@@ -1,0 +1,131 @@
+/*
+ * views/ip.css — "IP Intel" view (.ipi-*).
+ */
+
+.ipi-input .textarea {
+  min-height: 132px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.ipi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.ipi-run {
+  margin-left: auto;
+}
+
+.ipi-parsed:empty {
+  display: none;
+}
+
+.ipi-privacy {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .ipi-run {
+    width: 100%;
+  }
+
+  .ipi-run .btn {
+    flex: 1;
+  }
+}
+
+.ipi-empty {
+  padding: 8px 0;
+}
+
+.ipi-stats {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+@media (max-width: 1280px) {
+  .ipi-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ipi-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.ipi-row.is-pending td {
+  color: var(--text-3);
+}
+
+.ipi-ipcell,
+.ipi-holder,
+.ipi-loc {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ipi-ip {
+  font-weight: 600;
+}
+
+.ipi-holder {
+  min-width: 12rem;
+  max-width: 22rem;
+}
+
+.ipi-holder-name {
+  font-weight: 550;
+}
+
+.ipi-host,
+.ipi-asn {
+  font-size: 12.5px;
+}
+
+.ipi-flag {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font-sans);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.ipi-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.ipi-failed {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.ipi-rev {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.ipi-rev .tlist {
+  max-width: 20rem;
+}
+
+.ipi-details {
+  max-width: 60rem;
+}
+
+/* Make table scrollers the containing block of absolutely positioned descendants (.sr-only
+   labels inside cells) so they are clipped with the table instead of widening the page. */
+.ipi-view .dt-scroll {
+  position: relative;
+}

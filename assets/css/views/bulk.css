@@ -1,0 +1,199 @@
+/*
+ * views/bulk.css — "Bulk Resolve" view (.bulk-*). Input column + results column on wide
+ * screens, stacked below 1180 px. Uses the design tokens from style.css only.
+ */
+
+/* Input card on top (list | options), results below at full width: the result tables
+   have many columns (IPs, PTR, ASN, servers) and need the room. */
+.bulk-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.bulk-input-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr);
+  gap: 20px 28px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .bulk-input-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bulk-side {
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+}
+
+.bulk-side {
+  gap: 14px;
+}
+
+.bulk-input .textarea {
+  min-height: 220px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.bulk-input-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bulk-from-scan:empty {
+  display: none;
+}
+
+.bulk-input-tools > .btn {
+  margin-left: auto;
+}
+
+.bulk-parse {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bulk-parse .badge {
+  height: auto;
+  min-height: 21px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  white-space: normal;
+}
+
+.bulk-invalid summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.bulk-invalid-list {
+  max-height: 140px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bulk-side p {
+  margin: 0;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.bulk-actions .btn {
+  flex: 1;
+}
+
+.bulk-intro .empty {
+  padding: 56px 24px;
+}
+
+.bulk-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.bulk-progress-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.bulk-stats {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+/* Labels such as "Behind Cloudflare" wrap instead of being cut off. */
+.bulk-stats .stat-top {
+  align-items: flex-start;
+}
+
+.bulk-stats .stat-label {
+  white-space: normal;
+  line-height: 1.3;
+}
+
+.bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.bulk-filter {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.bulk-filter .field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.bulk-filter .select {
+  width: auto;
+  min-width: 10rem;
+}
+
+.bulk-status {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.bulk-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+  color: var(--k-direct);
+}
+
+.bulk-row-error td:first-child,
+.bulk-row-error td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--error-solid);
+}
+
+.bulk-details {
+  max-width: 980px;
+}
+
+@media (max-width: 600px) {
+  .bulk-input .textarea {
+    min-height: 180px;
+  }
+
+  .bulk-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bulk-filter,
+  .bulk-toolbar {
+    width: 100%;
+  }
+
+  .bulk-filter .select {
+    flex: 1;
+    min-width: 0;
+  }
+}

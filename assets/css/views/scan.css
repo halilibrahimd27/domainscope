@@ -1,0 +1,756 @@
+/*
+ * views/scan.css — "SSL Targets" view (.scan-*).
+ * Setup steps (numbered cards), run bar, live progress panel (stages + source chips),
+ * results (stats, tabs, tables, CLI card). Uses the design tokens from style.css only.
+ */
+
+/* ------------------------------------------------------------------------ */
+/* Setup steps                                                              */
+/* ------------------------------------------------------------------------ */
+
+.scan-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "cert domains"
+    "cert inventory"
+    "options options";
+  gap: 16px;
+  align-items: start;
+}
+
+.scan-step-cert {
+  grid-area: cert;
+  align-self: stretch;
+}
+
+.scan-step-domains {
+  grid-area: domains;
+}
+
+.scan-step-inventory {
+  grid-area: inventory;
+}
+
+.scan-step-options {
+  grid-area: options;
+}
+
+@media (max-width: 1100px) {
+  .scan-setup {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "cert"
+      "domains"
+      "inventory"
+      "options";
+  }
+}
+
+.scan-step {
+  display: flex;
+  flex-direction: column;
+}
+
+.scan-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.scan-step-num {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.scan-step-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-step-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.scan-step-title .icon {
+  color: var(--text-3);
+}
+
+.scan-step-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.scan-step-status {
+  flex: none;
+  margin-top: 2px;
+}
+
+.scan-step-body {
+  flex: 1;
+  padding: 14px 16px 16px;
+}
+
+.scan-step-cert .cert-drop {
+  min-height: 116px;
+}
+
+.scan-cert-another {
+  margin-top: 4px;
+}
+
+.scan-domains-cert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+
+.scan-domains-cert:empty {
+  display: none;
+}
+
+.scan-domains-cert .icon {
+  color: var(--accent);
+}
+
+.scan-inv {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.scan-inv-icon {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--k-direct-bg);
+  border: 1px solid var(--k-direct-border);
+  color: var(--k-direct);
+}
+
+.scan-inv-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-inv-count {
+  font-weight: 650;
+}
+
+.scan-privacy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+
+.scan-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px 28px;
+}
+
+@media (max-width: 1200px) {
+  .scan-options {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .scan-options > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .scan-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.scan-sources .choice-list {
+  gap: 10px;
+}
+
+.scan-sources .check-hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.scan-doh {
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.scan-doh .icon {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+.scan-doh .link-btn {
+  margin-left: 6px;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Run bar                                                                  */
+/* ------------------------------------------------------------------------ */
+
+.scan-runbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 12px 16px;
+  border-color: var(--accent-soft-border);
+  background: linear-gradient(0deg, var(--surface), var(--surface)), var(--accent-soft);
+}
+
+.scan-runbar-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.scan-runbar-info {
+  flex: 1;
+  min-width: 220px;
+}
+
+.scan-runbar-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--text-2);
+}
+
+.scan-dot {
+  color: var(--text-3);
+}
+
+.scan-runbar-error:empty {
+  display: none;
+}
+
+.scan-runbar-error {
+  margin-top: 8px;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Progress panel                                                           */
+/* ------------------------------------------------------------------------ */
+
+.scan-run {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.scan-run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 16px;
+}
+
+.scan-run-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-run-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.scan-run-meta {
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.scan-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scan-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.scan-stage-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--surface);
+}
+
+.scan-stage-note {
+  font-weight: 500;
+  font-style: italic;
+}
+
+.scan-stage-note:empty {
+  display: none;
+}
+
+.scan-stage[data-state="active"] {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.scan-stage[data-state="active"] .scan-stage-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.scan-stage[data-state="done"] {
+  color: var(--ok);
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+}
+
+.scan-stage[data-state="done"] .scan-stage-dot {
+  border-color: var(--ok-solid);
+  background: var(--ok-solid);
+}
+
+.scan-stage[data-state="skipped"] {
+  opacity: 0.65;
+  border-style: dashed;
+}
+
+.scan-run[data-status="cancelled"] .scan-stage[data-state="pending"],
+.scan-run[data-status="error"] .scan-stage[data-state="pending"] {
+  opacity: 0.55;
+}
+
+.scan-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scan-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.scan-chip .spinner-inline {
+  width: 12px;
+  height: 12px;
+}
+
+.scan-chip-name {
+  font-weight: 650;
+}
+
+.scan-chip-value {
+  color: var(--text-3);
+}
+
+.scan-chip[data-state="ok"] .icon {
+  color: var(--ok);
+}
+
+.scan-chip[data-state="partial"] {
+  border-color: var(--warn-border);
+}
+
+.scan-chip[data-state="partial"] .icon {
+  color: var(--warn);
+}
+
+.scan-chip[data-state="error"] {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+}
+
+.scan-chip[data-state="cancelled"] {
+  border-style: dashed;
+  color: var(--text-3);
+}
+
+.scan-chip[data-state="error"] .icon,
+.scan-chip[data-state="error"] .scan-chip-value {
+  color: var(--error);
+}
+
+.scan-run-notice:empty {
+  display: none;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Results                                                                  */
+/* ------------------------------------------------------------------------ */
+
+.scan-results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.scan-results-title {
+  flex: 1;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.scan-exports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scan-stats {
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+}
+
+/* Labels such as "Behind Cloudflare" wrap instead of being cut off. */
+.scan-stats .stat-top {
+  align-items: flex-start;
+}
+
+.scan-stats .stat-label {
+  white-space: normal;
+  line-height: 1.3;
+}
+
+.scan-summary:empty {
+  display: none;
+}
+
+.scan-subtitle {
+  margin: 8px 0 0;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+/* Hosts table */
+.scan-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.scan-filter-kind {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-filter-kind .field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.scan-filter-kind .select {
+  width: auto;
+  min-width: 11rem;
+}
+
+.scan-filters .check-label {
+  font-size: 13px;
+}
+
+.scan-host {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scan-host-name {
+  font-weight: 600;
+}
+
+.scan-mini-badge {
+  height: 18px;
+  padding: 0 6px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+}
+
+.scan-kind {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.scan-server-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+  color: var(--k-direct);
+}
+
+.scan-origins {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.scan-origin {
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.scan-origin[data-origin="cert"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.scan-origin[data-origin="bruteforce"] {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.scan-row-wildcard td {
+  opacity: 0.72;
+}
+
+.scan-row-dangling td:first-child,
+.scan-row-dangling td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--k-dangling-solid);
+}
+
+.scan-host-details {
+  max-width: 980px;
+}
+
+/* Servers tab */
+.scan-srv {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.scan-srv-name {
+  font-weight: 650;
+}
+
+.scan-srv-groups {
+  gap: 4px;
+}
+
+.scan-srv-groups .badge {
+  height: 18px;
+  font-size: 10.5px;
+}
+
+.scan-srv-host.is-hint {
+  color: var(--text-2);
+}
+
+.scan-row-needs td:first-child,
+.scan-row-needs td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+/* Behind CDN tab */
+.scan-why p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.scan-hint-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.scan-hint-reason .badge {
+  flex: none;
+}
+
+.scan-hint-detail {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  padding-top: 3px;
+}
+
+.scan-cli .card-subtitle {
+  max-width: 90ch;
+}
+
+.scan-cli-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: cli;
+}
+
+.scan-cli-steps > li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-left: 36px;
+  counter-increment: cli;
+}
+
+.scan-cli-steps > li::before {
+  content: counter(cli);
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scan-cli-step-title {
+  font-weight: 650;
+}
+
+.scan-cli-steps .codeblock {
+  align-self: stretch;
+}
+
+.scan-cli-steps p {
+  margin: 0;
+}
+
+/* CT tab */
+.scan-ct-table .scan-ct-match td {
+  background: var(--accent-soft);
+}
+
+.scan-ct-table .scan-ct-expiring td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.scan-ct-table .scan-ct-expired td {
+  color: var(--text-3);
+}
+
+.scan-serial {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* Sources tab */
+.scan-src-error code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Phones                                                                   */
+/* ------------------------------------------------------------------------ */
+
+@media (max-width: 600px) {
+  .scan-step-head {
+    padding: 12px 12px 10px;
+    gap: 10px;
+  }
+
+  .scan-step-body {
+    padding: 12px;
+  }
+
+  .scan-step-status {
+    display: none;
+  }
+
+  .scan-runbar {
+    padding: 12px;
+  }
+
+  .scan-runbar-buttons,
+  .scan-runbar-buttons .btn {
+    width: 100%;
+  }
+
+  .scan-run {
+    padding: 12px;
+  }
+
+  .scan-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scan-exports {
+    width: 100%;
+  }
+
+  .scan-filter-kind {
+    width: 100%;
+  }
+
+  .scan-filter-kind .select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .scan-cli-steps > li {
+    padding-left: 30px;
+  }
+}

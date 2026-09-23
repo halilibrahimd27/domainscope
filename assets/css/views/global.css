@@ -1,0 +1,409 @@
+/*
+ * views/global.css — "Global DNS" view (.glb-*).
+ *
+ * Answer groups are identified by a letter AND a colour (never colour alone). The group
+ * colour is the custom property --g, set by .glb-g0 … .glb-g7 (answers), .glb-gerr (failed)
+ * and .glb-gblk (blocked). Letter circles use white text on the solid colour (all ≥ 4.5:1).
+ */
+
+/* ---- form ------------------------------------------------------------------ */
+
+.glb-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10.5rem auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.glb-form .field {
+  min-width: 0;
+}
+
+.glb-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.glb-form-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+}
+
+.glb-examples .link-btn {
+  font-size: 12.5px;
+}
+
+.glb-how-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+@media (max-width: 700px) {
+  .glb-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .glb-buttons .btn {
+    width: 100%;
+  }
+}
+
+.glb-empty {
+  padding: 8px 0;
+}
+
+/* ---- group colours ----------------------------------------------------------- */
+
+.glb-g0 { --g: #2563eb; }
+.glb-g1 { --g: #c2410c; }
+.glb-g2 { --g: #15803d; }
+.glb-g3 { --g: #7c3aed; }
+.glb-g4 { --g: #be185d; }
+.glb-g5 { --g: #0e7490; }
+.glb-g6 { --g: #a16207; }
+.glb-g7 { --g: #4d7c0f; }
+.glb-gerr { --g: var(--error-solid); }
+.glb-gblk { --g: var(--warn-solid); }
+
+.glb-mark-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.glb-mark {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--g, var(--surface-3));
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.glb-mark-pending {
+  background: var(--surface-3);
+  color: var(--text-3);
+}
+
+.glb-mark-label {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+/* Legend chips (toggle buttons) */
+.glb-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.glb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid color-mix(in srgb, var(--g) 45%, var(--border));
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--g) 10%, var(--surface));
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--dur), background var(--dur);
+}
+
+.glb-chip:hover {
+  background: color-mix(in srgb, var(--g) 18%, var(--surface));
+}
+
+.glb-chip.is-active,
+.glb-chip[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--g);
+}
+
+.glb-chip-values {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42ch;
+  font-size: 12.5px;
+}
+
+.glb-chip-count {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.glb-filter-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* ---- tables ------------------------------------------------------------------ */
+
+.glb-row > td:first-child {
+  box-shadow: inset 3px 0 0 var(--g, transparent);
+}
+
+.glb-row.is-pending td {
+  color: var(--text-3);
+}
+
+.glb-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.glb-answer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 12rem;
+}
+
+.glb-answer .tlist {
+  gap: 3px;
+}
+
+.glb-ipval,
+.glb-alias,
+.glb-mx {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.glb-text {
+  display: inline-block;
+  max-width: min(38rem, 70vw);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+
+.glb-ip,
+.glb-host {
+  font-size: 12.5px;
+}
+
+.glb-prov {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.glb-prov-cloudflare {
+  border-color: var(--k-cloudflare-border);
+  background: var(--k-cloudflare-bg);
+  color: var(--k-cloudflare);
+}
+
+.glb-prov-cdn {
+  border-color: var(--k-cdn-border);
+  background: var(--k-cdn-bg);
+  color: var(--k-cdn);
+}
+
+.glb-prov-platform {
+  border-color: var(--k-platform-border);
+  background: var(--k-platform-bg);
+  color: var(--k-platform);
+}
+
+.glb-prov-private {
+  border-color: var(--k-private-border);
+  background: var(--k-private-bg);
+  color: var(--k-private);
+}
+
+.glb-fail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.glb-fail-text {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.glb-chain {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(34rem, 72vw);
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.glb-chain .glb-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+
+.glb-chain-label {
+  flex: none;
+  font-style: italic;
+}
+
+.glb-chain-arrow {
+  flex: none;
+}
+
+.glb-res,
+.glb-loc,
+.glb-isp {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.glb-res-name {
+  font-weight: 600;
+}
+
+.glb-pop {
+  align-self: flex-start;
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.glb-flag {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font-sans);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.glb-loc-geo {
+  font-weight: 550;
+}
+
+.glb-ms-fast {
+  color: var(--ok);
+}
+
+.glb-ms-slow {
+  color: var(--warn);
+}
+
+.glb-ms-very-slow {
+  color: var(--error);
+}
+
+.glb-ops .badge {
+  font-size: 11px;
+}
+
+/* IP table */
+.glb-seen {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 7rem;
+}
+
+.glb-bar {
+  display: block;
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.glb-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.glb-where {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.glb-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  max-width: 22rem;
+}
+
+/* ---- summary ------------------------------------------------------------------ */
+
+.glb-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 760px) {
+  .glb-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.glb-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.glb-progress[hidden] {
+  display: none;
+}
+
+/* Make table scrollers the containing block of absolutely positioned descendants (.sr-only
+   labels inside cells) so they are clipped with the table instead of widening the page. */
+.glb-view .dt-scroll {
+  position: relative;
+}

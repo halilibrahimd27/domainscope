@@ -1,0 +1,229 @@
+/**
+ * wordlist.js — candidate DNS labels used by the optional name-guessing step
+ * of the scanner. The scanner resolves each `<label>.<domain>` over DoH and
+ * keeps only names that actually resolve and are not wildcard look-alikes, so
+ * this list simply seeds lookups against domains the user already owns.
+ *
+ * WORDLIST_SMALL  — ~150 of the most common labels (global infra + Turkish market).
+ * WORDLIST_MEDIUM — ~1000 labels, a strict superset of SMALL (SMALL entries first).
+ * Every entry is unique, lowercase, and a valid single DNS label ([a-z0-9-],
+ * 1–63 chars, no leading/trailing '-').
+ */
+
+// Most common labels: web/mail/DNS, remote-access + platform infra, environments,
+// apps, and Turkish-market business terms.
+const SMALL_WORDS = [
+  // web + mail + dns
+  'www', 'www2', 'web', 'mail', 'webmail', 'email', 'smtp', 'pop', 'imap', 'mx', 'mx1', 'mx2',
+  'ns', 'ns1', 'ns2', 'ns3', 'dns', 'autodiscover', 'autoconfig', 'owa', 'exchange', 'ftp', 'sftp',
+  // remote access / platform infra
+  'vpn', 'remote', 'gateway', 'gw', 'proxy', 'lb', 'firewall', 'secure', 'cpanel', 'whm', 'webdisk',
+  'plesk', 'panel', 'server', 'host', 'cloud', 'backup', 'monitor', 'monitoring', 'status',
+  'git', 'gitlab', 'jenkins', 'grafana', 'kibana', 'prometheus', 'argocd', 'rancher', 'k8s',
+  'registry', 'harbor', 'sonar', 'nexus', 'vault', 'sso', 'auth', 'keycloak', 'ldap', 'login', 'id',
+  'db', 'mysql', 'jira', 'confluence', 'wiki',
+  // environments
+  'dev', 'test', 'stage', 'staging', 'uat', 'preprod', 'prod', 'beta', 'demo', 'sandbox', 'qa',
+  // apps / content
+  'api', 'app', 'apps', 'm', 'mobile', 'admin', 'static', 'cdn', 'img', 'images', 'media', 'assets',
+  'files', 'download', 'downloads', 'upload', 'docs', 'doc', 'blog', 'news', 'shop', 'store', 'pay',
+  'payment', 'checkout', 'crm', 'erp', 'intranet', 'extranet', 'portal', 'dashboard', 'account',
+  'accounts', 'my', 'user', 'users', 'client', 'clients', 'support', 'help', 'helpdesk', 'ticket',
+  'search', 'chat', 'video', 'meet', 'calendar', 'analytics', 'stats', 'metrics', 'link', 'go',
+  'redirect', 'test1', 'test2', 'old', 'new', 'temp', 'internal', 'external', 'public', 'private',
+  // Turkish-market business terms
+  'yonetim', 'destek', 'magaza', 'kargo', 'odeme', 'ik', 'muhasebe', 'bayi', 'b2b', 'b2c',
+  'musteri', 'siparis', 'fatura', 'basvuru', 'egitim', 'uyelik', 'kampanya', 'duyuru'
+];
+
+// Additional labels that, together with SMALL, make up the medium list.
+const MEDIUM_EXTRA = [
+  // mail / messaging / collaboration
+  'pop3', 'imap4', 'mx3', 'mx01', 'mx02', 'smtp1', 'smtp2', 'smtp3', 'mailgw', 'mailgateway',
+  'mailserver', 'mailhost', 'mail1', 'mail2', 'mail3', 'newsletter', 'mailer', 'mailing', 'lists',
+  'list', 'listserv', 'mailman', 'zimbra', 'roundcube', 'squirrelmail', 'horde', 'mail-relay',
+  'relay', 'mta', 'spam', 'antispam', 'barracuda', 'proofpoint', 'mimecast', 'mailarchive', 'archive',
+  'imaps', 'smtps', 'submission', 'postfix', 'dovecot', 'sieve', 'webmail2', 'mx-backup', 'mailbackup',
+  'lync', 'skype', 'teams', 'sfb', 'jabber', 'xmpp', 'im', 'messaging', 'rocketchat', 'mattermost',
+  'slack', 'mumble', 'ts', 'ts3', 'discord',
+  // dns / infra naming
+  'ns4', 'ns5', 'ns01', 'ns02', 'ns03', 'dns3', 'dns4', 'resolver', 'recursor', 'pdns', 'powerdns',
+  'bind', 'named', 'dhcp', 'ntp', 'time', 'radius', 'tacacs', 'kerberos', 'kdc', 'ca', 'pki',
+  'ocsp', 'crl', 'ipam', 'netbox', 'phpipam', 'dhcp1', 'dhcp2',
+  // remote access / security
+  'vpn1', 'vpn2', 'vpn3', 'ssl-vpn', 'sslvpn', 'anyconnect', 'globalprotect', 'gp', 'pulse',
+  'forticlient', 'fortigate', 'fortinet', 'fw', 'fw1', 'fw2', 'asa', 'pfsense', 'opnsense', 'ssh',
+  'bastion', 'jump', 'jumphost', 'jumpbox', 'access', 'rdgateway', 'rds', 'rdweb', 'ts-gateway',
+  'citrix2', 'netscaler', 'vdi', 'horizon', 'vmware', 'vcenter', 'esxi', 'esx', 'vsphere', 'xen',
+  'xenserver', 'proxmox', 'pve', 'hyperv', 'kvm', 'ovirt', 'nutanix', 'ipmi', 'idrac', 'ilo', 'bmc',
+  'kvm1', 'console', 'oob', 'mgmt', 'management', 'mgmt1', 'admin1', 'admin2', 'root', 'sudo',
+  // load balancing / proxy / cdn
+  'lb1', 'lb2', 'lb01', 'lb02', 'loadbalancer', 'balancer', 'haproxy', 'nginx', 'traefik', 'envoy',
+  'varnish', 'squid', 'proxy1', 'proxy2', 'reverse-proxy', 'edge', 'edge1', 'edge2', 'waf', 'cache',
+  'cache1', 'cache2', 'cdn1', 'cdn2', 'cdn3', 'static1', 'static2', 'assets1', 'assets2', 'origin',
+  'origins', 'pull', 'push', 'stream', 'streaming', 'live', 'vod', 'rtmp',
+  // web servers / apps / frameworks
+  'web1', 'web2', 'web3', 'web01', 'web02', 'web03', 'www1', 'www3', 'www01', 'app1', 'app2', 'app3',
+  'app01', 'app02', 'app03', 'apps1', 'apps2', 'application', 'applications', 'frontend', 'front',
+  'backend', 'back', 'middleware', 'services', 'service', 'svc', 'microservice', 'ws', 'wsapi',
+  'rest', 'restapi', 'graphql', 'gql', 'soap', 'rpc', 'grpc', 'gateway-api', 'apigw', 'apigateway',
+  'api1', 'api2', 'api3', 'api-v1', 'api-v2', 'apiv1', 'apiv2', 'v1', 'v2', 'v3', 'developer',
+  'developers', 'partner', 'partners', 'integration', 'integrations', 'connect', 'hooks', 'webhook',
+  'webhooks', 'callback', 'oauth', 'openid', 'token', 'idp', 'identity', 'accounts2', 'signin',
+  'signup', 'register', 'password', 'reset', 'profile', 'session',
+  // devops / ci-cd / source / registries
+  'ci', 'cd', 'cicd', 'build', 'builds', 'pipeline', 'pipelines', 'runner', 'runners', 'agent',
+  'agents', 'gitea', 'gogs', 'bitbucket', 'stash', 'svn', 'mercurial', 'hg', 'code', 'source',
+  'sources', 'repo', 'repos', 'repository', 'artifacts', 'artifactory', 'maven', 'npm', 'pypi',
+  'docker', 'dockerregistry', 'quay', 'containers', 'container', 'images-registry', 'helm', 'charts',
+  'teamcity', 'bamboo', 'circleci', 'drone', 'concourse', 'spinnaker', 'flux', 'tekton', 'octopus',
+  'deploy', 'deployment', 'release', 'releases', 'nightly', 'snapshot',
+  // monitoring / logging / observability
+  'logs', 'log', 'logging', 'logstash', 'elastic', 'elasticsearch', 'kibana2', 'graylog', 'splunk',
+  'loki', 'promtail', 'alertmanager', 'alerts', 'alert', 'nagios', 'icinga', 'zabbix', 'cacti',
+  'munin', 'observium', 'librenms', 'prtg', 'solarwinds', 'datadog', 'newrelic', 'sentry', 'jaeger',
+  'zipkin', 'tempo', 'thanos', 'cortex', 'victoriametrics', 'influx', 'influxdb', 'telegraf',
+  'collectd', 'statsd', 'uptime', 'uptimerobot', 'healthcheck', 'health', 'ping', 'probe', 'metric',
+  'dashboards', 'kiali', 'grafana2',
+  // databases / storage / cache / queues
+  'database', 'databases', 'db1', 'db2', 'db01', 'db02', 'mariadb', 'postgres', 'postgresql', 'pg',
+  'pgadmin', 'phpmyadmin', 'adminer', 'oracle', 'mssql', 'sqlserver', 'mongo', 'mongodb', 'couch',
+  'couchdb', 'cassandra', 'scylla', 'redis', 'memcache', 'memcached', 'elastic2', 'solr', 'sphinx',
+  'clickhouse', 'druid', 'presto', 'trino', 'hive', 'hadoop', 'hdfs', 'spark', 'flink', 'kafka',
+  'zookeeper', 'rabbitmq', 'rabbit', 'activemq', 'nats', 'pulsar', 'mq', 'queue', 'broker', 'etcd',
+  'consul', 'storage', 'store2', 'nas', 'san', 'ceph', 'gluster', 'minio', 's3', 'swift', 'objects',
+  'blob', 'bucket', 'buckets', 'fileserver', 'files1', 'files2', 'share', 'shares', 'smb', 'nfs',
+  'drive', 'disk', 'volumes', 'data', 'datastore', 'warehouse', 'dwh', 'datalake', 'lake', 'etl',
+  'airflow', 'dbt', 'metabase', 'superset', 'redash', 'looker', 'tableau', 'powerbi', 'bi',
+  // environments (expanded)
+  'development', 'testing', 'test3', 'tests', 'stg', 'stg1', 'stg2', 'staging1', 'staging2',
+  'preproduction', 'pre', 'pre-prod', 'production', 'prod1', 'prod2', 'live1', 'canary', 'blue',
+  'green', 'acceptance', 'accept', 'integration-env', 'int', 'training', 'sandbox2', 'lab', 'labs',
+  'poc', 'pilot', 'trial', 'experimental', 'experiment', 'staging-api', 'dev-api', 'test-api',
+  'dev1', 'dev2', 'dev01', 'dev02', 'devops', 'ops', 'sre', 'infra', 'infrastructure', 'platform',
+  // content / media / marketing
+  'cdn-static', 'images1', 'images2', 'image', 'photo', 'photos', 'pics', 'picture', 'pictures',
+  'thumb', 'thumbs', 'gallery', 'videos', 'video1', 'video2', 'audio', 'music', 'podcast', 'tv',
+  'radio', 'player', 'embed', 'content', 'cms', 'wordpress', 'wp', 'drupal', 'joomla', 'ghost',
+  'typo3', 'magento', 'prestashop', 'opencart', 'woocommerce', 'blog1', 'blog2', 'blogs', 'forum',
+  'forums', 'community', 'discourse', 'board', 'qna', 'faq', 'kb', 'knowledgebase', 'knowledge',
+  'learn', 'learning', 'lms', 'moodle', 'academy', 'courses', 'course', 'events', 'event', 'webinar',
+  'landing', 'lp', 'promo', 'campaign', 'campaigns', 'ads', 'ad', 'adserver', 'track', 'tracking',
+  'tracker', 'pixel', 'tag', 'tags', 'gtm', 'utm', 'seo', 'marketing', 'mkt', 'newsroom', 'press',
+  'media1', 'press-kit',
+  // e-commerce / payment / finance
+  'store1', 'store2', 'shop1', 'shop2', 'shopping', 'cart', 'basket', 'order', 'orders', 'catalog',
+  'catalogue', 'products', 'product', 'inventory', 'stock', 'warehouse2', 'pos', 'billing', 'invoice',
+  'invoices', 'payments', 'pay1', 'pay2', 'wallet', 'checkout2', 'secure-pay', 'payment-gateway',
+  'gateway2', 'merchant', 'paypal', 'stripe', 'iyzico', 'iyzipay', 'paytr', 'sipay', 'craftgate',
+  'finance', 'financial', 'bank', 'banking', 'money', 'account-finance', 'ledger', 'accounting',
+  'tax', 'payroll', 'expense', 'expenses', 'budget', 'treasury', 'trade', 'trading', 'exchange2',
+  'market', 'markets', 'quote', 'quotes',
+  // business apps / collaboration / crm-erp
+  'crm2', 'erp2', 'sap', 'salesforce', 'sfdc', 'dynamics', 'netsuite', 'odoo', 'sugarcrm', 'hubspot',
+  'zoho', 'sales', 'marketing2', 'leads', 'lead', 'contacts', 'contact', 'customer', 'customers',
+  'vendor', 'vendors', 'supplier', 'suppliers', 'procurement', 'purchasing', 'project', 'projects',
+  'pm', 'redmine', 'trello', 'asana', 'monday', 'basecamp', 'clickup', 'notion', 'workspace', 'work',
+  'office', 'office365', 'o365', 'sharepoint', 'onedrive', 'gsuite', 'gapps', 'workspace2', 'drive2',
+  'meet2', 'zoom', 'webex', 'gotomeeting', 'bluejeans', 'conference', 'conf', 'meeting', 'meetings',
+  'booking', 'bookings', 'appointment', 'appointments', 'schedule', 'scheduler', 'timesheet', 'hr',
+  'hrms', 'people', 'talent', 'recruit', 'recruiting', 'careers', 'career', 'jobs', 'job', 'apply',
+  'onboarding', 'employee', 'employees', 'staff', 'directory', 'phonebook', 'contacts2',
+  // admin / internal / management
+  'admin3', 'administrator', 'adminpanel', 'admin-panel', 'controlpanel', 'control', 'manage',
+  'manager', 'management2', 'backoffice', 'back-office', 'internal2', 'intranet2', 'corp', 'corporate',
+  'company', 'private2', 'secret', 'hidden', 'restricted', 'staff2', 'employee-portal', 'ess',
+  'selfservice', 'self-service', 'onboard', 'provisioning', 'provision', 'config', 'configuration',
+  'settings', 'setup', 'install', 'installer', 'update', 'updates', 'upgrade', 'patch', 'patches',
+  'mirror', 'mirrors', 'apt', 'yum', 'repo1', 'repo2', 'packages', 'package', 'dist', 'downloads2',
+  'files-internal', 'transfer', 'ftp1', 'ftp2', 'ftps', 'tftp', 'scp', 'rsync', 'sync', 'dropbox',
+  'nextcloud', 'owncloud', 'seafile', 'syncthing', 'filecloud',
+  // networking / telecom
+  'router', 'switch', 'core', 'core1', 'core2', 'dist1', 'dist2', 'access1', 'access2', 'wifi',
+  'wlan', 'wireless', 'ap', 'ap1', 'ap2', 'controller', 'wlc', 'voip', 'pbx', 'asterisk', 'freepbx',
+  'sip1', 'sip2', 'sbc', 'callmanager', 'cucm', '3cx', 'telephony', 'phone', 'fax', 'sms', 'gsm',
+  'modem', 'dsl', 'fiber', 'uplink', 'peering', 'transit', 'bgp', 'looking-glass', 'lg', 'smokeping',
+  'speedtest', 'iperf', 'netflow',
+  // security / compliance
+  'security', 'sec', 'soc', 'siem', 'ids', 'ips', 'nac', 'dlp', 'edr', 'av', 'antivirus', 'clamav',
+  'sophos', 'kaspersky', 'trendmicro', 'mcafee', 'crowdstrike', 'defender', 'scan', 'scanner',
+  'nessus', 'openvas', 'qualys', 'nmap', 'burp', 'pentest', 'audit', 'compliance', 'grc', 'risk',
+  'cert2', 'csirt', 'abuse', 'phishing', 'quarantine', 'honeypot', 'sinkhole', 'threat', 'ioc',
+  'secrets', 'keys', 'kms', 'hsm', 'password-manager', 'passwords', 'vault2', 'bitwarden', 'vaultwarden',
+  '1password', 'lastpass', 'keepass',
+  // cloud / virtualization / containers
+  'aws', 'azure', 'gcp', 'gcloud', 'oci', 'digitalocean', 'do', 'linode', 'vultr', 'hetzner', 'ovh',
+  'cloud1', 'cloud2', 'private-cloud', 'openstack', 'cloudstack', 'vm', 'vm1', 'vm2', 'vms', 'node',
+  'node1', 'node2', 'node01', 'node02', 'worker', 'worker1', 'worker2', 'master', 'master1', 'master2',
+  'control-plane', 'kubernetes', 'kube', 'k3s', 'openshift', 'ocp', 'okd', 'minikube', 'kubeadm',
+  'ingress', 'egress', 'pod', 'pods', 'namespace', 'cluster', 'cluster1', 'cluster2', 'swarm', 'mesos',
+  'nomad', 'portainer', 'kubeapi', 'kubelet', 'dashboard-k8s', 'kubernetes-dashboard', 'lens', 'kubeconfig',
+  // misc / utility
+  'test-www', 'www-test', 'demo1', 'demo2', 'example', 'sample', 'default', 'temp1', 'tmp', 'backup1',
+  'backup2', 'bak', 'archive1', 'archive2', 'legacy', 'old1', 'old2', 'new1', 'new2', 'beta1', 'beta2',
+  'alpha', 'rc', 'preview', 'staging-www', 'mirror1', 'mirror2', 'cdn-test', 'static-test', 'assets-cdn',
+  'go2', 'link2', 'links', 'short', 'url', 'urls', 'r', 's', 't', 'l', 'redirect2', 'out', 'click',
+  'clicks', 'ref', 'aff', 'affiliate', 'affiliates', 'partner2', 'referral', 'invite', 'share2',
+  'social', 'feed', 'rss', 'atom', 'sitemap', 'robots', 'well-known', 'acme', 'validation', 'verify',
+  'verification', 'confirm', 'activate', 'activation', 'unsubscribe',
+  // Turkish-market business / sector terms (expanded)
+  'yonetici', 'yonetimpaneli', 'panelim', 'kurumsal', 'sirket', 'firma', 'insankaynaklari',
+  'insan-kaynaklari', 'personel', 'calisan', 'bordro', 'izin', 'mesai', 'vardiya', 'satis',
+  'satinalma', 'tedarik', 'tedarikci', 'stok', 'depo', 'lojistik', 'sevkiyat', 'nakliye', 'teslimat',
+  'siparisler', 'faturalar', 'efatura', 'earsiv', 'edonusum', 'gib', 'tahsilat', 'odemeler', 'kasa',
+  'banka', 'butce', 'raporlar', 'rapor', 'analiz', 'istatistik', 'musteriler', 'musterihizmetleri',
+  'cagrimerkezi', 'canlidestek', 'yardim', 'sss', 'iletisim', 'basvurular', 'talep', 'talepler',
+  'sikayet', 'geribildirim', 'anket', 'randevu', 'rezervasyon', 'basvuruformu', 'form', 'formlar',
+  'uye', 'uyeler', 'uyelik', 'kayit', 'girisyap', 'giris', 'sifre', 'sifremiunuttum', 'hesap',
+  'hesabim', 'profilim', 'ayarlar', 'bildirimler', 'mesajlar', 'sepet', 'sepetim', 'kasa2', 'kampanyalar',
+  'firsatlar', 'indirim', 'indirimler', 'urunler', 'urun', 'katalog', 'vitrin', 'magazalar', 'subeler',
+  'sube', 'bayiler', 'bayilik', 'franchise', 'toptan', 'perakende', 'pazaryeri', 'market2', 'eticaret',
+  'online', 'sanalmagaza', 'sanalpos', 'sipay2', 'tahsis', 'abonelik', 'abone', 'paketler', 'tarife',
+  'tarifeler', 'kurumsalpanel', 'bayipanel', 'bayi-panel', 'musteripanel', 'ogrenci', 'ogrenciler',
+  'akademik', 'ogretim', 'sinav', 'sinavlar', 'kurs', 'kurslar', 'sertifika', 'egitimportali',
+  'uzaktanegitim', 'obs', 'ubs', 'yos', 'kutuphane', 'arsiv', 'belge', 'belgeler', 'evrak', 'doküman',
+  'dokuman', 'dokumanlar', 'proje', 'projeler', 'ihale', 'ihaleler', 'tenders', 'saglik', 'hastane',
+  'randevusistemi', 'eczane', 'laboratuvar', 'sonuc', 'sonuclar', 'tahlil', 'belediye', 'ebelediye',
+  'vatandas', 'basvuru2', 'ruhsat', 'emlak', 'tapu', 'harita', 'ulasim', 'otobus', 'metro'
+];
+
+/** Validate + dedupe (case-folded) a list of DNS labels, preserving order. */
+function cleanLabels(words) {
+  const labelRe = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
+  const seen = new Set();
+  const out = [];
+  for (const raw of words) {
+    const label = String(raw).trim().toLowerCase();
+    if (!labelRe.test(label) || seen.has(label)) continue;
+    seen.add(label);
+    out.push(label);
+  }
+  return out;
+}
+
+const SMALL = cleanLabels(SMALL_WORDS);
+const MEDIUM = cleanLabels([...SMALL_WORDS, ...MEDIUM_EXTRA]);
+
+/**
+ * ~150 most common subdomain labels (global infra + Turkish market).
+ * @type {string[]}
+ */
+export const WORDLIST_SMALL = Object.freeze(SMALL);
+
+/**
+ * ~1000 subdomain labels. Strict superset of {@link WORDLIST_SMALL}, whose
+ * entries appear first (in the same order).
+ * @type {string[]}
+ */
+export const WORDLIST_MEDIUM = Object.freeze(MEDIUM);
+
+/**
+ * Return a named wordlist by size.
+ * @param {'small'|'medium'} [size='small']
+ * @returns {string[]} Empty array for 'off' / unknown sizes.
+ */
+export function getWordlist(size = 'small') {
+  if (size === 'medium') return WORDLIST_MEDIUM;
+  if (size === 'small') return WORDLIST_SMALL;
+  return [];
+}

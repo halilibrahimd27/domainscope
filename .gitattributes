@@ -1,0 +1,13 @@
+# Normalise text files to LF in the repository.
+* text=auto eol=lf
+
+# Binary fixtures must never be touched.
+*.bin binary
+*.der binary
+*.pfx binary
+*.p12 binary
+*.p7b binary
+*.png binary
+
+# This fixture intentionally uses Windows (CRLF) line endings.
+tests/fixtures/rsa_multi_san_crlf.pem -text

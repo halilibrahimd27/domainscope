@@ -1,0 +1,557 @@
+/*
+ * views/health.css — "Domain Health" view (.hlt-*).
+ */
+
+/* ---- form ------------------------------------------------------------------ */
+
+.hlt-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.hlt-form .field {
+  min-width: 0;
+}
+
+.hlt-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.hlt-form-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hlt-examples .link-btn {
+  font-size: 12.5px;
+}
+
+.hlt-options .disclosure-summary {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+@media (max-width: 600px) {
+  .hlt-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hlt-buttons .btn {
+    flex: 1;
+  }
+}
+
+.hlt-empty {
+  padding: 8px 0;
+}
+
+/* ---- hero -------------------------------------------------------------------- */
+
+.hlt-hero-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hlt-hero {
+  --h-accent: var(--ok-solid);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px 24px;
+  align-items: center;
+  padding: 18px 20px;
+  overflow: hidden;
+}
+
+.hlt-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--h-accent);
+}
+
+.hlt-hero-warn {
+  --h-accent: var(--warn-solid);
+}
+
+.hlt-hero-error {
+  --h-accent: var(--error-solid);
+}
+
+/* Traffic light: three lamps, the active one lit; the verdict text repeats it. */
+.hlt-light {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+
+.hlt-lamp {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  opacity: 0.45;
+}
+
+.hlt-lamp-error.is-on {
+  background: var(--error-solid);
+  opacity: 1;
+  box-shadow: 0 0 10px var(--error-solid);
+}
+
+.hlt-lamp-warn.is-on {
+  background: var(--warn-solid);
+  opacity: 1;
+  box-shadow: 0 0 10px var(--warn-solid);
+}
+
+.hlt-lamp-ok.is-on {
+  background: var(--ok-solid);
+  opacity: 1;
+  box-shadow: 0 0 10px var(--ok-solid);
+}
+
+.hlt-hero-main {
+  min-width: 0;
+}
+
+.hlt-hero-domain {
+  font-size: 13px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.hlt-hero-verdict {
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.hlt-hero-error .hlt-hero-verdict {
+  color: var(--error);
+}
+
+.hlt-hero-warn .hlt-hero-verdict {
+  color: var(--warn);
+}
+
+.hlt-hero-ok .hlt-hero-verdict {
+  color: var(--ok);
+}
+
+.hlt-hero-body {
+  margin: 2px 0 10px;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.hlt-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.hlt-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hlt-count.is-zero {
+  opacity: 0.55;
+}
+
+.hlt-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+}
+
+.hlt-hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.hlt-score {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 2px;
+  text-align: right;
+}
+
+.hlt-score-value {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.hlt-score-max {
+  font-size: 15px;
+  color: var(--text-3);
+}
+
+.hlt-score-label {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.hlt-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 700px) {
+  .hlt-hero {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hlt-hero-side {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .hlt-hero-actions {
+    justify-content: flex-start;
+  }
+}
+
+.hlt-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ---- checks -------------------------------------------------------------------- */
+
+.hlt-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.hlt-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .hlt-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.hlt-group.hlt-group-error .card-icon {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.hlt-group.hlt-group-warn .card-icon {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.hlt-group.hlt-group-ok .card-icon,
+.hlt-group.hlt-group-info .card-icon {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.hlt-check-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hlt-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hlt-check:last-child {
+  border-bottom: 0;
+}
+
+.hlt-check-icon {
+  padding-top: 1px;
+}
+
+.hlt-sev-error {
+  background: color-mix(in srgb, var(--error-bg) 55%, transparent);
+}
+
+.hlt-sev-warn {
+  background: color-mix(in srgb, var(--warn-bg) 55%, transparent);
+}
+
+.hlt-check-title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.hlt-check-detail {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.hlt-none {
+  margin: 0;
+  padding: 14px 16px;
+}
+
+/* ---- details ------------------------------------------------------------------ */
+
+.hlt-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.hlt-details .hlt-mail {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1100px) {
+  .hlt-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.hlt-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hlt-host,
+.hlt-ip {
+  font-size: 12.5px;
+}
+
+.hlt-ips {
+  gap: 4px 10px;
+}
+
+.hlt-ns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.hlt-expiry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.hlt-mail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+
+@media (max-width: 900px) {
+  .hlt-mail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.hlt-mail-block {
+  min-width: 0;
+}
+
+.hlt-meter-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hlt-meter {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.hlt-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ok-solid);
+}
+
+.hlt-meter.is-warn .hlt-meter-fill {
+  background: var(--warn-solid);
+}
+
+.hlt-meter.is-error .hlt-meter-fill {
+  background: var(--error-solid);
+}
+
+/* SPF include tree */
+.hlt-spf .disclosure-body {
+  overflow-x: auto;
+}
+
+.hlt-spf-node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hlt-spf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hlt-spf-static {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+}
+
+.hlt-spf-chip {
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.hlt-spf-chip.is-all {
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.hlt-spf-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 2px 6px;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--border);
+  list-style: none;
+}
+
+.hlt-spf-term {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hlt-spf-term-head {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hlt-spf-raw {
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.hlt-extra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.hlt-extra-label {
+  min-width: 5.5rem;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hlt-extra-value {
+  overflow-wrap: anywhere;
+}
+
+/* CAA */
+.hlt-ca-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hlt-ca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hlt-ca-icon {
+  color: var(--ok);
+}
+
+.hlt-ca-name {
+  font-weight: 600;
+}
+
+.hlt-caa-deny {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.hlt-registrar {
+  overflow-wrap: anywhere;
+}
+
+/* Make table scrollers the containing block of absolutely positioned descendants (.sr-only
+   labels inside cells) so they are clipped with the table instead of widening the page. */
+.hlt-view .dt-scroll {
+  position: relative;
+}

@@ -1,0 +1,2436 @@
+{
+  "description": "Real DoH (RFC 8484) responses captured by tests/live/capture-dns-fixtures.mjs; expectations are structural. Regenerate with: node tests/live/capture-dns-fixtures.mjs",
+  "capturedAt": "2026-09-23T07:55:33.293Z",
+  "fixtures": [
+    {
+      "id": "cf-a-example.com",
+      "file": "cf-a-example.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "A",
+        "nsid": true
+      },
+      "size": 81,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "A"
+        },
+        "edns": {
+          "dnssecOk": false,
+          "nsid": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "A"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "A",
+            "textRe": "^\\d{1,3}(\\.\\d{1,3}){3}$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-aaaa-example.com",
+      "file": "cf-aaaa-example.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "AAAA"
+      },
+      "size": 96,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "AAAA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "AAAA"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "AAAA",
+            "textRe": "^[0-9a-f:]+$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-a-cname-chain",
+      "file": "cf-a-cname-chain.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "www.microsoft.com",
+        "type": "A"
+      },
+      "size": 146,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "www.microsoft.com",
+          "type": "A"
+        },
+        "chain": true,
+        "sections": {
+          "answers": {
+            "types": [
+              "CNAME",
+              "A"
+            ],
+            "min": 3
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "CNAME",
+            "name": "www.microsoft.com",
+            "data": "www.microsoft.com-c-3.edgekey.net",
+            "text": "www.microsoft.com-c-3.edgekey.net."
+          },
+          {
+            "section": "answers",
+            "type": "CNAME",
+            "name": "www.microsoft.com-c-3.edgekey.net",
+            "textRe": "^e\\d+\\.dscb\\.akamaiedge\\.net\\.$"
+          },
+          {
+            "section": "answers",
+            "type": "A",
+            "textRe": "^\\d{1,3}(\\.\\d{1,3}){3}$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-mx-google.com",
+      "file": "cf-mx-google.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "MX"
+      },
+      "size": 60,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "MX"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "MX"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "MX",
+            "data": {
+              "preference": 10,
+              "exchange": "smtp.google.com"
+            },
+            "text": "10 smtp.google.com."
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-mx-null-example.com",
+      "file": "cf-mx-null-example.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "MX"
+      },
+      "size": 55,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "MX"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "MX"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "MX",
+            "data": {
+              "preference": 0,
+              "exchange": "."
+            },
+            "text": "0 ."
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-txt-spf-long",
+      "file": "cf-txt-spf-long.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "_spf.apple.com",
+        "type": "TXT"
+      },
+      "size": 508,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_spf.apple.com",
+          "type": "TXT"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "TXT"
+            ],
+            "min": 1,
+            "names": [
+              "_spf.apple.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "TXT",
+            "textRe": "^\"v=spf1 [^\"]+\" \"[^\"]+\""
+          }
+        ],
+        "txtMultiString": true
+      }
+    },
+    {
+      "id": "cf-soa-example.com",
+      "file": "cf-soa-example.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "SOA"
+      },
+      "size": 102,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "SOA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SOA"
+            ],
+            "min": 1,
+            "max": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SOA",
+            "textRe": "^\\S+\\. \\S+\\. \\d+ \\d+ \\d+ \\d+ \\d+$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-ns-google.com",
+      "file": "cf-ns-google.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "NS"
+      },
+      "size": 111,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "NS"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "NS"
+            ],
+            "min": 4,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns1.google.com",
+            "text": "ns1.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns2.google.com",
+            "text": "ns2.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns3.google.com",
+            "text": "ns3.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns4.google.com",
+            "text": "ns4.google.com."
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-caa-google.com",
+      "file": "cf-caa-google.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "CAA"
+      },
+      "size": 66,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "CAA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "CAA"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "CAA",
+            "data": {
+              "flags": 0,
+              "tag": "issue",
+              "value": "pki.goog"
+            },
+            "text": "0 issue \"pki.goog\""
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-ds-cloudflare.com-do",
+      "file": "cf-ds-cloudflare.com-do.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "DS",
+        "dnssecOk": true
+      },
+      "size": 190,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0,
+          "ad": true
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "DS"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "DS",
+              "RRSIG"
+            ],
+            "min": 2,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "DS",
+            "data": {
+              "keyTag": 2371,
+              "algorithm": 13,
+              "digestType": 2
+            }
+          },
+          {
+            "section": "answers",
+            "type": "RRSIG",
+            "data": {
+              "typeCovered": "DS",
+              "algorithm": 13,
+              "labels": 2,
+              "signerName": "com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-dnskey-cloudflare.com-do",
+      "file": "cf-dnskey-cloudflare.com-do.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "DNSKEY",
+        "dnssecOk": true
+      },
+      "size": 313,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0,
+          "ad": true
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "DNSKEY"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "DNSKEY",
+              "RRSIG"
+            ],
+            "min": 3,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "DNSKEY",
+            "data": {
+              "flags": 257,
+              "protocol": 3,
+              "algorithm": 13,
+              "keyTag": 2371,
+              "sep": true,
+              "zoneKey": true
+            }
+          },
+          {
+            "section": "answers",
+            "type": "DNSKEY",
+            "data": {
+              "flags": 256,
+              "protocol": 3,
+              "algorithm": 13,
+              "sep": false,
+              "zoneKey": true
+            }
+          },
+          {
+            "section": "answers",
+            "type": "RRSIG",
+            "data": {
+              "typeCovered": "DNSKEY",
+              "algorithm": 13,
+              "labels": 2,
+              "keyTag": 2371,
+              "signerName": "cloudflare.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-https-cloudflare.com",
+      "file": "cf-https-cloudflare.com.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "HTTPS"
+      },
+      "size": 116,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "HTTPS"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "HTTPS"
+            ],
+            "min": 1,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "HTTPS",
+            "data": {
+              "priority": 1,
+              "target": ".",
+              "params": {
+                "alpn": [
+                  "h3",
+                  "h2"
+                ]
+              }
+            },
+            "textRe": "^1 \\. alpn=\"h3,h2\" ipv4hint=[0-9.,]+ ipv6hint=[0-9a-f:,]+$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-srv-jabber",
+      "file": "cf-srv-jabber.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "_xmpp-server._tcp.jabber.org",
+        "type": "SRV"
+      },
+      "size": 95,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_xmpp-server._tcp.jabber.org",
+          "type": "SRV"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SRV"
+            ],
+            "min": 1,
+            "names": [
+              "_xmpp-server._tcp.jabber.org"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SRV",
+            "data": {
+              "port": 5269
+            },
+            "textRe": "^\\d+ \\d+ 5269 [a-z0-9.-]+\\.jabber\\.org\\.$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-nxdomain",
+      "file": "cf-nxdomain.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "nx-ugz7d5p2rt5k.google.com",
+        "type": "A"
+      },
+      "size": 105,
+      "expect": {
+        "rcode": "NXDOMAIN",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "nx-ugz7d5p2rt5k.google.com",
+          "type": "A"
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          },
+          "authorities": {
+            "types": [
+              "SOA"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "authorities",
+            "type": "SOA",
+            "name": "google.com",
+            "data": {
+              "mname": "ns1.google.com",
+              "rname": "dns-admin.google.com",
+              "email": "dns-admin@google.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-ptr-8.8.8.8",
+      "file": "cf-ptr-8.8.8.8.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "8.8.8.8.in-addr.arpa",
+        "type": "PTR"
+      },
+      "size": 73,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "8.8.8.8.in-addr.arpa",
+          "type": "PTR"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "PTR"
+            ],
+            "min": 1,
+            "names": [
+              "8.8.8.8.in-addr.arpa"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "PTR",
+            "data": "dns.google",
+            "text": "dns.google."
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-servfail-dnssec-bogus",
+      "file": "cf-servfail-dnssec-bogus.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "dnssec-failed.org",
+        "type": "A"
+      },
+      "size": 103,
+      "expect": {
+        "rcode": "SERVFAIL",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "dnssec-failed.org",
+          "type": "A"
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          }
+        },
+        "ede": [
+          {
+            "code": 9
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-tlsa-ietf",
+      "file": "cf-tlsa-ietf.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "_25._tcp.mail.ietf.org",
+        "type": "TLSA"
+      },
+      "size": 98,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_25._tcp.mail.ietf.org",
+          "type": "TLSA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "TLSA"
+            ],
+            "min": 1,
+            "names": [
+              "_25._tcp.mail.ietf.org"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "TLSA",
+            "data": {
+              "usage": 3,
+              "selector": 1,
+              "matchingType": 1
+            },
+            "textRe": "^3 1 1 [0-9A-F]{64}$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-naptr-sip2sip",
+      "file": "cf-naptr-sip2sip.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "sip2sip.info",
+        "type": "NAPTR"
+      },
+      "size": 196,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "sip2sip.info",
+          "type": "NAPTR"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "NAPTR"
+            ],
+            "min": 3,
+            "names": [
+              "sip2sip.info"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "NAPTR",
+            "data": {
+              "order": 10,
+              "preference": 100,
+              "flags": "s",
+              "services": "SIP+D2T",
+              "regexp": "",
+              "replacement": "_sip._tcp.sip2sip.info"
+            },
+            "text": "10 100 \"s\" \"SIP+D2T\" \"\" _sip._tcp.sip2sip.info."
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-svcb-ddr",
+      "file": "cf-svcb-ddr.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "_dns.resolver.arpa",
+        "type": "SVCB"
+      },
+      "size": 358,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true
+        },
+        "question": {
+          "name": "_dns.resolver.arpa",
+          "type": "SVCB"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SVCB"
+            ],
+            "min": 2,
+            "names": [
+              "_dns.resolver.arpa"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SVCB",
+            "data": {
+              "priority": 1,
+              "target": "one.one.one.one",
+              "params": {
+                "alpn": [
+                  "h2",
+                  "h3"
+                ],
+                "port": 443,
+                "ipv4hint": [
+                  "1.1.1.1",
+                  "1.0.0.1"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-a-example.com",
+      "file": "gg-a-example.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "A",
+        "nsid": true
+      },
+      "size": 85,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "A"
+        },
+        "edns": {
+          "dnssecOk": false,
+          "nsid": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "A"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "A",
+            "textRe": "^\\d{1,3}(\\.\\d{1,3}){3}$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-aaaa-example.com",
+      "file": "gg-aaaa-example.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "AAAA"
+      },
+      "size": 96,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "AAAA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "AAAA"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "AAAA",
+            "textRe": "^[0-9a-f:]+$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-a-cname-chain",
+      "file": "gg-a-cname-chain.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "www.microsoft.com",
+        "type": "A"
+      },
+      "size": 146,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "www.microsoft.com",
+          "type": "A"
+        },
+        "chain": true,
+        "sections": {
+          "answers": {
+            "types": [
+              "CNAME",
+              "A"
+            ],
+            "min": 3
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "CNAME",
+            "name": "www.microsoft.com",
+            "data": "www.microsoft.com-c-3.edgekey.net",
+            "text": "www.microsoft.com-c-3.edgekey.net."
+          },
+          {
+            "section": "answers",
+            "type": "CNAME",
+            "name": "www.microsoft.com-c-3.edgekey.net",
+            "textRe": "^e\\d+\\.dscb\\.akamaiedge\\.net\\.$"
+          },
+          {
+            "section": "answers",
+            "type": "A",
+            "textRe": "^\\d{1,3}(\\.\\d{1,3}){3}$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-mx-google.com",
+      "file": "gg-mx-google.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "MX"
+      },
+      "size": 60,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "MX"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "MX"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "MX",
+            "data": {
+              "preference": 10,
+              "exchange": "smtp.google.com"
+            },
+            "text": "10 smtp.google.com."
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 15,
+            "data": "10 smtp.google.com."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-mx-null-example.com",
+      "file": "gg-mx-null-example.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "MX"
+      },
+      "size": 55,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "MX"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "MX"
+            ],
+            "min": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "MX",
+            "data": {
+              "preference": 0,
+              "exchange": "."
+            },
+            "text": "0 ."
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 15,
+            "data": "0 ."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-txt-spf-long",
+      "file": "gg-txt-spf-long.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "_spf.apple.com",
+        "type": "TXT"
+      },
+      "size": 508,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_spf.apple.com",
+          "type": "TXT"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "TXT"
+            ],
+            "min": 1,
+            "names": [
+              "_spf.apple.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "TXT",
+            "textRe": "^\"v=spf1 [^\"]+\" \"[^\"]+\""
+          }
+        ],
+        "txtMultiString": true
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 16,
+            "data": "v=spf1 ip4:17.151.62.66 ip4:17.151.62.67 ip4:17.151.62.68 ip4:17.171.2.60 ip4:17.171.2.68 ip4:17.171.2.72 ip4:17.179.253.33 ip4:17.179.253.34 ip4:17.179.253.38 ip4:17.179.253.39 ip4:17.179.253.43 ip4:17.179.253.44 ip4:17.179.253.48 ip4:17.179.253.49 ip4:17.179.253.22/31 ip4:17.179.253.24/31 ip4:17.32.222.22/31 ip4:17.32.222.24/31 ip4:17.72.136.23 ip4:17.72.136.24/31 ip4:17.132.96.0/31 ip4:17.132.100.0/31 ip4:17.132.108.0/29 ip4:17.23.4.16/29 ~all"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-soa-example.com",
+      "file": "gg-soa-example.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "example.com",
+        "type": "SOA"
+      },
+      "size": 102,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "example.com",
+          "type": "SOA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SOA"
+            ],
+            "min": 1,
+            "max": 1,
+            "names": [
+              "example.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SOA",
+            "textRe": "^\\S+\\. \\S+\\. \\d+ \\d+ \\d+ \\d+ \\d+$"
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 6,
+            "data": "elliott.ns.cloudflare.com. dns.cloudflare.com. 2415555295 10000 2400 604800 1800"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-ns-google.com",
+      "file": "gg-ns-google.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "NS"
+      },
+      "size": 111,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "NS"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "NS"
+            ],
+            "min": 4,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns1.google.com",
+            "text": "ns1.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns2.google.com",
+            "text": "ns2.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns3.google.com",
+            "text": "ns3.google.com."
+          },
+          {
+            "section": "answers",
+            "type": "NS",
+            "data": "ns4.google.com",
+            "text": "ns4.google.com."
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 2,
+            "data": "ns4.google.com."
+          },
+          {
+            "type": 2,
+            "data": "ns1.google.com."
+          },
+          {
+            "type": 2,
+            "data": "ns2.google.com."
+          },
+          {
+            "type": 2,
+            "data": "ns3.google.com."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-caa-google.com",
+      "file": "gg-caa-google.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "google.com",
+        "type": "CAA"
+      },
+      "size": 66,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "google.com",
+          "type": "CAA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "CAA"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "CAA",
+            "data": {
+              "flags": 0,
+              "tag": "issue",
+              "value": "pki.goog"
+            },
+            "text": "0 issue \"pki.goog\""
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 257,
+            "data": "0 issue \"pki.goog\""
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-ds-cloudflare.com-do",
+      "file": "gg-ds-cloudflare.com-do.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "DS",
+        "dnssecOk": true
+      },
+      "size": 190,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0,
+          "ad": true
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "DS"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "DS",
+              "RRSIG"
+            ],
+            "min": 2,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "DS",
+            "data": {
+              "keyTag": 2371,
+              "algorithm": 13,
+              "digestType": 2
+            }
+          },
+          {
+            "section": "answers",
+            "type": "RRSIG",
+            "data": {
+              "typeCovered": "DS",
+              "algorithm": 13,
+              "labels": 2,
+              "signerName": "com"
+            }
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 43,
+            "data": "2371 13 2 32996839A6D808AFE3EB4A795A0E6A7A39A76FC52FF228B22B76F6D63826F2B9"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-dnskey-cloudflare.com-do",
+      "file": "gg-dnskey-cloudflare.com-do.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "DNSKEY",
+        "dnssecOk": true
+      },
+      "size": 313,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0,
+          "ad": true
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "DNSKEY"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "DNSKEY",
+              "RRSIG"
+            ],
+            "min": 3,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "DNSKEY",
+            "data": {
+              "flags": 257,
+              "protocol": 3,
+              "algorithm": 13,
+              "keyTag": 2371,
+              "sep": true,
+              "zoneKey": true
+            }
+          },
+          {
+            "section": "answers",
+            "type": "DNSKEY",
+            "data": {
+              "flags": 256,
+              "protocol": 3,
+              "algorithm": 13,
+              "sep": false,
+              "zoneKey": true
+            }
+          },
+          {
+            "section": "answers",
+            "type": "RRSIG",
+            "data": {
+              "typeCovered": "DNSKEY",
+              "algorithm": 13,
+              "labels": 2,
+              "keyTag": 2371,
+              "signerName": "cloudflare.com"
+            }
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 48,
+            "data": "257 3 13 mdsswUyr3DPW132mOi8V9xESWE8jTo0dxCjjnopKl+GqJxpVXckHAeF+KkxLbxILfDLUT0rAK9iUzy1L53eKGQ=="
+          },
+          {
+            "type": 48,
+            "data": "256 3 13 oJMRESz5E4gYzS/q6XDrvU1qMPYIjCWzJaOau8XNEZeqCYKD5ar0IRd8KqXXFJkqmVfRvMGPmM1x8fGAa2XhSA=="
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-https-cloudflare.com",
+      "file": "gg-https-cloudflare.com.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "HTTPS"
+      },
+      "size": 116,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "cloudflare.com",
+          "type": "HTTPS"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "HTTPS"
+            ],
+            "min": 1,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "HTTPS",
+            "data": {
+              "priority": 1,
+              "target": ".",
+              "params": {
+                "alpn": [
+                  "h3",
+                  "h2"
+                ]
+              }
+            },
+            "textRe": "^1 \\. alpn=\"h3,h2\" ipv4hint=[0-9.,]+ ipv6hint=[0-9a-f:,]+$"
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 65,
+            "data": "1 . alpn=h3,h2 ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5,2606:4700::6810:85e5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-srv-jabber",
+      "file": "gg-srv-jabber.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "_xmpp-server._tcp.jabber.org",
+        "type": "SRV"
+      },
+      "size": 95,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_xmpp-server._tcp.jabber.org",
+          "type": "SRV"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SRV"
+            ],
+            "min": 1,
+            "names": [
+              "_xmpp-server._tcp.jabber.org"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SRV",
+            "data": {
+              "port": 5269
+            },
+            "textRe": "^\\d+ \\d+ 5269 [a-z0-9.-]+\\.jabber\\.org\\.$"
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 33,
+            "data": "30 30 5269 scarlet.jabber.org."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-nxdomain",
+      "file": "gg-nxdomain.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "nx-ugz7d5p2rt5k.google.com",
+        "type": "A"
+      },
+      "size": 105,
+      "expect": {
+        "rcode": "NXDOMAIN",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "nx-ugz7d5p2rt5k.google.com",
+          "type": "A"
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          },
+          "authorities": {
+            "types": [
+              "SOA"
+            ],
+            "min": 1,
+            "names": [
+              "google.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "authorities",
+            "type": "SOA",
+            "name": "google.com",
+            "data": {
+              "mname": "ns1.google.com",
+              "rname": "dns-admin.google.com",
+              "email": "dns-admin@google.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-ptr-8.8.8.8",
+      "file": "gg-ptr-8.8.8.8.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "8.8.8.8.in-addr.arpa",
+        "type": "PTR"
+      },
+      "size": 73,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "8.8.8.8.in-addr.arpa",
+          "type": "PTR"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "PTR"
+            ],
+            "min": 1,
+            "names": [
+              "8.8.8.8.in-addr.arpa"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "PTR",
+            "data": "dns.google",
+            "text": "dns.google."
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 12,
+            "data": "dns.google."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-servfail-dnssec-bogus",
+      "file": "gg-servfail-dnssec-bogus.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "dnssec-failed.org",
+        "type": "A"
+      },
+      "size": 97,
+      "expect": {
+        "rcode": "SERVFAIL",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "dnssec-failed.org",
+          "type": "A"
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          }
+        },
+        "ede": [
+          {
+            "code": 9
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-tlsa-ietf",
+      "file": "gg-tlsa-ietf.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "_25._tcp.mail.ietf.org",
+        "type": "TLSA"
+      },
+      "size": 98,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "_25._tcp.mail.ietf.org",
+          "type": "TLSA"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "TLSA"
+            ],
+            "min": 1,
+            "names": [
+              "_25._tcp.mail.ietf.org"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "TLSA",
+            "data": {
+              "usage": 3,
+              "selector": 1,
+              "matchingType": 1
+            },
+            "textRe": "^3 1 1 [0-9A-F]{64}$"
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 52,
+            "data": "3 1 1 38a88126a15ae8e643ce9447c3ce9a874ea0e05255d07ee12227809edbe5c7f1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-naptr-sip2sip",
+      "file": "gg-naptr-sip2sip.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "sip2sip.info",
+        "type": "NAPTR"
+      },
+      "size": 196,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "sip2sip.info",
+          "type": "NAPTR"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "NAPTR"
+            ],
+            "min": 3,
+            "names": [
+              "sip2sip.info"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "NAPTR",
+            "data": {
+              "order": 10,
+              "preference": 100,
+              "flags": "s",
+              "services": "SIP+D2T",
+              "regexp": "",
+              "replacement": "_sip._tcp.sip2sip.info"
+            },
+            "text": "10 100 \"s\" \"SIP+D2T\" \"\" _sip._tcp.sip2sip.info."
+          }
+        ]
+      },
+      "oracle": {
+        "source": "https://dns.google/resolve",
+        "answers": [
+          {
+            "type": 35,
+            "data": "10 100 s SIP+D2T  _sip._tcp.sip2sip.info."
+          },
+          {
+            "type": 35,
+            "data": "20 100 s SIP+D2U  _sip._udp.sip2sip.info."
+          },
+          {
+            "type": 35,
+            "data": "25 100 s SIPS+D2T  _sips._tcp.sip2sip.info."
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-svcb-ddr",
+      "file": "gg-svcb-ddr.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "_dns.resolver.arpa",
+        "type": "SVCB"
+      },
+      "size": 224,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true
+        },
+        "question": {
+          "name": "_dns.resolver.arpa",
+          "type": "SVCB"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "SVCB"
+            ],
+            "min": 2,
+            "names": [
+              "_dns.resolver.arpa"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "SVCB",
+            "data": {
+              "priority": 2,
+              "target": "dns.google",
+              "params": {
+                "alpn": [
+                  "h2",
+                  "h3"
+                ],
+                "dohpath": "/dns-query{?dns}"
+              }
+            },
+            "text": "2 dns.google. alpn=\"h2,h3\" dohpath=\"/dns-query{?dns}\""
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-nxdomain-com-nsec3-do",
+      "file": "gg-nxdomain-com-nsec3-do.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "nx-s6eczmaf4pz6.com",
+        "type": "A",
+        "dnssecOk": true
+      },
+      "size": 755,
+      "expect": {
+        "rcode": "NXDOMAIN",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "nx-s6eczmaf4pz6.com",
+          "type": "A"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          },
+          "authorities": {
+            "types": [
+              "SOA",
+              "RRSIG",
+              "NSEC3"
+            ],
+            "min": 4
+          }
+        },
+        "records": [
+          {
+            "section": "authorities",
+            "type": "SOA",
+            "name": "com"
+          },
+          {
+            "section": "authorities",
+            "type": "NSEC3",
+            "data": {
+              "hashAlgorithm": 1
+            },
+            "textRe": "^1 1 0 - [0-9A-V]{32}( [A-Z0-9]+)*$"
+          },
+          {
+            "section": "authorities",
+            "type": "RRSIG",
+            "data": {
+              "typeCovered": "NSEC3",
+              "signerName": "com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-nodata-cloudflare.com-nsec-do",
+      "file": "cf-nodata-cloudflare.com-nsec-do.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "nx-l0mtalfcnakm.cloudflare.com",
+        "type": "A",
+        "dnssecOk": true
+      },
+      "size": 388,
+      "expect": {
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "ad": true
+        },
+        "question": {
+          "name": "nx-l0mtalfcnakm.cloudflare.com",
+          "type": "A"
+        },
+        "edns": {
+          "dnssecOk": true
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          },
+          "authorities": {
+            "types": [
+              "SOA",
+              "RRSIG",
+              "NSEC"
+            ],
+            "min": 3
+          }
+        },
+        "records": [
+          {
+            "section": "authorities",
+            "type": "NSEC",
+            "name": "nx-l0mtalfcnakm.cloudflare.com",
+            "data": {
+              "types": [
+                "RRSIG",
+                "NSEC"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-any-cloudflare.com-do",
+      "file": "gg-any-cloudflare.com-do.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "ANY",
+        "dnssecOk": true
+      },
+      "size": 174,
+      "expect": {
+        "rcode": "NOERROR",
+        "question": {
+          "name": "cloudflare.com",
+          "type": "ANY"
+        },
+        "sections": {
+          "answers": {
+            "types": [
+              "HINFO",
+              "RRSIG"
+            ],
+            "min": 2,
+            "names": [
+              "cloudflare.com"
+            ]
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "HINFO",
+            "data": {
+              "cpu": "RFC8482",
+              "os": ""
+            },
+            "text": "\"RFC8482\" \"\""
+          }
+        ]
+      }
+    },
+    {
+      "id": "cf-any-notimp",
+      "file": "cf-any-notimp.bin",
+      "resolver": "cloudflare",
+      "url": "https://cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "cloudflare.com",
+        "type": "ANY"
+      },
+      "size": 49,
+      "expect": {
+        "rcode": "NOTIMP",
+        "question": {
+          "name": "cloudflare.com",
+          "type": "ANY"
+        },
+        "sections": {
+          "answers": {
+            "types": [],
+            "min": 0
+          }
+        },
+        "ede": [
+          {
+            "code": 21
+          }
+        ]
+      }
+    },
+    {
+      "id": "gg-ecs-v4-amazon",
+      "file": "gg-ecs-v4-amazon.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "www.amazon.com",
+        "type": "A",
+        "ecs": "85.105.0.0/24"
+      },
+      "size": 123,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "www.amazon.com",
+          "type": "A"
+        },
+        "chain": true,
+        "sections": {
+          "answers": {
+            "min": 2
+          }
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "A",
+            "textRe": "^\\d{1,3}(\\.\\d{1,3}){3}$"
+          }
+        ],
+        "ecs": {
+          "family": 1,
+          "sourcePrefix": 24,
+          "address": "85.105.0.0",
+          "scopePrefixMin": 1
+        }
+      }
+    },
+    {
+      "id": "gg-ecs-v4-wikipedia",
+      "file": "gg-ecs-v4-wikipedia.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "www.wikipedia.org",
+        "type": "A",
+        "ecs": "46.211.64.0/24"
+      },
+      "size": 102,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "www.wikipedia.org",
+          "type": "A"
+        },
+        "sections": {
+          "answers": {
+            "min": 1
+          }
+        },
+        "ecs": {
+          "family": 1,
+          "sourcePrefix": 24,
+          "address": "46.211.64.0",
+          "scopePrefixMin": 1
+        }
+      }
+    },
+    {
+      "id": "gg-ecs-v6",
+      "file": "gg-ecs-v6.bin",
+      "resolver": "google",
+      "url": "https://dns.google/dns-query",
+      "query": {
+        "name": "www.wikipedia.org",
+        "type": "AAAA",
+        "ecs": "2a01:cb00::/32"
+      },
+      "size": 115,
+      "expect": {
+        "rcode": "NOERROR",
+        "flags": {
+          "qr": true,
+          "rd": true,
+          "ra": true,
+          "tc": false,
+          "opcode": 0
+        },
+        "question": {
+          "name": "www.wikipedia.org",
+          "type": "AAAA"
+        },
+        "sections": {
+          "answers": {
+            "min": 1
+          }
+        },
+        "ecs": {
+          "family": 2,
+          "sourcePrefix": 32,
+          "address": "2a01:cb00::"
+        }
+      }
+    },
+    {
+      "id": "cff-blocked-ede",
+      "file": "cff-blocked-ede.bin",
+      "resolver": "cloudflare-family",
+      "url": "https://family.cloudflare-dns.com/dns-query",
+      "query": {
+        "name": "malware.wicar.org",
+        "type": "A"
+      },
+      "size": 68,
+      "expect": {
+        "rcode": "NOERROR",
+        "question": {
+          "name": "malware.wicar.org",
+          "type": "A"
+        },
+        "records": [
+          {
+            "section": "answers",
+            "type": "A",
+            "data": "0.0.0.0"
+          }
+        ],
+        "ede": [
+          {
+            "code": 16
+          }
+        ]
+      }
+    },
+    {
+      "id": "q9-blocked-ede",
+      "file": "q9-blocked-ede.bin",
+      "resolver": "quad9",
+      "url": "https://dns.quad9.net/dns-query",
+      "query": {
+        "name": "isitblocked.org",
+        "type": "A",
+        "nsid": true
+      },
+      "size": 64,
+      "expect": {
+        "rcode": "NXDOMAIN",
+        "question": {
+          "name": "isitblocked.org",
+          "type": "A"
+        },
+        "edns": {
+          "nsid": true
+        },
+        "ede": [
+          {
+            "code": 17
+          }
+        ]
+      }
+    }
+  ]
+}

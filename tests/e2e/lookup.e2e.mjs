@@ -1,0 +1,364 @@
+#!/usr/bin/env node
+/**
+ * lookup.e2e.mjs — end-to-end test of the "DNS Lookup" view in a real headless browser,
+ * against live DoH resolvers (network required).
+ *
+ *   node tests/e2e/lookup.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
+ *
+ * Covers: pure helpers (Node); shared link with many types + DNSSEC (parsed A/AAAA, MX, TXT,
+ * SOA, CAA, HTTPS, DS, DNSKEY cards, AD flag, RRSIG section, raw dig text); IP → PTR; NXDOMAIN;
+ * a specific resolver; presets and "other types" validation; host links navigating inside the
+ * view; language re-mount keeping results; phone light/dark; no console errors, exceptions or
+ * CSP violations; complete i18n.
+ */
+
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { startServer } from './serve.mjs';
+import { launchBrowser } from './cdp.mjs';
+import {
+  parseTypes, parseLookupName, soaSerialDate, rrsigStatus, txtKinds, digLine, responseText, TYPE_PRESETS
+} from '../../assets/js/views/lookup.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SHOTS = path.join(HERE, 'screenshots');
+const BASE = '/subdomain-scanner/';
+const argv = process.argv.slice(2);
+const optValue = (name, def) => {
+  const i = argv.indexOf(name);
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : def;
+};
+const BROWSER = optValue('--browser', 'auto');
+const HEADED = argv.includes('--headed');
+const SHOTS_ON = !argv.includes('--no-shots');
+/** Third-party hosts whose request failures are expected in browsers and handled by failover. */
+const FLAKY_HOSTS = ['dns.quad9.net', 'dns11.quad9.net'];
+const ALL_DONE = "document.querySelectorAll('.lkp-card').length > 0 && document.querySelectorAll('.lkp-card[data-state=\"pending\"]').length === 0";
+
+/* ------------------------------------------------------------------------ */
+/* Tiny runner                                                              */
+/* ------------------------------------------------------------------------ */
+
+const results = [];
+const notes = [];
+let currentGroup = '';
+
+function group(name) {
+  currentGroup = name;
+  process.stdout.write(`\n${name}\n`);
+}
+
+async function step(name, fn) {
+  const t0 = Date.now();
+  try {
+    await fn();
+    results.push({ group: currentGroup, name, ok: true });
+    process.stdout.write(`  PASS  ${name} (${Date.now() - t0} ms)\n`);
+  } catch (err) {
+    results.push({ group: currentGroup, name, ok: false, error: err });
+    process.stdout.write(`  FAIL  ${name}\n        ${String((err && err.stack) || err).split('\n').slice(0, 4).join('\n        ')}\n`);
+  }
+}
+
+function assert(cond, message) {
+  if (!cond) throw new Error(message);
+}
+
+function assertEqual(actual, expected, message) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+async function waitReady(page) {
+  await page.waitFor(() => document.documentElement.dataset.appReady === 'true', { timeout: 20000, message: 'app ready' });
+}
+
+async function gotoHash(page, hash, view) {
+  // Wait for the hashchange to be handled, so a same-view navigation cannot race the checks below.
+  await page.evaluate((hsh) => new Promise((resolve) => {
+    if (window.location.hash === hsh) {
+      resolve();
+      return;
+    }
+    window.addEventListener('hashchange', () => setTimeout(resolve, 0), { once: true });
+    window.location.hash = hsh;
+  }), hash);
+  await page.waitFor((v) => document.documentElement.dataset.view === v && document.querySelector('#page-body')?.dataset.view === v
+    && document.querySelector('#page-body').childElementCount > 0 && !document.querySelector('#page-body .page-loading'),
+  { args: [view], message: `view ${view}` });
+}
+
+async function assertNoHorizontalScroll(page, where) {
+  const rep = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+  assert(rep.sw <= rep.cw + 1, `${where}: page scrolls horizontally (${rep.sw} > ${rep.cw})`);
+}
+
+async function shot(page, name) {
+  if (!SHOTS_ON) return;
+  await page.evaluate(() => document.querySelectorAll('.toast').forEach((x) => x.remove()));
+  await page.screenshot(path.join(SHOTS, `${name}.png`), { fullPage: true });
+}
+
+async function assertClean(page, where) {
+  const p = await page.problems();
+  const issues = [
+    ...p.consoleErrors.map((m) => `console.${m.type}: ${m.text}`),
+    ...p.exceptions.map((e) => `exception: ${e.text}`),
+    ...p.csp.map((c) => `CSP: ${JSON.stringify(c).slice(0, 300)}`)
+  ];
+  for (const e of p.logErrors) {
+    const text = `${e.text || ''} ${e.url || ''}`;
+    if (FLAKY_HOSTS.some((host) => text.includes(`//${host}/`))) notes.push(`${where}: tolerated ${e.source} error for a flaky third-party host`);
+    else issues.push(`log(${e.source}): ${e.text} ${e.url || ''}`);
+  }
+  assert(issues.length === 0, `${where}: ${issues.length} problem(s):\n          ${issues.join('\n          ')}`);
+}
+
+async function setLangUi(page, lang) {
+  if (await page.evaluate(() => document.documentElement.lang) === lang) return;
+  await page.click(`[data-control="lang"] [data-value="${lang}"]`);
+  await page.waitFor((l) => document.documentElement.lang === l, { args: [lang], message: `lang ${lang}` });
+  await page.waitFor(() => document.querySelector('#page-body')?.childElementCount > 0);
+}
+
+async function checkI18n(page) {
+  const info = await page.evaluate(async () => {
+    const i = await import('./assets/js/i18n.js');
+    const en = i.listKeys('en').filter((k) => k.startsWith('lkp.'));
+    const tr = i.listKeys('tr').filter((k) => k.startsWith('lkp.'));
+    return { missing: i.getMissingKeys(), onlyEn: en.filter((k) => !tr.includes(k)), onlyTr: tr.filter((k) => !en.includes(k)) };
+  });
+  assertEqual(info.missing, [], 'missing i18n keys');
+  assertEqual(info.onlyEn, [], 'lkp.* keys only in EN');
+  assertEqual(info.onlyTr, [], 'lkp.* keys only in TR');
+}
+
+/** Summary of every card: type → { state, count, flags set, text sample }. */
+function cardsInfo() {
+  const out = {};
+  for (const card of document.querySelectorAll('.lkp-card')) {
+    out[card.dataset.type] = {
+      state: card.dataset.state,
+      count: Number(card.dataset.count || 0),
+      flags: [...card.querySelectorAll('.lkp-flag[data-set="1"]')].map((f) => f.dataset.flag),
+      sigs: !!card.querySelector('.lkp-sigs'),
+      text: card.textContent.replace(/\s+/g, ' ').slice(0, 2000),
+      raw: card.querySelector('.lkp-raw code')?.textContent || ''
+    };
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Main                                                                     */
+/* ------------------------------------------------------------------------ */
+
+async function main() {
+  group('Pure helpers (Node)');
+  await step('parseTypes: mnemonics, numbers, TYPE123, meta types rejected', () => {
+    assertEqual(parseTypes('a, mx TYPE65 bogus 28 axfr opt'), { types: ['A', 'MX', 'HTTPS', 'AAAA'], invalid: ['bogus', 'axfr', 'opt'] }, 'mixed');
+    assertEqual(parseTypes(['A,AAAA', 'MX', 'a']), { types: ['A', 'AAAA', 'MX'], invalid: [] }, 'array + dedupe');
+    assertEqual(parseTypes(''), { types: [], invalid: [] }, 'empty');
+    assertEqual(TYPE_PRESETS.common, ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS'], 'common preset');
+  });
+  await step('parseLookupName: IP → PTR name, URL/IDN hosts, TLDs, root, garbage', () => {
+    assertEqual(parseLookupName('8.8.8.8'), { name: '8.8.8.8.in-addr.arpa', ptrFor: '8.8.8.8' }, 'v4');
+    assertEqual(parseLookupName('2001:db8::1').name.endsWith('.8.b.d.0.1.0.0.2.ip6.arpa'), true, 'v6 nibbles');
+    assertEqual(parseLookupName('https://Örnek.com.tr/path'), { name: 'xn--rnek-4qa.com.tr', ptrFor: null }, 'IDN URL');
+    assertEqual(parseLookupName('com'), { name: 'com', ptrFor: null }, 'TLD');
+    assertEqual(parseLookupName('.'), { name: '.', ptrFor: null }, 'root');
+    assertEqual(parseLookupName('not a name'), null, 'garbage');
+    assertEqual(parseLookupName(''), null, 'empty');
+  });
+  await step('soaSerialDate, rrsigStatus, txtKinds, digLine, responseText', () => {
+    assertEqual(soaSerialDate(2024092301), { date: '2024-09-23', rev: 1 }, 'date serial');
+    assertEqual(soaSerialDate(2415557203), null, 'not a date');
+    assertEqual(soaSerialDate(2024023101), null, 'impossible date');
+    const now = Date.UTC(2026, 8, 23);
+    assertEqual(rrsigStatus({ inception: new Date(now - 1e6), expiration: new Date(now + 1e6) }, now), 'valid', 'valid');
+    assertEqual(rrsigStatus({ inception: new Date(now - 2e6), expiration: new Date(now - 1e6) }, now), 'expired', 'expired');
+    assertEqual(rrsigStatus({ inception: new Date(now + 1e6), expiration: new Date(now + 2e6) }, now), 'future', 'future');
+    assertEqual(rrsigStatus({}), 'unknown', 'unknown');
+    assertEqual(txtKinds('v=spf1 -all').map((k) => k.kind), ['spf'], 'spf');
+    assertEqual(txtKinds('v=DMARC1; p=reject').map((k) => k.kind), ['dmarc'], 'dmarc');
+    assertEqual(txtKinds('google-site-verification=x'), [{ kind: 'verification', service: 'Google' }], 'google');
+    assertEqual(txtKinds('docker-verification=x'), [{ kind: 'verification', service: 'Docker' }], 'generic');
+    assertEqual(txtKinds('hello world'), [], 'plain');
+    assertEqual(digLine({ name: 'example.com', ttl: 60, type: 'A', text: '192.0.2.1' }), 'example.com.\t60\tIN\tA\t192.0.2.1', 'dig line');
+    const txt = responseText({ name: 'example.com', type: 'A', resolver: 'cloudflare', ok: true, rcode: 'NOERROR', flags: { qr: true, rd: true, ra: true, ad: true }, elapsedMs: 12, ede: [{ code: 3, name: 'Stale Answer', text: '' }], answers: [{ name: 'example.com', ttl: 60, type: 'A', text: '192.0.2.1' }], authorities: [] });
+    assert(txt.includes('status: NOERROR, flags: qr rd ra ad, 12 ms') && txt.includes(';; ANSWER SECTION:') && txt.includes(';; EDE 3 (Stale Answer)'), `responseText: ${txt}`);
+  });
+
+  await mkdir(SHOTS, { recursive: true });
+  const server = await startServer({ base: BASE });
+  const browser = await launchBrowser({ browser: BROWSER, headless: !HEADED });
+  const version = await browser.version();
+  process.stdout.write(`\nServing ${server.url} — ${version.product}\n`);
+
+  try {
+    group('Desktop 1440×900 (English, live resolvers)');
+    const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    await page.goto(`${server.url}#/about`);
+    await waitReady(page);
+    await setLangUi(page, 'en');
+
+    await step('shared link: cloudflare.com, 10 types, DNSSEC on → parsed cards', async () => {
+      await gotoHash(page, '#/lookup?name=cloudflare.com&type=A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS,DS,DNSKEY&dnssec=1', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 45000, message: 'all cards answered' });
+      const c = await page.evaluate(cardsInfo);
+      assertEqual(Object.keys(c), ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS', 'DS', 'DNSKEY'], 'card order');
+      for (const [type, info] of Object.entries(c)) assertEqual(info.state, 'noerror', `${type} NOERROR`);
+      assert(c.A.count >= 1 && /Cloudflare/.test(c.A.text), 'A records with Cloudflare badge');
+      assert(c.A.flags.includes('ad') && c.A.flags.includes('ra'), `AD + RA flags on A: ${c.A.flags}`);
+      assert(c.A.sigs, 'RRSIG section with DO');
+      assert(/Primary name server/.test(c.SOA.text) && /Negative TTL/.test(c.SOA.text), 'SOA fields');
+      assert(/issue/.test(c.CAA.text) && /May issue certificates/.test(c.CAA.text), 'CAA parsed');
+      assert(/alpn/.test(c.HTTPS.text), 'HTTPS params');
+      assert(/KSK/.test(c.DNSKEY.text) && /ZSK/.test(c.DNSKEY.text), 'DNSKEY roles');
+      assert(/ECDSAP256SHA256/.test(c.DS.text), 'DS algorithm');
+      assert(/SPF/.test(c.TXT.text), 'SPF recognised in TXT');
+      assert(c.MX.count >= 1, 'MX records');
+      assert(c.A.raw.includes(';; ANSWER SECTION:') && c.A.raw.includes('cloudflare.com.'), 'raw dig text');
+      const form = await page.evaluate(() => ({
+        name: document.querySelector('[data-role="lookup-name"]').value,
+        dnssec: document.querySelector('[data-role="lookup-dnssec"]').checked,
+        checked: [...document.querySelectorAll('.lkp-types input:checked')].map((i) => i.value)
+      }));
+      assertEqual(form.name, 'cloudflare.com', 'name from URL');
+      assert(form.dnssec, 'DO switch from URL');
+      assertEqual(form.checked, ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS', 'DS', 'DNSKEY'], 'types from URL');
+      await assertNoHorizontalScroll(page, 'cloudflare');
+      await shot(page, 'lookup-desktop-light-en-cloudflare');
+    });
+
+    await step('IP address → PTR (8.8.8.8 → dns.google) with a link to IP Intel', async () => {
+      await page.type('[data-role="lookup-name"]', '8.8.8.8');
+      await page.click('[data-action="run"]');
+      await page.waitFor(() => document.querySelectorAll('.lkp-card').length === 1 && document.querySelector('.lkp-card').dataset.type === 'PTR'
+        && document.querySelector('.lkp-card').dataset.state !== 'pending', { timeout: 30000 });
+      const info = await page.evaluate(() => ({
+        text: document.querySelector('.lkp-card').textContent,
+        note: document.querySelector('.lkp-note').textContent,
+        ipLink: !!document.querySelector('.lkp-sum a[href^="#/ip?ips=8.8.8.8"]'),
+        checked: [...document.querySelectorAll('.lkp-types input:checked')].map((i) => i.value)
+      }));
+      assert(info.text.includes('dns.google'), 'PTR dns.google');
+      assert(/8\.8\.8\.8\.in-addr\.arpa/.test(info.note), 'PTR note');
+      assert(info.ipLink, 'IP Intel link');
+      assertEqual(info.checked, ['PTR'], 'form synced to PTR');
+    });
+
+    await step('NXDOMAIN is explained (with the negative-caching TTL)', async () => {
+      const name = `e2e-${Date.now().toString(36)}.invalid`; // RFC 6761: never exists
+      await gotoHash(page, `#/lookup?name=${name}&type=A`, 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000 });
+      const c = await page.evaluate(cardsInfo);
+      assertEqual(c.A.state, 'nxdomain', 'card state');
+      assert(/does not exist/.test(c.A.text) && /Negative answer cached/.test(c.A.text), `explanation: ${c.A.text.slice(0, 300)}`);
+    });
+
+    await step('specific resolver (Google) + host links navigate inside the view', async () => {
+      await gotoHash(page, '#/lookup?name=github.com&type=MX&resolver=google', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000 });
+      const info = await page.evaluate(() => ({
+        via: document.querySelector('.lkp-card .lkp-meta').textContent,
+        sel: document.querySelector('[data-role="lookup-resolver"]').value,
+        href: document.querySelector('.lkp-card a.lkp-host')?.getAttribute('href')
+      }));
+      assert(/Google Public DNS/.test(info.via), `answered by Google: ${info.via}`);
+      assertEqual(info.sel, 'google', 'resolver select');
+      assert(info.href && info.href.startsWith('#/lookup?name='), `host link: ${info.href}`);
+      const marker = await page.evaluate(() => { window.__lkpBody = document.querySelector('.lkp-view'); return true; });
+      assert(marker, 'marker');
+      await page.click('.lkp-card a.lkp-host');
+      await page.waitFor(() => /name=[^&]*outlook\.com/.test(window.location.hash) && document.querySelector('[data-role="lookup-name"]').value.endsWith('outlook.com'), { message: 'navigated to MX host' });
+      await page.waitFor(ALL_DONE, { timeout: 30000 });
+      const after = await page.evaluate(() => ({ same: window.__lkpBody === document.querySelector('.lkp-view'), types: [...document.querySelectorAll('.lkp-card')].map((c) => c.dataset.type) }));
+      assert(after.same, 'handled by update() without a re-mount');
+      assertEqual(after.types, ['A', 'AAAA'], 'host link asks A + AAAA');
+    });
+
+    await step('presets and "other types" validation', async () => {
+      await page.click('[data-preset="dnssec"]');
+      const checked = await page.evaluate(() => [...document.querySelectorAll('.lkp-types input:checked')].map((i) => i.value));
+      assertEqual(checked, ['SOA', 'DS', 'DNSKEY'], 'DNSSEC preset');
+      await page.click('[data-preset="none"]');
+      await page.type('[data-role="lookup-name"]', 'example.com');
+      await page.type('[data-role="lookup-other-types"]', 'URI, NOPE');
+      await page.click('[data-action="run"]');
+      await page.waitFor(() => /NOPE/.test(document.querySelector('.lkp-other .field-error')?.textContent || ''), { message: 'bad type error' });
+      await page.type('[data-role="lookup-other-types"]', '');
+      await page.click('[data-action="run"]');
+      await page.waitFor(() => !document.querySelector('.lkp-form-error').hidden, { message: 'no types error' });
+      await page.click('[data-preset="common"]');
+      await page.click('[data-action="run"]');
+      await page.waitFor(ALL_DONE, { timeout: 30000 });
+      const c = await page.evaluate(cardsInfo);
+      assertEqual(Object.keys(c).length, 9, 'common preset → 9 cards');
+      assert(/Null MX/.test(c.MX.text), 'example.com has a null MX');
+    });
+
+    await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+    await step('[dark] DNSSEC lookup of ietf.org renders; no horizontal scroll', async () => {
+      await gotoHash(page, '#/lookup?name=ietf.org&type=DS,DNSKEY,SOA&dnssec=1', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000 });
+      await assertNoHorizontalScroll(page, 'dark');
+      await shot(page, 'lookup-desktop-dark-en-ietf');
+    });
+
+    await step('language switch keeps results (snapshot) and translates', async () => {
+      const before = await page.evaluate(cardsInfo);
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula', { message: 'TR form' });
+      const after = await page.evaluate(cardsInfo);
+      assertEqual(Object.keys(after), Object.keys(before), 'cards kept');
+      assert(Object.values(after).every((c) => c.state !== 'pending'), 'restored without re-query');
+      assert(/Ham yanıt/.test(Object.values(after)[0].text), 'Turkish card text');
+      await shot(page, 'lookup-desktop-dark-tr-ietf');
+      await setLangUi(page, 'en');
+    });
+    await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+
+    await step('i18n: no missing keys; lkp.* TR/EN key sets match', () => checkI18n(page));
+    await step('desktop: no console errors, exceptions or CSP violations', () => assertClean(page, 'desktop'));
+    await page.close();
+
+    group('Phone 390×844 (Turkish)');
+    const phone = await browser.newPage('about:blank', { width: 390, height: 844, mobile: true });
+    await phone.goto(`${server.url}#/about`);
+    await waitReady(phone);
+    await setLangUi(phone, 'tr');
+    for (const scheme of ['light', 'dark']) {
+      await step(`[${scheme}] lookup fits 390 px`, async () => {
+        await phone.emulateMedia({ 'prefers-color-scheme': scheme });
+        await gotoHash(phone, '#/about', 'about');
+        await gotoHash(phone, `#/lookup?name=${scheme === 'light' ? 'github.com' : 'cloudflare.com'}&type=A,MX,TXT,CAA,HTTPS&dnssec=${scheme === 'dark' ? 1 : 0}`, 'lookup');
+        await phone.waitFor(ALL_DONE, { timeout: 30000 });
+        await assertNoHorizontalScroll(phone, `phone ${scheme}`);
+        await shot(phone, `lookup-mobile-${scheme}-tr`);
+      });
+    }
+    await step('phone: no console errors, exceptions or CSP violations', () => assertClean(phone, 'phone'));
+    await step('phone: i18n complete', () => checkI18n(phone));
+    await phone.close();
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+
+  const failed = results.filter((r) => !r.ok);
+  for (const n of [...new Set(notes)]) process.stdout.write(`  note: ${n}\n`);
+  process.stdout.write(`\n${results.length - failed.length} passed, ${failed.length} failed${SHOTS_ON ? ` — screenshots in ${path.relative(process.cwd(), SHOTS)}` : ''}\n`);
+  if (failed.length) {
+    for (const f of failed) process.stdout.write(`  - ${f.group}: ${f.name}\n`);
+    process.exitCode = 1;
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`E2E crashed: ${(err && err.stack) || err}\n`);
+  process.exitCode = 1;
+});

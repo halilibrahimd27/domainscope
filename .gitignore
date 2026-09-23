@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+tests/e2e/screenshots/
+tests/e2e/.profile*/
+*.log
+*.tmp

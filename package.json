@@ -1,0 +1,16 @@
+{
+  "name": "domainscope",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DomainScope — open-source SSL & DNS toolkit: find subdomains, IPs and the servers a certificate must be installed on. Runs entirely in the browser (GitHub Pages).",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"tests/js/*.test.js\"",
+    "test:py": "python -m unittest discover -s tests/python -v",
+    "serve": "node tests/e2e/serve.mjs 8080"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,553 @@
+/**
+ * views/inventory.js — "Servers": paste or import the server inventory, see it parsed live,
+ * fix warnings, save it to this browser (localStorage via state.js).
+ *
+ * The inventory is what turns DNS answers into "these 10 of your 300 servers need the new
+ * certificate": other views read it through `ctx.state.inventory` / `ctx.getInventoryIndex()`.
+ * Nothing here ever leaves the browser.
+ */
+
+import { h, clear, debounce } from '../ui/dom.js';
+import {
+  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, FileDrop, Icon, Modal, StatCard, Tabs,
+  TruncatedList, confirmDialog, ipSortValue, textarea, toast
+} from '../ui/components.js';
+import { downloadText } from '../ui/download.js';
+import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
+import { parseInventory } from '../lib/inventory.js';
+import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
+
+/** Route id. */
+export const id = 'inventory';
+/** i18n key of the page title. */
+export const titleKey = 'nav.inventory';
+/** Nav/page icon. */
+export const icon = 'server';
+
+/** File types offered by the importer. */
+const ACCEPT = '.txt,.csv,.tsv,.ini,.cfg,.conf,.yml,.yaml,.json,.jsonl,.hosts,.list,.lst';
+
+/** Example inventories (all verified to parse with lib/inventory.parseInventory). */
+const EXAMPLES = [
+  {
+    id: 'lines',
+    labelKey: 'inv.ex.lines',
+    text: '# name  ip [ip ...]\nweb01        10.0.1.11\nweb02        10.0.1.12  2001:db8::12\nlb-istanbul  185.60.10.5\n10.0.2.20    db01\n'
+  },
+  {
+    id: 'hosts',
+    labelKey: 'inv.ex.hosts',
+    text: '127.0.0.1     localhost\n10.0.1.11     web01.corp.local web01\n10.0.1.12     web02.corp.local web02\n192.168.10.5  mail.example.com.tr mail\n'
+  },
+  {
+    id: 'csv',
+    labelKey: 'inv.ex.csv',
+    text: 'hostname,ip_address,environment\nweb01,10.0.1.11,prod\nweb02,10.0.1.12,prod\napi01,10.0.3.21,staging\n'
+  },
+  {
+    id: 'ini',
+    labelKey: 'inv.ex.ini',
+    text: '[web]\nweb01 ansible_host=10.0.1.11\nweb02 ansible_host=10.0.1.12\n\n[db]\ndb01 ansible_host=10.0.2.20\n'
+  },
+  {
+    id: 'yaml',
+    labelKey: 'inv.ex.yaml',
+    text: 'all:\n  children:\n    web:\n      hosts:\n        web01:\n          ansible_host: 10.0.1.11\n        web02:\n          ansible_host: 10.0.1.12\n'
+  },
+  {
+    id: 'json',
+    labelKey: 'inv.ex.json',
+    text: '[\n  { "name": "web01", "ip": "10.0.1.11" },\n  { "name": "web02", "ips": ["10.0.1.12", "2001:db8::12"] }\n]\n'
+  }
+];
+
+registerStrings('en', {
+  'inv.privacyTitle': 'Stays in your browser',
+  'inv.privacy': 'The inventory is parsed and stored only on this device (browser localStorage). It is never uploaded — the other tools use it locally to match DNS answers to your servers.',
+  'inv.editorTitle': 'Inventory',
+  'inv.editorSubtitle': 'Paste it or import a file — any common format works',
+  'inv.textareaLabel': 'Server inventory',
+  'inv.placeholder': '# one server per line: name and IP address(es)\nweb01 10.0.1.11\nweb02 10.0.1.12 2001:db8::12\n\n# also: /etc/hosts, CSV/TSV, Ansible INI/YAML, JSON',
+  'inv.dropTitle': 'Import a file',
+  'inv.dropHint': 'drop it here, click to choose, or paste',
+  'inv.save': 'Save inventory',
+  'inv.clear': 'Clear',
+  'inv.clearConfirm': 'Remove the saved inventory from this browser?',
+  'inv.cleared': 'Inventory cleared',
+  'inv.saved': { zero: 'Inventory saved (empty)', one: 'Inventory saved: {count} server', other: 'Inventory saved: {count} servers' },
+  'inv.notPersisted': 'Could not write to browser storage — the inventory is kept only until this tab is closed.',
+  'inv.unsaved': 'Unsaved changes',
+  'inv.unsavedHint': 'The other tools use the saved inventory — save to apply your changes.',
+  'inv.savedAt': 'Saved {when}',
+  'inv.notSaved': 'Nothing saved yet',
+  'inv.importTitle': 'Import “{name}”',
+  'inv.importBody': 'The editor already contains an inventory. Replace it with the file, or append the file to it?',
+  'inv.replace': 'Replace',
+  'inv.append': 'Append',
+  'inv.imported': '{name} loaded — review it and press Save.',
+  'inv.stat.servers': 'Servers',
+  'inv.stat.ips': 'IP addresses',
+  'inv.stat.ipsHint': '{v4} IPv4 · {v6} IPv6 · {priv} private',
+  'inv.stat.groups': 'Groups',
+  'inv.stat.warnings': 'Warnings',
+  'inv.stat.lines': { zero: 'no lines', one: '{count} line', other: '{count} lines' },
+  'inv.tableTitle': 'Parsed servers',
+  'inv.tableSubtitle': 'What the tools will match against',
+  'inv.col.name': 'Server',
+  'inv.col.ips': 'IP addresses',
+  'inv.col.groups': 'Groups',
+  'inv.col.line': 'Line',
+  'inv.private': 'private',
+  'inv.aliases': 'also: {names}',
+  'inv.empty': 'No servers yet. Paste your inventory on the left or load an example.',
+  'inv.targets': 'targets.txt',
+  'inv.targetsTitle': 'Download "name ip" lines for the CLI (-t targets.txt)',
+  'inv.warningsTitle': 'Warnings',
+  'inv.warningsSubtitle': 'Lines that could not be used as-is — click one to jump to it',
+  'inv.warn.NO_IP': 'No IP address — this server cannot be matched',
+  'inv.warn.INVALID_IP': 'Invalid IP address',
+  'inv.warn.DUPLICATE_IP': 'The same IP address belongs to several servers',
+  'inv.warn.PARSE': 'Line could not be understood',
+  'inv.lineN': 'line {n}',
+  'inv.wholeInput': 'input',
+  'inv.formatsTitle': 'Supported formats & examples',
+  'inv.useExample': 'Use this example',
+  'inv.exampleConfirm': 'Replace the current editor content with this example?',
+  'inv.ex.lines': 'Name + IP',
+  'inv.ex.hosts': '/etc/hosts',
+  'inv.ex.csv': 'CSV / TSV',
+  'inv.ex.ini': 'Ansible INI',
+  'inv.ex.yaml': 'YAML',
+  'inv.ex.json': 'JSON',
+  'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too.'
+});
+
+registerStrings('tr', {
+  'inv.privacyTitle': 'Tarayıcınızda kalır',
+  'inv.privacy': 'Envanter yalnızca bu cihazda ayrıştırılır ve saklanır (tarayıcı localStorage). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır.',
+  'inv.editorTitle': 'Envanter',
+  'inv.editorSubtitle': 'Yapıştırın veya dosya içe aktarın — yaygın biçimlerin hepsi olur',
+  'inv.textareaLabel': 'Sunucu envanteri',
+  'inv.placeholder': '# her satıra bir sunucu: ad ve IP adres(ler)i\nweb01 10.0.1.11\nweb02 10.0.1.12 2001:db8::12\n\n# ayrıca: /etc/hosts, CSV/TSV, Ansible INI/YAML, JSON',
+  'inv.dropTitle': 'Dosya içe aktar',
+  'inv.dropHint': 'buraya bırakın, seçmek için tıklayın veya yapıştırın',
+  'inv.save': 'Envanteri kaydet',
+  'inv.clear': 'Temizle',
+  'inv.clearConfirm': 'Kayıtlı envanter bu tarayıcıdan kaldırılsın mı?',
+  'inv.cleared': 'Envanter temizlendi',
+  'inv.saved': { zero: 'Envanter kaydedildi (boş)', other: 'Envanter kaydedildi: {count} sunucu' },
+  'inv.notPersisted': 'Tarayıcı depolamasına yazılamadı — envanter yalnızca bu sekme kapanana kadar tutulacak.',
+  'inv.unsaved': 'Kaydedilmemiş değişiklikler',
+  'inv.unsavedHint': 'Diğer araçlar kayıtlı envanteri kullanır — değişikliklerin geçerli olması için kaydedin.',
+  'inv.savedAt': '{when} kaydedildi',
+  'inv.notSaved': 'Henüz kayıt yok',
+  'inv.importTitle': '“{name}” içe aktarılıyor',
+  'inv.importBody': 'Düzenleyicide zaten bir envanter var. Dosyayla değiştirilsin mi, yoksa sonuna mı eklensin?',
+  'inv.replace': 'Değiştir',
+  'inv.append': 'Sonuna ekle',
+  'inv.imported': '{name} yüklendi — kontrol edip Kaydet’e basın.',
+  'inv.stat.servers': 'Sunucular',
+  'inv.stat.ips': 'IP adresleri',
+  'inv.stat.ipsHint': '{v4} IPv4 · {v6} IPv6 · {priv} özel',
+  'inv.stat.groups': 'Gruplar',
+  'inv.stat.warnings': 'Uyarılar',
+  'inv.stat.lines': { zero: 'satır yok', other: '{count} satır' },
+  'inv.tableTitle': 'Ayrıştırılan sunucular',
+  'inv.tableSubtitle': 'Araçların eşleştirme yapacağı liste',
+  'inv.col.name': 'Sunucu',
+  'inv.col.ips': 'IP adresleri',
+  'inv.col.groups': 'Gruplar',
+  'inv.col.line': 'Satır',
+  'inv.private': 'özel',
+  'inv.aliases': 'diğer adlar: {names}',
+  'inv.empty': 'Henüz sunucu yok. Envanterinizi soldaki alana yapıştırın veya bir örnek yükleyin.',
+  'inv.targets': 'targets.txt',
+  'inv.targetsTitle': 'CLI için "ad ip" satırlarını indir (-t targets.txt)',
+  'inv.warningsTitle': 'Uyarılar',
+  'inv.warningsSubtitle': 'Olduğu gibi kullanılamayan satırlar — gitmek için tıklayın',
+  'inv.warn.NO_IP': 'IP adresi yok — bu sunucu eşleştirilemez',
+  'inv.warn.INVALID_IP': 'Geçersiz IP adresi',
+  'inv.warn.DUPLICATE_IP': 'Aynı IP adresi birden fazla sunucuya ait',
+  'inv.warn.PARSE': 'Satır anlaşılamadı',
+  'inv.lineN': '{n}. satır',
+  'inv.wholeInput': 'girdi',
+  'inv.formatsTitle': 'Desteklenen biçimler ve örnekler',
+  'inv.useExample': 'Bu örneği kullan',
+  'inv.exampleConfirm': 'Düzenleyicideki içerik bu örnekle değiştirilsin mi?',
+  'inv.ex.lines': 'Ad + IP',
+  'inv.ex.hosts': '/etc/hosts',
+  'inv.ex.csv': 'CSV / TSV',
+  'inv.ex.ini': 'Ansible INI',
+  'inv.ex.yaml': 'YAML',
+  'inv.ex.json': 'JSON',
+  'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır.'
+});
+
+/* ------------------------------------------------------------------------ */
+
+let teardown = null;
+
+/**
+ * "name ip ip…" lines for the CLI's -t option.
+ * @param {Array<{ name: string, ips: string[] }>} servers
+ * @returns {string}
+ */
+export function targetsText(servers) {
+  const lines = servers.filter((s) => s.ips.length).map((s) => `${s.name} ${s.ips.join(' ')}`);
+  return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+/**
+ * Character offsets [start, end) of 1-based line `n` in `text`.
+ * @param {string} text
+ * @param {number} n
+ * @returns {[number, number]}
+ */
+export function lineRange(text, n) {
+  const lines = String(text).split('\n');
+  const idx = Math.min(Math.max(1, n), lines.length) - 1;
+  let start = 0;
+  for (let i = 0; i < idx; i += 1) start += lines[i].length + 1;
+  return [start, start + lines[idx].length];
+}
+
+/**
+ * Mount the Servers view.
+ * @param {HTMLElement} container
+ * @param {import('../app.js').ViewContext} ctx
+ */
+export function mount(container, ctx) {
+  const { t, state } = ctx;
+  const saved = state.inventory;
+  const draft = state.takeSession('inventoryDraft');
+  const restoredText = ctx.restored && typeof ctx.restored.text === 'string' ? ctx.restored.text : undefined;
+  const initialText = restoredText ?? draft ?? saved.text;
+
+  let parsed = parseInventory(initialText);
+
+  /* --- editor ---------------------------------------------------------- */
+  const editor = textarea({
+    label: t('inv.textareaLabel'),
+    value: initialText,
+    rows: 16,
+    placeholder: t('inv.placeholder'),
+    className: 'inv-editor-field',
+    attrs: { 'data-role': 'inventory-text' }
+  });
+  editor.el.querySelector('.field-label').classList.add('sr-only');
+
+  const statusEl = h('div', { class: 'inv-status', attrs: { 'aria-live': 'polite' } });
+  const saveBtn = Button({ label: t('inv.save'), icon: 'check', variant: 'primary', onClick: save, dataset: { action: 'save' } });
+  const clearBtn = Button({ label: t('inv.clear'), icon: 'trash', variant: 'ghost', onClick: clearAll, dataset: { action: 'clear' } });
+
+  const drop = FileDrop({
+    accept: ACCEPT,
+    multiple: true,
+    compact: true,
+    icon: 'upload',
+    title: t('inv.dropTitle'),
+    hint: t('inv.dropHint'),
+    maxBytes: 8 * 1024 * 1024,
+    onFiles: (files) => importFiles(files)
+  });
+
+  const examplesTabs = Tabs(EXAMPLES.map((ex) => ({
+    id: ex.id,
+    label: t(ex.labelKey),
+    content: () => h('div', { class: 'stack-sm' },
+      CodeBlock(ex.text, { label: t(ex.labelKey) }),
+      h('div', { class: 'cluster' },
+        Button({ label: t('inv.useExample'), icon: 'arrow-down', size: 'sm', dataset: { example: ex.id }, onClick: () => useExample(ex) })))
+  })), { label: t('inv.formatsTitle'), className: 'inv-examples' });
+
+  const editorCard = Card({
+    title: t('inv.editorTitle'),
+    subtitle: t('inv.editorSubtitle'),
+    icon: 'file-text',
+    className: 'inv-editor',
+    children: h('div', { class: 'stack' },
+      drop,
+      editor.el,
+      h('div', { class: 'inv-actions' }, statusEl, h('div', { class: 'inv-buttons' }, clearBtn, saveBtn)),
+      Disclosure({
+        summary: t('inv.formatsTitle'),
+        className: 'inv-formats',
+        children: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-sm' }, t('inv.formatsNote')), examplesTabs)
+      }))
+  });
+
+  /* --- results --------------------------------------------------------- */
+  const stats = {
+    servers: StatCard({ label: t('inv.stat.servers'), icon: 'server', variant: 'accent' }),
+    ips: StatCard({ label: t('inv.stat.ips'), icon: 'network' }),
+    groups: StatCard({ label: t('inv.stat.groups'), icon: 'layers' }),
+    warnings: StatCard({ label: t('inv.stat.warnings'), icon: 'alert' })
+  };
+
+  const targetsBtn = Button({
+    label: t('inv.targets'),
+    icon: 'download',
+    size: 'sm',
+    title: t('inv.targetsTitle'),
+    dataset: { action: 'targets' },
+    onClick: () => downloadText('targets.txt', targetsText(parsed.servers))
+  });
+
+  const table = DataTable({
+    caption: t('inv.tableTitle'),
+    search: true,
+    pageSize: 200,
+    sort: { key: 'line', dir: 'asc' },
+    empty: t('inv.empty'),
+    rowKey: (s) => s.id,
+    toolbar: targetsBtn,
+    export: { filename: 'servers' },
+    columns: [
+      {
+        key: 'name',
+        label: t('inv.col.name'),
+        sortable: true,
+        sortValue: (s) => s.name,
+        searchValue: (s) => [s.name, ...(s.aliases || [])].join(' '),
+        exportValue: (s) => s.name,
+        render: (s) => h('div', { class: 'inv-name' },
+          h('span', { class: 'inv-name-main' }, s.name),
+          s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null)
+      },
+      {
+        key: 'ips',
+        label: t('inv.col.ips'),
+        sortable: true,
+        sortValue: (s) => ipSortValue(s.ips[0]),
+        searchValue: (s) => s.ips.join(' '),
+        exportValue: (s) => s.ips.join(' '),
+        render: (s) => TruncatedList(s.ips, {
+          max: 4,
+          render: (ip) => h('span', { class: 'inv-ip' }, ip,
+            isPrivateIP(ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
+        })
+      },
+      {
+        key: 'groups',
+        label: t('inv.col.groups'),
+        sortable: true,
+        sortValue: (s) => s.groups[0],
+        searchValue: (s) => s.groups.join(' '),
+        exportValue: (s) => s.groups.join(' '),
+        render: (s) => (s.groups.length ? h('div', { class: 'cluster inv-groups' }, s.groups.map((g) => Badge(g, { variant: 'neutral' }))) : null)
+      },
+      {
+        key: 'line',
+        label: t('inv.col.line'),
+        sortable: true,
+        align: 'end',
+        width: '5.5rem',
+        className: 'num',
+        render: (s) => h('button', {
+          type: 'button',
+          class: 'link-btn num',
+          title: t('inv.lineN', { n: s.line }),
+          on: { click: () => jumpToLine(s.line) }
+        }, String(s.line))
+      }
+    ]
+  });
+
+  const warningsList = h('ul', { class: 'inv-warnings' });
+  const warningsCard = Card({
+    title: t('inv.warningsTitle'),
+    subtitle: t('inv.warningsSubtitle'),
+    icon: 'alert',
+    className: 'inv-warnings-card',
+    padded: false,
+    children: warningsList
+  });
+
+  const resultsCol = h('div', { class: 'stack inv-results' },
+    h('div', { class: 'stat-grid inv-stats' }, stats.servers, stats.ips, stats.groups, stats.warnings),
+    warningsCard,
+    Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));
+
+  container.append(
+    Alert({ variant: 'ok', icon: 'lock', title: t('inv.privacyTitle'), message: t('inv.privacy'), compact: true }),
+    h('div', { class: 'inv-layout' }, editorCard, resultsCol));
+
+  /* --- behaviour ------------------------------------------------------- */
+  function isDirty() {
+    return editor.value !== state.inventory.text;
+  }
+
+  function renderStatus() {
+    clear(statusEl);
+    const dirty = isDirty();
+    if (dirty) {
+      statusEl.append(Badge(t('inv.unsaved'), { variant: 'warn', icon: 'alert', title: t('inv.unsavedHint') }));
+    } else if (state.inventory.updatedAt) {
+      statusEl.append(h('span', { class: 'muted text-sm', title: state.inventory.updatedAt.toLocaleString() },
+        Icon('check', { size: 14 }), ' ', t('inv.savedAt', { when: formatRelative(state.inventory.updatedAt) })));
+    } else {
+      statusEl.append(h('span', { class: 'muted text-sm' }, t('inv.notSaved')));
+    }
+    saveBtn.disabled = !dirty;
+    clearBtn.disabled = !editor.value && !state.inventory.text;
+  }
+
+  function renderResults() {
+    const { servers, warnings, stats: st } = parsed;
+    const ips = servers.flatMap((s) => s.ips);
+    const v6 = ips.filter((ip) => ipVersion(ip) === 6).length;
+    const priv = ips.filter((ip) => isPrivateIP(ip)).length;
+    const groups = new Set(servers.flatMap((s) => s.groups));
+    stats.servers.set({ value: servers.length, hint: t('inv.stat.lines', { count: st.lines }) });
+    stats.ips.set({
+      value: ips.length,
+      hint: ips.length ? t('inv.stat.ipsHint', { v4: formatNumber(ips.length - v6), v6: formatNumber(v6), priv: formatNumber(priv) }) : null
+    });
+    stats.groups.set({ value: groups.size, hint: groups.size ? [...groups].slice(0, 4).join(', ') + (groups.size > 4 ? '…' : '') : null });
+    stats.warnings.set({ value: warnings.length, variant: warnings.length ? 'warn' : 'default' });
+    table.setRows(servers);
+    targetsBtn.disabled = !servers.some((s) => s.ips.length);
+
+    clear(warningsList);
+    warningsCard.hidden = warnings.length === 0;
+    for (const w of warnings.slice(0, 200)) {
+      warningsList.append(h('li', null, h('button', {
+        type: 'button',
+        class: 'inv-warning',
+        dataset: { code: w.code, line: w.line },
+        disabled: !w.line,
+        on: { click: () => jumpToLine(w.line) }
+      },
+      h('span', { class: 'inv-warning-line num' }, w.line ? t('inv.lineN', { n: w.line }) : t('inv.wholeInput')),
+      h('span', { class: 'inv-warning-body' },
+        h('span', { class: 'inv-warning-code' }, t(`inv.warn.${w.code}`)),
+        w.text ? h('code', { class: 'inv-warning-text' }, w.text) : null,
+        w.detail && w.detail !== w.text ? h('span', { class: 'inv-warning-detail mono' }, w.detail) : null))));
+    }
+    if (warnings.length > 200) warningsList.append(h('li', { class: 'muted text-sm inv-warning-more' }, t('common.moreCount', { count: formatNumber(warnings.length - 200) })));
+  }
+
+  const reparse = () => {
+    parsed = parseInventory(editor.value);
+    renderResults();
+    renderStatus();
+  };
+  const reparseSoon = debounce(reparse, 200);
+  editor.input.addEventListener('input', () => {
+    renderStatus();
+    reparseSoon();
+  });
+
+  function save() {
+    reparseSoon.cancel();
+    const { persisted, inventory } = state.setInventory(editor.value);
+    parsed = { servers: inventory.servers, warnings: inventory.warnings, stats: inventory.stats };
+    renderResults();
+    renderStatus();
+    if (!persisted && editor.value.trim()) toast(t('inv.notPersisted'), { type: 'warn', timeout: 8000 });
+    else toast(t('inv.saved', { count: inventory.servers.length }), { type: 'success' });
+  }
+
+  async function clearAll() {
+    if (state.inventory.text || editor.value.trim()) {
+      const ok = await confirmDialog({ message: t('inv.clearConfirm'), confirmLabel: t('inv.clear'), danger: true });
+      if (!ok) return;
+    }
+    editor.value = '';
+    state.clearInventory();
+    reparse();
+    toast(t('inv.cleared'), { type: 'info' });
+    editor.focus();
+  }
+
+  async function importFiles(files) {
+    const incoming = files.map((f) => f.text.replace(/\s+$/, '')).join('\n\n');
+    const name = files.map((f) => f.name).join(', ');
+    let mode = 'replace';
+    if (editor.value.trim()) {
+      mode = await Modal({
+        title: t('inv.importTitle', { name }),
+        size: 'sm',
+        content: h('p', { class: 'modal-message' }, t('inv.importBody')),
+        actions: [
+          { label: t('common.cancel'), value: null },
+          { label: t('inv.append'), value: 'append', icon: 'plus' },
+          { label: t('inv.replace'), value: 'replace', variant: 'primary', autofocus: true }
+        ]
+      }).open();
+      if (!mode) return;
+    }
+    editor.value = mode === 'append' ? `${editor.value.replace(/\s+$/, '')}\n\n${incoming}\n` : `${incoming}\n`;
+    reparse();
+    toast(t('inv.imported', { name }), { type: 'info' });
+  }
+
+  async function useExample(ex) {
+    if (editor.value.trim() && editor.value !== ex.text) {
+      const ok = await confirmDialog({ message: t('inv.exampleConfirm'), confirmLabel: t('inv.replace') });
+      if (!ok) return;
+    }
+    editor.value = ex.text;
+    reparse();
+    editor.input.scrollIntoView({ block: 'nearest' });
+  }
+
+  function jumpToLine(n) {
+    if (!n) return;
+    const ta = editor.input;
+    const [start, end] = lineRange(ta.value, n);
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(start, end);
+    const lh = parseFloat(globalThis.getComputedStyle(ta).lineHeight) || 20;
+    ta.scrollTop = Math.max(0, (n - 1) * lh - ta.clientHeight / 3);
+    ta.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Another tab saved/cleared the inventory: follow it unless the user has unsaved edits.
+  let lastSavedText = state.inventory.text;
+  const unsubscribe = state.subscribe(({ key, origin }) => {
+    if (key !== 'inventory') return;
+    const wasClean = editor.value === lastSavedText;
+    lastSavedText = state.inventory.text;
+    if (origin === 'external' && wasClean) {
+      editor.value = lastSavedText;
+      reparse();
+    } else {
+      renderStatus();
+    }
+  });
+
+  // Refresh the relative "Saved … ago" label now and then.
+  const timer = setInterval(renderStatus, 30000);
+
+  renderResults();
+  renderStatus();
+
+  teardown = () => {
+    unsubscribe();
+    clearInterval(timer);
+    reparseSoon.cancel();
+    // Keep an unsaved draft for this session so navigating away does not lose it.
+    if (isDirty()) state.setSession('inventoryDraft', editor.value);
+  };
+  snapshotFn = () => ({ text: editor.value });
+}
+
+let snapshotFn = null;
+
+/** Clean up listeners; keep unsaved edits as a session draft. */
+export function unmount() {
+  if (teardown) teardown();
+  teardown = null;
+  snapshotFn = null;
+}
+
+/**
+ * State to carry over a re-mount (language change): the editor text.
+ * @returns {{ text: string }|null}
+ */
+export function snapshot() {
+  return snapshotFn ? snapshotFn() : null;
+}
+
+export default { id, titleKey, icon, mount, unmount, snapshot };

@@ -1,0 +1,181 @@
+/*
+ * views/inventory.css — "Servers" view (.inv-*).
+ */
+
+.inv-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+@media (max-width: 1180px) {
+  .inv-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.inv-editor .textarea {
+  min-height: 320px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.inv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.inv-buttons {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.inv-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.inv-status .muted {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inv-formats .tablist-scroll {
+  margin-bottom: 10px;
+}
+
+.inv-formats .tab {
+  padding: 7px 10px 9px;
+  font-size: 12.5px;
+}
+
+.inv-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .inv-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.inv-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.inv-name-main {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.inv-aliases {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.inv-ip {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.inv-ip-badge {
+  height: 17px;
+  padding: 0 6px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+}
+
+.inv-groups {
+  gap: 4px;
+}
+
+.inv-warnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.inv-warning {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inv-warning:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.inv-warning:disabled {
+  cursor: default;
+}
+
+.inv-warning:focus-visible {
+  outline-offset: -2px;
+}
+
+.inv-warnings li:last-child .inv-warning {
+  border-bottom: 0;
+}
+
+.inv-warning-line {
+  flex: none;
+  min-width: 68px;
+  padding-top: 1px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--warn);
+}
+
+.inv-warning-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.inv-warning-code {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.inv-warning-text {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.inv-warning-detail {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.inv-warning-more {
+  padding: 8px 16px;
+}

@@ -8,8 +8,9 @@
  * - Suites run sequentially (never in parallel): most of them hit live third-party APIs with
  *   small free quotas (HackerTarget ≈ 50/day, Cert Spotter ≈ 10/hour), and each one starts
  *   its own browser and static server.
- * - Order: shell first (offline, fastest), then the views in navigation order, then the
- *   cross-view integration suite, then any other *.e2e.mjs file alphabetically.
+ * - Order: shell first (offline, fastest), then the views in navigation order (verify, the
+ *   offline suite of SSL Targets › Verify, right after scan), then the cross-view integration
+ *   suite, then any other *.e2e.mjs file alphabetically.
  * - --only / --skip take suite names without the `.e2e.mjs` suffix (e.g. `--only shell,cert`).
  * - Every other argument is passed through to each suite (they share --browser, --headed and
  *   --no-shots; unknown flags are ignored by suites that do not use them).
@@ -31,7 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'integration'];
+const ORDER = ['shell', 'subdomains', 'scan', 'verify', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

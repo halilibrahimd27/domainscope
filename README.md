@@ -28,7 +28,7 @@ DomainScope combines several sources, resolves every name, classifies each answe
 | Tool | What it does |
 |---|---|
 | **Subdomains** (start page) | Enter a domain and get every subdomain the public internet can reveal, DNS first. It mines the zone's own records (NS, MX, SPF/TXT, SRV, …), tries a self-hosted wordlist — **Off**, **Small** (159 names), **Smart** (≈ 7,000, the default), **Large** (≈ 50,000) or **Huge** (≈ 130,000) — and variations of every name found (`shop` → `shopapi`, `api` → `api2`, `api-dev`; up to 1,500 by default, plus one deeper round under discovered parents). From Smart up it adds a **market word pack** picked from the domain ending (`.de` → German, `.com.tr` → Turkish; 12 markets, or choose them yourself), tries your own **custom wordlist** first and then, if you turn them on, the **names learned** from your earlier scans (see [Wordlists](#wordlists-and-what-dns-guessing-can-find)). Passive sources (Certificate Transparency and passive DNS, see below) run alongside, each with its own status and quota note. Wildcard DNS is detected at every level so look-alike hits are dropped. For hosts behind Cloudflare or another proxy it lists **origin candidates**: the networks (/24 for IPv4, /48 for IPv6) of the domain's DNS-only records, direct answers from other public resolvers, historical DNS, SPF/MX addresses, and a ready-to-run CLI command (Linux/macOS or Windows PowerShell) that sweeps those networks with TLS SNI. Copy the list or download `names.txt`. |
-| **SSL Targets** | Drop in a certificate (PEM, DER, chain or P7B). Uses the same discovery engine (the Smart wordlist is on by default; languages, custom wordlist and learned names are shared with Subdomains › Advanced options), resolves every name over DNS-over-HTTPS, checks which names the certificate covers, and groups the results **by your servers**. Tabs: Hosts, Servers, Behind CDN (with origin hints and the same CLI command for either shell), Sources, CT certificates. Exports to CSV, JSON, `names.txt` and `targets.txt`. |
+| **SSL Targets** | Drop in a certificate (PEM, DER, chain or P7B). Uses the same discovery engine (the Smart wordlist is on by default; languages, custom wordlist and learned names are shared with Subdomains › Advanced options), resolves every name over DNS-over-HTTPS, checks which names the certificate covers, and groups the results **by your servers**. Tabs: Hosts, Servers, Behind CDN (with origin hints and the same CLI command for either shell), **Verify**, Sources, CT certificates. **Verify** (with a certificate) checks from the internet which certificate each public server really serves for each name, through [Globalping](https://globalping.io) probes, and gives the CLI's verdicts (new certificate, old certificate, name not served here, TLS error, no answer, port closed) with warnings such as a missing intermediate. It shows the cost and asks for consent once per page session (and again before a batch of more than 50 checks, one larger than the remaining quota, or the first one that includes origin checks); private addresses are never sent and go to a ready CLI command instead. Exports to CSV, JSON, `names.txt` and `targets.txt`. |
 | **Certificate** | Full certificate details: SANs, validity, key, fingerprints, chain order and warnings. Also checks whether the domain's **CAA** records allow the issuing CA and looks the certificate up in CT logs. |
 | **Global DNS** | Queries one name through **12 public DoH resolvers** plus **31 locations in 27 countries** via EDNS Client Subnet, then groups the answers so you can see GeoDNS and CDN differences and follow propagation. Quad9 and Quad9 (ECS) answer browsers over HTTP/3 without a CORS header, so in Chrome, Edge and most other browsers their rows usually show "Not readable in browsers" with a `dig` command to run instead. |
 | **DNS Lookup** | Any record type (A, AAAA, CNAME, MX, NS, TXT, SOA, CAA, SRV, HTTPS/SVCB, DS, DNSKEY, TLSA, …), from any resolver, with a DNSSEC (DO/CD) toggle. Records are shown parsed, with the raw text alongside. |
@@ -49,12 +49,13 @@ DomainScope is a static site with no backend. Everything runs in your browser ag
 | DNS (RFC 8484 DoH) | Cloudflare, Cloudflare Family, Google Public DNS, Quad9†, Quad9 (ECS)†, Control D, DNS.SB, IIJ Public DNS, CleanBrowsing, Tiarap, seby.io, CZ.NIC ODVR |
 | IP data | [RIPEstat](https://stat.ripe.net), [ipwho.is](https://ipwho.is), HackerTarget reverse IP |
 | Registration | RDAP via the IANA bootstrap (some country TLDs, such as `.de`, `.jp` and `.tr`, publish no RDAP) |
+| Certificate check from the internet | [Globalping](https://globalping.io) (jsDelivr's free probe network; SSL Targets › Verify only, and only when you press "Check from the internet") |
 
 † Quad9 answers browsers over HTTP/3 without a CORS header, so Chrome, Edge and most other browsers usually cannot read it; Global DNS shows those rows as "Not readable in browsers" with a `dig` command, and discovery leaves Quad9 out of its default resolver chain. It works from a terminal, and in a browser on networks that block QUIC.
 
-Free tiers have rate limits, and they apply **per visitor IP**, not globally: HackerTarget allows about 50 requests per day, Cert Spotter about 10 full-domain searches per hour (a scan uses up to 5), and anonymous OTX is limited. If a source fails, the scan keeps going: the DNS-first discovery (record mining, wordlist, permutations) needs no third-party quota at all — only public DoH resolvers.
+Free tiers have rate limits, and they apply **per visitor IP**, not globally: HackerTarget allows about 50 requests per day, Cert Spotter about 10 full-domain searches per hour (a scan uses up to 5), and anonymous OTX is limited. Globalping allows 250 probes per hour without an account, shared by everyone behind your IP address; each Verify check costs one probe (a check whose probe fails is retried on another probe, at most 5 extra probes per batch), and the tab shows what is left before it sends anything. If a source fails, the scan keeps going: the DNS-first discovery (record mining, wordlist, permutations) needs no third-party quota at all — only public DoH resolvers.
 
-**Privacy.** Certificates and your server inventory are processed locally and never uploaded. The only data that leaves your browser is what each lookup needs: domain names go to the DNS resolvers and passive sources, and IPs go to the IP data services when you look them up. A custom wordlist stays in the current tab (session storage). Learned names are off until you turn them on; they are bare labels such as `api`, never full hostnames or IPs, stored only in this browser's local storage — but later scans try them as DNS lookups (`api.<domain>`), so resolvers and that domain's name servers see them; **Delete all local data** (Settings or About) removes them together with the inventory and settings. A private key is never needed; if you paste one by mistake, it is ignored and never displayed.
+**Privacy.** Certificates and your server inventory are processed locally and never uploaded, except the public IP / host name pairs you choose to check in **Verify** (below). The only data that leaves your browser is what each lookup needs: domain names go to the DNS resolvers and passive sources, and IPs go to the IP data services when you look them up. A custom wordlist stays in the current tab (session storage). **Verify** sends something only when you press "Check from the internet" and confirm: each public IP, host name and port pair goes to Globalping, whose results anyone with the measurement ID can read for about six months. Private addresses are never sent. The optional origin check (off by default) also sends an origin IP from your inventory together with the proxied name it serves, so the public measurement shows that this server answers for that name behind the CDN, which is exactly what someone trying to bypass the CDN looks for; turn it on only for origins whose address may be known. The certificate never leaves your browser; the comparison is local. One probe then sends one HTTPS HEAD request to the server (User-Agent "globalping probe"), so only check servers you operate. The consent is asked again in every page session and is never stored. Learned names are off until you turn them on; they are bare labels such as `api`, never full hostnames or IPs, stored only in this browser's local storage — but later scans try them as DNS lookups (`api.<domain>`), so resolvers and that domain's name servers see them; **Delete all local data** (Settings or About) removes them together with the inventory and settings. A private key is never needed; if you paste one by mistake, it is ignored and never displayed.
 
 ## Wordlists and what DNS guessing can find
 
@@ -118,7 +119,7 @@ The origin panel (Subdomains) and the Behind CDN tab (SSL Targets) write the swe
 0. **Subdomains (optional):** see everything first — every name, which are proxied, and the origin networks with a sweep command for your shell, e.g. `python3 ssl_origin_scan.py -t 203.0.113.0/24 -n api.example.com shop.example.com`.
 1. **SSL Targets:** drop in the new certificate, confirm the domain, and scan. Your inventory is matched automatically.
 2. **Servers tab:** lists the servers whose DNS points at a covered name. **Behind CDN tab:** lists the proxied hosts, their origin hints, and the CLI command.
-3. Install the certificate, then run the CLI with `--cert new-cert.pem`. Repeat until every server reports `UPDATED`.
+3. Install the certificate, then open the **Verify** tab and press **Check from the internet**: every public server is checked for every name it should serve, and "Check again" re-checks only what is not done yet. For private addresses and origins behind a CDN, run the CLI command the tab gives you (`--cert new-cert.pem`). Repeat until every server reports `UPDATED`.
 
 ## Run locally / self-host
 
@@ -137,23 +138,23 @@ To host your own copy, fork the repo and set **Settings → Pages → Source: Gi
 ```
 index.html               SPA shell (strict CSP, no inline scripts/styles)
 assets/js/lib/           DOM-free libraries (run in browsers and Node): x509, dnswire, doh, sources, scanner,
-                         wordlist, learned, permute, dnsmine, cmdline, health, …
+                         wordlist, learned, permute, dnsmine, cmdline, globalping, verify, health, …
 assets/js/views/         one module per tool (subdomains.js is the start page)
-assets/js/ui/            safe DOM builder + component library
+assets/js/ui/            safe DOM builder + component library (+ verify-panel.js, the SSL Targets › Verify tab)
 assets/data/             bundled wordlists (Smart plain text, Large + Huge gzip), 12 locale packs, manifest + licences
 tools/build-wordlists.mjs  rebuilds assets/data from pinned upstream lists (maintainers only)
 cli/ssl_origin_scan.py   companion CLI (stdlib only)
 tests/js/                node:test unit tests (no network), incl. a repo-hygiene check for real IPs
 tests/python/            CLI tests, including local TLS servers with SNI
 tests/e2e/               headless Chrome E2E via the DevTools protocol (no dependencies)
-tests/live/              live smoke tests and the discovery benchmark (network; never run in CI)
+tests/live/              live smoke tests and the discovery benchmark (network; never run in CI; the Globalping smoke never sends your own targets)
 docs/                    SPEC (module contracts), ROADMAP, RESEARCH
 ```
 
 ```bash
 npm test                 # JavaScript unit tests (node --test "tests/js/*.test.js"; `node --test tests/js/` is equivalent)
 npm run test:py          # CLI tests
-node tests/e2e/run-all.mjs   # end-to-end, against live APIs (needs Chrome or Edge)
+node tests/e2e/run-all.mjs   # end-to-end, against live APIs (needs Chrome or Edge); the verify suite is offline: 0 Globalping probes
 ```
 
 Tests and docs use reserved example names (`example.com`, `example.net`) and documentation IP ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`); `tests/js/repo-hygiene.test.js` fails on any other IPv4 address that is not well-known public infrastructure. Live scripts read your own targets only from the gitignored `tests/live/targets.local.json`.

@@ -11,9 +11,9 @@
  *      origin hints and extra names
  *
  * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the
- * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Sources /
- * CT certificates, plus exports (hosts CSV, servers CSV, full JSON, names.txt, targets.txt)
- * and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
+ * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Verify (only with a
+ * certificate: ui/verify-panel.js checks it from the internet) / Sources / CT certificates,
+ * plus exports (hosts CSV, servers CSV, full JSON, names.txt, targets.txt) and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
  * confirms origins behind Cloudflare from inside the network.
  *
  * A running scan is owned by this module, not by the mounted view: navigating to another
@@ -51,11 +51,13 @@ import {
 } from './cert.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
 import {
-  LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
+  LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
   applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary, originOverview,
   reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
   wordlistCount, wordlistPlan, wordlistPlanText, wordlistScanConfig
 } from './subdomains.js';
+// The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
+import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 
 /** Route id. */
 export const id = 'scan';
@@ -324,6 +326,8 @@ registerStrings('en', {
   'scan.origin.dnsmine': '{record} record',
 
   'scan.srv.intro': 'Servers from your inventory that the names resolve to (DNS) or that origin hints point at. Servers that need the certificate come first.',
+  'scan.srv.verifyHint': 'Installed it? Check from the internet which certificate each server really serves.',
+  'scan.sum.verify': 'After installing the certificate, open the Verify tab to check it from the internet.',
   'scan.srv.col.server': 'Server',
   'scan.srv.col.status': 'Action',
   'scan.srv.col.ips': 'Server IPs',
@@ -681,6 +685,8 @@ registerStrings('tr', {
   'scan.origin.dnsmine': '{record} kaydı',
 
   'scan.srv.intro': 'Envanterinizdeki, adların çözümlendiği (DNS) veya asıl sunucu ipuçlarının işaret ettiği sunucular. Sertifika kurulması gerekenler en üstte.',
+  'scan.srv.verifyHint': 'Kurdunuz mu? Her sunucunun gerçekte hangi sertifikayı sunduğunu internetten kontrol edin.',
+  'scan.sum.verify': 'Sertifikayı kurduktan sonra internetten kontrol etmek için Doğrula sekmesini açın.',
   'scan.srv.col.server': 'Sunucu',
   'scan.srv.col.status': 'Yapılacak',
   'scan.srv.col.ips': 'Sunucu IP’leri',
@@ -1039,6 +1045,8 @@ const session = {
   certKeyForDomains: null,
   extraText: '',
   cdnShell: 'posix',
+  /** Results tab shown when the run UI is rebuilt (null = Hosts); the Verify toast sets it. */
+  scanTab: null,
   run: null
 };
 let runCounter = 0;
@@ -1753,6 +1761,8 @@ export function mount(container, ctx) {
     });
     // The DohClient counts queries for its whole life; remember where this run started.
     run.queriesAtStart = typeof dns.stats === 'function' ? dns.stats().queries : null;
+    if (session.run) cancelVerify(session.run);
+    session.scanTab = null;
     session.run = run;
     hideLinkPrompt();
     ctx.setParams(v.domains.length ? { domain: v.domains.join(',') } : {});
@@ -2171,14 +2181,23 @@ function buildRunUI(run, ctx, { onFinish }) {
   const cdnPanel = h('div', { class: 'stack scan-tab-cdn' });
   const sourcesPanel = h('div', { class: 'stack scan-tab-sources' });
   const ctPanel = h('div', { class: 'stack scan-tab-ct' });
+  // Verify (only with a certificate): checks from the internet which certificate each server serves.
+  const verifyPanel = cert ? h('div', { class: 'stack scan-tab-verify' }) : null;
+  let verifyUi = null;
 
   const tabs = Tabs([
     { id: 'hosts', label: t('scan.tab.hosts'), icon: 'list', content: hostsPanel },
     { id: 'servers', label: t('scan.tab.servers'), icon: 'server', content: serversPanel },
     { id: 'cdn', label: t('scan.tab.cdn'), icon: 'cloud', content: cdnPanel },
+    cert ? { id: 'verify', label: t('vfy.tab'), icon: 'check-circle', content: verifyPanel } : null,
     { id: 'sources', label: t('scan.tab.sources'), icon: 'database', content: sourcesPanel },
     { id: 'ct', label: t('scan.tab.ct'), icon: 'certificate', content: ctPanel }
-  ], { label: t('scan.results'), className: 'scan-tabs' });
+  ].filter(Boolean), {
+    label: t('scan.results'), className: 'scan-tabs', selected: session.scanTab,
+    onChange: (tabId) => {
+      session.scanTab = tabId;
+    }
+  });
 
   /* Sources tab (live) */
   const sourcesTable = DataTable({
@@ -2250,7 +2269,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   const pendingState = () => EmptyState({ compact: true, icon: 'clock', message: t('scan.pending') });
   const unavailableState = () => EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.notAvailable') });
-  for (const p of [serversPanel, cdnPanel, ctPanel]) p.append(pendingState());
+  for (const p of [serversPanel, cdnPanel, ctPanel, verifyPanel]) if (p) p.append(pendingState());
 
   const results = h('section', { class: 'scan-results stack', attrs: { 'aria-labelledby': `scan-results-${run.id}` } },
     h('div', { class: 'scan-results-head' },
@@ -2309,7 +2328,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         notAfter: cert.notAfter,
         hostnames: cert.hostnames
       } : null,
-      scan: run.result
+      scan: run.result,
+      verification: verifyExport(run, ctx.version)
     };
   }
 
@@ -2362,6 +2382,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     } else {
       add('info', t('scan.sum.noInventory'), 'server', 'no-inventory');
     }
+    // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
+    if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t('scan.sum.verify'), 'check-circle', 'verify');
     if (st.hiddenOrigin) add('info', t('scan.sum.hidden', { count: st.hiddenOrigin }), 'cloud', 'hidden');
     const nets = (r.originNetworks || []).map((n) => n.cidr);
     if (st.hiddenOrigin && nets.length) {
@@ -2388,6 +2410,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
     const inv = run.config.inventoryServers > 0;
     serversPanel.append(h('p', { class: 'muted text-sm' }, t('scan.srv.intro')));
+    if (cert && (r.servers.length || r.unmatchedIps.length)) {
+      serversPanel.append(h('div', { class: 'cluster vfy-hint' },
+        h('span', { class: 'muted text-sm' }, t('scan.srv.verifyHint')),
+        Button({ size: 'sm', variant: 'ghost', icon: 'check-circle', label: t('vfy.tab'), dataset: { action: 'scan-open-verify' }, onClick: () => tabs.select('verify', { focus: true }) })));
+    }
     if (!inv) {
       serversPanel.append(Alert({
         variant: 'info', compact: true, icon: 'server', message: t('scan.srv.noInventory'),
@@ -2739,6 +2766,37 @@ function buildRunUI(run, ctx, { onFinish }) {
     });
   }
 
+  function renderVerifyTab() {
+    if (!verifyPanel) return;
+    if (verifyUi) verifyUi.dispose();
+    verifyUi = null;
+    clear(verifyPanel);
+    if (!run.result) {
+      verifyPanel.append(run.status === 'running' ? pendingState() : unavailableState());
+      return;
+    }
+    verifyUi = VerifyPanel({
+      run,
+      ctx,
+      onShowTab: (tabId) => tabs.select(tabId, { focus: true }),
+      onChange: renderBadgesSoon,
+      rememberTab: (tabId) => {
+        session.scanTab = tabId;
+      },
+      // The CDN card and this one share the shell choice and the CLI download.
+      cli: {
+        path: CLI_PATH,
+        shells: SHELLS,
+        pythonFor: PYTHON_FOR_SHELL,
+        getShell: () => session.cdnShell,
+        setShell: (sh) => {
+          session.cdnShell = sh;
+        }
+      }
+    });
+    verifyPanel.append(verifyUi.el);
+  }
+
   let hideExpired = false;
   function renderCtTab() {
     clear(ctPanel);
@@ -2839,6 +2897,10 @@ function buildRunUI(run, ctx, { onFinish }) {
       tabs.setBadge('cdn', r.stats.hiddenOrigin || null, r.stats.hiddenOrigin ? 'warn' : null);
       tabs.setBadge('ct', r.ctCerts.length || null);
     }
+    if (verifyPanel) {
+      const b = verifyTabBadge(run);
+      tabs.setBadge('verify', b ? b.value : null, b ? b.variant : null);
+    }
     const failed = run.sourceResults.filter((x) => !x.ok).length;
     tabs.setBadge('sources', run.sourceResults.length || null, failed ? 'error' : null);
   }
@@ -2874,6 +2936,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderSourceHealth();
     renderServersTab();
     renderCdnTab();
+    renderVerifyTab();
     renderCtTab();
     renderWildcards();
     renderTabBadges();
@@ -2949,6 +3012,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     dispose() {
       run.listeners.delete(listener);
       stopTicker();
+      // Detaches the panel only: a running verification keeps going on the run.
+      if (verifyUi) verifyUi.dispose();
     }
   };
 }

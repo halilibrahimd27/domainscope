@@ -1,0 +1,232 @@
+/*
+ * views/verify.css — the Verify tab of SSL Targets (.vfy-*, ui/verify-panel.js): plan and
+ * not-checkable lines, consent / quota notes, the headline, the checks table and the CLI card.
+ * Design tokens from style.css only, so light and dark mode follow automatically. Phase D's
+ * standalone Verify view reuses this file.
+ */
+
+.vfy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.vfy-info,
+.vfy-status,
+.vfy-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.vfy-headline {
+  gap: 8px;
+}
+
+.vfy-intro,
+.vfy-plan,
+.vfy-nothere {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.vfy-plan {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.vfy-nothere {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.vfy-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Buttons (Start / Check again / Stop, CLI downloads): a wrapping cluster. */
+.vfy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vfy-progress {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vfy-progress .progress {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.vfy-quota {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.vfy-cant {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.vfy-cant .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* Table cells */
+.vfy-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 24rem;
+}
+
+.vfy-mini.badge {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.vfy-mini .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.vfy-running .spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
+.vfy-cell-2 {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vfy-cell-2.is-stale {
+  opacity: 0.7;
+}
+
+.vfy-sub {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.vfy-name,
+.vfy-ip,
+.vfy-served-cn {
+  font-family: var(--font-mono);
+}
+
+.vfy-flag {
+  margin-right: 2px;
+}
+
+.vfy-exp-expired,
+.vfy-exp-soon {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.vfy-exp-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.vfy-table .vfy-row-old td {
+  background: var(--warn-bg);
+}
+
+.vfy-table .vfy-row-old td:first-child,
+.vfy-table .vfy-row-old td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.vfy-table .vfy-row-skipped td {
+  color: var(--text-3);
+}
+
+.vfy-last {
+  white-space: nowrap;
+}
+
+.vfy-details .kv-value {
+  overflow-wrap: anywhere;
+}
+
+/* CLI card: the shared card / codeblock styles; only spacing here. */
+.vfy-cli .card-subtitle {
+  white-space: normal;
+}
+
+.vfy-cli-namesfile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vfy-cli-namesfile p {
+  margin: 0;
+}
+
+/* Servers tab: "Installed it? Check from the internet" hint. */
+.vfy-hint {
+  gap: 4px 10px;
+}
+
+/* Consent + cost dialog */
+.vfy-confirm p {
+  margin: 0;
+}
+
+.vfy-confirm-privacy {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Phones: full-width actions; the table scrolls inside .dt-scroll (never the page). */
+@media (max-width: 480px) {
+  .vfy-actions .btn,
+  .vfy-progress .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .vfy-result {
+    max-width: 16rem;
+  }
+}
+
+/* Reduced motion: the running badge's spinner turns slowly (style.css calms every spinner). */
+@media (prefers-reduced-motion: reduce) {
+  .vfy-running .spinner {
+    animation-duration: 1.8s !important;
+  }
+}

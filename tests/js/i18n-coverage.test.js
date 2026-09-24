@@ -175,6 +175,28 @@ describe('i18n coverage', () => {
     for (const k of [...views.bulk.BULK_FILTERS, ...views.bulk.IP_FILTERS]) add(`bulk.filter.${k}`);
     for (const k of Object.keys(views.lookup.TYPE_PRESETS)) add(`lkp.preset.${k}`);
     for (const g of views.health.HEALTH_GROUPS) add(`health.group.${g}`);
+    // Verify tab (ui/verify-panel.js): every status, reason, error, warning (+ tooltip), state,
+    // skip / not-run reason, exposure (+ tooltip), headline and not-checkable part lib/verify.js
+    // can produce; the panel builds these keys from the codes.
+    const vf = await imp('assets/js/lib/verify.js');
+    for (const s of vf.VERIFY_STATUSES) add(`vfy.st.${s}`);
+    for (const k of ['vfy.st.NEEDS_UPDATE.other', 'vfy.st.NEEDS_UPDATE.nocert', 'vfy.st.NEEDS_UPDATE.origin', 'vfy.st.TIMEOUT.origin']) add(k);
+    for (const k of ['vfy.empty', 'vfy.empty.none', 'vfy.empty.noCli']) add(k); // emptyKey()
+    for (const r of vf.VERIFY_REASONS) add(`vfy.reason.${r}`);
+    for (const e of vf.VERIFY_ERRORS) add(`vfy.err.${e}`);
+    for (const w of vf.VERIFY_WARNINGS) { add(`vfy.warn.${w}`); add(`vfy.warn.${w}.title`); }
+    for (const s of vf.VERIFY_STATES.filter((x) => x !== 'done' && x !== 'skipped')) add(`vfy.state.${s}`);
+    for (const s of vf.SKIP_REASONS) { add(`vfy.skip.${s}`); add(`vfy.notHere.${s}`); }
+    add('vfy.skip.cdn-edge.title');
+    for (const k of ['proxied', 'managed']) add(`vfy.notHere.${k}`);
+    for (const k of vf.NOT_HERE_KEYS || []) add(`vfy.notHere.${k}`);
+    for (const n of vf.NOT_RUN_REASONS) add(`vfy.notRun.${n}`);
+    for (const x of vf.EXPOSURES) { add(`vfy.exp.${x}`); add(`vfy.exp.${x}.title`); }
+    for (const hk of vf.HEADLINE_KEYS) add(`vfy.head.${hk}`);
+    for (const v of ['dns', 'hint', 'zone']) add(`vfy.via.${v}`);
+    for (const k of ['datacenter', 'eyeball']) add(`vfy.det.kind.${k}`);
+    for (const k of ['on', 'off']) add(`vfy.planOrigins.${k}`);
+    for (const sh of views.subdomains.SHELLS) { add(`scan.cdn.shell.${sh}`); add(`scan.cdn.shellTitle.${sh}`); }
     assert.deepEqual(missingIn(keys), []);
   });
 

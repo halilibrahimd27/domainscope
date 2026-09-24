@@ -179,6 +179,38 @@ state.subscribe(({ key, value }) => {
 });
 
 /* ------------------------------------------------------------------------ */
+/* Shared Globalping client                                                 */
+/* ------------------------------------------------------------------------ */
+
+let gpPromise = null;
+
+/**
+ * Shared Globalping client (lib/globalping.js): one instance per page, so every view sees one
+ * merged quota (the anonymous hourly quota is per IP address). Creating it sends nothing.
+ * A failed load is not cached, so the next call tries again.
+ * @param {() => Promise<{ createGlobalping: Function }>} [load] module loader (tests inject one)
+ * @returns {Promise<object>} createGlobalping() instance
+ */
+export function getGlobalping(load = () => import('./lib/globalping.js')) {
+  if (!gpPromise) {
+    const promise = Promise.resolve().then(load).then(({ createGlobalping }) => createGlobalping());
+    gpPromise = promise;
+    promise.catch(() => {
+      if (gpPromise === promise) gpPromise = null;
+    });
+  }
+  return gpPromise;
+}
+
+state.subscribe(({ key }) => {
+  // "Delete all local data" also forgets a Globalping token (Phase D sets one; the MVP never does).
+  if (key !== 'cleared' || !gpPromise) return;
+  gpPromise.then((client) => {
+    if (client && typeof client.setToken === 'function') client.setToken(null);
+  }).catch(() => {});
+});
+
+/* ------------------------------------------------------------------------ */
 /* View context                                                             */
 /* ------------------------------------------------------------------------ */
 
@@ -198,6 +230,7 @@ state.subscribe(({ key, value }) => {
  * @property {(view: string, params?: object) => string} href  route hash for links ('#/lookup?name=x')
  * @property {(params?: object) => string} shareUrl  absolute URL of this view with params
  * @property {() => Promise<object>} getDns   shared DohClient
+ * @property {() => Promise<object>} getGlobalping  shared Globalping client (one quota view; sends nothing by itself)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
  * @property {typeof toast} toast
  * @property {(...nodes: any[]) => void} setActions  put buttons into the page header (right side)
@@ -254,6 +287,7 @@ function makeContext(id, params, searchParams, controller, restored) {
     navigate,
     href: buildRoute,
     getDns,
+    getGlobalping: () => getGlobalping(),
     toast,
     getInventoryIndex: () => state.getInventoryIndex(),
     setParams(next, { merge = false } = {}) {

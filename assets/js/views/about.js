@@ -99,6 +99,8 @@ registerStrings('en', {
   'about.src.ipwhoLimit': 'Free tiers with daily limits.',
   'about.src.rdap': 'Domain registration: registrar, dates, name servers, DNSSEC.',
   'about.src.rdapLimit': 'IANA bootstrap + registries, rdap.org fallback. Some country TLDs (for example .de, .jp, .tr) publish no RDAP service.',
+  'about.src.globalping': 'Globalping (jsDelivr): TLS checks of your public server addresses from probes worldwide (SSL Targets › Verify).',
+  'about.src.globalpingLimit': '250 probes per hour per IP address without an account; results are public by measurement ID for about six months.',
   'about.resolversTitle': 'The {count} DNS-over-HTTPS resolvers (verified {date})',
   'about.res.name': 'Resolver',
   'about.res.location': 'Location',
@@ -107,12 +109,13 @@ registerStrings('en', {
   'about.vantagesNote': 'Global DNS compares {count} vantage points in {countries} countries via EDNS Client Subnet.',
 
   'about.privacyTitle': 'Privacy',
-  'about.privacyDesc': 'Designed so sensitive data never leaves your machine.',
+  'about.privacyDesc': 'Designed so sensitive data never leaves your machine, except the public IP / host name pairs you choose to check in Verify.',
   'about.priv1': 'No backend, no analytics, no cookies, no tracking.',
   'about.priv2': 'Certificates are parsed in your browser. Private keys are never needed; if a file contains one it is ignored and never displayed.',
   'about.priv3': 'Your server inventory and, only if you switch them on, the learned subdomain names (bare labels such as “api”, never full hostnames or IP addresses) are kept in this browser’s local storage (keys starting with “ssds.”); a custom wordlist stays in this tab only. Learned and custom names are tried as DNS lookups under the domains you scan (label.domain), so the DNS resolvers and those domains’ nameservers see them — learned names under every domain you scan later. All of it can be deleted at any time.',
   'about.priv4': 'What third parties see: domain names you scan go to the CT / passive-DNS services and DoH resolvers; IP addresses you inspect go to RIPEstat and ipwho.is. As with any website, they also see your IP address.',
   'about.priv5': 'Requests carry no referrer, so services do not learn which page you used.',
+  'about.priv6': 'Only when you press “Check from the internet”: each public IP, host name and port pair goes to Globalping, whose results anyone with the measurement ID can read for about six months. Private addresses are never sent. The optional origin check (off by default) also sends an origin IP from your inventory together with the proxied name it serves, so the public measurement shows that this server answers for that name behind the CDN; turn it on only for origins whose address may be known. The certificate never leaves your browser; the comparison is local.',
   'about.clearData': 'Delete all local data',
   'about.clearConfirm': 'Delete the saved server inventory, all settings, the learned names and the custom wordlist from this browser? This cannot be undone.',
   'about.cleared': 'Local data deleted',
@@ -214,6 +217,8 @@ registerStrings('tr', {
   'about.src.ipwhoLimit': 'Günlük sınırlı ücretsiz katmanlar.',
   'about.src.rdap': 'Alan adı kaydı: kayıt kuruluşu, tarihler, ad sunucuları, DNSSEC.',
   'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşları, yedek olarak rdap.org. Bazı ülke uzantılarının (ör. .de, .jp, .tr) RDAP hizmeti yok.',
+  'about.src.globalping': 'Globalping (jsDelivr): genel sunucu adreslerinizin dünya çapındaki ölçüm noktalarından TLS kontrolü (SSL Hedefleri › Doğrula).',
+  'about.src.globalpingLimit': 'Hesapsız IP adresi başına saatte 250 ölçüm; sonuçlar ölçüm kimliğiyle yaklaşık altı ay herkese açık.',
   'about.resolversTitle': '{count} DNS-over-HTTPS çözümleyicisi ({date} tarihinde doğrulandı)',
   'about.res.name': 'Çözümleyici',
   'about.res.location': 'Konum',
@@ -222,12 +227,13 @@ registerStrings('tr', {
   'about.vantagesNote': 'Global DNS, EDNS Client Subnet ile {countries} ülkedeki {count} gözlem noktasını karşılaştırır.',
 
   'about.privacyTitle': 'Gizlilik',
-  'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı.',
+  'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı; tek istisna, Doğrula’da kontrol etmeyi seçtiğiniz genel IP / host adı çiftleridir.',
   'about.priv1': 'Sunucu yok, analitik yok, çerez yok, izleme yok.',
   'about.priv2': 'Sertifikalar tarayıcınızda ayrıştırılır. Özel anahtar hiçbir zaman gerekmez; dosyada varsa yok sayılır ve asla gösterilmez.',
   'about.priv3': 'Sunucu envanteriniz ve yalnızca açarsanız öğrenilen subdomain adları (“api” gibi yalın etiketler; asla tam host adları ya da IP adresleri değil) bu tarayıcının yerel depolamasında (“ssds.” ile başlayan anahtarlar), özel kelime listesi ise yalnızca bu sekmede tutulur. Öğrenilen ve özel adlar taradığınız alan adlarının altında DNS sorgusu olarak denenir (etiket.alanadı); yani DNS çözümleyicileri ve o alan adlarının ad sunucuları bunları görür — öğrenilen adları, sonradan taradığınız her alan adı altında. Hepsi istediğiniz an silinebilir.',
   'about.priv4': 'Üçüncü tarafların gördükleri: taradığınız alan adları CT / pasif DNS hizmetlerine ve DoH çözümleyicilerine; incelediğiniz IP adresleri RIPEstat ve ipwho.is’e gider. Her web sitesinde olduğu gibi IP adresinizi de görürler.',
   'about.priv5': 'İstekler referrer bilgisi taşımaz; hizmetler hangi sayfayı kullandığınızı öğrenmez.',
+  'about.priv6': 'Yalnızca “İnternetten kontrol et”e bastığınızda: her genel IP, host adı ve port çifti Globalping’e gider; sonuçları ölçüm kimliğini bilen herkes yaklaşık altı ay okuyabilir. Özel adresler asla gönderilmez. İsteğe bağlı asıl sunucu kontrolü (varsayılan olarak kapalı) envanterinizdeki bir asıl sunucu IP’sini proxy’lenen adıyla birlikte de gönderir; böylece herkese açık ölçüm, CDN arkasında o ad için bu sunucunun yanıt verdiğini gösterir. Bunu yalnızca adresi bilinse de sorun olmayan asıl sunucular için açın. Sertifika tarayıcınızdan hiç çıkmaz; karşılaştırma yereldir.',
   'about.clearData': 'Tüm yerel verileri sil',
   'about.clearConfirm': 'Kayıtlı sunucu envanteri, tüm ayarlar, öğrenilen adlar ve özel kelime listesi bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
   'about.cleared': 'Yerel veriler silindi',
@@ -271,7 +277,8 @@ const SOURCES = [
   { name: 'DNS-over-HTTPS', url: 'https://datatracker.ietf.org/doc/html/rfc8484', key: 'doh' },
   { name: 'RIPEstat', url: 'https://stat.ripe.net/', key: 'ripe' },
   { name: 'ipwho.is', url: 'https://ipwho.is/', key: 'ipwho' },
-  { name: 'RDAP', url: 'https://about.rdap.org/', key: 'rdap' }
+  { name: 'RDAP', url: 'https://about.rdap.org/', key: 'rdap' },
+  { name: 'Globalping', url: 'https://globalping.io/', key: 'globalping' }
 ];
 
 const CLI_EXAMPLES = [
@@ -442,7 +449,8 @@ export function mount(container, ctx) {
     ['file-text', 'about.priv2'],
     ['server', 'about.priv3'],
     ['eye', 'about.priv4'],
-    ['link', 'about.priv5']
+    ['link', 'about.priv5'],
+    ['globe', 'about.priv6']
   ];
   const privacy = section('privacy', {
     title: t('about.privacyTitle'),

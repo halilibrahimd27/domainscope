@@ -666,7 +666,7 @@ function writeOpt(w, { udpSize = 1232, version = 0, dnssecOk = false, extendedRc
  * @param {boolean} [opts.ad=true] set AD in the query (like dig): resolvers then report whether the answer was
  *   DNSSEC-validated (AD) even without DO (RFC 6840 §5.7) — extension
  * @param {boolean} [opts.dnssecOk=false] DO bit (request RRSIG / NSEC records)
- * @param {null|string|{address:string,sourcePrefix:number}} [opts.ecs=null] EDNS Client Subnet, e.g. '85.105.0.0/24'
+ * @param {null|string|{address:string,sourcePrefix:number}} [opts.ecs=null] EDNS Client Subnet, e.g. '198.51.100.0/24'
  * @param {number} [opts.udpSize=1232] advertised EDNS UDP payload size
  * @param {boolean} [opts.nsid=false] request the server's NSID (RFC 5001) — extension
  * @param {number} [opts.qclass=1] query class — extension

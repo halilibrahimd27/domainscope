@@ -32,7 +32,7 @@ const EXAMPLES = [
   {
     id: 'lines',
     labelKey: 'inv.ex.lines',
-    text: '# name  ip [ip ...]\nweb01        10.0.1.11\nweb02        10.0.1.12  2001:db8::12\nlb-istanbul  185.60.10.5\n10.0.2.20    db01\n'
+    text: '# name  ip [ip ...]\nweb01        10.0.1.11\nweb02        10.0.1.12  2001:db8::12\nlb-eu        203.0.113.5\n10.0.2.20    db01\n'
   },
   {
     id: 'hosts',

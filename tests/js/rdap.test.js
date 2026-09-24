@@ -27,7 +27,7 @@ const DNS_BOOTSTRAP = {
 const IPV4_BOOTSTRAP = {
   services: [
     [['140.0.0.0/8', '8.0.0.0/8'], ['https://rdap.arin.net/registry/', 'http://rdap.arin.net/registry/']],
-    [['85.0.0.0/8'], ['https://rdap.db.ripe.net/']],
+    [['193.0.0.0/8'], ['https://rdap.db.ripe.net/']],
     [['200.0.0.0/8'], ['https://rdap.lacnic.net/rdap/']],
     [['200.160.0.0/16'], ['https://rdap.more-specific.test/']]
   ]
@@ -104,22 +104,23 @@ const ARIN_GITHUB = {
   type: 'DIRECT ALLOCATION'
 };
 
-const RIPE_TT = {
-  handle: '85.105.0.0 - 85.105.255.255',
-  startAddress: '85.105.0.0',
-  endAddress: '85.105.255.255',
+// RIPE-style answer (shape of a real RIPE DB object), modelled on the RIPE NCC's own block.
+const RIPE_NET = {
+  handle: '193.0.0.0 - 193.0.7.255',
+  startAddress: '193.0.0.0',
+  endAddress: '193.0.7.255',
   ipVersion: 'v4',
-  name: 'TurkTelekom',
+  name: 'RIPE-NCC',
   type: 'ASSIGNED PA',
-  country: 'tr',
-  parentHandle: '85.96.0.0 - 85.111.255.255',
-  cidr0_cidrs: [{ v4prefix: '85.105.0.0', length: 16 }],
+  country: 'nl',
+  parentHandle: '193.0.0.0 - 193.0.7.255',
+  cidr0_cidrs: [{ v4prefix: '193.0.0.0', length: 21 }],
   entities: [
-    { handle: 'as9121-mnt', roles: ['registrant'], vcardArray: ['vcard', [['fn', {}, 'text', 'AS9121-MNT'], ['kind', {}, 'text', 'individual']]] },
-    { handle: 'TTBA1-RIPE', roles: ['administrative', 'technical'], vcardArray: ['vcard', [['fn', {}, 'text', 'TT Administrative Contact Role'], ['kind', {}, 'text', 'group']]] },
-    { handle: 'AR12859-RIPE', roles: ['abuse'], vcardArray: ['vcard', [['fn', {}, 'text', 'Abuse Role'], ['kind', {}, 'text', 'group'], ['email', { type: 'abuse' }, 'text', 'abuse@turktelekom.com.tr']]] }
+    { handle: 'ripe-ncc-mnt', roles: ['registrant'], vcardArray: ['vcard', [['fn', {}, 'text', 'RIPE-NCC-MNT'], ['kind', {}, 'text', 'individual']]] },
+    { handle: 'OPS4-RIPE', roles: ['administrative', 'technical'], vcardArray: ['vcard', [['fn', {}, 'text', 'Operations Contact Role'], ['kind', {}, 'text', 'group']]] },
+    { handle: 'AR1-RIPE', roles: ['abuse'], vcardArray: ['vcard', [['fn', {}, 'text', 'Abuse Role'], ['kind', {}, 'text', 'group'], ['email', { type: 'abuse' }, 'text', 'abuse@ripe.net']]] }
   ],
-  remarks: [{ description: ['ADSL-TT net_Static Pool'] }, { title: 'Terms and Conditions', description: ['ignore me'] }],
+  remarks: [{ description: ['Office network'] }, { title: 'Terms and Conditions', description: ['ignore me'] }],
   port43: 'whois.ripe.net'
 };
 
@@ -204,7 +205,7 @@ test('findIpService: longest prefix per address family', () => {
 });
 
 test('rangeToCidrs', () => {
-  assert.deepEqual(rangeToCidrs('85.105.0.0', '85.105.255.255'), ['85.105.0.0/16']);
+  assert.deepEqual(rangeToCidrs('193.0.0.0', '193.0.7.255'), ['193.0.0.0/21']);
   assert.deepEqual(rangeToCidrs('10.0.0.1', '10.0.0.6'), ['10.0.0.1/32', '10.0.0.2/31', '10.0.0.4/31', '10.0.0.6/32']);
   assert.deepEqual(rangeToCidrs('0.0.0.0', '255.255.255.255'), ['0.0.0.0/0']);
   assert.deepEqual(rangeToCidrs('2606:4700::', '2606:4700:ffff:ffff:ffff:ffff:ffff:ffff'), ['2606:4700::/32']);
@@ -269,14 +270,14 @@ test('parseRdapIp: ARIN, RIPE (maintainer is not an org), LACNIC string lengths,
   assert.equal(a.parentHandle, 'NET-140-0-0-0-0');
   assert.equal(a.registered.toISOString(), '2018-04-25T19:34:18.000Z');
 
-  const r = parseRdapIp(RIPE_TT);
-  assert.equal(r.name, 'TurkTelekom');
-  assert.equal(r.country, 'TR');
-  assert.equal(r.org, null); // "AS9121-MNT" is a maintainer, not an organisation
-  assert.equal(r.cidr, '85.105.0.0/16');
+  const r = parseRdapIp(RIPE_NET);
+  assert.equal(r.name, 'RIPE-NCC');
+  assert.equal(r.country, 'NL');
+  assert.equal(r.org, null); // "RIPE-NCC-MNT" is a maintainer, not an organisation
+  assert.equal(r.cidr, '193.0.0.0/21');
   assert.equal(r.rir, 'RIPE NCC');
-  assert.equal(r.abuseEmail, 'abuse@turktelekom.com.tr');
-  assert.deepEqual(r.description, ['ADSL-TT net_Static Pool']);
+  assert.equal(r.abuseEmail, 'abuse@ripe.net');
+  assert.deepEqual(r.description, ['Office network']);
 
   const l = parseRdapIp({
     handle: '200.160.0.0/20', name: '22817', country: 'BR', startAddress: '200.160.0.0', endAddress: '200.160.15.255',
@@ -487,16 +488,16 @@ test('rdapIp: IPv6, IPv4-mapped, more-specific service', async () => {
   const f = mockFetch({
     ...BOOT,
     'https://rdap.arin.net/registry/ip/2606:4700::1111': { ...ARIN_GITHUB, cidr0_cidrs: [{ v6prefix: '2606:4700::', length: 32 }], startAddress: '2606:4700::', endAddress: '2606:4700:ffff:ffff:ffff:ffff:ffff:ffff' },
-    'https://rdap.db.ripe.net/ip/85.105.1.1': RIPE_TT,
+    'https://rdap.db.ripe.net/ip/193.0.6.139': RIPE_NET,
     'https://rdap.more-specific.test/ip/200.160.2.3': { name: 'BR', startAddress: '200.160.0.0', endAddress: '200.160.15.255' }
   });
   const v6 = await rdapIp('2606:4700:0:0::1111', { fetchImpl: f });
   assert.equal(v6.ok, true);
   assert.equal(v6.ip, '2606:4700::1111');
   assert.equal(v6.cidr, '2606:4700::/32');
-  const mapped = await rdapIp('::ffff:85.105.1.1', { fetchImpl: f });
+  const mapped = await rdapIp('::ffff:193.0.6.139', { fetchImpl: f });
   assert.equal(mapped.ok, true);
-  assert.equal(mapped.country, 'TR');
+  assert.equal(mapped.country, 'NL');
   const ms = await rdapIp('200.160.2.3', { fetchImpl: f });
   assert.equal(ms.cidr, '200.160.0.0/20');
 });

@@ -194,10 +194,10 @@ describe('encodeQuery', () => {
   });
 
   test('ECS IPv4 /24 (RFC 7871 wire layout)', () => {
-    const q = encodeQuery('x.com', 'A', { ecs: '85.105.3.77/24' });
-    assert.deepEqual(q.slice(-11), hex('0008 0007 0001 18 00 556903'));
+    const q = encodeQuery('x.com', 'A', { ecs: '198.51.100.77/24' });
+    assert.deepEqual(q.slice(-11), hex('0008 0007 0001 18 00 c63364'));
     const m = decodeMessage(q);
-    assert.deepEqual(m.edns.ecs, { family: 1, sourcePrefix: 24, scopePrefix: 0, address: '85.105.3.0', subnet: '85.105.3.0/24' });
+    assert.deepEqual(m.edns.ecs, { family: 1, sourcePrefix: 24, scopePrefix: 0, address: '198.51.100.0', subnet: '198.51.100.0/24' });
   });
 
   test('ECS truncates to ceil(prefix/8) bytes and zeroes host bits', () => {
@@ -205,8 +205,8 @@ describe('encodeQuery', () => {
       const m = decodeMessage(encodeQuery('x.com', 'A', { ecs }));
       return { ecs: m.edns.ecs, data: hexEncode(m.edns.options.find((o) => o.code === 8).data) };
     };
-    assert.equal(opt('85.105.255.77/22').data, '00011600' + '5569fc');
-    assert.equal(opt('85.105.255.77/22').ecs.address, '85.105.252.0');
+    assert.equal(opt('10.105.255.77/22').data, '00011600' + '0a69fc');
+    assert.equal(opt('10.105.255.77/22').ecs.address, '10.105.252.0');
     assert.equal(opt('10.1.2.3/32').data, '00012000' + '0a010203');
     assert.equal(opt('10.1.2.3/0').data, '00010000');
     assert.equal(opt('10.1.2.3/1').data, '00010100' + '00');
@@ -766,7 +766,7 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     const m = decodeMessage(encodeMessage({
       edns: {
         udpSize: 1400, dnssecOk: true,
-        ecs: { address: '85.105.0.0', sourcePrefix: 24, scopePrefix: 17 },
+        ecs: { address: '198.51.100.0', sourcePrefix: 24, scopePrefix: 17 },
         ede: [{ code: 15, text: 'blocked by policy' }, { code: 29 }, { code: 999, text: 'x' }],
         nsid: 'ist07',
         options: [{ code: 65001, data: 'beef' }]
@@ -774,7 +774,7 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     }));
     assert.equal(m.edns.udpSize, 1400);
     assert.equal(m.edns.dnssecOk, true);
-    assert.deepEqual(m.edns.ecs, { family: 1, sourcePrefix: 24, scopePrefix: 17, address: '85.105.0.0', subnet: '85.105.0.0/24' });
+    assert.deepEqual(m.edns.ecs, { family: 1, sourcePrefix: 24, scopePrefix: 17, address: '198.51.100.0', subnet: '198.51.100.0/24' });
     assert.deepEqual(m.edns.ede, [
       { code: 15, name: 'Blocked', text: 'blocked by policy' },
       { code: 29, name: 'Synthesized', text: '' },

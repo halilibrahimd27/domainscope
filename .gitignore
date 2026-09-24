@@ -7,3 +7,16 @@ tests/e2e/screenshots/
 tests/e2e/.profile*/
 *.log
 *.tmp
+
+# Private, local-only test targets and the denylist of company domains/IPs
+.private-denylist
+*.local.json
+tests/live/private/
+tests/live/.cache/
+# Reports of the live scripts can name private domains, zone labels and origin IPs.
+# The scripts refuse any other path inside the repo (tests/live/targets.mjs reportPath);
+# these catch the old example names and hand-made copies.
+tests/live/*.json
+tests/live/*.csv
+/out.json
+/hosts.csv

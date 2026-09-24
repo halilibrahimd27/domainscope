@@ -137,7 +137,7 @@ describe('toJson', () => {
 
 const D = 'example.com.tr';
 const inventory = [
-  ...parseInventory('web01 203.0.113.10 10.0.0.10\nweb02 203.0.113.11\n203.0.113.30').servers,
+  ...parseInventory('web01 203.0.113.10 10.0.0.10\nweb02 203.0.113.12\n203.0.113.30').servers,
   // server names from CSV / JSON inventories may contain spaces
   { id: 'db 01', name: 'db 01', ips: ['203.0.113.20'], groups: ['db'], line: 4, aliases: [] }
 ];
@@ -256,7 +256,7 @@ describe('CLI helpers', () => {
       'web01 203.0.113.10',
       'web01 10.0.0.10',
       'db_01 203.0.113.20',
-      'web02 203.0.113.11',
+      'web02 203.0.113.12',
       '203.0.113.30', // a server named by its IP is written bare
       '198.51.100.7',
       '2001:db8::1',

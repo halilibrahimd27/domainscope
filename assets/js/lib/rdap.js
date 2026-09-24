@@ -550,7 +550,7 @@ export function parseRdapIp(json) {
   if (!org) {
     const registrant = findEntity(entities, (e) => hasRole(e, 'registrant'));
     const n = entityName(registrant);
-    // RIPE often lists a maintainer ("AS9121-MNT", "MNT-GOOG-PROD") as registrant; not an org name.
+    // RIPE often lists a maintainer ("RIPE-NCC-MNT", "MNT-GOOG-PROD") as registrant; not an org name.
     if (n && !/(^MNT-|-MNT$)/i.test(n)) org = n;
   }
   const description = [];

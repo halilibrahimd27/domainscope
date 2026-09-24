@@ -91,8 +91,8 @@ function mockFetch(routes, { delayMs = 0, log = [] } = {}) {
 test('splitAsHolder separates the AS name from the organisation', () => {
   assert.deepEqual(splitAsHolder('GOOGLE - Google LLC'), { asName: 'GOOGLE', holder: 'Google LLC' });
   assert.deepEqual(splitAsHolder('CLOUDFLARENET - Cloudflare, Inc.'), { asName: 'CLOUDFLARENET', holder: 'Cloudflare, Inc.' });
-  assert.deepEqual(splitAsHolder('TTNet Turk Telekomunikasyon Anonim Sirketi'),
-    { asName: 'TTNet Turk Telekomunikasyon Anonim Sirketi', holder: 'TTNet Turk Telekomunikasyon Anonim Sirketi' });
+  assert.deepEqual(splitAsHolder('Example Networks Ltd without a short name'),
+    { asName: 'Example Networks Ltd without a short name', holder: 'Example Networks Ltd without a short name' });
   assert.deepEqual(splitAsHolder('A-B - Org - with dash'), { asName: 'A-B', holder: 'Org - with dash' });
   assert.deepEqual(splitAsHolder(''), { asName: null, holder: null });
   assert.deepEqual(splitAsHolder(null), { asName: null, holder: null });
@@ -119,14 +119,14 @@ test('parsePrefixOverview: unannounced space, MOAS, RIR variants, errors', () =>
   const moas = parsePrefixOverview({
     status: 'ok',
     data: {
-      announced: true, resource: '85.105.0.0/17',
-      asns: [{ asn: 9121, holder: 'TTNet Turk Telekomunikasyon Anonim Sirketi' }, { asn: '15924', holder: '' }, { asn: 'x' }],
+      announced: true, resource: '198.51.100.0/24',
+      asns: [{ asn: 64500, holder: 'EXAMPLE-NET Example Networks Ltd' }, { asn: '64501', holder: '' }, { asn: 'x' }],
       block: { desc: 'RIPE NCC (Status: ALLOCATED)' }
     }
   });
-  assert.equal(moas.asn, 9121);
+  assert.equal(moas.asn, 64500);
   assert.equal(moas.rir, 'RIPE NCC');
-  assert.deepEqual(moas.asns, [{ asn: 9121, holder: 'TTNet Turk Telekomunikasyon Anonim Sirketi' }, { asn: 15924, holder: null }]);
+  assert.deepEqual(moas.asns, [{ asn: 64500, holder: 'EXAMPLE-NET Example Networks Ltd' }, { asn: 64501, holder: null }]);
 
   assert.throws(() => parsePrefixOverview({ status: 'error', messages: [['error', 'bad resource']] }), /bad resource/);
   assert.throws(() => parsePrefixOverview(null), SyntaxError);

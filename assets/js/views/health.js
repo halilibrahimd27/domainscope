@@ -467,7 +467,7 @@ export function mount(container, ctx) {
   const runBtn = Button({ label: t('hlt.run'), icon: 'activity', variant: 'primary', dataset: { action: 'run' }, onClick: () => start() });
   const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'stop' }, onClick: () => { if (current && current.controller) current.controller.abort(); } });
   stopBtn.hidden = true;
-  const examples = ['github.com', 'cloudflare.com', 'turkcell.com.tr', 'example.com'];
+  const examples = ['github.com', 'cloudflare.com', 'wikipedia.org', 'example.com'];
   const examplesEl = h('div', { class: 'cluster text-sm hlt-examples' },
     h('span', { class: 'muted' }, t('hlt.examples')),
     examples.map((d) => h('button', {

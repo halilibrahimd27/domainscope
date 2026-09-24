@@ -8,6 +8,13 @@
  *    DNSSEC validation (dnssec-failed.org → SERVFAIL, AD on signed names), filtering
  *    (malware test domain), NSID support, and whether ECS is echoed / honoured;
  *    plus a real headless-Chrome fetch from an http://127.0.0.1 origin.
+ *  - browsers: tests/live/browser-doh-matrix.mjs fetched every resolver and vantage from a
+ *    page in real Chrome 153 and Edge 153 (3 fresh profiles × 3 repeats each, GET / POST /
+ *    JSON forms, protocol from Chrome's NetLog). Results for GET ?dns= (what doh.js sends):
+ *    18/18 for every resolver except Quad9 and Quad9 ECS (HTTP/3 without CORS, see below),
+ *    Control D (unreachable from the test network, see its entry) and one IIJ timeout; all
+ *    31 ECS vantages 558/558 on Google with scope /24. POST needs a CORS preflight that
+ *    Google, IIJ, CleanBrowsing, Tiarap and CZ.NIC fail, so GET is the only portable form.
  *  - vantages: each /24's country (and city) with RIPEstat maxmind-geo-lite, its
  *    origin ASN with RIPEstat prefix-overview, and Google DoH returning an ECS
  *    scope / geo-specific answers for it.
@@ -37,13 +44,21 @@ export const RESOLVERS_VERIFIED = '2026-09-23';
 /**
  * The 12 CORS-enabled DoH resolvers (spec §3), all re-verified live.
  *
- * Quad9 caveat (found with a real Chrome/Edge): over HTTP/3 Quad9 omits the
- * Access-Control-Allow-Origin header (it is present over HTTP/2). Browsers
- * learn h3 support from Quad9's HTTPS DNS record / Alt-Svc and then usually use
- * h3, so the fetch fails with a CORS error. The entries are kept (the contract
- * and DEFAULT_CHAIN reference 'quad9', and some fetches do go over h2) but are
- * flagged `browserReliable: false, issue: 'h3-no-cors'` — callers should expect
- * transport errors from them and fail over.
+ * Quad9 caveat (measured in real Chrome/Edge with tests/live/browser-doh-matrix.mjs):
+ * Quad9's HTTP/3 front end answers with only content-type / content-length — no
+ * Access-Control-Allow-Origin (its HTTP/2 answers carry `*`). Browsers use HTTP/3 for
+ * Quad9 from the very first request, because the HTTPS DNS record of dns.quad9.net
+ * (and dns9/10/11/12) advertises alpn=h3,h2, so the page gets a CORS error (Chrome
+ * reports MissingAllowOriginHeader; GET 1/18 and 2/18 ok for quad9 / quad9-ecs). No
+ * client-side workaround exists — fetch() cannot pin HTTP/2, and every alternative was
+ * measured: IP-literal URLs (https://9.9.9.9/dns-query; the certificate has IP SANs)
+ * skip the HTTPS record but switch to h3 via Alt-Svc after the first answer (fresh 3/3,
+ * warm 0/6); the old port 5053 no longer answers (TCP timeout; 8443 is not DoH); the
+ * JSON form and POST fail the same way over h3 (POST also fails its preflight). So the
+ * entries are kept for the Global DNS view (which shows them as "not readable in
+ * browsers", and they do answer on networks that block QUIC) and for Node, where they
+ * work, but they are flagged `browserReliable: false, issue: 'h3-no-cors'` and left out
+ * of DEFAULT_CHAIN and of the DohClient bulk balance pool.
  *
  * @type {ReadonlyArray<Resolver>}
  */
@@ -129,6 +144,13 @@ export const RESOLVERS = Object.freeze([
     issue: 'h3-no-cors'
   },
   {
+    // Reachability caveat: on 2026-09-23 freedns.controld.com (76.76.2.11 / 76.76.10.11)
+    // timed out on TCP 443, 853 and 53 from the test connection (one consumer ISP) for the whole
+    // test (18/18 browser GETs: ERR_CONNECTION_TIMED_OUT), while other Control D addresses
+    // (76.76.2.22) answered — a network-level block or outage, not a browser issue. It is
+    // therefore not in DEFAULT_CHAIN nor the bulk balance pool, where every query sent to it
+    // would wait for the full request timeout. (dns.controld.com/p0 answers but REFUSES every
+    // query: it serves account profiles only.)
     id: 'controld',
     name: 'Control D (unfiltered)',
     operator: 'Control D',
@@ -242,8 +264,13 @@ export const RESOLVERS = Object.freeze([
   }
 ].map((r) => Object.freeze(r)));
 
-/** Failover order for general lookups (resolver ids). */
-export const DEFAULT_CHAIN = Object.freeze(['cloudflare', 'google', 'quad9', 'dnssb']);
+/**
+ * Failover order for general lookups (resolver ids): unfiltered, DNSSEC-validating
+ * resolvers that real browsers read reliably (18/18 GETs in Chrome + Edge). Quad9 is not
+ * here — browsers cannot read it (h3-no-cors) and, as a malware-filtering resolver, it
+ * would report flagged customer names as NXDOMAIN in a scan.
+ */
+export const DEFAULT_CHAIN = Object.freeze(['cloudflare', 'google', 'dnssb', 'cznic']);
 
 /**
  * Resolver used for geo (ECS) queries: Google is the only CORS-usable resolver that both

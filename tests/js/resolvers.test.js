@@ -82,9 +82,17 @@ describe('RESOLVERS', () => {
 });
 
 describe('DEFAULT_CHAIN / DEFAULT_GEO_RESOLVER / getResolver', () => {
-  test('DEFAULT_CHAIN matches the contract and only references known resolvers', () => {
-    assert.deepEqual([...DEFAULT_CHAIN], ['cloudflare', 'google', 'quad9', 'dnssb']);
-    for (const id of DEFAULT_CHAIN) assert.ok(getResolver(id), id);
+  test('DEFAULT_CHAIN: known, browser-readable, unfiltered, DNSSEC-validating resolvers', () => {
+    // Quad9 was dropped (browsers cannot read it: HTTP/3 without CORS; and it filters malware).
+    assert.deepEqual([...DEFAULT_CHAIN], ['cloudflare', 'google', 'dnssb', 'cznic']);
+    for (const id of DEFAULT_CHAIN) {
+      const r = getResolver(id);
+      assert.ok(r, id);
+      assert.equal(r.browserReliable, true, `${id} browserReliable`);
+      assert.equal(r.filtering, null, `${id} unfiltered`);
+      assert.equal(r.dnssecValidating, true, `${id} validates`);
+    }
+    assert.ok(Object.isFrozen(DEFAULT_CHAIN));
   });
 
   test('the geo resolver honours and echoes ECS', () => {

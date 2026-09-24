@@ -18,7 +18,8 @@ import {
   Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion } from '../i18n.js';
-import { RESOLVERS, GEO_VANTAGES, flagEmoji } from '../lib/resolvers.js';
+import { RESOLVERS, GEO_VANTAGES } from '../lib/resolvers.js';
+import { Flag } from '../ui/flag.js';
 import { checkPropagation } from '../lib/propagation.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
@@ -37,6 +38,9 @@ export const GLOBAL_TYPES = Object.freeze(['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TX
 
 /** Number of distinct group colours defined in global.css (.glb-g0 … .glb-g7). */
 export const GROUP_COLORS = 8;
+
+/** Per-request timeout of the comparison queries (each source is asked once, no retry). */
+export const QUERY_TIMEOUT_MS = 5000;
 
 /** Example queries shown under the form. */
 const EXAMPLES = [
@@ -65,6 +69,7 @@ registerStrings('en', {
   'glb.how.anycast': 'Public resolvers are anycast: you reach the nearest point of presence (PoP, shown when the resolver reports its NSID). Each PoP has its own cache and its own view of GeoDNS.',
   'glb.how.ttl': 'Right after a DNS change, resolvers keep the old answer until its TTL expires — that is what “DNS propagation” means.',
   'glb.how.filter': 'Filtering resolvers (Quad9, Cloudflare Family, CleanBrowsing) may block a name on purpose; that is shown as “Blocked”, not as a different answer.',
+  'glb.how.browser': 'A web page can only read resolvers that send a CORS header. Quad9 leaves it out over HTTP/3 — which Chrome, Edge and other browsers use for Quad9 — so its rows usually show “Not readable in browsers” instead of an answer.',
   'glb.emptyTitle': 'Compare DNS answers around the world',
   'glb.emptyBody': 'Enter a host name to ask 12 public resolvers and {count} locations at once — after a DNS change, to check CDN/GeoDNS steering, or to collect every IP address a name uses.',
 
@@ -80,9 +85,11 @@ registerStrings('en', {
   'glb.sum.failedBody': 'Every query failed. Check your connection, or whether a browser extension or firewall blocks DNS-over-HTTPS.',
   'glb.sum.errors': { one: '{count} query failed (not counted as a difference).', other: '{count} queries failed (not counted as a difference).' },
   'glb.sum.blocked': { one: '{count} answer was blocked by a filtering resolver.', other: '{count} answers were blocked by filtering resolvers.' },
+  'glb.sum.unavailable': '{names}: not readable from a browser (HTTP/3 without a CORS header) — not counted as a failure.',
 
   'glb.stat.answered': 'Answered',
   'glb.stat.failed': '{count} failed',
+  'glb.stat.unavailable': '{count} not readable in browsers',
   'glb.stat.groups': 'Distinct answers',
   'glb.stat.ips': 'IP addresses',
   'glb.stat.latency': 'Median latency',
@@ -140,6 +147,10 @@ registerStrings('en', {
   'glb.value.failed': 'Query failed',
   'glb.value.blocked': 'Blocked',
   'glb.value.blockedTitle': 'This filtering resolver blocks the name (malware or content filter).',
+  'glb.value.unavailable': 'Not readable in browsers',
+  'glb.value.unavailableShort': 'HTTP/3 without CORS',
+  'glb.value.unavailableTitle': '{name} answers browsers over HTTP/3 without a CORS header, so the browser discards the reply. This says nothing about the name — ask {name} from a terminal to see its answer.',
+  'glb.value.terminal': 'In a terminal:',
   'glb.value.aliasOf': 'alias',
   'glb.scopeTitle': 'ECS scope returned by the authoritative server: /24 means the answer is specific to this subnet, /0 means everyone gets the same answer.',
   'glb.scopeNone': 'Not reported',
@@ -166,6 +177,7 @@ registerStrings('tr', {
   'glb.how.anycast': 'Genel çözümleyiciler anycast’tir: size en yakın erişim noktasına (PoP; çözümleyici NSID bildiriyorsa gösterilir) bağlanırsınız. Her PoP’un kendi önbelleği ve kendi GeoDNS görünümü vardır.',
   'glb.how.ttl': 'Bir DNS değişikliğinden hemen sonra çözümleyiciler eski yanıtı TTL süresi dolana kadar tutar — “DNS yayılması” (propagation) budur.',
   'glb.how.filter': 'Filtreleyen çözümleyiciler (Quad9, Cloudflare Family, CleanBrowsing) bir adı bilerek engelleyebilir; bu farklı bir yanıt olarak değil “Engellendi” olarak gösterilir.',
+  'glb.how.browser': 'Bir web sayfası yalnızca CORS başlığı gönderen çözümleyicileri okuyabilir. Quad9 bu başlığı HTTP/3’te göndermiyor — Chrome, Edge ve diğer tarayıcılar Quad9 için HTTP/3 kullanıyor — bu yüzden satırlarında genellikle yanıt yerine “Tarayıcıda okunamıyor” görünür.',
   'glb.emptyTitle': 'DNS yanıtlarını dünya genelinde karşılaştırın',
   'glb.emptyBody': 'Bir host adı girin; 12 genel çözümleyiciye ve {count} konuma aynı anda sorulsun — DNS değişikliğinden sonra, CDN/GeoDNS yönlendirmesini kontrol etmek ya da bir adın kullandığı tüm IP adreslerini toplamak için.',
 
@@ -181,9 +193,11 @@ registerStrings('tr', {
   'glb.sum.failedBody': 'Tüm sorgular başarısız oldu. Bağlantınızı ya da bir tarayıcı eklentisinin veya güvenlik duvarının DNS-over-HTTPS’i engelleyip engellemediğini kontrol edin.',
   'glb.sum.errors': '{count} sorgu başarısız oldu (farklılık sayılmadı).',
   'glb.sum.blocked': '{count} yanıt filtreleyen çözümleyiciler tarafından engellendi.',
+  'glb.sum.unavailable': '{names}: tarayıcıdan okunamıyor (HTTP/3’te CORS başlığı yok) — başarısız sayılmadı.',
 
   'glb.stat.answered': 'Yanıtlanan',
   'glb.stat.failed': '{count} başarısız',
+  'glb.stat.unavailable': '{count} tanesi tarayıcıda okunamıyor',
   'glb.stat.groups': 'Farklı yanıt',
   'glb.stat.ips': 'IP adresi',
   'glb.stat.latency': 'Ortanca gecikme',
@@ -241,6 +255,10 @@ registerStrings('tr', {
   'glb.value.failed': 'Sorgu başarısız',
   'glb.value.blocked': 'Engellendi',
   'glb.value.blockedTitle': 'Bu filtreleyen çözümleyici adı engelliyor (zararlı yazılım ya da içerik filtresi).',
+  'glb.value.unavailable': 'Tarayıcıda okunamıyor',
+  'glb.value.unavailableShort': 'HTTP/3’te CORS yok',
+  'glb.value.unavailableTitle': '{name}, tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan yanıt veriyor; tarayıcı da bu yüzden yanıtı atıyor. Bu, sorgulanan adla ilgili bir sorun değil — {name} yanıtını görmek için terminalden sorun.',
+  'glb.value.terminal': 'Terminalde:',
   'glb.value.aliasOf': 'takma ad',
   'glb.scopeTitle': 'Yetkili sunucunun döndürdüğü ECS kapsamı: /24 yanıtın bu alt ağa özel olduğunu, /0 herkesin aynı yanıtı aldığını gösterir.',
   'glb.scopeNone': 'Bildirilmedi',
@@ -268,6 +286,35 @@ export function groupLetter(index) {
 }
 
 const isErrorValues = (values) => Array.isArray(values) && values.length === 1 && values[0] === 'ERROR';
+
+/** Classic-DNS address of the resolvers browsers cannot read, for a copyable terminal command. */
+const TERMINAL_DNS = Object.freeze({ quad9: '9.9.9.9', 'quad9-ecs': '9.9.9.11' });
+
+/**
+ * Is a finished row a resolver that browsers cannot read (resolvers.js `browserReliable: false`;
+ * Quad9 answers over HTTP/3 without a CORS header) whose query failed at transport level?
+ * Such rows are shown muted as "Not readable in browsers": they are not failures, get no answer
+ * group and are not counted as errors. When such a resolver does answer (e.g. on a network that
+ * blocks QUIC, so the browser falls back to HTTP/2), the row is an ordinary answer.
+ * @param {{ kind?: string, pending?: boolean, values?: string[]|null, resolver?: object|null }|null} row
+ * @returns {boolean}
+ */
+export function isBrowserBlocked(row) {
+  return !!row && !row.pending && row.kind !== 'geo' && !!row.resolver
+    && row.resolver.browserReliable === false && isErrorValues(row.values);
+}
+
+/**
+ * `dig` command that asks a browser-unreadable resolver over classic DNS (null when unknown).
+ * @param {string} resolverId
+ * @param {string} name
+ * @param {string} [type='A']
+ * @returns {string|null}
+ */
+export function terminalCommand(resolverId, name, type = 'A') {
+  const ip = TERMINAL_DNS[resolverId];
+  return ip && name ? `dig @${ip} ${name} ${type}` : null;
+}
 
 /**
  * Group finished rows by identical answer values. Real answers come first (largest group
@@ -369,7 +416,7 @@ export function mount(container, ctx) {
   };
   const hostLink = (host) => h('a', { class: 'glb-host mono', href: ctx.href('lookup', { name: host }) }, host);
   const ipLink = (ip) => h('a', { class: 'glb-ip mono', href: ctx.href('ip', { ips: ip }) }, ip);
-  const flag = (cc, title = null) => h('span', { class: 'glb-flag', title, attrs: { 'aria-hidden': title ? null : 'true' } }, flagEmoji(cc));
+  const flag = (cc, title = null) => Flag(cc, { className: 'glb-flag', title });
   const vantageName = (v) => (lang === 'tr' ? v.nameTr : v.nameEn);
   /**
    * Operator of one answer address. The CNAME chain of the same answer is taken into account,
@@ -429,7 +476,7 @@ export function mount(container, ctx) {
     summary: t('glb.how.title'),
     className: 'glb-how',
     children: h('ul', { class: 'glb-how-list' },
-      ['ecs', 'geo', 'anycast', 'ttl', 'filter'].map((k) => h('li', null, t(`glb.how.${k}`))))
+      ['ecs', 'geo', 'anycast', 'ttl', 'filter', 'browser'].map((k) => h('li', null, t(`glb.how.${k}`))))
   });
 
   const formCard = Card({
@@ -465,6 +512,9 @@ export function mount(container, ctx) {
     if (g.filtered) return 'glb-gblk';
     return `glb-g${g.color}`;
   };
+  const unavailableMark = () => h('span', { class: 'glb-mark-wrap', title: t('glb.value.unavailable') },
+    h('span', { class: 'glb-mark glb-mark-pending', attrs: { 'aria-hidden': 'true' } }, '–'),
+    h('span', { class: 'sr-only' }, t('glb.value.unavailable')));
   const groupMark = (g, { withLabel = false } = {}) => {
     if (!g) return h('span', { class: 'glb-mark glb-mark-pending', attrs: { 'aria-hidden': 'true' } }, '·');
     const text = g.letter || (g.error ? '!' : '⊘');
@@ -473,7 +523,7 @@ export function mount(container, ctx) {
       h('span', { class: 'glb-mark', attrs: { 'aria-hidden': 'true' } }, text),
       withLabel ? h('span', { class: 'glb-mark-label' }, label) : h('span', { class: 'sr-only' }, label));
   };
-  const rowGroup = (row) => (row.pending ? null : groupByKey.get(row.values.join('\n')) || null);
+  const rowGroup = (row) => (row.pending || isBrowserBlocked(row) ? null : groupByKey.get(row.values.join('\n')) || null);
 
   /** One compact line for the CNAME chain: "alias → a.example.net → b.cdn.net". */
   function chainLine(chain) {
@@ -508,6 +558,18 @@ export function mount(container, ctx) {
       return h('span', { class: 'glb-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('glb.pending'));
     }
     const v = row.values;
+    if (isBrowserBlocked(row)) {
+      // Not an error: the browser cannot read this resolver (HTTP/3 without CORS). Say so calmly
+      // and give a way to get its answer anyway.
+      const res = row.response || {};
+      const cmd = current ? terminalCommand(row.resolver.id, current.name, current.type) : null;
+      return h('div', { class: 'glb-skip', title: [t('glb.value.unavailableTitle', { name: row.resolver.name }), res.error].filter(Boolean).join('\n') },
+        h('span', { class: 'cluster' },
+          Badge(t('glb.value.unavailable'), { variant: 'neutral', icon: 'minus-circle' }),
+          h('span', { class: 'muted text-xs' }, t('glb.value.unavailableShort'))),
+        cmd ? h('span', { class: 'glb-skip-cmd text-xs' },
+          Icon('terminal', { size: 12 }), h('span', { class: 'muted' }, t('glb.value.terminal')), h('code', { class: 'mono' }, cmd)) : null);
+    }
     if (isErrorValues(v)) {
       const res = row.response || {};
       const kind = res.errorKind && res.errorKind !== 'unknown' && hasString(`error.kind.${res.errorKind}`, 'en') ? t(`error.kind.${res.errorKind}`) : '';
@@ -549,7 +611,7 @@ export function mount(container, ctx) {
   }
 
   function renderLatency(row) {
-    if (row.pending || !row.response) return null;
+    if (row.pending || !row.response || isBrowserBlocked(row)) return null;
     const v = row.response.ok ? row.response.elapsedMs : row.response.totalMs;
     if (!Number.isFinite(v)) return null;
     const speed = v < 120 ? 'fast' : v < 400 ? 'ok' : v < 1500 ? 'slow' : 'very-slow';
@@ -570,12 +632,13 @@ export function mount(container, ctx) {
   };
   const latencyValue = (row) => (row.pending || !row.response ? null : (row.response.ok ? row.response.elapsedMs : row.response.totalMs));
   const groupSort = (row) => {
+    if (isBrowserBlocked(row)) return '3';
     const g = rowGroup(row);
     if (!g) return null;
     return g.letter ? `0${g.letter.padStart(3, ' ')}` : g.filtered ? '1' : '2';
   };
-  const answerText = (row) => (row.pending ? '' : row.values.join(' '));
-  const rowClass = (row) => ['glb-row', groupClass(rowGroup(row)), { 'is-pending': row.pending }];
+  const answerText = (row) => (row.pending ? '' : isBrowserBlocked(row) ? 'UNAVAILABLE' : row.values.join(' '));
+  const rowClass = (row) => ['glb-row', groupClass(rowGroup(row)), { 'is-pending': row.pending, 'is-unavailable': isBrowserBlocked(row) }];
 
   /* --- resolvers table ------------------------------------------------------ */
   const resolverTable = DataTable({
@@ -588,7 +651,8 @@ export function mount(container, ctx) {
     columns: [
       {
         key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
-        render: (r) => groupMark(rowGroup(r)), exportValue: (r) => rowGroup(r)?.letter || (r.pending ? '' : rowGroup(r)?.error ? 'ERROR' : 'BLOCKED')
+        render: (r) => (isBrowserBlocked(r) ? unavailableMark() : groupMark(rowGroup(r))),
+        exportValue: (r) => rowGroup(r)?.letter || (r.pending ? '' : isBrowserBlocked(r) ? 'UNAVAILABLE' : rowGroup(r)?.error ? 'ERROR' : 'BLOCKED')
       },
       {
         key: 'resolver', label: t('glb.col.resolver'), sortable: true, sortValue: (r) => r.resolver.name,
@@ -611,7 +675,7 @@ export function mount(container, ctx) {
         render: (r) => (r.resolver.filtering ? Badge(t(`settings.filter.${r.resolver.filtering}`), { icon: 'filter' }) : null)
       },
       { key: 'ttl', label: t('glb.col.ttl'), sortable: true, align: 'end', sortValue: (r) => (r.pending ? null : minAnswerTtl(r.response)), render: renderTtl },
-      { key: 'status', label: t('glb.col.status'), sortable: true, sortValue: (r) => (r.pending ? null : r.response?.rcode || 'ERROR'), render: renderStatus, exportValue: (r) => (r.pending ? '' : r.response?.rcode || 'ERROR') },
+      { key: 'status', label: t('glb.col.status'), sortable: true, sortValue: (r) => (r.pending ? null : r.response?.rcode || 'ERROR'), render: renderStatus, exportValue: (r) => (r.pending ? '' : r.response?.rcode || (isBrowserBlocked(r) ? 'UNAVAILABLE' : 'ERROR')) },
       { key: 'ad', label: t('glb.col.dnssec'), sortable: true, sortValue: (r) => (r.pending || !r.response?.ok ? null : r.response.ad), render: renderAd, exportValue: (r) => (r.response?.ad ? 'AD' : '') },
       { key: 'latency', label: t('glb.col.latency'), sortable: true, align: 'end', sortValue: latencyValue, render: renderLatency, exportValue: latencyValue },
       { key: 'answer', label: t('glb.col.answer'), render: renderAnswer, searchValue: answerText, exportValue: answerText }
@@ -855,7 +919,7 @@ export function mount(container, ctx) {
   /** Recompute groups and refresh every derived piece of UI (cheap: ≤ 43 rows). */
   function renderAll() {
     if (!current) return;
-    groups = groupAnswers(current.rows);
+    groups = groupAnswers(current.rows.filter((r) => !isBrowserBlocked(r)));
     groupByKey = new Map(groups.map((g) => [g.key, g]));
     if (filterKey && !groupByKey.has(filterKey)) setFilter(null);
     resolverTable.refresh();
@@ -895,7 +959,7 @@ export function mount(container, ctx) {
   function setFilter(key) {
     filterKey = key;
     const g = key ? groupByKey.get(key) : null;
-    const fn = g ? (row) => !row.pending && row.values.join('\n') === key : null;
+    const fn = g ? (row) => !row.pending && !isBrowserBlocked(row) && row.values.join('\n') === key : null;
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
     ipTable.setFilter(g ? (ipRow) => [...ipRow.members].some((k) => g.members.includes(k)) : null);
@@ -917,11 +981,15 @@ export function mount(container, ctx) {
   function renderStats() {
     const rows = current.rows;
     const finished = rows.filter((r) => !r.pending);
-    const failed = finished.filter((r) => isErrorValues(r.values)).length;
+    const unavailable = finished.filter(isBrowserBlocked).length;
+    const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable;
     stats.answered.set({
-      value: `${formatNumber(finished.length - failed)} / ${formatNumber(rows.length)}`,
-      hint: failed ? t('glb.stat.failed', { count: failed }) : null,
-      variant: failed && failed === finished.length && current.done ? 'error' : 'accent'
+      value: `${formatNumber(finished.length - failed - unavailable)} / ${formatNumber(rows.length)}`,
+      hint: [
+        failed ? t('glb.stat.failed', { count: failed }) : null,
+        unavailable ? t('glb.stat.unavailable', { count: unavailable }) : null
+      ].filter(Boolean).join(' · ') || null,
+      variant: failed && failed + unavailable === finished.length && current.done ? 'error' : 'accent'
     });
     const answerGroups = groups.filter((g) => g.letter).length;
     stats.groups.set({ value: answerGroups, variant: answerGroups > 1 ? 'warn' : answerGroups === 1 ? 'ok' : 'default' });
@@ -945,7 +1013,8 @@ export function mount(container, ctx) {
     if (!current.done && !current.cancelled) {
       if (!finished.length) return;
     }
-    const failed = finished.filter((r) => isErrorValues(r.values)).length;
+    const unavailable = finished.filter(isBrowserBlocked);
+    const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable.length;
     const blocked = finished.filter((r) => r.filtered).length;
     const usable = finished.filter((r) => !r.filtered && !isErrorValues(r.values));
     const distinct = (list) => new Set(list.map((r) => r.values.join('\n'))).size;
@@ -955,6 +1024,7 @@ export function mount(container, ctx) {
     const extra = [
       failed ? t('glb.sum.errors', { count: failed }) : null,
       blocked ? t('glb.sum.blocked', { count: blocked }) : null,
+      unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
       current.cancelled ? t('glb.cancelled') : null
     ].filter(Boolean).join(' ');
     let alert;
@@ -1075,7 +1145,11 @@ export function mount(container, ctx) {
     renderAll();
     setRunning(true);
     try {
-      const dns = await ctx.getDns();
+      const shared = await ctx.getDns();
+      // A one-shot comparison: ask every source once, with a short timeout, so an unreachable
+      // resolver costs seconds instead of two full app timeouts (a resolver unreachable from the
+      // user's network: ~16 s → 5 s). Healthy DoH answers arrive well under 1.5 s (browser-doh-matrix).
+      const dns = { query: (qname, qtype, opts = {}) => shared.query(qname, qtype, { ...opts, timeoutMs: QUERY_TIMEOUT_MS, retries: 0 }) };
       await checkPropagation(name, type, {
         dns,
         vantages: geo ? GEO_VANTAGES : [],

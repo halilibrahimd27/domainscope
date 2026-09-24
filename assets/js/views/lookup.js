@@ -362,7 +362,9 @@ registerStrings('tr', {
 /**
  * Normalise a list of record types from a URL param / text box: mnemonics (any case),
  * RFC 3597 'TYPE123' or numbers; comma/space separated strings or arrays. Unknown and
- * meta types go to `invalid`. Order is kept, duplicates removed.
+ * meta types go to `invalid`. Order is kept, duplicates removed. Preset names expand to
+ * their types, so shared links like `type=ALL` work: 'ALL' / 'COMMON' → the "All common"
+ * preset; 'WEB', 'MAIL' and 'DNSSEC' → those presets (none of them is a type mnemonic).
  * @param {string|string[]|null|undefined} input
  * @returns {{ types: string[], invalid: string[] }}
  */
@@ -370,7 +372,11 @@ export function parseTypes(input) {
   const tokens = (Array.isArray(input) ? input : [input])
     .flatMap((v) => String(v ?? '').split(/[\s,;+]+/))
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((s) => {
+      const preset = s.toLowerCase() === 'all' ? 'common' : s.toLowerCase();
+      return Object.hasOwn(TYPE_PRESETS, preset) ? TYPE_PRESETS[preset] : [s];
+    });
   const types = [];
   const invalid = [];
   for (const token of tokens) {
@@ -868,7 +874,7 @@ export function mount(container, ctx) {
     return simpleTable([t('lkp.col.name'), t('lkp.col.next'), t('lkp.col.types')], rrs.map((rr) => [
       h('span', { class: 'mono' }, rr.name),
       h('span', { class: 'mono' }, rr.type === 'NSEC3' ? String(rr.data.nextHashedOwner || '').toUpperCase() : rr.data.nextDomain),
-      { cell: h('span', { class: 'cluster' }, (rr.data.types || []).map((x) => Badge(x, { mono: true }))), className: 'dt-wrap' }
+      { cell: h('span', { class: 'cluster lkp-nsec-types' }, (rr.data.types || []).map((x) => Badge(x, { mono: true }))), className: 'dt-wrap' }
     ]));
   }
 

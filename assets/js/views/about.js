@@ -8,7 +8,7 @@ import {
   Alert, Badge, ButtonLink, Button, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog, toast
 } from '../ui/components.js';
 import { registerStrings, formatDate, formatNumber, formatRegion } from '../i18n.js';
-import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES } from '../lib/resolvers.js';
+import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver } from '../lib/resolvers.js';
 import { RANGES_UPDATED, PROVIDERS } from '../lib/netinfo.js';
 
 /** Route id. */
@@ -21,11 +21,20 @@ export const icon = 'info';
 /** Path of the CLI relative to the site root (published by the Pages workflow). */
 export const CLI_PATH = 'cli/ssl_origin_scan.py';
 
+/**
+ * "Cloudflare, Google, DNS.SB, CZ.NIC" — the display names of the default resolver chain
+ * (lib/resolvers DEFAULT_CHAIN), used in "How it works".
+ * @returns {string}
+ */
+export function defaultChainNames() {
+  return DEFAULT_CHAIN.map((rid) => (getResolver(rid) || { name: rid }).name).join(', ');
+}
+
 registerStrings('en', {
   'about.heroTitle': 'SSL & DNS toolkit for people who run many servers',
-  'about.heroBody': 'A customer sends a renewed certificate for *.example.com.tr and you have to install it everywhere it is used. DomainScope finds every name the certificate covers, resolves them, recognises Cloudflare and other proxies, and matches the answers to your own server inventory — so you know exactly which machines need the new certificate.',
+  'about.heroBody': 'A renewed certificate for *.example.com arrives and it has to be installed everywhere it is used. DomainScope discovers the names it covers that DNS and public data reveal, resolves them, recognises Cloudflare and other proxies, and matches the answers to your own server inventory — so you know which machines need the new certificate.',
   'about.heroStatic': 'Everything runs in your browser against public, CORS-enabled APIs. There is no backend and nothing to install; the companion CLI covers the one thing a browser cannot do.',
-  'about.start': 'Find SSL targets',
+  'about.start': 'Find subdomains',
   'about.downloadCli': 'Download the CLI',
   'about.source': 'Source code',
   'about.onThisPage': 'On this page',
@@ -40,9 +49,9 @@ registerStrings('en', {
   'about.howTitle': 'How it works',
   'about.howDesc': 'Five steps, each of which you can also use on its own through the other tools.',
   'about.step1Title': 'Collect names',
-  'about.step1Body': 'Certificate Transparency logs (crt.sh, Cert Spotter), passive DNS (HackerTarget, Anubis, AlienVault OTX), the names inside your certificate and — optionally — a wordlist. Sources disagree, so they are merged.',
+  'about.step1Body': 'The domain’s own DNS records (MX, NS, SPF, SRV …), a ranked wordlist — with a word pack for the domain’s market, your own custom list and names learned from your earlier scans if you switch that on — and variations of the names found, plus Certificate Transparency logs (crt.sh, Cert Spotter), passive DNS (HackerTarget, Anubis, AlienVault OTX, ip.thc.org) and the names inside your certificate. Sources disagree, so they are merged. A name that exists only inside the zone and appears nowhere else stays hidden unless it is in your own list; only a zone export is complete.',
   'about.step2Title': 'Resolve over HTTPS',
-  'about.step2Body': 'Your browser asks public DNS-over-HTTPS resolvers directly (Cloudflare, Google, Quad9 …), with automatic failover. Global DNS repeats a query from 12 resolvers and 30+ locations.',
+  'about.step2Body': 'Your browser asks public DNS-over-HTTPS resolvers directly ({resolvers} by default; change them in Settings), with automatic failover. Global DNS repeats a query from {count} resolvers and 30+ locations.',
   'about.step3Title': 'Classify',
   'about.step3Body': 'Answer IPs and CNAME chains are compared with the official ranges of Cloudflare, Fastly, CloudFront and others, and with platform domains, so proxies are never mistaken for your servers.',
   'about.step4Title': 'Match your servers',
@@ -63,7 +72,7 @@ registerStrings('en', {
   'about.flowJump': 'Jump host',
   'about.flowSni': 'TLS, SNI = name',
   'about.flowCert': 'serves cert ✓',
-  'about.cfHints': 'The scan also collects origin hints that often leak the real IPs: SPF records, MX hosts, non-proxied sibling names and historical DNS from before Cloudflare was enabled.',
+  'about.cfHints': 'The scan also collects origin hints that can point to the real servers: answers of other public resolvers, the networks of the non-proxied names, SPF records, MX hosts and historical DNS from before Cloudflare was enabled — candidates to confirm with the CLI, whose command the page writes for Linux / macOS or Windows PowerShell.',
 
   'about.sourcesTitle': 'Data sources & quotas',
   'about.sourcesDesc': 'Only services that allow browser access (CORS) are used. Free tiers have limits — when one is reached the tool says so and continues with the others.',
@@ -71,7 +80,7 @@ registerStrings('en', {
   'about.col.provides': 'Provides',
   'about.col.limits': 'Limits & notes',
   'about.src.crtsh': 'Certificate Transparency search: every name that appeared in a public certificate.',
-  'about.src.crtshLimit': 'Free. Can be slow (a minute or more) or briefly unavailable under load; retried once.',
+  'about.src.crtshLimit': 'Free. Can be slow or briefly unavailable under load: retried with growing pauses, then a lighter search — up to about 3 minutes when it keeps timing out; Cert Spotter covers it meanwhile.',
   'about.src.certspotter': 'Certificate Transparency issuances with names and fingerprints.',
   'about.src.certspotterLimit': 'Small anonymous hourly quota (HTTP 429 when used up).',
   'about.src.hackertarget': 'Host search (names + current IPs) and reverse IP lookup.',
@@ -80,14 +89,16 @@ registerStrings('en', {
   'about.src.anubisLimit': 'Free, no key.',
   'about.src.otx': 'Passive DNS including historical IPs — often the pre-Cloudflare origin.',
   'about.src.otxLimit': 'Anonymous access is frequently rate-limited.',
+  'about.src.thc': 'Subdomain database with the date each name was last seen.',
+  'about.src.thcLimit': 'Free, no key. About 250 requests per IP, refilling one every 2 s; pages are fetched 2 s apart (up to 1,000 names).',
   'about.src.doh': 'All DNS answers; EDNS Client Subnet for the geographic view.',
-  'about.src.dohLimit': 'Public resolvers; parallelism is capped in Settings.',
+  'about.src.dohLimit': 'Public resolvers from your Settings chain; parallelism follows Settings (subdomain scans use up to twice that value, at most 24).',
   'about.src.ripe': 'ASN, prefix, holder, geolocation and reverse DNS of IP addresses.',
   'about.src.ripeLimit': 'Free, fair use.',
   'about.src.ipwho': 'Fallback geolocation and ASN.',
   'about.src.ipwhoLimit': 'Free tiers with daily limits.',
   'about.src.rdap': 'Domain registration: registrar, dates, name servers, DNSSEC.',
-  'about.src.rdapLimit': 'IANA bootstrap + registries, rdap.org fallback. .tr has no public RDAP service.',
+  'about.src.rdapLimit': 'IANA bootstrap + registries, rdap.org fallback. Some country TLDs (for example .de, .jp, .tr) publish no RDAP service.',
   'about.resolversTitle': 'The {count} DNS-over-HTTPS resolvers (verified {date})',
   'about.res.name': 'Resolver',
   'about.res.location': 'Location',
@@ -99,11 +110,11 @@ registerStrings('en', {
   'about.privacyDesc': 'Designed so sensitive data never leaves your machine.',
   'about.priv1': 'No backend, no analytics, no cookies, no tracking.',
   'about.priv2': 'Certificates are parsed in your browser. Private keys are never needed; if a file contains one it is ignored and never displayed.',
-  'about.priv3': 'Your server inventory stays in this browser’s local storage (keys starting with “ssds.”) and can be deleted at any time.',
+  'about.priv3': 'Your server inventory and, only if you switch them on, the learned subdomain names (bare labels such as “api”, never full hostnames or IP addresses) are kept in this browser’s local storage (keys starting with “ssds.”); a custom wordlist stays in this tab only. Learned and custom names are tried as DNS lookups under the domains you scan (label.domain), so the DNS resolvers and those domains’ nameservers see them — learned names under every domain you scan later. All of it can be deleted at any time.',
   'about.priv4': 'What third parties see: domain names you scan go to the CT / passive-DNS services and DoH resolvers; IP addresses you inspect go to RIPEstat and ipwho.is. As with any website, they also see your IP address.',
   'about.priv5': 'Requests carry no referrer, so services do not learn which page you used.',
   'about.clearData': 'Delete all local data',
-  'about.clearConfirm': 'Delete the saved server inventory and all settings from this browser? This cannot be undone.',
+  'about.clearConfirm': 'Delete the saved server inventory, all settings, the learned names and the custom wordlist from this browser? This cannot be undone.',
   'about.cleared': 'Local data deleted',
 
   'about.cliTitle': 'Companion CLI: ssl_origin_scan.py',
@@ -129,14 +140,16 @@ registerStrings('en', {
   'about.licenseTitle': 'Credits & license',
   'about.licenseBody': 'Open source under the MIT license. Contributions and issue reports are welcome.',
   'about.thanks': 'Thanks to the operators of the free services listed above, which make a backend-free tool like this possible.',
-  'about.version': 'Version {version}'
+  'about.version': 'Version {version}',
+  'about.wordlistCredits': 'The bundled subdomain wordlists are built from SecLists, bitquark and dnsgen (MIT) and commonspeak2 and altdns (Apache-2.0).',
+  'about.wordlistLicenses': 'Wordlist licences'
 });
 
 registerStrings('tr', {
   'about.heroTitle': 'Çok sayıda sunucu yönetenler için SSL & DNS araç kutusu',
-  'about.heroBody': 'Müşteri *.example.com.tr için yenilenmiş bir sertifika gönderdi ve bunu kullanıldığı her yere kurmanız gerekiyor. DomainScope sertifikanın kapsadığı tüm adları bulur, çözümler, Cloudflare ve diğer proxy’leri tanır ve yanıtları kendi sunucu envanterinizle eşleştirir — böylece yeni sertifikanın tam olarak hangi makinelere kurulacağını bilirsiniz.',
+  'about.heroBody': '*.example.com için yenilenmiş bir sertifika geldi ve kullanıldığı her yere kurulması gerekiyor. DomainScope sertifikanın kapsadığı ve DNS ile açık verilerde görünen adları bulur, çözümler, Cloudflare ve diğer proxy’leri tanır ve yanıtları kendi sunucu envanterinizle eşleştirir — böylece yeni sertifikanın hangi makinelere kurulacağını bilirsiniz.',
   'about.heroStatic': 'Her şey tarayıcınızda, CORS destekli genel API’lere karşı çalışır. Sunucu yok, kurulacak bir şey yok; tarayıcının yapamadığı tek işi yardımcı CLI aracı üstlenir.',
-  'about.start': 'SSL hedeflerini bul',
+  'about.start': 'Subdomain’leri bul',
   'about.downloadCli': 'CLI aracını indir',
   'about.source': 'Kaynak kod',
   'about.onThisPage': 'Bu sayfada',
@@ -151,9 +164,9 @@ registerStrings('tr', {
   'about.howTitle': 'Nasıl çalışır',
   'about.howDesc': 'Beş adım; her biri diğer araçlar üzerinden tek başına da kullanılabilir.',
   'about.step1Title': 'Adları topla',
-  'about.step1Body': 'Certificate Transparency kayıtları (crt.sh, Cert Spotter), pasif DNS (HackerTarget, Anubis, AlienVault OTX), sertifikanızdaki adlar ve — isteğe bağlı — bir kelime listesi. Kaynaklar birbirini tutmaz; bu yüzden birleştirilir.',
+  'about.step1Body': 'Alan adının kendi DNS kayıtları (MX, NS, SPF, SRV …), sıralanmış bir kelime listesi — alan adının pazarına uygun kelime paketi, sizin özel listeniz ve (açarsanız) önceki taramalarınızdan öğrenilen adlarla — ve bulunan adların varyasyonları; ayrıca Certificate Transparency kayıtları (crt.sh, Cert Spotter), pasif DNS (HackerTarget, Anubis, AlienVault OTX, ip.thc.org) ve sertifikanızdaki adlar. Kaynaklar birbirini tutmaz; bu yüzden birleştirilir. Yalnızca bölge (zone) içinde olup başka hiçbir yerde geçmeyen bir ad, kendi listenizde yoksa gizli kalır; eksiksiz olan tek liste bölgenin dışa aktarımıdır.',
   'about.step2Title': 'HTTPS üzerinden çözümle',
-  'about.step2Body': 'Tarayıcınız genel DNS-over-HTTPS çözümleyicilerine (Cloudflare, Google, Quad9 …) doğrudan, otomatik yedeklemeyle sorar. Global DNS aynı sorguyu 12 çözümleyiciden ve 30’dan fazla konumdan tekrarlar.',
+  'about.step2Body': 'Tarayıcınız genel DNS-over-HTTPS çözümleyicilerine (varsayılan olarak {resolvers}; Ayarlar’dan değiştirilebilir) doğrudan, otomatik yedeklemeyle sorar. Global DNS aynı sorguyu {count} çözümleyiciden ve 30’dan fazla konumdan tekrarlar.',
   'about.step3Title': 'Sınıflandır',
   'about.step3Body': 'Yanıttaki IP’ler ve CNAME zincirleri Cloudflare, Fastly, CloudFront ve diğerlerinin resmî IP aralıkları ve platform alan adlarıyla karşılaştırılır; böylece proxy’ler asla sizin sunucunuz sanılmaz.',
   'about.step4Title': 'Sunucularınızla eşleştir',
@@ -174,7 +187,7 @@ registerStrings('tr', {
   'about.flowJump': 'Atlama sunucusu',
   'about.flowSni': 'TLS, SNI = ad',
   'about.flowCert': 'sertifikayı sunar ✓',
-  'about.cfHints': 'Tarama ayrıca gerçek IP’leri çoğu zaman ele veren ipuçlarını da toplar: SPF kayıtları, MX sunucuları, proxy’lenmeyen kardeş adlar ve Cloudflare açılmadan önceki geçmiş DNS kayıtları.',
+  'about.cfHints': 'Tarama ayrıca gerçek sunuculara işaret edebilecek ipuçlarını da toplar: diğer genel çözümleyicilerin yanıtları, proxy’lenmeyen adların ağları, SPF kayıtları, MX sunucuları ve Cloudflare açılmadan önceki geçmiş DNS kayıtları — CLI ile doğrulanacak adaylar; sayfa bunun komutunu Linux / macOS ya da Windows PowerShell için yazar.',
 
   'about.sourcesTitle': 'Veri kaynakları ve kotalar',
   'about.sourcesDesc': 'Yalnızca tarayıcıdan erişime (CORS) izin veren hizmetler kullanılır. Ücretsiz katmanların sınırları vardır — biri dolduğunda araç bunu söyler ve diğerleriyle devam eder.',
@@ -182,7 +195,7 @@ registerStrings('tr', {
   'about.col.provides': 'Sağladığı',
   'about.col.limits': 'Sınırlar ve notlar',
   'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad.',
-  'about.src.crtshLimit': 'Ücretsiz. Yoğunlukta yavaş (bir dakika veya daha uzun) ya da kısa süre erişilemez olabilir; bir kez yeniden denenir.',
+  'about.src.crtshLimit': 'Ücretsiz. Yoğunlukta yavaş ya da kısa süre erişilemez olabilir: giderek uzayan aralarla yeniden denenir, sonra daha hafif bir aramaya geçilir — zaman aşımları sürerse yaklaşık 3 dakikaya kadar; bu sırada Cert Spotter devreye girer.',
   'about.src.certspotter': 'Adları ve parmak izleriyle Certificate Transparency kayıtları.',
   'about.src.certspotterLimit': 'Anonim kullanımda küçük saatlik kota (dolunca HTTP 429).',
   'about.src.hackertarget': 'Host araması (adlar + güncel IP’ler) ve ters IP sorgusu.',
@@ -191,14 +204,16 @@ registerStrings('tr', {
   'about.src.anubisLimit': 'Ücretsiz, anahtar gerekmez.',
   'about.src.otx': 'Geçmiş IP’ler dahil pasif DNS — çoğu zaman Cloudflare öncesi asıl sunucu.',
   'about.src.otxLimit': 'Anonim erişim sık sık hız sınırına takılır.',
+  'about.src.thc': 'Her adın en son ne zaman görüldüğünü de veren alt alan adı veritabanı.',
+  'about.src.thcLimit': 'Ücretsiz, anahtar gerekmez. IP başına yaklaşık 250 istek, 2 saniyede bir yenilenir; sayfalar 2 saniye arayla alınır (en fazla 1.000 ad).',
   'about.src.doh': 'Tüm DNS yanıtları; coğrafi görünüm için EDNS Client Subnet.',
-  'about.src.dohLimit': 'Genel çözümleyiciler; paralellik Ayarlar’dan sınırlanır.',
+  'about.src.dohLimit': 'Ayarlar’daki zincirde bulunan genel çözümleyiciler; paralellik Ayarlar’a göre belirlenir (subdomain taramaları bu değerin en fazla iki katını, en çok 24 kullanır).',
   'about.src.ripe': 'IP adreslerinin ASN, önek, sahip, konum ve ters DNS bilgisi.',
   'about.src.ripeLimit': 'Ücretsiz, adil kullanım.',
   'about.src.ipwho': 'Yedek konum ve ASN bilgisi.',
   'about.src.ipwhoLimit': 'Günlük sınırlı ücretsiz katmanlar.',
   'about.src.rdap': 'Alan adı kaydı: kayıt kuruluşu, tarihler, ad sunucuları, DNSSEC.',
-  'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşları, yedek olarak rdap.org. .tr için genel RDAP hizmeti yok.',
+  'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşları, yedek olarak rdap.org. Bazı ülke uzantılarının (ör. .de, .jp, .tr) RDAP hizmeti yok.',
   'about.resolversTitle': '{count} DNS-over-HTTPS çözümleyicisi ({date} tarihinde doğrulandı)',
   'about.res.name': 'Çözümleyici',
   'about.res.location': 'Konum',
@@ -210,11 +225,11 @@ registerStrings('tr', {
   'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı.',
   'about.priv1': 'Sunucu yok, analitik yok, çerez yok, izleme yok.',
   'about.priv2': 'Sertifikalar tarayıcınızda ayrıştırılır. Özel anahtar hiçbir zaman gerekmez; dosyada varsa yok sayılır ve asla gösterilmez.',
-  'about.priv3': 'Sunucu envanteriniz bu tarayıcının yerel depolamasında (“ssds.” ile başlayan anahtarlar) kalır ve istediğiniz an silinebilir.',
+  'about.priv3': 'Sunucu envanteriniz ve yalnızca açarsanız öğrenilen subdomain adları (“api” gibi yalın etiketler; asla tam host adları ya da IP adresleri değil) bu tarayıcının yerel depolamasında (“ssds.” ile başlayan anahtarlar), özel kelime listesi ise yalnızca bu sekmede tutulur. Öğrenilen ve özel adlar taradığınız alan adlarının altında DNS sorgusu olarak denenir (etiket.alanadı); yani DNS çözümleyicileri ve o alan adlarının ad sunucuları bunları görür — öğrenilen adları, sonradan taradığınız her alan adı altında. Hepsi istediğiniz an silinebilir.',
   'about.priv4': 'Üçüncü tarafların gördükleri: taradığınız alan adları CT / pasif DNS hizmetlerine ve DoH çözümleyicilerine; incelediğiniz IP adresleri RIPEstat ve ipwho.is’e gider. Her web sitesinde olduğu gibi IP adresinizi de görürler.',
   'about.priv5': 'İstekler referrer bilgisi taşımaz; hizmetler hangi sayfayı kullandığınızı öğrenmez.',
   'about.clearData': 'Tüm yerel verileri sil',
-  'about.clearConfirm': 'Kayıtlı sunucu envanteri ve tüm ayarlar bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
+  'about.clearConfirm': 'Kayıtlı sunucu envanteri, tüm ayarlar, öğrenilen adlar ve özel kelime listesi bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
   'about.cleared': 'Yerel veriler silindi',
 
   'about.cliTitle': 'Yardımcı CLI aracı: ssl_origin_scan.py',
@@ -240,7 +255,9 @@ registerStrings('tr', {
   'about.licenseTitle': 'Katkılar ve lisans',
   'about.licenseBody': 'MIT lisansıyla açık kaynak. Katkılar ve hata bildirimleri memnuniyetle karşılanır.',
   'about.thanks': 'Böyle sunucusuz bir aracı mümkün kılan, yukarıda listelenen ücretsiz hizmetlerin işletmecilerine teşekkürler.',
-  'about.version': 'Sürüm {version}'
+  'about.version': 'Sürüm {version}',
+  'about.wordlistCredits': 'Paketteki subdomain kelime listeleri SecLists, bitquark ve dnsgen (MIT) ile commonspeak2 ve altdns (Apache-2.0) listelerinden üretilir.',
+  'about.wordlistLicenses': 'Kelime listesi lisansları'
 });
 
 /** Data sources table rows (static; mirrors spec §3). */
@@ -250,9 +267,10 @@ const SOURCES = [
   { name: 'HackerTarget', url: 'https://hackertarget.com/', key: 'hackertarget' },
   { name: 'Anubis', url: 'https://anubisdb.com/', key: 'anubis' },
   { name: 'AlienVault OTX', url: 'https://otx.alienvault.com/', key: 'otx' },
+  { name: 'ip.thc.org', url: 'https://ip.thc.org/', key: 'thc' },
   { name: 'DNS-over-HTTPS', url: 'https://datatracker.ietf.org/doc/html/rfc8484', key: 'doh' },
   { name: 'RIPEstat', url: 'https://stat.ripe.net/', key: 'ripe' },
-  { name: 'ipwho.is · ipinfo.io', url: 'https://ipwho.is/', key: 'ipwho' },
+  { name: 'ipwho.is', url: 'https://ipwho.is/', key: 'ipwho' },
   { name: 'RDAP', url: 'https://about.rdap.org/', key: 'rdap' }
 ];
 
@@ -311,7 +329,7 @@ export function mount(container, ctx) {
       h('p', null, t('about.heroBody')),
       h('p', { class: 'muted' }, t('about.heroStatic')),
       h('div', { class: 'cluster about-hero-actions' },
-        h('a', { class: 'btn btn-primary', href: ctx.href('scan') }, Icon('target'), h('span', { class: 'btn-label' }, t('about.start'))),
+        h('a', { class: 'btn btn-primary', href: ctx.href('subdomains') }, Icon('layers'), h('span', { class: 'btn-label' }, t('about.start'))),
         ButtonLink({ href: CLI_PATH, label: t('about.downloadCli'), icon: 'download', download: 'ssl_origin_scan.py' }),
         ButtonLink({ href: ctx.repoUrl, label: t('about.source'), icon: 'code', variant: 'ghost', external: true }))),
     h('img', { class: 'about-hero-logo', src: 'favicon.svg', alt: '', attrs: { width: 96, height: 96 } }));
@@ -340,7 +358,8 @@ export function mount(container, ctx) {
   /* How it works */
   const steps = [
     ['search', 'about.step1Title', 'about.step1Body'],
-    ['globe', 'about.step2Title', 'about.step2Body'],
+    // The resolver names come from the default chain, so the text cannot go stale again.
+    ['globe', 'about.step2Title', 'about.step2Body', { resolvers: defaultChainNames(), count: RESOLVERS.length }],
     ['layers', 'about.step3Title', 'about.step3Body'],
     ['server', 'about.step4Title', 'about.step4Body'],
     ['terminal', 'about.step5Title', 'about.step5Body']
@@ -348,12 +367,12 @@ export function mount(container, ctx) {
   const how = section('how', {
     title: t('about.howTitle'),
     description: t('about.howDesc'),
-    children: h('ol', { class: 'about-steps' }, steps.map(([ic, title, body], i) => h('li', { class: 'about-step card' },
+    children: h('ol', { class: 'about-steps' }, steps.map(([ic, title, body, params], i) => h('li', { class: 'about-step card' },
       h('div', { class: 'about-step-head' },
         h('span', { class: 'about-step-num num' }, String(i + 1)),
         h('span', { class: 'about-step-icon' }, Icon(ic, { size: 18 }))),
       h('h3', { class: 'about-step-title' }, t(title)),
-      h('p', { class: 'about-step-body' }, t(body)))))
+      h('p', { class: 'about-step-body' }, t(body, params)))))
   });
 
   /* Cloudflare */
@@ -372,13 +391,13 @@ export function mount(container, ctx) {
             flowArrow(),
             flowNode('cloud', t('about.flowEdge'), '104.21.x.x', 'edge'),
             flowArrow(),
-            flowNode('server', t('about.flowOrigin'), `10.0.1.11 · ${t('about.flowHidden')}`, 'hidden'))),
+            flowNode('server', t('about.flowOrigin'), `10.0.1.20 · ${t('about.flowHidden')}`, 'hidden'))),
         h('figure', { class: 'about-flow card' },
           h('figcaption', { class: 'about-flow-caption' }, Badge('CLI', { variant: 'accent', icon: 'terminal' }), ' ', t('about.flowCli')),
           h('div', { class: 'about-flow-row' },
             flowNode('terminal', t('about.flowJump'), 'ssl_origin_scan.py'),
             flowArrow(t('about.flowSni')),
-            flowNode('server', t('about.flowOrigin'), `10.0.1.11 · ${t('about.flowCert')}`, 'ok')))))
+            flowNode('server', t('about.flowOrigin'), `10.0.1.20 · ${t('about.flowCert')}`, 'ok')))))
   });
   cloudflare.querySelector('.section-body').append(Alert({ variant: 'info', icon: 'lightbulb', message: t('about.cfHints'), compact: true }));
 
@@ -480,6 +499,8 @@ export function mount(container, ctx) {
     children: h('div', { class: 'stack-sm' },
       h('p', null, t('about.licenseBody')),
       h('p', { class: 'muted' }, t('about.thanks')),
+      h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ',
+        h('a', { href: 'assets/data/THIRD_PARTY_LICENSES.txt', target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
       h('div', { class: 'cluster' },
         Badge('MIT', { variant: 'accent', icon: 'book' }),
         Badge(t('about.version', { version: ctx.version }), { variant: 'neutral' }),

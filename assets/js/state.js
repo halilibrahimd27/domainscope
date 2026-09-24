@@ -13,6 +13,10 @@
  * full quota degrade to in-memory state (see `persistence` / `lastPersistError`).
  * Keys are prefixed 'ssds.'. Other tabs' changes arrive via the `storage` event.
  *
+ * Stored records carry a schema version `v`. Settings are at v2: loading an older record runs
+ * {@link migrateSettings} once (a resolver chain still equal to a former built-in default
+ * becomes today's DEFAULT_CHAIN; customised chains are kept) and writes it back as v2.
+ *
  * @example
  *   import { state } from './state.js';
  *   const off = state.subscribe(({ key, value }) => { if (key === 'inventory') redraw(value); });
@@ -28,7 +32,21 @@ import { RESOLVERS, DEFAULT_CHAIN } from './lib/resolvers.js';
 export const STORAGE_PREFIX = 'ssds.';
 const KEY_INVENTORY = `${STORAGE_PREFIX}inventory`;
 const KEY_SETTINGS = `${STORAGE_PREFIX}settings`;
+/** Schema version of the stored inventory record. */
 const SCHEMA_VERSION = 1;
+/** Schema version of the stored settings record (2: DEFAULT_CHAIN without Quad9, 2026-09-23). */
+export const SETTINGS_VERSION = 2;
+
+/**
+ * Resolver chains that used to be the built-in default. A settings record older than
+ * {@link SETTINGS_VERSION} whose chain is exactly one of these was never customised (the whole
+ * settings object is saved on any change, e.g. of the theme), so it follows the new default.
+ */
+export const LEGACY_DEFAULT_CHAINS = Object.freeze([
+  // v1.0.0 until 2026-09-23. Quad9 left the default: browsers cannot read its HTTP/3 answers
+  // (no CORS header), so every lookup it was asked first had to fail over.
+  Object.freeze(['cloudflare', 'google', 'quad9', 'dnssb'])
+]);
 
 /** Valid theme values. */
 export const THEMES = Object.freeze(['auto', 'light', 'dark']);
@@ -62,6 +80,27 @@ export function sanitizeSettings(input) {
   return { lang, theme, chain, concurrency };
 }
 
+/**
+ * Bring a stored settings record up to {@link SETTINGS_VERSION} (pure; the input is not changed).
+ * v1 → v2: a chain exactly equal to one of {@link LEGACY_DEFAULT_CHAINS} becomes DEFAULT_CHAIN;
+ * any other chain (reordered, trimmed, extended — a user's choice) is kept as it is.
+ * Records without `v` are treated as v1; current or newer records are returned unchanged.
+ * @param {object|null} data raw record as read from storage (may include `v`)
+ * @returns {{ data: object, migrated: boolean }} `migrated` is true when the record was older
+ *   (it should then be written back so the migration runs only once)
+ */
+export function migrateSettings(data) {
+  const src = data && typeof data === 'object' ? data : {};
+  const version = Number.isInteger(src.v) && src.v > 0 ? src.v : 1;
+  if (version >= SETTINGS_VERSION) return { data: src, migrated: false };
+  const out = { ...src, v: SETTINGS_VERSION };
+  const chain = Array.isArray(src.chain) ? src.chain : null;
+  if (chain && LEGACY_DEFAULT_CHAINS.some((old) => old.length === chain.length && old.every((id, i) => id === chain[i]))) {
+    out.chain = [...DEFAULT_CHAIN];
+  }
+  return { data: out, migrated: true };
+}
+
 /** Resolve the browser's localStorage without throwing (SecurityError in some sandboxes). */
 function defaultStorage() {
   try {
@@ -76,24 +115,47 @@ function defaultStorage() {
   }
 }
 
+/** Resolve the browser's sessionStorage without throwing (it holds this tab's custom wordlist). */
+function defaultSessionStorage() {
+  try {
+    return globalThis.sessionStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove every 'ssds.*' key of a Storage (collected first: removing shifts the indexes). */
+function removePrefixed(store) {
+  const keys = [];
+  for (let i = 0; i < store.length; i += 1) {
+    const k = store.key(i);
+    if (k && k.startsWith(STORAGE_PREFIX)) keys.push(k);
+  }
+  keys.forEach((k) => store.removeItem(k));
+}
+
 function emptyInventory() {
   return { text: '', servers: [], warnings: [], stats: { lines: 0, servers: 0, ips: 0 }, updatedAt: null };
 }
 
 /**
  * @typedef {object} StateChange
- * @property {'inventory'|'settings'|'session'} key
- * @property {any} value the new slice value (for 'session': { name, value })
+ * @property {'inventory'|'settings'|'session'|'cleared'} key ('cleared': "Delete all local data" ran;
+ *   views drop what they keep outside the slices, e.g. the custom wordlist of this tab)
+ * @property {any} value the new slice value (for 'session': { name, value }; for 'cleared': true)
  * @property {'local'|'external'} origin 'external' when another tab changed storage
  */
 
 /**
  * Create an isolated app state (the app uses the {@link state} singleton; tests inject storage).
- * @param {{ storage?: Storage|null, parse?: typeof parseInventory, now?: () => Date,
+ * `sessionStore` is only used by {@link clearAll}, which removes this tab's 'ssds.*' session keys
+ * (the pasted custom wordlist) too.
+ * @param {{ storage?: Storage|null, sessionStore?: Storage|null, parse?: typeof parseInventory, now?: () => Date,
  *   listenStorageEvents?: boolean }} [opts]
  */
 export function createState({
   storage = defaultStorage(),
+  sessionStore = defaultSessionStorage(),
   parse = parseInventory,
   now = () => new Date(),
   listenStorageEvents = true
@@ -123,8 +185,9 @@ export function createState({
   function write(key, value) {
     if (!storage) return false;
     try {
+      const v = key === KEY_SETTINGS ? SETTINGS_VERSION : SCHEMA_VERSION;
       if (value === null) storage.removeItem(key);
-      else storage.setItem(key, JSON.stringify({ v: SCHEMA_VERSION, ...value }));
+      else storage.setItem(key, JSON.stringify({ v, ...value }));
       lastPersistError = null;
       return true;
     } catch (err) {
@@ -165,12 +228,22 @@ export function createState({
     return deriveInventory(data.text, at && !Number.isNaN(at.getTime()) ? at : null);
   }
 
-  function loadSettings() {
-    return sanitizeSettings(read(KEY_SETTINGS) || {});
+  /**
+   * @param {{ persistMigration?: boolean }} [opts] write a migrated record back (at start-up
+   *   only: re-reading another tab's change must not start a write ping-pong with an older
+   *   version of the app still open in that tab)
+   */
+  function loadSettings({ persistMigration = false } = {}) {
+    const raw = read(KEY_SETTINGS);
+    if (!raw) return sanitizeSettings({});
+    const { data, migrated } = migrateSettings(raw);
+    const next = sanitizeSettings(data);
+    if (migrated && persistMigration) write(KEY_SETTINGS, next);
+    return next;
   }
 
   inventory = loadInventory();
-  settings = loadSettings();
+  settings = loadSettings({ persistMigration: true });
 
   const api = {
     /** Current inventory (treat as read-only). */
@@ -299,22 +372,26 @@ export function createState({
     },
 
     /**
-     * Delete every 'ssds.*' key from storage and reset all slices (session too).
+     * Delete every 'ssds.*' key from storage (the inventory, settings, remembered view options
+     * and the learned names) and from this tab's session storage (the custom wordlist), reset
+     * all slices (session too) and notify: 'inventory', 'settings', then 'cleared'.
      * @returns {boolean} true when storage was cleaned
      */
     clearAll() {
       let ok = !!storage;
       if (storage) {
         try {
-          const keys = [];
-          for (let i = 0; i < storage.length; i += 1) {
-            const k = storage.key(i);
-            if (k && k.startsWith(STORAGE_PREFIX)) keys.push(k);
-          }
-          keys.forEach((k) => storage.removeItem(k));
+          removePrefixed(storage);
         } catch (err) {
           lastPersistError = err instanceof Error ? err : new Error(String(err));
           ok = false;
+        }
+      }
+      if (sessionStore && sessionStore !== storage) {
+        try {
+          removePrefixed(sessionStore);
+        } catch {
+          // a blocked session storage holds nothing of ours
         }
       }
       inventory = emptyInventory();
@@ -323,6 +400,7 @@ export function createState({
       for (const k of Object.keys(session)) delete session[k];
       emit('inventory', inventory);
       emit('settings', api.settings);
+      emit('cleared', true);
       return ok;
     },
 

@@ -3,7 +3,7 @@
  * settings dialog and the per-view context object.
  *
  * Routes: `#/<view>?key=value` (shareable, e.g. `#/lookup?name=example.com&type=MX`).
- * Unknown views fall back to 'scan'. Hashes that do not start with '#/' are in-page
+ * Unknown views fall back to 'subdomains'. Hashes that do not start with '#/' are in-page
  * anchors and never change the view.
  *
  * View modules (assets/js/views/<id>.js) are loaded lazily on first visit and must export
@@ -29,13 +29,14 @@ export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
 /** App version (keep in sync with package.json). */
 export const APP_VERSION = '1.0.0';
 /** Default route. */
-export const DEFAULT_VIEW = 'scan';
+export const DEFAULT_VIEW = 'subdomains';
 
 /**
  * Navigation table in spec §6 order. `load` is a lazy import so a view that fails to load
  * (or is still being written) cannot break the rest of the app.
  */
 export const VIEWS = Object.freeze([
+  { id: 'subdomains', group: 'discover', icon: 'layers', load: () => import('./views/subdomains.js') },
   { id: 'scan', group: 'ssl', icon: 'target', load: () => import('./views/scan.js') },
   { id: 'cert', group: 'ssl', icon: 'shield', load: () => import('./views/cert.js') },
   { id: 'global', group: 'dns', icon: 'globe', load: () => import('./views/global.js') },
@@ -48,6 +49,7 @@ export const VIEWS = Object.freeze([
 ].map((v) => Object.freeze(v)));
 
 const NAV_GROUPS = [
+  { id: 'discover', labelKey: 'nav.groupDiscover' },
   { id: 'ssl', labelKey: 'nav.groupSsl' },
   { id: 'dns', labelKey: 'nav.groupDns' },
   { id: 'data', labelKey: 'nav.groupData' }
@@ -122,8 +124,30 @@ let dnsPromise = null;
 let dnsChainKey = '';
 
 /**
+ * Resolvers a bulk sweep prefers (the fast, browser-readable anycast pool of lib/doh.js's
+ * balance mode). Only the ones the user kept in the Settings chain are ever used.
+ */
+export const BULK_POOL_PREFERRED = Object.freeze(['cloudflare', 'google', 'dnssb']);
+
+/**
+ * The balance pool for bulk scans, derived from the user's resolver chain so a resolver
+ * removed in Settings never receives a scan's guesses: the preferred bulk resolvers that are
+ * in the chain; otherwise the chain's browser-readable resolvers; otherwise the chain itself.
+ * @param {string[]} chain resolver ids in the user's order
+ * @returns {string[]}
+ */
+export function balancePoolFor(chain) {
+  const ids = (Array.isArray(chain) ? chain : []).filter((id) => typeof id === 'string');
+  const preferred = BULK_POOL_PREFERRED.filter((id) => ids.includes(id));
+  if (preferred.length) return preferred;
+  const readable = ids.filter((id) => (getResolver(id) || {}).browserReliable !== false);
+  return readable.length ? readable : [...ids];
+}
+
+/**
  * Shared DohClient (lib/doh.js), created lazily and configured from settings
- * (resolver chain + concurrency). A chain change creates a fresh client on the next call;
+ * (resolver chain + concurrency; the bulk balance pool comes from the chain too, see
+ * {@link balancePoolFor}). A chain change creates a fresh client on the next call;
  * a concurrency change is applied to the existing one.
  * @returns {Promise<import('./lib/doh.js').DohClient>}
  */
@@ -132,7 +156,8 @@ export function getDns() {
   const key = chain.join(',');
   if (!dnsPromise || key !== dnsChainKey) {
     dnsChainKey = key;
-    const promise = import('./lib/doh.js').then(({ DohClient }) => new DohClient({ chain, concurrency }));
+    const balancePool = balancePoolFor(chain);
+    const promise = import('./lib/doh.js').then(({ DohClient }) => new DohClient({ chain, concurrency, balancePool }));
     dnsPromise = promise;
     // A failed import (offline, file missing) must not be cached forever.
     promise.catch(() => {
@@ -646,12 +671,37 @@ function renderChrome() {
 /* Settings dialog                                                          */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * Resolvers that answer fine in general but could not be reached from every network we tested.
+ * Measured 2026-09-23 with tests/live/browser-doh-matrix.mjs (see the entry in lib/resolvers.js):
+ * freedns.controld.com timed out on TCP from some networks. Display only — the chain logic
+ * fails over on timeouts anyway.
+ */
+const MAY_BE_UNREACHABLE = Object.freeze(['controld']);
+
+/**
+ * i18n key of a short, honest caveat shown under a resolver in the settings dialog, or null.
+ * @param {import('./lib/resolvers.js').Resolver} r
+ * @returns {string|null}
+ */
+export function resolverNoteKey(r) {
+  if (!r) return null;
+  if (r.browserReliable === false && r.issue === 'h3-no-cors') return 'settings.note.h3NoCors';
+  if (r.browserReliable === false) return 'settings.unreliable';
+  if (MAY_BE_UNREACHABLE.includes(r.id)) return 'settings.note.unreachable';
+  return null;
+}
+
 function resolverMeta(r) {
   const bits = [Badge(r.countryCode ? formatRegion(r.countryCode, r.location) : t('settings.anycast'), { icon: r.countryCode ? 'map-pin' : 'globe' })];
   if (r.dnssecValidating) bits.push(Badge(t('settings.flagDnssec'), { variant: 'ok', icon: 'shield' }));
   if (r.ecs) bits.push(Badge(t('settings.flagEcs'), { variant: 'info', icon: 'map-pin' }));
   if (r.filtering) bits.push(Badge(`${t('settings.flagFilter')}: ${t(`settings.filter.${r.filtering}`)}`, { variant: 'neutral', icon: 'filter' }));
-  if (r.browserReliable === false) bits.push(Badge('HTTP/3', { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }));
+  if (r.browserReliable === false) bits.push(Badge(t('settings.flagBrowser'), { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }));
+  else if (MAY_BE_UNREACHABLE.includes(r.id)) bits.push(Badge(t('settings.flagReach'), { variant: 'warn', icon: 'alert' }));
+  const noteKey = resolverNoteKey(r);
+  // A flex item of .settings-resolver-meta: long text wraps onto its own line under the badges.
+  if (noteKey) bits.push(h('span', { class: 'settings-resolver-note', dataset: { note: r.id } }, t(noteKey)));
   return bits;
 }
 

@@ -70,6 +70,16 @@
   gap: 1px;
 }
 
+/* Operator cell with a well-known network hint: badge + one muted line under it. */
+.ipi-op {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
 .ipi-ip {
   font-weight: 600;
 }
@@ -92,6 +102,24 @@
   font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font-sans);
   font-size: 15px;
   line-height: 1;
+}
+
+/* No flag glyphs on this platform (Chrome/Edge on Windows): the ISO code in a small chip. */
+.ipi-flag.is-code {
+  display: inline-block;
+  min-width: 2.2em;
+  padding: 2px 4px 1px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-align: center;
+  vertical-align: 0.1em;
 }
 
 .ipi-pending {

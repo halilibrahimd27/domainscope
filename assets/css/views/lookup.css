@@ -398,6 +398,12 @@
   word-break: break-all;
 }
 
+/* NSEC/NSEC3 type bitmaps list 20+ types: keep several chips per line on phones (the table
+   scrolls horizontally) instead of one chip per line in a very tall row. */
+.lkp-nsec-types {
+  min-width: 16rem;
+}
+
 .lkp-keycell {
   display: inline-flex;
   align-items: center;

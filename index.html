@@ -2,16 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; base-uri 'none'; form-action 'none'; manifest-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="no-referrer">
-  <meta name="description" content="Open-source SSL &amp; DNS toolkit: find every subdomain, IP address and server a certificate belongs on. Global DNS, record lookups, bulk resolve, IP intel and domain health — all in your browser.">
+  <meta name="description" content="Open-source SSL &amp; DNS toolkit: discover the subdomains, IP addresses and servers a certificate belongs on. Global DNS, record lookups, bulk resolve, IP intel and domain health — all in your browser.">
   <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d1015" media="(prefers-color-scheme: dark)">
   <title>DomainScope — SSL &amp; DNS toolkit</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="assets/css/style.css">
+  <link rel="stylesheet" href="assets/css/views/subdomains.css">
   <link rel="stylesheet" href="assets/css/views/scan.css">
   <link rel="stylesheet" href="assets/css/views/cert.css">
   <link rel="stylesheet" href="assets/css/views/global.css">
@@ -39,7 +40,7 @@
   <a class="skip-link" id="skip-link" href="#main">Skip to content</a>
   <div class="app" id="app">
     <header class="app-header" id="app-header">
-      <a class="brand" id="brand" href="#/scan">
+      <a class="brand" id="brand" href="#/subdomains">
         <img class="brand-logo" src="favicon.svg" alt="" width="30" height="30">
         <span class="brand-text">
           <span class="brand-name">DomainScope</span>

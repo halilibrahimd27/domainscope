@@ -5,8 +5,9 @@
  *   returns the key itself (and records it in {@link getMissingKeys}).
  * - `{name}` placeholders are replaced from `params`; unknown placeholders stay as-is.
  * - A string can be a plural object `{ zero?, one, other, … }`: the form is picked with
- *   `Intl.PluralRules` from `params.count` (`zero` is an explicit override for 0) and
- *   `{count}` is rendered with locale digit grouping in that case.
+ *   `Intl.PluralRules` from `params.count` (`zero` is an explicit override for 0).
+ *   A numeric `{count}` is rendered with locale digit grouping in plain strings and plural
+ *   forms alike ('5,000' / '5.000').
  * - Views register their own strings at module load:
  *     registerStrings('en', { 'lookup.run': 'Look up', 'lookup.records': { one: '{count} record', other: '{count} records' } });
  *     registerStrings('tr', { 'lookup.run': 'Sorgula', 'lookup.records': '{count} kayıt' });
@@ -204,7 +205,8 @@ function lookup(key) {
 }
 
 /**
- * Translate `key` with `{name}` interpolation and plural support.
+ * Translate `key` with `{name}` interpolation and plural support. A numeric `count` param is
+ * locale-grouped ({@link formatNumber}) in plain strings and plural forms alike.
  * Fallback: current language → English → the key itself.
  * @param {string} key
  * @param {Record<string, unknown>} [params]
@@ -213,7 +215,12 @@ function lookup(key) {
 export function t(key, params) {
   const value = lookup(key);
   if (value === undefined) return String(key);
-  if (typeof value === 'string') return interpolate(value, params);
+  if (typeof value === 'string') {
+    // A numeric {count} is locale-grouped in plain strings too ('5.000 varyasyon'), exactly like
+    // the plural branch below. Only real numbers: an already formatted string is left alone.
+    const c = params && params.count;
+    return interpolate(value, typeof c === 'number' && Number.isFinite(c) ? { ...params, count: formatNumber(c) } : params);
+  }
   // Plural object.
   const count = params && Number(params.count);
   const form = plural(Number.isFinite(count) ? count : NaN, value);
@@ -405,17 +412,20 @@ export function formatRelative(date, now = Date.now()) {
 registerStrings('en', {
   'app.name': 'DomainScope',
   'app.subtitle': 'SSL & DNS toolkit',
-  'app.tagline': 'Find every subdomain, IP and server a certificate belongs on — in your browser.',
+  'app.tagline': 'Find the subdomains, IPs and servers a certificate belongs on — in your browser.',
 
   'lang.tr': 'Türkçe',
   'lang.en': 'English',
 
   'nav.label': 'Tools',
+  'nav.groupDiscover': 'Discover',
   'nav.groupSsl': 'Certificates',
   'nav.groupDns': 'DNS tools',
   'nav.groupData': 'Workspace',
+  'nav.subdomains': 'Subdomains',
+  'nav.subdomains.desc': 'Discover the subdomains of a domain from DNS, CT logs and passive DNS, and see where each one points: its IP addresses, Cloudflare / CDN or your own server.',
   'nav.scan': 'SSL Targets',
-  'nav.scan.desc': 'Find every subdomain, IP address and server a certificate must be installed on.',
+  'nav.scan.desc': 'Find the subdomains, IP addresses and servers a certificate must be installed on.',
   'nav.cert': 'Certificate',
   'nav.cert.desc': 'Inspect a certificate: names, validity, key, fingerprints, chain, CAA and CT logs.',
   'nav.global': 'Global DNS',
@@ -462,13 +472,13 @@ registerStrings('en', {
 
   'settings.title': 'Settings',
   'settings.dohChain': 'DNS-over-HTTPS resolvers',
-  'settings.dohChainHint': 'Queried in this order. When a resolver fails, times out or rate-limits, the next one is used.',
+  'settings.dohChainHint': 'Lookups ask them in this order; when one fails, times out or rate-limits, the next one is used. Subdomain scans spread their many guesses over the resolvers of this list (Cloudflare, Google and DNS.SB when present) — a resolver you remove is not used by scans.',
   'settings.concurrency': 'Parallel DNS queries',
-  'settings.concurrencyHint': 'Higher is faster; lower is gentler on the public resolvers.',
+  'settings.concurrencyHint': 'Higher is faster; lower is gentler on the public resolvers. Subdomain scans spread their guesses over several resolvers and may run up to twice this many at once (at most 24).',
   'settings.resetDefaults': 'Restore defaults',
   'settings.clearData': 'Delete all local data',
-  'settings.clearDataHint': 'Removes the saved server inventory and all settings from this browser.',
-  'settings.clearDataConfirm': 'Delete the saved server inventory and all settings from this browser? This cannot be undone.',
+  'settings.clearDataHint': 'Removes the saved server inventory, all settings and remembered options, the learned subdomain names and the custom wordlist from this browser.',
+  'settings.clearDataConfirm': 'Delete the saved server inventory, all settings, the learned names and the custom wordlist from this browser? This cannot be undone.',
   'settings.dataCleared': 'Local data deleted',
   'settings.saved': 'Settings saved',
   'settings.atLeastOne': 'Keep at least one resolver.',
@@ -479,6 +489,10 @@ registerStrings('en', {
   'settings.filter.security': 'security',
   'settings.filter.family': 'family',
   'settings.unreliable': 'Browsers may fail to read its answers (HTTP/3 without CORS); the next resolver is used then.',
+  'settings.flagBrowser': 'Not readable in browsers',
+  'settings.flagReach': 'May time out',
+  'settings.note.h3NoCors': 'It answers browsers over HTTP/3 without the CORS header a web page needs, so every query falls through to the next resolver. It works fine from dig and other command-line tools.',
+  'settings.note.unreachable': 'Unreachable from some networks: connections from them timed out in our tests. While that happens, each query waits for the timeout before the next resolver is tried.',
   'settings.anycast': 'Anycast',
   'settings.position': 'Position {n}',
 
@@ -634,6 +648,20 @@ registerStrings('en', {
   'error.kind.network': 'Network error — offline, blocked by an extension or firewall, or the service is down.',
   'error.kind.parse': 'The response could not be understood.',
   'error.kind.unknown': 'Unexpected error.',
+  'error.kind.unavailable': 'The service is temporarily down: it answered every retry with a server error.',
+
+  'source.quota.day': 'The daily free quota for your IP address is used up; it resets within 24 hours.',
+  'source.quota.hour': 'The hourly free quota for your IP address is used up; try again in about an hour.',
+  'source.quota.minutes': 'Rate limit reached; try again in a few minutes.',
+  'source.quota.later': 'Anonymous access is limited for your IP address right now; try again later.',
+  'source.state.ok': 'OK',
+  'source.state.empty': 'No results',
+  'source.state.partial': 'Partial',
+  'source.state.rate-limited': 'Quota used up',
+  'source.state.unavailable': 'Temporarily down',
+  'source.state.timeout': 'Timed out',
+  'source.state.error': 'Failed',
+  'source.fallback': '{name} was used instead.',
 
   'time.ms': '{n} ms',
   'time.s': '{n} s',
@@ -652,17 +680,20 @@ registerStrings('en', {
 registerStrings('tr', {
   'app.name': 'DomainScope',
   'app.subtitle': 'SSL & DNS araç kutusu',
-  'app.tagline': 'Bir sertifikanın ait olduğu tüm alt alan adlarını, IP’leri ve sunucuları tarayıcınızda bulun.',
+  'app.tagline': 'Bir sertifikanın ait olduğu alt alan adlarını, IP’leri ve sunucuları tarayıcınızda bulun.',
 
   'lang.tr': 'Türkçe',
   'lang.en': 'English',
 
   'nav.label': 'Araçlar',
+  'nav.groupDiscover': 'Keşif',
   'nav.groupSsl': 'Sertifikalar',
   'nav.groupDns': 'DNS araçları',
   'nav.groupData': 'Çalışma alanı',
+  'nav.subdomains': 'Subdomain Tarama',
+  'nav.subdomains.desc': 'Bir alan adının subdomain’lerini DNS, CT kayıtları ve pasif DNS ile keşfedin ve her birinin nereye işaret ettiğini görün: IP adresleri, Cloudflare / CDN ya da kendi sunucunuz.',
   'nav.scan': 'SSL Hedefleri',
-  'nav.scan.desc': 'Bir sertifikanın kurulması gereken tüm alt alan adlarını, IP adreslerini ve sunucuları bulun.',
+  'nav.scan.desc': 'Bir sertifikanın kurulması gereken alt alan adlarını, IP adreslerini ve sunucuları bulun.',
   'nav.cert': 'Sertifika',
   'nav.cert.desc': 'Sertifikayı inceleyin: adlar, geçerlilik, anahtar, parmak izleri, zincir, CAA ve CT kayıtları.',
   'nav.global': 'Global DNS',
@@ -709,13 +740,13 @@ registerStrings('tr', {
 
   'settings.title': 'Ayarlar',
   'settings.dohChain': 'DNS-over-HTTPS çözümleyicileri',
-  'settings.dohChainHint': 'Bu sırayla sorgulanır. Bir çözümleyici hata verir, zaman aşımına uğrar veya sınırlama yaparsa sıradaki kullanılır.',
+  'settings.dohChainHint': 'Sorgular bu sırayla yapılır; bir çözümleyici hata verir, zaman aşımına uğrar veya sınırlama yaparsa sıradaki kullanılır. Subdomain taramaları çok sayıdaki tahmini bu listedeki çözümleyicilere dağıtır (listedeyse Cloudflare, Google ve DNS.SB) — çıkardığınız bir çözümleyici taramalarda kullanılmaz.',
   'settings.concurrency': 'Paralel DNS sorgusu',
-  'settings.concurrencyHint': 'Yüksek değer daha hızlıdır; düşük değer genel çözümleyicileri daha az yorar.',
+  'settings.concurrencyHint': 'Yüksek değer daha hızlıdır; düşük değer genel çözümleyicileri daha az yorar. Subdomain taramaları tahminlerini birkaç çözümleyiciye dağıttığı için aynı anda bunun en fazla iki katını (en çok 24) çalıştırabilir.',
   'settings.resetDefaults': 'Varsayılanları geri yükle',
   'settings.clearData': 'Tüm yerel verileri sil',
-  'settings.clearDataHint': 'Kayıtlı sunucu envanterini ve tüm ayarları bu tarayıcıdan kaldırır.',
-  'settings.clearDataConfirm': 'Kayıtlı sunucu envanteri ve tüm ayarlar bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
+  'settings.clearDataHint': 'Kayıtlı sunucu envanterini, tüm ayarları ve hatırlanan seçenekleri, öğrenilen subdomain adlarını ve özel kelime listesini bu tarayıcıdan kaldırır.',
+  'settings.clearDataConfirm': 'Kayıtlı sunucu envanteri, tüm ayarlar, öğrenilen adlar ve özel kelime listesi bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
   'settings.dataCleared': 'Yerel veriler silindi',
   'settings.saved': 'Ayarlar kaydedildi',
   'settings.atLeastOne': 'En az bir çözümleyici kalmalı.',
@@ -726,6 +757,10 @@ registerStrings('tr', {
   'settings.filter.security': 'güvenlik',
   'settings.filter.family': 'aile',
   'settings.unreliable': 'Tarayıcılar yanıtını okuyamayabilir (HTTP/3’te CORS yok); bu durumda sıradaki çözümleyici kullanılır.',
+  'settings.flagBrowser': 'Tarayıcıda okunamıyor',
+  'settings.flagReach': 'Zaman aşımı olabilir',
+  'settings.note.h3NoCors': 'Tarayıcılara HTTP/3 üzerinden, bir web sayfasının ihtiyaç duyduğu CORS başlığı olmadan yanıt veriyor; bu yüzden her sorgu sıradaki çözümleyiciye düşer. dig ve diğer komut satırı araçlarından sorunsuz çalışır.',
+  'settings.note.unreachable': 'Bazı ağlardan erişilemiyor: testlerimizde bu ağlardan yapılan bağlantılar zaman aşımına uğradı. Bu durumda her sorgu, sıradaki çözümleyici denenmeden önce zaman aşımını bekler.',
   'settings.anycast': 'Anycast',
   'settings.position': '{n}. sıra',
 
@@ -881,6 +916,20 @@ registerStrings('tr', {
   'error.kind.network': 'Ağ hatası — çevrimdışısınız, bir eklenti ya da güvenlik duvarı engelliyor veya hizmet çalışmıyor.',
   'error.kind.parse': 'Yanıt anlaşılamadı.',
   'error.kind.unknown': 'Beklenmeyen hata.',
+  'error.kind.unavailable': 'Hizmet geçici olarak çalışmıyor: her denemede sunucu hatası döndürdü.',
+
+  'source.quota.day': 'IP adresinizin günlük ücretsiz kotası doldu; 24 saat içinde sıfırlanır.',
+  'source.quota.hour': 'IP adresinizin saatlik ücretsiz kotası doldu; yaklaşık bir saat sonra tekrar deneyin.',
+  'source.quota.minutes': 'Hız sınırına ulaşıldı; birkaç dakika sonra tekrar deneyin.',
+  'source.quota.later': 'IP adresiniz için anonim erişim şu an sınırlı; daha sonra tekrar deneyin.',
+  'source.state.ok': 'Tamam',
+  'source.state.empty': 'Sonuç yok',
+  'source.state.partial': 'Kısmi',
+  'source.state.rate-limited': 'Kota doldu',
+  'source.state.unavailable': 'Geçici olarak çalışmıyor',
+  'source.state.timeout': 'Zaman aşımı',
+  'source.state.error': 'Başarısız',
+  'source.fallback': 'Yerine {name} kullanıldı.',
 
   'time.ms': '{n} ms',
   'time.s': '{n} sn',

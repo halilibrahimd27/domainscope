@@ -1476,6 +1476,9 @@ button.nav-status:hover {
 .badge-text {
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The badge itself uses line-height 1; give the clipped text box room for descenders
+     (g, p, y) so overflow: hidden does not cut them off. */
+  line-height: 1.3;
 }
 
 .badge.mono {
@@ -2692,6 +2695,9 @@ button.nav-status:hover {
 }
 
 .dt-scroll {
+  /* Containing block for absolutely positioned descendants (.sr-only labels in cells), so
+     they are clipped with the table instead of widening the page on phones. */
+  position: relative;
   max-height: min(72vh, 780px);
   overflow: auto;
   border: 1px solid var(--border);

@@ -21,10 +21,11 @@ import {
 import { parseRoute, buildRoute, sameParams, VIEWS, REPO_URL, DEFAULT_VIEW } from '../../assets/js/app.js';
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { HttpError } from '../../assets/js/lib/util.js';
+import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
+const VIEW_IDS = ['subdomains', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */
@@ -259,6 +260,30 @@ describe('i18n', () => {
     assert.equal(i18n.plural(3, null), '');
   });
 
+  test('a numeric {count} is locale-grouped in plain strings too (Turkish entries are often plain)', async () => {
+    i18n.registerStrings('en', { 'test.plainCount': '{count} names' });
+    i18n.registerStrings('tr', { 'test.plainCount': '{count} ad' });
+    // Real view strings whose Turkish form is a plain string.
+    await import('../../assets/js/views/subdomains.js');
+    await import('../../assets/js/views/scan.js');
+    i18n.setLang('tr');
+    try {
+      assert.equal(i18n.t('test.plainCount', { count: 12345 }), '12.345 ad');
+      assert.equal(i18n.t('test.plainCount', { count: 12 }), '12 ad');
+      assert.equal(i18n.t('test.plainCount', { count: '1.234' }), '1.234 ad', 'an already formatted string is left alone');
+      assert.equal(i18n.t('sub.opt.permBudgetValue', { count: 5000 }), '5.000 varyasyon');
+      assert.equal(i18n.t('scan.opt.permBudgetValue', { count: 5000 }), '5.000 varyasyon');
+      assert.equal(i18n.t('sub.stage.candidates', { count: 12345 }), '12.345 ad');
+      assert.equal(i18n.t('sub.doneToast', { count: 1234 }), 'Subdomain taraması bitti: 1.234 ad');
+      assert.equal(i18n.t('sub.org.net.hosts', { count: 1500 }), '1.500 DNS-only host');
+      i18n.setLang('en');
+      assert.equal(i18n.t('test.plainCount', { count: 12345 }), '12,345 names');
+      assert.equal(i18n.t('sub.opt.permBudgetValue', { count: 5000 }), '5,000 variations');
+    } finally {
+      i18n.setLang('en');
+    }
+  });
+
   test('detectLang / normalizeLang', () => {
     assert.equal(i18n.detectLang({ saved: 'tr', languages: ['en-US'] }), 'tr');
     assert.equal(i18n.detectLang({ saved: 'en', languages: ['tr-TR'] }), 'en');
@@ -356,7 +381,8 @@ describe('i18n', () => {
     const placeholders = (lang, key) => {
       i18n.setLang(lang);
       const raw = i18n.t(key, { count: 7 });
-      return (raw.match(/\{[A-Za-z0-9_.-]+\}/g) || []).sort();
+      // Unique set, like i18n-coverage: one language may use a placeholder twice.
+      return [...new Set(raw.match(/\{[A-Za-z0-9_.-]+\}/g) || [])].sort();
     };
     const mismatched = en.filter((k) => JSON.stringify(placeholders('en', k)) !== JSON.stringify(placeholders('tr', k)));
     i18n.setLang('en');
@@ -517,6 +543,21 @@ describe('state', () => {
     assert.equal(s.inventory.servers.length, 0);
     assert.equal(s.settings.theme, 'auto');
     assert.equal(s.getSession('x'), undefined);
+  });
+
+  test('clearAll also removes the learned names and this tab\'s custom wordlist, then emits "cleared"', () => {
+    const storage = new MemoryStorage({ 'ssds.learned.labels': '{"v":1,"labels":{"api":[1,1]}}', 'ssds.subdomains.options': '{}' });
+    const sessionStore = new MemoryStorage({ 'ssds.wordlist.custom': 'api\nvpn', other: 'keep' });
+    const s = createState({ storage, sessionStore, listenStorageEvents: false });
+    const events = [];
+    s.subscribe((e) => events.push(e.key));
+    assert.equal(s.clearAll(), true);
+    assert.equal(storage.map.size, 0, 'learned names and remembered options gone');
+    assert.deepEqual([...sessionStore.map.keys()], ['other'], 'only our session keys removed');
+    assert.deepEqual(events, ['inventory', 'settings', 'cleared']);
+    // A broken session storage never breaks "Delete all local data".
+    const broken = { get length() { throw new Error('SecurityError'); } };
+    assert.equal(createState({ storage: new MemoryStorage(), sessionStore: broken, listenStorageEvents: false }).clearAll(), true);
   });
 
   test('handleExternalChange re-reads storage written by another tab', () => {
@@ -892,7 +933,7 @@ describe('routing', () => {
 
   test('VIEWS follow the spec order; REPO_URL is a placeholder https URL', () => {
     assert.deepEqual(VIEWS.map((v) => v.id), VIEW_IDS);
-    assert.ok(VIEWS.every((v) => typeof v.load === 'function' && ['ssl', 'dns', 'data'].includes(v.group)));
+    assert.ok(VIEWS.every((v) => typeof v.load === 'function' && ['discover', 'ssl', 'dns', 'data'].includes(v.group)));
     assert.match(REPO_URL, /^https:\/\/github\.com\//);
   });
 
@@ -920,6 +961,860 @@ describe('routing', () => {
     assert.deepEqual(lineRange(text, 0), [0, 1], 'clamped to the first line');
     assert.equal(targetsText([{ name: 'web01', ips: ['10.0.0.1', '2001:db8::1'] }, { name: 'x', ips: [] }]), 'web01 10.0.0.1 2001:db8::1\n');
     assert.equal(targetsText([]), '');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Discovery engine v2 in the Subdomains / SSL Targets views                */
+/* ------------------------------------------------------------------------ */
+
+describe('subdomains / scan view helpers (discovery engine v2)', () => {
+  const load = async () => ({
+    S: await import('../../assets/js/views/subdomains.js'),
+    C: await import('../../assets/js/views/scan.js'),
+    src: await import('../../assets/js/lib/sources.js')
+  });
+  const inLang = (lang, fn) => {
+    const prev = i18n.getLang();
+    i18n.setLang(lang);
+    try {
+      return fn();
+    } finally {
+      i18n.setLang(prev);
+    }
+  };
+  const host = (name, origins, extra = {}) => ({
+    name,
+    origins,
+    wildcardSuspect: !!extra.wildcard,
+    classification: { kind: extra.kind || 'direct', hidesOrigin: extra.kind === 'cloudflare', dangling: false, provider: extra.kind === 'cloudflare' ? { name: 'Cloudflare' } : null },
+    resolution: { ipv4: extra.ips || [], ipv6: [], cnames: [], status: 'NOERROR' },
+    candidateNetworks: extra.networks || [],
+    servers: []
+  });
+
+  test('sanitizeOptions (Subdomains): smart by default, legacy medium → smart, budgets validated, new sources surfaced once', async () => {
+    const { S, src } = await load();
+    const ids = src.SOURCES.map((s) => s.id);
+    const d = S.sanitizeOptions(null);
+    assert.equal(d.bruteforce, 'smart');
+    assert.equal(d.permutations, true);
+    assert.equal(d.permutationBudget, 1500);
+    assert.equal(d.originHints, true);
+    assert.deepEqual(d.knownSources, ids);
+    assert.equal(S.sanitizeOptions({ bruteforce: 'medium' }).bruteforce, 'smart', 'a saved medium level still loads');
+    assert.equal(S.sanitizeOptions({ bruteforce: 'large' }).bruteforce, 'large');
+    assert.equal(S.sanitizeOptions({ bruteforce: 'off' }).bruteforce, 'off');
+    assert.equal(S.sanitizeOptions({ bruteforce: 'huge' }).bruteforce, 'huge', 'huge is now a real level');
+    assert.equal(S.sanitizeOptions({ bruteforce: 'nonsense' }).bruteforce, 'smart', 'an unknown level falls back to smart');
+    assert.equal(S.sanitizeOptions({ permutationBudget: 5000 }).permutationBudget, 5000);
+    assert.equal(S.sanitizeOptions({ permutationBudget: 123 }).permutationBudget, 1500);
+    assert.equal(S.sanitizeOptions({ permutations: false, originHints: false }).permutations, false);
+    // Languages / learned: auto (null) + learned names OFF by default (opt-in: they are sent as
+    // DNS lookups under every later target); explicit values validated / kept.
+    assert.equal(d.locales, null, 'languages default to automatic (from the TLD)');
+    assert.equal(d.learned, false, 'learned names are opt-in');
+    assert.equal(S.sanitizeOptions({ learned: true }).learned, true, 'an explicit opt-in is kept');
+    assert.equal(S.sanitizeOptions({ learned: 'yes' }).learned, false, 'only a real true opts in');
+    assert.deepEqual(S.sanitizeOptions({ locales: ['de', 'nope', 'tr', 'de'] }).locales, ['tr', 'de'], 'unknown packs dropped, deduped, pack order');
+    assert.deepEqual(S.sanitizeOptions({ locales: [] }).locales, [], 'none is kept distinct from auto');
+    assert.equal(S.sanitizeOptions({ learned: false }).learned, false);
+    // No knownSources (never saved by an older version of this view): the selection is kept as is.
+    assert.deepEqual(S.sanitizeOptions({ sources: [] }).sources, []);
+    // A source added after the save (not in knownSources) is switched on once; an unticked known one stays off.
+    const known = ids.filter((x) => x !== 'thc');
+    assert.deepEqual(S.sanitizeOptions({ sources: ['crtsh'], knownSources: known }).sources, ['crtsh', 'thc']);
+    assert.deepEqual(S.sanitizeOptions({ sources: ['crtsh'], knownSources: ids }).sources, ['crtsh']);
+  });
+
+  test('sanitizeOptions (SSL Targets): legacy saves gain only the sources added later', async () => {
+    const { C } = await load();
+    assert.deepEqual(C.BRUTEFORCE_MODES, ['off', 'small', 'smart', 'large', 'huge']);
+    const legacy = C.sanitizeOptions({ sources: ['crtsh', 'nope', 'crtsh'], bruteforce: 'medium', includeExpired: 'yes', originHints: false });
+    assert.deepEqual(legacy.sources, ['crtsh', 'thc'], 'unticked legacy sources stay off; ip.thc.org is new');
+    assert.equal(legacy.bruteforce, 'smart');
+    assert.equal(legacy.includeExpired, false);
+    assert.equal(legacy.originHints, false);
+    assert.equal(legacy.permutationBudget, 1500);
+    const again = C.sanitizeOptions({ ...legacy, sources: ['crtsh'] });
+    assert.deepEqual(again.sources, ['crtsh'], 'once known, an unticked source stays unticked');
+  });
+
+  test('estimateText / wordlistCount give rough, localized numbers (build-time counts, sweep-aware)', async () => {
+    const { S } = await load();
+    inLang('en', () => {
+      assert.equal(S.estimateText(5760), '≈ 50 s');
+      assert.equal(S.estimateText(159), '≈ 10 s');
+      assert.equal(S.estimateText(20500), '≈ 3 min');
+      assert.equal(S.estimateText(5760, 2), '≈ 100 s', 'two domains take twice as long');
+      // A lower sweep width (a gentler Settings value) takes proportionally longer.
+      assert.equal(S.estimateText(5760, 1, 12), '≈ 100 s', 'half the sweep width, twice the time');
+      assert.equal(S.wordlistCount('small').count, WORDLIST_SMALL.length);
+      // Counts are exact build-time constants now — no "≈".
+      assert.equal(S.wordlistCount('large').text, S.wordlistCount('large').count.toLocaleString('en-US'));
+      assert.ok(S.wordlistCount('large').count > S.wordlistCount('smart').count);
+      assert.ok(S.wordlistCount('huge').count > S.wordlistCount('large').count, 'huge is the largest tier');
+    });
+    inLang('tr', () => assert.equal(S.estimateText(5760), '≈ 50 sn'));
+    const n = await S.ensureSmartCount();
+    assert.ok(n > 5000, `smart list size ${n}`);
+    assert.equal(S.wordlistCount('smart').count, n);
+    assert.equal(S.levelCount('off'), 0, 'off has no candidates');
+    assert.match(S.levelSize('large'), /\bKB\b|\bMB\b/, 'large advertises a download size');
+    assert.equal(S.levelSize('small'), '', 'the built-in small list has no download');
+  });
+
+  test('wordlistPlan: per-domain candidate counts, locale packs and the per-domain / total caps', async () => {
+    const { S } = await load();
+    const off = S.wordlistPlan({ level: 'off', domains: ['example.com'] });
+    assert.equal(off.total, 0);
+    assert.deepEqual(off.perDomain, []);
+    // Smart + auto Turkish pack for a .com.tr domain; custom/learned add on top.
+    const smart = S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], custom: 3, learned: 5 });
+    const pd = smart.perDomain[0];
+    assert.deepEqual(pd.packs.map((p) => p.code), ['tr'], 'auto pack from the ccSLD');
+    assert.equal(pd.total, S.levelCount('smart') + pd.packs[0].count + 3 + 5);
+    assert.equal(pd.capped, false);
+    assert.equal(smart.total, pd.total, 'one domain');
+    // Small is language-neutral: no packs even for a .de domain.
+    assert.deepEqual(S.wordlistPlan({ level: 'small', domains: ['example.de'] }).perDomain[0].packs, []);
+    // Explicit locales override the auto pick; [] means the global list only.
+    assert.deepEqual(S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], locales: ['de'] }).perDomain[0].packs.map((p) => p.code), ['de']);
+    assert.deepEqual(S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], locales: [] }).perDomain[0].packs, []);
+    // Huge is capped per domain, and the whole scan is capped at the total.
+    const huge = S.wordlistPlan({ level: 'huge', domains: ['a.com', 'b.com'], custom: 300000 });
+    assert.equal(huge.perDomain[0].total, S.BRUTEFORCE_CAPS.huge, 'per-domain cap');
+    assert.equal(huge.perDomain[0].capped, true);
+    assert.equal(huge.total, S.BRUTEFORCE_TOTAL_CAP, 'multi-domain total cap');
+  });
+
+  test('locale helpers: auto pick from the TLD, a readable summary and the effective packs', async () => {
+    const { S } = await load();
+    assert.deepEqual(S.autoLocales(['example.com.tr']).map((p) => ({ suffix: p.suffix, codes: p.codes })), [{ suffix: '.com.tr', codes: ['tr'] }]);
+    assert.deepEqual(S.autoLocales(['example.ch'])[0].codes, ['de', 'fr', 'it'], 'Switzerland → several packs');
+    assert.deepEqual(S.autoLocales(['example.com'])[0].codes, [], '.com has no market pack');
+    assert.deepEqual(S.effectiveLocales(null, 'example.de'), ['de'], 'auto for a domain');
+    assert.deepEqual(S.effectiveLocales(['tr'], 'example.de'), ['tr'], 'explicit wins');
+    assert.deepEqual(S.effectiveLocales([], 'example.de'), [], 'none');
+    inLang('en', () => {
+      assert.equal(S.localeSummary(null, ['example.com.tr']), 'Auto: Turkish (.com.tr)');
+      assert.equal(S.localeSummary(null, ['example.com']), 'Auto: none — .com has no market pack, so the global list is used');
+      assert.equal(S.localeSummary(['de', 'fr'], []), 'Chosen: German, French');
+      assert.equal(S.localeSummary([], []), 'None: the global list only');
+    });
+    inLang('tr', () => {
+      assert.equal(S.localeSummary(null, ['example.com.tr']), 'Otomatik: Türkçe (.com.tr)');
+      assert.equal(S.localeSummary([], []), 'Hiçbiri: yalnızca küresel liste');
+    });
+  });
+
+  test('wordlistScanConfig maps options + labels to a runScan config (locales auto vs explicit)', async () => {
+    const { S } = await load();
+    const auto = S.wordlistScanConfig({ bruteforce: 'smart', locales: null, learned: true }, { custom: ['api'], learned: ['vpn'] });
+    assert.equal(auto.bruteforce, 'smart');
+    assert.ok(!('locales' in auto), 'auto: locales left undefined so the scanner picks per domain');
+    assert.deepEqual(auto.customWordlist, ['api']);
+    assert.deepEqual(auto.learnedLabels, ['vpn']);
+    const manual = S.wordlistScanConfig({ bruteforce: 'huge', locales: ['tr', 'nope'], learned: false }, { custom: [], learned: ['vpn'] });
+    assert.deepEqual(manual.locales, ['tr'], 'explicit packs validated');
+    assert.ok(!('customWordlist' in manual), 'no custom labels → field omitted');
+    assert.ok(!('learnedLabels' in manual), 'learned off → labels not passed');
+    // Opt-in only: a missing switch (older saved options, a caller that forgot it) passes nothing.
+    assert.ok(!('learnedLabels' in S.wordlistScanConfig({ bruteforce: 'smart', locales: null }, { learned: ['vpn'] })), 'no explicit opt-in → none');
+    // Level Off: the scanner would still feed learned labels to the permutation words and the
+    // recursive round — another target's vocabulary must not go out when nothing is to be guessed.
+    const off = S.wordlistScanConfig({ bruteforce: 'off', locales: null, learned: true }, { custom: ['api'], learned: ['erp-prod', 'vpn-ist'] });
+    assert.equal(off.bruteforce, 'off');
+    assert.ok(!('learnedLabels' in off), 'level Off → learned labels never passed');
+    assert.deepEqual(off.customWordlist, ['api'], 'the scan\'s own custom list still seeds permutations');
+  });
+
+  test('wordlist caps and the probe rate: one constant each, in step with lib/scanner', async () => {
+    const { S } = await load();
+    const src = await readFile(new URL('../../assets/js/lib/scanner.js', import.meta.url), 'utf8');
+    const perBase = /const MAX_BRUTEFORCE_PER_BASE = \{([^}]+)\}/.exec(src);
+    assert.ok(perBase, 'scanner declares MAX_BRUTEFORCE_PER_BASE');
+    const caps = Object.fromEntries([...perBase[1].matchAll(/(\w+):\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
+    assert.deepEqual(caps, { ...S.BRUTEFORCE_CAPS }, 'per-domain caps mirror the scanner');
+    assert.equal(Number(/const MAX_BRUTEFORCE_TOTAL = (\d+)/.exec(src)[1]), S.BRUTEFORCE_TOTAL_CAP, 'multi-domain cap mirrors the scanner');
+    assert.ok(S.BRUTEFORCE_CAPS.huge >= S.levelCount('huge'), 'one huge scan can try the whole huge tier');
+    // Every estimate derives from PROBE_RATE_QPS at the full sweep width.
+    assert.equal(S.probeRate(), S.PROBE_RATE_QPS);
+    assert.equal(S.probeRate(S.MAX_SWEEP_CONCURRENCY / 2), S.PROBE_RATE_QPS / 2);
+    const hugeMinutes = S.levelCount('huge') / S.PROBE_RATE_QPS / 60;
+    inLang('en', () => assert.equal(S.estimateText(S.levelCount('huge')), `≈ ${Math.round(hugeMinutes)} min`));
+    assert.ok(hugeMinutes > 5, 'huge really is "many minutes"');
+  });
+
+  test('wordlistPlanText: one honest sentence per plan (per-domain breakdown for several domains)', async () => {
+    const { S } = await load();
+    inLang('en', () => {
+      const one = S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], custom: 2 });
+      const tr = one.perDomain[0].packs[0].count;
+      const total = S.levelCount('smart') + tr + 2;
+      assert.equal(S.wordlistPlanText(one),
+        `≈ ${total.toLocaleString('en-US')} DNS queries for 1 domain (${S.levelCount('smart').toLocaleString('en-US')} smart, +${tr} Turkish, +2 yours) · ${S.estimateText(total)}`);
+      const two = S.wordlistPlan({ level: 'smart', domains: ['example.de', 'example.fr'] });
+      assert.match(S.wordlistPlanText(two), /for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ German, \+[\d,]+ French\)/);
+      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'huge', domains: ['example.org'], learned: 999999 })), /capped at 160,000 per domain/);
+      assert.equal(S.wordlistPlanText(S.wordlistPlan({ level: 'off', domains: ['example.org'] })), '');
+    });
+    // The level labels add the packs the typed domains get (each once), from Smart up.
+    assert.deepEqual(S.levelPacks('small', ['example.com.tr'], null), [], 'small is language-neutral');
+    assert.deepEqual(S.levelPacks('smart', ['example.com.tr', 'shop.example.com.tr'], null).map((p) => p.code), ['tr']);
+    assert.deepEqual(S.levelPacks('huge', ['example.ch'], null).map((p) => p.code), ['de', 'fr', 'it']);
+    assert.deepEqual(S.levelPacks('large', [], ['pl']).map((p) => p.code), ['pl'], 'a manual choice applies before a domain is typed');
+    assert.deepEqual(S.levelPacks('off', ['example.de'], null), []);
+    inLang('tr', () => {
+      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'small', domains: ['example.org'] })), /^1 alan adı için ≈ [\d.]+ DNS sorgusu \([\d.]+ küçük\) · ≈ \d+ sn$/);
+    });
+  });
+
+  test('custom wordlist: this tab only (sessionStorage), parsed with accepted / rejected counts, memory fallback', async () => {
+    const { S } = await load();
+    const prev = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    const store = new MemoryStorage();
+    Object.defineProperty(globalThis, 'sessionStorage', { value: store, configurable: true, writable: true });
+    try {
+      S.resetCustomWordlist();
+      assert.deepEqual(S.customWordlist().labels, [], 'empty by default');
+      assert.equal(S.saveCustomWordlist('api\nbilling, dev.api\n-bad-\n'), 'session');
+      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), 'api\nbilling, dev.api\n-bad-\n', 'raw text kept in this tab');
+      const cw = S.customWordlist();
+      assert.deepEqual(cw.labels, ['api', 'billing', 'dev.api']);
+      assert.deepEqual(cw.rejected, ['-bad-']);
+      assert.equal(cw.stored, 'session');
+      // A fresh page of the same tab reads it back.
+      S.resetCustomWordlist();
+      assert.deepEqual(S.customWordlist().labels, ['api', 'billing', 'dev.api']);
+      // Too long for session storage → kept in memory only (and the stale copy removed).
+      assert.equal(S.saveCustomWordlist('x'.repeat(S.CUSTOM_WORDLIST_MAX_CHARS + 1)), 'memory');
+      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
+      assert.equal(S.customWordlist().stored, 'memory');
+      // A throwing storage (private mode / quota) degrades to memory, never throws — and never
+      // leaves the older, replaced list behind for a reload of this tab to bring back.
+      assert.equal(S.saveCustomWordlist('old-label'), 'session');
+      store.failWrites = true;
+      assert.equal(S.saveCustomWordlist('vpn'), 'memory');
+      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null, 'the replaced list is removed from the tab storage');
+      assert.deepEqual(S.customWordlist().labels, ['vpn']);
+      S.resetCustomWordlist(); // a reload of this tab
+      assert.deepEqual(S.customWordlist().labels, [], 'the reload does not bring the older list back');
+      store.failWrites = false;
+      assert.equal(S.saveCustomWordlist(''), 'session', 'clearing removes the key');
+      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
+    } finally {
+      S.resetCustomWordlist();
+      if (prev) Object.defineProperty(globalThis, 'sessionStorage', prev);
+      else delete globalThis.sessionStorage;
+    }
+  });
+
+  test('learned names: only bare labels of resolving, non-suspect names are recorded — and only when switched on', async () => {
+    const { S } = await load();
+    const { createLearnedStore } = await import('../../assets/js/lib/learned.js');
+    const storage = new MemoryStorage();
+    const store = createLearnedStore(storage);
+    const result = {
+      domains: ['example.com'],
+      hosts: [
+        host('api.example.com', ['wordlist'], { ips: ['192.0.2.10'] }),
+        host('dev.panel.example.com', ['crtsh'], { ips: ['192.0.2.12'] }),
+        host('gone.example.com', ['crtsh']), // not resolving
+        host('fake.example.com', ['wordlist'], { ips: ['192.0.2.13'], wildcard: true }),
+        host('203.example.com', ['wordlist'], { ips: ['192.0.2.14'] }), // numeric: no convention signal
+        // Another organisation's names (a certificate SAN, an extra hostname): outside every
+        // scanned domain, so neither the brand label nor its subdomain labels are learned.
+        host('acmebrand.org', ['input'], { ips: ['192.0.2.2'] }),
+        host('portal.acmebrand.org', ['cert'], { ips: ['192.0.2.3'] })
+      ]
+    };
+    assert.equal(S.rememberLearned(result, false, () => store), 0, 'switch off: nothing is saved');
+    assert.equal(store.size(), 0);
+    assert.equal(S.rememberLearned(result, true, () => store), 3);
+    assert.deepEqual(store.labels().sort(), ['api', 'dev', 'panel'], 'no acmebrand / portal from out-of-scope names');
+    const raw = storage.getItem('ssds.learned.labels');
+    assert.ok(raw && !/example|192\.0\.2|\./.test(Object.keys(JSON.parse(raw).labels).join(' ')), `labels only: ${raw}`);
+    assert.equal(S.rememberLearned(null, true, () => store), 0, 'no result, no change');
+    assert.equal(S.rememberLearned(result, true, () => { throw new Error('storage gone'); }), 0, 'never throws');
+    // The runScan config takes the learned labels only while the switch is on (most frequent first, capped).
+    const many = Array.from({ length: S.LEARNED_TRY_MAX + 5 }, (_, i) => `n${i}x`);
+    assert.equal(S.wordlistScanConfig({ bruteforce: 'smart', locales: null, learned: true }, { learned: many }).learnedLabels.length, S.LEARNED_TRY_MAX);
+  });
+
+  test('sharedVocabulary: SSL Targets reuses the Subdomains languages, custom list and learned names', async () => {
+    const { S } = await load();
+    const prevL = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const prevS = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    const local = new MemoryStorage({
+      [S.OPTIONS_KEY]: JSON.stringify({ locales: ['de'], learned: true }),
+      'ssds.learned.labels': JSON.stringify({ v: 1, seq: 2, labels: { vpn: [3, 1], shop: [1, 2] } })
+    });
+    const session = new MemoryStorage({ [S.CUSTOM_WORDLIST_KEY]: 'kunden\nportal' });
+    Object.defineProperty(globalThis, 'localStorage', { value: local, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'sessionStorage', { value: session, configurable: true, writable: true });
+    try {
+      S.resetCustomWordlist();
+      assert.deepEqual(S.sharedVocabulary(), { locales: ['de'], learnedOn: true, custom: ['kunden', 'portal'], learned: ['vpn', 'shop'] });
+      local.setItem(S.OPTIONS_KEY, JSON.stringify({ learned: false }));
+      const off = S.sharedVocabulary();
+      assert.equal(off.locales, null, 'automatic languages');
+      assert.deepEqual([off.learnedOn, off.learned], [false, []], 'learned names switched off in Subdomains');
+    } finally {
+      S.resetCustomWordlist();
+      if (prevL) Object.defineProperty(globalThis, 'localStorage', prevL);
+      else delete globalThis.localStorage;
+      if (prevS) Object.defineProperty(globalThis, 'sessionStorage', prevS);
+      else delete globalThis.sessionStorage;
+    }
+  });
+
+  test('"Delete all local data" drops this tab\'s custom wordlist with no Subdomains view mounted', async () => {
+    const { S } = await load();
+    const { state: singleton } = await import('../../assets/js/state.js');
+    const prev = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    const store = new MemoryStorage();
+    Object.defineProperty(globalThis, 'sessionStorage', { value: store, configurable: true, writable: true });
+    try {
+      S.resetCustomWordlist();
+      assert.equal(S.saveCustomWordlist('billing\nintranet'), 'session');
+      assert.deepEqual(S.customWordlist().labels, ['billing', 'intranet']);
+      // About / Settings wipe the tab storage from any view: the module cache follows the storage.
+      createState({ storage: new MemoryStorage(), sessionStore: store, listenStorageEvents: false }).clearAll();
+      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
+      assert.equal(S.loadCustomWordlist(), '', 'the textarea of a later mount starts empty');
+      assert.deepEqual(S.customWordlist().labels, [], 'the next scan probes nothing stale');
+      assert.deepEqual(S.sharedVocabulary().custom, [], 'SSL Targets sees it gone too');
+      // A memory-only copy (the tab storage refused it) is dropped by the app state's 'cleared' event.
+      store.failWrites = true;
+      assert.equal(S.saveCustomWordlist('vpn\nportal'), 'memory');
+      assert.deepEqual(S.customWordlist().labels, ['vpn', 'portal']);
+      store.failWrites = false;
+      singleton.clearAll();
+      assert.deepEqual(S.customWordlist().labels, [], 'memory copy forgotten');
+    } finally {
+      S.resetCustomWordlist();
+      if (prev) Object.defineProperty(globalThis, 'sessionStorage', prev);
+      else delete globalThis.sessionStorage;
+    }
+  });
+
+  test('learned names never reach another target when the wordlist level is Off (view config → real runScan)', async () => {
+    const { S } = await load();
+    const { runScan } = await import('../../assets/js/lib/scanner.js');
+    const { DohClient } = await import('../../assets/js/lib/doh.js');
+    const { RESOLVERS } = await import('../../assets/js/lib/resolvers.js');
+    const { decodeMessage, encodeMessage, base64UrlDecode } = await import('../../assets/js/lib/dnswire.js');
+    // Customer B's zone; api.B has children, so the permutation and the deeper (recursive) rounds run.
+    const B = 'customer-b.example';
+    const zone = { [B]: '203.0.113.1', [`api.${B}`]: '203.0.113.2', [`v1.api.${B}`]: '203.0.113.3', [`v2.api.${B}`]: '203.0.113.4' };
+    const queried = [];
+    const fetchImpl = async (url) => {
+      if (!RESOLVERS.some((r) => url.startsWith(`${r.url}?`))) throw new TypeError(`unexpected URL ${url}`);
+      const q = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns'))).questions[0];
+      queried.push(q.name);
+      const exists = !!zone[q.name] || Object.keys(zone).some((k) => k.endsWith(`.${q.name}`));
+      const answers = q.type === 'A' && zone[q.name] ? [{ name: q.name, type: 'A', ttl: 300, data: zone[q.name] }] : [];
+      return new Response(encodeMessage({
+        id: 0, flags: { qr: true, rd: true, ra: true }, rcode: exists ? 'NOERROR' : 'NXDOMAIN',
+        questions: [{ name: q.name, type: q.type }], answers, authorities: [], edns: {}
+      }));
+    };
+    const dns = new DohClient({ fetchImpl, baseDelayMs: 1, maxDelayMs: 2, retries: 0 });
+    // Labels learned from customer A, switched on, but the level is Off ("guess nothing").
+    const options = S.sanitizeOptions({ sources: [], bruteforce: 'off', learned: true });
+    const cfg = S.wordlistScanConfig(options, { custom: [], learned: ['erp-prod', 'vpn-ist'] });
+    const scan = await runScan({
+      domains: [B], extraNames: [`api.${B}`, `v1.api.${B}`], sources: [], ...cfg,
+      permutationBudget: 200, recursive: true, mine: false, originHints: false, balance: false, dns, fetchImpl
+    });
+    assert.ok(queried.length > 0, 'the scan did query');
+    assert.ok(scan.hosts.some((x) => x.name === `v2.api.${B}`), 'the permutation / recursive rounds ran');
+    assert.deepEqual(queried.filter((n) => /erp-prod|vpn-ist/.test(n)), [], 'no learned label was sent under customer B');
+    assert.equal(scan.options.wordlist.learnedTried || 0, 0);
+  });
+
+  test('bruteforceBases: the wordlist plan counts every base the scanner brute-forces', async () => {
+    const { S } = await load();
+    // A certificate with nested wildcards: the scanner runs the level list under each wildcard base too.
+    const certNames = ['example.com', '*.example.com', '*.api.example.com', '*.shop.example.com', 'www.example.com'];
+    assert.deepEqual(S.bruteforceBases(['example.com'], certNames), ['example.com', 'api.example.com', 'shop.example.com']);
+    // Nothing typed: the registrable domains of the names (as the scanner derives its targets) + wildcard bases.
+    assert.deepEqual(S.bruteforceBases([], ['www.example.org', '*.cdn.example.org']), ['example.org', 'cdn.example.org']);
+    assert.deepEqual(S.bruteforceBases([], ['*.com.tr']), [], 'a public suffix is never a base');
+    assert.deepEqual(S.bruteforceBases(['example.net'], null), ['example.net']);
+    assert.deepEqual(S.bruteforceBases(['example.net', 'example.net'], ['*.example.net']), ['example.net'], 'deduplicated');
+    const plan = S.wordlistPlan({ level: 'smart', domains: S.bruteforceBases(['example.com'], certNames) });
+    assert.equal(plan.perDomain.length, 3);
+    assert.equal(plan.total, 3 * plan.perDomain[0].total, 'three full lists, not one');
+    inLang('en', () => assert.match(S.wordlistPlanText(plan), /DNS queries for 3 domains \(per domain: /));
+  });
+
+  test('live refresh hooks: SSL Targets defines refreshVocab (startRun calls it); Forget re-renders the Advanced summary', async () => {
+    // The views cannot be mounted on the minimal fake DOM; these guard the wiring (the E2E runs check the behaviour).
+    const scanSrc = await readFile(new URL('../../assets/js/views/scan.js', import.meta.url), 'utf8');
+    assert.match(scanSrc, /active && active\.refreshVocab\) active\.refreshVocab\(\)/, 'startRun calls the hook after learning');
+    const activeBlock = /\n {2}active = \{([\s\S]*?)\n {2}\};/.exec(scanSrc);
+    assert.ok(activeBlock && /\n {4}refreshVocab\(\) \{\s*renderVocab\(\);/.test(activeBlock[1]), 'the mounted view defines it');
+    const subSrc = await readFile(new URL('../../assets/js/views/subdomains.js', import.meta.url), 'utf8');
+    const forget = /dataset: \{ action: 'sub-learned-clear' \},\s*onClick: \(\) => \{([\s\S]*?)\n {4}\}\n {2}\}\);/.exec(subSrc);
+    assert.ok(forget, 'Forget handler found');
+    for (const fn of ['renderLearned()', 'renderPlan()', 'renderAdvSummary()']) assert.ok(forget[1].includes(fn), `Forget calls ${fn}`);
+    // The summary counts what a scan tries (capped like the plan line), not the whole store.
+    const adv = /function renderAdvSummary\(\) \{([\s\S]*?)\n {2}\}/.exec(subSrc);
+    assert.ok(adv && /learnedTryCount\(\)/.test(adv[1]) && !/learnedStore\(\)\.size\(\)/.test(adv[1]), 'summary uses the capped count');
+  });
+
+  test('reasonHost / reasonText read the structured fields only — `detail` is never parsed', async () => {
+    const { S, C } = await load();
+    assert.deepEqual(S.reasonHost({ kind: 'resolver-leak', host: 'a.x.com', resolver: 'google' }), { host: 'a.x.com', resolver: 'google', source: null, lastSeen: null });
+    assert.deepEqual(S.reasonHost({ kind: 'history', host: 'b.x.com', source: 'otx', lastSeen: '2024-01-02' }), { host: 'b.x.com', resolver: null, source: 'otx', lastSeen: '2024-01-02' });
+    // A detail-only reason has no host: the text is display-only, never read back.
+    assert.deepEqual(S.reasonHost({ kind: 'resolver-leak', detail: 'c.x.com via cloudflare' }), { host: null, resolver: null, source: null, lastSeen: null });
+    assert.equal(S.reasonHost({ kind: 'history', host: 42, source: {} }).host, null, 'non-string fields are ignored');
+    inLang('en', () => {
+      assert.equal(S.reasonText({ kind: 'resolver-leak', host: 'a.x.com', resolver: 'google', detail: 'ignored' }), 'a.x.com answered by Google Public DNS');
+      assert.equal(S.reasonText({ kind: 'history', host: 'b.x.com', source: 'otx', lastSeen: '2024-01-02' }), 'b.x.com · seen by AlienVault OTX · last Jan 2, 2024');
+      assert.equal(S.reasonText({ kind: 'history', host: 'b.x.com', source: 'thc' }), 'b.x.com · seen by ip.thc.org');
+      assert.equal(S.reasonText({ kind: 'mx', detail: 'x.com: MX 10 mail.x.com' }), 'x.com: MX 10 mail.x.com', 'SPF / MX / sibling keep their detail');
+      assert.equal(S.reasonText({ kind: 'resolver-leak', detail: 'c.x.com via cloudflare' }), 'c.x.com via cloudflare', 'no host → the detail as given');
+      assert.equal(S.dayText('2024-01-02'), 'Jan 2, 2024');
+      assert.equal(S.dayText('last week'), 'last week', 'anything but a day is shown as given');
+    });
+    inLang('tr', () => {
+      assert.equal(S.reasonText({ kind: 'history', host: 'b.x.com', source: 'otx', lastSeen: '2024-01-02' }), 'b.x.com · AlienVault OTX gördü · son 2 Oca 2024');
+    });
+    // SSL Targets renders its hint table with the same helper (no raw scanner detail in the cell).
+    assert.ok(!/scan-hint-detail' \}, x\.detail/.test(await readFile(new URL('../../assets/js/views/scan.js', import.meta.url), 'utf8')), 'scan.js shows reasonText(x)');
+    assert.equal(typeof C.id, 'string');
+  });
+
+  test('techniqueCounts separates DNS discovery from passive sources (wildcard suspects left out)', async () => {
+    const { S } = await load();
+    const c = S.techniqueCounts([
+      host('a.x.com', ['input']),
+      host('mail.x.com', ['dns-mine:MX', 'crtsh']),
+      host('ns1.x.com', ['dns-mine:NS', 'dns-mine:SOA']),
+      host('api.x.com', ['wordlist']),
+      host('app.x.com', ['bruteforce', 'thc']),
+      host('api2.x.com', ['permutation']),
+      host('v2.api.x.com', ['recursive']),
+      host('old.x.com', ['otx', 'hackertarget']),
+      host('fake.x.com', ['wordlist'], { wildcard: true })
+    ]);
+    assert.equal(c.total, 8);
+    assert.equal(c.dns, 6);
+    assert.equal(c.sources, 3);
+    assert.equal(c.dnsOnly, 4, 'ns1, api, api2, v2.api');
+    assert.deepEqual([c.mine, c.wordlist, c.permutation, c.recursive], [2, 2, 1, 1]);
+    assert.deepEqual(c.byRecord, { MX: 1, NS: 1, SOA: 1 });
+    assert.deepEqual(c.bySource, { crtsh: 1, thc: 1, otx: 1, hackertarget: 1 });
+  });
+
+  test('origin labels are readable and localized in both views', async () => {
+    const { S, C } = await load();
+    inLang('en', () => {
+      assert.equal(S.originLabel('dns-mine:MX'), 'MX record');
+      assert.equal(S.originLabel('wordlist'), 'Wordlist');
+      assert.equal(S.originLabel('permutation'), 'Permutation');
+      assert.equal(S.originLabel('recursive'), 'Deeper level');
+      assert.equal(S.originLabel('thc'), 'ip.thc.org');
+      assert.equal(C.originLabel('dns-mine:SPF'), 'SPF record');
+      assert.equal(C.originLabel('permutation'), 'Permutation');
+    });
+    inLang('tr', () => {
+      assert.equal(S.originLabel('dns-mine:MX'), 'MX kaydı');
+      assert.equal(S.originLabel('permutation'), 'Varyasyon');
+      assert.equal(C.originLabel('recursive'), 'Alt seviye');
+    });
+  });
+
+  test('sourceHealthText: quota, outage with the CT fallback, page limit, plain results', async () => {
+    const { S, src } = await load();
+    const r = (source, ok, extra = {}) => ({
+      source, ok, domain: 'x.com', names: [], ipHints: [], certs: [], partial: false, error: ok ? null : 'x', errorKind: null, attempts: 1, elapsedMs: 5, ...extra
+    });
+    const health = src.sourceHealthSummary([
+      r('crtsh', false, { errorKind: 'unavailable', error: 'HTTP 502' }),
+      r('certspotter', true, { names: ['a.x.com'] }),
+      r('hackertarget', false, { errorKind: 'rate-limit', error: 'API count exceeded', quota: { limited: true, period: 'day', hintKey: 'source.quota.day' } }),
+      r('thc', true, { names: ['a.x.com', 'b.x.com'], truncated: true, available: 4293 }),
+      r('anubis', true)
+    ]);
+    const by = Object.fromEntries(health.map((x) => [x.source, x]));
+    inLang('en', () => {
+      const crt = S.sourceHealthText(by.crtsh);
+      assert.equal(crt.tone, 'error');
+      assert.equal(crt.short, 'Temporarily down');
+      assert.equal(crt.detail, 'crt.sh is temporarily down. Cert Spotter was used instead.');
+      const ht = S.sourceHealthText(by.hackertarget);
+      assert.equal(ht.tone, 'limited');
+      assert.equal(ht.short, 'Quota used up');
+      assert.match(ht.detail, /^HackerTarget: The daily free quota .* resets within 24 hours\.$/);
+      assert.equal(S.sourceHealthText(by.thc).detail, 'ip.thc.org: the first 2 of 4,293 names (page limit)');
+      assert.equal(S.sourceHealthText(by.anubis).detail, 'Anubis DB: no names for this domain');
+      assert.equal(S.sourceHealthText(by.certspotter).short, '1 name');
+    });
+    inLang('tr', () => {
+      assert.equal(S.sourceHealthText(by.crtsh).detail, 'crt.sh geçici olarak çalışmıyor. Yerine Cert Spotter kullanıldı.');
+      assert.match(S.sourceHealthText(by.hackertarget).detail, /^HackerTarget: IP adresinizin günlük ücretsiz kotası doldu; 24 saat içinde sıfırlanır\.$/);
+    });
+  });
+
+  test('originOverview: resolver leaks and history per proxied host, networks, CLI command for the downloaded file', async () => {
+    const { S } = await load();
+    const result = {
+      hosts: [
+        host('shopapi.x.com', ['permutation'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: ['203.0.113.0/24'] }),
+        host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.2'], networks: ['203.0.113.0/24'] }),
+        host('api.x.com', ['wordlist'], { ips: ['203.0.113.14'] }),
+        host('ghost.x.com', ['wordlist'], { kind: 'cloudflare', wildcard: true })
+      ],
+      // engine v2 reasons: structured fields (host / resolver / source / lastSeen), no parsing.
+      originHints: [
+        { ip: '203.0.113.77', reasons: [{ kind: 'resolver-leak', host: 'shopapi.x.com', resolver: 'google', detail: 'shopapi.x.com via google' }], hosts: ['shopapi.x.com'], servers: [], provider: null },
+        { ip: '203.0.113.9', reasons: [{ kind: 'history', host: 'www.x.com', source: 'otx', lastSeen: '2024-01-02', detail: 'otx: www.x.com (last seen 2024-01-02)' }], hosts: ['www.x.com'], servers: [], provider: null },
+        { ip: '203.0.113.14', reasons: [{ kind: 'direct-sibling', detail: 'api.x.com' }], hosts: ['api.x.com'], servers: [], provider: null },
+        { ip: '10.0.0.7', reasons: [{ kind: 'direct-sibling', detail: 'intranet.x.com' }], hosts: ['intranet.x.com'], servers: [], provider: null },
+        { ip: '203.0.113.9', reasons: [{ kind: 'mx', detail: 'x.com: MX 10 mail.x.com' }, { kind: 'direct-sibling', detail: 'mail.x.com' }], hosts: [], servers: [], provider: null }
+      ],
+      originNetworks: [{ cidr: '203.0.113.0/24', ips: ['203.0.113.14', '203.0.113.77'], hosts: ['api.x.com'], provider: null }],
+      // Structured v2 output: targets + names go straight to lib/cmdline (no string parsing).
+      cliTargets: ['203.0.113.0/24'],
+      cliNames: ['shopapi.x.com', 'www.x.com'],
+      cliSuggestion: 'python3 cli/ssl_origin_scan.py -t 203.0.113.0/24 -n shopapi.x.com www.x.com'
+    };
+    const o = S.originOverview(result);
+    assert.deepEqual(o.proxied.map((p) => p.name), ['shopapi.x.com', 'www.x.com'], 'wildcard suspects left out');
+    assert.deepEqual(o.proxied[0].leaks, [{ ip: '203.0.113.77', resolver: 'Google Public DNS' }]);
+    assert.deepEqual(o.proxied[1].history, [{ ip: '203.0.113.9', source: 'otx', lastSeen: '2024-01-02' }], 'structured history fields');
+    assert.deepEqual(o.proxied[0].networks, ['203.0.113.0/24']);
+    assert.equal(o.leakCount, 1);
+    assert.equal(o.historyCount, 1);
+    // A sibling already listed by its origin network is not repeated; a private sibling and an MX host are.
+    assert.deepEqual(o.general.map((x) => x.ip), ['10.0.0.7', '203.0.113.9']);
+    assert.equal(o.networks.length, 1);
+    assert.equal(o.command, 'python3 ssl_origin_scan.py -t 203.0.113.0/24 -n shopapi.x.com www.x.com');
+    assert.equal(o.commands.posix, o.command, 'command is the POSIX one');
+    assert.equal(o.commands.powershell, 'python ssl_origin_scan.py -t 203.0.113.0/24 -n shopapi.x.com www.x.com', 'PowerShell variant uses python');
+    assert.equal(o.droppedCount, 0, 'every token is a valid IP/CIDR or hostname');
+    assert.equal(S.originOverview(null).proxied.length, 0);
+    assert.equal(S.originOverview({ hosts: [], cliSuggestion: null }).command, null);
+    // The cliSuggestion string is display text: without cliTargets / cliNames there is no command.
+    assert.equal(S.originOverview({ ...result, cliTargets: undefined, cliNames: undefined }).command, null, 'never parsed from cliSuggestion');
+  });
+
+  test('originOverview ignores detail-only reasons and drops a hostile CLI token', async () => {
+    const { S } = await load();
+    const result = {
+      hosts: [host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.9'], networks: ['198.51.100.0/24'] })],
+      originHints: [
+        { ip: '198.51.100.9', reasons: [{ kind: 'resolver-leak', host: 'www.x.com', resolver: 'cloudflare', detail: 'www.x.com via cloudflare' }], hosts: ['www.x.com'], servers: [], provider: null },
+        // No structured host: the detail text is never parsed, so it is no candidate for www.
+        { ip: '198.51.100.8', reasons: [{ kind: 'resolver-leak', detail: 'www.x.com via google' }], hosts: [], servers: [], provider: null }
+      ],
+      originNetworks: [{ cidr: '198.51.100.0/24', ips: ['198.51.100.9'], hosts: [], provider: null }],
+      // A hostile / malformed token must never reach the command: cmdline drops and reports it.
+      cliTargets: ['198.51.100.0/24', '; rm -rf /'],
+      cliNames: ['www.x.com', '$(whoami)']
+    };
+    const o = S.originOverview(result);
+    assert.deepEqual(o.proxied[0].leaks, [{ ip: '198.51.100.9', resolver: 'Cloudflare' }], 'structured leak only');
+    assert.equal(o.command, 'python3 ssl_origin_scan.py -t 198.51.100.0/24 -n www.x.com');
+    assert.equal(o.droppedCount, 2, 'the injection tokens were dropped and counted');
+    assert.doesNotMatch(o.commands.powershell, /rm -rf|whoami/, 'nothing hostile in either shell');
+  });
+
+  test('originOverview: a large proxied estate reads its names from proxied-names.txt, offered as a download', async () => {
+    const { S } = await load();
+    const names = Array.from({ length: 250 }, (_, i) => `shop${String(i).padStart(3, '0')}.x.com`);
+    const result = {
+      hosts: names.map((n, i) => host(n, ['wordlist'], { kind: 'cloudflare', ips: [`104.21.1.${(i % 200) + 1}`], networks: ['203.0.113.0/24'] })),
+      originHints: [],
+      originNetworks: [{ cidr: '203.0.113.0/24', ips: ['203.0.113.14'], hosts: [], provider: null }],
+      cliTargets: ['203.0.113.0/24'],
+      cliNames: names
+    };
+    const o = S.originOverview(result);
+    assert.equal(o.command, 'python3 ssl_origin_scan.py -t 203.0.113.0/24 -n proxied-names.txt');
+    assert.equal(o.commands.powershell, 'python ssl_origin_scan.py -t 203.0.113.0/24 -n proxied-names.txt');
+    for (const sh of ['posix', 'powershell']) {
+      const nf = o.namesFiles[sh];
+      assert.equal(nf.file, 'proxied-names.txt');
+      assert.equal(nf.count, 250);
+      assert.equal(nf.text, `${names.join('\n')}\n`, 'the file holds exactly the proxied names, one per line');
+    }
+    // A small estate keeps the names inline and offers no file.
+    const small = S.originOverview({ ...result, hosts: result.hosts.slice(0, 3), cliNames: names.slice(0, 3) });
+    assert.match(small.command, /-n shop000\.x\.com shop001\.x\.com shop002\.x\.com$/);
+    assert.deepEqual(small.namesFiles, { posix: null, powershell: null });
+    const sweep = S.originSweep(result, { shell: 'powershell' });
+    assert.equal(sweep.namesFile, 'proxied-names.txt');
+    assert.equal(sweep.count, 250);
+    assert.deepEqual(S.originSweep(null), { command: null, namesFile: null, namesText: '', count: 0 });
+  });
+
+  test('origin CLI command: an IPv6 /48 becomes its known addresses (the CLI refuses the /48 and scans nothing)', async () => {
+    const { S } = await load();
+    for (const ok of ['192.0.2.0/24', '198.51.100.0/16', '2001:db8:1::/112', '2001:db8:1::25', '203.0.113.9']) assert.ok(S.sweepableTarget(ok), ok);
+    for (const bad of ['2001:db8:1::/48', '2001:db8::/64', '10.0.0.0/8', '198.51.100.0/15', 'example.com', '', '2001:db8::/129']) assert.ok(!S.sweepableTarget(bad), bad);
+    const mail = host('mail.x.com', ['dns-mine:MX'], { ips: ['198.51.100.6'] });
+    mail.resolution.ipv6 = ['2001:db8:1::25'];
+    const result = {
+      hosts: [
+        host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.16.1.1'], networks: ['198.51.100.0/24', '2001:db8:1::/48'] }),
+        host('x.com', ['input'], { ips: ['198.51.100.5'] }),
+        mail
+      ],
+      originHints: [],
+      originNetworks: [
+        { cidr: '198.51.100.0/24', ips: ['198.51.100.5', '198.51.100.6'], hosts: ['mail.x.com', 'x.com'], provider: null },
+        { cidr: '2001:db8:1::/48', ips: ['2001:db8:1::25'], hosts: ['mail.x.com'], provider: null }
+      ],
+      cliTargets: ['198.51.100.0/24', '2001:db8:1::/48'],
+      cliNames: ['www.x.com']
+    };
+    const o = S.originOverview(result);
+    assert.equal(o.command, 'python3 ssl_origin_scan.py -t 198.51.100.0/24 2001:db8:1::25 -n www.x.com');
+    assert.ok(!/\/48/.test(o.command), 'no /48 reaches the command');
+    assert.equal(o.networks.length, 2, 'the /48 is still shown as context');
+    // A scanner that already lists the IPv6 addresses is left as it is.
+    assert.equal(S.originCliCommand({ cliTargets: ['198.51.100.0/24', '2001:db8:1::25'], cliNames: ['www.x.com'] }),
+      'python3 ssl_origin_scan.py -t 198.51.100.0/24 2001:db8:1::25 -n www.x.com');
+    assert.equal(S.originCliCommand({ cliTargets: ['198.51.100.0/24'], cliNames: ['www.x.com'] }, { shell: 'powershell' }),
+      'python ssl_origin_scan.py -t 198.51.100.0/24 -n www.x.com', 'PowerShell launches python');
+    // Nothing sweepable left → no command (never a command the CLI rejects).
+    assert.equal(S.originCliCommand({ cliTargets: ['2001:db8:9::/48'], cliNames: ['www.x.com'] }), null);
+  });
+
+  test('origin CLI command and networks leave wildcard suspects out', async () => {
+    const { S } = await load();
+    const ghosts = ['retired0.x.com', 'retired1.x.com', 'retired2.x.com'];
+    const result = {
+      hosts: [
+        host('www.x.com', ['crtsh'], { kind: 'cloudflare', ips: ['104.16.1.1'], networks: ['198.51.100.0/24', '192.0.2.0/24'] }),
+        ...ghosts.map((n) => host(n, ['crtsh'], { kind: 'cloudflare', ips: ['104.16.9.9'], wildcard: true, networks: ['198.51.100.0/24', '192.0.2.0/24'] })),
+        host('api.x.com', ['wordlist'], { ips: ['198.51.100.6'] }),
+        host('ghost-direct.x.com', ['otx'], { ips: ['198.51.100.99'], wildcard: true }),
+        host('only-ghost.x.com', ['otx'], { ips: ['192.0.2.50'], wildcard: true })
+      ],
+      originHints: [],
+      originNetworks: [
+        { cidr: '198.51.100.0/24', ips: ['198.51.100.6', '198.51.100.99'], hosts: ['api.x.com', 'ghost-direct.x.com'], provider: null },
+        { cidr: '192.0.2.0/24', ips: ['192.0.2.50'], hosts: ['only-ghost.x.com'], provider: null }
+      ],
+      cliTargets: ['198.51.100.0/24', '192.0.2.0/24'],
+      cliNames: [...ghosts, 'www.x.com']
+    };
+    const o = S.originOverview(result);
+    assert.deepEqual(o.proxied.map((p) => p.name), ['www.x.com']);
+    assert.equal(o.command, 'python3 ssl_origin_scan.py -t 198.51.100.0/24 -n www.x.com', 'no suspect names, no suspect-only network');
+    assert.deepEqual(o.networks.map((n) => n.cidr), ['198.51.100.0/24']);
+    assert.deepEqual(o.networks[0].hosts, ['api.x.com'], 'the card counts real DNS-only hosts only');
+    assert.deepEqual(o.networks[0].ips, ['198.51.100.6']);
+    assert.deepEqual(o.proxied[0].networks, ['198.51.100.0/24']);
+    assert.equal(result.originNetworks[0].hosts.length, 2, 'the ScanResult itself is not changed');
+  });
+
+  test('stage pills: mining next to the sources, cumulative permutation rounds, a cancelled run stops its stage', async () => {
+    const { S } = await load();
+    const scanner = await import('../../assets/js/lib/scanner.js');
+    const mk = () => {
+      const stages = {};
+      for (const s of scanner.SCAN_STAGES) stages[s] = { state: 'pending', info: null };
+      return { stages, progress: { stage: null, done: 0, total: 0 }, config: { bruteforce: 'off' }, sourcePlan: null, miningProgress: null, rounds: null };
+    };
+    const run = mk();
+    S.applyStage(run, 'sources', { domains: ['x.com'], sources: ['crtsh'] });
+    assert.deepEqual(run.sourcePlan, { domains: ['x.com'], sources: ['crtsh'] });
+    // Mining finishes while crt.sh is still pending: the bar keeps showing the sources.
+    assert.equal(S.applyProgress(run, { stage: 'sources', done: 1, total: 3 }), false);
+    assert.equal(S.applyProgress(run, { stage: 'mining', done: 1, total: 1 }), true, 'the mining pill changed');
+    assert.deepEqual(run.progress, { stage: 'sources', done: 1, total: 3 });
+    assert.equal(run.stages.mining.state, 'done');
+    assert.equal(run.stages.sources.state, 'active');
+    S.applyStage(run, 'mining', { domains: 1 });
+    assert.equal(run.stages.sources.state, 'done');
+    assert.equal(run.stages.mining.state, 'done', 'mining that finished early is not restarted');
+    S.applyStage(run, 'wildcard', {});
+    S.applyStage(run, 'bruteforce', { skipped: true });
+    assert.equal(run.stages.bruteforce.state, 'skipped');
+    // Permutations, then the deeper round reporting from 0 again: the bar never runs backwards.
+    S.applyStage(run, 'permutations', { budget: 1500, recursive: true });
+    assert.equal(S.applyProgress(run, { stage: 'permutations', done: 0, total: 1500 }), true, 'candidate count learned');
+    assert.equal(run.stages.permutations.candidates, 1500);
+    S.applyProgress(run, { stage: 'permutations', done: 1500, total: 1500 });
+    S.applyProgress(run, { stage: 'permutations', done: 10, total: 300 });
+    assert.deepEqual(run.progress, { stage: 'permutations', done: 1510, total: 1800 });
+    assert.equal(run.stages.permutations.candidates, 1800);
+    // Cancel: the running stage is stopped, never left active (pulsing, aria-current).
+    S.stopStages(run);
+    assert.equal(run.stages.permutations.state, 'stopped');
+    assert.ok(!Object.values(run.stages).some((s) => s.state === 'active'));
+    assert.equal(run.stages.resolve.state, 'pending');
+    // Mining still running when the sources finish stays active and keeps its progress.
+    const r2 = mk();
+    S.applyStage(r2, 'sources', {});
+    S.applyProgress(r2, { stage: 'mining', done: 1, total: 2 });
+    assert.equal(r2.stages.mining.state, 'active');
+    S.applyStage(r2, 'mining', {});
+    assert.equal(r2.stages.mining.state, 'active');
+    assert.deepEqual(r2.progress, { stage: 'mining', done: 1, total: 2 });
+    S.applyProgress(r2, { stage: 'mining', done: 2, total: 2 });
+    assert.deepEqual(r2.progress, { stage: 'mining', done: 2, total: 2 });
+  });
+
+  test('table filter: wildcard suspects streaming in after a filter was chosen stay hidden', async () => {
+    const { S } = await load();
+    const prefs = { showWildcard: false };
+    const real = host('api.x.com', ['wordlist'], { ips: ['203.0.113.1'] });
+    const ghost = host('ghost.x.com', ['crtsh'], { ips: ['203.0.113.2'], wildcard: true });
+    assert.equal(S.hostTableFilter('all', prefs, [real]), null, 'nothing to hide');
+    const resolving = S.hostTableFilter('resolving', prefs, [real]);
+    assert.equal(resolving(real), true);
+    assert.equal(resolving(ghost), false, 'a suspect arriving later is hidden');
+    prefs.showWildcard = true;
+    assert.equal(resolving(ghost), true, 'the toggle is read live');
+    prefs.showWildcard = false;
+    const all = S.hostTableFilter('all', prefs, [real, ghost]);
+    assert.equal(all(ghost), false);
+    assert.equal(S.hostTableFilter('bogus', { showWildcard: true }, [ghost]), null, 'unknown filter → all');
+  });
+
+  test('"only through DNS" is claimed only when every selected source answered completely', async () => {
+    const { S, src } = await load();
+    const r = (source, ok, extra = {}) => ({ source, ok, domain: 'x.com', names: [], ipHints: [], certs: [], partial: false, error: ok ? null : 'x', errorKind: null, ...extra });
+    const allOk = src.sourceHealthSummary([r('crtsh', true, { names: ['a.x.com'] }), r('anubis', true)]);
+    assert.equal(S.dnsOnlyNoteKey(4, ['crtsh', 'anubis'], allOk), 'sub.tech.dnsOnly');
+    assert.equal(S.dnsOnlyNoteKey(0, ['crtsh', 'anubis'], allOk), null, 'nothing found only by DNS');
+    assert.equal(S.dnsOnlyNoteKey(4, [], []), null, 'no passive source was queried: no claim at all');
+    const limited = src.sourceHealthSummary([r('crtsh', true), r('hackertarget', false, { errorKind: 'rate-limit', quota: { limited: true, period: 'day', hintKey: 'source.quota.day' } })]);
+    assert.equal(S.dnsOnlyNoteKey(4, ['crtsh', 'hackertarget'], limited), 'sub.tech.dnsOnlyIncomplete');
+    const truncated = src.sourceHealthSummary([r('thc', true, { names: ['a.x.com'], truncated: true, available: 5000 })]);
+    assert.equal(S.dnsOnlyNoteKey(4, ['thc'], truncated), 'sub.tech.dnsOnlyIncomplete', 'page limit');
+    assert.equal(S.dnsOnlyNoteKey(4, ['crtsh', 'otx'], allOk), 'sub.tech.dnsOnlyIncomplete', 'a source that never answered');
+    inLang('en', () => {
+      assert.doesNotMatch(i18n.t('sub.tech.dnsOnly', { count: 2 }), /no online database/);
+      assert.match(i18n.t('sub.tech.dnsOnly', { count: 2 }), /passive sources queried in this scan/);
+      assert.doesNotMatch(i18n.t('sub.origin.dnsTitle'), /database/);
+    });
+  });
+
+  test('scan parallelism follows Settings (up to twice the value, at most 24)', async () => {
+    const { S } = await load();
+    assert.equal(S.scanConcurrency(12), 24, 'the default keeps the tested sweep speed');
+    assert.equal(S.scanConcurrency(4), 8);
+    assert.equal(S.scanConcurrency(1), 2);
+    assert.equal(S.scanConcurrency(32), 24);
+    assert.equal(S.scanConcurrency(NaN), 24);
+  });
+
+  test('a shared run=1 link asks for one click; it never scans on its own', async () => {
+    const { S } = await load();
+    const run = (domains, status = 'done') => ({ status, config: { domains } });
+    assert.equal(S.linkAction({ domain: 'example.com', run: '1' }, ['example.com'], null), 'prompt');
+    assert.equal(S.linkAction({ domain: 'example.com' }, ['example.com'], null), null, 'without run=1 the box is only pre-filled');
+    assert.equal(S.linkAction({ run: '1' }, [], null), null, 'nothing to scan');
+    assert.equal(S.linkAction({ run: '1' }, ['example.com'], run(['example.com'])), null, 'this page already has that scan');
+    assert.equal(S.linkAction({ run: '1' }, ['example.org'], run(['example.com'], 'running')), null, 'a scan is running');
+    assert.equal(S.linkAction({ run: '1' }, ['example.org'], run(['example.com'])), 'prompt');
+    // start() writes only `domain` (a reload pre-fills instead of re-scanning) — checked in the source.
+    const srcText = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    assert.match(srcText, /ctx\.setParams\(\{ domain: v\.domains\.join\(','\) \}\);/);
+    assert.doesNotMatch(srcText, /ctx\.setParams\([^)]*run: '1'/);
+    assert.doesNotMatch(srcText, /queueMicrotask\(\(\) => \{\s*if \(!ctx\.signal\.aborted\) start\(\);/, 'no automatic start');
+    const scanText = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    assert.doesNotMatch(scanText, /p\.run === '1'\) start\(\)|if \(!ctx\.signal\.aborted\) start\(\)/, 'SSL Targets neither');
+  });
+
+  test('scanner warnings never show a raw key in either view', async () => {
+    const { S, C } = await load();
+    const codes = [...(await readFile(path.join(ROOT, 'assets/js/lib/scanner.js'), 'utf8')).matchAll(/code: '([A-Z_]+)'/g)].map((m) => m[1]);
+    assert.ok(codes.includes('WILDCARD_PARENTS_TRUNCATED'));
+    for (const code of new Set(codes)) {
+      assert.ok(S.WARNING_CODES.includes(code), `WARNING_CODES lists ${code}`);
+      for (const lang of ['en', 'tr']) {
+        inLang(lang, () => {
+          for (const prefix of ['sub', 'scan']) {
+            const text = i18n.t(`${prefix}.warn.${code}`, { detail: '80' });
+            assert.notEqual(text, `${prefix}.warn.${code}`, `${lang} ${prefix}.warn.${code}`);
+            assert.ok(!text.includes('{detail}'));
+          }
+        });
+      }
+    }
+    assert.ok(C);
+  });
+
+  test('sanitizeOptions (SSL Targets): a v1.0 save gets the Smart default once; a later deliberate Off stays', async () => {
+    const { C, src } = await load();
+    const ids = src.SOURCES.map((s) => s.id);
+    assert.equal(C.sanitizeOptions({ sources: ['crtsh'], bruteforce: 'off' }).bruteforce, 'smart', 'v1.0 stored its default off');
+    assert.equal(C.sanitizeOptions({ sources: ['crtsh'], knownSources: ids, bruteforce: 'off' }).bruteforce, 'off');
+    assert.equal(C.sanitizeOptions({ sources: ['crtsh'], bruteforce: 'large' }).bruteforce, 'large');
+    const migrated = C.sanitizeOptions({ sources: ['crtsh'], bruteforce: 'off' });
+    assert.equal(C.sanitizeOptions({ ...migrated, bruteforce: 'off' }).bruteforce, 'off', 'once saved again, off is a choice');
+  });
+
+  test('resolver chain from Settings bounds the bulk balance pool (a removed resolver gets no scan queries)', async () => {
+    const app = await import('../../assets/js/app.js');
+    assert.deepEqual(app.balancePoolFor(DEFAULT_CHAIN), ['cloudflare', 'google', 'dnssb'], 'defaults unchanged');
+    assert.deepEqual(app.balancePoolFor(['cloudflare', 'cznic']), ['cloudflare']);
+    assert.deepEqual(app.balancePoolFor(['cznic']), ['cznic']);
+    assert.deepEqual(app.balancePoolFor(['quad9', 'cznic']), ['cznic'], 'browser-unreadable resolvers are not the rotating pool');
+    assert.deepEqual(app.balancePoolFor(['quad9']), ['quad9'], 'last resort: the chain itself');
+    // End to end with the real client: balance mode only contacts resolvers of the chain.
+    const { DohClient } = await import('../../assets/js/lib/doh.js');
+    const { decodeMessage, encodeMessage, base64UrlDecode } = await import('../../assets/js/lib/dnswire.js');
+    const hosts = new Set();
+    const fetchImpl = async (url) => {
+      const u = new URL(url);
+      hosts.add(u.host);
+      const q = decodeMessage(base64UrlDecode(u.searchParams.get('dns'))).questions[0];
+      const bytes = encodeMessage({ id: 0, flags: { qr: true, rd: true, ra: true }, rcode: 'NXDOMAIN', questions: [q], answers: [], authorities: [], edns: {} });
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'application/dns-message' } });
+    };
+    const chain = ['cloudflare', 'cznic'];
+    const dns = new DohClient({ chain, balancePool: app.balancePoolFor(chain), fetchImpl, cache: false, retries: 0 });
+    for (let i = 0; i < 6; i += 1) await dns.query(`n${i}.example.com`, 'A', { balance: true });
+    assert.deepEqual([...hosts], ['cloudflare-dns.com']);
+  });
+
+  test('About names the resolvers of the default chain (no stale Quad9)', async () => {
+    const about = await import('../../assets/js/views/about.js');
+    const names = about.defaultChainNames();
+    assert.doesNotMatch(names, /Quad9/);
+    assert.match(names, /Cloudflare/);
+    inLang('en', () => {
+      const text = i18n.t('about.step2Body', { resolvers: names, count: 12 });
+      assert.ok(text.includes(names));
+      assert.doesNotMatch(text, /Quad9/);
+    });
+  });
+
+  test('user-facing text is global and honest (no local ISP, no completeness promise)', async () => {
+    await load();
+    await import('../../assets/js/views/about.js');
+    for (const lang of ['en', 'tr']) {
+      inLang(lang, () => {
+        assert.doesNotMatch(i18n.t('settings.note.unreachable'), /Turkish|Türk/);
+        for (const k of ['app.tagline', 'nav.subdomains.desc', 'nav.scan.desc', 'about.start', 'about.heroBody', 'scan.step.domainsDesc']) {
+          assert.doesNotMatch(i18n.t(k), /\bevery (subdomain|name)\b|tüm (subdomain|alt alan|adlar)/i, `${lang} ${k}`);
+        }
+        assert.doesNotMatch(i18n.t('sub.opt.bfHint'), /never to the customer|müşterinin sunucularına asla/);
+        for (const k of ['sub.org.networksHint', 'sub.org.lead', 'sub.intro.cf', 'scan.cdn.netDesc']) {
+          assert.doesNotMatch(i18n.t(k, { count: 2 }), /usually|very likely|strong candidates|büyük olasılıkla|genellikle|güçlü adaylar/, `${lang} ${k}`);
+        }
+        assert.doesNotMatch(i18n.t('scan.sum.networks', { count: 2, list: '192.0.2.0/24' }), /very likely|büyük olasılıkla/);
+      });
+    }
+    inLang('en', () => {
+      assert.match(i18n.t('sub.progress.sources'), /a few minutes/);
+      assert.match(i18n.t('source.quota.day'), /within 24 hours/);
+      assert.match(i18n.t('sub.org.cliHint'), /authorised/);
+    });
+    const html = await readFile(path.join(ROOT, 'index.html'), 'utf8');
+    assert.doesNotMatch(html, /every subdomain/i);
   });
 });
 
@@ -957,7 +1852,7 @@ describe('security & shell invariants', () => {
     assert.match(html, /<script type="module" src="assets\/js\/app\.js"><\/script>/);
   });
 
-  test('all nine view stylesheets exist and are linked', async () => {
+  test('every view stylesheet exists and is linked', async () => {
     const html = await readFile(path.join(ROOT, 'index.html'), 'utf8');
     for (const id of VIEW_IDS) {
       await readFile(path.join(ROOT, `assets/css/views/${id}.css`), 'utf8');

@@ -17,11 +17,11 @@ import {
   TruncatedList, ipSortValue, setButtonBusy, textarea
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatRegion } from '../i18n.js';
-import { createIpIntel } from '../lib/ipintel.js';
+import { createIpIntel, networkHint } from '../lib/ipintel.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
-import { flagEmoji } from '../lib/resolvers.js';
+import { Flag } from '../ui/flag.js';
 import { mergeSignals, splitList } from '../lib/util.js';
 
 /** Route id (`#/ip`). */
@@ -36,7 +36,7 @@ export const MAX_IPS = 250;
 /** Maximum host names resolved per run. */
 export const MAX_HOSTS = 100;
 
-const EXAMPLE = '8.8.8.8\n1.1.1.1\n2606:4700:4700::1111\n85.105.1.1\ngithub.com\n';
+const EXAMPLE = '8.8.8.8\n1.1.1.1\n2606:4700:4700::1111\n9.9.9.9\ngithub.com\n';
 
 registerStrings('en', {
   'ipi.inputLabel': 'IP addresses or host names',
@@ -100,12 +100,26 @@ registerStrings('en', {
   'ipi.det.errors': 'Problems',
   'ipi.det.provider': 'Provider',
   'ipi.det.links': 'Open elsewhere',
-  'ipi.det.hosts': 'Host names you entered'
+  'ipi.det.hosts': 'Host names you entered',
+  'ipi.det.network': 'Network',
+
+  'ipi.net.badge': '{name} network',
+  'ipi.net.short.outside-proxy-ranges': 'AS{asn} · not a proxied-site range',
+  'ipi.net.short.cdn-edge': 'AS{asn} · probably a CDN edge',
+  'ipi.net.short.hosted': 'AS{asn} · {category}',
+  'ipi.net.long.outside-proxy-ranges': 'This address is on {name}’s own network (AS{asn}) but outside the ranges {name} publishes for the websites it proxies — so it is one of {name}’s own services (1.1.1.1, for example, is a DNS resolver), not a website hidden behind {name}.',
+  'ipi.net.long.cdn-edge': 'Announced by {name} (AS{asn}), a CDN / security proxy that publishes no list of its edge addresses — most likely an edge server in front of a website whose own server is hidden.',
+  'ipi.net.long.hosted': 'Announced by {name} (AS{asn}): a server or service on {name}’s network, reached directly with no CDN in front.',
+  'ipi.net.cat.cdn': 'CDN',
+  'ipi.net.cat.waf': 'CDN / WAF',
+  'ipi.net.cat.cloud': 'cloud',
+  'ipi.net.cat.hosting': 'hosting',
+  'ipi.net.cat.platform': 'platform'
 });
 
 registerStrings('tr', {
   'ipi.inputLabel': 'IP adresleri veya host adları',
-  'ipi.placeholder': '8.8.8.8\n1.1.1.1\n2606:4700::1111\nwww.ornek.com.tr   ← host adları önce çözümlenir',
+  'ipi.placeholder': '8.8.8.8\n1.1.1.1\n2606:4700::1111\nwww.example.com   ← host adları önce çözümlenir',
   'ipi.inputHint': 'Her satıra bir tane ya da boşluk/virgülle ayırarak. Port ve [köşeli parantez] sorun değil; # yorum başlatır.',
   'ipi.run': 'Sorgula',
   'ipi.stop': 'Durdur',
@@ -165,7 +179,21 @@ registerStrings('tr', {
   'ipi.det.errors': 'Sorunlar',
   'ipi.det.provider': 'Sağlayıcı',
   'ipi.det.links': 'Başka yerde aç',
-  'ipi.det.hosts': 'Girdiğiniz host adları'
+  'ipi.det.hosts': 'Girdiğiniz host adları',
+  'ipi.det.network': 'Ağ',
+
+  'ipi.net.badge': '{name} ağı',
+  'ipi.net.short.outside-proxy-ranges': 'AS{asn} · proxy’li site aralığı değil',
+  'ipi.net.short.cdn-edge': 'AS{asn} · büyük olasılıkla CDN kenar sunucusu',
+  'ipi.net.short.hosted': 'AS{asn} · {category}',
+  'ipi.net.long.outside-proxy-ranges': 'Bu adres {name} ağına (AS{asn}) ait, ancak {name} tarafından proxy’lenen web siteleri için yayımlanan aralıkların dışında — yani bir {name} hizmeti (örneğin 1.1.1.1 bir DNS çözümleyicisidir), arkasına gizlenmiş bir web sitesi değil.',
+  'ipi.net.long.cdn-edge': '{name} (AS{asn}) tarafından duyuruluyor: kenar sunucu adreslerini yayımlamayan bir CDN / güvenlik proxy’si — büyük olasılıkla, asıl sunucusu gizlenmiş bir web sitesinin önündeki kenar sunucusu.',
+  'ipi.net.long.hosted': '{name} (AS{asn}) tarafından duyuruluyor: {name} ağında, önünde CDN olmadan doğrudan erişilen bir sunucu ya da hizmet.',
+  'ipi.net.cat.cdn': 'CDN',
+  'ipi.net.cat.waf': 'CDN / WAF',
+  'ipi.net.cat.cloud': 'bulut',
+  'ipi.net.cat.hosting': 'barındırma',
+  'ipi.net.cat.platform': 'platform'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -256,7 +284,14 @@ export function mount(container, ctx) {
 
   /* --- helpers ----------------------------------------------------------------- */
   const hostLink = (host) => h('a', { class: 'ipi-host mono', href: ctx.href('lookup', { name: host, type: 'A,AAAA' }) }, host);
-  const flag = (cc) => h('span', { class: 'ipi-flag', attrs: { 'aria-hidden': 'true' } }, flagEmoji(cc));
+  const flag = (cc) => Flag(cc, { className: 'ipi-flag' });
+  /** Well-known network behind a plain 'direct' address (display only, see ipintel.networkHint). */
+  const hintOf = (r) => (r.info ? networkHint(r.info, r.classification) : null);
+  const hintText = (hint) => ({
+    badge: t('ipi.net.badge', { name: hint.name }),
+    short: t(`ipi.net.short.${hint.relation}`, { asn: hint.asn, category: t(`ipi.net.cat.${hint.category}`) }),
+    long: t(`ipi.net.long.${hint.relation}`, { name: hint.name, asn: hint.asn })
+  });
 
   /* --- input ----------------------------------------------------------------------- */
   const input = textarea({
@@ -341,6 +376,10 @@ export function mount(container, ctx) {
       hosts: r.hosts,
       private: isPrivateIP(r.ip),
       operator: r.classification.provider ? r.classification.provider.name : r.classification.kind,
+      network: (() => {
+        const hint = hintOf(r);
+        return hint ? { id: hint.id, name: hint.name, asn: hint.asn, category: hint.category, relation: hint.relation } : null;
+      })(),
       ptr: r.info ? r.info.ptr : [],
       asn: r.info ? r.info.asn : null,
       asName: r.info ? r.info.asName : null,
@@ -375,9 +414,16 @@ export function mount(container, ctx) {
       },
       {
         key: 'operator', label: t('ipi.col.operator'), sortable: true, sortValue: (r) => r.classification.kind,
-        searchValue: (r) => `${r.classification.kind} ${r.classification.provider ? r.classification.provider.name : ''}`,
-        exportValue: (r) => (r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`)),
-        render: (r) => KindBadge(r.classification)
+        searchValue: (r) => {
+          const hint = hintOf(r);
+          return `${r.classification.kind} ${r.classification.provider ? r.classification.provider.name : ''} ${hint ? hintText(hint).badge : ''}`;
+        },
+        exportValue: (r) => {
+          const base = r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`);
+          const hint = hintOf(r);
+          return hint ? `${base} · ${hintText(hint).badge} (AS${hint.asn})` : base;
+        },
+        render: renderOperator
       },
       {
         key: 'server', label: t('ipi.col.server'), sortable: true,
@@ -442,6 +488,19 @@ export function mount(container, ctx) {
   container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results));
 
   /* --- cell renderers ----------------------------------------------------------------- */
+  /** Operator cell: the classification badge, or for plain 'direct' addresses on a well-known
+   *  network (1.1.1.1 → AS13335) a badge naming that network plus a one-line explanation. */
+  function renderOperator(r) {
+    const hint = hintOf(r);
+    if (!hint) return KindBadge(r.classification);
+    const text = hintText(hint);
+    const edge = hint.relation === 'cdn-edge';
+    const badge = Badge(text.badge, { variant: edge ? 'cdn' : 'direct', icon: edge ? 'zap' : (hint.category === 'hosting' ? 'server' : 'cloud'), title: text.long });
+    badge.dataset.kind = r.classification.kind;
+    return h('div', { class: 'ipi-op', dataset: { network: hint.id, relation: hint.relation } },
+      badge, h('span', { class: 'muted text-xs ipi-op-note' }, text.short));
+  }
+
   function pendingCell() {
     return h('span', { class: 'ipi-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('ipi.pending'));
   }
@@ -481,6 +540,8 @@ export function mount(container, ctx) {
     const items = [];
     if (r.hosts.length) items.push({ key: t('ipi.det.hosts'), value: h('div', { class: 'cluster' }, r.hosts.map(hostLink)) });
     if (r.classification.provider) items.push({ key: t('ipi.det.provider'), value: t(r.classification.reasonKey, { provider: r.classification.provider.name }) });
+    const hint = hintOf(r);
+    if (hint) items.push({ key: t('ipi.det.network'), value: `${hintText(hint).badge} — ${hintText(hint).long}` });
     if (info) {
       if (info.ptr.length) items.push({ key: t('ipi.col.ptr'), value: h('div', { class: 'cluster' }, info.ptr.map(hostLink)) });
       if (info.asns.length) {

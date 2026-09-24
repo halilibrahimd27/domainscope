@@ -646,7 +646,10 @@ export function mount(container, ctx) {
   let options = loadOptions();
   const cleanups = [];
 
-  const fromRoute = splitList([...(ctx.searchParams.getAll ? ctx.searchParams.getAll('names') : []), ctx.params.names || ''].join('\n'));
+  // ctx.params.names is the last of the (possibly repeated) ?names= values, so read either
+  // every value or that one — never both (that listed each name twice → "N duplicates removed").
+  const routeNames = ctx.searchParams && ctx.searchParams.getAll ? ctx.searchParams.getAll('names') : [ctx.params.names || ''];
+  const fromRoute = splitList(routeNames.join('\n'));
   if (fromRoute.length) session.text = fromRoute.join('\n');
   if (session.text === null) session.text = '';
 

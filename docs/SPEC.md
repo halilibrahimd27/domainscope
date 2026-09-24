@@ -1,6 +1,6 @@
 # DomainScope — baseline build specification
 
-> Written before implementation to give every module a binding contract. Modules have since been extended (backward-compatibly); **where this document and the code differ, the code is the source of truth.** Last synced with the code on 2026-09-24 (discovery engine v2 and the wired wordlist system — levels up to Huge, locale packs, custom and learned lists, safe sweep command: §1, §2, §3, §5.6, §5.8, §5.9, §5.11, §5.12, §5.17, §6; then SSL Targets › Verify, the Globalping check from the internet, ROADMAP P0.1 Phase A: §1, §2, §3, §4, §5.4, §5.17, §5.18, §5.19, §6, §8).
+> Written before implementation to give every module a binding contract. Modules have since been extended (backward-compatibly); **where this document and the code differ, the code is the source of truth.** Last synced with the code on 2026-09-24 (discovery engine v2 and the wired wordlist system — levels up to Huge, locale packs, custom and learned lists, safe sweep command: §1, §2, §3, §5.6, §5.8, §5.9, §5.11, §5.12, §5.17, §6; then SSL Targets › Verify, the Globalping check from the internet, ROADMAP P0.1 Phase A: §1, §2, §3, §4, §5.4, §5.17, §5.18, §5.19, §6, §8; then the Zone File view (ROADMAP P1.2 MVP) with the scanner's zone / exact mode, sibling-domain and per-host origin candidates, network ownership, live rows while scanning and the CLI's `--exclude`: §2, §5.4, §5.12, §5.13, §5.17, §5.20–§5.23, §6, §7).
 
 ## 0. Why this exists (product context — read this)
 
@@ -17,7 +17,7 @@ UI languages: Turkish + English (default by `navigator.language`, toggle). Turki
 - **Dependency injection for I/O:** every network function accepts `{ fetchImpl = globalThis.fetch, signal }` (and DNS-dependent functions accept a `dns` client object). This makes them unit-testable with mocks.
 - **Every async network op supports `AbortSignal`** and timeouts.
 - **Security:** Untrusted data (subdomains from CT logs, TXT records, RDAP, API responses) must **never** reach `innerHTML`. Build DOM with `textContent`/`createElement` only. `index.html` has a CSP meta: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'`. No inline `<script>`/`<style>`/`style=""` attributes in HTML (setting `el.style.x` from JS is OK).
-- **Privacy:** certificate files and server inventory never leave the browser. The private key must never be needed; if a PEM contains a private key, warn and ignore it (never display it). The one feature that sends user-chosen data to a third party is SSL Targets › Verify: only after a click and a per-page-session consent, and only (public IP, host name, port) pairs — never a private address, the certificate or an inventory server name (§3 Globalping, §5.19).
+- **Privacy:** certificate files and server inventory never leave the browser. The private key must never be needed; if a PEM contains a private key, warn and ignore it (never display it). The one feature that sends user-chosen data to a third party is SSL Targets › Verify: only after a click and a per-page-session consent, and only (public IP, host name, port) pairs — never a private address, the certificate or an inventory server name (§3 Globalping, §5.19). An imported zone file never leaves the browser and is never persisted; the Zone File live check sends only record names and types to the DoH resolvers, and only after a click (§5.23). A network-owner lookup sends one network address to RIPEstat, only on a click (§5.13).
 - Code style: 2-space indent, semicolons, single quotes, `const`/`let`, JSDoc on every export, small focused functions. Python: PEP 8, type hints, stdlib only, Python ≥ 3.8 compatible.
 - Tests: `node --test "tests/js/*.test.js"` (= `npm test`, what CI runs; node:test + node:assert/strict; each file in its own process), `python -m unittest discover -s tests/python -v`. `node --test tests/js/` runs the same files through `tests/js/index.js`, which starts one `node --test` process per file so results never depend on file order. Tests must not hit the network (mock `fetchImpl`). Live/manual checks go in `tests/live/*.mjs` (not run in CI).
 - Test data is generic: reserved names (`example.com/.net/.org`, `example-test.com.tr`) and documentation IPs (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`). `tests/js/repo-hygiene.test.js` fails on any other IPv4 literal that is not well-known public infrastructure, and (locally) on anything matching the gitignored `.private-denylist`.
@@ -30,7 +30,7 @@ favicon.svg
 .nojekyll
 package.json                  # {"name":"domainscope","private":true,"type":"module","scripts":{"test":"node --test \"tests/js/*.test.js\"","test:py":"python -m unittest discover -s tests/python -v","serve":"node tests/e2e/serve.mjs 8080"}}
 assets/css/style.css          # design system (tokens, light/dark, components)
-assets/css/views/{subdomains,scan,cert,global,lookup,bulk,ip,health,inventory,about}.css   # per-view styles
+assets/css/views/{subdomains,zone,scan,cert,global,lookup,bulk,ip,health,inventory,about}.css   # per-view styles
 assets/js/app.js              # bootstrap: router, i18n, theme, shared state
 assets/js/i18n.js             # t(key, params), setLang, registerStrings(lang, dict)
 assets/js/state.js            # shared app state (inventory, settings) + localStorage persistence (try/catch)
@@ -39,7 +39,7 @@ assets/js/ui/components.js    # DataTable, Tabs, ProgressBar, Badge, CopyButton,
 assets/js/ui/download.js      # downloadText(filename, text, mime)
 assets/js/ui/flag.js          # Flag(countryCode) with a globe fallback where the OS has no flag emoji
 assets/js/ui/verify-panel.js  # the SSL Targets › Verify tab body (a ui/ module: every views/*.js is a routed view); styles in assets/css/views/verify.css
-assets/js/views/{subdomains,scan,cert,global,lookup,bulk,ip,health,inventory,about}.js   # each exports {id, titleKey, icon, mount(container, ctx), unmount?()} + registers its i18n strings; subdomains is the default route
+assets/js/views/{subdomains,zone,scan,cert,global,lookup,bulk,ip,health,inventory,about}.js   # each exports {id, titleKey, icon, mount(container, ctx), unmount?()} + registers its i18n strings; subdomains is the default route
 assets/js/lib/util.js
 assets/js/lib/x509.js
 assets/js/lib/domain.js
@@ -52,6 +52,10 @@ assets/js/lib/learned.js      # createLearnedStore(): per-browser learned labels
 assets/js/lib/cmdline.js      # buildSweepCommand(): validated, shell-quoted ssl_origin_scan.py sweep command (§5.17)
 assets/js/lib/globalping.js   # Globalping v1 client: transport, quota, request builder, target prefilters (§5.18)
 assets/js/lib/verify.js       # served-certificate verification: classification, CLI roll-up, runner, exports (§5.19)
+assets/js/lib/zoneparse.js    # zone exports (BIND dialects, Cloudflare API, Route 53, octoDNS, Plesk) → records in dnswire shape (§5.20)
+assets/js/lib/zonelint.js     # lintZone(): 38 closed-set rules (§5.21)
+assets/js/lib/zoneorigins.js  # zone index, scan seeds, proxied-origin map, address map, CLI hand-off (§5.22)
+assets/js/lib/zonedrift.js    # planDrift() / driftZone(): the zone vs live DNS over DoH (§5.23)
 assets/js/lib/dnswire.js
 assets/js/lib/resolvers.js
 assets/js/lib/doh.js
@@ -65,7 +69,7 @@ assets/js/lib/export.js
 assets/data/                  # self-hosted wordlist tiers (wordlist-base.txt = smart, wordlist-{large,huge}.txt.gz), locale/<cc>.txt packs, wordlist-manifest.json, README (sources) + THIRD_PARTY_LICENSES.txt
 tools/build-wordlists.mjs     # maintainer tool: rebuilds assets/data from pinned upstream lists (+ tools/locale-data.mjs)
 cli/ssl_origin_scan.py
-tests/fixtures/               # ALREADY EXISTS — see §4 (+ globalping/: trimmed, scrubbed real measurements, README)
+tests/fixtures/               # ALREADY EXISTS — see §4 (+ globalping/: trimmed, scrubbed real measurements, README; zones/: one export per format and dialect with parse goldens; zones-analysis/: lint / origin / drift goldens)
 tests/js/*.test.js            # + tests/js/index.js (directory form, one process per file)
 tests/python/test_ssl_origin_scan.py
 tests/live/*.mjs              # manual live smoke scripts + discovery benchmark (network); targets from the gitignored targets.local.json via targets.mjs; globalping-smoke.mjs uses hard-coded public targets only (≤ 10 probes; `--capture` also records the two deliberate charged failures, localtest.me → 127.0.0.1 and `3fff::1`)
@@ -220,6 +224,9 @@ export const RANGES_UPDATED = '2026-09-23'
 export const PROVIDERS = [ { id, name, category: 'cdn'|'waf'|'platform'|'loadbalancer'|'hosting', hidesOrigin: boolean, certManagedByProvider: boolean, cidrs: string[], cnameSuffixes: string[] } ]
   // must include: cloudflare (IP ranges above + cname 'cdn.cloudflare.net'), fastly (ranges above + fastly.net, fastlylb.net), cloudfront (cloudfront.net), akamai (akamaiedge.net, akamai.net, edgekey.net, edgesuite.net, akamaized.net, akamaihd.net, akamaitechnologies.com), azure-frontdoor/cdn (azurefd.net, azureedge.net, trafficmanager.net? -> separate), imperva (incapdns.net, impervadns.net + official ranges only if verified), sucuri (sucuri.net cname only unless verified), stackpath, bunny (b-cdn.net), keycdn (kxcdn.com), cdn77 (cdn77.org, cdn77.net), edgio/edgecast (edgecastcdn.net), medianova (mncdn.com, mncdn.net — Turkish CDN), gcore (gcdn.co), and platforms: aws-elb (elb.amazonaws.com), aws-s3 (s3*.amazonaws.com), azure-appservice (azurewebsites.net), azure-trafficmanager (trafficmanager.net), github-pages (github.io), heroku (herokuapp.com, herokudns.com), vercel (vercel-dns.com, vercel.app), netlify (netlify.app, netlify.com), google-hosted (ghs.googlehosted.com, googlehosted.com), firebase (web.app, firebaseapp.com), shopify (myshopify.com), wpengine (wpengine.com), pantheon, render (onrender.com), fly (fly.dev), railway, digitalocean app (ondigitalocean.app). Only add IP ranges you verified from an official source in this session.
 export function matchProviderByIP(ip) -> provider|null
+export const SHARED_PROVIDER_CATEGORIES = ['cdn', 'waf', 'platform', 'loadbalancer', 'hosting', 'cloud']   // extension
+export function isSharedProvider(provider) -> bool      // extension: multi-tenant space (one block serves many unrelated customers); false for a DNS-only steering provider
+                                                        // (`dnsOnly`); accepts a PROVIDERS entry or any { category, dnsOnly? } (ipintel INFRA_NETWORKS). Display / sweep-policy hint only
 export function matchProviderByCname(hostname) -> provider|null        // suffix match on label boundary
 export function classifyResolution({ status, ipv4 = [], ipv6 = [], cnames = [] }) -> {
   kind: 'cloudflare'|'cdn'|'platform'|'direct'|'private'|'unresolved'|'nxdomain',
@@ -444,8 +451,71 @@ OriginNetwork = { cidr /* /24 IPv4 · /48 IPv6 */, ips: string[], hosts: string[
 ServerGroup = { server: Server, hosts: Array<{ name, ip, covered: boolean|null, via: 'dns'|'hint' }>, needsCert: boolean }
 ```
 Pipeline (v2, DNS first): seeds (domains + cert hostnames with wildcards stripped → wildcard bases + extraNames) → `sources` (passive sources per registrable domain, in parallel with) `mining` (in-domain names from the zone's own MX / NS / SOA / SPF / DMARC / SRV / CNAME / CAA / HTTPS records) → `wildcard` (detectWildcardDeep at the apex, every certificate wildcard base and every level that hosts a discovered name) → `bruteforce` (A-only wordlist sweep of the chosen level under the apex and each wildcard base, balance mode; wildcard look-alikes dropped) → `permutations` (variants of everything found so far — env / number / region / sibling words and the service-suffix tier `shop → shopapi` — up to `permutationBudget`, then one recursive wordlist round under discovered parents) → `resolve` (A + AAAA for every surviving name; stream `onHost`) → classify / cert coverage / inventory match → `hints` (DNS only, never a connection to the target: apex SPF `ip4:`/`ip6:`/`a:`/`mx`, MX host IPs, public IPs of non-proxied siblings, historical IP hints from hackertarget/otx that are not CDN IPs, `resolver-leak` = a proxied name answered with a non-CDN address by another public resolver; then the DNS-only hosts and leaks are clustered into `originNetworks` and every proxied host gets them as `candidateNetworks`) → server groups (DNS matches + hint matches) and unmatched direct IPs → `done`.
-`cliTargets` / `cliNames` are built for the sweep (IPv4: the /24 when the block holds at least two origin IPs or an inventory server, otherwise the exact IPs; IPv6: exact addresses only — a /48 is far over the CLI's block limit) and passed through `lib/cmdline.buildSweepCommand` (§5.17), so they hold only what survived validation. `cliSuggestion` is the POSIX form `python3 cli/ssl_origin_scan.py -t <targets> -n <names>`, or null when nothing is left to sweep; the views build their own copy-ready command for POSIX (`python3 ssl_origin_scan.py …`) or PowerShell (`python ssl_origin_scan.py …`) from `cliTargets` / `cliNames`, never from this string. Resolver-leak re-resolves each proxied host through at most 3 other resolvers of the pool (≤ 300 queries per scan, 2.5 s each, no retries, resolvers with an open circuit breaker skipped).
+`cliTargets` / `cliNames` are built for the sweep (IPv4: the /24 when the block holds an inventory server, or at least two origin IPs outside shared provider space (`OriginNetwork.sweep`), otherwise the exact IPs; IPv6: exact addresses only — a /48 is far over the CLI's block limit) and passed through `lib/cmdline.buildSweepCommand` (§5.17), so they hold only what survived validation. `cliSuggestion` is the POSIX form `python3 cli/ssl_origin_scan.py -t <targets> -n <names>`, or null when nothing is left to sweep; the views build their own copy-ready command for POSIX (`python3 ssl_origin_scan.py …`) or PowerShell (`python ssl_origin_scan.py …`) from `cliTargets` / `cliNames`, never from this string. Resolver-leak re-resolves each proxied host through at most 3 other resolvers of the pool (≤ 300 queries per scan, 2.5 s each, no retries, resolvers with an open circuit breaker skipped).
 `lib/dnsmine.js`: `mineDnsNames(domain, { dns, signal, onProgress, resolvePtr = false })` → `{ names, evidence: [{ name, from, record }], externalRefs }`; `SRV_SERVICES` lists the probed `_service._proto` labels. `lib/permute.js`: `permutations(foundNames, domain, { budget = 1500, words, envs, regions, suffixes, exclude })` → ranked, de-duplicated candidates (never the known names, never a name in `exclude` — a Set of names already probed, skipped before it counts toward the budget — never over budget); `DEFAULT_WORDS` / `DEFAULT_ENVS` / `DEFAULT_REGIONS` / `DEFAULT_SUFFIXES` are English-first and global (`DEFAULT_SUFFIXES` = web, api, admin, app, db, ws, service, gw, panel, srv, auth, ranked by how often `<label><suffix>` occurs in the shipped public wordlist).
+
+**Extensions since discovery v2.** These are additive: a run without `zone` or `exact` gives the same result as before, apart from the new fields.
+```js
+config.zone: null | { v: 1, origin, names: string[], wildcardBases: string[], delegations?: string[], proxied: Array<{ name, ips: string[], host: string|null }> }
+  // The zoneorigins.zoneScanInput() shape (§5.22), validated here; the scanner never imports the zone libraries.
+  // - Zone names (+ delegations) are seeds with origin 'zone': ranked after 'input' and before 'cert', never truncated.
+  // - Names outside every scanned root are dropped with ONE warning ZONE_OUT_OF_SCOPE (detail = count).
+  // - With no `domains`, the zone origin is the target.
+  // - A zone wildcard base (`*.apps` → apps) is seeded and wildcard-checked, but never brute-forced and never a certificate wildcard base.
+  // - Zone names are never wildcard suspects.
+  // - Dropped from `proxied`: Cloudflare placeholders (192.0.2.0, 100::), CDN / WAF addresses, and numeric or invalid host origins.
+config.exact: boolean = false
+  // Resolve the given names only. No passive sources, mining, wordlist, custom / learned labels, permutations, recursive round
+  // or wildcard detection (the 'wildcard' stage event carries skipped: true). Quota-free.
+  // Origin hints still follow `originHints`; pass false to query the zone names only.
+hooks.onFound(partial)
+  // Streams a probe hit the moment it resolves in the wordlist / permutation / recursive stages:
+  // { name, origin, ipv4, cnames, classification } (A only, classified from that answer).
+  // The same host arrives again as a full HostRecord through onHost at 'resolve', so dedupe by name. Hook errors never break a scan.
+// Stage info: 'wildcard' → { parents, total, sourcesStillRunning: string[], sourcesCutOff: boolean } (the source grace snapshot);
+//             'hints' → { skipped, total, leakQueries, zones }
+export const HOST_SPECIFIC_HINT_KINDS = Set{'history', 'resolver-leak', 'sibling-domain', 'zone'}   // hints about ONE proxied host; spf / mx / direct-sibling are general
+export function estimateQueries({ bruteforce = 'smart', domains, wildcardBases, certNames, extraNames, locales = null, customCount = 0, learnedCount = 0,
+                                  permutationBudget = 1500, recursive = true, recursiveParents = 8, mine = true, originHints = true, resolverLeak = true })
+  -> { min, max, breakdown: { wordlist, mining, wildcard, permutation, recursive, resolveMin, resolveMax, hintsMin, hintsMax, bases, zones } }
+  // Pure (no DNS); every stage is counted with the scan's own caps. `min` is what always fires; `max` adds what depends on the finds.
+  // For an exact-mode plan, pass bruteforce 'off', mine false, permutationBudget 0, recursive false and the zone names as extraNames.
+HostRecord += {
+  originCandidates: Array<{ ip?, cidr?, kind: 'zone'|'resolver-leak'|'sibling-domain'|'history'|'network', score, evidence }>,
+    // Proxied hosts only, strongest first:
+    // - exact host-specific IPs: zone 110 · resolver-leak 100 · sibling-domain 95 · history 90;
+    // - then the networks related to THIS host: a DNS-only sibling with the same label stem 70 · its parent stem 65 ·
+    //   the main cluster 60 · another multi-IP cluster 50. A lone 1-IP network unrelated to the host is left out.
+    // evidence by kind: resolver-leak { resolver } · history { source, lastSeen } · sibling-domain { sibling } ·
+    //   zone { source: 'zone' } · network { relation, ips, sweep, shared }
+  zoneOnly: boolean   // only the zone file names it, so its labels are never learned (like customOnly)
+}
+// candidateNetworks = the CIDRs of the network candidates; `origins` may include 'zone'.
+Reason +=
+    { kind: 'sibling-domain', host, sibling, detail }
+      // Several apexes scanned together: a proxied X.<d1> whose exact left-most label X is a DNS-only, public, non-CDN
+      // host X.<d2> under ANOTHER scanned apex → that IP is a host-specific candidate (exact label only, never X vs Xapi).
+  | { kind: 'zone', host, detail }
+      // The zone file's exact origin of that proxied name. It costs no query, so it runs even with originHints off.
+OriginNetwork += {
+  shared: boolean,        // offline: the block is in a PROVIDERS range of a shared category (netinfo.isSharedProvider)
+  sweep: 'cidr'|'ips'     // IPv6 → 'ips'; a /24 holding an inventory server → 'cidr'; a shared /24 without one → 'ips';
+                          // otherwise 'cidr' at ≥ 2 origins, else 'ips'
+}
+ServerGroup.hosts[].via += 'zone'   // hosts sort dns, zone, hint; needsCert counts dns and zone matches
+ScanResult += {
+  sourceGrace: { graceMs, cutOff, stillRunning: string[] },
+  cliHostTargets: string[],   // zone host origins for the CLI (`-t` host names); [] without a zone
+  zone: null | { origin, exact, seeds, wildcardBases: string[], proxied, resolved, outOfScope, cliNames, cliTargets, cliHostTargets }
+}
+options += { exact: boolean, zone: null | { origin, seeds, wildcardBases /* count */, proxied, resolved, outOfScope } }
+stats += { zoneSeeds, zoneResolved }   // present only when a zone is given
+```
+With a zone:
+- the exact origins join the CLI command as exact tokens (private ones kept, never widened to a /24);
+- host origins join as host targets, and the proxied names (`*.x` kept) as names;
+- hosts the zone already maps skip the resolver-leak pass;
+- zone addresses never join `originNetworks`.
 
 ### 5.13 `lib/ipintel.js`
 ```js
@@ -454,6 +524,22 @@ export function createIpIntel({ fetchImpl, dns /* DohClient for PTR */, concurre
 }
 IpInfo = { ip, version, private: boolean, provider: provider|null, ptr: string[], asn: number|null, asName: string|null, holder: string|null, prefix: string|null, country: string|null, city: string|null, sources: string[], error: string|null }
 // Private IPs: no external calls. Order: RIPEstat prefix-overview + maxmind-geo-lite; fallback ipwho.is. Cache per ip.
+// Extension: createIpIntel(...).describeNetwork(target, { signal, noCache }) is the same as below and shares the service's limiter.
+export function describeNetwork(target /* IP or CIDR */, { fetchImpl, signal, noCache = false } = {}) -> Promise<NetworkDescription>
+  // Who announces an origin network, ON DEMAND: the views call it on a click, the scanner never does.
+  // ONE RIPEstat prefix-overview request for the block's network address; private / reserved space is never looked up.
+  // Cached per network for 1 h (failures are not cached) and de-duplicated in flight. Rejects only with AbortError.
+NetworkDescription = {
+  input, ip, version: 4|6|0, private,
+  provider,                  // offline PROVIDERS match
+  asn, asName, holder, prefix, announced, asns: [{ asn, holder }], rir,
+  infra: { id, name, category }|null,   // well-known operator of the AS
+  category,
+  shared: boolean|null,      // true: known multi-tenant space; false is NOT proof of single ownership; null: unknown
+  coversInput: boolean|null, sources: string[], error, errorKind
+}
+export function networkQuery(target) -> { input, ip, version, range }|null                  // pure
+export function summarizeNetwork(q, prefixOverview|null) -> NetworkDescription              // pure
 ```
 
 ### 5.14 `lib/rdap.js`
@@ -501,6 +587,20 @@ export const DEFAULT_NAMES_FILE = 'proxied-names.txt', MAX_INLINE_NAMES = 200, M
 `buildSweepCommand` also takes `cert = null`, `json = null` and `ports = null` (the Verify tab's CLI card uses the first two): `cert` / `json` must be plain path tokens (the `script` rule) and become `--cert <cert>` / `--json <json>`; `ports` are integers 1–65535 (a single integer is accepted), deduplicated in order, and become `-p 443,8443` — omitted when null, `[]`, exactly `[443]` (the CLI default) or when every value was invalid. The options follow the names (or the names file) in the order `-p`, `--cert`, `--json`, count toward the inline length limit, and PowerShell quotes `'443,8443'`. The result always carries `dropped.options: string[]` (`'cert'`, `'json'`, `'ports:<v>'`; `[]` when nothing was dropped); without the new options every output is byte-identical to before.
 
 An internationalised name is kept in its punycode form (`xn--…`). Anything else that is not a valid target or name (`; rm -rf /`, `$(…)`, backticks, spaces, quotes, newlines, a leading `-`, over-long labels) is dropped and reported — never quoted into the command — so the result is inert in both a POSIX shell and PowerShell and a name can never be read as an option. The caller prefixes the interpreter (`python3` for POSIX, `python` for PowerShell); the views show `dropped` as a count. `script` and `namesFile` must be plain paths (`[A-Za-z0-9_./-]`, not starting with `-`), otherwise the default is used. Over 200 names or 8,000 characters the command reads the names from `namesFile` (the CLI loads a `-n` value that is an existing file, one name per line), so a large estate never hits the Windows command-line limit; the views then offer that file (`proxied-names.txt`, the validated proxied names) as a download next to the command.
+
+**Extensions.** These are additive; without them every output is byte-identical to before.
+- **`exclude`** (IPs / CIDRs, or a string split on whitespace and commas) becomes `--exclude a b …` right after the `-t` targets. Excludes are validated like targets.
+  - A target that an exclude covers entirely is removed from `-t` and reported in `excluded`.
+  - An exclude that overlaps no remaining target is left out of the command and reported in `excludeUnused`.
+  - An invalid exclude is dropped and reported in `dropped.exclude`.
+  - These four fields appear only when `exclude` is given, and `targets` then lists only what is left in `-t`.
+- **Zone hand-off opt-ins**, all off by default:
+  - `allowHostTargets` keeps HOST NAME targets (a proxied record's CNAME origin, resolved by the CLI inside the network). Validation: `normalizeHostname`, `[a-z0-9_.-]`, at least one dot, no leading `-`. IP / CIDR targets come first, then the host names.
+  - `allowWildcardNames` keeps `*.x` names, always quoted.
+  - `targetsFile` and `maxInlineTargets`: when the targets exceed `maxInlineTargets`, the names exceed `maxInlineNames` or the command exceeds `maxLength`, BOTH lists go to files (`-t <targetsFile> … -n <namesFile>`). The result then carries `targetsInline` / `targetsFile`. An invalid `targetsFile` is reported as `'targetsFile'` in `dropped.options`.
+  - `validateTargets(list, { allowHostTargets })` and `validateNames(list, { allowWildcard })` expose the same rules.
+- **Numeric host names:** a host target or name that glibc `inet_aton` would read as an IPv4 address is always dropped (`2026092401`, `0x7f.0x1`, `0177.1`, `10.1`), so it never reaches `getaddrinfo`. `isInetAtonNumeric(s)` is exported for tests.
+- **Known gap:** an exclude that only a host target's resolved address would match cannot be checked in the browser, so it is reported as unused and left out of the command.
 
 ### 5.18 `lib/globalping.js` — the Globalping v1 client (transport only)
 DOM-free; knows nothing about certificates (§5.19 interprets results). All I/O goes through `util.fetchWithTimeout` with an injected `fetchImpl` (default: `globalThis.fetch`, looked up at call time), `sleepImpl` and `now`.
@@ -587,10 +687,167 @@ Rules that are easy to get wrong:
 - Runner: the probe budget is **reserved before each POST**, so parallel workers never overspend. A paid, unfinished measurement (Stop, deadline) is polled again for free, first, but only within 120 s and once. A re-check keeps the last verdict, marked `stale`, until a new one replaces it, so a stopped or quota-limited re-check never makes a server look live. `TimeoutError` / `TypeError` → `network` (3 → `stoppedBy 'unreachable'`); a quota 429 (`rate_limit_exceeded` / `insufficient_credits`) stops the queue (`not-run · quota`), while any other 429 waits for `Retry-After` (5 s without one, at most 60 s) and repeats the POST once, else `poll-rate`; a free `private-target` / `bad-host` 400 turns the row into a `reserved` / `bad-name` skip; a GP code outside VERIFY_ERRORS becomes `unknown` (the code is kept in `row.error.raw`).
 - Headline (servers, not IPs; bare IPs stand for unmatched addresses; a shared VIP counts for every server that lists it): base = total − filtered origins − origin candidates that do not host the name (`notHostingOrigins`). Origin rows that behave as expected (filtered, no answer, closed, or an origin hint answering "not this name") never make a server a problem, and a server leaves the base only once every row of it has a verdict; `all` also needs `incomplete` = 0. The first entry is exactly one of `all` / `some` / `none` / `partial` / `noAnswer`: `none` also when no server is live and a DNS- or zone-matched name gets another certificate or a refusal (`wrongCert`, which makes `other` warn), `partial` with 0 live when a server returned some certificate (`served`, e.g. an Origin CA one), `noAnswer` only when none did; then, when non-zero, `incomplete`, `chain` (servers with an UPDATED row missing its intermediate), `tlsError`, `unreachable`, `other`, `exposed`, `filtered`, `notHere`. Every counted entry carries `params.count`.
 
+### 5.20 `lib/zoneparse.js` — zone exports → records (Zone File, ROADMAP P1.2)
+Pure, synchronous, DOM-free, no I/O. `parseZone()` never throws: every problem is an issue whose `code` is in the closed set `ISSUE_CODES` (49 codes: fatal, error, warn, info), with `params` for i18n; `detail` is English log text that the UI never parses.
+```js
+export function parseZone(input /* string | ArrayBuffer | Uint8Array */, { origin, filename, format = 'auto' /* | ZONE_FORMATS */, source, limits, defaultTtl } = {}) -> Zone
+export function detectZoneFormat(text, { filename }) -> { format, dialect, markers: string[], confidence: 'high'|'low', notZone, fatal: { code, params }|null }
+export function mergeZones(zones, { limits }) -> Zone                 // several files of ONE zone (API pages, a $INCLUDE part); different origins → fatal ORIGIN_MISMATCH
+export function inferOriginFromFilename(filename) -> string|null      // 'db.example.com', 'example.com.zone.txt' → 'example.com'
+export function zoneNames(zone) -> string[] ; export function uniqueRecords(zone) -> ZoneRecord[] ; export function wildcardCovers(zone, name) -> string|null   // RFC 4592
+export function rdataKey(type, data) -> string ; export function txtJoinedKey(type, data) -> string   // THE comparison keys (file data and live dnswire rr.data alike)
+export function toBindText(zone, { header = true }) -> string          // canonical BIND (cf_tags kept; aliases / routing in cli53 syntax)
+export function awsAliasProvider(target, { origin, self }) -> string|null
+export const ZONE_FORMATS = ['bind', 'cloudflare-api', 'route53', 'octodns', 'plesk-info'], ZONE_DIALECTS = ['generic', 'cloudflare', 'cli53', 'godaddy', 'cpanel', 'directadmin'],
+  ORIGIN_SOURCES = ['user', '$ORIGIN', 'header', 'soa', 'filename', 'records'], NOT_A_ZONE_HINTS, ISSUE_CODES, ZONE_LIMITS, GTLDS, AWS_ALIAS_PROVIDERS
+// also exported for tests: tokenizeMaster, parseYamlSubset, decodeUtf8Lenient, presentCharString, presentLabel, decodeEscapes
+Zone = {
+  format, dialect, markers: string[],
+  origin, originSource, originConfidence: 'high'|'low' /* 'low' ⇒ the UI asks the user to confirm */,
+  records: ZoneRecord[], warnings: ZoneIssue[], fatal: ZoneIssue|null, partial: boolean,
+  sources: [{ name, size, format, dialect }],
+  stats: { bytes, lines, entries, records, skipped, generated, proxied, dnsOnly, byType, elapsedMs },
+  defaultTtl
+}
+ZoneRecord = {
+  id, name /* served owner, lowercase, '*' kept, no trailing dot */, intendedName?, type,
+  ttl: number|null, ttlAuto?, data /* dnswire RR.data shape */, text /* what dnswire prints */,
+  targets: string[], intendedTargets?,
+  proxied: true|false|null, proxiable?, flattenCname?, alias?: { target, zoneId, evaluateTargetHealth, provider }, routing?,
+  occludedBy?, invalid?, unsupported?, generated?, duplicateOf?, comment?, tags?, line, source
+}
+ZoneIssue = { code, severity: 'error'|'warn'|'info', line, source?, name?, type?, params, detail }
+```
+Inputs:
+- BIND / RFC 1035 master files: `$ORIGIN`, `$TTL`, relative names, parentheses, `$GENERATE` (capped), and `$INCLUDE`, which is refused and merged only when the file is dropped too. Dialects:
+  - the Cloudflare export (`;; Domain:` header, `cf_tags=cf-proxied:true|false`);
+  - cPanel, DirectAdmin and GoDaddy;
+  - cli53 (`AWS ALIAS`, `; AWS routing=`);
+  - `dig AXFR` output.
+- Cloudflare API JSON: one or several pasted pages.
+- Route 53 `list-resource-record-sets` JSON: octal escapes, aliases, routing sets.
+- An octoDNS YAML subset: a scratch parser with null-prototype maps.
+- Plesk `--info` output (marked FORMAT_UNVERIFIED).
+
+Limits: 5 MB per file, 5,000,000 characters, 20,000 records, 200,000 entries and 500 issues.
+
+### 5.21 `lib/zonelint.js` — mistakes in an imported zone
+```js
+export function lintZone(zone) -> { findings: LintFinding[] /* severity, then line */, occluded: Map<name, 'cut'|'dname'>, occludedIds: Set<number>, proxiedOrigins: Set<string> }
+LintFinding = { code /* LINT_RULES */, severity: 'error'|'warn'|'info', name, type, line, source, recordIds: number[], params, detail }
+export const LINT_RULES   // 38 codes, each { severity, scopes, severityCf?, severityByFormat? }
+export const SEVERITY_ORDER = ['error', 'warn', 'info'], CAA_KNOWN_TAGS, CF_PROXY_PORTS, LONG_CHAIN_HOPS = 8, TTL_LOW = 30, TTL_HIGH = 172800, TTL_OUTLIER_FACTOR = 20, SOA_NEGATIVE_TTL_MAX = 86400
+```
+The rules:
+- CNAME conflicts: CNAME with other data or at the apex, multiple CNAMEs, loops, chains of more than 8 hops.
+- Targets: MX / NS / SRV pointing to a CNAME, a target that is an IP address, dangling in-zone targets.
+- Duplicates and hidden data: DUPLICATE_RR, data occluded by a delegation or a DNAME.
+- Addresses: private, localhost and non-global IPv6.
+- Cloudflare zones:
+  - mixed proxy flags;
+  - an origin exposed by a DNS-only sibling or MX (ORIGIN_EXPOSED_BY_SIBLING) or by SPF;
+  - a private or Cloudflare-range origin;
+  - originless placeholders, Tunnels and SaaS targets;
+  - proxied MX targets, and proxied SRV targets off the proxy's ports.
+- Mail and certificates: SPF (multiple, invalid, SPF RR type), DMARC, CAA tags and flags.
+- TXT strings longer than 255 bytes.
+- TTL outliers and very low TTLs, the SOA negative TTL, a single NS.
+- Route 53 alias targets missing from the zone.
+
+The zone index is shared with `zoneorigins.js`, so lint findings and the origin map's `exposure` come from one source.
+
+### 5.22 `lib/zoneorigins.js` — seeds, the proxied-origin map and the CLI hand-off
+Pure: no network, storage or clock. Origins stay exact: an address is never widened to its /24, and every proxied name keeps its own origin.
+```js
+export function zoneIndex(zone) -> index            // cached per zone object; shared by lint and drift
+export function deriveSeeds(zone, { lint, skip }) -> { names, wildcardBases, delegations, excluded: [{ name, why /* SEED_EXCLUSIONS */ }] }
+export function proxiedOriginMap(zone, { inventoryIndex }) -> ProxiedOrigin[]
+ProxiedOrigin = { name, kind: 'ip'|'host'|'tunnel'|'provider'|'placeholder'|'cloudflare-ip'|'unresolved'|'loop', ips, ignored, host, via: string[] /* in-zone chain */,
+  provider, target, proxiedBy: 'direct'|'chain', private, servers: [{ serverId, name, ip }], exposure: [{ by: 'sibling'|'mx'|'spf', name }], recordIds }
+  // Cloudflare rules: one proxied A/AAAA makes the whole name proxied; a DNS-only CNAME to a proxied name is proxied through the chain;
+  // 192.0.2.0 / 100:: are originless placeholders; an address in Cloudflare's own ranges is not an origin (error 1000)
+export function addressMap(zone, { inventoryIndex }) -> Array<{ ip, names: [{ name, proxied, via?, exposed?, occluded? }], servers, private, provider, placeholder, exposed }>
+export function privateLookingNames(zone) -> Set<string>   // private A/AAAA, INTERNAL_LABELS, INTERNAL_SUFFIXES, or a DNS-only CNAME into the set
+export function handoffNames(zone) -> string[]             // TLS-bearing names for scope 'all'
+export function cliHandoff(zone, { origins }) -> { targets, hostTargets, names, skipped, dropped }   // scope 'proxied'; kinds ip / host only
+export function zoneSweep(zone, { scope = 'proxied'|'all', shell, script, origins, buildCommand }) -> { scope, targets, hostTargets, names, skipped, dropped, command, tokens, chars,
+  probes, probesAtLeast, fileForm /* > 60 tokens or > 2,000 chars */, commandOptions }   // pass cmdline.buildSweepCommand as buildCommand; otherwise command is null
+export function handoffFiles(sweep, { origin, inventoryIndex, now }) -> { namesTxt, targetsTxt }   // zone-names.txt / zone-targets.txt ('<server> <ip>' lines, then host targets)
+export function zoneScanInput(zone, { skip, skipPrivate = true }) -> { v: 1, origin, names, wildcardBases, delegations, proxied: [{ name, ips, host }], skipped }   // → runScan({ zone })
+export function validateHostTargets(list), validateSweepNames(list), isInetAtonNumeric(s)   // the same rules as cmdline's opt-ins
+export function isCloudflareIp(ip), isPrivateAddress(ip), isPlaceholder(ip), providerIdOfIp(ip), classifyExternalTarget(target), wildcardCovers(zoneOrIndex, name), sortIps(ips),
+  servedTargets(r), effectiveTargets(r), addressOf(r), isSpfRecord(r), proxiedCore(idx), proxiedSets(idx), exposureFacts(idx), zoneConstants()
+export const ORIGIN_KINDS, PLACEHOLDERS = ['192.0.2.0', '100::'], TUNNEL_SUFFIX = 'cfargotunnel.com', CF_HOSTED_SUFFIXES, AWS_ORIGIN_PROVIDERS, INTERNAL_LABELS, INTERNAL_SUFFIXES,
+  SEED_EXCLUSIONS, SWEEP_INLINE_MAX_TOKENS = 60, SWEEP_INLINE_MAX_CHARS = 2000, ZONE_NAMES_FILE = 'zone-names.txt', ZONE_TARGETS_FILE = 'zone-targets.txt', MAX_CNAME_CHAIN = 16
+```
+
+### 5.23 `lib/zonedrift.js` — the zone compared with live DNS
+All I/O goes through the injected DohClient (`dns.query` only).
+
+What is sent:
+- names and types only, to the resolver chain with failover (or one chosen resolver);
+- never through `balance` rotation, never to Globalping or a passive source.
+
+What is never sent:
+- private-looking names (skipped by default);
+- the target of a proxied CNAME;
+- flattened / alias targets, unless `resolveTargets`;
+- types the file does not contain, and HTTPS / SVCB at a proxied name (`cf-synthesized`).
+
+Every (name, type) is queried once.
+```js
+export function planDrift(zone, { skip, skipPrivate = true, wildcardProbes = true, resolveTargets = false, maxQueries }) -> { rrsets, queries /* EXACTLY what driftZone sends */,
+  needed, overBudget, maxQueries, names, skipped: { private, occluded, unsupported, escaped, dnssec, synthesized, wildcard, budget }, targetsHidden, internalShare }
+export async function driftZone(zone, { dns, resolver, signal, onRow, onProgress, maxQueries = 2000, concurrency = 6, skip, skipPrivate = true, wildcardProbes = true,
+  resolveTargets = false, labelFn, now }) -> { origin, startedAt, finishedAt, aborted, queries, planned, resolverPolicy,
+  preflight: { originExists, liveSerial, fileSerial, serial: 'same'|'newer'|'older'|'unknown', fileNs, liveNs, nsMatch: 'same'|'overlap'|'disjoint'|'unknown' }, rows: DriftRow[], counts }
+  // Never rejects on DNS failure or cancel (aborted: true). Free rows stream first, then 2 preflight queries (SOA, NS at the origin),
+  // then every other RRset. A missing origin (NXDOMAIN) turns every remaining row into error / nxdomain without another query.
+DriftRow = { key, name, type, status, reasons: string[], file, live, added, removed, resolver, rcode, fileTtl, liveTtl, proxied, recordIds, probe }
+export function classifyExtraNames(zone, liveNames) -> Array<{ name, kind: 'wildcard'|'delegated'|'extra', matchedBy }>   // live names missing from the file
+export const DRIFT_STATUSES /* match, differs, missing-live, proxied-ok, origin-exposed, flattened-ok, alias-ok, routing-ok, occluded, skipped, error */, DRIFT_REASONS /* 30 */,
+  DRIFT_SEVERITY, DRIFT_DEFAULT_BUDGET = 2000, DRIFT_MAX_BUDGET = 10000, DRIFT_MAX_CONCURRENCY = 8, DRIFT_TTL_FLOOR = 60, CF_CAA_ISSUER_IDS, MANAGED_ALIAS_PROVIDERS
+```
+How drift reads a zone:
+- A proxied name is `proxied-ok` when the live answers are Cloudflare addresses, and `origin-exposed` when the live answer is the origin.
+- Flattened CNAMEs, Route 53 aliases (rotating managed ones included) and routing sets have their own `*-ok` statuses.
+- `ttl-stale` is reported only when the live TTL is above max(file TTL, 60).
+- Filtering resolvers give `filtered`.
+
 ## 6. UI (views)
 
-Hash routing `#/<view>?param=...` (shareable: e.g. `#/lookup?name=example.com&type=MX`, `#/global?name=www.example.com&type=A`). Navigation groups: Discover (subdomains), SSL (scan, cert), DNS (global, lookup, bulk, ip, health), Data (inventory, about). Views:
+Hash routing `#/<view>?param=...` (shareable: e.g. `#/lookup?name=example.com&type=MX`, `#/global?name=www.example.com&type=A`). Navigation groups: Discover (subdomains, zone), SSL (scan, cert), DNS (global, lookup, bulk, ip, health), Data (inventory, about). Views:
 0. **subdomains** "Subdomains" (**default route**; the brand link and About's Start button open it): domain(s) in, every discoverable subdomain out. Options: wordlist level **Off / Small / Smart (recommended, default) / Large / Huge** with exact counts (`wordlistInfo()`), the locale packs the typed domain gets and time estimates (candidates ÷ 120 queries/s at the full sweep width of 24, scaled down for a lower Settings value), and a plan line (≈ queries per domain, custom / learned / pack shares, per-domain caps); under Advanced options: languages / markets (auto from the domain ending, a manual pack list, or none; remembered), custom wordlist (textarea + `.txt` file, accepted / rejected counts from `parseCustomWordlist`, this tab only, Clear), learned names (opt-in switch, off by default, with the count, Forget; never used at Off), permutations on/off with a budget (500 / 1,500 / 5,000; the switch also drives the recursive round), origin hints on/off, passive sources with quota notes, include expired, extra hostnames, DoH chain. A shared link (`run=1`) pre-fills the domain and asks before scanning. While running: stage pills in `SCAN_STAGES` order with per-stage counts and a progress bar. Results: summary line (sources that failed, wildcard parents, Cloudflare count, dangling CNAMEs), a technique bar ("how the names were found": DNS records / wordlist / permutations / deeper level / passive sources), per-source status (`sourceHealthSummary`, quota explanations), the host table (name → DNS Lookup link, origin badges, classification, IPs), a wordlist usage line from `options.wordlist` (served level, packs, custom / learned tried vs found, fallback), and for proxied hosts an **Origin** panel ("Origin servers behind the proxy"): origin networks (/24 · /48) with their DNS-only hosts, per proxied host its resolver-leak answers ("answered by <resolver>") and history ("seen by <source> · last <date>"), read from the structured reason fields, other SPF / MX / sibling hints, and the sweep command for **Linux / macOS** or **Windows PowerShell** (built from `cliTargets` / `cliNames` with `buildSweepCommand`, dropped entries counted; over 200 names it reads `-n proxied-names.txt`, offered as a download next to the command) with copy and a download link for the CLI. Copy all names / resolving only / `names.txt`; a CTA opens SSL Targets for the same domain.
+   Later additions:
+   - **Live rows:** while the wordlist, permutation and recursive stages run, `onFound` hits appear at once as "resolving…" rows and are replaced by the full record at the resolve stage.
+   - **Stage pills:** they show which passive sources were still fetching when the sweep started (`sourcesStillRunning`).
+   - **Plan line:** a query range from `estimateQueries`.
+   - **Origin panel:**
+     - per proxied host, its `originCandidates` in order: zone file, resolver leak, sibling domain ("same name as <sibling>"), history, then only the related networks;
+     - per network, whether the command sweeps the whole /24 or only its addresses (and why), a **shared hosting / cloud** badge with a warning, and **Look up owner** (`describeNetwork`, one RIPEstat request on click);
+     - an **Exclude addresses** box (→ `buildSweepCommand({ exclude })`);
+     - a tip to scan sister domains together.
+0b. **zone** "Zone File" (`#/zone[?tab=overview|records|origins|problems|live]`; only `tab=` ever goes in the URL):
+   - **Import:** drop, choose or paste, with format / dialect auto-detection. The zone name override and a Confirm step apply when the name is only guessed; there are 3 built-in samples and "How do I export my zone?".
+   - **Summary bar:** a format badge and counts ("39 records · 26 names · 10 proxied"), with Forget. Alerts are pinned for an incomplete export and a mostly-internal zone.
+   - **Overview:** stat cards and next steps:
+     - Scan these names: exact mode or discovery, with "Leave out names that look internal", on by default;
+     - Sweep the real origins;
+     - Find certificate targets;
+     - Compare with live DNS: shows the planned query count.
+   - **Records:** type groups, proxied only, search, CSV / JSON, copy names; an expanded row shows its comment, tags and problems.
+   - **Origins & servers:** one row per proxied name (`proxiedOriginMap`), a by-address table (`addressMap`) and the sweep command (`zoneSweep` + `cmdline.buildSweepCommand` with the zone opt-ins). The command has a proxied-only / everything scope, POSIX / PowerShell, an "at least N TLS handshakes" estimate and the two-file form with `zone-names.txt` / `zone-targets.txt` downloads. It uses exact tokens only, never a /24.
+   - **Problems:** parse issues and lint findings, errors first; a click jumps to the record.
+   - **Live check** (`planDrift` / `driftZone`): nothing is sent until you click Check.
+     - The card shows the record sets, the query count, the resolvers and what is sent.
+     - Internal names are skipped by default, and wildcard probing is optional.
+     - Progress, Cancel and Re-run; the check keeps running while you are on another view.
+     - Banners: serial, name servers, a zone that does not exist. Status chips filter the rows.
+     - CSV / JSON exports redact origins unless opted in.
+   - **Hand-off contracts:**
+     - `state.session.zone` = `zoneScanInput(...)` + `{ label, counts }`. It is published only once the zone name is confirmed, and cleared by Forget and "Delete all local data".
+     - `state.session.zoneScanIntent` = `{ v: 1, target: 'subdomains'|'scan', domain, mode: 'exact'|'discover', autostart, at }`, one-shot. Exact mode maps to `runScan({ zone, exact: true })` and is never written to the stored options.
+   - **Privacy:** nothing about the zone is persisted (no storage key, no URL data), and no network request is made before a click.
 1. **scan** "SSL Targets": steps — (1) drop/paste certificate (optional) → shows parsed summary; (2) target domain(s) (auto-filled from cert via registrableDomain); (3) inventory (uses shared inventory from state; link to inventory view); (4) options (sources checkboxes w/ notes about quotas, include expired, wordlist Off/Small/Smart/Large/Huge (default Smart) + permutations, DoH chain; a vocabulary line shows the languages, custom wordlist and learned names shared with Subdomains › Advanced options, with a link there — SSL Targets has no separate controls for them, but records learned labels after its scans too); Run/Cancel with per-source status + progress. Results: stat cards; tabs Hosts / Servers / Behind CDN / Verify / Sources / CT: **Hosts** (table: name, origins, status/classification badge incl. 🟠 Cloudflare, IPs, CNAME, cert coverage ✓/✗, matched servers; filters: covered only / resolving only / hide wildcard suspects / by kind; search), **Servers** (grouped: server → hosts; "needs cert" first; unmatched IPs group), **Behind CDN** (proxied hosts + origin hints + explanation + ready-to-run CLI command with the same POSIX / PowerShell toggle & download buttons for names.txt/targets.txt + link to `cli/ssl_origin_scan.py`), **Verify** (only with a certificate; `ui/verify-panel.js` over §5.18–§5.19: every covered (public IP, name) pair of the scan checked from the internet through Globalping, with the CLI's six verdicts. Nothing is sent when the tab opens, not even `/limits`. Start and "Check again (n)" read the free quota and show the consent + cost dialog on the first send of the page session (consent is never stored; "Delete all local data" resets it); a partial run is offered when the quota does not fit, and a 429 stops cleanly with the reset time. Private, reserved and unaccepted pairs are listed as skipped and, with every pair the internet could not answer (TIMEOUT / CLOSED), go to a validated CLI command (`--cert new-cert.pem --json verify-cli.json`, POSIX / PowerShell) with a new-cert.pem download; CDN-edge pairs are listed as skipped too but stay out of it, because the CDN serves its own certificate there. Origin-hint pairs (an inventory origin IP with a proxied name) are opt-in, off by default. The headline counts servers; the tab badge reads `live/total`; warnings carry tooltips; CSV (the CLI's 17 columns first) and JSON exports; the scan's full JSON gains `verification`. The job lives on the scan run: it survives navigation and language changes, toasts when it finishes in the background ("Show results" reopens this tab), and a new scan cancels it), **Sources** (per-source status, counts, errors, timing), **CT certificates** (crt.sh/certspotter certs: issuer, validity, names; highlight the uploaded cert's serial and certs expiring ≤30 days). Exports CSV/JSON.
 2. **cert** "Certificate": full parsed details (subject, issuer, validity with days left, SAN list, key, fingerprints, chain order, warnings), CAA check against issuer for each base domain, CT lookup of this serial via crt.sh, and a "find targets for this cert" button that opens scan pre-filled.
 3. **global** "Global DNS": name + type → table of all resolvers (answer, TTL, rcode, AD, latency) + geo table via ECS (flag, country, ISP, answer, scope) + consistency groups with color coding + answer IP classification (CDN badge). Re-run button; share link.
@@ -615,6 +872,16 @@ python3 ssl_origin_scan.py -t targets.txt [-t 10.0.0.0/24 -t web01.internal ...]
 - Status per (server, port, name): `UPDATED` (serves the new cert), `NEEDS_UPDATE` (served cert covers the name but is not the new cert — show its expiry), `NOT_HOSTED` (served cert does not cover the name / only default cert), `TLS_ERROR`, `CLOSED`, `TIMEOUT`.
 - Output: human-readable summary grouped by server ("servers that need the new certificate: N") with colors (auto-disabled when not a TTY/`--no-color`/`NO_COLOR`), plus `--json` / `--csv`. Exit code 0 always unless usage error (2); `--fail-on-needs-update` → exit 1 when any NEEDS_UPDATE (for CI).
 - Robust: Ctrl-C handling, per-connection timeout, thread pool, IPv6 support, no stack traces for expected errors.
+- `--exclude ADDR [ADDR ...]` (repeatable) takes IPs, CIDRs (v4 / v6), ranges, `-` for stdin, or a file of them (`#` comments).
+  - Host names are refused (exit 2).
+  - IPv4-mapped addresses match both ways.
+  - It is applied after names are resolved and before any connection.
+  - Reported in the summary, in the JSON (`excluded[]`, `summary.excludedAddresses`, `options.exclude`) and in the CSV (rows with `probe=excluded`, status `EXCLUDED`). A rule that matches nothing is a warning.
+- Numeric "host names" that the resolver would read as IPv4 are refused: all digits, hex, octal, dotted numeric, full-width digits, ideographic dots, a trailing dot (`2026092401`, `127.1`, `0x7f.0x1`).
+  - In `-t`, NAME=IP and `-n` this is exit 2; from a file, the entry is skipped with a warning. They never reach the resolver.
+  - IPv4 parts with a leading zero (`010.0.0.1`) are refused as ambiguous.
+  - 0.0.0.0/8, multicast and broadcast addresses are never scanned.
+- The zone hand-off files (`zone-targets.txt` with `server ip` lines and host names, and `zone-names.txt`, both with a `#` header) load as `-t` / `-n` files. A dedicated `--zone FILE` option is not built yet.
 - Tests (`tests/python/test_ssl_origin_scan.py`): DER parser vs `tests/fixtures/expected.json`; inventory parsing; wildcard matching; **integration**: start local TLS servers on 127.0.0.1 ephemeral ports (threads, `ssl.SSLContext.sni_callback` selecting fixture cert/key by SNI; default cert = cn_only) and assert statuses for names; `--cert` fingerprint UPDATED path.
 
 ## 8. Quality bar

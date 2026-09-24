@@ -1,0 +1,531 @@
+# DomainScope roadmap
+
+Prioritised from a survey of popular DNS / recon projects and web tools, an idea synthesis, and **live feasibility checks** (CORS, endpoints, licences) run on 2026-09-23. See [RESEARCH.md](RESEARCH.md) for the prior-art survey and the verification log.
+
+Constraints every item respects: runs in a browser from a static page (only CORS-enabled endpoints, no required API keys) **or** belongs in the stdlib-only Python CLI; vanilla JS, no dependencies, no build step, CSP-safe (no inline scripts/styles, never `innerHTML` with dynamic data), TR + EN, light/dark, mobile.
+
+- **P0** — high value, verified feasible, next iteration
+  - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
+  - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
+  - [P0.3 Rollout Board: per-server certificate rollout checklist](#p03-rollout-board-per-server-certificate-rollout-checklist)
+  - [P0.4 Per-server deploy snippet + verify-command generator](#p04-per-server-deploy-snippet--verify-command-generator)
+  - [P0.5 Old-vs-new certificate diff and pre-install lint](#p05-old-vs-new-certificate-diff-and-pre-install-lint)
+  - [P0.6 Cutover assistant: expected value, watch mode, cache countdown, TTL planner](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner)
+  - [P0.7 CT watchlist: expiry radar and new-issuance alerts](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts)
+  - [P0.8 IP Intel enrichment: open ports, RPKI, routing, abuse, exposure matrix](#p08-ip-intel-enrichment-open-ports-rpki-routing-abuse-exposure-matrix)
+  - [P0.9 Zonemaster deep delegation test in Domain Health](#p09-zonemaster-deep-delegation-test-in-domain-health)
+  - [P0.10 Dangling-reference registrability check (SubdoMailing)](#p010-dangling-reference-registrability-check-subdomailing)
+  - [P0.11 World map + relationship graph + aggregate mini-bars (inline SVG, vendored)](#p011-world-map--relationship-graph--aggregate-mini-bars-inline-svg-vendored)
+  - [P0.12 Universal search, command palette and keyboard shortcuts](#p012-universal-search-command-palette-and-keyboard-shortcuts)
+  - [P0.13 Health v2: score, problems-first, fix advice, Web category](#p013-health-v2-score-problems-first-fix-advice-web-category)
+  - [P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)](#p014-share-snapshot-link--customer-report-printpdf--self-contained-html)
+- **P1** — next
+  - [P1.1 Source status, quota meter and optional user keys](#p11-source-status-quota-meter-and-optional-user-keys)
+  - [P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift)
+  - [P1.3 Real-ISP DNS propagation in Global DNS (Globalping probes)](#p13-real-isp-dns-propagation-in-global-dns-globalping-probes)
+  - [P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)](#p14-delegation--authoritative-consistency-serial-drift-lame-ns-sitting-ducks-axfr)
+  - [P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode)
+  - [P1.6 Mail identity: FCrDNS, generic-PTR policy, DMARC external-report authorisation (ruf)](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf)
+  - [P1.7 Takeover fingerprints and cloud-IP ownership hints](#p17-takeover-fingerprints-and-cloud-ip-ownership-hints)
+  - [P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)](#p18-blacklist--filtering-resolver-reputation-over-doh-honest-about-spamhaus)
+  - [P1.9 Permutation discovery from found names, multi-level wildcard filtering](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering)
+  - [P1.10 CLI: TLS on mail, database and other non-HTTPS ports](#p110-cli-tls-on-mail-database-and-other-non-https-ports)
+  - [P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency)
+  - [P1.12 CLI local-certs finder + generated fleet one-liners](#p112-cli-local-certs-finder--generated-fleet-one-liners)
+  - [P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner](#p113-renewal-planning-ari-window-cab-lifetime-schedule-coveragecsr-planner)
+  - [P1.14 In-browser DNSSEC chain-of-trust validator and graph](#p114-in-browser-dnssec-chain-of-trust-validator-and-graph)
+- **P2** — later
+  - [P2.1 'Copy as command' + provenance on every row](#p21-copy-as-command--provenance-on-every-row)
+  - [P2.2 Run history and diff between scans](#p22-run-history-and-diff-between-scans)
+  - [P2.3 Monitoring/automation exports (web + CLI)](#p23-monitoringautomation-exports-web--cli)
+  - [P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns)
+  - [P2.5 Reverse-DNS sweep of a prefix or ASN](#p25-reverse-dns-sweep-of-a-prefix-or-asn)
+  - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each)
+  - [P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl)
+  - [P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)](#p28-lookalike--typosquat-watch-locale-aware-dnstwist-lite)
+  - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view)
+  - [P2.10 Self-refreshing provider ranges + two-tier Cloudflare classification](#p210-self-refreshing-provider-ranges--two-tier-cloudflare-classification)
+  - [P2.11 CLI DNS mode: split-horizon diff, per-NS consistency, AXFR check](#p211-cli-dns-mode-split-horizon-diff-per-ns-consistency-axfr-check)
+  - [P2.12 CLI mail checks: MTA-STS, MX STARTTLS certs, DNSBL incl. Spamhaus, FCrDNS](#p212-cli-mail-checks-mta-sts-mx-starttls-certs-dnsbl-incl-spamhaus-fcrdns)
+- [Rejected (with reasons)](#rejected)
+- [UI upgrade spec](#ui-upgrade-spec)
+- [Reusable data](#reusable-data)
+
+## P0 — next iteration
+
+### P0.1 Verify the served certificate from the internet (Globalping SNI probe)
+
+id `gp-cert-verify` · where: **browser** · effort: **M**
+
+FLAGSHIP. Behaviour: from Servers, Behind-CDN, Inventory and the Rollout Board, a 'Verify from internet' action TLS-probes each (public IP, hostname) pair from 1-3 chosen countries and compares result.tls against the uploaded cert, reusing the CLI's own verdicts: UPDATED (fingerprint256 == new cert), NEEDS_UPDATE (covers name, different serial — show expiry), NOT_HOSTED (ERR_TLS_CERT_ALTNAME_INVALID / cert does not cover name), TLS_ERROR, TIMEOUT, CLOSED. Web + CLI rows merge on (ip,name). New view 'verify' (group ssl, stepper stage Verify) hosting the queue, cost preview and results; also embedded as a per-row action elsewhere. NEW LIB lib/globalping.js (DOM-free, DI {fetchImpl,signal}): createGlobalping({fetchImpl, token})-&gt; {measure({type,target,locations,limit,measurementOptions}, {signal})-&gt;{id}, poll(id,{signal,intervalMs=500})-&gt;result (waits status 'finished', max 2 GET/s), limits({signal})-&gt;{remaining,reset,limitType}}; classifyTls(tlsObj, newCert)-&gt; {status, servedSerial, servedFp, expiresAt, coversName}. Normalise serials: Globalping gives colon-hex uppercase WITHOUT the 00 sign byte (A5:9E:..) — strip colons, lowercase, and re-add leading 00 when x509.serialHex high bit set, before comparing. Options: ipVersion 6 (hostname target only; an IP target + ipVersion → 400) to catch an IPv6 vhost still on the old cert; port 8443/9443 allowed. Cost = probes, not measurements (X-Request-Cost read live): 3 countries triples cost; anonymous 250/h/IP ≈ 83 pairs/h at 3 probes. Header quota chip (Globalping 236/250) turns amber &lt;20%; a confirmDialog() precedes any batch that would exceed remaining. Optional token in localStorage (try/catch) raises to 500/h; invalid token → 401 → silent anonymous fallback. Opt-in privacy banner: the IP+hostname go to jsDelivr and measurement results are readable by anyone with the id. Private/loopback/CGNAT targets are filtered client-side (netinfo.isPrivateIP) and handed to the CLI command instead (Globalping returns 400 for RFC1918). Edge cases: no structured error codes — parse rawOutput ('Request timed out'→TIMEOUT/filtered, 'ECONNREFUSED'→CLOSED, 'SSL alert number 40'→SNI-strict/wrong vhost, 'ECONNRESET'→retry on a different-ASN probe); only the leaf is returned (infer incomplete chain from UNABLE_TO_VERIFY_LEAF_SIGNATURE, cannot list chain); non-HTTP TLS ports return no tls object → route to CLI; a dual RSA/ECDSA server shows only one leaf. Test: node --test with mocked fetchImpl returning saved fixtures (gp_http_res.json) for each status; classifyTls unit table incl. serial-normalisation; poll() abort + 2GET/s throttle; live smoke in tests/live/globalping.mjs (not CI).
+
+**Verified endpoints / data**
+
+- `POST https://api.globalping.io/v1/measurements {type:'http', target:'<ip>', locations:[{country:'TR'},{country:'DE'}], limit:2, measurementOptions:{protocol:'HTTPS', port:443, request:{method:'HEAD', host:'<hostname>', path:'/'}}}`
+- `GET https://api.globalping.io/v1/measurements/{id}`
+- `GET https://api.globalping.io/v1/limits`
+
+### P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts
+
+id `origin-exposure-audit` · where: **browser** · effort: **S**
+
+**Status (2026-09-24): not started; the DNS-only groundwork has shipped.** The scanner's origin hints v2 (resolver-leak answers, `originNetworks` /24 · /48, per-host `candidateNetworks`, history with source and last-seen day as structured reason fields) feed the Subdomains origin panel and the SSL Targets Behind CDN tab, together with a validated sweep command for Linux / macOS or PowerShell (`lib/cmdline.js`). On a private customer domain every known origin IP of its proxied names fell inside a computed candidate network and the command's targets. The HTTPS reachability probe (Globalping) and InternetDB below are still open.
+
+Behaviour: for each proxied host with origin candidates (scanner.originHints: SPF ip4/a, MX host IPs, non-proxied siblings, OTX/hackertarget history, inventory public IPs), probe candidate IP + host=&lt;proxied name&gt; over HTTPS. A 2xx/3xx with a cert covering the name (or even a 403 over a valid cert) = origin reachable directly → WAF bypassable (exposed); ~15s timeout = filtered; sub-1s ECONNREFUSED = closed. Add InternetDB open ports/tags/CVEs for the IP. Verdict per origin: exposed / filtered / unknown, with fixes (firewall-allow only Cloudflare ranges via netinfo PROVIDERS, Authenticated Origin Pulls/mTLS, Cloudflare Tunnel). Lives in the Behind-CDN tab of scan; reuses lib/globalping.js. NEW in lib/ipintel.js: internetdb(ip,{signal})-&gt; {ports, tags, vulns, hostnames, cpes} | null (404). Edge cases: exclude candidate IPs that fall inside any CDN range (probing a CF IP with the proxied name trivially 'succeeds'); a single-probe timeout ≠ CF-only firewall (host may be down) → use 2 probes from different ASNs (cost 2), label 'filtered from &lt;ASN&gt;' and 'unknown' when probes disagree; filter RFC1918/loopback/CGNAT before InternetDB (it returns fabricated ports for 10.0.0.1); keep opt-in, 'your own infrastructure only'. About wording: 'Open-port data from Shodan InternetDB (free for non-commercial use; commercial use needs a Shodan enterprise license; updated weekly).' Test: mocked fetchImpl exposed/filtered/closed fixtures; CDN-range exclusion unit test; InternetDB 404 + private-IP skip.
+
+**Verified endpoints / data**
+
+- `POST https://api.globalping.io/v1/measurements (type http, target=<candidate IP>, request.host=<proxied name>)`
+- `GET https://internetdb.shodan.io/{ip}`
+
+### P0.3 Rollout Board: per-server certificate rollout checklist
+
+id `rollout-board` · where: **both** · effort: **M**
+
+Behaviour: after a scan, ServerGroups become a Kanban board, one card per server: hosts+ports to switch, service type (nginx/Apache/HAProxy/IIS/Tomcat/Postfix/Dovecot/k8s-ingress/appliance), step checkboxes (backup, upload fullchain+key, config test, reload, verify), owner, notes. Columns: todo / doing / done / verified, plus a 'CDN-managed: no install' lane. Cards auto-move to Verified when the user drops CLI --json (UPDATED rows, matched by server name+ip) or a Globalping probe sees the new serial; each verified claim shows an evidence badge (source + UTC time). Header progress bar '37/41 servers verified'. New view 'board' (group ssl, stepper stage Roll out). NEW LIB lib/rollout.js (DOM-free): createBoard(scanResult, cert)-&gt; {schemaVersion, certSha256, cards:[{serverId, name, ips, hosts, serviceType, steps:{...bool}, column, owner, notes, evidence:[]}]}; applyEvidence(board, cliJson|gpResult)-&gt; board (maps CLI UPDATED/NEEDS_UPDATE/TIMEOUT/CLOSED + Globalping statuses); exportBoard/importBoard(json). State keyed by cert SHA-256 in localStorage (try/catch) with JSON export/import as the durable hand-off; add schemaVersion separate from CLI version; call navigator.storage.persist(). Edge cases: Safari ITP evicts script-writable storage after 7 days idle → export is the real backup; board contains IPs → excluded from the share fragment by default; drag/drop must be keyboard-accessible (move buttons) and CSP-safe. Test: createBoard from a fixture ScanResult; applyEvidence with fixture CLI json and gp result; export/import round-trip; localStorage failure path.
+
+**Verified endpoints / data**
+
+- `None external; optional Globalping/CLI evidence`
+
+### P0.4 Per-server deploy snippet + verify-command generator
+
+id `deploy-snippets` · where: **browser** · effort: **S**
+
+Behaviour: from a selected server/host and the parsed cert, generate a filled config snippet for nginx (fullchain order), Apache (SSLCertificateFile/KeyFile, legacy ChainFile), HAProxy (concatenated PEM), IIS (openssl pkcs12 -export + Import-PfxCertificate + netsh binding), Tomcat/Java (pkcs12 then keytool -importkeystore), Postfix, Dovecot, Exim, Kubernetes (kubectl create secret tls --dry-run=client -o yaml | kubectl apply -f -), Traefik/Caddy notes. Every snippet ends with a verify command with the expected SHA-256 pre-filled: openssl s_client -connect IP:443 -servername NAME | openssl x509 -noout -serial -enddate -fingerprint -sha256 (show both serial forms: colon-hex from s_client vs no-colon from our x509). Copy buttons (CopyButton). Lives as a panel inside the Rollout Board card and the Behind-CDN tab. NEW LIB lib/deploy.js (DOM-free, pure): renderSnippet(serviceType, {names, certPath, keyPath, ip, port, sha256})-&gt; {config:string, verify:string}. Private key never enters the page. Edge cases: mail servers (Postfix/Dovecot/Exim) verify with s_client -starttls smtp / :465 / :993, not plain 443, and point at the CLI since Globalping can't verify non-HTTP TLS; IIS/Java paths are commands not files. Test: snapshot each template against a fixture cert; assert the expected fingerprint appears verbatim; no template contains a key placeholder that echoes real key material.
+
+**Verified endpoints / data**
+
+- `None (static templates)`
+
+### P0.5 Old-vs-new certificate diff and pre-install lint
+
+id `cert-diff-lint` · where: **browser** · effort: **M**
+
+Behaviour: compare the dropped new cert with what is served today (current cert from CLI JSON, a Globalping TLS result, or the latest certspotter issuance for the same names). Diff panel in the Certificate view: SANs removed (names that will break) / added, key-type change (RSA↔ECDSA breaks old clients + Java keystores), issuer/intermediate change, per-base-domain CAA check via existing checkCaaAllows. Lint: clientAuth EKU lost (current public leaves are serverAuth-only — mTLS reuse breaks), validity above the CA/B max at issuance (398 → 200 from 2026-03-15 → 100 from 2027-03-15 → 47 from 2029-03-15), missing intermediate / wrong bundle order (show the AIA caIssuers URL + openssl fullchain command — do NOT fetch: AIA URLs are http:// and blocked as mixed content), distrusted CA (Entrust SCT after 2024-11-11; Chunghwa/Netlock SCT after 2025-07-31; e-Tugra), RSA&lt;2048, SHA-1. Uses existing x509 fields (extKeyUsage, authorityKeyId, caIssuersUrls, scts) — no new parsing. certspotter expand=issuer.caa_domains gives authoritative CAA identifiers per issuer (better than a hand map); expand=pubkey gives {type,curve} for key-type change. NEW LIB lib/certlint.js (DOM-free, pure + one fetch): diffCerts(oldCert,newCert)-&gt;{sansAdded,sansRemoved,keyChange,issuerChange,caa}; lintCert(cert, {rulesAsOf})-&gt;[{code,severity,fixKey}]; DISTRUST_RULES table with a 'rules as of &lt;date&gt;' stamp citing Chrome Root Program. Edge cases: certspotter shows issuance not deployment (prefer CLI/Globalping when present) and returns only unexpired issuances; letsencrypt.org gives 403 not_allowed_by_plan for some domains; small anonymous quota (see ct-watchlist). Test: diffCerts across fixtures (rsa_multi_san vs ec_wildcard, many_sans); lintCert unit table for each rule + boundary dates; mocked certspotter issuer.caa_domains.
+
+**Verified endpoints / data**
+
+- `https://api.certspotter.com/v1/issuances?domain={d}&include_subdomains=true&expand=dns_names&expand=issuer.caa_domains&expand=pubkey&expand=revocation`
+
+### P0.6 Cutover assistant: expected value, watch mode, cache countdown, TTL planner
+
+id `cutover-assistant` · where: **browser** · effort: **S**
+
+DNS-side flagship. Behaviour in Global DNS: an 'Expected value' input (exact / contains / regex) marks each resolver+geo row match/mismatch; auto re-check (off / 20s / 60s) that stops when every row matches. Each row shows a cache countdown ('old answer can live until 14:32') from the DoH remaining TTL; the header shows a worst-case ETA computed from the MAX authoritative TTL across all NS (multi-provider zones differ, e.g. 3600 vs 900) plus negative-cache time (SOA minimum) for brand-new names — NOT from the non-monotonic observed remaining TTL. A timeline shows locations matched per round. On full match: Notification (permission requested from a click; tab title '(3/25) DomainScope' + favicon badge). TTL migration planner: takes record + planned cutover time, reads current TTL (authoritative via Globalping resolver=&lt;NS IP&gt; SOA, cached via DoH), outputs when to lower TTL, the window TTL, when to restore, how long to keep the old origin; output timeline + checklist + .ics + links to Google/Cloudflare flush pages. NEW LIB lib/cutover.js (DOM-free): matchExpected(values, {mode,pattern})-&gt;bool; worstCaseEta(nsTtls, negCache)-&gt;seconds; buildTtlPlan({recordTtl, cutoverAt})-&gt;{steps, ics}. Reuses DohClient + lib/globalping.js. Edge cases: hidden-tab timer throttling stretches 20s→~60s (label as approximate); Notification.requestPermission must be user-gesture; authoritative TTL via Globalping costs 1 credit per NS. Test: matchExpected table (exact/contains/regex incl. NXDOMAIN); worstCaseEta with mixed NS TTLs; ics validity; mocked DoH TTL decrement.
+
+**Verified endpoints / data**
+
+- `https://cloudflare-dns.com/dns-query`
+- `https://dns.google/resolve`
+- `POST https://api.globalping.io/v1/measurements (resolver=<NS IP>, query SOA)`
+- `https://developers.google.com/speed/public-dns/cache (link)`
+- `https://one.one.one.one/purge-cache/ (link)`
+
+### P0.7 CT watchlist: expiry radar and new-issuance alerts
+
+id `ct-watchlist` · where: **browser** · effort: **M**
+
+Behaviour: a watchlist of domains in localStorage. On open, query certspotter per name-set: show the newest non-revoked cert, days-left, issuer, bucketed ≤7/≤30/≤60. Store the last issuance id per domain; next time list certs issued since (after=&lt;id&gt;), flagging issuers not allowed by current CAA, issuers outside a user 'expected CAs' list, new wildcards, never-seen names (shadow IT), revoked certs. Links to the CA problem-reporting contact (expand=problem_reporting works anonymously). .ics export with VALARMs at 30/14/7/1 days. Caveat banner: CT proves issuance, not deployment. Replaces the Let's Encrypt expiry emails that ended 2025-06-04. New view 'watch' (new nav group). Reuses lib/sources.js certspotter path. NEW: watchlistCheck(domains, {fetchImpl, signal, lastIds})-&gt; per-domain {newest, sinceLast[], flags}. Edge cases: anonymous quota is bucketed — include_subdomains queries get 10/h, exact-name queries 100/h; neither header is CORS-exposed so only react to 429; use exact-name queries + staggered refresh for 20+ domains, offer an optional SSLMate key (certspotter CORS allows Authorization: '*, Authorization'); certspotter normal responses are Cache-Control max-age=14400 so fetch with {cache:'no-cache'} to see new issuances; some domains 403 not_allowed_by_plan; crt.sh only as opt-in fallback (18-48s, intermittent 404/502 with no ACAO); localStorage subject to Safari 7-day eviction → export. Test: mocked certspotter pages incl. after= empty (Retry-After 3600); bucketing + flag logic unit; ics alarms; 429 handling.
+
+**Verified endpoints / data**
+
+- `https://api.certspotter.com/v1/issuances?domain={d}&include_subdomains=true&expand=dns_names&expand=issuer&expand=revocation&expand=problem_reporting&after={id}`
+- `https://crt.sh/?q=%25.{d}&output=json&exclude=expired&deduplicate=Y (flaky fallback)`
+
+### P0.8 IP Intel enrichment: open ports, RPKI, routing, abuse, exposure matrix
+
+id `ip-enrichment` · where: **browser** · effort: **S**
+
+Behaviour: extend the IP Intel view per IP with InternetDB ports/tags/CVE-ids/hostnames (Shodan hostnames = extra IP→name evidence for inventory mapping), RPKI status of the announced prefix+origin AS (valid/invalid/unknown), routing sanity (not announced / multiple origins / more-specifics), abuse contact, PeeringDB network type, and a clickable CIDR breadcrumb (/8›/16›/24›announced prefix›IP) to surface sibling inventory servers. Inventory-wide 'exposure matrix' of risky open ports (22,3389,3306,5432,6379,9200,27017,2375,5900,11211) + a hint for which --ports to pass the CLI. Extends lib/ipintel.js createIpIntel with rpki(asn,pfx), routingStatus(pfx), abuseContact(ip), peeringdb(asn), internetdb(ip). Update RIPESTAT_SOURCEAPP to 'domainscope'. Edge cases: InternetDB is the fragile one — a short burst locks the IP for ~1h (429, Retry-After not JS-exposed), so make it per-IP on demand, stop at first 429, show a ~1h lockout, and route inventory-wide sweeps to the CLI --ports; RIPEstat is robust (200 IPs in ~3s, batch per prefix/ASN, sourceapp etiquette, email stat@ripe.net above 1k/day); PeeringDB throttles at ~16 rapid calls (429 Retry-After 10) → ~1 req/4s or per-ASN dedupe; ARIN RDAP 303-redirects to the RIR keeping CORS. About: 'InternetDB by Shodan, weekly data, non-commercial use only.' Test: parse fixtures for each RIPEstat call; RPKI valid/invalid_asn cases; InternetDB 404 + private skip + 429 lockout state; CIDR breadcrumb math.
+
+**Verified endpoints / data**
+
+- `https://internetdb.shodan.io/{ip}`
+- `https://stat.ripe.net/data/rpki-validation/data.json?resource=AS{asn}&prefix={pfx}&sourceapp=domainscope`
+- `https://stat.ripe.net/data/routing-status/data.json?resource={pfx}`
+- `https://stat.ripe.net/data/network-info/data.json?resource={ip}`
+- `https://stat.ripe.net/data/abuse-contact-finder/data.json?resource={ip}`
+- `https://www.peeringdb.com/api/net?asn={asn}`
+- `https://rdap.arin.net/registry/ip/{ip}`
+
+### P0.9 Zonemaster deep delegation test in Domain Health
+
+id `zonemaster` · where: **browser** · effort: **S**
+
+Behaviour: a 'Deep test (Zonemaster, ~40s)' button in Domain Health calls start_domain_test, shows a progress bar driven by test_progress (1→100), then renders get_test_results grouped by module (Basic, Address, Connectivity, Consistency, DNSSEC, Delegation, Nameserver, Syntax, Zone, System) with a level filter (INFO→CRITICAL) and the zonemaster.net/en/result/{id} permalink. JSON-RPC 2.0 over POST; ACAO *; languages da/en/es/fi/fr/nb/sl/sv (no Turkish → English messages, TR strings for module/level labels, optional per-testcase TR mapping via testcase id, since messages carry {module, level, testcase} but no tag). NEW LIB lib/zonemaster.js (DOM-free): createZonemaster({fetchImpl})-&gt; {start(domain,{signal})-&gt;test_id, progress(test_id), results(test_id,{language:'en'})}. Privacy banner (tests run from Zonemaster infra). Edge cases: recent tests are reused (same test_id returned) so no need to re-run; a bad domain gives JSON-RPC -32602 with data[].message; no rate-limit headers observed. Test: mocked JSON-RPC transcript (start→progress→results) from fixture zm_res.json; error -32602 path; module grouping + level filter.
+
+**Verified endpoints / data**
+
+- `POST https://zonemaster.net/api (start_domain_test, test_progress, get_test_results, get_language_tags, version_info)`
+- `https://zonemaster.net/en/result/{id}`
+
+### P0.10 Dangling-reference registrability check (SubdoMailing)
+
+id `dangling-registrability` · where: **browser** · effort: **M**
+
+Behaviour: in Domain Health, collect every external domain the zone depends on (NS targets, MX exchanges, CNAME-chain targets, SPF include/redirect/a:/mx:/exists:, DMARC rua/ruf hosts, DKIM selector CNAMEs, CAA iodef), reduce each to its registrable domain (PSL), and check registrability. Verdict per dependency: 'possibly registrable — verify at a registrar' (CRITICAL) when registry RDAP returns 404 AND DoH SOA/NS is NXDOMAIN; expiry &lt;30d = warn. SubdoMailing hijacked 8k+ domains this way. Extends lib/rdap.js: rdapDomain already resolves via the IANA bootstrap; add bootstrapLookup(d)-&gt;rdapServer and registrable() (uses domain.registrableDomain). Edge cases (adversarial-verified): rdap.org returns 404 for TLDs with NO RDAP (io/co/de/eu/me/tr/ru/cn/jp) — must check the bootstrap first and fall back to DoH-only for those; registry-reserved names (example.info) return RDAP 404 + NXDOMAIN yet are not buyable → REQUIRE both RDAP 404 and DoH NXDOMAIN and word it as 'possibly registrable'; some registries 404 redacted-but-existing names → corroborate with DoH; rdap.org throttles (429 no ACAO → TypeError) so prefer registry servers from the bootstrap. Test: mocked bootstrap + registry 404/200; TLD-without-RDAP path; reserved-name false-positive guard; dependency extraction from a fixture zone.
+
+**Verified endpoints / data**
+
+- `https://data.iana.org/rdap/dns.json`
+- `https://rdap.org/domain/{d}`
+- `https://rdap.verisign.com/com/v1/domain/{d}`
+- `https://rdap.publicinterestregistry.org/rdap/domain/{d}`
+- `https://pubapi.registry.google/rdap/domain/{d}`
+
+### P0.11 World map + relationship graph + aggregate mini-bars (inline SVG, vendored)
+
+id `scan-visuals` · where: **browser** · effort: **M**
+
+Behaviour, all inline SVG via svg()/createElementNS with presentation attributes (CSP-safe, no inline style): (1) World map in Global DNS — vendored pre-projected Equal Earth land path (assets/data/worldmap.json, ~58KB / 22KB gzip, viewBox 0 0 1000 487; a build script projects world-atlas 110m). Pins coloured by answer group (glb-g0..g7) with the group LETTER drawn in the pin, not ok/fail; ECS vantages hollow, real Globalping probes filled; hovering a table row highlights its pin and vice-versa; legend 'Group A 140.82.121.4 · 18 locations'. (2) Relationship map above Hosts/Servers — deterministic layered SVG columns (hostnames → IP/CDN edge → inventory server → ASN) with bundled edges, hover-to-trace, click-to-filter, '+N more' collapse; NO force layout so screenshots/reports stay stable. (3) Aggregate mini-bars above big tables (by provider/ASN, country, classification) that are clickable filters. NEW LIB lib/geo.js: project(lon,lat)-&gt;{x,y} (Equal Earth, matching the build script) so vantages/probes place correctly; NEW ui/charts.js: worldMap(el,{pins}), layeredGraph(el,{columns,edges}), miniBars(el,{buckets,onPick}). Build script tools/build-worldmap.mjs (Node, no deps): TopoJSON→arcs→Equal Earth, antimeridian Sutherland-Hodgman clip + Antarctica pole-closure, 0.1px rounding. Edge cases: layered graph unreadable &gt;~60 unique IPs → collapse to server/ASN grouping or show on demand, always keep the aggregate bars as the reliable summary; map land uses surface-3 in dark so pins carry colour; ip.thc.org reverse-IP count is per-IP-on-click (token bucket 250, 0.5/s). Test: geo.project golden points (IST 570.9,97.1 / NYC 318.6,98.1) matching the build output; miniBars bucket counts; graph node cap; SVG contains no style attribute.
+
+**Verified endpoints / data**
+
+- `None (existing ScanResult / propagation / ipintel data); optional POST https://ip.thc.org/api/v1/lookup {ip_address} for reverse-IP count`
+
+### P0.12 Universal search, command palette and keyboard shortcuts
+
+id `universal-search` · where: **browser** · effort: **M**
+
+Behaviour: one always-visible header input focused with '/' or Ctrl+K that auto-detects and routes input — domain→Lookup/Health, IP or CIDR→IP Intel, ASN (AS13335)→ASN prefixes, URL→host, pasted PEM→Certificate, multi-line list→Bulk — and accepts prefixes mx: txt: global: health: cert: ptr: probe: (only prefixes whose view exists). Enter routes to the best view with a dropdown of alternatives. Ctrl+K opens a palette (Modal) listing views, recent queries (localStorage, try/catch), and actions (theme, language, export, copy permalink, re-run). '?' overlay lists shortcuts (g+letter for views, j/k rows, Enter pivot, c copy). Every view gets an empty state with three clickable examples ('github.com MX','1.1.1.1','AS13335') + one line of explanation. NEW LIB lib/detect.js (DOM-free, pure): detectQuery(text)-&gt; {kind:'domain'|'ip'|'cidr'|'asn'|'url'|'pem'|'list', route:{view,params}, alternatives:[]} reusing netinfo.parseCidr/ipVersion, domain.normalizeHostname, x509.parseCertificates, util.splitList. Wire into app.js header + buildRoute/parseRoute (already exported). Edge cases: ignore '/', j/k, g-chords while focus is in input/textarea/contenteditable; Ctrl+K is the browser find shortcut — preventDefault only when the page has focus; never route to unregistered view ids. Test: detectQuery table (all kinds + ambiguous 'example.com' domain-vs-search); prefix parsing; buildRoute round-trip; no-network.
+
+**Verified endpoints / data**
+
+- `None (routing only; existing #/view?name= hash routes)`
+
+### P0.13 Health v2: score, problems-first, fix advice, Web category
+
+id `health-v2` · where: **browser** · effort: **M**
+
+Behaviour: rework Domain Health presentation — a percentage score bar + category tiles (DNS, Email, TLS/CAA, DNSSEC, Registration, Web) each with error/warn/pass counts and a coloured bottom stripe; below, a problems-only table (Category, Host, Result, How to fix) with passes behind 'Show all N checks'; each check gains impact + effort tags ('High impact · Low effort') and a plain-language verdict + next action. New Web category: Mozilla Observatory grade+score (POST, no body = simple request, ACAO *, synchronous ~0.6-3s — NO client polling) plus HSTS/redirect presence from /api/v2/analyze (scan.response_headers + tests), with a link to the full MDN report; a 'Run deep test' button links to zonemaster. Extends lib/health.js Check with impact, effort, fixKey fields and adds category 'web' to HEALTH_CATEGORIES; NEW observatory(host,{fetchImpl,signal})-&gt; {grade,score,testsFailed,detailsUrl,hsts,redirect}. Edge cases: a scan sends the host to Mozilla + triggers a fresh scan → explicit step / toggle + privacy note; scan only apex + www, not every subdomain; results are synchronous so no polling loop. Test: extend health fixtures with impact/effort assertions; mocked Observatory scan+analyze; category tile roll-up counts; problems-only filter.
+
+**Verified endpoints / data**
+
+- `POST https://observatory-api.mdn.mozilla.net/api/v2/scan?host={host}`
+- `https://observatory-api.mdn.mozilla.net/api/v2/analyze?host={host}`
+
+### P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)
+
+id `share-and-report` · where: **browser** · effort: **M**
+
+Behaviour: 'Share snapshot' compresses a result JSON (scan summary, cert diff, board, health) with CompressionStream('deflate-raw'), base64url-encodes into #/snap/&lt;data&gt;, and renders it read-only with an 'as of &lt;UTC&gt; via &lt;resolver&gt;' stamp — nothing leaves the browser (the fragment is never sent in HTTP, so link unfurlers only ever see the base page). A ~32KB size guard falls back to a downloaded file; a warning appears when the payload contains IPs/inventory. Report builder: a bilingual TR/EN hand-over — cert summary, hosts + coverage, servers updated with evidence (CLI run time, Globalping city/ASN/serial), CDN-managed hosts, open issues (NEEDS_UPDATE, NOT_HOSTED, dangling, CAA) and next renewal date — output as an @media print stylesheet (nav hidden, disclosures expanded, header with query+UTC+URL) plus 'Download HTML' (single file, inline CSS built via textContent). Reuses each view's existing snapshot() export + lib/export.js. NEW LIB lib/snapshot.js (DOM-free): encodeSnapshot(obj)-&gt;Promise&lt;string&gt;, decodeSnapshot(str)-&gt;Promise&lt;obj&gt; (both wrap CompressionStream/DecompressionStream, throw on unsupported); ui/report.js builds the print DOM. Verified: a 300-host JSON (35,631B) → 2,442-char fragment, round-trip identical in Chrome. Edge cases: unsupported browser (older Safari) → file fallback; keep board/IPs out of the fragment by default; deflate-raw is Chrome 103 not 80. Test: encode/decode round-trip on fixtures (Node 22 has the API); size-guard threshold; print-DOM has no innerHTML; unsupported-API path.
+
+**Verified endpoints / data**
+
+- `None (CompressionStream deflate-raw; Chrome 103+/FF113+/Safari16.4+)`
+
+## P1 — next
+
+### P1.1 Source status, quota meter and optional user keys
+
+id `quota-and-keys` · where: **browser** · effort: **S**
+
+**Status (2026-09-23): partly shipped.** Per-source quota / rate-limit classification is live in `lib/sources.js`: `SourceQuota` (period, Retry-After, readable X-RateLimit-*, localized `hintKey`), HackerTarget's HTTP-200 'API count exceeded' text, Cert Spotter / OTX 429 (Cert Spotter stops paging on its hourly quota), crt.sh outage vs. empty answer, and `sourceHealthSummary()` feeding the source-status panel of Subdomains and SSL Targets. Still open: `lib/quota.js` (cross-API tracker incl. Globalping `/v1/limits`), the header chip, confirm-before-exceeding for bulk actions, and optional user keys.
+
+Behaviour (original plan): one panel + header chip showing each external API's remaining budget and state — Globalping (X-RateLimit-Remaining/Reset exposed + /v1/limits), hackertarget (~50/day from body text 'API count exceeded'), certspotter/OTX/InternetDB 429 state. A clear 'rate-limited, retry in 42 min' replaces generic errors; bulk actions that would exceed a quota get a confirmDialog. Optional keys (Globalping token, certspotter API key, Spamhaus DQS key) kept only in localStorage behind a Clear button and sent only to their own API. NEW LIB lib/quota.js (DOM-free): track({source, headers, status, body})-&gt; {remaining, reset, state}; readGlobalpingLimits(). Edge cases: exact countdown only for Globalping (its Retry-After/X-RateLimit-* are CORS-exposed); certspotter/hackertarget/InternetDB expose the headers but not to JS → infer from status/body; Tranco/rdap.org 429 have no ACAO → browser sees TypeError, infer 'probably rate-limited' after a burst; certspotter key IS browser-usable (preflight allows Authorization). Test: track() per-source fixtures; TypeError-after-burst heuristic; key stored/cleared; never send a key cross-origin.
+
+**Verified endpoints / data**
+
+- `https://api.globalping.io/v1/limits`
+- `https://api.certspotter.com/v1/issuances (Authorization: Bearer allowed)`
+- `hackertarget body-text errors`
+- `https://otx.alienvault.com/api/v1/indicators/domain/{d}/passive_dns (429 readable)`
+
+### P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift
+
+id `zone-import-drift` · where: **both** · effort: **M**
+
+**Status (2026-09-24): not started — now the biggest gap in discovery.** On a private customer domain ([RESEARCH.md › Measured results](RESEARCH.md#measured-results-2026-09-23)) the remaining known names are organisation-specific words that neither the public lists nor any passive source contain, so no wordlist level, locale pack or permutation reaches them; today only the user's custom wordlist, or learned names carried over from an earlier scan, cover them. A zone export is the only complete list.
+
+Behaviour: drop/paste a zone export — BIND (Cloudflare export carries '; cf_tags=cf-proxied:true|false'), Route53 list-resource-record-sets JSON, or octoDNS YAML. Parse $ORIGIN/$TTL/relative names/multi-line records. Names become exact scan seeds (no guessing between sources); for proxied BIND records the file value IS the real origin → those names map straight to inventory servers (orange-cloud solved without probing). Lint: CNAME at apex or alongside data, MX/NS→CNAME, missing trailing dot (www.example.com.example.com), private IPs in a public zone, multiple SPF, unsplit TXT &gt;255, TTL outliers. Drift: query each record via DoH → table of in-file-but-differs / missing-live / live-but-not-in-file (needs discovery). The file never leaves the browser; the CLI accepts the same file as -n names and -t origin-targets. New view 'zone' (group ssl or dns) + lib/zoneparse.js (DOM-free): parseBind(text), parseRoute53(json), parseOctodns(yaml)-&gt; {records:[{name,type,ttl,value,proxied}], warnings}; lintZone(records); driftReport(records,{dns}). Edge cases: octoDNS needs a scratch YAML-subset parser (&gt; S effort — ship BIND+Route53 first); Route53 Alias records have no TTL/values → treat DNSName ending elb/cloudfront/s3-website/execute-api as provider-managed ('resolves via alias'); weighted/geo/latency/failover SetIdentifier sets → 'routing-policy: partial compare'; proxied records always 'differ' live (DoH returns edge IPs) → compare 'live IPs in CF ranges' instead; live-but-not-in-file needs discovery (ANY is useless: Google RFC8482 HINFO, Cloudflare Status 4 EDE21). Test: parse fixtures for BIND/Route53/octoDNS incl. cf_tags + \052 wildcard; lint each rule; drift classification with mocked DoH.
+
+**Verified endpoints / data**
+
+- `https://cloudflare-dns.com/dns-query`
+- `https://dns.google/resolve`
+
+### P1.3 Real-ISP DNS propagation in Global DNS (Globalping probes)
+
+id `gp-real-dns` · where: **browser** · effort: **M**
+
+Behaviour: a 'Real ISPs' mode next to the ECS emulation in Global DNS. Globalping dns measurements with locations by country/ASN (e.g. [{country:'DE'},{magic:'AS3320'}]) resolve through each probe's own ISP resolver — show ISP/ASN, resolver used, answers + TTL, grouped into the existing A/B/C answer groups and plotted on the world map (filled pins). A 'Your connection' row explains why your own view differs: egress resolver + ECS subnet from o-o.myaddr TXT, and TLS/PQ-kex/ECH/colo from crypto.cloudflare.com/cdn-cgi/trace, plus the real system/browser resolver from edns.ip-api.com/json. Reuses lib/globalping.js (add type:'dns') + the scan-visuals map. Edge cases: NOT every probe is a real eyeball — of 6 probes in one country 3 used 1.1.1.1/8.8.8.8, 3 reported resolver 'private' (SERVER masked) and one was datacenter-tagged; label rows by result.resolver and offer a 'private + eyeball-network only' filter; structured answers[] carry ttl per probe (not only rawOutput); cost = probe count against the shared 250/h; o-o.myaddr via DoH shows Google's egress not the OS resolver (edns.ip-api.com fills that, ACAO * on 302 and 200, non-commercial use only). Test: parse gp dns fixture (answers[].ttl, probe.resolvers, tags); resolver-classification (public vs private vs datacenter); answer-group reuse.
+
+**Verified endpoints / data**
+
+- `POST https://api.globalping.io/v1/measurements {type:'dns', locations:[{country:'DE'},{magic:'AS3320'}], measurementOptions:{query:{type:'A'}, protocol:'UDP'}}`
+- `GET https://api.globalping.io/v1/measurements/{id}`
+- `https://dns.google/resolve?name=o-o.myaddr.l.google.com&type=TXT`
+- `https://crypto.cloudflare.com/cdn-cgi/trace`
+- `https://edns.ip-api.com/json`
+
+### P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)
+
+id `delegation-consistency` · where: **browser** · effort: **M**
+
+Behaviour: a Domain-Health sub-panel, intoDNS-style Category/Status/Test/Info table, one row per NS (IP, ASN, serial, AA, RTT). Query the parent (resolver=&lt;TLD server IP&gt;, the referral is in rawOutput) and every authoritative NS directly via Globalping dns. Checks: parent-vs-child NS set, glue vs actual A/AAAA, SOA serial per NS (multi-provider noted as expected), lame NS (no AA / REFUSED / SERVFAIL), open recursion on authoritative servers (query an out-of-zone name, check 'ra'), NSID. Sitting-Ducks detector flags a SERVFAIL/REFUSED delegation to a provider that lets anyone claim zones, or a subzone NS pointing at Azure/Route53 servers not answering authoritatively. AXFR exposure via hackertarget zonetransfer (shared ~50/day quota). Reuses lib/globalping.js. Edge cases (adversarial): Route53 and NS1 both answered AA NOERROR SOA for example.com from OTHER customers' zones → AA alone does not prove correct delegation; compare SOA mname + serial + NS set across NS and against the parent; AA/NSID/rcode + referral are only in rawOutput (dig 9.16 text) → brittle parser needed, measurementOptions.query must be an object (arrays and 'nsid' rejected) so each NS×qtype costs 1 credit (~17/domain for 8 NS); resolver accepts IP or hostname; Sitting-Ducks provider list is hand-curated (can-i-take-over-dns 1,105★ has no licence → link only). Test: rawOutput parser fixtures (referral, aa flag, serial, ra); shared-provider false-AA guard; hackertarget zonetransfer 'Transfer failed' vs full zone.
+
+**Verified endpoints / data**
+
+- `POST https://api.globalping.io/v1/measurements {type:'dns', resolver:'<NS IP or hostname>', query:{type:'SOA'|'NS'}, protocol:'UDP'|'TCP', trace}`
+- `https://api.hackertarget.com/zonetransfer/?q={domain}`
+- `existing DoH NS/SOA`
+
+### P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode
+
+id `record-renderers` · where: **browser** · effort: **M**
+
+Behaviour in Lookup + Health: (1) TXT verification tokens → vendor chips (google-site-verification, MS=, facebook-, apple-, atlassian-, docusign=, stripe-, openai-, anthropic-, adobe-idp-, TAILSCALE-, _github-challenge, …) from a vendored static table (no external logos); stale tokens become a cleanup hint. (2) SPF as numbered plain-English steps with a collapsible include tree + per-branch lookup cost (existing spfLookupCount tree), a 'Does IP X pass?' evaluator, a flatten preview with size, warnings for strings &gt;255 / records &gt;~450 bytes. (3) SOA fields as human durations, MX 'Primary' badge, CAA grouped by tag. (4) HTTPS/SVCB cards: alpn (h3?), port, ipv4hint/ipv6hint compared with real A/AAAA (stale hints break HTTP/3); decode ech= ECHConfigList (version 0xfe0d, config_id, KEM, cipher suites, public_name) — verified with existing dnswire.js + a ~30-line parser. Extends lib/health.js: add expandSpfForIp(ip) (existing expandSpfDomain only does d/o); NEW lib/records.js (DOM-free): classifyTxt(txt)-&gt;vendor|null, decodeEch(b64)-&gt;{...}, spfSteps(tree). Vendor the nuclei txt-service-detect.yaml patterns (MIT) as assets/data/txt-vendors.json + hand-add MS=/adobe-idp/TAILSCALE/_github-challenge. Edge cases: SPF macro evaluator — expand %{i},%{ir},%{v},%{d},%{o} (Salesforce exists:%{i} is too common to skip), report %{h}/%{s}/%{l} as 'not evaluated (needs HELO/sender)'; hint order differs between resolvers → sort before compare. Test: classifyTxt table; decodeEch on crypto.cloudflare.com fixture; SPF evaluator pass/fail incl. macro; SVCB parse from dnswire fixture.
+
+**Verified endpoints / data**
+
+- `https://cloudflare-dns.com/dns-query`
+- `https://dns.google/dns-query`
+- `https://dns.google/resolve`
+
+### P1.6 Mail identity: FCrDNS, generic-PTR policy, DMARC external-report authorisation (ruf)
+
+id `mail-identity` · where: **browser** · effort: **S**
+
+Behaviour: new Health checks over existing DoH. For MX targets and SPF single-host ip4/a IPs: A/AAAA → PTR → forward-confirm (FCrDNS). Flag generic/dynamic PTRs (embedded IP, dsl/dynamic/pool, cloud defaults like ec2-…compute.amazonaws.com, *.bc.googleusercontent.com, &lt;ip&gt;.dynamic.&lt;isp-domain&gt;) and IPv6 MX without PTR. Map results to Gmail/Yahoo (Feb 2024, tightened Nov 2025) bulk-sender rules. For each DMARC rua/ruf mailto outside the org domain, query &lt;policy-domain&gt;._report._dmarc.&lt;report-domain&gt; TXT for v=DMARC1 (RFC 7489 §7.1) and warn when missing (receivers silently drop reports). Mostly extends lib/health.js: the rua authorisation check already exists (dmarc.rua-unauthorized, org-domain, ≤5 targets) — add ruf coverage and cross-domain-only signal; add mail.fcrdns and mail.ptr-generic checks with impact/effort. Edge cases: MX hosts are receivers → run FCrDNS on SPF ip4/a sending IPs and label MX FCrDNS as a proxy; report a generic PTR as info/warn not error (legit relays carry cloud PTRs, e.g. messagelabs → googleusercontent, FCrDNS PASS); report vendors publish wildcards so only self-hosted cross-domain report addresses give real signal; do NOT map PTR to the Microsoft 2025-05-05 rule (that enforces SPF/DKIM/DMARC, not PTR). Test: FCrDNS pass/fail + IPv6-no-PTR fixtures; generic-PTR regex table; ruf authorisation NXDOMAIN vs wildcard-hit.
+
+**Verified endpoints / data**
+
+- `https://cloudflare-dns.com/dns-query`
+- `https://dns.google/dns-query`
+- `https://dns.google/resolve`
+
+### P1.7 Takeover fingerprints and cloud-IP ownership hints
+
+id `takeover-fingerprints` · where: **browser** · effort: **M**
+
+Behaviour: vendor can-i-take-over-xyz fingerprints.json (CC-BY-4.0, 76 entries, attribution in About, optional weekly refresh). Match each host's CNAME suffix to a service with its vulnerable/edge-case status + NXDOMAIN requirement, upgrading the existing scanner 'dangling' flag to a severity with provider-specific fix text. Tag A records in AWS EC2 ranges (region, from a vendored compact snapshot) and GitHub Pages IPs with 'cloud IP: confirm it is still yours'. Optionally confirm with a Globalping HTTP GET whose rawBody matches the service fingerprint text. Extends lib/netinfo or scanner classification; NEW assets/data/takeover-fingerprints.json + assets/data/aws-ec2-ranges.json. Edge cases: only 28/76 entries have cname patterns (GitHub's is empty) → also match by A-record (GH Pages IPs) and by NXDOMAIN requirement; Globalping rawBody is capped ~10KB (truncated flag), 1 credit per GET; elastic-IP hint is info-only (high false positive); vendor AWS as a compact [prefix,region] snapshot (~60KB), never the 2.7MB file at runtime. Test: fingerprint match by cname + by A-IP; NXDOMAIN gating; rawBody body-match with fixture; EC2-range tag.
+
+**Verified endpoints / data**
+
+- `https://raw.githubusercontent.com/EdOverflow/can-i-take-over-xyz/master/fingerprints.json (vendor)`
+- `https://api.github.com/meta`
+- `POST https://api.globalping.io/v1/measurements (type http, optional body match)`
+
+### P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)
+
+id `dnsbl-reputation` · where: **browser** · effort: **M**
+
+Behaviour: query &lt;reversed-ip&gt;.&lt;zone&gt; A (+TXT reason) via DoH for MX IPs, single-host SPF ip4, the inventory 'mail' group and pasted IPs. Each zone self-tests at runtime with RFC 5782 points (2.0.0.127 listed, 1.0.0.127 must be NXDOMAIN) and is auto-disabled if the control fails. Summary 'Listed N / checked M / unavailable K'. Default list (~22 verified working on both CF+Google): all.s5h.net, b.barracudacentral.org, bl.spamcop.net, bl.mailspike.net, psbl.surriel.com, dnsbl-1/2.uceprotect.net, bl.blocklist.de, dnsbl.dronebl.org (answers 127.0.0.1), truncate.gbudb.net, rbl.interserver.net, bl.nordspam.com … behind 'more lists'. For domains, compare filtering resolvers (Quad9, Cloudflare Family/Security, CleanBrowsing) with unfiltered to report 'blocked as malware/adult by X' + false-positive-form links. Builds on propagation.isFilteredResponse. NEW lib/dnsbl.js (DOM-free): DNSBL_ZONES, checkIp(ip,{dns}), selfTest(zone,{dns}). Edge cases: NEVER query Spamhaus zen/dbl/sbl/xbl/pbl or cbl.abuseat through public resolvers — CF returns 127.255.255.254 (refused), Google returns NXDOMAIN (a FALSE clean); treat 127.255.x.x as error codes; the '127.0.0.1 = not listed' rule is wrong (dronebl lists with 127.0.0.1) → use the 1.0.0.127 NXDOMAIN control; several lists are dead/flaky (sorbs, manitu, wpbl, spamrats SERVFAIL) → excluded; optional Spamhaus DQS key queries &lt;key&gt;.zen.dq.spamhaus.net (mark experimental, appears in resolver logs); per-list terms unverified (Barracuda wants free registration). Test: selfTest logic with 127.0.0.2/1.0.0.127 fixtures; Spamhaus-exclusion guard; filtered-resolver compare.
+
+**Verified endpoints / data**
+
+- `https://cloudflare-dns.com/dns-query`
+- `https://dns.google/resolve`
+- `https://family.cloudflare-dns.com/dns-query`
+- `https://security.cloudflare-dns.com/dns-query`
+- `https://dns.quad9.net/dns-query` — Node/CLI only: browsers cannot read Quad9 (its HTTP/3 answers lack the CORS header and Chrome/Edge use HTTP/3 for it; measured 2026-09-23 with `tests/live/browser-doh-matrix.mjs`), so the browser comparison must treat Quad9 as "not readable", not as "not blocked"
+
+### P1.9 Permutation discovery from found names, multi-level wildcard filtering
+
+id `permutation-discovery` · where: **browser** · effort: **M**
+
+**Status (2026-09-24): shipped.** `lib/permute.js` builds environment, number (±1/±2), sibling-word, service-suffix (`billing → billingapi`) and region variants of the names already found; the user's custom and learned labels join the sibling words. The default region tokens are global (`us, eu, uk, de, fr, jp, east, west`); market-specific tokens can only be passed explicitly through `opts.regions`. The scanner resolves the candidates within a budget (default 1,500; 500 / 1,500 / 5,000 in the UI) after NODATA/CNAME-aware wildcard detection on every parent (`detectWildcardDeep`), then runs one recursive round under discovered parents. The wordlists are self-hosted rather than fetched from GitHub at runtime, and every level is in the UI: Small (159, built in), Smart (≈7,000, default), Large (≈50,000) and Huge (≈130,000), built by `tools/build-wordlists.mjs` (see `assets/data/README.md`). Market vocabulary lives only in the 12 locale packs (`assets/data/locale/`), never in the global lists; each scanned domain gets its packs from its TLD (the last label: `.com.tr` → tr), or the user picks them (or none). A custom wordlist (kept in the tab only) and the opt-in per-browser learned names (`lib/learned.js`, bare labels only, off by default and never used at level Off) are tried before the level's list. Measured ([RESEARCH.md › Measured results](RESEARCH.md#measured-results-2026-09-23)): no false positive among 30 independently re-checked DNS-only finds; on a private domain a manually chosen locale pack raised recall from 17 to 21 of 27 known names. **Open:** choose locale packs from evidence when the TLD is generic (discovered labels, the country of the NS / MX hosts) — a generic TLD gets no pack automatically today, whatever its market.
+
+Original plan (superseded by the status above: the default budget is 1,500, not ~2k; the self-hosted tiers are built from SecLists top-1M (110k), bitquark, commonspeak2, dnsgen and altdns instead of SecLists top-5000/20000; alterx's permutations.yaml is not vendored — its patterns only informed the curated boost in `tools/build-wordlists.mjs`): from discovered labels, generate candidates alterx/dnsgen-style — environments (dev/test/stg/uat/prod/preprod), numbers ±1, separators, regions (us/eu/uk/…), versions (v1/v2), plus a vendored word list — and resolve via DoH within a user budget (default ~2k). Detect wildcard roots at EVERY level (not only apex) and drop suspects. Optional bigger lists (SecLists top-5k/20k) fetched on demand. Env hosts (api-v2, panel2, stg-api, support-test) are often where the old cert lives and CT misses them. Integrates into the scan pipeline as a bruteforce mode; NEW lib/permute.js (DOM-free, pure): permutations(labels, {envs,regions,words})-&gt; string[]; reuses DohClient.detectWildcard. Vendor alterx permutations.yaml + dnsgen words.txt + SecLists top-5000 (all MIT) as assets/data/*; top-20000 on demand. Edge cases (measured): no 429 up to ~280 qps (Cloudflare) / ~740 qps (Google) so a 2k budget at concurrency 12 ≈ 10s — the real limit is courtesy to the target's authoritative NS, keep the default pace; random labels under some domains return NODATA (NOERROR no-data) not NXDOMAIN → wildcard detection must treat NODATA and CNAME wildcards as wildcards, not only A matches; puredns is GPL → ideas only. Test: permutations() golden set; multi-level wildcard + NODATA detection with mocked DoH; budget cap.
+
+**Verified endpoints / data**
+
+- `https://raw.githubusercontent.com/projectdiscovery/alterx/main/permutations.yaml` (reviewed, not vendored)
+- `https://raw.githubusercontent.com/AlephNullSK/dnsgen/master/dnsgen/words.txt` (used by the wordlist build, pinned — see assets/data/README.md)
+- `https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt` (original plan; the build uses the top1million-110000 list instead, pinned)
+
+### P1.10 CLI: TLS on mail, database and other non-HTTPS ports
+
+id `cli-starttls` · where: **cli** · effort: **M**
+
+Behaviour: protocol-aware handshakes in ssl_origin_scan.py — SMTP 25/587 (EHLO+STARTTLS), 465 implicit, IMAP 143 STARTTLS + 993 implicit, POP3 110 STLS + 995, FTP 21 AUTH TLS, PostgreSQL 5432 (SSLRequest 00000008 04d2162f then wrap), LDAPS 636 (+ LDAP StartTLS OID 1.3.6.1.4.1.1466.20037), RDP 3389 (X.224 CR RDP_NEG_REQ requestedProtocols=0x3), XMPP 5222 optional. Presets --profile web|mail|all. Statuses/output unchanged, add a proto column. All 7 upgrades verified against in-process fake servers + live Gmail/Outlook. Edge cases: imaplib.starttls / poplib.stls re-send CAPABILITY and failed against minimal servers → for IMAP/POP3/LDAP/PG/RDP use a RAW exchange (send command, read one line/PDU, wrap); smtplib + ftplib.FTP_TLS are fine; RDP tested only against a fake server — servers using the RDP Security Layer return RDP_NEG_FAILURE → report 'no TLS' (unverified on real Windows); outbound 25 blocked on most cloud VMs → distinct 'blocked' status. Test: tests/python fake SMTP/IMAP/POP3/FTP/PG/LDAP/RDP server threads (already prototyped in a local research script, tls_lab.py — not committed) asserting the expected leaf fingerprint per protocol; no real mail server needed in CI.
+
+**Verified endpoints / data**
+
+- `local + gmail-smtp-in.l.google.com:25, smtp.gmail.com:587/465, imap.gmail.com:993, outlook.office365.com:143`
+
+### P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency
+
+id `cli-tls-audit` · where: **cli** · effort: **M**
+
+Behaviour: per ip:port×name record accepted TLS versions (loop min/max 1.0-1.3), negotiated cipher, chain validity vs the system store, hostname match, key + signature algorithm. On Py3.13+ use get_unverified_chain(); on 3.10-3.12 use the private sock._sslobj.get_unverified_chain(); else compare a CERT_REQUIRED handshake with CERT_NONE to detect an incomplete chain. --both-keytypes caps at TLS1.2 and probes set_ciphers('aRSA') vs ('aECDSA') to catch dual-cert servers where one stays old. Fleet check flags the same name returning different serials on different IPs (a missed LB pool member). Verified in the local tls_lab.py prototype (not committed). Edge cases: distinguish verify code 20 (missing intermediate) from an unknown root — prefer the unverified-chain length; the Windows ROOT store is lazily populated (57 certs here) so CERT_REQUIRED can falsely say 'untrusted'; on RHEL9-style crypto policy TLS1.0 is impossible even at SECLEVEL=0 → report 'untestable' not 'disabled'; the ssl module has no sigalgs API so RSA/ECDSA split only probes at ≤TLS1.2 (TLS1.3-only servers can't be dual-probed); Py3.12 DeprecationWarning on TLSv1/1_1. Test: dual-cert SSLContext fixture (rsa_multi_san + ec_wildcard on one port); SECLEVEL=0 legacy negotiation; chain-length via unverified chain; fleet serial-mismatch.
+
+**Verified endpoints / data**
+
+- `local only (dual load_cert_chain, @SECLEVEL=0, get_unverified_chain)`
+
+### P1.12 CLI local-certs finder + generated fleet one-liners
+
+id `cli-local-certs` · where: **both** · effort: **M**
+
+Behaviour: new subcommand ssl_origin_scan.py local-certs [--paths ...] [--match-cert old.pem] --json. Walk /etc/{nginx,apache2,httpd,haproxy,ssl,pki,letsencrypt,postfix,dovecot}, /opt,/srv,/usr/local/etc with os.walk(followlinks=False), parse every PEM/DER/PKCS7 with the built-in DER parser, and grep configs for referenced paths (ssl_certificate, SSLCertificateFile, HAProxy crt, smtpd_tls_cert_file, Dovecot ssl_cert). Report path, serial, SANs, expiry, whether it is the old cert, and the referencing config. On Windows use ssl.enum_certificates('MY') (verified). The web UI generates fleet commands: ansible all -m script -a 'ssl_origin_scan.py local-certs --json', PowerShell (Get-ChildItem Cert:\LocalMachine\My, netsh http show sslcert), keytool -list, kubectl get secrets --field-selector type=kubernetes.io/tls. Reuses the CLI's own load_certificates() (verified: parsed 35/45 fixtures, keys never shown). Edge cases: certbot /etc/letsencrypt/{live,archive} are 0700 root → command needs sudo; print ONE aggregated 'N paths permission-denied' line, not per-file noise; dedupe by os.path.realpath (live→archive symlinks) then by serial; JKS/PKCS12 need a password → generate keytool/openssl commands only; kubectl field-selector documented but not live-tested. Test: walk tests/fixtures (35/45 parse), with_key.pem key-suppression, permission-denied aggregation, realpath+serial dedupe.
+
+**Verified endpoints / data**
+
+- `filesystem only; ssl.enum_certificates('MY') on Windows`
+
+### P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner
+
+id `renewal-planning` · where: **both** · effort: **S**
+
+Behaviour: (1) ACME Renewal Information — compute certID = base64url(AKI keyIdentifier)+'.'+base64url(serial DER), read renewalInfo from the CA directory, show the suggested window + any explanationURL (early-renewal/revocation). (2) Cadence — from issuance dates + the CA/B schedule show renewals/year and manual effort (servers × renewals × minutes) with per-server-type ACME tool suggestions (acme.sh, certbot, lego, cert-manager, certimate). (3) Coverage planner — from discovered hosts, the minimal cert set (what *.example.com covers, which names need explicit SANs like the apex/deeper names/other registrable domains, which sit behind a CDN edge cert), exported as a SAN list + openssl req config + CSR command (key generated locally by the user). NEW lib/ari.js (DOM-free): certId(cert)-&gt; string, renewalInfo(directoryUrl, certId, {fetchImpl,signal})-&gt; {window, explanationUrl, retryAfter}. Verified: LE prod+staging directory + renewal-info are ACAO *, work for ANY LE cert with no account; expired certs still return 200 with a past window; unknown serial → 404 malformed. Edge cases: certID needs the AKI keyIdentifier (x509 authorityKeyId) and x509.serialHex strips the 00 sign byte → re-add when the high bit is set; respect Retry-After (6-8h); GTS/Sectigo/ZeroSSL/SSL.com renewalInfo have NO ACAO → those go through the CLI only; cadence math uses SC-081 dates (200d from 2026-03-15, 100d 2027-03-15, 47d 2029-03-15). Test: certId() vs known LE leaf (serial sign-byte case); renewalInfo mocked 200/404; coverage planner minimal-set logic; CSR/openssl config text.
+
+**Verified endpoints / data**
+
+- `GET https://acme-v02.api.letsencrypt.org/directory`
+- `GET https://acme-v02.api.letsencrypt.org/acme/renewal-info/{certID}`
+- `GET https://acme-staging-v02.api.letsencrypt.org/directory`
+
+### P1.14 In-browser DNSSEC chain-of-trust validator and graph
+
+id `dnssec-chain` · where: **browser** · effort: **L**
+
+Behaviour: walk root→TLD→zone with DO+CD over DoH wire, collect DS/DNSKEY/RRSIG, anchor on the IANA root KSK. Verify DS digests with crypto.subtle.digest (SHA-256/384); verify RRSIGs with WebCrypto — RSASSA-PKCS1-v1_5 SHA-1/256/512, ECDSA P-256/P-384 (raw r||s matches WebCrypto), Ed25519 where supported; anything else 'not verified'. Inline SVG graph per zone (DS→KSK→ZSK→RRset, edges secure/insecure/bogus) with legend, counts, 'Download SVG'. Checks: DS with no matching DNSKEY (provider migration), RRSIG expiring &lt;5 days, algorithm 5/7 or DS digest type 1, NSEC3 iterations &gt;0 (RFC 9276), KSK/ZSK counts during rollover. Clean-room (DNSViz is GPL → ideas only). New view 'dnssec' or a Health panel; NEW lib/dnssec.js (DOM-free) using dnswire.js. Verified in a local dnssec_check.mjs prototype (not committed): full root→com→cloudflare.com chain validates, both root KSKs anchored, denial proofs (NSEC3 + compact NOERROR+NSEC) arrive. Edge cases: dnswire keeps rdata as a raw view (may hold compression pointers) — fine for DNSKEY/DS (no names) but NS/MX/CNAME/SOA RRsets need canonical re-encoding (lowercase, uncompressed, RFC 4034 §6) from decoded data; wildcard RRSIGs (labels&lt;owner labels) need '*.' reconstruction; handle Cloudflare compact NOERROR+NSEC denial; anchor BOTH root KSKs (rollover in progress); Ed25519 needs Chrome 137+/FF129+/Safari17+. Test: golden chains from wire fixtures (root/com/zone) with real RRSIG verify; canonical re-encode unit; NSEC3 iteration check; algorithm-not-supported path.
+
+**Verified endpoints / data**
+
+- `https://data.iana.org/root-anchors/root-anchors.xml`
+- `https://cloudflare-dns.com/dns-query (wire, DO+CD)`
+- `https://dns.google/dns-query (wire, DO+CD)`
+- `crypto.subtle (RSASSA-PKCS1-v1_5 / ECDSA / Ed25519 / digest)`
+
+## P2 — later
+
+### P2.1 'Copy as command' + provenance on every row
+
+id `copy-as-command` · where: **browser**
+
+**Status (2026-09-24): groundwork only.** `lib/cmdline.js` builds the one command the app already offers — the `ssl_origin_scan.py` origin sweep — from validated tokens with per-shell quoting (POSIX and PowerShell); new command builders should reuse `quoteArg` and the same drop-don't-quote rule. The per-row 'Copy as' menu is open.
+
+Kebab menu on each record/host/IP row copying the equivalent terminal command: dig (@resolver,+dnssec,+subnet,+trace,+short), kdig/doggo, nslookup, Resolve-DnsName, curl DoH (?dns=&lt;base64url&gt; via dnswire), curl --resolve name:443:ip -svI, openssl s_client -connect ip:443 -servername name, ssl_origin_scan.py -t ip -n name; a Raw toggle shows dig-style zone lines. Pure text (lib/commands.js). Provenance stamp is PARTIAL: dns.google 'Comment: Response from &lt;ip&gt;.' appears only on cache-miss (7/10 then absent on repeat) → show 'answered by NS x' only when present, otherwise 'via Google DoH · &lt;UTC&gt; · &lt;ms&gt;', and make the extra provenance query on-demand not default.
+
+### P2.2 Run history and diff between scans
+
+id `run-history-diff` · where: **browser**
+
+Save scan/health/lookup results per domain in IndexedDB (try/catch; JSON export/import as the durable path; navigator.storage.persist()). 'Compare with previous' shows new/removed subdomains, IP/CNAME changes, CDN on/off, new dangling records, cert changes, DNSSEC status changes, record-level diffs with +/−/~ glyphs+colour; export as Markdown/JSON for tickets. Reuse the same diff component for cert SANs, zone drift and CT new issuances. Quota ~10GB on Pages origins; Safari ITP 7-day eviction → keep export. Retain last ~20 runs/domain, prune by size.
+
+### P2.3 Monitoring/automation exports (web + CLI)
+
+id `toolchain-exports` · where: **both**
+
+From Hosts/Servers/Board generate: Prometheus blackbox_exporter file_sd targets JSON + alert rule (probe_ssl_earliest_cert_expiry - time() &lt; 21*86400), Gatus endpoints YAML ([CERTIFICATE_EXPIRATION] &gt; 336h), Nagios/Icinga check_ssl_cert commands (-H name --resolve IP -c 7 -w 21), Ansible INI inventory with [needs_new_cert]/[behind_cdn]. CLI mirrors with --prometheus-textfile (ssl_cert_not_after_seconds{name,ip,port,serial}), --jsonl, --junit, --ansible-inventory. Pure text. blackbox file_sd for IP+SNI needs a relabel (target=IP, tls_config.server_name per module) — include the relabel in the export. DROP the Uptime Kuma export: v2.0 removed JSON backup/restore.
+
+### P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)
+
+id `iac-export` · where: **browser**
+
+From an ALL lookup on the apex + discovered names, build a reconstructed zone clearly labelled 'observed via public DNS, not authoritative, hidden records missing', exported as BIND, DNSControl dnsconfig.js (needs var REG_NONE=NewRegistrar('none'); + NewDnsProvider(...); CF proxy meta {cloudflare_proxy:'on'}) and octoDNS YAML. Iterate record types per name (ANY is useless). Lossy: hidden names, cached-decremented TTLs and geo variants missing; a Cloudflare-flattened apex resolves to edge IPs → emit as a commented placeholder or ALIAS/CNAME with CF_PROXY_ON, not literal A records. Medium value; 'observed, not authoritative' label mandatory.
+
+### P2.5 Reverse-DNS sweep of a prefix or ASN
+
+id `ptr-sweep` · where: **browser**
+
+Input a CIDR (cap /22) or ASN (list announced prefixes via RIPEstat, require the user to pick — one national ISP announces 54KB of prefixes). Run PTR for every IP through the DoH limiter (verified: 256 queries/concurrency 12 in ~1-2.5s, no 429), forward-confirm, classify, match against inventory; output IP/PTR/forward-check/inventory-match with 'add to inventory' + 'add names to scan'. RIPEstat reverse-dns shows who serves the rDNS zone. ISP ranges give templated PTRs (static/dynamic) that forward-confirm but carry no signal → collapse those patterns. IPv6 sweeps impractical → IPv4 only.
+
+### P2.6 Domain portfolio view: many domains, one row each
+
+id `portfolio` · where: **browser**
+
+Paste many domains → one row each: RDAP expiry countdown + status flags (clientTransferProhibited missing = hijack risk; serverHold/redemptionPeriod/pendingDelete critical), registrar, delegationSigned, nameservers' own registrable-domain expiry, DNSSEC, CAA, mail posture (SPF valid ≤10 lookups, DKIM ≥1024 bits, DMARC policy, MTA-STS/TLS-RPT, null MX/-all/p=reject for parked). Sortable, CSV, .ics. RDAP: query registry servers directly from the IANA bootstrap (verified 100 domains/3.8s); rdap.org only as fallback at ≤1 req/s (429 no ACAO → TypeError); add a small ccTLD override map (io→identitydigital). PARTIAL for ccTLDs without RDAP (e.g. .de, .jp, .tr): expiry/status/registrar columns stay empty → registry whois link only (for .tr, TRABIS whois is POST+CSRF, so no prefill). DNS side (DNSSEC/CAA/SPF/DMARC/MTA-STS) works for every TLD.
+
+### P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)
+
+id `extra-passive-sources` · where: **browser**
+
+**Status (2026-09-23): partly shipped.** ip.thc.org is the `thc` source in `lib/sources.js` (default-enabled; paged, 100 names per page, at most 10 pages / 1,000 names per domain, pages 2 s apart; `lastSeen` per name, `truncated` / `available` when capped) and appears in the Subdomains / SSL Targets source lists and About. Common Crawl and the runtime PSL refresh are still open.
+
+Original plan: add ip.thc.org to SOURCES: POST https://ip.thc.org/api/v1/lookup/subdomains {domain,limit,page_state}, ACAO *, text/plain body avoids preflight, 100 domains/page, paginate with page_state (a large telco domain = 1,144 records / 12 calls), returns last_seen_on for recency ranking; token bucket 250 @ 0.5/s → fetch up to ~10 pages/domain, spaced out. Common Crawl (collinfo.json + CC-MAIN-2026-39-index) is LOW marginal value (SURT-sorted URLs: a large telco domain's 5,150 lines → 2 hosts) and up to 500KB+/query → opt-in only, cap limit=3000 fl=url, no paging on big domains. Optional runtime PSL refresh (335KB, MPL-2.0).
+
+### P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)
+
+id `lookalike-watch` · where: **browser**
+
+JS reimplementation of dnstwist fuzzers (omission/repetition/transposition/keyboard (QWERTY; other layouts such as Turkish Q/F or AZERTY as opt-in locale packs)/insertion/hyphenation/bitsquat/vowel-swap/IDN homoglyphs (generic Latin/Cyrillic confusables; locale letters such as ı/i, ş/s, ß/ss from packs)/TLD swap (the domain's own ccTLD and second-level forms + .com/.net + IANA list)/dictionary words: English by default — login, secure, account, support, pay — plus the locale pack's words from assets/data/locale/ when the user opts in). Registration via DoH NS/SOA then A/MX (MX = phishing mail possible), optional certspotter per hit as a single-hostname query (the 100/h allowance, not the 10/h full-domain one), Tranco rank to demote legit domains. Cap ~500 names, save + diff on later visits. Tranco ~1 req/s (429 no ACAO → TypeError, treat SERVFAIL as 'registered, broken DNS'); many hits are parking IPs (above.com, GoDaddy) → a small parking list cuts noise. dnstwist Apache-2.0.
+
+### P2.9 SCT / CT-policy panel in the Certificate view
+
+id `sct-policy` · where: **browser**
+
+Parse the embedded SCT list (already in x509 cert.scts[]) and map log IDs → name/operator/state using the Google v3 + Apple log lists (both ACAO *, ~47KB + ~148KB, cache in sessionStorage). Show timestamps, whether Chrome/Apple policies look satisfied (SCT count from distinct operators over lifetime — approximate), retired/rejected logs. Lookup must include operators[].tiled_logs (static-CT logs like Geomys), not only logs[]. Low value relative to the rest → later.
+
+### P2.10 Self-refreshing provider ranges + two-tier Cloudflare classification
+
+id `provider-ranges` · where: **both**
+
+A weekly GitHub Action regenerates vendored ranges from no-CORS sources (Cloudflare ips-v4/v6, Fastly, Google/gstatic, CloudFront) with a date stamp; CORS sources (AWS, Gcore, Oracle, GitHub meta, Bunny — all verified ACAO *) refresh at runtime. Two-tier Cloudflare: 'proxied' (official 15 ranges) vs 'Cloudflare network' (AS13335 prefixes via RIPEstat, ~1.26M addresses incl. Spectrum/WARP/BYOIP — label 'not necessarily proxied'; cdncheck waf.cloudflare adds 697 customer-BYOIP prefixes). Fetch the 2.4MB cdncheck + 637KB RIPEstat files at runtime on demand, don't vendor. Action commits to main (harmless Pages rebuild) with contents:write.
+
+### P2.11 CLI DNS mode: split-horizon diff, per-NS consistency, AXFR check
+
+id `cli-dns` · where: **cli**
+
+Stdlib UDP/TCP DNS client (port of dnswire.js) in the single file. dns-diff resolves each name via getaddrinfo, internal resolvers (/etc/resolv.conf or --resolver; Windows via winreg Tcpip Interfaces — verified) and public (1.1.1.1/8.8.8.8/9.9.9.9), flagging names where internal DNS still points at the old IP, internal-only names, NXDOMAIN-internal-but-public. dns-auth queries each authoritative NS for SOA serial/NS set/AA/recursion/TCP/EDNS + an AXFR attempt (--axfr-report-only). --json imports into the web Global view as 'internal' columns. AXFR reader must stop at the closing SOA or socket timeout; corporate nets often block egress UDP 53 → fall back to DoH via urllib; compare SOA mname+serial+NS set, not just AA (shared providers answer AA for others' zones).
+
+### P2.12 CLI mail checks: MTA-STS, MX STARTTLS certs, DNSBL incl. Spamhaus, FCrDNS
+
+id `cli-mail` · where: **cli**
+
+What the browser cannot do: urllib fetch https://mta-sts.&lt;domain&gt;/.well-known/mta-sts.txt (no ACAO), validate version/mode/max_age/mx vs the real MX set + the mta-sts host cert; STARTTLS :25 to each MX to check the cert covers the MX name and expiry (in enforce mode an expired MX cert stops inbound mail); DNSBL via the stdlib client iterating to each zone's authoritative NS (verified: query Spamhaus b.gns/e.gns directly → real answers), because the 'local resolver' often forwards to Google/Cloudflare (false clean); self-test the 127.0.0.2 point; compare PTR/FCrDNS with the SMTP banner/EHLO. --fail-on-listed for cron. Port 25 blocked on most cloud VMs → clear 'blocked' status. Spamhaus free use 'low-volume non-commercial' (terms unverified).
+
+## Rejected
+
+Ideas that were checked and dropped, so nobody has to re-investigate them.
+
+| Idea | Why it was rejected |
+| --- | --- |
+| Verify mail/DB TLS certs (SMTP/IMAP/POP3/465/993) from the browser via Globalping | Globalping HTTPS probes return NO tls object on non-HTTP ports (imap.gmail.com:993 → 'Response does not match HTTP/1.1', :465 timed out). Non-HTTP TLS verification is CLI-only (cli-starttls / cli-mail). |
+| Fetch AIA caIssuers to auto-build the full chain in the browser | AIA caIssuers URLs are http:// (lencr.org, sectigo, pki.goog) → blocked as mixed content from an https page; https variants restrict ACAO or don't respond; crt.sh ?d= and the CCADB CSV have no ACAO. Show the openssl fullchain command instead of fetching. |
+| Check Spamhaus zen/dbl/sbl through public DoH resolvers | Cloudflare returns 127.255.255.254 (open-resolver refused) and Google returns NXDOMAIN — a FALSE 'clean'. Only a user DQS key (&lt;key&gt;.zen.dq.spamhaus.net, experimental) or the CLI querying Spamhaus's authoritative NS works. |
+| ARI renewal window in the browser for GTS / Sectigo / ZeroSSL / SSL.com | Their directories/renewalInfo hosts send no ACAO (dv.acme-v02.api.pki.goog, ari.sectigo.com, ari.trust-provider.com all 'Failed to fetch' from a browser). Only Let's Encrypt (prod+staging) is browser-usable; other CAs → CLI. |
+| Inventory-wide InternetDB open-port exposure matrix from the browser | A short burst (~37 requests) locks the source IP out for ~1h (429, Retry-After not JS-exposed) and it returns fabricated ports for RFC1918. Keep InternetDB per-IP on demand; route fleet-wide port sweeps to the CLI --ports. |
+| Common Crawl as a primary passive subdomain source | SURT-sorted URL index yields almost nothing per host (a large telco domain: 5,150 lines → 2 hosts) at up to 500KB+/query. Keep opt-in and capped; ip.thc.org is the real key-less win. |
+| crt.sh as a primary/real-time source | 18-48s latency and intermittent 404/502 with no ACAO on errors (browser sees a CORS TypeError). Keep only as an optional, retrying fallback to certspotter. |
+| Uptime Kuma monitor export | Uptime Kuma v2.0 removed JSON backup/restore (only data-directory backup remains), so there is no stable import format to target. Drop it from toolchain-exports. |
+| Turkish (tr) language for the Zonemaster deep test | The Zonemaster API supports only da/en/es/fi/fr/nb/sl/sv ('tr' → -32602 Unknown language). Render English messages with TR labels for module/level and an optional per-testcase-id TR map. |
+| .tr registry expiry/status + prefilled whois deep link in the portfolio view | No .tr RDAP in the IANA bootstrap and TRABIS whois is a POST form with a CSRF token → registrar/expiry columns stay empty and only a plain TRABIS link is possible. The DNS-side checks still work for .tr. |
+| Full 2.7MB AWS ip-ranges.json (and 2.4MB cdncheck) vendored at build time | Too large to bake into the static bundle. Vendor only a compact EC2 [prefix,region] snapshot (~60KB) via a weekly Action; fetch cdncheck/RIPEstat on demand at runtime. |
+| Elastic-IP / cloud-IP takeover auto-verdict | Very high false-positive rate (a legit A record in an EC2/GitHub range is normal). Keep it as an info-only 'confirm it is still yours' hint, never a takeover verdict. |
+| Force-layout relationship graph / graph at 300+ hosts | Force layouts make screenshots and printed reports non-deterministic, and a node-per-host graph is unreadable past ~60 unique IPs. Use a deterministic layered SVG, collapse to server/ASN grouping above the threshold, and always keep the aggregate mini-bars as the reliable summary. |
+
+## UI upgrade spec
+
+GROUNDING: build on the existing tokens in style.css (--accent single blue, ok/info/warn/error, --k-* classification kinds, glb-g0..g7 answer groups) and the existing ui/ primitives (h()/svg() safe builders, DataTable with streaming addRows + CSV/JSON export, Tabs, StatCard, KindBadge, SeverityBadge, Modal, toast, CopyButton, Disclosure). Everything vanilla ES modules, no deps/CDN, CSP-safe (no inline style/script; JS sets el.style.* / CSSOM only), light/dark via the existing prefers-color-scheme + data-theme model, responsive to 360px (tables scroll inside .dt-scroll, never the page).\n\nNAV &amp; SHELL: regroup the sidebar into sections matching the workflow — SSL rollout: Find targets, Certificate, Rollout Board, Verify, Report · DNS: Lookup, Global DNS, Health, Bulk · Network: IP Intel, PTR sweep · Watch: CT watchlist, Portfolio, Lookalikes · Setup: Servers, About. On phones the sidebar stays a horizontal scroller. Add a header stepper for the SSL flow (Find → Plan → Roll out → Verify → Report) with live progress ('37/41 verified'). Long result pages (Certificate, Health, IP) get a right-hand scrollspy TOC whose anchors are deep links. Content max ~1440px.\n\nUNIVERSAL SEARCH (see universal-search P0): header-centre input focused with '/' or Ctrl+K, auto-detects domain/IP/CIDR/ASN/URL/PEM/list via lib/detect.js and routes through buildRoute; accepts prefixes (mx:,txt:,global:,health:,cert:,ptr:,probe:) that only resolve to registered view ids. Ctrl+K → Modal palette (views, recent queries from localStorage, actions: theme/language/export/copy-permalink/re-run). '?' → shortcuts overlay (g+letter views, j/k rows, Enter pivot, c copy). Suppress shortcuts while focus is in input/textarea/contenteditable; preventDefault Ctrl+K only when the page has focus. Every view's pre-query state: an EmptyState with one line of explanation + three clickable examples ('github.com MX','1.1.1.1','AS13335').\n\nRESULT PAGES: checks start in parallel and stream in. A compact progress line 'Running 7 of 9 checks (4.2s) · 1 issue' with a 'Show load state' Disclosure listing pending/ok/rate-limited/error per source with ms. An advisory rollup at the top ('Errors n / Warnings n / Info n / Passes n', passes collapsed). Each card: an (i) explainer, a retry button, a Web|JSON toggle, a copy button. Every finding reads verdict → why it matters → how to fix, with 'High impact · Low effort' tags (from the new Check.impact/effort/fixKey). A provenance stamp on every result: resolver · answering NS (only when the DoH Comment is present) · UTC · ms. Row pivots via a kebab menu / inline links (IP → Intel/RPKI/DNSBL/Probe-cert; host → Lookup/Global/Health) plus a 'Copy as…' menu (dig, doggo, Resolve-DnsName, curl --resolve, openssl s_client, ssl_origin_scan.py).\n\nVISUALISATIONS (all inline SVG via svg()/createElementNS with presentation attributes, vendored data — see scan-visuals P0 + reusableData): (1) World map — assets/data/worldmap.json Equal Earth land, land drawn in surface-3 so pins carry colour; pins coloured by answer group with the group LETTER inside, ECS vantages hollow / real Globalping probes filled; row↔pin hover highlight; legend 'Group A 140.82.121.4 · 18 locations'. (2) Relationship map — deterministic layered columns (hostnames → IP/CDN edge → inventory server → ASN), bundled edges, hover-trace, click-to-filter, '+N more' collapse, no force layout; collapse to server/ASN grouping above ~60 unique IPs. (3) Aggregate mini-bars above big tables (provider/ASN, country, classification) as clickable filters. (4) DNSSEC chain graph (DS→KSK→ZSK→RRset, secure/insecure/bogus edges) + legend + 'Download SVG'. (5) SPF include tree with per-node lookup cost + a '9/10 lookups' meter. (6) cert-expiry timeline/radar + a propagation 'matched over time' sparkline. Respect prefers-reduced-motion (disable the 120ms row-fade and countdown ticking).\n\nDENSITY &amp; TYPE: dense but calm — 32px table rows (28px compact toggle). Secondary facts as small muted mono under the primary value (IP with PTR below, ASN with prefix below) rather than extra columns. System sans 14px UI / 12px meta; all data (IPs, serials, fingerprints, records) in the mono stack with tabular-nums, middle-truncated with copy-on-click. TTLs/dates human ('cache expires in 3m 50s', 'expires in 1 month 9 days') with the raw value in a title tooltip; days-left bands expired / ≤30 red / ≤60 amber.\n\nCOLOUR &amp; DARK: neutral grey surfaces, single blue accent; status always pairs colour with an icon + text label (✓ ✗ ! i) and +/−/~ diff glyphs; answer groups use the 8 categorical colours + letters; Cloudflare orange (--k-cloudflare) reserved for the Proxied badge only. Dark surfaces near-black blue-grey (#0f1115/#161a20, never pure black); status colours lightened for AA; charts reuse the same tokens.\n\nMICRO-INTERACTIONS: rows stream in with a 120ms fade; skeleton rows while pending; copy buttons morph to ✓ for 1.2s; countdowns tick per second only for visible rows; watch mode sets the tab title '(3/25) DomainScope' + a favicon badge and fires a Notification on completion (permission requested from a click); a header quota chip ('Globalping 236/250') turns amber &lt;20% and a confirmDialog precedes any bulk action that would exceed a quota; a toast on background-job end.\n\nTRUST &amp; OUTPUT: no ads/upsells/captchas/row-caps/blur/SEO walls; a persistent feature line 'Free · no limits · runs in your browser · certificate and inventory never leave this device'; views that send data to a third party (Globalping, Zonemaster, Observatory, InternetDB) carry a privacy banner naming the recipient. Every table exports CSV (BOM), JSON, a Markdown table and names.txt/targets.txt. A print stylesheet (extend the existing @media print) hides nav, expands disclosures, adds a header with query + UTC + URL so 'Save as PDF' yields a customer-ready bilingual TR/EN report. 'Share snapshot' puts compressed state in the #fragment with a ~32KB size guard + IP/inventory privacy warning (see share-and-report P0).
+
+## Reusable data
+
+| Dataset | Licence | URL | Plan |
+| --- | --- | --- | --- |
+| world-atlas 110m land (pre-projected Equal Earth) | ISC (world-atlas); underlying Natural Earth is public domain | https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json | VENDOR at build time. tools/build-worldmap.mjs (Node, no deps) projects TopoJSON→Equal Earth with antimeridian clip + Antarctica pole-closure + 0.1px rounding → assets/data/worldmap.json (~58KB, 22KB gzip, viewBox 0 0 1000 487). Verified: renders correctly, IST=570.9,97.1 NYC=318.6,98.1. lib/geo.js must reuse the identical projection so pins/vantages align. |
+| can-i-take-over-xyz fingerprints | CC-BY-4.0 (attribution required in About) | https://raw.githubusercontent.com/EdOverflow/can-i-take-over-xyz/master/fingerprints.json | VENDOR assets/data/takeover-fingerprints.json (30.8KB, 76 entries), weekly Action refresh. Add A-record + NXDOMAIN matching since only 28/76 have cname patterns. |
+| nuclei-templates txt-service-detect | MIT | https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/main/dns/txt-service-detect.yaml | VENDOR (do not fetch at runtime) as assets/data/txt-vendors.json; hand-add MS=, adobe-idp-site-verification, TAILSCALE-, _github-challenge (missing from the source). |
+| AWS EC2 IP ranges (compact snapshot) | AWS permissive (customer use) | https://ip-ranges.amazonaws.com/ip-ranges.json | VENDOR a compact [prefix,region] EC2 subset (~60KB) via weekly Action — NEVER the 2.7MB file at runtime. Used for cloud-IP hints. |
+| Cloudflare / Fastly / Google / CloudFront IP ranges | Provider public range lists | https://www.cloudflare.com/ips-v4 , https://api.fastly.com/public-ip-list , https://www.gstatic.com/ipranges/cloud.json | VENDOR via weekly Action (no CORS from the browser) into netinfo PROVIDERS with a RANGES_UPDATED stamp; CloudFront also derivable from AWS ip-ranges service=CLOUDFRONT. |
+| Subdomain wordlists: SecLists (top-1M 110k + services-names), bitquark top-100k, dnsgen words, commonspeak2, altdns words | MIT (SecLists, bitquark, dnsgen); Apache-2.0 (commonspeak2, altdns) | https://github.com/danielmiessler/SecLists , https://github.com/bitquark/dnspop , https://github.com/AlephNullSK/dnsgen , https://github.com/assetnote/commonspeak2-wordlists , https://github.com/infosec-au/altdns | DONE: `tools/build-wordlists.mjs` builds self-hosted tiers from pinned commits (smart ≈7k plain text, large ≈50k and huge ≈130k gzip) plus 12 curated locale packs, all wired into scans and the UI; no runtime fetch from GitHub. Full licence texts ship in `assets/data/THIRD_PARTY_LICENSES.txt`. Attribution and pinned SHAs are in `assets/data/README.md`. The alterx permutation patterns (MIT) only informed `permute.js` and are not vendored. |
+| Google + Apple CT log lists | Public (Google/Apple CT programs) | https://www.gstatic.com/ct/log_list/v3/log_list.json , https://valid.apple.com/ct/log_list/current_log_list.json | FETCH at runtime, cache in sessionStorage with TTL (47KB + 148KB). Include operators[].tiled_logs. For the P2 SCT panel only. |
+| IANA root trust anchors | IANA public | https://data.iana.org/root-anchors/root-anchors.xml | FETCH at runtime (ACAO *), cache. Anchor BOTH root KSKs (20326 + 38696) for the DNSSEC validator. |
+| IANA RDAP bootstrap + registry RDAP | IANA public | https://data.iana.org/rdap/dns.json | FETCH at runtime (already in rdap.js). Add a small ccTLD override map (io→rdap.identitydigital.services) for TLDs missing from the bootstrap; fall back to DoH-only for TLDs with no RDAP (tr/io/co/de/eu/…). |
+| Globalping probe list | Globalping (open, ACAO *) | https://api.globalping.io/v1/probes | FETCH at runtime on demand (2.1MB, 5,144 probes / 122 countries / 27 in TR) only when the user opens the world map in Real-ISP mode, to place real probe pins; cache in memory for the session. |
+| Public Suffix List + IANA TLD list | MPL-2.0 (PSL); IANA public (TLDs) | https://publicsuffix.org/list/public_suffix_list.dat , https://data.iana.org/TLD/tlds-alpha-by-domain.txt | Ship the embedded suffix set already in domain.js; OPTIONAL runtime PSL refresh (335KB) to make registrableDomain exact for dangling-registrability + lookalike. |
+| Tranco ranks | Tranco (research/attribution) | https://tranco-list.eu/api/ranks/domain/{d} | FETCH at runtime, ≤1 req/s (429 has no ACAO → TypeError), only to demote popular legit domains in the lookalike view. |
+
+<details>
+<summary>Türkçe özet</summary>
+
+Kanka, verified sonuçlara göre net bir yol haritası çıktı. En heyecanlı P0'lar:
+
+1) Sertifikayı internetten doğrulama (gp-cert-verify) — bu ürünün can damarı. Globalping ile IP+hostname'e SNI göndererek dünyanın 1-3 ülkesinden sunulan sertifikayı çekiyoruz; fingerprint256/serial'ı yüklediğin yeni sertifikayla karşılaştırıp CLI'ın kendi durumlarını (UPDATED / NEEDS_UPDATE / NOT_HOSTED / TLS_ERROR) veriyoruz. Web + CLI sonuçları birleşiyor. Canlı test ettim: SNI gerçekten gidiyor, fingerprint openssl ile birebir. Ücretsiz kota 250/saat, header'da kalan kotayı gösterip toplu işten önce onay soruyoruz.
+
+2) Rollout Board — 300 sunucudan hangisine kurulacak, herkesin Excel'de tuttuğu o tabloyu Kanban'a çeviriyoruz. Kartlar CLI --json veya Globalping yeni seri görünce otomatik 'Verified'e geçiyor, kanıt rozetiyle. localStorage + JSON export, sertifika SHA-256'sıyla anahtarlı.
+
+3) Cutover asistanı (DNS tarafının yıldızı) — 'beklenen değer' girip otomatik yenile, her satırda 'eski cevap 14:32'ye kadar yaşayabilir' geri sayımı, en kötü senaryo ETA'sı (otoritatif TTL max'ından), TTL düşürme planlayıcı + .ics. DevOps DNS geçişlerinde tam aradığın şey.
+
+4) CT watchlist — Let's Encrypt'in kapattığı bitiş-tarihi e-postalarının yerine geçiyor; certspotter ile süresi dolan ve yeni kesilen (shadow IT / yetkisiz CA) sertifikaları yakalıyor, .ics alarmlı.
+
+5) Dangling/SubdoMailing kontrolü — zone'un bağımlı olduğu domainlerin kapılmaya açık olup olmadığını RDAP+DoH ile bakıyoruz (yanlış-pozitif tuzaklarını doğruladım, ikisi birden gerekiyor).
+
+Artı büyük UI yükseltmeleri: evrensel arama/komut paleti (/ ve Ctrl+K), problem-öncelikli Health v2 (Mozilla Observatory web notu dahil), Equal Earth SVG dünya haritası (58KB vendored, TR'de 27 gerçek Globalping probe'u var), ilişki grafiği, ve müşteriye verilecek yazdır/PDF + paylaşım linki (veri tarayıcıdan çıkmadan #fragment'te sıkıştırılmış). IP Intel'e RPKI/routing/açık port/abuse eklendi ve Zonemaster derin testi tek tıkla geliyor. P1'de zone import, gerçek-ISP propagasyonu, delegasyon tutarlılığı, DNSSEC doğrulayıcı ve CLI'a mail/DB STARTTLS + yerel sertifika tarayıcı var. Kısaca: önce 'hangi sunucu' sorusunu kusursuz çözüyoruz, sonra tüm DNS toolbox'ını serpiştiriyoruz.
+
+Durum (2026-09-24): keşif motoru v2 ve kelime listesi sistemi yayında — Küçük / Akıllı / Büyük / Dev seviyeleri, alan adı uzantısına göre seçilen 12 pazar kelime paketi, özel kelime listesi, tarayıcıda tutulan öğrenilen adlar ve Linux / macOS ile PowerShell için güvenli tarama komutu (P1.9 tamam, P0.2 ve P2.1'in altyapısı hazır). Ölçümlere göre sıradaki en büyük boşluk zone import (P1.2): kuruma özel adları hiçbir genel liste bulamıyor.
+
+</details>

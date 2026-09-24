@@ -1,7 +1,7 @@
 # DomainScope
 
 **Tamamen tarayıcında çalışan, açık kaynak SSL & DNS araç kutusu.**
-Bir domainin tüm subdomainlerini, nereye çözümlendiklerini, hangilerinin Cloudflare arkasında olduğunu ve **sertifikanın tam olarak hangi sunucularına kurulması gerektiğini** bulur.
+Bir domainin subdomainlerini keşfeder; nereye çözümlendiklerini, hangilerinin Cloudflare arkasında olduğunu ve **sertifikanın tam olarak hangi sunucularına kurulması gerektiğini** bulur.
 
 **▶ Hemen kullan: https://halilibrahimd27.github.io/domainscope/**
 
@@ -23,24 +23,48 @@ DomainScope birden fazla kaynağı birleştiriyor, her ismi çözümlüyor ve he
 
 | Araç | Ne yapar |
 |---|---|
-| **SSL Hedefleri** | Sertifikayı bırakırsın (PEM, DER, zincir veya P7B). Certificate Transparency ve pasif DNS kaynaklarından subdomainleri toplar, istersen wordlist ile brute-force yapar, hepsini DNS-over-HTTPS ile çözer, sertifikanın hangi isimleri kapsadığını kontrol eder ve sonuçları **sunucu bazında** gruplar. Sekmeler: Hostlar, Sunucular, CDN Arkası (origin ipuçları ve hazır CLI komutuyla), Kaynaklar, CT sertifikaları. CSV, JSON, `names.txt` ve `targets.txt` olarak export alabilirsin. |
+| **Subdomain Tarama** (açılış sayfası) | Domaini yazarsın; internetin gösterebildiği tüm subdomainleri, önce DNS ile bulur. Zone'un kendi kayıtlarını (NS, MX, SPF/TXT, SRV, …) tarar, bu sitede barınan bir kelime listesi (wordlist) dener — **Kapalı**, **Küçük** (159 ad), **Akıllı** (≈ 7.000, varsayılan), **Büyük** (≈ 50.000) veya **Dev** (≈ 130.000) — ve bulunan her adın varyasyonlarını dener (`shop` → `shopapi`, `api` → `api2`, `api-dev`; varsayılan en fazla 1.500, artı bulunan üst adların altında bir tur daha). Akıllı seviyeden itibaren alan adı uzantısına göre bir **pazar kelime paketi** ekler (`.de` → Almanca, `.com.tr` → Türkçe; 12 pazar, istersen kendin seçersin); önce senin **özel kelime listeni**, ardından — açtıysan — önceki taramalarından **öğrenilen adları** dener (bkz. [Kelime listeleri](#kelime-listeleri-ve-dns-tahmininin-bulabildikleri)). Pasif kaynaklar (Certificate Transparency ve pasif DNS, aşağıda) yanında çalışır; her birinin durumu ve kota notu ayrı gösterilir. Wildcard DNS her seviyede tespit edilir, sahte eşleşmeler atılır. Cloudflare veya başka bir proxy arkasındaki hostlar için **asıl sunucu (origin) adaylarını** listeler: domainin DNS-only kayıtlarının ağları (IPv4 için /24, IPv6 için /48), diğer public resolver'ların doğrudan cevapları, geçmiş DNS kayıtları, SPF/MX adresleri ve bu ağları TLS SNI ile tarayan hazır CLI komutu (Linux/macOS ya da Windows PowerShell için). Listeyi kopyalayabilir veya `names.txt` indirebilirsin. |
+| **SSL Hedefleri** | Sertifikayı bırakırsın (PEM, DER, zincir veya P7B). Aynı keşif motorunu kullanır (Akıllı kelime listesi varsayılan olarak açık; diller, özel kelime listesi ve öğrenilen adlar Subdomain Tarama › Gelişmiş seçenekler ile ortak), hepsini DNS-over-HTTPS ile çözer, sertifikanın hangi isimleri kapsadığını kontrol eder ve sonuçları **sunucu bazında** gruplar. Sekmeler: Hostlar, Sunucular, CDN Arkası (asıl sunucu ipuçları ve iki kabuk için de hazır CLI komutuyla), Kaynaklar, CT sertifikaları. CSV, JSON, `names.txt` ve `targets.txt` olarak export alabilirsin. |
 | **Sertifika** | Sertifikanın tüm detayları: SAN'lar, geçerlilik, anahtar, parmak izleri, zincir sırası ve uyarılar. Domainin **CAA** kayıtlarının sertifikayı veren CA'ya izin verip vermediğini kontrol eder ve sertifikayı CT loglarında arar. |
-| **Global DNS** | Bir ismi **12 public DoH resolver** ve EDNS Client Subnet ile **dünyadaki 31 konum** üzerinden sorgular (Türkiye'den 4 konum: Türk Telekom, Turkcell Superonline, Vodafone). Cevapları gruplar; GeoDNS/CDN farklarını ve propagation'ı görürsün. |
+| **Global DNS** | Bir ismi **12 public DoH resolver** ve EDNS Client Subnet ile **27 ülkedeki 31 konum** üzerinden sorgular. Cevapları gruplar; GeoDNS/CDN farklarını ve propagation'ı görürsün. Quad9 ve Quad9 (ECS) tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan cevap verir; bu yüzden Chrome, Edge ve çoğu tarayıcıda satırlarında genellikle "Tarayıcıda okunamıyor" ve onun yerine çalıştırabileceğin bir `dig` komutu görünür. |
 | **DNS Sorgulama** | Her kayıt tipi (A, AAAA, CNAME, MX, NS, TXT, SOA, CAA, SRV, HTTPS/SVCB, DS, DNSKEY, TLSA, …), istediğin resolver'dan, DNSSEC (DO/CD) seçeneğiyle. Kayıtlar ayrıştırılmış halde, ham metinle birlikte gösterilir. |
 | **Toplu Çözümleme** | Yüzlerce hostname yapıştırırsın; IP, CNAME zinciri, CDN sınıfı, PTR, ASN ve envanter eşleşmesini alırsın, sonra export edersin. |
 | **IP Bilgisi** | Her IP için PTR, ASN ve sahibi, prefix, ülke ve şehir, CDN/sağlayıcı, private IP işareti, envanterdeki karşılığı ve reverse IP (aynı IP'deki diğer domainler). |
-| **Domain Sağlığı** | NS, SOA, MX, SPF (özyinelemeli 10-lookup sayımıyla), DMARC, DKIM selector'ları, CAA, DNSSEC (imzalı mı, doğrulanıyor mu, bozuk mu), MTA-STS, TLS-RPT, BIMI, wildcard DNS ve RDAP ile domain bitiş tarihi; hepsi tek bir puanda. |
+| **Alan Adı Sağlığı** | NS, SOA, MX, SPF (özyinelemeli 10-lookup sayımıyla), DMARC, DKIM selector'ları, CAA, DNSSEC (imzalı mı, doğrulanıyor mu, bozuk mu), MTA-STS, TLS-RPT, BIMI, wildcard DNS ve RDAP ile domain bitiş tarihi; hepsi tek bir puanda. |
 | **Sunucular** | Envanterini şu formatlardan biriyle yapıştır veya içe aktar: `isim ip` satırları, `/etc/hosts`, CSV/TSV (Excel export'u dahil), Ansible INI/YAML, JSON. Envanter **tarayıcından hiç çıkmaz**. |
 
 Arayüz Türkçe ve İngilizce, açık/koyu tema destekli ve mobil uyumlu. Her ekranın paylaşılabilir bir linki var (örneğin `#/global?name=example.com&type=A`).
 
 ## Nasıl çalışır?
 
-Backend yok, tamamen statik bir site. Her şey tarayıcında, CORS'a izin veren açık API'lere karşı çalışıyor: crt.sh, Cert Spotter, HackerTarget, AnubisDB, AlienVault OTX (subdomain kaynakları); 12 DoH resolver; RIPEstat ve ipwho.is (IP bilgisi); RDAP (domain kaydı; `.tr` için public RDAP yok).
+Backend yok, tamamen statik bir site. Her şey tarayıcında, açık API'lere karşı çalışıyor: crt.sh, Cert Spotter, HackerTarget, AnubisDB, AlienVault OTX, ip.thc.org (subdomain kaynakları); 12 DoH resolver; RIPEstat ve ipwho.is (IP bilgisi); RDAP (domain kaydı; `.de`, `.jp`, `.tr` gibi bazı ülke uzantılarında public RDAP yok). Bunların hepsi CORS'a izin verir; tek istisna Quad9 ve Quad9 (ECS): tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan cevap verdikleri için Chrome, Edge ve çoğu tarayıcı onları genellikle okuyamaz. Global DNS bu satırları "Tarayıcıda okunamıyor" olarak bir `dig` komutuyla gösterir, keşif de Quad9'u varsayılan resolver zincirine koymaz. Terminalden ve QUIC'i engelleyen ağlarda tarayıcıdan çalışırlar.
 
-Ücretsiz kotalar **ziyaretçi IP'si başına** işliyor, herkes aynı kotayı paylaşmıyor. Yaklaşık değerler: HackerTarget günde ~50 istek, Cert Spotter saatte ~10 istek; OTX anonim kullanımda sınırlı. Bir kaynak hata verirse tarama devam eder.
+Ücretsiz kotalar **ziyaretçi IP'si başına** işliyor, herkes aynı kotayı paylaşmıyor. Yaklaşık değerler: HackerTarget günde ~50 istek, Cert Spotter saatte ~10 tam alan adı araması (bir tarama en fazla 5 kullanır); OTX anonim kullanımda sınırlı. Bir kaynak hata verirse tarama devam eder: önce-DNS keşfi (kayıt tarama, wordlist, varyasyonlar) hiçbir üçüncü taraf kotasına ihtiyaç duymaz, yalnızca public DoH resolver'ları kullanır.
 
-**Gizlilik:** Sertifika ve sunucu envanteri yerelde işlenir, hiçbir yere yüklenmez. Dışarı yalnızca her sorgunun gerektirdiği veri çıkar: domain isimleri DNS resolver'lara ve pasif kaynaklara, IP'ler ise sorguladığında IP bilgi servislerine gider. Private key'e hiç ihtiyaç yok; yanlışlıkla yapıştırırsan yok sayılır ve ekranda gösterilmez.
+**Gizlilik:** Sertifika ve sunucu envanteri yerelde işlenir, hiçbir yere yüklenmez. Dışarı yalnızca her sorgunun gerektirdiği veri çıkar: domain isimleri DNS resolver'lara ve pasif kaynaklara, IP'ler ise sorguladığında IP bilgi servislerine gider. Özel kelime listesi yalnızca açık sekmede (oturum deposu) durur. Öğrenilen adlar sen açana kadar kapalıdır; `api` gibi yalın etiketlerdir, asla tam host adı ya da IP değil, ve yalnızca bu tarayıcının yerel deposunda saklanır — ama sonraki taramalar onları DNS sorgusu olarak dener (`api.<domain>`), yani resolver'lar ve o domainin ad sunucuları bu etiketleri görür. **Tüm yerel verileri sil** (Ayarlar ya da Hakkında) bunları envanter ve ayarlarla birlikte siler. Private key'e hiç ihtiyaç yok; yanlışlıkla yapıştırırsan yok sayılır ve ekranda gösterilmez.
+
+## Kelime listeleri ve DNS tahmininin bulabildikleri
+
+DNS'te "bütün kayıtları listele" diye bir sorgu yok; Cloudflare gibi sağlayıcılar da zone transferine izin vermiyor. Bu yüzden DomainScope listeyi dört tür kanıttan yeniden kuruyor: genel sertifikalarda ve pasif DNS'te geçen adlar, zone'un kendi kayıtlarında adı geçenler, bir kelime listesindeki kelimeler ve bulunan adların varyasyonları. Her tahmin gerçek bir DNS cevabıyla doğrulanır, wildcard benzerleri atılır.
+
+| Seviye | Alan adı başına ad | İndirme | Alan adı başına kaba süre* |
+|---|---:|---:|---:|
+| Kapalı | yok (yalnızca kayıtlar + pasif kaynaklar) | — | — |
+| Küçük | 159 | yerleşik | birkaç saniye |
+| **Akıllı** (varsayılan) | ≈ 7.000 | 42 kB | ≈ 1 dk |
+| Büyük | ≈ 50.000 | 183 kB (gzip) | ≈ 7 dk |
+| Dev | ≈ 130.000 | 588 kB (gzip) | ≈ 18 dk |
+
+\* Süreler, varsayılan Ayarlar paralelliğinde (aynı anda 24 sorgu) saniyede 120 sorgu varsayılarak hesaplanır; Ayarlar'da daha düşük bir değer taramayı orantılı olarak yavaşlatır. Tahmin bilerek temkinli tutuldu; ölçülen hızlar [docs/RESEARCH.md](docs/RESEARCH.md#measured-results-2026-09-23) içinde.
+
+- **Tek sıralama, üç boy.** Akıllı, Büyük ve Dev, serbest lisanslı açık listelerden (SecLists, bitquark, commonspeak2, dnsgen, altdns; bkz. [Lisans](#lisans)) üretilen tek bir sıralamanın ilk ≈ 7.000, ≈ 50.000 ve ≈ 130.000 adıdır. Dosyalar bu siteden sunulur; tarama hiçbir kelime listesini üçüncü taraftan çekmez.
+- **Pazar kelime paketleri** (Akıllı ve üstü): `tr, de, fr, es, pt, it, nl, pl, ru, ar, ja, zh`; her biri 83–283 genel iş ve kamu hizmeti kelimesi. **Otomatik** mod paketleri alan adı uzantısından seçer: `.com.tr` gibi ikinci seviye uzantıları da tanır, çok dilli ülkelere birden fazla paket verir (`.ch` → Almanca, Fransızca, İtalyanca). `.com` uzantısına otomatik paket verilmez; Gelişmiş seçenekler'den paketleri kendin seçebilir ya da hiçbirini seçmeyebilirsin.
+- **Özel kelime listesi.** Adları yapıştır ya da bir `.txt` dosyası ekle — her satıra bir tane ya da virgül / boşlukla ayrılmış; `dev.api` bir alt seviyeyi dener. Bunlar Küçük seviyeden itibaren her seviyede ilk sırada denenir. Dosya tarayıcında okunur, liste yalnızca bu sekmede tutulur.
+- **Öğrenilen adlar** (isteğe bağlı, varsayılan olarak kapalı). Açarsan her tamamlanan taramadan sonra taranan domainlerin altında çözümlenen adların en soldaki etiketleri bu tarayıcıda hatırlanır ve bir sonraki taramada özel listenin hemen ardından denenir (en sık görülen 1.000 tanesi). Böylece aynı adlandırma düzenini izleyen kardeş bir alan adı, adları hiçbir açık listede olmasa bile kapsanır. Sonraki taramalar *her* domain için bu etiketleri DNS sorgusu olarak gönderir; ilgisiz kurumları tararken anahtarı kapalı tut. **Kapalı** seviyede hiç kullanılmazlar; **Öğrenilen adları unut** ile istediğin an silebilirsin.
+- **Nazik tarama.** Her tahmin, resolver havuzuna dağıtılan tek bir A sorgusudur; tarayıcın alan adının web sunucularına hiç bağlanmaz. Resolver'ın önbelleğinde olmayan adlar alan adının yetkili ad sunucularına iletilir; yani kendi ad sunucusunu işleten bir alan adı bu yoğunluğu görür. Alan adı başına en fazla 4.000 / 20.000 / 80.000 / 160.000 aday (Küçük / Akıllı / Büyük / Dev), tarama başına 200.000.
+- **Yavaş kaynaklar kelime listesi taramasını bekletmez.** Wildcard kontrolü ve kelime listesi taraması, pasif kaynaklar cevap verince ya da kayıt taramasından 12 saniye sonra (hangisi önce olursa) başlar. Varyasyon ve son çözümleme aşamaları ise geç gelen adlar da dahil edilsin diye kaynakları bekler: crt.sh gibi yavaş bir kaynak hâlâ yeniden denerken (durumunda görünür) kelime listesi taraması bitmiş olsa bile sonuç tablosu boş kalabilir.
+
+**Sınırlar, açıkça.** Yalnızca bir kurumun zone'unda bulunan, hiçbir sertifikada ya da pasif DNS'te görünmemiş bir ad (bir ürün ya da proje adı gibi) hiçbir genel kelime listesiyle bulunamaz. Onu özel kelime listene ekle, öğrenilen adlarla ilişkili bir alan adından taşınmasını sağla ya da zone export'unu içe aktar ([planlanan: Zone import](docs/ROADMAP.md#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift)); eksiksiz olan tek liste zone export'udur. Üst adın wildcard kaydıyla birebir aynı cevabı veren bir host wildcard'dan ayırt edilemez ve atılır. Proxy'lenen bir kaydın asıl sunucu IP'si DNS'te hiç yayınlanmaz; bu yüzden asıl sunucu paneli kesin cevap değil, CLI ile doğrulanacak adaylar verir.
 
 ## Cloudflare arkasındaki gerçek sunucuyu bulmak: CLI
 
@@ -57,6 +81,9 @@ python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert yeni-sertifika.pem
 
 # Script'ler ve Excel için rapor, CI için çıkış kodu
 python3 ssl_origin_scan.py -t hosts.ini --cert yeni.pem --json rapor.json --csv rapor.csv --fail-on-needs-update
+
+# Proxy'li isimlerin origin'ini bul: Subdomain'ler sayfasının önerdiği ağı tara
+python3 ssl_origin_scan.py -t 203.0.113.0/24 -n shop.example.com api.example.com
 ```
 
 | Durum | Anlamı |
@@ -66,8 +93,11 @@ python3 ssl_origin_scan.py -t hosts.ini --cert yeni.pem --json rapor.json --csv 
 | `NOT_HOSTED` | Bu isim bu sunucuda yok (sunucu varsayılan sertifikasını döndürüyor). |
 | `TLS_ERROR` / `TIMEOUT` / `CLOSED` | Sunucuya ulaşılamadı ya da handshake başarısız oldu. |
 
+Subdomain Tarama'daki asıl sunucu paneli ve SSL Hedefleri'ndeki CDN Arkası sekmesi tarama komutunu senin için yazar: **Linux / macOS** (`python3 …`) ya da **Windows PowerShell** (`python …`) için. IPv4 ağları, içinde birden fazla asıl sunucu ya da envanterindeki bir sunucu varsa /24 olarak, yoksa tek tek adresler olarak eklenir; IPv6 her zaman tek tek adreslerle (bir /48 taranamayacak kadar büyük). Her hedef bir IP adresi ya da ağ, her ad geçerli bir host adı olmak zorunda: geri kalan her şey — örneğin bir CT kaydından gelen kötü niyetli bir ad — komuta hiç yazılmaz, yalnızca sayısı gösterilir; kalan parçalar da seçilen kabuğa göre tırnaklanır.
+
 ## Tipik SSL rollout akışı
 
+0. **Subdomain Tarama (isteğe bağlı):** önce her şeyi gör — tüm isimler, hangilerinin proxy'li olduğu ve kabuğuna uygun tarama komutuyla birlikte asıl sunucu ağları.
 1. **SSL Hedefleri** ekranında yeni sertifikayı bırak, domaini onayla ve taramayı başlat. Envanterin otomatik eşleşir.
 2. **Sunucular** sekmesi, DNS'i sertifikanın kapsadığı bir isme işaret eden sunucuları listeler. **CDN Arkası** sekmesi proxy'li hostları, origin ipuçlarını ve CLI komutunu gösterir.
 3. Sertifikayı kur, ardından CLI'ı `--cert yeni-sertifika.pem` ile çalıştır. Her sunucu `UPDATED` olana kadar tekrarla.
@@ -84,6 +114,10 @@ npm run serve            # veya: python -m http.server 8080
 
 Kendi kopyanı yayınlamak için repoyu fork'la ve **Settings → Pages → Source: GitHub Actions** ayarını yap. Repodaki workflow, `main`'e yapılan her push'ta siteyi deploy eder.
 
+## Geliştirme
+
+Klasör yapısı ve komutlar için [README.md → Development](README.md#development). Kısaca: `npm test` (birim testleri; `node --test tests/js/` de aynı şeyi yapar), `npm run test:py` (CLI testleri), `node tests/e2e/run-all.mjs` (gerçek Chrome/Edge ile uçtan uca). Kelime listeleri (Akıllı düz metin, Büyük ve Dev gzip) ve 12 pazar paketi `assets/data/` altında, `tools/build-wordlists.mjs` ile üretilir. Testler ve dokümanlar yalnızca örnek isimler (`example.com`, `example.net`) ve dokümantasyon IP blokları (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) kullanır; `tests/js/repo-hygiene.test.js` bunların dışındaki, bilinen public altyapıya ait olmayan her IPv4 adresinde hata verir.
+
 ## Lisans
 
-[MIT](LICENSE). Veriler yukarıdaki servislerden gelir; her biri kendi kullanım koşullarına tabidir.
+[MIT](LICENSE). Veriler yukarıdaki servislerden gelir; her biri kendi kullanım koşullarına tabidir. Repodaki subdomain kelime listeleri serbest lisanslı listelerden üretilir (SecLists, bitquark ve dnsgen MIT; commonspeak2 ve altdns Apache-2.0). Kaynaklar, sabitlenmiş sürümler ve lisanslar [`assets/data/README.md`](assets/data/README.md) dosyasında; lisans metinlerinin tamamı [`assets/data/THIRD_PARTY_LICENSES.txt`](assets/data/THIRD_PARTY_LICENSES.txt) dosyasında (Hakkında sayfasından da bağlantılı). Pazar kelime paketleri ve yerleşik çekirdek liste DomainScope'un kendi, MIT lisanslı çalışmasıdır.

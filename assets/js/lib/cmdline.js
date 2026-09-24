@@ -7,8 +7,9 @@
  * shown to the user (and may be copy-pasted into a shell), so every token is
  * built here under strict rules — never by ad-hoc template interpolation:
  *
- *  - a TARGET must be a literal IPv4/IPv6 address or a CIDR block (validated by
- *    {@link parseCidr}); it is re-emitted in canonical form;
+ *  - a TARGET (and an `--exclude` entry) must be a literal IPv4/IPv6 address or
+ *    a CIDR block (validated by {@link parseCidr}); it is re-emitted in
+ *    canonical form;
  *  - a NAME must be a hostname accepted by {@link normalizeHostname} whose
  *    output is limited to letters, digits, hyphen, dot and underscore and never
  *    begins with '-';
@@ -26,7 +27,14 @@
  *    PowerShell would read as closing the literal, nor a NUL / CR / LF;
  *  - many names do not go inline: above a threshold the command reads them from
  *    a names file (`-n proxied-names.txt`), keeping it far below the Windows
- *    32,767-character command-line limit.
+ *    32,767-character command-line limit;
+ *  - two opt-ins widen the token rules for the zone-file hand-off, both off by
+ *    default so every earlier caller is byte-identical: `allowHostTargets` keeps
+ *    a HOST NAME target (a zone's proxied CNAME origin, resolved by the CLI
+ *    inside the network) and `allowWildcardNames` keeps a `*.x` name (always
+ *    quoted, `*` is in neither safe set). A host target (and, under the opt-in,
+ *    a name) that glibc `inet_aton` would read as an IPv4 address (`2026092401`,
+ *    `0x7f.0x1`, `0177.1`, `10.1`) is dropped: it must never reach getaddrinfo.
  *
  * The whole design assumes the command may be pasted verbatim into either a
  * POSIX shell or PowerShell, so it must be inert under both.
@@ -76,6 +84,54 @@ function canonName(raw) {
   return n;
 }
 
+// The numeric forms glibc `inet_aton` accepts as an IPv4 address: 1–4 parts, each
+// decimal, octal (leading 0) or hex (0x…). `normalizeHostname` already rejects the
+// all-decimal forms, but `0x7f.0x1` passes it, so the opt-ins check this too.
+const INET_ATON = /^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+)){0,3}$/i;
+
+/**
+ * Would glibc `inet_aton` read `s` as an IPv4 address? Internal: exported for the
+ * tests only (the opt-in validators below use it).
+ * @param {unknown} s
+ * @returns {boolean}
+ */
+export function isInetAtonNumeric(s) {
+  return INET_ATON.test(String(s ?? ''));
+}
+
+/**
+ * Canonicalise one HOST NAME target (the `allowHostTargets` opt-in): not an
+ * IP / CIDR, a `normalizeHostname` result of `[a-z0-9_.-]` with at least one
+ * dot, no leading '-', and not an inet_aton numeric form.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function canonHostTarget(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s || s.includes('/') || normalizeIP(s)) return null;
+  const n = normalizeHostname(s);
+  if (!n || n.startsWith('-') || !NAME_CHARS.test(n) || !n.includes('.') || isInetAtonNumeric(n)) return null;
+  return n;
+}
+
+// A sweep name under the `allowWildcardNames` opt-in: an optional leading `*.`.
+const WILDCARD_NAME_CHARS = /^(\*\.)?[a-z0-9_.-]+$/;
+
+/**
+ * Canonicalise one sweep name that may be a `*.x` wildcard (the
+ * `allowWildcardNames` opt-in). The CLI probes `*.x` as the base plus a
+ * wildcard SNI. inet_aton numeric forms are dropped.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function canonWildcardName(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const n = normalizeHostname(s, { allowWildcard: true });
+  if (!n || n.startsWith('-') || !WILDCARD_NAME_CHARS.test(n) || isInetAtonNumeric(n.replace(/^\*\./, ''))) return null;
+  return n;
+}
+
 /** Validate + dedupe a list with `canon`, keeping first-seen order. */
 function validateList(list, canon) {
   const valid = [];
@@ -95,21 +151,25 @@ function validateList(list, canon) {
 }
 
 /**
- * Validate sweep targets (IP addresses / CIDR blocks).
+ * Validate sweep targets (IP addresses / CIDR blocks; host names too with
+ * `allowHostTargets`).
  * @param {unknown[]} list
+ * @param {{ allowHostTargets?: boolean }} [opts]
  * @returns {{ valid: string[], dropped: string[] }}
  */
-export function validateTargets(list) {
-  return validateList(list, canonTarget);
+export function validateTargets(list, { allowHostTargets = false } = {}) {
+  if (allowHostTargets !== true) return validateList(list, canonTarget);
+  return validateList(list, (raw) => canonTarget(raw) ?? canonHostTarget(raw));
 }
 
 /**
- * Validate sweep names (hostnames).
+ * Validate sweep names (hostnames; `*.x` too with `allowWildcard`).
  * @param {unknown[]} list
+ * @param {{ allowWildcard?: boolean }} [opts]
  * @returns {{ valid: string[], dropped: string[] }}
  */
-export function validateNames(list) {
-  return validateList(list, canonName);
+export function validateNames(list, { allowWildcard = false } = {}) {
+  return validateList(list, allowWildcard === true ? canonWildcardName : canonName);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -209,6 +269,66 @@ function validateOptions({ cert = null, json = null, ports = null }) {
   return { tokens, dropped };
 }
 
+/* ------------------------------------------------------------------------ */
+/* --exclude                                                                 */
+/* ------------------------------------------------------------------------ */
+
+/** A validated target / exclude token as a range: { version, network, prefix } (null when invalid). */
+function rangeOf(token) {
+  return parseCidr(String(token ?? ''));
+}
+
+/** Does range `outer` contain the whole of range `inner`? */
+function rangeCovers(outer, inner) {
+  if (!outer || !inner || outer.version !== inner.version || outer.prefix > inner.prefix) return false;
+  const bits = outer.version === 4 ? 32 : 128;
+  const shift = BigInt(bits - outer.prefix);
+  return (inner.network >> shift) === (outer.network >> shift);
+}
+
+/** Do two ranges share at least one address? */
+function rangesOverlap(a, b) {
+  return rangeCovers(a, b) || rangeCovers(b, a);
+}
+
+/**
+ * Split validated targets against validated excludes: a target an exclude covers
+ * entirely is removed (sweeping it would probe nothing), an exclude that touches
+ * a remaining target is emitted, and one that touches no target at all is
+ * `unused` (it would change nothing). An exclude that only removed whole targets
+ * did its job without being emitted, so it is neither emitted nor unused.
+ * @param {string[]} targets canonical target tokens
+ * @param {string[]} excludes canonical exclude tokens
+ * @returns {{ targets: string[], excluded: string[], exclude: string[], unused: string[] }}
+ */
+function applyExcludes(targets, excludes) {
+  const ex = excludes.map((tok) => ({ tok, range: rangeOf(tok), applied: false })).filter((x) => x.range);
+  const kept = [];
+  const excluded = [];
+  for (const tok of targets) {
+    const range = rangeOf(tok);
+    const covering = range ? ex.filter((x) => rangeCovers(x.range, range)) : [];
+    if (covering.length) {
+      for (const x of covering) x.applied = true;
+      excluded.push(tok);
+    } else {
+      kept.push(tok);
+    }
+  }
+  const keptRanges = kept.map(rangeOf).filter(Boolean);
+  // A HOST NAME target (allowHostTargets) has no range until the CLI resolves it
+  // inside the network, so any exclude may match one of its addresses: with a
+  // host target kept, every exclude is emitted (never silently left out).
+  const hostKept = keptRanges.length < kept.length;
+  const exclude = [];
+  const unused = [];
+  for (const x of ex) {
+    if (hostKept || keptRanges.some((r) => rangesOverlap(r, x.range))) exclude.push(x.tok);
+    else if (!x.applied) unused.push(x.tok);
+  }
+  return { targets: kept, excluded, exclude, unused };
+}
+
 /**
  * Build the origin-sweep command and report what was kept / dropped.
  *
@@ -238,41 +358,101 @@ function validateOptions({ cert = null, json = null, ports = null }) {
  * @param {number[]|null} [opts.ports=null] `-p 443,8443`: integers 1–65535,
  *   deduped in order; omitted when null, empty or exactly `[443]` (the CLI
  *   default); every other value is dropped as `'ports:<value>'`
+ * @param {unknown[]|string|null} [opts.exclude=null] `--exclude`: IP addresses /
+ *   CIDR blocks the CLI must never probe (validated like `targets`; a string is
+ *   split on whitespace / commas). Emitted right after the `-t` targets as
+ *   `--exclude a b …` (the CLI flag takes several values and may repeat, like
+ *   `-t`). A target an exclude covers entirely is removed from `-t` (reported in
+ *   `excluded`); an exclude that overlaps no remaining target is left out of the
+ *   command (reported in `excludeUnused`) — unless a host-name target is kept
+ *   (its addresses are unknown until the CLI resolves it, so every exclude is
+ *   emitted); an invalid one is dropped (reported
+ *   in `dropped.exclude`). Only when `exclude` is given (not null / undefined)
+ *   does the result carry `exclude`, `excluded`, `excludeUnused` and
+ *   `dropped.exclude`, so every earlier call shape is byte-identical.
+ * @param {boolean} [opts.allowHostTargets=false] zone hand-off opt-in: keep a
+ *   HOST NAME target (see {@link validateTargets}); IP / CIDR targets come first
+ *   in the order given, then the host names
+ * @param {boolean} [opts.allowWildcardNames=false] zone hand-off opt-in: keep a
+ *   `*.x` name (see {@link validateNames}); it is always quoted
+ * @param {string|null} [opts.targetsFile=null] zone hand-off opt-in: a targets
+ *   file token (plain path, validated like `script`). When given and the
+ *   targets exceed `maxInlineTargets`, the names exceed `maxInlineNames` or the
+ *   inline command exceeds `maxLength`, BOTH lists go to files
+ *   (`-t <targetsFile> … -n <namesFile>`; the CLI reads a `-t` / `-n` value that
+ *   is a file) and the result carries `targetsInline` / `targetsFile`. Without
+ *   it targets are always inline and neither field is present.
+ * @param {number|null} [opts.maxInlineTargets=null] more targets than this →
+ *   the file form (only with `targetsFile`)
  * @returns {{ command: string|null, targets: string[], names: string[],
- *   dropped: { targets: string[], names: string[], options: string[] }, length: number,
- *   namesInline: boolean, namesFile: string|null }}
+ *   dropped: { targets: string[], names: string[], options: string[], exclude?: string[] }, length: number,
+ *   namesInline: boolean, namesFile: string|null, exclude?: string[], excluded?: string[],
+ *   excludeUnused?: string[], targetsInline?: boolean, targetsFile?: string|null }}
  *   `command` is null when no valid target or no valid name survives; `length`
  *   is its length (0 when null); `namesFile` is the file the command reads the
  *   names from (null when they are inline). The options follow the names (or
  *   the names file) in the order `-p`, `--cert`, `--json`: argparse's
- *   `nargs='+'` for `-n` stops at the next option. Without the three options
+ *   `nargs='+'` for `-n` stops at the next option. Without the four options
  *   the command is byte-identical to earlier versions and `dropped.options` is [].
+ *   With `exclude`, `targets` lists only the targets left in `-t`.
  */
 export function buildSweepCommand({
   targets = [], names = [], script = DEFAULT_SCRIPT, shell = 'posix',
   namesFile = DEFAULT_NAMES_FILE, maxInlineNames = MAX_INLINE_NAMES, maxLength = MAX_INLINE_LENGTH,
-  cert = null, json = null, ports = null
+  cert = null, json = null, ports = null, exclude = null,
+  allowHostTargets = false, allowWildcardNames = false, targetsFile = null, maxInlineTargets = null
 } = {}) {
-  const t = validateTargets(targets);
-  const n = validateNames(names);
+  const t = validateTargets(targets, { allowHostTargets: allowHostTargets === true });
+  if (allowHostTargets === true) {
+    // IP / CIDR targets first, host names after (a stable, readable order).
+    t.valid = [...t.valid.filter((x) => canonTarget(x) !== null), ...t.valid.filter((x) => canonTarget(x) === null)];
+  }
+  const n = validateNames(names, { allowWildcard: allowWildcardNames === true });
   const opts = validateOptions({ cert, json, ports });
   const dropped = { targets: t.dropped, names: n.dropped, options: opts.dropped };
-  if (!t.valid.length || !n.valid.length) {
-    return { command: null, targets: t.valid, names: n.valid, dropped, length: 0, namesInline: true, namesFile: null };
+  const withExclude = exclude !== null && exclude !== undefined;
+  let targetList = t.valid;
+  const extra = {};
+  if (withExclude) {
+    const raw = typeof exclude === 'string' ? exclude.split(/[\s,]+/).filter(Boolean) : exclude;
+    const ex = validateTargets(Array.isArray(raw) ? raw : [raw]);
+    const split = applyExcludes(t.valid, ex.valid);
+    targetList = split.targets;
+    dropped.exclude = ex.dropped;
+    extra.exclude = split.exclude;
+    extra.excluded = split.excluded;
+    extra.excludeUnused = split.unused;
+  }
+  const withTargetsFile = targetsFile !== null && targetsFile !== undefined;
+  const tFile = withTargetsFile && typeof targetsFile === 'string' && PATH_TOKEN.test(targetsFile) ? targetsFile : null;
+  if (withTargetsFile && tFile === null) dropped.options.push('targetsFile');
+  if (!targetList.length || !n.valid.length) {
+    const tf = withTargetsFile ? { targetsInline: true, targetsFile: null } : {};
+    return { command: null, targets: targetList, names: n.valid, dropped, length: 0, namesInline: true, namesFile: null, ...tf, ...extra };
   }
   const q = (v) => quoteArg(v, shell);
   const pathTok = (v, fallback) => (typeof v === 'string' && PATH_TOKEN.test(v) ? v : fallback);
-  const head = `${q(pathTok(script, DEFAULT_SCRIPT))} -t ${t.valid.map(q).join(' ')} -n `;
+  const exTokens = withExclude && extra.exclude.length ? ` --exclude ${extra.exclude.map(q).join(' ')}` : '';
+  const head = `${q(pathTok(script, DEFAULT_SCRIPT))} -t ${targetList.map(q).join(' ')}${exTokens} -n `;
   const tail = opts.tokens.length ? ` ${opts.tokens.map(q).join(' ')}` : '';
   const inline = `${head}${n.valid.map(q).join(' ')}${tail}`;
   const nameCap = Number.isFinite(maxInlineNames) && maxInlineNames >= 0 ? maxInlineNames : Infinity;
   const lenCap = Number.isFinite(maxLength) && maxLength > 0 ? maxLength : Infinity;
-  if (n.valid.length <= nameCap && inline.length <= lenCap) {
-    return { command: inline, targets: t.valid, names: n.valid, dropped, length: inline.length, namesInline: true, namesFile: null };
+  const targetCap = Number.isFinite(maxInlineTargets) && maxInlineTargets >= 0 ? maxInlineTargets : Infinity;
+  if (n.valid.length <= nameCap && inline.length <= lenCap && !(tFile && targetList.length > targetCap)) {
+    const tf = withTargetsFile ? { targetsInline: true, targetsFile: null } : {};
+    return { command: inline, targets: targetList, names: n.valid, dropped, length: inline.length, namesInline: true, namesFile: null, ...tf, ...extra };
   }
   const file = pathTok(namesFile, DEFAULT_NAMES_FILE);
+  if (tFile) {
+    // Both lists to files: the caller offers the two downloads (targets = the
+    // validated `targets`, names = the validated `names`, one per line).
+    const command = `${q(pathTok(script, DEFAULT_SCRIPT))} -t ${q(tFile)}${exTokens} -n ${q(file)}${tail}`;
+    return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, targetsInline: false, targetsFile: tFile, ...extra };
+  }
   const command = `${head}${q(file)}${tail}`;
-  return { command, targets: t.valid, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file };
+  const tf = withTargetsFile ? { targetsInline: true, targetsFile: null } : {};
+  return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, ...tf, ...extra };
 }
 
 /**

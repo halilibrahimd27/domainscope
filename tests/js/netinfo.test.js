@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP, isGloballyRoutable,
   reversePtrName, formatIP, RANGES_UPDATED, PROVIDERS, getProvider,
-  matchProviderByIP, matchProviderByCname, classifyResolution
+  matchProviderByIP, matchProviderByCname, classifyResolution, isSharedProvider, SHARED_PROVIDER_CATEGORIES
 } from '../../assets/js/lib/netinfo.js';
 
 /* -------------------------------------------------------------------- */
@@ -334,4 +334,30 @@ test('isPrivateIP keeps its meaning: documentation / multicast space is not "pri
   assert.equal(isPrivateIP('224.0.0.1'), false);
   assert.equal(isPrivateIP('2001:db8::1'), false);
   assert.equal(isGloballyRoutable('192.0.2.1'), false);
+});
+
+/* -------------------------------------------------------------------- */
+/* isSharedProvider (multi-tenant address space)                        */
+/* -------------------------------------------------------------------- */
+
+test('isSharedProvider: CDN / WAF / platform / loadbalancer / hosting / cloud are shared', () => {
+  for (const cat of SHARED_PROVIDER_CATEGORIES) {
+    assert.equal(isSharedProvider({ category: cat }), true, cat);
+  }
+  // real PROVIDERS entries
+  assert.equal(isSharedProvider(getProvider('cloudflare')), true);
+  assert.equal(isSharedProvider(getProvider('cloudfront')), true);
+  assert.equal(isSharedProvider(getProvider('github-pages')), true);
+  // an ipintel INFRA_NETWORKS-shaped record is accepted too
+  assert.equal(isSharedProvider({ category: 'cloud' }), true);
+  assert.equal(isSharedProvider({ category: 'hosting' }), true);
+});
+
+test('isSharedProvider: a DNS-only steering provider and null / unknown are not shared', () => {
+  assert.equal(isSharedProvider(getProvider('azure-trafficmanager')), false, 'dnsOnly answers are the real endpoints');
+  assert.equal(isSharedProvider({ category: 'cloud', dnsOnly: true }), false);
+  assert.equal(isSharedProvider(null), false);
+  assert.equal(isSharedProvider(undefined), false);
+  assert.equal(isSharedProvider({}), false);
+  assert.equal(isSharedProvider({ category: 'router' }), false, 'an unknown category is not shared');
 });

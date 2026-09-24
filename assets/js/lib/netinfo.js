@@ -623,6 +623,24 @@ export function getProvider(id) {
   return PROVIDERS.find((p) => p.id === id);
 }
 
+/** Provider categories whose address space many unrelated customers share. */
+export const SHARED_PROVIDER_CATEGORIES = Object.freeze(['cdn', 'waf', 'platform', 'loadbalancer', 'hosting', 'cloud']);
+
+/**
+ * Is `provider` multi-tenant address space — a CDN / WAF edge, a hosting
+ * platform, a shared load balancer or a cloud — where one address or block
+ * serves many unrelated customers? A DNS-only steering provider (its answers
+ * are the customer's own endpoints) is not. Accepts a PROVIDERS entry or any
+ * `{ category, dnsOnly? }` record (e.g. an ipintel INFRA_NETWORKS entry).
+ * Extension; display / sweep-policy hint only.
+ * @param {{ category?: string, dnsOnly?: boolean }|null|undefined} provider
+ * @returns {boolean}
+ */
+export function isSharedProvider(provider) {
+  if (!provider || typeof provider !== 'object' || provider.dnsOnly) return false;
+  return SHARED_PROVIDER_CATEGORIES.includes(provider.category);
+}
+
 let compiledRanges = null; // lazily parsed [{ cidr, provider }]
 let suffixIndex = null; // Map<suffix, provider>
 

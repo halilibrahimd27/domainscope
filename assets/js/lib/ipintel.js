@@ -22,7 +22,9 @@ import {
   fetchJson, fetchText, retry, createLimiter, createCache, errorKind,
   throwIfAborted, abortReasonToError, HttpError, uniq
 } from './util.js';
-import { normalizeIP, ipVersion, isPrivateIP, matchProviderByIP } from './netinfo.js';
+import {
+  normalizeIP, ipVersion, isPrivateIP, matchProviderByIP, parseCidr, formatIP, isSharedProvider
+} from './netinfo.js';
 import { normalizeHostname, sortHostnames } from './domain.js';
 
 /** RIPEstat Data API base URL. */
@@ -632,19 +634,224 @@ export function createIpIntel({
     return { ...result, domains: [...result.domains] };
   }
 
+  const networkDescriber = makeNetworkDescriber(getJson, cacheSize);
+
   return {
     info,
     reverseIp,
+    /**
+     * Who announces an origin network (extension): see the module-level {@link describeNetwork}.
+     * Shares this service's request limiter; cached per network (1 h).
+     * @param {string} target IP address or CIDR block
+     * @param {{ signal?: AbortSignal, noCache?: boolean }} [opts]
+     * @returns {Promise<NetworkDescription>}
+     */
+    describeNetwork: networkDescriber.describe,
     /** Drop every cached result. */
     clearCache() {
       infoCache.clear();
       reverseCache.clear();
+      networkDescriber.clear();
     },
     /** Change the HTTP request concurrency. */
     setConcurrency(n) {
       limiter.setConcurrency(n);
     }
   };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Network ownership (origin networks, on demand)                           */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * @typedef {object} NetworkDescription
+ * @property {string} input canonical query: an address, or `network/prefix` (host bits masked off)
+ * @property {string|null} ip the address the lookup was made for (the block's network address for a
+ *   CIDR — any address of a /24 or /48 sits under the same announced prefix); null when invalid
+ * @property {4|6|0} version 0 when the input is neither an address nor a CIDR block
+ * @property {boolean} private private / reserved space: nothing is looked up (never leaves the browser)
+ * @property {object|null} provider netinfo PROVIDERS entry whose published ranges contain `ip` (offline)
+ * @property {number|null} asn origin AS number
+ * @property {string|null} asName short AS name ('AMAZON-02')
+ * @property {string|null} holder AS holder organisation
+ * @property {string|null} prefix the announced (covering) prefix
+ * @property {boolean|null} announced
+ * @property {Array<{ asn: number, holder: string|null }>} asns every origin AS (MOAS prefixes have several)
+ * @property {string|null} rir
+ * @property {{ id: string, name: string, category: string }|null} infra well-known operator of the AS
+ *   ({@link INFRA_NETWORKS})
+ * @property {string|null} category infra (or provider) category: 'cloud'|'hosting'|'cdn'|'waf'|'platform'|…
+ * @property {boolean|null} shared true: known multi-tenant space (a cloud / hosting / platform / CDN
+ *   operator, or a provider range) where one block serves many unrelated customers; false: the AS is
+ *   not a known shared operator (NOT proof of single ownership); null: unknown (the lookup failed)
+ * @property {boolean|null} coversInput the announced prefix contains the whole queried block (a block
+ *   wider than its announced prefix is only partly described); null without a prefix
+ * @property {string[]} sources 'ripestat' when RIPEstat answered
+ * @property {string|null} error
+ * @property {string|null} errorKind util.errorKind() of `error` ('invalid' for bad input)
+ */
+
+/**
+ * Parse a network query: an IP address or a CIDR block.
+ * @param {unknown} target
+ * @returns {{ input: string, ip: string, version: 4|6, range: { version: 4|6, network: bigint, prefix: number } }|null}
+ */
+export function networkQuery(target) {
+  const s = typeof target === 'string' ? target.trim() : '';
+  if (!s) return null;
+  if (s.includes('/')) {
+    const range = parseCidr(s);
+    if (!range) return null;
+    const ip = formatIP(range.network, range.version);
+    const bits = range.version === 4 ? 32 : 128;
+    return { input: range.prefix === bits ? ip : `${ip}/${range.prefix}`, ip, version: range.version, range };
+  }
+  const ip = lookupForm(s);
+  if (!ip) return null;
+  const range = parseCidr(ip);
+  return range ? { input: ip, ip, version: range.version, range } : null;
+}
+
+function rangeWithin(outer, inner) {
+  if (!outer || !inner || outer.version !== inner.version || outer.prefix > inner.prefix) return false;
+  const shift = BigInt((outer.version === 4 ? 32 : 128) - outer.prefix);
+  return (inner.network >> shift) === (outer.network >> shift);
+}
+
+function emptyNetworkDescription(q, raw) {
+  return {
+    input: q ? q.input : String(raw ?? ''),
+    ip: q ? q.ip : null,
+    version: q ? q.version : 0,
+    private: false,
+    provider: q ? matchProviderByIP(q.ip) : null,
+    asn: null,
+    asName: null,
+    holder: null,
+    prefix: null,
+    announced: null,
+    asns: [],
+    rir: null,
+    infra: null,
+    category: null,
+    shared: null,
+    coversInput: null,
+    sources: [],
+    error: null,
+    errorKind: null
+  };
+}
+
+/**
+ * Combine a network query with a parsed RIPEstat prefix-overview (or null when the lookup failed)
+ * into a {@link NetworkDescription}. Pure; exported for tests and reuse.
+ * @param {ReturnType<typeof networkQuery>} q
+ * @param {ReturnType<typeof parsePrefixOverview>|null} po
+ * @returns {NetworkDescription}
+ */
+export function summarizeNetwork(q, po) {
+  const out = emptyNetworkDescription(q, null);
+  if (po) {
+    Object.assign(out, {
+      asn: po.asn, asName: po.asName, holder: po.holder, prefix: po.prefix,
+      announced: po.announced, asns: po.asns.map((a) => ({ ...a })), rir: po.rir
+    });
+    out.sources = ['ripestat'];
+    const hit = networkHint({ asn: po.asn, asns: po.asns });
+    out.infra = hit ? { id: hit.id, name: hit.name, category: hit.category } : null;
+    const pre = po.prefix ? parseCidr(po.prefix) : null;
+    out.coversInput = pre && q ? rangeWithin(pre, q.range) : null;
+  }
+  out.category = (out.infra && out.infra.category) || (out.provider && out.provider.category) || null;
+  if (isSharedProvider(out.provider) || (out.infra && isSharedProvider(out.infra))) out.shared = true;
+  else if (po) out.shared = false;
+  return out;
+}
+
+function cloneNetworkDescription(d) {
+  return { ...d, asns: d.asns.map((a) => ({ ...a })), sources: [...d.sources], infra: d.infra ? { ...d.infra } : null };
+}
+
+/**
+ * A cached, de-duplicated network describer over a `getJson(url, signal)` function.
+ * @param {(url: string, signal?: AbortSignal) => Promise<any>} getJson
+ * @param {number} [cacheSize]
+ */
+function makeNetworkDescriber(getJson, cacheSize = 500) {
+  const cache = createCache({ maxEntries: cacheSize, ttlMs: INFO_TTL_MS });
+  const inflight = new Map();
+  async function describeOne(target, { signal, noCache = false } = {}) {
+    throwIfAborted(signal);
+    const q = networkQuery(target);
+    if (!q) {
+      const out = emptyNetworkDescription(null, target);
+      out.error = 'Invalid IP address or CIDR block';
+      out.errorKind = 'invalid';
+      return out;
+    }
+    if (isPrivateIP(q.ip)) {
+      const out = emptyNetworkDescription(q, target);
+      out.private = true;
+      return out;
+    }
+    if (!noCache) {
+      const hit = cache.get(q.input);
+      if (hit) return cloneNetworkDescription(hit);
+    }
+    const result = await shared(inflight, q.input, signal, async (sig) => {
+      let po = null;
+      let failure = null;
+      try {
+        const url = `${RIPESTAT_BASE}/prefix-overview/data.json?resource=${q.ip}&sourceapp=${RIPESTAT_SOURCEAPP}`;
+        po = parsePrefixOverview(await getJson(url, sig));
+      } catch (err) {
+        if (isAbort(err) && sig?.aborted) throw err;
+        failure = err;
+      }
+      const out = summarizeNetwork(q, po);
+      if (failure) {
+        out.error = `ripestat: ${describe(failure)}`;
+        out.errorKind = errorKind(failure);
+      } else {
+        cache.set(q.input, out);
+      }
+      return out;
+    });
+    return cloneNetworkDescription(result);
+  }
+  return { describe: describeOne, clear: () => cache.clear() };
+}
+
+// One describer (own cache + limiter) per fetch implementation, created on first use.
+const describersByFetch = new WeakMap();
+
+/**
+ * Who announces an origin network, on demand: one RIPEstat prefix-overview request for the block's
+ * network address (or the address itself), giving the origin AS, its holder, the announced prefix
+ * and — for a well-known operator — whether it is shared cloud / hosting / CDN space. For the UI to
+ * call per origin network AFTER a scan (the scanner never waits on it). Private / reserved space is
+ * never looked up. Cached per network for an hour (failures are not cached) and de-duplicated
+ * while in flight; abortable through `signal` (rejects only with AbortError then). Every other
+ * failure is reported in the result (`error`, `shared: null` unless a provider range already says).
+ * @param {string} target IP address or CIDR block ('192.0.2.0/24', '2001:db8:1::/48')
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, noCache?: boolean }} [opts]
+ * @returns {Promise<NetworkDescription>}
+ */
+export function describeNetwork(target, { fetchImpl = globalThis.fetch, signal, noCache = false } = {}) {
+  let describer = typeof fetchImpl === 'function' ? describersByFetch.get(fetchImpl) : null;
+  if (!describer) {
+    const limiter = createLimiter(4);
+    const getJson = (url, sig) => limiter.run(
+      () => retry(() => fetchJson(url, { fetchImpl, signal: sig, timeoutMs: DEFAULT_TIMEOUT_MS, headers: { accept: 'application/json' } }), {
+        retries: 1, signal: sig, baseDelayMs: 400, maxDelayMs: 4000
+      }),
+      { signal: sig }
+    );
+    describer = makeNetworkDescriber(getJson);
+    if (typeof fetchImpl === 'function') describersByFetch.set(fetchImpl, describer);
+  }
+  return describer.describe(target, { signal, noCache });
 }
 
 /**

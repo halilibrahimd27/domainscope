@@ -7,7 +7,7 @@
 // and the passive sources are mocked with the real payload shapes.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { runScan, SCAN_STAGES, learnedLabelsFromScan } from '../../assets/js/lib/scanner.js';
+import { runScan, SCAN_STAGES, learnedLabelsFromScan, estimateQueries } from '../../assets/js/lib/scanner.js';
 import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
@@ -1231,5 +1231,368 @@ describe('discovery engine v2: learned labels and wildcards stay in scope (defen
     assert.ok(!(scan.wildcardBases || []).includes('com.tr'));
     assert.ok(scan.warnings.some((w) => w.code === 'PUBLIC_SUFFIX' && w.detail === 'com.tr'), JSON.stringify(scan.warnings));
     assert.ok(!scan.warnings.some((w) => w.code === 'INVALID_NAME'), 'the wildcard is recognised, not rejected as invalid');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Engine v3: sibling-domain hint, per-host candidates, network ownership,  */
+/* streaming, stage honesty, query estimate                                 */
+/* ------------------------------------------------------------------------ */
+
+describe('discovery engine v3: sibling-domain origin hint (cross-brand)', () => {
+  test('a proxied X.<d1> whose exact label X is DNS-only under sibling <d2> gets an exact host-specific candidate', async () => {
+    const A = 'brand-a.example';
+    const B = 'brand-b.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`ticket.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' }, // proxied on brand A
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] },
+      [B]: { A: ['203.0.113.10'] },
+      [`ticket.${B}`]: { A: ['203.0.113.50'] } // the real origin, published in the open on brand B
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A, B], sources: [], bruteforce: 'small', wordlist: ['ticket'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    const h = byName(scan);
+    assert.equal(h.get(`ticket.${A}`).classification.hidesOrigin, true);
+    // the hint
+    const hint = scan.originHints.find((x) => x.ip === '203.0.113.50');
+    assert.ok(hint, 'the sibling origin is an origin hint');
+    const sib = hint.reasons.find((r) => r.kind === 'sibling-domain');
+    assert.ok(sib, 'a sibling-domain reason');
+    assert.equal(sib.host, `ticket.${A}`);
+    assert.equal(sib.sibling, `ticket.${B}`);
+    // the per-host candidate list: exact sibling IP first, then its network
+    const cand = h.get(`ticket.${A}`).originCandidates;
+    assert.equal(cand[0].ip, '203.0.113.50');
+    assert.equal(cand[0].kind, 'sibling-domain');
+    assert.ok(cand[0].score > (cand.find((c) => c.cidr) || { score: 0 }).score, 'the exact IP ranks above the network');
+    assert.deepEqual(h.get(`ticket.${A}`).candidateNetworks, ['203.0.113.0/24']);
+    // the sibling IP is swept: its /24 (2 IPs) is a CLI target
+    assert.ok(scan.cliTargets.includes('203.0.113.0/24'));
+    assert.ok(scan.cliNames.includes(`ticket.${A}`));
+  });
+
+  test('no sibling hint from the SAME brand, and none for a single-apex scan', async () => {
+    const A = 'solo-brand.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`ticket.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      [`ticket2.${A}`]: { A: ['192.0.2.6'] }, // same brand, different label
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['ticket', 'ticket2'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    assert.ok(!scan.originHints.some((x) => x.reasons.some((r) => r.kind === 'sibling-domain')), 'no sibling-domain hint in a single-apex scan');
+  });
+});
+
+describe('discovery engine v3: per-host candidate networks (noise capped)', () => {
+  test('only the main cluster / related networks are attached; a lone 1-IP mail or dev network is not', async () => {
+    const A = 'estate.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`api.${A}`]: { A: ['192.0.2.6'] },
+      [`app.${A}`]: { A: ['192.0.2.7'] },
+      [`crm.${A}`]: { A: ['192.0.2.8'] },
+      [`mail.${A}`]: { A: ['198.51.100.9'] },
+      [`webmail.${A}`]: { A: ['198.51.100.9'] }, // same single IP as mail (a shared mail server)
+      [`dev.${A}`]: { A: ['203.0.113.10'] }, // a lone box in another /24
+      [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['api', 'app', 'crm', 'mail', 'webmail', 'dev', 'www'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    // all three networks exist for display
+    assert.deepEqual(scan.originNetworks.map((n) => n.cidr).sort(),
+      ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24']);
+    // but the proxied host only gets the multi-IP main cluster, not the 1-IP noise
+    assert.deepEqual(byName(scan).get(`www.${A}`).candidateNetworks, ['192.0.2.0/24']);
+    // the CLI sweeps the /24 whole for the cluster, exact IPs for the singletons
+    const byCidr = new Map(scan.originNetworks.map((n) => [n.cidr, n]));
+    assert.equal(byCidr.get('192.0.2.0/24').sweep, 'cidr');
+    assert.equal(byCidr.get('198.51.100.0/24').sweep, 'ips');
+    assert.equal(byCidr.get('203.0.113.0/24').sweep, 'ips');
+    assert.ok(scan.cliTargets.includes('192.0.2.0/24'));
+    assert.ok(scan.cliTargets.includes('198.51.100.9'));
+    assert.ok(scan.cliTargets.includes('203.0.113.10'));
+    assert.ok(!scan.cliTargets.includes('198.51.100.0/24'), 'a 1-IP network is not widened to its /24');
+  });
+
+  test('each origin network carries a shared flag (offline) and a sweep decision', async () => {
+    const A = 'flags.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`api.${A}`]: { A: ['192.0.2.6'] },
+      [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['api'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    const net = scan.originNetworks.find((n) => n.cidr === '192.0.2.0/24');
+    assert.equal(net.shared, false, 'documentation space is not a known shared provider range');
+    assert.equal(net.sweep, 'cidr');
+    assert.equal(net.provider, null);
+  });
+});
+
+describe('discovery engine v3: streaming onFound', () => {
+  test('every wordlist / permutation hit is streamed the moment it resolves, with a cheap classification', async () => {
+    const A = 'stream.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`api.${A}`]: { A: ['192.0.2.6'] },
+      [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const found = [];
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['api', 'www', 'nope'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    }, { onFound: (p) => found.push(p) });
+    const byNameFound = new Map(found.map((p) => [p.name, p]));
+    assert.ok(byNameFound.has(`api.${A}`) && byNameFound.has(`www.${A}`), 'both hits streamed');
+    assert.ok(!byNameFound.has(`nope.${A}`), 'an NXDOMAIN candidate is not streamed');
+    assert.equal(byNameFound.get(`api.${A}`).origin, 'wordlist');
+    assert.deepEqual(byNameFound.get(`api.${A}`).ipv4, ['192.0.2.6']);
+    assert.equal(byNameFound.get(`api.${A}`).classification.kind, 'direct');
+    assert.equal(byNameFound.get(`www.${A}`).classification.kind, 'cloudflare');
+    // the final result is unchanged: the same hosts arrive as full records
+    assert.ok(byName(scan).has(`api.${A}`) && byName(scan).has(`www.${A}`));
+    // a hook that throws never breaks the scan
+    const scan2 = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['api'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    }, { onFound: () => { throw new Error('boom'); } });
+    assert.ok(byName(scan2).has(`api.${A}`));
+  });
+});
+
+describe('discovery engine v3: stage honesty', () => {
+  test('the grace window reports which passive sources were still fetching', async () => {
+    const A = 'grace.example';
+    const zone = { [A]: { A: ['192.0.2.5'] } };
+    const sources = { 'https://anubisdb.com/': async () => { await new Promise((r) => setTimeout(r, 120)); return [`api.${A}`]; } };
+    const { fetchImpl, dns } = mkWorld({ zone, sources });
+    const stageInfo = {};
+    const scan = await runScan({
+      domains: [A], sources: ['anubis'], bruteforce: 'off', mine: false, permutationBudget: 0,
+      recursive: false, originHints: false, balance: false, sourceGraceMs: 5, dns, fetchImpl
+    }, { onStage: (s, info) => { stageInfo[s] = info; } });
+    assert.deepEqual(scan.sourceGrace.stillRunning, ['anubis']);
+    assert.equal(scan.sourceGrace.cutOff, true);
+    assert.deepEqual(stageInfo.wildcard.sourcesStillRunning, ['anubis'], 'the wildcard stage carries the snapshot');
+    assert.equal(stageInfo.wildcard.sourcesCutOff, true);
+    // the source is still awaited before resolve, so its late name is not lost
+    assert.ok(byName(scan).has(`api.${A}`), 'the slow source name is folded in');
+  });
+
+  test('a source that settles inside the grace window leaves stillRunning empty', async () => {
+    const A = 'settled.example';
+    const zone = { [A]: { A: ['192.0.2.5'] } };
+    const { fetchImpl, dns } = mkWorld({ zone, sources: anubis([`api.${A}`]) });
+    const scan = await runScan({
+      domains: [A], sources: ['anubis'], bruteforce: 'off', mine: false, permutationBudget: 0,
+      recursive: false, originHints: false, balance: false, sourceGraceMs: 12000, dns, fetchImpl
+    });
+    assert.deepEqual(scan.sourceGrace.stillRunning, []);
+    assert.equal(scan.sourceGrace.cutOff, false);
+  });
+
+  test('the hints stage has determinate progress that reaches its total', async () => {
+    const A = 'hintsprog.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const progress = [];
+    let hintsInfo = null;
+    await runScan({
+      domains: [A], extraNames: [`www.${A}`], sources: [], bruteforce: 'off', mine: false,
+      permutationBudget: 0, recursive: false, originHints: true, resolverLeak: true, balance: false, dns, fetchImpl
+    }, { onStage: (s, info) => { if (s === 'hints') hintsInfo = info; }, onProgress: (p) => { if (p.stage === 'hints') progress.push(p); } });
+    assert.ok(hintsInfo.total > 0, 'a determinate total is announced');
+    const last = progress[progress.length - 1];
+    assert.ok(last && last.done === last.total && last.total > 0, `hints progress reaches ${last && last.total}`);
+  });
+});
+
+describe('discovery engine v3: query estimate', () => {
+  test('counts every stage; the range brackets a real run (Smart + Turkish, one apex)', () => {
+    const est = estimateQueries({ bruteforce: 'smart', domains: ['example-test.com.tr'], locales: ['tr'] });
+    assert.equal(est.breakdown.wordlist, 7000 + 283, 'smart base + the Turkish pack');
+    assert.equal(est.breakdown.permutation, 1500, 'the permutation budget is counted (the old plan missed it)');
+    assert.ok(est.breakdown.mining > 0 && est.breakdown.hintsMax > 0);
+    assert.ok(est.min <= 8952 && est.max >= 8952, `real 8,952 should fall in [${est.min}, ${est.max}]`);
+    assert.ok(est.min <= est.max);
+  });
+
+  test('off means no wordlist queries; disabling stages drops their terms', () => {
+    const est = estimateQueries({ bruteforce: 'off', domains: ['example.com'], permutationBudget: 0, recursive: false, mine: false, originHints: false });
+    assert.equal(est.breakdown.wordlist, 0);
+    assert.equal(est.breakdown.permutation, 0);
+    assert.equal(est.breakdown.recursive, 0);
+    assert.equal(est.breakdown.mining, 0);
+    assert.equal(est.breakdown.hintsMax, 0);
+  });
+
+  test('several apexes sum, under the total brute-force cap; auto locale applies per domain', () => {
+    const est = estimateQueries({ bruteforce: 'smart', domains: ['a.com.tr', 'b.de'], locales: null });
+    // a.com.tr adds the tr pack, b.de adds the de pack, both on top of the 7,000 smart base
+    assert.ok(est.breakdown.wordlist > 7000 * 2, 'both apexes counted');
+    assert.ok(est.breakdown.wordlist <= 200000, 'under the total cap');
+    assert.equal(est.breakdown.bases, 2);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Review fixes (engine v3 + zone hand-off)                                 */
+/* ------------------------------------------------------------------------ */
+
+describe('engine v3 review fixes', () => {
+  test('nested apexes are one brand: no cross-brand sibling-domain hint between shop.X and X', async () => {
+    const A = 'nest.example';
+    const S = `shop.${A}`;
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [S]: { A: ['192.0.2.6'] },
+      [`api.${S}`]: { CNAME: 'proxy.cdn.cloudflare.net' }, // proxied under the nested apex
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] },
+      [`api.${A}`]: { A: ['203.0.113.50'] } // same label, same organisation, DNS-only
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A, S], sources: [], bruteforce: 'small', wordlist: ['api'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    assert.equal(byName(scan).get(`api.${S}`).classification.hidesOrigin, true);
+    assert.ok(!scan.originHints.some((x) => x.reasons.some((r) => r.kind === 'sibling-domain')),
+      'a nested apex of the same organisation is not a sister brand');
+  });
+
+  test('an IP named by two host-specific kinds is ONE candidate (the strongest), not a duplicate row', async () => {
+    const A = 'dupe-a.example';
+    const B = 'dupe-b.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`ticket.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] },
+      [B]: { A: ['203.0.113.10'] },
+      [`ticket.${B}`]: { A: ['203.0.113.50'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A, B], sources: [], bruteforce: 'small', wordlist: ['ticket'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl,
+      zone: { v: 1, origin: A, names: [`ticket.${A}`], wildcardBases: [], proxied: [{ name: `ticket.${A}`, ips: ['203.0.113.50'], host: null }] }
+    });
+    const cand = byName(scan).get(`ticket.${A}`).originCandidates.filter((c) => c.ip === '203.0.113.50');
+    assert.equal(cand.length, 1, JSON.stringify(cand));
+    assert.equal(cand[0].kind, 'zone', 'the zone file (score 110) outranks the sibling-domain match');
+  });
+
+  test('candidate networks per host are capped: the weakest band (unrelated clusters) keeps at most 3', async () => {
+    const A = 'many.example';
+    const zone = { [A]: { A: ['192.0.2.5'] }, [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' }, 'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] } };
+    const words = ['www'];
+    const extraNames = [];
+    // 8 unrelated 2-IP clusters, one IPv6 documentation /48 each (AAAA-only: given as names)
+    for (let i = 0; i < 8; i += 1) {
+      for (const j of [1, 2]) {
+        zone[`n${i}x${j}.${A}`] = { AAAA: [`2001:db8:${i + 1}::${j}`] };
+        extraNames.push(`n${i}x${j}.${A}`);
+      }
+    }
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: words, extraNames,
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    const www = byName(scan).get(`www.${A}`);
+    assert.ok(scan.originNetworks.length >= 8, `networks: ${scan.originNetworks.length}`);
+    const bands = www.originCandidates.filter((c) => c.kind === 'network').map((c) => c.evidence.relation);
+    assert.ok(bands.filter((r) => r === 'cluster').length <= 3, JSON.stringify(bands));
+    assert.equal(bands.filter((r) => r === 'main-cluster').length, 1, 'the main cluster is always kept');
+    assert.deepEqual(www.candidateNetworks, www.originCandidates.filter((c) => c.kind === 'network').map((c) => c.cidr));
+  });
+
+  test('no onFound row is streamed once the scan is aborted (even when the DNS client ignores the signal)', async () => {
+    const A = 'abort-stream.example';
+    const zone = { [A]: { A: ['192.0.2.5'] } };
+    const words = [];
+    for (let i = 0; i < 40; i += 1) { zone[`h${i}.${A}`] = { A: [`192.0.2.${10 + i}`] }; words.push(`h${i}`); }
+    const { fetchImpl, dns: inner } = mkWorld({ zone });
+    // a client that does not race the abort signal: answers already in flight still land
+    const dns = {
+      query: (n, t, o = {}) => inner.query(n, t, { ...o, signal: undefined }),
+      resolveHost: (n, o = {}) => inner.resolveHost(n, { ...o, signal: undefined }),
+      detectWildcard: (...a) => inner.detectWildcard(...a),
+      chain: inner.chain
+    };
+    const ctl = new AbortController();
+    const late = [];
+    let seen = 0;
+    await assert.rejects(runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: words,
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: true, dns, fetchImpl, signal: ctl.signal
+    }, {
+      onFound: (p) => {
+        if (ctl.signal.aborted) late.push(p.name);
+        seen += 1;
+        if (seen === 1) ctl.abort();
+      }
+    }), (err) => err.name === 'AbortError');
+    assert.deepEqual(late, [], 'rows streamed after the abort');
+  });
+
+  test('estimate: mining runs per registrable domain (a subdomain target is not mined twice); cert wildcard bases add no hint zone', () => {
+    const one = estimateQueries({ domains: ['example.com'], bruteforce: 'off', originHints: true });
+    const sub = estimateQueries({ domains: ['shop.example.com'], bruteforce: 'off', originHints: true });
+    assert.equal(sub.breakdown.mining, one.breakdown.mining, 'runScan mines example.com once for shop.example.com');
+    const wc = estimateQueries({ domains: ['example.com'], wildcardBases: ['apps.example.com'], bruteforce: 'off', originHints: true });
+    assert.equal(wc.breakdown.mining, one.breakdown.mining);
+    assert.equal(wc.breakdown.hintsMin, one.breakdown.hintsMin, 'SPF / MX run for the scanned domains only');
+    assert.equal(wc.breakdown.bases, 2, 'the wildcard base is still a brute-force / wildcard base');
+  });
+});
+
+describe('engine v3 review fixes: related-parent networks', () => {
+  test('a network holding a DNS-only sibling under the same parent (db.shop for a proxied api.shop) is a related candidate', async () => {
+    const A = 'parent-rel.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`www.${A}`]: { A: ['192.0.2.6'] }, // the main cluster (2 IPs)
+      [`api.shop.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' }, // proxied
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] },
+      [`db.shop.${A}`]: { A: ['198.51.100.9'] }, // DNS-only sibling under the same parent, a lone IP
+      [`mail.${A}`]: { A: ['203.0.113.10'] } // a lone unrelated box: still noise
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'off', extraNames: [`www.${A}`, `api.shop.${A}`, `db.shop.${A}`, `mail.${A}`],
+      mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+    });
+    const host = byName(scan).get(`api.shop.${A}`);
+    assert.equal(host.classification.hidesOrigin, true);
+    const nets = host.originCandidates.filter((c) => c.kind === 'network');
+    assert.deepEqual(nets.map((c) => [c.cidr, c.evidence.relation]), [
+      ['198.51.100.0/24', 'related-parent'],
+      ['192.0.2.0/24', 'main-cluster']
+    ]);
+    assert.deepEqual(host.candidateNetworks, ['198.51.100.0/24', '192.0.2.0/24']);
   });
 });

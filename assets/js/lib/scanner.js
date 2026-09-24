@@ -22,18 +22,19 @@ import {
   baseDomainsFromNames, certCovers
 } from './domain.js';
 import {
-  classifyResolution, matchProviderByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP
+  classifyResolution, matchProviderByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP,
+  isSharedProvider
 } from './netinfo.js';
 import { buildIpIndex, lookupServers } from './inventory.js';
 import {
   getWordlist, loadWordlist, WORDLIST_SMALL, WORDLIST_LEVELS,
-  parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES
+  parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES, wordlistInfo
 } from './wordlist.js';
 import { SOURCES, fetchAllSources, mergeCerts, sourceHealthSummary } from './sources.js';
 import { followCnames, detectWildcardDeep } from './doh.js';
-import { mineDnsNames } from './dnsmine.js';
+import { mineDnsNames, SRV_SERVICES } from './dnsmine.js';
 import { permutations, DEFAULT_WORDS } from './permute.js';
-import { buildSweepCommand } from './cmdline.js';
+import { buildSweepCommand, validateTargets } from './cmdline.js';
 import { isStorableLabel } from './learned.js';
 import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
 
@@ -44,28 +45,41 @@ import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
 /**
  * @typedef {object} HostRecord
  * @property {string} name
- * @property {string[]} origins where the name came from: 'input', 'cert',
- *   source ids, 'dns-mine:<record>' (MX|NS|SOA|SPF|DMARC|SRV|CNAME|CAA|HTTPS|PTR),
- *   'wordlist', 'permutation', 'recursive' (legacy runs may show 'bruteforce')
+ * @property {string[]} origins where the name came from: 'input', 'zone' (the imported
+ *   zone file, `config.zone`), 'cert', source ids, 'dns-mine:<record>'
+ *   (MX|NS|SOA|SPF|DMARC|SRV|CNAME|CAA|HTTPS|PTR), 'wordlist', 'permutation',
+ *   'recursive' (legacy runs may show 'bruteforce')
  * @property {object} resolution HostResolution (doh.js)
  * @property {object} classification netinfo.classifyResolution() result
  * @property {{ covered: boolean, by: string|null }|null} cert coverage by the scanned certificate (null without cert)
  * @property {Array<{ serverId: string, name: string, ip: string }>} servers inventory servers owning a resolved IP
  * @property {boolean} wildcardSuspect answer identical to the parent's wildcard answer
  * @property {object[]} ipHints IpHint[] from passive sources for this name
- * @property {string[]} candidateNetworks extension (v2): /24 · /48 origin-network CIDRs to sweep for
- *   a proxied host's real origin (empty unless the host hides its origin)
+ * @property {string[]} candidateNetworks extension (v2): the origin-network CIDRs (/24 · /48) worth
+ *   sweeping for THIS proxied host's real origin, ranked (host-related networks, then the main
+ *   cluster, then other multi-IP clusters; a lone 1-IP network unrelated to the host is left out).
+ *   Empty unless the host hides its origin. The CIDRs of the `originCandidates` network entries.
+ * @property {Array<{ ip?: string, cidr?: string, kind: 'zone'|'resolver-leak'|'history'|'sibling-domain'|'network',
+ *   score: number, evidence: object }>} originCandidates extension (v3): the ordered origin
+ *   candidates for THIS proxied host, strongest first — host-specific exact IPs (zone file,
+ *   resolver-leak, history, sibling-domain) above candidate networks. Empty unless the host hides its origin.
  * @property {boolean} customOnly extension: found ONLY by a custom-wordlist label that is not in the
  *   built-in core list (the tab-only custom list is its sole evidence) — never learned
+ * @property {boolean} zoneOnly extension (zone import): its only evidence is the user's zone file
+ *   (origin 'zone', possibly with probe origins) — like customOnly, its labels are never learned
  */
 
 /**
  * @typedef {object} OriginHint
  * @property {string} ip
- * @property {Array<{ kind: 'spf'|'mx'|'direct-sibling'|'history'|'resolver-leak', detail: string }>} reasons
+ * @property {Array<{ kind: 'spf'|'mx'|'direct-sibling'|'history'|'resolver-leak'|'sibling-domain'|'zone', detail: string,
+ *   host?: string, source?: string, lastSeen?: string|null, resolver?: string, sibling?: string }>} reasons
+ *   structured fields by kind: history → { host, source, lastSeen }; resolver-leak → { host, resolver };
+ *   sibling-domain → { host, sibling } (the proxied host and the DNS-only sister-brand name at this IP);
+ *   zone → { host } (the proxied name whose exact origin the imported zone file holds)
  * @property {Array<{ serverId: string, name: string }>} servers inventory servers with this IP
  * @property {object|null} provider netinfo provider of the IP (never a CDN that hides origins)
- * @property {string[]} hosts extension: hostnames the hint is specifically about (history / sibling / resolver-leak)
+ * @property {string[]} hosts extension: hostnames the hint is specifically about (history / sibling-domain / resolver-leak)
  */
 
 /**
@@ -74,14 +88,20 @@ import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
  * @property {string[]} ips the public, non-CDN origin IPs seen in the block
  * @property {string[]} hosts the DNS-only host names that resolve into the block
  * @property {object|null} provider netinfo provider of the block (usually null for a real origin)
+ * @property {boolean} shared extension (v3): the block sits in known multi-tenant space (a CDN / cloud /
+ *   hosting / platform PROVIDERS range) where one /24 serves many unrelated customers — offline only;
+ *   ipintel.describeNetwork resolves the AS owner on demand for the rest
+ * @property {'cidr'|'ips'} sweep extension (v3): how the CLI targets this block — the whole /24
+ *   ('cidr') or its exact addresses ('ips': an IPv6 /48, a shared /24 with no inventory, or a single IP)
  */
 
 /**
  * @typedef {object} ServerGroup
  * @property {object} server inventory Server
- * @property {Array<{ name: string, ip: string, covered: boolean|null, via: 'dns'|'hint' }>} hosts
- * @property {boolean} needsCert a DNS-matched host is covered by the certificate (without a
- *   certificate: any DNS-matched host)
+ * @property {Array<{ name: string, ip: string, covered: boolean|null, via: 'dns'|'zone'|'hint' }>} hosts
+ *   sorted dns, then zone (the zone file's exact origin of a proxied name), then hint
+ * @property {boolean} needsCert a DNS- or zone-matched host is covered by the certificate (without a
+ *   certificate: any DNS- or zone-matched host)
  * @property {boolean} maybeNeedsCert extension: only origin hints point here
  */
 
@@ -92,9 +112,30 @@ import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
 const STAGES = ['sources', 'mining', 'wildcard', 'bruteforce', 'permutations', 'resolve', 'hints', 'done'];
 /** DNS-discovery origin tags (a name found only through these can be dropped if it looks synthesized). */
 const PROBE_ORIGINS = new Set(['wordlist', 'permutation', 'recursive']);
+// Origin-hint kinds that name ONE specific proxied host (a host-specific exact
+// origin), as opposed to a general candidate (spf / mx / direct-sibling) that
+// applies to every proxied host. Used for the per-host candidate list and the
+// server-group attribution.
+// 'zone' is the imported zone file's exact origin of one proxied name (exported
+// so the views split host-specific from general hints the same way).
+export const HOST_SPECIFIC_HINT_KINDS = new Set(['history', 'resolver-leak', 'sibling-domain', 'zone']);
+// Per-host origin-candidate scores (strongest first). Exact host-specific IPs
+// rank above candidate networks; a network's relatedness to the host sets which
+// band it lands in.
+const CANDIDATE_SCORE = Object.freeze({
+  zone: 110, 'resolver-leak': 100, 'sibling-domain': 95, history: 90,
+  'net-sibling': 70, 'net-related': 65, 'net-main': 60, 'net-cluster': 50
+});
+// Per-host cap on the weakest candidate band: other multi-IP clusters unrelated
+// to the host (host-related networks and the main cluster are never capped).
+const MAX_CLUSTER_CANDIDATES = 3;
 const MAX_SPF_DEPTH = 5;
 const MAX_SPF_LOOKUPS = 10;
 const MAX_MX = 10;
+// DNS queries mineDnsNames fires per domain: the apex records (NS, SOA, MX, TXT,
+// CAA, HTTPS = 6) + _dmarc TXT (1) + one SRV per well-known service. A constant
+// for the query estimate (kept in step with dnsmine.js through SRV_SERVICES).
+const MINE_QUERIES_PER_DOMAIN = 7 + SRV_SERVICES.length;
 // Per-apex brute-force ceilings, by wordlist level. `huge` (~130k labels) must
 // be fully reachable for a SINGLE apex — its cap sits just above the list size —
 // while smaller levels keep a tight cap so a typo in the level cannot balloon a
@@ -160,10 +201,16 @@ const RECURSIVE_MAX = MAX_PERMUTATIONS;
 const PROBE_ERR_THRESHOLD = 8;
 const PROBE_BACKOFF_STEP = 50;
 const PROBE_BACKOFF_MAX = 1000;
+// Zone import: the Cloudflare placeholder origins ("no server behind this proxied
+// record") are never a hint or a CLI target, even if a caller passes them.
+const ZONE_PLACEHOLDER_IPS = new Set(['192.0.2.0', '100::']);
+// Server-group host order: DNS matches, then zone-file origins, then hints.
+const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
 
 /** Rank of an origin tag for stable display order. */
 function rankOrigin(o) {
   if (o === 'input') return 0;
+  if (o === 'zone') return 0.5;
   if (o === 'cert') return 1;
   if (typeof o === 'string' && o.startsWith('dns-mine:')) return 2;
   const si = SOURCES.findIndex((s) => s.id === o);
@@ -306,6 +353,43 @@ function parentOf(name) {
   return dot === -1 ? '' : name.slice(dot + 1);
 }
 
+/**
+ * Validate `config.zone` (the zoneorigins.js `zoneScanInput` shape) defensively:
+ * the scanner never imports the zone libraries, it takes plain arrays. Names are
+ * normalised (invalid ones dropped), `delegations` join the names, proxied
+ * entries keep only valid addresses (never a Cloudflare placeholder, never a
+ * CDN / WAF edge address) and a host origin the CLI can take (cmdline's host-target
+ * rule: no inet_aton numeric form); an entry with neither is dropped.
+ * @param {unknown} zone
+ * @returns {{ origin: string|null, names: string[], wildcardBases: string[],
+ *   proxied: Array<{ name: string, ips: string[], host: string|null }> }|null}
+ */
+function normalizeZoneInput(zone) {
+  if (!zone || typeof zone !== 'object') return null;
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const host = (raw, opts) => (typeof raw === 'string' ? normalizeHostname(raw, opts) : null);
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+  const origin = host(zone.origin) || null;
+  const names = uniq([...list(zone.names), ...list(zone.delegations)].map((n) => host(n)));
+  const wildcardBases = uniq(list(zone.wildcardBases).map((b) => host(b)));
+  const proxied = [];
+  const seen = new Set();
+  for (const p of list(zone.proxied)) {
+    if (!p || typeof p !== 'object') continue;
+    const name = host(p.name, { allowWildcard: true });
+    if (!name || seen.has(name)) continue;
+    const ips = uniq(list(p.ips).map((ip) => normalizeIP(String(ip ?? ''))))
+      .filter((ip) => !ZONE_PLACEHOLDER_IPS.has(ip) && !(matchProviderByIP(ip) || {}).hidesOrigin);
+    const hostTok = typeof p.host === 'string' && !normalizeIP(p.host) ? validateTargets([p.host], { allowHostTargets: true }).valid[0] : null;
+    const origHost = hostTok && !parseCidr(hostTok) ? hostTok : null;
+    if (!ips.length && !origHost) continue;
+    seen.add(name);
+    proxied.push({ name, ips, host: origHost || null });
+  }
+  if (!origin && !names.length && !wildcardBases.length && !proxied.length) return null;
+  return { origin, names, wildcardBases, proxied };
+}
+
 /* ------------------------------------------------------------------------ */
 /* Wordlist selection                                                        */
 /* ------------------------------------------------------------------------ */
@@ -384,6 +468,7 @@ function leftmostLabels(name, apexes) {
  * only the probe stages derived (a permutation `secret2` / recursive
  * `www.secret` of a custom-only `secret`). A host some other method found
  * (sources, mining, input, certificate) is public evidence and is learned as usual.
+ * A `zoneOnly` host (only the user's zone file names it) is withheld the same way.
  * @param {object} result a ScanResult from {@link runScan}
  * @returns {string[]} unique labels in first-seen order
  */
@@ -394,7 +479,7 @@ export function learnedLabelsFromScan(result) {
   const apexes = Array.isArray(result.domains) ? result.domains : [];
   const privateLabels = [];
   for (const host of result.hosts) {
-    if (!host || !host.customOnly) continue;
+    if (!host || !(host.customOnly || host.zoneOnly)) continue;
     for (const label of leftmostLabels(host.name, apexes)) {
       if (!CORE_LABELS.has(label) && !privateLabels.includes(label)) privateLabels.push(label);
     }
@@ -402,7 +487,7 @@ export function learnedLabelsFromScan(result) {
   const probeOnly = (host) => Array.isArray(host.origins) && host.origins.length > 0
     && host.origins.every((o) => PROBE_ORIGINS.has(o) || o === 'bruteforce');
   for (const host of result.hosts) {
-    if (!host || host.wildcardSuspect || host.customOnly) continue;
+    if (!host || host.wildcardSuspect || host.customOnly || host.zoneOnly) continue;
     const res = host.resolution || {};
     const resolved = (res.ipv4 && res.ipv4.length) || (res.ipv6 && res.ipv6.length);
     if (!resolved) continue;
@@ -510,6 +595,101 @@ async function collectSpf(domain, { dns, signal, isOwn }) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Per-host origin candidates                                               */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Fill each proxied host's `originCandidates` (ordered, strongest first) and
+ * `candidateNetworks` (the CIDRs of its network candidates), in place. This
+ * replaces attaching every origin network to every proxied host.
+ *
+ * Order: host-specific exact IPs (resolver-leak / history / sibling-domain hints
+ * that NAME the host) rank above candidate networks. A network is a candidate for
+ * a host when it holds a DNS-only sibling that shares the host's label stem
+ * (`ticket` under a sister brand), or the host's parent stem (`db.shop` for a
+ * proxied `api.shop`), or it is the main cluster (where most origins sit), or
+ * another multi-IP cluster. A lone 1-IP network unrelated to the host (a mail
+ * server, a stray cloud VM) is left out as noise.
+ *
+ * @param {object[]} proxiedHosts hosts that hide their origin (no wildcard suspects)
+ * @param {object[]} originNetworks the sorted ScanResult.originNetworks (main cluster first)
+ * @param {object[]} originHintList the ScanResult.originHints (reasons carry structured host fields)
+ * @param {(name: string) => ({ apex: string, stem: string }|null)} stemUnderApex
+ * @param {(stem: string) => (string|null)} parentStem
+ */
+function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, stemUnderApex, parentStem) {
+  if (!proxiedHosts.length) return;
+  const mainCidr = originNetworks.length ? originNetworks[0].cidr : null;
+  // The member-host stems of each network, and their parent stems (for
+  // relatedness scoring: `db.shop` in a network makes it related to a proxied
+  // `api.shop`, as does `shop` itself).
+  const netStems = new Map();
+  const netParents = new Map();
+  for (const net of originNetworks) {
+    const stems = new Set();
+    const parents = new Set();
+    for (const name of net.hosts) {
+      const info = stemUnderApex(name);
+      if (!info) continue;
+      stems.add(info.stem);
+      const p = parentStem(info.stem);
+      if (p) parents.add(p); // never '' (a top-level label would relate every host)
+    }
+    netStems.set(net.cidr, stems);
+    netParents.set(net.cidr, parents);
+  }
+  // Host-specific exact-IP candidates, grouped by the proxied host they name.
+  const exactByHost = new Map();
+  for (const hint of originHintList) {
+    for (const reason of hint.reasons || []) {
+      if (!HOST_SPECIFIC_HINT_KINDS.has(reason.kind) || !reason.host) continue;
+      const evidence = reason.kind === 'resolver-leak' ? { resolver: reason.resolver || null }
+        : reason.kind === 'history' ? { source: reason.source || null, lastSeen: reason.lastSeen || null }
+          : reason.kind === 'zone' ? { source: 'zone' }
+            : { sibling: reason.sibling || null };
+      let list = exactByHost.get(reason.host);
+      if (!list) exactByHost.set(reason.host, (list = []));
+      // One candidate per IP: an address named by two kinds (zone file + sibling
+      // match, leak + history) keeps only its strongest evidence, never two rows.
+      const score = CANDIDATE_SCORE[reason.kind] || 0;
+      const at = list.findIndex((e) => e.ip === hint.ip);
+      if (at === -1) list.push({ ip: hint.ip, kind: reason.kind, score, evidence });
+      else if (score > list[at].score) list[at] = { ip: hint.ip, kind: reason.kind, score, evidence };
+    }
+  }
+  for (const host of proxiedHosts) {
+    const info = stemUnderApex(host.name);
+    const stem = info ? info.stem : null;
+    const parent = stem !== null ? parentStem(stem) : null;
+    const exact = (exactByHost.get(host.name) || []).slice()
+      .sort((a, b) => b.score - a.score || compareIp(a.ip, b.ip));
+    const nets = [];
+    for (const net of originNetworks) {
+      const stems = netStems.get(net.cidr) || new Set();
+      const parents = netParents.get(net.cidr) || new Set();
+      let relation = null;
+      let score = 0;
+      if (stem !== null && stems.has(stem)) { relation = 'sibling-label'; score = CANDIDATE_SCORE['net-sibling']; }
+      else if (parent !== null && parent !== '' && (stems.has(parent) || parents.has(parent))) {
+        relation = 'related-parent'; score = CANDIDATE_SCORE['net-related'];
+      }
+      else if (net.cidr === mainCidr) { relation = 'main-cluster'; score = CANDIDATE_SCORE['net-main']; }
+      else if (net.ips.length >= 2) { relation = 'cluster'; score = CANDIDATE_SCORE['net-cluster']; }
+      else continue; // a lone 1-IP network unrelated to this host: noise
+      nets.push({ cidr: net.cidr, kind: 'network', score, evidence: { relation, ips: net.ips.length, sweep: net.sweep, shared: !!net.shared } });
+    }
+    nets.sort((a, b) => b.score - a.score || b.evidence.ips - a.evidence.ips || compareIp(a.cidr, b.cidr));
+    // Noise cap: host-related networks and the main cluster are always kept; the
+    // weakest band (clusters unrelated to this host) keeps only its largest few,
+    // so a big estate does not list every cluster under every proxied host.
+    let clusters = 0;
+    const kept = nets.filter((n) => n.evidence.relation !== 'cluster' || (clusters += 1) <= MAX_CLUSTER_CANDIDATES);
+    host.originCandidates = [...exact, ...kept];
+    host.candidateNetworks = kept.map((n) => n.cidr);
+  }
+}
+
+/* ------------------------------------------------------------------------ */
 /* Scan                                                                     */
 /* ------------------------------------------------------------------------ */
 
@@ -572,7 +752,26 @@ async function collectSpf(domain, { dns, signal, isOwn }) {
  *   before the DNS sweep starts (late source names are merged before resolve); 0 = wait fully
  * @param {boolean} [config.wordlistPreferFetch=false] extension (tests): load the wordlist data
  *   files through `fetchImpl` even under Node (the browser path; see loadWordlist `preferFetch`)
- * @param {object} [hooks] { onStage(stage, info), onSource(result), onHost(record), onProgress({ stage, done, total }) }
+ * @param {object|null} [config.zone=null] extension (zone import): the zoneorigins.js
+ *   `zoneScanInput` shape `{ v, origin, names, wildcardBases, delegations?, proxied: [{ name, ips, host }] }`,
+ *   validated here. Zone names (and delegations) are seeds with origin 'zone' (never truncated;
+ *   outside every scope root → dropped, one ZONE_OUT_OF_SCOPE warning); a zone wildcard base is
+ *   seeded and wildcard-checked but never brute-forced; with no `domains` the zone origin is the
+ *   target. Each proxied name's exact origin becomes a host-specific hint `{ kind: 'zone', host }`
+ *   (even with `originHints` off: it costs no query), skips the resolver-leak pass, matches its
+ *   inventory server as `via: 'zone'` (counts toward needsCert) and goes into the CLI command as
+ *   exact addresses (private ones kept, never widened to a /24) plus host targets
+ *   (`cliHostTargets`) and the proxied names (`*.x` kept). A run without it is unchanged.
+ * @param {boolean} [config.exact=false] extension (zone import): resolve the given names only —
+ *   no passive sources, no DNS mining, no wordlist, no permutations, no recursive round and no
+ *   wildcard detection (the zone names are authoritative, so never wildcard suspects). Quota-free.
+ * @param {object} [hooks] { onStage(stage, info), onSource(result), onHost(record),
+ *   onProgress({ stage, done, total }), onFound(partial) }. `onFound` streams a
+ *   probe hit the instant it resolves during the wordlist / permutation / recursive
+ *   stages — `{ name, origin, ipv4, cnames, classification }`, a cheap A-only
+ *   partial, not the final HostRecord — so the table can fill live; the same host
+ *   arrives again as a full record through `onHost` at the resolve stage, so a
+ *   consumer dedupes by name. Hook errors never break the scan.
  * @returns {Promise<object>} ScanResult
  */
 export async function runScan(config = {}, hooks = {}) {
@@ -583,7 +782,8 @@ export async function runScan(config = {}, hooks = {}) {
     wordlist = null, customWordlist = null, learnedLabels = null, locales,
     balance = true, recursiveParents = DEFAULT_RECURSIVE_PARENTS,
     resolverLeak = true, maxHosts = 20000, concurrency = 32, maxConcurrency,
-    sourceGraceMs = DEFAULT_SOURCE_GRACE_MS, wordlistPreferFetch = false
+    sourceGraceMs = DEFAULT_SOURCE_GRACE_MS, wordlistPreferFetch = false,
+    zone = null, exact = false
   } = config || {};
   if (!dns || typeof dns.query !== 'function' || typeof dns.resolveHost !== 'function' || typeof dns.detectWildcard !== 'function') {
     throw new TypeError('runScan: config.dns must be a DohClient');
@@ -601,18 +801,22 @@ export async function runScan(config = {}, hooks = {}) {
   const pool = Math.max(1, Math.min(Math.floor(Number(concurrency)) || 32, maxConc ?? Infinity));
   const probePool = Math.max(1, Math.min(pool, PROBE_CONCURRENCY, maxConc ?? Infinity));
   const useBalance = balance !== false;
-  const bfMode = bruteforce === undefined || bruteforce === null ? 'smart' : String(bruteforce);
-  const permBudget = Number.isFinite(permutationBudget) && permutationBudget > 0
+  // Exact mode (zone import): resolve the given names only — no guessing, no
+  // passive sources, no mining (quota-free; the names are the user's own zone).
+  const exactMode = exact === true;
+  const zoneIn = normalizeZoneInput(zone);
+  const bfMode = exactMode ? 'off' : bruteforce === undefined || bruteforce === null ? 'smart' : String(bruteforce);
+  const permBudget = !exactMode && Number.isFinite(permutationBudget) && permutationBudget > 0
     ? Math.min(Math.floor(permutationBudget), MAX_PERMUTATIONS) : 0;
-  const recursiveEnabled = recursive !== false && recursive !== 0;
+  const recursiveEnabled = !exactMode && recursive !== false && recursive !== 0;
   const recursiveCap = Math.max(0, Math.floor(Number(recursiveParents)) || 0);
 
   /* ---- wordlist inputs (custom → learned → level list) ------------------ */
   // `config.wordlist` (legacy) REPLACES everything; otherwise custom labels are
   // tried first, then learned labels, then the level's list (small / locale
   // packs / base / larger tiers, assembled per apex by loadWordlist).
-  const overrideWords = Array.isArray(wordlist) && wordlist.length ? wordlist : null;
-  const customLabels = overrideWords ? [] : normalizeCustomLabels(customWordlist);
+  const overrideWords = !exactMode && Array.isArray(wordlist) && wordlist.length ? wordlist : null;
+  const customLabels = overrideWords || exactMode ? [] : normalizeCustomLabels(customWordlist);
   const customSet = new Set(customLabels);
   // Learned labels come from OTHER scans, so they are never sent at level 'off'
   // (not even through permutations or the recursive round); only this scan's
@@ -707,16 +911,47 @@ export async function runScan(config = {}, hooks = {}) {
     }
     pushTarget(stripWildcard(n).base);
   }
+  const domainsGiven = targetDomains.length > 0;
   if (!targetDomains.length) {
     for (const d of baseDomainsFromNames([...certHostnames, ...extras])) pushTarget(d);
+  }
+  // Zone import with no typed domain: the zone's own origin is the target (or,
+  // without a valid origin, the registrable domains of its names).
+  if (zoneIn && !domainsGiven) {
+    if (zoneIn.origin) pushTarget(zoneIn.origin);
+    else for (const d of baseDomainsFromNames([...zoneIn.names, ...zoneIn.proxied.map((p) => p.name)])) pushTarget(d);
   }
   if (!targetDomains.length && !origins.size) {
     throw new TypeError('runScan: nothing to scan (no valid domain, certificate name or extra name)');
   }
   for (const d of targetDomains) addName(d, 'input');
 
+  // Zone seeds (origin 'zone'): only names under a scanned root; the rest are
+  // dropped and counted (one ZONE_OUT_OF_SCOPE warning). A zone wildcard base
+  // (`*.apps` → apps) is seeded and becomes a scope root for wildcard detection,
+  // but never a brute-force base nor a certificate wildcard base (critic A4).
+  const zoneSeedNames = new Set();
+  const zoneWildcardRoots = [];
+  let zoneOutOfScope = 0;
+  if (zoneIn) {
+    const roots = [...targetDomains, ...wildcardBases];
+    const underRoot = (n) => roots.some((root) => isSubdomainOf(n, root));
+    for (const n of zoneIn.names) {
+      if (!underRoot(n)) { zoneOutOfScope += 1; continue; }
+      addName(n, 'zone');
+      zoneSeedNames.add(n);
+    }
+    for (const b of zoneIn.wildcardBases) {
+      if (!underRoot(b)) { zoneOutOfScope += 1; continue; }
+      addName(b, 'zone');
+      zoneSeedNames.add(b);
+      if (!zoneWildcardRoots.includes(b)) zoneWildcardRoots.push(b);
+    }
+    if (zoneOutOfScope) warnings.push({ code: 'ZONE_OUT_OF_SCOPE', detail: String(zoneOutOfScope) });
+  }
+
   const sourceDomains = [...new Set(targetDomains.map((d) => registrableDomain(d) || d))];
-  const scopeRoots = [...new Set([...targetDomains, ...wildcardBases])];
+  const scopeRoots = [...new Set([...targetDomains, ...wildcardBases, ...zoneWildcardRoots])];
   const inScope = (name) => scopeRoots.some((root) => isSubdomainOf(name, root));
   const isOwn = (name) => [...sourceDomains, ...scopeRoots].some((root) => isSubdomainOf(name, root));
   // Wordlist entries may be pasted FULL hostnames (`api.example.com`, copied from
@@ -737,12 +972,20 @@ export async function runScan(config = {}, hooks = {}) {
   const ipIndex = buildIpIndex(servers);
 
   /* ---- passive sources ∥ DNS record mining ------------------------------ */
-  const sourceIds = Array.isArray(sources) ? [...new Set(sources)] : SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
+  const sourceIds = exactMode ? []
+    : Array.isArray(sources) ? [...new Set(sources)] : SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
   const sourceTotal = sourceIds.length * sourceDomains.length;
   const sourceResults = [];
   const hintsByName = new Map();
   const lastSeenByName = {};
   let certsAll = [];
+  // How many (source, domain) results each source id has produced so far. A source
+  // is "still running" while its count is below the number of source domains. Used
+  // to report honestly which passive sources were cut by the grace window (task 6):
+  // the sources keep fetching after the DNS sweep starts, so a source pill going
+  // green early must not claim the source finished (crt.sh can back off for minutes).
+  const sourceDoneCount = new Map(sourceIds.map((id) => [id, 0]));
+  const sourcesStillRunning = () => sourceIds.filter((id) => (sourceDoneCount.get(id) || 0) < sourceDomains.length);
 
   // Ingest one source's result as soon as it arrives, so the names it found are
   // in `origins` even if a slower source (crt.sh) is still backing off.
@@ -774,6 +1017,7 @@ export async function runScan(config = {}, hooks = {}) {
         includeExpired,
         onResult: (r) => {
           done += 1;
+          if (sourceDoneCount.has(r.source)) sourceDoneCount.set(r.source, sourceDoneCount.get(r.source) + 1);
           ingestSource(r); // incremental: names are usable before the slow sources settle
           safeCall(h.onSource, r);
           progress('sources', done, sourceTotal);
@@ -786,7 +1030,7 @@ export async function runScan(config = {}, hooks = {}) {
 
   const mineEvidence = [];
   const mineExternal = new Set();
-  const mineEnabled = mine !== false;
+  const mineEnabled = !exactMode && mine !== false;
   // Mining runs concurrently with the sources stage, but its progress must not
   // paint over the still-active 'sources' progress. Buffer the count and only
   // emit 'mining' progress once the 'mining' stage has actually been reported.
@@ -823,22 +1067,31 @@ export async function runScan(config = {}, hooks = {}) {
   miningStageShown = true;
   if (mineEnabled) progress('mining', miningDone, sourceDomains.length);
   const graceMs = Number.isFinite(sourceGraceMs) && sourceGraceMs >= 0 ? Math.floor(sourceGraceMs) : DEFAULT_SOURCE_GRACE_MS;
+  // Snapshot of the passive sources when the DNS sweep is about to start: whether
+  // the grace window cut them off and which ids were still fetching. The sources
+  // keep running and their late names are folded in before the permutation and
+  // resolve stages (nothing is lost), but the UI must not paint the grace wait as
+  // "reading DNS records" or show a source pill as done while crt.sh still retries.
+  let sourceGrace = { graceMs, cutOff: false, stillRunning: [] };
   if (sourceTotal > 0 && graceMs > 0) {
     // Proceed when the sources finish OR the grace timer fires, whichever comes
     // first (the timer is always cleared, so no dangling handle is left behind).
-    await new Promise((resolve) => {
+    const cutOff = await new Promise((resolve) => {
       let settled = false;
-      const finish = () => {
+      const finish = (byTimer) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (signal) signal.removeEventListener('abort', finish);
-        resolve();
+        if (signal) signal.removeEventListener('abort', onAbort);
+        resolve(byTimer === true);
       };
-      const timer = setTimeout(finish, graceMs);
-      sourcesTask.then(finish, finish);
-      if (signal) signal.addEventListener('abort', finish, { once: true });
+      const timer = setTimeout(() => finish(true), graceMs);
+      const onAbort = () => finish(false);
+      sourcesTask.then(() => finish(false), () => finish(false));
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
     });
+    const running = sourcesStillRunning();
+    sourceGrace = { graceMs, cutOff: cutOff && running.length > 0, stillRunning: running };
   } else {
     await sourcesTask;
   }
@@ -851,6 +1104,7 @@ export async function runScan(config = {}, hooks = {}) {
    * names, permutation parents) so probes are never run under an unchecked parent.
    */
   const ensureWildcards = async (candidateParents) => {
+    if (exactMode) return; // exact mode sends no probe, so no parent needs a check
     const todo = [];
     const seen = new Set();
     for (const p of candidateParents) {
@@ -873,7 +1127,7 @@ export async function runScan(config = {}, hooks = {}) {
     const parent = parentOf(name);
     if (parent && parent.includes('.') && scopeRoots.some((root) => isSubdomainOf(parent, root))) wildcardParents.add(parent);
   }
-  let parents = sortHostnames([...wildcardParents]);
+  let parents = exactMode ? [] : sortHostnames([...wildcardParents]);
   if (parents.length > MAX_WILDCARD_PARENTS) {
     // keep the apex + certificate bases and the shallowest levels first
     const priority = new Set(scopeRoots);
@@ -884,7 +1138,14 @@ export async function runScan(config = {}, hooks = {}) {
   }
 
   let wildcardDone = 0;
-  stage('wildcard', { parents, total: parents.length });
+  // The wildcard stage starts exactly when the source grace window ends, so its
+  // event carries the source snapshot: the UI can show "still fetching: crt.sh"
+  // instead of attributing the grace wait to mining (task 6). `stillRunning` is []
+  // when every source settled inside the window.
+  stage('wildcard', {
+    parents, total: parents.length, sourcesStillRunning: sourceGrace.stillRunning, sourcesCutOff: sourceGrace.cutOff,
+    ...(exactMode ? { skipped: true } : {})
+  });
   await mapPool(parents, 4, async (p) => {
     wildcards[p] = await detectWildcardDeep(dns, p, { signal });
     wildcardDone += 1;
@@ -932,6 +1193,9 @@ export async function runScan(config = {}, hooks = {}) {
         await sleep(Math.min(PROBE_BACKOFF_MAX, PROBE_BACKOFF_STEP * (streak - PROBE_ERR_THRESHOLD + 1)), signal);
       }
       const res = await dns.query(name, 'A', probeOpts);
+      // An answer that lands after the user cancelled is dropped: no late
+      // onFound row / progress tick once the scan is aborted.
+      if (signal && signal.aborted) return;
       done += 1;
       progress(stageName, (baseDone || 0) + done, grandTotal || candidates.length);
       if (!res.ok) {
@@ -961,6 +1225,19 @@ export async function runScan(config = {}, hooks = {}) {
       }
       addName(name, origin);
       out.found += 1;
+      // Stream the hit the moment it resolves (task 5) so the UI can show rows
+      // live through the long wordlist / permutation stages instead of an empty
+      // table until the resolve stage. This is a cheap PARTIAL — the A answer
+      // only (AAAA is fetched in the resolve stage), classified from that A
+      // record — never the final HostRecord; onHost still fires per host during
+      // resolve with the full record, so a consumer must dedupe by name.
+      safeCall(h.onFound, {
+        name,
+        origin,
+        ipv4: [...ipv4],
+        cnames: [...cnames],
+        classification: classifyResolution({ status: 'NOERROR', ipv4, ipv6: [], cnames })
+      });
     }, signal);
     return out;
   };
@@ -1207,8 +1484,8 @@ export async function runScan(config = {}, hooks = {}) {
   let names = sortHostnames([...origins.keys()]);
   let truncated = false;
   if (names.length > maxHosts) {
-    // keep explicitly requested names (input / certificate) first
-    const isPriority = (n) => origins.get(n).has('input') || origins.get(n).has('cert');
+    // keep explicitly requested names (input / certificate / zone file) first
+    const isPriority = (n) => origins.get(n).has('input') || origins.get(n).has('cert') || origins.get(n).has('zone');
     const priority = names.filter(isPriority);
     const rest = names.filter((n) => !isPriority(n));
     names = sortHostnames([...priority, ...rest].slice(0, maxHosts));
@@ -1234,8 +1511,10 @@ export async function runScan(config = {}, hooks = {}) {
     resolvedDone += 1;
     progress('resolve', resolvedDone, names.length);
     const classification = classifyResolution(resolution);
-    const wildcardSuspect = isWildcardSuspect(resolution, nearestWildcard(name));
     const nameOrigins = origins.get(name);
+    // A zone-file name is authoritative: it is a real record even when its
+    // answer equals a covering wildcard's.
+    const wildcardSuspect = !nameOrigins.has('zone') && isWildcardSuspect(resolution, nearestWildcard(name));
     const onlyProbe = [...nameOrigins].every((o) => PROBE_ORIGINS.has(o));
     const hasAnswer = resolution.ipv4.length || resolution.ipv6.length || resolution.cnames.length;
     if (onlyProbe && (wildcardSuspect || !hasAnswer)) {
@@ -1254,7 +1533,9 @@ export async function runScan(config = {}, hooks = {}) {
       wildcardSuspect,
       ipHints: hintsByName.get(name) || [],
       candidateNetworks: [],
-      customOnly: isCustomOnly(name, nameOrigins)
+      originCandidates: [],
+      customOnly: isCustomOnly(name, nameOrigins),
+      zoneOnly: nameOrigins.has('zone') && [...nameOrigins].every((o) => o === 'zone' || PROBE_ORIGINS.has(o))
     };
     records.set(name, record);
     safeCall(h.onHost, record);
@@ -1279,9 +1560,10 @@ export async function runScan(config = {}, hooks = {}) {
     if (!hint.reasons.some((r) => r.kind === reason.kind && r.detail === reason.detail)) hint.reasons.push(reason);
     for (const n of hostNames) {
       hint.hosts.add(n);
-      // history + resolver-leak hints are about one specific name, not a
-      // candidate origin for every proxied host.
-      if (reason.kind === 'history' || reason.kind === 'resolver-leak') hint.historyHosts.add(n);
+      // history / resolver-leak / sibling-domain hints are about one specific
+      // proxied name (a host-specific exact origin), not a candidate origin for
+      // every proxied host.
+      if (HOST_SPECIFIC_HINT_KINDS.has(reason.kind)) hint.historyHosts.add(n);
     }
   };
 
@@ -1290,6 +1572,11 @@ export async function runScan(config = {}, hooks = {}) {
   // evidence of a proxied origin: leave them out of the resolver-leak pass (which
   // has a query budget), the candidate networks and the CLI `-n` names.
   const proxiedHosts = hosts.filter((x) => x.classification.hidesOrigin && !x.wildcardSuspect);
+  // Zone import: the in-scope proxied zone names and their exact origins. A name
+  // the zone already maps skips the resolver-leak pass (its origin is exact).
+  const zoneProxied = zoneIn ? zoneIn.proxied.filter((p) => inScope(stripWildcard(p.name).base)) : [];
+  const zoneKnown = new Set(zoneProxied.map((p) => p.name));
+  const leakHosts = zoneKnown.size ? proxiedHosts.filter((x) => !zoneKnown.has(x.name)) : proxiedHosts;
   // A 'direct' host is origin evidence only if its answer is its own: no CNAME,
   // or a CNAME chain that stays inside the scanned zones, OR one of its IPs
   // matches an inventory server. An in-zone name that CNAMEs out to third-party
@@ -1300,9 +1587,46 @@ export async function runScan(config = {}, hooks = {}) {
     if (chain.every((c) => isOwn(c))) return true;
     return lookupServers([...host.resolution.ipv4, ...host.resolution.ipv6], ipIndex).length > 0;
   };
-  stage('hints', { skipped: !hintsEnabled });
+  // A host's stem relative to the LONGEST scanned apex it sits under: the labels
+  // left of that apex ('' for the apex itself) plus that apex. null when the host
+  // is under no scanned apex (another organisation's SAN). Used to match the same
+  // left-most name across sibling brands (sibling-domain hint) and to judge how
+  // related a candidate network is to a proxied host.
+  const stemUnderApex = (name) => {
+    let best = null;
+    for (const apex of targetDomains) {
+      if (name === apex) { if (!best || apex.length > best.apex.length) best = { apex, stem: '' }; continue; }
+      if (isSubdomainOf(name, apex) && (!best || apex.length > best.apex.length)) {
+        best = { apex, stem: name.slice(0, name.length - apex.length - 1) };
+      }
+    }
+    return best;
+  };
+  /** The parent stem of a stem ('api.shop' → 'shop', 'shop' → '', '' → null). */
+  const parentStem = (stem) => {
+    if (stem === '') return null;
+    const dot = stem.indexOf('.');
+    return dot === -1 ? '' : stem.slice(dot + 1);
+  };
+  // Determinate hints-stage progress (task 6): the resolver-leak pass (which can
+  // be the longest part) plus one unit per SPF/MX zone. The final reconcile below
+  // makes the bar reach 100 % even when fewer leak queries actually run.
+  const hintZones = hintsEnabled ? [...new Set([...sourceDomains, ...targetDomains])] : [];
+  const plannedLeak = hintsEnabled && resolverLeak !== false
+    ? Math.min(RESOLVER_LEAK_MAX_QUERIES, leakHosts.length * RESOLVER_LEAK_PER_HOST) : 0;
+  const hintsTotal = plannedLeak + hintZones.length;
+  let hintsDone = 0;
+  stage('hints', { skipped: !hintsEnabled, total: hintsTotal, leakQueries: plannedLeak, zones: hintZones.length });
   const hintErrors = [];
   let resolverLeakQueries = 0;
+  // 0. Zone file: each proxied zone name's exact origin, host-specific. It costs
+  //    no query, so it runs even with originHints off. A `*.x` name names no
+  //    single host (its addresses still go to the CLI targets below); addHint
+  //    drops a CDN / WAF address, so a Cloudflare-range origin never becomes one.
+  for (const p of zoneProxied) {
+    if (p.name.startsWith('*.')) continue;
+    for (const ip of p.ips) addHint(ip, { kind: 'zone', host: p.name, detail: `zone file: ${p.name}` }, { own: true, hostNames: [p.name] });
+  }
   if (hintsEnabled) {
     // 1. Historical / passive IPs of each name (not CDN, not the current answer).
     for (const host of hosts) {
@@ -1342,10 +1666,46 @@ export async function runScan(config = {}, hooks = {}) {
         addHint(ip, { kind: 'direct-sibling', detail: `${list.slice(0, SIBLING_DETAIL_NAMES).join(', ')}${more}` }, { own: s.own, hostNames: list });
       }
     }
+    // 2b. sibling-domain (task 1): when several apexes are scanned together, a
+    //     proxied host X.<d1> whose EXACT left-most label X is also published under
+    //     ANOTHER scanned apex <d2> as a DNS-only, public, non-CDN host is a strong,
+    //     host-specific origin candidate — companies reuse names across brands, so
+    //     ticket.<d1> hidden behind a CDN often has its real origin sitting in the
+    //     open as ticket.<d2>. Exact left-most label only (an X-vs-Xapi variant is
+    //     not clearly correct, so it is left out). The sibling's IP is already an
+    //     origin-network member (it is a direct host on <d2>), so this adds the
+    //     host-specific evidence and ranks that IP as an exact candidate for X.
+    if (proxiedHosts.length && targetDomains.length > 1) {
+      const directByStem = new Map(); // stem → [{ apex, name, ips: string[] }]
+      for (const host of hosts) {
+        if (host.classification.kind !== 'direct' || host.wildcardSuspect || !answerIsOwned(host)) continue;
+        const info = stemUnderApex(host.name);
+        if (!info) continue;
+        const ips = [...host.resolution.ipv4, ...host.resolution.ipv6].filter(isOriginIp);
+        if (!ips.length) continue;
+        if (!directByStem.has(info.stem)) directByStem.set(info.stem, []);
+        directByStem.get(info.stem).push({ apex: info.apex, name: host.name, ips });
+      }
+      for (const host of proxiedHosts) {
+        const info = stemUnderApex(host.name);
+        if (!info) continue;
+        for (const sib of directByStem.get(info.stem) || []) {
+          // same brand: a direct sibling, not a cross-brand match — and a nested
+          // apex (shop.X scanned next to X) is the same organisation, not a sister brand
+          if (isSubdomainOf(sib.apex, info.apex) || isSubdomainOf(info.apex, sib.apex)) continue;
+          for (const ip of sib.ips) {
+            addHint(ip, {
+              kind: 'sibling-domain', host: host.name, sibling: sib.name,
+              detail: `${host.name}: same name as ${sib.name} (direct at ${ip})`
+            }, { hostNames: [host.name] });
+          }
+        }
+      }
+    }
     // 3. resolver-leak: re-resolve each proxied host through OTHER resolvers of
     //    the pool. Any non-CDN public IP that appears is a strong origin hint for
     //    that specific host. DNS only, capped — never an HTTP/TLS probe.
-    if (resolverLeak !== false && proxiedHosts.length && typeof dns.query === 'function') {
+    if (resolverLeak !== false && leakHosts.length && typeof dns.query === 'function') {
       const poolIds = Array.isArray(dns.chain) ? dns.chain : [];
       // Resolvers whose breaker is currently open would only time out — skip them.
       const downResolvers = () => {
@@ -1354,7 +1714,7 @@ export async function runScan(config = {}, hooks = {}) {
           return new Set(Object.keys(byResolver).filter((id) => byResolver[id] && byResolver[id].down));
         } catch { return new Set(); }
       };
-      await mapPool(proxiedHosts, 4, async (host) => {
+      await mapPool(leakHosts, 4, async (host) => {
         if (resolverLeakQueries >= RESOLVER_LEAK_MAX_QUERIES) return;
         const already = new Set([...host.resolution.ipv4, ...host.resolution.ipv6]);
         const down = downResolvers();
@@ -1362,6 +1722,8 @@ export async function runScan(config = {}, hooks = {}) {
         for (const rid of others) {
           if (resolverLeakQueries >= RESOLVER_LEAK_MAX_QUERIES) break;
           resolverLeakQueries += 1;
+          hintsDone += 1;
+          progress('hints', hintsDone, hintsTotal);
           let res;
           try {
             // retries:0 — the short cap is the whole point; a retry pass would
@@ -1388,8 +1750,7 @@ export async function runScan(config = {}, hooks = {}) {
     }
     checkAbort(signal);
     // 4. SPF and MX of each zone apex.
-    const zones = [...new Set([...sourceDomains, ...targetDomains])];
-    let zonesDone = 0;
+    const zones = hintZones;
     await mapPool(zones, 4, async (zone) => {
       const spf = await collectSpf(zone, { dns, signal, isOwn });
       hintErrors.push(...spf.errors);
@@ -1416,9 +1777,12 @@ export async function runScan(config = {}, hooks = {}) {
           if (ipInCidr(ip, net.cidr)) addHint(ip, { kind: 'spf', detail: net.detail }, { own: true });
         }
       }
-      zonesDone += 1;
-      progress('hints', zonesDone, zones.length);
+      hintsDone += 1;
+      progress('hints', hintsDone, hintsTotal);
     }, signal);
+    // Reconcile: fewer resolver-leak queries may have run than planned (down
+    // resolvers, the per-host / total caps), so drive the bar to 100 % at the end.
+    if (hintsTotal > 0) progress('hints', hintsTotal, hintsTotal);
   }
   checkAbort(signal);
 
@@ -1459,33 +1823,47 @@ export async function runScan(config = {}, hooks = {}) {
     if (!hint.reasons.some((r) => r.kind === 'resolver-leak')) continue;
     for (const hostName of hint.hosts) addToNetwork(hint.ip, hostName);
   }
-  const originNetworks = [...netMap.values()]
-    .map((net) => ({
-      cidr: net.cidr,
-      ips: [...net.ips].sort(compareIp),
-      hosts: sortHostnames([...net.hosts]),
-      provider: matchProviderByIP([...net.ips][0]) || null
-    }))
-    .sort((a, b) => b.hosts.length - a.hosts.length || b.ips.length - a.ips.length || compareIp(a.cidr, b.cidr));
-
-  const networkCidrs = originNetworks.map((n) => n.cidr); // display context (/24 · /48)
-  const proxiedNames = sortHostnames([...new Set(proxiedHosts.map((x) => x.name))]);
-  // Attach the candidate origin networks to every proxied host (display).
-  if (networkCidrs.length) {
-    for (const host of proxiedHosts) host.candidateNetworks = [...networkCidrs];
-  }
-  // Build the CLI `-t` targets the sweep can actually accept:
+  const hasInventoryIn = (net) => (net.ips || []).some((ip) => lookupServers([ip], ipIndex).length > 0);
+  // The sweep decision the CLI can actually accept, per network (task 4):
   //  - IPv6: exact addresses only — a /48 has 2^80 hosts and ssl_origin_scan.py
   //    rejects any block over 2^20, so the whole command would fail;
-  //  - IPv4: the /24 when the block clusters several origins or holds an
-  //    inventory server; otherwise the exact IPs, so the sweep does not blast a
-  //    whole shared cloud/hosting /24 the user does not own.
-  const hasInventoryIn = (net) => [...net.ips].some((ip) => lookupServers([ip], ipIndex).length > 0);
+  //  - a /24 holding an inventory server the user owns → sweep it whole;
+  //  - a shared cloud / hosting / CDN /24 (a PROVIDERS range) with no inventory →
+  //    exact IPs only, so a single origin does not silently widen into a
+  //    multi-tenant block the user does not own;
+  //  - otherwise the /24 when the block clusters ≥ 2 origins, else the exact IP(s).
+  const sweepDecision = (net) => {
+    const parsed = parseCidr(net.cidr);
+    if (!parsed || parsed.version !== 4) return 'ips';
+    if (hasInventoryIn(net)) return 'cidr';
+    if (net.shared) return 'ips';
+    return net.ips.length >= 2 ? 'cidr' : 'ips';
+  };
+  const originNetworks = [...netMap.values()]
+    .map((net) => {
+      const ips = [...net.ips].sort(compareIp);
+      const provider = matchProviderByIP(ips[0]) || null;
+      const out = { cidr: net.cidr, ips, hosts: sortHostnames([...net.hosts]), provider, shared: isSharedProvider(provider) };
+      out.sweep = sweepDecision(out); // 'cidr' | 'ips' — what the CLI targets carry for this block
+      return out;
+    })
+    .sort((a, b) => b.hosts.length - a.hosts.length || b.ips.length - a.ips.length || compareIp(a.cidr, b.cidr));
+
+  const proxiedNames = sortHostnames([...new Set(proxiedHosts.map((x) => x.name))]);
+  // Per-host origin candidates (tasks 1 & 2): stop attaching every network to
+  // every proxied host. Each proxied host gets an ordered candidate list —
+  // host-specific exact IPs (resolver-leak / history / sibling-domain) first,
+  // then the origin networks worth sweeping FOR IT: networks holding a DNS-only
+  // sibling that shares the host's label stem (or its parent), then the main
+  // cluster, then other multi-IP clusters. A lone 1-IP network unrelated to the
+  // host (a mail server, a stray cloud VM) is left out as noise.
+  assignOriginCandidates(proxiedHosts, originNetworks, originHintList, stemUnderApex, parentStem);
+
+  // Build the CLI `-t` targets from each network's own sweep decision, so the
+  // command and result agree exactly on what is swept whole vs by address.
   const cliTargets = [];
   for (const net of originNetworks) {
-    const parsed = parseCidr(net.cidr);
-    const v4 = parsed && parsed.version === 4;
-    if (v4 && (net.ips.length >= 2 || hasInventoryIn(net))) cliTargets.push(net.cidr);
+    if (net.sweep === 'cidr') cliTargets.push(net.cidr);
     else for (const ip of net.ips) cliTargets.push(ip);
   }
   // A ready-to-run cli/ssl_origin_scan.py command: TLS+SNI-sweep the origin
@@ -1495,10 +1873,25 @@ export async function runScan(config = {}, hooks = {}) {
   // proxied estate (> 200 names / 8,000 chars) reads its names from
   // `proxied-names.txt` (= cliNames, one per line) instead of inline, so the
   // command never overflows a shell's command-line limit.
-  const sweep = buildSweepCommand({ targets: cliTargets, names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix' });
+  // Zone import: the zone's exact origins join as exact addresses (private ones
+  // kept — the CLI runs inside the network — and never widened to a /24), its host
+  // origins as host targets, its proxied names (`*.x` kept) as names. Only then
+  // are the host-target / wildcard-name opt-ins on, so a run without a zone
+  // builds exactly the command it always did.
+  const zoneIps = [...new Set(zoneProxied.flatMap((p) => p.ips))].sort(compareIp);
+  const zoneHosts = sortHostnames([...new Set(zoneProxied.map((p) => p.host).filter(Boolean))]);
+  const sweep = zoneIn
+    ? buildSweepCommand({
+      targets: [...cliTargets, ...zoneIps, ...zoneHosts],
+      names: sortHostnames([...new Set([...proxiedNames, ...zoneProxied.map((p) => p.name)])]),
+      script: 'cli/ssl_origin_scan.py', shell: 'posix', allowHostTargets: true, allowWildcardNames: true
+    })
+    : buildSweepCommand({ targets: cliTargets, names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix' });
   const cliSuggestion = sweep.command ? `python3 ${sweep.command}` : null;
   const cliNames = sweep.names;
-  const cliValidTargets = sweep.targets;
+  const isAddressToken = (tok) => !!(normalizeIP(tok) || parseCidr(tok));
+  const cliValidTargets = zoneIn ? sweep.targets.filter(isAddressToken) : sweep.targets;
+  const cliHostTargets = zoneIn ? sweep.targets.filter((tok) => !isAddressToken(tok)) : [];
 
   /* ---- server groups ---------------------------------------------------- */
   const groups = new Map();
@@ -1518,16 +1911,20 @@ export async function runScan(config = {}, hooks = {}) {
   }
   for (const hint of originHintList) {
     if (!hint.servers.length) continue;
-    // 'history' / 'resolver-leak' hints are about specific names; spf / mx /
-    // sibling hints are candidate origins for every host hidden behind a CDN.
-    const general = hint.reasons.some((r) => r.kind !== 'history' && r.kind !== 'resolver-leak');
+    // 'history' / 'resolver-leak' / 'sibling-domain' hints name one specific host;
+    // spf / mx / direct-sibling hints are candidate origins for every host hidden
+    // behind a CDN.
+    const general = hint.reasons.some((r) => !HOST_SPECIFIC_HINT_KINDS.has(r.kind));
+    // The zone file's exact origin of a proxied name matches that host as 'zone'
+    // (authoritative: it counts toward needsCert); everything else stays a 'hint'.
+    const zoneHosts = new Set(hint.reasons.filter((r) => r.kind === 'zone').map((r) => r.host));
     const targets = hosts.filter((x) => hint.historyHosts.has(x.name) || (general && x.classification.hidesOrigin));
     if (!targets.length) continue;
     for (const { server } of lookupServers([hint.ip], ipIndex)) {
       const g = groupOf(server);
       for (const host of targets) {
         if (g.hosts.some((e) => e.name === host.name && e.ip === hint.ip)) continue;
-        g.hosts.push({ name: host.name, ip: hint.ip, covered: coveredOf(host), via: 'hint' });
+        g.hosts.push({ name: host.name, ip: hint.ip, covered: coveredOf(host), via: zoneHosts.has(host.name) ? 'zone' : 'hint' });
       }
     }
   }
@@ -1535,9 +1932,9 @@ export async function runScan(config = {}, hooks = {}) {
   const serverGroups = [...groups.values()];
   for (const g of serverGroups) {
     const order = new Map(sortHostnames([...new Set(g.hosts.map((e) => e.name))]).map((n, i) => [n, i]));
-    g.hosts.sort((a, b) => (a.via === b.via ? 0 : a.via === 'dns' ? -1 : 1)
+    g.hosts.sort((a, b) => (VIA_RANK[a.via] ?? 9) - (VIA_RANK[b.via] ?? 9)
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
-    g.needsCert = g.hosts.some((e) => e.via === 'dns' && e.covered !== false);
+    g.needsCert = g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false);
     g.maybeNeedsCert = !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
   }
   serverGroups.sort((a, b) => Number(b.needsCert) - Number(a.needsCert)
@@ -1617,7 +2014,13 @@ export async function runScan(config = {}, hooks = {}) {
     ctCerts: ctCerts.length,
     dnsQueries: typeof dns.stats === 'function' ? dns.stats().queries : null,
     truncated,
-    elapsedMs: Date.now() - t0
+    elapsedMs: Date.now() - t0,
+    // zone import only (absent without a zone, so a plain run's stats are unchanged):
+    // seeds taken from the zone, and how many of them resolved
+    ...(zoneIn ? {
+      zoneSeeds: zoneSeedNames.size,
+      zoneResolved: count((x) => x.origins.includes('zone') && (x.resolution.ipv4.length > 0 || x.resolution.ipv6.length > 0))
+    } : {})
   };
 
   /* ---- wordlist usage (per domain + custom/learned tried vs found) ------- */
@@ -1672,6 +2075,20 @@ export async function runScan(config = {}, hooks = {}) {
     perDomain: wordlistPerDomain
   };
 
+  const zoneNameSet = new Set(zoneProxied.map((p) => p.name));
+  const zoneIpSet = new Set(zoneIps);
+  const zoneSummary = zoneIn ? {
+    origin: zoneIn.origin,
+    exact: exactMode,
+    seeds: zoneSeedNames.size,
+    wildcardBases: sortHostnames([...zoneWildcardRoots]),
+    proxied: zoneProxied.length,
+    resolved: stats.zoneResolved,
+    outOfScope: zoneOutOfScope,
+    cliNames: cliNames.filter((n) => zoneNameSet.has(n)),
+    cliTargets: cliValidTargets.filter((ip) => zoneIpSet.has(ip)),
+    cliHostTargets: [...cliHostTargets]
+  } : null;
   const result = {
     startedAt,
     finishedAt: new Date(),
@@ -1694,22 +2111,167 @@ export async function runScan(config = {}, hooks = {}) {
     lastSeen: lastSeenByName,
     warnings,
     hintErrors: [...new Set(hintErrors)],
+    // Passive-source snapshot when the DNS sweep started (task 6): whether the
+    // grace window cut the sources off and which ids were still fetching then. By
+    // the end every source is awaited, so this only describes the grace moment.
+    sourceGrace,
     // v2 origin-hunting output
     originNetworks,
     cliSuggestion,
     cliTargets: cliValidTargets,
     cliNames,
+    // zone import: host-name CLI targets (a proxied name's CNAME origin); [] without a zone
+    cliHostTargets,
     options: {
       sources: sourceIds, includeExpired: !!includeExpired,
       bruteforce: levelUsed,
       mine: mineEnabled, permutationBudget: permBudget, recursive: recursiveEnabled,
       resolverLeak: resolverLeak !== false,
       originHints: hintsEnabled, cert: !!cert, inventoryServers: servers.length,
-      wordlist: wordlistUsage
-    }
+      wordlist: wordlistUsage,
+      exact: exactMode,
+      zone: zoneSummary && {
+        origin: zoneSummary.origin, seeds: zoneSummary.seeds, wildcardBases: zoneSummary.wildcardBases.length,
+        proxied: zoneSummary.proxied, resolved: zoneSummary.resolved, outOfScope: zoneSummary.outOfScope
+      }
+    },
+    // zone import summary (null without a zone): counts, plus exactly which zone
+    // names / addresses / hosts went into the CLI command
+    zone: zoneSummary
   };
   stage('done', { stats });
   return result;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Query estimate (plan line)                                               */
+/* ------------------------------------------------------------------------ */
+
+/** The wordlist size of a level (build-time counts; 0 for off / unknown). */
+function levelWordCount(level) {
+  if (level === 'off' || !level) return 0;
+  if (level === 'small') return WORDLIST_SMALL.length;
+  if (level === 'medium') return getWordlist('medium').length;
+  const info = wordlistInfo().levels[level];
+  return info ? Number(info.approxCount) || 0 : 0;
+}
+
+/** The build-time size of a locale pack (0 for unknown). */
+function localePackWordCount(code) {
+  const info = wordlistInfo().locales[code];
+  return info ? Number(info.approxCount) || 0 : 0;
+}
+
+/**
+ * Honest DNS-query estimate range for a planned scan, as `{ min, max }` with a
+ * breakdown — for the UI plan line. The old line counted only the wordlist and so
+ * undercounted real runs by ~20-25 %: the permutation budget, the recursive round
+ * and the origin-hint queries were missing. This counts every stage.
+ *
+ * The range is genuine uncertainty, not padding: the wordlist / mining / wildcard
+ * queries always fire, so they set the floor; the permutation budget, recursive
+ * round, per-host resolver-leak and per-name resolve depend on what is found, so
+ * they widen the ceiling. Counts use the same caps the scan enforces
+ * (per-base + total brute-force caps, permutation & recursive caps, leak caps).
+ * Pure — no DNS, safe to call on every keystroke.
+ *
+ * @param {object} opts
+ * @param {'off'|'small'|'medium'|'smart'|'large'|'huge'} [opts.bruteforce='smart']
+ * @param {string[]} [opts.domains] scanned apex domains (already normalized is fine)
+ * @param {string[]} [opts.wildcardBases] extra brute-force bases from `*.x` names
+ * @param {string[]} [opts.certNames] certificate hostnames (for the seed / resolve floor)
+ * @param {string[]} [opts.extraNames] extra input names (seed / resolve floor)
+ * @param {string[]|null} [opts.locales] explicit locale packs (null = auto per domain, [] = none)
+ * @param {number} [opts.customCount=0] custom-wordlist labels
+ * @param {number} [opts.learnedCount=0] learned labels
+ * @param {number} [opts.permutationBudget=1500] 0 disables permutations
+ * @param {boolean} [opts.recursive=true]
+ * @param {number} [opts.recursiveParents=8]
+ * @param {boolean} [opts.mine=true]
+ * @param {boolean} [opts.originHints=true]
+ * @param {boolean} [opts.resolverLeak=true]
+ * @returns {{ min: number, max: number, breakdown: { wordlist: number, mining: number, wildcard: number,
+ *   permutation: number, recursive: number, resolveMin: number, resolveMax: number, hintsMin: number,
+ *   hintsMax: number, bases: number, zones: number } }}
+ */
+export function estimateQueries({
+  bruteforce = 'smart', domains = [], wildcardBases = [], certNames = [], extraNames = [],
+  locales = null, customCount = 0, learnedCount = 0,
+  permutationBudget = DEFAULT_PERMUTATION_BUDGET, recursive = true, recursiveParents = DEFAULT_RECURSIVE_PARENTS,
+  mine = true, originHints = true, resolverLeak = true
+} = {}) {
+  const level = bruteforce == null ? 'smart' : String(bruteforce);
+  const norm = (d) => normalizeHostname(String(d ?? ''), { allowSingleLabel: true });
+  const baseSet = [];
+  const addBase = (d) => { const n = norm(d); if (n && !isPublicSuffix(n) && !baseSet.includes(n)) baseSet.push(n); };
+  for (const d of Array.isArray(domains) ? domains : []) addBase(d);
+  const domainBases = [...baseSet]; // the scanned domains (runScan's targetDomains)
+  for (const b of Array.isArray(wildcardBases) ? wildcardBases : []) addBase(b);
+  const extra = Math.max(0, Number(customCount) || 0) + Math.max(0, Number(learnedCount) || 0);
+  const usesPacks = KNOWN_LEVELS.has(level) && level !== 'small';
+  const packsFor = (base) => (Array.isArray(locales)
+    ? locales.filter((cc) => LOCALE_PACK_CODES.includes(cc))
+    : localesForDomain(base));
+
+  // Brute-force candidates, with the scan's per-base and total caps.
+  const levelCount = levelWordCount(level);
+  let wordlist = 0;
+  if (level !== 'off' && (levelCount > 0 || extra > 0)) {
+    const perBaseCap = KNOWN_LEVELS.has(level)
+      ? (MAX_BRUTEFORCE_PER_BASE[level] || LEGACY_MAX_BRUTEFORCE) + extra
+      : (baseSet.length ? Math.max(1, Math.floor(LEGACY_MAX_BRUTEFORCE / baseSet.length)) : LEGACY_MAX_BRUTEFORCE);
+    for (const base of baseSet.length ? baseSet : ['']) {
+      const packSum = usesPacks ? packsFor(base).reduce((a, cc) => a + localePackWordCount(cc), 0) : 0;
+      wordlist += Math.min(levelCount + packSum + extra, perBaseCap);
+    }
+    wordlist = Math.min(wordlist, MAX_BRUTEFORCE_TOTAL);
+  }
+
+  // As runScan: mining runs once per registrable domain of the scanned domains
+  // (sourceDomains); the SPF/MX hints per registrable domain ∪ scanned domain
+  // (hintZones). Certificate wildcard bases add neither.
+  const regZones = [...new Set(domainBases.map((b) => registrableDomain(b) || b))];
+  const zones = [...new Set([...regZones, ...domainBases])];
+  const mining = mine ? regZones.length * MINE_QUERIES_PER_DOMAIN : 0;
+  const wildcard = baseSet.length * 4; // 2 random labels × (A + AAAA); grows with finds, capped elsewhere
+
+  const permBudget = Number.isFinite(permutationBudget) && permutationBudget > 0
+    ? Math.min(Math.floor(permutationBudget), MAX_PERMUTATIONS) : 0;
+  const recCap = Math.max(0, Math.floor(Number(recursiveParents)) || 0);
+  const recursiveMax = recursive && recCap > 0
+    ? Math.min(RECURSIVE_MAX, recCap * (WORDLIST_SMALL.length + Math.min(extra, RECURSIVE_EXTRA_WORDS)))
+    : 0;
+
+  // Seeds (resolve floor): domains + certificate names + extra names, unique.
+  const seedSet = new Set();
+  for (const d of baseSet) seedSet.add(d);
+  for (const n of [...(Array.isArray(certNames) ? certNames : []), ...(Array.isArray(extraNames) ? extraNames : [])]) {
+    const nn = norm(String(n).replace(/^\*\./, ''));
+    if (nn) seedSet.add(nn);
+  }
+  const seedCount = seedSet.size || 1;
+  const resolveMin = 2 * seedCount;
+  // Up to ~5 % of the swept candidates may resolve in a dense estate (upper bound).
+  const resolveMax = 2 * (seedCount + Math.ceil(0.05 * (wordlist + permBudget + recursiveMax)));
+
+  // Origin hints: SPF/MX always run when enabled; resolver-leak depends on how
+  // many proxied hosts are found (bounded by the query cap).
+  const leakMax = originHints && resolverLeak ? RESOLVER_LEAK_MAX_QUERIES : 0;
+  const spfMxPerZone = MAX_SPF_LOOKUPS + 1 + (MAX_SPF_LOOKUPS + MAX_MX) * 2; // spf TXT walk + MX + resolving each
+  const hintsMin = originHints ? zones.length * 2 : 0; // at least an MX + apex SPF TXT per zone
+  const hintsMax = originHints ? leakMax + zones.length * spfMxPerZone : 0;
+
+  const floor = wordlist + mining + wildcard;
+  const min = floor + resolveMin + hintsMin;
+  const max = floor + permBudget + recursiveMax + resolveMax + hintsMax;
+  return {
+    min,
+    max,
+    breakdown: {
+      wordlist, mining, wildcard, permutation: permBudget, recursive: recursiveMax,
+      resolveMin, resolveMax, hintsMin, hintsMax, bases: baseSet.length, zones: zones.length
+    }
+  };
 }
 
 /** Stage names in the order they are reported (extension). */

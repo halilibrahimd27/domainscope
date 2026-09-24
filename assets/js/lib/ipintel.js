@@ -221,6 +221,108 @@ export function parseReverseIpText(text) {
   return { ok: true, domains: sortHostnames(uniq(domains)), error: null, limited: false, errorKind: null };
 }
 
+/* ------------------------------------------------------------------------ */
+/* Well-known infrastructure networks by origin ASN (display enrichment)    */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * @typedef {object} InfraNetwork
+ * @property {string} id
+ * @property {string} name short display name ('Cloudflare', 'AWS' …)
+ * @property {'cdn'|'waf'|'cloud'|'hosting'|'platform'} category
+ * @property {ReadonlyArray<number>} asns origin AS numbers operated by this company
+ * @property {string|null} proxyRanges id of the netinfo PROVIDERS entry whose published
+ *   proxy / edge ranges are checked by classifyResolution (null: none published or embedded)
+ */
+
+const infra = (id, name, category, asns, proxyRanges = null) => Object.freeze({ id, name, category, asns: Object.freeze(asns), proxyRanges });
+
+/**
+ * A short list of large infrastructure operators, by the AS numbers they announce their
+ * address space from (checked against RIPEstat prefix-overview / as-overview, 2026-09-23).
+ *
+ * Why: netinfo.classifyResolution recognises CDNs by their *published proxy ranges* only, so
+ * an address the CDN company uses for something else — 1.1.1.1 is AS13335 (Cloudflare) but
+ * not in https://www.cloudflare.com/ips/ — is classified 'direct'. That is right for the
+ * scanner (no website is proxied there) but reads oddly in the IP view, which uses this table
+ * to say "Cloudflare network (AS13335) — not a proxied-site range" instead. Display only: the
+ * classification contract does not change and nothing here is used to decide coverage.
+ *
+ * Keep it small and well known; an unknown AS simply gets no hint.
+ * @type {ReadonlyArray<InfraNetwork>}
+ */
+export const INFRA_NETWORKS = Object.freeze([
+  infra('cloudflare', 'Cloudflare', 'cdn', [13335, 209242], 'cloudflare'),
+  infra('fastly', 'Fastly', 'cdn', [54113], 'fastly'),
+  infra('akamai', 'Akamai', 'cdn', [20940, 16625]),
+  infra('imperva', 'Imperva', 'waf', [19551]),
+  infra('sucuri', 'Sucuri', 'waf', [30148]),
+  infra('aws', 'AWS', 'cloud', [16509, 14618], 'cloudfront'),
+  infra('google', 'Google', 'cloud', [15169, 396982]),
+  infra('microsoft', 'Microsoft', 'cloud', [8075]),
+  infra('oracle', 'Oracle Cloud', 'cloud', [31898]),
+  infra('alibaba', 'Alibaba Cloud', 'cloud', [45102]),
+  infra('tencent', 'Tencent Cloud', 'cloud', [132203]),
+  infra('digitalocean', 'DigitalOcean', 'hosting', [14061]),
+  infra('linode', 'Linode (Akamai)', 'hosting', [63949]),
+  infra('hetzner', 'Hetzner', 'hosting', [24940]),
+  infra('ovh', 'OVHcloud', 'hosting', [16276]),
+  infra('scaleway', 'Scaleway', 'hosting', [12876]),
+  infra('vultr', 'Vultr', 'hosting', [20473]),
+  infra('github', 'GitHub', 'platform', [36459])
+]);
+
+let infraByAsn = null;
+
+/**
+ * The well-known network that announces from `asn`, or null.
+ * @param {number|string|null|undefined} asn 13335, '13335' or 'AS13335'
+ * @returns {InfraNetwork|null}
+ */
+export function infraNetworkByAsn(asn) {
+  if (!infraByAsn) {
+    infraByAsn = new Map();
+    for (const n of INFRA_NETWORKS) for (const a of n.asns) infraByAsn.set(a, n);
+  }
+  const num = typeof asn === 'number' ? asn : Number(String(asn ?? '').trim().replace(/^AS/i, ''));
+  return Number.isInteger(num) && num > 0 ? infraByAsn.get(num) || null : null;
+}
+
+/**
+ * @typedef {object} NetworkHint
+ * @property {string} id InfraNetwork id
+ * @property {string} name
+ * @property {InfraNetwork['category']} category
+ * @property {number} asn the matching origin AS
+ * @property {'outside-proxy-ranges'|'cdn-edge'|'hosted'} relation
+ *   - outside-proxy-ranges: a CDN whose proxy ranges are known, and the address is not in them
+ *     (the company's own service, e.g. a DNS resolver — not a website behind the CDN)
+ *   - cdn-edge: a CDN / WAF that publishes no ranges: most likely an edge in front of a site
+ *   - hosted: a cloud / hosting / platform network: a server reached directly
+ */
+
+/**
+ * Display hint for an address that netinfo classified as plain 'direct': which well-known
+ * network announces it. Null for every other classification (Cloudflare-proxied, CDN,
+ * platform, private … already say who operates it) and for unknown ASes.
+ * @param {{ asn?: number|null, asns?: Array<{ asn: number }> }|null} info IpInfo (or part of it)
+ * @param {{ kind?: string }|null} [classification] netinfo.classifyResolution result
+ * @returns {NetworkHint|null}
+ */
+export function networkHint(info, classification = null) {
+  if (!info || typeof info !== 'object') return null;
+  if (classification && classification.kind !== 'direct') return null;
+  const candidates = [info.asn, ...(Array.isArray(info.asns) ? info.asns.map((a) => a && a.asn) : [])];
+  for (const asn of candidates) {
+    const net = infraNetworkByAsn(asn);
+    if (!net) continue;
+    let relation = 'hosted';
+    if (net.category === 'cdn' || net.category === 'waf') relation = net.proxyRanges ? 'outside-proxy-ranges' : 'cdn-edge';
+    return { id: net.id, name: net.name, category: net.category, asn: Number(String(asn).replace(/^AS/i, '')), relation };
+  }
+  return null;
+}
+
 function firstLine(s) {
   return String(s).split(/\r?\n/)[0].trim().slice(0, 200);
 }

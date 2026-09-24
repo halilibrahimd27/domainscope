@@ -70,7 +70,7 @@ function zoneAnswer(zone, name, type) {
 
 const SOURCE_PAYLOADS = {
   'https://crt.sh/': () => [
-    { issuer_ca_id: 1, issuer_name: 'C=TR, CN=Test CA', common_name: D, name_value: `${D}\nwww.${D}\napi.${D}\n*.cdn.${D}\nxn--mnchen-3ya.${D}`, id: 100, not_before: '2026-06-01T00:00:00', not_after: '2034-06-01T00:00:00', serial_number: 'f1e2d3c4b5a69788' },
+    { issuer_ca_id: 1, issuer_name: 'C=US, CN=Test CA', common_name: D, name_value: `${D}\nwww.${D}\napi.${D}\n*.cdn.${D}\nxn--mnchen-3ya.${D}`, id: 100, not_before: '2026-06-01T00:00:00', not_after: '2034-06-01T00:00:00', serial_number: 'f1e2d3c4b5a69788' },
     { issuer_ca_id: 2, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: `shop.${D}`, name_value: `shop.${D}\nold.${D}`, id: 101, not_before: '2026-08-01T00:00:00', not_after: '2026-10-30T00:00:00', serial_number: '0badc0de' }
   ],
   'https://api.certspotter.com/': (url) => (url.includes('after=') ? [] : [{ id: '9', cert_sha256: 'aa'.repeat(32), dns_names: [`gone.${D}`], not_before: '2026-01-01T00:00:00Z', not_after: '2026-12-01T00:00:00Z' }]),
@@ -82,7 +82,8 @@ const SOURCE_PAYLOADS = {
       { hostname: `shop.${D}`, address: '203.0.113.60', record_type: 'A', first: '2023-01-01T00:00:00', last: '2023-06-01T00:00:00' },
       { hostname: `api.${D}`, address: '104.21.5.5', record_type: 'A', first: '2024-01-01T00:00:00', last: '2026-09-01T00:00:00' }
     ]
-  })
+  }),
+  'https://ip.thc.org/': () => ({ matching_records: 0, domains: [], next_page_state: '' })
 };
 
 const INVENTORY_TEXT = `
@@ -139,6 +140,9 @@ describe('runScan end-to-end', () => {
     const scan = await runScan({
       domains: [D], cert: CERT, extraNames: [], sources: undefined, includeExpired: false,
       bruteforce: 'small', wordlist: ['api', 'static', 'admin', 'panel', 'vpn'],
+      // this test pins the classic sources+wildcard+wordlist+resolve+hints path;
+      // the DNS-mine / permutation / recursive stages are covered in scanner-v2.test.js
+      mine: false, permutationBudget: 0, recursive: false,
       inventory, originHints: true, dns, fetchImpl
     }, {
       onStage: (s, info) => stages.push([s, info]),
@@ -150,7 +154,7 @@ describe('runScan end-to-end', () => {
     // stages reported in execution order
     assert.deepEqual(stages.map((s) => s[0]), [...SCAN_STAGES]);
     assert.deepEqual(stages[0][1].domains, [D]);
-    assert.equal(sourcesSeen.length, 5);
+    assert.equal(sourcesSeen.length, 6);
     assert.ok(progress.some((p) => p.stage === 'resolve' && p.done === p.total));
     assert.ok(progress.some((p) => p.stage === 'bruteforce' && p.total === 9));
 
@@ -168,7 +172,7 @@ describe('runScan end-to-end', () => {
     // origins
     assert.deepEqual(h.get(D).origins, ['input', 'cert', 'crtsh', 'hackertarget']);
     assert.deepEqual(h.get(`www.${D}`).origins, ['cert', 'crtsh', 'hackertarget', 'otx']);
-    assert.deepEqual(h.get(`admin.${D}`).origins, ['bruteforce']);
+    assert.deepEqual(h.get(`admin.${D}`).origins, ['wordlist']);
     assert.deepEqual(h.get(`dev.${D}`).origins, ['anubis']);
     assert.deepEqual(h.get(`gone.${D}`).origins, ['certspotter']);
 
@@ -211,8 +215,13 @@ describe('runScan end-to-end', () => {
       total: 12, resolved: 9, cloudflare: 3, cdn: 1, platform: 0, direct: 4, private: 1, nxdomain: 2,
       dangling: 1, covered: 5, matchedServers: 2, wildcardSuspects: 0,
       unresolved: 1, hiddenOrigin: 4, needsCert: 1, hintedServers: 3, originHints: 8, unmatchedIps: 2,
-      sourcesOk: 5, sourcesFailed: 0, bruteforceTried: 9, bruteforceFound: 3, bruteforceWildcardDropped: 4,
-      bruteforceErrors: 0, ctCerts: 3, dnsQueries: 0, truncated: false, elapsedMs: 0
+      sourcesOk: 6, sourcesFailed: 0,
+      fromSources: 9, fromDns: 3, wildcardParents: 1, mineFound: 0,
+      wordlistFound: 3, permutationFound: 0, recursiveFound: 0,
+      bruteforceTried: 9, bruteforceFound: 3, bruteforceWildcardDropped: 4, bruteforceErrors: 0,
+      permutationTried: 0, permutationWildcardDropped: 0, permutationErrors: 0,
+      recursiveTried: 0, recursiveWildcardDropped: 0, recursiveErrors: 0,
+      ctCerts: 3, dnsQueries: 0, truncated: false, elapsedMs: 0
     });
 
     // origin hints
@@ -222,7 +231,9 @@ describe('runScan end-to-end', () => {
     ]);
     assert.ok(!hints.has('198.18.5.5'), 'third-party SPF IP without inventory match is dropped');
     assert.ok(!hints.has('104.16.10.1'), 'CDN IPs are never origin hints');
-    assert.deepEqual(hints.get('203.0.113.50').reasons, [{ kind: 'history', detail: `otx: www.${D} (last seen 2024-05-01)` }]);
+    // v2: 'history' reasons carry structured { host, source, lastSeen } so the
+    // views no longer parse the human-readable `detail` string.
+    assert.deepEqual(hints.get('203.0.113.50').reasons, [{ kind: 'history', host: `www.${D}`, source: 'otx', lastSeen: '2024-05-01', detail: `otx: www.${D} (last seen 2024-05-01)` }]);
     assert.deepEqual(hints.get('203.0.113.50').servers, [{ serverId: 'app02', name: 'app02' }]);
     assert.deepEqual(hints.get('203.0.113.25').reasons.map((r) => r.kind).sort(), ['mx', 'spf', 'spf']);
     assert.ok(hints.get('203.0.113.25').reasons.some((r) => r.detail === `${D}: MX 10 mail.${D}`));
@@ -260,18 +271,23 @@ describe('runScan end-to-end', () => {
     assert.equal(scan.unmatchedIps[0].provider, null);
 
     // sources + CT certificates
-    assert.deepEqual(scan.sources.map((r) => [r.source, r.ok]), [['crtsh', true], ['certspotter', true], ['hackertarget', true], ['anubis', true], ['otx', true]]);
+    assert.deepEqual(scan.sources.map((r) => [r.source, r.ok]), [['crtsh', true], ['certspotter', true], ['hackertarget', true], ['anubis', true], ['otx', true], ['thc', true]]);
     assert.equal(scan.ctCerts.find((c) => c.serialHex === 'f1e2d3c4b5a69788').matchesCert, true);
     assert.equal(scan.ctCerts.filter((c) => c.matchesCert).length, 1);
 
-    // one source request per source (certspotter: + one empty page), all DoH on the first resolver
+    // one source request per source (certspotter: + one empty page); bulk A-only probes
+    // and the final resolve use balance mode, and the resolver-leak hint re-resolves
+    // proxied hosts through the failover chain — so DoH spreads across several healthy
+    // resolvers, every one a known resolver (which exact ids depends on resolvers.js).
     assert.equal(log.http.filter((u) => u.startsWith('https://crt.sh/')).length, 1);
-    assert.ok(log.doh.every((q) => q.resolver === 'cloudflare'));
+    const usedResolvers = new Set(log.doh.map((q) => q.resolver));
+    assert.ok(usedResolvers.size > 1, 'balance mode + resolver-leak spread DoH across the pool');
+    assert.ok([...usedResolvers].every((r) => RESOLVERS.some((x) => x.id === r)), 'every resolver used is a known resolver');
   });
 
   test('domains default to the registrable domains of the certificate names', async () => {
     const { fetchImpl, dns } = world();
-    const scan = await runScan({ cert: CERT, sources: [], dns, fetchImpl, originHints: false });
+    const scan = await runScan({ cert: CERT, sources: [], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, originHints: false });
     assert.deepEqual(scan.domains, [D]);
     assert.deepEqual(scan.hosts.map((h) => h.name), [D, `api.${D}`, `cdn.${D}`, `www.${D}`, `xn--mnchen-3ya.${D}`]);
     assert.equal(scan.stats.covered, 4);
@@ -283,11 +299,12 @@ describe('runScan end-to-end', () => {
     const { fetchImpl, dns, log } = world();
     const stages = [];
     const scan = await runScan({
-      domains: `${D}\n# comment`, extraNames: [`admin.${D}`, 'not a name!'], sources: [], dns, fetchImpl,
+      domains: `${D}\n# comment`, extraNames: [`admin.${D}`, 'not a name!'], sources: [],
+      bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl,
       inventory: parseInventory(INVENTORY_TEXT), originHints: false
     }, { onStage: (s, info) => stages.push([s, info.skipped]) });
     assert.equal(log.http.length, 0);
-    assert.deepEqual(stages, [['sources', true], ['wildcard', undefined], ['bruteforce', true], ['resolve', undefined], ['hints', true], ['done', undefined]]);
+    assert.deepEqual(stages, [['sources', true], ['mining', true], ['wildcard', undefined], ['bruteforce', true], ['permutations', true], ['resolve', undefined], ['hints', true], ['done', undefined]]);
     assert.deepEqual(scan.hosts.map((h) => h.name), [D, `admin.${D}`]);
     assert.ok(scan.hosts.every((h) => h.cert === null));
     assert.equal(serverGroup(scan, 'web01').needsCert, true);
@@ -331,7 +348,7 @@ describe('runScan end-to-end', () => {
         'https://api.hackertarget.com/': () => new Response('API count exceeded - Increase Quota with Membership')
       }
     });
-    const scan = await runScan({ domains: [D], dns, fetchImpl, originHints: false });
+    const scan = await runScan({ domains: [D], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, originHints: false });
     const failed = scan.sources.filter((r) => !r.ok).map((r) => [r.source, r.errorKind]);
     assert.deepEqual(failed, [['hackertarget', 'rate-limit'], ['otx', 'rate-limit']]);
     assert.equal(scan.stats.sourcesFailed, 2);
@@ -340,7 +357,7 @@ describe('runScan end-to-end', () => {
 
   test('DNS transport failures surface as ERROR hosts, not exceptions', async () => {
     const { fetchImpl, dns } = world({ onDoh: (q) => { if (q.name === `api.${D}`) throw new TypeError('network down'); } });
-    const scan = await runScan({ domains: [D], cert: CERT, sources: [], dns, fetchImpl, originHints: false });
+    const scan = await runScan({ domains: [D], cert: CERT, sources: [], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, originHints: false });
     const api = byName(scan).get(`api.${D}`);
     assert.equal(api.resolution.status, 'ERROR');
     assert.equal(api.classification.kind, 'unresolved');
@@ -350,7 +367,7 @@ describe('runScan end-to-end', () => {
   test('maxHosts keeps input/cert names first; warnings report truncation', async () => {
     const many = Array.from({ length: 30 }, (_, i) => `h${i}.${D}`);
     const { fetchImpl, dns } = world({ sources: { 'https://anubisdb.com/': () => many } });
-    const scan = await runScan({ domains: [D], cert: CERT, sources: ['anubis'], dns, fetchImpl, maxHosts: 8, originHints: false });
+    const scan = await runScan({ domains: [D], cert: CERT, sources: ['anubis'], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, maxHosts: 8, originHints: false });
     assert.equal(scan.hosts.length, 8);
     for (const n of [D, `www.${D}`, `api.${D}`, `cdn.${D}`, `xn--mnchen-3ya.${D}`]) assert.ok(byName(scan).has(n), n);
     assert.equal(scan.stats.truncated, true);
@@ -365,7 +382,7 @@ describe('runScan end-to-end', () => {
       'proxied.loop.example': { A: ['104.16.0.1'] }
     };
     const { fetchImpl, dns } = world({ zone, sources: { 'https://anubisdb.com/': () => ['proxied.loop.example'] } });
-    const scan = await runScan({ domains: ['loop.example'], sources: ['anubis'], dns, fetchImpl });
+    const scan = await runScan({ domains: ['loop.example'], sources: ['anubis'], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl });
     assert.ok(scan.hintErrors.some((e) => /lookup limit/.test(e)));
     assert.ok(scan.originHints.some((x) => x.ip === '192.0.2.200'));
     assert.ok(scan.originHints.some((x) => x.ip === '192.0.2.9' && x.reasons.some((r) => r.kind === 'direct-sibling')));
@@ -374,7 +391,7 @@ describe('runScan end-to-end', () => {
   test('hooks that throw do not break the scan', async () => {
     const { fetchImpl, dns } = world();
     const boom = () => { throw new Error('ui bug'); };
-    const scan = await runScan({ domains: [D], sources: ['anubis'], dns, fetchImpl }, {
+    const scan = await runScan({ domains: [D], sources: ['anubis'], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl }, {
       onStage: boom, onSource: boom, onHost: boom, onProgress: boom
     });
     assert.ok(scan.hosts.length > 0);

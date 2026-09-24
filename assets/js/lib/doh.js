@@ -6,7 +6,11 @@
  *    SERVFAIL / REFUSED → next resolver), or a single explicit resolver;
  *  - retries with exponential backoff + jitter (extra passes over the chain);
  *  - a per-resolver circuit breaker so a resolver that keeps failing (e.g.
- *    Quad9 in browsers, HTTP/3 without CORS) is tried last for a while;
+ *    Quad9 in browsers, HTTP/3 without CORS) is tried last for a while. The
+ *    breaker is re-checked right before every request (a burst of queries
+ *    stops hitting a resolver the moment its breaker opens) and, after the
+ *    cooldown, lets a single trial request through (half-open) instead of
+ *    sending every concurrent query back to a resolver that may still be down;
  *  - one shared concurrency limiter for every HTTP request of the client;
  *  - a TTL-aware LRU cache and in-flight de-duplication of identical queries;
  *  - per-resolver statistics.
@@ -84,9 +88,28 @@ const HOST_STATUSES = new Set(['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']);
 const MAX_MESSAGE = 65535;
 const MAX_CHAIN = 16;
 // Circuit breaker: after this many consecutive transport failures a resolver
-// is moved to the end of the failover order for BREAKER_COOLDOWN_MS.
+// is moved to the end of the failover order for BREAKER_COOLDOWN_MS. When the
+// cooldown is over, one trial request is let through (half-open); the others
+// keep treating the resolver as down until that request succeeds or fails.
 const BREAKER_THRESHOLD = 3;
 const BREAKER_COOLDOWN_MS = 30000;
+// Returned by the limiter task instead of a response when the breaker of the
+// resolver opened while the query was waiting for a request slot.
+const SKIPPED = Symbol('skipped');
+// Bulk balance mode (query({ balance: true })) spreads queries across this pool
+// so no single resolver is hammered — the courtesy that matters when resolving
+// thousands of wordlist / permutation candidates. Only large anycast,
+// unfiltered resolvers that real browsers read reliably (18/18 in Chrome + Edge,
+// tests/live/browser-doh-matrix.mjs) and that tolerate bulk rates (Cloudflare
+// ~280 qps, Google ~740 qps without 429). Left out: Quad9 — over HTTP/3 it omits
+// the CORS header and Chrome/Edge use HTTP/3 for it from the first request
+// (resolvers.js issue 'h3-no-cors'), which fetch() cannot work around; Control D
+// — unreachable from some networks during testing, so every query rotated to it
+// waited for the full timeout (p95 8.5 s over 60 bulk queries). A custom pool may
+// still include browser-unreliable resolvers: balance mode then uses them only
+// as failover, never as the rotating primary, and the circuit breaker drops them
+// after repeated transport errors.
+const DEFAULT_BALANCE_POOL = Object.freeze(['cloudflare', 'google', 'dnssb']);
 
 const clock = () => (globalThis.performance && typeof globalThis.performance.now === 'function'
   ? globalThis.performance.now()
@@ -296,6 +319,107 @@ export function hostResolutionFrom(name, a, aaaa) {
   };
 }
 
+/** Are two arrays equal as sets? */
+function setsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((x) => s.has(x));
+}
+
+/**
+ * Classify one wildcard probe into the wildcard "kind" it evidences:
+ * a CNAME chain, address records ('A'), an empty NOERROR ('NODATA'), or nothing
+ * (NXDOMAIN / SERVFAIL / transport error).
+ */
+function classifyProbe(res) {
+  if (!res || res.status === 'ERROR') return { kind: null };
+  if (Array.isArray(res.cnames) && res.cnames.length) {
+    return { kind: 'CNAME', cname: res.cnames[0], cnames: res.cnames };
+  }
+  if ((res.ipv4 && res.ipv4.length) || (res.ipv6 && res.ipv6.length)) {
+    return { kind: 'A', ipv4: res.ipv4 || [], ipv6: res.ipv6 || [] };
+  }
+  if (res.status === 'NOERROR') return { kind: 'NODATA' };
+  return { kind: null };
+}
+
+/**
+ * Does a DNSSEC query for `probeName` prove the exact name does NOT exist?
+ * True for compact denial of existence (Cloudflare "black lies") and RFC 9250
+ * NXNAME: the authority carries an NSEC owned by the queried name whose bitmap
+ * is NXNAME (TYPE128) or only RRSIG+NSEC. Such an answer is a NODATA-looking
+ * denial, not a wildcard, so it must not flag every label as a wildcard suspect.
+ * Any inconclusive result (no DNSSEC, no NSEC, error) returns false.
+ */
+async function dnssecProvesNonexistent(dns, probeName, signal) {
+  if (!dns || typeof dns.query !== 'function') return false;
+  let res;
+  try {
+    res = await dns.query(probeName, 'A', { signal, dnssec: true });
+  } catch (err) {
+    if (err instanceof AbortError) throw err;
+    return false;
+  }
+  if (!res || !res.ok) return false;
+  const qn = canonicalName(probeName);
+  for (const rr of res.authorities || []) {
+    if (rr.type !== 'NSEC' || !rr.data || canonicalName(rr.name) !== qn) continue;
+    const types = Array.isArray(rr.data.types) ? rr.data.types : [];
+    if (types.includes('NXNAME') || types.includes('TYPE128')) return true; // RFC 9250 NXNAME
+    const meaningful = types.filter((t) => t !== 'RRSIG' && t !== 'NSEC');
+    if (meaningful.length === 0) return true; // "black lie": NSEC proving the qname has nothing
+  }
+  return false;
+}
+
+/**
+ * Deep wildcard detection that treats NODATA and CNAME wildcards correctly.
+ *
+ * Some zones answer *any* label with NODATA (NOERROR, no records) or with a
+ * fixed CNAME rather than an address — the plain "did a random label get an A?"
+ * test misses those and lets wildcard hits pollute results. This resolves two
+ * random labels below `parent` and only reports a wildcard when both probes
+ * agree on the same kind and value.
+ *
+ * A NODATA (NOERROR-empty) result is only reported as a wildcard when a DNSSEC
+ * query does NOT prove the name's non-existence: many DNSSEC zones (all
+ * Cloudflare-hosted ones) use compact denial of existence / NXNAME, answering
+ * NOERROR-empty for every nonexistent label. Treating that as a wildcard would
+ * flag every NXDOMAIN-equivalent name (including ones the user typed) as a
+ * wildcard suspect.
+ *
+ * @param {{ resolveHost: Function, query?: Function }} dns injected DoH client
+ * @param {string} parent the zone to test (apex or any level)
+ * @param {{ signal?: AbortSignal }} [opts]
+ * @returns {Promise<{ wildcard: boolean, kind: 'A'|'CNAME'|'NODATA'|null, ipv4: string[], ipv6: string[], cnames: string[] }>}
+ */
+export async function detectWildcardDeep(dns, parent, { signal } = {}) {
+  const none = { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [] };
+  const base = normalizeHostname(String(parent ?? ''), { allowSingleLabel: true });
+  if (!base || !dns || typeof dns.resolveHost !== 'function') return none;
+
+  const labels = [`${randomLabel(12)}.${base}`, `${randomLabel(12)}.${base}`];
+  const [r1, r2] = await Promise.all(labels.map((n) => dns.resolveHost(n, { signal })));
+  const p1 = classifyProbe(r1);
+  const p2 = classifyProbe(r2);
+  if (!p1.kind || p1.kind !== p2.kind) return none;
+
+  if (p1.kind === 'CNAME') {
+    return p1.cname && p1.cname === p2.cname
+      ? { wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...p1.cnames] }
+      : none;
+  }
+  if (p1.kind === 'A') {
+    return setsEqual(p1.ipv4, p2.ipv4) && setsEqual(p1.ipv6, p2.ipv6) && (p1.ipv4.length || p1.ipv6.length)
+      ? { wildcard: true, kind: 'A', ipv4: [...p1.ipv4], ipv6: [...p1.ipv6], cnames: [] }
+      : none;
+  }
+  // Both NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not prove
+  // the probe name's non-existence (compact denial of existence / NXNAME).
+  if (await dnssecProvesNonexistent(dns, labels[0], signal)) return none;
+  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [] };
+}
+
 /* ------------------------------------------------------------------------ */
 /* Client                                                                   */
 /* ------------------------------------------------------------------------ */
@@ -381,6 +505,10 @@ export class DohClient {
   #health = new Map();
   #counters = { queries: 0, cacheHits: 0, failures: 0, requests: 0, shared: 0 };
   #byResolver = new Map();
+  #balancePool = [];
+  #balancePoolExplicit = false;
+  #balanceKey = '';
+  #balanceCursor = 0;
 
   /**
    * @param {object} [opts]
@@ -404,7 +532,8 @@ export class DohClient {
     cacheSize = 5000,
     minCacheTtl = 10,
     maxCacheTtl = 300,
-    now = Date.now
+    now = Date.now,
+    balancePool = DEFAULT_BALANCE_POOL
   } = {}) {
     this.#resolverDefs = new Map();
     for (const r of Array.isArray(resolvers) ? resolvers : []) {
@@ -427,6 +556,35 @@ export class DohClient {
       this.#cache = null;
     }
     this.setChain(chain);
+    this.#setBalancePool(balancePool, balancePool !== DEFAULT_BALANCE_POOL);
+  }
+
+  /**
+   * Set the resolver pool used by bulk `balance` mode (extension). Unknown ids
+   * are skipped; if none are known the failover chain is used instead.
+   * `explicit` records whether the caller chose this pool (an explicit pool is
+   * honoured as given; the built-in default is intersected with the chain by
+   * {@link #balancedChain} so bulk queries respect the user's resolver choice).
+   * @param {Array<string|{id:string,url:string}>} pool
+   * @param {boolean} [explicit=true]
+   */
+  #setBalancePool(pool, explicit = true) {
+    const list = [];
+    for (const entry of Array.isArray(pool) ? pool : []) {
+      const r = this.#lookupResolver(entry);
+      if (r && !list.some((x) => x.id === r.id)) list.push(r);
+    }
+    this.#balancePool = list.length ? list : this.#chain;
+    this.#balancePoolExplicit = !!explicit && list.length > 0;
+    this.#recomputeBalanceKey();
+  }
+
+  /** Cache key for balanced answers: depends on the pool AND the chain, so a
+   *  chain change never reuses answers from resolvers the user removed. */
+  #recomputeBalanceKey() {
+    const pool = this.#balancePool.map((r) => r.id).slice().sort().join(',');
+    const chain = this.#chain ? this.#chain.map((r) => r.id).slice().sort().join(',') : '';
+    this.#balanceKey = `${pool};${chain}`;
   }
 
   /**
@@ -442,6 +600,9 @@ export class DohClient {
     }
     if (!list.length) throw new TypeError('DohClient: the resolver chain has no known resolver');
     this.#chain = list;
+    // The balance key includes the chain, so a chain change invalidates cached
+    // balanced answers (and the default pool now follows the new chain).
+    if (this.#balancePool.length) this.#recomputeBalanceKey();
   }
 
   /** Resolver ids of the failover chain, in configured order (extension). */
@@ -455,6 +616,11 @@ export class DohClient {
    */
   setConcurrency(n) {
     this.#limiter.setConcurrency(n);
+  }
+
+  /** Current maximum number of parallel HTTP requests (extension). */
+  get concurrency() {
+    return this.#limiter.concurrency;
   }
 
   /** Drop every cached answer (extension). */
@@ -503,9 +669,17 @@ export class DohClient {
    * @param {boolean} [opts.cd=false] checking disabled (no DNSSEC validation)
    * @param {AbortSignal} [opts.signal]
    * @param {boolean} [opts.noCache=false] bypass the cache (the answer is still stored)
+   * @param {boolean} [opts.balance=false] bulk mode: round-robin across the healthy
+   *   resolver pool (ignored when an explicit `resolver` is given)
+   * @param {number} [opts.timeoutMs] extension: per-request timeout for this query
+   *   (default: the client's `timeoutMs`), e.g. a short one for one-shot comparisons
+   * @param {number} [opts.retries] extension: extra passes for this query (default: the
+   *   client's `retries`). An identical query already in flight is shared as it is.
    * @returns {Promise<DnsResponse>} never rejects except with AbortError
    */
-  async query(name, type = 'A', { resolver, ecs = null, dnssec = false, cd = false, signal, noCache = false } = {}) {
+  async query(name, type = 'A', {
+    resolver, ecs = null, dnssec = false, cd = false, signal, noCache = false, balance = false, timeoutMs, retries
+  } = {}) {
     checkAbort(signal);
     this.#counters.queries += 1;
     const qname = canonicalName(name);
@@ -533,7 +707,10 @@ export class DohClient {
         `Invalid query: ${err.message}`, 'parse'));
     }
 
-    const scope = targets ? `r:${targets[0].id}` : `c:${this.#chain.map((r) => r.id).join(',')}`;
+    const balanced = !targets && !!balance;
+    const scope = targets
+      ? `r:${targets[0].id}`
+      : balanced ? `b:${this.#balanceKey}` : `c:${this.#chain.map((r) => r.id).join(',')}`;
     const key = `${qname}|${typeNum}|${scope}|${ecsKey(ecs)}|${dnssec ? 1 : 0}|${cd ? 1 : 0}`;
     if (this.#cache && !noCache) {
       const hit = this.#cache.get(key);
@@ -543,7 +720,13 @@ export class DohClient {
       }
     }
 
-    const ctx = { qname, typeNum, typeName, wire: base64UrlEncode(wire), targets, key, noCache };
+    // Rotate the balance pool only on a real (cache-miss) request.
+    const chainList = balanced ? this.#balancedChain() : null;
+    const ctx = {
+      qname, typeNum, typeName, wire: base64UrlEncode(wire), targets, chainList, key, noCache,
+      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : this.#timeoutMs,
+      retries: Number.isFinite(retries) && retries >= 0 ? Math.floor(retries) : this.#retries
+    };
     const response = await this.#shared(key, (sharedSignal) => this.#run(ctx, sharedSignal), signal);
     if (!response.ok) this.#counters.failures += 1;
     return { ...response };
@@ -553,12 +736,12 @@ export class DohClient {
    * Resolve a host: A and AAAA concurrently, CNAME chain in order, addresses
    * of the final target.
    * @param {string} name
-   * @param {{ signal?: AbortSignal, resolver?: string, noCache?: boolean }} [opts]
+   * @param {{ signal?: AbortSignal, resolver?: string, noCache?: boolean, balance?: boolean, timeoutMs?: number, retries?: number }} [opts]
    * @returns {Promise<HostResolution>}
    */
-  async resolveHost(name, { signal, resolver, noCache = false } = {}) {
+  async resolveHost(name, { signal, resolver, noCache = false, balance = false, timeoutMs, retries } = {}) {
     checkAbort(signal);
-    const opts = { signal, resolver, noCache };
+    const opts = { signal, resolver, noCache, balance, timeoutMs, retries };
     const [a, aaaa] = await Promise.all([this.query(name, 'A', opts), this.query(name, 'AAAA', opts)]);
     return hostResolutionFrom(name, a, aaaa);
   }
@@ -659,22 +842,73 @@ export class DohClient {
     const s = this.#resolverStats(id);
     s.fail += 1;
     s.lastError = describeError(err);
-    const h = this.#health.get(id) || { consecutive: 0, downUntil: 0 };
+    const h = this.#health.get(id) || { consecutive: 0, downUntil: 0, probeUntil: 0 };
     h.consecutive += 1;
+    h.probeUntil = 0;
     if (h.consecutive >= BREAKER_THRESHOLD) h.downUntil = this.#now() + BREAKER_COOLDOWN_MS;
     this.#health.set(id, h);
   }
 
+  /**
+   * Should `id` be treated as down right now? True while its breaker is open,
+   * and — once the cooldown is over (half-open) — while a trial request is in
+   * flight. With `claimProbe`, the caller that finds the resolver half-open and
+   * idle becomes that trial request (only one per request timeout).
+   */
+  #breakerDown(id, { claimProbe = false } = {}) {
+    const h = this.#health.get(id);
+    if (!h || h.consecutive < BREAKER_THRESHOLD) return false;
+    const now = this.#now();
+    if (h.downUntil > now || h.probeUntil > now) return true;
+    if (claimProbe) h.probeUntil = now + this.#timeoutMs;
+    return false;
+  }
+
   /** Chain order with resolvers whose breaker is open moved to the end. */
   #orderedChain() {
-    const now = this.#now();
     const up = [];
     const down = [];
-    for (const r of this.#chain) {
-      const h = this.#health.get(r.id);
-      (h && h.downUntil > now ? down : up).push(r);
-    }
+    for (const r of this.#chain) (this.#breakerDown(r.id) ? down : up).push(r);
     return [...up, ...down];
+  }
+
+  /**
+   * Balance-mode failover list: the pool rotated by a per-client cursor so each
+   * bulk query starts on a different resolver, with browser-unreliable
+   * resolvers (h3-no-cors) and breaker-open ones pushed to the end (used only
+   * as failover), followed by any remaining chain resolvers as a final failover.
+   *
+   * The rotating set respects the user's chain: the built-in default pool is
+   * intersected with the chain (so removing Google from the chain also removes
+   * it from bulk traffic, and a chain of only unusual resolvers still gets
+   * queried); an explicitly configured pool is honoured as given. When every
+   * rotating candidate is unreachable, the ordered chain is still appended, so
+   * bulk queries fail over to a working resolver instead of returning ERROR.
+   */
+  #balancedChain() {
+    const chainIds = new Set(this.#chain.map((r) => r.id));
+    let rotatingPool = this.#balancePool;
+    if (!this.#balancePoolExplicit) {
+      const inChain = this.#balancePool.filter((r) => chainIds.has(r.id));
+      rotatingPool = inChain.length ? inChain : this.#chain;
+    }
+    const reliable = [];
+    const unreliable = [];
+    const down = [];
+    for (const r of rotatingPool) {
+      if (this.#breakerDown(r.id)) down.push(r);
+      else if (r.browserReliable === false) unreliable.push(r);
+      else reliable.push(r);
+    }
+    const rot = reliable.length ? this.#balanceCursor % reliable.length : 0;
+    this.#balanceCursor = (this.#balanceCursor + 1) % 1e9;
+    const rotated = reliable.length ? [...reliable.slice(rot), ...reliable.slice(0, rot)] : [];
+    // Append the rest of the chain (breaker order) as failover, de-duplicated,
+    // so a query is never stranded when the whole rotating pool is down.
+    const listed = new Set([...rotated, ...unreliable, ...down].map((r) => r.id));
+    const chainFailover = this.#orderedChain().filter((r) => !listed.has(r.id));
+    const list = [...rotated, ...unreliable, ...chainFailover, ...down];
+    return list.length ? list : this.#orderedChain();
   }
 
   /**
@@ -749,14 +983,19 @@ export class DohClient {
   async #run(ctx, signal) {
     const started = clock();
     const explicit = !!ctx.targets;
-    const list = explicit ? ctx.targets : this.#orderedChain();
+    const list = explicit ? ctx.targets : (ctx.chainList || this.#orderedChain());
     const attempts = [];
     let dnsFailure = null;
     let lastError = null;
     let lastResolver = list[0].id;
     let pending = list;
 
-    for (let pass = 0; pass <= this.#retries && pending.length; pass += 1) {
+    // If every candidate's breaker is already open (a blocked / offline pool),
+    // one pass is enough — a retry pass would only re-send doomed requests and
+    // stall the sweep for another full timeout each.
+    const allDown = !explicit && list.every((r) => this.#breakerDown(r.id));
+    const maxRetries = allDown ? 0 : ctx.retries;
+    for (let pass = 0; pass <= maxRetries && pending.length; pass += 1) {
       if (pass > 0) {
         try {
           await sleep(this.#backoff(pass, lastError), signal);
@@ -765,20 +1004,44 @@ export class DohClient {
         }
       }
       const retryNext = [];
-      for (const r of pending) {
+      const queue = pending.slice();
+      const deferred = new Set();
+      while (queue.length) {
+        const r = queue.shift();
         let result;
         try {
-          result = await this.#limiter.run(() => this.#request(r, ctx, signal), { signal });
+          result = await this.#limiter.run(async () => {
+            // The order was fixed when the query started; the breaker may have opened (or a
+            // half-open trial started) while this query waited for a slot. Try the others
+            // first then — this resolver is still tried last in the pass if nobody answers.
+            if (!explicit) {
+              const down = this.#breakerDown(r.id, { claimProbe: true });
+              if (down && queue.length && !deferred.has(r.id)) return SKIPPED;
+            }
+            // Health is recorded before the slot is released, so the next queued request
+            // already sees an opened breaker.
+            try {
+              const out = await this.#request(r, ctx, signal);
+              this.#recordSuccess(r.id, out.elapsedMs);
+              return out;
+            } catch (err) {
+              if (!signal.aborted) this.#recordFailure(r.id, err);
+              throw err;
+            }
+          }, { signal });
         } catch (err) {
           if (signal.aborted) throw toAbortError(signal.reason);
-          this.#recordFailure(r.id, err);
           attempts.push({ resolver: r.id, ok: false, error: describeError(err), errorKind: errorKind(err) });
           lastError = err;
           lastResolver = r.id;
           if (isRetryable(err)) retryNext.push(r);
           continue;
         }
-        this.#recordSuccess(r.id, result.elapsedMs);
+        if (result === SKIPPED) {
+          deferred.add(r.id);
+          queue.push(r);
+          continue;
+        }
         const resp = messageResponse(ctx.qname, ctx.typeName, r.id, result.msg, result.elapsedMs);
         attempts.push({ resolver: r.id, ok: true, rcode: resp.rcode, elapsedMs: resp.elapsedMs });
         if (!explicit && FAILOVER_RCODES.has(resp.rcode)) {
@@ -828,7 +1091,7 @@ export class DohClient {
   async #request(r, ctx, signal) {
     this.#counters.requests += 1;
     const t0 = clock();
-    const timeoutMs = this.#timeoutMs;
+    const timeoutMs = ctx.timeoutMs;
     const timeoutCtl = new AbortController();
     const timer = setTimeout(() => {
       timeoutCtl.abort(new TimeoutError(`${r.id}: no answer within ${timeoutMs} ms`, { timeoutMs }));

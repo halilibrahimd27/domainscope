@@ -142,20 +142,20 @@ describe('DohClient.query', () => {
   test('passes DO / CD bits and ECS; exposes the echoed ECS scope, EDE and NSID', async () => {
     const { fetchImpl, calls } = mockFetch(({ query }) => ({
       answers: [{ name: 'www.amazon.com', type: 'A', ttl: 60, data: '65.9.93.124' }],
-      edns: { ecs: { address: query.edns.ecs.address, sourcePrefix: 24, scopePrefix: 20 }, ede: [{ code: 3, text: 'stale' }], nsid: 'ist03' },
+      edns: { ecs: { address: query.edns.ecs.address, sourcePrefix: 24, scopePrefix: 20 }, ede: [{ code: 3, text: 'stale' }], nsid: 'edge03' },
       ad: true
     }));
     const dns = new DohClient({ fetchImpl, ...fast() });
-    const res = await dns.query('www.amazon.com', 'A', { resolver: 'google', ecs: '85.105.12.34/24', dnssec: true, cd: true });
+    const res = await dns.query('www.amazon.com', 'A', { resolver: 'google', ecs: '198.51.100.34/24', dnssec: true, cd: true });
     const q = calls[0].query;
     assert.ok(calls[0].url.startsWith('https://dns.google/dns-query?dns='));
     assert.equal(q.edns.dnssecOk, true);
     assert.equal(q.flags.cd, true);
-    assert.equal(q.edns.ecs.subnet, '85.105.12.0/24', 'host bits zeroed');
+    assert.equal(q.edns.ecs.subnet, '198.51.100.0/24', 'host bits zeroed');
     assert.equal(res.ecs.scopePrefix, 20);
-    assert.equal(res.ecs.subnet, '85.105.12.0/24');
+    assert.equal(res.ecs.subnet, '198.51.100.0/24');
     assert.deepEqual(res.ede.map((e) => e.code), [3]);
-    assert.equal(res.nsid, 'ist03');
+    assert.equal(res.nsid, 'edge03');
     assert.equal(res.ad, true);
     assert.equal(res.flags.ad, true);
   });
@@ -190,9 +190,9 @@ describe('DohClient.query', () => {
   test('IDN names are queried in punycode', async () => {
     const { fetchImpl, calls } = mockFetch(() => ({ rcode: 'NXDOMAIN' }));
     const dns = new DohClient({ fetchImpl, ...fast() });
-    const res = await dns.query('Örnek.com.tr', 'A');
-    assert.equal(res.name, 'xn--rnek-4qa.com.tr');
-    assert.equal(calls[0].name, 'xn--rnek-4qa.com.tr');
+    const res = await dns.query('Bücher.example', 'A');
+    assert.equal(res.name, 'xn--bcher-kva.example');
+    assert.equal(calls[0].name, 'xn--bcher-kva.example');
     assert.equal(res.rcode, 'NXDOMAIN');
   });
 
@@ -250,11 +250,11 @@ describe('failover and retries', () => {
     });
     const dns = new DohClient({ fetchImpl, ...fast() });
     const ok = await dns.query('example.com');
-    assert.equal(ok.resolver, 'quad9');
+    assert.equal(ok.resolver, DEFAULT_CHAIN[2]);
     assert.equal(ok.rcode, 'NOERROR');
 
-    const { fetchImpl: allFail, calls } = mockFetch(({ resolver }) => (resolver === 'quad9'
-      ? Promise.reject(new TypeError('h3 no cors'))
+    const { fetchImpl: allFail, calls } = mockFetch(({ resolver }) => (resolver === DEFAULT_CHAIN[2]
+      ? Promise.reject(new TypeError('Failed to fetch'))
       : { rcode: 'SERVFAIL', edns: { ede: [{ code: 6, text: 'bogus' }] } }));
     const dns2 = new DohClient({ fetchImpl: allFail, ...fast() });
     const bogus = await dns2.query('dnssec-failed.org');
@@ -262,8 +262,8 @@ describe('failover and retries', () => {
     assert.equal(bogus.rcode, 'SERVFAIL');
     assert.equal(bogus.resolver, 'cloudflare');
     assert.equal(bogus.ede[0].code, 6);
-    // one pass only: a DNS answer exists, so the quad9 transport failure is not retried
-    assert.deepEqual(calls.map((c) => c.resolver), ['cloudflare', 'google', 'quad9', 'dnssb']);
+    // one pass only: a DNS answer exists, so the transport failure of the third resolver is not retried
+    assert.deepEqual(calls.map((c) => c.resolver), [...DEFAULT_CHAIN]);
   });
 
   test('explicit resolver: no failover, SERVFAIL returned as-is', async () => {
@@ -316,7 +316,7 @@ describe('failover and retries', () => {
     const res = await dns.query('example.com');
     assert.equal(res.ok, true);
     assert.equal(res.resolver, 'cloudflare');
-    assert.deepEqual(calls.map((c) => c.resolver), ['cloudflare', 'google', 'quad9', 'dnssb', 'cloudflare']);
+    assert.deepEqual(calls.map((c) => c.resolver), [...DEFAULT_CHAIN, 'cloudflare']);
   });
 
   test('all transport failures → ok=false with the last error; no throw', async () => {
@@ -364,7 +364,7 @@ describe('failover and retries', () => {
     });
     const dns = new DohClient({ fetchImpl, ...fast() });
     const res = await dns.query('example.com');
-    assert.equal(res.resolver, 'quad9');
+    assert.equal(res.resolver, DEFAULT_CHAIN[2]);
     assert.deepEqual(res.attempts.slice(0, 2).map((a) => a.errorKind), ['parse', 'parse']);
   });
 

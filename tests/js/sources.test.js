@@ -54,7 +54,7 @@ const crtRows = [
 
 describe('SOURCES', () => {
   test('catalogue fields', () => {
-    assert.deepEqual(SOURCES.map((s) => s.id), ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx']);
+    assert.deepEqual(SOURCES.map((s) => s.id), ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc']);
     for (const s of SOURCES) {
       for (const k of ['id', 'name', 'homepage', 'noteKey']) assert.equal(typeof s[k], 'string', `${s.id}.${k}`);
       for (const k of ['providesIps', 'providesCerts', 'defaultEnabled']) assert.equal(typeof s[k], 'boolean');
@@ -71,7 +71,7 @@ describe('crt.sh', () => {
   test('URL, newline-separated SANs, scope filtering, wildcard bases, dedupe by serial+issuer, UTC dates', async () => {
     const { fetchImpl, calls } = router({ [CRT]: () => crtRows });
     const r = await fetchSource('crtsh', 'https://Example.com.tr/', { fetchImpl });
-    assert.equal(calls[0].url, 'https://crt.sh/?q=%25.example.com.tr&output=json&exclude=expired');
+    assert.equal(calls[0].url, 'https://crt.sh/?q=%25.example.com.tr&output=json&exclude=expired&deduplicate=Y');
     assert.equal(r.ok, true);
     assert.equal(r.source, 'crtsh');
     assert.equal(r.domain, 'example.com.tr');
@@ -106,25 +106,26 @@ describe('crt.sh', () => {
   test('includeExpired drops &exclude=expired; empty results are fine', async () => {
     const { fetchImpl, calls } = router({ [CRT]: () => [] });
     const r = await fetchSource('crtsh', 'example.com', { fetchImpl, includeExpired: true });
-    assert.equal(calls[0].url, 'https://crt.sh/?q=%25.example.com&output=json');
+    assert.equal(calls[0].url, 'https://crt.sh/?q=%25.example.com&output=json&deduplicate=Y');
     assert.equal(r.ok, true);
     assert.deepEqual(r.names, []);
   });
 
-  test('retries once on 5xx / network errors, then succeeds', async () => {
+  test('retries on 5xx / network errors, then succeeds', async () => {
     const { fetchImpl, calls } = router({ [CRT]: (url, n) => (n === 1 ? new Response('Bad gateway', { status: 502 }) : crtRows.slice(0, 1)) });
     const r = await fetchSource('crtsh', 'example.com.tr', { fetchImpl, retryDelayMs: 1 });
     assert.equal(calls.length, 2);
     assert.equal(r.ok, true);
+    assert.equal(r.attempts, 2);
     assert.deepEqual(r.names, ['e-kutup.example.com.tr', 'yardim.example.com.tr']);
 
-    // browsers see crt.sh's CORS-less 502 pages as a network TypeError
+    // browsers see crt.sh's CORS-less 502 pages as a network TypeError: 4 tries + the identity fallback
     const { fetchImpl: f2, calls: c2 } = router({ [CRT]: () => { throw new TypeError('Failed to fetch'); } });
     const r2 = await fetchSource('crtsh', 'example.com', { fetchImpl: f2, retryDelayMs: 1 });
-    assert.equal(c2.length, 2);
+    assert.equal(c2.length, 5);
     assert.equal(r2.ok, false);
-    assert.equal(r2.errorKind, 'network');
-    assert.match(r2.error, /^crt\.sh did not respond \(Failed to fetch\)\. crt\.sh is often overloaded/);
+    assert.equal(r2.errorKind, 'unavailable');
+    assert.match(r2.error, /^crt\.sh is temporarily unavailable: 5 attempts over \d+ s failed \(network error ×5\)\. Its error pages carry no CORS header/);
   });
 
   test('includeExpired: when the full history fails, fall back to unexpired certificates (partial)', async () => {
@@ -133,21 +134,23 @@ describe('crt.sh', () => {
     });
     const r = await fetchSource('crtsh', 'example.com.tr', { fetchImpl, includeExpired: true, retryDelayMs: 1 });
     assert.deepEqual(calls.map((c) => c.url), [
-      'https://crt.sh/?q=%25.example.com.tr&output=json',
-      'https://crt.sh/?q=%25.example.com.tr&output=json&exclude=expired'
+      'https://crt.sh/?q=%25.example.com.tr&output=json&deduplicate=Y',
+      'https://crt.sh/?q=%25.example.com.tr&output=json&deduplicate=Y',
+      'https://crt.sh/?q=%25.example.com.tr&output=json&exclude=expired&deduplicate=Y'
     ]);
     assert.equal(r.ok, true);
     assert.equal(r.partial, true);
-    assert.equal(r.errorKind, 'http');
-    assert.equal(r.error, 'Expired certificates omitted: the full crt.sh history failed (HTTP 502)');
+    assert.equal(r.queryForm, 'subdomains');
+    assert.equal(r.errorKind, 'unavailable');
+    assert.equal(r.error, 'Expired certificates omitted: the full crt.sh history failed (HTTP 502 ×2)');
     assert.deepEqual(r.names, ['e-kutup.example.com.tr', 'yardim.example.com.tr']);
 
-    // the fallback failing too → a plain failure
+    // the fallbacks failing too → a plain failure (2 × history, 2 × unexpired, 1 × identity)
     const { fetchImpl: f2, calls: c2 } = router({ [CRT]: () => { throw new TypeError('Failed to fetch'); } });
     const r2 = await fetchSource('crtsh', 'example.com', { fetchImpl: f2, includeExpired: true, retryDelayMs: 1 });
-    assert.equal(c2.length, 2);
+    assert.equal(c2.length, 5);
     assert.equal(r2.ok, false);
-    assert.equal(r2.errorKind, 'network');
+    assert.equal(r2.errorKind, 'unavailable');
 
     // non-transient errors do not trigger the fallback
     const { fetchImpl: f3, calls: c3 } = router({ [CRT]: () => new Response('not json') });
@@ -156,13 +159,13 @@ describe('crt.sh', () => {
     assert.equal(r3.errorKind, 'parse');
   });
 
-  test('gives up after one retry; 4xx and bad JSON are not retried', async () => {
+  test('gives up after 4 tries + the identity fallback; 4xx and bad JSON are not retried', async () => {
     const { fetchImpl, calls } = router({ [CRT]: () => new Response('<html>503</html>', { status: 503 }) });
     const r = await fetchSource('crtsh', 'example.com', { fetchImpl, retryDelayMs: 1 });
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 5);
     assert.equal(r.ok, false);
-    assert.equal(r.errorKind, 'http');
-    assert.equal(r.error, 'HTTP 503');
+    assert.equal(r.errorKind, 'unavailable');
+    assert.match(r.error, /^crt\.sh is temporarily unavailable: 5 attempts over \d+ s failed \(HTTP 503 ×5\)\.$/);
 
     const { fetchImpl: f2, calls: c2 } = router({ [CRT]: () => new Response('<html>oops</html>') });
     const r2 = await fetchSource('crtsh', 'example.com', { fetchImpl: f2, retryDelayMs: 1 });
@@ -258,25 +261,25 @@ describe('Cert Spotter', () => {
 describe('HackerTarget', () => {
   test('host,ip lines → names + IP hints (in scope only)', async () => {
     const body = [
-      'sahibinden.com,85.153.138.111',
-      '000.sahibinden.com,104.18.33.183',
-      'API.Sahibinden.com,172.64.154.73',
-      'mail.sahibinden.com,2a00:1450:4017:80b::200e',
-      'nohost.sahibinden.com',
-      'sahibinden.com.evil.net,1.2.3.4',
-      'bad.sahibinden.com,999.1.1.1',
+      'example.org,203.0.113.10',
+      '000.example.org,104.18.33.183',
+      'API.Example.org,172.64.154.73',
+      'mail.example.org,2001:db8:4017:80b::200e',
+      'nohost.example.org',
+      'example.org.evil.net,1.2.3.4',
+      'bad.example.org,999.1.1.1',
       ''
     ].join('\n');
     const { fetchImpl, calls } = router({ [HT]: () => new Response(body, { headers: { 'content-type': 'text/plain' } }) });
-    const r = await fetchSource('hackertarget', 'sahibinden.com', { fetchImpl });
-    assert.equal(calls[0].url, 'https://api.hackertarget.com/hostsearch/?q=sahibinden.com');
+    const r = await fetchSource('hackertarget', 'example.org', { fetchImpl });
+    assert.equal(calls[0].url, 'https://api.hackertarget.com/hostsearch/?q=example.org');
     assert.equal(r.ok, true);
-    assert.deepEqual(r.names, ['sahibinden.com', '000.sahibinden.com', 'api.sahibinden.com', 'bad.sahibinden.com', 'mail.sahibinden.com', 'nohost.sahibinden.com']);
+    assert.deepEqual(r.names, ['example.org', '000.example.org', 'api.example.org', 'bad.example.org', 'mail.example.org', 'nohost.example.org']);
     assert.deepEqual(r.ipHints, [
-      { name: 'sahibinden.com', ip: '85.153.138.111', source: 'hackertarget' },
-      { name: '000.sahibinden.com', ip: '104.18.33.183', source: 'hackertarget' },
-      { name: 'api.sahibinden.com', ip: '172.64.154.73', source: 'hackertarget' },
-      { name: 'mail.sahibinden.com', ip: '2a00:1450:4017:80b::200e', source: 'hackertarget' }
+      { name: 'example.org', ip: '203.0.113.10', source: 'hackertarget' },
+      { name: '000.example.org', ip: '104.18.33.183', source: 'hackertarget' },
+      { name: 'api.example.org', ip: '172.64.154.73', source: 'hackertarget' },
+      { name: 'mail.example.org', ip: '2001:db8:4017:80b::200e', source: 'hackertarget' }
     ]);
   });
 
@@ -317,9 +320,12 @@ describe('Anubis', () => {
     assert.deepEqual(r.wildcardBases, ['cdn.example.com']);
   });
 
-  test('non-array payload → parse error; HTTP errors reported', async () => {
+  test('JSON error object → service error; non-array payload → parse error; HTTP errors reported', async () => {
     const r = await fetchSource('anubis', 'example.com', { fetchImpl: router({ [AN]: () => ({ error: 'nope' }) }).fetchImpl });
-    assert.equal(r.errorKind, 'parse');
+    assert.equal(r.errorKind, 'http');
+    assert.equal(r.error, 'Anubis: nope');
+    const r1 = await fetchSource('anubis', 'example.com', { fetchImpl: router({ [AN]: () => ({ names: 1 }) }).fetchImpl });
+    assert.equal(r1.errorKind, 'parse');
     const r2 = await fetchSource('anubis', 'example.com', { fetchImpl: router({ [AN]: () => new Response('gone', { status: 404 }) }).fetchImpl });
     assert.equal(r2.ok, false);
     assert.equal(r2.error, 'HTTP 404: gone');
@@ -402,16 +408,25 @@ describe('fetchAllSources', () => {
     }]),
     [HT]: () => new Response('api.example.com.tr,192.0.2.10\nyardim.example.com.tr,104.16.1.1'),
     [AN]: () => ['api.example.com.tr', 'anubis-only.example.com.tr'],
-    [OTX]: () => new Response(JSON.stringify({ detail: 'limited' }), { status: 429 })
+    [OTX]: () => new Response(JSON.stringify({ detail: 'limited' }), { status: 429 }),
+    'https://ip.thc.org/': () => ({
+      matching_records: 2, next_page_state: '',
+      domains: [{ domain: 'thc-only.example.com.tr', last_seen_on: '2024-12-11' }, { domain: 'api.example.com.tr', last_seen_on: '2026-09-20' }]
+    })
   });
 
   test('parallel fetch, results in source order, name → sources map, merged hints and certs', async () => {
     const { fetchImpl } = router(routes());
     const seen = [];
     const out = await fetchAllSources('example.com.tr', { fetchImpl, onResult: (r) => seen.push(r.source) });
-    assert.deepEqual(out.results.map((r) => r.source), ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx']);
-    assert.deepEqual(seen.sort(), ['anubis', 'certspotter', 'crtsh', 'hackertarget', 'otx']);
+    assert.deepEqual(out.results.map((r) => r.source), ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc']);
+    assert.deepEqual(seen.sort(), ['anubis', 'certspotter', 'crtsh', 'hackertarget', 'otx', 'thc']);
     assert.equal(out.results.find((r) => r.source === 'otx').errorKind, 'rate-limit');
+    assert.deepEqual([...out.names.get('thc-only.example.com.tr')], ['thc']);
+    assert.deepEqual(out.lastSeen, { 'api.example.com.tr': '2026-09-20', 'thc-only.example.com.tr': '2024-12-11' });
+    assert.deepEqual(out.health.map((s) => [s.source, s.state]), [
+      ['crtsh', 'ok'], ['certspotter', 'ok'], ['hackertarget', 'ok'], ['anubis', 'ok'], ['otx', 'rate-limited'], ['thc', 'ok']
+    ]);
     assert.ok(out.names instanceof Map);
     assert.deepEqual([...out.names.get('yardim.example.com.tr')].sort(), ['certspotter', 'crtsh', 'hackertarget']);
     assert.deepEqual([...out.names.get('anubis-only.example.com.tr')], ['anubis']);

@@ -1,0 +1,154 @@
+{
+  "name": "m05-untrusted-root",
+  "capturedAt": "2026-09-24T06:52:25.411Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "locations": [
+      {
+        "tags": [
+          "eyeball-network"
+        ]
+      }
+    ],
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "untrusted-root.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "244",
+      "x-ratelimit-reset": "3569",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2Kl4uAV6m0k29dnsf00021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2Kl4uAV6m0k29dnsf00021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:25.411Z",
+    "updatedAt": "2026-09-24T06:52:25.411Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "locations": [
+      {
+        "tags": [
+          "eyeball-network"
+        ]
+      }
+    ],
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "untrusted-root.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "EU",
+          "region": "Western Europe",
+          "country": "AT",
+          "city": "Vienna",
+          "asn": 8412,
+          "network": "T-Mobile",
+          "tags": [
+            "eyeball-network"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2Kl4uAV6m0k29dnsf00021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:25.411Z",
+      "updatedAt": "2026-09-24T06:52:25.982Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "locations": [
+        {
+          "tags": [
+            "eyeball-network"
+          ]
+        }
+      ],
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "untrusted-root.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "AT",
+            "city": "Vienna",
+            "asn": 8412,
+            "network": "T-Mobile",
+            "tags": [
+              "eyeball-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 544,
+              "dns": null,
+              "tcp": 133,
+              "tls": 278,
+              "firstByte": 133,
+              "download": 0
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "SELF_SIGNED_CERT_IN_CHAIN",
+              "createdAt": "2026-09-22T21:00:16.000Z",
+              "expiresAt": "2028-09-21T21:00:16.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "BadSSL",
+                "CN": "BadSSL Untrusted Root Certificate Authority"
+              },
+              "subject": {
+                "CN": "*.badssl.com",
+                "alt": "DNS:*.badssl.com, DNS:badssl.com"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "A8:A7:6D:23:D5:0F:16:66",
+              "fingerprint256": "21:B7:EA:CA:E5:0A:BE:A4:04:16:4E:4C:23:D7:FC:D0:55:21:86:F9:B3:05:EE:E2:74:3B:E1:07:9D:80:A8:34"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

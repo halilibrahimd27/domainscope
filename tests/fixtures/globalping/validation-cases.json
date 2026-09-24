@@ -1,0 +1,1061 @@
+{
+  "name": "validation-cases",
+  "capturedAt": "2026-09-24T06:51:00.000Z",
+  "note": "Every POST /v1/measurements the research and critic runs sent that the API refused for free (no X-RateLimit headers, remaining unchanged). Entries with \"reconstructed\": true were verified live by the critic (C.1) but their bodies were not saved; their body is the verbatim message every private-target refusal carried. \"accepted\" lists targets the API took AND CHARGED although no probe can reach them.",
+  "cases": [
+    {
+      "name": "v-bad-host-with-port",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "github.com:443",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.request.host": "\"measurementOptions.request.host\" must contain a valid domain name"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-benchmark",
+      "request": {
+        "type": "http",
+        "target": "198.18.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-cgnat",
+      "request": {
+        "type": "http",
+        "target": "100.64.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-ip-with-ipversion",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          },
+          "ipVersion": 4
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.ipVersion": "\"measurementOptions.ipVersion\" is not allowed when target is not a domain"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-limit-and-location-limit",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 2,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        },
+        "locations": [
+          {
+            "country": "DE",
+            "limit": 1
+          }
+        ]
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "locations.0.limit": "\"locations[0].limit\" is not allowed when a global limit is set"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-linklocal",
+      "request": {
+        "type": "http",
+        "target": "169.254.169.254",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-localhost-name",
+      "request": {
+        "type": "http",
+        "target": "localhost",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" does not match any of the allowed types"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-loopback",
+      "request": {
+        "type": "http",
+        "target": "127.0.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-multicast",
+      "request": {
+        "type": "http",
+        "target": "224.0.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-noprobes-country",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        },
+        "locations": [
+          {
+            "country": "AQ"
+          }
+        ]
+      },
+      "status": 422,
+      "body": {
+        "error": {
+          "type": "no_probes_found",
+          "message": "No matching IPv4 probes available."
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-reserved240",
+      "request": {
+        "type": "http",
+        "target": "240.0.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-rfc1918-10",
+      "request": {
+        "type": "http",
+        "target": "10.0.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-rfc1918-172",
+      "request": {
+        "type": "http",
+        "target": "172.16.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-rfc1918-192168",
+      "request": {
+        "type": "http",
+        "target": "192.168.1.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-testnet1",
+      "request": {
+        "type": "http",
+        "target": "192.0.2.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-testnet3",
+      "request": {
+        "type": "http",
+        "target": "203.0.113.5",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-v6-doc",
+      "request": {
+        "type": "http",
+        "target": "2001:db8::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-v6-loopback",
+      "request": {
+        "type": "http",
+        "target": "::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-v6-mapped",
+      "request": {
+        "type": "http",
+        "target": "::ffff:10.0.0.1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-v6-ula",
+      "request": {
+        "type": "http",
+        "target": "fd00::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v-zero",
+      "request": {
+        "type": "http",
+        "target": "0.0.0.0",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-host-ip",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "140.82.121.4",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.request.host": "\"measurementOptions.request.host\" must contain a valid domain name"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-host-underscore",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "_x.github.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.request.host": "\"measurementOptions.request.host\" must contain a valid domain name"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-host-wildcard",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "*.github.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.request.host": "\"measurementOptions.request.host\" must contain a valid domain name"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-limit-51",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 51,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "github.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "limit": "\"limit\" must be less than or equal to 50"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-method-get-proto-http2-port0",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTP3",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "github.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.protocol": "\"measurementOptions.protocol\" must be one of [HTTP, HTTPS, HTTP2]"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-timeout-4",
+      "request": {
+        "type": "http",
+        "target": "140.82.121.4",
+        "limit": 1,
+        "timeout": 4,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "github.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "timeout": "\"timeout\" must be greater than or equal to 5"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "v2-v6-literal-ipversion",
+      "request": {
+        "type": "http",
+        "target": "2606:4700::6810:7c60",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "ipVersion": 6,
+          "request": {
+            "method": "HEAD",
+            "host": "www.cloudflare.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.ipVersion": "\"measurementOptions.ipVersion\" is not allowed when target is not a domain"
+          }
+        },
+        "links": {
+          "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+        }
+      }
+    },
+    {
+      "name": "critic-test-net-2",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "198.51.100.7",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-ietf-protocol-assignments-192-0-0-0-24",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "192.0.0.8",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-limited-broadcast",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "255.255.255.255",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-ipv6-link-local",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "fe80::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-ipv6-multicast",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "ff02::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-ipv6-unspecified",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "::",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "critic-ipv6-discard-only-100-64",
+      "reconstructed": true,
+      "request": {
+        "type": "http",
+        "target": "100::1",
+        "limit": 1,
+        "measurementOptions": {
+          "protocol": "HTTPS",
+          "port": 443,
+          "request": {
+            "method": "HEAD",
+            "host": "example.com",
+            "path": "/"
+          }
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must not be a private hostname"
+          }
+        }
+      }
+    }
+  ],
+  "accepted": [
+    {
+      "target": "3fff::1",
+      "status": 202,
+      "cost": 1,
+      "measurement": "m25-v6-doc-enetunreach.json"
+    }
+  ]
+}

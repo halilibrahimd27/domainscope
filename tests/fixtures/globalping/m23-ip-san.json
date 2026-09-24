@@ -1,0 +1,101 @@
+{
+  "name": "m23-ip-san",
+  "capturedAt": "2026-09-24T06:55:55.957Z",
+  "request": {
+    "type": "http",
+    "target": "1.1.1.1",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "one.one.one.one",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "223",
+      "x-ratelimit-reset": "3359",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "21V7t2Vbhc1ZeCrZF00021C1P",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "21V7t2Vbhc1ZeCrZF00021C1P",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:55:55.957Z",
+      "updatedAt": "2026-09-24T06:55:56.186Z",
+      "target": "1.1.1.1",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "one.one.one.one"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "1.1.1.1",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 25,
+              "dns": null,
+              "tcp": 2,
+              "tls": 7,
+              "firstByte": 16,
+              "download": 0
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_256_GCM_SHA384",
+              "createdAt": "2025-12-31T19:20:01.000Z",
+              "expiresAt": "2026-12-21T19:20:01.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "SSL Corp",
+                "CN": "SSL.com SSL Intermediate CA ECC R2"
+              },
+              "subject": {
+                "CN": "cloudflare-dns.com",
+                "alt": "DNS:cloudflare-dns.com, DNS:*.cloudflare-dns.com, IP Address:1.0.0.1, IP Address:1.1.1.1, IP Address:162.159.36.1, IP Address:162.159.46.1, IP Address:2606:4700:4700:0:0:0:0:1001, IP Address:2606:4700:4700:0:0:0:0:1111, IP Address:2606:4700:4700:0:0:0:0:64, IP Address:2606:4700:4700:0:0:0:0:6400, DNS:one.one.one.one"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "4E:D0:33:04:C4:6B:87:A8:C2:EB:55:69:DB:9E:BA:0C",
+              "fingerprint256": "E3:B0:28:26:78:9D:65:3D:22:4D:3E:DA:CB:E4:E8:77:CB:72:86:FC:4C:92:26:72:F6:22:67:41:CA:57:AD:65"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "v-limit-and-location-limit-400",
+  "capturedAt": "2026-09-24T06:51:29.091Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 2,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "example.com",
+        "path": "/"
+      }
+    },
+    "locations": [
+      {
+        "country": "DE",
+        "limit": 1
+      }
+    ]
+  },
+  "post": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "error": {
+        "type": "validation_error",
+        "message": "Parameter validation failed.",
+        "params": {
+          "locations.0.limit": "\"locations[0].limit\" is not allowed when a global limit is set"
+        }
+      },
+      "links": {
+        "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "poll-429",
+  "capturedAt": "2026-09-24T06:49:00.000Z",
+  "synthetic": true,
+  "request": {
+    "method": "GET",
+    "path": "/v1/measurements/2BQe3etLekZmRGfMF00021C1L"
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "retry-after": "5"
+    },
+    "body": {
+      "error": {
+        "type": "too_many_requests",
+        "message": "Too many requests. Please retry in 5 seconds."
+      }
+    }
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "name": "m24-not-tls",
+  "capturedAt": "2026-09-24T06:55:56.321Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 80,
+      "request": {
+        "method": "HEAD",
+        "host": "http.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "222",
+      "x-ratelimit-reset": "3358",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "243iGekdndBucV9f800021C1P",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "243iGekdndBucV9f800021C1P",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:55:56.321Z",
+    "updatedAt": "2026-09-24T06:55:56.321Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 80,
+      "request": {
+        "host": "http.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "AS",
+          "region": "Eastern Asia",
+          "country": "JP",
+          "city": "Tokyo",
+          "asn": 31898,
+          "network": "Oracle",
+          "tags": [
+            "eyeball-network"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "243iGekdndBucV9f800021C1P",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:55:56.321Z",
+      "updatedAt": "2026-09-24T06:55:56.848Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 80,
+        "request": {
+          "host": "http.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "eyeball-network"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "target",
+            "resolvedAddress": null,
+            "rawOutput": "80B847D76C7F0000:error:0A00010B:SSL routines:tls_validate_record_header:wrong version number:../deps/openssl/openssl/ssl/record/methods/tlsany_meth.c:77:\n",
+            "truncated": false,
+            "statusCode": null,
+            "statusCodeName": null,
+            "timings": {
+              "total": null,
+              "dns": null,
+              "tcp": null,
+              "tls": null,
+              "firstByte": null,
+              "download": null
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

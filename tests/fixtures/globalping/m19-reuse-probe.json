@@ -1,0 +1,98 @@
+{
+  "name": "m19-reuse-probe",
+  "capturedAt": "2026-09-24T06:54:53.069Z",
+  "request": {
+    "type": "http",
+    "target": "www.cloudflare.com",
+    "locations": "2kFpoPiB5Y5SC1VdU00021C1N",
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "path": "/"
+      },
+      "ipVersion": 4
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "227",
+      "x-ratelimit-reset": "3422",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "20NxrG4ySQTJSvwo000021C1O",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "20NxrG4ySQTJSvwo000021C1O",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:54:53.069Z",
+      "updatedAt": "2026-09-24T06:54:53.311Z",
+      "target": "www.cloudflare.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 20473,
+            "network": "The Constant Company",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "104.16.124.96",
+            "truncated": false,
+            "statusCode": 403,
+            "statusCodeName": "Forbidden",
+            "timings": {
+              "total": 19,
+              "dns": 2,
+              "tcp": 3,
+              "tls": 8,
+              "firstByte": 6,
+              "download": 0
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_256_GCM_SHA384",
+              "createdAt": "2026-09-16T13:01:15.000Z",
+              "expiresAt": "2026-12-15T14:00:55.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "Google Trust Services",
+                "CN": "WE1"
+              },
+              "subject": {
+                "CN": "www.cloudflare.com",
+                "alt": "DNS:www.cloudflare.com, DNS:timeline.www.cloudflare.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "94:8B:98:D3:26:10:07:8C:13:84:8B:58:6D:E3:B2:3F",
+              "fingerprint256": "80:2C:43:B9:F4:A8:4D:41:07:A1:F0:6D:DD:3B:D7:3C:69:89:7F:67:5C:A2:61:49:09:26:F1:EF:64:3E:E4:50"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

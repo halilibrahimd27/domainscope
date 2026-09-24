@@ -1,0 +1,34 @@
+{
+  "name": "v-bad-host-400",
+  "capturedAt": "2026-09-24T06:51:29.019Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com:443",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "error": {
+        "type": "validation_error",
+        "message": "Parameter validation failed.",
+        "params": {
+          "measurementOptions.request.host": "\"measurementOptions.request.host\" must contain a valid domain name"
+        }
+      },
+      "links": {
+        "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+      }
+    }
+  }
+}

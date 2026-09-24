@@ -1,0 +1,35 @@
+{
+  "name": "v-ip-with-ipversion-400",
+  "capturedAt": "2026-09-24T06:51:28.819Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "example.com",
+        "path": "/"
+      },
+      "ipVersion": 4
+    }
+  },
+  "post": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "error": {
+        "type": "validation_error",
+        "message": "Parameter validation failed.",
+        "params": {
+          "measurementOptions.ipVersion": "\"measurementOptions.ipVersion\" is not allowed when target is not a domain"
+        }
+      },
+      "links": {
+        "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+      }
+    }
+  }
+}

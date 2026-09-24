@@ -1,0 +1,35 @@
+{
+  "name": "v-no-probes-422",
+  "capturedAt": "2026-09-24T06:51:28.923Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "example.com",
+        "path": "/"
+      }
+    },
+    "locations": [
+      {
+        "country": "AQ"
+      }
+    ]
+  },
+  "post": {
+    "status": 422,
+    "headers": {},
+    "body": {
+      "error": {
+        "type": "no_probes_found",
+        "message": "No matching IPv4 probes available."
+      },
+      "links": {
+        "documentation": "https://globalping.io/docs/api.globalping.io#post-/v1/measurements"
+      }
+    }
+  }
+}

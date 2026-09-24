@@ -175,6 +175,39 @@ export const MAX_INLINE_LENGTH = 8000;
 // A script / names-file token: a plain relative or absolute path of letters,
 // digits, '_', '.', '/', '-' that does not start with '-' (never an option).
 const PATH_TOKEN = /^(?!-)[A-Za-z0-9_./-]{1,200}$/;
+/** The CLI's default `-p` value: a port list of exactly this is omitted. */
+const CLI_DEFAULT_PORT = 443;
+
+/**
+ * Validate the optional `-p` / `--cert` / `--json` options into command tokens.
+ * Every rejected value is reported in `dropped` ('cert', 'json', 'ports:<value>'),
+ * never quoted into the command.
+ * @param {{ cert?: unknown, json?: unknown, ports?: unknown }} opts
+ * @returns {{ tokens: string[], dropped: string[] }} tokens in CLI order: -p, --cert, --json
+ */
+function validateOptions({ cert = null, json = null, ports = null }) {
+  const tokens = [];
+  const dropped = [];
+  if (ports !== null && ports !== undefined) {
+    const list = [];
+    for (const p of Array.isArray(ports) ? ports : [ports]) {
+      if (Number.isInteger(p) && p >= 1 && p <= 65535) {
+        if (!list.includes(p)) list.push(p);
+      } else {
+        dropped.push(`ports:${String(p)}`);
+      }
+    }
+    if (list.length && !(list.length === 1 && list[0] === CLI_DEFAULT_PORT)) tokens.push('-p', list.join(','));
+  }
+  const pathOpt = (value, flag, label) => {
+    if (value === null || value === undefined) return;
+    if (typeof value === 'string' && PATH_TOKEN.test(value)) tokens.push(flag, value);
+    else dropped.push(label);
+  };
+  pathOpt(cert, '--cert', 'cert');
+  pathOpt(json, '--json', 'json');
+  return { tokens, dropped };
+}
 
 /**
  * Build the origin-sweep command and report what was kept / dropped.
@@ -197,34 +230,48 @@ const PATH_TOKEN = /^(?!-)[A-Za-z0-9_./-]{1,200}$/;
  *   path, validated like `script`)
  * @param {number} [opts.maxInlineNames=200] more names than this → names file
  * @param {number} [opts.maxLength=8000] a longer inline command → names file
+ * @param {string|null} [opts.cert=null] `--cert <file>`: the new certificate
+ *   the CLI compares against (a plain path token like `script`; anything else
+ *   is dropped and reported as `'cert'` in `dropped.options`)
+ * @param {string|null} [opts.json=null] `--json <file>`: where the CLI writes
+ *   its JSON report (plain path token; otherwise dropped as `'json'`)
+ * @param {number[]|null} [opts.ports=null] `-p 443,8443`: integers 1–65535,
+ *   deduped in order; omitted when null, empty or exactly `[443]` (the CLI
+ *   default); every other value is dropped as `'ports:<value>'`
  * @returns {{ command: string|null, targets: string[], names: string[],
- *   dropped: { targets: string[], names: string[] }, length: number,
+ *   dropped: { targets: string[], names: string[], options: string[] }, length: number,
  *   namesInline: boolean, namesFile: string|null }}
  *   `command` is null when no valid target or no valid name survives; `length`
  *   is its length (0 when null); `namesFile` is the file the command reads the
- *   names from (null when they are inline).
+ *   names from (null when they are inline). The options follow the names (or
+ *   the names file) in the order `-p`, `--cert`, `--json`: argparse's
+ *   `nargs='+'` for `-n` stops at the next option. Without the three options
+ *   the command is byte-identical to earlier versions and `dropped.options` is [].
  */
 export function buildSweepCommand({
   targets = [], names = [], script = DEFAULT_SCRIPT, shell = 'posix',
-  namesFile = DEFAULT_NAMES_FILE, maxInlineNames = MAX_INLINE_NAMES, maxLength = MAX_INLINE_LENGTH
+  namesFile = DEFAULT_NAMES_FILE, maxInlineNames = MAX_INLINE_NAMES, maxLength = MAX_INLINE_LENGTH,
+  cert = null, json = null, ports = null
 } = {}) {
   const t = validateTargets(targets);
   const n = validateNames(names);
-  const dropped = { targets: t.dropped, names: n.dropped };
+  const opts = validateOptions({ cert, json, ports });
+  const dropped = { targets: t.dropped, names: n.dropped, options: opts.dropped };
   if (!t.valid.length || !n.valid.length) {
     return { command: null, targets: t.valid, names: n.valid, dropped, length: 0, namesInline: true, namesFile: null };
   }
   const q = (v) => quoteArg(v, shell);
   const pathTok = (v, fallback) => (typeof v === 'string' && PATH_TOKEN.test(v) ? v : fallback);
   const head = `${q(pathTok(script, DEFAULT_SCRIPT))} -t ${t.valid.map(q).join(' ')} -n `;
-  const inline = `${head}${n.valid.map(q).join(' ')}`;
+  const tail = opts.tokens.length ? ` ${opts.tokens.map(q).join(' ')}` : '';
+  const inline = `${head}${n.valid.map(q).join(' ')}${tail}`;
   const nameCap = Number.isFinite(maxInlineNames) && maxInlineNames >= 0 ? maxInlineNames : Infinity;
   const lenCap = Number.isFinite(maxLength) && maxLength > 0 ? maxLength : Infinity;
   if (n.valid.length <= nameCap && inline.length <= lenCap) {
     return { command: inline, targets: t.valid, names: n.valid, dropped, length: inline.length, namesInline: true, namesFile: null };
   }
   const file = pathTok(namesFile, DEFAULT_NAMES_FILE);
-  const command = `${head}${q(file)}`;
+  const command = `${head}${q(file)}${tail}`;
   return { command, targets: t.valid, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file };
 }
 

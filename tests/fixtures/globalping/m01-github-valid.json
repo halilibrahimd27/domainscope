@@ -1,0 +1,257 @@
+{
+  "name": "m01-github-valid",
+  "capturedAt": "2026-09-24T06:51:54.790Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "locations": [
+      {
+        "country": "DE"
+      },
+      {
+        "country": "US"
+      }
+    ],
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "2",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "248",
+      "x-ratelimit-reset": "3600",
+      "x-request-cost": "2"
+    },
+    "body": {
+      "id": "2BQe3etLekZmRGfMF00021C1L",
+      "probesCount": 2
+    }
+  },
+  "inProgress": {
+    "id": "2BQe3etLekZmRGfMF00021C1L",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:51:54.790Z",
+    "updatedAt": "2026-09-24T06:51:54.881Z",
+    "target": "140.82.121.4",
+    "probesCount": 2,
+    "locations": [
+      {
+        "country": "DE"
+      },
+      {
+        "country": "US"
+      }
+    ],
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "github.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "EU",
+          "region": "Western Europe",
+          "country": "DE",
+          "city": "Falkenstein",
+          "asn": 24940,
+          "network": "Hetzner Online",
+          "tags": [
+            "datacenter-network"
+          ]
+        },
+        "result": {
+          "status": "finished",
+          "resolvedAddress": "140.82.121.4",
+          "truncated": false,
+          "statusCode": 200,
+          "statusCodeName": "OK",
+          "timings": {
+            "total": 30,
+            "dns": null,
+            "tcp": 7,
+            "tls": 15,
+            "firstByte": 8,
+            "download": 0
+          },
+          "tls": {
+            "authorized": true,
+            "protocol": "TLSv1.3",
+            "cipherName": "TLS_AES_128_GCM_SHA256",
+            "createdAt": "2026-09-01T00:00:00.000Z",
+            "expiresAt": "2026-11-29T23:59:59.000Z",
+            "issuer": {
+              "C": "GB",
+              "O": "Sectigo Limited",
+              "CN": "Sectigo Public Server Authentication CA DV E36"
+            },
+            "subject": {
+              "CN": "github.com",
+              "alt": "DNS:github.com, DNS:www.github.com"
+            },
+            "keyType": "EC",
+            "keyBits": 256,
+            "serialNumber": "A5:9E:BD:B5:96:75:1D:B7:F5:C0:95:07:96:13:95:3C",
+            "fingerprint256": "46:B6:01:EE:08:B4:18:CF:8A:3A:1E:BF:E6:70:BA:5C:E4:3B:B0:5A:91:7F:A8:B2:DD:08:7A:30:47:1C:FC:63",
+            "publicKey": "04:85:36:1B:34:BC:B3:51:F7:20:E9:AA:9A:CB:E8:27:2D:60:D1:31:7B:1D:38:D1:D8:C7:D7:A0:FA:5A:B1:F1:2F:28:E7:99:51:46:61:22:38:B2:3E:B0:2B:75:75:EC:00:E2:69:A6:CF:13:4E:2F:42:4E:FA:76:35:B4:0D:3F:2A"
+          }
+        }
+      },
+      {
+        "probe": {
+          "continent": "NA",
+          "region": "Northern America",
+          "country": "US",
+          "city": "Los Angeles",
+          "asn": 36352,
+          "network": "HostPapa",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2BQe3etLekZmRGfMF00021C1L",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:51:54.790Z",
+      "updatedAt": "2026-09-24T06:51:55.532Z",
+      "target": "140.82.121.4",
+      "probesCount": 2,
+      "locations": [
+        {
+          "country": "DE"
+        },
+        {
+          "country": "US"
+        }
+      ],
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "github.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "DE",
+            "city": "Falkenstein",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "140.82.121.4",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 30,
+              "dns": null,
+              "tcp": 7,
+              "tls": 15,
+              "firstByte": 8,
+              "download": 0
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_128_GCM_SHA256",
+              "createdAt": "2026-09-01T00:00:00.000Z",
+              "expiresAt": "2026-11-29T23:59:59.000Z",
+              "issuer": {
+                "C": "GB",
+                "O": "Sectigo Limited",
+                "CN": "Sectigo Public Server Authentication CA DV E36"
+              },
+              "subject": {
+                "CN": "github.com",
+                "alt": "DNS:github.com, DNS:www.github.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "A5:9E:BD:B5:96:75:1D:B7:F5:C0:95:07:96:13:95:3C",
+              "fingerprint256": "46:B6:01:EE:08:B4:18:CF:8A:3A:1E:BF:E6:70:BA:5C:E4:3B:B0:5A:91:7F:A8:B2:DD:08:7A:30:47:1C:FC:63",
+              "publicKey": "04:85:36:1B:34:BC:B3:51:F7:20:E9:AA:9A:CB:E8:27:2D:60:D1:31:7B:1D:38:D1:D8:C7:D7:A0:FA:5A:B1:F1:2F:28:E7:99:51:46:61:22:38:B2:3E:B0:2B:75:75:EC:00:E2:69:A6:CF:13:4E:2F:42:4E:FA:76:35:B4:0D:3F:2A"
+            }
+          }
+        },
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Los Angeles",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "140.82.121.4",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 512,
+              "dns": null,
+              "tcp": 164,
+              "tls": 180,
+              "firstByte": 167,
+              "download": 1
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_128_GCM_SHA256",
+              "createdAt": "2026-09-01T00:00:00.000Z",
+              "expiresAt": "2026-11-29T23:59:59.000Z",
+              "issuer": {
+                "C": "GB",
+                "O": "Sectigo Limited",
+                "CN": "Sectigo Public Server Authentication CA DV E36"
+              },
+              "subject": {
+                "CN": "github.com",
+                "alt": "DNS:github.com, DNS:www.github.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "A5:9E:BD:B5:96:75:1D:B7:F5:C0:95:07:96:13:95:3C",
+              "fingerprint256": "46:B6:01:EE:08:B4:18:CF:8A:3A:1E:BF:E6:70:BA:5C:E4:3B:B0:5A:91:7F:A8:B2:DD:08:7A:30:47:1C:FC:63",
+              "publicKey": "04:85:36:1B:34:BC:B3:51:F7:20:E9:AA:9A:CB:E8:27:2D:60:D1:31:7B:1D:38:D1:D8:C7:D7:A0:FA:5A:B1:F1:2F:28:E7:99:51:46:61:22:38:B2:3E:B0:2B:75:75:EC:00:E2:69:A6:CF:13:4E:2F:42:4E:FA:76:35:B4:0D:3F:2A"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

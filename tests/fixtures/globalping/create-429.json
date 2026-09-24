@@ -1,0 +1,36 @@
+{
+  "name": "create-429",
+  "capturedAt": "2026-09-24T06:49:00.000Z",
+  "synthetic": true,
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 429,
+    "headers": {
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-consumed": "250",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1200",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "error": {
+        "type": "rate_limit_exceeded",
+        "message": "This measurement exceeds the remaining hourly rate limit for your IP address."
+      }
+    }
+  }
+}

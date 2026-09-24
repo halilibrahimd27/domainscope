@@ -430,6 +430,22 @@ export async function fetchWithTimeout(url, opts = {}) {
   return timedFetch(url, opts, null);
 }
 
+/**
+ * {@link fetchWithTimeout} for callers that read the body themselves: `read(response)`
+ * runs while the timer and the caller's signal are still armed, so a body that stalls
+ * after the headers ends in a TimeoutError too. Any status is passed to `read`.
+ * @template T
+ * @param {string|URL} url
+ * @param {{ timeoutMs?: number, signal?: AbortSignal, fetchImpl?: typeof fetch } & RequestInit} opts
+ * @param {(response: Response) => T|Promise<T>} read
+ * @returns {Promise<T>}
+ * @throws {TimeoutError|AbortError|TypeError}
+ */
+export async function fetchAndRead(url, opts, read) {
+  if (typeof read !== 'function') throw new TypeError('fetchAndRead expects a read(response) function');
+  return timedFetch(url, opts || {}, read);
+}
+
 async function readBodySnippet(response) {
   try {
     return (await response.text()).slice(0, 500);

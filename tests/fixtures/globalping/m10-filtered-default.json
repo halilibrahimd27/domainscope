@@ -1,0 +1,118 @@
+{
+  "name": "m10-filtered-default",
+  "capturedAt": "2026-09-24T06:53:01.244Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 8443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "239",
+      "x-ratelimit-reset": "3534",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2UMjCb9xRKrfl5riH00021C1N",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2UMjCb9xRKrfl5riH00021C1N",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:53:01.244Z",
+    "updatedAt": "2026-09-24T06:53:01.244Z",
+    "target": "140.82.121.4",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 8443,
+      "request": {
+        "host": "github.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "SA",
+          "region": "South America",
+          "country": "BR",
+          "city": "Sao Paulo",
+          "asn": 31898,
+          "network": "Oracle",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2UMjCb9xRKrfl5riH00021C1N",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:53:01.244Z",
+      "updatedAt": "2026-09-24T06:53:16.444Z",
+      "target": "140.82.121.4",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 8443,
+        "request": {
+          "host": "github.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "target",
+            "resolvedAddress": null,
+            "rawOutput": "Request timed out while establishing the TCP connection.",
+            "truncated": false,
+            "statusCode": null,
+            "statusCodeName": null,
+            "timings": {
+              "total": 15002,
+              "dns": null,
+              "tcp": null,
+              "tls": null,
+              "firstByte": null,
+              "download": null
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

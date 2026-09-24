@@ -237,6 +237,48 @@ export function isPrivateIP(ip) {
   return PRIVATE_V6.some((c) => cidrContains(c, addr));
 }
 
+// Beyond PRIVATE_V4: documentation (TEST-NET-1/2/3), the deprecated 6to4 relay anycast,
+// multicast and 240/4 (incl. 255.255.255.255).
+const NON_GLOBAL_V4 = [
+  '192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24', '192.88.99.0/24', '224.0.0.0/4', '240.0.0.0/4'
+].map(parseCidr);
+const GLOBAL_UNICAST_V6 = parseCidr('2000::/3');
+// Inside 2000::/3 but not a reachable server address: Teredo, benchmarking, ORCHID and ORCHIDv2
+// (identifiers, not locators), documentation (2001:db8::/32 and RFC 9637's 3fff::/20) and 6to4.
+const NON_GLOBAL_V6 = [
+  '2001::/32', '2001:2::/48', '2001:10::/28', '2001:20::/28', '2001:db8::/32', '2002::/16', '3fff::/20'
+].map(parseCidr);
+
+/**
+ * Globally routable unicast: an address a probe on the public internet (Globalping, later
+ * InternetDB) can reach. An allowlist for IPv6, because the API accepts — and charges for —
+ * prefixes it cannot reach (3fff::1 was accepted at cost 1, verified 2026-09-24).
+ *
+ * - IPv4: false when {@link isPrivateIP}, or in 192.0.2/24, 198.51.100/24, 203.0.113/24,
+ *   192.88.99/24, 224/4 or 240/4 (incl. 255.255.255.255). Every listed range was refused by
+ *   Globalping with a free 400 ("must not be a private hostname"), except 192.88.99/24 (added
+ *   conservatively: deprecated 6to4 relay anycast).
+ * - IPv6: true only inside 2000::/3 and outside 2001::/32 (Teredo), 2001:2::/48 (benchmarking),
+ *   2001:10::/28 and 2001:20::/28 (ORCHID), 2001:db8::/32, 2002::/16 (6to4) and 3fff::/20. This
+ *   also rules out ::, ::1, fc00::/7, fe80::/10, fec0::/10, ff00::/8, 100::/64 and 64:ff9b::/96.
+ * - IPv4-mapped IPv6 (::ffff:a.b.c.d) follows the IPv4 rules.
+ * - Invalid input → false.
+ *
+ * {@link isPrivateIP} is unchanged: it keeps its app-wide meaning ("an internal address").
+ * @param {string} ip
+ * @returns {boolean}
+ */
+export function isGloballyRoutable(ip) {
+  const addr = parseIP(ip);
+  if (!addr) return false;
+  const v4 = addr.version === 4 ? addr.value : mappedV4(addr);
+  if (v4 !== null) {
+    const a = { version: 4, value: v4 };
+    return !PRIVATE_V4.some((c) => cidrContains(c, a)) && !NON_GLOBAL_V4.some((c) => cidrContains(c, a));
+  }
+  return cidrContains(GLOBAL_UNICAST_V6, addr) && !NON_GLOBAL_V6.some((c) => cidrContains(c, addr));
+}
+
 /**
  * Reverse-DNS query name: `4.3.2.1.in-addr.arpa` / nibble `….ip6.arpa`.
  * @param {string} ip

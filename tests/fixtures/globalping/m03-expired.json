@@ -1,0 +1,150 @@
+{
+  "name": "m03-expired",
+  "capturedAt": "2026-09-24T06:52:23.816Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "locations": [
+      {
+        "asn": 16276
+      }
+    ],
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "expired.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "246",
+      "x-ratelimit-reset": "3571",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "23fpgzrp0BphToXYO00021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "23fpgzrp0BphToXYO00021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:23.816Z",
+    "updatedAt": "2026-09-24T06:52:23.816Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "locations": [
+      {
+        "asn": 16276
+      }
+    ],
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "expired.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "EU",
+          "region": "Western Europe",
+          "country": "FR",
+          "city": "Roubaix",
+          "asn": 16276,
+          "network": "OVH",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "23fpgzrp0BphToXYO00021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:23.816Z",
+      "updatedAt": "2026-09-24T06:52:24.330Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "locations": [
+        {
+          "asn": 16276
+        }
+      ],
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "expired.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "FR",
+            "city": "Roubaix",
+            "asn": 16276,
+            "network": "OVH",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 476,
+              "dns": null,
+              "tcp": 106,
+              "tls": 262,
+              "firstByte": 108,
+              "download": 0
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "CERT_HAS_EXPIRED",
+              "createdAt": "2015-04-09T00:00:00.000Z",
+              "expiresAt": "2015-04-12T23:59:59.000Z",
+              "issuer": {
+                "C": "GB",
+                "O": "COMODO CA Limited",
+                "CN": "COMODO RSA Domain Validation Secure Server CA"
+              },
+              "subject": {
+                "CN": "*.badssl.com",
+                "alt": "DNS:*.badssl.com, DNS:badssl.com"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "4A:E7:95:49:FA:9A:BE:3F:10:0F:17:A4:78:E1:69:09",
+              "fingerprint256": "BA:10:5C:E0:2B:AC:76:88:8E:CE:E4:7C:D4:EB:79:41:65:3E:9A:C9:93:B6:1B:2E:B3:DC:C8:20:14:D2:1B:4F"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

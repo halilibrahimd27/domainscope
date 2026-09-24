@@ -1,0 +1,25 @@
+{
+  "name": "limits-used",
+  "capturedAt": "2026-09-24T06:49:00.000Z",
+  "synthetic": true,
+  "request": {
+    "method": "GET",
+    "path": "/v1/limits"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "rateLimit": {
+        "measurements": {
+          "create": {
+            "type": "ip",
+            "limit": 250,
+            "remaining": 241,
+            "reset": 3314
+          }
+        }
+      }
+    }
+  }
+}

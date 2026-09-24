@@ -1,0 +1,109 @@
+{
+  "name": "m21-private-resolve",
+  "capturedAt": "2026-09-24T06:54:54.297Z",
+  "request": {
+    "type": "http",
+    "target": "localtest.me",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "225",
+      "x-ratelimit-reset": "3420",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2Y1DZFQFq8Cn85mv500021C1O",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2Y1DZFQFq8Cn85mv500021C1O",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:54:54.297Z",
+    "updatedAt": "2026-09-24T06:54:54.297Z",
+    "target": "localtest.me",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 443
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "OC",
+          "region": "Australia and New Zealand",
+          "country": "AU",
+          "city": "Sydney",
+          "asn": 31898,
+          "network": "Oracle",
+          "tags": [
+            "eyeball-network"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2Y1DZFQFq8Cn85mv500021C1O",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:54:54.297Z",
+      "updatedAt": "2026-09-24T06:54:54.710Z",
+      "target": "localtest.me",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "OC",
+            "region": "Australia and New Zealand",
+            "country": "AU",
+            "city": "Sydney",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "eyeball-network"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "target",
+            "resolvedAddress": null,
+            "rawOutput": "Private IP ranges are not allowed.",
+            "truncated": false,
+            "statusCode": null,
+            "statusCodeName": null,
+            "timings": {
+              "total": null,
+              "dns": null,
+              "tcp": null,
+              "tls": null,
+              "firstByte": null,
+              "download": null
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

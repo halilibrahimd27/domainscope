@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AbortError, TimeoutError, HttpError, RateLimitError, ParseError,
-  sleep, createLimiter, fetchWithTimeout, fetchJson, fetchText, retry,
+  sleep, createLimiter, fetchWithTimeout, fetchAndRead, fetchJson, fetchText, retry,
   defaultShouldRetry, errorKind, uniq, chunk, randomLabel, createCache,
   mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError
 } from '../../assets/js/lib/util.js';
@@ -206,6 +206,16 @@ test('fetchWithTimeout rejects a pre-aborted caller signal without calling fetch
 
 test('fetchWithTimeout wraps a missing fetch as TypeError', async () => {
   await assert.rejects(fetchWithTimeout('https://x/', { fetchImpl: undefined }), (e) => e instanceof TypeError);
+});
+
+test('fetchAndRead: read() gets any status, and the timeout covers a body that stalls after the headers', async () => {
+  const out = await fetchAndRead('https://x/', { fetchImpl: async () => mockResponse('slow down', { status: 429 }) },
+    async (res) => [res.status, await res.text()]);
+  assert.deepEqual(out, [429, 'slow down']);
+  const stalled = { ...mockResponse(''), text: () => new Promise(() => {}) }; // headers arrived, body never ends
+  await assert.rejects(fetchAndRead('https://x/', { fetchImpl: async () => stalled, timeoutMs: 20 }, (res) => res.text()),
+    (e) => e.name === 'TimeoutError');
+  await assert.rejects(fetchAndRead('https://x/', { fetchImpl: async () => stalled }, null), TypeError);
 });
 
 test('fetchJson parses, and maps non-2xx to HttpError with Retry-After', async () => {

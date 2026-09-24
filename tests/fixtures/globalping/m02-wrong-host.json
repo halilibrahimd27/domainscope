@@ -1,0 +1,149 @@
+{
+  "name": "m02-wrong-host",
+  "capturedAt": "2026-09-24T06:52:22.823Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "locations": [
+      {
+        "magic": "AS24940"
+      }
+    ],
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "wrong.host.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "247",
+      "x-ratelimit-reset": "3572",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2bFvUjZUuu45tZsL800021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2bFvUjZUuu45tZsL800021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:22.823Z",
+    "updatedAt": "2026-09-24T06:52:22.823Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "locations": [
+      {
+        "magic": "AS24940"
+      }
+    ],
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "wrong.host.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "EU",
+          "region": "Western Europe",
+          "country": "DE",
+          "city": "Falkenstein",
+          "asn": 24940,
+          "network": "Hetzner Online",
+          "tags": [
+            "datacenter-network"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2bFvUjZUuu45tZsL800021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:22.823Z",
+      "updatedAt": "2026-09-24T06:52:23.310Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "locations": [
+        {
+          "magic": "AS24940"
+        }
+      ],
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "wrong.host.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "DE",
+            "city": "Falkenstein",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 468,
+              "dns": null,
+              "tcp": 115,
+              "tls": 236,
+              "firstByte": 117,
+              "download": 0
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "ERR_TLS_CERT_ALTNAME_INVALID",
+              "createdAt": "2026-07-28T20:03:02.000Z",
+              "expiresAt": "2026-10-26T20:03:01.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "Let's Encrypt",
+                "CN": "YR2"
+              },
+              "subject": {
+                "CN": "*.badssl.com",
+                "alt": "DNS:*.badssl.com, DNS:badssl.com"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "06:5B:E1:7B:35:9D:30:FC:A5:94:59:F9:89:32:31:C1:D8:7D",
+              "fingerprint256": "68:8F:99:18:5E:12:A4:94:D3:91:0C:E0:60:53:28:26:A3:5F:E0:24:76:E1:7E:9B:AD:2F:68:E9:23:84:7C:A3",
+              "publicKey": "30:82:01:22:30:0D:06:09:2A:86:48:86:F7:0D:01:01:01:05:00:03:82:01:0F:00:30:82:01:0A:02:82:01:01:00:C5:44:75:A3:5D:D1:36:20:A7:56:76:ED:3E:29:9A:43:10:6E:DA:77:A3:F8:76:58:C5:4F:15:28:E7:3E:5A:3B:8C:DA:AA:6B:59:3F:DB:81:AE:42:27:99:02:3C:08:E2:BC:58:0C:E9:92:57:68:A0:CC:F9:DC:6B:E2:CA:69:36:E0:5B:25:5B:16:46:7D:4C:A6:C2:33:61:2A:44:22:C7:0C:3E:0D:D1:93:84:B0:29:A0:92:93:B5:08:A3:B9:D7:68:7B:2D:E9:AA:31:0A:C0:2B:5E:BC:AC:B6:E8:82:14:CD:6D:1F:3C:C5:EB:97:43:C7:49:88:25:24:CA:42:38:D1:E9:DC:DD:D2:89:E4:A1:7F:6D:7F:21:85:C4:EF:20:69:ED:CC:33:CD:D1:8A:0A:4D:B4:2B:AC:8A:AA:CE:AB:86:28:1A:00:15:32:48:E0:88:A0:02:50:E5:77:97:40:B9:61:DC:7E:6D:27:84:E4:53:F9:72:C3:74:AD:01:D8:25:90:23:8A:56:61:88:36:11:6D:18:72:F7:8E:BF:EA:E6:E6:E6:0C:6D:75:93:6B:B1:97:4D:C9:81:F2:47:E9:25:3F:0B:49:89:3B:FF:AA:58:2F:81:53:9E:AA:98:0D:91:5F:1F:23:79:E9:30:C6:F3:D7:11:53:F2:CD:CA:AF:02:03:01:00:01"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "create-401",
+  "capturedAt": "2026-09-24T06:49:00.000Z",
+  "synthetic": true,
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 401,
+    "headers": {},
+    "body": {
+      "error": {
+        "type": "unauthorized",
+        "message": "Unauthorized."
+      }
+    }
+  }
+}

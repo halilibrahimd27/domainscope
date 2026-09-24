@@ -1,0 +1,137 @@
+{
+  "name": "m22-http2",
+  "capturedAt": "2026-09-24T06:54:55.168Z",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTP2",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "224",
+      "x-ratelimit-reset": "3420",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2AzLmrFa6YOvx76uF00021C1O",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2AzLmrFa6YOvx76uF00021C1O",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:54:55.168Z",
+    "updatedAt": "2026-09-24T06:54:55.168Z",
+    "target": "140.82.121.4",
+    "probesCount": 1,
+    "measurementOptions": {
+      "protocol": "HTTP2",
+      "port": 443,
+      "request": {
+        "host": "github.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "AF",
+          "region": "Western Africa",
+          "country": "NG",
+          "city": "Lagos",
+          "asn": 214354,
+          "network": "SiteHUB Agency",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2AzLmrFa6YOvx76uF00021C1O",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:54:55.168Z",
+      "updatedAt": "2026-09-24T06:54:55.759Z",
+      "target": "140.82.121.4",
+      "probesCount": 1,
+      "measurementOptions": {
+        "protocol": "HTTP2",
+        "port": 443,
+        "request": {
+          "host": "github.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AF",
+            "region": "Western Africa",
+            "country": "NG",
+            "city": "Lagos",
+            "asn": 214354,
+            "network": "SiteHUB Agency",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "140.82.121.4",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "",
+            "timings": {
+              "total": 362,
+              "dns": null,
+              "tcp": 116,
+              "tls": 123,
+              "firstByte": 122,
+              "download": 1
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_128_GCM_SHA256",
+              "createdAt": "2026-09-01T00:00:00.000Z",
+              "expiresAt": "2026-11-29T23:59:59.000Z",
+              "issuer": {
+                "C": "GB",
+                "O": "Sectigo Limited",
+                "CN": "Sectigo Public Server Authentication CA DV E36"
+              },
+              "subject": {
+                "CN": "github.com",
+                "alt": "DNS:github.com, DNS:www.github.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "A5:9E:BD:B5:96:75:1D:B7:F5:C0:95:07:96:13:95:3C",
+              "fingerprint256": "46:B6:01:EE:08:B4:18:CF:8A:3A:1E:BF:E6:70:BA:5C:E4:3B:B0:5A:91:7F:A8:B2:DD:08:7A:30:47:1C:FC:63"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

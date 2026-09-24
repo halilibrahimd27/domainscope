@@ -1,0 +1,150 @@
+{
+  "name": "m04-self-signed",
+  "capturedAt": "2026-09-24T06:52:24.610Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "locations": [
+      {
+        "country": "TR"
+      }
+    ],
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "self-signed.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "245",
+      "x-ratelimit-reset": "3570",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2QHoNfzooEUIzdWvs00021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2QHoNfzooEUIzdWvs00021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:24.610Z",
+    "updatedAt": "2026-09-24T06:52:24.610Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "locations": [
+      {
+        "country": "TR"
+      }
+    ],
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "self-signed.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "AS",
+          "region": "Western Asia",
+          "country": "TR",
+          "city": "Istanbul",
+          "asn": 209604,
+          "network": "2E TELEKOMUNIKASYON",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2QHoNfzooEUIzdWvs00021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:24.610Z",
+      "updatedAt": "2026-09-24T06:52:25.278Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "locations": [
+        {
+          "country": "TR"
+        }
+      ],
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "self-signed.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Western Asia",
+            "country": "TR",
+            "city": "Istanbul",
+            "asn": 209604,
+            "network": "2E TELEKOMUNIKASYON",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 615,
+              "dns": null,
+              "tcp": 152,
+              "tls": 308,
+              "firstByte": 153,
+              "download": 2
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "DEPTH_ZERO_SELF_SIGNED_CERT",
+              "createdAt": "2026-09-22T21:00:16.000Z",
+              "expiresAt": "2028-09-21T21:00:16.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "BadSSL",
+                "CN": "*.badssl.com"
+              },
+              "subject": {
+                "CN": "*.badssl.com",
+                "alt": "DNS:*.badssl.com, DNS:badssl.com"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "A5:A6:6B:63:A3:5A:62:82",
+              "fingerprint256": "12:49:4D:FD:35:48:36:34:C5:66:C9:79:D0:69:3B:CA:0C:57:8F:D5:EB:44:EF:41:F3:5C:D6:B0:AD:B9:A1:52"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "name": "m25-v6-doc-enetunreach",
+  "capturedAt": "2026-09-24T08:24:08.491Z",
+  "reconstructed": [
+    "request",
+    "post"
+  ],
+  "request": {
+    "type": "http",
+    "target": "3fff::1",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "example.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2pTgtxLlyWvamuItO00021C2q",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2pTgtxLlyWvamuItO00021C2q",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T08:24:08.491Z",
+      "updatedAt": "2026-09-24T08:24:08.762Z",
+      "target": "3fff::1",
+      "timeout": 5,
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "example.com"
+        },
+        "ipVersion": 6
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 3258,
+            "network": "xTom",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "target",
+            "resolvedAddress": null,
+            "rawOutput": "connect ENETUNREACH 3fff::1:443",
+            "truncated": false,
+            "statusCode": null,
+            "statusCodeName": null,
+            "timings": {
+              "total": null,
+              "dns": null,
+              "tcp": null,
+              "tls": null,
+              "firstByte": null,
+              "download": null
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

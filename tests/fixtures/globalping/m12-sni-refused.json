@@ -1,0 +1,118 @@
+{
+  "name": "m12-sni-refused",
+  "capturedAt": "2026-09-24T06:53:22.399Z",
+  "request": {
+    "type": "http",
+    "target": "104.16.124.96",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "237",
+      "x-ratelimit-reset": "3512",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2xRWY3nxugT4lMyRW00021C1N",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2xRWY3nxugT4lMyRW00021C1N",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:53:22.399Z",
+    "updatedAt": "2026-09-24T06:53:22.399Z",
+    "target": "104.16.124.96",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "github.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "AF",
+          "region": "Western Africa",
+          "country": "NG",
+          "city": "Lagos",
+          "asn": 214354,
+          "network": "SiteHUB Agency",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2xRWY3nxugT4lMyRW00021C1N",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:53:22.399Z",
+      "updatedAt": "2026-09-24T06:53:22.768Z",
+      "target": "104.16.124.96",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "github.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AF",
+            "region": "Western Africa",
+            "country": "NG",
+            "city": "Lagos",
+            "asn": 214354,
+            "network": "SiteHUB Agency",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "target",
+            "resolvedAddress": null,
+            "rawOutput": "C08CF6CE7A7F0000:error:0A000410:SSL routines:ssl3_read_bytes:ssl/tls alert handshake failure:../deps/openssl/openssl/ssl/record/rec_layer_s3.c:918:SSL alert number 40\n",
+            "truncated": false,
+            "statusCode": null,
+            "statusCodeName": null,
+            "timings": {
+              "total": null,
+              "dns": null,
+              "tcp": null,
+              "tls": null,
+              "firstByte": null,
+              "download": null
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

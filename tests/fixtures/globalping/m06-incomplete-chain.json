@@ -1,0 +1,134 @@
+{
+  "name": "m06-incomplete-chain",
+  "capturedAt": "2026-09-24T06:52:26.230Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "host": "incomplete-chain.badssl.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "243",
+      "x-ratelimit-reset": "3569",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2yDACOZt5SDtLOrth00021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2yDACOZt5SDtLOrth00021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:26.230Z",
+    "updatedAt": "2026-09-24T06:52:26.230Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 443,
+      "request": {
+        "host": "incomplete-chain.badssl.com"
+      }
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "EU",
+          "region": "Western Europe",
+          "country": "DE",
+          "city": "Falkenstein",
+          "asn": 24940,
+          "network": "Hetzner Online",
+          "tags": [
+            "datacenter-network"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2yDACOZt5SDtLOrth00021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:26.230Z",
+      "updatedAt": "2026-09-24T06:52:26.713Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "host": "incomplete-chain.badssl.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "DE",
+            "city": "Falkenstein",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 465,
+              "dns": null,
+              "tcp": 115,
+              "tls": 233,
+              "firstByte": 117,
+              "download": 0
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+              "createdAt": "2026-07-28T20:03:02.000Z",
+              "expiresAt": "2026-10-26T20:03:01.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "Let's Encrypt",
+                "CN": "YR2"
+              },
+              "subject": {
+                "CN": "*.badssl.com",
+                "alt": "DNS:*.badssl.com, DNS:badssl.com"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "06:5B:E1:7B:35:9D:30:FC:A5:94:59:F9:89:32:31:C1:D8:7D",
+              "fingerprint256": "68:8F:99:18:5E:12:A4:94:D3:91:0C:E0:60:53:28:26:A3:5F:E0:24:76:E1:7E:9B:AD:2F:68:E9:23:84:7C:A3"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

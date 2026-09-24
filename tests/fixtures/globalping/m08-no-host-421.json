@@ -1,0 +1,129 @@
+{
+  "name": "m08-no-host-421",
+  "capturedAt": "2026-09-24T06:52:27.963Z",
+  "request": {
+    "type": "http",
+    "target": "54.1.2.3",
+    "limit": 1,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "HEAD",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "241",
+      "x-ratelimit-reset": "3567",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2NnmILjPEdypc75QU00021C1M",
+      "probesCount": 1
+    }
+  },
+  "inProgress": {
+    "id": "2NnmILjPEdypc75QU00021C1M",
+    "type": "http",
+    "status": "in-progress",
+    "createdAt": "2026-09-24T06:52:27.963Z",
+    "updatedAt": "2026-09-24T06:52:27.963Z",
+    "target": "54.1.2.3",
+    "probesCount": 1,
+    "measurementOptions": {
+      "port": 443
+    },
+    "results": [
+      {
+        "probe": {
+          "continent": "SA",
+          "region": "South America",
+          "country": "BR",
+          "city": "Sao Paulo",
+          "asn": 31898,
+          "network": "Oracle",
+          "tags": [
+            "datacenter-network",
+            "u-probe"
+          ]
+        },
+        "result": {
+          "status": "in-progress"
+        }
+      }
+    ]
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2NnmILjPEdypc75QU00021C1M",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-24T06:52:27.963Z",
+      "updatedAt": "2026-09-24T06:52:28.717Z",
+      "target": "54.1.2.3",
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "54.1.2.3",
+            "truncated": false,
+            "statusCode": 421,
+            "statusCodeName": "Misdirected Request",
+            "timings": {
+              "total": 554,
+              "dns": null,
+              "tcp": 138,
+              "tls": 278,
+              "firstByte": 138,
+              "download": 0
+            },
+            "tls": {
+              "authorized": false,
+              "protocol": "TLSv1.2",
+              "cipherName": "ECDHE-RSA-AES128-GCM-SHA256",
+              "error": "CERT_HAS_EXPIRED",
+              "createdAt": "2016-08-08T21:17:05.000Z",
+              "expiresAt": "2018-08-08T21:17:05.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "BadSSL",
+                "CN": "BadSSL Intermediate Certificate Authority"
+              },
+              "subject": {
+                "CN": "badssl-fallback-unknown-subdomain-or-no-sni",
+                "alt": "DNS:badssl-fallback-unknown-subdomain-or-no-sni"
+              },
+              "keyType": "RSA",
+              "keyBits": 2048,
+              "serialNumber": "CD:BC:5A:4A:EC:97:67:B1",
+              "fingerprint256": "D0:73:B3:89:43:B3:6B:D9:70:EC:8F:61:B3:A1:AE:A6:6E:58:EF:F1:60:DA:EE:14:3B:CB:9D:99:67:86:78:13"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

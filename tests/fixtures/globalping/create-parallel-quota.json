@@ -1,0 +1,79 @@
+{
+  "name": "create-parallel-quota",
+  "capturedAt": "2026-09-24T07:41:49.790Z",
+  "note": "Six POST /v1/measurements sent in parallel (one probe each). X-RateLimit-Remaining is not monotonic across concurrent POSTs; the true value after all six is the minimum. x-ratelimit-limit / -consumed were not recorded (anonymous limit 250).",
+  "posts": [
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "220",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "23h7WxJNAJijtLpCi00021C29",
+        "probesCount": 1
+      }
+    },
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "216",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "2N6ZQPgHXcLc8hwc500021C29",
+        "probesCount": 1
+      }
+    },
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "215",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "2OHZ55W4TvnyqQfSJ00021C29",
+        "probesCount": 1
+      }
+    },
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "219",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "2EKsqmo779PFYJ7yP00021C29",
+        "probesCount": 1
+      }
+    },
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "217",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "27FbYYfwcAG3TH7ze00021C29",
+        "probesCount": 1
+      }
+    },
+    {
+      "status": 202,
+      "headers": {
+        "x-ratelimit-remaining": "218",
+        "x-ratelimit-reset": "606",
+        "x-request-cost": "1"
+      },
+      "body": {
+        "id": "2frCeZ3WeAQZWEeke00021C29",
+        "probesCount": 1
+      }
+    }
+  ]
+}

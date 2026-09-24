@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP,
+  ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP, isGloballyRoutable,
   reversePtrName, formatIP, RANGES_UPDATED, PROVIDERS, getProvider,
   matchProviderByIP, matchProviderByCname, classifyResolution
 } from '../../assets/js/lib/netinfo.js';
@@ -278,4 +278,60 @@ test('classify: DNS-only steering (Traffic Manager) does not hide origin', () =>
 test('classify: mixed private + public is direct, not private', () => {
   const r = classifyResolution({ ipv4: ['10.0.0.1', '8.8.8.8'] });
   assert.equal(r.kind, 'direct');
+});
+
+/* -------------------------------------------------------------------- */
+/* isGloballyRoutable (what Globalping / InternetDB can reach)          */
+/* -------------------------------------------------------------------- */
+
+test('isGloballyRoutable: public unicast v4, v6 and IPv4-mapped v6', () => {
+  for (const ip of ['140.82.121.4', '1.1.1.1', '8.8.8.8', '45.33.32.156', '104.16.124.96',
+    '2606:4700::6810:7c60', '2a01:4f8::1', '2001:4860:4860::8888', '2001:3::1', '2001:db9::1',
+    '3fff:1000::1', '::ffff:140.82.121.4', '[2606:4700::1111]']) {
+    assert.equal(isGloballyRoutable(ip), true, ip);
+  }
+});
+
+test('isGloballyRoutable: every v4 range Globalping refuses (free 400 "private hostname", verified live)', () => {
+  for (const ip of ['10.0.0.1', '172.16.5.4', '172.16.0.1', '192.168.1.1', '127.0.0.1', '100.64.0.1',
+    '169.254.1.1', '169.254.169.254', '192.0.0.8', '0.0.0.0', '198.18.0.1', '198.19.255.255',
+    '192.0.2.1', '198.51.100.7', '203.0.113.5', // TEST-NET-1/2/3
+    '224.0.0.1', '239.255.255.250', // multicast 224/4
+    '240.0.0.1', '255.255.255.255']) { // 240/4 incl. limited broadcast
+    assert.equal(isGloballyRoutable(ip), false, ip);
+  }
+});
+
+test('isGloballyRoutable: 192.88.99/24 (deprecated 6to4 relay) refused conservatively', () => {
+  assert.equal(isGloballyRoutable('192.88.99.1'), false);
+});
+
+test('isGloballyRoutable: IPv6 is an allowlist (2000::/3 minus special prefixes)', () => {
+  // refused by the API for free: ::, ::1, ULA, link-local, multicast, discard-only, documentation
+  for (const ip of ['::', '::1', 'fd00::1', 'fc00::1', 'fe80::1', 'ff02::1', '100::1', '2001:db8::1']) {
+    assert.equal(isGloballyRoutable(ip), false, ip);
+  }
+  // 3fff::/20 (RFC 9637 documentation) was ACCEPTED and charged: the client must refuse it itself
+  assert.equal(isGloballyRoutable('3fff::1'), false);
+  assert.equal(isGloballyRoutable('3fff:fff:ffff::1'), false, 'last /20 block of 3fff::/20');
+  for (const ip of ['2001:2::1', '64:ff9b::808:808', 'fec0::1', '2001::1', '2001:10::1', '2001:20::1',
+    '2002::1', '::0.0.0.1', '4000::1', 'e000::1']) {
+    assert.equal(isGloballyRoutable(ip), false, ip);
+  }
+});
+
+test('isGloballyRoutable: IPv4-mapped v6 follows the v4 rules; invalid input is false', () => {
+  assert.equal(isGloballyRoutable('::ffff:10.0.0.1'), false);
+  assert.equal(isGloballyRoutable('::ffff:192.0.2.1'), false);
+  assert.equal(isGloballyRoutable('::ffff:8.8.8.8'), true);
+  for (const bad of ['x', '', '1.2.3', '256.1.1.1', '010.0.0.1', 'github.com', null, undefined, 42]) {
+    assert.equal(isGloballyRoutable(bad), false, String(bad));
+  }
+});
+
+test('isPrivateIP keeps its meaning: documentation / multicast space is not "private"', () => {
+  assert.equal(isPrivateIP('192.0.2.1'), false);
+  assert.equal(isPrivateIP('224.0.0.1'), false);
+  assert.equal(isPrivateIP('2001:db8::1'), false);
+  assert.equal(isGloballyRoutable('192.0.2.1'), false);
 });

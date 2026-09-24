@@ -150,7 +150,7 @@ describe('i18n coverage', () => {
       add(`scan.summary.bf.${m}`);
       if (m !== 'off') { add(`scan.opt.bf.${m}`); add(`scan.opt.bf.${m}Hint`); }
     }
-    for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine']) add(`scan.origin.${o}`);
+    for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine', 'zone']) add(`scan.origin.${o}`);
     // Subdomains view: every stage pill / progress label, wordlist level, origin id and hint kind.
     const sub = views.subdomains;
     for (const s of sub.SHOWN_STAGES) { add(`sub.stage.${s}`); add(`sub.progress.${s}`); }
@@ -160,10 +160,10 @@ describe('i18n coverage', () => {
       add(`sub.opt.bf.${m}Hint`);
       if (m !== 'off') add(`sub.bf.${m}`);
     }
-    for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine']) add(`sub.origin.${o}`);
+    for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine', 'zone', 'zoneTitle']) add(`sub.origin.${o}`);
     for (const k of sub.HINT_KINDS) { add(`sub.hint.${k}`); add(`sub.hint.${k}.title`); }
     for (const f of sub.SEGMENT_FILTERS) add(`sub.filter.${f}`);
-    for (const k of ['mine', 'wordlist', 'permutation', 'recursive']) add(`sub.tech.${k}`);
+    for (const k of ['mine', 'wordlist', 'permutation', 'recursive', 'zone']) add(`sub.tech.${k}`);
     for (const k of ['sub.tech.dnsOnly', 'sub.tech.dnsOnlyIncomplete']) add(k); // dnsOnlyNoteKey()
     // Source health: every state and every quota hint key a SourceResult can carry.
     for (const s of sources.SOURCE_HEALTH_STATES) add(`source.state.${s}`);

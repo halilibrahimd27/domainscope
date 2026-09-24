@@ -1005,6 +1005,9 @@ async function main() {
       } finally {
         await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       }
+      // The dialog's 'close' event (and so the wipe) lands a task after [open] goes away: wait for
+      // the wipe itself, or it can erase the options seeded below on a busy machine.
+      await page.waitFor(() => localStorage.getItem('ssds.inventory') === null, { message: 'local data wiped' });
       await dismissToasts(page);
       await seedOptions(page); // the wipe restored every passive source: keep the suite offline
       await gotoRoute(page, 'scan');

@@ -378,6 +378,95 @@ async function setOptions(page, { sources, bruteforce }) {
   await page.click(`input[name="scan-bruteforce"][value="${bruteforce}"]`);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Zone File hand-off (shared with subdomains.e2e.mjs): an emulated zone     */
+/* ------------------------------------------------------------------------ */
+
+/** The apex the Zone File hand-off steps scan (answered in the page, never on the network). */
+export const ZONE_HANDOFF_APEX = 'example.net';
+/**
+ * Live DNS of the emulated apex: www / shop are proxied (Cloudflare edge addresses), the apex, api
+ * and mail are DNS-only in 203.0.113.0/24. Documentation ranges only; no last octet .11/.27/.28/.41.
+ */
+export const ZONE_HANDOFF_DNS = {
+  'example.net': { A: ['203.0.113.10'] },
+  'www.example.net': { A: ['104.16.5.5'] },
+  'shop.example.net': { A: ['172.67.1.5'] },
+  'api.example.net': { A: ['203.0.113.14'] },
+  'mail.example.net': { A: ['203.0.113.12'] }
+};
+/**
+ * What the Zone File view publishes as `state.session.zone` (the zoneScanInput shape): www's exact
+ * origin 192.0.2.10, shop behind a host-name origin, and a proxied wildcard `*.apps`.
+ */
+export const ZONE_HANDOFF_INPUT = {
+  v: 1,
+  origin: 'example.net',
+  names: ['example.net', 'www.example.net', 'shop.example.net', 'api.example.net', 'mail.example.net'],
+  wildcardBases: ['apps.example.net'],
+  delegations: [],
+  proxied: [
+    { name: 'www.example.net', ips: ['192.0.2.10'], host: null },
+    { name: 'shop.example.net', ips: [], host: 'origin-lb.example.org' },
+    { name: '*.apps.example.net', ips: ['192.0.2.10'], host: null }
+  ],
+  skipped: [],
+  label: 'E2E zone · example.net',
+  counts: { names: 6, origins: 3, skipped: 0 }
+};
+
+/**
+ * A page script (installed before the app loads) that answers every DoH query under `apex` from
+ * `zone` and BLOCKS any other request that leaves the page origin (recorded in
+ * window.__zoneBlocked), so a hand-off step proves that nothing but DNS for the zone's own names
+ * is sent. Queried names are recorded in window.__zoneDnsNames.
+ * @param {string} apex
+ * @param {object} zone
+ * @returns {string}
+ */
+export const zoneHandoffScript = (apex, zone) => `(() => {
+  const APEX = ${JSON.stringify(apex)};
+  const ZONE = ${JSON.stringify(zone)};
+  const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
+  const answer = (name, type) => {
+    const node = ZONE[name];
+    if (!node) {
+      const exists = Object.keys(ZONE).some((k) => k.endsWith('.' + name));
+      return { rcode: exists ? 'NOERROR' : 'NXDOMAIN', answers: [], authorities: [{ name: APEX, type: 'SOA', ttl: 300, data: SOA }] };
+    }
+    const answers = (node[type] || []).map((data) => ({ name, type, ttl: 300, data }));
+    return { rcode: 'NOERROR', answers, authorities: answers.length ? [] : [{ name: APEX, type: 'SOA', ttl: 300, data: SOA }] };
+  };
+  const realFetch = window.fetch.bind(window);
+  let wire = null;
+  window.__zoneDnsQueries = 0;
+  window.__zoneDnsNames = [];
+  window.__zoneBlocked = [];
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) {
+      if (new URL(url, location.href).origin === location.origin) return realFetch(input, init);
+      window.__zoneBlocked.push(url);
+      throw new TypeError('blocked by the E2E (Zone File hand-off)');
+    }
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    if (name !== APEX && !name.endsWith('.' + APEX)) {
+      window.__zoneBlocked.push('dns:' + name);
+      throw new TypeError('blocked by the E2E (DNS outside the zone)');
+    }
+    window.__zoneDnsQueries += 1;
+    if (!window.__zoneDnsNames.includes(name)) window.__zoneDnsNames.push(name);
+    const out = answer(name, q.type);
+    return new Response(wire.encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
+      questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
 const runStatus = (page) => page.evaluate(() => {
   const ui = document.querySelector('.scan-run-ui');
   return ui ? { id: ui.dataset.run, status: ui.querySelector('.scan-run').dataset.status } : null;
@@ -484,7 +573,7 @@ async function main() {
       }, { message: 'plan + vocabulary lines' });
       // The fixture's *.cdn.example-test.com.tr SAN is a second wordlist base (the scanner runs the
       // level list under cdn.example-test.com.tr too), so the plan counts 2 bases, not 1 domain.
-      assert(/^≈ [\d,]+ DNS queries for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(info.plan), `plan: ${info.plan}`);
+      assert(/^≈ [\d,]+(?:–[\d,]+)? DNS queries for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(info.plan), `plan: ${info.plan}`);
       // Learned names are opt-in (Subdomains › Advanced): off unless this browser switched them on.
       assert(/^Languages \/ markets: Auto: Turkish \(\.com\.tr\) · (learned names off|no learned names yet|[\d,]+ learned names? first)$/.test(info.vocab), `vocabulary: ${info.vocab}`);
       assertEqual(info.link, '#/subdomains', 'the vocabulary is changed in Subdomains › Advanced');
@@ -534,6 +623,10 @@ async function main() {
         ct: document.querySelector('.scan-tab-ct')?.textContent || ''
       }));
       assert(/Cancelled/.test(info.notice), `cancel notice: ${info.notice}`);
+      // Streamed partials never resolve once cancelled: no row may keep claiming "resolving…" (the
+      // table redraws on its next frame).
+      await page.waitFor(() => ![...document.querySelectorAll('.scan-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
+        { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
       assert(info.run && !info.busy, 'run button back, not busy');
     });
 
@@ -831,6 +924,111 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
       await page.setViewport({ width: 1440, height: 900 });
+    });
+
+    run.group('Zone File hand-off (emulated DNS, nothing else leaves the page)');
+    await run.step('"Find certificate targets": step 2 pre-filled with an exact-mode chip and no auto-start; Run → zone origins on Behind CDN, via: zone on Servers, exact command', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      // The live suite's stored options / inventory are restored afterwards.
+      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }));
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS) });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        // Stored options that WOULD ask sources and guess names: exact mode ignores them for one run.
+        const stored = JSON.stringify({ sources: ['crtsh', 'anubis'], bruteforce: 'smart', permutations: true, originHints: true });
+        await tab.evaluate(async (s) => {
+          localStorage.setItem('ssds.scan.options', s);
+          (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10');
+        }, stored);
+        await tab.evaluate(async (zone) => {
+          const { state } = await import('./assets/js/state.js');
+          state.setSession('zone', zone);
+          state.setSession('zoneScanIntent', { v: 1, target: 'scan', domain: zone.origin, mode: 'exact', autostart: false, at: Date.now() });
+          location.hash = `#/scan?domain=${zone.origin}`;
+        }, ZONE_HANDOFF_INPUT);
+        await tab.waitFor(() => document.querySelector('.scan-step-domains [data-role="zone-chip"]'), { timeout: 15000, message: 'zone chip in step 2' });
+        await sleep(600);
+        const before = await tab.evaluate(() => ({
+          domains: document.querySelector('[data-role="scan-domains"]').value,
+          chip: document.querySelector('[data-role="zone-chip"] .sub-zone-title').textContent,
+          pressed: document.querySelector('.sub-zone-mode .seg-btn[aria-pressed="true"]')?.dataset.value,
+          started: !!document.querySelector('.scan-run-ui'),
+          summary: document.querySelector('.scan-runbar-summary').textContent,
+          queries: window.__zoneDnsQueries
+        }));
+        assertEqual([before.domains, before.pressed, before.started, before.queries], ['example.net', 'exact', false, 0], 'pre-filled, exact, nothing started or sent');
+        assert(/6 names, 3 exact origins/.test(before.chip), `chip: ${before.chip}`);
+        assert(/no passive sources/.test(before.summary) && /Zone file/.test(before.summary), `run summary: ${before.summary}`);
+        // DOM clicks: the results scroll smoothly into view, which can move a coordinate click.
+        await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+        const done = await tab.waitFor(() => {
+          const ui = document.querySelector('.scan-run-ui');
+          const st = ui && ui.querySelector('.scan-run').dataset.status;
+          return st && st !== 'running' ? st : false;
+        }, { timeout: 60000, message: 'exact zone scan done' });
+        assertEqual(done, 'done', 'status');
+        assert(await tab.evaluate(() => document.querySelector('.scan-run .sub-zone-banner')?.dataset.zoneMode === 'exact'), 'exact banner');
+        // The discovery summary says where the hosts came from: the zone file, not "0 by DNS · 0 by sources" alone.
+        const discovery = await tab.evaluate(() => document.querySelector('[data-summary="discovery"]')?.textContent || '');
+        assert(/from your zone file: [1-9]/.test(discovery), `discovery summary names the zone file: ${discovery}`);
+        await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="cdn"]').click());
+        const cdn = await tab.waitFor(() => {
+          const quick = document.querySelector('.scan-cli-quick code')?.textContent || '';
+          return quick ? {
+            zoneRows: [...document.querySelectorAll('.scan-zone-origins tbody tr.dt-row')].map((r) => r.textContent),
+            quick
+          } : false;
+        }, { timeout: 15000, message: 'Behind CDN command' });
+        assertEqual(cdn.zoneRows.length, 1, `one proxied host with a zone origin: ${JSON.stringify(cdn.zoneRows)}`);
+        assert(/www\.example\.net/.test(cdn.zoneRows[0]) && /192\.0\.2\.10/.test(cdn.zoneRows[0]), `zone row: ${cdn.zoneRows[0]}`);
+        const tokens = cdn.quick.split(/\s+/);
+        assert(tokens.includes('192.0.2.10') && !cdn.quick.includes('192.0.2.0/24'), `exact zone origin, never a /24: ${cdn.quick}`);
+        assert(tokens.includes('origin-lb.example.org') && cdn.quick.includes("'*.apps.example.net'"), `host target + quoted wildcard name: ${cdn.quick}`);
+        await shot(tab, opts, 'scan-zone-cdn-desktop-light-en');
+        await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="servers"]').click());
+        const via = await tab.waitFor(() => {
+          const el = document.querySelector('.scan-srv-host.is-zone');
+          return el ? el.textContent : false;
+        }, { timeout: 10000, message: 'via zone on Servers' });
+        assert(/www\.example\.net/.test(via) && /Zone file/.test(via), `web01 matched via the zone file: ${via}`);
+        const after = await tab.evaluate(() => ({
+          blocked: window.__zoneBlocked,
+          names: window.__zoneDnsNames,
+          options: localStorage.getItem('ssds.scan.options')
+        }));
+        assertEqual(after.blocked, [], 'no request left the page except DNS for the zone');
+        assert(after.names.every((n) => ['example.net', 'www.example.net', 'shop.example.net', 'api.example.net', 'mail.example.net', 'apps.example.net'].includes(n)),
+          `only the zone's names were resolved (no guesses): ${after.names.join(', ')}`);
+        assertEqual(after.options, stored, 'the exact run never touched the stored options');
+        // Phone: the chip fits in EN light and TR dark.
+        await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="hosts"]').click());
+        await tab.setViewport({ width: 390, height: 844, mobile: true });
+        for (const [lang, scheme] of [['en', 'light'], ['tr', 'dark']]) {
+          await setLangUi(tab, lang);
+          await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+          await tab.waitFor(() => document.querySelector('[data-role="zone-chip"]'), { message: 'chip after re-mount' });
+          await tab.evaluate(() => window.scrollTo(0, 0));
+          await assertNoHorizontalScroll(tab, `zone chip ${lang} ${scheme}`);
+          await shot(tab, opts, `scan-zone-mobile-${scheme}-${lang}`);
+        }
+        await setLangUi(tab, 'en');
+        // Forget in the Zone File view (or "Delete all local data") removes the chip at once.
+        await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('zone', undefined));
+        await tab.waitFor(() => !document.querySelector('[data-role="zone-chip"]'), { message: 'chip gone after Forget' });
+        await assertClean(tab, 'zone hand-off (SSL Targets)', origin);
+      } finally {
+        await tab.close();
+        await page.evaluate((s) => {
+          for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
+            if (value === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, value);
+          }
+        }, saved);
+      }
     });
 
     run.group('Quality');

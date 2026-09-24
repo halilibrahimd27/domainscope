@@ -45,7 +45,8 @@ import { launchBrowser } from './cdp.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, takeDownloads, waitReady
+  csvHeader, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, takeDownloads, waitReady,
+  ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS, ZONE_HANDOFF_INPUT, zoneHandoffScript
 } from './scan.e2e.mjs';
 
 const DEFAULT_SOURCES = ['crtsh', 'anubis', 'hackertarget'];
@@ -254,6 +255,63 @@ const fakeZoneScript = (apex, zone) => `(() => {
 })();`;
 
 /**
+ * Two apexes answered in the page for the sibling-domain candidate: a proxied `ticket.example.net`
+ * (Cloudflare), and `ticket.example.org` as a DNS-only public host at 203.0.113.20 — the same
+ * left-most label on a sister brand, which the engine raises to an exact origin candidate when both
+ * domains are scanned together. Documentation ranges only; no last octet .11/.27/.28/.41.
+ */
+const SIBLING_APEXES = ['example.net', 'example.org'];
+const SIBLING_ZONE = {
+  'example.net': { A: ['203.0.113.10'] },
+  'www.example.net': { A: ['203.0.113.10'] },
+  'ticket.example.net': { A: ['104.16.7.7'] },
+  'api.example.net': { A: ['203.0.113.14'] },
+  'example.org': { A: ['203.0.113.50'] },
+  'www.example.org': { A: ['203.0.113.50'] },
+  'ticket.example.org': { A: ['203.0.113.20'] },
+  'api.example.org': { A: ['203.0.113.14'] }
+};
+
+/**
+ * A DoH stub answering several apexes in the page (window.fetch wrapped before the app loads); any
+ * name outside every apex passes through to the real fetch. Shape matches {@link fakeZoneScript}.
+ */
+const multiZoneScript = (apexes, zone) => `(() => {
+  const APEXES = ${JSON.stringify(apexes)};
+  const ZONE = ${JSON.stringify(zone)};
+  const apexOf = (name) => APEXES.find((a) => name === a || name.endsWith('.' + a)) || null;
+  const soa = (apex) => ({ mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60, apex });
+  const answer = (name, type) => {
+    const apex = apexOf(name);
+    const node = ZONE[name];
+    if (!node) {
+      const exists = Object.keys(ZONE).some((k) => k.endsWith('.' + name));
+      return { rcode: exists ? 'NOERROR' : 'NXDOMAIN', answers: [], authorities: [{ name: apex || name, type: 'SOA', ttl: 300, data: soa(apex || name) }] };
+    }
+    const answers = (node[type] || []).map((data) => ({ name, type, ttl: 300, data }));
+    return { rcode: 'NOERROR', answers, authorities: answers.length ? [] : [{ name: apex || name, type: 'SOA', ttl: 300, data: soa(apex || name) }] };
+  };
+  const realFetch = window.fetch.bind(window);
+  let wire = null;
+  window.__fakeDnsQueries = 0;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return realFetch(input, init);
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    if (!apexOf(name)) return realFetch(input, init);
+    window.__fakeDnsQueries += 1;
+    const out = answer(name, q.type);
+    return new Response(wire.encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
+      questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/**
  * Elements of a panel that stick out of the viewport on the right (text or a control cut off on
  * a phone). Content inside a scrolling wrapper (the tables) is allowed to be wider.
  */
@@ -414,7 +472,11 @@ async function main() {
           : false;
       }, { message: 'automatic language line for .com.tr' });
       assertEqual([auto.line, auto.auto, auto.packsHidden], ['Auto: Turkish (.com.tr)', true, true], 'automatic pick from the domain ending');
-      assert(/^≈ [\d,]+ DNS queries for 1 domain \([\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(auto.plan), `plan line: ${auto.plan}`);
+      // The plan line now shows the honest whole-scan DNS-query estimate as a range (wordlist +
+      // permutations + deeper round + origin hints), with the wordlist breakdown in parentheses.
+      assert(/^≈ [\d,]+(?:–[\d,]+)? DNS queries for 1 domain \([\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(auto.plan), `plan line: ${auto.plan}`);
+      const planRange = await page.evaluate(() => ({ min: Number(document.querySelector('.sub-wl-plan').dataset.queriesMin), max: Number(document.querySelector('.sub-wl-plan').dataset.queriesMax) }));
+      assert(planRange.min > 5000 && planRange.max > planRange.min, `plan range brackets the run: ${JSON.stringify(planRange)}`);
       await page.type('[data-role="sub-domain"]', 'example.com');
       await page.waitFor(() => /no market pack/.test(document.querySelector('.sub-lang-line').textContent), { message: '.com has no pack' });
       await page.type('[data-role="sub-domain"]', 'example.com.tr');
@@ -823,16 +885,26 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 
-    await run.step('phone 390×844 (TR, light + dark): the table scrolls inside its wrapper, never the page', async () => {
+    await run.step('phone 390×844 (TR, light + dark): the results stack into cards, name + classification on screen, never a page scroll', async () => {
       await page.setViewport({ width: 390, height: 844, mobile: true });
       await setLangUi(page, 'tr');
       await sleep(200);
       await assertNoHorizontalScroll(page, 'phone results');
+      // Stacked card rows: each row is a block, and the classification (Cloudflare / Doğrudan) stays
+      // inside the viewport (the phone's main answer is no longer scrolled off to the right).
       const table = await page.evaluate(() => {
-        const s = document.querySelector('.sub-table .dt-scroll');
-        return { scrollable: s.scrollWidth > s.clientWidth, overflow: getComputedStyle(s).overflowX };
+        const row = document.querySelector('.sub-table tbody tr.dt-row');
+        if (!row) return null;
+        const vw = document.documentElement.clientWidth;
+        const kind = row.querySelector('.sub-kind [data-kind]');
+        const name = row.querySelector('.sub-host-name');
+        return {
+          block: getComputedStyle(row).display,
+          nameVisible: !!name && name.getBoundingClientRect().right <= vw + 1,
+          kindVisible: !!kind && kind.getBoundingClientRect().right <= vw + 1
+        };
       });
-      assert(table.overflow === 'auto', `table wrapper scrolls: ${JSON.stringify(table)}`);
+      assert(table && table.block === 'block' && table.nameVisible && table.kindVisible, `stacked, name + classification on screen: ${JSON.stringify(table)}`);
       const btn = await page.evaluate(() => {
         const r = document.querySelector('[data-action="sub-run"]').getBoundingClientRect();
         return { w: Math.round(r.width), vw: document.documentElement.clientWidth };
@@ -912,6 +984,10 @@ async function main() {
         readOnly: document.querySelector('[data-role="sub-domain"]').readOnly
       }));
       assert(/Cancelled after/.test(info.notice) && info.run && !info.readOnly, `after cancel: ${JSON.stringify(info)}`);
+      // Streamed partials never resolve once cancelled: no row may keep claiming "resolving…" (the
+      // table redraws on its next frame).
+      await page.waitFor(() => ![...document.querySelectorAll('.sub-table .sub-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
+        { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
       await shot(page, opts, 'subdomains-desktop-light-en-cancelled');
     });
 
@@ -946,6 +1022,8 @@ async function main() {
 
     await run.step('#/subdomains?domain=…&run=1 asks for one click, then scans (sources, wordlist, permutations and hints off); a reload does not scan', async () => {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       await tab.goto(`${server.url}#/about`);
       await waitReady(tab);
       await tab.evaluate(() => localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'off', includeExpired: false, permutations: false, originHints: false })));
@@ -992,6 +1070,8 @@ async function main() {
     run.group('Emulated zone (no network): the ORIGIN panel with a network and both shells');
     await run.step(`${FAKE_APEX} answered in the page: origin /24, sweep command for POSIX and PowerShell, 390 px TR/EN × light/dark`, async () => {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       try {
         await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(FAKE_APEX, FAKE_ZONE) });
         await tab.goto(`${server.url}#/about`);
@@ -1048,6 +1128,146 @@ async function main() {
         }
         assert(/python ssl_origin_scan\.py/.test(await tab.evaluate(() => document.querySelector('.sub-org-command code').textContent)), 'the chosen shell survives a language re-mount');
         await assertClean(tab, 'emulated zone', origin);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    run.group('Emulated sibling domains (no network): the cross-brand origin candidate');
+    await run.step('two apexes scanned together: a proxied ticket.<a> gets ticket.<b> (DNS-only) as its exact origin', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: multiZoneScript(SIBLING_APEXES, SIBLING_ZONE) });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        // No passive source; small list; a custom list guarantees `ticket` is tried under both apexes.
+        await tab.evaluate(() => {
+          localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
+          sessionStorage.setItem('ssds.wordlist.custom', 'ticket\napi\nwww');
+        });
+        await tab.evaluate(() => { location.hash = '#/subdomains?domain=example.net,example.org&run=1'; });
+        await tab.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
+        await tab.click('[data-action="sub-link-start"]');
+        await tab.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'started' });
+        const id = await currentRunId(tab);
+        assertEqual(await tab.waitFor(DONE(id), { timeout: 60000, message: 'sibling scan done' }), 'done', 'status');
+        const info = await tab.evaluate(() => {
+          const panel = document.querySelector('.sub-org');
+          const rows = [...(panel ? panel.querySelectorAll('.sub-org-table tbody tr.dt-row') : [])];
+          const ticket = rows.find((r) => (r.querySelector('td')?.textContent || '').startsWith('ticket.example.net'));
+          return {
+            proxied: panel ? Number(panel.dataset.proxied) : 0,
+            suggest: !!(panel && panel.querySelector('.sub-org-suggest')),
+            siblingCands: [...(panel ? panel.querySelectorAll('.sub-org-cand[data-kind="sibling-domain"]') : [])].map((c) => c.textContent),
+            ticketRow: ticket ? ticket.textContent : null
+          };
+        });
+        assert(info.proxied >= 1, `a proxied host on example.net: ${JSON.stringify(info)}`);
+        assert(info.suggest, 'the panel suggests scanning sibling domains together');
+        assert(info.siblingCands.some((tx) => /ticket\.example\.org/.test(tx) && /203\.0\.113\.20/.test(tx)),
+          `ticket.example.net shows ticket.example.org (203.0.113.20) as a sibling-domain candidate: ${JSON.stringify(info.siblingCands)}`);
+        assert(info.ticketRow && /203\.0\.113\.20/.test(info.ticketRow), `the candidate is on the ticket.example.net row: ${info.ticketRow}`);
+        await shotEl(tab, opts, 'subdomains-origin-siblings-desktop-light-en', '.sub-org');
+        await assertClean(tab, 'sibling zone', origin);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    run.group('Zone File hand-off (emulated DNS, nothing else leaves the page)');
+    await run.step('"Scan now" in exact mode: chip, banner, zone names only (no sources / wordlist / permutations), exact origins + host targets in the command', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS) });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        // Stored options that WOULD ask sources and guess names: exact mode ignores them for one run.
+        const stored = JSON.stringify({ sources: ['crtsh', 'anubis'], bruteforce: 'smart', permutations: true, originHints: true });
+        await tab.evaluate((s) => localStorage.setItem('ssds.subdomains.options', s), stored);
+        // What the Zone File view does on "Scan now": publish the zone, a one-shot intent, navigate.
+        await tab.evaluate(async (zone) => {
+          const { state } = await import('./assets/js/state.js');
+          state.setSession('zone', zone);
+          state.setSession('zoneScanIntent', { v: 1, target: 'subdomains', domain: zone.origin, mode: 'exact', autostart: true, at: Date.now() });
+          location.hash = `#/subdomains?domain=${zone.origin}`;
+        }, ZONE_HANDOFF_INPUT);
+        await tab.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'the intent started the scan' });
+        const id = await currentRunId(tab);
+        assertEqual(await tab.waitFor(DONE(id), { timeout: 60000, message: 'exact zone scan done' }), 'done', 'status');
+        const info = await tab.evaluate(() => {
+          const panel = document.querySelector('.sub-org');
+          return {
+            domain: document.querySelector('[data-role="sub-domain"]').value,
+            chip: document.querySelector('[data-role="zone-chip"] .sub-zone-title')?.textContent || null,
+            pressed: document.querySelector('.sub-zone-mode .seg-btn[aria-pressed="true"]')?.dataset.value || null,
+            banner: document.querySelector('.sub-zone-banner')?.dataset.zoneMode || null,
+            plan: { exact: document.querySelector('.sub-wl-plan')?.dataset.zoneExact || null, text: document.querySelector('.sub-wl-plan')?.textContent || '' },
+            sourceChips: document.querySelectorAll('.sub-chip').length,
+            stages: [...document.querySelectorAll('.sub-stage')].map((s) => `${s.dataset.stage}:${s.dataset.state}`),
+            rows: [...document.querySelectorAll('.sub-table tbody tr.dt-row .sub-host-name')].map((a) => a.textContent).sort(),
+            zoneChips: document.querySelectorAll('.sub-table [data-origin="zone"]').length,
+            zoneBlock: panel ? [...panel.querySelectorAll('.sub-org-block[data-block="zone"] li')].map((li) => `${li.dataset.host}→${li.dataset.ip}`) : [],
+            zoneLink: !!(panel && panel.querySelector('.sub-org-block[data-block="zone"] a')),
+            command: panel?.querySelector('.sub-org-command code')?.textContent || null,
+            blocked: window.__zoneBlocked,
+            names: window.__zoneDnsNames,
+            options: localStorage.getItem('ssds.subdomains.options')
+          };
+        });
+        assertEqual([info.domain, info.pressed, info.banner], ['example.net', 'exact', 'exact'], 'pre-filled domain, exact chip, exact banner');
+        assert(/6 names, 3 exact origins/.test(info.chip || ''), `chip: ${info.chip}`);
+        // The Advanced plan line describes the exact run, not the stored wordlist options.
+        assert(info.plan.exact === '1' && /Exact mode: only the 6 names from your zone file/.test(info.plan.text), `exact plan line: ${JSON.stringify(info.plan)}`);
+        assertEqual(info.sourceChips, 0, 'no passive source was asked');
+        for (const st of ['sources:skipped', 'bruteforce:skipped', 'permutations:skipped']) assert(info.stages.includes(st), `${st} in ${info.stages.join(' ')}`);
+        // The zone's names, plus its wildcard base (`*.apps` → apps.example.net, seeded, never brute-forced).
+        assertEqual(info.rows, ['api.example.net', 'apps.example.net', 'example.net', 'mail.example.net', 'shop.example.net', 'www.example.net'], 'only the zone names');
+        assert(info.zoneChips >= 5, `"Zone file" origin chips in the table: ${info.zoneChips}`);
+        assertEqual(info.zoneBlock, ['www.example.net→192.0.2.10'], 'exact origin from the zone file, first block');
+        assert(!info.zoneLink, 'a zone origin is never an IP Intel link');
+        const tokens = (info.command || '').split(/\s+/);
+        assert(tokens[0] === 'python3' && tokens.includes('192.0.2.10') && !info.command.includes('192.0.2.0/24'), `exact zone origin, never a /24: ${info.command}`);
+        assert(tokens.includes('origin-lb.example.org') && info.command.includes("'*.apps.example.net'"), `host target + quoted wildcard name: ${info.command}`);
+        assertEqual(info.blocked, [], 'no request left the page except DNS for the zone');
+        assert(info.names.every((n) => ['example.net', 'www.example.net', 'shop.example.net', 'api.example.net', 'mail.example.net', 'apps.example.net'].includes(n)),
+          `only the zone's names were resolved (no guesses): ${info.names.join(', ')}`);
+        assertEqual(info.options, stored, 'the exact run never touched the stored options');
+        await tab.evaluate(() => document.querySelector('.sub-org-shell .seg-btn[data-value="powershell"]').click());
+        const ps = await tab.waitFor(() => {
+          const c = document.querySelector('.sub-org-command code')?.textContent || '';
+          return c.startsWith('python ') ? c : false;
+        }, { message: 'PowerShell command' });
+        assert(ps.includes("'*.apps.example.net'") && ps.split(/\s+/).includes('192.0.2.10'), `PowerShell command: ${ps}`);
+        await shotEl(tab, opts, 'subdomains-zone-chip-desktop-light-en', '.sub-hero');
+        await shotEl(tab, opts, 'subdomains-zone-origin-desktop-light-en', '.sub-org');
+        // "Include in discovery" / "Leave out" only change the next run (nothing starts).
+        await tab.evaluate(() => document.querySelector('.sub-zone-mode .seg-btn[data-value="discover"]').click());
+        const note = await tab.evaluate(() => document.querySelector('.sub-zone-note').dataset.mode);
+        assertEqual(note, 'discover', 'mode note follows the choice');
+        assertEqual(await currentRunId(tab), id, 'choosing a mode starts nothing');
+        // Phone: chip + ORIGIN panel fit (EN light, TR dark).
+        await tab.setViewport({ width: 390, height: 844, mobile: true });
+        for (const [lang, scheme] of [['en', 'light'], ['tr', 'dark']]) {
+          await setLangUi(tab, lang);
+          await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+          await tab.waitFor(() => document.querySelector('[data-role="zone-chip"]') && document.querySelector('.sub-org'), { message: 'chip + panel after re-mount' });
+          await sleep(150);
+          await assertNoHorizontalScroll(tab, `zone chip ${lang} ${scheme}`);
+          assertEqual(await overflowingIn(tab, '.sub-zone'), [], `zone chip inside 390 px (${lang} ${scheme})`);
+          assertEqual(await overflowingIn(tab, '.sub-org'), [], `ORIGIN panel inside 390 px (${lang} ${scheme})`);
+          await shotEl(tab, opts, `subdomains-zone-chip-mobile-${scheme}-${lang}`, '.sub-hero');
+        }
+        await setLangUi(tab, 'en');
+        // Forget in the Zone File view (or "Delete all local data") removes the chip at once.
+        await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('zone', undefined));
+        await tab.waitFor(() => !document.querySelector('[data-role="zone-chip"]'), { message: 'chip gone after Forget' });
+        await assertClean(tab, 'zone hand-off (Subdomains)', origin);
       } finally {
         await tab.close();
       }

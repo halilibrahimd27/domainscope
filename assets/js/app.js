@@ -37,6 +37,7 @@ export const DEFAULT_VIEW = 'subdomains';
  */
 export const VIEWS = Object.freeze([
   { id: 'subdomains', group: 'discover', icon: 'layers', load: () => import('./views/subdomains.js') },
+  { id: 'zone', group: 'discover', icon: 'file-text', load: () => import('./views/zone.js') },
   { id: 'scan', group: 'ssl', icon: 'target', load: () => import('./views/scan.js') },
   { id: 'cert', group: 'ssl', icon: 'shield', load: () => import('./views/cert.js') },
   { id: 'global', group: 'dns', icon: 'globe', load: () => import('./views/global.js') },

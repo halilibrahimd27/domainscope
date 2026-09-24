@@ -282,6 +282,13 @@
   margin-left: 6px;
 }
 
+/* The scan spreads its guesses across the resolvers; the arrows are not a strict failover order. */
+.sub-doh-spread {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
 /* Wordlist plan: candidate count + breakdown + time estimate for the typed domains */
 .sub-wl-plan {
   display: flex;
@@ -693,6 +700,30 @@
   color: var(--warn);
 }
 
+/* "crt.sh still fetching (up to 12 s)" while the DNS sweep already runs. */
+.sub-src-wait[hidden] {
+  display: none;
+}
+
+.sub-src-wait {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.sub-src-wait .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
 /* Per-source status lines (quota used up, temporarily down + CT fallback, page limit) */
 .sub-src-notes:empty {
   display: none;
@@ -1047,6 +1078,120 @@
   gap: 4px 10px;
 }
 
+/* Per-network sweep decision: whole /24 vs its exact addresses (and why, via the title). */
+.sub-org-sweep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.sub-org-sweep .icon {
+  color: var(--text-3);
+}
+
+.sub-org-sweep[data-sweep="cidr"] {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.sub-org-sweep[data-sweep="cidr"] .icon {
+  color: var(--ok);
+}
+
+.sub-org-shared-badge {
+  font-size: 11px;
+}
+
+/* On-demand AS owner of a network. */
+.sub-org-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.sub-org-owner .btn {
+  --btn-h: 22px;
+  font-size: 11.5px;
+}
+
+.sub-org-owner-prov {
+  color: var(--text-2);
+}
+
+.sub-org-owner-as {
+  overflow-wrap: anywhere;
+}
+
+.sub-org-owner-as.is-shared {
+  color: var(--warn);
+}
+
+.sub-org-owner-error {
+  color: var(--text-3);
+}
+
+/* "Exclude addresses" input + its report. */
+.sub-org-exclude {
+  margin: 4px 0 2px;
+}
+
+.sub-org-exclude-report {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.sub-org-exclude-report:empty {
+  display: none;
+}
+
+.sub-org-exclude-report > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.sub-org-exclude-report > div .icon {
+  flex: none;
+  transform: translateY(2px);
+}
+
+.sub-org-exclude-invalid {
+  color: var(--warn);
+}
+
+/* Suggest scanning sibling domains together. */
+.sub-org-suggest {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.sub-org-suggest .icon {
+  flex: none;
+  transform: translateY(2px);
+  color: var(--text-3);
+}
+
+.sub-org-cand-nets {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .sub-org-cidr {
   font-size: 15px;
   font-weight: 700;
@@ -1101,6 +1246,12 @@
 .sub-org-block[data-block="history"] .sub-org-leak {
   border-color: var(--info-border);
   background: var(--info-bg);
+}
+
+/* Zone-file origins are authoritative answers, not leaks: the ok palette, not the warning one. */
+.sub-org-block[data-block="zone"] .sub-org-leak {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
 }
 
 .sub-org-name {
@@ -1270,7 +1421,8 @@
   white-space: nowrap;
 }
 
-.sub-origin[data-origin="input"] {
+.sub-origin[data-origin="input"],
+.sub-origin[data-origin="zone"] {
   background: var(--accent-soft);
   color: var(--accent-text);
 }
@@ -1458,5 +1610,166 @@
 
   .sub-cta-btn {
     width: 100%;
+  }
+
+  /* The filter segmented control fills the row and scrolls sideways instead of clipping its last
+     button; a right-edge fade hints there is more. */
+  .sub-filter {
+    width: 100%;
+    -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, #000 92%, transparent);
+  }
+
+  /* Stacked card rows: on a phone the results table would need to scroll sideways and push the
+     main answer (Cloudflare / Doğrudan) off-screen. Each row becomes a card that stacks the name,
+     its classification and its IPs — nothing scrolls sideways, and long IPv6 wraps. The CNAME,
+     "Found by" and server columns drop out of the phone view (still in every export). */
+  .sub-table .dt-scroll {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .sub-table table,
+  .sub-table tbody,
+  .sub-table tr,
+  .sub-table td {
+    display: block;
+    width: auto;
+  }
+
+  .sub-table thead {
+    display: none;
+  }
+
+  .sub-table tbody tr.dt-row {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .sub-table tbody tr.dt-row td {
+    padding: 2px 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* Keep name (1), IPs (2) and classification (3); drop CNAME / Found by / server on the phone. */
+  .sub-table tbody tr.dt-row td:nth-child(n + 4) {
+    display: none;
+  }
+
+  .sub-ips .tlist {
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+  }
+
+  /* The learned-names explanation is long; trim it on a phone (still fully read by a screen reader
+     when focused, and the full text shows on wider viewports). */
+  .sub-learned .check-hint {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    overflow: hidden;
+  }
+
+  /* Origin-panel tables: the candidates and "about" columns wrap rather than scroll off-screen. */
+  .sub-org-table td,
+  .sub-org-hints td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* ---- Zone File hand-off: "Zone file loaded" chip (Subdomains + SSL Targets) ---------- */
+
+.sub-zone-host[hidden] {
+  display: none;
+}
+
+.sub-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+  min-width: 0;
+}
+
+.sub-zone-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.sub-zone-head .icon {
+  color: var(--accent-text);
+  flex: none;
+}
+
+.sub-zone-title {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sub-zone-open {
+  margin-left: auto;
+  font-size: 13px;
+}
+
+.sub-zone-mode.segmented {
+  flex-wrap: wrap;
+  height: auto;
+}
+
+.sub-zone-mode .seg-btn {
+  white-space: normal;
+  height: auto;
+  min-height: 24px;
+}
+
+.sub-zone-note,
+.sub-zone-privacy {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.sub-zone-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-3);
+}
+
+.sub-zone-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.sub-org-block[data-block="zone"] .sub-org-leak .sub-ip {
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .sub-zone-open {
+    margin-left: 0;
+  }
+
+  .sub-zone-mode.segmented {
+    width: 100%;
+  }
+
+  .sub-zone-mode .seg-btn {
+    flex: 1 1 auto;
   }
 }

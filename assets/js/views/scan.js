@@ -30,7 +30,7 @@ import { h, clear } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
-  checkboxGroup, ipSortValue, radioGroup, select, textarea, toast
+  checkboxGroup, ipSortValue, radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import {
@@ -52,10 +52,13 @@ import {
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
 import {
   LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
-  applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary, originOverview,
-  reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
-  wordlistCount, wordlistPlan, wordlistPlanText, wordlistScanConfig
+  applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary,
+  liveHosts, originOverview, originSweep, partialHostRecord, planQueryRange,
+  realOriginNetworks, reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
+  wordlistCount, wordlistPlan, wordlistPlanText, wordlistScanConfig,
+  ZoneChip, isResolving, validZoneIntent, zoneForDomains, zoneScanOverrides
 } from './subdomains.js';
+import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 
@@ -83,7 +86,7 @@ const KIND_ORDER = ['dangling', 'cloudflare', 'cdn', 'platform', 'direct', 'priv
 export const KIND_FILTERS = Object.freeze(['all', 'hidden', 'cloudflare', 'cdn', 'platform', 'cdnplatform', 'direct', 'private', 'unresolved', 'dangling']);
 const SOURCE_NAMES = Object.fromEntries(SOURCES.map((s) => [s.id, s.name]));
 /** Origin-hint kinds with a localized label (scan.hint.<kind>). */
-export const HINT_KINDS = Object.freeze(['resolver-leak', 'spf', 'mx', 'direct-sibling', 'history']);
+export const HINT_KINDS = Object.freeze(['resolver-leak', 'spf', 'mx', 'direct-sibling', 'sibling-domain', 'history', 'zone']);
 const CHIP_ERRORS = ['abort', 'timeout', 'rate-limit', 'http', 'network', 'parse', 'unknown'];
 
 /* ------------------------------------------------------------------------ */
@@ -159,6 +162,7 @@ registerStrings('en', {
   'scan.opt.extraPlaceholder': 'intranet.example.com\nold-shop.example.com',
   'scan.opt.extraHint': 'Names you already know about; they are always resolved.',
   'scan.opt.doh': 'DNS over HTTPS: {chain}',
+  'scan.opt.dohSpread': 'A bulk scan spreads its queries across these resolvers — this is not a strict failover order.',
   'scan.opt.dohChange': 'Change',
   'scan.vocab.langs': 'Languages / markets: {summary}',
   'scan.vocab.custom': { one: '{count} custom name', other: '{count} custom names' },
@@ -256,6 +260,7 @@ registerStrings('en', {
   'scan.sum.wildcard': 'Wildcard DNS on {list}: every name there resolves, so wordlist-only hits were dropped and look-alikes are marked “wildcard?”.',
   'scan.sum.sourcesFailed': { one: '{count} source failed — see “Sources”. The results are still valid.', other: '{count} sources failed — see “Sources”. The results are still valid.' },
   'scan.sum.discovery': 'Found through DNS: {dns} · from passive sources: {sources}',
+  'scan.sum.discoveryZone': 'Found through DNS: {dns} · from passive sources: {sources} · from your zone file: {zone}',
   'scan.sum.networks': { one: 'Candidate origin network {list}: the non-proxied names live there, and the proxied ones may too. See “Behind CDN”.', other: 'Candidate origin networks {list}: the non-proxied names live there, and the proxied ones may too. See “Behind CDN”.' },
   'scan.warn.PUBLIC_SUFFIX': '{detail} is a public suffix and was skipped.',
   'scan.warn.INVALID_DOMAIN': 'Invalid domain skipped: {detail}',
@@ -266,6 +271,14 @@ registerStrings('en', {
   'scan.warn.WILDCARD_PARENTS_TRUNCATED': 'Wildcard DNS was checked for the first {detail} parent names only.',
   'scan.warn.WORDLIST_DEGRADED': 'The chosen wordlist could not be loaded, so a smaller one was used ({detail}).',
   'scan.warn.DNS_UNREACHABLE': 'The public DNS resolvers stopped answering ({detail} guesses in a row failed), so the wordlist and variations were stopped early. Check your connection, or whether DNS-over-HTTPS is blocked on this network.',
+  'scan.warn.ZONE_OUT_OF_SCOPE': '{detail} names from your zone file are outside the scanned domain and were skipped.',
+  'scan.origin.zone': 'Zone file',
+  'scan.hint.zone': 'Zone file',
+  'scan.hint.zone.title': 'Your zone file names this address as the real server behind the proxied name',
+  'scan.srv.via.zone': 'Zone file',
+  'scan.cdn.zoneTitle': 'Exact origins from your zone file',
+  'scan.cdn.zoneDesc': 'Your zone file names the real server behind these proxied names. The command below probes these exact addresses and never widens them to a /24.',
+  'scan.cdn.col.zoneOrigin': 'Origin from the zone file',
 
   'scan.tab.hosts': 'Hosts',
   'scan.tab.servers': 'Servers',
@@ -368,6 +381,8 @@ registerStrings('en', {
   'scan.cdn.col.cidr': 'Network',
   'scan.cdn.col.netHosts': 'Non-proxied names',
   'scan.cdn.col.netIps': 'IPs',
+  'scan.cdn.col.sweep': 'Sweep',
+  'scan.cdn.col.owner': 'Owner',
   'scan.cdn.quickTitle': 'Quick check: sweep the origin networks',
   'scan.cdn.quickDesc': 'Connects to every address of these networks with each proxied name (TLS SNI) — no input files needed. Run it inside the network; IPv6 networks are tried at their known addresses only.',
   'scan.cdn.shell': 'Shell',
@@ -384,11 +399,13 @@ registerStrings('en', {
   'scan.hint.spf': 'SPF',
   'scan.hint.mx': 'MX',
   'scan.hint.direct-sibling': 'Sibling',
+  'scan.hint.sibling-domain': 'Sibling domain',
   'scan.hint.history': 'History',
   'scan.hint.resolver-leak': 'Resolver leak',
   'scan.hint.spf.title': 'Allowed to send mail for the domain (SPF record)',
   'scan.hint.mx.title': 'Mail server (MX) of the domain',
   'scan.hint.direct-sibling.title': 'Public IP of a non-proxied name of the same domain',
+  'scan.hint.sibling-domain.title': 'The same name is a DNS-only host on a sister domain scanned with this one',
   'scan.hint.history.title': 'Seen in historical DNS (possibly before the proxy was enabled)',
   'scan.hint.resolver-leak.title': 'Another public resolver answered the proxied name with this non-CDN address',
   'scan.cli.title': 'Confirm from inside your network',
@@ -518,6 +535,7 @@ registerStrings('tr', {
   'scan.opt.extraPlaceholder': 'intranet.example.com.tr\neski-magaza.example.com.tr',
   'scan.opt.extraHint': 'Zaten bildiğiniz adlar; her zaman çözümlenir.',
   'scan.opt.doh': 'DNS over HTTPS: {chain}',
+  'scan.opt.dohSpread': 'Toplu tarama sorgularını bu çözümleyicilere dağıtır — kesin bir yedekleme (failover) sırası değildir.',
   'scan.opt.dohChange': 'Değiştir',
   'scan.vocab.langs': 'Diller / pazarlar: {summary}',
   'scan.vocab.custom': '{count} özel ad',
@@ -538,7 +556,7 @@ registerStrings('tr', {
   'scan.summary.bf.small': 'küçük kelime listesi',
   'scan.summary.bf.smart': 'akıllı kelime listesi',
   'scan.summary.bf.large': 'büyük kelime listesi',
-  'scan.summary.bf.huge': 'dev kelime listesi',
+  'scan.summary.bf.huge': 'çok büyük kelime listesi',
   'scan.summary.perm': 'varyasyonlar',
   'scan.summary.cert': 'sertifikalı',
   'scan.summary.noCert': 'sertifikasız',
@@ -615,6 +633,7 @@ registerStrings('tr', {
   'scan.sum.wildcard': '{list} üzerinde wildcard DNS var: oradaki her ad çözümlenir; bu yüzden yalnızca kelime listesiyle bulunanlar atıldı, benzerleri “wildcard?” olarak işaretlendi.',
   'scan.sum.sourcesFailed': { one: '{count} kaynak başarısız oldu — “Kaynaklar” sekmesine bakın. Sonuçlar yine de geçerli.', other: '{count} kaynak başarısız oldu — “Kaynaklar” sekmesine bakın. Sonuçlar yine de geçerli.' },
   'scan.sum.discovery': 'DNS ile bulunan: {dns} · pasif kaynaklardan: {sources}',
+  'scan.sum.discoveryZone': 'DNS ile bulunan: {dns} · pasif kaynaklardan: {sources} · zone dosyanızdan: {zone}',
   'scan.sum.networks': 'Aday asıl sunucu ağı {list}: proxy’lenmeyen adlar burada; proxy’lenenler de burada olabilir. “CDN arkası” sekmesine bakın.',
   'scan.warn.PUBLIC_SUFFIX': '{detail} bir genel sonek olduğu için atlandı.',
   'scan.warn.INVALID_DOMAIN': 'Geçersiz alan adı atlandı: {detail}',
@@ -625,6 +644,14 @@ registerStrings('tr', {
   'scan.warn.WILDCARD_PARENTS_TRUNCATED': 'Wildcard DNS yalnızca ilk {detail} üst ad için kontrol edildi.',
   'scan.warn.WORDLIST_DEGRADED': 'Seçilen kelime listesi yüklenemedi; daha küçük bir liste kullanıldı ({detail}).',
   'scan.warn.DNS_UNREACHABLE': 'Genel DNS çözümleyicileri yanıt vermeyi bıraktı (art arda {detail} tahmin başarısız oldu); bu yüzden kelime listesi ve varyasyonlar erken durduruldu. Bağlantınızı ya da bu ağda DNS-over-HTTPS’in engellenip engellenmediğini kontrol edin.',
+  'scan.warn.ZONE_OUT_OF_SCOPE': 'Zone dosyanızdaki {detail} ad taranan alan adının dışında kaldığı için atlandı.',
+  'scan.origin.zone': 'Zone dosyası',
+  'scan.hint.zone': 'Zone dosyası',
+  'scan.hint.zone.title': 'Zone dosyanız bu adresi proxy’li adın arkasındaki gerçek sunucu olarak gösteriyor',
+  'scan.srv.via.zone': 'Zone dosyası',
+  'scan.cdn.zoneTitle': 'Zone dosyanızdaki kesin originler',
+  'scan.cdn.zoneDesc': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
+  'scan.cdn.col.zoneOrigin': 'Zone dosyasındaki origin',
 
   'scan.tab.hosts': 'Host’lar',
   'scan.tab.servers': 'Sunucular',
@@ -727,6 +754,8 @@ registerStrings('tr', {
   'scan.cdn.col.cidr': 'Ağ',
   'scan.cdn.col.netHosts': 'Proxy’lenmeyen adlar',
   'scan.cdn.col.netIps': 'IP’ler',
+  'scan.cdn.col.sweep': 'Tarama',
+  'scan.cdn.col.owner': 'Sahip',
   'scan.cdn.quickTitle': 'Hızlı kontrol: asıl sunucu ağlarını tara',
   'scan.cdn.quickDesc': 'Bu ağlardaki her adrese her proxy’lenen adla (TLS SNI) bağlanır — girdi dosyası gerekmez. Ağın içinden çalıştırın; IPv6 ağlarında yalnızca bilinen adresler denenir.',
   'scan.cdn.shell': 'Kabuk',
@@ -743,11 +772,13 @@ registerStrings('tr', {
   'scan.hint.spf': 'SPF',
   'scan.hint.mx': 'MX',
   'scan.hint.direct-sibling': 'Kardeş ad',
+  'scan.hint.sibling-domain': 'Kardeş alan adı',
   'scan.hint.history': 'Geçmiş',
   'scan.hint.resolver-leak': 'Çözümleyici sızıntısı',
   'scan.hint.spf.title': 'Alan adı adına e-posta göndermeye yetkili (SPF kaydı)',
   'scan.hint.mx.title': 'Alan adının e-posta sunucusu (MX)',
   'scan.hint.direct-sibling.title': 'Aynı alan adındaki proxy’lenmeyen bir adın genel IP’si',
+  'scan.hint.sibling-domain.title': 'Aynı ad, bu taramadaki bir kardeş alan adında DNS-only bir host',
   'scan.hint.history.title': 'Geçmiş DNS kayıtlarında görülmüş (muhtemelen proxy açılmadan önce)',
   'scan.hint.resolver-leak.title': 'Başka bir genel çözümleyici proxy’lenen adı bu CDN dışı adresle yanıtladı',
   'scan.cli.title': 'Ağınızın içinden doğrulayın',
@@ -1028,7 +1059,7 @@ export function originLabel(origin) {
     return t('scan.origin.dnsmine', { record: origin.slice('dns-mine:'.length) });
   }
   if (origin === 'input' || origin === 'cert' || origin === 'bruteforce'
-    || origin === 'wordlist' || origin === 'permutation' || origin === 'recursive') {
+    || origin === 'wordlist' || origin === 'permutation' || origin === 'recursive' || origin === 'zone') {
     return t(`scan.origin.${origin}`);
   }
   return SOURCE_NAMES[origin] || origin;
@@ -1049,6 +1080,12 @@ const session = {
   scanTab: null,
   run: null
 };
+
+/**
+ * How the next scan uses each imported zone ('exact' | 'discover' | 'off'), keyed by the zone
+ * object in state.session.zone (a forgotten zone drops out with its key).
+ */
+const zoneModes = new WeakMap();
 let runCounter = 0;
 /** The mounted view (null when another tool is shown). */
 let active = null;
@@ -1091,6 +1128,9 @@ function createRun(config) {
     sourceResults: [],
     sourcePlan: { domains: [], sources: [] },
     hosts: [],
+    // Streamed probe partials (hooks.onFound), keyed by name; superseded by the full record.
+    found: new Map(),
+    sourceWait: null,
     result: null,
     error: null,
     startedAt: new Date(),
@@ -1130,7 +1170,15 @@ function startRun(run, scanConfig, appState) {
     },
     onHost(record) {
       run.hosts.push(record);
+      if (run.found.has(record.name)) run.found.delete(record.name);
       emit(run, 'host', record);
+    },
+    onFound(partial) {
+      if (!partial || !partial.name) return;
+      if (run.hosts.some((x) => x.name === partial.name)) return;
+      const record = partialHostRecord(partial);
+      run.found.set(partial.name, record);
+      emit(run, 'found', record);
     },
     onProgress(p) {
       const pills = applyProgress(run, p);
@@ -1145,6 +1193,7 @@ function startRun(run, scanConfig, appState) {
     appState.setSession('scanHosts', {
       domains: result.domains,
       names: result.hosts.filter((x) => !x.wildcardSuspect).map((x) => x.name),
+      resolving: result.hosts.filter((x) => !x.wildcardSuspect && isResolving(x)).map((x) => x.name),
       finishedAt: run.finishedAt
     });
     // Learn the naming vocabulary like Subdomains does (opt-in; bare labels of in-scope names only,
@@ -1243,6 +1292,18 @@ export function mount(container, ctx) {
     session.domainsFromCert = false;
   }
 
+  /* --- Zone File hand-off ("Find certificate targets") ---------------------- */
+  // A one-shot intent pre-fills step 2 with the zone's domain and presets exact mode; it never
+  // starts the scan (the Run button does).
+  const zoneIntent = state.takeSession('zoneScanIntent');
+  if (validZoneIntent(zoneIntent, 'scan', state.getSession('zone'))) {
+    if (!fromRoute.length && zoneIntent.domain) {
+      session.domainsText = String(zoneIntent.domain);
+      session.domainsFromCert = false;
+    }
+    zoneModes.set(state.getSession('zone'), zoneIntent.mode === 'discover' ? 'discover' : 'exact');
+  }
+
   /* --- step 1: certificate --------------------------------------------------- */
   const certBody = h('div', { class: 'stack-sm' });
   const certStatus = h('span', { class: 'scan-step-status' });
@@ -1312,6 +1373,28 @@ export function mount(container, ctx) {
     }
   });
   const domainsHint = h('div', { class: 'scan-domains-cert' });
+  // "Zone file loaded" chip (shared with Subdomains): shown while the imported zone belongs to a
+  // domain of step 2.
+  const zoneHost = h('div', { class: 'sub-zone-host scan-zone-host', hidden: true });
+  const activeZone = () => zoneForDomains(state.getSession('zone'), parseDomainsInput(domainsField.value).domains);
+  let zoneShown = null;
+  function renderZoneChip() {
+    const zone = activeZone();
+    if (zone === zoneShown && (zone ? !zoneHost.hidden : zoneHost.hidden)) return;
+    zoneShown = zone;
+    clear(zoneHost);
+    zoneHost.hidden = !zone;
+    if (!zone) return;
+    zoneHost.append(ZoneChip({
+      zone,
+      mode: zoneModes.get(zone) || 'discover',
+      href: ctx.href('zone'),
+      onMode: (m) => {
+        zoneModes.set(zone, m);
+        renderRunSummary();
+      }
+    }));
+  }
   const domainsStatus = h('span', { class: 'scan-step-status' });
 
   function certDomains() {
@@ -1336,6 +1419,7 @@ export function mount(container, ctx) {
   }
 
   function renderDomainsHint() {
+    renderZoneChip();
     clear(domainsHint);
     clear(domainsStatus);
     const parsed = parseDomainsInput(domainsField.value);
@@ -1472,15 +1556,27 @@ export function mount(container, ctx) {
       planLine.append(Icon('info', { size: 13 }), h('span', null, t('sub.plan.none')));
       return;
     }
+    const learnedCount = vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0;
     const plan = wordlistPlan({
       level: options.bruteforce,
       domains,
       locales: vocab.locales,
       custom: vocab.custom.length,
-      learned: vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0
+      learned: learnedCount
+    });
+    // The honest whole-scan query estimate (wordlist + variations + deeper round + origin hints),
+    // so the plan line does not under-count like a wordlist-only figure would.
+    const certNames = certLeaf() ? certLeaf().hostnames : [];
+    const extraNames = parseHostList(session.extraText || '', { allowWildcard: true }).valid;
+    const queries = planQueryRange({
+      level: options.bruteforce, domains, locales: vocab.locales, custom: vocab.custom.length, learned: learnedCount,
+      permutations: options.permutations, permutationBudget: options.permutationBudget, originHints: options.originHints,
+      certNames, extraNames
     });
     planLine.dataset.total = String(plan.total);
-    planLine.append(Icon('search', { size: 13 }), h('span', null, wordlistPlanText(plan, sweepWidth())));
+    planLine.dataset.queriesMin = String(queries.min);
+    planLine.dataset.queriesMax = String(queries.max);
+    planLine.append(Icon('search', { size: 13 }), h('span', null, wordlistPlanText(plan, sweepWidth(), queries)));
   }
   function renderBfOptions() {
     // From Smart up, the locale packs the domains get are added on top (like Subdomains shows).
@@ -1575,7 +1671,8 @@ export function mount(container, ctx) {
         type: 'button',
         class: 'link-btn',
         on: { click: () => globalThis.document.querySelector('[data-control="settings"]')?.click() }
-      }, t('scan.opt.dohChange')));
+      }, t('scan.opt.dohChange')),
+      h('span', { class: 'scan-doh-spread' }, t('scan.opt.dohSpread')));
   }
 
   /* --- run bar ----------------------------------------------------------------- */
@@ -1604,14 +1701,19 @@ export function mount(container, ctx) {
     if (parsed.domains.length) domainsText = t('scan.summary.domains', { count: parsed.domains.length });
     else if (certLeaf() && certLeaf().hostnames.length) domainsText = t('scan.summary.domainsCert');
     clear(runSummary);
+    // Exact zone mode (one run): the zone's names only — no sources, wordlist or permutations.
+    const zone = activeZone();
+    const exact = !!zone && zoneModes.get(zone) === 'exact';
     runSummary.append(
       h('span', null, domainsText),
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
-      h('span', null, t('scan.summary.sources', { count: options.sources.length })),
+      h('span', null, t('scan.summary.sources', { count: exact ? 0 : options.sources.length })),
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
-      h('span', null, t(`scan.summary.bf.${options.bruteforce}`)),
-      options.permutations ? h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·') : null,
-      options.permutations ? h('span', null, t('scan.summary.perm')) : null,
+      h('span', null, t(`scan.summary.bf.${exact ? 'off' : options.bruteforce}`)),
+      options.permutations && !exact ? h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·') : null,
+      options.permutations && !exact ? h('span', null, t('scan.summary.perm')) : null,
+      zone && zoneModes.get(zone) !== 'off' ? h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·') : null,
+      zone && zoneModes.get(zone) !== 'off' ? h('span', { dataset: { zoneMode: exact ? 'exact' : 'discover' } }, t('sub.origin.zone')) : null,
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
       h('span', null, certLeaf() ? t('scan.summary.cert') : t('scan.summary.noCert')));
   }
@@ -1640,7 +1742,7 @@ export function mount(container, ctx) {
 
   const setup = h('div', { class: 'scan-setup' },
     step(1, 'cert', 'certificate', certStatus, certBody, 'scan-step-cert'),
-    step(2, 'domains', 'globe', domainsStatus, h('div', { class: 'stack-sm' }, domainsField.el, domainsHint), 'scan-step-domains'),
+    step(2, 'domains', 'globe', domainsStatus, h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
     step(3, 'inventory', 'server', invStatus, invBody, 'scan-step-inventory'),
     step(4, 'options', 'sliders', null, h('div', { class: 'scan-options' },
       sourcesGroup.el,
@@ -1673,6 +1775,8 @@ export function mount(container, ctx) {
       renderVocab();
     }
     if (key === 'cleared') renderVocab();
+    // A zone imported, replaced or forgotten (Zone File view / "Delete all local data").
+    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') renderZoneChip();
     if (key === 'session' && value && value.name === CURRENT_CERT) {
       const next = normalizeCertLoad(value.value);
       if (next !== certLoad) {
@@ -1746,11 +1850,17 @@ export function mount(container, ctx) {
       { bruteforce: options.bruteforce, locales: vocab.locales, learned: vocab.learnedOn },
       { custom: vocab.custom, learned: vocab.learned }
     );
+    // Zone File hand-off (one run only, never saved to the stored options).
+    const zone = activeZone();
+    const zoneMode = zone ? (zoneModes.get(zone) || 'discover') : 'off';
+    const zoneCfg = zoneScanOverrides(zone, zoneMode);
+    const exact = zoneCfg.exact === true;
     const run = createRun({
       domains: shownDomains,
-      sources: [...options.sources],
-      bruteforce: options.bruteforce,
-      permutationBudget,
+      sources: exact ? [] : [...options.sources],
+      bruteforce: exact ? 'off' : options.bruteforce,
+      permutationBudget: exact ? 0 : permutationBudget,
+      zoneMode: zoneCfg.zone ? zoneMode : null,
       includeExpired: options.includeExpired,
       originHints: options.originHints,
       // The finished scan records its labels into the learned store only when that switch is on.
@@ -1784,7 +1894,8 @@ export function mount(container, ctx) {
       // `maxConcurrency` the hard ceiling derived from the same Settings value (never above 24).
       concurrency: scanConcurrency(state.settings.concurrency),
       maxConcurrency: scanConcurrency(state.settings.concurrency),
-      dns
+      dns,
+      ...zoneCfg
     }, state);
     resultsHost.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
@@ -1866,6 +1977,10 @@ function buildRunUI(run, ctx, { onFinish }) {
   const { state } = ctx;
   const cert = run.config.cert;
   const domainsLabel = run.config.domains.join(', ') || '—';
+  // Behind-CDN origin-panel state: the exclude tokens and an on-demand network-owner cache.
+  const cdnExclude = { raw: '', tokens: [] };
+  const cdnOwnerCache = new Map();
+  const cdnOwnerCtl = new AbortController();
 
   /* --- progress panel --------------------------------------------------------- */
   const title = h('h2', { class: 'scan-run-title' });
@@ -1883,11 +1998,33 @@ function buildRunUI(run, ctx, { onFinish }) {
   const progress = ProgressBar({ label: t('scan.progress.starting'), indeterminate: true });
   const chips = h('div', { class: 'scan-chips', attrs: { 'aria-label': t('scan.tab.sources') } });
   const chipEls = new Map();
+  // "crt.sh still fetching (up to 12 s)" while the DNS sweep already runs (honest stage reporting).
+  const sourceWaitNote = h('div', { class: 'scan-src-wait', attrs: { 'aria-live': 'polite' }, hidden: true });
   const runNotice = h('div', { class: 'scan-run-notice' });
   // The ProgressBar has its own throttled live region; the panel itself is not live (too chatty).
+  // How this run used an imported zone file (exact: its names only; discover: added as seeds).
+  const zoneBanner = run.config.zoneMode === 'exact' || run.config.zoneMode === 'discover'
+    ? Alert({ variant: 'info', compact: true, icon: 'file-text', message: t(`sub.zone.${run.config.zoneMode}`) })
+    : null;
+  if (zoneBanner) {
+    zoneBanner.classList.add('sub-zone-banner');
+    zoneBanner.dataset.zoneMode = run.config.zoneMode;
+  }
   const panel = h('section', { class: 'scan-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
     h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta)),
-    stageList, progress, chips, runNotice);
+    zoneBanner, stageList, progress, sourceWaitNote, chips, runNotice);
+
+  const SOURCE_GRACE_SECONDS = 12;
+  function renderSourceWait() {
+    clear(sourceWaitNote);
+    const waiting = run.status === 'running' && run.sourceWait && Array.isArray(run.sourceWait.sources)
+      ? run.sourceWait.sources.filter((sid) => sourceChipState(run.sourceResults, sid, Math.max(1, run.sourcePlan.domains.length || run.config.domains.length)).state === 'pending')
+      : [];
+    sourceWaitNote.hidden = !waiting.length;
+    if (!waiting.length) return;
+    const list = waiting.map((sid) => SOURCE_NAMES[sid] || sid).join(', ');
+    sourceWaitNote.append(Icon('clock', { size: 14 }), h('span', null, t('sub.srcWait', { list, seconds: SOURCE_GRACE_SECONDS, count: waiting.length })));
+  }
 
   function renderTitle() {
     title.textContent = run.status === 'running' ? t('scan.run.title', { domains: domainsLabel }) : t('scan.run.titleDone', { domains: domainsLabel });
@@ -1922,8 +2059,11 @@ function buildRunUI(run, ctx, { onFinish }) {
       const total = Number(st.info && st.info.total) || Number(st.candidates) || 0;
       let text = '';
       if (st.state === 'skipped') text = t('scan.stage.skipped');
-      else if (st.state === 'active' && (s === 'bruteforce' || s === 'permutations') && total > 0) text = t('scan.stage.candidates', { count: total });
-      else if (tech && st.state === 'done' && FOUND_BY_STAGE[s]) text = t('scan.stage.found', { count: formatNumber(FOUND_BY_STAGE[s](tech)) });
+      else if (st.state === 'active' && (s === 'bruteforce' || s === 'permutations') && total > 0) {
+        // Candidate count + a live "hits" count (names resolved so far, streamed via onFound).
+        const hits = liveHosts(run).length;
+        text = t('scan.stage.candidates', { count: total }) + (hits > 0 ? ` ${t('sub.stage.liveHits', { count: hits })}` : '');
+      } else if (tech && st.state === 'done' && FOUND_BY_STAGE[s]) text = t('scan.stage.found', { count: formatNumber(FOUND_BY_STAGE[s](tech)) });
       note.textContent = text;
       if (s === current) el.setAttribute('aria-current', 'step');
       else el.removeAttribute('aria-current');
@@ -2017,10 +2157,12 @@ function buildRunUI(run, ctx, { onFinish }) {
   }
 
   const renderStats = timeThrottle(() => {
-    const c = run.result ? { ...countHosts(run.result.hosts), ...pickStats(run.result.stats) } : countHosts(run.hosts);
+    // Live view includes streamed partials (task: stat cards update during the wordlist stage).
+    const live = liveHosts(run);
+    const c = run.result ? { ...countHosts(run.result.hosts), ...pickStats(run.result.stats) } : countHosts(live);
     stat.hosts.set({ value: c.total, hint: t('scan.stat.hostsHint', { count: formatNumber(c.resolved) }) });
     stat.cloudflare.set({ value: c.cloudflare, hint: t('scan.stat.cloudflareHint') });
-    stat.cdn.set({ value: c.cdn + c.platform, hint: providerHint(run.result ? run.result.hosts : run.hosts) || t('scan.stat.cdnHint') });
+    stat.cdn.set({ value: c.cdn + c.platform, hint: providerHint(run.result ? run.result.hosts : live) || t('scan.stat.cdnHint') });
     stat.direct.set({ value: c.direct + c.private, hint: state.inventory.servers.length || run.config.inventoryServers ? t('scan.stat.directHint', { count: c.onServers }) : null });
     if (stat.covered) stat.covered.set({ value: c.covered, hint: t('scan.stat.coveredHint', { total: formatNumber(c.total) }) });
     if (run.result) {
@@ -2100,6 +2242,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         sortValue: (x) => kindRank(x),
         searchValue: (x) => `${t(`kind.${x.classification.dangling ? 'dangling' : x.classification.kind}`)} ${x.resolution.status}`,
         render: (x) => h('div', { class: 'cluster scan-kind' }, KindBadge(x.classification),
+          // A streamed partial is "resolving…" only while the run lives (a cancelled run never resolves it).
+          x._partial && run.status === 'running' ? Badge(t('sub.host.resolving'), { variant: 'neutral', icon: 'clock', title: t('sub.host.resolvingTitle'), className: 'scan-mini-badge' }) : null,
           x.resolution.status !== 'NOERROR' && x.resolution.status !== 'NXDOMAIN'
             ? Badge(x.resolution.status, { variant: 'error', title: x.resolution.error || '', mono: true }) : null)
       },
@@ -2390,7 +2534,11 @@ function buildRunUI(run, ctx, { onFinish }) {
       add('info', t('scan.sum.networks', { count: nets.length, list: nets.slice(0, 3).join(', ') + (nets.length > 3 ? '…' : '') }), 'network', 'networks');
     }
     const tech = techniqueCounts(r.hosts);
-    if (tech.total) add('info', t('scan.sum.discovery', { dns: formatNumber(tech.dns), sources: formatNumber(tech.sources) }), 'search', 'discovery');
+    // A zone-file run names where its hosts came from too (an exact run finds none by DNS or sources).
+    if (tech.total) {
+      const found = { dns: formatNumber(tech.dns), sources: formatNumber(tech.sources), zone: formatNumber(tech.zone || 0) };
+      add('info', t(tech.zone ? 'scan.sum.discoveryZone' : 'scan.sum.discovery', found), 'search', 'discovery');
+    }
     if (inv && st.unmatchedIps) add('info', t('scan.sum.unmatched', { count: st.unmatchedIps }), 'help', 'unmatched');
     if (st.dangling) add('error', t('scan.sum.dangling', { count: st.dangling }), 'unlink', 'dangling');
     const wild = Object.entries(r.wildcards || {}).filter(([, w]) => w && w.wildcard).map(([d]) => `*.${d}`);
@@ -2479,8 +2627,8 @@ function buildRunUI(run, ctx, { onFinish }) {
             exportValue: (g) => [...new Set(g.hosts.map((x) => x.name))].join(' '),
             render: (g) => TruncatedList([...new Map(g.hosts.map((x) => [x.name, x])).values()], {
               max: 3,
-              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint' }] }, x.name,
-                x.via === 'hint' ? h('span', { class: 'muted' }, ` · ${t('scan.srv.via.hint')}`) : null)
+              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' }] }, x.name,
+                x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null)
             })
           },
           {
@@ -2530,7 +2678,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       columns: [
         { key: 'name', label: t('scan.srv.col.host'), mono: true },
         { key: 'ip', label: t('scan.srv.col.ip'), mono: true },
-        { key: 'via', label: t('scan.srv.col.via'), render: (x) => Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : 'info' }) },
+        { key: 'via', label: t('scan.srv.col.via'), render: (x) => Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }) },
         cert ? {
           key: 'covered', label: t('scan.srv.col.covered'),
           render: (x) => (x.covered ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
@@ -2549,14 +2697,71 @@ function buildRunUI(run, ctx, { onFinish }) {
     const hidden = r.hosts.filter((x) => x.classification.hidesOrigin);
     // Origin networks without wildcard suspects (and a CLI command the CLI accepts), shared with Subdomains.
     const overview = originOverview(r);
+    const { networks: cdnNetworks, dropped: cdnDropped } = realOriginNetworks(r.originNetworks, r.hosts);
+    const cdnProxiedNames = overview.proxied.map((p) => p.name);
     const netCidrs = new Set(overview.networks.map((n) => n.cidr));
     const sameNetworks = (x) => (x.candidateNetworks || []).filter((c) => netCidrs.has(c));
+    // The AS owner of a network for a table cell: the offline provider at once, else an on-demand
+    // RIPEstat lookup (one request per /24 · /48, cached).
+    const ownerCell = (net) => {
+      const el = h('span', { class: 'scan-net-owner', attrs: { 'aria-live': 'polite' } });
+      const fill = (d) => {
+        clear(el);
+        if (d && !d.error && d.asn) el.append(h('span', { class: ['scan-net-owner-as', { 'is-shared': d.shared }] }, t('sub.org.owner.as', { asn: d.asn, holder: d.holder || d.asName || '' })));
+        else el.append(h('span', { class: 'muted' }, t('sub.org.owner.error')));
+      };
+      if (net.provider) { el.append(h('span', null, net.provider.name)); return el; }
+      if (cdnOwnerCache.has(net.cidr)) { fill(cdnOwnerCache.get(net.cidr)); return el; }
+      el.append(Button({
+        label: t('sub.org.owner.lookup'), icon: 'search', size: 'sm', variant: 'ghost', dataset: { action: 'scan-net-owner', cidr: net.cidr },
+        ariaLabel: t('sub.org.owner.lookupFor', { cidr: net.cidr }), title: t('sub.org.owner.lookupFor', { cidr: net.cidr }),
+        onClick: async () => {
+          clear(el);
+          el.append(h('span', { class: 'muted' }, t('sub.org.owner.looking')));
+          try {
+            const d = await describeNetwork(net.cidr, { signal: cdnOwnerCtl.signal });
+            cdnOwnerCache.set(net.cidr, d);
+            fill(d);
+          } catch (err) {
+            if (errorKind(err) === 'abort') return;
+            clear(el);
+            el.append(h('span', { class: 'muted' }, t('sub.org.owner.error')));
+          }
+        }
+      }));
+      return el;
+    };
     cdnPanel.append(Alert({
       variant: 'info',
       icon: 'cloud',
       title: t('scan.cdn.whyTitle'),
       children: h('div', { class: 'stack-sm scan-why' }, h('p', null, t('scan.cdn.why1')), h('p', null, t('scan.cdn.why2')))
     }));
+
+    // Exact origins from the imported zone file (Zone File hand-off): authoritative, so first. A
+    // zone origin may be a private address: plain text, never an IP Intel link.
+    const zoned = overview.proxied.filter((p) => p.zone.length);
+    if (zoned.length) {
+      cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.zoneTitle')),
+        h('p', { class: 'muted text-sm' }, t('scan.cdn.zoneDesc')),
+        DataTable({
+          caption: t('scan.cdn.zoneTitle'),
+          rows: zoned,
+          dense: true,
+          rowKey: (p) => p.name,
+          sort: { key: 'name', dir: 'asc' },
+          className: 'scan-zone-origins',
+          columns: [
+            { key: 'name', label: t('scan.col.name'), mono: true, sortable: true, sortValue: (p) => hostSortKey(p.name), searchValue: (p) => p.name, render: (p) => p.name },
+            {
+              key: 'origin', label: t('scan.cdn.col.zoneOrigin'), mono: true,
+              searchValue: (p) => p.zone.map((z) => z.ip).join(' '),
+              render: (p) => h('div', { class: 'cluster' }, Badge(t('scan.hint.zone'), { variant: 'ok', title: t('scan.hint.zone.title') }),
+                TruncatedList(p.zone.map((z) => z.ip), { max: 3, inline: true }))
+            }
+          ]
+        }).el);
+    }
 
     cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.hostsTitle')), DataTable({
       caption: t('scan.cdn.hostsTitle'),
@@ -2600,7 +2805,10 @@ function buildRunUI(run, ctx, { onFinish }) {
     // CLI sweep of those blocks with the proxied names (no input files needed).
     if (hidden.length) {
       cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.netTitle')),
-        h('p', { class: 'muted text-sm' }, t('scan.cdn.netDesc')),
+        h('p', { class: 'muted text-sm' }, t('scan.cdn.netDesc')));
+      // Warn about shared cloud / hosting space before the table (guarded: native append('null')).
+      if (overview.shared) cdnPanel.append(Alert({ variant: 'warn', compact: true, icon: 'alert', message: t('sub.org.warnShared') }));
+      cdnPanel.append(
         DataTable({
           caption: t('scan.cdn.netTitle'),
           rows: overview.networks,
@@ -2621,19 +2829,39 @@ function buildRunUI(run, ctx, { onFinish }) {
               key: 'ips', label: t('scan.cdn.col.netIps'), mono: true,
               searchValue: (n) => n.ips.join(' '), exportValue: (n) => n.ips.join(' '),
               render: (n) => TruncatedList(n.ips, { max: 3 })
+            },
+            {
+              // Whether the command sweeps the whole /24 or only its known addresses, plus a
+              // shared-space flag — so the reader knows what the command actually probes and why.
+              key: 'sweep', label: t('scan.cdn.col.sweep'),
+              exportValue: (n) => (n.sweep === 'cidr' ? 'cidr' : 'ips') + (n.shared ? ' shared' : ''),
+              render: (n) => h('div', { class: 'cluster scan-net-sweep', dataset: { sweep: n.sweep, shared: n.shared ? '1' : '0' } },
+                h('span', { class: 'scan-net-sweep-label', title: n.sweep === 'cidr' ? t('sub.org.sweep.cidrTitle') : t('sub.org.sweep.ipsTitle') },
+                  n.sweep === 'cidr' ? t('sub.org.sweep.cidr') : t('sub.org.sweep.ips', { count: n.ips.length })),
+                n.shared ? Badge(t('sub.org.shared'), { variant: 'warn', icon: 'alert', title: t('sub.org.sharedTitle') }) : null)
+            },
+            {
+              key: 'owner', label: t('scan.cdn.col.owner'),
+              exportValue: (n) => (n.provider ? n.provider.name : ''),
+              render: (n) => ownerCell(n)
             }
           ]
         }).el);
       if (overview.command) {
-        // The sweep command in either shell (built by lib/cmdline so every token is quoted).
+        // The sweep command in either shell (built by lib/cmdline so every token is quoted), plus
+        // an "exclude" box that feeds --exclude (a mail server, a shared address, an octet to skip).
         const quickHost = h('div', { class: 'scan-cli-quick-cmd' });
+        const quickReport = h('div', { class: 'scan-cli-exclude-report text-sm', attrs: { 'aria-live': 'polite' } });
         const renderQuick = () => {
           clear(quickHost);
+          clear(quickReport);
           const shell = SHELLS.includes(session.cdnShell) ? session.cdnShell : 'posix';
-          const command = overview.commands[shell];
-          if (command) quickHost.append(CodeBlock(command, { label: t('scan.cli.command'), wrap: true }));
-          // A long sweep reads its names from a file (`-n proxied-names.txt`): offer that file here.
-          const nf = command && overview.namesFiles ? overview.namesFiles[shell] : null;
+          const sweep = originSweep(r, {
+            names: cdnProxiedNames, networks: cdnNetworks, dropped: cdnDropped, shell,
+            exclude: cdnExclude.tokens.length ? cdnExclude.tokens : null
+          });
+          if (sweep.command) quickHost.append(CodeBlock(sweep.command, { label: t('scan.cli.command'), wrap: true }));
+          const nf = sweep.command && sweep.namesFile ? { file: sweep.namesFile, text: sweep.namesText, count: sweep.count } : null;
           if (nf) {
             quickHost.append(h('div', { class: 'sub-org-namesfile', dataset: { file: nf.file } },
               h('p', { class: 'muted text-sm' }, t('sub.org.namesFile', { file: nf.file, count: formatNumber(nf.count) })),
@@ -2645,6 +2873,14 @@ function buildRunUI(run, ctx, { onFinish }) {
                 }
               })));
           }
+          const invalid = sweep.excludeDropped || [];
+          const unused = sweep.excludeUnused || [];
+          const droppedTargets = sweep.droppedTargets || 0;
+          const lines = [];
+          if (invalid.length) lines.push(h('div', { class: 'scan-cli-exclude-invalid', dataset: { role: 'exclude-invalid' } }, Icon('alert', { size: 13 }), h('span', null, t('sub.org.exclude.invalid', { count: invalid.length, list: invalid.slice(0, 5).join(', ') }))));
+          if (droppedTargets) lines.push(h('div', { dataset: { role: 'exclude-applied' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.applied', { count: droppedTargets }))));
+          if (unused.length) lines.push(h('div', { dataset: { role: 'exclude-unused' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.unused', { count: unused.length, list: unused.slice(0, 5).join(', ') }))));
+          quickReport.append(...lines);
         };
         const quickShell = SegmentedControl({
           label: t('scan.cdn.shell'),
@@ -2657,20 +2893,34 @@ function buildRunUI(run, ctx, { onFinish }) {
             renderQuick();
           }
         });
+        const excludeField = textInput({
+          label: t('sub.org.exclude.label'),
+          value: cdnExclude.raw,
+          placeholder: t('sub.org.exclude.placeholder'),
+          hint: t('sub.org.exclude.hint'),
+          mono: true,
+          className: 'scan-cli-exclude',
+          attrs: { 'data-role': 'scan-cdn-exclude', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off' },
+          onInput: (value) => {
+            cdnExclude.raw = value;
+            cdnExclude.tokens = value.split(/[\s,]+/).filter(Boolean);
+            renderQuick();
+          }
+        });
         renderQuick();
         cdnPanel.append(Card({
           title: t('scan.cdn.quickTitle'),
           subtitle: t('scan.cdn.quickDesc'),
           icon: 'terminal',
           className: 'scan-cli-quick',
-          children: h('div', { class: 'stack-sm' }, quickShell.el, quickHost)
+          children: h('div', { class: 'stack-sm' }, quickShell.el, excludeField.el, quickHost, quickReport)
         }));
       }
     }
 
     cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.hintsTitle')),
       h('p', { class: 'muted text-sm' }, t('scan.cdn.hintsDesc')));
-    if (!r.options || r.options.originHints === false) {
+    if ((!r.options || r.options.originHints === false) && !(r.originHints || []).length) {
       cdnPanel.append(EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.cdn.hintsOff') }));
     } else {
       cdnPanel.append(DataTable({
@@ -2888,7 +3138,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function renderTabBadges() {
     const r = run.result;
-    const hostsCount = r ? r.hosts.length : run.hosts.length;
+    const hostsCount = r ? r.hosts.length : liveHosts(run).length;
     tabs.setBadge('hosts', hostsCount);
     if (r) {
       const inv = run.config.inventoryServers > 0;
@@ -2910,6 +3160,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderMeta();
     renderStages();
     renderChips();
+    renderSourceWait();
     clear(runNotice);
     if (run.status === 'done') {
       const n = run.result.hosts.length;
@@ -2919,7 +3170,12 @@ function buildRunUI(run, ctx, { onFinish }) {
       hostsTable.setLoading(false);
       hostsTable.setRows(run.result.hosts);
       announce(t('scan.doneToast', { count: run.result.hosts.length }));
-    } else if (run.status === 'cancelled') {
+    } else if (run.found && run.found.size) {
+      // Cancelled / failed: redraw the streamed partials without their "resolving…" badge
+      // (updateRow drops the table's cached row, which setRows with the same objects would keep).
+      for (const partial of run.found.values()) hostsTable.updateRow(partial);
+    }
+    if (run.status === 'cancelled') {
       progress.setVariant('warn');
       progress.setIndeterminate(false);
       progress.setLabel(t('scan.run.cancelledShort'));
@@ -2954,12 +3210,20 @@ function buildRunUI(run, ctx, { onFinish }) {
   const renderBadgesSoon = frameThrottle(renderTabBadges);
   const syncExportsSoon = frameThrottle(syncExports);
 
+  // Per-hit updates are batched per frame (a big wordlist streams thousands of hits); rows of
+  // names shown as a streamed partial are replaced in place, other full records appended.
+  const renderStagesSoon = frameThrottle(renderStages);
+  const partialShown = new Set(run.found ? run.found.keys() : []);
   const listener = (type, payload) => {
     switch (type) {
       case 'stage':
         renderStages();
         renderProgress();
+        renderSourceWait();
         if (payload.stage === 'sources') renderChips();
+        // Announce a stage that really runs; a skipped one (exact zone mode, no wordlist…) stays silent.
+        if (SCAN_STAGES.includes(payload.stage) && payload.stage !== 'done'
+          && run.stages[payload.stage] && run.stages[payload.stage].state === 'active') announce(t(`scan.progress.${payload.stage}`));
         break;
       case 'progress':
         if (payload && payload.pills) renderStages();
@@ -2967,13 +3231,24 @@ function buildRunUI(run, ctx, { onFinish }) {
         break;
       case 'source':
         renderChips();
+        renderSourceWait();
         sourcesTable.addRows([payload]);
         renderSourceHealth();
         renderBadgesSoon();
         break;
-      case 'host':
-        hostsTable.addRows([payload]);
+      case 'found':
+        partialShown.add(payload.name);
+        hostsTable.upsertRow(payload);
         renderStats();
+        renderStagesSoon();
+        renderBadgesSoon();
+        syncExportsSoon();
+        break;
+      case 'host':
+        if (partialShown.delete(payload.name)) hostsTable.upsertRow(payload);
+        else hostsTable.addRows([payload]);
+        renderStats();
+        renderStagesSoon();
         renderBadgesSoon();
         syncExportsSoon();
         break;
@@ -2994,7 +3269,9 @@ function buildRunUI(run, ctx, { onFinish }) {
   renderChips();
   if (run.sourceResults.length) sourcesTable.setRows(run.sourceResults);
   renderSourceHealth();
-  if (run.hosts.length && !run.result) hostsTable.setRows(run.hosts);
+  renderSourceWait();
+  const replayHosts = liveHosts(run);
+  if (replayHosts.length && !run.result) hostsTable.setRows(replayHosts);
   renderStats();
   renderTabBadges();
   syncExports();
@@ -3012,6 +3289,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     dispose() {
       run.listeners.delete(listener);
       stopTicker();
+      try {
+        cdnOwnerCtl.abort();
+      } catch {
+        // already aborted / unsupported
+      }
       // Detaches the panel only: a running verification keeps going on the run.
       if (verifyUi) verifyUi.dispose();
     }

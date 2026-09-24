@@ -25,7 +25,7 @@ import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['subdomains', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const VIEW_IDS = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */
@@ -275,7 +275,7 @@ describe('i18n', () => {
       assert.equal(i18n.t('scan.opt.permBudgetValue', { count: 5000 }), '5.000 varyasyon');
       assert.equal(i18n.t('sub.stage.candidates', { count: 12345 }), '12.345 ad');
       assert.equal(i18n.t('sub.doneToast', { count: 1234 }), 'Subdomain taraması bitti: 1.234 ad');
-      assert.equal(i18n.t('sub.org.net.hosts', { count: 1500 }), '1.500 DNS-only host');
+      assert.equal(i18n.t('sub.org.net.hosts', { count: 1500 }), '1.500 gri bulut kaydı');
       i18n.setLang('en');
       assert.equal(i18n.t('test.plainCount', { count: 12345 }), '12,345 names');
       assert.equal(i18n.t('sub.opt.permBudgetValue', { count: 5000 }), '5,000 variations');
@@ -1170,6 +1170,109 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     });
   });
 
+  test('planQueryRange / queryRangeText: the honest whole-scan estimate (perms + recursive + hints), not the wordlist size', async () => {
+    const { S } = await load();
+    const smart = S.planQueryRange({ level: 'smart', domains: ['example.com'] });
+    assert.ok(smart.min > S.levelCount('smart'), 'the floor already exceeds the wordlist (mining + wildcard + resolve)');
+    assert.ok(smart.max > smart.min, 'the ceiling adds the permutation / recursive / hint budgets');
+    // Turning permutations and origin hints off lowers both ends.
+    const lean = S.planQueryRange({ level: 'smart', domains: ['example.com'], permutations: false, originHints: false });
+    assert.ok(lean.max < smart.max, 'no variations / hints → a smaller ceiling');
+    // A .com.tr adds the Turkish pack, so the floor rises.
+    const tr = S.planQueryRange({ level: 'smart', domains: ['example.com.tr'] });
+    assert.ok(tr.min > smart.min, 'the auto Turkish pack lifts the floor');
+    // A real smart+TR run measured 8,664–8,952 DNS queries; the range must bracket it.
+    assert.ok(tr.min <= 8664 && tr.max >= 8952, `range ${tr.min}-${tr.max} brackets a real run`);
+    inLang('en', () => {
+      assert.equal(S.queryRangeText({ min: 7000, max: 7000 }), '7,000', 'a single number when the ends coincide');
+      assert.equal(S.queryRangeText({ min: 7300, max: 11500 }), '7,300–11,500');
+    });
+    inLang('tr', () => assert.equal(S.queryRangeText({ min: 7300, max: 11500 }), '7.300–11.500'));
+    // wordlistPlanText uses the range when given, and the plan total as a fallback otherwise.
+    inLang('en', () => {
+      const plan = S.wordlistPlan({ level: 'smart', domains: ['example.com'] });
+      assert.match(S.wordlistPlanText(plan, S.MAX_SWEEP_CONCURRENCY, { min: 7000, max: 9000 }), /^≈ 7,000–9,000 DNS queries for 1 domain \(/);
+      assert.match(S.wordlistPlanText(plan), new RegExp(`^≈ ${plan.total.toLocaleString('en-US')} DNS queries for 1 domain \\(`), 'fallback: the plan total');
+    });
+  });
+
+  test('streaming partials: partialHostRecord is table-shaped and marked _partial; liveHosts merges, full wins', async () => {
+    const { S } = await load();
+    const p = S.partialHostRecord({ name: 'api.x.com', origin: 'wordlist', ipv4: ['203.0.113.5'], cnames: [], classification: { kind: 'direct', provider: null, dangling: false, hidesOrigin: false, reasonKey: 'class.direct' } });
+    assert.equal(p._partial, true);
+    assert.deepEqual(p.resolution.ipv4, ['203.0.113.5']);
+    assert.deepEqual(p.resolution.ipv6, [], 'AAAA arrives with the full record');
+    assert.deepEqual(p.origins, ['wordlist']);
+    assert.ok(Array.isArray(p.servers) && Array.isArray(p.originCandidates), 'shaped like a HostRecord');
+    // liveHosts: partials show while running; a full record of the same name supersedes its partial.
+    const run = { result: null, hosts: [], found: new Map([['api.x.com', p]]) };
+    assert.deepEqual(S.liveHosts(run).map((x) => x.name), ['api.x.com']);
+    const full = { name: 'api.x.com', _partial: false };
+    run.hosts = [full];
+    assert.deepEqual(S.liveHosts(run), [full], 'the full record wins; the partial is not double-counted');
+    run.result = { hosts: [full, { name: 'www.x.com' }] };
+    assert.equal(S.liveHosts(run).length, 2, 'once finished, the result hosts are authoritative');
+  });
+
+  test('originSweep --exclude: an octet drops from the /24, a fully-covered network drops out, invalid / unused reported', async () => {
+    const { S } = await load();
+    const result = {
+      hosts: [host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: ['203.0.113.0/24'] })],
+      originNetworks: [{ cidr: '203.0.113.0/24', ips: ['203.0.113.5'], hosts: ['api.x.com'], provider: null, shared: false, sweep: 'cidr' }],
+      cliTargets: ['203.0.113.0/24'],
+      cliNames: ['www.x.com']
+    };
+    const networks = [{ cidr: '203.0.113.0/24', ips: ['203.0.113.5'], hosts: ['api.x.com'], provider: null, shared: false, sweep: 'cidr' }];
+    // No exclude → the old shape exactly.
+    assert.deepEqual(S.originSweep(result, { names: ['www.x.com'], networks }), {
+      command: 'python3 ssl_origin_scan.py -t 203.0.113.0/24 -n www.x.com', namesFile: null, namesText: '', count: 1
+    });
+    // Excluding an address inside the /24 emits --exclude and keeps the target.
+    const ex = S.originSweep(result, { names: ['www.x.com'], networks, exclude: ['203.0.113.9'] });
+    assert.match(ex.command, /-t 203\.0\.113\.0\/24 --exclude 203\.0\.113\.9 -n www\.x\.com$/);
+    assert.deepEqual(ex.emitted, ['203.0.113.9'], 'the exclude is written as --exclude');
+    assert.deepEqual(ex.excluded, [], 'no whole target was removed');
+    assert.equal(ex.droppedTargets, 0);
+    // Excluding the whole /24 removes it from -t → no command left.
+    const gone = S.originSweep(result, { names: ['www.x.com'], networks, exclude: ['203.0.113.0/24'] });
+    assert.equal(gone.command, null);
+    assert.equal(gone.droppedTargets, 1, 'the fully-covered network dropped out of the sweep');
+    // An invalid token and one that touches nothing are reported, not emitted.
+    const rep = S.originSweep(result, { names: ['www.x.com'], networks, exclude: ['not-an-ip', '198.51.100.0/24'] });
+    assert.deepEqual(rep.excludeDropped, ['not-an-ip']);
+    assert.deepEqual(rep.excludeUnused, ['198.51.100.0/24']);
+    assert.match(rep.command, /^python3 ssl_origin_scan\.py -t 203\.0\.113\.0\/24 -n www\.x\.com$/, 'no --exclude when nothing overlaps');
+  });
+
+  test('originOverview: sibling-domain candidates (engine v3) and the shared-space flag', async () => {
+    const { S } = await load();
+    const proxied = host('ticket.a.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: ['203.0.113.0/24'] });
+    // Engine v3: the host carries ordered originCandidates including a cross-brand sibling.
+    proxied.originCandidates = [
+      { ip: '203.0.113.20', kind: 'sibling-domain', score: 95, evidence: { sibling: 'ticket.b.com' } },
+      { cidr: '203.0.113.0/24', kind: 'network', score: 60, evidence: { relation: 'main-cluster' } }
+    ];
+    const result = {
+      hosts: [proxied, host('ticket.b.com', ['wordlist'], { ips: ['203.0.113.20'] })],
+      originHints: [],
+      originNetworks: [{ cidr: '203.0.113.0/24', ips: ['203.0.113.20'], hosts: ['ticket.b.com'], provider: null, shared: false, sweep: 'cidr' }],
+      cliTargets: ['203.0.113.0/24'],
+      cliNames: ['ticket.a.com']
+    };
+    const o = S.originOverview(result);
+    assert.deepEqual(o.proxied[0].siblings, [{ ip: '203.0.113.20', sibling: 'ticket.b.com' }], 'sibling candidate surfaced from originCandidates');
+    assert.equal(o.siblingCount, 1);
+    assert.equal(o.shared, false, 'no shared network here');
+    // A shared provider network raises the flag (offline: the network entry says shared).
+    const sharedResult = {
+      ...result,
+      originNetworks: [{ cidr: '198.51.100.0/24', ips: ['198.51.100.5'], hosts: ['api.a.com'], provider: { name: 'Fastly', category: 'cdn' }, shared: true, sweep: 'ips' }],
+      hosts: [host('www.a.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.2'], networks: ['198.51.100.0/24'] }), host('api.a.com', ['wordlist'], { ips: ['198.51.100.5'] })],
+      cliNames: ['www.a.com']
+    };
+    assert.equal(S.originOverview(sharedResult).shared, true, 'a shared cloud / hosting network flags the panel');
+  });
+
   test('custom wordlist: this tab only (sessionStorage), parsed with accepted / rejected counts, memory fallback', async () => {
     const { S } = await load();
     const prev = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
@@ -1723,8 +1826,70 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(srcText, /ctx\.setParams\(\{ domain: v\.domains\.join\(','\) \}\);/);
     assert.doesNotMatch(srcText, /ctx\.setParams\([^)]*run: '1'/);
     assert.doesNotMatch(srcText, /queueMicrotask\(\(\) => \{\s*if \(!ctx\.signal\.aborted\) start\(\);/, 'no automatic start');
+    // The one exception: the Zone File view's in-app "Scan now" click (a one-shot, in-memory intent,
+    // validated for this view and still fresh). Every queued start must go through that path.
+    const queued = [...srcText.matchAll(/queueMicrotask\(([^;]*)\);/g)].map((m) => m[1]).filter((body) => /start/i.test(body));
+    assert.deepEqual(queued, ['startFromZoneClick'], 'only the zone-intent start is queued');
+    assert.match(srcText, /if \(intentOk && zoneIntent\.autostart === true\) queueMicrotask\(startFromZoneClick\);/, 'gated by a valid autostart intent');
+    assert.match(srcText, /const intentOk = validZoneIntent\(zoneIntent, 'subdomains', state\.getSession\('zone'\)\);/, 'the intent is validated for Subdomains');
+    assert.match(srcText, /const zoneIntent = state\.takeSession\('zoneScanIntent'\);/, 'the intent is one-shot (taken)');
     const scanText = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     assert.doesNotMatch(scanText, /p\.run === '1'\) start\(\)|if \(!ctx\.signal\.aborted\) start\(\)/, 'SSL Targets neither');
+    assert.doesNotMatch(scanText, /queueMicrotask\([^;]*start/i, 'SSL Targets never queues a start (the zone intent only pre-fills)');
+  });
+
+  test('live runs: skipped stages are not announced; a partial row says "resolving…" only while the run lives', async () => {
+    // Wiring guards (the views cannot be mounted on the fake DOM; the E2E cancel steps check the behaviour).
+    const subSrc = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const scanSrc = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    for (const [name, src, prefix] of [['subdomains', subSrc, 'sub'], ['scan', scanSrc, 'scan']]) {
+      const announces = [...src.matchAll(/announce\(t\(`(?:sub|scan)\.progress\.\$\{payload\.stage\}`\)\)/g)];
+      assert.equal(announces.length, 1, `${name}: one stage announcement`);
+      const before = src.slice(Math.max(0, announces[0].index - 260), announces[0].index);
+      assert.match(before, /run\.stages\[payload\.stage\]\.state === 'active'/, `${name}: only an active (not skipped) stage is announced`);
+      assert.match(src, new RegExp(`x\\._partial && run\\.status === 'running' \\? Badge\\(t\\('sub\\.host\\.resolving'\\)[^\\n]*${prefix}-mini-badge`), `${name}: the badge needs a running run`);
+      assert.match(src, /\} else if \(run\.found && run\.found\.size\) \{\s*\/\/ Cancelled \/ failed: redraw the streamed partials[^\n]*\n[^\n]*\n\s*for \(const partial of run\.found\.values\(\)\) (?:table|hostsTable)\.updateRow\(partial\);/, `${name}: cancel / failure re-renders each partial row (updateRow, not the cached setRows)`);
+      // Thousands of streamed hits: a full record replaces its partial in place, any other one is
+      // batch-appended (no per-row table scan), and the stage pills re-render once per frame.
+      assert.match(src, /if \(partialShown\.delete\(payload\.name\)\) (?:table|hostsTable)\.upsertRow\(payload\);\s*else (?:table|hostsTable)\.addRows\(\[payload\]\);/, `${name}: host rows batched unless replacing a partial`);
+      assert.match(src, /const renderStagesSoon = frameThrottle\(renderStages\);/, `${name}: stage pills throttled per frame`);
+      assert.doesNotMatch(src.slice(src.indexOf("case 'found':"), src.indexOf("case 'done':")), /\brenderStages\(\);/, `${name}: no unthrottled pill render per hit`);
+    }
+  });
+
+  test('Subdomains plan line: exact zone mode describes the zone run, not the stored wordlist', async () => {
+    await load();
+    inLang('en', () => assert.equal(i18n.t('sub.plan.zoneExact', { count: 6 }), 'Exact mode: only the 6 names from your zone file are resolved; the wordlist, variations and passive sources are not used for this scan.'));
+    inLang('tr', () => assert.equal(i18n.t('sub.plan.zoneExact', { count: 6 }), 'Kesin mod: yalnızca zone dosyanızdaki 6 ad çözümlenir; bu taramada kelime listesi, varyasyonlar ve pasif kaynaklar kullanılmaz.'));
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const plan = /function renderPlan\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
+    assert.ok(plan, 'renderPlan found');
+    assert.match(plan[1], /zone && zoneModes\.get\(zone\) === 'exact'/, 'the exact branch reads the chosen zone mode');
+    assert.ok(plan[1].indexOf("sub.plan.zoneExact") < plan[1].indexOf("options.bruteforce === 'off'"), 'checked before the wordlist options');
+    assert.match(src, /onMode: \(m\) => \{\s*zoneModes\.set\(zone, m\);\s*renderPlan\(\);/, 'a mode change refreshes the plan');
+  });
+
+  test('owner lookup buttons: each names its network for screen readers; the answer lands in a live region', async () => {
+    await load();
+    inLang('en', () => assert.equal(i18n.t('sub.org.owner.lookupFor', { cidr: '203.0.113.0/24' }), 'Look up the owner of 203.0.113.0/24 (asks RIPEstat)'));
+    inLang('tr', () => assert.equal(i18n.t('sub.org.owner.lookupFor', { cidr: '203.0.113.0/24' }), '203.0.113.0/24 ağının sahibini bul (RIPEstat’a sorar)'));
+    for (const file of ['subdomains.js', 'scan.js']) {
+      const src = await readFile(path.join(ROOT, 'assets/js/views', file), 'utf8');
+      assert.match(src, /ariaLabel: t\('sub\.org\.owner\.lookupFor', \{ cidr: net\.cidr \}\)/, `${file}: distinct accessible name`);
+      assert.match(src, /class: '(?:sub-org-owner|scan-net-owner)', attrs: \{ 'aria-live': 'polite' \}/, `${file}: polite live region`);
+    }
+  });
+
+  test('SSL Targets discovery summary names the zone file when the run used one', async () => {
+    await load();
+    inLang('en', () => {
+      assert.equal(i18n.t('scan.sum.discoveryZone', { dns: '0', sources: '0', zone: '6' }), 'Found through DNS: 0 · from passive sources: 0 · from your zone file: 6');
+    });
+    inLang('tr', () => {
+      assert.equal(i18n.t('scan.sum.discoveryZone', { dns: '0', sources: '0', zone: '6' }), 'DNS ile bulunan: 0 · pasif kaynaklardan: 0 · zone dosyanızdan: 6');
+    });
+    const scanSrc = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    assert.match(scanSrc, /t\(tech\.zone \? 'scan\.sum\.discoveryZone' : 'scan\.sum\.discovery', found\)/);
   });
 
   test('scanner warnings never show a raw key in either view', async () => {

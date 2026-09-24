@@ -30,7 +30,7 @@ import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['subdomains', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const ROUTES = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);

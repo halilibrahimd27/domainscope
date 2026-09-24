@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import codecs
 import csv
 import hashlib
 import io
@@ -42,10 +43,12 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import sys
 import textwrap
 import threading
 import time
+import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -2249,9 +2252,13 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
     }
 
 
-def render_json(report: ScanReport) -> str:
-    """Pretty-printed JSON text of :func:`report_to_dict` (UTF-8, 2-space indent)."""
-    return json.dumps(report_to_dict(report), indent=2, ensure_ascii=False) + '\n'
+def render_json(report: ScanReport, ensure_ascii: bool = False) -> str:
+    """Pretty-printed JSON text of :func:`report_to_dict` (UTF-8, 2-space indent).
+
+    ``ensure_ascii=True`` escapes non-ASCII characters (``\\u00fc``) - used when stdout is
+    not UTF-8, so every consumer decodes the JSON correctly whatever the code page.
+    """
+    return json.dumps(report_to_dict(report), indent=2, ensure_ascii=ensure_ascii) + '\n'
 
 
 CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covered_by',
@@ -2625,6 +2632,10 @@ statuses (per server, port and name):
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update),
             2 usage error, 130 interrupted (Ctrl-C)
 
+output encoding: follows the reader - the console code page when piped on Windows
+  (cmd, PowerShell), UTF-8 for files, Git Bash and other systems. PYTHONIOENCODING=utf-8
+  forces UTF-8 (e.g. for PowerShell 7 "> file"); --json/--csv FILE are always UTF-8.
+
 Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, örnek:
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni-sertifika.pem
 """
@@ -2760,13 +2771,134 @@ def _isatty(stream: TextIO) -> bool:
         return False
 
 
+# --- stdout / stderr encoding ---------------------------------------------------------
+# Python writes pipes and files in the ANSI code page on Windows (cp1252 / cp1254 ...),
+# but console programs reading a pipe (cmd `| more`, `| findstr`, PowerShell, which
+# decodes native output with [Console]::OutputEncoding) use the console's OEM code page
+# (cp437 / cp857 ...), and Git Bash's mintty expects UTF-8 - hence mojibake like
+# "T³rkþe" for "Türkçe". _configure_streams() picks the encoding the reader will use.
+
+_IS_WINDOWS = os.name == 'nt'
+_TRANSLIT_ERRORS = 'ssl_origin_scan.translit'
+# Characters without a usable NFKD decomposition (the rest: 'ş' -> 's', 'ü' -> 'u' ...).
+_ASCII_LOOKALIKES = {
+    'ı': 'i', '‘': "'", '’': "'", '‚': "'", '“': '"', '”': '"',
+    '„': '"', '–': '-', '—': '-', '…': '...', '→': '->',
+    '←': '<-', '✓': 'v', '✗': 'x', '×': 'x', ' ': ' ', '•': '*',
+}
+
+
+def _translit_errors(exc: UnicodeError) -> Tuple[str, int]:
+    """Codec error handler: an ASCII look-alike ('ş' -> 's', 'ı' -> 'i') or '?', never an error."""
+    if not isinstance(exc, UnicodeEncodeError):
+        raise exc
+    out = []
+    for char in exc.object[exc.start:exc.end]:
+        rep = _ASCII_LOOKALIKES.get(char)
+        if rep is None:
+            rep = ''.join(c for c in unicodedata.normalize('NFKD', char)
+                          if not unicodedata.combining(c))
+        out.append(rep if rep and rep.isascii() else '?')
+    return ''.join(out), exc.end
+
+
+def _codec_name(encoding: Optional[str]) -> str:
+    try:
+        return codecs.lookup(encoding or '').name
+    except (LookupError, TypeError):
+        return ''
+
+
+def _choose_stream_encoding(current: Optional[str], kind: str,
+                            env: Optional[Dict[str, str]] = None, console_cp: int = 0,
+                            windows: Optional[bool] = None,
+                            utf8_mode: Optional[bool] = None) -> Optional[str]:
+    """The encoding a standard stream should switch to, or None to keep ``current``.
+
+    ``kind``: 'console' (terminal), 'file' (redirected to a regular file), 'pipe' or 'other'.
+    An explicit PYTHONIOENCODING or Python UTF-8 mode always wins. Then:
+
+    * already UTF-8 -> keep (includes the Windows console, which Python writes as UTF-16);
+    * Windows pipe read by a console program (cmd ``| more``, ``| findstr``; PowerShell
+      pipes and captures) -> the console output code page, e.g. cp857 / cp437;
+    * Windows pipe under Git Bash / MSYS2 / Cygwin (UTF-8 terminals), console code page
+      65001, no console at all, a redirect to a file, anything else -> UTF-8;
+    * POSIX with an ASCII (C / POSIX) locale -> UTF-8; other locales are kept.
+    """
+    env = os.environ if env is None else env
+    windows = _IS_WINDOWS if windows is None else windows
+    utf8_mode = bool(getattr(sys.flags, 'utf8_mode', 0)) if utf8_mode is None else utf8_mode
+    if env.get('PYTHONIOENCODING') or utf8_mode:
+        return None
+    current_codec = _codec_name(current)
+    if current_codec == 'utf-8':
+        return None
+    if not windows:
+        return 'utf-8' if current_codec in ('ascii', '') else None
+    if kind == 'console':
+        return None
+    term = env.get('TERM', '')
+    msys = bool(env.get('MSYSTEM')) or term.startswith(('xterm', 'cygwin', 'mintty'))
+    if kind == 'pipe' and not msys and console_cp and console_cp != 65001:
+        target = _codec_name('cp%d' % console_cp)
+        if target:
+            return None if target == current_codec else target
+    return 'utf-8'
+
+
+def _stream_kind(stream: TextIO) -> str:
+    try:
+        if stream.isatty():
+            return 'console'
+        mode = os.fstat(stream.fileno()).st_mode
+    except (AttributeError, ValueError, OSError, io.UnsupportedOperation):
+        return 'other'
+    if stat.S_ISREG(mode):
+        return 'file'
+    if stat.S_ISFIFO(mode):
+        return 'pipe'
+    return 'other'
+
+
+def _console_output_cp() -> int:
+    """GetConsoleOutputCP() on Windows (0 without a console or elsewhere)."""
+    if not _IS_WINDOWS:
+        return 0
+    try:
+        import ctypes
+        return int(ctypes.windll.kernel32.GetConsoleOutputCP())  # type: ignore[attr-defined]
+    except (AttributeError, ImportError, OSError, ValueError):
+        return 0
+
+
+def _stream_is_utf8(stream: TextIO) -> bool:
+    return _codec_name(getattr(stream, 'encoding', None)) == 'utf-8'
+
+
 def _configure_streams() -> None:
-    # Never crash on a hostname/CN the console encoding cannot represent.
+    """Give stdout / stderr the encoding their reader expects (see
+    :func:`_choose_stream_encoding`); characters it cannot represent become ASCII
+    look-alikes or '?' - never a crash on a hostname / CN, never mojibake."""
+    codecs.register_error(_TRANSLIT_ERRORS, _translit_errors)
+    console_cp = None  # type: Optional[int]
     for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is None:  # StringIO in tests, custom wrappers
+            continue
+        if console_cp is None:
+            console_cp = _console_output_cp()
+        target = _choose_stream_encoding(getattr(stream, 'encoding', None), _stream_kind(stream),
+                                         console_cp=console_cp)
         try:
-            stream.reconfigure(errors='replace')  # type: ignore[attr-defined]
-        except (AttributeError, ValueError, io.UnsupportedOperation):
-            pass
+            if target:
+                reconfigure(encoding=target, errors=_TRANSLIT_ERRORS)
+            else:
+                reconfigure(errors=_TRANSLIT_ERRORS)
+        except (AttributeError, ValueError, LookupError, io.UnsupportedOperation):
+            try:
+                reconfigure(errors='replace')
+            except (AttributeError, ValueError, LookupError, io.UnsupportedOperation):
+                pass
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -2841,7 +2973,9 @@ def _run(args: argparse.Namespace) -> int:
         progress.finish()
 
     if args.json:
-        _write_output(args.json, render_json(report))
+        # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
+        _write_output(args.json, render_json(
+            report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout)))
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
         if args.csv == '-':

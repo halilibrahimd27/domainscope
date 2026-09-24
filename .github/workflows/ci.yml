@@ -16,11 +16,14 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test "tests/js/*.test.js"
+      # includes tests/js/repo-hygiene.test.js: every IPv4 literal in code, tests, fixtures,
+      # docs and the gzip wordlists must be documentation space or well-known infrastructure
+      - name: Unit tests (+ repo hygiene)
+        run: node --test "tests/js/*.test.js"
 
   python:
     name: CLI tests (Python ${{ matrix.python }})
@@ -32,8 +35,8 @@ jobs:
           - { python: '3.12', os: ubuntu-latest }
           - { python: '3.12', os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests/python -v

@@ -10,6 +10,7 @@ on ephemeral ports, using the test-only fixture keys in tests/fixtures/.
 from __future__ import annotations
 
 import base64
+import codecs
 import contextlib
 import csv
 import hashlib
@@ -691,6 +692,19 @@ class LoadTargetsTests(unittest.TestCase):
         with self.assertRaisesRegex(sos.UsageError, 'allow-large'):
             sos.load_targets(['10.0.0.0/8'])
 
+    def test_browser_cli_suggestion_targets(self):
+        # The web app's cliSuggestion `-t` tokens: an IPv4 /24 where origins cluster, exact IPv4
+        # addresses otherwise, and exact IPv6 addresses (never the /48 it only displays).
+        servers, warnings = sos.load_targets(['198.51.100.0/24', '203.0.113.10', '2001:db8:1234::1'],
+                                             resolver=self.fake_resolver)
+        ips = {ip for s in servers for ip in s.ips}
+        self.assertIn('198.51.100.7', ips)
+        self.assertIn('203.0.113.10', ips)
+        self.assertIn('2001:db8:1234::1', ips)
+        self.assertEqual(warnings, [])
+        with self.assertRaisesRegex(sos.UsageError, 'allow-large'):
+            sos.load_targets(['2001:db8:1234::/48'])
+
     def test_real_resolver_for_localhost(self):
         ips = sos.resolve_host('localhost')  # served from the hosts file, no network
         self.assertTrue(set(ips) & {'127.0.0.1', '::1'}, ips)
@@ -1265,6 +1279,15 @@ class CliArgumentTests(unittest.TestCase):
         self.assertIn('interrupted', err)
         self.assertEqual(out, '')
 
+    def test_json_on_non_utf8_stdout_is_ascii_escaped(self):
+        report = sample_report()
+        report.warnings.append('Türkçe uyarı')
+        escaped = sos.render_json(report, ensure_ascii=True)
+        self.assertTrue(escaped.isascii())
+        self.assertIn('\\u0131', escaped)
+        self.assertEqual(json.loads(escaped), json.loads(sos.render_json(report)))
+        self.assertIn('Türkçe uyarı', sos.render_json(report))
+
     def test_load_new_certificate_messages(self):
         leaf, messages = sos.load_new_certificate(str(FIXTURES / 'with_key.pem'), NOW)
         self.assertEqual(leaf.subject_cn, 'www.example-test.com.tr')
@@ -1278,6 +1301,88 @@ class CliArgumentTests(unittest.TestCase):
         _, messages = sos.load_new_certificate(str(FIXTURES / 'cli_renewed_wild.pem'),
                                                datetime(2025, 1, 1, tzinfo=timezone.utc))
         self.assertTrue(any('not valid before' in m for m in messages))
+
+
+TURKISH_HELP_LINE = ('Türkçe: yeni sertifikanın hangi sunuculara '
+                     'yüklenmesi gerektiğini bulur, örnek:')
+
+
+class StreamEncodingTests(unittest.TestCase):
+    """stdout / stderr encodings that avoid mojibake ('T³rkþe') on Windows consoles."""
+
+    def choose(self, current, kind, env=None, cp=857, windows=True, utf8_mode=False):
+        return sos._choose_stream_encoding(current, kind, env=env or {}, console_cp=cp,
+                                           windows=windows, utf8_mode=utf8_mode)
+
+    def test_windows_matrix(self):
+        cases = [
+            # (current, kind, env, console cp) -> target (None = keep)
+            (('cp1254', 'pipe', {}, 857), 'cp857'),       # cmd `| more`, PowerShell pipes
+            (('cp1252', 'pipe', {}, 437), 'cp437'),
+            (('cp857', 'pipe', {}, 857), None),           # already the console code page
+            (('cp1254', 'pipe', {}, 65001), 'utf-8'),     # chcp 65001 / UTF-8 console
+            (('cp1254', 'pipe', {}, 0), 'utf-8'),         # no console (service, CI runner)
+            (('cp1254', 'pipe', {}, 12345), 'utf-8'),     # unknown code page
+            (('cp1254', 'pipe', {'MSYSTEM': 'MINGW64'}, 857), 'utf-8'),  # Git Bash / mintty
+            (('cp1254', 'pipe', {'TERM': 'xterm-256color'}, 857), 'utf-8'),
+            (('cp1254', 'pipe', {'TERM': 'cygwin'}, 857), 'utf-8'),
+            (('cp1254', 'file', {}, 857), 'utf-8'),       # `> out.txt`
+            (('cp1254', 'other', {}, 857), 'utf-8'),
+            (('utf-8', 'console', {}, 857), None),        # the console API writes UTF-16
+            (('UTF-8', 'pipe', {}, 857), None),
+            (('cp1254', 'pipe', {'PYTHONIOENCODING': 'cp1254'}, 857), None),  # explicit wins
+        ]
+        for (current, kind, env, cp), want in cases:
+            with self.subTest(current=current, kind=kind, env=env, cp=cp):
+                self.assertEqual(self.choose(current, kind, env, cp), want)
+        self.assertIsNone(self.choose('cp1254', 'pipe', utf8_mode=True))
+
+    def test_posix(self):
+        self.assertEqual(self.choose('ascii', 'pipe', windows=False), 'utf-8')
+        self.assertEqual(self.choose('ANSI_X3.4-1968', 'console', windows=False), 'utf-8')
+        self.assertIsNone(self.choose('utf-8', 'pipe', windows=False))
+        self.assertIsNone(self.choose('iso8859-9', 'console', windows=False))
+
+    def test_transliteration_instead_of_mojibake_or_crash(self):
+        codecs.register_error(sos._TRANSLIT_ERRORS, sos._translit_errors)
+        text = 'Türkçe ışİĞ → ’x’ ✓ 中'
+        # cp437 has ü and ç but no ı ş İ Ğ: look-alikes instead of '?' (unknown CJK -> '?')
+        self.assertEqual(text.encode('cp437', sos._TRANSLIT_ERRORS),
+                         b"T\x81rk\x87e isIG -> 'x' v ?")
+        self.assertEqual(text.encode('cp857', sos._TRANSLIT_ERRORS).decode('cp857'),
+                         "Türkçe ışİĞ -> 'x' v ?")
+        with self.assertRaises(UnicodeDecodeError):
+            b'\xff'.decode('utf-8', sos._TRANSLIT_ERRORS)
+
+    @unittest.skipIf(sys.flags.utf8_mode, 'Python UTF-8 mode keeps UTF-8 on purpose')
+    def test_configure_streams_switches_a_pipe_to_the_console_code_page(self):
+        out = io.TextIOWrapper(io.BytesIO(), encoding='cp1254')
+        err = io.TextIOWrapper(io.BytesIO(), encoding='cp1254')
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('PYTHONIOENCODING', 'MSYSTEM', 'TERM')}
+        with mock.patch.object(sos, '_IS_WINDOWS', True), \
+                mock.patch.object(sos, '_stream_kind', return_value='pipe'), \
+                mock.patch.object(sos, '_console_output_cp', return_value=857), \
+                mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys, 'stdout', out), mock.patch.object(sys, 'stderr', err):
+            sos._configure_streams()
+            sys.stdout.write(TURKISH_HELP_LINE + ' 中')
+            sys.stdout.flush()
+        self.assertEqual(out.encoding, 'cp857')
+        self.assertEqual(err.encoding, 'cp857')
+        self.assertEqual(out.buffer.getvalue().decode('cp857'), TURKISH_HELP_LINE + ' ?')
+
+    def test_help_redirected_to_a_file_is_utf8(self):
+        env = {k: v for k, v in os.environ.items() if k != 'PYTHONIOENCODING'}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'help.txt')
+            with open(path, 'wb') as handle:
+                proc = subprocess.run([sys.executable, str(CLI_PATH), '--help'], stdout=handle,
+                                      stderr=subprocess.PIPE, env=env, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(path, 'rb') as handle:
+                data = handle.read()
+        self.assertIn(TURKISH_HELP_LINE, data.decode('utf-8'))
 
 
 # ===================================================================== integration
@@ -1648,7 +1753,7 @@ class CompatibilityTests(unittest.TestCase):
         stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'csv', 'hashlib', 'io',
                   'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
-                  'datetime', 'typing', 'ctypes', 'msvcrt'}
+                  'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

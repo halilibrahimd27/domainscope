@@ -16,9 +16,12 @@ import csv
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import re
+import shlex
+import shutil
 import socket
 import ssl
 import subprocess
@@ -345,9 +348,16 @@ class HostnameTests(unittest.TestCase):
                 self.assertEqual(sos.normalize_hostname(raw), expected)
         for raw in ('', ' ', '10.0.0.1', '::1', '[2001:db8::1]', 'a..b', '-a.com', 'a-.com',
                     'a b.com', '*.example.com', 'x' * 64 + '.com', 'host:port',
-                    '.'.join(['a' * 63] * 4) + '.com', 'exa$mple.com'):
+                    '.'.join(['a' * 63] * 4) + '.com', 'exa$mple.com',
+                    # numeric forms the system resolver turns into an IPv4 address
+                    '2026092401', '127.1', '0x7f.0x1', '0X7F.0X1.', '0177.0.0.1', '0x7f000001',
+                    'host.123', '\uff11\uff12\uff17\uff0e\uff11', 'https://2026092401:443/x'):
             with self.subTest(raw=raw):
                 self.assertIsNone(sos.normalize_hostname(raw))
+        # numbers inside a name are fine as long as the top-level label is not numeric
+        for raw in ('1password.com', '123.example.com', 'deadbeef', 'x.0x10', 'web-01.example.com'):
+            with self.subTest(raw=raw):
+                self.assertEqual(sos.normalize_hostname(raw), raw)
 
     def test_normalize_hostname_wildcards(self):
         self.assertEqual(sos.normalize_hostname('*.Example.com', allow_wildcard=True),
@@ -362,14 +372,51 @@ class HostnameTests(unittest.TestCase):
         self.assertEqual(sos.normalize_ip('[2001:db8::1]'), '2001:db8::1')
         self.assertEqual(sos.normalize_ip('fe80::1%eth0'), 'fe80::1')
         self.assertEqual(sos.normalize_ip('::ffff:10.0.0.1'), '::ffff:10.0.0.1')
-        for raw in ('10.0.0.256', 'example.com', '', '1.2.3', '10.0.0.1/24'):
+        self.assertEqual(sos.normalize_ip('2001:db8::01'), '2001:db8::1')  # IPv6 groups: fine
+        for raw in ('10.0.0.256', 'example.com', '', '1.2.3', '10.0.0.1/24',
+                    # a leading zero is octal for inet_aton: ambiguous on every Python version
+                    '010.0.0.1', '10.0.0.01', '::ffff:010.0.0.1'):
             self.assertIsNone(sos.normalize_ip(raw), raw)
+
+    def test_leading_zeros_are_refused_even_where_python_accepts_them(self):
+        real = ipaddress.ip_address
+        real_network = ipaddress.ip_network
+
+        def decimal(text):  # Python < 3.8.12 / 3.9.5 read "010" as decimal 10
+            if isinstance(text, str) and ':' not in text:
+                head, sep, tail = text.partition('/')
+                text = '.'.join(str(int(p)) if p.isdigit() else p for p in head.split('.'))
+                text += sep + tail
+            return text
+
+        with mock.patch.object(sos.ipaddress, 'ip_address', lambda t: real(decimal(t))), \
+                mock.patch.object(sos.ipaddress, 'ip_network',
+                                  lambda t, strict=True: real_network(decimal(t), strict)):
+            self.assertEqual(sos.normalize_ip('10.0.0.1'), '10.0.0.1')
+            for text in ('010.0.0.1', '10.0.0.01', '0177.0.0.1'):
+                self.assertIsNone(sos.normalize_ip(text), text)
+            self.assertIsNone(sos.expand_ip_block('010.0.0.0/30'))
+            self.assertIsNone(sos.parse_exclude_token('010.0.0.1'))
+            self.assertIsNone(sos.parse_exclude_token('010.0.0.0/24'))
+            self.assertEqual(sos.expand_ip_block('10.0.0.0/30'), ['10.0.0.1', '10.0.0.2'])
+        self.assertTrue(sos._has_ambiguous_ipv4_part('::ffff:010.0.0.1'))
+        self.assertFalse(sos._has_ambiguous_ipv4_part('2001:db8::01'))
+        self.assertFalse(sos._has_ambiguous_ipv4_part('10.0.0.0/8'))
 
     def test_is_scannable_ip(self):
         self.assertTrue(sos.is_scannable_ip('10.0.0.1'))
         self.assertTrue(sos.is_scannable_ip('::1'))
-        for ip in ('0.0.0.0', '::', '224.0.0.1', 'ff02::1', '255.255.255.255'):
+        self.assertTrue(sos.is_scannable_ip('::ffff:10.0.0.1'))
+        self.assertTrue(sos.is_scannable_ip('198.51.100.7'))
+        for ip in ('0.0.0.0', '::', '224.0.0.1', 'ff02::1', '255.255.255.255',
+                   # 0.0.0.0/8 "this network" (0.0.0.0 dials the local host on Linux)
+                   '0.0.14.16', '0.1.2.3', '0.255.255.255',
+                   # IPv4-mapped IPv6 is dialled as IPv4: judged by its IPv4 address
+                   '::ffff:0.0.0.0', '::ffff:0.1.2.3', '::ffff:224.0.0.1', '::ffff:255.255.255.255'):
             self.assertFalse(sos.is_scannable_ip(ip), ip)
+        inv = sos.parse_inventory('zero 0.0.14.16\nweb 10.0.0.1\n')
+        self.assertEqual(list(servers_by_name(inv)), ['web'])
+        self.assertIn('0.0.0.0/8', str(inv.warnings[0]))
 
     def test_wildcard_matches_rfc6125(self):
         yes = [('*.a.com', 'x.a.com'), ('*.A.com', 'X.a.COM'), ('*.a.com.', 'x.a.com'),
@@ -708,6 +755,340 @@ class LoadTargetsTests(unittest.TestCase):
     def test_real_resolver_for_localhost(self):
         ips = sos.resolve_host('localhost')  # served from the hosts file, no network
         self.assertTrue(set(ips) & {'127.0.0.1', '::1'}, ips)
+
+
+class RecordingResolver:
+    """A resolver that records every lookup (numeric names must never reach it)."""
+
+    def __init__(self, table: Optional[Dict[str, List[str]]] = None) -> None:
+        self.table = table or {}
+        self.calls = []  # type: List[str]
+
+    def __call__(self, host: str) -> List[str]:
+        self.calls.append(host)
+        if host not in self.table:
+            raise socket.gaierror(11001, 'getaddrinfo failed')
+        return self.table[host]
+
+
+# What the system resolver (inet_aton rules) dials for the SOA serial 2026092401: a public
+# address, so it is computed here - the repo-hygiene test forbids real-world IP literals.
+SERIAL_ADDRESS = str(ipaddress.IPv4Address(2026092401))
+
+# A BIND zone passed as -t by mistake: the SOA serial and timers are "names" on their own
+# lines, and glibc's getaddrinfo would turn 2026092401 into SERIAL_ADDRESS.
+ZONE_AS_INVENTORY = (
+    '$ORIGIN example.com.\n$TTL 3600\n'
+    '@   IN SOA ns1.example.com. hostmaster.example.com. (\n'
+    '        2026092401 ; serial\n        3600       ; refresh\n        1800       ; retry\n'
+    '        1209600    ; expire\n        86400 )    ; minimum\n'
+    'www IN A 192.0.2.10\n')
+
+
+class NumericHostTests(unittest.TestCase):
+    """Numeric "hostnames" (inet_aton forms) are refused, never resolved nor probed."""
+
+    def test_is_numeric_host(self):
+        numeric = ('2026092401', '3600', '127.1', '0x7f.0x1', '0X7F.0X1.', '0177.0.0.1',
+                   '0x7f000001', '10.0.0.300', '1.2.3.4.5', '08.1', '0x', 'host.123',
+                   'a.b.c.300', '*.0x7f.0x1', 'https://2026092401:8443/path',
+                   '\uff11\uff12\uff17\uff0e\uff11',   # fullwidth digits and dot (NFKC)
+                   '127\u30021')                        # ideographic full stop
+        for value in numeric:
+            with self.subTest(value=value):
+                self.assertTrue(sos.is_numeric_host(value))
+        for value in ('10.0.0.1', '::1', '2001:db8::1', 'www.example.com', '1password.com',
+                      'deadbeef', 'x.0x10', 'localhost', 'web01', '', 'a..b'):
+            with self.subTest(value=value):
+                self.assertFalse(sos.is_numeric_host(value))
+
+    def test_legacy_ipv4_mirrors_inet_aton(self):
+        # verified against glibc and Windows inet_aton; the platform check below re-verifies
+        platform = {'2026092401': SERIAL_ADDRESS, '127.1': '127.0.0.1',
+                    '0x7f.0x1': '127.0.0.1', '0177.0.0.1': '127.0.0.1', '0x7f000001': '127.0.0.1',
+                    '10.1.2': '10.1.0.2', '0': '0.0.0.0'}
+        # glibc-only forms (Windows inet_addr rejects these two)
+        cases = dict(platform, **{'0x': '0.0.0.0', '4294967295': '255.255.255.255'})
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(sos._legacy_ipv4(text), want)
+                if text in platform:  # the platform's own parser agrees
+                    self.assertEqual(socket.inet_ntoa(socket.inet_aton(text)), want)
+        for text in ('4294967296', '1.2.3.4.5', '08.1', '256.1', '1.2.3.256', 'a.1', ''):
+            with self.subTest(text=text):
+                self.assertIsNone(sos._legacy_ipv4(text))
+
+    def test_note_names_the_address_the_resolver_would_dial(self):
+        self.assertIn(SERIAL_ADDRESS, sos.numeric_host_note('2026092401'))
+        self.assertIn('127.0.0.1', sos.numeric_host_note('0x7f.0x1'))
+        self.assertIn('numeric label', sos.numeric_host_note('host.123'))
+
+    def test_target_tokens_are_usage_errors(self):
+        for token in ('2026092401', '0x7f.0x1', '127.1', '0177.0.0.1', 'web=2026092401',
+                      'web=127.1', 'https://0x7f.0x1/'):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(sos.UsageError, 'invalid target .*not a hostname'):
+                    sos.parse_target_tokens(token)
+        with self.assertRaisesRegex(sos.UsageError, re.escape(SERIAL_ADDRESS)):
+            sos.parse_target_tokens('2026092401')
+        with self.assertRaisesRegex(sos.UsageError, r'leading zero.*octal: 10\.0\.0\.1'):
+            sos.parse_target_tokens('012.0.0.1')  # octal 012 = 10
+        with self.assertRaisesRegex(sos.UsageError, 'invalid target'):
+            sos.parse_target_tokens('10.0.0.300')  # a typo'd dotted quad keeps its message
+        resolver = RecordingResolver()
+        with self.assertRaises(sos.UsageError):
+            sos.load_targets(['web01.internal 2026092401'], resolver=resolver)
+        self.assertEqual(resolver.calls, [])  # refused before any lookup
+
+    def test_zone_file_as_inventory_never_resolves_numbers(self):
+        inv = sos.parse_inventory(ZONE_AS_INVENTORY, 'zone.txt')
+        servers = servers_by_name(inv)
+        self.assertEqual(servers['www'].ips, ['192.0.2.10'])
+        hostnames = [host for server in inv.servers for host in server.hostnames]
+        self.assertFalse([h for h in hostnames if sos.is_numeric_host(h)], hostnames)
+        invalid = [w for w in inv.warnings if w.code == 'INVALID_IP']
+        self.assertEqual(len(invalid), 5)  # serial, refresh, retry, expire, minimum
+        self.assertIn(SERIAL_ADDRESS, str(invalid[0]))
+        self.assertIn('zone.txt:4', str(invalid[0]))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'zone.txt')
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write(ZONE_AS_INVENTORY)
+            resolver = RecordingResolver()
+            servers, _ = sos.load_targets([path], resolver=resolver)
+        self.assertEqual({ip for s in servers for ip in s.ips}, {'192.0.2.10'})
+        self.assertFalse([h for h in resolver.calls if sos.is_numeric_host(h)], resolver.calls)
+
+    def test_other_inventory_formats(self):
+        csv_inv = sos.parse_inventory('name,ip\n1001,\nweb01,10.0.0.1\n')
+        self.assertEqual(list(servers_by_name(csv_inv)), ['web01'])
+        self.assertEqual([w.code for w in csv_inv.warnings], ['INVALID_IP'])
+        json_inv = sos.parse_inventory(json.dumps([
+            {'name': '1001'}, {'name': 'web', 'ansible_host': '2026092401'},
+            {'name': 'ok', 'ip': '10.0.0.2'}]))
+        self.assertEqual(list(servers_by_name(json_inv)), ['ok'])
+        self.assertEqual([w.code for w in json_inv.warnings], ['INVALID_IP', 'INVALID_IP'])
+        yaml_inv = sos.parse_inventory('web01:\n  ansible_host: 0x7f.0x1\n')
+        self.assertEqual(yaml_inv.servers, [])
+        self.assertEqual([w.code for w in yaml_inv.warnings], ['INVALID_IP'])
+        ini_inv = sos.parse_inventory('[web]\n3600\nweb02 ansible_host=127.1\n')
+        self.assertEqual(ini_inv.servers, [])
+        self.assertEqual([w.code for w in ini_inv.warnings], ['INVALID_IP', 'INVALID_IP'])
+
+    def test_resolve_servers_never_hands_numbers_to_the_resolver(self):
+        resolver = RecordingResolver({'app.internal': ['10.2.2.2']})
+        servers = [sos.Server('bad', hostnames=['2026092401']),
+                   sos.Server('app', hostnames=['app.internal'])]
+        kept, warnings = sos.resolve_servers(servers, resolver=resolver)
+        self.assertEqual([s.name for s in kept], ['app'])
+        self.assertEqual(resolver.calls, ['app.internal'])
+        self.assertIn(SERIAL_ADDRESS, str(warnings[0]))
+
+    def test_names(self):
+        valid, invalid = sos.parse_names_text('www.example.com 0x7f.0x1 127.1 2026092401\n')
+        self.assertEqual(valid, ['www.example.com'])
+        self.assertEqual(invalid, ['0x7f.0x1', '127.1', '2026092401'])
+        for token in ('0x7f.0x1', '127.1', '2026092401', 'a.example.com 0177.0.0.1'):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(sos.UsageError, r'invalid name .*\(-n\)'):
+                    sos.load_names([token])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'names.txt')
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('127.1\nwww.example.com\n')
+            names, warnings = sos.load_names([path])
+        self.assertEqual(names, ['www.example.com'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('skipped - 127.1 is not a hostname', warnings[0])
+        names, warnings = sos.load_names(['-'], stdin=io.StringIO('0x7f.0x1\na.example.com\n'))
+        self.assertEqual(names, ['a.example.com'])
+        self.assertIn('<stdin>', warnings[0])
+
+
+def ips_of(servers) -> List[str]:
+    return [ip for server in servers for ip in server.ips]
+
+
+class ExcludeTests(unittest.TestCase):
+    """--exclude parsing (strict) and the address math."""
+
+    def test_parse_exclude_token(self):
+        cases = {
+            '192.0.2.10': ('192.0.2.10', ['192.0.2.10/32']),
+            ' 192.0.2.10 ': ('192.0.2.10', ['192.0.2.10/32']),
+            '192.0.2.10/32': ('192.0.2.10', ['192.0.2.10/32']),
+            '192.0.2.7/29': ('192.0.2.0/29', ['192.0.2.0/29']),       # host bits tolerated
+            '198.51.100.5-9': ('198.51.100.5-198.51.100.9', ['198.51.100.5/32', '198.51.100.6/31',
+                                                              '198.51.100.8/31']),
+            '198.51.100.5-198.51.100.5': ('198.51.100.5', ['198.51.100.5/32']),
+            '2001:DB8:0:0:0:0:0:5': ('2001:db8::5', ['2001:db8::5/128']),
+            '[2001:db8::5]': ('2001:db8::5', ['2001:db8::5/128']),
+            'fe80::1%eth0': ('fe80::1', ['fe80::1/128']),
+            '2001:db8:1::/48': ('2001:db8:1::/48', ['2001:db8:1::/48']),
+        }
+        for token, (label, networks) in cases.items():
+            with self.subTest(token=token):
+                rule = sos.parse_exclude_token(token)
+                self.assertEqual(rule.label, label)
+                self.assertEqual([str(n) for n in rule.networks], networks)
+        mapped = sos.parse_exclude_token('::FFFF:198.51.100.7')
+        self.assertEqual(mapped.label, '::ffff:198.51.100.7')
+        self.assertEqual(int(mapped.networks[0].network_address), (0xFFFF << 32) | 0xC6336407)
+        for token in ('', 'www.example.com', '*.example.com', '2026092401', '127.1', '0x7f.0x1',
+                      '010.0.0.1', '192.0.2.0/33', '192.0.2.300', 'web=192.0.2.10', 'x-y',
+                      '192.0.2.10:443', 'localhost'):
+            with self.subTest(token=token):
+                self.assertIsNone(sos.parse_exclude_token(token))
+        with self.assertRaisesRegex(sos.UsageError, 'invalid IP range'):
+            sos.parse_exclude_token('192.0.2.9-192.0.2.1')
+        with self.assertRaisesRegex(sos.UsageError, 'invalid IP range'):
+            sos.parse_exclude_token('192.0.2.1-2001:db8::1')
+
+    def test_load_excludes_values_files_and_stdin(self):
+        rules = sos.load_excludes(['192.0.2.10 198.51.100.0/30', '203.0.113.5,2001:db8::5',
+                                   '192.0.2.10', '198.51.100.1/30'])   # duplicates dropped
+        self.assertEqual([r.label for r in rules],
+                         ['192.0.2.10', '198.51.100.0/30', '203.0.113.5', '2001:db8::5'])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'excludes.txt')
+            with open(path, 'w', encoding='utf-16') as handle:  # PowerShell-style UTF-16
+                handle.write('# keep the mail server out\n192.0.2.10  # mx\n; ini comment\n'
+                             '// js comment\n2001:db8::5, 198.51.100.64/28\n\n')
+            rules = sos.load_excludes([path, '203.0.113.5'])
+            self.assertEqual([r.label for r in rules],
+                             ['192.0.2.10', '2001:db8::5', '198.51.100.64/28', '203.0.113.5'])
+            bad = os.path.join(tmp, 'bad.txt')
+            with open(bad, 'w', encoding='utf-8') as handle:
+                handle.write('192.0.2.10\n\nwww.example.com\n')
+            with self.assertRaisesRegex(sos.UsageError, r'bad\.txt:3: --exclude takes IP '
+                                                        r'addresses and CIDRs, not hostnames'):
+                sos.load_excludes([bad])
+        rules = sos.load_excludes(['-'], stdin=io.StringIO('\ufeff192.0.2.10\n# c\n2001:db8::/126\n'))
+        self.assertEqual([r.label for r in rules], ['192.0.2.10', '2001:db8::/126'])
+        self.assertEqual(sos.load_excludes([]), [])
+
+    def test_load_excludes_is_strict(self):
+        cases = [
+            (['www.example.com'], 'not hostnames'),
+            (['192.0.2.10 www.example.com'], 'not hostnames'),
+            (['*.example.com'], 'not hostnames'),
+            (['2026092401'], 'not an IP address or CIDR.*' + re.escape(SERIAL_ADDRESS)),
+            (['0x7f.0x1'], 'not an IP address or CIDR.*127.0.0.1'),
+            (['010.0.0.1'], 'leading zero'),
+            (['192.0.2.0/33'], "'192.0.2.0/33' is not an IP address, CIDR or range"),
+            (['missing-excludes.txt'], 'file not found'),
+            (['no-such-dir/excludes'], 'file not found'),
+            ([''], 'empty value'),
+            (['192.0.2.9-1'], 'invalid IP range'),
+        ]
+        for values, pattern in cases:
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(sos.UsageError, pattern):
+                    sos.load_excludes(values)
+
+    def test_slash24_minus_single_ips(self):
+        servers, _ = sos.load_targets(['198.51.100.0/24'])
+        self.assertEqual(len(servers), 254)
+        kept, excluded = sos.apply_excludes(servers, ['198.51.100.10', '198.51.100.200',
+                                                      '198.51.100.0', '198.51.100.255'])
+        self.assertEqual(len(kept), 252)
+        self.assertEqual([(e.ip, e.rule) for e in excluded],
+                         [('198.51.100.10', '198.51.100.10'), ('198.51.100.200', '198.51.100.200')])
+        self.assertEqual(sos.excluded_address_count(excluded), 2)
+        kept_ips = set(ips_of(kept))
+        self.assertNotIn('198.51.100.10', kept_ips)
+        self.assertNotIn('198.51.100.200', kept_ips)
+        self.assertEqual(len(kept_ips), 252)
+        # the network/broadcast rules matched no target: reported, not silently accepted
+        self.assertEqual(sos.unused_excludes(['198.51.100.10', '198.51.100.200', '198.51.100.0',
+                                              '198.51.100.255'], excluded),
+                         ['198.51.100.0', '198.51.100.255'])
+
+    def test_slash24_minus_subnets_and_ranges(self):
+        servers, _ = sos.load_targets(['198.51.100.0/24'])
+        kept, excluded = sos.apply_excludes(servers, ['198.51.100.128/25'])
+        self.assertEqual(ips_of(kept), ['198.51.100.%d' % n for n in range(1, 128)])
+        self.assertEqual(len(excluded), 127)  # .128-.254 (the target list skips .255)
+        kept, excluded = sos.apply_excludes(servers, ['198.51.100.0/26', '198.51.100.100-119',
+                                                      '198.51.100.250/31'])
+        want = [n for n in range(1, 255) if not (n < 64 or 100 <= n <= 119 or n in (250, 251))]
+        self.assertEqual(ips_of(kept), ['198.51.100.%d' % n for n in want])
+        self.assertEqual(sos.excluded_address_count(excluded), 63 + 20 + 2)
+        self.assertEqual({e.rule for e in excluded},
+                         {'198.51.100.0/26', '198.51.100.100-198.51.100.119', '198.51.100.250/31'})
+        kept, excluded = sos.apply_excludes(servers, ['198.51.100.0/24'])
+        self.assertEqual((kept, len(excluded)), ([], 254))
+
+    def test_ipv6_math(self):
+        servers, _ = sos.load_targets(['2001:db8::/125'])
+        self.assertEqual(ips_of(servers), ['2001:db8::%d' % n for n in range(1, 8)])
+        kept, excluded = sos.apply_excludes(servers, ['2001:db8::4/126', '2001:DB8:0:0:0:0:0:1'])
+        self.assertEqual(ips_of(kept), ['2001:db8::2', '2001:db8::3'])
+        self.assertEqual([e.ip for e in excluded],
+                         ['2001:db8::1', '2001:db8::4', '2001:db8::5', '2001:db8::6', '2001:db8::7'])
+        self.assertEqual({e.rule for e in excluded}, {'2001:db8::1', '2001:db8::4/126'})
+        big, _ = sos.load_targets(['2001:db8:5::/120'])
+        kept, excluded = sos.apply_excludes(big, ['2001:db8:5::80/121', '2001:db8:5::10'])
+        self.assertEqual(len(ips_of(big)), 255)
+        self.assertEqual(len(excluded), 128 + 1)
+        self.assertEqual(len(kept), 255 - 129)
+        # an IPv4 rule never touches IPv6 targets and vice versa
+        mixed = [sos.Server('v4', ['198.51.100.7']), sos.Server('v6', ['2001:db8::7'])]
+        kept, _ = sos.apply_excludes(mixed, ['2001:db8::/32'])
+        self.assertEqual([s.name for s in kept], ['v4'])
+        kept, _ = sos.apply_excludes(mixed, ['0.0.0.0/0'])
+        self.assertEqual([s.name for s in kept], ['v6'])
+        kept, _ = sos.apply_excludes(mixed, ['::/0'])
+        self.assertEqual([s.name for s in kept], ['v4'])
+
+    def test_ipv4_mapped_targets_and_rules(self):
+        servers = [sos.Server('mapped', ['::ffff:198.51.100.7']),
+                   sos.Server('plain', ['198.51.100.7'])]
+        for rule in ('198.51.100.7', '198.51.100.0/29', '::ffff:198.51.100.7',
+                     '::ffff:198.51.100.0/120', '::ffff:0:0/96'):
+            with self.subTest(rule=rule):
+                kept, excluded = sos.apply_excludes(servers, [rule])
+                self.assertEqual(kept, [])
+                self.assertEqual(sos.excluded_address_count(excluded), 2)
+        kept, _ = sos.apply_excludes(servers, ['::/0'])  # every IPv6 form, not plain IPv4
+        self.assertEqual([s.name for s in kept], ['plain'])
+
+    def test_partial_servers_are_copies(self):
+        web = sos.Server('web', ['192.0.2.10', '192.0.2.20', '2001:db8::a'], ['prod'])
+        db = sos.Server('db', ['192.0.2.30'])
+        both = sos.Server('dup', ['192.0.2.10'])  # the same IP on two servers
+        kept, excluded = sos.apply_excludes([web, db, both], ['192.0.2.10', '2001:db8::a'])
+        self.assertEqual([(s.name, s.ips, s.groups) for s in kept],
+                         [('web', ['192.0.2.20'], ['prod']), ('db', ['192.0.2.30'], [])])
+        self.assertIs(kept[1], db)                                   # untouched servers reused
+        self.assertEqual(web.ips, ['192.0.2.10', '192.0.2.20', '2001:db8::a'])  # input intact
+        self.assertEqual([(e.server, e.ip) for e in excluded],
+                         [('web', '192.0.2.10'), ('web', '2001:db8::a'), ('dup', '192.0.2.10')])
+        self.assertEqual(sos.excluded_address_count(excluded), 2)
+        self.assertEqual(sos.apply_excludes([web], []), ([web], []))
+
+    def test_overlapping_rules_and_unused(self):
+        servers, _ = sos.load_targets(['198.51.100.0/30'])
+        rules = sos.load_excludes(['198.51.100.0/24', '198.51.100.1', '203.0.113.0/24'])
+        kept, excluded = sos.apply_excludes(servers, rules)
+        self.assertEqual(kept, [])
+        self.assertEqual({e.rule for e in excluded}, {'198.51.100.0/24'})  # first match wins
+        # the shadowed single IP still matched a target; only the unrelated /24 is unused
+        self.assertEqual(sos.unused_excludes(rules, excluded), ['203.0.113.0/24'])
+
+    def test_bad_rule_objects_raise(self):
+        with self.assertRaisesRegex(sos.UsageError, 'not hostnames'):
+            sos.apply_excludes([sos.Server('a', ['192.0.2.10'])], ['www.example.com'])
+
+    def test_large_block_is_fast_enough(self):
+        servers, _ = sos.load_targets(['10.20.0.0/18'])
+        started = time.monotonic()
+        kept, excluded = sos.apply_excludes(servers, ['10.20.0.0/19', '10.20.40.1',
+                                                      '10.20.63.0/24'])
+        elapsed = time.monotonic() - started
+        self.assertEqual(sos.excluded_address_count(excluded), (8192 - 1) + 1 + 255)
+        self.assertEqual(len(kept), 16382 - len(excluded))
+        self.assertLess(elapsed, 20)
 
 
 # ================================================================ engine (mocked I/O)
@@ -1049,12 +1430,15 @@ class OutputTests(unittest.TestCase):
         doc = json.loads(sos.render_json(self.report))
         self.assertEqual(set(doc), {'tool', 'version', 'startedAt', 'finishedAt',
                                     'elapsedSeconds', 'options', 'newCertificates', 'names',
-                                    'summary', 'servers', 'endpoints', 'results',
+                                    'summary', 'servers', 'endpoints', 'results', 'excluded',
                                     'certificates', 'warnings'})
         self.assertEqual(doc['tool'], 'ssl_origin_scan')
         self.assertEqual(doc['version'], sos.__version__)
         self.assertTrue(doc['finishedAt'].endswith('Z'))
-        self.assertEqual(doc['options'], {'ports': [443], 'timeoutSeconds': 1, 'workers': 4})
+        self.assertEqual(doc['options'], {'ports': [443], 'timeoutSeconds': 1, 'workers': 4,
+                                          'exclude': []})
+        self.assertEqual(doc['excluded'], [])
+        self.assertEqual(doc['summary']['excludedAddresses'], 0)
         self.assertEqual(doc['newCertificates'][0]['sha256'], RENEWED_WILD_SHA256)
         self.assertEqual(doc['summary']['servers'], 7)
         self.assertEqual(doc['summary']['endpoints'], 7)
@@ -1191,6 +1575,67 @@ class OutputTests(unittest.TestCase):
         sos.ProgressPrinter(silent, enabled=False).update('tls', 1, 2, {})
         self.assertEqual(silent.getvalue(), '')
 
+    def test_excluded_addresses_in_json_csv_and_summary(self):
+        dialled = []  # type: List[str]
+
+        def connect_fn(ip, port, timeout):
+            dialled.append(ip)
+
+        network = FakeNetwork({}, {'192.0.2.10': by_old_or_new(EC_DER),
+                                   '192.0.2.20': by_old_or_new(EC_DER),
+                                   '2001:db8::5': by_old_or_new(EC_DER)})
+        servers = [sos.Server('web', ['192.0.2.10', '192.0.2.30'], ['prod']),
+                   sos.Server('mail', ['192.0.2.40']),
+                   sos.Server('api', ['192.0.2.20', '2001:db8::5', '2001:db8::6'])]
+        report = sos.run_scan(servers, sos.build_probe_names(['a.wild.example.net']), [443, 8443],
+                              timeout=1, workers=4, connect_fn=connect_fn, tls_fn=network.tls_fn,
+                              exclude=['192.0.2.30', '192.0.2.32/28', '2001:db8::6'])
+        # never connected to, never handshaken with
+        self.assertEqual(sorted(set(dialled)), ['192.0.2.10', '192.0.2.20', '2001:db8::5'])
+        self.assertEqual(len(dialled), 6)  # 3 addresses x 2 ports
+        self.assertFalse({ip for ip, _, _ in network.calls} - {'192.0.2.10', '192.0.2.20',
+                                                               '2001:db8::5'})
+        self.assertEqual([s.name for s in report.servers], ['web', 'api'])
+        self.assertEqual(report.servers[0].ips, ['192.0.2.10'])
+        self.assertEqual(report.excluded_count(), 3)
+
+        doc = json.loads(sos.render_json(report))
+        self.assertEqual(doc['options']['exclude'], ['192.0.2.30', '192.0.2.32/28', '2001:db8::6'])
+        self.assertEqual(doc['summary']['excludedAddresses'], 3)
+        self.assertEqual(doc['excluded'], [
+            {'server': 'web', 'ip': '192.0.2.30', 'excludedBy': '192.0.2.30'},
+            {'server': 'mail', 'ip': '192.0.2.40', 'excludedBy': '192.0.2.32/28'},
+            {'server': 'api', 'ip': '2001:db8::6', 'excludedBy': '2001:db8::6'}])
+        self.assertFalse({'192.0.2.30', '192.0.2.40', '2001:db8::6'}
+                         & {row['ip'] for row in doc['results']})
+        self.assertEqual(doc['summary']['servers'], 2)
+        self.assertEqual(doc['summary']['endpoints'], 6)
+
+        rows = list(csv.DictReader(io.StringIO(sos.render_csv(report))))
+        excluded_rows = [r for r in rows if r['status'] == 'EXCLUDED']
+        self.assertEqual(len(rows), len(report.results) + 3)
+        self.assertEqual([(r['server'], r['ip'], r['port'], r['probe']) for r in excluded_rows],
+                         [('web', '192.0.2.30', '', 'excluded'), ('mail', '192.0.2.40', '', 'excluded'),
+                          ('api', '2001:db8::6', '', 'excluded')])
+        self.assertEqual(excluded_rows[1]['error'],
+                         'excluded by --exclude 192.0.2.32/28 (never probed)')
+        self.assertEqual(rows[-1]['status'], 'EXCLUDED')  # after the scan results
+
+        text = sos.render_summary(report)
+        self.assertIn('Excluded by --exclude (never probed): 3 addresses - 192.0.2.30, '
+                      '192.0.2.32/28, 2001:db8::6', text.splitlines()[1])
+        self.assertIn('\x1b[33m', sos.render_summary(report, color=True))
+        self.assertNotIn('Excluded by', sos.render_summary(self.report))  # no --exclude given
+
+        unmatched = sos.run_scan(servers, sos.build_probe_names(['a.wild.example.net']), [443],
+                                 timeout=1, workers=2, connect_fn=lambda *a: None,
+                                 tls_fn=lambda *a: sos.TlsResult(status='TLS_ERROR', error='x'),
+                                 exclude=['203.0.113.0/24'])
+        self.assertEqual(unmatched.excluded, [])
+        self.assertIn('Excluded by --exclude (never probed): 0 addresses (no target matched '
+                      '203.0.113.0/24)', sos.render_summary(unmatched))
+        self.assertEqual(json.loads(sos.render_json(unmatched))['summary']['excludedAddresses'], 0)
+
     def test_iso_and_endpoint_labels(self):
         self.assertEqual(sos.iso_utc(datetime(2025, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)),
                          '2025-01-02T03:04:05.678Z')
@@ -1214,7 +1659,10 @@ class CliArgumentTests(unittest.TestCase):
         code, out, _ = run_main('--help')
         self.assertEqual(code, 0)
         for needle in ('examples:', '--fail-on-needs-update', 'NEEDS_UPDATE', 'ansible_host',
-                       'T\u00fcrk\u00e7e', '--allow-large', 'exit codes'):
+                       'T\u00fcrk\u00e7e', '--allow-large', 'exit codes',
+                       '--exclude ADDR', 'exclude (--exclude, repeatable)', 'EXCLUDED',
+                       'excludedAddresses', 'Hostnames are refused', '2026092401', '0x7f.0x1',
+                       '0.0.0.0/8', '--exclude ile', 'hi\u00e7 ba\u011flan\u0131lmaz'):
             self.assertIn(needle, out)
 
     def test_parse_ports(self):
@@ -1242,13 +1690,34 @@ class CliArgumentTests(unittest.TestCase):
             ('-t', '127.0.0.1', '--cert', str(FIXTURES / 'does-not-exist.pem')),
             ('-t', '127.0.0.1', '--cert', str(FIXTURES / 'ec_wildcard.key')),
             ('-t', '127.0.0.1', '--bogus-option'),
+            # numeric "hostnames" the system resolver would turn into an IPv4 address
+            ('-t', '2026092401', '-n', 'a.example.com'),
+            ('-t', '0x7f.0x1', '-n', 'a.example.com'),
+            ('-t', 'web=127.1', '-n', 'a.example.com'),
+            ('-t', '010.0.0.1', '-n', 'a.example.com'),
+            ('-t', '127.0.0.1', '-n', '0x7f.0x1'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '2026092401'),
+            ('-t', '0.0.0.0/30', '-n', 'a.example.com'),                # 0.0.0.0/8 only
+            # --exclude is strict
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude', 'www.example.com'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude', '2026092401'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude', 'missing-excludes.txt'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude', '192.0.2.0/33'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude'),
+            ('-t', '127.0.0.1', '-n', 'a.example.com', '--exclude', '127.0.0.0/8'),  # all
+            ('-t', '-', '-n', 'a.example.com', '--exclude', '-'),
         ]
         for args in cases:
             with self.subTest(args=args):
-                code, _, err = run_main(*args)
+                with mock.patch.object(sos, 'tcp_connect',
+                                       side_effect=AssertionError('must not connect')), \
+                        mock.patch.object(socket, 'getaddrinfo',
+                                          side_effect=AssertionError('must not resolve')):
+                    code, _, err = run_main(*args)
                 self.assertEqual(code, 2)
                 self.assertTrue(err.strip())
                 self.assertNotIn('Traceback', err)
+                self.assertNotIn('must not', err)
 
     def test_pkcs12_and_csr_messages(self):
         code, _, err = run_main('-t', '127.0.0.1', '--cert', str(FIXTURES / 'cli_bundle.p12'))
@@ -1303,7 +1772,354 @@ class CliArgumentTests(unittest.TestCase):
         self.assertTrue(any('not valid before' in m for m in messages))
 
 
-TURKISH_HELP_LINE = ('Türkçe: yeni sertifikanın hangi sunuculara '
+class ExcludeCliTests(unittest.TestCase):
+    """--exclude end to end through main(), with the network replaced by a recorder."""
+
+    def run_recorded(self, *args: str) -> Tuple[int, str, str, List[str]]:
+        dialled = []  # type: List[str]
+        lock = threading.Lock()
+
+        def refuse(ip, port, timeout):
+            with lock:
+                dialled.append(ip)
+            raise ConnectionRefusedError()
+
+        with mock.patch.object(sos, 'tcp_connect', side_effect=refuse), \
+                mock.patch.object(socket, 'getaddrinfo',
+                                  side_effect=AssertionError('must not resolve')):
+            code, out, err = run_main(*args)
+        return code, out, err, dialled
+
+    def test_slash29_minus_an_ip_and_a_slash31(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = os.path.join(tmp, 'r.json')
+            csv_path = os.path.join(tmp, 'r.csv')
+            code, out, err, dialled = self.run_recorded(
+                '-t', '198.51.100.0/29', '--exclude', '198.51.100.3', '198.51.100.4/31',
+                '-n', 'www.example.com', '-p', '443,8443', '--json', json_path, '--csv', csv_path)
+            self.assertEqual(code, 0, err)
+            doc = read_json(json_path)
+            with open(csv_path, encoding='utf-8-sig', newline='') as handle:
+                records = list(csv.DictReader(handle))
+        # hosts .1-.6 minus .3, .4, .5: only .1, .2 and .6 are ever dialled (2 ports each)
+        self.assertEqual(sorted(set(dialled)), ['198.51.100.1', '198.51.100.2', '198.51.100.6'])
+        self.assertEqual(len(dialled), 6)
+        self.assertEqual(doc['options']['exclude'], ['198.51.100.3', '198.51.100.4/31'])
+        self.assertEqual(doc['summary']['excludedAddresses'], 3)
+        self.assertEqual(doc['summary']['servers'], 3)
+        self.assertEqual([e['ip'] for e in doc['excluded']],
+                         ['198.51.100.3', '198.51.100.4', '198.51.100.5'])
+        self.assertEqual(sum(1 for r in records if r['status'] == 'EXCLUDED'), 3)
+        self.assertIn('Excluded by --exclude (never probed): 3 addresses - 198.51.100.3, '
+                      '198.51.100.4/31', out)
+        self.assertIn('Scanning 3 server(s) / 3 IP(s) x 2 port(s)', err)
+        self.assertIn('(3 excluded address(es) left out) ...', err)
+
+    def test_exclude_file_repeatable_and_ipv6(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'never.txt')
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('# hosts we may not touch\n2001:db8::2\n198.51.100.0/31 // net\n')
+            code, out, err, dialled = self.run_recorded(
+                '-t', '198.51.100.0/30', '2001:db8::/126', '--exclude', path,
+                '--exclude', '2001:db8::3', '-n', 'www.example.com', '--json', '-', '-q')
+        self.assertEqual(code, 0, err)
+        doc = json.loads(out)
+        self.assertEqual(sorted(set(dialled)), ['198.51.100.2', '2001:db8::1'])
+        self.assertEqual(doc['options']['exclude'], ['2001:db8::2', '198.51.100.0/31', '2001:db8::3'])
+        self.assertEqual(doc['summary']['excludedAddresses'], 3)
+        self.assertEqual(err, '')
+
+    def test_unmatched_rule_is_a_warning(self):
+        code, out, err, dialled = self.run_recorded(
+            '-t', '198.51.100.1', '--exclude', '203.0.113.0/24', '-n', 'www.example.com')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(dialled, ['198.51.100.1'])
+        self.assertIn('warning: --exclude 203.0.113.0/24 matched no target address', err)
+        self.assertIn('0 addresses (no target matched 203.0.113.0/24)', out)
+
+    def test_everything_excluded_is_a_usage_error(self):
+        code, _, err, dialled = self.run_recorded(
+            '-t', '198.51.100.0/30', '--exclude', '198.51.100.0/24', '-n', 'www.example.com')
+        self.assertEqual(code, 2)
+        self.assertIn('all 2 target address(es) are excluded by --exclude', err)
+        self.assertEqual(dialled, [])
+
+    def test_hostnames_are_refused_before_any_lookup(self):
+        code, _, err, dialled = self.run_recorded(
+            '-t', 'www.example.com', '--exclude', 'mail.example.com', '-n', 'www.example.com')
+        self.assertEqual(code, 2)
+        self.assertIn('--exclude takes IP addresses and CIDRs, not hostnames', err)
+        self.assertNotIn('must not resolve', err)
+        self.assertEqual(dialled, [])
+
+    def test_resolved_hostname_targets_are_excluded_by_address(self):
+        resolver_answers = {'app.internal': ['198.51.100.7', '198.51.100.8']}
+
+        def fake_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, 0))
+                    for ip in resolver_answers[host]]
+
+        dialled = []  # type: List[str]
+
+        def refuse(ip, port, timeout):
+            dialled.append(ip)
+            raise ConnectionRefusedError()
+
+        with mock.patch.object(sos, 'tcp_connect', side_effect=refuse), \
+                mock.patch.object(socket, 'getaddrinfo', side_effect=fake_getaddrinfo):
+            code, out, err = run_main('-t', 'app.internal', '--exclude', '198.51.100.8',
+                                      '-n', 'www.example.com', '--json', '-', '-q')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(dialled, ['198.51.100.7'])
+        doc = json.loads(out)
+        self.assertEqual(doc['excluded'], [{'server': 'app.internal', 'ip': '198.51.100.8',
+                                            'excludedBy': '198.51.100.8'}])
+
+    def test_numeric_target_is_never_resolved(self):
+        code, _, err, dialled = self.run_recorded('-t', '2026092401', '-n', 'www.example.com')
+        self.assertEqual(code, 2)
+        self.assertIn("invalid target '2026092401'", err)
+        self.assertIn(SERIAL_ADDRESS, err)
+        self.assertEqual(dialled, [])
+        code, _, err, _ = self.run_recorded('-t', '198.51.100.1', '-n', '0x7f.0x1')
+        self.assertEqual(code, 2)
+        self.assertIn("invalid name '0x7f.0x1' (-n)", err)
+
+
+class ExcludeReviewTests(unittest.TestCase):
+    """Review fixes: unused-rule detection speed and clearer usage errors."""
+
+    def test_unused_excludes_is_not_rules_times_addresses(self):
+        servers, _ = sos.load_targets(['10.20.0.0/17'])
+        # one /18 excludes 16k addresses; 400 single-IP rules outside the targets are unused
+        rules = sos.load_excludes(['10.20.0.0/18'] + ['10.30.%d.%d' % (i // 200, i % 200 + 1)
+                                                      for i in range(400)])
+        kept, excluded = sos.apply_excludes(servers, rules)
+        self.assertEqual(sos.excluded_address_count(excluded), 16384 - 1)
+        started = time.monotonic()
+        unused = sos.unused_excludes(rules, excluded)
+        elapsed = time.monotonic() - started
+        self.assertEqual(len(unused), 400)
+        self.assertNotIn('10.20.0.0/18', unused)
+        self.assertLess(elapsed, 3)  # was ~40 s (every rule x every excluded address)
+
+    def test_unused_excludes_matches_contains(self):
+        servers, _ = sos.load_targets(['198.51.100.0/29', '2001:db8::/126', '::ffff:203.0.113.9'])
+        rules = sos.load_excludes(['198.51.100.2', '198.51.100.0/30', '2001:db8::3',
+                                   '203.0.113.9', '::ffff:198.51.100.6/127', '2001:db8::/120',
+                                   '198.51.100.7-9', '192.0.2.0/24', '2001:db8:1::/48'])
+        _, excluded = sos.apply_excludes(servers, rules)
+        addresses = {entry.ip for entry in excluded}
+        want = [rule.label for rule in rules
+                if not any(rule.contains(ip) for ip in addresses)]
+        self.assertEqual(sos.unused_excludes(rules, excluded), want)
+        # .7 is the /29 broadcast address, never a target, so the .7-.9 range matches nothing
+        self.assertEqual(want, ['198.51.100.7-198.51.100.9', '192.0.2.0/24', '2001:db8:1::/48'])
+
+    def test_clear_errors_for_bad_ranges_and_zero_padded_blocks(self):
+        with self.assertRaisesRegex(sos.UsageError, "'198.51.100.5-09' is not a valid IP range"):
+            sos.load_excludes(['198.51.100.5-09'])
+        for token in ('010.0.0.0/24', '010.0.0.1-5'):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(sos.UsageError, 'leading zero is ambiguous'):
+                    sos.parse_target_tokens(token)
+
+
+WEB_APP_ANSWERS = {'origin.example.com': ['192.0.2.20'],
+                   'app.example.net': ['2001:db8::20', '192.0.2.21']}
+# The two zone hand-off downloads (assets/js/lib/zoneorigins.js handoffFiles): a '#'
+# header with an em dash, then one entry per line - "<server> <ip>", bare IPs, host names.
+ZONE_HEADER = '# DomainScope zone hand-off for example.com — 2026-09-24T12:00:00.000Z\n'
+ZONE_NAMES_TXT = ZONE_HEADER + '*.example.com\nwww.example.com\n_sip._tls.example.com\n'
+ZONE_TARGETS_TXT = (ZONE_HEADER + 'web01 192.0.2.10\n192.0.2.12\n2001:db8::10\n'
+                    'origin.example.com\napp.example.net\n')
+
+
+def _node_major() -> int:
+    node = shutil.which('node')
+    if not node:
+        return 0
+    try:
+        text = subprocess.run([node, '--version'], capture_output=True, text=True,
+                              timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    match = re.match(r'v(\d+)', text.strip())
+    return int(match.group(1)) if match else 0
+
+
+class WebAppCommandTests(unittest.TestCase):
+    """The sweep commands the web app prints (cmdline.js buildSweepCommand, zone hand-off)
+    are accepted by the CLI parser as the shell would split them, and scan exactly the
+    intended addresses - excluded ones never."""
+
+    def run_command(self, command: str, files: Optional[Dict[str, str]] = None
+                    ) -> Tuple[int, str, str, List[Tuple[str, int]], Tuple[object, Optional[Dict]]]:
+        argv = shlex.split(command)  # POSIX sh rules; the PowerShell form splits the same
+        self.assertIn(argv[0], ('python3', 'python'), command)
+        self.assertTrue(argv[1].endswith('ssl_origin_scan.py'), command)
+        args = argv[2:]
+        parsed = sos.build_parser().parse_args(args)  # SystemExit(2) would fail the test
+        dialled = []  # type: List[Tuple[str, int]]
+        lock = threading.Lock()
+
+        def refuse(ip, port, timeout):
+            with lock:
+                dialled.append((ip, port))
+            raise ConnectionRefusedError()
+
+        def fake_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if host not in WEB_APP_ANSWERS:
+                raise socket.gaierror(-2, 'Name or service not known')
+            return [(socket.AF_INET6 if ':' in ip else socket.AF_INET, socket.SOCK_STREAM, 6,
+                     '', (ip, 0)) for ip in WEB_APP_ANSWERS[host]]
+
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, text in (files or {}).items():
+                with open(os.path.join(tmp, name), 'w', encoding='utf-8', newline='\n') as handle:
+                    handle.write(text)
+            shutil.copyfile(str(FIXTURES / 'cli_renewed_wild.pem'), os.path.join(tmp, 'new.pem'))
+            os.chdir(tmp)
+            try:
+                with mock.patch.object(sos, 'tcp_connect', side_effect=refuse), \
+                        mock.patch.object(socket, 'getaddrinfo', side_effect=fake_getaddrinfo):
+                    code, out, err = run_main(*args, '-q')
+                report = read_json('report.json') if os.path.isfile('report.json') else None
+            finally:
+                os.chdir(cwd)
+        return code, out, err, dialled, (parsed, report)
+
+    def assert_scanned(self, command: str, want: Sequence[str], ports: Sequence[int] = (443,),
+                       files: Optional[Dict[str, str]] = None):
+        code, out, err, dialled, extra = self.run_command(command, files)
+        self.assertEqual(code, 0, '%s\n%s' % (command, err))
+        self.assertEqual(sorted(dialled), sorted((ip, p) for ip in want for p in ports), command)
+        return out, extra
+
+    def test_generated_inline_commands(self):
+        self.assert_scanned(
+            'python3 cli/ssl_origin_scan.py -t 192.0.2.0/30 2001:db8::10 '
+            '-n a.example.com b.example.org',
+            ['192.0.2.1', '192.0.2.2', '2001:db8::10'])
+        self.assert_scanned(
+            'python3 cli/ssl_origin_scan.py -t 192.0.2.0/30 '
+            '-n _sip._tls.example.com xn--bcher-kva.example -p 8443',
+            ['192.0.2.1', '192.0.2.2'], ports=(8443,))
+
+    def test_generated_exclude_ports_cert_and_json(self):
+        _, (parsed, report) = self.assert_scanned(
+            'python3 cli/ssl_origin_scan.py -t 192.0.2.0/29 --exclude 192.0.2.5 192.0.2.6/31 '
+            '-n a.example.com -p 443,8443 --cert new.pem --json report.json',
+            ['192.0.2.1', '192.0.2.2', '192.0.2.3', '192.0.2.4'], ports=(443, 8443))
+        self.assertEqual(parsed.exclude, ['192.0.2.5', '192.0.2.6/31'])
+        self.assertEqual(parsed.names, ['a.example.com'])
+        self.assertEqual(report['summary']['excludedAddresses'], 2)
+        self.assertEqual(report['options']['exclude'], ['192.0.2.5', '192.0.2.6/31'])
+
+    def test_generated_powershell_command_with_ipv6_exclude(self):
+        self.assert_scanned(
+            'python cli/ssl_origin_scan.py -t 198.51.100.0/30 2001:db8::/126 '
+            '--exclude 2001:db8::2 198.51.100.2 -n a.example.com',
+            ['198.51.100.1', '2001:db8::1', '2001:db8::3'])
+
+    def test_generated_names_file_form(self):
+        names = '\n'.join('h%d.example.com' % i for i in range(250)) + '\n'
+        _, (parsed, _) = self.assert_scanned(
+            'python3 cli/ssl_origin_scan.py -t 192.0.2.0/30 -n proxied-names.txt',
+            ['192.0.2.1', '192.0.2.2'], files={'proxied-names.txt': names})
+        self.assertEqual(parsed.names, ['proxied-names.txt'])
+
+    def test_host_targets_and_quoted_wildcard_names(self):
+        for command in (
+                "python3 cli/ssl_origin_scan.py -t 192.0.2.10 origin.example.com app.example.net "
+                "-n '*.example.com' www.example.com --json report.json",
+                "python cli/ssl_origin_scan.py -t 192.0.2.10 origin.example.com app.example.net "
+                "-n '*.example.com' www.example.com --json report.json"):
+            with self.subTest(command=command):
+                _, (parsed, report) = self.assert_scanned(
+                    command, ['192.0.2.10', '192.0.2.20', '192.0.2.21', '2001:db8::20'])
+                self.assertEqual(parsed.names, ['*.example.com', 'www.example.com'])
+                self.assertIn({'name': '*.example.com', 'sni': mock.ANY, 'wildcard': True},
+                              report['names'])
+
+    def test_zone_hand_off_files_with_exclude(self):
+        _, (parsed, report) = self.assert_scanned(
+            'python3 cli/ssl_origin_scan.py -t zone-targets.txt --exclude 192.0.2.21 '
+            '-n zone-names.txt --json report.json',
+            ['192.0.2.10', '192.0.2.12', '2001:db8::10', '192.0.2.20', '2001:db8::20'],
+            files={'zone-targets.txt': ZONE_TARGETS_TXT, 'zone-names.txt': ZONE_NAMES_TXT})
+        self.assertEqual(parsed.targets, ['zone-targets.txt'])
+        self.assertEqual([n['name'] for n in report['names'] if not n['wildcard']],
+                         ['example.com', 'www.example.com', '_sip._tls.example.com'])
+        self.assertEqual(report['excluded'], [{'server': 'app.example.net', 'ip': '192.0.2.21',
+                                               'excludedBy': '192.0.2.21'}])
+        self.assertEqual(report['warnings'], [])
+
+    @unittest.skipUnless(_node_major() >= 22, 'needs Node 22+ to run assets/js/lib/cmdline.js')
+    def test_commands_built_by_cmdline_js(self):
+        """Contract: whatever cmdline.js emits today is parsed and honoured by the CLI."""
+        script = r'''
+import { buildSweepCommand } from %s;
+const cases = [
+  { targets: ['192.0.2.0/30', '2001:db8::10'], names: ['a.example.com', 'b.example.org'] },
+  { targets: ['192.0.2.0/29'], names: ['a.example.com'], exclude: ['192.0.2.5', '192.0.2.6/31', '203.0.113.0/24'],
+    ports: [443, 8443], cert: 'new.pem', json: 'report.json' },
+  { targets: ['198.51.100.0/30', '2001:db8::/126'], names: ['a.example.com'], exclude: '2001:db8::2, 198.51.100.2',
+    shell: 'powershell' },
+  { targets: ['192.0.2.0/30'], names: Array.from({ length: 250 }, (_, i) => `h${i}.example.com`) },
+  { targets: ['192.0.2.10', 'origin.example.com'], names: ['*.example.com', 'www.example.com'],
+    allowHostTargets: true, allowWildcardNames: true, exclude: ['192.0.2.20'] },
+  { targets: ['192.0.2.10', 'origin.example.com'], names: ['*.example.com', 'www.example.com'],
+    allowHostTargets: true, allowWildcardNames: true, shell: 'powershell' }
+];
+const out = cases.map((opts) => {
+  const r = buildSweepCommand({ script: 'cli/ssl_origin_scan.py', ...opts });
+  return { opts, command: r.command, names: r.names, namesFile: r.namesFile, targets: r.targets,
+           hostTargets: r.hostTargets || [], exclude: r.exclude || [] };
+});
+console.log(JSON.stringify(out));
+''' % json.dumps((ROOT / 'assets' / 'js' / 'lib' / 'cmdline.js').as_uri())
+        proc = subprocess.run([shutil.which('node'), '--input-type=module', '-e', script],
+                              capture_output=True, text=True, timeout=60, cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        built = json.loads(proc.stdout)
+        self.assertEqual(len(built), 6)
+        for case in built:
+            with self.subTest(opts=case['opts']):
+                self.assertIsNotNone(case['command'])
+                python = 'python' if case['opts'].get('shell') == 'powershell' else 'python3'
+                files = {}
+                if case['namesFile']:  # the page offers this file next to the command
+                    files[case['namesFile']] = '\n'.join(case['names']) + '\n'
+                code, _, err, dialled, (parsed, _) = self.run_command(
+                    '%s %s' % (python, case['command']), files)
+                self.assertEqual(code, 0, '%s\n%s' % (case['command'], err))
+                self.assertTrue(dialled)
+                allowed = set()
+                for target in list(case['targets']) + list(case['hostTargets']):
+                    if target in WEB_APP_ANSWERS:
+                        allowed.update(WEB_APP_ANSWERS[target])
+                    elif sos.normalize_ip(target):
+                        allowed.add(sos.normalize_ip(target))
+                    else:
+                        allowed.update(sos.expand_ip_block(target) or [])
+                rules = sos.load_excludes(case['exclude']) if case['exclude'] else []
+                requested = case['opts'].get('exclude') or []
+                if isinstance(requested, str):
+                    requested = [t for t in re.split(r'[\s,]+', requested) if t]
+                # every requested exclusion reaches the CLI: with IP / CIDR targets only the
+                # ones inside a target matter, and a kept host target makes cmdline.js emit all
+                # of them (its address is only known once the CLI resolves it)
+                rules = rules + sos.load_excludes(requested) if requested else rules
+                for ip, _port in dialled:
+                    self.assertIn(ip, allowed)
+                    self.assertFalse(any(rule.contains(ip) for rule in rules), ip)
+                self.assertEqual(parsed.exclude, case['exclude'])
+
+
+TURKISH_HELP_LINE =('Türkçe: yeni sertifikanın hangi sunuculara '
                      'yüklenmesi gerektiğini bulur, örnek:')
 
 
@@ -1750,7 +2566,7 @@ class CompatibilityTests(unittest.TestCase):
         source = CLI_PATH.read_text(encoding='utf-8')
         self.assertTrue(source.startswith('#!/usr/bin/env python3'))
         imports = set(re.findall(r'^(?:from|import) ([a-zA-Z_][\w.]*)', source, re.M))
-        stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'csv', 'hashlib', 'io',
+        stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'bisect', 'csv', 'hashlib', 'io',
                   'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata'}

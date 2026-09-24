@@ -16,14 +16,16 @@ single file - copy it anywhere.
 
 Pipeline:
   1. targets  -> inventory files / IPs / CIDRs / hostnames, resolved to IPs
-  2. names    -> -n names/files and the SAN names of --cert (wildcards expanded)
-  3. phase 1  -> TCP connect to every ip:port (thread pool), closed ports skipped
-  4. phase 2  -> TLS handshake per open ip:port x name (SNI) + one probe without SNI
-  5. verdict  -> UPDATED / NEEDS_UPDATE / NOT_HOSTED / TLS_ERROR / TIMEOUT / CLOSED
+  2. exclude  -> --exclude IPs / CIDRs removed from the target set (never probed)
+  3. names    -> -n names/files and the SAN names of --cert (wildcards expanded)
+  4. phase 1  -> TCP connect to every ip:port (thread pool), closed ports skipped
+  5. phase 2  -> TLS handshake per open ip:port x name (SNI) + one probe without SNI
+  6. verdict  -> UPDATED / NEEDS_UPDATE / NOT_HOSTED / TLS_ERROR / TIMEOUT / CLOSED
 
 The module is importable: parse_certificate(), load_certificates(),
-parse_inventory(), load_targets(), build_probe_names(), run_scan(),
-report_to_dict(), render_csv(), render_summary() and main() are the public API.
+parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
+is_numeric_host(), build_probe_names(), run_scan(), report_to_dict(), render_csv(),
+render_summary() and main() are the public API.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import bisect
 import codecs
 import csv
 import hashlib
@@ -50,7 +53,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
                     Set, TextIO, Tuple, Union)
@@ -68,12 +71,15 @@ CLOSED = 'CLOSED'              # port closed / host unreachable
 STATUSES = (UPDATED, NEEDS_UPDATE, NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED)
 
 OPEN = 'OPEN'  # endpoint state after a successful TCP connect (phase 1)
+# Not a scan status: a target address removed by --exclude (CSV rows only, never probed).
+EXCLUDED = 'EXCLUDED'
 
 # Kinds of result rows.
 PROBE_SNI = 'sni'            # handshake with SNI = the name
 PROBE_WILDCARD = 'wildcard'  # handshake with a synthetic name under a wildcard
 PROBE_DEFAULT = 'default'    # handshake without SNI (the server's default cert)
 PROBE_CONNECT = 'connect'    # the port was not open; one row per endpoint
+PROBE_EXCLUDED = 'excluded'  # CSV only: a target address --exclude removed before the scan
 
 EXIT_OK = 0
 EXIT_NEEDS_UPDATE = 1
@@ -787,18 +793,30 @@ def select_leaf(certs: Sequence[CertInfo]) -> Optional[CertInfo]:
 
 _LABEL_RE = re.compile(r'^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$')
 _SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*://')
+# An IPv4 part with a leading zero ("010"): octal for inet_aton (glibc, Windows), decimal
+# for Python < 3.8.12 / 3.9.5 - ambiguous, so never accepted as an address.
+_IPV4_LEADING_ZERO_RE = re.compile(r'(?:^|\.)0[0-9]')
+
+
+def _has_ambiguous_ipv4_part(text: str) -> bool:
+    """True when the IPv4 part of ``text`` (dotted tail of an IPv6 too) has a leading zero."""
+    tail = text.rsplit(':', 1)[-1].split('/', 1)[0]
+    return '.' in tail and bool(_IPV4_LEADING_ZERO_RE.search(tail))
 
 
 def normalize_ip(value: str) -> Optional[str]:
     """Canonical IP text (IPv6: RFC 5952, lowercase), or ``None`` if invalid.
 
-    Strips surrounding ``[]`` and a ``%zone`` suffix.
+    Strips surrounding ``[]`` and a ``%zone`` suffix. IPv4 parts with a leading zero
+    (``010.0.0.1``: octal for the system resolver) are rejected on every Python version.
     """
     text = value.strip()
     if text.startswith('[') and text.endswith(']'):
         text = text[1:-1]
     if '%' in text:
         text = text.split('%', 1)[0]
+    if _has_ambiguous_ipv4_part(text):
+        return None
     try:
         addr = ipaddress.ip_address(text)
     except ValueError:
@@ -808,20 +826,45 @@ def normalize_ip(value: str) -> Optional[str]:
     return str(addr)
 
 
+def _parse_network(token: str) -> Optional[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]:
+    """``addr/prefix`` -> network (host bits tolerated), or ``None`` if not a CIDR."""
+    if _has_ambiguous_ipv4_part(token):
+        return None
+    try:
+        return ipaddress.ip_network(token, strict=False)
+    except ValueError:
+        return None
+
+
+def _unscannable_reason(ip: str) -> Optional[str]:
+    """Why ``ip`` must never be dialled (``None`` when it is a scannable unicast address)."""
+    addr = ipaddress.ip_address(ip)  # type: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped  # dialled as IPv4 (see _connect_address)
+    if addr.is_unspecified:
+        return 'unspecified address'
+    if addr.version == 4 and int(addr) >> 24 == 0:
+        return '0.0.0.0/8 "this network" - some systems dial it as the local host'
+    if addr.is_multicast:
+        return 'multicast address'
+    if addr.version == 4 and int(addr) == 0xFFFFFFFF:
+        return 'broadcast address'
+    return None
+
+
 def is_scannable_ip(ip: str) -> bool:
-    """False for unspecified, multicast and limited-broadcast addresses."""
-    addr = ipaddress.ip_address(ip)
-    if addr.is_unspecified or addr.is_multicast:
-        return False
-    return not (addr.version == 4 and str(addr) == '255.255.255.255')
+    """False for unspecified, 0.0.0.0/8, multicast and limited-broadcast addresses.
+
+    IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``) are judged by their IPv4 address,
+    because that is what gets dialled.
+    """
+    return _unscannable_reason(ip) is None
 
 
-def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str]:
-    """Lowercase ASCII (punycode) hostname without trailing dot, or ``None`` if invalid.
+def _host_text(value: str) -> Optional[str]:
+    """Strip scheme, userinfo, path/query/fragment, port and one trailing dot; lowercase.
 
-    Strips scheme, userinfo, path/query/fragment and port. IDN labels are converted with
-    Python's IDNA codec. ``_`` is allowed in labels. IP literals are rejected (``None``).
-    ``allow_wildcard`` permits a single leading ``*.`` label.
+    ``None`` for bracketed or IPv6-looking input and for a non-numeric port.
     """
     text = value.strip()
     if not text:
@@ -842,7 +885,21 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
         return None
     if text.endswith('.'):
         text = text[:-1]
-    text = text.lower()
+    return text.lower()
+
+
+def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str]:
+    """Lowercase ASCII (punycode) hostname without trailing dot, or ``None`` if invalid.
+
+    Strips scheme, userinfo, path/query/fragment and port. IDN labels are converted with
+    Python's IDNA codec. ``_`` is allowed in labels. IP literals are rejected (``None``),
+    and so are numeric names the system resolver would read as an IPv4 address
+    (``2026092401``, ``127.1``, ``0x7f.0x1`` - see :func:`is_numeric_host`).
+    ``allow_wildcard`` permits a single leading ``*.`` label.
+    """
+    text = _host_text(value)
+    if not text:
+        return None
     wildcard = False
     if text.startswith('*.'):
         if not allow_wildcard:
@@ -866,7 +923,95 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
     host = '.'.join(labels)
     if len(host) > 253 or (wildcard and len(host) > 251):
         return None
+    if _numeric_labels(labels):
+        return None
     return '*.' + host if wildcard else host
+
+
+# A label inet_aton-style parsers read as a number: decimal, octal (leading 0) or 0x-hex.
+_NUMERIC_LABEL_RE = re.compile(r'^(?:0x[0-9a-f]*|[0-9]+)$')
+_IDEOGRAPHIC_DOTS = ('\u3002', '\uff0e', '\uff61')
+
+
+def _numeric_labels(labels: Sequence[str]) -> bool:
+    """Every label is a number (``127.1``, ``0x7f.0x1``), or the last one is all digits.
+
+    RFC 1123 section 2.1: the top-level label of a host name is never numeric.
+    """
+    if not labels:
+        return False
+    if all(_NUMERIC_LABEL_RE.match(label) for label in labels):
+        return True
+    return labels[-1].isascii() and labels[-1].isdigit()
+
+
+def _legacy_ipv4(text: str) -> Optional[str]:
+    """The IPv4 address inet_aton (glibc, Windows) reads ``text`` as, or ``None``.
+
+    1 to 4 parts, each decimal, octal (leading ``0``) or hex (``0x``); the last part
+    fills the remaining bytes: ``2130706433`` -> ``127.0.0.1``, ``127.1`` ->
+    ``127.0.0.1``, ``0x7f.0x1`` -> ``127.0.0.1``, ``0177.0.0.1`` -> ``127.0.0.1`` (and a
+    zone serial such as ``2026092401`` -> a public address in 120.0.0.0/8).
+    """
+    parts = text.lower().split('.')
+    if not 1 <= len(parts) <= 4:
+        return None
+    values = []
+    for part in parts:
+        if re.match(r'^0x[0-9a-f]*$', part):
+            values.append(int(part[2:] or '0', 16))
+        elif re.match(r'^0[0-7]*$', part):
+            values.append(int(part, 8))
+        elif re.match(r'^[1-9][0-9]*$', part):
+            values.append(int(part))
+        else:
+            return None
+    last_bits = 8 * (5 - len(values))
+    if any(value > 0xFF for value in values[:-1]) or values[-1] >= 1 << last_bits:
+        return None
+    number = 0
+    for value in values[:-1]:
+        number = (number << 8) | value
+    number = (number << last_bits) | values[-1]
+    return str(ipaddress.IPv4Address(number))
+
+
+def _numeric_candidate(value: str) -> Optional[str]:
+    """``value`` as host text for the numeric test (NFKC, ideographic dots, no wildcard)."""
+    text = unicodedata.normalize('NFKC', value)
+    for dot in _IDEOGRAPHIC_DOTS:
+        text = text.replace(dot, '.')
+    host = _host_text(text)
+    if host and host.startswith('*.'):
+        host = host[2:]
+    return host or None
+
+
+def is_numeric_host(value: str) -> bool:
+    """True when ``value`` looks like a hostname but is a number / numeric IPv4 form.
+
+    The system resolver (glibc and Windows ``getaddrinfo``, inet_aton rules) turns
+    ``2026092401``, ``127.1``, ``0x7f.0x1`` or ``0177.0.0.1`` into an IPv4 address without
+    any DNS lookup - e.g. a zone file's SOA serial would make the scan dial an unrelated
+    public address. Such names are never resolved nor used as SNI names. Detected: every
+    label is a decimal, octal or ``0x`` hex number, or the last label is all digits
+    (RFC 1123 section 2.1). Canonical IP literals (:func:`normalize_ip`) are addresses,
+    not hostnames: they return False.
+    """
+    host = _numeric_candidate(value)
+    if not host or normalize_ip(host) is not None:
+        return False
+    return _numeric_labels(host.split('.'))
+
+
+def numeric_host_note(value: str) -> str:
+    """Why a numeric "hostname" is refused (names the address the resolver would dial)."""
+    host = _numeric_candidate(value) or value.strip()
+    address = _legacy_ipv4(host)
+    if address:
+        return ('%s is not a hostname - the system resolver reads it as the IPv4 address %s'
+                % (value.strip(), address))
+    return '%s is not a hostname - a host name never ends in a numeric label' % value.strip()
 
 
 def wildcard_matches(pattern: str, host: str) -> bool:
@@ -998,11 +1143,7 @@ def is_ip_block(token: str) -> bool:
     """Cheap syntax check: is ``token`` a CIDR or an IP range (without expanding it)?"""
     token = token.strip()
     if '/' in token:
-        try:
-            ipaddress.ip_network(token, strict=False)
-            return True
-        except ValueError:
-            return False
+        return _parse_network(token) is not None
     if '-' in token:
         start_text, end_text = token.split('-', 1)
         start = normalize_ip(start_text)
@@ -1021,9 +1162,8 @@ def expand_ip_block(token: str, allow_large: bool = False) -> Optional[List[str]
     """
     token = token.strip()
     if '/' in token:
-        try:
-            network = ipaddress.ip_network(token, strict=False)
-        except ValueError:
+        network = _parse_network(token)
+        if network is None:
             return None
         _check_block_size(token, network.num_addresses, allow_large)
         if network.num_addresses == 1:
@@ -1081,10 +1221,11 @@ class _InventoryBuilder:
         """Add (or merge into) server ``name``; unscannable IPs become warnings."""
         usable = []
         for ip in ips:
-            if is_scannable_ip(ip):
+            reason = _unscannable_reason(ip)
+            if reason is None:
                 usable.append(ip)
             else:
-                self.warn(line, 'INVALID_IP', '%s is not a unicast address' % ip)
+                self.warn(line, 'INVALID_IP', '%s is not scannable (%s)' % (ip, reason))
         if not usable and not hostnames:
             if ips:
                 return
@@ -1106,6 +1247,21 @@ class _InventoryBuilder:
             if host not in server.hostnames:
                 server.hostnames.append(host)
 
+    def add_hostname(self, name: str, line: int, groups: Sequence[str] = (),
+                     fallback: Optional[str] = None) -> None:
+        """Add a server known only by ``name`` (resolved later), or warn why it cannot be.
+
+        A numeric name (``2026092401``, ``127.1``) is an INVALID_IP, never resolved;
+        anything else that is not a hostname is NO_IP (text: ``fallback`` or the name).
+        """
+        host = normalize_hostname(name)
+        if host:
+            self.add(name, [], line, groups, [host])
+        elif is_numeric_host(name):
+            self.warn(line, 'INVALID_IP', numeric_host_note(name))
+        else:
+            self.warn(line, 'NO_IP', name if fallback is None else fallback)
+
     def add_token_values(self, name: Optional[str], values: Sequence[str], line: int,
                          groups: Sequence[str] = ()) -> None:
         """Add ``name`` with IPs / hostnames / CIDRs taken from free-form ``values``."""
@@ -1125,6 +1281,9 @@ class _InventoryBuilder:
                 continue
             if _looks_like_ip(value):
                 self.warn(line, 'INVALID_IP', value)
+                continue
+            if is_numeric_host(value):
+                self.warn(line, 'INVALID_IP', numeric_host_note(value))
                 continue
             host = normalize_hostname(value)
             if host:
@@ -1228,9 +1387,8 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
         if name_ip:
             values.insert(0, name_ip)
         if not values:
-            host = normalize_hostname(name) if name else None
-            if host:
-                builder.add(name, [], number, groups, [host])
+            if name:
+                builder.add_hostname(name, number, groups, ','.join(cells))
             else:
                 builder.warn(number, 'NO_IP', ','.join(cells))
             continue
@@ -1315,11 +1473,8 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
         elif had_invalid:
             continue  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
         elif name is not None:
-            host = normalize_hostname(name)
-            if host:
-                builder.add(name, [], number, groups, [host])
-            else:
-                builder.warn(number, 'NO_IP', line)
+            # A zone file's "2026092401 ; serial" line must never be resolved (glibc -> IP).
+            builder.add_hostname(name, number, groups, line)
 
 
 def _json_name(obj: Dict[str, Any]) -> Optional[str]:
@@ -1422,11 +1577,7 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
         if values:
             builder.add_token_values(name or key_hint, values, 0)
         elif name:
-            host = normalize_hostname(name)
-            if host:
-                builder.add(name, [], 0, (), [host])
-            else:
-                builder.warn(0, 'NO_IP', name)
+            builder.add_hostname(name, 0)
         return
     for child_key, child in data.items():
         if child_key == '_meta' and isinstance(child, dict):
@@ -1457,7 +1608,8 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
     """Parse a ``-t`` argument that is not a file: IPs, CIDRs, ranges, ``name=ip``, hostnames.
 
     Unlike inventory lines, every token is its own server. Raises :class:`UsageError`
-    for tokens that are none of these.
+    for tokens that are none of these, including numeric "hostnames" the system
+    resolver would read as an IPv4 address (``2026092401``, ``127.1``, ``0x7f.0x1``).
     """
     builder = _InventoryBuilder('argument', allow_large)
     for token in (t for t in re.split(r'[\s,]+', value) if t):
@@ -1465,6 +1617,9 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
             name, _, target = token.partition('=')
             if not name or not target:
                 raise UsageError('invalid target %r (expected NAME=IP)' % token)
+            if is_numeric_host(target):
+                raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
+                                 % (token, numeric_host_note(target)))
             builder.add_token_values(name, [target], 0)
             continue
         ip = normalize_ip(token)
@@ -1476,6 +1631,15 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
             for block_ip in block:
                 builder.add(block_ip, [block_ip], 0, [token])
             continue
+        # 010.0.0.1, and the address part of 010.0.0.0/24 or 010.0.0.1-5
+        if _has_ambiguous_ipv4_part(token) and _looks_like_ip(re.split(r'[/-]', token)[0]):
+            legacy = _legacy_ipv4(token)
+            raise UsageError('invalid target %r: an IPv4 part with a leading zero is ambiguous '
+                             '(the system resolver reads it as octal%s)'
+                             % (token, ': ' + legacy if legacy else ''))
+        if is_numeric_host(token) and not _looks_like_ip(token):
+            raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
+                             % (token, numeric_host_note(token)))
         if _looks_like_path(token):
             raise UsageError('target file not found: %s' % value)
         host = normalize_hostname(token)
@@ -1502,7 +1666,12 @@ def resolve_host(host: str) -> List[str]:
 def resolve_servers(servers: List[Server], resolver: Callable[[str], List[str]] = resolve_host,
                     workers: int = 16, cancel: Optional[threading.Event] = None
                     ) -> Tuple[List[Server], List[InventoryWarning]]:
-    """Resolve the hostnames of servers that have no IP; drop servers that stay without IP."""
+    """Resolve the hostnames of servers that have no IP; drop servers that stay without IP.
+
+    Numeric names (:func:`is_numeric_host`) are never handed to the resolver, which would
+    turn them into an IPv4 address; unscannable answers (0.0.0.0/8, multicast...) are
+    dropped.
+    """
     todo = []  # type: List[str]
     for server in servers:
         if not server.ips:
@@ -1512,6 +1681,8 @@ def resolve_servers(servers: List[Server], resolver: Callable[[str], List[str]] 
     answers = {}  # type: Dict[str, Tuple[List[str], Optional[str]]]
 
     def lookup(host: str) -> Tuple[List[str], Optional[str]]:
+        if is_numeric_host(host):
+            return [], 'not resolved - %s' % numeric_host_note(host)
         try:
             ips = [ip for ip in resolver(host) if is_scannable_ip(ip)]
             return ips, None if ips else 'no address'
@@ -1585,6 +1756,293 @@ def load_targets(values: Sequence[str], allow_large: bool = False,
 
 
 # =====================================================================================
+# --exclude: target addresses that must never be probed
+# =====================================================================================
+
+IpNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+_V4_MAPPED_FIRST = 0xFFFF << 32               # ::ffff:0:0/96 - IPv4-mapped IPv6,
+_V4_MAPPED_LAST = _V4_MAPPED_FIRST + 0xFFFFFFFF  # dialled as IPv4 (_connect_address)
+# (version, first, last) as integers.
+_Span = Tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class ExcludeRule:
+    """One ``--exclude`` entry: its canonical text and the networks it covers."""
+
+    label: str                        # '192.0.2.10', '192.0.2.0/28', '192.0.2.5-192.0.2.9'
+    networks: Tuple[IpNetwork, ...]
+
+    def spans(self) -> List[_Span]:
+        """Integer spans per IP version.
+
+        A network written in IPv4-mapped form (``::ffff:192.0.2.0/120``) also covers the
+        plain IPv4 addresses; a wider IPv6 network (``::/0``) does not.
+        """
+        out = []  # type: List[_Span]
+        for net in self.networks:
+            first, last = int(net.network_address), int(net.broadcast_address)
+            out.append((net.version, first, last))
+            if net.version == 6 and _V4_MAPPED_FIRST <= first and last <= _V4_MAPPED_LAST:
+                out.append((4, first - _V4_MAPPED_FIRST, last - _V4_MAPPED_FIRST))
+        return out
+
+    def contains(self, ip: str) -> bool:
+        """Whether target ``ip`` falls in this rule (``::ffff:a.b.c.d`` also as ``a.b.c.d``)."""
+        spans = self.spans()
+        return any(v == version and first <= value <= last
+                   for version, value in _match_keys(ip) for v, first, last in spans)
+
+
+@dataclass
+class ExcludedAddress:
+    """A target address removed by ``--exclude`` before the scan (never probed)."""
+
+    server: str
+    ip: str
+    rule: str  # label of the first ExcludeRule that matched
+
+
+def _match_keys(ip: str) -> List[Tuple[int, int]]:
+    """``(version, integer)`` forms of a target: an IPv4-mapped IPv6 address has both."""
+    addr = ipaddress.ip_address(ip)  # type: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+    keys = [(addr.version, int(addr))]
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        keys.append((4, int(addr.ipv4_mapped)))
+    return keys
+
+
+def parse_exclude_token(token: str) -> Optional[ExcludeRule]:
+    """An IP, a CIDR or a range (``a-b``, ``a.b.c.d-N``) -> :class:`ExcludeRule`.
+
+    ``None`` for anything else - hostnames included: an exclusion must name addresses,
+    never something a resolver could answer differently later. Host bits of a CIDR are
+    tolerated (``192.0.2.7/28`` = ``192.0.2.0/28``). Raises :class:`UsageError` for a
+    reversed or mixed-version range.
+    """
+    token = token.strip()
+    if not token:
+        return None
+    ip = normalize_ip(token)
+    if ip is not None:
+        return ExcludeRule(ip, (ipaddress.ip_network(ip),))
+    if '/' in token:
+        network = _parse_network(token)
+        if network is None:
+            return None
+        address = _ip_text(network.network_address)
+        label = address if network.num_addresses == 1 else '%s/%d' % (address, network.prefixlen)
+        return ExcludeRule(label, (network,))
+    if '-' in token:
+        start_text, end_text = token.split('-', 1)
+        start = normalize_ip(start_text)
+        if start is None:
+            return None
+        end = normalize_ip(end_text)
+        if end is None and end_text.isdigit() and '.' in start:
+            end = normalize_ip(start.rsplit('.', 1)[0] + '.' + end_text)  # 192.0.2.5-9
+        if end is None:
+            return None
+        first, last = ipaddress.ip_address(start), ipaddress.ip_address(end)
+        if first.version != last.version or int(last) < int(first):
+            raise UsageError('--exclude: invalid IP range %r' % token)
+        networks = tuple(ipaddress.summarize_address_range(first, last))  # type: ignore[arg-type]
+        return ExcludeRule(start if start == end else '%s-%s' % (start, end), networks)
+    return None
+
+
+def _exclude_error(token: str) -> str:
+    if _has_ambiguous_ipv4_part(token):
+        return ('--exclude: %r has an IPv4 part with a leading zero, which is ambiguous (octal '
+                'for the system resolver) - write it without leading zeros' % token)
+    if is_numeric_host(token):
+        address = _legacy_ipv4(_numeric_candidate(token) or token)
+        return ('--exclude: %r is not an IP address or CIDR - write IPv4 addresses as a.b.c.d%s'
+                % (token, ' (the system resolver would read it as %s)' % address
+                   if address else ''))
+    if '-' in token and normalize_ip(token.split('-', 1)[0]):  # 192.0.2.5-09, 192.0.2.5-x
+        return ('--exclude: %r is not a valid IP range (write 192.0.2.5-192.0.2.9 or '
+                '192.0.2.5-9)' % token)
+    if normalize_hostname(token, allow_wildcard=True):
+        return ('--exclude takes IP addresses and CIDRs, not hostnames: %r (exclude the '
+                'address itself, e.g. 192.0.2.10 or 192.0.2.0/28)' % token)
+    return '--exclude: %r is not an IP address, CIDR or range' % token
+
+
+def _exclude_looks_like_file(value: str) -> bool:
+    """A missing file rather than a bad address (``192.0.2.0/33`` is a bad CIDR)."""
+    if '\\' in value or _TARGET_FILE_EXT_RE.search(value):
+        return True
+    if '/' not in value:
+        return False
+    head = value.split('/', 1)[0].strip()
+    return not (':' in head or _looks_like_ip(head) or re.match(r'^[0-9.]+$', head))
+
+
+def _exclude_text(text: str, source: str, add: Callable[[ExcludeRule], None]) -> None:
+    """Rules from an exclude file: IPs/CIDRs/ranges, ``#`` ``;`` ``//`` comments."""
+    for number, raw in enumerate(text.lstrip('\ufeff').splitlines(), 1):
+        for token in (t for t in re.split(r'[\s,;]+', _strip_comment(raw)) if t):
+            rule = parse_exclude_token(token)
+            if rule is None:
+                raise UsageError('%s:%d: %s' % (source, number, _exclude_error(token)))
+            add(rule)
+
+
+def load_excludes(values: Sequence[str], stdin: Optional[TextIO] = None) -> List[ExcludeRule]:
+    """``--exclude`` values -> rules (input order, deduplicated); strict.
+
+    Each value is one or more IPs / CIDRs / ranges (separated by spaces, ``,`` or ``;``),
+    ``-`` for stdin, or a file with one or more of them per line (``#`` comments). Raises
+    :class:`UsageError` for hostnames (including numeric ones such as ``2026092401``),
+    malformed addresses and missing files - an exclusion is a safety list, so nothing in
+    it is silently ignored.
+    """
+    rules = []  # type: List[ExcludeRule]
+    seen = set()  # type: Set[str]
+
+    def add(rule: ExcludeRule) -> None:
+        if rule.label not in seen:
+            seen.add(rule.label)
+            rules.append(rule)
+
+    for value in values:
+        if value == '-':
+            _exclude_text((stdin or sys.stdin).read(), '<stdin>', add)
+            continue
+        tokens = [t for t in re.split(r'[\s,;]+', value) if t]
+        parsed = [parse_exclude_token(token) for token in tokens]
+        if tokens and all(rule is not None for rule in parsed):
+            for rule in parsed:
+                add(rule)  # type: ignore[arg-type]
+            continue
+        if os.path.isfile(value):
+            try:
+                text = read_text_file(value)
+            except OSError as exc:
+                raise UsageError('cannot read %s: %s' % (value, exc.strerror or exc))
+            _exclude_text(text, value, add)
+            continue
+        if not tokens:
+            raise UsageError('--exclude: empty value')
+        if _exclude_looks_like_file(value):
+            raise UsageError('--exclude file not found: %s' % value)
+        bad = next(token for token, rule in zip(tokens, parsed) if rule is None)
+        raise UsageError(_exclude_error(bad))
+    return rules
+
+
+def _as_rules(items: Iterable[Union[str, ExcludeRule]]) -> List[ExcludeRule]:
+    rules = []  # type: List[ExcludeRule]
+    for item in items:
+        if isinstance(item, ExcludeRule):
+            rules.append(item)
+            continue
+        rule = parse_exclude_token(item)
+        if rule is None:
+            raise UsageError(_exclude_error(item))
+        rules.append(rule)
+    return rules
+
+
+class _ExcludeMatcher:
+    """Address -> first matching rule, with a merged-interval fast path (bisect)."""
+
+    def __init__(self, rules: Sequence[ExcludeRule]) -> None:
+        self.rules = [(rule, rule.spans()) for rule in rules]
+        merged = {4: [], 6: []}  # type: Dict[int, List[Tuple[int, int]]]
+        for _rule, spans in self.rules:
+            for version, first, last in spans:
+                merged[version].append((first, last))
+        self.starts = {}  # type: Dict[int, List[int]]
+        self.ends = {}  # type: Dict[int, List[int]]
+        for version, spans in merged.items():
+            out = []  # type: List[Tuple[int, int]]
+            for first, last in sorted(spans):
+                if out and first <= out[-1][1] + 1:
+                    out[-1] = (out[-1][0], max(out[-1][1], last))
+                else:
+                    out.append((first, last))
+            self.starts[version] = [first for first, _ in out]
+            self.ends[version] = [last for _, last in out]
+
+    def _inside(self, version: int, value: int) -> bool:
+        index = bisect.bisect_right(self.starts[version], value) - 1
+        return index >= 0 and value <= self.ends[version][index]
+
+    def match(self, ip: str) -> Optional[ExcludeRule]:
+        keys = [key for key in _match_keys(ip) if self._inside(*key)]
+        if not keys:
+            return None
+        for rule, spans in self.rules:
+            if any(v == version and first <= value <= last
+                   for version, value in keys for v, first, last in spans):
+                return rule
+        return None
+
+
+def apply_excludes(servers: Sequence[Server], rules: Iterable[Union[str, ExcludeRule]]
+                   ) -> Tuple[List[Server], List[ExcludedAddress]]:
+    """Remove every excluded address from ``servers`` -> ``(kept servers, excluded)``.
+
+    ``rules`` are :class:`ExcludeRule` objects or IP / CIDR / range strings. Servers left
+    without any address are dropped; the others are copies with the remaining IPs (the
+    inputs are not modified). An IPv4-mapped IPv6 target (``::ffff:a.b.c.d``, dialled as
+    IPv4) is excluded by a rule covering ``a.b.c.d``, and a rule written in mapped form
+    (``::ffff:a.b.c.d[/n]``) excludes the plain IPv4 target too.
+    """
+    rule_list = _as_rules(rules)
+    if not rule_list:
+        return list(servers), []
+    matcher = _ExcludeMatcher(rule_list)
+    kept = []  # type: List[Server]
+    excluded = []  # type: List[ExcludedAddress]
+    for server in servers:
+        ips = []  # type: List[str]
+        for ip in server.ips:
+            rule = matcher.match(ip)
+            if rule is None:
+                ips.append(ip)
+            else:
+                excluded.append(ExcludedAddress(server.name, ip, rule.label))
+        if len(ips) == len(server.ips):
+            kept.append(server)
+        elif ips:
+            kept.append(replace(server, ips=ips, groups=list(server.groups),
+                                hostnames=list(server.hostnames)))
+    return kept, excluded
+
+
+def unused_excludes(rules: Iterable[Union[str, ExcludeRule]],
+                    excluded: Sequence[ExcludedAddress]) -> List[str]:
+    """Labels of the rules that matched no target address (typo guard for a warning).
+
+    Sorted address keys + bisect per rule span: O((rules + addresses) log n), so a long
+    exclude file against a large excluded block stays instant (was rules x addresses).
+    """
+    keys = {4: set(), 6: set()}  # type: Dict[int, Set[int]]
+    for ip in {entry.ip for entry in excluded}:
+        for version, value in _match_keys(ip):
+            keys[version].add(value)
+    ordered = {version: sorted(values) for version, values in keys.items()}
+
+    def matched(rule: ExcludeRule) -> bool:
+        for version, first, last in rule.spans():
+            values = ordered[version]
+            index = bisect.bisect_left(values, first)
+            if index < len(values) and values[index] <= last:
+                return True
+        return False
+
+    return [rule.label for rule in _as_rules(rules) if not matched(rule)]
+
+
+def excluded_address_count(excluded: Sequence[ExcludedAddress]) -> int:
+    """Distinct addresses among ``excluded`` (one IP may belong to several servers)."""
+    return len({entry.ip for entry in excluded})
+
+
+# =====================================================================================
 # Names to probe
 # =====================================================================================
 
@@ -1624,7 +2082,11 @@ def parse_names_text(text: str) -> Tuple[List[str], List[str]]:
 
 def load_names(values: Sequence[str], stdin: Optional[TextIO] = None
                ) -> Tuple[List[str], List[str]]:
-    """Names from ``-n`` values: files, ``-`` (stdin) or literal names -> ``(names, warnings)``."""
+    """Names from ``-n`` values: files, ``-`` (stdin) or literal names -> ``(names, warnings)``.
+
+    A numeric "name" (``2026092401``, ``127.1``, ``0x7f.0x1``) given on the command line
+    raises :class:`UsageError`; in a file or stdin it is skipped with a warning.
+    """
     names, warnings = [], []  # type: List[str], List[str]
     for value in values:
         if value == '-':
@@ -1645,6 +2107,10 @@ def load_names(values: Sequence[str], stdin: Optional[TextIO] = None
         for token in invalid:
             if normalize_ip(token):
                 warnings.append('%s: %s is an IP address - put IPs in -t targets' % (source, token))
+            elif is_numeric_host(token):
+                if source == 'argument':
+                    raise UsageError('invalid name %r (-n): %s' % (token, numeric_host_note(token)))
+                warnings.append('%s: skipped - %s' % (source, numeric_host_note(token)))
             else:
                 warnings.append('%s: ignoring invalid name %r' % (source, token))
     return names, warnings
@@ -1754,6 +2220,12 @@ class ScanReport:
     timeout: float = DEFAULT_TIMEOUT
     workers: int = DEFAULT_WORKERS
     warnings: List[str] = field(default_factory=list)
+    exclude: List[str] = field(default_factory=list)       # --exclude rules (labels)
+    excluded: List[ExcludedAddress] = field(default_factory=list)  # removed, never probed
+
+    def excluded_count(self) -> int:
+        """Distinct target addresses removed by --exclude."""
+        return excluded_address_count(self.excluded)
 
     def rows_by_server(self) -> Dict[str, List[ProbeResult]]:
         """Result rows grouped by server name (input order)."""
@@ -1990,19 +2462,25 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
              tls_fn: Optional[Callable[[str, int, Optional[str], float], TlsResult]] = None,
              progress: Optional[ProgressCallback] = None,
              cancel: Optional[threading.Event] = None,
-             default_probe: bool = True, warnings: Optional[List[str]] = None) -> ScanReport:
+             default_probe: bool = True, warnings: Optional[List[str]] = None,
+             exclude: Iterable[Union[str, ExcludeRule]] = ()) -> ScanReport:
     """Probe every ``server IP x port`` for every name and classify the results.
 
-    Phase 1 TCP-connects each unique ip:port (``connect_fn``); phase 2 runs one TLS
-    handshake per open endpoint and unique SNI plus one without SNI (``tls_fn``). Both
-    are injectable for tests. ``progress(phase, done, total, info)`` is called from
-    this thread with phase ``connect`` or ``tls``. KeyboardInterrupt propagates.
+    Addresses matching ``exclude`` (:class:`ExcludeRule` objects or IP / CIDR / range
+    strings) are removed first - never connected to - and listed in
+    :attr:`ScanReport.excluded`. Phase 1 TCP-connects each unique ip:port
+    (``connect_fn``); phase 2 runs one TLS handshake per open endpoint and unique SNI
+    plus one without SNI (``tls_fn``). Both are injectable for tests.
+    ``progress(phase, done, total, info)`` is called from this thread with phase
+    ``connect`` or ``tls``. KeyboardInterrupt propagates.
     """
     connect_fn = connect_fn or tcp_connect
     tls_fn = tls_fn or TlsProber()
     cancel = cancel or threading.Event()
     started = _utcnow()
     ports = list(ports)
+    exclude_rules = _as_rules(exclude)
+    servers, excluded = apply_excludes(servers, exclude_rules)
 
     endpoints = {}  # type: Dict[Tuple[str, int], Endpoint]
     for server in servers:
@@ -2111,7 +2589,8 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                       new_certs=list(new_certs), endpoints=list(endpoints.values()),
                       results=results, certificates=certificates, started_at=started,
                       finished_at=_utcnow(), timeout=timeout, workers=workers,
-                      warnings=list(warnings or []))
+                      warnings=list(warnings or []),
+                      exclude=[rule.label for rule in exclude_rules], excluded=excluded)
 
 
 def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional[str],
@@ -2232,7 +2711,7 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
         'finishedAt': iso_utc(report.finished_at),
         'elapsedSeconds': round((report.finished_at - report.started_at).total_seconds(), 3),
         'options': {'ports': list(report.ports), 'timeoutSeconds': report.timeout,
-                    'workers': report.workers},
+                    'workers': report.workers, 'exclude': list(report.exclude)},
         'newCertificates': [cert.to_dict(now) for cert in report.new_certs],
         'names': [{'name': p.name, 'sni': p.sni, 'wildcard': p.wildcard} for p in report.probes],
         'summary': {
@@ -2242,11 +2721,15 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
             'serversNeedingUpdate': sum(1 for s in summaries if s.status == NEEDS_UPDATE),
             'serversUpdated': sum(1 for s in summaries if s.status == UPDATED),
             'statusCounts': report.status_counts(),
+            'excludedAddresses': report.excluded_count(),
         },
         'servers': servers,
         'endpoints': [{'ip': e.ip, 'port': e.port, 'state': e.state, 'error': e.error,
                        'connectMs': e.connect_ms} for e in report.endpoints],
         'results': [_row_dict(row, now) for row in report.results],
+        # target addresses --exclude removed before the scan (never connected to)
+        'excluded': [{'server': e.server, 'ip': e.ip, 'excludedBy': e.rule}
+                     for e in report.excluded],
         'certificates': certificates,
         'warnings': list(report.warnings),
     }
@@ -2267,7 +2750,11 @@ CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covere
 
 
 def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
-    """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`."""
+    """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`.
+
+    With ``--exclude``, one more row per excluded target address follows the results:
+    probe ``excluded``, status ``EXCLUDED``, empty port, the matching rule in ``error``.
+    """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
     writer.writerow(CSV_COLUMNS)
@@ -2283,6 +2770,11 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
             '' if data['certDaysLeft'] is None else data['certDaysLeft'],
             data['certSha256'] or '', data['tlsVersion'] or '', data['error'] or '',
         ])
+    for entry in report.excluded:
+        row = dict.fromkeys(CSV_COLUMNS, '')  # type: Dict[str, Any]
+        row.update(server=entry.server, ip=entry.ip, probe=PROBE_EXCLUDED, status=EXCLUDED,
+                   error='excluded by --exclude %s (never probed)' % entry.rule)
+        writer.writerow([row[column] for column in CSV_COLUMNS])
     return buffer.getvalue()
 
 
@@ -2460,6 +2952,20 @@ def _section(lines: List[str], title: str, summaries: Sequence[ServerSummary], s
     lines.append('')
 
 
+def _excluded_line(report: ScanReport, style: Style, limit: int = 10) -> str:
+    """``Excluded by --exclude (never probed): N address(es) - rule, rule ...``."""
+    count = report.excluded_count()
+    text = 'Excluded by --exclude (never probed): %d address%s' % (count,
+                                                                  '' if count == 1 else 'es')
+    used = list(dict.fromkeys(entry.rule for entry in report.excluded))
+    if used:
+        text += ' - ' + ', '.join(used[:limit]) + (' ...' if len(used) > limit else '')
+    elif report.exclude:
+        text += ' (no target matched %s%s)' % (', '.join(report.exclude[:limit]),
+                                               ' ...' if len(report.exclude) > limit else '')
+    return style.paint(text, 'yellow') if count else text
+
+
 def render_summary(report: ScanReport, color: bool = False, show_all: bool = False,
                    width: int = 100) -> str:
     """Human-readable report, most actionable first.
@@ -2479,6 +2985,8 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
         'ports %s, %.1fs' % (len(report.servers), len(report.endpoints), open_count,
                              len(report.probes), ','.join(str(p) for p in report.ports), elapsed)
     lines = [style.paint(header, 'bold')]
+    if report.exclude:
+        lines.append(_excluded_line(report, style))
     for cert in report.new_certs:
         lines.append('New certificate: %s | %s' % (cert_line(cert, now, style), cert_ids(cert)))
     if not has_new:
@@ -2599,6 +3107,9 @@ examples:
   A subnet and two names, no certificate (just "who hosts these?"):
     python3 ssl_origin_scan.py -t 10.0.0.0/24 -n www.example.com api.example.com
 
+  The same sweep, leaving one address and a /28 alone (never connected to):
+    python3 ssl_origin_scan.py -t 10.0.0.0/24 --exclude 10.0.0.5 10.0.0.64/28 -n www.example.com
+
   CI / cron - exit code 1 while any server still needs the new certificate:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color
 
@@ -2610,9 +3121,22 @@ targets (-t, repeatable):
     Ansible INI (web01 ansible_host=10.0.0.5, [groups]), simple Ansible YAML, JSON.
   Entries without an IP are resolved with the system resolver (IPv4 and IPv6).
   CIDRs/ranges larger than a /16 need --allow-large.
+  Numeric "hostnames" such as 2026092401, 127.1 or 0x7f.0x1 are refused (usage error
+  on the command line, skipped in files): the system resolver would read them as an
+  IPv4 address. IPv4 parts with a leading zero (010.0.0.1, octal) are refused too.
+  0.0.0.0/8, multicast and broadcast addresses are never scanned.
+
+exclude (--exclude, repeatable): addresses that must never be probed, e.g. a mail
+  server or a host you may not test inside a swept range. IPs, CIDRs (IPv4/IPv6) or
+  ranges, separated by spaces or commas, "-" for stdin, or a file with one or more
+  per line (# comments). Hostnames are refused (exit code 2). Applied after names
+  are resolved and before any connection. Reported in the summary, in the JSON
+  ("excluded", summary.excludedAddresses, options.exclude) and in the CSV (one row
+  per address, status EXCLUDED). A rule that matches no target is a warning.
 
 names (-n, repeatable): hostnames or files with names (one per line, # comments).
-  "*.example.com" probes example.com plus a synthetic name under the wildcard.
+  "*.example.com" probes example.com plus a synthetic name under the wildcard (quote
+  it on the command line, '*.example.com', so the shell does not expand the *).
   --cert FILE adds the certificate's SAN names and lets servers that already serve
   it be reported as UPDATED (compared by SHA-256 fingerprint). The private key is
   never needed; if the file contains one it is ignored.
@@ -2638,6 +3162,12 @@ output encoding: follows the reader - the console code page when piped on Window
 
 Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, örnek:
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni-sertifika.pem
+  Dokunulmaması gereken adresleri --exclude ile çıkarın: IP, CIDR ya da aralık,
+  boşlukla ayrılmış ya da satır başına bir adres içeren bir dosya. Bu adreslere
+  hiç bağlanılmaz; alan adı kabul edilmez. Örnek:
+  python3 ssl_origin_scan.py -t 10.0.0.0/24 --exclude 10.0.0.5 10.0.0.64/28 -n www.example.com
+  2026092401 ya da 0x7f.0x1 gibi sayısal "alan adları" reddedilir: sistem çözümleyicisi
+  bunları IPv4 adresi olarak okur.
 """
 
 
@@ -2650,6 +3180,9 @@ def build_parser() -> argparse.ArgumentParser:
     what.add_argument('-t', '--targets', metavar='TARGET', action='extend', nargs='+',
                       required=True,
                       help='inventory file, IP, CIDR, range, hostname or NAME=IP (repeatable)')
+    what.add_argument('--exclude', metavar='ADDR', action='extend', nargs='+', default=[],
+                      help='IP, CIDR or range that must never be probed, or a file of them '
+                           '(repeatable; hostnames are refused)')
     what.add_argument('-n', '--names', metavar='NAME', action='extend', nargs='+', default=[],
                       help='hostname(s) or a file with one name per line (repeatable)')
     what.add_argument('--cert', metavar='FILE', action='append', default=[],
@@ -2922,10 +3455,11 @@ def _run(args: argparse.Namespace) -> int:
         raise UsageError('--timeout must be > 0 and <= %d seconds' % MAX_TIMEOUT)
     if args.json == '-' and args.csv == '-':
         raise UsageError('--json - and --csv - cannot both write to stdout')
-    if list(args.targets).count('-') + list(args.names).count('-') > 1:
+    if sum(list(values).count('-') for values in (args.targets, args.names, args.exclude)) > 1:
         raise UsageError('stdin ("-") can be used only once')
     _check_output_path(args.json, '--json')
     _check_output_path(args.csv, '--csv')
+    exclude_rules = load_excludes(args.exclude)  # strict: bad input stops before any lookup
 
     all_warnings = []  # type: List[str]
     new_certs = []  # type: List[CertInfo]
@@ -2958,17 +3492,28 @@ def _run(args: argparse.Namespace) -> int:
     all_warnings.extend(target_messages)
     if not servers:
         raise UsageError('no scannable targets (no IP addresses found or resolved)')
+    kept, excluded = apply_excludes(servers, exclude_rules)
+    unused = ['--exclude %s matched no target address' % label
+              for label in unused_excludes(exclude_rules, excluded)]
+    warn_many(unused)
+    all_warnings.extend(unused)
+    if not kept:
+        raise UsageError('no scannable targets: all %d target address(es) are excluded by '
+                         '--exclude' % excluded_address_count(excluded))
 
-    ip_count = len({ip for server in servers for ip in server.ips})
+    ip_count = len({ip for server in kept for ip in server.ips})
     if not quiet:
+        skipped = (' (%d excluded address(es) left out)' % excluded_address_count(excluded)
+                   if excluded else '')
         print('Scanning %d server(s) / %d IP(s) x %d port(s) for %d name(s) with %d workers, '
-              'timeout %gs ...' % (len(servers), ip_count, len(ports), len(probes),
-                                   args.workers, args.timeout), file=err)
+              'timeout %gs%s ...' % (len(kept), ip_count, len(ports), len(probes),
+                                     args.workers, args.timeout, skipped), file=err)
     progress = ProgressPrinter(err, enabled=not quiet and _isatty(err))
     try:
+        # run_scan applies the same exclusion itself, so it is enforced where connections start.
         report = run_scan(servers, probes, ports, new_certs=new_certs, timeout=args.timeout,
                           workers=args.workers, progress=progress.update,
-                          warnings=all_warnings)
+                          warnings=all_warnings, exclude=exclude_rules)
     finally:
         progress.finish()
 

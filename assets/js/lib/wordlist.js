@@ -4,14 +4,28 @@
  * keeps only names that actually resolve and are not wildcard look-alikes, so
  * this list simply seeds lookups against domains the user already owns.
  *
- * WORDLIST_SMALL  — ~150 of the most common labels (global infra + Turkish market).
+ * WORDLIST_SMALL  — the most common labels (global infra + a compact core), no I/O.
  * WORDLIST_MEDIUM — ~1000 labels, a strict superset of SMALL (SMALL entries first).
  * Every entry is unique, lowercase, and a valid single DNS label ([a-z0-9-],
  * 1–63 chars, no leading/trailing '-').
+ *
+ * {@link loadWordlist} extends this with on-demand, self-hosted tiers built by
+ * `tools/build-wordlists.mjs` from permissively-licensed sources (SecLists,
+ * bitquark, commonspeak2, dnsgen, altdns — see `assets/data/README.md` for the
+ * exact licences): the global `smart` base (`wordlist-base.txt`, ~7k), the
+ * gzipped `large` (~50k) and `huge` (~130k) tiers, and curated per-market locale
+ * packs (`assets/data/locale/<cc>.txt`) selected from the domain's TLD. The list
+ * is a global product: examples and defaults are generic (no single customer's
+ * zone). {@link wordlistInfo} exposes build-time counts; {@link parseCustomWordlist}
+ * validates user lists; a per-browser learned store lives in `learned.js`.
  */
 
+// (no external fetch helper needed; tiers load via fetch/fs directly)
+
 // Most common labels: web/mail/DNS, remote-access + platform infra, environments,
-// apps, and Turkish-market business terms.
+// apps, and the top-ranked global labels. This core is tried on EVERY domain, so
+// it stays language-neutral: market vocabularies (Turkish, German, …) live in
+// the locale packs (assets/data/locale/<cc>.txt), selected from the TLD.
 const SMALL_WORDS = [
   // web + mail + dns
   'www', 'www2', 'web', 'mail', 'webmail', 'email', 'smtp', 'pop', 'imap', 'mx', 'mx1', 'mx2',
@@ -31,9 +45,13 @@ const SMALL_WORDS = [
   'accounts', 'my', 'user', 'users', 'client', 'clients', 'support', 'help', 'helpdesk', 'ticket',
   'search', 'chat', 'video', 'meet', 'calendar', 'analytics', 'stats', 'metrics', 'link', 'go',
   'redirect', 'test1', 'test2', 'old', 'new', 'temp', 'internal', 'external', 'public', 'private',
-  // Turkish-market business terms
-  'yonetim', 'destek', 'magaza', 'kargo', 'odeme', 'ik', 'muhasebe', 'bayi', 'b2b', 'b2c',
-  'musteri', 'siparis', 'fatura', 'basvuru', 'egitim', 'uyelik', 'kampanya', 'duyuru'
+  'b2b', 'b2c',
+  // the highest-ranked labels of the SecLists top-1M frequency list (Cloudflare-
+  // derived) not listed above, loopback `localhost` excluded — mostly the
+  // standard Microsoft 365 and cPanel records found on org domains worldwide.
+  'sip', 'pop3', 'ns4', 'lyncdiscover', 'speedtest', 'dns2', 'enterpriseenrollment',
+  'enterpriseregistration', 'dns1', 'ntp', 'mail2', 'zabbix', 'msoid', 'cpcontacts', 'css',
+  'cpcalendars'
 ];
 
 // Additional labels that, together with SMALL, make up the medium list.
@@ -115,7 +133,7 @@ const MEDIUM_EXTRA = [
   'store1', 'store2', 'shop1', 'shop2', 'shopping', 'cart', 'basket', 'order', 'orders', 'catalog',
   'catalogue', 'products', 'product', 'inventory', 'stock', 'warehouse2', 'pos', 'billing', 'invoice',
   'invoices', 'payments', 'pay1', 'pay2', 'wallet', 'checkout2', 'secure-pay', 'payment-gateway',
-  'gateway2', 'merchant', 'paypal', 'stripe', 'iyzico', 'iyzipay', 'paytr', 'sipay', 'craftgate',
+  'gateway2', 'merchant', 'paypal', 'stripe',
   'finance', 'financial', 'bank', 'banking', 'money', 'account-finance', 'ledger', 'accounting',
   'tax', 'payroll', 'expense', 'expenses', 'budget', 'treasury', 'trade', 'trading', 'exchange2',
   'market', 'markets', 'quote', 'quotes',
@@ -165,26 +183,8 @@ const MEDIUM_EXTRA = [
   'go2', 'link2', 'links', 'short', 'url', 'urls', 'r', 's', 't', 'l', 'redirect2', 'out', 'click',
   'clicks', 'ref', 'aff', 'affiliate', 'affiliates', 'partner2', 'referral', 'invite', 'share2',
   'social', 'feed', 'rss', 'atom', 'sitemap', 'robots', 'well-known', 'acme', 'validation', 'verify',
-  'verification', 'confirm', 'activate', 'activation', 'unsubscribe',
-  // Turkish-market business / sector terms (expanded)
-  'yonetici', 'yonetimpaneli', 'panelim', 'kurumsal', 'sirket', 'firma', 'insankaynaklari',
-  'insan-kaynaklari', 'personel', 'calisan', 'bordro', 'izin', 'mesai', 'vardiya', 'satis',
-  'satinalma', 'tedarik', 'tedarikci', 'stok', 'depo', 'lojistik', 'sevkiyat', 'nakliye', 'teslimat',
-  'siparisler', 'faturalar', 'efatura', 'earsiv', 'edonusum', 'gib', 'tahsilat', 'odemeler', 'kasa',
-  'banka', 'butce', 'raporlar', 'rapor', 'analiz', 'istatistik', 'musteriler', 'musterihizmetleri',
-  'cagrimerkezi', 'canlidestek', 'yardim', 'sss', 'iletisim', 'basvurular', 'talep', 'talepler',
-  'sikayet', 'geribildirim', 'anket', 'randevu', 'rezervasyon', 'basvuruformu', 'form', 'formlar',
-  'uye', 'uyeler', 'uyelik', 'kayit', 'girisyap', 'giris', 'sifre', 'sifremiunuttum', 'hesap',
-  'hesabim', 'profilim', 'ayarlar', 'bildirimler', 'mesajlar', 'sepet', 'sepetim', 'kasa2', 'kampanyalar',
-  'firsatlar', 'indirim', 'indirimler', 'urunler', 'urun', 'katalog', 'vitrin', 'magazalar', 'subeler',
-  'sube', 'bayiler', 'bayilik', 'franchise', 'toptan', 'perakende', 'pazaryeri', 'market2', 'eticaret',
-  'online', 'sanalmagaza', 'sanalpos', 'sipay2', 'tahsis', 'abonelik', 'abone', 'paketler', 'tarife',
-  'tarifeler', 'kurumsalpanel', 'bayipanel', 'bayi-panel', 'musteripanel', 'ogrenci', 'ogrenciler',
-  'akademik', 'ogretim', 'sinav', 'sinavlar', 'kurs', 'kurslar', 'sertifika', 'egitimportali',
-  'uzaktanegitim', 'obs', 'ubs', 'yos', 'kutuphane', 'arsiv', 'belge', 'belgeler', 'evrak', 'doküman',
-  'dokuman', 'dokumanlar', 'proje', 'projeler', 'ihale', 'ihaleler', 'tenders', 'saglik', 'hastane',
-  'randevusistemi', 'eczane', 'laboratuvar', 'sonuc', 'sonuclar', 'tahlil', 'belediye', 'ebelediye',
-  'vatandas', 'basvuru2', 'ruhsat', 'emlak', 'tapu', 'harita', 'ulasim', 'otobus', 'metro'
+  'verification', 'confirm', 'activate', 'activation', 'unsubscribe', 'form', 'online', 'franchise',
+  'tenders', 'metro'
 ];
 
 /** Validate + dedupe (case-folded) a list of DNS labels, preserving order. */
@@ -205,7 +205,7 @@ const SMALL = cleanLabels(SMALL_WORDS);
 const MEDIUM = cleanLabels([...SMALL_WORDS, ...MEDIUM_EXTRA]);
 
 /**
- * ~150 most common subdomain labels (global infra + Turkish market).
+ * ~150 most common subdomain labels (global, language-neutral core).
  * @type {string[]}
  */
 export const WORDLIST_SMALL = Object.freeze(SMALL);
@@ -226,4 +226,413 @@ export function getWordlist(size = 'small') {
   if (size === 'medium') return WORDLIST_MEDIUM;
   if (size === 'small') return WORDLIST_SMALL;
   return [];
+}
+
+/* ------------------------------------------------------------------------ */
+/* On-demand tiers, locale packs, custom lists (smart / large / huge)        */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Ordered discovery levels. `small` is the built-in {@link WORDLIST_SMALL}
+ * (no I/O). `smart` adds the global base list; `large` and `huge` extend it
+ * with the self-hosted gzipped tiers built by `tools/build-wordlists.mjs`.
+ * @type {readonly ['small','smart','large','huge']}
+ */
+export const WORDLIST_LEVELS = Object.freeze(['small', 'smart', 'large', 'huge']);
+
+/** Locale packs shipped in `assets/data/locale/`. */
+export const LOCALE_PACK_CODES = Object.freeze([
+  'tr', 'de', 'fr', 'es', 'pt', 'it', 'nl', 'pl', 'ru', 'ar', 'ja', 'zh'
+]);
+
+/**
+ * Embedded build-time manifest (counts / bytes / provenance) so the UI can show
+ * sizes without downloading anything. Generated by `tools/build-wordlists.mjs`
+ * (see `assets/data/wordlist-manifest.json`); `tests/js/wordlist-info.test.js`
+ * asserts these counts match the actual data files, so they stay honest.
+ */
+const MANIFEST = Object.freeze({
+  levels: {
+    small: { id: 'small', approxCount: WORDLIST_SMALL.length, bytes: 0, file: null,
+      sources: ['DomainScope curated core'], licence: 'MIT' },
+    smart: { id: 'smart', approxCount: 7000, bytes: 42399, file: 'wordlist-base.txt',
+      sources: ['DomainScope core', 'SecLists', 'bitquark/dnspop', 'commonspeak2', 'dnsgen', 'altdns'],
+      licence: 'MIT / Apache-2.0' },
+    large: { id: 'large', approxCount: 50000, bytes: 182788, file: 'wordlist-large.txt.gz',
+      sources: ['SecLists top-1M', 'bitquark top-100k', 'commonspeak2'], licence: 'MIT / Apache-2.0' },
+    huge: { id: 'huge', approxCount: 130000, bytes: 588172, file: 'wordlist-huge.txt.gz',
+      sources: ['SecLists top-1M', 'bitquark top-100k', 'commonspeak2'], licence: 'MIT / Apache-2.0' }
+  },
+  locales: {
+    tr: { approxCount: 283, bytes: 2419 }, de: { approxCount: 181, bytes: 1689 },
+    fr: { approxCount: 171, bytes: 1531 }, es: { approxCount: 180, bytes: 1615 },
+    pt: { approxCount: 169, bytes: 1494 }, it: { approxCount: 152, bytes: 1375 },
+    nl: { approxCount: 124, bytes: 1163 }, pl: { approxCount: 127, bytes: 1057 },
+    ru: { approxCount: 126, bytes: 1039 }, ar: { approxCount: 128, bytes: 940 },
+    ja: { approxCount: 83, bytes: 602 }, zh: { approxCount: 93, bytes: 698 }
+  },
+  localeLicence: 'MIT (original DomainScope curation, ASCII-folded)'
+});
+
+/**
+ * Per-level and per-locale metadata for the UI: `{ id, approxCount, bytes,
+ * sources, licence }` for each tier, plus `locales` with the same shape.
+ * Counts are build-time constants — no download required.
+ * @returns {{ levels: Record<string,object>, locales: Record<string,object> }}
+ */
+export function wordlistInfo() {
+  const locales = {};
+  for (const cc of LOCALE_PACK_CODES) {
+    const m = MANIFEST.locales[cc] || { approxCount: 0, bytes: 0 };
+    locales[cc] = { id: cc, approxCount: m.approxCount, bytes: m.bytes,
+      sources: ['DomainScope curated'], licence: MANIFEST.localeLicence };
+  }
+  return {
+    levels: {
+      small: { ...MANIFEST.levels.small },
+      smart: { ...MANIFEST.levels.smart },
+      large: { ...MANIFEST.levels.large },
+      huge: { ...MANIFEST.levels.huge }
+    },
+    locales
+  };
+}
+
+/* ---- label validation ---------------------------------------------------- */
+
+// A single DNS-host label of a data file: [a-z0-9-], 1–63, no leading/trailing '-'.
+const HOST_LABEL_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
+// A label of a custom fragment: also allows '_' (service labels); a fragment
+// may hold several dot-separated labels (e.g. `dev.api`).
+const CUSTOM_LABEL_RE = /^(?!-)[a-z0-9_-]{1,63}(?<!-)$/;
+
+/** True when every dot-separated label of `s` is a valid custom fragment (≤253). */
+function isValidFragment(s) {
+  if (!s || s.length > 253) return false;
+  const parts = s.split('.');
+  for (const p of parts) if (!CUSTOM_LABEL_RE.test(p)) return false;
+  return true;
+}
+
+/**
+ * Parse a plain-text wordlist file into validated single labels.
+ * Blank lines and `#` comments are skipped; everything is lowercased and deduped.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function parseHostLabels(text) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of String(text ?? '').split(/\r\n|\r|\n/)) {
+    const line = raw.trim().toLowerCase();
+    if (!line || line.startsWith('#')) continue;
+    if (!HOST_LABEL_RE.test(line) || seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Parse a user-supplied custom wordlist. Accepts one entry per line, or
+ * comma / whitespace separated. Entries may be bare labels (`api`) or
+ * multi-label prefixes (`dev.api`); a trailing dot is stripped. Invalid tokens
+ * are collected in `rejected`. Capped at 200 000 accepted labels.
+ * @param {string} text
+ * @returns {{ labels: string[], rejected: string[] }}
+ */
+export function parseCustomWordlist(text) {
+  const CAP = 200000;
+  const labels = [];
+  const rejected = [];
+  const seen = new Set();
+  outer: for (const rawLine of String(text ?? '').split(/\r\n|\r|\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue; // whole-line comment
+    for (const rawTok of line.split(/[\s,]+/)) {
+      if (labels.length >= CAP) break outer;
+      const tok = rawTok.trim().toLowerCase().replace(/\.+$/, '');
+      if (!tok) continue;
+      if (!isValidFragment(tok)) { rejected.push(rawTok.trim()); continue; }
+      if (seen.has(tok)) continue;
+      seen.add(tok);
+      labels.push(tok);
+    }
+  }
+  return { labels, rejected };
+}
+
+/* ---- locale selection ----------------------------------------------------- */
+
+// Country-code TLD → locale pack(s); a domain may map to several packs
+// (e.g. Switzerland → de, fr, it).
+const TLD_LOCALES = {
+  tr: ['tr'],
+  de: ['de'], at: ['de'], ch: ['de', 'fr', 'it'], li: ['de'],
+  fr: ['fr'], be: ['fr', 'nl'], lu: ['fr', 'de'], mc: ['fr'],
+  es: ['es'], mx: ['es'], ar: ['es'], co: ['es'], cl: ['es'], pe: ['es'], ve: ['es'],
+  ec: ['es'], uy: ['es'], bo: ['es'], py: ['es'], gt: ['es'], cr: ['es'], pa: ['es'],
+  do: ['es'], sv: ['es'], hn: ['es'], ni: ['es'],
+  br: ['pt'], pt: ['pt'],
+  it: ['it'], sm: ['it'],
+  nl: ['nl'],
+  pl: ['pl'],
+  ru: ['ru'], by: ['ru'], kz: ['ru'], ua: ['ru'], kg: ['ru'], uz: ['ru'],
+  sa: ['ar'], ae: ['ar'], eg: ['ar'], qa: ['ar'], kw: ['ar'], bh: ['ar'], om: ['ar'],
+  jo: ['ar'], lb: ['ar'], ma: ['ar'], dz: ['ar'], tn: ['ar'], iq: ['ar'], ly: ['ar'],
+  jp: ['ja'],
+  cn: ['zh'], tw: ['zh'], hk: ['zh'], mo: ['zh']
+};
+
+/**
+ * Locale packs implied by a domain's country-code TLD. Reads the LAST label
+ * only: under a ccSLD the ccTLD is still the last label, so `example.com.tr`
+ * maps to `tr` through `tr` (no second-level table; add one if a rule ever has
+ * to tell `.co` from `.com.co`). Returns known pack codes only.
+ * @param {string} [domain]
+ * @returns {string[]}
+ */
+export function localesForDomain(domain) {
+  if (!domain || typeof domain !== 'string') return [];
+  const parts = domain.trim().toLowerCase().replace(/\.+$/, '').split('.').filter(Boolean);
+  if (parts.length < 1) return [];
+  const tld = parts[parts.length - 1];
+  const out = [];
+  for (const cc of TLD_LOCALES[tld] || []) if (LOCALE_PACK_CODES.includes(cc) && !out.includes(cc)) out.push(cc);
+  return out;
+}
+
+/**
+ * Resolve which locale packs to load. Explicit `locales` win ([] disables);
+ * otherwise they are inferred from `domain`.
+ * @param {{ domain?: string, locales?: string[] }} opts
+ * @returns {string[]}
+ */
+function resolveLocales({ domain, locales } = {}) {
+  if (Array.isArray(locales)) return locales.filter((cc) => LOCALE_PACK_CODES.includes(cc));
+  return localesForDomain(domain);
+}
+
+/* ---- data-file loading ---------------------------------------------------- */
+
+/** Concatenate arrays keeping first-seen order, de-duplicated. */
+function dedupeOrdered(lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const item of list) {
+      if (!seen.has(item)) { seen.add(item); out.push(item); }
+    }
+  }
+  return out;
+}
+
+/** Running in Node (file:// module) vs a browser (http(s):// module). */
+const IS_NODE = typeof import.meta.url === 'string' && import.meta.url.startsWith('file:');
+
+/** Per-file cache of parsed labels (plain and gzipped files alike). */
+const fileCache = new Map();
+
+/** Is `err` a cancellation we must not swallow? */
+function isAbort(err) {
+  return !!err && typeof err === 'object' && err.name === 'AbortError';
+}
+
+/** Decode gzip bytes to text. Uses DecompressionStream in the browser, zlib in Node. */
+async function gunzipToText(bytes) {
+  if (IS_NODE) {
+    const { gunzipSync } = await import('node:zlib');
+    return Buffer.from(gunzipSync(bytes)).toString('utf8');
+  }
+  if (typeof DecompressionStream === 'function') {
+    const ds = new DecompressionStream('gzip');
+    const stream = new Response(bytes).body.pipeThrough(ds);
+    return await new Response(stream).text();
+  }
+  throw new Error('gzip decompression unavailable');
+}
+
+/**
+ * Load and parse a plain-text data file from `assets/data/`. Browser: `fetch`
+ * relative to this module; Node: `fs`. Cached. Abort errors propagate.
+ * @param {string} relPath e.g. 'wordlist-base.txt' or 'locale/tr.txt'
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal }} [opts]
+ * @returns {Promise<string[]>}
+ */
+async function loadTextFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
+  const key = `text:${relPath}`;
+  if (fileCache.has(key)) return fileCache.get(key);
+  const url = new URL(`../../data/${relPath}`, import.meta.url);
+  let text;
+  if (IS_NODE && !preferFetch) {
+    const { readFile } = await import('node:fs/promises');
+    text = await readFile(url, 'utf8');
+  } else {
+    const impl = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
+    const res = await impl(url, { signal, headers: { accept: 'text/plain' } });
+    if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
+    text = await res.text();
+  }
+  const parsed = parseHostLabels(text);
+  fileCache.set(key, parsed);
+  return parsed;
+}
+
+/**
+ * Load and parse a gzipped data file from `assets/data/`. Node reads bytes with
+ * `fs`; the browser fetches bytes and either decompresses them (gzip magic
+ * present) or, if GitHub Pages already decoded a `Content-Encoding: gzip`
+ * response, reads them as text directly. Cached. Abort errors propagate.
+ * @param {string} relPath e.g. 'wordlist-large.txt.gz'
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal }} [opts]
+ * @returns {Promise<string[]>}
+ */
+async function loadGzFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
+  const key = `gz:${relPath}`;
+  if (fileCache.has(key)) return fileCache.get(key);
+  const url = new URL(`../../data/${relPath}`, import.meta.url);
+  let text;
+  if (IS_NODE && !preferFetch) {
+    const { readFile } = await import('node:fs/promises');
+    const buf = await readFile(url);
+    text = await gunzipToText(buf);
+  } else {
+    const impl = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
+    const res = await impl(url, { signal, headers: { accept: 'application/gzip, text/plain' } });
+    if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    // 0x1f 0x8b = gzip magic. If absent, the layer below already decompressed it.
+    text = (bytes[0] === 0x1f && bytes[1] === 0x8b) ? await gunzipToText(bytes)
+      : new TextDecoder().decode(bytes);
+  }
+  const parsed = parseHostLabels(text);
+  fileCache.set(key, parsed);
+  return parsed;
+}
+
+/** Cache of the built tier lists (base/large/huge), keyed by level. */
+const tierCache = new Map();
+
+/** Load the tier list for a level (`smart`→base, `large`, `huge`). Cached. */
+async function loadTier(level, opts) {
+  if (tierCache.has(level)) return tierCache.get(level);
+  let list;
+  if (level === 'smart') list = await loadTextFile('wordlist-base.txt', opts);
+  else if (level === 'large') list = await loadGzFile('wordlist-large.txt.gz', opts);
+  else if (level === 'huge') list = await loadGzFile('wordlist-huge.txt.gz', opts);
+  else return [];
+  tierCache.set(level, list);
+  return list;
+}
+
+/** Load the selected locale packs, skipping any that fail (non-fatal). */
+async function loadLocalePacks(codes, opts, onInfo) {
+  const packs = [];
+  for (const cc of codes) {
+    try {
+      packs.push(await loadTextFile(`locale/${cc}.txt`, opts));
+    } catch (err) {
+      if (isAbort(err)) throw err;
+      if (typeof onInfo === 'function') onInfo({ type: 'locale-missing', locale: cc });
+    }
+  }
+  return packs;
+}
+
+/** Validate + normalise caller-supplied extra labels (learned / custom). */
+function cleanExtra(extra) {
+  if (!Array.isArray(extra)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of extra) {
+    const s = String(raw ?? '').trim().toLowerCase().replace(/\.+$/, '');
+    if (!s || !isValidFragment(s) || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+// Levels from largest to smallest, for graceful degradation.
+const LEVEL_ORDER = ['small', 'smart', 'large', 'huge'];
+function smallerLevel(level) {
+  const i = LEVEL_ORDER.indexOf(level);
+  return i > 0 ? LEVEL_ORDER[i - 1] : 'small';
+}
+
+/**
+ * Load a wordlist by discovery level, ordered by likelihood:
+ *   `extra` (learned / custom, first) → {@link WORDLIST_SMALL} → locale packs →
+ *   base → the larger tiers.
+ *
+ * Levels: `small` (built-in, no I/O), `smart` (base ≈7k), `large` (≈50k),
+ * `huge` (≈130k). The gzipped tiers are self-hosted and decoded with
+ * `DecompressionStream('gzip')` in the browser and `node:zlib` in Node.
+ *
+ * Locale packs are auto-selected from `domain`'s country-code TLD unless `locales`
+ * is given (`[]` disables them). On a fetch/decode failure the level degrades
+ * to the next smaller one and, if given, `onInfo({type:'degrade',requested,served})`
+ * is called; the returned array is always usable.
+ *
+ * @param {'small'|'smart'|'large'|'huge'} [level='small']
+ * @param {{ domain?: string, locales?: string[], extra?: string[],
+ *           fetchImpl?: typeof fetch, signal?: AbortSignal,
+ *           onInfo?: (info: object) => void, preferFetch?: boolean }} [opts]
+ *   `preferFetch` forces the browser fetch/decompress path even under Node
+ *   (used by tests to exercise the gzip/degrade branches with a mock fetch).
+ * @returns {Promise<string[]>} a fresh array (the caller may mutate it)
+ */
+export async function loadWordlist(level = 'small', opts = {}) {
+  const { domain, locales, extra, fetchImpl, signal, onInfo, preferFetch } = opts;
+  const io = { fetchImpl, signal, preferFetch };
+  const lvl = WORDLIST_LEVELS.includes(level) ? level : 'small';
+
+  const extraLabels = cleanExtra(extra);
+  const codes = resolveLocales({ domain, locales });
+
+  // small: built-in only (plus extra) — preserves the no-I/O contract.
+  if (lvl === 'small') {
+    return dedupeOrdered([extraLabels, WORDLIST_SMALL]);
+  }
+
+  // Locale packs apply to every level from smart up.
+  let packs = [];
+  try {
+    packs = await loadLocalePacks(codes, io, onInfo);
+  } catch (err) {
+    if (isAbort(err)) throw err;
+    packs = [];
+  }
+
+  // Tier list, degrading on failure down through smaller tiers to 'small'.
+  let tier = [];
+  let served = lvl;
+  try {
+    tier = await loadTier(lvl, io);
+  } catch (err) {
+    if (isAbort(err)) throw err;
+    served = 'small'; // worst case: only the built-in small list
+    let fallback = smallerLevel(lvl);
+    while (fallback !== 'small') {
+      try {
+        tier = await loadTier(fallback, io);
+        served = fallback;
+        break;
+      } catch (err2) {
+        if (isAbort(err2)) throw err2;
+        fallback = smallerLevel(fallback);
+      }
+    }
+    if (typeof onInfo === 'function') {
+      onInfo({ type: 'degrade', requested: lvl, served, reason: String(err && err.message || err) });
+    }
+  }
+
+  return dedupeOrdered([extraLabels, WORDLIST_SMALL, ...packs, tier]);
+}
+
+/** Drop the in-memory wordlist caches (extension, mainly for tests). */
+export function clearWordlistCache() {
+  fileCache.clear();
+  tierCache.clear();
 }

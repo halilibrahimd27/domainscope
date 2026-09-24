@@ -1,0 +1,164 @@
+{
+  "generatedBy": "tools/build-wordlists.mjs",
+  "generatedAt": "2026-09-23",
+  "note": "Counts are computed at build time; assets/js/lib/wordlist.js embeds a copy for the UI. A unit test asserts the embedded counts match these files.",
+  "licenseFile": "THIRD_PARTY_LICENSES.txt",
+  "tiers": {
+    "small": {
+      "id": "small",
+      "approxCount": 159,
+      "bytes": 0,
+      "file": null,
+      "sources": [
+        "DomainScope curated core"
+      ],
+      "licence": "MIT"
+    },
+    "smart": {
+      "id": "smart",
+      "approxCount": 7000,
+      "bytes": 42399,
+      "file": "wordlist-base.txt",
+      "sources": [
+        "DomainScope curated core",
+        "SecLists",
+        "bitquark/dnspop",
+        "commonspeak2",
+        "dnsgen",
+        "altdns"
+      ],
+      "licence": "MIT / Apache-2.0"
+    },
+    "large": {
+      "id": "large",
+      "approxCount": 50000,
+      "bytes": 182788,
+      "file": "wordlist-large.txt.gz",
+      "sources": [
+        "SecLists top-1M",
+        "bitquark top-100k",
+        "commonspeak2"
+      ],
+      "licence": "MIT / Apache-2.0"
+    },
+    "huge": {
+      "id": "huge",
+      "approxCount": 130000,
+      "bytes": 588172,
+      "file": "wordlist-huge.txt.gz",
+      "sources": [
+        "SecLists top-1M",
+        "bitquark top-100k",
+        "commonspeak2"
+      ],
+      "licence": "MIT / Apache-2.0"
+    }
+  },
+  "locales": {
+    "tr": {
+      "count": 283,
+      "bytes": 2419
+    },
+    "de": {
+      "count": 181,
+      "bytes": 1689
+    },
+    "fr": {
+      "count": 171,
+      "bytes": 1531
+    },
+    "es": {
+      "count": 180,
+      "bytes": 1615
+    },
+    "pt": {
+      "count": 169,
+      "bytes": 1494
+    },
+    "it": {
+      "count": 152,
+      "bytes": 1375
+    },
+    "nl": {
+      "count": 124,
+      "bytes": 1163
+    },
+    "pl": {
+      "count": 127,
+      "bytes": 1057
+    },
+    "ru": {
+      "count": 126,
+      "bytes": 1039
+    },
+    "ar": {
+      "count": 128,
+      "bytes": 940
+    },
+    "ja": {
+      "count": 83,
+      "bytes": 602
+    },
+    "zh": {
+      "count": 93,
+      "bytes": 698
+    }
+  },
+  "localeNote": "Original curation for DomainScope (MIT). ASCII-folded generic business / public-service / e-commerce / accounting / e-government vocabulary for the market; never sourced from any single organisation's DNS zone.",
+  "sources": [
+    {
+      "id": "seclists",
+      "project": "https://github.com/danielmiessler/SecLists",
+      "licence": "MIT",
+      "url": "https://raw.githubusercontent.com/danielmiessler/SecLists/7ee9b27880ef4a2400c4940956875721f025f76b/Discovery/DNS/subdomains-top1million-110000.txt",
+      "kind": "ranked",
+      "raw": 110000,
+      "kept": 91099
+    },
+    {
+      "id": "bitquark",
+      "project": "https://github.com/bitquark/dnspop",
+      "licence": "MIT (bitquark/dnspop, vendored in SecLists)",
+      "url": "https://raw.githubusercontent.com/danielmiessler/SecLists/7ee9b27880ef4a2400c4940956875721f025f76b/Discovery/DNS/bitquark-subdomains-top100000.txt",
+      "kind": "ranked",
+      "raw": 100000,
+      "kept": 97099
+    },
+    {
+      "id": "commonspeak2",
+      "project": "https://github.com/assetnote/commonspeak2-wordlists",
+      "licence": "Apache-2.0",
+      "url": "https://raw.githubusercontent.com/assetnote/commonspeak2-wordlists/a514ff1becb4254a4a11a14e668d9313a3a6f9ed/subdomains/subdomains.txt",
+      "kind": "ranked",
+      "raw": 484700,
+      "kept": 381310
+    },
+    {
+      "id": "dnsgen",
+      "project": "https://github.com/AlephNullSK/dnsgen",
+      "licence": "MIT",
+      "url": "https://raw.githubusercontent.com/AlephNullSK/dnsgen/7c98e7ecda2f626d49c47be9c98b234a2e4db5b7/dnsgen/words.txt",
+      "kind": "flat",
+      "raw": 362,
+      "kept": 327
+    },
+    {
+      "id": "altdns",
+      "project": "https://github.com/infosec-au/altdns",
+      "licence": "Apache-2.0",
+      "url": "https://raw.githubusercontent.com/infosec-au/altdns/6728272cbda8b8ceca4d59f4398e81df921853f2/words.txt",
+      "kind": "flat",
+      "raw": 232,
+      "kept": 221
+    },
+    {
+      "id": "services",
+      "project": "https://github.com/danielmiessler/SecLists",
+      "licence": "MIT",
+      "url": "https://raw.githubusercontent.com/danielmiessler/SecLists/7ee9b27880ef4a2400c4940956875721f025f76b/Discovery/DNS/services-names.txt",
+      "kind": "flat",
+      "raw": 1419,
+      "kept": 1418
+    }
+  ]
+}

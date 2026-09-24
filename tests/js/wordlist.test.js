@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { WORDLIST_SMALL, WORDLIST_MEDIUM, getWordlist } from '../../assets/js/lib/wordlist.js';
 
 const LABEL_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
@@ -46,11 +47,25 @@ test('includes environment, app and numbered labels', () => {
   }
 });
 
-test('includes Turkish-market names', () => {
-  const medium = new Set(WORDLIST_MEDIUM);
-  for (const w of ['yonetim', 'panel', 'destek', 'magaza', 'kargo', 'odeme', 'ik', 'muhasebe', 'bayi',
-    'portal', 'b2b']) {
-    assert.ok(medium.has(w), `missing TR label: ${w}`);
+test('includes the standard Microsoft 365 / hosting-panel records', () => {
+  const small = new Set(WORDLIST_SMALL);
+  for (const w of ['autodiscover', 'sip', 'lyncdiscover', 'enterpriseenrollment', 'enterpriseregistration',
+    'msoid', 'cpanel', 'whm', 'webdisk', 'cpcalendars', 'cpcontacts', 'b2b', 'portal', 'panel']) {
+    assert.ok(small.has(w), `missing global label: ${w}`);
+  }
+});
+
+test('the built-in core is language-neutral; market words live in the locale packs', () => {
+  // SMALL / MEDIUM are tried on every domain in the world, so they must not
+  // carry one market's vocabulary. Those words ship in assets/data/locale/<cc>.txt
+  // and are only added when the TLD (or an explicit `locales` option) asks.
+  const core = new Set(WORDLIST_MEDIUM);
+  const tr = new Set(readFileSync(new URL('../../assets/data/locale/tr.txt', import.meta.url), 'utf8')
+    .split(/\r?\n/).filter(Boolean));
+  for (const w of ['yonetim', 'destek', 'magaza', 'kargo', 'odeme', 'ik', 'muhasebe', 'bayi', 'fatura',
+    'efatura', 'earsiv', 'siparis', 'musteri', 'iyzico', 'paytr']) {
+    assert.ok(!core.has(w), `market-specific label in the global core: ${w}`);
+    assert.ok(tr.has(w), `missing from the tr locale pack: ${w}`);
   }
 });
 

@@ -3,10 +3,10 @@
  * scan.e2e.mjs — end-to-end test of the "SSL Targets" view against the LIVE services
  * (DoH resolvers, crt.sh / Anubis / HackerTarget …) in a real headless Chrome/Edge.
  *
- *   node tests/e2e/scan.e2e.mjs [--domain webtekno.com] [--sources crtsh,anubis,hackertarget]
+ *   node tests/e2e/scan.e2e.mjs [--domain npmjs.com] [--sources crtsh,anubis,hackertarget]
  *                               [--bruteforce small] [--browser chrome|edge] [--headed] [--no-shots]
  *
- * The default domain is a mid-size Turkish site behind Cloudflare. Free source quotas are
+ * The default domain is a mid-size public site behind Cloudflare. Free source quotas are
  * small (Cert Spotter ≈ 10 requests/hour, HackerTarget ≈ 50/day), so the default source list
  * leaves Cert Spotter and OTX out; pass --sources to include them.
  *
@@ -33,6 +33,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Repository root. */
@@ -41,8 +42,8 @@ export const ROOT = path.resolve(HERE, '..', '..');
 export const SHOTS = path.join(HERE, 'screenshots');
 /** Test fixtures (certificates, keys, containers). */
 export const FIXTURES = path.join(ROOT, 'tests', 'fixtures');
-/** Served under a project path, like GitHub Pages. */
-export const BASE = '/subdomain-scanner/';
+/** Served under a project path, like GitHub Pages (the live site is /domainscope/). */
+export const BASE = '/domainscope/';
 
 /* ------------------------------------------------------------------------ */
 /* Harness (shared with cert.e2e.mjs and bulk.e2e.mjs)                      */
@@ -273,6 +274,8 @@ export function csvHeader(text) {
 /* ------------------------------------------------------------------------ */
 
 const DEFAULT_SOURCES = ['crtsh', 'anubis', 'hackertarget'];
+/** Sources the app enables by default (lib/sources.js is the single source of truth). */
+const DEFAULT_ENABLED = LIB_SOURCES.filter((s) => s.defaultEnabled).length;
 
 async function nodeChecks(run) {
   const S = await import('../../assets/js/views/scan.js');
@@ -291,10 +294,14 @@ async function nodeChecks(run) {
     assertEqual(S.routeDomains(new URLSearchParams(''), {}), [], 'none');
   });
   await run.step('sanitizeOptions keeps valid values and falls back otherwise', () => {
-    assertEqual(S.sanitizeOptions({ sources: ['crtsh', 'nope', 'crtsh'], bruteforce: 'huge', includeExpired: 'yes', originHints: false }),
-      { sources: ['crtsh'], includeExpired: false, bruteforce: 'off', originHints: false }, 'sanitized');
+    const x = S.sanitizeOptions({ sources: ['crtsh', 'nope', 'crtsh'], bruteforce: 'huge', includeExpired: 'yes', originHints: false });
+    // A save from before `knownSources` keeps its unticked sources off and gains only ip.thc.org.
+    assertEqual([x.sources, x.includeExpired, x.bruteforce, x.originHints, x.permutations, x.permutationBudget],
+      [['crtsh', 'thc'], false, 'huge', false, true, 1500], 'sanitized (huge is a real level now)');
+    assertEqual(S.sanitizeOptions({ bruteforce: 'medium' }).bruteforce, 'smart', 'a saved medium level loads as smart');
+    assertEqual(S.sanitizeOptions({ bruteforce: 'nope' }).bruteforce, 'smart', 'an unknown level falls back to smart');
     const d = S.sanitizeOptions(null);
-    assert(d.sources.length === 5 && d.bruteforce === 'off' && d.originHints === true, 'defaults');
+    assert(d.sources.length === DEFAULT_ENABLED && d.bruteforce === 'smart' && d.originHints === true && d.permutations === true, 'defaults');
   });
   const host = (kind, extra = {}) => ({
     name: `${kind}.example.com`,
@@ -378,7 +385,7 @@ const runStatus = (page) => page.evaluate(() => {
 
 async function main() {
   const opts = cliOptions();
-  const DOMAIN = opts.value('--domain', 'webtekno.com');
+  const DOMAIN = opts.value('--domain', 'npmjs.com');
   const SOURCES = opts.value('--sources', DEFAULT_SOURCES.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
   const BRUTE = opts.value('--bruteforce', 'small');
   const run = createRunner();
@@ -410,14 +417,26 @@ async function main() {
       const steps = await page.evaluate(() => [...document.querySelectorAll('.scan-step')].map((s) => s.dataset.step));
       assertEqual(steps, ['cert', 'domains', 'inventory', 'options'], 'steps');
       assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no results yet');
-      assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), 5, 'all sources on by default');
+      const bf = await page.waitFor(() => {
+        const smart = document.querySelector('.scan-bf [data-level="smart"]')?.textContent || '';
+        return /\d{1,3}(,\d{3})+|\d{4,}/.test(smart) ? {
+          values: [...document.querySelectorAll('input[name="scan-bruteforce"]')].map((i) => i.value),
+          checked: document.querySelector('input[name="scan-bruteforce"]:checked').value,
+          smart,
+          perm: document.querySelector('[data-role="scan-permutations"]').checked,
+          summary: document.querySelector('.scan-runbar-summary').textContent
+        } : false;
+      }, { message: 'wordlist levels' });
+      assertEqual([bf.values, bf.checked, bf.perm], [['off', 'small', 'smart', 'large', 'huge'], 'smart', true], 'wordlist levels + permutations');
+      assert(/smart wordlist\s*·\s*permutations/.test(bf.summary), `run summary: ${bf.summary}`);
+      assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), DEFAULT_ENABLED, 'all sources on by default');
       await assertNoHorizontalScroll(page, 'setup');
       await shot(page, opts, 'scan-desktop-light-en-setup');
     });
 
     await run.step('seeds the inventory with a real direct IP of the domain (matching test)', async () => {
       direct = await findDirectIp(page, DOMAIN);
-      const text = [`# e2e inventory`, direct ? `web-origin ${direct.ip}` : null, 'web02 10.20.30.40', 'db01 10.20.30.41'].filter(Boolean).join('\n');
+      const text = [`# e2e inventory`, direct ? `web-origin ${direct.ip}` : null, 'web02 10.20.30.40', 'db01 10.20.30.50'].filter(Boolean).join('\n');
       await page.evaluate(async (tx) => (await import('./assets/js/state.js')).state.setInventory(tx), text);
       await page.waitFor(() => document.querySelector('.scan-inv-count')?.dataset.servers >= 2, { message: 'inventory step updated' });
       process.stdout.write(`        direct host: ${direct ? `${direct.name} → ${direct.ip}` : 'none found (server matching is not asserted)'}\n`);
@@ -453,6 +472,28 @@ async function main() {
       await shot(page, opts, 'scan-desktop-light-en-cert');
     });
 
+    await run.step('wordlist plan + shared vocabulary follow the certificate domain (.com.tr → Turkish pack)', async () => {
+      const info = await page.waitFor(() => {
+        const plan = document.querySelector('[data-role="scan-wl-plan"]')?.textContent || '';
+        const vocab = document.querySelector('[data-role="scan-vocab"]');
+        return /Turkish/.test(plan) && vocab && !vocab.hidden ? {
+          plan,
+          vocab: vocab.querySelector('.scan-vocab-text').textContent,
+          link: vocab.querySelector('[data-action="scan-vocab-change"]').getAttribute('href')
+        } : false;
+      }, { message: 'plan + vocabulary lines' });
+      // The fixture's *.cdn.example-test.com.tr SAN is a second wordlist base (the scanner runs the
+      // level list under cdn.example-test.com.tr too), so the plan counts 2 bases, not 1 domain.
+      assert(/^≈ [\d,]+ DNS queries for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(info.plan), `plan: ${info.plan}`);
+      // Learned names are opt-in (Subdomains › Advanced): off unless this browser switched them on.
+      assert(/^Languages \/ markets: Auto: Turkish \(\.com\.tr\) · (learned names off|no learned names yet|[\d,]+ learned names? first)$/.test(info.vocab), `vocabulary: ${info.vocab}`);
+      assertEqual(info.link, '#/subdomains', 'the vocabulary is changed in Subdomains › Advanced');
+      // Off: no plan to count, no vocabulary line.
+      await page.click('input[name="scan-bruteforce"][value="off"]');
+      assert(await page.evaluate(() => document.querySelector('[data-role="scan-vocab"]').hidden && /No names are guessed/.test(document.querySelector('[data-role="scan-wl-plan"]').textContent)), 'off hides the vocabulary');
+      await page.click('input[name="scan-bruteforce"][value="smart"]');
+    });
+
     await run.step('typing another domain offers the certificate domains again ("Use these")', async () => {
       await page.type('[data-role="scan-domains"]', DOMAIN);
       await page.waitForSelector('[data-action="use-cert-domains"]');
@@ -462,7 +503,7 @@ async function main() {
     });
 
     await run.step('Cancel stops a running scan and keeps the partial hosts', async () => {
-      await setOptions(page, { sources: [], bruteforce: 'medium' });
+      await setOptions(page, { sources: [], bruteforce: 'smart' });
       await page.type('[data-role="scan-domains"]', 'example.com');
       // Start and cancel inside the page: a warm DoH cache can finish 1,300 lookups in ~2 s.
       const seen = await page.evaluate(async () => {
@@ -497,7 +538,7 @@ async function main() {
     });
 
     await run.step('a scan keeps running on another page; the toast leads back to the results', async () => {
-      await setOptions(page, { sources: [], bruteforce: 'medium' });
+      await setOptions(page, { sources: [], bruteforce: 'small' });
       await page.type('[data-role="scan-domains"]', 'example.com');
       // Start, then leave as soon as the run exists, so it is still running when the view unmounts.
       const left = await page.evaluate(async () => {
@@ -651,6 +692,32 @@ async function main() {
       }));
       assertEqual(info.why, 'Why the real servers are hidden', 'explanation');
       assert(info.proxied >= 1, `proxied rows ${info.proxied}`);
+      const nets = await page.evaluate(() => ({
+        table: !!document.querySelector('.scan-networks-table'),
+        rows: [...document.querySelectorAll('.scan-networks-table tbody tr.dt-row')].map((tr) => tr.querySelector('td').textContent),
+        quick: document.querySelector('.scan-cli-quick code')?.textContent || null
+      }));
+      process.stdout.write(`        origin networks: ${nets.rows.join(', ') || 'none'}; quick command: ${nets.quick || '-'}\n`);
+      assert(nets.table, 'origin networks table');
+      // An IPv4 /24 is swept whole when it clusters several origins, otherwise as its exact
+      // addresses; an IPv6 /48 (which the CLI refuses) always goes in as its known addresses.
+      if (nets.rows.length) {
+        const tokens = (nets.quick || '').split(/\s+/);
+        const sweeps = (raw) => {
+          const cidr = raw.trim();
+          return tokens.includes(cidr) || tokens.some((x) => x.startsWith(cidr.replace(/0\/24$/, '')));
+        };
+        assert(nets.quick && nets.quick.startsWith('python3 ssl_origin_scan.py -t ') && nets.rows.filter((c) => !c.includes(':')).every(sweeps)
+          && !/:\S*\/48\b/.test(nets.quick), `quick sweep command: ${nets.quick}`);
+        // PowerShell variant: the same validated tokens, launched with `python`.
+        await page.click('.scan-cli-shell .seg-btn[data-value="powershell"]');
+        const ps = await page.waitFor(() => {
+          const c = document.querySelector('.scan-cli-quick code')?.textContent || '';
+          return c.startsWith('python ssl_origin_scan.py') ? c : false;
+        }, { message: 'PowerShell sweep command' });
+        assertEqual(ps.replace(/^python /, 'python3 '), nets.quick, 'same tokens in both shells');
+        await page.click('.scan-cli-shell .seg-btn[data-value="posix"]');
+      }
       assertEqual(info.command, 'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem', 'CLI command');
       assertEqual(info.cliHref, 'cli/ssl_origin_scan.py', 'CLI link');
       if (direct) assert(info.hints.includes(direct.ip), `origin hints include the non-proxied sibling ${direct.ip}: ${info.hints}`);
@@ -662,9 +729,16 @@ async function main() {
 
     await run.step('Sources tab: one row per source with status and timing', async () => {
       await page.click('.scan-tabs [data-tab="sources"]');
-      const rows = await page.evaluate(() => [...document.querySelectorAll('.scan-sources-table tbody tr.dt-row')].map((tr) => tr.textContent));
+      const rows = await page.evaluate(() => [...document.querySelectorAll('.scan-sources-table tbody tr.dt-row')].map((tr) => ({
+        status: tr.querySelector('[data-status]')?.dataset.status, text: tr.textContent
+      })));
       assertEqual(rows.length, SOURCES.length, 'source rows');
-      assert(rows.every((r) => /OK|Partial|Failed/.test(r)), 'status badges');
+      assert(rows.every((r) => ['ok', 'partial', 'failed'].includes(r.status)), `status badges: ${JSON.stringify(rows.map((r) => r.status))}`);
+      const health = await page.evaluate(() => [...document.querySelectorAll('.scan-src-health-line')].map((l) => `${l.dataset.source}/${l.dataset.health}: ${l.textContent}`));
+      for (const line of health) process.stdout.write(`        note: ${line}\n`);
+      for (const r of rows.filter((x) => x.status === 'failed')) {
+        assert(!/Rate limited: this service/.test(r.text) || /quota/i.test(r.text), `a quota failure explains when it resets: ${r.text.slice(0, 160)}`);
+      }
     });
 
     await run.step('CT certificates tab: certificates with validity status (when a CT source answered)', async () => {
@@ -673,7 +747,7 @@ async function main() {
       const info = await page.evaluate(() => ({
         rows: document.querySelectorAll('.scan-ct-table tbody tr.dt-row').length,
         match: document.querySelector('.scan-tab-ct [data-ct-match]')?.dataset.ctMatch ?? null,
-        ctOk: [...document.querySelectorAll('.scan-chip')].some((c) => ['crtsh', 'certspotter'].includes(c.dataset.source) && c.dataset.state !== 'error')
+        ctOk: [...document.querySelectorAll('.scan-chip')].some((c) => ['crtsh', 'certspotter'].includes(c.dataset.source) && ['ok', 'partial'].includes(c.dataset.state) && c.dataset.health !== 'empty')
       }));
       if (info.ctOk) assert(info.rows >= 1, `CT rows ${info.rows}`);
       if (info.rows) assertEqual(info.match, 'false', 'the private test certificate is not in CT');

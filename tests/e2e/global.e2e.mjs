@@ -11,8 +11,13 @@
  * keeping results without re-querying, desktop + phone in light/dark, no horizontal page
  * scroll, no console errors / exceptions / CSP violations and no missing i18n keys.
  *
- * Tolerated: network failures of FLAKY_HOSTS (Quad9 answers over HTTP/3 without CORS in
- * browsers — known and handled by the app, which shows the row as failed).
+ * Quad9 / Quad9 ECS (resolvers.js browserReliable:false): browsers use HTTP/3 for them and
+ * Quad9's HTTP/3 answers carry no CORS header (tests/live/browser-doh-matrix.mjs), so their rows
+ * must show the muted "Not readable in browsers" state with a dig command — never "Query failed"
+ * — and the summary must say so without counting them as failures.
+ *
+ * Tolerated: network failures of FLAKY_HOSTS (every public resolver can time out; Control D
+ * is unreachable from some networks), which the view reports in its UI.
  */
 
 import { mkdir } from 'node:fs/promises';
@@ -20,12 +25,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
-import { groupAnswers, groupLetter, median, minAnswerTtl, splitChain, GLOBAL_TYPES } from '../../assets/js/views/global.js';
+import { groupAnswers, groupLetter, median, minAnswerTtl, splitChain, isBrowserBlocked, terminalCommand, GLOBAL_TYPES } from '../../assets/js/views/global.js';
 import { RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
-const BASE = '/subdomain-scanner/';
+const BASE = '/domainscope/';
 const argv = process.argv.slice(2);
 const optValue = (name, def) => {
   const i = argv.indexOf(name);
@@ -34,8 +39,9 @@ const optValue = (name, def) => {
 const BROWSER = optValue('--browser', 'auto');
 const HEADED = argv.includes('--headed');
 const SHOTS_ON = !argv.includes('--no-shots');
-/** Third-party hosts whose request failures are expected in browsers and handled by the UI. */
-const FLAKY_HOSTS = ['dns.quad9.net', 'dns11.quad9.net'];
+/** Third-party hosts whose request failures the view reports in its UI: every public DoH
+ *  resolver can time out or, like Quad9 over HTTP/3, omit CORS headers. */
+const FLAKY_HOSTS = [...RESOLVERS.map((r) => new URL(r.url).hostname)];
 const DONE = "document.querySelector('.glb-summary .alert') && document.querySelector('.glb-summary .alert').dataset.state !== 'running'";
 
 /* ------------------------------------------------------------------------ */
@@ -153,6 +159,17 @@ function tableInfo() {
     ips: document.querySelectorAll('.glb-ips tbody tr.dt-row').length,
     state: document.querySelector('.glb-summary .alert')?.dataset.state,
     failed: document.querySelectorAll('.glb-resolvers .glb-fail').length,
+    unavailable: document.querySelectorAll('.glb-resolvers .glb-skip').length,
+    // Quad9 rows (operator "Quad9 Foundation"): answered, or muted — never an error row.
+    quad9: res.filter((tr) => tr.textContent.includes('Quad9 Foundation')).map((tr) => ({
+      state: tr.querySelector('.glb-skip') ? 'unavailable' : tr.querySelector('.glb-fail') ? 'failed' : /NOERROR/.test(tr.textContent) ? 'answered' : 'other',
+      muted: tr.classList.contains('is-unavailable'),
+      cmd: tr.querySelector('.glb-skip-cmd code')?.textContent || null,
+      label: tr.querySelector('.glb-skip .badge-text')?.textContent || null
+    })),
+    summary: document.querySelector('.glb-summary .alert')?.textContent || '',
+    answeredHint: document.querySelector('.glb-stats .stat')?.textContent || '',
+    errorChip: !!document.querySelector('.glb-legend .glb-chip[data-group="error"]'),
     cfStatus: res.find((tr) => tr.textContent.includes('Cloudflare, Inc.'))?.textContent || '',
     hash: window.location.hash
   };
@@ -187,6 +204,14 @@ async function main() {
     assertEqual(g.map((x) => x.members.length), [2, 1, 1, 1], 'members');
     assertEqual([g[2].filtered, g[3].error], [true, true], 'blocked then failed');
     assertEqual(g.slice(0, 2).map((x) => x.color), [0, 1], 'colours');
+  });
+  await step('isBrowserBlocked / terminalCommand (Quad9: HTTP/3 without CORS)', () => {
+    const q9 = RESOLVERS.find((r) => r.id === 'quad9');
+    const cf = RESOLVERS.find((r) => r.id === 'cloudflare');
+    assertEqual(isBrowserBlocked({ kind: 'resolver', resolver: q9, pending: false, values: ['ERROR'] }), true, 'quad9 transport failure');
+    assertEqual(isBrowserBlocked({ kind: 'resolver', resolver: q9, pending: false, values: ['1.2.3.4'] }), false, 'quad9 answer');
+    assertEqual(isBrowserBlocked({ kind: 'resolver', resolver: cf, pending: false, values: ['ERROR'] }), false, 'cloudflare failure');
+    assertEqual(terminalCommand('quad9', 'www.amazon.com', 'A'), 'dig @9.9.9.9 www.amazon.com A', 'dig command');
   });
 
   await mkdir(SHOTS, { recursive: true });
@@ -226,6 +251,20 @@ async function main() {
       assert(['agree', 'geo', 'differ'].includes(info.state), `summary state ${info.state}`);
       assert(/NOERROR/.test(info.cfStatus), `Cloudflare row answered NOERROR: ${info.cfStatus.slice(0, 200)}`);
       assert(info.failed <= 3, `at most the flaky resolvers failed (${info.failed})`);
+      assertEqual(info.quad9.length, 2, 'two Quad9 rows');
+      for (const q of info.quad9) {
+        assert(q.state === 'unavailable' || q.state === 'answered', `Quad9 row is answered or "not readable", never an error: ${JSON.stringify(q)}`);
+        if (q.state === 'unavailable') {
+          assert(q.muted && q.label === 'Not readable in browsers' && /^dig @9.9.9.(9|11) www.amazon.com A$/.test(q.cmd || ''), `muted row with dig command: ${JSON.stringify(q)}`);
+        }
+      }
+      if (info.unavailable) {
+        assert(/not readable from a browser/.test(info.summary) && /Quad9/.test(info.summary), `summary explains Quad9: ${info.summary.slice(0, 300)}`);
+        assert(/not readable in browsers/.test(info.answeredHint), `answered stat hint: ${info.answeredHint}`);
+        assertEqual(info.errorChip, info.failed > 0, 'an error chip only for real failures');
+      }
+      process.stdout.write(`        Quad9 rows: ${info.quad9.map((q) => q.state).join(', ')}; other failures: ${info.failed}
+`);
       const form = await page.evaluate(() => ({ name: document.querySelector('[data-role="global-name"]').value, type: document.querySelector('[data-role="global-type"]').value }));
       assertEqual(form, { name: 'www.amazon.com', type: 'A' }, 'form filled from URL');
       await assertNoHorizontalScroll(page, 'amazon');
@@ -333,6 +372,8 @@ async function main() {
       await setLangUi(page, 'tr');
       await page.waitFor(() => document.querySelector('.glb-resolvers .section-title')?.textContent === 'Genel çözümleyiciler', { message: 'TR titles' });
       const after = await page.evaluate(tableInfo);
+      for (const q of after.quad9.filter((x) => x.state === 'unavailable')) assertEqual(q.label, 'Tarayıcıda okunamıyor', 'TR label of the muted Quad9 row');
+      if (after.unavailable) assert(/tarayıcıdan okunamıyor/.test(after.summary), `TR summary explains Quad9: ${after.summary.slice(0, 300)}`);
       assertEqual(after.pending, 0, 'no pending rows after re-mount (restored, not re-queried)');
       assertEqual(after.resolvers, before.resolvers, 'resolver rows kept');
       assertEqual(after.state, before.state, 'summary state kept');

@@ -29,7 +29,8 @@ const LANG = args.includes('--tr') ? 'tr' : 'en';
 const REVERSE = args.includes('--reverse');
 const CORS = !args.includes('--no-cors');
 const domainsArg = args.filter((a) => !a.startsWith('--'));
-const DOMAINS = domainsArg.length ? domainsArg : ['github.com', 'turkcell.com.tr', 'cloudflare.com', 'dnssec-failed.org'];
+// denic.de: a ccTLD registry without RDAP in the IANA bootstrap (like .jp and .tr), so the 'unsupported' path is exercised
+const DOMAINS = domainsArg.length ? domainsArg : ['github.com', 'denic.de', 'cloudflare.com', 'dnssec-failed.org'];
 const ORIGIN = 'https://example.github.io';
 
 /** Per-domain expectations (only for the default set). */
@@ -46,8 +47,8 @@ const EXPECT = {
     ['CAA present', r.records.caa.length > 0],
     ['no errors', r.summary.error === 0]
   ],
-  'turkcell.com.tr': (r) => [
-    ['.tr → rdap.unsupported', r.checks.some((c) => c.id === 'rdap.unsupported')],
+  'denic.de': (r) => [
+    ['.de → rdap.unsupported', r.checks.some((c) => c.id === 'rdap.unsupported')],
     ['unsupportedTld flag', r.rdap?.unsupportedTld === true],
     ['SOA found', !!r.records.soa],
     ['MX found', r.records.mx.length > 0]
@@ -193,7 +194,8 @@ for (const domain of DOMAINS) {
 
 console.log('\n# IP intel');
 const intel = createIpIntel({ fetchImpl: loggingFetch, dns });
-const IPS = ['140.82.121.4', '8.8.8.8', '2606:4700::1111', '85.105.1.1', '104.16.132.229', '10.0.0.1'];
+// 193.0.6.139 = www.ripe.net (RIPE NCC's own network): a stable RIPE-region address
+const IPS = ['140.82.121.4', '8.8.8.8', '2606:4700::1111', '193.0.6.139', '104.16.132.229', '10.0.0.1'];
 const infos = await Promise.all(IPS.map((ip) => intel.info(ip)));
 for (const i of infos) {
   console.log(`   ${i.ip.padEnd(18)} AS${i.asn ?? '-'} ${i.asName ?? ''} | ${i.holder ?? '-'} | ${i.prefix ?? '-'} | ${i.country ?? '-'} ${i.city ?? ''} | PTR ${i.ptr.join(',') || '-'} | provider ${i.provider?.id ?? '-'} | ${i.sources.join('+') || (i.private ? 'private' : '-')}${i.error ? ` | ERROR ${i.error}` : ''}`);
@@ -202,7 +204,7 @@ expect('github IP → AS36459', infos[0].asn === 36459);
 expect('8.8.8.8 → AS15169 US', infos[1].asn === 15169 && infos[1].country === 'US');
 expect('8.8.8.8 PTR dns.google', infos[1].ptr.includes('dns.google'));
 expect('Cloudflare v6 → AS13335 + provider cloudflare', infos[2].asn === 13335 && infos[2].provider?.id === 'cloudflare');
-expect('Türk Telekom → AS9121 TR', infos[3].asn === 9121 && infos[3].country === 'TR');
+expect('RIPE NCC → AS3333 NL', infos[3].asn === 3333 && infos[3].country === 'NL');
 expect('private IP → no lookups', infos[5].private === true && infos[5].sources.length === 0);
 if (REVERSE) {
   const rev = await intel.reverseIp('140.82.121.4');
@@ -217,7 +219,7 @@ for (const d of ['github.com', 'bbc.co.uk', 'wikipedia.org', 'example.com.tr']) 
   if (d === 'example.com.tr') expect('.com.tr unsupportedTld', r.unsupportedTld === true);
   else expect(`${d} ok`, r.ok);
 }
-for (const ip of ['140.82.121.4', '85.105.1.1', '1.1.1.1', '200.160.2.3', '41.1.1.1', '2606:4700::1111', '2a00:1450:4001::1']) {
+for (const ip of ['140.82.121.4', '193.0.6.139', '1.1.1.1', '200.160.2.3', '41.1.1.1', '2606:4700::1111', '2a00:1450:4001::1']) {
   const r = await rdapIp(ip, { fetchImpl: loggingFetch });
   console.log(`   ${ip.padEnd(18)} ok=${r.ok} rir=${r.rir ?? '-'} name=${r.name ?? '-'} org=${r.org ?? '-'} country=${r.country ?? '-'} cidr=${r.cidr ?? '-'} server=${r.rdapServer ?? '-'}${r.error ? ` error=${r.error}` : ''}`);
   expect(`rdapIp ${ip} ok`, r.ok && !!r.cidr);

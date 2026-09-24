@@ -249,7 +249,7 @@ def('cf-any-notimp', 'cloudflare', 'cloudflare.com', 'ANY', {}, {
   sections: { answers: { types: [], min: 0 } },
   ede: [{ code: 21 }]
 });
-// ECS through Google: IPv4 vantage (Türk Telekom /24) on a geo-aware name → non-zero scope.
+// ECS through Google: IPv4 vantage (a consumer-ISP /24) on a geo-aware name → non-zero scope.
 def('gg-ecs-v4-amazon', 'google', 'www.amazon.com', 'A', { ecs: '85.105.0.0/24' }, {
   rcode: 'NOERROR', flags: HEADER_OK, question: { name: 'www.amazon.com', type: 'A' },
   chain: true,

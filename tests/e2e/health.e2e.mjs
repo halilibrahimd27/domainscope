@@ -17,12 +17,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { healthScore, trafficLight, groupChecks, parseSelectors, HEALTH_GROUPS } from '../../assets/js/views/health.js';
 import { HEALTH_I18N, HEALTH_CHECK_IDS } from '../../assets/js/lib/health.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
-const BASE = '/subdomain-scanner/';
+const BASE = '/domainscope/';
 const argv = process.argv.slice(2);
 const optValue = (name, def) => {
   const i = argv.indexOf(name);
@@ -31,7 +32,9 @@ const optValue = (name, def) => {
 const BROWSER = optValue('--browser', 'auto');
 const HEADED = argv.includes('--headed');
 const SHOTS_ON = !argv.includes('--no-shots');
-const FLAKY_HOSTS = ['dns.quad9.net', 'dns11.quad9.net'];
+// Third-party hosts whose request failures the view reports in its UI (not app errors): every
+// public DoH resolver can time out or, like Quad9 over HTTP/3, omit CORS headers.
+const FLAKY_HOSTS = [...RESOLVERS.map((r) => new URL(r.url).hostname)];
 const DONE = "!!document.querySelector('.hlt-hero') && !document.querySelector('[data-action=\"run\"]').hidden";
 
 /* ------------------------------------------------------------------------ */
@@ -245,21 +248,21 @@ async function main() {
       assert(/MTA-STS/.test(r.mail), 'email extras');
     });
 
-    await step('.com.tr domain: RDAP unsupported is explained (nic.tr), other checks still run', async () => {
-      await gotoHash(page, '#/health?domain=turkcell.com.tr', 'health');
-      await page.waitFor(() => document.querySelector('.hlt-hero-domain')?.textContent === 'turkcell.com.tr' && !document.querySelector('[data-action="run"]').hidden, { timeout: 60000 });
+    await step('.tr domain: RDAP unsupported is explained (nic.tr), other checks still run', async () => {
+      await gotoHash(page, '#/health?domain=trabis.gov.tr', 'health');
+      await page.waitFor(() => document.querySelector('.hlt-hero-domain')?.textContent === 'trabis.gov.tr' && !document.querySelector('[data-action="run"]').hidden, { timeout: 60000 });
       const r = await page.evaluate(reportInfo);
       assert(/nic\.tr/.test(r.rdap), `RDAP explanation: ${r.rdap}`);
       assert(r.checks.some((c) => c.id === 'rdap.unsupported'), 'rdap.unsupported check');
       assert(r.checks.some((c) => c.id.startsWith('ns.')), 'NS checks ran');
-      await shot(page, 'health-desktop-light-en-comtr');
+      await shot(page, 'health-desktop-light-en-tr');
     });
 
     await step('validation: IPs and garbage are rejected', async () => {
       await page.type('[data-role="health-domain"]', '8.8.8.8');
       await page.click('[data-action="run"]');
       await page.waitFor(() => !!document.querySelector('.hlt-form .field.has-error'));
-      assert((await page.evaluate(() => window.location.hash)).includes('turkcell.com.tr'), 'URL unchanged');
+      assert((await page.evaluate(() => window.location.hash)).includes('trabis.gov.tr'), 'URL unchanged');
     });
 
     await page.emulateMedia({ 'prefers-color-scheme': 'dark' });

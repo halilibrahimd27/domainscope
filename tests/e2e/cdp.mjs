@@ -14,10 +14,14 @@
  *
  * Browser selection: `browser: 'chrome'|'edge'|'auto'` or `executablePath`, or the CHROME_PATH /
  * BROWSER_PATH environment variables.
+ *
+ * Cleanup: every launched browser is registered; when the suite process exits — normally, on an
+ * uncaught error, or on SIGINT / SIGTERM / SIGHUP (e.g. run-all's --timeout-min) — the browser is
+ * killed and its profile removed, even if the suite never reached `browser.close()`.
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +66,108 @@ export function findBrowser(preference = 'auto') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let profileCounter = 0;
+
+/* ------------------------------------------------------------------------ */
+/* Launched-browser registry: no orphaned browsers when a suite is killed   */
+/* ------------------------------------------------------------------------ */
+
+/** Browsers launched by this process that are not closed yet: ChildProcess → profile dir. */
+const LIVE_BROWSERS = new Map();
+let exitHooksInstalled = false;
+
+/**
+ * Kill every browser this process launched and still owns, and delete their profiles.
+ * Synchronous, so it is safe inside a process 'exit' handler.
+ * @returns {number} how many browsers were registered
+ */
+export function killLaunchedBrowsers() {
+  const n = LIVE_BROWSERS.size;
+  for (const [proc, profileDir] of LIVE_BROWSERS) {
+    try {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+    } catch {
+      // already gone
+    }
+    try {
+      rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // still locked (Windows); run-all.mjs sweeps leftover .profile-<pid>-* folders
+    }
+  }
+  LIVE_BROWSERS.clear();
+  return n;
+}
+
+/**
+ * Register a launched browser for cleanup at process exit. Installs the exit / signal hooks once:
+ * Node skips 'exit' handlers on an unhandled signal, so each signal handler kills the browsers and
+ * then exits with the conventional 128+n code.
+ * @param {import('node:child_process').ChildProcess} proc
+ * @param {string} profileDir
+ */
+export function registerBrowserProcess(proc, profileDir) {
+  LIVE_BROWSERS.set(proc, profileDir);
+  if (exitHooksInstalled) return;
+  exitHooksInstalled = true;
+  process.once('exit', killLaunchedBrowsers);
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
+    process.once(signal, () => {
+      killLaunchedBrowsers();
+      process.exit(code);
+    });
+  }
+}
+
+/** Forget a browser that was closed properly. */
+function unregisterBrowserProcess(proc) {
+  LIVE_BROWSERS.delete(proc);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Which resolver failures may an E2E suite tolerate?                        */
+/* ------------------------------------------------------------------------ */
+
+/** Chrome net errors that depend on the network the test runs from, not on the app. */
+const NETWORK_ERROR_RE = /net::ERR_(?:TIMED_OUT|CONNECTION_[A-Z_]+|QUIC_[A-Z_]+|HTTP2_[A-Z_]+|NETWORK_CHANGED|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|ADDRESS_UNREACHABLE|EMPTY_RESPONSE|SSL_PROTOCOL_ERROR)\b/;
+/** A resolver that answered but refused us: an app bug (URL, method, headers) until proven otherwise. */
+const STATUS_OR_CORS_RE = /CORS policy|status of [45]\d\d|net::ERR_FAILED\b/i;
+
+/**
+ * Build a classifier for console / log problems that mention a public DoH resolver, shared by the
+ * E2E suites so their tolerance stays consistent:
+ * - resolvers outside `defaultChain`, or flagged `browserReliable: false`, are fully tolerated
+ *   (they are optional, and some are unreadable in browsers by design);
+ * - for DEFAULT-CHAIN resolvers only network-level failures are tolerated, at most
+ *   `maxNetworkErrorsPerHost` per host; an HTTP status error or a CORS block is always an issue,
+ *   because failover would otherwise hide a request the app builds wrongly for one resolver;
+ * - `net::ERR_ABORTED` (the client cancelled: timeout, hedged request) is tolerated.
+ * @param {{ resolvers: ReadonlyArray<{ id: string, url: string, browserReliable?: boolean }>,
+ *   defaultChain: ReadonlyArray<string>, maxNetworkErrorsPerHost?: number }} opts
+ * @returns {(text: string) => null | { host: string, tolerated: boolean, reason: string }}
+ *   null when the text names none of the resolvers (not this classifier's business)
+ */
+export function resolverProblemFilter({ resolvers, defaultChain, maxNetworkErrorsPerHost = 2 }) {
+  const chain = new Set(defaultChain);
+  const hosts = resolvers.map((r) => ({ host: new URL(r.url).hostname, strict: chain.has(r.id) && r.browserReliable !== false }));
+  const networkErrors = new Map();
+  return (text) => {
+    const s = String(text || '');
+    const hit = hosts.find(({ host }) => s.includes(`//${host}/`) || s.includes(`//${host}:`) || s.includes(`//${host}?`));
+    if (!hit) return null;
+    const { host } = hit;
+    if (!hit.strict) return { host, tolerated: true, reason: 'optional resolver (not in the default chain, or not browser-readable)' };
+    if (STATUS_OR_CORS_RE.test(s)) return { host, tolerated: false, reason: 'default-chain resolver refused the request (HTTP status / CORS)' };
+    if (/net::ERR_ABORTED\b/.test(s)) return { host, tolerated: true, reason: 'request cancelled by the client' };
+    if (NETWORK_ERROR_RE.test(s)) {
+      const n = (networkErrors.get(host) || 0) + 1;
+      networkErrors.set(host, n);
+      return n <= maxNetworkErrorsPerHost
+        ? { host, tolerated: true, reason: `network failure ${n}/${maxNetworkErrorsPerHost}` }
+        : { host, tolerated: false, reason: `more than ${maxNetworkErrorsPerHost} network failures from a default-chain resolver` };
+    }
+    return { host, tolerated: false, reason: 'unexpected failure from a default-chain resolver' };
+  };
+}
 
 /** JSON-RPC over the browser WebSocket (flat sessions). */
 class Connection {
@@ -479,6 +585,7 @@ export class Browser {
       // already gone
     }
     this.conn.close();
+    unregisterBrowserProcess(this.proc);
     const exited = await Promise.race([
       new Promise((r) => {
         if (this.proc.exitCode !== null) r(true);
@@ -536,6 +643,7 @@ export async function launchBrowser({
     'about:blank'
   ].filter(Boolean);
   const proc = spawn(found.path, flags, { stdio: ['ignore', 'ignore', 'pipe'] });
+  registerBrowserProcess(proc, profileDir);
   let stderr = '';
   proc.stderr.on('data', (d) => {
     stderr = (stderr + d.toString()).slice(-4000);

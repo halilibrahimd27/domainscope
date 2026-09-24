@@ -17,13 +17,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import {
   parseTypes, parseLookupName, soaSerialDate, rrsigStatus, txtKinds, digLine, responseText, TYPE_PRESETS
 } from '../../assets/js/views/lookup.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
-const BASE = '/subdomain-scanner/';
+const BASE = '/domainscope/';
 const argv = process.argv.slice(2);
 const optValue = (name, def) => {
   const i = argv.indexOf(name);
@@ -32,8 +33,9 @@ const optValue = (name, def) => {
 const BROWSER = optValue('--browser', 'auto');
 const HEADED = argv.includes('--headed');
 const SHOTS_ON = !argv.includes('--no-shots');
-/** Third-party hosts whose request failures are expected in browsers and handled by failover. */
-const FLAKY_HOSTS = ['dns.quad9.net', 'dns11.quad9.net'];
+/** Third-party hosts whose request failures the view reports in its UI: every public DoH
+ *  resolver can time out or, like Quad9 over HTTP/3, omit CORS headers. */
+const FLAKY_HOSTS = [...RESOLVERS.map((r) => new URL(r.url).hostname)];
 const ALL_DONE = "document.querySelectorAll('.lkp-card').length > 0 && document.querySelectorAll('.lkp-card[data-state=\"pending\"]').length === 0";
 
 /* ------------------------------------------------------------------------ */
@@ -161,6 +163,8 @@ async function main() {
     assertEqual(parseTypes('a, mx TYPE65 bogus 28 axfr opt'), { types: ['A', 'MX', 'HTTPS', 'AAAA'], invalid: ['bogus', 'axfr', 'opt'] }, 'mixed');
     assertEqual(parseTypes(['A,AAAA', 'MX', 'a']), { types: ['A', 'AAAA', 'MX'], invalid: [] }, 'array + dedupe');
     assertEqual(parseTypes(''), { types: [], invalid: [] }, 'empty');
+    assertEqual(parseTypes('ALL').types, [...TYPE_PRESETS.common], 'ALL = "All common" preset');
+    assertEqual(parseTypes('mx,dnssec').types, ['MX', 'DS', 'DNSKEY', 'SOA'], 'preset names expand in place');
     assertEqual(TYPE_PRESETS.common, ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS'], 'common preset');
   });
   await step('parseLookupName: IP → PTR name, URL/IDN hosts, TLDs, root, garbage', () => {

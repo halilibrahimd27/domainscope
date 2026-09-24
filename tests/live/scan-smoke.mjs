@@ -4,12 +4,12 @@
  * scanner.js + propagation.js + export.js against real services.
  * Not run by `npm test`.
  *
- *   node tests/live/scan-smoke.mjs                      # default domain (webtekno.com, Cloudflare-proxied)
- *   node tests/live/scan-smoke.mjs example.com.tr --bruteforce small --inventory servers.txt --cert new.pem
- *   node tests/live/scan-smoke.mjs example.com --sources crtsh,anubis --no-hints --json out.json --csv hosts.csv
+ *   node tests/live/scan-smoke.mjs                      # first of targets.local.json, else cloudflare.com (always Cloudflare-fronted)
+ *   node tests/live/scan-smoke.mjs example.com --bruteforce small --inventory servers.txt --cert new.pem
+ *   node tests/live/scan-smoke.mjs example.com --sources crtsh,anubis --no-hints --json tests/live/private/scan.json --csv tests/live/private/hosts.csv
  *
  * Options:
- *   --bruteforce off|small|medium   (default small)
+ *   --bruteforce off|small|smart|large   (default small: keeps the load on third parties low)
  *   --sources a,b,c                 (default: every defaultEnabled source)
  *   --chain a,b,c                   DoH failover chain (default DEFAULT_CHAIN)
  *   --inventory FILE                server inventory (any format parseInventory accepts)
@@ -17,7 +17,10 @@
  *   --no-hints                      skip origin hints
  *   --no-global                     skip the Global DNS (propagation) checks
  *   --geo-name NAME                 name for the ECS geo check (default www.amazon.com)
- *   --json FILE / --csv FILE        write the scan as JSON / the host table as CSV
+ *   --vantage ID                    GEO_VANTAGES id whose subnet the ECS check sends (default us-east)
+ *   --json FILE / --csv FILE        write the scan as JSON / the host table as CSV (hosts, IPs and origin
+ *                                   hints: inside the repository only a gitignored path is accepted,
+ *                                   e.g. tests/live/private/…; see targets.mjs reportPath)
  *   --browser                       instead: run a small scan INSIDE headless Chrome/Edge (page served on
  *                                   http://127.0.0.1 with the production CSP) to prove the libraries work
  *                                   with real browser CORS / CSP (CHROME env var overrides the browser path)
@@ -33,7 +36,7 @@ import http2 from 'node:http2';
 import http from 'node:http';
 import tls from 'node:tls';
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,10 +44,11 @@ import { DohClient } from '../../assets/js/lib/doh.js';
 import { runScan } from '../../assets/js/lib/scanner.js';
 import { checkPropagation } from '../../assets/js/lib/propagation.js';
 import { toCsv, toJson, scanHostRows, HOST_COLUMNS, namesForCli, targetsForCli, cliCommand } from '../../assets/js/lib/export.js';
-import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
+import { RESOLVERS, DEFAULT_CHAIN, getVantage } from '../../assets/js/lib/resolvers.js';
 import { SOURCES } from '../../assets/js/lib/sources.js';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
+import { pickDomains, positionalArgs, reportPathOrExit, writeReport } from './targets.mjs';
 
 /* ------------------------------------------------------------------------ */
 /* Arguments                                                                */
@@ -56,9 +60,11 @@ const option = (name, fallback = null) => {
   const i = argv.indexOf(name);
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
 };
-const optionNames = new Set(['--bruteforce', '--sources', '--chain', '--inventory', '--cert', '--json', '--csv', '--geo-name']);
-const positional = argv.filter((a, i) => !a.startsWith('--') && !optionNames.has(argv[i - 1]));
-const DOMAIN = positional[0] || 'webtekno.com';
+const optionNames = new Set(['--bruteforce', '--sources', '--chain', '--inventory', '--cert', '--json', '--csv', '--geo-name', '--vantage']);
+const DOMAIN = pickDomains(positionalArgs(argv, optionNames), ['cloudflare.com'])[0];
+const JSON_OUT = reportPathOrExit(option('--json'));
+const CSV_OUT = reportPathOrExit(option('--csv'));
+const VANTAGE = getVantage(option('--vantage', 'us-east')) || getVantage('us-east');
 const BRUTEFORCE = option('--bruteforce', 'small');
 const SOURCE_IDS = option('--sources') ? option('--sources').split(',') : SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
 const CHAIN = option('--chain') ? option('--chain').split(',') : [...DEFAULT_CHAIN];
@@ -180,8 +186,9 @@ async function main() {
     console.log(`   ${pad(r.id, 18)} ${res.ok ? `${pad(res.rcode, 9)} ${pad(`${res.elapsedMs} ms`, 8)} AD=${res.ad ? 1 : 0} nsid=${pad(res.nsid || '-', 16)} ${answers}` : `FAILED ${res.errorKind}: ${res.error}`}`);
     if (!res.ok && CHAIN.includes(r.id)) failures += 1;
   }
-  const ecs = await dns.query('www.amazon.com', 'A', { resolver: 'google', ecs: '78.181.32.0/24', noCache: true });
-  log(`ECS via google (TR vantage): scope /${ecs.ecs ? ecs.ecs.scopePrefix : '?'} → ${ecs.answers.filter((x) => x.type === 'A').map((x) => x.data).join(' ')}`);
+  const geoName = option('--geo-name', 'www.amazon.com');
+  const ecs = await dns.query(geoName, 'A', { resolver: 'google', ecs: VANTAGE.subnet, noCache: true });
+  log(`ECS via google (${VANTAGE.id} vantage, ${geoName}): scope /${ecs.ecs ? ecs.ecs.scopePrefix : '?'} → ${ecs.answers.filter((x) => x.type === 'A').map((x) => x.data).join(' ')}`);
 
   // 2. Full scan.
   const inventory = option('--inventory') ? parseInventory(readFileSync(option('--inventory'), 'utf8')) : { servers: [] };
@@ -246,8 +253,8 @@ async function main() {
   JSON.parse(json);
   console.log(`\nExports: CSV ${csv.split('\r\n').length - 2} rows / ${csv.length} chars, JSON ${json.length} chars (re-parsed OK), names.txt ${namesForCli(scan).split('\n').length - 1} names, targets.txt ${targetsForCli([...scan.servers, ...scan.originHints, ...scan.unmatchedIps]).split('\n').length - 1} lines`);
   console.log(`CLI: ${cliCommand({ certFile: cert ? 'new-cert.pem' : null })}`);
-  if (option('--json')) writeFileSync(option('--json'), json);
-  if (option('--csv')) writeFileSync(option('--csv'), csv);
+  if (JSON_OUT) writeReport(JSON_OUT, json);
+  if (CSV_OUT) writeReport(CSV_OUT, csv);
 
   // 5. Global DNS for www.<domain>.
   if (!flag('--no-global')) {
@@ -286,7 +293,7 @@ async function main() {
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
 // Same policy as index.html (spec §1).
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
 
 function findBrowser() {
   const candidates = [

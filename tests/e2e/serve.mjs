@@ -3,11 +3,11 @@
  * serve.mjs — tiny dependency-free static file server (local preview + E2E tests).
  *
  * CLI:  node tests/e2e/serve.mjs [port=8080] [--host 127.0.0.1] [--root <dir>] [--base /prefix/] [--quiet]
- *   --base serves the site under a path prefix, e.g. `--base /subdomain-scanner/` to mimic a
+ *   --base serves the site under a path prefix, e.g. `--base /domainscope/` to mimic the
  *   GitHub Pages project site (catches absolute asset URLs that would break there).
  *
- * API:  const srv = await startServer({ port: 0, base: '/subdomain-scanner/' });
- *       srv.url  // 'http://127.0.0.1:53211/subdomain-scanner/'
+ * API:  const srv = await startServer({ port: 0, base: '/domainscope/' });
+ *       srv.url  // 'http://127.0.0.1:53211/domainscope/'
  *       await srv.close();
  *
  * Security: binds to 127.0.0.1 by default, GET/HEAD only, refuses path traversal and

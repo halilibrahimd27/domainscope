@@ -4,7 +4,7 @@
  *
  *   node tests/e2e/shell.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Serves the repo under /subdomain-scanner/ (like a GitHub Pages project site), then on a
+ * Serves the repo under /domainscope/ (like the GitHub Pages project site), then on a
  * desktop (1440×900) and a phone (390×844) viewport:
  *   - opens every route in light and dark, in English and Turkish, checks the title, that the
  *     page never scrolls horizontally, and saves full-page screenshots to tests/e2e/screenshots/
@@ -25,11 +25,12 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { t as translate, setLang as setNodeLang } from '../../assets/js/i18n.js';
+import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
-const BASE = '/subdomain-scanner/';
-const ROUTES = ['scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const BASE = '/domainscope/';
+const ROUTES = ['subdomains', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);
@@ -45,7 +46,7 @@ const SAMPLE_INVENTORY = [
   '# e2e inventory',
   'web01 10.0.1.11',
   'web02 10.0.1.12 2001:db8::12',
-  'lb-istanbul 185.60.10.5',
+  'lb-edge 198.51.100.5',
   'db01 10.0.2.20',
   'web03 10.0.1.300',
   'cache01'
@@ -194,7 +195,7 @@ async function buildGallery() {
   const kindNames = ['cloudflare', 'cdn', 'platform', 'direct', 'private', 'nxdomain'];
   for (let i = 1; i <= 450; i += 1) {
     rows.push({
-      name: `web-${i}.example.com.tr`,
+      name: `web-${i}.example.com`,
       ip: `10.${Math.floor(i / 250)}.${i % 250}.${(i * 7) % 250}`,
       kind: kindNames[i % kindNames.length],
       ttl: (i * 37) % 3600,
@@ -266,9 +267,9 @@ async function buildGallery() {
       h('div', { class: 'stack' },
         C.Card({ title: 'Progress', icon: 'activity', children: h('div', { class: 'stack' }, progress, indet, C.Spinner({ showLabel: true })) }),
         C.Card({
-          title: 'Certificate', subtitle: '*.example.com.tr', icon: 'shield',
+          title: 'Certificate', subtitle: '*.example.com', icon: 'shield',
           children: C.KeyValueList([
-            ['Subject', 'CN=*.example.com.tr, O=Örnek A.Ş., C=TR'],
+            ['Subject', 'CN=*.example.com, O=Exämple Ltd., C=US'],
             { key: 'SHA-256', value: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89', mono: true, copy: true },
             ['Valid until', '2027-01-15 (478 days left)'],
             ['Empty', null]
@@ -279,7 +280,7 @@ async function buildGallery() {
       C.Card({
         title: 'Fields', icon: 'sliders',
         children: h('div', { class: 'stack' },
-          C.textInput({ label: 'Domain', placeholder: 'example.com.tr', hint: 'Apex or subdomain', value: 'örnek.com.tr' }),
+          C.textInput({ label: 'Domain', placeholder: 'example.com', hint: 'Apex or subdomain', value: 'bücher.example' }),
           C.select({ label: 'Record type', options: ['A', 'AAAA', 'CNAME', { label: 'Mail', options: ['MX', 'TXT'] }], value: 'MX' }),
           C.checkbox({ label: 'Include expired certificates', hint: 'crt.sh returns more names but slower', checked: true }),
           C.checkbox({ label: 'DNSSEC (DO bit)', switch: true, checked: true }),
@@ -317,11 +318,11 @@ async function main() {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
-    await step('boots at the site root and shows the default view (scan)', async () => {
+    await step('boots at the site root and shows the default view (subdomains)', async () => {
       await page.goto(server.url);
       await waitReady(page);
-      assertEqual(await page.evaluate(() => document.documentElement.dataset.view), 'scan', 'default view');
-      assertEqual(await page.evaluate(() => document.querySelector('h1').textContent), title('scan', 'en'), 'h1');
+      assertEqual(await page.evaluate(() => document.documentElement.dataset.view), 'subdomains', 'default view');
+      assertEqual(await page.evaluate(() => document.querySelector('h1').textContent), title('subdomains', 'en'), 'h1');
       assertEqual(await page.evaluate(() => document.querySelectorAll('.nav-link').length), ROUTES.length, 'nav links');
       assertEqual(await page.evaluate(() => document.documentElement.lang), 'en', 'html lang');
     });
@@ -341,10 +342,10 @@ async function main() {
     }
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
-    await step('router: unknown view → scan (URL rewritten), anchors keep the view', async () => {
+    await step('router: unknown view → subdomains (URL rewritten), anchors keep the view', async () => {
       await gotoRoute(page, 'about');
       await page.evaluate(() => { window.location.hash = '#/definitely-not-a-view'; });
-      await page.waitFor(() => document.documentElement.dataset.view === 'scan' && window.location.hash === '#/scan');
+      await page.waitFor(() => document.documentElement.dataset.view === 'subdomains' && window.location.hash === '#/subdomains');
       await gotoRoute(page, 'about');
       await page.evaluate(() => { window.location.hash = '#main'; });
       await new Promise((r) => setTimeout(r, 200));
@@ -396,19 +397,43 @@ async function main() {
     });
 
     await step('settings dialog: reorder/toggle resolvers, restore defaults, Esc closes', async () => {
+      // Expectations are derived from DEFAULT_CHAIN so they follow any change of the default.
+      assert(DEFAULT_CHAIN.length >= 3, `DEFAULT_CHAIN needs 3+ resolvers for this step: ${DEFAULT_CHAIN}`);
+      const waitChain = (want, message) => page.waitFor((w) => JSON.parse(localStorage.getItem('ssds.settings') || '{}').chain?.join(',') === w,
+        { args: [want], message });
+      const toggled = DEFAULT_CHAIN[1];
+      const afterToggle = DEFAULT_CHAIN.filter((id) => id !== toggled);
+      const moved = afterToggle[afterToggle.length - 1];
+      const afterMove = afterToggle.slice();
+      [afterMove[afterMove.length - 2], afterMove[afterMove.length - 1]] = [moved, afterMove[afterMove.length - 2]];
+
       await page.click('[data-control="settings"]');
-      await page.waitForSelector('dialog.modal[open] .settings-resolvers');
-      await shot(page, 'desktop-light-en-settings');
-      await page.click('dialog.modal[open] [data-resolver="google"] input[type="checkbox"]');
-      await page.waitFor(() => !JSON.parse(localStorage.getItem('ssds.settings')).chain.includes('google'));
-      await page.click('dialog.modal[open] [data-resolver="dnssb"] .btn-icon');
-      await page.waitFor(() => JSON.parse(localStorage.getItem('ssds.settings')).chain.join(',') === 'cloudflare,dnssb,quad9');
-      const status = await page.evaluate(() => document.querySelector('[data-status="doh"]').textContent);
-      assert(status.includes('Cloudflare') && status.indexOf('DNS.SB') < status.indexOf('Quad9'), `nav DoH status reflects order: ${status}`);
-      await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] .modal-foot button')][0].click());
-      await page.waitFor(() => JSON.parse(localStorage.getItem('ssds.settings')).chain.join(',') === 'cloudflare,google,quad9,dnssb');
-      await page.press('Escape');
-      await page.waitFor(() => !document.querySelector('dialog.modal'));
+      try {
+        await page.waitForSelector('dialog.modal[open] .settings-resolvers');
+        await shot(page, 'desktop-light-en-settings');
+        // The dialog lists the active chain first, in order, and explains the resolvers browsers cannot use.
+        const listed = await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] .settings-resolver.is-active')].map((li) => li.dataset.resolver));
+        assertEqual(listed, [...DEFAULT_CHAIN], 'active resolvers in dialog');
+        const notes = await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] [data-note]')].map((n) => n.dataset.note));
+        assert(notes.includes('quad9') && notes.includes('controld'), `resolver notes in the dialog: ${notes}`);
+
+        await page.click(`dialog.modal[open] [data-resolver="${toggled}"] input[type="checkbox"]`);
+        await waitChain(afterToggle.join(','), `chain without ${toggled}`);
+        await page.click(`dialog.modal[open] [data-resolver="${moved}"] .btn-icon`); // first icon button = move up
+        await waitChain(afterMove.join(','), `chain after moving ${moved} up`);
+        setNodeLang('en');
+        const wantStatus = translate('shell.dohStatus', { chain: afterMove.map((id) => getResolver(id).name).join(' → ') });
+        const status = await page.evaluate(() => document.querySelector('[data-status="doh"]').textContent);
+        assertEqual(status, wantStatus, 'nav DoH status reflects the new order');
+        await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] .modal-foot button')][0].click());
+        await waitChain(DEFAULT_CHAIN.join(','), 'restore defaults → DEFAULT_CHAIN');
+        await page.press('Escape');
+        await page.waitFor(() => !document.querySelector('dialog.modal'), { message: 'dialog closed' });
+      } finally {
+        // Never leave a modal open on failure: it would make the rest of the page inert and
+        // turn one failed assertion into a cascade of unrelated failures in the next steps.
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
     });
 
     await step('getDns() lazily creates a shared DohClient from settings', async () => {
@@ -449,7 +474,7 @@ async function main() {
     });
 
     await step('Servers: search filters the table; examples tabs are keyboard accessible', async () => {
-      await page.type('.inv-results .dt-search-input', 'istanbul');
+      await page.type('.inv-results .dt-search-input', 'lb-edge');
       await page.waitFor(() => document.querySelectorAll('.inv-results .dt-table tbody tr').length === 1);
       await page.type('.inv-results .dt-search-input', '');
       await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr').length === n, { args: [expectedSample.servers.length] });
@@ -520,7 +545,7 @@ async function main() {
       await page.click('#gallery th[data-key="name"] .dt-sort');
       await page.click('#gallery th[data-key="name"] .dt-sort');
       assertEqual(await page.evaluate(() => document.querySelector('#gallery th[data-key="name"]').getAttribute('aria-sort')), 'descending', 'aria-sort');
-      assertEqual(await page.evaluate(() => document.querySelector('#gallery .dt-table tbody tr.dt-row td:nth-child(2)').textContent), 'web-450.example.com.tr', 'natural desc sort');
+      assertEqual(await page.evaluate(() => document.querySelector('#gallery .dt-table tbody tr.dt-row td:nth-child(2)').textContent), 'web-450.example.com', 'natural desc sort');
       await page.type('#gallery .dt-search-input', 'web-12');
       await page.waitFor(() => document.querySelectorAll('#gallery .dt-table tbody tr.dt-row').length === 11);
       await page.type('#gallery .dt-search-input', '');
@@ -559,6 +584,80 @@ async function main() {
       await dismissToasts(page);
       await page.evaluate(() => window.__tabs.select('servers'));
       assertEqual(await page.evaluate(() => window.__tabs.getSelected()), 'servers', 'tabs.select');
+    });
+
+    await step('Settings › Delete all local data also forgets the learned names and this tab\'s custom wordlist', async () => {
+      await dismissToasts(page);
+      // Seed the per-browser vocabulary the way the Subdomains view keeps it.
+      await page.evaluate(() => {
+        localStorage.setItem('ssds.learned.labels', JSON.stringify({ v: 1, seq: 2, labels: { api: [2, 1], vpn: [1, 2] } }));
+        sessionStorage.setItem('ssds.wordlist.custom', 'portal\nbilling');
+        sessionStorage.setItem('other.key', 'keep');
+      });
+      await page.reload();
+      await waitReady(page);
+      await gotoRoute(page, 'subdomains');
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = true; });
+      const before = await page.evaluate(() => ({
+        learned: document.querySelector('.sub-learned .check-text').textContent,
+        custom: document.querySelector('[data-role="sub-custom"]').value
+      }));
+      assert(/\(2\)$/.test(before.learned) && before.custom === 'portal\nbilling', `seeded: ${JSON.stringify(before)}`);
+      await page.click('[data-control="settings"]');
+      try {
+        await page.waitForSelector('dialog.modal[open] .settings-danger');
+        const hint = await page.evaluate(() => document.querySelector('dialog.modal[open] .settings-danger .field-hint').textContent);
+        assert(/learned subdomain names and the custom wordlist/.test(hint), `the hint says what is deleted: ${hint}`);
+        await page.click('dialog.modal[open] .settings-danger .btn-danger');
+        await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
+        await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
+        await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
+      } finally {
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+      const after = await page.waitFor(() => {
+        const label = document.querySelector('.sub-learned .check-text').textContent;
+        return /none yet/.test(label) ? {
+          label,
+          custom: document.querySelector('[data-role="sub-custom"]').value,
+          status: document.querySelector('.sub-custom-status').textContent,
+          learnedKey: localStorage.getItem('ssds.learned.labels'),
+          customKey: sessionStorage.getItem('ssds.wordlist.custom'),
+          other: sessionStorage.getItem('other.key')
+        } : false;
+      }, { message: 'view refreshed after the delete' });
+      assertEqual([after.custom, after.status, after.learnedKey, after.customKey, after.other], ['', 'No custom names.', null, null, 'keep'],
+        'learned names + custom wordlist gone; other session keys kept');
+      await page.evaluate(() => sessionStorage.removeItem('other.key'));
+      // Settings were reset too: back to English for the remaining steps.
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
+    });
+
+    await step('About › Delete all local data also drops the custom wordlist while Subdomains is not mounted', async () => {
+      await dismissToasts(page);
+      await gotoRoute(page, 'subdomains');
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = true; });
+      await page.type('[data-role="sub-custom"]', 'portal, billing');
+      await page.waitFor(() => sessionStorage.getItem('ssds.wordlist.custom') === 'portal, billing', { message: 'custom list kept for this tab' });
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
+      // Wipe from another view: the Subdomains view (and its 'cleared' listener) is unmounted now.
+      await gotoRoute(page, 'about');
+      await page.click('[data-action="clear-data"]');
+      try {
+        await page.waitFor(() => !!document.querySelector('dialog.modal[open] .btn-danger'), { message: 'confirmation' });
+        await page.click('dialog.modal[open] .btn-danger');
+        await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialog closed' });
+      } finally {
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+      await gotoRoute(page, 'subdomains');
+      const after = await page.evaluate(() => ({
+        custom: document.querySelector('[data-role="sub-custom"]').value,
+        status: document.querySelector('.sub-custom-status').textContent,
+        key: sessionStorage.getItem('ssds.wordlist.custom')
+      }));
+      assertEqual([after.custom, after.status, after.key], ['', 'No custom names.', null], 'the module keeps no stale copy after a delete from another view');
+      await dismissToasts(page);
     });
 
     await step('i18n: no missing keys, TR and EN key sets match', async () => {

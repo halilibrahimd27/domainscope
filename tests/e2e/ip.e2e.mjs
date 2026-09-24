@@ -3,10 +3,14 @@
  * ip.e2e.mjs — end-to-end test of the "IP Intel" view in a real headless browser, against the
  * live RIPEstat / ipwho.is / HackerTarget APIs and DoH (network required).
  *
- *   node tests/e2e/ip.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
+ *   node tests/e2e/ip.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots] [--no-quota-apis]
+ *
+ * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
+ * are small): the reverse-IP step then checks the error path instead of spending a unit.
  *
  * Covers: pure helpers (Node); shared link with IPv4, IPv6, a private IP and a host name;
- * PTR / ASN / owner / location / operator columns; inventory matching; private IPs never
+ * PTR / ASN / owner / location / operator columns (incl. the well-known-network hint for
+ * 1.1.1.1 and the flag / country-code fallback); inventory matching; private IPs never
  * looked up; one reverse-IP lookup (uses 1 HackerTarget quota unit — "limited" is accepted);
  * row details; input validation notes; language re-mount keeping rows; phone light/dark;
  * no console errors, exceptions or CSP violations; complete i18n.
@@ -20,11 +24,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { parseIpInput, classifyIp, MAX_IPS } from '../../assets/js/views/ip.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
-const BASE = '/subdomain-scanner/';
+const BASE = '/domainscope/';
 const argv = process.argv.slice(2);
 const optValue = (name, def) => {
   const i = argv.indexOf(name);
@@ -33,7 +38,10 @@ const optValue = (name, def) => {
 const BROWSER = optValue('--browser', 'auto');
 const HEADED = argv.includes('--headed');
 const SHOTS_ON = !argv.includes('--no-shots');
-const FLAKY_HOSTS = ['ipwho.is', 'api.hackertarget.com', 'dns.quad9.net', 'dns11.quad9.net'];
+const NO_QUOTA_APIS = argv.includes('--no-quota-apis');
+// Third-party hosts whose request failures the view reports in its UI (not app errors): every
+// public DoH resolver can time out or, like Quad9 over HTTP/3, omit CORS headers.
+const FLAKY_HOSTS = ['ipwho.is', 'api.hackertarget.com', ...RESOLVERS.map((r) => new URL(r.url).hostname)];
 const ROWS_DONE = "document.querySelectorAll('.ipi-row').length > 0 && document.querySelectorAll('.ipi-row.is-pending').length === 0 && !document.querySelector('[data-action=\"run\"]').hidden";
 
 /* ------------------------------------------------------------------------ */
@@ -69,6 +77,12 @@ function assertEqual(actual, expected, message) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   }
+}
+
+/** Block the small-quota APIs in this tab (--no-quota-apis); failures show up in the UI only. */
+async function blockQuotaApis(page) {
+  await page.send('Network.enable');
+  await page.send('Network.setBlockedURLs', { urls: ['*://ipwho.is/*', '*://api.hackertarget.com/*'] });
 }
 
 async function waitReady(page) {
@@ -143,6 +157,14 @@ function rowsInfo() {
     out[ip] = {
       text: tr.textContent.replace(/\s+/g, ' '),
       kind: tr.querySelector('[data-kind]')?.dataset.kind,
+      network: tr.querySelector('[data-network]')?.dataset.network || null,
+      relation: tr.querySelector('[data-relation]')?.dataset.relation || null,
+      flag: (() => {
+        const f = tr.querySelector('.ipi-flag');
+        if (!f) return null;
+        const mode = ['is-emoji', 'is-code', 'is-globe'].find((c) => f.classList.contains(c)) || null;
+        return { cc: f.dataset.cc || null, mode, text: f.textContent };
+      })(),
       reverse: tr.querySelector('.ipi-rev')?.dataset.state || (tr.querySelector('[data-action="reverse"]') ? 'button' : 'none')
     };
   }
@@ -156,9 +178,9 @@ function rowsInfo() {
 async function main() {
   group('Pure helpers (Node)');
   await step('parseIpInput: ports, brackets, URLs, IDN, CIDR, junk, duplicates', () => {
-    const p = parseIpInput('8.8.8.8, 1.1.1.1:443 [2001:db8::1]:8443 # comment\nhttps://www.Örnek.com.tr/x github.com 10.0.0.0/8 bogus!! 8.8.8.8\n"192.0.2.7"');
+    const p = parseIpInput('8.8.8.8, 1.1.1.1:443 [2001:db8::1]:8443 # comment\nhttps://www.Bücher.example/x github.com 10.0.0.0/8 bogus!! 8.8.8.8\n"192.0.2.7"');
     assertEqual(p.ips, ['8.8.8.8', '1.1.1.1', '2001:db8::1', '192.0.2.7'], 'ips');
-    assertEqual(p.hosts, ['www.xn--rnek-4qa.com.tr', 'github.com'], 'hosts');
+    assertEqual(p.hosts, ['www.xn--bcher-kva.example', 'github.com'], 'hosts');
     assertEqual(p.cidrs, ['10.0.0.0/8'], 'cidrs');
     assertEqual(p.invalid, ['bogus!!'], 'invalid');
     assertEqual(parseIpInput(''), { ips: [], hosts: [], invalid: [], cidrs: [] }, 'empty');
@@ -180,6 +202,7 @@ async function main() {
   try {
     group('Desktop 1440×900 (English, live APIs)');
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    if (NO_QUOTA_APIS) await blockQuotaApis(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     await page.goto(`${server.url}#/about`);
     await waitReady(page);
@@ -199,7 +222,7 @@ async function main() {
 
     await step('shared link with IPv4, IPv6, private IP and a host name → full rows', async () => {
       await gotoHash(page, '#/about', 'about');
-      await gotoHash(page, '#/ip?ips=8.8.8.8,2606:4700:4700::1111,10.0.0.1,85.105.1.1,github.com', 'ip');
+      await gotoHash(page, '#/ip?ips=8.8.8.8,2606:4700:4700::1111,10.0.0.1,1.1.1.1,github.com', 'ip');
       await page.waitFor(ROWS_DONE, { timeout: 60000, message: 'rows looked up' });
       const rows = await page.evaluate(rowsInfo);
       const ips = Object.keys(rows);
@@ -211,7 +234,23 @@ async function main() {
       assert(/AS13335/.test(rows['2606:4700:4700::1111'].text), 'AS13335');
       assertEqual(rows['10.0.0.1'].kind, 'private', 'private kind');
       assert(/lan-box/.test(rows['10.0.0.1'].text) && /not for private IPs/.test(rows['10.0.0.1'].text), 'private row: server + no reverse');
-      assert(/AS9121/.test(rows['85.105.1.1'].text) && /Türkiye|Turkey/.test(rows['85.105.1.1'].text), `Türk Telekom row: ${rows['85.105.1.1'].text}`);
+      // 1.1.1.1 is AS13335 but outside Cloudflare's proxy ranges: still 'direct', with a network hint.
+      const one = rows['1.1.1.1'];
+      assertEqual([one.kind, one.network, one.relation], ['direct', 'cloudflare', 'outside-proxy-ranges'], '1.1.1.1 operator');
+      assert(/AS13335/.test(one.text) && /Cloudflare network/.test(one.text) && /not a proxied-site range/.test(one.text), `1.1.1.1 row: ${one.text}`);
+      assertEqual([g.network, g.relation], ['google', 'hosted'], '8.8.8.8 network hint');
+      assertEqual(rows['2606:4700:4700::1111'].network, null, 'no hint on a proxied range');
+      // Flags: an emoji where the platform draws them, else the ISO code in a chip (Windows Chrome/Edge).
+      const flagMode = await page.evaluate(async () => ((await import('./assets/js/ui/flag.js')).supportsFlagEmoji() ? 'is-emoji' : 'is-code'));
+      const flags = Object.values(rows).map((r) => r.flag).filter((f) => f && f.cc);
+      assert(g.flag && g.flag.cc === 'US', `8.8.8.8 flag: ${JSON.stringify(g.flag)}`);
+      for (const f of flags) {
+        assertEqual(f.mode, flagMode, `flag mode for ${f.cc}`);
+        assert(/^[A-Z]{2}$/.test(f.cc), `flag cc ${f.cc}`);
+        if (f.mode === 'is-code') assertEqual(f.text, f.cc, 'code chip text');
+        else assertEqual([...f.text].length, 2, `emoji flag for ${f.cc}`);
+      }
+      notes.push(`flags rendered as ${flagMode === 'is-code' ? 'ISO-code chips (no flag emoji on this platform)' : 'emoji'}`);
       assert(Object.values(rows).some((r) => /from github\.com/.test(r.text)), 'host name resolved and credited');
       const stats = await page.evaluate(() => [...document.querySelectorAll('.ipi-stats .stat-value')].map((v) => v.textContent));
       assertEqual(stats[2], '2', 'your servers stat');
@@ -269,14 +308,14 @@ async function main() {
     });
 
     await step('reverse IP (1 HackerTarget quota unit): domains, or a clear quota message', async () => {
-      await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="85.105.1.1"]').click());
+      await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="1.1.1.1"]').click());
       await page.waitFor(() => {
-        const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '85.105.1.1');
+        const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '1.1.1.1');
         return !!row && !!row.querySelector('.ipi-rev');
       }, { timeout: 30000, message: 'reverse IP result' });
-      const state = (await page.evaluate(rowsInfo))['85.105.1.1'].reverse;
-      assert(['done', 'limited', 'error'].includes(state), `reverse state ${state}`);
-      notes.push(`reverse IP outcome: ${state}`);
+      const state = (await page.evaluate(rowsInfo))['1.1.1.1'].reverse;
+      assert(NO_QUOTA_APIS ? state === 'error' : ['done', 'limited', 'error'].includes(state), `reverse state ${state}`);
+      notes.push(`reverse IP outcome: ${state}${NO_QUOTA_APIS ? ' (HackerTarget blocked by --no-quota-apis)' : ''}`);
     });
 
     await step('input notes: junk and CIDR ranges are reported; nothing usable → field error', async () => {
@@ -316,6 +355,7 @@ async function main() {
 
     group('Phone 390×844 (Turkish)');
     const phone = await browser.newPage('about:blank', { width: 390, height: 844, mobile: true });
+    if (NO_QUOTA_APIS) await blockQuotaApis(phone);
     await phone.goto(`${server.url}#/about`);
     await waitReady(phone);
     await setLangUi(phone, 'tr');

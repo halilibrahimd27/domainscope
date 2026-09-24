@@ -5,8 +5,10 @@
  *   node tests/live/verify-resolvers.mjs              # resolvers + geo vantages
  *   node tests/live/verify-resolvers.mjs --browser    # + real headless Chrome/Edge CORS check
  *   node tests/live/verify-resolvers.mjs --no-geo     # resolvers only
- *   node tests/live/verify-resolvers.mjs --no-resolvers --json out.json
+ *   node tests/live/verify-resolvers.mjs --no-resolvers --json tests/live/private/resolvers.json
  *
+ * --json FILE writes the report; like every live report, inside the repository it must go to a
+ * gitignored path (tests/live/private/…, *.local.json — see targets.mjs reportPath).
  * Resolvers (node:http2 — Quad9 requires HTTP/2 and Node's fetch is HTTP/1.1):
  *   - GET ?dns= with `Origin: https://example.github.io` → must be 200 + Access-Control-Allow-Origin
  *     + a decodable DNS message (otherwise the resolver must be DROPPED from RESOLVERS),
@@ -27,18 +29,19 @@ import http2 from 'node:http2';
 import http from 'node:http';
 import tls from 'node:tls';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { encodeQuery, decodeMessage, base64UrlEncode } from '../../assets/js/lib/dnswire.js';
 import { RESOLVERS, GEO_VANTAGES, DEFAULT_GEO_RESOLVER, getResolver } from '../../assets/js/lib/resolvers.js';
+import { reportPathOrExit, writeReport } from './targets.mjs';
 
 const args = process.argv.slice(2);
 const OPT = {
   resolvers: !args.includes('--no-resolvers'),
   geo: !args.includes('--no-geo'),
   browser: args.includes('--browser'),
-  json: args.includes('--json') ? args[args.indexOf('--json') + 1] : null
+  json: reportPathOrExit(args.includes('--json') ? args[args.indexOf('--json') + 1] : null)
 };
 const ORIGIN = 'https://example.github.io';
 // Test names blocked by malware/security/family filters (isitblocked.org is Quad9's own test name).
@@ -338,7 +341,10 @@ async function main() {
   }
 
   for (const s of sessions.values()) s.close();
-  if (OPT.json) writeFileSync(OPT.json, JSON.stringify(report, null, 2));
+  if (OPT.json) {
+    writeReport(OPT.json, JSON.stringify(report, null, 2));
+    console.log(`wrote ${OPT.json}`);
+  }
   console.log(`\n${failed ? 'FAILED' : 'ALL CHECKS PASSED'}`);
   process.exitCode = failed ? 1 : 0;
 }

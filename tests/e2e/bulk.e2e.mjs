@@ -3,7 +3,9 @@
  * bulk.e2e.mjs — end-to-end test of the "Bulk Resolve" view against the LIVE DoH resolvers
  * (and RIPEstat for the ASN option) in a real headless Chrome/Edge.
  *
- *   node tests/e2e/bulk.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
+ *   node tests/e2e/bulk.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots] [--no-quota-apis]
+ *
+ * --no-quota-apis blocks the small-quota ipwho.is fallback of the ASN option in the browser.
  *
  * Node side: parseBulkInput / sanitizeBulkOptions / bulkRowMatches / ipRowMatches / bulkStats.
  *
@@ -31,7 +33,7 @@ import {
 /** Real hostnames with stable, well-known hosting (the assertions only rely on a few of them). */
 const NAMES = [
   // Cloudflare
-  'www.cloudflare.com', 'cloudflare.com', 'discord.com', 'www.npmjs.com', 'webtekno.com', 'www.webtekno.com', 'canva.com',
+  'www.cloudflare.com', 'cloudflare.com', 'discord.com', 'www.npmjs.com', 'npmjs.com', 'registry.npmjs.org', 'canva.com',
   // Fastly / CDNs
   'pypi.org', 'www.reddit.com', 'github.githubassets.com', 'www.fastly.com',
   // Akamai / CloudFront / Azure
@@ -39,14 +41,14 @@ const NAMES = [
   // Platforms
   'pages.github.com', 'nextjs.org', 'docs.github.com', 'www.netlify.com',
   // Direct
-  'dns.google', 'one.one.one.one', 'api.webtekno.com', 'www.turkiye.gov.tr', 'www.meb.gov.tr', 'www.tcmb.gov.tr',
-  'www.ptt.gov.tr', 'www.nic.tr', 'www.ripe.net', 'www.iana.org', 'www.kernel.org', 'www.debian.org', 'www.python.org',
+  'dns.google', 'one.one.one.one', 'www.arin.net', 'www.usa.gov', 'www.nasa.gov', 'www.nist.gov',
+  'www.gov.uk', 'www.denic.de', 'www.ripe.net', 'www.iana.org', 'www.kernel.org', 'www.debian.org', 'www.python.org',
   'www.wikipedia.org', 'www.google.com', 'mail.google.com', 'www.youtube.com', 'www.gitlab.com', 'gitlab.com',
   'www.mozilla.org', 'www.openssl.org',
   // Private (wildcard DNS services that echo the IP)
   '10-0-0-1.nip.io', '192-168-1-20.nip.io',
   // Not existing
-  'no-such-host-e2e-7c1f.example.com', 'surely-missing-e2e-9a2b.webtekno.com', 'nope-e2e.invalid-tld-xyz'
+  'no-such-host-e2e-7c1f.example.com', 'surely-missing-e2e-9a2b.example.org', 'nope-e2e.invalid-tld-xyz'
 ];
 const EXTRA_INPUT = [
   'dns.google', 'DNS.Google.', // duplicates (case / trailing dot)
@@ -150,6 +152,10 @@ async function main() {
   process.stdout.write(`\nServing ${server.url} — ${(await browser.version()).product}; ${expected.names.length} hostnames\n`);
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    if (opts.has('--no-quota-apis')) {
+      await page.send('Network.enable');
+      await page.send('Network.setBlockedURLs', { urls: ['*://ipwho.is/*', '*://api.hackertarget.com/*'] });
+    }
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
@@ -237,10 +243,10 @@ async function main() {
       rows = await rowsOf(page, '.bulk-hosts');
       assert(rows.some((r) => r.first === 'no-such-host-e2e-7c1f.example.com') && rows.every((r) => ['nxdomain', 'unresolved', 'dangling'].includes(r.kind)), 'unresolved');
       await setFilter('all');
-      await page.type('.bulk-hosts .dt-search-input', 'gov.tr');
+      await page.type('.bulk-hosts .dt-search-input', '.gov');
       await page.waitFor(() => {
         const rows = [...document.querySelectorAll('.bulk-hosts tbody tr.dt-row')];
-        return rows.length >= 1 && rows.every((tr) => tr.textContent.includes('gov.tr'));
+        return rows.length >= 1 && rows.every((tr) => tr.textContent.includes('.gov'));
       });
       await page.type('.bulk-hosts .dt-search-input', '');
     });

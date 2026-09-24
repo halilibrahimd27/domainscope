@@ -1,0 +1,7 @@
+# DomainScope zone hand-off for example.com — 2026-01-01T00:00:00.000Z
+example.com
+app.example.com
+backend.example.com
+smtp.example.com
+tm.example.com
+www.example.com

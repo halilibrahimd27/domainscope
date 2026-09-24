@@ -1,0 +1,16 @@
+# plesk.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=plesk-info dialect=- origin=example.com partial=false
+seed example.com
+seed ftp.example.com
+seed mail.example.com
+seed ns1.example.com
+seed ns2.example.com
+seed webmail.example.com
+seed www.example.com
+address 192.0.2.70 example.com mail.example.com ns1.example.com webmail.example.com servers -
+address 192.0.2.71 ns2.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=2 hosts=0 names=7 tokens=9 chars=159 probes=14 probesAtLeast=false fileForm=false
+scan names=7 wildcardBases=0 delegations=0 proxied=0 skipped=-
+drift rrsets=12 queries=13 needed=13 names=9 targetsHidden=0 internalShare=0.000
+drift skipped private=0 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

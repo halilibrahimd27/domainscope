@@ -1,0 +1,23 @@
+$TTL 3600
+@	IN	SOA	ns1.example.net.	hostmaster.example.com. (
+						2026092401
+						3600
+						3600
+						1209600
+						86400 )
+
+example.com.	3600	IN	NS	ns1.example.net.
+example.com.	3600	IN	NS	ns2.example.net.
+
+example.com.	3600	IN	A	203.0.113.80
+ftp	3600	IN	A	203.0.113.80
+mail	3600	IN	A	203.0.113.80
+pop	3600	IN	A	203.0.113.80
+smtp	3600	IN	A	203.0.113.80
+www	3600	IN	A	203.0.113.80
+
+example.com.	3600	IN	MX	10 mail
+
+example.com.	3600	IN	TXT	"v=spf1 a mx ip4:203.0.113.80 ~all"
+_dmarc	3600	IN	TXT	"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com"
+x._domainkey	3600	IN	TXT	( "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample" )

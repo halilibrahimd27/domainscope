@@ -1,0 +1,18 @@
+{
+  "result": [
+    {"id":"0000000000000000000000000000a001","name":"example.com","type":"A","content":"192.0.2.10","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:18:42.986092Z"},
+    {"id":"0000000000000000000000000000a002","name":"www.example.com","type":"A","content":"192.0.2.10","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a003","name":"api.example.com","type":"A","content":"192.0.2.14","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{},"comment":"API origin; do not expose","tags":["team:backend"],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z","comment_modified_on":"2026-09-07T06:11:28.959005Z","tags_modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a004","name":"admin.example.com","type":"A","content":"192.0.2.12","proxiable":true,"proxied":false,"ttl":1,"settings":{"ipv4_only":false,"ipv6_only":false},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a005","name":"*.apps.example.com","type":"A","content":"192.0.2.20","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a006","name":"old.dev.example.com","type":"A","content":"192.0.2.60","proxiable":true,"proxied":false,"ttl":1,"settings":{},"meta":{"shadowed_by":["0000000000000000000000000000a020"]},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a007","name":"www.example.com","type":"AAAA","content":"2001:db8::10","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a008","name":"app.example.com","type":"CNAME","content":"origin-lb.example.net","proxiable":true,"proxied":true,"ttl":1,"settings":{"flatten_cname":false},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a009","name":"tunnel.example.com","type":"CNAME","content":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com","proxiable":true,"proxied":true,"ttl":1,"settings":{"flatten_cname":false},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"},
+    {"id":"0000000000000000000000000000a010","name":"status.example.com","type":"CNAME","content":"statuspage.example.org","proxiable":true,"proxied":false,"ttl":1,"settings":{"flatten_cname":true},"meta":{},"comment":null,"tags":[],"created_on":"2026-09-07T06:11:28.959005Z","modified_on":"2026-09-07T06:11:28.959005Z"}
+  ],
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result_info": {"page":1,"per_page":10,"count":10,"total_count":19,"total_pages":2}
+}

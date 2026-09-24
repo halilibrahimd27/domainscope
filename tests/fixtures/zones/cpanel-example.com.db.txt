@@ -1,0 +1,49 @@
+; cPanel first:118.0.12 (update_time):1727160000 Cpanel::ZoneFile::VERSION:1.3 hostname:server01.example.net latest:118.0.12
+; Zone file for example.com
+$TTL 14400
+example.com.	86400	IN	SOA	ns1.example.net.	hostmaster.example.net.	(
+						2026092401 ;Serial Number
+						3600 ;refresh
+						1800 ;retry
+						1209600 ;expire
+						86400	)
+; example.com.	86400	IN	NS	ns1.old-host.example. ; Previous value removed by cPanel restore auto-merge on 20260901120000 GMT
+
+example.com.	86400	IN	NS	ns1.example.net.
+example.com.	86400	IN	NS	ns2.example.net.
+
+
+example.com.	14400	IN	A	192.0.2.80
+localhost	14400	IN	A	127.0.0.1
+
+example.com.	14400	IN	MX	0	example.com.
+
+mail	14400	IN	CNAME	example.com.
+www	14400	IN	CNAME	example.com.
+ftp	14400	IN	A	192.0.2.80
+cpanel	14400	IN	A	192.0.2.80
+whm	14400	IN	A	192.0.2.80
+webmail	14400	IN	A	192.0.2.80
+webdisk	14400	IN	A	192.0.2.80
+cpcalendars	14400	IN	A	192.0.2.80
+cpcontacts	14400	IN	A	192.0.2.80
+autodiscover	14400	IN	A	192.0.2.80
+autoconfig	14400	IN	A	192.0.2.80
+cpcalendars	14400	IN	A	192.0.2.80
+_caldav._tcp	14400	IN	SRV	0	0	2079	server01.example.net.
+_caldav._tcp	14400	IN	TXT	path=/
+_caldavs._tcp	14400	IN	SRV	0	0	2080	server01.example.net.
+_caldavs._tcp	14400	IN	TXT	path=/
+_carddav._tcp	14400	IN	SRV	0	0	2079	server01.example.net.
+_carddavs._tcp	14400	IN	SRV	0	0	2080	server01.example.net.
+_autodiscover._tcp	14400	IN	SRV	0	0	443	cpanelemaildiscovery.cpanel.net.
+example.com.	14400	IN	TXT	"v=spf1 +a +mx +ip4:192.0.2.80 ~all"
+example.com	900	IN	TXT	"hosting-verification=abc123"
+_cpanel-dcv-test-record	14400	IN	TXT	_cpanel-dcv-test-record=AbCdEf0123456789
+_acme-challenge	14400	IN	TXT	AbCdEfGhIjKlMnOpQrStUvWxYz-0123456789_abcdefgh
+default._domainkey	14400	IN	TXT	( "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample0key0material0that0is0long0enough0to0need0a0second0string0in0a0real0export0example0example0example0example0example0example0example0example0example0example0example0example0exa"
+	  "mple0example0IDAQAB;" )
+blog	14400	IN	A	192.0.2.81
+www.blog	14400	IN	A	192.0.2.81
+webmail.blog	14400	IN	A	192.0.2.81
+cpanel.blog	14400	IN	A	192.0.2.81

@@ -1,0 +1,41 @@
+# internal.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=generic origin=example.com partial=false
+lint warn SINGLE_NS example.com NS @2 name=example.com
+lint warn PRIVATE_IP ns1.example.com A @3 name=ns1.example.com ip=10.0.0.53
+lint warn PRIVATE_IP intranet.example.com A @5 name=intranet.example.com ip=10.1.2.3
+lint warn PRIVATE_IP db.corp.example.com A @6 name=db.corp.example.com ip=10.1.2.4
+lint warn PRIVATE_IP git.example.com A @7 name=git.example.com ip=192.168.10.20
+lint warn PRIVATE_IP printer.lan.example.com A @10 name=printer.lan.example.com ip=172.16.5.5
+lint warn PRIVATE_IP mail.internal.example.com A @14 name=mail.internal.example.com ip=10.0.0.25
+seed example.com
+seed build.example.com
+seed db.corp.example.com
+seed git.example.com
+seed mail.internal.example.com
+seed intranet.example.com
+seed printer.lan.example.com
+seed ns1.example.com
+seed vpn.example.com
+seed wiki.example.com
+seed www.example.com
+private build.example.com
+private db.corp.example.com
+private git.example.com
+private mail.internal.example.com
+private intranet.example.com
+private printer.lan.example.com
+private ns1.example.com
+private wiki.example.com
+address 10.0.0.25 mail.internal.example.com servers - private
+address 10.0.0.53 ns1.example.com servers - private
+address 10.1.2.3 intranet.example.com servers - private
+address 10.1.2.4 db.corp.example.com servers - private
+address 172.16.5.5 printer.lan.example.com servers - private
+address 192.168.10.20 git.example.com servers - private
+address 198.51.100.40 example.com servers -
+address 203.0.113.30 vpn.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=8 hosts=0 names=11 tokens=19 chars=316 probes=88 probesAtLeast=false fileForm=false
+scan names=3 wildcardBases=0 delegations=0 proxied=0 skipped=build.example.com,db.corp.example.com,git.example.com,mail.internal.example.com,intranet.example.com,printer.lan.example.com,ns1.example.com,wiki.example.com
+drift rrsets=13 queries=6 needed=6 names=11 targetsHidden=0 internalShare=0.750
+drift skipped private=8 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

@@ -1,0 +1,16 @@
+format bind dialect generic origin example.com (soa, high)
+markers dig AXFR
+stats records=9 proxied=0 dns-only=0 entries=10 skipped=0 generated=0 lines=19
+types A=3 CNAME=1 MX=1 NS=2 SOA=1 TXT=1
+owners 4
+partial false
+rr example.com. 3600 SOA ns1.example.com. hostmaster.example.com. 2026092402 7200 1800 1209600 300 ; @5
+rr example.com. 3600 NS ns1.example.com. ; @6
+rr example.com. 3600 NS ns2.example.net. ; @7
+rr example.com. 3600 A 192.0.2.10 ; @8
+rr example.com. 3600 MX 10 mail.example.com. ; @9
+rr example.com. 3600 TXT "v=spf1 mx -all" ; @10
+rr mail.example.com. 3600 A 198.51.100.25 ; @11
+rr ns1.example.com. 3600 A 192.0.2.53 ; @12
+rr www.example.com. 3600 CNAME example.com. ; @13
+issue info ORIGIN_INFERRED @0 origin=example.com source=soa

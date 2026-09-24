@@ -1,0 +1,20 @@
+# cli53.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=cli53 origin=example.com partial=false
+seed example.com
+seed api.example.com
+seed app.example.com
+seed geo.example.com
+seed ha.example.com
+seed www.example.com
+wildcard example.com
+address 192.0.2.21 app.example.com servers -
+address 192.0.2.22 app.example.com servers -
+address 198.51.100.30 geo.example.com servers -
+address 198.51.100.31 geo.example.com servers -
+address 203.0.113.50 ha.example.com servers -
+address 203.0.113.51 ha.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=6 hosts=0 names=7 tokens=13 chars=207 probes=42 probesAtLeast=false fileForm=false
+scan names=6 wildcardBases=1 delegations=0 proxied=0 skipped=-
+drift rrsets=8 queries=9 needed=9 names=7 targetsHidden=2 internalShare=0.000
+drift skipped private=0 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

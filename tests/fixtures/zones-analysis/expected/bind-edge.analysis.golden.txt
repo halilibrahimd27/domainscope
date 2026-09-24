@@ -1,0 +1,69 @@
+# bind-edge.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=generic origin=example.com partial=false
+lint error MX_TO_CNAME example.com MX @15 name=example.com target=mx-backup.example.com
+lint error MULTIPLE_SPF example.com TXT @19 name=example.com count=2
+lint error CNAME_AND_OTHER_DATA www.example.com CNAME @24 name=www.example.com types=A
+lint error TXT_STRING_TOO_LONG long.example.com TXT @39 name=long.example.com bytes=266
+lint error TARGET_IS_IP badns.example.com NS @50 name=badns.example.com target=192.0.2.53
+lint warn CAA_UNKNOWN_TAG example.com CAA @21 name=example.com tag=isue
+lint warn PRIVATE_IP intranet.example.com A @33 name=intranet.example.com ip=10.20.30.40
+lint warn LOCALHOST_RECORD localhost.example.com A @34 name=localhost.example.com ip=127.0.0.1
+lint warn DUPLICATE_RR old.example.com A @36 name=old.example.com type=A
+lint warn OCCLUDED_BY_DELEGATION old.dev.example.com A @49 name=old.dev.example.com cut=dev.example.com
+lint info TTL_OUTLIER slow.example.com A @38 name=slow.example.com ttl=604800 median=3600
+seed example.com
+seed blog.example.com
+seed 4.dec.example.com
+seed fast.example.com
+seed host-1.example.com
+seed host-2.example.com
+seed host-3.example.com
+seed intranet.example.com
+seed localhost.example.com
+seed mail.example.com
+seed mx-backup.example.com
+seed ns1.example.com
+seed old.example.com
+seed shop.example.com
+seed sip.example.com
+seed slow.example.com
+seed sub.example.com
+seed api.sub.example.com
+seed svc.example.com
+seed upper.example.com
+seed www.example.com
+wildcard example.com
+wildcard lit.example.com
+delegation badns.example.com
+delegation dev.example.com
+exclude old.dev.example.com occluded
+exclude dot\.label.example.com escaped
+exclude x.example.com invalid
+private intranet.example.com
+private localhost.example.com
+address 10.20.30.40 intranet.example.com servers - private
+address 127.0.0.1 localhost.example.com servers - private
+address 192.0.2.1 host-1.example.com servers -
+address 192.0.2.2 host-2.example.com servers -
+address 192.0.2.3 host-3.example.com servers -
+address 192.0.2.10 example.com servers web01
+address 192.0.2.12 old.example.com servers -
+address 192.0.2.13 fast.example.com servers -
+address 192.0.2.14 slow.example.com servers -
+address 192.0.2.15 upper.example.com servers -
+address 192.0.2.16 www.example.com servers -
+address 192.0.2.53 ns1.example.com servers -
+address 192.0.2.60 old.dev.example.com# servers -
+address 192.0.2.96 dot\.label.example.com servers -
+address 192.0.2.97 4.dec.example.com servers -
+address 192.0.2.98 *.lit.example.com servers -
+address 192.0.2.99 *.example.com servers -
+address 198.51.100.25 mail.example.com servers -
+address 203.0.113.20 sub.example.com servers -
+address 203.0.113.21 api.sub.example.com servers -
+address 2001:db8::10 example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=20 hosts=0 names=21 tokens=41 chars=625 probes=440 probesAtLeast=false fileForm=false
+scan names=19 wildcardBases=2 delegations=2 proxied=0 skipped=intranet.example.com,localhost.example.com
+drift rrsets=43 queries=38 needed=38 names=36 targetsHidden=0 internalShare=0.095
+drift skipped private=2 occluded=1 unsupported=2 escaped=1 dnssec=0 synthesized=0 wildcard=0 budget=0

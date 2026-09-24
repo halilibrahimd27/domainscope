@@ -6,8 +6,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildOriginSweepCommand, buildSweepCommand, quoteArg, validateTargets, validateNames
+  buildOriginSweepCommand, buildSweepCommand, quoteArg, validateTargets, validateNames, isInetAtonNumeric
 } from '../../assets/js/lib/cmdline.js';
+import { zoneSweep } from '../../assets/js/lib/zoneorigins.js';
+import { loadFixture } from '../fixtures/zones-analysis/gen-analysis-golden.mjs';
 
 describe('validateTargets', () => {
   test('accepts and canonicalises IPs and CIDRs, drops everything else', () => {
@@ -310,5 +312,170 @@ describe('buildSweepCommand — -p / --cert / --json options (Verify CLI card)',
     const file = buildSweepCommand({ targets: ['203.0.113.0/24'], names: many(1500), shell: 'powershell' });
     assert.equal(file.command, 'ssl_origin_scan.py -t 203.0.113.0/24 -n proxied-names.txt');
     assert.equal(file.length, file.command.length);
+  });
+});
+
+describe('buildSweepCommand — --exclude (leave named IPs / blocks out of the sweep)', () => {
+  const base = { targets: ['192.0.2.0/24', '198.51.100.9', '203.0.113.5'], names: ['www.example.com'] };
+
+  test('emits --exclude right after -t; overlapping excludes are kept, non-overlapping are unused', () => {
+    const res = buildSweepCommand({ ...base, exclude: ['192.0.2.13', '198.51.100.9', '203.0.113.0/28', 'bad'] });
+    // 198.51.100.9 is a whole target → removed from -t (not emitted as --exclude); 203.0.113.0/28
+    // covers the whole /24? no — it covers .5, so .5 is removed as a target too.
+    assert.equal(res.command,
+      'ssl_origin_scan.py -t 192.0.2.0/24 --exclude 192.0.2.13 -n www.example.com');
+    assert.deepEqual(res.targets, ['192.0.2.0/24']);
+    assert.deepEqual(res.exclude, ['192.0.2.13'], 'the exclude that trims a still-present target is emitted');
+    assert.deepEqual(res.excluded.sort(), ['198.51.100.9', '203.0.113.5'], 'targets an exclude removed whole');
+    assert.deepEqual(res.excludeUnused, [], 'no exclude touched nothing');
+    assert.deepEqual(res.dropped.exclude, ['bad']);
+  });
+
+  test('an exclude that overlaps no target is reported unused, not emitted', () => {
+    const res = buildSweepCommand({ targets: ['192.0.2.0/24'], names: ['www.example.com'], exclude: ['203.0.113.7'] });
+    assert.equal(res.command, 'ssl_origin_scan.py -t 192.0.2.0/24 -n www.example.com');
+    assert.deepEqual(res.exclude, []);
+    assert.deepEqual(res.excludeUnused, ['203.0.113.7']);
+  });
+
+  test('a string exclude is split on whitespace / commas; canonicalised and deduped', () => {
+    const res = buildSweepCommand({ targets: ['192.0.2.0/24'], names: ['www.example.com'], exclude: '192.0.2.13, 192.0.2.13 192.0.2.14' });
+    assert.equal(res.command, 'ssl_origin_scan.py -t 192.0.2.0/24 --exclude 192.0.2.13 192.0.2.14 -n www.example.com');
+    assert.deepEqual(res.exclude, ['192.0.2.13', '192.0.2.14']);
+  });
+
+  test('excluding every target yields no command (nothing left to sweep)', () => {
+    const res = buildSweepCommand({ targets: ['192.0.2.5'], names: ['www.example.com'], exclude: ['192.0.2.0/24'] });
+    assert.equal(res.command, null);
+    assert.deepEqual(res.targets, []);
+    assert.deepEqual(res.excluded, ['192.0.2.5']);
+  });
+
+  test('a hostile exclude token is dropped, never quoted into the command', () => {
+    const res = buildSweepCommand({ targets: ['192.0.2.5', '192.0.2.6'], names: ['www.example.com'], exclude: ['192.0.2.5', '; rm -rf /', '$(reboot)'] });
+    assert.equal(res.command, 'ssl_origin_scan.py -t 192.0.2.6 -n www.example.com');
+    assert.deepEqual(res.dropped.exclude, ['; rm -rf /', '$(reboot)']);
+  });
+
+  test('exclude works alongside --cert / --json (options still follow the names)', () => {
+    const res = buildSweepCommand({
+      targets: ['192.0.2.0/24'], names: ['www.example.com'], exclude: ['192.0.2.13'], cert: 'new.pem', json: 'out.json'
+    });
+    assert.equal(res.command,
+      'ssl_origin_scan.py -t 192.0.2.0/24 --exclude 192.0.2.13 -n www.example.com --cert new.pem --json out.json');
+  });
+
+  test('regression: without exclude the result shape is byte-identical (no exclude fields)', () => {
+    const res = buildSweepCommand({ targets: ['203.0.113.0/24'], names: ['a.example.com'] });
+    assert.deepEqual(Object.keys(res), ['command', 'targets', 'names', 'dropped', 'length', 'namesInline', 'namesFile']);
+    assert.deepEqual(res.dropped, { targets: [], names: [], options: [] });
+    // an empty exclude array is still "given": the exclude fields appear but change nothing
+    const withEmpty = buildSweepCommand({ targets: ['203.0.113.0/24'], names: ['a.example.com'], exclude: [] });
+    assert.equal(withEmpty.command, 'ssl_origin_scan.py -t 203.0.113.0/24 -n a.example.com');
+    assert.deepEqual(withEmpty.exclude, []);
+    assert.deepEqual(withEmpty.excluded, []);
+    assert.deepEqual(withEmpty.dropped.exclude, []);
+  });
+});
+
+describe('zone hand-off opt-ins (allowHostTargets / allowWildcardNames / targetsFile)', () => {
+  test('isInetAtonNumeric covers the decimal, octal and hex forms glibc accepts', () => {
+    for (const x of ['2026092401', '0x7f.0x1', '0177.1', '10.1', '127.0.0.1', '0xdeadbeef', '1.2.3.4']) assert.equal(isInetAtonNumeric(x), true, x);
+    for (const x of ['origin-lb.example.net', '0xdeadbeef.example.com', '123.example.com', 'a1.example.com', '', '1.2.3.4.5']) {
+      assert.equal(isInetAtonNumeric(x), false, x);
+    }
+  });
+
+  test('allowHostTargets keeps a host name target and drops numeric, hostile and dotless forms', () => {
+    const list = ['203.0.113.10', 'origin-lb.example.net', 'ORIGIN-LB.example.net.', '0x7f.0x1', '2026092401', '10.1', '0177.1',
+      '-evil.example.com', 'a;b.example.com', '$(id)', 'web01', 'a b.example.com', '198.51.100.0/24'];
+    assert.deepEqual(validateTargets(list, { allowHostTargets: true }).valid, ['203.0.113.10', 'origin-lb.example.net', '198.51.100.0/24']);
+    assert.deepEqual(validateTargets(list, { allowHostTargets: true }).dropped,
+      ['0x7f.0x1', '2026092401', '10.1', '0177.1', '-evil.example.com', 'a;b.example.com', '$(id)', 'web01', 'a b.example.com']);
+    assert.deepEqual(validateTargets(list).valid, ['203.0.113.10', '198.51.100.0/24'], 'default: addresses only (unchanged)');
+    const built = buildSweepCommand({ targets: ['origin-lb.example.net', '203.0.113.10', '0x7f.0x1'], names: ['app.example.com'], allowHostTargets: true });
+    assert.equal(built.command, 'ssl_origin_scan.py -t 203.0.113.10 origin-lb.example.net -n app.example.com', 'addresses first, then hosts');
+    assert.deepEqual(built.dropped.targets, ['0x7f.0x1']);
+    assert.equal(buildSweepCommand({ targets: ['origin-lb.example.net'], names: ['app.example.com'] }).command, null, 'default drops a host target');
+  });
+
+  test('allowWildcardNames keeps *.x, quoted in POSIX and PowerShell, and drops malformed wildcards', () => {
+    const names = ['*.apps.example.com', 'www.example.com', '*.*.example.com', 'a.*.example.com', '*', '*.0x7f.0x1', '*.-x.example.com'];
+    assert.deepEqual(validateNames(names, { allowWildcard: true }).valid, ['*.apps.example.com', 'www.example.com']);
+    assert.deepEqual(validateNames(names).valid, ['www.example.com'], 'default: no wildcard (unchanged)');
+    const posix = buildSweepCommand({ targets: ['203.0.113.10'], names: ['*.apps.example.com', 'www.example.com'], allowWildcardNames: true });
+    assert.equal(posix.command, "ssl_origin_scan.py -t 203.0.113.10 -n '*.apps.example.com' www.example.com");
+    const pwsh = buildSweepCommand({ targets: ['203.0.113.10'], names: ['*.apps.example.com'], allowWildcardNames: true, shell: 'powershell' });
+    assert.equal(pwsh.command, "ssl_origin_scan.py -t 203.0.113.10 -n '*.apps.example.com'");
+  });
+
+  test('targetsFile: over either cap BOTH lists go to files; without it the result shape is unchanged', () => {
+    const targets = ['203.0.113.1', '203.0.113.2', '203.0.113.3', 'origin-lb.example.net'];
+    const names = ['a.example.com', '*.apps.example.com'];
+    const opts = { targets, names, allowHostTargets: true, allowWildcardNames: true, namesFile: 'zone-names.txt', targetsFile: 'zone-targets.txt' };
+    const inline = buildSweepCommand({ ...opts, maxInlineTargets: 10 });
+    assert.equal(inline.targetsInline, true);
+    assert.equal(inline.targetsFile, null);
+    assert.match(inline.command, /^ssl_origin_scan\.py -t 203\.0\.113\.1 .* origin-lb\.example\.net -n a\.example\.com '\*\.apps\.example\.com'$/);
+    const filed = buildSweepCommand({ ...opts, maxInlineTargets: 3 });
+    assert.equal(filed.command, 'ssl_origin_scan.py -t zone-targets.txt -n zone-names.txt');
+    assert.deepEqual([filed.targetsInline, filed.targetsFile, filed.namesInline, filed.namesFile], [false, 'zone-targets.txt', false, 'zone-names.txt']);
+    assert.deepEqual(filed.targets, ['203.0.113.1', '203.0.113.2', '203.0.113.3', 'origin-lb.example.net'], 'the file content');
+    const byNames = buildSweepCommand({ ...opts, maxInlineNames: 1 });
+    assert.equal(byNames.command, 'ssl_origin_scan.py -t zone-targets.txt -n zone-names.txt', 'the names cap moves both');
+    const bad = buildSweepCommand({ ...opts, targetsFile: '-rf', maxInlineTargets: 1 });
+    assert.ok(bad.dropped.options.includes('targetsFile'));
+    assert.ok(!bad.command.includes('-rf'));
+    const plain = buildSweepCommand({ targets: ['203.0.113.1'], names: ['a.example.com'] });
+    assert.ok(!('targetsInline' in plain) && !('targetsFile' in plain));
+  });
+
+  test('zoneorigins.zoneSweep builds its command through these opt-ins (Cloudflare export fixture)', () => {
+    const sweep = zoneSweep(loadFixture('cloudflare-export'), { buildCommand: buildSweepCommand });
+    assert.ok(sweep.command, 'a command is built');
+    assert.ok(sweep.command.includes("'*.apps.example.com'"));
+    assert.ok(sweep.command.includes('origin-lb.example.net'));
+    assert.ok(!/192\.0\.2\.0\/24/.test(sweep.command), 'exact origins, never a /24');
+    assert.equal(buildSweepCommand(sweep.commandOptions).command, sweep.command);
+  });
+});
+
+describe('buildSweepCommand: review fixes', () => {
+  test('with a host-name target kept, every exclude is emitted (the CLI resolves the host inside the network)', () => {
+    // origin.example.com may resolve to 192.0.2.20 — the user excluded it, so the
+    // exclude must reach the CLI, not be reported unused and silently dropped.
+    const r = buildSweepCommand({
+      targets: ['192.0.2.10', 'origin.example.com'], names: ['www.example.com'],
+      allowHostTargets: true, exclude: ['192.0.2.20']
+    });
+    assert.equal(r.command, 'ssl_origin_scan.py -t 192.0.2.10 origin.example.com --exclude 192.0.2.20 -n www.example.com');
+    assert.deepEqual(r.exclude, ['192.0.2.20']);
+    assert.deepEqual(r.excludeUnused, []);
+    // without a host target the unused rule still applies (unchanged)
+    const plain = buildSweepCommand({ targets: ['192.0.2.10'], names: ['www.example.com'], exclude: ['198.51.100.20'] });
+    assert.deepEqual(plain.excludeUnused, ['198.51.100.20']);
+    assert.ok(!plain.command.includes('--exclude'));
+    // a covering exclude still removes a whole IP target; the host target keeps the exclude emitted
+    const cov = buildSweepCommand({
+      targets: ['192.0.2.10', 'origin.example.com'], names: ['www.example.com'],
+      allowHostTargets: true, exclude: ['192.0.2.10']
+    });
+    assert.deepEqual(cov.targets, ['origin.example.com']);
+    assert.deepEqual(cov.excluded, ['192.0.2.10']);
+    assert.equal(cov.command, 'ssl_origin_scan.py -t origin.example.com --exclude 192.0.2.10 -n www.example.com');
+  });
+
+  test('hostile host targets and wildcard names never reach the command', () => {
+    const bad = ['$(id).example.com', '-rf.example.com', 'a;b.example.com', 'exa`mple.com', "it's.example.com",
+      'a b.example.com', 'ex\u0000ample.com', '0x7f.0x1', '010.1.1.1', 'localhost', '*.example.com'];
+    const t = validateTargets(bad, { allowHostTargets: true });
+    assert.deepEqual(t.valid, []);
+    const n = validateNames(['*.*.example.com', 'a.*.example.com', '**.example.com', '*.-x.example.com', "*.it's.com",
+      '*.0x7f.0x1', '*', '*.', '$(id).example.com'], { allowWildcard: true });
+    assert.deepEqual(n.valid, []);
+    for (const shell of ['posix', 'powershell']) {
+      const r = buildSweepCommand({ targets: ['192.0.2.5', ...bad], names: ['*.example.com'], shell, allowHostTargets: true, allowWildcardNames: true });
+      assert.equal(r.command, "ssl_origin_scan.py -t 192.0.2.5 -n '*.example.com'", shell);
+    }
   });
 });

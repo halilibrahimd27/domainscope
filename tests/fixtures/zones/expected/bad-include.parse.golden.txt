@@ -1,0 +1,9 @@
+format bind dialect generic origin example.com ($ORIGIN, high)
+stats records=2 proxied=0 dns-only=0 entries=2 skipped=0 generated=0 lines=5
+types A=1 NS=1
+owners 2
+partial false
+default-ttl 300
+rr example.com. 300 NS ns1.example.com. ; @3
+rr www.example.com. 300 A 192.0.2.10 ; @5
+issue error INCLUDE_REJECTED @4 path=records.zone origin=null

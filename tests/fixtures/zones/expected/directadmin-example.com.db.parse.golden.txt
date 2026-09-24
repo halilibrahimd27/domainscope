@@ -1,0 +1,22 @@
+format bind dialect directadmin origin example.com (records, high)
+markers @ IN SOA without TTL | x._domainkey
+stats records=13 proxied=0 dns-only=0 entries=13 skipped=0 generated=0 lines=23
+types A=6 MX=1 NS=2 SOA=1 TXT=3
+owners 8
+partial false
+default-ttl 3600
+rr example.com. 3600 SOA ns1.example.net. hostmaster.example.com. 2026092401 3600 3600 1209600 86400 ; @2
+rr example.com. 3600 NS ns1.example.net. ; @9
+rr example.com. 3600 NS ns2.example.net. ; @10
+rr example.com. 3600 A 203.0.113.80 ; @12
+rr ftp.example.com. 3600 A 203.0.113.80 ; @13
+rr mail.example.com. 3600 A 203.0.113.80 ; @14
+rr pop.example.com. 3600 A 203.0.113.80 ; @15
+rr smtp.example.com. 3600 A 203.0.113.80 ; @16
+rr www.example.com. 3600 A 203.0.113.80 ; @17
+rr example.com. 3600 MX 10 mail.example.com. ; @19
+rr example.com. 3600 TXT "v=spf1 a mx ip4:203.0.113.80 ~all" ; @21
+rr _dmarc.example.com. 3600 TXT "v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com" ; @22
+rr x._domainkey.example.com. 3600 TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample" ; @23
+issue info ORIGIN_CORRECTED @0 from=directadmin-example.com to=example.com
+issue info ORIGIN_INFERRED @0 origin=example.com source=records

@@ -1,0 +1,9 @@
+format bind dialect generic origin example.com ($ORIGIN, high)
+stats records=2 proxied=0 dns-only=0 entries=2 skipped=0 generated=0 lines=5
+types A=2
+owners 2
+partial false
+default-ttl 300
+rr b.example.com. 300 A 192.0.2.1 ; @4
+rr c.example.com. 300 A 192.0.2.2 ; @5
+issue error UNTERMINATED_QUOTE @3

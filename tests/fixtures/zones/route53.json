@@ -1,0 +1,189 @@
+{
+    "ResourceRecordSets": [
+        {
+            "Name": "example.com.",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z2FDTNDATAQYW2",
+                "DNSName": "d111111abcdef8.cloudfront.net.",
+                "EvaluateTargetHealth": false
+            }
+        },
+        {
+            "Name": "example.com.",
+            "Type": "MX",
+            "TTL": 300,
+            "ResourceRecords": [
+                { "Value": "10 mail.example.com." },
+                { "Value": "20 mx2.example.net." }
+            ]
+        },
+        {
+            "Name": "example.com.",
+            "Type": "NS",
+            "TTL": 172800,
+            "ResourceRecords": [
+                { "Value": "ns-111.awsdns-13.com." },
+                { "Value": "ns-1222.awsdns-24.org." },
+                { "Value": "ns-555.awsdns-05.net." },
+                { "Value": "ns-1888.awsdns-44.co.uk." }
+            ]
+        },
+        {
+            "Name": "example.com.",
+            "Type": "SOA",
+            "TTL": 900,
+            "ResourceRecords": [
+                { "Value": "ns-111.awsdns-13.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400" }
+            ]
+        },
+        {
+            "Name": "example.com.",
+            "Type": "TXT",
+            "TTL": 300,
+            "ResourceRecords": [
+                { "Value": "\"v=spf1 ip4:198.51.100.25 include:amazonses.com ~all\"" },
+                { "Value": "\"part-one-of-a-long-value-\" \"part-two\"" }
+            ]
+        },
+        {
+            "Name": "example.com.",
+            "Type": "CAA",
+            "TTL": 300,
+            "ResourceRecords": [
+                { "Value": "0 issue \"amazon.com\"" }
+            ]
+        },
+        {
+            "Name": "\\052.example.com.",
+            "Type": "CNAME",
+            "TTL": 300,
+            "ResourceRecords": [
+                { "Value": "example.com." }
+            ]
+        },
+        {
+            "Name": "api.example.com.",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z35SXDOTRQ7X7K",
+                "DNSName": "dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com.",
+                "EvaluateTargetHealth": true
+            }
+        },
+        {
+            "Name": "static.example.com.",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z3AQBSTGFYJSTF",
+                "DNSName": "s3-website-us-east-1.amazonaws.com.",
+                "EvaluateTargetHealth": false
+            }
+        },
+        {
+            "Name": "gw.example.com.",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z1UJRXOUMOOFQ8",
+                "DNSName": "d-abcdef1234.execute-api.us-east-1.amazonaws.com.",
+                "EvaluateTargetHealth": false
+            }
+        },
+        {
+            "Name": "www.example.com.",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z0EXAMPLEZONEID",
+                "DNSName": "example.com.",
+                "EvaluateTargetHealth": false
+            }
+        },
+        {
+            "Name": "app.example.com.",
+            "Type": "A",
+            "SetIdentifier": "blue",
+            "Weight": 90,
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "192.0.2.21" } ]
+        },
+        {
+            "Name": "app.example.com.",
+            "Type": "A",
+            "SetIdentifier": "green",
+            "Weight": 10,
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "192.0.2.22" } ]
+        },
+        {
+            "Name": "geo.example.com.",
+            "Type": "A",
+            "SetIdentifier": "default",
+            "GeoLocation": { "CountryCode": "*" },
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "198.51.100.30" } ]
+        },
+        {
+            "Name": "geo.example.com.",
+            "Type": "A",
+            "SetIdentifier": "turkey",
+            "GeoLocation": { "CountryCode": "TR" },
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "198.51.100.31" } ]
+        },
+        {
+            "Name": "lat.example.com.",
+            "Type": "A",
+            "SetIdentifier": "eu-central-1",
+            "Region": "eu-central-1",
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "203.0.113.40" } ]
+        },
+        {
+            "Name": "ha.example.com.",
+            "Type": "A",
+            "SetIdentifier": "primary",
+            "Failover": "PRIMARY",
+            "HealthCheckId": "11111111-2222-3333-4444-555555555555",
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "203.0.113.50" } ]
+        },
+        {
+            "Name": "ha.example.com.",
+            "Type": "A",
+            "SetIdentifier": "secondary",
+            "Failover": "SECONDARY",
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "203.0.113.51" } ]
+        },
+        {
+            "Name": "multi.example.com.",
+            "Type": "A",
+            "SetIdentifier": "one",
+            "MultiValueAnswer": true,
+            "TTL": 60,
+            "ResourceRecords": [ { "Value": "192.0.2.61" } ]
+        },
+        {
+            "Name": "db.internal.example.com.",
+            "Type": "A",
+            "TTL": 300,
+            "ResourceRecords": [ { "Value": "10.0.12.34" } ]
+        },
+        {
+            "Name": "_sip._tcp.example.com.",
+            "Type": "SRV",
+            "TTL": 300,
+            "ResourceRecords": [ { "Value": "10 5 5060 sip.example.com." } ]
+        },
+        {
+            "Name": "name\\040with\\040space.example.com.",
+            "Type": "TXT",
+            "TTL": 300,
+            "ResourceRecords": [ { "Value": "\"octal \\342\\200\\224 escapes in TXT\"" } ]
+        }
+    ],
+    "IsTruncated": true,
+    "NextRecordName": "zz.example.com.",
+    "NextRecordType": "A",
+    "MaxItems": "300"
+}

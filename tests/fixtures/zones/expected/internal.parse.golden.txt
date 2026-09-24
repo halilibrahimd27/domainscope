@@ -1,0 +1,17 @@
+format bind dialect generic origin example.com ($ORIGIN, high)
+stats records=11 proxied=0 dns-only=0 entries=11 skipped=0 generated=0 lines=15
+types A=8 CNAME=1 NS=1 SOA=1
+owners 10
+partial false
+default-ttl 300
+rr example.com. 300 SOA ns1.example.com. hostmaster.example.com. 2026092401 3600 600 604800 300 ; @5
+rr example.com. 300 NS ns1.example.com. ; @6
+rr ns1.example.com. 300 A 10.0.0.53 ; @7
+rr db.example.com. 300 A 10.0.12.34 ; @8
+rr git.example.com. 300 A 10.0.12.35 ; @9
+rr wiki.example.com. 300 A 172.16.5.10 ; @10
+rr ldap.example.com. 300 A 192.168.10.20 ; @11
+rr printer.example.com. 300 A 192.168.10.30 ; @12
+rr intranet.example.com. 300 CNAME wiki.example.com. ; @13
+rr www.example.com. 300 A 192.0.2.10 ; @14
+rr vpn.example.com. 300 A 203.0.113.5 ; @15

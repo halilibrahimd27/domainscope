@@ -1,0 +1,19 @@
+
+; <<>> DiG 9.18.28 <<>> @ns1.example.com example.com AXFR
+; (1 server found)
+;; global options: +cmd
+example.com.		3600	IN	SOA	ns1.example.com. hostmaster.example.com. 2026092402 7200 1800 1209600 300
+example.com.		3600	IN	NS	ns1.example.com.
+example.com.		3600	IN	NS	ns2.example.net.
+example.com.		3600	IN	A	192.0.2.10
+example.com.		3600	IN	MX	10 mail.example.com.
+example.com.		3600	IN	TXT	"v=spf1 mx -all"
+mail.example.com.	3600	IN	A	198.51.100.25
+ns1.example.com.	3600	IN	A	192.0.2.53
+www.example.com.	3600	IN	CNAME	example.com.
+example.com.		3600	IN	SOA	ns1.example.com. hostmaster.example.com. 2026092402 7200 1800 1209600 300
+;; Query time: 12 msec
+;; SERVER: 192.0.2.53#53(ns1.example.com) (TCP)
+;; WHEN: Thu Sep 24 10:00:00 UTC 2026
+;; XFR size: 10 records (messages 1, bytes 346)
+

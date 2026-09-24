@@ -1,0 +1,21 @@
+;;
+;; Domain:     example.com.
+;; Exported:   2026-09-24 08:15:02
+;;
+;; Cloudflare-style export with the documented originless placeholders (192.0.2.0 and 100::,
+;; a proxied record served by a Worker or a redirect rule, no origin server) and a proxied
+;; record pointing at a Cloudflare address (error 1000). The ONLY fixture with these values.
+;; SOA Record
+example.com	3600	IN	SOA	ada.ns.cloudflare.com. dns.cloudflare.com. 2051234568 10000 2400 604800 3600
+
+;; NS Records
+example.com.	86400	IN	NS	ada.ns.cloudflare.com.
+example.com.	86400	IN	NS	bob.ns.cloudflare.com.
+
+;; A Records
+example.com.	1	IN	A	192.0.2.10 ; cf_tags=cf-proxied:true
+worker.example.com.	1	IN	A	192.0.2.0 ; Worker route, no origin server cf_tags=cf-proxied:true
+cfip.example.com.	1	IN	A	104.16.1.1 ; points at a Cloudflare address cf_tags=cf-proxied:true
+
+;; AAAA Records
+edge.example.com.	1	IN	AAAA	100:: ; redirect rule only cf_tags=cf-proxied:true

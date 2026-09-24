@@ -1,0 +1,65 @@
+; Generic RFC 1035 / BIND master file exercising the syntax a parser must get right.
+; Every name and address is reserved documentation space (example.com, 192.0.2.0/24,
+; 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) or private space (lint tests).
+$ORIGIN example.com.
+$TTL 1h                                   ; BIND time units: s m h d w, case-insensitive, combinable (1h30m)
+@       IN  SOA ns1.example.com. hostmaster.example.com. (
+                2026092401 ; serial
+                2h         ; refresh
+                30M        ; retry (upper-case unit)
+                2W         ; expire
+                5m )       ; negative-cache TTL (SOA minimum)
+        IN  NS  ns1                       ; blank owner = previous owner (@); relative target -> ns1.example.com.
+        IN  NS  ns2.example.net.
+        IN  MX  10 mail                   ; relative exchange -> mail.example.com.
+        IN  MX  20 mx-backup              ; mx-backup is a CNAME below -> lint MX_TO_CNAME
+@       3600 IN A 192.0.2.10              ; TTL before class
+@       IN 3600 AAAA 2001:db8::10         ; class before TTL (both orders are legal)
+@       TXT "v=spf1 mx -all"              ; class and TTL both omitted
+@       TXT "v=spf1 a -all"               ; second SPF at the same owner -> lint MULTIPLE_SPF
+@       CAA 0 issue "letsencrypt.org"
+@       CAA 0 isue "example-ca.example"   ; tag typo -> lint CAA_UNKNOWN_TAG
+ns1     A   192.0.2.53
+mail    A   198.51.100.25
+www     CNAME @                           ; @ as RDATA = the origin
+www     A   192.0.2.17                    ; CNAME and other data at the same name -> lint CNAME_AND_OTHER_DATA
+mx-backup CNAME mail
+blog    CNAME example-blog.github.io      ; missing trailing dot -> becomes example-blog.github.io.example.com. -> lint RELATIVE_LOOKS_ABSOLUTE
+shop    CNAME shops.myshopify.com.
+*       A   192.0.2.99                    ; wildcard (a literal *, not an escape)
+\042.lit A  192.0.2.98                    ; \042 is DECIMAL 42 = '*' -> owner *.lit.example.com. (RFC 1035 \DDD is decimal)
+\052.dec A  192.0.2.97                    ; \052 is DECIMAL 52 = '4' -> owner 4.dec.example.com. (Route 53's \052 is OCTAL = '*')
+dot\.label A 192.0.2.96                   ; escaped dot stays inside one label: "dot.label" is ONE label
+intranet  A 10.20.30.40                   ; RFC 1918 in a public zone -> lint PRIVATE_IP
+localhost A 127.0.0.1                     ; classic hosting-panel record -> lint LOCALHOST_RECORD
+old       A 192.0.2.12
+old       A 192.0.2.12                    ; exact duplicate RR -> lint DUPLICATE_RR
+fast   60 A 192.0.2.13
+slow 1w   A 192.0.2.14                    ; TTL outlier vs the zone median -> lint TTL_OUTLIER
+long    TXT "a-single-character-string-longer-than-255-octets-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-01234567"
+multi   TXT "first string " "second string"   ; two character-strings in one RR (concatenated by SPF/DKIM consumers)
+quoted  TXT "she said \"hi\"; this ; is inside quotes"   ; escaped quote, semicolons inside quotes are NOT comments
+unq     TXT unquoted-token\;with-escaped-semicolon ; unquoted string; \; keeps the ; literal
+paren   TXT ( "multi-line"
+              "txt record" )              ; parentheses continue the RR over lines
+_sip._tcp SRV 10 5 5060 sip.example.com.
+svc     HTTPS 1 . alpn="h3,h2" ipv4hint=192.0.2.10
+dev     NS  ns-1.example-dns.net.         ; delegation (zone cut)
+dev     DS  12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+old.dev A   192.0.2.60                    ; below a zone cut: occluded, never served -> lint OCCLUDED_BY_DELEGATION
+badns   NS  192.0.2.53.                   ; IP literal as NS target (seen in real cPanel zones) -> lint TARGET_IS_IP
+UPPER   A   192.0.2.15                    ; owner names are case-insensitive -> upper.example.com.
+chaos  CH TXT "version"                   ; non-IN class -> ignore with a warning
+$ORIGIN sub.example.com.
+@       A   203.0.113.20                  ; now relative to the new origin -> sub.example.com.
+api     A   203.0.113.21                  ; -> api.sub.example.com.
+$ORIGIN example.com.
+$GENERATE 1-3 host-$ A 192.0.2.$          ; BIND extension (Cloudflare import supports it) -> host-1..host-3
+$INCLUDE /etc/bind/other.zone             ; must be REJECTED in a browser (no file system; Cloudflare also rejects it)
+; --- robustness cases after the rejected $INCLUDE: each is reported and parsing goes on ---
+big 4294967295 A 192.0.2.3             ; TTL above 2^31-1 -> BAD_TTL, treated as 0 and not remembered
+x       A   999.1.1.1                  ; not an IPv4 address -> BAD_RDATA (record kept, invalid)
+bad     MX  mail.example.com.          ; MX without a preference -> BAD_RDATA
+gen     TYPE65534 \# 4 0a000001        ; RFC 3597 generic RDATA of an unknown type
+hexa    A   \# 4 C0000264              ; RFC 3597 form of a known type -> decoded as 192.0.2.100
+kase    TXT "k\195\164se"              ; decimal escapes of UTF-8 bytes -> "käse"

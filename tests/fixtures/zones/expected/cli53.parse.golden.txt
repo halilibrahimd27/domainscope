@@ -1,0 +1,19 @@
+format bind dialect cli53 origin example.com ($ORIGIN, high)
+markers class AWS | ; AWS routing
+stats records=13 proxied=0 dns-only=0 entries=13 skipped=0 generated=0 lines=14
+types A=9 CNAME=1 NS=2 SOA=1
+owners 7
+partial false
+rr example.com. 900 SOA ns-111.awsdns-13.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400 ; @2
+rr example.com. 172800 NS ns-111.awsdns-13.com. ; @3
+rr example.com. 172800 NS ns-1222.awsdns-24.org. ; @4
+rr example.com. - A - ; alias cloudfront d111111abcdef8.cloudfront.net. ; @5
+rr api.example.com. - A - ; alias elb dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com. eval-health ; @6
+rr www.example.com. - A - ; alias same-zone api.example.com. ; @7
+rr app.example.com. 60 A 192.0.2.21 ; routing weighted:blue weight=90 ; @8
+rr app.example.com. 60 A 192.0.2.22 ; routing weighted:green weight=10 ; @9
+rr geo.example.com. 60 A 198.51.100.30 ; routing geolocation:default geo={"countryCode":"*"} ; @10
+rr geo.example.com. 60 A 198.51.100.31 ; routing geolocation:turkey geo={"countryCode":"TR"} ; @11
+rr ha.example.com. 60 A 203.0.113.50 ; routing failover:primary failover=PRIMARY health-check ; @12
+rr ha.example.com. 60 A 203.0.113.51 ; routing failover:secondary failover=SECONDARY ; @13
+rr *.example.com. 300 CNAME example.com. ; @14

@@ -1,0 +1,41 @@
+{
+  "origin": "example.com",
+  "format": "route53",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "*.example.com",
+        "api.example.com",
+        "app.example.com",
+        "geo.example.com",
+        "gw.example.com",
+        "ha.example.com",
+        "db.internal.example.com",
+        "lat.example.com",
+        "multi.example.com",
+        "static.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.0.12.34",
+        "192.0.2.21",
+        "192.0.2.22",
+        "192.0.2.61",
+        "198.51.100.30",
+        "198.51.100.31",
+        "203.0.113.40",
+        "203.0.113.50",
+        "203.0.113.51"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

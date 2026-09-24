@@ -1,0 +1,33 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "*.example.com",
+        "api.example.com",
+        "app.example.com",
+        "geo.example.com",
+        "ha.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "192.0.2.21",
+        "192.0.2.22",
+        "198.51.100.30",
+        "198.51.100.31",
+        "203.0.113.50",
+        "203.0.113.51"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

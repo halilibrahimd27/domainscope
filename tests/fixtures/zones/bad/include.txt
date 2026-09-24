@@ -1,0 +1,5 @@
+$ORIGIN example.com.
+$TTL 300
+@       NS  ns1.example.com.
+$INCLUDE records.zone
+www     A   192.0.2.10

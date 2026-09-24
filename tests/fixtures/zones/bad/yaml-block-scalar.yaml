@@ -1,0 +1,4 @@
+_dmarc:
+  type: TXT
+  value: |
+    v=DMARC1; p=none

@@ -1,0 +1,50 @@
+{
+  "origin": "example.com",
+  "format": "octodns",
+  "scopes": {
+    "proxied": {
+      "names": [
+        "example.com",
+        "*.example.com",
+        "api.example.com",
+        "app.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "192.0.2.10",
+        "192.0.2.13",
+        "2001:db8::10"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net"
+      ],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "*.example.com",
+        "admin.example.com",
+        "api.example.com",
+        "app.example.com",
+        "geo.example.com",
+        "intranet.example.com",
+        "mail.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.20.30.40",
+        "192.0.2.10",
+        "192.0.2.12",
+        "192.0.2.13",
+        "198.51.100.25",
+        "198.51.100.30",
+        "2001:db8::10"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net"
+      ],
+      "skipped": []
+    }
+  }
+}

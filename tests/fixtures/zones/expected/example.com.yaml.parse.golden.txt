@@ -1,0 +1,31 @@
+format octodns dialect - origin example.com (filename, low)
+markers ? ''
+stats records=23 proxied=5 dns-only=0 entries=18 skipped=1 generated=0 lines=108
+types A=10 AAAA=1 CAA=1 CNAME=2 MX=2 NS=2 SRV=1 TXT=4
+owners 12
+partial false
+rr example.com. 300 A 192.0.2.10 ; proxied ; @7
+rr example.com. 3600 CAA 0 issue "letsencrypt.org" ; @7
+rr example.com. 3600 MX 10 mail.example.com. ; @7
+rr example.com. 3600 MX 20 mx2.example.net. ; @7
+rr example.com. 3600 NS ns1.example-dns.net. ; @7
+rr example.com. 3600 NS ns2.example-dns.net. ; @7
+rr example.com. 3600 TXT "google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" ; @7
+rr example.com. 3600 TXT "v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all" ; @7
+rr *.example.com. 3600 CNAME www.example.com. ; @34
+rr _dmarc.example.com. 3600 TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com" ; @37
+rr _sip._tcp.example.com. 600 SRV 10 5 5060 sip.example.com. ; @40
+rr admin.example.com. 3600 A 192.0.2.12 ; @48
+rr api.example.com. 300~ A 192.0.2.14 ; proxied ; @51
+rr app.example.com. 3600 CNAME origin-lb.example.net. ; proxied ; @59
+rr geo.example.com. 3600 A 198.51.100.30 ; routing dynamic:- ; @65
+rr geo.example.com. 3600 A 198.51.100.31 ; routing dynamic:eu ; @65
+rr geo.example.com. 3600 A 198.51.100.32 ; routing dynamic:us weight=2 ; @65
+rr geo.example.com. 3600 A 198.51.100.33 ; routing dynamic:us ; @65
+rr google._domainkey.example.com. 3600 TXT "v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample" ; @84
+rr intranet.example.com. 3600 A 10.20.30.40 ; @92
+rr mail.example.com. 3600 A 198.51.100.25 ; @95
+rr www.example.com. 3600 A 192.0.2.10 ; proxied ; @98
+rr www.example.com. 3600 AAAA 2001:db8::10 ; proxied ; @98
+issue info ORIGIN_INFERRED @0 origin=example.com source=filename
+issue info OCTODNS_IGNORED @87 name=ignored.example.com type=A

@@ -1,0 +1,79 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [
+        "example.com",
+        "api.example.com",
+        "app.example.com",
+        "*.apps.example.com",
+        "docs.example.com",
+        "mixed.example.com",
+        "tagged.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "192.0.2.10",
+        "192.0.2.13",
+        "192.0.2.20",
+        "192.0.2.30",
+        "192.0.2.31",
+        "192.0.2.40",
+        "2001:db8::10"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net"
+      ],
+      "skipped": [
+        "shop.example.com",
+        "tunnel.example.com"
+      ]
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "admin.example.com",
+        "api.example.com",
+        "app.example.com",
+        "*.apps.example.com",
+        "blog.example.com",
+        "docs.example.com",
+        "ftp.example.com",
+        "intranet.example.com",
+        "mail.example.com",
+        "mixed.example.com",
+        "shop.example.com",
+        "legacy.shop.example.com",
+        "status.example.com",
+        "tagged.example.com",
+        "tunnel.example.com",
+        "v6only.example.com",
+        "vpn.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.20.30.40",
+        "192.0.2.10",
+        "192.0.2.12",
+        "192.0.2.13",
+        "192.0.2.20",
+        "192.0.2.30",
+        "192.0.2.31",
+        "192.0.2.40",
+        "192.0.2.50",
+        "198.51.100.25",
+        "203.0.113.5",
+        "2001:db8::10",
+        "2001:db8::77"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net"
+      ],
+      "skipped": [
+        "shop.example.com",
+        "tunnel.example.com"
+      ]
+    }
+  }
+}

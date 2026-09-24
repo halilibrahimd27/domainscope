@@ -1,0 +1,40 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "autoconfig.example.com",
+        "autodiscover.example.com",
+        "blog.example.com",
+        "cpanel.blog.example.com",
+        "webmail.blog.example.com",
+        "www.blog.example.com",
+        "cpanel.example.com",
+        "cpcalendars.example.com",
+        "cpcontacts.example.com",
+        "ftp.example.com",
+        "localhost.example.com",
+        "mail.example.com",
+        "webdisk.example.com",
+        "webmail.example.com",
+        "whm.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "127.0.0.1",
+        "192.0.2.80",
+        "192.0.2.81"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

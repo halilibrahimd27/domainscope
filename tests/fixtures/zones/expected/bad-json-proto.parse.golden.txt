@@ -1,0 +1,9 @@
+format cloudflare-api dialect - origin example.com (records, low)
+markers result[]
+stats records=2 proxied=0 dns-only=1 entries=2 skipped=0 generated=0 lines=4
+types A=1 TXT=1
+owners 2
+partial false
+rr example.com. 300~ A 192.0.2.10 ; dns-only ; @1
+rr constructor.example.com. 300 TXT "prototype" ; tags {"__proto__":"x","constructor":"y"} ; @2
+issue info ORIGIN_INFERRED @0 origin=example.com source=records

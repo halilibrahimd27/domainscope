@@ -1,0 +1,18 @@
+format cloudflare-api dialect - origin example.com (records, low)
+markers result[]
+stats records=10 proxied=7 dns-only=3 entries=10 skipped=0 generated=0 lines=18
+types A=6 AAAA=1 CNAME=3
+owners 9
+partial true
+rr example.com. 300~ A 192.0.2.10 ; proxied ; @1
+rr www.example.com. 300~ A 192.0.2.10 ; proxied ; @2
+rr api.example.com. 300~ A 192.0.2.14 ; proxied ; tags {"team":"backend"} ; comment "API origin; do not expose" ; @3
+rr admin.example.com. 300~ A 192.0.2.12 ; dns-only ; @4
+rr *.apps.example.com. 300~ A 192.0.2.20 ; proxied ; @5
+rr old.dev.example.com. 300~ A 192.0.2.60 ; dns-only ; occluded-by delegation ; @6
+rr www.example.com. 300~ AAAA 2001:db8::10 ; proxied ; @7
+rr app.example.com. 300~ CNAME origin-lb.example.net. ; proxied ; @8
+rr tunnel.example.com. 300~ CNAME 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com. ; proxied ; @9
+rr status.example.com. 300~ CNAME statuspage.example.org. ; dns-only ; flatten ; @10
+issue error PARTIAL_EXPORT @0 have=10 total=19 pages=1 totalPages=2 provider=cloudflare
+issue info ORIGIN_INFERRED @0 origin=example.com source=records

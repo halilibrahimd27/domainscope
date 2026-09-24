@@ -1,0 +1,14 @@
+$ORIGIN example.com.
+@	900	IN	SOA	ns-111.awsdns-13.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400
+@	172800	IN	NS	ns-111.awsdns-13.com.
+@	172800	IN	NS	ns-1222.awsdns-24.org.
+@	86400	AWS	ALIAS	A d111111abcdef8.cloudfront.net. Z2FDTNDATAQYW2 false
+api	86400	AWS	ALIAS	A dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com. Z35SXDOTRQ7X7K true
+www	86400	AWS	ALIAS	A api $self false
+app	60	IN	A	192.0.2.21 ; AWS routing="WEIGHTED" weight=90 identifier="blue"
+app	60	IN	A	192.0.2.22 ; AWS routing="WEIGHTED" weight=10 identifier="green"
+geo	60	IN	A	198.51.100.30 ; AWS routing="GEOLOCATION" countryCode="*" identifier="default"
+geo	60	IN	A	198.51.100.31 ; AWS routing="GEOLOCATION" countryCode="TR" identifier="turkey"
+ha	60	IN	A	203.0.113.50 ; AWS routing="FAILOVER" failover="PRIMARY" healthCheckId="11111111-2222-3333-4444-555555555555" identifier="primary"
+ha	60	IN	A	203.0.113.51 ; AWS routing="FAILOVER" failover="SECONDARY" identifier="secondary"
+*	300	IN	CNAME	example.com.

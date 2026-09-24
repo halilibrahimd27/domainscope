@@ -1,0 +1,10 @@
+__proto__:
+  polluted: true
+  type: A
+  value: 192.0.2.30
+constructor:
+  type: A
+  value: 192.0.2.31
+prototype:
+  type: TXT
+  value: harmless

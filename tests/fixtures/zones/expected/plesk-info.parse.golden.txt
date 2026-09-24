@@ -1,0 +1,21 @@
+format plesk-info dialect - origin example.com (header, high)
+markers SUCCESS: Getting information
+stats records=13 proxied=0 dns-only=0 entries=13 skipped=0 generated=0 lines=15
+types A=5 CNAME=2 MX=1 NS=2 TXT=3
+owners 9
+partial false
+rr example.com. - NS ns1.example.com. ; @3
+rr example.com. - NS ns2.example.com. ; @4
+rr ns1.example.com. - A 192.0.2.70 ; @5
+rr ns2.example.com. - A 192.0.2.71 ; @6
+rr example.com. - A 192.0.2.70 ; @7
+rr www.example.com. - CNAME example.com. ; @8
+rr ftp.example.com. - CNAME example.com. ; @9
+rr mail.example.com. - A 192.0.2.70 ; @10
+rr webmail.example.com. - A 192.0.2.70 ; @11
+rr example.com. - MX 10 mail.example.com. ; @12
+rr example.com. - TXT "v=spf1 +a +mx +a:server01.example.net -all" ; @13
+rr _dmarc.example.com. - TXT "v=DMARC1; p=none" ; @14
+rr default._domainkey.example.com. - TXT "v=DKIM1; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQexample" ; @15
+issue info FORMAT_UNVERIFIED @0 format=plesk-info
+issue info ORIGIN_INFERRED @0 origin=example.com source=header

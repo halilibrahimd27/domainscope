@@ -1,0 +1,65 @@
+# placeholder-cf.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=cloudflare origin=example.com partial=false
+lint error PROXIED_TO_CLOUDFLARE_IP err1000.example.com A @8 name=err1000.example.com ip=104.16.1.1
+lint error PROXIED_PRIVATE_ORIGIN backend.example.com A @9 name=backend.example.com ip=10.0.0.5
+lint error ORIGIN_EXPOSED_BY_SIBLING mail.example.com A @10 name=mail.example.com ip=198.51.100.20 proxied=example.com,smtp.example.com,www.example.com role=mx
+lint error ORIGIN_EXPOSED_BY_SIBLING direct.example.com A @11 name=direct.example.com ip=198.51.100.20 proxied=example.com,smtp.example.com,www.example.com role=record
+lint error ORIGIN_EXPOSED_BY_SIBLING lb2.example.com CNAME @14 name=lb2.example.com host=origin-lb.example.net proxied=app.example.com role=record
+lint error MX_TARGET_PROXIED example.com MX @19 name=example.com target=smtp.example.com
+lint error MX_TO_CNAME example.com MX @19 name=example.com target=smtp.example.com
+lint warn SRV_TARGET_PROXIED _sip._tcp.example.com SRV @20 name=_sip._tcp.example.com target=www.example.com port=5060
+lint info ORIGINLESS_PLACEHOLDER worker.example.com A @6 name=worker.example.com ip=192.0.2.0
+lint info ORIGINLESS_PLACEHOLDER edge.example.com AAAA @7 name=edge.example.com ip=100::
+lint info PROXIED_PROVIDER pages.example.com CNAME @15 name=pages.example.com target=example-site.pages.dev provider=cloudflare-pages
+lint info PROXIED_PROVIDER gw.example.com CNAME @17 name=gw.example.com target=abc123.execute-api.eu-west-1.amazonaws.com provider=aws-api-gateway
+seed example.com
+seed app.example.com
+seed backend.example.com
+seed direct.example.com
+seed edge.example.com
+seed err1000.example.com
+seed gw.example.com
+seed lb2.example.com
+seed mail.example.com
+seed pages.example.com
+seed smtp.example.com
+seed tm.example.com
+seed worker.example.com
+seed www.example.com
+private backend.example.com
+origin example.com ip 198.51.100.20 via - provider - servers web02 exposure mx:mail.example.com,sibling:direct.example.com
+origin app.example.com host origin-lb.example.net via - provider - servers - exposure sibling:lb2.example.com
+origin backend.example.com ip 10.0.0.5 via - provider - servers - exposure - private
+origin edge.example.com placeholder 100:: via - provider - servers - exposure -
+origin err1000.example.com cloudflare-ip 104.16.1.1 via - provider - servers - exposure -
+origin gw.example.com provider - via - provider aws-api-gateway servers - exposure -
+origin pages.example.com provider - via - provider cloudflare-pages servers - exposure -
+origin smtp.example.com ip 198.51.100.20 via www.example.com provider - servers web02 exposure mx:mail.example.com,sibling:direct.example.com
+origin tm.example.com host example-app.trafficmanager.net via - provider azure-trafficmanager servers - exposure -
+origin worker.example.com placeholder 192.0.2.0 via - provider - servers - exposure -
+origin www.example.com ip 198.51.100.20 via - provider - servers web02 exposure mx:mail.example.com,sibling:direct.example.com
+address 10.0.0.5 backend.example.com* servers - private
+address 104.16.1.1 err1000.example.com* servers - provider cloudflare
+address 192.0.2.0 worker.example.com* servers - placeholder
+address 198.51.100.20 example.com* direct.example.com! mail.example.com! smtp.example.com*~ www.example.com* servers web02
+address 100:: edge.example.com* servers - placeholder
+handoff target 10.0.0.5
+handoff target 198.51.100.20
+handoff host origin-lb.example.net
+handoff host example-app.trafficmanager.net
+handoff name example.com
+handoff name app.example.com
+handoff name backend.example.com
+handoff name smtp.example.com
+handoff name tm.example.com
+handoff name www.example.com
+skip edge.example.com placeholder 100::
+skip err1000.example.com cloudflare-ip 104.16.1.1
+skip gw.example.com provider abc123.execute-api.eu-west-1.amazonaws.com
+skip pages.example.com provider example-site.pages.dev
+skip worker.example.com placeholder 192.0.2.0
+sweep proxied targets=2 hosts=2 names=6 tokens=10 chars=196 probes=24 probesAtLeast=true fileForm=false
+sweep all targets=2 hosts=2 names=14 tokens=18 chars=337 probes=56 probesAtLeast=true fileForm=false
+scan names=13 wildcardBases=0 delegations=0 proxied=5 skipped=backend.example.com
+drift rrsets=20 queries=23 needed=23 names=16 targetsHidden=0 internalShare=0.125
+drift skipped private=1 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=1 wildcard=0 budget=0

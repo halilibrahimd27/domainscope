@@ -1,0 +1,51 @@
+{
+  "format": "bind",
+  "dialect": "godaddy",
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "$ORIGIN",
+  "originConfidence": "high",
+  "warnings": [],
+  "fatal": null,
+  "partial": false,
+  "sources": [
+    {
+      "name": "godaddy.txt",
+      "size": 0,
+      "format": "bind",
+      "dialect": "godaddy"
+    }
+  ],
+  "stats": {
+    "records": 15,
+    "proxied": 0,
+    "dnsOnly": 0,
+    "byType": {
+      "SOA": 1,
+      "A": 2,
+      "TXT": 2,
+      "AAAA": 1,
+      "CNAME": 3,
+      "NS": 2,
+      "MX": 2,
+      "SRV": 2
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"SOA","ttl":3600,"data":{"mname":"ns07.domaincontrol.com","rname":"dns.jomax.net","serial":2026092401,"refresh":28800,"retry":7200,"expire":604800,"minimum":3600,"email":"dns@jomax.net"},"text":"ns07.domaincontrol.com. dns.jomax.net. 2026092401 28800 7200 604800 3600","targets":["ns07.domaincontrol.com","dns.jomax.net"],"proxied":null,"line":32,"source":0},
+    {"id":1,"name":"example.com","type":"A","ttl":600,"data":"192.0.2.90","text":"192.0.2.90","targets":[],"proxied":null,"line":41,"source":0},
+    {"id":2,"name":"shop.example.com","type":"A","ttl":600,"data":"192.0.2.91","text":"192.0.2.91","targets":[],"proxied":null,"line":42,"source":0},
+    {"id":3,"name":"example.com","type":"TXT","ttl":3600,"data":["v=spf1 include:secureserver.net -all"],"text":"\"v=spf1 include:secureserver.net -all\"","targets":[],"proxied":null,"line":45,"source":0},
+    {"id":4,"name":"_dmarc.example.com","type":"TXT","ttl":3600,"data":["v=DMARC1; p=quarantine;"],"text":"\"v=DMARC1; p=quarantine;\"","targets":[],"proxied":null,"line":46,"source":0},
+    {"id":5,"name":"v6.example.com","type":"AAAA","ttl":1800,"data":"2001:db8::90","text":"2001:db8::90","targets":[],"proxied":null,"line":49,"source":0},
+    {"id":6,"name":"www.example.com","type":"CNAME","ttl":3600,"data":"example.com","text":"example.com.","targets":["example.com"],"proxied":null,"line":52,"source":0},
+    {"id":7,"name":"_domainconnect.example.com","type":"CNAME","ttl":3600,"data":"_domainconnect.gd.domaincontrol.com","text":"_domainconnect.gd.domaincontrol.com.","targets":["_domainconnect.gd.domaincontrol.com"],"proxied":null,"line":53,"source":0},
+    {"id":8,"name":"pay.example.com","type":"CNAME","ttl":3600,"data":"payments.example.org.example.com","text":"payments.example.org.example.com.","targets":["payments.example.org.example.com"],"proxied":null,"line":54,"source":0,"intendedTargets":["payments.example.org"]},
+    {"id":9,"name":"example.com","type":"NS","ttl":3600,"data":"ns07.domaincontrol.com","text":"ns07.domaincontrol.com.","targets":["ns07.domaincontrol.com"],"proxied":null,"line":57,"source":0},
+    {"id":10,"name":"example.com","type":"NS","ttl":3600,"data":"ns08.domaincontrol.com","text":"ns08.domaincontrol.com.","targets":["ns08.domaincontrol.com"],"proxied":null,"line":58,"source":0},
+    {"id":11,"name":"example.com","type":"MX","ttl":3600,"data":{"preference":10,"exchange":"mailstore1.secureserver.net"},"text":"10 mailstore1.secureserver.net.","targets":["mailstore1.secureserver.net"],"proxied":null,"line":61,"source":0},
+    {"id":12,"name":"example.com","type":"MX","ttl":3600,"data":{"preference":0,"exchange":"smtp.secureserver.net"},"text":"0 smtp.secureserver.net.","targets":["smtp.secureserver.net"],"proxied":null,"line":62,"source":0},
+    {"id":13,"name":"_autodiscover._tcp.example.com","type":"SRV","ttl":3600,"data":{"priority":0,"weight":1,"port":443,"target":"autodiscover.secureserver.net"},"text":"0 1 443 autodiscover.secureserver.net.","targets":["autodiscover.secureserver.net"],"proxied":null,"line":65,"source":0},
+    {"id":14,"name":"_imaps._tcp.example.com","type":"SRV","ttl":3600,"data":{"priority":0,"weight":1,"port":993,"target":"imap.secureserver.net"},"text":"0 1 993 imap.secureserver.net.","targets":["imap.secureserver.net"],"proxied":null,"line":66,"source":0}
+  ]
+}

@@ -1,0 +1,15 @@
+SUCCESS: Getting information for Domain 'example.com' complete.
+
+example.com. NS ns1.example.com.
+example.com. NS ns2.example.com.
+ns1.example.com. A 192.0.2.70
+ns2.example.com. A 192.0.2.71
+example.com. A 192.0.2.70
+www.example.com. CNAME example.com.
+ftp.example.com. CNAME example.com.
+mail.example.com. A 192.0.2.70
+webmail.example.com. A 192.0.2.70
+example.com. MX 10 mail.example.com.
+example.com. TXT v=spf1 +a +mx +a:server01.example.net -all
+_dmarc.example.com. TXT v=DMARC1; p=none
+default._domainkey.example.com. TXT v=DKIM1; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQexample

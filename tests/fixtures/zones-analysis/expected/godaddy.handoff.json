@@ -1,0 +1,28 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "pay.example.com",
+        "shop.example.com",
+        "v6.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "192.0.2.90",
+        "192.0.2.91",
+        "2001:db8::90"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

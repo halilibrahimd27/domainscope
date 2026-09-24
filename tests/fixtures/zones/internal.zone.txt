@@ -1,0 +1,15 @@
+; Split-horizon (internal) view of example.com: most addresses are RFC 1918 space.
+; Used for the "internal zone" warning and the drift "skip private-looking names" default.
+$ORIGIN example.com.
+$TTL 300
+@         IN SOA  ns1.example.com. hostmaster.example.com. 2026092401 3600 600 604800 300
+@         IN NS   ns1.example.com.
+ns1       IN A    10.0.0.53
+db        IN A    10.0.12.34
+git       IN A    10.0.12.35
+wiki      IN A    172.16.5.10
+ldap      IN A    192.168.10.20
+printer   IN A    192.168.10.30
+intranet  IN CNAME wiki.example.com.
+www       IN A    192.0.2.10
+vpn       IN A    203.0.113.5

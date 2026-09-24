@@ -1,0 +1,45 @@
+# cloudflare-api.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=cloudflare-api dialect=- origin=example.com partial=false
+lint warn OCCLUDED_BY_DELEGATION old.dev.example.com A @6 name=old.dev.example.com cut=dev.example.com
+lint warn DANGLING_IN_ZONE_TARGET example.com MX @11 name=example.com target=mail.example.com
+lint warn DANGLING_IN_ZONE_TARGET _autodiscover._tcp.example.com SRV @12 name=_autodiscover._tcp.example.com target=mail.example.com
+lint info PROXIED_TUNNEL tunnel.example.com CNAME @9 name=tunnel.example.com target=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com
+seed example.com
+seed admin.example.com
+seed api.example.com
+seed app.example.com
+seed mail.example.com
+seed status.example.com
+seed tunnel.example.com
+seed www.example.com
+wildcard apps.example.com
+delegation dev.example.com
+exclude old.dev.example.com occluded
+origin example.com ip 192.0.2.10 via - provider - servers web01 exposure -
+origin api.example.com ip 192.0.2.13 via - provider - servers - exposure -
+origin app.example.com host origin-lb.example.net via - provider - servers - exposure -
+origin *.apps.example.com ip 192.0.2.20 via - provider - servers - exposure -
+origin tunnel.example.com tunnel - via - provider cloudflare-tunnel servers - exposure -
+origin www.example.com ip 192.0.2.10,2001:db8::10 via - provider - servers web01 exposure -
+address 192.0.2.10 example.com* www.example.com* servers web01
+address 192.0.2.12 admin.example.com servers -
+address 192.0.2.13 api.example.com* servers -
+address 192.0.2.20 *.apps.example.com* servers -
+address 192.0.2.60 old.dev.example.com# servers -
+address 2001:db8::10 www.example.com* servers -
+handoff target 192.0.2.10
+handoff target 192.0.2.13
+handoff target 192.0.2.20
+handoff target 2001:db8::10
+handoff host origin-lb.example.net
+handoff name example.com
+handoff name api.example.com
+handoff name app.example.com
+handoff name *.apps.example.com
+handoff name www.example.com
+skip tunnel.example.com tunnel 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com
+sweep proxied targets=4 hosts=1 names=5 tokens=10 chars=173 probes=30 probesAtLeast=true fileForm=false
+sweep all targets=5 hosts=1 names=8 tokens=14 chars=240 probes=54 probesAtLeast=true fileForm=false
+scan names=8 wildcardBases=1 delegations=1 proxied=5 skipped=-
+drift rrsets=16 queries=20 needed=20 names=12 targetsHidden=1 internalShare=0.000
+drift skipped private=0 occluded=1 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

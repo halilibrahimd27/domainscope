@@ -1,0 +1,64 @@
+format bind dialect generic origin example.com ($ORIGIN, high)
+stats records=51 proxied=0 dns-only=0 entries=49 skipped=1 generated=3 lines=65
+types A=24 AAAA=1 CAA=2 CNAME=4 DS=1 HTTPS=1 MX=3 NS=4 SOA=1 SRV=1 TXT=8 TYPE65534=1
+owners 38
+partial false
+default-ttl 3600
+rr example.com. 3600 SOA ns1.example.com. hostmaster.example.com. 2026092401 7200 1800 1209600 300 ; comment "serial refresh retry (upper-case unit) expire negative-cache TTL (SOA minimum)" ; @6
+rr example.com. 3600 NS ns1.example.com. ; comment "blank owner = previous owner (@); relative target -> ns1.example.com." ; @12
+rr example.com. 3600 NS ns2.example.net. ; @13
+rr example.com. 3600 MX 10 mail.example.com. ; comment "relative exchange -> mail.example.com." ; @14
+rr example.com. 3600 MX 20 mx-backup.example.com. ; comment "mx-backup is a CNAME below -> lint MX_TO_CNAME" ; @15
+rr example.com. 3600 A 192.0.2.10 ; comment "TTL before class" ; @16
+rr example.com. 3600 AAAA 2001:db8::10 ; comment "class before TTL (both orders are legal)" ; @17
+rr example.com. 3600 TXT "v=spf1 mx -all" ; comment "class and TTL both omitted" ; @18
+rr example.com. 3600 TXT "v=spf1 a -all" ; comment "second SPF at the same owner -> lint MULTIPLE_SPF" ; @19
+rr example.com. 3600 CAA 0 issue "letsencrypt.org" ; @20
+rr example.com. 3600 CAA 0 isue "example-ca.example" ; comment "tag typo -> lint CAA_UNKNOWN_TAG" ; @21
+rr ns1.example.com. 3600 A 192.0.2.53 ; @22
+rr mail.example.com. 3600 A 198.51.100.25 ; @23
+rr www.example.com. 3600 CNAME example.com. ; comment "@ as RDATA = the origin" ; @24
+rr www.example.com. 3600 A 192.0.2.17 ; comment "CNAME and other data at the same name -> lint CNAME_AND_OTHER_DATA" ; @25
+rr mx-backup.example.com. 3600 CNAME mail.example.com. ; @26
+rr blog.example.com. 3600 CNAME example-blog.github.io.example.com. ; intended-targets example-blog.github.io ; comment "missing trailing dot -> becomes example-blog.github.io.example.com. -> lint RELATIVE_LOOKS_ABSOLUTE" ; @27
+rr shop.example.com. 3600 CNAME shops.myshopify.com. ; @28
+rr *.example.com. 3600 A 192.0.2.99 ; comment "wildcard (a literal *, not an escape)" ; @29
+rr *.lit.example.com. 3600 A 192.0.2.98 ; comment "\\042 is DECIMAL 42 = '*' -> owner *.lit.example.com. (RFC 1035 \\DDD is decimal)" ; @30
+rr 4.dec.example.com. 3600 A 192.0.2.97 ; comment "\\052 is DECIMAL 52 = '4' -> owner 4.dec.example.com. (Route 53's \\052 is OCTAL = '*')" ; @31
+rr dot\.label.example.com. 3600 A 192.0.2.96 ; comment "escaped dot stays inside one label: \"dot.label\" is ONE label" ; @32
+rr intranet.example.com. 3600 A 10.20.30.40 ; comment "RFC 1918 in a public zone -> lint PRIVATE_IP" ; @33
+rr localhost.example.com. 3600 A 127.0.0.1 ; comment "classic hosting-panel record -> lint LOCALHOST_RECORD" ; @34
+rr old.example.com. 3600 A 192.0.2.12 ; @35
+rr old.example.com. 3600 A 192.0.2.12 ; dup-of #24 ; comment "exact duplicate RR -> lint DUPLICATE_RR" ; @36
+rr fast.example.com. 60 A 192.0.2.13 ; @37
+rr slow.example.com. 604800 A 192.0.2.14 ; comment "TTL outlier vs the zone median -> lint TTL_OUTLIER" ; @38
+rr long.example.com. 3600 TXT "a-single-character-string-longer-than-255-octets-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-01234567" ; @39
+rr multi.example.com. 3600 TXT "first string " "second string" ; comment "two character-strings in one RR (concatenated by SPF/DKIM consumers)" ; @40
+rr quoted.example.com. 3600 TXT "she said \"hi\"; this ; is inside quotes" ; comment "escaped quote, semicolons inside quotes are NOT comments" ; @41
+rr unq.example.com. 3600 TXT "unquoted-token;with-escaped-semicolon" ; comment "unquoted string; \\; keeps the ; literal" ; @42
+rr paren.example.com. 3600 TXT "multi-line" "txt record" ; comment "parentheses continue the RR over lines" ; @43
+rr _sip._tcp.example.com. 3600 SRV 10 5 5060 sip.example.com. ; @45
+rr svc.example.com. 3600 HTTPS 1 . alpn="h3,h2" ipv4hint=192.0.2.10 ; @46
+rr dev.example.com. 3600 NS ns-1.example-dns.net. ; comment "delegation (zone cut)" ; @47
+rr dev.example.com. 3600 DS 12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF ; @48
+rr old.dev.example.com. 3600 A 192.0.2.60 ; comment "below a zone cut: occluded, never served -> lint OCCLUDED_BY_DELEGATION" ; @49
+rr badns.example.com. 3600 NS 192.0.2.53. ; comment "IP literal as NS target (seen in real cPanel zones) -> lint TARGET_IS_IP" ; @50
+rr upper.example.com. 3600 A 192.0.2.15 ; comment "owner names are case-insensitive -> upper.example.com." ; @51
+rr sub.example.com. 3600 A 203.0.113.20 ; comment "now relative to the new origin -> sub.example.com." ; @54
+rr api.sub.example.com. 3600 A 203.0.113.21 ; comment "-> api.sub.example.com." ; @55
+rr host-1.example.com. 3600 A 192.0.2.1 ; generated ; comment "BIND extension (Cloudflare import supports it) -> host-1..host-3" ; @57
+rr host-2.example.com. 3600 A 192.0.2.2 ; generated ; comment "BIND extension (Cloudflare import supports it) -> host-1..host-3" ; @57
+rr host-3.example.com. 3600 A 192.0.2.3 ; generated ; comment "BIND extension (Cloudflare import supports it) -> host-1..host-3" ; @57
+rr big.example.com. 0 A 192.0.2.3 ; comment "TTL above 2^31-1 -> BAD_TTL, treated as 0 and not remembered" ; @60
+rr x.example.com. 3600 A 999.1.1.1 ; invalid ; comment "not an IPv4 address -> BAD_RDATA (record kept, invalid)" ; @61
+rr bad.example.com. 3600 MX mail.example.com. ; invalid ; comment "MX without a preference -> BAD_RDATA" ; @62
+rr gen.example.com. 3600 TYPE65534 \# 4 0A000001 ; comment "RFC 3597 generic RDATA of an unknown type" ; @63
+rr hexa.example.com. 3600 A 192.0.2.100 ; comment "RFC 3597 form of a known type -> decoded as 192.0.2.100" ; @64
+rr kase.example.com. 3600 TXT "käse" ; comment "decimal escapes of UTF-8 bytes -> \"käse\"" ; @65
+issue warn TARGET_MISSING_TRAILING_DOT @27 name=blog.example.com target=example-blog.github.io.example.com intended=example-blog.github.io
+issue info NON_IN_CLASS @52 class=CH
+issue info GENERATE_EXPANDED @57 count=3 range=1-3
+issue error INCLUDE_REJECTED @58 path=/etc/bind/other.zone origin=null
+issue warn BAD_TTL @60 ttl=4294967295 max=2147483647
+issue error BAD_RDATA @61 type=A reason=bad-address
+issue error BAD_RDATA @62 type=MX reason=missing-field

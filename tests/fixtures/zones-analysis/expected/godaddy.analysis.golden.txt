@@ -1,0 +1,16 @@
+# godaddy.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=godaddy origin=example.com partial=false
+seed example.com
+seed pay.example.com
+seed shop.example.com
+seed v6.example.com
+seed www.example.com
+exclude _domainconnect.example.com service-label
+address 192.0.2.90 example.com servers -
+address 192.0.2.91 shop.example.com servers -
+address 2001:db8::90 v6.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=3 hosts=0 names=5 tokens=8 chars=135 probes=15 probesAtLeast=false fileForm=false
+scan names=5 wildcardBases=0 delegations=0 proxied=0 skipped=-
+drift rrsets=12 queries=13 needed=13 names=9 targetsHidden=0 internalShare=0.000
+drift skipped private=0 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

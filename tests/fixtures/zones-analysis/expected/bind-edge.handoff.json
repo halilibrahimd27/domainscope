@@ -1,0 +1,61 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "*.example.com",
+        "blog.example.com",
+        "4.dec.example.com",
+        "fast.example.com",
+        "host-1.example.com",
+        "host-2.example.com",
+        "host-3.example.com",
+        "intranet.example.com",
+        "*.lit.example.com",
+        "localhost.example.com",
+        "mail.example.com",
+        "mx-backup.example.com",
+        "ns1.example.com",
+        "old.example.com",
+        "shop.example.com",
+        "slow.example.com",
+        "sub.example.com",
+        "api.sub.example.com",
+        "upper.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.20.30.40",
+        "127.0.0.1",
+        "192.0.2.1",
+        "192.0.2.2",
+        "192.0.2.3",
+        "192.0.2.10",
+        "192.0.2.12",
+        "192.0.2.13",
+        "192.0.2.14",
+        "192.0.2.15",
+        "192.0.2.16",
+        "192.0.2.53",
+        "192.0.2.96",
+        "192.0.2.97",
+        "192.0.2.98",
+        "192.0.2.99",
+        "198.51.100.25",
+        "203.0.113.20",
+        "203.0.113.21",
+        "2001:db8::10"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

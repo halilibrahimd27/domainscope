@@ -1,0 +1,46 @@
+{
+  "format": "bind",
+  "dialect": "directadmin",
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "filename",
+  "originConfidence": "low",
+  "warnings": [],
+  "fatal": null,
+  "partial": false,
+  "sources": [
+    {
+      "name": "directadmin-example.com.db.txt",
+      "size": 0,
+      "format": "bind",
+      "dialect": "directadmin"
+    }
+  ],
+  "stats": {
+    "records": 13,
+    "proxied": 0,
+    "dnsOnly": 0,
+    "byType": {
+      "SOA": 1,
+      "NS": 2,
+      "A": 6,
+      "MX": 1,
+      "TXT": 3
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"SOA","ttl":3600,"data":{"mname":"ns1.example.net","rname":"hostmaster.example.com","serial":2026092401,"refresh":3600,"retry":3600,"expire":1209600,"minimum":86400,"email":"hostmaster@example.com"},"text":"ns1.example.net. hostmaster.example.com. 2026092401 3600 3600 1209600 86400","targets":["ns1.example.net","hostmaster.example.com"],"proxied":null,"line":2,"source":0},
+    {"id":1,"name":"example.com","type":"NS","ttl":3600,"data":"ns1.example.net","text":"ns1.example.net.","targets":["ns1.example.net"],"proxied":null,"line":9,"source":0},
+    {"id":2,"name":"example.com","type":"NS","ttl":3600,"data":"ns2.example.net","text":"ns2.example.net.","targets":["ns2.example.net"],"proxied":null,"line":10,"source":0},
+    {"id":3,"name":"example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":12,"source":0},
+    {"id":4,"name":"ftp.example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":13,"source":0},
+    {"id":5,"name":"mail.example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":14,"source":0},
+    {"id":6,"name":"pop.example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":15,"source":0},
+    {"id":7,"name":"smtp.example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":16,"source":0},
+    {"id":8,"name":"www.example.com","type":"A","ttl":3600,"data":"203.0.113.80","text":"203.0.113.80","targets":[],"proxied":null,"line":17,"source":0},
+    {"id":9,"name":"example.com","type":"MX","ttl":3600,"data":{"preference":10,"exchange":"mail.example.com"},"text":"10 mail.example.com.","targets":["mail.example.com"],"proxied":null,"line":19,"source":0},
+    {"id":10,"name":"example.com","type":"TXT","ttl":3600,"data":["v=spf1 a mx ip4:203.0.113.80 ~all"],"text":"\"v=spf1 a mx ip4:203.0.113.80 ~all\"","targets":[],"proxied":null,"line":21,"source":0},
+    {"id":11,"name":"_dmarc.example.com","type":"TXT","ttl":3600,"data":["v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com"],"text":"\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com\"","targets":[],"proxied":null,"line":22,"source":0},
+    {"id":12,"name":"x._domainkey.example.com","type":"TXT","ttl":3600,"data":["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample"],"text":"\"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample\"","targets":[],"proxied":null,"line":23,"source":0}
+  ]
+}

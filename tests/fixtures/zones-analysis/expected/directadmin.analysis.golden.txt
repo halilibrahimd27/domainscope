@@ -1,0 +1,14 @@
+# directadmin.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=directadmin origin=example.com partial=false
+seed example.com
+seed ftp.example.com
+seed mail.example.com
+seed pop.example.com
+seed smtp.example.com
+seed www.example.com
+address 203.0.113.80 example.com ftp.example.com mail.example.com pop.example.com smtp.example.com www.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=1 hosts=0 names=6 tokens=7 chars=131 probes=6 probesAtLeast=false fileForm=false
+scan names=6 wildcardBases=0 delegations=0 proxied=0 skipped=-
+drift rrsets=11 queries=12 needed=12 names=8 targetsHidden=0 internalShare=0.000
+drift skipped private=0 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

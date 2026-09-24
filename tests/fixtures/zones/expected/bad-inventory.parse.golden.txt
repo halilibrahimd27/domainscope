@@ -1,0 +1,2 @@
+format - dialect - origin - (-, low)
+fatal error NOT_A_ZONE @0 hint=csv samples=["name,ip,role","web01,192.0.2.10,web","db01,192.0.2.20,database"]

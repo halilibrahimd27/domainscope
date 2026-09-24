@@ -1,0 +1,5 @@
+# DomainScope zone hand-off for example.com — 2026-01-01T00:00:00.000Z
+10.0.0.5
+web02 198.51.100.20
+origin-lb.example.net
+example-app.trafficmanager.net

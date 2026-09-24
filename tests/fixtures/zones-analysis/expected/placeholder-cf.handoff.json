@@ -1,0 +1,64 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [
+        "example.com",
+        "app.example.com",
+        "backend.example.com",
+        "smtp.example.com",
+        "tm.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.0.0.5",
+        "198.51.100.20"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net",
+        "example-app.trafficmanager.net"
+      ],
+      "skipped": [
+        "edge.example.com",
+        "err1000.example.com",
+        "gw.example.com",
+        "pages.example.com",
+        "worker.example.com"
+      ]
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "app.example.com",
+        "backend.example.com",
+        "direct.example.com",
+        "edge.example.com",
+        "err1000.example.com",
+        "gw.example.com",
+        "lb2.example.com",
+        "mail.example.com",
+        "pages.example.com",
+        "smtp.example.com",
+        "tm.example.com",
+        "worker.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.0.0.5",
+        "198.51.100.20"
+      ],
+      "hostTargets": [
+        "origin-lb.example.net",
+        "example-app.trafficmanager.net"
+      ],
+      "skipped": [
+        "edge.example.com",
+        "err1000.example.com",
+        "gw.example.com",
+        "pages.example.com",
+        "worker.example.com"
+      ]
+    }
+  }
+}

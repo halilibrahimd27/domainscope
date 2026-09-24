@@ -1,0 +1,5 @@
+$ORIGIN example.com.
+$TTL 300
+a       TXT "oops, the closing quote is missing
+b       A   192.0.2.1
+c       A   192.0.2.2

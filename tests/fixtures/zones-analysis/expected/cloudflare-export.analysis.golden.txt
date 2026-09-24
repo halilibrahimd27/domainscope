@@ -1,0 +1,79 @@
+# cloudflare-export.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=cloudflare origin=example.com partial=false
+lint error ORIGIN_EXPOSED_BY_SIBLING ftp.example.com A @38 name=ftp.example.com ip=192.0.2.10 proxied=example.com,docs.example.com,www.example.com role=record
+lint warn PRIVATE_IP intranet.example.com A @42 name=intranet.example.com ip=10.20.30.40
+lint warn MIXED_PROXY_FLAGS mixed.example.com A @44 name=mixed.example.com
+lint warn OCCLUDED_BY_DELEGATION old.dev.example.com A @47 name=old.dev.example.com cut=dev.example.com
+lint warn ORIGIN_EXPOSED_BY_SPF example.com TXT @82 spfName=example.com ips=192.0.2.10,192.0.2.13 proxied=example.com,api.example.com,docs.example.com,www.example.com
+lint info PROXIED_PROVIDER shop.example.com CNAME @59 name=shop.example.com target=shops.myshopify.com provider=shopify
+lint info PROXIED_TUNNEL tunnel.example.com CNAME @61 name=tunnel.example.com target=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com
+seed example.com
+seed admin.example.com
+seed api.example.com
+seed app.example.com
+seed blog.example.com
+seed docs.example.com
+seed ftp.example.com
+seed intranet.example.com
+seed mail.example.com
+seed mixed.example.com
+seed shop.example.com
+seed legacy.shop.example.com
+seed status.example.com
+seed tagged.example.com
+seed tunnel.example.com
+seed v6only.example.com
+seed vpn.example.com
+seed www.example.com
+wildcard apps.example.com
+delegation dev.example.com
+exclude selector1._domainkey.example.com service-label
+exclude old.dev.example.com occluded
+private intranet.example.com
+origin example.com ip 192.0.2.10 via - provider - servers web01 exposure sibling:ftp.example.com,spf:example.com
+origin api.example.com ip 192.0.2.13 via - provider - servers - exposure spf:example.com
+origin app.example.com host origin-lb.example.net via - provider - servers - exposure -
+origin *.apps.example.com ip 192.0.2.20 via - provider - servers - exposure -
+origin docs.example.com ip 192.0.2.10,2001:db8::10 via www.example.com provider - servers web01 exposure sibling:ftp.example.com,spf:example.com
+origin mixed.example.com ip 192.0.2.30,192.0.2.31 via - provider - servers - exposure -
+origin shop.example.com provider - via - provider shopify servers - exposure -
+origin tagged.example.com ip 192.0.2.40 via - provider - servers - exposure -
+origin tunnel.example.com tunnel - via - provider cloudflare-tunnel servers - exposure -
+origin www.example.com ip 192.0.2.10,2001:db8::10 via - provider - servers web01 exposure sibling:ftp.example.com,spf:example.com
+address 10.20.30.40 intranet.example.com servers - private
+address 192.0.2.10 example.com* docs.example.com*~ ftp.example.com! www.example.com* servers web01
+address 192.0.2.12 admin.example.com servers -
+address 192.0.2.13 api.example.com* servers -
+address 192.0.2.20 *.apps.example.com* servers -
+address 192.0.2.30 mixed.example.com* servers -
+address 192.0.2.31 mixed.example.com* servers -
+address 192.0.2.40 tagged.example.com* servers -
+address 192.0.2.50 legacy.shop.example.com servers -
+address 192.0.2.60 old.dev.example.com# servers -
+address 198.51.100.25 mail.example.com servers -
+address 203.0.113.5 vpn.example.com servers -
+address 2001:db8::10 docs.example.com*~ www.example.com* servers -
+address 2001:db8::77 v6only.example.com servers -
+handoff target 192.0.2.10
+handoff target 192.0.2.13
+handoff target 192.0.2.20
+handoff target 192.0.2.30
+handoff target 192.0.2.31
+handoff target 192.0.2.40
+handoff target 2001:db8::10
+handoff host origin-lb.example.net
+handoff name example.com
+handoff name api.example.com
+handoff name app.example.com
+handoff name *.apps.example.com
+handoff name docs.example.com
+handoff name mixed.example.com
+handoff name tagged.example.com
+handoff name www.example.com
+skip shop.example.com provider shops.myshopify.com
+skip tunnel.example.com tunnel 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com
+sweep proxied targets=7 hosts=1 names=8 tokens=16 chars=260 probes=72 probesAtLeast=true fileForm=false
+sweep all targets=13 hosts=1 names=19 tokens=33 chars=536 probes=280 probesAtLeast=true fileForm=false
+scan names=17 wildcardBases=1 delegations=1 proxied=8 skipped=intranet.example.com
+drift rrsets=32 queries=35 needed=35 names=26 targetsHidden=1 internalShare=0.063
+drift skipped private=1 occluded=1 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

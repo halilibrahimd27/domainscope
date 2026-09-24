@@ -1,0 +1,39 @@
+{
+  "origin": "example.com",
+  "format": "bind",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "build.example.com",
+        "db.corp.example.com",
+        "git.example.com",
+        "mail.internal.example.com",
+        "intranet.example.com",
+        "printer.lan.example.com",
+        "ns1.example.com",
+        "vpn.example.com",
+        "wiki.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "10.0.0.25",
+        "10.0.0.53",
+        "10.1.2.3",
+        "10.1.2.4",
+        "172.16.5.5",
+        "192.168.10.20",
+        "198.51.100.40",
+        "203.0.113.30"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

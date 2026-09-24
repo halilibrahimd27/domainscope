@@ -1,0 +1,24 @@
+format bind dialect godaddy origin example.com ($ORIGIN, high)
+markers ; Exported (y-m-d hh:mm:ss) | .@ owner
+stats records=15 proxied=0 dns-only=0 entries=15 skipped=0 generated=0 lines=66
+types A=2 AAAA=1 CNAME=3 MX=2 NS=2 SOA=1 SRV=2 TXT=2
+owners 9
+partial false
+rr example.com. 3600 SOA ns07.domaincontrol.com. dns.jomax.net. 2026092401 28800 7200 604800 3600 ; @32
+rr example.com. 600 A 192.0.2.90 ; @41
+rr shop.example.com. 600 A 192.0.2.91 ; @42
+rr example.com. 3600 TXT "v=spf1 include:secureserver.net -all" ; @45
+rr _dmarc.example.com. 3600 TXT "v=DMARC1; p=quarantine;" ; @46
+rr v6.example.com. 1800 AAAA 2001:db8::90 ; @49
+rr www.example.com. 3600 CNAME example.com. ; @52
+rr _domainconnect.example.com. 3600 CNAME _domainconnect.gd.domaincontrol.com. ; @53
+rr pay.example.com. 3600 CNAME payments.example.org.example.com. ; intended-targets payments.example.org ; @54
+rr example.com. 3600 NS ns07.domaincontrol.com. ; @57
+rr example.com. 3600 NS ns08.domaincontrol.com. ; @58
+rr example.com. 3600 MX 10 mailstore1.secureserver.net. ; @61
+rr example.com. 3600 MX 0 smtp.secureserver.net. ; @62
+rr _autodiscover._tcp.example.com. 3600 SRV 0 1 443 autodiscover.secureserver.net. ; @65
+rr _imaps._tcp.example.com. 3600 SRV 0 1 993 imap.secureserver.net. ; @66
+issue warn TARGET_MISSING_TRAILING_DOT @54 name=pay.example.com target=payments.example.org.example.com intended=payments.example.org
+issue warn AT_INSIDE_NAME @65 name=_autodiscover._tcp.example.com raw=_autodiscover._tcp.@
+issue warn AT_INSIDE_NAME @66 name=_imaps._tcp.example.com raw=_imaps._tcp.@

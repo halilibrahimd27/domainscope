@@ -1,0 +1,63 @@
+{
+  "format": "route53",
+  "dialect": null,
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "records",
+  "originConfidence": "low",
+  "warnings": [],
+  "fatal": null,
+  "partial": true,
+  "sources": [
+    {
+      "name": "route53.json",
+      "size": 0,
+      "format": "route53",
+      "dialect": null
+    }
+  ],
+  "stats": {
+    "records": 27,
+    "proxied": 0,
+    "dnsOnly": 0,
+    "byType": {
+      "A": 14,
+      "MX": 2,
+      "NS": 4,
+      "SOA": 1,
+      "TXT": 3,
+      "CAA": 1,
+      "CNAME": 1,
+      "SRV": 1
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"A","ttl":null,"data":null,"text":"d111111abcdef8.cloudfront.net.","targets":[],"alias":{"target":"d111111abcdef8.cloudfront.net","zoneId":"Z2FDTNDATAQYW2","evaluateTargetHealth":false,"provider":"cloudfront"},"proxied":null,"line":1,"source":0},
+    {"id":1,"name":"example.com","type":"MX","ttl":300,"data":{"preference":10,"exchange":"mail.example.com"},"text":"10 mail.example.com.","targets":["mail.example.com"],"proxied":null,"line":2,"source":0},
+    {"id":2,"name":"example.com","type":"MX","ttl":300,"data":{"preference":20,"exchange":"mx2.example.net"},"text":"20 mx2.example.net.","targets":["mx2.example.net"],"proxied":null,"line":2,"source":0},
+    {"id":3,"name":"example.com","type":"NS","ttl":172800,"data":"ns-111.awsdns-13.com","text":"ns-111.awsdns-13.com.","targets":["ns-111.awsdns-13.com"],"proxied":null,"line":3,"source":0},
+    {"id":4,"name":"example.com","type":"NS","ttl":172800,"data":"ns-1222.awsdns-24.org","text":"ns-1222.awsdns-24.org.","targets":["ns-1222.awsdns-24.org"],"proxied":null,"line":3,"source":0},
+    {"id":5,"name":"example.com","type":"NS","ttl":172800,"data":"ns-555.awsdns-05.net","text":"ns-555.awsdns-05.net.","targets":["ns-555.awsdns-05.net"],"proxied":null,"line":3,"source":0},
+    {"id":6,"name":"example.com","type":"NS","ttl":172800,"data":"ns-1888.awsdns-44.co.uk","text":"ns-1888.awsdns-44.co.uk.","targets":["ns-1888.awsdns-44.co.uk"],"proxied":null,"line":3,"source":0},
+    {"id":7,"name":"example.com","type":"SOA","ttl":900,"data":{"mname":"ns-111.awsdns-13.com","rname":"awsdns-hostmaster.amazon.com","serial":1,"refresh":7200,"retry":900,"expire":1209600,"minimum":86400,"email":"awsdns-hostmaster@amazon.com"},"text":"ns-111.awsdns-13.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400","targets":["ns-111.awsdns-13.com","awsdns-hostmaster.amazon.com"],"proxied":null,"line":4,"source":0},
+    {"id":8,"name":"example.com","type":"TXT","ttl":300,"data":["v=spf1 ip4:198.51.100.25 include:amazonses.com ~all"],"text":"\"v=spf1 ip4:198.51.100.25 include:amazonses.com ~all\"","targets":[],"proxied":null,"line":5,"source":0},
+    {"id":9,"name":"example.com","type":"TXT","ttl":300,"data":["part-one-of-a-long-value-","part-two"],"text":"\"part-one-of-a-long-value-\" \"part-two\"","targets":[],"proxied":null,"line":5,"source":0},
+    {"id":10,"name":"example.com","type":"CAA","ttl":300,"data":{"flags":0,"tag":"issue","value":"amazon.com","critical":false},"text":"0 issue \"amazon.com\"","targets":[],"proxied":null,"line":6,"source":0},
+    {"id":11,"name":"*.example.com","type":"CNAME","ttl":300,"data":"example.com","text":"example.com.","targets":["example.com"],"proxied":null,"line":7,"source":0},
+    {"id":12,"name":"api.example.com","type":"A","ttl":null,"data":null,"text":"my-alb-1234567890.us-east-1.elb.amazonaws.com.","targets":[],"alias":{"target":"my-alb-1234567890.us-east-1.elb.amazonaws.com","zoneId":"Z35SXDOTRQ7X7K","evaluateTargetHealth":true,"provider":"elb"},"proxied":null,"line":8,"source":0},
+    {"id":13,"name":"static.example.com","type":"A","ttl":null,"data":null,"text":"s3-website-us-east-1.amazonaws.com.","targets":[],"alias":{"target":"s3-website-us-east-1.amazonaws.com","zoneId":"Z3AQBSTGFYJSTF","evaluateTargetHealth":false,"provider":"s3-website"},"proxied":null,"line":9,"source":0},
+    {"id":14,"name":"gw.example.com","type":"A","ttl":null,"data":null,"text":"d-abcdef1234.execute-api.us-east-1.amazonaws.com.","targets":[],"alias":{"target":"d-abcdef1234.execute-api.us-east-1.amazonaws.com","zoneId":"Z1UJRXOUMOOFQ8","evaluateTargetHealth":false,"provider":"api-gateway"},"proxied":null,"line":10,"source":0},
+    {"id":15,"name":"www.example.com","type":"A","ttl":null,"data":null,"text":"example.com.","targets":[],"alias":{"target":"example.com","zoneId":"Z0EXAMPLEZONEID","evaluateTargetHealth":false,"provider":"same-zone"},"proxied":null,"line":11,"source":0},
+    {"id":16,"name":"app.example.com","type":"A","ttl":60,"data":"192.0.2.21","text":"192.0.2.21","targets":[],"proxied":null,"routing":{"policy":"weighted","id":"blue","weight":90,"healthCheck":null},"line":12,"source":0},
+    {"id":17,"name":"app.example.com","type":"A","ttl":60,"data":"192.0.2.22","text":"192.0.2.22","targets":[],"proxied":null,"routing":{"policy":"weighted","id":"green","weight":10,"healthCheck":null},"line":13,"source":0},
+    {"id":18,"name":"geo.example.com","type":"A","ttl":60,"data":"198.51.100.30","text":"198.51.100.30","targets":[],"proxied":null,"routing":{"policy":"geolocation","id":"default","geo":{"CountryCode":"*"},"healthCheck":null},"line":14,"source":0},
+    {"id":19,"name":"geo.example.com","type":"A","ttl":60,"data":"198.51.100.31","text":"198.51.100.31","targets":[],"proxied":null,"routing":{"policy":"geolocation","id":"turkey","geo":{"CountryCode":"TR"},"healthCheck":null},"line":15,"source":0},
+    {"id":20,"name":"lat.example.com","type":"A","ttl":60,"data":"203.0.113.40","text":"203.0.113.40","targets":[],"proxied":null,"routing":{"policy":"latency","id":"eu-central-1","region":"eu-central-1","healthCheck":null},"line":16,"source":0},
+    {"id":21,"name":"ha.example.com","type":"A","ttl":60,"data":"203.0.113.50","text":"203.0.113.50","targets":[],"proxied":null,"routing":{"policy":"failover","id":"primary","failover":"PRIMARY","healthCheck":"11111111-2222-3333-4444-555555555555"},"line":17,"source":0},
+    {"id":22,"name":"ha.example.com","type":"A","ttl":60,"data":"203.0.113.51","text":"203.0.113.51","targets":[],"proxied":null,"routing":{"policy":"failover","id":"secondary","failover":"SECONDARY","healthCheck":null},"line":18,"source":0},
+    {"id":23,"name":"multi.example.com","type":"A","ttl":60,"data":"192.0.2.61","text":"192.0.2.61","targets":[],"proxied":null,"routing":{"policy":"multivalue","id":"one","healthCheck":null},"line":19,"source":0},
+    {"id":24,"name":"db.internal.example.com","type":"A","ttl":300,"data":"10.0.12.34","text":"10.0.12.34","targets":[],"proxied":null,"line":20,"source":0},
+    {"id":25,"name":"_sip._tcp.example.com","type":"SRV","ttl":300,"data":{"priority":10,"weight":5,"port":5060,"target":"sip.example.com"},"text":"10 5 5060 sip.example.com.","targets":["sip.example.com"],"proxied":null,"line":21,"source":0},
+    {"id":26,"name":"name\\032with\\032space.example.com","type":"TXT","ttl":300,"data":["octal â escapes in TXT"],"text":"\"octal â\\194\\128\\194\\148 escapes in TXT\"","targets":[],"proxied":null,"line":22,"source":0}
+  ]
+}

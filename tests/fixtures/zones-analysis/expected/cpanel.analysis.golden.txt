@@ -1,0 +1,30 @@
+# cpanel.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=bind dialect=cpanel origin=example.com partial=false
+lint warn LOCALHOST_RECORD localhost.example.com A @17 name=localhost.example.com ip=127.0.0.1
+lint warn DUPLICATE_RR cpcalendars.example.com A @32 name=cpcalendars.example.com type=A
+seed example.com
+seed autoconfig.example.com
+seed autodiscover.example.com
+seed blog.example.com
+seed cpanel.blog.example.com
+seed webmail.blog.example.com
+seed www.blog.example.com
+seed cpanel.example.com
+seed cpcalendars.example.com
+seed cpcontacts.example.com
+seed ftp.example.com
+seed localhost.example.com
+seed mail.example.com
+seed webdisk.example.com
+seed webmail.example.com
+seed whm.example.com
+seed www.example.com
+private localhost.example.com
+address 127.0.0.1 localhost.example.com servers - private
+address 192.0.2.80 example.com autoconfig.example.com autodiscover.example.com cpanel.example.com cpcalendars.example.com cpcontacts.example.com ftp.example.com webdisk.example.com webmail.example.com whm.example.com servers -
+address 192.0.2.81 blog.example.com cpanel.blog.example.com webmail.blog.example.com www.blog.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=3 hosts=0 names=17 tokens=20 chars=396 probes=51 probesAtLeast=false fileForm=false
+scan names=16 wildcardBases=0 delegations=0 proxied=0 skipped=localhost.example.com
+drift rrsets=31 queries=31 needed=31 names=26 targetsHidden=0 internalShare=0.067
+drift skipped private=1 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

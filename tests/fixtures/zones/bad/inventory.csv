@@ -1,0 +1,4 @@
+name,ip,role
+web01,192.0.2.10,web
+db01,192.0.2.20,database
+cache01,198.51.100.30,cache

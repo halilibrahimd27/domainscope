@@ -1,0 +1,108 @@
+---
+# octoDNS zone file: the zone name comes from the FILE NAME (example.com.yaml),
+# not from the content. Keys are names relative to the zone; '' is the apex.
+# octodns-dump / PyYAML writes the empty apex key in "complex key" form: "? ''".
+# octoDNS refuses unsorted keys by default ("keys out of order"), so real files
+# are key-sorted at every level.
+? ''
+: - octodns:
+      cloudflare:
+        proxied: true
+    ttl: 300
+    type: A
+    values:
+    - 192.0.2.10
+  - type: CAA
+    values:
+    - flags: 0
+      tag: issue
+      value: letsencrypt.org
+  - type: MX
+    values:
+    - exchange: mail.example.com.
+      preference: 10
+    - priority: 20
+      value: mx2.example.net.
+  - type: NS
+    values:
+    - ns1.example-dns.net.
+    - ns2.example-dns.net.
+  - type: TXT
+    values:
+    - google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789
+    - v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all
+'*':
+  type: CNAME
+  value: www.example.com.
+_dmarc:
+  type: TXT
+  value: v=DMARC1\; p=quarantine\; rua=mailto:dmarc@example.com
+_sip._tcp:
+  ttl: 600
+  type: SRV
+  values:
+  - port: 5060
+    priority: 10
+    target: sip.example.com.
+    weight: 5
+admin:
+  type: A
+  value: 192.0.2.12
+api:
+  octodns:
+    cloudflare:
+      auto-ttl: true
+      proxied: true
+  ttl: 120
+  type: A
+  value: 192.0.2.14
+app:
+  octodns:
+    cloudflare:
+      proxied: true
+  type: CNAME
+  value: origin-lb.example.net.
+geo:
+  dynamic:
+    pools:
+      eu:
+        values:
+        - value: 198.51.100.31
+      us:
+        fallback: eu
+        values:
+        - value: 198.51.100.32
+          weight: 2
+        - value: 198.51.100.33
+    rules:
+    - geos:
+      - NA-US
+      pool: us
+    - pool: eu
+  type: A
+  values: [198.51.100.30]
+google._domainkey:
+  type: TXT
+  value: 'v=DKIM1\;k=rsa\;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample'
+ignored:
+  octodns:
+    ignored: true
+  type: A
+  value: 203.0.113.99
+intranet:
+  type: A
+  value: 10.20.30.40
+mail:
+  type: A
+  value: 198.51.100.25
+www:
+- octodns:
+    cloudflare:
+      proxied: true
+  type: A
+  value: 192.0.2.10
+- octodns:
+    cloudflare:
+      proxied: true
+  type: AAAA
+  value: 2001:db8::10

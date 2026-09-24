@@ -1,0 +1,32 @@
+# route53.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=route53 dialect=- origin=example.com partial=true
+lint warn PRIVATE_IP db.internal.example.com A @20 name=db.internal.example.com ip=10.0.12.34
+seed example.com
+seed api.example.com
+seed app.example.com
+seed geo.example.com
+seed gw.example.com
+seed ha.example.com
+seed db.internal.example.com
+seed lat.example.com
+seed mail.example.com
+seed multi.example.com
+seed sip.example.com
+seed static.example.com
+seed www.example.com
+wildcard example.com
+private db.internal.example.com
+address 10.0.12.34 db.internal.example.com servers - private
+address 192.0.2.21 app.example.com servers -
+address 192.0.2.22 app.example.com servers -
+address 192.0.2.61 multi.example.com servers -
+address 198.51.100.30 geo.example.com servers -
+address 198.51.100.31 geo.example.com servers -
+address 203.0.113.40 lat.example.com servers -
+address 203.0.113.50 ha.example.com servers -
+address 203.0.113.51 ha.example.com servers -
+sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=false fileForm=false
+sweep all targets=9 hosts=0 names=12 tokens=21 chars=334 probes=108 probesAtLeast=false fileForm=false
+scan names=12 wildcardBases=1 delegations=0 proxied=0 skipped=db.internal.example.com
+drift rrsets=18 queries=17 needed=17 names=14 targetsHidden=4 internalShare=0.111
+drift skipped private=1 occluded=0 unsupported=0 escaped=1 dnssec=0 synthesized=0 wildcard=0 budget=0

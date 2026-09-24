@@ -1,0 +1,40 @@
+# octodns.zone.json — analysis golden (gen-analysis-golden.mjs; regenerate with --write)
+zone format=octodns dialect=- origin=example.com partial=false
+lint warn PRIVATE_IP intranet.example.com A @17 name=intranet.example.com ip=10.20.30.40
+seed example.com
+seed admin.example.com
+seed api.example.com
+seed app.example.com
+seed geo.example.com
+seed intranet.example.com
+seed mail.example.com
+seed sip.example.com
+seed www.example.com
+wildcard example.com
+private intranet.example.com
+origin example.com ip 192.0.2.10 via - provider - servers web01 exposure -
+origin *.example.com ip 192.0.2.10,2001:db8::10 via www.example.com provider - servers web01 exposure -
+origin api.example.com ip 192.0.2.13 via - provider - servers - exposure -
+origin app.example.com host origin-lb.example.net via - provider - servers - exposure -
+origin www.example.com ip 192.0.2.10,2001:db8::10 via - provider - servers web01 exposure -
+address 10.20.30.40 intranet.example.com servers - private
+address 192.0.2.10 example.com* *.example.com*~ www.example.com* servers web01
+address 192.0.2.12 admin.example.com servers -
+address 192.0.2.13 api.example.com* servers -
+address 198.51.100.25 mail.example.com servers -
+address 198.51.100.30 geo.example.com servers -
+address 2001:db8::10 *.example.com*~ www.example.com* servers -
+handoff target 192.0.2.10
+handoff target 192.0.2.13
+handoff target 2001:db8::10
+handoff host origin-lb.example.net
+handoff name example.com
+handoff name *.example.com
+handoff name api.example.com
+handoff name app.example.com
+handoff name www.example.com
+sweep proxied targets=3 hosts=1 names=5 tokens=9 chars=157 probes=20 probesAtLeast=true fileForm=false
+sweep all targets=7 hosts=1 names=9 tokens=17 chars=280 probes=72 probesAtLeast=true fileForm=false
+scan names=8 wildcardBases=1 delegations=0 proxied=5 skipped=intranet.example.com
+drift rrsets=17 queries=18 needed=18 names=12 targetsHidden=0 internalShare=0.125
+drift skipped private=1 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

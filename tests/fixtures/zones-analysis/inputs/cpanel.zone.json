@@ -1,0 +1,69 @@
+{
+  "format": "bind",
+  "dialect": "cpanel",
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "header",
+  "originConfidence": "high",
+  "warnings": [],
+  "fatal": null,
+  "partial": false,
+  "sources": [
+    {
+      "name": "cpanel-example.com.db.txt",
+      "size": 0,
+      "format": "bind",
+      "dialect": "cpanel"
+    }
+  ],
+  "stats": {
+    "records": 34,
+    "proxied": 0,
+    "dnsOnly": 0,
+    "byType": {
+      "SOA": 1,
+      "NS": 2,
+      "A": 16,
+      "MX": 1,
+      "CNAME": 2,
+      "SRV": 5,
+      "TXT": 7
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"SOA","ttl":86400,"data":{"mname":"ns1.example.net","rname":"hostmaster.example.net","serial":2026092401,"refresh":3600,"retry":1800,"expire":1209600,"minimum":86400,"email":"hostmaster@example.net"},"text":"ns1.example.net. hostmaster.example.net. 2026092401 3600 1800 1209600 86400","targets":["ns1.example.net","hostmaster.example.net"],"proxied":null,"comment":"Serial Number refresh retry expire","line":4,"source":0},
+    {"id":1,"name":"example.com","type":"NS","ttl":86400,"data":"ns1.example.net","text":"ns1.example.net.","targets":["ns1.example.net"],"proxied":null,"line":12,"source":0},
+    {"id":2,"name":"example.com","type":"NS","ttl":86400,"data":"ns2.example.net","text":"ns2.example.net.","targets":["ns2.example.net"],"proxied":null,"line":13,"source":0},
+    {"id":3,"name":"example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":16,"source":0},
+    {"id":4,"name":"localhost.example.com","type":"A","ttl":14400,"data":"127.0.0.1","text":"127.0.0.1","targets":[],"proxied":null,"line":17,"source":0},
+    {"id":5,"name":"example.com","type":"MX","ttl":14400,"data":{"preference":0,"exchange":"example.com"},"text":"0 example.com.","targets":["example.com"],"proxied":null,"line":19,"source":0},
+    {"id":6,"name":"mail.example.com","type":"CNAME","ttl":14400,"data":"example.com","text":"example.com.","targets":["example.com"],"proxied":null,"line":21,"source":0},
+    {"id":7,"name":"www.example.com","type":"CNAME","ttl":14400,"data":"example.com","text":"example.com.","targets":["example.com"],"proxied":null,"line":22,"source":0},
+    {"id":8,"name":"ftp.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":23,"source":0},
+    {"id":9,"name":"cpanel.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":24,"source":0},
+    {"id":10,"name":"whm.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":25,"source":0},
+    {"id":11,"name":"webmail.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":26,"source":0},
+    {"id":12,"name":"webdisk.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":27,"source":0},
+    {"id":13,"name":"cpcalendars.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":28,"source":0},
+    {"id":14,"name":"cpcontacts.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":29,"source":0},
+    {"id":15,"name":"autodiscover.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":30,"source":0},
+    {"id":16,"name":"autoconfig.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":31,"source":0},
+    {"id":17,"name":"cpcalendars.example.com","type":"A","ttl":14400,"data":"192.0.2.80","text":"192.0.2.80","targets":[],"proxied":null,"line":32,"source":0,"duplicateOf":13},
+    {"id":18,"name":"_caldav._tcp.example.com","type":"SRV","ttl":14400,"data":{"priority":0,"weight":0,"port":2079,"target":"server01.example.net"},"text":"0 0 2079 server01.example.net.","targets":["server01.example.net"],"proxied":null,"line":33,"source":0},
+    {"id":19,"name":"_caldav._tcp.example.com","type":"TXT","ttl":14400,"data":["path=/"],"text":"\"path=/\"","targets":[],"proxied":null,"line":34,"source":0},
+    {"id":20,"name":"_caldavs._tcp.example.com","type":"SRV","ttl":14400,"data":{"priority":0,"weight":0,"port":2080,"target":"server01.example.net"},"text":"0 0 2080 server01.example.net.","targets":["server01.example.net"],"proxied":null,"line":35,"source":0},
+    {"id":21,"name":"_caldavs._tcp.example.com","type":"TXT","ttl":14400,"data":["path=/"],"text":"\"path=/\"","targets":[],"proxied":null,"line":36,"source":0},
+    {"id":22,"name":"_carddav._tcp.example.com","type":"SRV","ttl":14400,"data":{"priority":0,"weight":0,"port":2079,"target":"server01.example.net"},"text":"0 0 2079 server01.example.net.","targets":["server01.example.net"],"proxied":null,"line":37,"source":0},
+    {"id":23,"name":"_carddavs._tcp.example.com","type":"SRV","ttl":14400,"data":{"priority":0,"weight":0,"port":2080,"target":"server01.example.net"},"text":"0 0 2080 server01.example.net.","targets":["server01.example.net"],"proxied":null,"line":38,"source":0},
+    {"id":24,"name":"_autodiscover._tcp.example.com","type":"SRV","ttl":14400,"data":{"priority":0,"weight":0,"port":443,"target":"cpanelemaildiscovery.cpanel.net"},"text":"0 0 443 cpanelemaildiscovery.cpanel.net.","targets":["cpanelemaildiscovery.cpanel.net"],"proxied":null,"line":39,"source":0},
+    {"id":25,"name":"example.com","type":"TXT","ttl":14400,"data":["v=spf1 +a +mx +ip4:192.0.2.80 ~all"],"text":"\"v=spf1 +a +mx +ip4:192.0.2.80 ~all\"","targets":[],"proxied":null,"line":40,"source":0},
+    {"id":26,"name":"example.com.example.com","type":"TXT","intendedName":"example.com","ttl":900,"data":["hosting-verification=abc123"],"text":"\"hosting-verification=abc123\"","targets":[],"proxied":null,"line":41,"source":0},
+    {"id":27,"name":"_cpanel-dcv-test-record.example.com","type":"TXT","ttl":14400,"data":["_cpanel-dcv-test-record=AbCdEf0123456789"],"text":"\"_cpanel-dcv-test-record=AbCdEf0123456789\"","targets":[],"proxied":null,"line":42,"source":0},
+    {"id":28,"name":"_acme-challenge.example.com","type":"TXT","ttl":14400,"data":["AbCdEfGhIjKlMnOpQrStUvWxYz-0123456789_abcdefgh"],"text":"\"AbCdEfGhIjKlMnOpQrStUvWxYz-0123456789_abcdefgh\"","targets":[],"proxied":null,"line":43,"source":0},
+    {"id":29,"name":"default._domainkey.example.com","type":"TXT","ttl":14400,"data":["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample0key0material0that0is0long0enough0to0need0a0second0string0in0a0real0export0example0example0example0example0example0example0example0example0example0example0example0example0exa","mple0example0IDAQAB;"],"text":"\"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample0key0material0that0is0long0enough0to0need0a0second0string0in0a0real0export0example0example0example0example0example0example0example0example0example0example0example0example0exa\" \"mple0example0IDAQAB;\"","targets":[],"proxied":null,"line":44,"source":0},
+    {"id":30,"name":"blog.example.com","type":"A","ttl":14400,"data":"192.0.2.81","text":"192.0.2.81","targets":[],"proxied":null,"line":46,"source":0},
+    {"id":31,"name":"www.blog.example.com","type":"A","ttl":14400,"data":"192.0.2.81","text":"192.0.2.81","targets":[],"proxied":null,"line":47,"source":0},
+    {"id":32,"name":"webmail.blog.example.com","type":"A","ttl":14400,"data":"192.0.2.81","text":"192.0.2.81","targets":[],"proxied":null,"line":48,"source":0},
+    {"id":33,"name":"cpanel.blog.example.com","type":"A","ttl":14400,"data":"192.0.2.81","text":"192.0.2.81","targets":[],"proxied":null,"line":49,"source":0}
+  ]
+}

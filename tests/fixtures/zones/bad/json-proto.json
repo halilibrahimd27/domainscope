@@ -1,0 +1,4 @@
+{"result": [
+  {"__proto__": {"polluted": true}, "id": "p1", "name": "example.com", "type": "A", "content": "192.0.2.10", "proxiable": true, "proxied": false, "ttl": 1, "constructor": {"prototype": {"polluted": true}}},
+  {"id": "p2", "name": "constructor.example.com", "type": "TXT", "content": "\"prototype\"", "ttl": 300, "tags": ["__proto__:x", "constructor:y"], "meta": {"__proto__": {"shadowed_by": ["p1"]}}}
+], "success": true, "errors": [], "result_info": {"page": 1, "per_page": 100, "count": 2, "total_count": 2, "total_pages": 1}}

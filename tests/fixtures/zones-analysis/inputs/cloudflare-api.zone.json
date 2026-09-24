@@ -1,0 +1,52 @@
+{
+  "format": "cloudflare-api",
+  "dialect": null,
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "records",
+  "originConfidence": "low",
+  "warnings": [],
+  "fatal": null,
+  "partial": false,
+  "sources": [
+    {
+      "name": "cloudflare-api.json",
+      "size": 0,
+      "format": "cloudflare-api",
+      "dialect": null
+    }
+  ],
+  "stats": {
+    "records": 16,
+    "proxied": 7,
+    "dnsOnly": 3,
+    "byType": {
+      "A": 6,
+      "AAAA": 1,
+      "CNAME": 3,
+      "MX": 1,
+      "SRV": 1,
+      "CAA": 1,
+      "TXT": 2,
+      "NS": 1
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.10","text":"192.0.2.10","targets":[],"proxied":true,"proxiable":true,"line":1,"source":0},
+    {"id":1,"name":"www.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.10","text":"192.0.2.10","targets":[],"proxied":true,"proxiable":true,"line":2,"source":0},
+    {"id":2,"name":"api.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.13","text":"192.0.2.13","targets":[],"proxied":true,"proxiable":true,"comment":"API origin; do not expose","tags":{"team":"backend"},"line":3,"source":0},
+    {"id":3,"name":"admin.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.12","text":"192.0.2.12","targets":[],"proxied":false,"proxiable":true,"line":4,"source":0},
+    {"id":4,"name":"*.apps.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.20","text":"192.0.2.20","targets":[],"proxied":true,"proxiable":true,"line":5,"source":0},
+    {"id":5,"name":"old.dev.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.60","text":"192.0.2.60","targets":[],"proxied":false,"proxiable":true,"occludedBy":"delegation","line":6,"source":0},
+    {"id":6,"name":"www.example.com","type":"AAAA","ttl":300,"ttlAuto":true,"data":"2001:db8::10","text":"2001:db8::10","targets":[],"proxied":true,"proxiable":true,"line":7,"source":0},
+    {"id":7,"name":"app.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"origin-lb.example.net","text":"origin-lb.example.net.","targets":["origin-lb.example.net"],"proxied":true,"proxiable":true,"line":8,"source":0},
+    {"id":8,"name":"tunnel.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com","text":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com.","targets":["0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.cfargotunnel.com"],"proxied":true,"proxiable":true,"line":9,"source":0},
+    {"id":9,"name":"status.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"statuspage.example.org","text":"statuspage.example.org.","targets":["statuspage.example.org"],"proxied":false,"proxiable":true,"flattenCname":true,"line":10,"source":0},
+    {"id":10,"name":"example.com","type":"MX","ttl":300,"ttlAuto":true,"data":{"preference":10,"exchange":"mail.example.com"},"text":"10 mail.example.com.","targets":["mail.example.com"],"proxied":null,"proxiable":false,"line":11,"source":0},
+    {"id":11,"name":"_autodiscover._tcp.example.com","type":"SRV","ttl":300,"ttlAuto":true,"data":{"priority":0,"weight":0,"port":443,"target":"mail.example.com"},"text":"0 0 443 mail.example.com.","targets":["mail.example.com"],"proxied":null,"proxiable":false,"line":12,"source":0},
+    {"id":12,"name":"example.com","type":"CAA","ttl":300,"ttlAuto":true,"data":{"flags":0,"tag":"issue","value":"letsencrypt.org","critical":false},"text":"0 issue \"letsencrypt.org\"","targets":[],"proxied":null,"proxiable":false,"line":13,"source":0},
+    {"id":13,"name":"example.com","type":"TXT","ttl":300,"ttlAuto":true,"data":["v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all"],"text":"\"v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all\"","targets":[],"proxied":null,"proxiable":false,"line":14,"source":0},
+    {"id":14,"name":"_acme-challenge.example.com","type":"TXT","ttl":120,"data":["unquoted-legacy-token-0123456789"],"text":"\"unquoted-legacy-token-0123456789\"","targets":[],"proxied":null,"proxiable":false,"line":15,"source":0},
+    {"id":15,"name":"dev.example.com","type":"NS","ttl":300,"ttlAuto":true,"data":"ns-1.example-dns.net","text":"ns-1.example-dns.net.","targets":["ns-1.example-dns.net"],"proxied":null,"proxiable":false,"comment":"delegated to the dev team","line":16,"source":0}
+  ]
+}

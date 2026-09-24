@@ -1,0 +1,29 @@
+{
+  "origin": "example.com",
+  "format": "plesk-info",
+  "scopes": {
+    "proxied": {
+      "names": [],
+      "targets": [],
+      "hostTargets": [],
+      "skipped": []
+    },
+    "all": {
+      "names": [
+        "example.com",
+        "ftp.example.com",
+        "mail.example.com",
+        "ns1.example.com",
+        "ns2.example.com",
+        "webmail.example.com",
+        "www.example.com"
+      ],
+      "targets": [
+        "192.0.2.70",
+        "192.0.2.71"
+      ],
+      "hostTargets": [],
+      "skipped": []
+    }
+  }
+}

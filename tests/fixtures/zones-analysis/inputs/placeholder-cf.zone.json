@@ -1,0 +1,60 @@
+{
+  "format": "bind",
+  "dialect": "cloudflare",
+  "markers": [],
+  "origin": "example.com",
+  "originSource": "header",
+  "originConfidence": "high",
+  "warnings": [],
+  "fatal": null,
+  "partial": false,
+  "sources": [
+    {
+      "name": "placeholder.cf.txt",
+      "size": 0,
+      "format": "bind",
+      "dialect": "cloudflare"
+    }
+  ],
+  "stats": {
+    "records": 23,
+    "proxied": 10,
+    "dnsOnly": 4,
+    "byType": {
+      "SOA": 1,
+      "NS": 2,
+      "A": 7,
+      "AAAA": 1,
+      "CNAME": 6,
+      "MX": 2,
+      "SRV": 2,
+      "TXT": 1,
+      "HTTPS": 1
+    }
+  },
+  "records": [
+    {"id":0,"name":"example.com","type":"SOA","ttl":3600,"data":{"mname":"ada.ns.cloudflare.com","rname":"dns.cloudflare.com","serial":2026092401,"refresh":10000,"retry":2400,"expire":604800,"minimum":3600,"email":"dns@cloudflare.com"},"text":"ada.ns.cloudflare.com. dns.cloudflare.com. 2026092401 10000 2400 604800 3600","targets":["ada.ns.cloudflare.com","dns.cloudflare.com"],"proxied":null,"line":1,"source":0},
+    {"id":1,"name":"example.com","type":"NS","ttl":86400,"data":"ada.ns.cloudflare.com","text":"ada.ns.cloudflare.com.","targets":["ada.ns.cloudflare.com"],"proxied":null,"line":2,"source":0},
+    {"id":2,"name":"example.com","type":"NS","ttl":86400,"data":"bob.ns.cloudflare.com","text":"bob.ns.cloudflare.com.","targets":["bob.ns.cloudflare.com"],"proxied":null,"line":3,"source":0},
+    {"id":3,"name":"example.com","type":"A","ttl":300,"ttlAuto":true,"data":"198.51.100.20","text":"198.51.100.20","targets":[],"proxied":true,"line":4,"source":0},
+    {"id":4,"name":"www.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"198.51.100.20","text":"198.51.100.20","targets":[],"proxied":true,"line":5,"source":0},
+    {"id":5,"name":"worker.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"192.0.2.0","text":"192.0.2.0","targets":[],"proxied":true,"line":6,"source":0},
+    {"id":6,"name":"edge.example.com","type":"AAAA","ttl":300,"ttlAuto":true,"data":"100::","text":"100::","targets":[],"proxied":true,"line":7,"source":0},
+    {"id":7,"name":"err1000.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"104.16.1.1","text":"104.16.1.1","targets":[],"proxied":true,"line":8,"source":0},
+    {"id":8,"name":"backend.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"10.0.0.5","text":"10.0.0.5","targets":[],"proxied":true,"line":9,"source":0},
+    {"id":9,"name":"mail.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"198.51.100.20","text":"198.51.100.20","targets":[],"proxied":false,"line":10,"source":0},
+    {"id":10,"name":"direct.example.com","type":"A","ttl":300,"ttlAuto":true,"data":"198.51.100.20","text":"198.51.100.20","targets":[],"proxied":false,"line":11,"source":0},
+    {"id":11,"name":"smtp.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"www.example.com","text":"www.example.com.","targets":["www.example.com"],"proxied":false,"line":12,"source":0},
+    {"id":12,"name":"app.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"origin-lb.example.net","text":"origin-lb.example.net.","targets":["origin-lb.example.net"],"proxied":true,"line":13,"source":0},
+    {"id":13,"name":"lb2.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"origin-lb.example.net","text":"origin-lb.example.net.","targets":["origin-lb.example.net"],"proxied":false,"line":14,"source":0},
+    {"id":14,"name":"pages.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"example-site.pages.dev","text":"example-site.pages.dev.","targets":["example-site.pages.dev"],"proxied":true,"line":15,"source":0},
+    {"id":15,"name":"tm.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"example-app.trafficmanager.net","text":"example-app.trafficmanager.net.","targets":["example-app.trafficmanager.net"],"proxied":true,"line":16,"source":0},
+    {"id":16,"name":"gw.example.com","type":"CNAME","ttl":300,"ttlAuto":true,"data":"abc123.execute-api.eu-west-1.amazonaws.com","text":"abc123.execute-api.eu-west-1.amazonaws.com.","targets":["abc123.execute-api.eu-west-1.amazonaws.com"],"proxied":true,"line":17,"source":0},
+    {"id":17,"name":"example.com","type":"MX","ttl":300,"ttlAuto":true,"data":{"preference":10,"exchange":"mail.example.com"},"text":"10 mail.example.com.","targets":["mail.example.com"],"proxied":null,"line":18,"source":0},
+    {"id":18,"name":"example.com","type":"MX","ttl":300,"ttlAuto":true,"data":{"preference":20,"exchange":"smtp.example.com"},"text":"20 smtp.example.com.","targets":["smtp.example.com"],"proxied":null,"line":19,"source":0},
+    {"id":19,"name":"_sip._tcp.example.com","type":"SRV","ttl":300,"ttlAuto":true,"data":{"priority":10,"weight":5,"port":5060,"target":"www.example.com"},"text":"10 5 5060 www.example.com.","targets":["www.example.com"],"proxied":null,"line":20,"source":0},
+    {"id":20,"name":"_autodiscover._tcp.example.com","type":"SRV","ttl":300,"ttlAuto":true,"data":{"priority":0,"weight":0,"port":443,"target":"www.example.com"},"text":"0 0 443 www.example.com.","targets":["www.example.com"],"proxied":null,"line":21,"source":0},
+    {"id":21,"name":"example.com","type":"TXT","ttl":300,"ttlAuto":true,"data":["v=spf1 ip4:198.51.100.0/28 ~all"],"text":"\"v=spf1 ip4:198.51.100.0/28 ~all\"","targets":[],"proxied":null,"line":22,"source":0},
+    {"id":22,"name":"example.com","type":"HTTPS","ttl":300,"ttlAuto":true,"data":{"priority":1,"target":".","params":{"alpn":["h2"]}},"text":"1 . alpn=\"h2\"","targets":[""],"proxied":null,"line":23,"source":0}
+  ]
+}

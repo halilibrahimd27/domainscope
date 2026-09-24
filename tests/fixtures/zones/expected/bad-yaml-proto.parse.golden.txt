@@ -1,0 +1,9 @@
+format octodns dialect - origin example.com (user, high)
+markers type: keys
+stats records=3 proxied=0 dns-only=0 entries=3 skipped=0 generated=0 lines=10
+types A=2 TXT=1
+owners 3
+partial false
+rr __proto__.example.com. 3600 A 192.0.2.30 ; @1
+rr constructor.example.com. 3600 A 192.0.2.31 ; @5
+rr prototype.example.com. 3600 TXT "harmless" ; @8

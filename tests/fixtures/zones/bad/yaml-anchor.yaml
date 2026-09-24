@@ -1,0 +1,5 @@
+---
+base: &base
+  type: A
+  value: 192.0.2.10
+www: *base

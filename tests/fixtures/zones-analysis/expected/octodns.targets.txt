@@ -1,0 +1,5 @@
+# DomainScope zone hand-off for example.com — 2026-01-01T00:00:00.000Z
+web01 192.0.2.10
+192.0.2.13
+2001:db8::10
+origin-lb.example.net

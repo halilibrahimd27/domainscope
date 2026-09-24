@@ -1,0 +1,43 @@
+format bind dialect cpanel origin example.com (header, high)
+markers Cpanel::ZoneFile::VERSION | ; Zone file for
+stats records=34 proxied=0 dns-only=0 entries=34 skipped=0 generated=0 lines=49
+types A=16 CNAME=2 MX=1 NS=2 SOA=1 SRV=5 TXT=7
+owners 26
+partial false
+default-ttl 14400
+rr example.com. 86400 SOA ns1.example.net. hostmaster.example.net. 2026092401 3600 1800 1209600 86400 ; comment "Serial Number refresh retry expire" ; @4
+rr example.com. 86400 NS ns1.example.net. ; @12
+rr example.com. 86400 NS ns2.example.net. ; @13
+rr example.com. 14400 A 192.0.2.80 ; @16
+rr localhost.example.com. 14400 A 127.0.0.1 ; @17
+rr example.com. 14400 MX 0 example.com. ; @19
+rr mail.example.com. 14400 CNAME example.com. ; @21
+rr www.example.com. 14400 CNAME example.com. ; @22
+rr ftp.example.com. 14400 A 192.0.2.80 ; @23
+rr cpanel.example.com. 14400 A 192.0.2.80 ; @24
+rr whm.example.com. 14400 A 192.0.2.80 ; @25
+rr webmail.example.com. 14400 A 192.0.2.80 ; @26
+rr webdisk.example.com. 14400 A 192.0.2.80 ; @27
+rr cpcalendars.example.com. 14400 A 192.0.2.80 ; @28
+rr cpcontacts.example.com. 14400 A 192.0.2.80 ; @29
+rr autodiscover.example.com. 14400 A 192.0.2.80 ; @30
+rr autoconfig.example.com. 14400 A 192.0.2.80 ; @31
+rr cpcalendars.example.com. 14400 A 192.0.2.80 ; dup-of #13 ; @32
+rr _caldav._tcp.example.com. 14400 SRV 0 0 2079 server01.example.net. ; @33
+rr _caldav._tcp.example.com. 14400 TXT "path=/" ; @34
+rr _caldavs._tcp.example.com. 14400 SRV 0 0 2080 server01.example.net. ; @35
+rr _caldavs._tcp.example.com. 14400 TXT "path=/" ; @36
+rr _carddav._tcp.example.com. 14400 SRV 0 0 2079 server01.example.net. ; @37
+rr _carddavs._tcp.example.com. 14400 SRV 0 0 2080 server01.example.net. ; @38
+rr _autodiscover._tcp.example.com. 14400 SRV 0 0 443 cpanelemaildiscovery.cpanel.net. ; @39
+rr example.com. 14400 TXT "v=spf1 +a +mx +ip4:192.0.2.80 ~all" ; @40
+rr example.com.example.com. 900 TXT "hosting-verification=abc123" ; intended example.com ; @41
+rr _cpanel-dcv-test-record.example.com. 14400 TXT "_cpanel-dcv-test-record=AbCdEf0123456789" ; @42
+rr _acme-challenge.example.com. 14400 TXT "AbCdEfGhIjKlMnOpQrStUvWxYz-0123456789_abcdefgh" ; @43
+rr default._domainkey.example.com. 14400 TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample0key0material0that0is0long0enough0to0need0a0second0string0in0a0real0export0example0example0example0example0example0example0example0example0example0example0example0example0exa" "mple0example0IDAQAB;" ; @44
+rr blog.example.com. 14400 A 192.0.2.81 ; @46
+rr www.blog.example.com. 14400 A 192.0.2.81 ; @47
+rr webmail.blog.example.com. 14400 A 192.0.2.81 ; @48
+rr cpanel.blog.example.com. 14400 A 192.0.2.81 ; @49
+issue info ORIGIN_INFERRED @0 origin=example.com source=header
+issue error OWNER_MISSING_TRAILING_DOT @41 name=example.com.example.com intended=example.com

@@ -1,0 +1,15 @@
+format bind dialect cloudflare origin example.com (header, high)
+markers ;; Domain: header | cf_tags | ns.cloudflare.com
+stats records=7 proxied=4 dns-only=0 entries=7 skipped=0 generated=0 lines=21
+types A=3 AAAA=1 NS=2 SOA=1
+owners 4
+partial false
+rr example.com. 3600 SOA ada.ns.cloudflare.com. dns.cloudflare.com. 2051234568 10000 2400 604800 3600 ; @9
+rr example.com. 86400 NS ada.ns.cloudflare.com. ; @12
+rr example.com. 86400 NS bob.ns.cloudflare.com. ; @13
+rr example.com. 300~ A 192.0.2.10 ; proxied ; @16
+rr worker.example.com. 300~ A 192.0.2.0 ; proxied ; comment "Worker route, no origin server" ; @17
+rr cfip.example.com. 300~ A 104.16.1.1 ; proxied ; comment "points at a Cloudflare address" ; @18
+rr edge.example.com. 300~ AAAA 100:: ; proxied ; comment "redirect rule only" ; @21
+issue info ORIGIN_INFERRED @0 origin=example.com source=header
+issue info CF_SOA_OWNER_UNDOTTED @9 name=example.com

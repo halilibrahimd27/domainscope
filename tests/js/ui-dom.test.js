@@ -1678,6 +1678,34 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.deepEqual(S.originSweep(null), { command: null, namesFile: null, namesText: '', count: 0 });
   });
 
+  test('originSweep: a target list too long even with the names file goes to proxied-targets.txt too', async () => {
+    const { S } = await load();
+    // 1,400 exact IPv6 origins: far over 8,000 characters inline, whatever the names.
+    const ips = Array.from({ length: 1400 }, (_, i) => `2001:db8:${(i + 1).toString(16)}::1`);
+    const result = {
+      hosts: [host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: [] })],
+      originHints: [],
+      originNetworks: [],
+      cliTargets: ips,
+      cliNames: ['www.x.com']
+    };
+    for (const [shell, python] of [['posix', 'python3'], ['powershell', 'python']]) {
+      const sweep = S.originSweep(result, { names: ['www.x.com'], shell });
+      assert.equal(sweep.command, `${python} ssl_origin_scan.py -t proxied-targets.txt -n proxied-names.txt`, shell);
+      assert.deepEqual([sweep.targetsFile, sweep.targetCount, sweep.namesFile], ['proxied-targets.txt', 1400, 'proxied-names.txt'], shell);
+      assert.equal(sweep.targetsText, `${ips.join('\n')}\n`, 'the file holds exactly the targets, one per line');
+      assert.equal(sweep.overLength, undefined, shell);
+    }
+    // Thousands of exclusions keep even the file form too long: flagged for a warning.
+    const exclude = ips.map((_, i) => `2001:db8:1::${(i + 1).toString(16)}`);
+    const over = S.originSweep({ ...result, cliTargets: ['2001:db8:1::/112'] }, { names: ['www.x.com'], exclude });
+    assert.equal(over.overLength, true);
+    assert.ok(over.command.length > 8000);
+    // A command that fits carries none of the new fields.
+    const small = S.originSweep({ ...result, cliTargets: ips.slice(0, 3) }, { names: ['www.x.com'] });
+    assert.deepEqual(Object.keys(small).sort(), ['command', 'count', 'namesFile', 'namesText']);
+  });
+
   test('origin CLI command: an IPv6 /48 becomes its known addresses (the CLI refuses the /48 and scans nothing)', async () => {
     const { S } = await load();
     for (const ok of ['192.0.2.0/24', '198.51.100.0/16', '2001:db8:1::/112', '2001:db8:1::25', '203.0.113.9']) assert.ok(S.sweepableTarget(ok), ok);

@@ -34,7 +34,7 @@ import {
 } from '../i18n.js';
 import { state } from '../state.js';
 import { toCsv, toJson } from '../lib/export.js';
-import { buildSweepCommand } from '../lib/cmdline.js';
+import { buildFittedSweepCommand } from '../lib/cmdline.js';
 import { pemEncode, formatFingerprint } from '../lib/x509.js';
 import { errorKind } from '../lib/util.js';
 import { GP_LIMITS } from '../lib/globalping.js';
@@ -243,6 +243,7 @@ registerStrings('en', {
   'vfy.cli.dropped': { one: '{count} entry was not safe for a command and was left out', other: '{count} entries were not safe for a command and were left out' },
   'vfy.cli.namesFile': 'The command reads the {count} names from {file}: download it next to the script.',
   'vfy.cli.namesFileDownload': 'Download {file}',
+  'vfy.cli.targetsFile': 'The command reads the {count} targets from {file}: download it next to the script.',
   'vfy.cdnLink': 'See “Behind CDN”',
   'vfy.doneToast': 'Verification finished: {live} of {total} servers serve the new certificate',
   'vfy.exported': '{file} downloaded'
@@ -442,6 +443,7 @@ registerStrings('tr', {
   'vfy.cli.dropped': 'komut için güvenli olmayan {count} girdi dışarıda bırakıldı',
   'vfy.cli.namesFile': 'Komut {count} adı {file} dosyasından okur: dosyayı betiğin yanına indirin.',
   'vfy.cli.namesFileDownload': '{file} indir',
+  'vfy.cli.targetsFile': 'Komut {count} hedefi {file} dosyasından okur: dosyayı betiğin yanına indirin.',
   'vfy.cdnLink': '“CDN arkası”na bakın',
   'vfy.doneToast': 'Doğrulama bitti: {total} sunucunun {live} tanesi yeni sertifikayı sunuyor',
   'vfy.exported': '{file} indirildi'
@@ -467,6 +469,8 @@ const CLI_CERT_FILE = 'new-cert.pem';
 const CLI_JSON_FILE = 'verify-cli.json';
 /** The Verify card's names file: never the Behind CDN card's proxied-names.txt (another list). */
 const CLI_NAMES_FILE = 'verify-names.txt';
+/** Its targets file, used only when the targets alone keep the command too long. */
+const CLI_TARGETS_FILE = 'verify-targets.txt';
 /** Minutes a paid, unfinished measurement can still be fetched for free (lib VERIFY_REUSE_WINDOW_MS). */
 const REUSE_MINUTES = Math.round(VERIFY_REUSE_WINDOW_MS / 60000);
 /**
@@ -779,16 +783,18 @@ export function planText(rows, { quota = null } = {}) {
 
 /**
  * The CLI card's command: the plan's targets and names, the new certificate and the JSON
- * report; a long name list goes to verify-names.txt (not the Behind CDN card's file).
+ * report; a long name list goes to verify-names.txt (not the Behind CDN card's file), and a
+ * target list still too long after that to verify-targets.txt as well.
  * @param {{ targets: string[], names: string[] }} plan lib/verify cliPlan()
  * @param {string} shell
- * @returns {object} lib/cmdline buildSweepCommand() result
+ * @returns {object} lib/cmdline buildSweepCommand() result (`targetsInline: false` and
+ *   `targetsFile` when the targets went to their file)
  */
 export function verifyCliSweep(plan, shell) {
-  return buildSweepCommand({
+  return buildFittedSweepCommand({
     targets: plan.targets, names: plan.names, script: CLI_SCRIPT, shell, cert: CLI_CERT_FILE, json: CLI_JSON_FILE,
     namesFile: CLI_NAMES_FILE
-  });
+  }, CLI_TARGETS_FILE);
 }
 
 /**
@@ -1848,6 +1854,18 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
             label: t('vfy.cli.namesFileDownload', { file: sweep.namesFile }), icon: 'download', size: 'sm', dataset: { action: 'vfy-names-file' },
             onClick: () => {
               const file = downloadText(sweep.namesFile, text, 'text/plain;charset=utf-8');
+              toast(t('vfy.exported', { file }), { type: 'success', timeout: 2500 });
+            }
+          })));
+      }
+      if (sweep.command && sweep.targetsInline === false && sweep.targetsFile) {
+        const text = `${(sweep.targets || []).join('\n')}\n`;
+        cmdHost.append(h('div', { class: 'vfy-cli-namesfile', dataset: { file: sweep.targetsFile } },
+          h('p', { class: 'muted text-sm' }, t('vfy.cli.targetsFile', { file: sweep.targetsFile, count: formatNumber((sweep.targets || []).length) })),
+          Button({
+            label: t('vfy.cli.namesFileDownload', { file: sweep.targetsFile }), icon: 'download', size: 'sm', dataset: { action: 'vfy-targets-file' },
+            onClick: () => {
+              const file = downloadText(sweep.targetsFile, text, 'text/plain;charset=utf-8');
               toast(t('vfy.exported', { file }), { type: 'success', timeout: 2500 });
             }
           })));

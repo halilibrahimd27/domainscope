@@ -783,6 +783,16 @@ describe('rows and copy (review fixes)', () => {
     assert.equal(verifyCliSweep({ targets: ['10.0.0.5'], names: ['a.example.com'] }, 'posix').namesInline, true);
   });
 
+  test('a target list too long even with the names file goes to verify-targets.txt', () => {
+    const targets = Array.from({ length: 1400 }, (_, i) => `2001:db8:${(i + 1).toString(16)}::1`);
+    for (const shell of ['posix', 'powershell']) {
+      const sweep = verifyCliSweep({ targets, names: ['a.example.com'] }, shell);
+      assert.equal(sweep.command, 'ssl_origin_scan.py -t verify-targets.txt -n verify-names.txt --cert new-cert.pem --json verify-cli.json', shell);
+      assert.deepEqual([sweep.targetsInline, sweep.targetsFile, sweep.targets.length, sweep.overLength], [false, 'verify-targets.txt', 1400, undefined], shell);
+    }
+    assert.equal(verifyCliSweep({ targets: targets.slice(0, 3), names: ['a.example.com'] }, 'posix').targetsFile, undefined);
+  });
+
   test('the plan line counts the probe-fault retries in its cost (F8)', () => {
     setLang('en');
     const text = planText([pendingRow(), pendingRow({ ip: '5.6.7.9' })]);

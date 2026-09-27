@@ -2873,10 +2873,23 @@ function buildRunUI(run, ctx, { onFinish }) {
                 }
               })));
           }
+          // A target list too long even then: the command reads the targets from a file too.
+          if (sweep.command && sweep.targetsFile) {
+            quickHost.append(h('div', { class: 'sub-org-namesfile', dataset: { file: sweep.targetsFile } },
+              h('p', { class: 'muted text-sm' }, t('sub.org.targetsFile', { file: sweep.targetsFile, count: formatNumber(sweep.targetCount) })),
+              Button({
+                label: t('sub.org.namesFileDownload', { file: sweep.targetsFile }), icon: 'download', size: 'sm', dataset: { export: 'targets-file' },
+                onClick: () => {
+                  const file = downloadText(sweep.targetsFile, sweep.targetsText, 'text/plain;charset=utf-8');
+                  toast(t('scan.exported', { file }), { type: 'success', timeout: 2500 });
+                }
+              })));
+          }
           const invalid = sweep.excludeDropped || [];
           const unused = sweep.excludeUnused || [];
           const droppedTargets = sweep.droppedTargets || 0;
           const lines = [];
+          if (sweep.overLength) lines.push(h('div', { class: 'scan-cli-exclude-invalid', dataset: { role: 'over-length' } }, Icon('alert', { size: 13 }), h('span', null, t('sub.org.overLength', { count: formatNumber(sweep.command.length) }))));
           if (invalid.length) lines.push(h('div', { class: 'scan-cli-exclude-invalid', dataset: { role: 'exclude-invalid' } }, Icon('alert', { size: 13 }), h('span', null, t('sub.org.exclude.invalid', { count: invalid.length, list: invalid.slice(0, 5).join(', ') }))));
           if (droppedTargets) lines.push(h('div', { dataset: { role: 'exclude-applied' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.applied', { count: droppedTargets }))));
           if (unused.length) lines.push(h('div', { dataset: { role: 'exclude-unused' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.unused', { count: unused.length, list: unused.slice(0, 5).join(', ') }))));

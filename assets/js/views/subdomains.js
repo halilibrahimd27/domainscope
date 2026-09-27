@@ -59,7 +59,7 @@ import {
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
 import { state as stateSingleton } from '../state.js';
-import { buildSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
+import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
@@ -485,6 +485,8 @@ registerStrings('en', {
   'sub.org.cliDownload': 'Download ssl_origin_scan.py',
   'sub.org.namesFile': 'Too many names to fit on one command line: the command reads the {count} proxied names from {file}. Download it and save it next to ssl_origin_scan.py.',
   'sub.org.namesFileDownload': 'Download {file}',
+  'sub.org.targetsFile': 'Too many targets to fit on one command line: the command reads the {count} targets from {file}. Download it and save it next to ssl_origin_scan.py.',
+  'sub.org.overLength': 'This command is {count} characters long, more than some shells accept (Windows especially): list fewer exclusions.',
   'sub.org.command': 'Command',
   'sub.org.shell': 'Shell',
   'sub.org.shell.posix': 'Linux / macOS',
@@ -893,6 +895,8 @@ registerStrings('tr', {
   'sub.org.cliDownload': 'ssl_origin_scan.py dosyasını indir',
   'sub.org.namesFile': 'Adlar tek bir komut satırına sığmıyor: komut {count} proxy’lenen adı {file} dosyasından okur. Dosyayı indirip ssl_origin_scan.py ile aynı klasöre kaydedin.',
   'sub.org.namesFileDownload': '{file} dosyasını indir',
+  'sub.org.targetsFile': 'Hedefler tek bir komut satırına sığmıyor: komut {count} hedefi {file} dosyasından okur. Dosyayı indirip ssl_origin_scan.py ile aynı klasöre kaydedin.',
+  'sub.org.overLength': 'Bu komut {count} karakter uzunluğunda; bazı kabuklar (özellikle Windows) bu kadar uzun bir komutu kabul etmez: daha az hariç tutma girin.',
   'sub.org.command': 'Komut',
   'sub.org.hosts': 'Proxy’lenen host’lar ({count})',
   'sub.org.col.host': 'Proxy’lenen host',
@@ -1792,7 +1796,7 @@ export function rawSweepTokens(result) {
 }
 
 /**
- * The `-t` targets and `-n` names of a ScanResult's CLI sweep, ready for {@link buildSweepCommand}:
+ * The `-t` targets and `-n` names of a ScanResult's CLI sweep, ready for lib/cmdline buildSweepCommand:
  * `-n` keeps only the proxied names the panel lists (no wildcard suspects); `-t` keeps what the
  * CLI can sweep — an IPv6 /48 (which the CLI refuses, failing the whole run) becomes the network's
  * known addresses, and networks of wildcard suspects are left out.
@@ -1854,14 +1858,18 @@ export function originCliCommand(result, { names = null, networks = [], dropped 
 }
 
 /**
- * {@link originCliCommand} plus the names file it may need. Above 200 names (or an 8,000-character
- * command) lib/cmdline puts `-n proxied-names.txt` in the command instead of the names, so a large
- * proxied estate never overflows the Windows command-line limit; `namesFile` is then that file's
- * name and `namesText` its content (the validated proxied names, one per line) for a download.
+ * {@link originCliCommand} plus the files it may need. Above 200 names (or an 8,000-character
+ * command) lib/cmdline puts `-n proxied-names.txt` in the command instead of the names; `namesFile`
+ * is then that file's name and `namesText` its content (the validated proxied names, one per line)
+ * for a download. When the targets alone still keep the command over 8,000 characters they go to
+ * `proxied-targets.txt` as well (lib/cmdline buildFittedSweepCommand): `targetsFile`, `targetsText`
+ * and `targetCount` are then present, likewise for a download. Only a command still over the cap
+ * after that (very many exclusions) carries `overLength: true`, for a warning.
  * @param {object|null} result ScanResult
  * @param {{ names?: Iterable<string>|null, networks?: object[], dropped?: Set<string>,
- *   shell?: 'posix'|'powershell' }} [opts]
- * @returns {{ command: string|null, namesFile: string|null, namesText: string, count: number }}
+ *   shell?: 'posix'|'powershell', exclude?: string[]|null }} [opts]
+ * @returns {{ command: string|null, namesFile: string|null, namesText: string, count: number,
+ *   targetsFile?: string, targetsText?: string, targetCount?: number, overLength?: true }}
  */
 export function originSweep(result, { names = null, networks = [], dropped = new Set(), shell = 'posix', exclude = null } = {}) {
   const sh = SHELLS.includes(shell) ? shell : 'posix';
@@ -1874,7 +1882,7 @@ export function originSweep(result, { names = null, networks = [], dropped = new
   // A zone run keeps its host targets and `*.x` names (lib/cmdline opt-ins, off otherwise).
   if (zoneOfResult(result)) Object.assign(opts, { allowHostTargets: true, allowWildcardNames: true });
   if (withExclude) opts.exclude = exclude;
-  const sweep = buildSweepCommand(opts);
+  const sweep = buildFittedSweepCommand(opts);
   // Report the exclusions' effect only when they were requested, so a call without `exclude` keeps
   // its earlier return shape byte-for-byte.
   const report = withExclude ? {
@@ -1888,11 +1896,18 @@ export function originSweep(result, { names = null, networks = [], dropped = new
     droppedTargets: Math.max(0, targets.length - sweep.targets.length)
   } : {};
   if (!sweep.command) return { command: null, namesFile: null, namesText: '', count: 0, ...report };
+  // Present only when the targets went to a file or the command is still too long, so a command
+  // that fits keeps its earlier return shape.
+  const targetsFile = sweep.targetsInline === false && sweep.targetsFile
+    ? { targetsFile: sweep.targetsFile, targetsText: `${sweep.targets.join('\n')}\n`, targetCount: sweep.targets.length }
+    : {};
   return {
     command: `${PYTHON_FOR_SHELL[sh]} ${sweep.command}`,
     namesFile: sweep.namesInline ? null : sweep.namesFile,
     namesText: sweep.namesInline ? '' : `${sweep.names.join('\n')}\n`,
     count: sweep.names.length,
+    ...targetsFile,
+    ...(sweep.overLength ? { overLength: true } : {}),
     ...report
   };
 }
@@ -4163,11 +4178,22 @@ function buildRunUI(run, ctx, { onFinish }) {
             onClick: () => saved(downloadText(nf.file, nf.text, 'text/plain;charset=utf-8'))
           })));
       }
-      // Report what the exclusions did: invalid tokens, ones that touched nothing, networks dropped.
+      // A target list too long even then: the command reads the targets from a file too.
+      if (sweep.command && sweep.targetsFile) {
+        codeHost.append(h('div', { class: 'sub-org-namesfile', dataset: { file: sweep.targetsFile } },
+          h('p', { class: 'sub-org-hint' }, t('sub.org.targetsFile', { file: sweep.targetsFile, count: formatNumber(sweep.targetCount) })),
+          Button({
+            label: t('sub.org.namesFileDownload', { file: sweep.targetsFile }), icon: 'download', size: 'sm', dataset: { export: 'targets-file' },
+            onClick: () => saved(downloadText(sweep.targetsFile, sweep.targetsText, 'text/plain;charset=utf-8'))
+          })));
+      }
+      // Report what the exclusions did: invalid tokens, ones that touched nothing, networks dropped,
+      // and a command they keep too long for a shell.
       const invalid = sweep.excludeDropped || [];
       const unused = sweep.excludeUnused || [];
       const droppedTargets = sweep.droppedTargets || 0;
       const lines = [];
+      if (sweep.overLength) lines.push(h('div', { class: 'sub-org-exclude-invalid', dataset: { role: 'over-length' } }, Icon('alert', { size: 13 }), h('span', null, t('sub.org.overLength', { count: formatNumber(sweep.command.length) }))));
       if (invalid.length) lines.push(h('div', { class: 'sub-org-exclude-invalid', dataset: { role: 'exclude-invalid' } }, Icon('alert', { size: 13 }), h('span', null, t('sub.org.exclude.invalid', { count: invalid.length, list: invalid.slice(0, 5).join(', ') }))));
       if (droppedTargets) lines.push(h('div', { class: 'sub-org-exclude-applied', dataset: { role: 'exclude-applied' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.applied', { count: droppedTargets }))));
       if (unused.length) lines.push(h('div', { class: 'sub-org-exclude-unused', dataset: { role: 'exclude-unused' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.unused', { count: unused.length, list: unused.slice(0, 5).join(', ') }))));

@@ -3042,23 +3042,40 @@ class BaselineTests(unittest.TestCase):
 
     def test_certificate_changes_and_fallback_certificates(self):
         names = (WILD, 'nothere.example.com')
-        before = scan_doc([sos.Server('web', ['10.0.0.1'])],
-                          {'10.0.0.1': lambda sni: EC_DER if sni == WILD else CN_ONLY_DER},
-                          names=names, new_certs=())
-        after = scan_doc([sos.Server('web', ['10.0.0.1'])],
-                         {'10.0.0.1': lambda sni: RENEWED_DER if sni == WILD else RSA_DER},
-                         names=names, new_certs=())
+
+        def doc(for_wild, fallback):
+            """``for_wild`` for WILD, ``fallback`` for every other name and without SNI."""
+            return scan_doc([sos.Server('web', ['10.0.0.1'])],
+                            {'10.0.0.1': lambda sni: for_wild if sni == WILD else fallback},
+                            names=names, new_certs=())
+
+        def keys(changes):
+            return [(c['kind'], c['transition'], c['probe'], c['name'], c['after']['status'])
+                    for c in changes]
+
+        before, after = doc(EC_DER, CN_ONLY_DER), doc(RENEWED_DER, RSA_DER)
         changes = sos.compare_reports(before, after)
-        # NEEDS_UPDATE both times (no --cert) with another certificate: a 'cert' change; the
-        # no-SNI certificate changed too; nothere.example.com is NOT_HOSTED with another
-        # fallback certificate - not a change
-        self.assertEqual([(c['kind'], c['probe'], c['name'], c['after']['status'])
-                          for c in changes],
-                         [('cert', 'default', None, 'NOT_HOSTED'),
-                          ('cert', 'sni', WILD, 'NEEDS_UPDATE')])
-        self.assertTrue(all(c['certChanged'] and c['transition'] is None for c in changes))
+        # NEEDS_UPDATE both times (no --cert) with another certificate: a 'cert' change;
+        # nothere.example.com and the no-SNI probe are NOT_HOSTED with another fallback
+        # certificate - not a change
+        self.assertEqual(keys(changes), [('cert', None, 'sni', WILD, 'NEEDS_UPDATE')])
+        self.assertTrue(changes[0]['certChanged'])
         info = sos.baseline_info(before, after, 'last.json')
         self.assertFalse(info['newCertificateChanged'])
+        # only the fallback certificate changed (a proxy's self-signed default certificate
+        # made anew on every restart, another site's renewed one): nothing to report or send
+        fallback_only = sos.compare_reports(before, doc(EC_DER, RSA_DER))
+        self.assertEqual(fallback_only, [])
+        self.assertFalse(sos.should_notify(sos.MonitorResult(changes=fallback_only)))
+        # a default certificate that covers a probed name is served for it: another one is
+        # a change, and so is the default probe's move from NOT_HOSTED to covering a name
+        covering = doc(EC_DER, EC_DER)
+        self.assertEqual(keys(sos.compare_reports(covering, doc(EC_DER, RENEWED_DER))),
+                         [('cert', None, 'default', None, 'NEEDS_UPDATE')])
+        self.assertEqual(keys(sos.compare_reports(before, covering)),
+                         [('status', 'hosted', 'default', None, 'NEEDS_UPDATE')])
+        self.assertEqual(keys(sos.compare_reports(covering, doc(EC_DER, RSA_DER))),
+                         [('status', 'unhosted', 'default', None, 'NOT_HOSTED')])
 
     def test_names_and_ports_that_differ(self):
         tls = {'10.0.0.1': by_old_or_new(RENEWED_DER)}

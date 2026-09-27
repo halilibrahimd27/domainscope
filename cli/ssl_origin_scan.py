@@ -4263,9 +4263,11 @@ def _row_change(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], ip
     if before['status'] != after['status']:
         return _change('status', 'row', before=before, after=after, cert_changed=cert_changed,
                        transition=status_transition(before['status'], after['status']), **where)
-    # Another certificate for a name the server hosts, or another default certificate. A
-    # NOT_HOSTED row's certificate is whatever the server falls back to: not a change.
-    if cert_changed and (_covers_name(after['status']) or entry['probe'] == PROBE_DEFAULT):
+    # Another certificate for a name the server hosts, or a default certificate that
+    # covers a probed name. A NOT_HOSTED row's certificate - for a name or without SNI -
+    # is whatever the server falls back to (a proxy's self-signed certificate made anew on
+    # every restart, another site's renewed one): not a change.
+    if cert_changed and _covers_name(after['status']):
         return _change('cert', 'row', before=before, after=after, cert_changed=True, **where)
     return None
 
@@ -4286,9 +4288,10 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
       on the open side; its rows are not listed one by one either;
     * scope ``row`` - on an endpoint open in both: a status that moved (``status``, with
       ``transition`` from :func:`status_transition` and ``certChanged``), another
-      certificate with the same status (``cert``: for rows whose certificate covers the
-      name - UPDATED, NEEDS_UPDATE or a status of a later version - and the no-SNI
-      probe, ``name`` None), or a row only one report has.
+      certificate with the same status (``cert``: only for rows whose certificate
+      covers the name - UPDATED, NEEDS_UPDATE or a status of a later version - also
+      for the no-SNI probe, ``name`` None; a NOT_HOSTED row's fallback certificate is not
+      a change), or a row only one report has.
 
     Order: names, then endpoints in the order of ``after`` followed by the ones only
     ``before`` has, each with its rows in probe order.
@@ -5217,7 +5220,8 @@ statuses (per server, port and name):
 
 monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   --baseline FILE compares the scan with a previous --json report, per IP, port and
-  name: another served certificate (SHA-256 fingerprint), a status that moved
+  name: another certificate served for a name (SHA-256 fingerprint; the fallback
+  certificate of a name a server does not host is left out), a status that moved
   (UPDATED -> NEEDS_UPDATE, hosted -> NOT_HOSTED, a new TLS_ERROR / TIMEOUT / CLOSED,
   recovered), endpoints and names that are new or gone. Listed under "Changes since
   the baseline" and in the JSON ("baseline", "changes"). Give the same file to

@@ -704,6 +704,27 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 
+    await step('DataTable keeps keyboard focus on a row control when rows stream in, on refresh and on expand', async () => {
+      const focusInfo = () => page.evaluate(() => {
+        const a = document.activeElement;
+        const tr = a && a.closest('#gallery tbody tr.dt-row');
+        return { expandBtn: !!a && a.classList.contains('dt-expand-btn'), row: tr ? tr.querySelector('td:nth-child(2)').textContent : null, expanded: a && a.getAttribute('aria-expanded') };
+      });
+      const nextFrame = () => page.evaluate(() => new Promise((resolve) => { requestAnimationFrame(() => setTimeout(resolve, 50)); }));
+      const name = await page.evaluate(() => {
+        const tr = document.querySelectorAll('#gallery tbody tr.dt-row')[1];
+        tr.querySelector('.dt-expand-btn').focus();
+        return tr.querySelector('td:nth-child(2)').textContent;
+      });
+      await page.evaluate(() => window.__table.addRows([{ name: 'stream-501.example.com', ip: '192.0.2.2', kind: 'direct', ttl: 60, covered: true }]));
+      await nextFrame();
+      assertEqual(await focusInfo(), { expandBtn: true, row: name, expanded: 'false' }, 'after streamed rows');
+      await page.evaluate(() => window.__table.refresh());
+      assertEqual(await focusInfo(), { expandBtn: true, row: name, expanded: 'false' }, 'after refresh (rebuilt row)');
+      await page.press('Enter');
+      assertEqual(await focusInfo(), { expandBtn: true, row: name, expanded: 'true' }, 'after expanding with the keyboard');
+    });
+
     await step('gallery: toast, modal and Tabs behave', async () => {
       await page.evaluate(async () => {
         const C = await import('./assets/js/ui/components.js');

@@ -1805,6 +1805,7 @@ export function DataTable(opts) {
   let emptyContent = empty;
   const trCache = new WeakMap();
   const detailCache = new WeakMap();
+  const rowOfTr = new WeakMap(); // rendered <tr> (row or details) → row object
   const searchCache = new WeakMap();
   const expanded = new WeakSet();
   const collator = new Intl.Collator(localeTag(getLang()), { numeric: true, sensitivity: 'base' });
@@ -1988,7 +1989,10 @@ export function DataTable(opts) {
         }
       } : null
     }, cells);
-    if (row && typeof row === 'object') trCache.set(row, tr);
+    if (row && typeof row === 'object') {
+      trCache.set(row, tr);
+      rowOfTr.set(tr, row);
+    }
     return tr;
   }
 
@@ -1997,8 +2001,41 @@ export function DataTable(opts) {
     if (tr) return tr;
     const content = details(row);
     tr = h('tr', { class: 'dt-details' }, h('td', { attrs: { colspan: columns.length + 1 } }, h('div', { class: 'dt-details-body' }, content)));
-    if (row && typeof row === 'object') detailCache.set(row, tr);
+    if (row && typeof row === 'object') {
+      detailCache.set(row, tr);
+      rowOfTr.set(tr, row);
+    }
     return tr;
+  }
+
+  // replaceChildren() detaches every <tr>, even a cached one, and a focused control inside it
+  // drops keyboard focus to <body> (streamed rows, refresh, the expand button). Remember where
+  // focus was and put it back — on the same control of the rebuilt <tr> when the row was
+  // re-rendered (expand toggle, updateRow).
+  const ROW_FOCUSABLE = 'a[href],button,input,select,textarea,[tabindex]';
+
+  /** Keyboard focus inside the body: its row, which <tr> of the row and which control. */
+  function focusInBody() {
+    const active = globalThis.document ? globalThis.document.activeElement : null;
+    if (!active || active === tbody || !tbody.contains(active)) return null;
+    let tr = active;
+    while (tr.parentNode !== tbody) tr = tr.parentNode; // this table's <tr>, even from a nested table
+    if (!rowOfTr.has(tr)) return null;
+    return {
+      active,
+      row: rowOfTr.get(tr),
+      details: tr.classList.contains('dt-details'),
+      index: active === tr ? -1 : [...tr.querySelectorAll(ROW_FOCUSABLE)].indexOf(active)
+    };
+  }
+
+  function restoreFocus(saved) {
+    let target = saved.active.isConnected ? saved.active : null;
+    if (!target) {
+      const tr = (saved.details ? detailCache : trCache).get(saved.row);
+      if (tr && tr.isConnected) target = saved.index === -1 ? tr : tr.querySelectorAll(ROW_FOCUSABLE)[saved.index] || null;
+    }
+    if (target) target.focus({ preventScroll: true });
   }
 
   let lastRenderAt = 0;
@@ -2014,7 +2051,9 @@ export function DataTable(opts) {
       trs.push(renderRow(row));
       if (details && expanded.has(row)) trs.push(renderDetails(row));
     }
+    const focused = focusInBody();
     tbody.replaceChildren(...trs);
+    if (focused) restoreFocus(focused);
 
     const filtered = !!filterFn || !!normalizeSearch(query).trim();
     // Empty states

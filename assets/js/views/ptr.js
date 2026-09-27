@@ -1205,6 +1205,8 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     onChange: (v) => setFilter(v, { chosen: true })
   });
   filterSel.input.dataset.role = 'ptr-filter';
+  // "Under your domain" needs a focus domain (renderStats turns it off without one).
+  const focusOption = [...filterSel.input.options].find((o) => o.value === 'focus');
   const expandBox = checkbox({
     label: t('ptr.expand'),
     checked: session.expand,
@@ -1400,6 +1402,10 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     stat.failed.set({ value: s.failed, hint: t('ptr.stat.failedHint', { count: s.byStatus.servfail }), variant: s.failed ? 'error' : 'nxdomain' });
     stat.focus.el.hidden = !f;
     stat.servers.el.hidden = !!f;
+    // Without a focus domain "Under your domain" would match nothing: it is off, and a table
+    // showing it goes back to the default filter.
+    focusOption.disabled = !f;
+    if (!f && session.filter === 'focus') setFilter('ptr');
     if (f) stat.focus.set({ label: t('ptr.stat.focus', { domain: f }), value: s.focus });
     else {
       const servers = new Set(sweepRows(job.results, { collapse: false, index: ctx.getInventoryIndex() }).flatMap((r) => r.servers.map((x) => x.serverId)));

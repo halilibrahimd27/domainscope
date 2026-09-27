@@ -169,7 +169,12 @@
   font-weight: 600;
 }
 
+/* Muted, not faded: opacity on the text itself would drop "0 errors" below 4.5:1 in light mode. */
 .hlt-count.is-zero {
+  color: var(--text-3);
+}
+
+.hlt-count.is-zero .sev {
   opacity: 0.55;
 }
 

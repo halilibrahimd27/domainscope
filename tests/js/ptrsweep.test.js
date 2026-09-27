@@ -225,6 +225,39 @@ describe('parseSweepTarget', () => {
     assert.deepEqual(P.parseSweepTarget('- 192.0.2.10\n- 192.0.2.20').addresses, ['192.0.2.10', '192.0.2.20']);
   });
 
+  test('targetTokens: the tokens parseSweepTarget reads, stable when joined with commas (a link’s target)', () => {
+    const tokens = P.targetTokens('192.0.2.10 - 192.0.2.14, AS 64496\n192.0.2.30 – 40 # office\n2001:db8::25');
+    assert.deepEqual(tokens, ['192.0.2.10-192.0.2.14', 'AS64496', '192.0.2.30-40', '2001:db8::25']);
+    assert.deepEqual(P.targetTokens(tokens.join(',')), tokens);
+    assert.deepEqual(P.targetTokens('192.0.2.0/24 - 198.51.100.0/24'), ['192.0.2.0/24', '-', '198.51.100.0/24']);
+    // a word longer than any range half is never joined to the one after the dash
+    assert.deepEqual(P.targetTokens(`${'1'.repeat(70)} - 5`), ['1'.repeat(70), '-', '5']);
+    assert.deepEqual(P.targetTokens(''), []);
+  });
+
+  test('ReDoS set: a long pasted word, with or without dashes, is read in linear time', () => {
+    const cases = {
+      letters: 'a'.repeat(100000),
+      digits: '1'.repeat(100000),
+      dots: '1.'.repeat(50000),
+      colons: '1:'.repeat(50000),
+      slashes: '1/'.repeat(50000),
+      dashes: '1-'.repeat(50000),
+      enDashes: '1–'.repeat(50000),
+      spacedDashes: '1 - '.repeat(25000),
+      longHalves: `${'a'.repeat(50000)} - ${'b'.repeat(50000)}`,
+      asSpaces: `AS${' '.repeat(100000)}x`
+    };
+    for (const [name, text] of Object.entries(cases)) {
+      const t0 = performance.now();
+      const t = P.parseSweepTarget(text);
+      const ms = performance.now() - t0;
+      assert.equal(t.ok, false, name);
+      // Quadratic parsing took seconds here; the margin is for shared CI runners.
+      assert.ok(ms < 250, `${name}: ${Math.round(ms)} ms`);
+    }
+  });
+
   test('private and reserved addresses are left out and counted', () => {
     const t = P.parseSweepTarget('10.0.0.0/30 192.0.2.1 224.0.0.1 fe80::1 ff02::1 fd00::1');
     assert.deepEqual(t.addresses, ['192.0.2.1']);

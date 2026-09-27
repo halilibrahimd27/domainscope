@@ -307,18 +307,26 @@ const issue = (code, params = {}) => ({ code, severity: TARGET_ISSUE_SEVERITY[co
 const listText = (items, max = 6) => (items.length > max ? `${items.slice(0, max).join(', ')} (+${items.length - max})` : items.join(', '));
 
 /**
+ * `a - b` / `a – b`: two whole words (a separator before and after each) of at most 64
+ * characters around a dash — a range half never is longer (an IPv6 address is at most 45).
+ * Bounded and anchored at a word's start, so a long pasted word costs no backtracking.
+ */
+const RANGE_JOIN_RE = /(?<![^\s,;#])([^\s,;#]{1,64})[ \t]*[-–][ \t]*(?=([^\s,;#]{1,64})(?![^\s,;#]))/g;
+
+/**
  * One token per address, range, network or AS number: `AS 64496` / `ASN 64496` and a range
  * typed with spaces or an en dash (`192.0.2.10 - 192.0.2.20`, `192.0.2.10–20`) are joined
  * before the text is split. Two words around a dash are joined only when together they read
- * as a range: two networks (`192.0.2.0/24 - 198.51.100.0/24`) stay two tokens.
+ * as a range: two networks (`192.0.2.0/24 - 198.51.100.0/24`) stay two tokens. Linear in the
+ * text. The view's share link and a link's `target` are read with it too, so a spaced range
+ * survives them as one token.
  * @param {string} text
  * @returns {string[]}
  */
-function targetTokens(text) {
+export function targetTokens(text) {
   const joined = String(text ?? '')
     .replace(/(^|[\s,;])(ASN?)[ \t]+(\d{1,10})(?=$|[\s,;#])/gim, '$1$2$3')
-    .replace(/([^\s,;#]+)[ \t]*[-\u2013][ \t]*(?=([^\s,;#]+))/g,
-      (whole, left, right) => (parseRange(`${left}-${right}`) ? `${left}-` : whole));
+    .replace(RANGE_JOIN_RE, (whole, left, right) => (parseRange(`${left}-${right}`) ? `${left}-` : whole));
   return splitList(joined);
 }
 

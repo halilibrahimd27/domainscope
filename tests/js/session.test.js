@@ -398,19 +398,41 @@ describe('createSessionStore', () => {
   test('memory: over the total bound the oldest other snapshots go first', () => {
     const s = createSessionStore({ now: clock(), entryBytes: 3000, totalBytes: 5000 });
     const big = () => ({ text: 'x'.repeat(1200) });
-    s.keep('lookup', { params: { name: 'a.example.com' }, at: new Date(), snapshot: big() });
-    s.keep('global', { params: { name: 'b.example.com' }, at: new Date(), snapshot: big() });
+    const at = (min) => new Date(Date.UTC(2026, 8, 27, 12, min));
+    s.keep('lookup', { params: { name: 'a.example.com' }, at: at(1), snapshot: big() });
+    s.keep('global', { params: { name: 'b.example.com' }, at: at(2), snapshot: big() });
     assert.equal(s.usage().entries, 2);
-    s.keep('health', { params: { domain: 'example.com' }, at: new Date(), snapshot: big() });
+    s.keep('health', { params: { domain: 'example.com' }, at: at(3), snapshot: big() });
     assert.equal(s.kept('lookup').dropped, true, 'the oldest went');
     assert.equal(s.kept('global').dropped, false);
     assert.equal(s.kept('health').dropped, false);
     assert.ok(s.usage().bytes <= 5000);
-    // Keeping a tool again makes it the newest.
-    s.keep('global', { params: { name: 'b.example.com' }, at: new Date(), snapshot: big() });
-    s.keep('ip', { params: { ips: '192.0.2.1' }, at: new Date(), snapshot: big() });
+    // A new result of a tool makes it the newest.
+    s.keep('global', { params: { name: 'b.example.com' }, at: at(4), snapshot: big() });
+    s.keep('ip', { params: { ips: '192.0.2.1' }, at: at(5), snapshot: big() });
     assert.equal(s.kept('health').dropped, true);
     assert.equal(s.kept('global').dropped, false);
+  });
+
+  test('memory: a result kept again (its tool left once more, no new run) keeps its age', () => {
+    const s = createSessionStore({ now: clock(), entryBytes: 3000, totalBytes: 5000 });
+    const big = (box) => ({ box, text: 'x'.repeat(1200) });
+    const at = (min) => new Date(Date.UTC(2026, 8, 27, 12, min));
+    s.keep('lookup', { params: { name: 'a.example.com' }, at: at(1), snapshot: big('a.example.com') });
+    s.keep('global', { params: { name: 'b.example.com' }, at: at(2), snapshot: big('b.example.com') });
+    // The lookup looked at again (a carried name in its box) and left: the same result.
+    const again = big('c.example.com');
+    s.keep('lookup', { params: { name: 'a.example.com', run: '0' }, at: at(1), snapshot: again });
+    assert.equal(s.kept('lookup').snapshot, again, 'the box as it was left');
+    s.keep('health', { params: { domain: 'example.com' }, at: at(3), snapshot: big('example.com') });
+    assert.equal(s.kept('lookup').dropped, true, 'the oldest result went, though its tool was left later');
+    assert.equal(s.kept('global').dropped, false, 'the newer result stays');
+    assert.equal(s.kept('health').dropped, false);
+    // Kept again once more (a language re-mount, another trip): still older, dropped first.
+    s.keep('global', { params: { name: 'b.example.com' }, at: at(2), snapshot: big('b.example.com') });
+    s.keep('ip', { params: { ips: '192.0.2.1' }, at: at(4), snapshot: big('192.0.2.1') });
+    assert.equal(s.kept('global').dropped, true, 'the result of 12:02 before the one of 12:03');
+    assert.equal(s.kept('health').dropped, false);
   });
 
   test('drop and clear ("Delete all local data") forget; subscribers hear it', () => {

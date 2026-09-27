@@ -426,7 +426,11 @@ export function createSessionStore({
 } = {}) {
   /** @type {SessionTarget|null} */
   let target = null;
-  /** Insertion order = keep order (a kept view moves to the end), so the oldest is dropped first. */
+  /**
+   * Insertion order = the order the results came in (a new result moves its tool to the end; the
+   * same result kept again when its tool is left once more stays where it was), so the oldest
+   * result is dropped first.
+   */
   const kept = new Map();
   const listeners = new Set();
 
@@ -448,7 +452,10 @@ export function createSessionStore({
   };
   const copy = (entry) => (entry ? { ...entry, params: { ...entry.params } } : null);
 
-  /** Drop the oldest snapshots (their queries stay, marked dropped) until the total fits. */
+  /**
+   * Drop the oldest snapshots (their queries stay, marked dropped) until the total fits; a new
+   * result (`latest`) goes last, a result kept again (null) in its own turn.
+   */
   function trim(latest) {
     let total = 0;
     for (const e of kept.values()) total += e.size;
@@ -458,7 +465,7 @@ export function createSessionStore({
       total -= e.size;
       Object.assign(e, { snapshot: null, size: 0, dropped: true });
     }
-    if (total > totalBytes && latest.snapshot) Object.assign(latest, { snapshot: null, size: 0, dropped: true });
+    if (latest && total > totalBytes && latest.snapshot) Object.assign(latest, { snapshot: null, size: 0, dropped: true });
   }
 
   const api = {
@@ -493,7 +500,9 @@ export function createSessionStore({
     /**
      * Keep a tool's finished result (at most one per tool: it replaces the previous one). A
      * snapshot larger than the entry bound is not kept (the entry is `dropped`); when all of them
-     * together pass the total bound, the oldest other snapshots are dropped first.
+     * together pass the total bound, the oldest results' snapshots are dropped first. The same
+     * result kept again (the same `at` and params: the tool was left once more without a new run)
+     * keeps its age, so a result only looked at again is not taken for the newest.
      * @param {string} view
      * @param {{ params?: Record<string, string>, subject?: string|null, at?: Date|number|string, snapshot?: any }} result
      * @returns {KeptResult} a copy of the entry
@@ -511,9 +520,11 @@ export function createSessionStore({
         size: has && !tooLarge ? size : 0,
         dropped: tooLarge
       };
-      kept.delete(entry.view);
+      const prev = kept.get(entry.view);
+      const again = !!prev && prev.at.getTime() === entry.at.getTime() && routeKey(prev.params) === routeKey(entry.params);
+      if (!again) kept.delete(entry.view);
       kept.set(entry.view, entry);
-      trim(entry);
+      trim(again ? null : entry);
       emit('kept', entry.view);
       return copy(entry);
     },

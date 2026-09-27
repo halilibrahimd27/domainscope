@@ -147,8 +147,9 @@ async function delayRequests(page, patterns, ms) {
  * loads), so the "No file?" steps are offline. `window.__ctFake.mode`: 'found' (one issuance
  * with the DER, then the empty page that ends the list), 'none' (nothing current), '429' (Cert
  * Spotter rate limited; crt.sh lists the certificate as precertificate + certificate rows),
- * 'down' (Cert Spotter rate limited, crt.sh answering 404), 'hold' (no answer until the request
- * is aborted; `aborted` counts those). Every intercepted request is recorded with its
+ * 'down' (Cert Spotter rate limited, crt.sh answering 404), 'wild-down' (Cert Spotter rate
+ * limited, crt.sh answering the name's own search with nothing and its `*.parent` search with a
+ * 404), 'hold' (no answer until the request is aborted; `aborted` counts those). Every intercepted request is recorded with its
  * credentials mode; any other fetch goes out.
  */
 const ctFakeScript = (row, crtshRows) => `(() => {
@@ -171,13 +172,15 @@ const ctFakeScript = (row, crtshRows) => `(() => {
     if (url.startsWith('https://api.certspotter.com/v1/issuances')) {
       window.__ctFake.calls.push({ url, credentials: init && init.credentials });
       if (mode === 'hold') return hold(init);
-      if (mode === '429' || mode === 'down') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
+      if (mode === '429' || mode === 'down' || mode === 'wild-down') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
       return json(mode === 'none' || /[?&]after=/.test(url) ? [] : [ROW]);
     }
     if (url.startsWith('https://crt.sh/?q=')) {
       window.__ctFake.calls.push({ url, credentials: init && init.credentials });
       if (mode === 'hold') return hold(init);
-      if (mode === 'down') return new Response('<html>Not found</html>', { status: 404, headers: { 'content-type': 'text/html' } });
+      const notFound = () => new Response('<html>Not found</html>', { status: 404, headers: { 'content-type': 'text/html' } });
+      if (mode === 'down') return notFound();
+      if (mode === 'wild-down') return new URL(url).searchParams.get('q').startsWith('*.') ? notFound() : json([]);
       return json(mode === '429' ? CRTSH : []);
     }
     return realFetch(input, init);
@@ -255,12 +258,14 @@ async function main() {
         return {
           label: alt?.querySelector('.field-label')?.textContent,
           labelled: !!input && alt.querySelector('.field-label').getAttribute('for') === input.id,
+          described: (input?.getAttribute('aria-describedby') || '').split(' ').map((id) => document.getElementById(id)?.textContent || `#${id}?`),
           load: !!alt?.querySelector('[data-action="ct-load"]'),
           sample: alt?.querySelector('[data-action="cert-sample"]')?.textContent
         };
       });
       assertEqual(info.label, 'No file? Load the public certificate of a host name', 'label');
       assert(info.labelled && info.load, 'labelled field and Load button');
+      assert(info.described.length === 1 && /^Reads the newest valid certificate/.test(info.described[0]), `hint tied to the field: ${info.described}`);
       assertEqual(info.sample, 'Try a sample', 'sample button');
     });
 
@@ -274,9 +279,11 @@ async function main() {
         note: document.querySelector('.cert-content .cert-source-note')?.textContent || '',
         names: [...document.querySelectorAll('.cert-tabs .dt-table tbody tr.dt-row')].map((tr) => tr.querySelectorAll('td')[1].textContent.trim()),
         verify: !!document.querySelector('[data-action="ct-verify"]'),
-        sample: performance.getEntriesByType('resource').filter((e) => /\/assets\/data\/sample-cert\.pem$/.test(e.name)).length
+        sample: performance.getEntriesByType('resource').filter((e) => /\/assets\/data\/sample-cert\.pem$/.test(e.name)).length,
+        focused: document.activeElement === document.querySelector('.cert-content .cert-source-note')
       }));
       assertEqual(info.badge, 'sample', 'Sample badge');
+      assert(info.focused, 'the keyboard focus moves to the new source note, not to <body>');
       assert(/made-up .DomainScope Sample. CA\. No server uses it/.test(info.note), `sample note: ${info.note}`);
       assert(['example.com', '*.example.com', 'example.net', 'www.example.net'].every((n) => info.names.some((c) => c.startsWith(n))), `names ${info.names}`);
       assert(!info.verify, 'no Verify link for the sample');
@@ -292,6 +299,9 @@ async function main() {
       await page.click('.cert-reload [data-action="ct-load"]');
       const err = await page.waitFor(() => document.querySelector('.cert-reload [data-role="cert-alt"] .field-error')?.textContent, { message: 'field error' });
       assert(/host name such as www\.example\.com/.test(err), `error: ${err}`);
+      const described = await page.evaluate(() => (document.querySelector('.cert-reload [data-role="ct-host"]').getAttribute('aria-describedby') || '')
+        .split(' ').map((id) => document.getElementById(id)?.className));
+      assertEqual(described, ['muted text-sm cert-alt-hint', 'field-error'], 'hint and error both describe the field');
       assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'no request');
     });
 
@@ -349,9 +359,10 @@ async function main() {
       });
     });
 
-    await run.step('found: loaded with the CT badge, the caveat, Check servers in SSL Targets; the chain note blames no file', async () => {
+    await run.step('found (Enter in the field): the CT badge, the caveat, Check servers in SSL Targets, the focus on the note; the chain note blames no file', async () => {
       await page.evaluate(() => { window.__ctFake.mode = 'found'; window.__ctFake.calls = []; });
-      await page.click('.cert-reload [data-action="ct-load"]');
+      await page.type('.cert-reload [data-role="ct-host"]', 'www.example.net');
+      await page.press('Enter');
       await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'ct', { message: 'CT certificate loaded' });
       const info = await page.evaluate(() => ({
         badge: document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource,
@@ -359,9 +370,12 @@ async function main() {
         note: document.querySelector('.cert-content .cert-source-note')?.textContent || '',
         verify: document.querySelector('.cert-source-note [data-action="ct-verify"]')?.textContent,
         crtsh: document.querySelector('.cert-source-note a[href^="https://crt.sh/?q="]')?.getAttribute('href'),
-        pages: window.__ctFake.calls.map((c) => new URL(c.url).searchParams.get('after'))
+        pages: window.__ctFake.calls.map((c) => new URL(c.url).searchParams.get('after')),
+        focused: document.activeElement === document.querySelector('.cert-content .cert-source-note')
+          && document.activeElement.getAttribute('tabindex') === '-1'
       }));
       assertEqual(info.badge, 'ct', 'CT badge');
+      assert(info.focused, 'Enter left the focus on the new source note');
       assertEqual(info.title, 'Loaded from Certificate Transparency — the server may serve a different one.', 'caveat');
       assert(/newest valid certificate logged for www\.example\.net/.test(info.note), `note: ${info.note}`);
       assertEqual(info.verify, 'Check servers in SSL Targets', 'SSL Targets link');
@@ -405,9 +419,11 @@ async function main() {
         domains: document.querySelector('[data-role="scan-domains"]').value,
         note: document.querySelector('.scan-step-cert .cert-source-note').textContent,
         results: document.querySelector('.scan-results-host').childElementCount,
-        doh: performance.getEntriesByType('resource').filter((e) => e.name.includes('dns-query')).length
+        doh: performance.getEntriesByType('resource').filter((e) => e.name.includes('dns-query')).length,
+        focused: document.activeElement === document.querySelector('.scan-step-cert .cert-source-note')
       }));
       assertEqual(info.domains, 'example.com\nexample.net', 'domains filled in');
+      assert(info.focused, 'the focus follows the certificate into step 1');
       assert(/a scan runs only when you press Start scan/.test(info.note), `note: ${info.note}`);
       assertEqual(info.results, 0, 'no scan');
       assertEqual(info.doh, dohBefore, 'no DNS query');
@@ -473,6 +489,27 @@ async function main() {
       assertEqual([info.spotter, info.crtsh], [0, 2], 'only crt.sh asked, not retried after a 404');
       await assertNoHorizontalScroll(page, 'crt.sh error');
       await shot(page, opts, 'scan-desktop-light-en-ct-error');
+    });
+
+    await run.step('crt.sh answering one search of two: a hedged not-found with Try again, never "not logged"', async () => {
+      const scope = '.scan-cert-another';
+      await page.evaluate(() => { window.__ctFake.mode = 'wild-down'; window.__ctFake.calls = []; });
+      await page.click(`${scope} [data-ct-result] [data-action="ct-retry"]`);
+      const cancelFocused = await page.evaluate((sel) => document.activeElement === document.querySelector(`${sel} [data-action="ct-load"]`), scope);
+      assert(cancelFocused, 'Try again is cleared: the focus moves to Load (Cancel), not to <body>');
+      assertEqual(await ctResult(page, scope, 'not-found'), 'not-found', 'outcome');
+      const info = await page.evaluate((sel) => {
+        const box = document.querySelector(`${sel} [data-ct-result]`);
+        return {
+          text: box.querySelector('.alert-message')?.textContent || '',
+          retry: !!box.querySelector('[data-action="ct-retry"]'),
+          crtsh: window.__ctFake.calls.filter((c) => c.url.startsWith('https://crt.sh/')).map((c) => new URL(c.url).searchParams.get('q')).sort()
+        };
+      }, scope);
+      assert(/No currently valid certificate for www\.example\.net was found in the answers received, but crt\.sh did not answer every search: a valid certificate may still be logged\. Try again later\.$/.test(info.text), `text: ${info.text}`);
+      assert(!/Internal names|is logged in Certificate Transparency/.test(info.text), `no flat not-found: ${info.text}`);
+      assert(info.retry, 'Try again offered');
+      assertEqual(info.crtsh, ['*.example.net', 'www.example.net'], 'both searches sent, the failed 404 not retried');
       // Back to the crt.sh links for the next step.
       await page.evaluate(() => { window.__ctFake.mode = '429'; window.__ctFake.calls = []; });
       await page.click(`${scope} [data-ct-result] [data-action="ct-retry"]`);

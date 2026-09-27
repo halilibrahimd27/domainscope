@@ -12,7 +12,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage
+  sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
+  ctCrtshIncomplete, focusLoadedCert
 } from '../../assets/js/views/cert.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';
@@ -250,5 +251,102 @@ describe('cert view: the text of a lookup that loaded nothing', () => {
     const partialThenCrtsh = ctOutcomeMessage({ ...base, status: 'not-found', truncated: true, certspotter: { ...ok, state: 'partial', errorKind: 'http' },
       crtsh: { entry: null, candidates: 0, partial: false, error: null, errorKind: null } });
     assert.match(partialThenCrtsh, /^Cert Spotter answered only in part, so crt.sh was searched too. No currently valid certificate/, 'crt.sh read the whole list');
+  });
+
+  // crt.sh's identity search is literal: the wildcard certificate that covers a host is only in the
+  // `*.parent` search, which is the one that failed here (crt.sh answered it 502 on 2026-09-27).
+  const spotter429 = () => json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
+  const crtshWildcardDown = (literal) => async (url) => {
+    const u = String(url);
+    if (u.startsWith('https://api.certspotter.com/')) return spotter429();
+    return new URL(u).searchParams.get('q').startsWith('*.') ? new Response('bad gateway', { status: 502 }) : json(literal);
+  };
+  const crtRow = (id) => ({
+    id, issuer_ca_id: 1, issuer_name: 'C=US, O=Example Trust, CN=Example CA R1', common_name: 'www.example.com',
+    name_value: 'www.example.com', not_before: '2026-08-01T00:00:00', not_after: '2026-10-30T00:00:00', serial_number: '0a0b0c'
+  });
+
+  test('not found while crt.sh left a search unanswered: hedged, never "not logged" or "internal name" (EN, TR)', async () => {
+    const opts = { now: NOW, cooldown: createCtCooldown(), crtshRetryDelayMs: 0 };
+    const r = await lookupCtCertificate('www.example.com', { ...opts, fetchImpl: crtshWildcardDown([]) });
+    assert.deepEqual([r.status, r.certspotter.state, r.crtsh.partial, r.crtsh.errorKind], ['not-found', 'failed', true, 'http']);
+    assert.equal(ctCrtshIncomplete(r), true);
+    setLang('en');
+    const time = formatDate(RESET, { timeStyle: 'short' });
+    const en = ctOutcomeMessage(r, { now: NOW.getTime() });
+    assert.equal(en, `Cert Spotter’s hourly limit for your IP address is used up, so crt.sh was searched instead. Cert Spotter is asked again from about ${time}. `
+      + 'No currently valid certificate for www.example.com was found in the answers received, but crt.sh did not answer every search: a valid certificate may still be logged. Try again later.');
+    assert.doesNotMatch(en, /is logged in Certificate Transparency|Internal names/);
+    setLang('tr');
+    const tr = ctOutcomeMessage(r, { now: NOW.getTime() });
+    assert.equal(tr, `IP adresinizin saatlik Cert Spotter sınırı doldu; bu yüzden crt.sh’te arandı. Cert Spotter’a saat ${formatDate(RESET, { timeStyle: 'short' })} civarından itibaren yeniden sorulur. `
+      + 'Alınan yanıtlarda www.example.com için şu an geçerli bir sertifika bulunamadı; ancak crt.sh her aramaya yanıt vermedi: geçerli bir sertifika yine de kayıtlı olabilir. Daha sonra tekrar deneyin.');
+    assert.doesNotMatch(tr, /İç ağ adları/);
+    setLang('en');
+  });
+
+  test('not found on a partial Cert Spotter list with crt.sh answering nothing: says crt.sh answered none of its searches', async () => {
+    setLang('en');
+    const other = { id: '1', dns_names: ['www.example.org'], not_before: '2026-08-01T00:00:00Z', not_after: '2026-10-30T00:00:00Z', revoked: false, cert_der: '' };
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u.startsWith('https://api.certspotter.com/')) return /[?&]after=/.test(u) ? json({}, 500) : json([other]);
+      return new Response('bad gateway', { status: 502 });
+    };
+    const r = await lookupCtCertificate('www.example.com', { fetchImpl, now: NOW, cooldown: createCtCooldown(), crtshRetryDelayMs: 0 });
+    assert.deepEqual([r.status, r.certspotter.state, r.truncated, r.crtsh.partial], ['not-found', 'partial', true, false]);
+    const msg = ctOutcomeMessage(r, { now: NOW.getTime() });
+    assert.equal(msg, 'Cert Spotter answered only in part, so crt.sh was searched too. '
+      + 'No currently valid certificate for www.example.com is among those Cert Spotter listed, and crt.sh answered none of its searches: a valid certificate may still be logged. Try again later.');
+    assert.doesNotMatch(msg, /did not answer every search|Internal names/);
+    setLang('tr');
+    assert.match(ctOutcomeMessage(r, { now: NOW.getTime() }), /crt\.sh aramalarının hiçbirine yanıt vermedi: geçerli bir sertifika yine de kayıtlı olabilir\. Daha sonra tekrar deneyin\.$/);
+    setLang('en');
+    assert.equal(ctCrtshIncomplete({ ...base, status: 'not-found', crtsh: null }), false, 'crt.sh not asked');
+  });
+
+  test('a crt.sh find with a search unanswered: "may not be the newest"', async () => {
+    const r = await lookupCtCertificate('www.example.com', {
+      fetchImpl: crtshWildcardDown([crtRow(11), crtRow(12)]), now: NOW, cooldown: createCtCooldown(), crtshRetryDelayMs: 0
+    });
+    assert.deepEqual([r.status, r.crtsh.partial], ['manual', true]);
+    setLang('en');
+    assert.match(ctOutcomeMessage(r, { now: NOW.getTime() }),
+      /Newest valid certificate for www\.example\.com: www\.example\.com, issued by Example Trust \(Example CA R1\), valid until .+\. crt\.sh did not answer every search, so a newer certificate for this name may be missing here\.$/);
+    setLang('tr');
+    assert.match(ctOutcomeMessage(r, { now: NOW.getTime() }), /bu ad için daha yeni bir sertifika burada eksik olabilir\.$/);
+    setLang('en');
+    const whole = { ...r, crtsh: { ...r.crtsh, partial: false, error: null, errorKind: null } };
+    assert.doesNotMatch(ctOutcomeMessage(whole, { now: NOW.getTime() }), /may be missing/, 'every search answered');
+  });
+});
+
+describe('cert view: the keyboard focus after a certificate loads from the "No file?" block', () => {
+  const fakeEl = ({ connected = true, tabindex = null } = {}) => {
+    const attrs = new Map(tabindex === null ? [] : [['tabindex', tabindex]]);
+    const calls = [];
+    return {
+      isConnected: connected,
+      calls,
+      hasAttribute: (k) => attrs.has(k),
+      getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
+      setAttribute: (k, v) => attrs.set(k, String(v)),
+      focus: (o) => calls.push(['focus', o]),
+      scrollIntoView: (o) => calls.push(['scroll', o.block])
+    };
+  };
+
+  test('focusLoadedCert: made focusable (tabindex -1), focused without a jump, scrolled only as far as needed', () => {
+    const note = fakeEl();
+    assert.equal(focusLoadedCert(note), true);
+    assert.equal(note.getAttribute('tabindex'), '-1');
+    assert.deepEqual(note.calls, [['focus', { preventScroll: true }], ['scroll', 'nearest']]);
+    const heading = fakeEl({ tabindex: '0' });
+    focusLoadedCert(heading);
+    assert.equal(heading.getAttribute('tabindex'), '0', 'an element that is focusable already keeps its tabindex');
+    assert.equal(focusLoadedCert(null), false);
+    const gone = fakeEl({ connected: false });
+    assert.equal(focusLoadedCert(gone), false);
+    assert.deepEqual(gone.calls, []);
   });
 });

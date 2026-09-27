@@ -101,6 +101,8 @@ registerStrings('en', {
   'cert.alt.searching': 'Searching the Certificate Transparency logs for {host}…',
   'cert.alt.notFound': 'No currently valid certificate for {host} is logged in Certificate Transparency. Internal names and private CAs are never logged, and a certificate issued in the last few hours may not be listed yet.',
   'cert.alt.notFoundTruncated': 'None of the certificates read for {host} is currently valid, but Cert Spotter lists more than were read, and the newest are among the unread ones: a valid certificate may still be logged.',
+  'cert.alt.notFoundCrtshPartial': 'No currently valid certificate for {host} was found in the answers received, but crt.sh did not answer every search: a valid certificate may still be logged. Try again later.',
+  'cert.alt.notFoundCrtshDown': 'No currently valid certificate for {host} is among those Cert Spotter listed, and crt.sh answered none of its searches: a valid certificate may still be logged. Try again later.',
   'cert.alt.revokedSkipped': { one: '{count} revoked certificate was skipped.', other: '{count} revoked certificates were skipped.' },
   'cert.alt.failed': 'Certificate Transparency could not be searched',
   'cert.alt.spotterQuota': 'Cert Spotter’s hourly limit for your IP address is used up, so crt.sh was searched instead.',
@@ -110,10 +112,11 @@ registerStrings('en', {
   'cert.alt.spotterFailed': 'Cert Spotter could not answer, so crt.sh was searched instead.',
   'cert.alt.spotterUnreadable': 'Cert Spotter’s copy of the certificate could not be read, so crt.sh was searched instead.',
   'cert.alt.spotterPartial': 'Cert Spotter answered only in part, so crt.sh was searched too.',
-  'cert.alt.crtshPartial': 'crt.sh did not answer every search, so a certificate may be missing here.',
+  'cert.alt.manualPartial': 'crt.sh did not answer every search, so a newer certificate for this name may be missing here.',
   'cert.alt.manualTitle': 'Found on crt.sh — download it and drop the file above',
   'cert.alt.manualCert': 'Newest valid certificate for {host}: {names}, issued by {issuer}, valid until {date}.',
   'cert.alt.manualWhy': 'crt.sh does not let web pages download certificates, so save the file yourself. crt.sh lists each certificate twice — as the precertificate and as the certificate servers send — and does not say which is which: if the file you drop is marked “Precertificate”, use the other link.',
+  'cert.alt.manualWhyOne': 'crt.sh does not let web pages download certificates, so save the file yourself. If the file you drop is marked “Precertificate”, the certificate servers send is not logged yet: take it from the server or the CA.',
   'cert.alt.download': 'Download #{id}',
   'cert.alt.openCrtsh': 'Open on crt.sh',
   'cert.alt.sample': 'Try a sample',
@@ -125,6 +128,7 @@ registerStrings('en', {
   'cert.src.ct': 'Loaded from Certificate Transparency — the server may serve a different one.',
   'cert.src.ctWhat': 'The newest valid certificate logged for {host} (issued {date}). A log shows what a CA issued, not what is installed.',
   'cert.src.ctNewerPrecert': 'A newer certificate for this name (issued {date}) is logged only as a precertificate so far.',
+  'cert.src.ctPrecert': 'No final certificate of this issuance is logged yet, so the one servers send cannot be loaded from Certificate Transparency: take it from the server or the CA.',
   'cert.src.ctTruncated': 'Cert Spotter lists more certificates for this name than were read; a newer one may exist.',
   'cert.src.ctOpen': 'Open on crt.sh',
   'cert.src.verify': 'Check servers in SSL Targets',
@@ -386,6 +390,8 @@ registerStrings('tr', {
   'cert.alt.searching': '{host} için Certificate Transparency kayıtları aranıyor…',
   'cert.alt.notFound': '{host} için şu an geçerli bir sertifika Certificate Transparency kayıtlarında yok. İç ağ adları ve özel CA’lar hiç kaydedilmez; son birkaç saatte verilen bir sertifika da henüz listelenmemiş olabilir.',
   'cert.alt.notFoundTruncated': '{host} için okunan sertifikaların hiçbiri şu an geçerli değil; ancak Cert Spotter okunandan fazlasını listeliyor ve en yeniler okunmayanlar arasında: geçerli bir sertifika yine de kayıtlı olabilir.',
+  'cert.alt.notFoundCrtshPartial': 'Alınan yanıtlarda {host} için şu an geçerli bir sertifika bulunamadı; ancak crt.sh her aramaya yanıt vermedi: geçerli bir sertifika yine de kayıtlı olabilir. Daha sonra tekrar deneyin.',
+  'cert.alt.notFoundCrtshDown': 'Cert Spotter’ın listeledikleri arasında {host} için şu an geçerli bir sertifika yok ve crt.sh aramalarının hiçbirine yanıt vermedi: geçerli bir sertifika yine de kayıtlı olabilir. Daha sonra tekrar deneyin.',
   'cert.alt.revokedSkipped': { one: 'İptal edilmiş {count} sertifika atlandı.', other: 'İptal edilmiş {count} sertifika atlandı.' },
   'cert.alt.failed': 'Certificate Transparency aranamadı',
   'cert.alt.spotterQuota': 'IP adresinizin saatlik Cert Spotter sınırı doldu; bu yüzden crt.sh’te arandı.',
@@ -395,10 +401,11 @@ registerStrings('tr', {
   'cert.alt.spotterFailed': 'Cert Spotter yanıt veremedi; bu yüzden crt.sh’te arandı.',
   'cert.alt.spotterUnreadable': 'Cert Spotter’daki sertifika kopyası okunamadı; bu yüzden crt.sh’te arandı.',
   'cert.alt.spotterPartial': 'Cert Spotter yalnızca kısmen yanıt verdi; bu yüzden crt.sh’te de arandı.',
-  'cert.alt.crtshPartial': 'crt.sh her aramaya yanıt vermedi; bu yüzden bir sertifika burada eksik olabilir.',
+  'cert.alt.manualPartial': 'crt.sh her aramaya yanıt vermedi; bu yüzden bu ad için daha yeni bir sertifika burada eksik olabilir.',
   'cert.alt.manualTitle': 'crt.sh’te bulundu — indirip dosyayı yukarı bırakın',
   'cert.alt.manualCert': '{host} için geçerli en yeni sertifika: {names}; veren: {issuer}; {date} tarihine kadar geçerli.',
   'cert.alt.manualWhy': 'crt.sh, web sayfalarının sertifika indirmesine izin vermez; dosyayı kendiniz kaydedin. crt.sh her sertifikayı iki kez listeler — ön sertifika olarak ve sunucuların gönderdiği sertifika olarak — ve hangisinin hangisi olduğunu söylemez: bıraktığınız dosya “Ön sertifika” olarak işaretlenirse diğer bağlantıyı kullanın.',
+  'cert.alt.manualWhyOne': 'crt.sh, web sayfalarının sertifika indirmesine izin vermez; dosyayı kendiniz kaydedin. Bıraktığınız dosya “Ön sertifika” olarak işaretlenirse sunucuların gönderdiği sertifika henüz kaydedilmemiştir: onu sunucudan ya da CA’dan alın.',
   'cert.alt.download': '#{id} indir',
   'cert.alt.openCrtsh': 'crt.sh’te aç',
   'cert.alt.sample': 'Örnek deneyin',
@@ -410,6 +417,7 @@ registerStrings('tr', {
   'cert.src.ct': 'Certificate Transparency’den yüklendi — sunucu farklı bir sertifika sunuyor olabilir.',
   'cert.src.ctWhat': '{host} için kaydedilmiş, geçerli en yeni sertifika ({date} tarihinde verildi). Kayıt, bir CA’nın ne verdiğini gösterir; neyin kurulu olduğunu değil.',
   'cert.src.ctNewerPrecert': 'Bu ad için daha yeni bir sertifika ({date} tarihinde verildi) şimdilik yalnızca ön sertifika olarak kayıtlı.',
+  'cert.src.ctPrecert': 'Bu sertifikanın son hâli henüz kaydedilmedi; bu yüzden sunucuların gönderdiği sertifika Certificate Transparency’den yüklenemez: onu sunucudan ya da CA’dan alın.',
   'cert.src.ctTruncated': 'Cert Spotter bu ad için okunandan daha fazla sertifika listeliyor; daha yeni bir tane olabilir.',
   'cert.src.ctOpen': 'crt.sh’te aç',
   'cert.src.verify': 'Sunucuları SSL Hedefleri’nde kontrol et',
@@ -1202,27 +1210,44 @@ function ctLookupError(r) {
 }
 
 /**
+ * Did crt.sh leave searches of a lookup unanswered (some, or all of them after a partial Cert
+ * Spotter list)? Then a not-found may be wrong and a crt.sh find may not be the newest.
+ * @param {import('../lib/ctcert.js').CtLookup} r
+ * @returns {boolean}
+ */
+export function ctCrtshIncomplete(r) {
+  return !!(r && r.crtsh && r.crtsh.error);
+}
+
+/**
  * The text of a lookup outcome that is not a loaded certificate (status 'manual', 'not-found' or
  * 'error'), as the "No file?" block shows it. An error after Cert Spotter's hourly limit says so,
- * and until when "Try again" searches crt.sh only; a not-found on a Cert Spotter list cut at the
- * page cap is hedged (the unread issuances are the newest).
+ * and until when "Try again" searches crt.sh only. A not-found says flatly that nothing is logged
+ * only on a complete answer: it is hedged when Cert Spotter's list was cut at the page cap (the
+ * unread issuances are the newest) and when crt.sh left some or all of its searches unanswered
+ * (a wildcard certificate may sit in the one that failed); a crt.sh find is hedged the same way.
  * @param {import('../lib/ctcert.js').CtLookup} r
  * @param {{ now?: number }} [opts]
  * @returns {string}
  */
 export function ctOutcomeMessage(r, { now = Date.now() } = {}) {
   const why = ctCrtshWhy(r, { now });
+  const incomplete = ctCrtshIncomplete(r);
   if (r.status === 'manual' && r.crtsh && r.crtsh.entry) {
     const e = r.crtsh.entry;
-    return [why, t('cert.alt.manualCert', { host: r.host, names: e.names.join(', ') || r.host, issuer: dnDisplayName(e.issuer), date: formatDate(e.notAfter) })]
-      .filter(Boolean).join(' ');
+    return [
+      why,
+      t('cert.alt.manualCert', { host: r.host, names: e.names.join(', ') || r.host, issuer: dnDisplayName(e.issuer), date: formatDate(e.notAfter) }),
+      incomplete ? t('cert.alt.manualPartial') : null
+    ].filter(Boolean).join(' ');
   }
   if (r.status === 'not-found') {
-    const lines = [
-      why,
-      r.crtsh && r.crtsh.error ? t('cert.alt.crtshPartial') : null,
-      t(r.truncated && !r.crtsh ? 'cert.alt.notFoundTruncated' : 'cert.alt.notFound', { host: r.host })
-    ];
+    let key = 'cert.alt.notFound';
+    // A crt.sh error leaves a gap whatever Cert Spotter answered: with `partial` crt.sh answered
+    // some of its searches, without it none (a not-found then rests on a partial Cert Spotter list).
+    if (incomplete) key = r.crtsh.partial ? 'cert.alt.notFoundCrtshPartial' : 'cert.alt.notFoundCrtshDown';
+    else if (r.truncated && !r.crtsh) key = 'cert.alt.notFoundTruncated';
+    const lines = [why, t(key, { host: r.host })];
     if (r.skipped && r.skipped.revoked) lines.push(t('cert.alt.revokedSkipped', { count: r.skipped.revoked }));
     return lines.filter(Boolean).join(' ');
   }
@@ -1240,12 +1265,14 @@ export function ctOutcomeMessage(r, { now = Date.now() } = {}) {
  * stops the lookup through {@link setCurrentCert}, and a lookup whose block was replaced is never
  * loaded over the user's choice.
  * @param {{ onLoad: (load: CertLoad) => void, signal?: AbortSignal|null, onBusy?: ((busy: boolean) => void)|null,
- *   onStale?: (() => void)|null }} opts onBusy: the view's busy flag while a lookup runs (defers a
- *   language re-mount; the block's own live status says what runs); onStale: the sample file failed
- *   to load (ctx.checkOutdated)
+ *   onStale?: (() => void)|null, focusTarget?: (() => HTMLElement|null)|null }} opts onBusy: the view's
+ *   busy flag while a lookup runs (defers a language re-mount; the block's own live status says what
+ *   runs); onStale: the sample file failed to load (ctx.checkOutdated); focusTarget: where the
+ *   loaded certificate shows once `onLoad` has rendered it (its source note), for the keyboard
+ *   focus that was in this block ({@link focusLoadedCert})
  * @returns {{ el: HTMLElement, input: HTMLInputElement }}
  */
-export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null }) {
+export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null, focusTarget = null }) {
   const status = h('div', { class: 'cert-alt-status', attrs: { 'aria-live': 'polite' } });
   let running = null;
   const field = textInput({
@@ -1256,7 +1283,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     attrs: { 'data-role': 'ct-host', enterkeyhint: 'search' },
     onInput: (v) => {
       ctForm.text = v;
-      field.setError(null);
+      setFieldError(null);
     },
     onEnter: () => {
       if (!running) lookup();
@@ -1269,12 +1296,42 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     onClick: () => (running ? running.abort() : lookup())
   });
   const sampleBtn = Button({ label: t('cert.alt.sample'), icon: 'file-text', size: 'sm', variant: 'ghost', dataset: { action: 'cert-sample' }, onClick: () => sample() });
+  // The hint sits under the whole row (field + Load), outside the field's own hint slot, so it is
+  // tied to the input here; fieldShell rewrites aria-describedby on every setError.
+  const hintId = `${field.input.id}-ct-hint`;
+  const setFieldError = (msg) => {
+    field.setError(msg);
+    const ids = (field.input.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== hintId);
+    field.input.setAttribute('aria-describedby', [hintId, ...ids].join(' '));
+  };
   const el = h('div', { class: 'cert-alt stack-sm', dataset: { role: 'cert-alt' } },
     h('label', { class: 'field-label', for: field.input.id }, t('cert.alt.title')),
     h('div', { class: 'cert-alt-row' }, field.el, loadBtn),
-    h('p', { class: 'muted text-sm cert-alt-hint' }, t('cert.alt.hint')),
+    h('p', { class: 'muted text-sm cert-alt-hint', id: hintId }, t('cert.alt.hint')),
     status,
     h('div', { class: 'cluster cert-alt-sample' }, sampleBtn, h('span', { class: 'muted text-sm' }, t('cert.alt.sampleHint'))));
+  setFieldError(null);
+
+  /** Is the keyboard focus in this block? */
+  const focusInBlock = () => {
+    const doc = globalThis.document;
+    return !!doc && el.contains(doc.activeElement);
+  };
+
+  /**
+   * Hand `load` over; the keyboard focus that is in this block (which the load replaces) follows
+   * the certificate. `hadFocus`: the focus was here when the action started and has fallen to
+   * <body> since (Try a sample disables its button while the file loads). Focus the user moved
+   * elsewhere meanwhile stays where it is.
+   */
+  function loaded(load, hadFocus) {
+    const doc = globalThis.document;
+    const active = doc ? doc.activeElement : null;
+    const lost = !active || active === doc.body || active === doc.documentElement;
+    const follow = focusInBlock() || (hadFocus && lost);
+    onLoad(load);
+    if (follow && focusTarget && !(el.isConnected && focusInBlock())) focusLoadedCert(focusTarget());
+  }
 
   function setRunning(host) {
     const icon = loadBtn.querySelector('.icon');
@@ -1290,17 +1347,22 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
   async function lookup() {
     const host = normalizeCtHost(field.value);
     if (!host) {
-      field.setError(t('cert.alt.invalid'));
+      setFieldError(t('cert.alt.invalid'));
       field.focus();
       return;
     }
-    field.setError(null);
+    setFieldError(null);
     stopCtLookup();
     const ctl = new AbortController();
     running = ctl;
     ctForm.running = ctl;
     ctForm.last = null;
+    // "Try again" is cleared with the outcome: its keyboard focus moves to Load, now Cancel.
+    const doc = globalThis.document;
+    const fromOutcome = !!doc && status.contains(doc.activeElement);
+    const hadFocus = focusInBlock();
     setRunning(host);
+    if (fromOutcome) loadBtn.focus({ preventScroll: true });
     let result = null;
     try {
       result = await lookupCtCertificate(host, { signal: mergeSignals(signal, ctl.signal) });
@@ -1317,7 +1379,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     setRunning(null);
     if (!result) return; // cancelled
     if (result.status === 'found') {
-      onLoad(ctCertLoad(result));
+      loaded(ctCertLoad(result), hadFocus);
       return;
     }
     ctForm.last = result;
@@ -1325,10 +1387,11 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
   }
 
   async function sample() {
+    const hadFocus = focusInBlock();
     setButtonBusy(sampleBtn, true);
     try {
       const load = await loadSampleCert({ signal });
-      if (el.isConnected) onLoad(load);
+      if (el.isConnected) loaded(load, hadFocus);
     } catch (err) {
       if (errorKind(err) === 'abort') return;
       toast(t('cert.alt.sampleFailed'), { type: 'error' });
@@ -1336,6 +1399,10 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     } finally {
       setButtonBusy(sampleBtn, false);
     }
+  }
+
+  function retryButton() {
+    return Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', dataset: { action: 'ct-retry' }, onClick: () => lookup() });
   }
 
   function showOutcome(r) {
@@ -1350,14 +1417,22 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
         icon: 'download',
         title: t('cert.alt.manualTitle'),
         message: ctOutcomeMessage(r),
-        children: h('p', { class: 'text-sm cert-alt-why' }, t('cert.alt.manualWhy')),
+        // A single id: crt.sh holds one half of the pair so far, so there is no "other link".
+        children: h('p', { class: 'text-sm cert-alt-why' }, t(e.downloads.length > 1 ? 'cert.alt.manualWhy' : 'cert.alt.manualWhyOne')),
         actions: [
           ...e.downloads.map((d) => ButtonLink({ href: d.url, label: t('cert.alt.download', { id: d.id }), icon: 'download', size: 'sm', external: true })),
           ExternalLink(e.pageUrl, t('cert.alt.openCrtsh'), { className: 'text-sm' })
         ]
       });
     } else if (r.status === 'not-found') {
-      box = Alert({ variant: 'info', compact: true, icon: 'search', message: ctOutcomeMessage(r) });
+      // A not-found that rests on unanswered crt.sh searches offers the retry its text suggests.
+      box = Alert({
+        variant: 'info',
+        compact: true,
+        icon: 'search',
+        message: ctOutcomeMessage(r),
+        actions: ctCrtshIncomplete(r) ? [retryButton()] : null
+      });
     } else {
       // ErrorBanner's layout, with a message that also says why only crt.sh was asked; the
       // details are the failed request's own text ('HTTP 502 …', 'Failed to fetch').
@@ -1368,7 +1443,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
         title: t('cert.alt.failed'),
         message: ctOutcomeMessage(r),
         children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
-        actions: [Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', dataset: { action: 'ct-retry' }, onClick: () => lookup() })]
+        actions: [retryButton()]
       });
     }
     box.dataset.ctResult = r.status;
@@ -1377,6 +1452,21 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
 
   if (ctForm.last) showOutcome(ctForm.last);
   return { el, input: field.input };
+}
+
+/**
+ * Move the keyboard focus to where a certificate loaded from the "No file?" block now shows (its
+ * source note), so a keyboard user who pressed Enter or Try a sample keeps their place instead of
+ * falling to <body> when the block is re-rendered. The element becomes focusable (tabindex -1).
+ * @param {HTMLElement|null} target
+ * @returns {boolean} focus moved
+ */
+export function focusLoadedCert(target) {
+  if (!target || !target.isConnected || typeof target.focus !== 'function') return false;
+  if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+  target.focus({ preventScroll: true });
+  if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  return true;
 }
 
 /**
@@ -1413,6 +1503,7 @@ export function CertSourceNote(load, { actions = [], extra = null } = {}) {
     const issued = ct.issuance && ct.issuance.notBefore ? formatDate(ct.issuance.notBefore) : '—';
     const lines = [
       t('cert.src.ctWhat', { host: ct.host, date: issued }),
+      ct.precertificate ? t('cert.src.ctPrecert') : null,
       ct.newerPrecertificate ? t('cert.src.ctNewerPrecert', { date: formatDate(ct.newerPrecertificate.notBefore) }) : null,
       ct.truncated ? t('cert.src.ctTruncated') : null,
       extra
@@ -1633,7 +1724,13 @@ export function mount(container, ctx) {
   function renderLoader() {
     clear(loaderHost);
     const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load });
-    const alternatives = CertAlternatives({ onLoad: (l) => setLoad(l), signal: ctx.signal, onBusy: ctx.setBusy, onStale: ctx.checkOutdated });
+    const alternatives = CertAlternatives({
+      onLoad: (l) => setLoad(l),
+      signal: ctx.signal,
+      onBusy: ctx.setBusy,
+      onStale: ctx.checkOutdated,
+      focusTarget: () => content.querySelector('.cert-source-note') || content.querySelector('.cert-overview-cn')
+    });
     if (!load) {
       loaderHost.append(Card({
         title: t('cert.loaderTitle'),

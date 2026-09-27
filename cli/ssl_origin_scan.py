@@ -945,7 +945,7 @@ def _idna_label(label: str) -> Optional[str]:
     Python's ``idna`` codec is IDNA 2003: ``straße`` would become ``strasse``, another
     registrable name. A deviation character is kept as it is (ZWJ / ZWNJ only right after
     a virama, so a Persian ZWNJ name needs its ``xn--`` form); the text around it gets the
-    codec's nameprep mapping, and the whole label its bidi rule (``\u03c2`` next to a Hebrew
+    codec's nameprep mapping, and the whole label its bidi rule (``ς`` next to a Hebrew
     letter mixes directions). A label may not start with a combining mark either: the web
     app rejects both.
     """

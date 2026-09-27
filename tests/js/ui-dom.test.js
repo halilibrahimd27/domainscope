@@ -2099,6 +2099,23 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.doesNotMatch(html, /every subdomain/i);
   });
 
+  test('SSL Targets Servers tab: one entry per name, the strongest match (DNS, then zone file, then hint)', async () => {
+    const { C } = await load();
+    const pick = (hosts) => C.strongestPerName(hosts).map((x) => `${x.name}:${x.via}`);
+    // lib/scanner orders a server's hosts dns < zone < hint.
+    assert.deepEqual(pick([
+      { name: 'www.example.com', ip: '192.0.2.10', via: 'dns' },
+      { name: 'api.example.com', ip: '192.0.2.10', via: 'dns' },
+      { name: 'shop.example.com', ip: '192.0.2.12', via: 'zone' },
+      { name: 'www.example.com', ip: '192.0.2.12', via: 'hint' },
+      { name: 'shop.example.com', ip: '192.0.2.10', via: 'hint' },
+      { name: 'old.example.com', ip: '192.0.2.10', via: 'hint' }
+    ]), ['www.example.com:dns', 'api.example.com:dns', 'shop.example.com:zone', 'old.example.com:hint']);
+    assert.deepEqual(C.strongestPerName([]), []);
+    const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    assert.match(src, /render: \(g\) => TruncatedList\(strongestPerName\(g\.hosts\), \{/);
+  });
+
   test('SSL Targets plan line follows the variation budget and origin hints at once', async () => {
     const { S } = await load();
     const base = { level: 'smart', domains: ['example.com'], permutations: true, permutationBudget: 1500, originHints: true };

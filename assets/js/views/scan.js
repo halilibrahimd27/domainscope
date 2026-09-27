@@ -1065,6 +1065,19 @@ export function originLabel(origin) {
   return SOURCE_NAMES[origin] || origin;
 }
 
+/**
+ * One entry per name for a server's Hostnames cell: the first, i.e. the strongest match —
+ * lib/scanner orders a server's hosts DNS, then zone file, then origin hint, and a name can
+ * have several (a DNS match on one address and a hint on another).
+ * @param {Array<{ name: string, via: string }>} hosts
+ * @returns {Array<{ name: string, via: string }>}
+ */
+export function strongestPerName(hosts) {
+  const byName = new Map();
+  for (const x of hosts) if (!byName.has(x.name)) byName.set(x.name, x);
+  return [...byName.values()];
+}
+
 /* ------------------------------------------------------------------------ */
 /* Scan runs (module-owned: they outlive a mounted view)                    */
 /* ------------------------------------------------------------------------ */
@@ -2629,7 +2642,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             key: 'hosts', label: t('scan.srv.col.hosts'),
             searchValue: (g) => g.hosts.map((x) => x.name).join(' '),
             exportValue: (g) => [...new Set(g.hosts.map((x) => x.name))].join(' '),
-            render: (g) => TruncatedList([...new Map(g.hosts.map((x) => [x.name, x])).values()], {
+            render: (g) => TruncatedList(strongestPerName(g.hosts), {
               max: 3,
               render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' }] }, x.name,
                 x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null)

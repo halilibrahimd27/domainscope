@@ -723,7 +723,7 @@ describe('buildVerifyPairs', () => {
   });
 
   test('every pair is returned: the cap on checks is applied to the rows of a scope', () => {
-    const { pairs } = V.buildVerifyPairs(scanResult(), { maxRows: 2 });
+    const { pairs } = V.buildVerifyPairs(scanResult());
     assert.equal(pairs.length, 11);
     assert.ok(!pairs.some((p) => p.skip === 'over-cap'));
     const over = (rows) => rows.filter((r) => r.overCap).map((r) => `${r.name} ${r.ip} ${r.state} ${r.skip ?? r.notRun}`);

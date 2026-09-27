@@ -4717,11 +4717,11 @@ def _render_expiring(report: ScanReport, monitor: MonitorResult, style: Style,
 
 # --- --notify: webhook formats and delivery ---------------------------------------------
 
-NOTIFY_FORMATS = ('auto', 'slack', 'teams', 'discord', 'telegram', 'json')
-# Message text per format: Discord allows 2,000 characters, Telegram 4,096; Slack and
-# Teams take more, but a longer chat message is not read either.
+NOTIFY_FORMATS = ('auto', 'slack', 'teams', 'discord', 'telegram', 'googlechat', 'json')
+# Message text per format: Discord allows 2,000 characters, Telegram 4,096; Slack, Teams
+# and Google Chat take more, but a longer chat message is not read either.
 _NOTIFY_TEXT_LIMITS = {'slack': 3500, 'teams': 3500, 'discord': 1800, 'telegram': 3900,
-                       'json': 3500}
+                       'googlechat': 3500, 'json': 3500}
 NOTIFY_MAX_CHANGES = 20       # change lines in a message (the JSON format has them all)
 NOTIFY_MAX_EXPIRING = 10      # expiring certificates in a message
 NOTIFY_MAX_JSON_CHANGES = 500
@@ -4734,29 +4734,34 @@ _TEAMS_HOSTS = ('outlook.office.com', 'outlook.office365.com')
 # Teams incoming webhooks, Power Automate / Logic Apps workflow triggers
 _TEAMS_HOST_SUFFIXES = ('.webhook.office.com', '.logic.azure.com', '.api.powerplatform.com')
 _TELEGRAM_PATH_RE = re.compile(r'^/bot[^/]+/sendMessage$')
+_DISCORD_PATH_RE = re.compile(r'^/api/(?:v\d{1,2}/)?webhooks/')   # also /api/v10/webhooks/
 # Path words of the webhook services above: not secrets, kept in error texts.
 _NOTIFY_PATH_WORDS = frozenset((
     'api', 'automations', 'direct', 'hook', 'hooks', 'incomingwebhook', 'invoke', 'manual',
-    'paths', 'powerautomate', 'sendmessage', 'services', 'slack', 'triggers', 'webhook',
-    'webhookb2', 'webhooks', 'workflows'))
+    'messages', 'paths', 'powerautomate', 'sendmessage', 'services', 'slack', 'spaces',
+    'triggers', 'webhook', 'webhookb2', 'webhooks', 'workflows'))
+_API_VERSION_RE = re.compile(r'^v\d{1,2}$')   # /api/v10/, /v1/spaces/: not a token either
 _USER_AGENT = 'ssl_origin_scan/%s (+https://github.com/halilibrahimd27/domainscope)' % __version__
 
 
 def detect_notify_format(url: str) -> str:
     """The payload a webhook URL expects: ``slack`` (hooks.slack.com, and Discord's
-    Slack-compatible ``.../slack`` endpoint), ``discord`` (``/api/webhooks/``),
-    ``telegram`` (api.telegram.org), ``teams`` (Teams incoming webhooks, Power Automate /
-    Logic Apps workflows) or ``json`` for anything else."""
+    Slack-compatible ``.../slack`` endpoint), ``discord`` (``/api/webhooks/``, also with
+    an API version: ``/api/v10/webhooks/``), ``telegram`` (api.telegram.org), ``teams``
+    (Teams incoming webhooks, Power Automate / Logic Apps workflows), ``googlechat``
+    (chat.googleapis.com) or ``json`` for anything else."""
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or '').rstrip('.')
     if host in ('hooks.slack.com', 'hooks.slack-gov.com'):
         return 'slack'
-    if host in _DISCORD_HOSTS and parts.path.startswith('/api/webhooks/'):
+    if host in _DISCORD_HOSTS and _DISCORD_PATH_RE.match(parts.path):
         return 'slack' if parts.path.rstrip('/').endswith('/slack') else 'discord'
     if host == 'api.telegram.org':
         return 'telegram'
     if host in _TEAMS_HOSTS or host.endswith(_TEAMS_HOST_SUFFIXES):
         return 'teams'
+    if host == 'chat.googleapis.com':
+        return 'googlechat'
     return 'json'
 
 
@@ -4765,6 +4770,23 @@ def _telegram_chat_id(query: str) -> Optional[Union[int, str]]:
         if key == 'chat_id' and value:
             return int(value) if re.match(r'^-?\d{1,20}$', value) else value
     return None
+
+
+def ascii_url(url: str) -> str:
+    """``url`` with the non-ASCII characters of its path, query and fragment
+    percent-encoded as UTF-8 (``/hööks/1`` -> ``/h%C3%B6%C3%B6ks/1``): an HTTP request
+    line is ASCII only. The host stays as it is (it is sent in its IDNA form)."""
+    if url.isascii():
+        return url
+    parts = urllib.parse.urlsplit(url)
+
+    def encode(text: str) -> str:
+        return ''.join(char if ord(char) < 128 else urllib.parse.quote(char, safe='')
+                       for char in text)
+
+    return urllib.parse.urlunsplit(parts._replace(path=encode(parts.path),
+                                                  query=encode(parts.query),
+                                                  fragment=encode(parts.fragment)))
 
 
 def check_notify_url(url: str, fmt: str = 'auto', source: str = '--notify') -> str:
@@ -4833,23 +4855,42 @@ def notify_is_plaintext(url: str) -> bool:
 
 def _secret_segment(segment: str) -> bool:
     """A URL path segment that may be a token: 8 or more characters or a digit, and not
-    a path word of the webhook services (``services``, ``webhooks``, ``sendMessage``)."""
-    return (segment.lower() not in _NOTIFY_PATH_WORDS
+    a path word of the webhook services (``services``, ``webhooks``, ``sendMessage``) or
+    an API version (``v10``)."""
+    return (segment.lower() not in _NOTIFY_PATH_WORDS and not _API_VERSION_RE.match(segment)
             and (len(segment) >= 8 or any(char.isdigit() for char in segment)))
+
+
+def _segment_forms(segment: str) -> List[str]:
+    """How a secret path segment may be written in an error text or an echoed request:
+    as in the URL, decoded, and encoded (``123:abc`` / ``123%3Aabc``) - for Telegram's
+    ``bot<token>`` also the token alone, and its part after the ``:``."""
+    plain = urllib.parse.unquote(segment)
+    tokens = [plain]
+    if plain[:3].lower() == 'bot' and ':' in plain:
+        tokens.extend((plain[3:], plain.partition(':')[2]))
+    forms = [segment]
+    for token in tokens:
+        if token:
+            forms.extend((token, urllib.parse.quote(token, safe='')))
+    return forms
 
 
 def redact_url(text: str, url: str) -> str:
     """``text`` (an error message, a response body) without the secret parts of ``url``:
     the URL (also without its user info), its path, query and fragment, the query
-    values, the path segments that may be tokens (:func:`_secret_segment`), and the user
-    name and password. Webhook URLs are credentials - whoever has one can post."""
+    values, the path segments that may be tokens (:func:`_secret_segment`, in the forms
+    of :func:`_segment_forms`), the user name and password, and the Basic
+    authentication header made of them (:func:`split_credentials`). Webhook URLs are
+    credentials - whoever has one can post."""
     unquote = urllib.parse.unquote
     parts = urllib.parse.urlsplit(url)
-    secrets = {url, split_credentials(url)[0], parts.path, parts.query, parts.fragment,
+    target, auth = split_credentials(url)
+    secrets = {url, target, parts.path, parts.query, parts.fragment,
                unquote(parts.path), unquote(parts.query)}
     for segment in parts.path.split('/'):
         if _secret_segment(unquote(segment)):
-            secrets.update((segment, unquote(segment)))
+            secrets.update(_segment_forms(segment))
     for _key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
         secrets.add(value)
     secrets.update(pair.split('=', 1)[-1] for pair in parts.query.split('&'))
@@ -4860,6 +4901,8 @@ def redact_url(text: str, url: str) -> str:
         secrets.update((userinfo, unquote(userinfo), user, unquote(user)))
         # the password however short - or the user name when it is the only credential
         always.update((password, unquote(password)) if colon else (user, unquote(user)))
+    if auth:  # an error body that echoes the request headers
+        always.update((auth, auth.split(' ', 1)[1]))
     found = {secret for secret in secrets if len(secret) >= 4} | {s for s in always if s}
     for secret in sorted(found, key=len, reverse=True):
         text = text.replace(secret, '***')
@@ -4981,6 +5024,13 @@ def _no_backticks(text: str) -> str:
     return text.replace('`', 'ˋ')
 
 
+def _no_angle_brackets(text: str) -> str:
+    # Google Chat reads <users/all> as a mention and <url|text> as a link, and does not
+    # document decoding Slack's &lt; (which would then show as it is): an opening
+    # bracket becomes a lookalike instead, so no certificate text can ping a space.
+    return text.replace('<', '‹')
+
+
 def _teams_card(title: str, lines: Sequence[str]) -> Dict[str, Any]:
     """A plain Adaptive Card: TextRuns are never read as markdown, unlike TextBlocks."""
     body = [{'type': 'RichTextBlock', 'inlines': [
@@ -5004,6 +5054,8 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
     * ``discord`` - ``{content, allowed_mentions: {parse: []}}`` (no @everyone);
     * ``telegram`` - ``{chat_id, text}`` without link previews, ``chat_id`` moved from
       the URL's query into the body;
+    * ``googlechat`` - ``{text}`` like Slack's, with ``<`` turned into a lookalike
+      rather than escaped (:func:`_no_angle_brackets`);
     * ``json`` - ``{tool, version, title, text, finishedAt, summary, baseline, changes,
       changesTotal, warnDays, expiring, expiringTotal}``: at most
       :data:`NOTIFY_MAX_JSON_CHANGES` changes and :data:`NOTIFY_MAX_JSON_EXPIRING`
@@ -5021,6 +5073,9 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
                      'allowed_mentions': {'parse': []}}
     if fmt == 'teams':
         return url, _teams_card(title, lines)
+    if fmt == 'googlechat':
+        return url, {'text': '*%s*\n```\n%s\n```' % (
+            _no_angle_brackets(title), _no_angle_brackets(_no_backticks(body)))}
     if fmt == 'telegram':
         parts = urllib.parse.urlsplit(url)
         query = [(key, value) for key, value in
@@ -5275,9 +5330,11 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   run with --notify-always). The payload follows the URL: Slack incoming webhooks
   (also Discord's .../slack endpoint), Microsoft Teams incoming webhooks and Power
   Automate / Logic Apps workflows (an Adaptive Card), Discord webhooks, Telegram
-  (https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>), and JSON with
-  the changes for any other URL; --notify-format overrides the choice (e.g. slack
-  for a Slack-compatible Mattermost). Set the URL in DOMAINSCOPE_NOTIFY_URL rather
+  (https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>), Google Chat
+  space webhooks, and JSON with the changes for any other URL; --notify-format
+  overrides the choice (e.g. slack for a Slack-compatible Mattermost). A Slack
+  Workflow Builder webhook (hooks.slack.com/triggers/...) gets the message in the
+  variable "text": add it to the workflow. Set the URL in DOMAINSCOPE_NOTIFY_URL rather
   than on the command line, where it ends up in the shell history: whoever has it can
   post. It is never printed - only its host; user:password@ in it is sent as Basic
   authentication. One retry, 10 s timeout, no redirects, the system proxy settings
@@ -5321,8 +5378,8 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   Cron ile izleme: --baseline önceki --json raporuyla karşılaştırıp değişenleri
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
-  DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord veya
-  Telegram'a kısa bir özet gönderir. Aynı dosya hem --baseline hem --json ise ve
+  DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord,
+  Telegram veya Google Chat'e kısa bir özet gönderir. Aynı dosya hem --baseline hem --json ise ve
   bildirim gönderilemezse önceki rapor korunur; değişiklikler bir sonraki
   çalıştırmada yeniden bildirilir. Özet dosyaya yazılırsa cron yalnızca hataları
   e-postayla gönderir. Örnek:
@@ -5389,9 +5446,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help='list served certificates that expire within N days (off by '
                           'default)')
     mon.add_argument('--notify', metavar='URL',
-                     help='POST a short summary to a Slack, Teams / Power Automate, Discord '
-                          'or Telegram webhook (JSON for any other URL) when something '
-                          'changed or expires (default: $%s)' % NOTIFY_ENV)
+                     help='POST a short summary to a Slack, Teams / Power Automate, Discord, '
+                          'Telegram or Google Chat webhook (JSON for any other URL) when '
+                          'something changed or expires (default: $%s)' % NOTIFY_ENV)
     mon.add_argument('--notify-format', choices=NOTIFY_FORMATS, default='auto',
                      help='payload format (default: auto, from the URL)')
     mon.add_argument('--notify-always', action='store_true',
@@ -5925,6 +5982,7 @@ def _notify_settings(args: argparse.Namespace, warnings: List[str]
                              '--notify URL or %s' % NOTIFY_ENV)
         return None, None
     fmt = check_notify_url(url, args.notify_format, source)
+    url = ascii_url(url)  # checked above; http.client would refuse it after the scan
     if notify_is_plaintext(url):
         warnings.append('%s uses http:// to another host: the webhook URL, which works as '
                         'a password, travels unencrypted' % source)

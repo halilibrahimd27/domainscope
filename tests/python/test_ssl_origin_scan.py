@@ -3326,11 +3326,17 @@ class ChangeSummaryTests(unittest.TestCase):
                                              sos.report_to_dict(self.report, monitor), monitor)
         self.assertNotIn('<!channel>', slack['text'])
         self.assertIn('&lt;!channel&gt;', slack['text'])
+        _url, gchat = sos.build_notification('googlechat', GCHAT_URL,
+                                             sos.report_to_dict(self.report, monitor), monitor)
+        self.assertNotIn('<', gchat['text'])  # no <users/all>, no <url|text>
+        self.assertIn('\u2039!channel>', gchat['text'])
 
 
 # --- --notify ---------------------------------------------------------------------------
 
 SLACK_URL = 'https://hooks.slack.com/services/' + 'T00000000/B00000000/' + 'X' * 24
+GCHAT_URL = ('https://chat.googleapis.com/v1/spaces/AAAAexample/messages'
+             '?key=KEYexample0123456789&token=TOKENexample0123456789')
 TELEGRAM_URL = ('https://api.telegram.org/bot123456:TEST-token_value/sendMessage'
                 '?chat_id=-1001234567890')
 
@@ -3351,7 +3357,11 @@ class NotifyFormatTests(unittest.TestCase):
             'https://discord.com/api/webhooks/123/token-value': 'discord',
             'https://discordapp.com/api/webhooks/123/token-value': 'discord',
             'https://discord.com/api/webhooks/123/token-value/slack': 'slack',
+            'https://discord.com/api/v10/webhooks/123/token-value': 'discord',
+            'https://discord.com/api/v9/webhooks/123/token-value/slack': 'slack',
+            'https://discord.com/api/v10/channels/123/messages': 'json',
             'https://discord.com/channels/123': 'json',
+            GCHAT_URL: 'googlechat',
             TELEGRAM_URL: 'telegram',
             'https://example.webhook.office.com/webhookb2/abc@def/IncomingWebhook/123/456': 'teams',
             'https://outlook.office.com/webhook/abc/IncomingWebhook/def/ghi': 'teams',
@@ -3411,6 +3421,15 @@ class NotifyFormatTests(unittest.TestCase):
                          'bad password ***')  # a password however short
         self.assertEqual(sos.redact_url('bad token k9Z', 'https://k9Z@example.com/'),
                          'bad token ***')  # a user name that is the only credential
+        # an error body that echoes the request's Authorization header
+        basic = base64.b64encode(b'alerts:Hunter2$ecret').decode('ascii')
+        self.assertEqual(sos.redact_url('got Authorization: Basic %s; also %s' % (basic, basic),
+                                        url), 'got Authorization: ***; also ***')
+        # the Telegram token without "bot", encoded, or only its secret part
+        for tg_url in (TELEGRAM_URL, TELEGRAM_URL.replace('123456:', '123456%3A')):
+            self.assertEqual(sos.redact_url('bot123456:TEST-token_value 123456:TEST-token_value '
+                                            '123456%3ATEST-token_value (TEST-token_value)',
+                                            tg_url), '*** *** *** (***)', tg_url)
         # only the path segments that may be tokens: host names and path words stay
         for url, text, want in (
                 ('https://hooks.example.com/hook', 'hooks.example.com: 404 on hook',
@@ -3418,10 +3437,20 @@ class NotifyFormatTests(unittest.TestCase):
                 (SLACK_URL, 'services webhooks hooks.slack.com', 'services webhooks hooks.slack.com'),
                 (TELEGRAM_URL, 'sendMessage: token bot123456:TEST-token_value',
                  'sendMessage: token ***'),
+                ('https://discord.com/api/v10/webhooks/123/tokentokentoken',
+                 'v10 webhooks: tokentokentoken', 'v10 webhooks: ***'),
+                (GCHAT_URL, 'spaces/AAAAexample/messages: TOKENexample0123456789',
+                 'spaces/***/messages: ***'),
                 ('https://example.com/hooks/Zq8pLmW', 'unknown Zq8pLmW', 'unknown ***'),
                 ('https://example.com/hooks/abcdefghij', 'unknown abcdefghij', 'unknown ***')):
             self.assertEqual(sos.redact_url(text, url), want, url)
         self.assertEqual(sos.split_credentials(SLACK_URL), (SLACK_URL, None))
+        # non-ASCII in the path or query is sent percent-encoded (the host as it is)
+        self.assertEqual(sos.ascii_url('https://hooks.example.com/h\u00f6\u00f6k/1?q=\u00fc#\u00e7'),
+                         'https://hooks.example.com/h%C3%B6%C3%B6k/1?q=%C3%BC#%C3%A7')
+        self.assertEqual(sos.ascii_url('https://u:p@b\u00fccher.example/x?y=%C3%BC'),
+                         'https://u:p@b\u00fccher.example/x?y=%C3%BC')
+        self.assertEqual(sos.ascii_url(SLACK_URL), SLACK_URL)
         self.assertEqual(sos.split_credentials('https://a%40b:p%3Ass@example.com:8443/x?y=1'),
                          ('https://example.com:8443/x?y=1',
                           'Basic ' + base64.b64encode(b'a@b:p:ss').decode('ascii')))
@@ -3500,6 +3529,13 @@ class NotifyFormatTests(unittest.TestCase):
         self.assertEqual(url, 'https://api.telegram.org/bot1:x/sendMessage?message_thread_id=7')
         self.assertEqual(telegram['chat_id'], '@channel')
 
+        url, gchat = sos.build_notification('googlechat', GCHAT_URL, self.doc, self.monitor)
+        self.assertEqual((url, list(gchat)), (GCHAT_URL, ['text']))
+        self.assertTrue(gchat['text'].startswith('*SSL origin scan: 9 changes since '))
+        self.assertIn('\n```\n- NEW name extra.example.com', gchat['text'])
+        self.assertIn('NEEDS_UPDATE -> UPDATED', gchat['text'])  # not escaped: shown as is
+        self.assertTrue(gchat['text'].endswith('```'))
+
         _, generic = sos.build_notification('json', 'https://example.com/hook', self.doc,
                                             self.monitor)
         self.assertEqual(set(generic), {'tool', 'version', 'title', 'text', 'finishedAt',
@@ -3572,7 +3608,7 @@ class NotifyFormatTests(unittest.TestCase):
                 for i in range(300)]
         monitor = sos.MonitorResult(baseline=self.monitor.baseline, changes=many)
         doc = sos.report_to_dict(self.report, monitor)
-        limits = {'slack': 4000, 'discord': 2000, 'telegram': 4096}
+        limits = {'slack': 4000, 'discord': 2000, 'telegram': 4096, 'googlechat': 4096}
         for fmt, limit in limits.items():
             _, payload = sos.build_notification(fmt, TELEGRAM_URL, doc, monitor)
             text = payload.get('text') or payload.get('content')
@@ -3686,7 +3722,7 @@ class NotifyDeliveryTests(unittest.TestCase):
         return code, out, err, hook
 
     def test_each_format_through_a_local_webhook(self):
-        for fmt in ('slack', 'teams', 'discord', 'telegram', 'json'):
+        for fmt in ('slack', 'teams', 'discord', 'telegram', 'googlechat', 'json'):
             path = ('/bot123456:%s/sendMessage?chat_id=-1001234567890' % self.TOKEN
                     if fmt == 'telegram' else None)
             with self.subTest(fmt=fmt):
@@ -3708,6 +3744,9 @@ class NotifyDeliveryTests(unittest.TestCase):
                                      'AdaptiveCard')
                 elif fmt == 'discord':
                     self.assertEqual(payload['allowed_mentions'], {'parse': []})
+                elif fmt == 'googlechat':
+                    self.assertTrue(payload['text'].startswith('*SSL origin scan: 9 changes'))
+                    self.assertNotIn('&gt;', payload['text'])
                 elif fmt == 'telegram':
                     self.assertEqual(request['path'], '/bot123456:%s/sendMessage' % self.TOKEN)
                     self.assertEqual(payload['chat_id'], -1001234567890)
@@ -3910,6 +3949,14 @@ class NotifyDeliveryTests(unittest.TestCase):
             self.assertIn('error: notification failed', err)
             self.assertNotIn('kept the previous baseline', err)
             self.assertEqual(read_json(state)['options']['warnDays'], 3650)
+
+    def test_non_ascii_url_is_sent_percent_encoded(self):
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                          path='/h\u00f6\u00f6k/%s?kanal=\u00e7' % self.TOKEN)
+        self.assertEqual((code, len(hook.requests)), (0, 1), err)
+        self.assertEqual(hook.requests[0]['path'],
+                         '/h%%C3%%B6%%C3%%B6k/%s?kanal=%%C3%%A7' % self.TOKEN)
+        self.assertIn('Notification sent (json, 127.0.0.1:', err)
 
     def test_send_notification_directly(self):
         with WebhookReceiver([500, 500]) as hook, no_proxy():
@@ -4230,7 +4277,8 @@ class MonitorCliTests(unittest.TestCase):
         for needle in ('--baseline FILE', '--warn-days N', '--notify URL', 'DOMAINSCOPE_NOTIFY_URL',
                        '--fail-on-change', '4 something changed', '5 the --notify message',
                        'When several apply: 3, then 5, then 4, then 1', 'Telegram',
-                       'Logic Apps workflows', 'Cron ile izleme'):
+                       'Logic Apps workflows', 'Cron ile izleme', 'Google Chat',
+                       'Workflow Builder', 'FAILING'):
             self.assertIn(needle, out)
 
 

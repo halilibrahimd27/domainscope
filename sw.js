@@ -2,9 +2,12 @@
  * sw.js — DomainScope's service worker: a classic script at the site root, so its scope is the
  * whole app. It decides nothing itself: tools/assemble-site.mjs writes the deploy's manifest into
  * BUILD below (assets/js/lib/pwa.js buildSwManifest — the version, the app shell to precache and
- * the wordlist files with their hash keys). In the repository BUILD stays null and the worker
- * installs no handler at all, so every request goes to the network as if it were not there (the
- * app registers it only from the Pages bundle anyway).
+ * the wordlist files with their hash keys). In the repository BUILD stays null: the worker answers
+ * no request, so everything goes to the network as if it were not there (the app registers it
+ * only from the Pages bundle anyway). The one thing it does there: when a checkout is served where
+ * a bundle was (`serve.mjs --root _site`, then `npm run serve` on the same port), the browser's
+ * update check installs this file over the bundle's worker, and it takes over at once and deletes
+ * the bundle's caches, so the next load is the checkout rather than a cached deploy.
  *
  * - install: precache this version's app shell into domainscope-shell-<version>, past the HTTP
  *   cache. The index.html fetched must be this version's: a CDN still serving the previous one
@@ -128,5 +131,13 @@ if (BUILD) {
   });
   self.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'skip-waiting') self.skipWaiting();
+  });
+} else {
+  // The repository's copy replacing a deployed worker: no fetch handler, the deploy's caches gone.
+  self.addEventListener('install', () => self.skipWaiting());
+  self.addEventListener('activate', (event) => {
+    event.waitUntil(caches.keys().then((names) => Promise.all(names
+      .filter((name) => name.startsWith('domainscope-'))
+      .map((name) => caches.delete(name)))));
   });
 }

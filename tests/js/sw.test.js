@@ -1,7 +1,8 @@
 /**
  * sw.js, the service worker, run in a node:vm context with a fake Cache Storage, fetch and
- * worker scope: as the repository ships it (no manifest: no handler at all) and as
- * tools/assemble-site.mjs writes it for a deploy — the precache at install (past the HTTP cache,
+ * worker scope: as the repository ships it (no manifest: it answers nothing, and only clears a
+ * deploy's caches when it replaces one) and as tools/assemble-site.mjs writes it for a deploy —
+ * the precache at install (past the HTTP cache,
  * refusing a stale index.html), the clean-up at activation (earlier versions, dropped wordlists,
  * nothing it does not own), the routing (the app shell cache first, wordlists by content hash)
  * and above all what it must leave alone: third-party APIs, query strings, other methods and
@@ -13,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSwManifest } from '../../assets/js/lib/pwa.js';
+import { buildSwManifest, CACHE_PREFIX } from '../../assets/js/lib/pwa.js';
 import { injectSwBuild } from '../../tools/assemble-site.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -141,9 +142,23 @@ async function installed(version = 'one', caches = new FakeCaches()) {
 }
 
 describe('sw.js in the repository (no build)', () => {
-  test('installs no handler: every request goes to the network as if there were no worker', () => {
+  test('answers no request: no fetch handler, every request goes to the network', () => {
     const worker = loadWorker({ network: () => served('x') });
-    assert.deepEqual(Object.keys(worker.listeners), []);
+    assert.deepEqual(Object.keys(worker.listeners).sort(), ['activate', 'install']);
+  });
+
+  test('replacing a deployed worker (a checkout served where a bundle was) it takes over and drops the deploy\'s caches', async () => {
+    const caches = new FakeCaches();
+    await (await caches.open('domainscope-shell-one')).put(`${SCOPE}index.html`, served('cached deploy'));
+    await (await caches.open('domainscope-wordlists')).put(`${SCOPE}wordlists/${HASH}/tr.txt`, served('tr'));
+    await (await caches.open('another-app')).put('https://example.github.io/other/x', served('x'));
+    const worker = loadWorker({ caches, network: () => served('x') });
+    await extendable(worker.listeners.install);
+    assert.equal(worker.state.skipped, true, 'takes over at once');
+    await extendable(worker.listeners.activate);
+    assert.deepEqual(await caches.keys(), ['another-app']);
+    assert.deepEqual(worker.sent, []);
+    assert.ok(SOURCE.includes(`name.startsWith('${CACHE_PREFIX}')`), 'the prefix of lib/pwa.js');
   });
 
   test('has exactly one BUILD line for tools/assemble-site.mjs to fill', () => {

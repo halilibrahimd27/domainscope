@@ -669,6 +669,24 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     assert.deepEqual(decodeMessage(encodeMessage({ answers: chain.answers })).answers.map((rr) => rr.text), chain.answers.map((rr) => rr.text));
   });
 
+  test('a decoded SOA whose RNAME label holds an @ byte or an escaped dot re-encodes losslessly', () => {
+    const labels = (...ls) => [...ls.flatMap((l) => [l.length, ...Buffer.from(l, 'latin1')]), 0];
+    const rdata = Uint8Array.from([
+      ...encodeName('ns.example.com'), ...labels('a@b', 'example', 'com'), ...new Array(20).fill(1)
+    ]);
+    const rr = decodeMessage(encodeMessage({ answers: [{ name: 'example.com', type: 'SOA', rdata }] })).answers[0];
+    assert.equal(rr.data.rname, 'a\\@b.example.com');
+    const again = decodeMessage(encodeMessage({ answers: [rr] })).answers[0];
+    assert.equal(again.text, rr.text);
+    // the mailbox convenience splits at the unescaped '@' only, escaping a dot once
+    const soa = (rname) => decodeMessage(encodeMessage({
+      answers: [{ name: 'example.com', type: 'SOA', data: { mname: 'ns.example.com', rname, serial: 1 } }]
+    })).answers[0].data.rname;
+    assert.equal(soa('host.master@example.com'), 'host\\.master.example.com');
+    assert.equal(soa('host\\.master@example.com'), 'host\\.master.example.com');
+    assert.equal(soa('a\\@b@example.com'), 'a\\@b.example.com');
+  });
+
   test('raw rdata alone is still written as given (hand-crafted wire)', () => {
     const rr = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'CNAME', rdata: encodeName('t.example') }] })).answers[0];
     assert.equal(rr.text, 't.example.');

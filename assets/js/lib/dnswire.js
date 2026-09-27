@@ -1503,9 +1503,11 @@ function writeSvcParams(w, params = {}) {
 }
 
 function soaRname(v) {
-  // Accept a mailbox ('hostmaster@example.com') for convenience.
-  const at = v.indexOf('@');
-  return at < 0 ? v : `${v.slice(0, at).replace(/\./g, '\\.')}.${v.slice(at + 1)}`;
+  // Accept a mailbox ('hostmaster@example.com') for convenience. Only an
+  // unescaped '@' splits it (a decoded RNAME presents an '@' byte as '\@'), and
+  // a dot the local part already escapes stays escaped once.
+  const m = /^((?:[^@\\]|\\.)*)@(.*)$/.exec(v);
+  return m ? `${m[1].replace(/\\.|\./g, (s) => (s === '.' ? '\\.' : s))}.${m[2]}` : v;
 }
 
 /** RDATA writers keyed by type number (input shape = decoder `data` shape). */

@@ -8,9 +8,12 @@
  *   information never depends on colour alone, and shows who operates its addresses. Clicking a
  *   group filters both tables.
  * - The summary says why answers differ (lib/propagation.propagationVerdict): CDN / GeoDNS edges
- *   differ by design; NXDOMAIN, SERVFAIL, private or direct addresses among CDN edges, a CNAME
- *   that differs before the CDN and a name that points to different providers are named as
- *   propagation or a misconfiguration. A filtering resolver's SafeSearch rewrite is its policy.
+ *   differ by design, and so do names before the CDN that lead to the same CDN names (weighted
+ *   records) or CNAME chains without records of the type anywhere; NXDOMAIN, SERVFAIL, private
+ *   or direct addresses among CDN edges, a CNAME that differs before the CDN and a name that
+ *   points to different providers are named as propagation or a misconfiguration; a name nobody
+ *   resolves (SERVFAIL everywhere) is an error. A filtering resolver's SafeSearch rewrite is its
+ *   policy.
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
@@ -73,7 +76,7 @@ registerStrings('en', {
   'glb.how.geo': 'CDNs and GeoDNS services (Cloudflare, Akamai, CloudFront …) deliberately hand out different, nearby servers per region — different IPs per location are normal for them.',
   'glb.how.anycast': 'Public resolvers are anycast: you reach the nearest point of presence (PoP, shown when the resolver reports its NSID). Each PoP has its own cache and its own view of GeoDNS.',
   'glb.how.ttl': 'Right after a DNS change, resolvers keep the old answer until its TTL expires — that is what “DNS propagation” means.',
-  'glb.how.filter': 'Filtering resolvers (Quad9, Cloudflare Family, CleanBrowsing) may block a name on purpose; that is shown as “Blocked”, not as a different answer.',
+  'glb.how.filter': 'Filtering resolvers (Quad9, Cloudflare Family, CleanBrowsing) may block a name on purpose; that is shown as “Blocked”, not as a different answer. A SafeSearch rewrite (a search engine’s name sent to its safe-search name, such as forcesafesearch.google.com) is their policy too and is not counted as a difference.',
   'glb.how.browser': 'A web page can only read resolvers that send a CORS header. Quad9 leaves it out over HTTP/3 — which Chrome, Edge and other browsers use for Quad9 — so its rows usually show “Not readable in browsers” instead of an answer.',
   'glb.emptyTitle': 'Compare DNS answers around the world',
   'glb.emptyBody': 'Enter a host name to ask 12 public resolvers and {count} locations at once — after a DNS change, to check CDN/GeoDNS steering, or to collect every IP address a name uses.',
@@ -86,10 +89,14 @@ registerStrings('en', {
   'glb.sum.geoBody': 'The locations see {groups} different answers. That is normal for CDNs and GeoDNS: every region is sent to nearby servers.',
   'glb.sum.designTitle': 'Differs by design: CDN / GeoDNS edges ({operators})',
   'glb.sum.designBody': 'Every answer is an edge of a known CDN, platform or DNS steering service, and the CNAME chains agree up to it. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.designSteered': 'Every answer is an edge of a known CDN, platform or DNS steering service. On the way, {owner} sends sources to different names ({targets}), but they lead to the same CDN names: weighted or load-balanced records in the name’s own DNS, not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.nodataTitle': 'No {type} records anywhere — the CNAME chains differ by design ({operators})',
+  'glb.sum.nodataBody': 'No source returns {type} records for this name. The CNAME chains differ only by steering (CDN / GeoDNS, weighted or load-balanced records) and all lead to {operators} — this is not propagation.',
   'glb.sum.designMulti': 'More than one operator answers (multi-CDN steering). If you are moving from one to the other, answers that point to the old one stay cached until their TTL expires.',
   'glb.sum.designPart': 'The differences between {operators} edges are by design; these are not:',
   'glb.sum.differTitle': 'Answers differ',
   'glb.sum.differBody': 'The sources return {groups} different answers.',
+  'glb.sum.unresolvedTitle': 'No source could resolve the name',
   'glb.sum.failedTitle': 'No answers',
   'glb.sum.failedBody': 'Every query failed. Check your connection, or whether a browser extension or firewall blocks DNS-over-HTTPS.',
   'glb.sum.errors': { one: '{count} query failed (not counted as a difference).', other: '{count} queries failed (not counted as a difference).' },
@@ -97,20 +104,21 @@ registerStrings('en', {
   'glb.sum.rewritten': '{names}: a SafeSearch rewrite ({targets}), the policy of these filtering resolvers — not counted as a difference.',
   'glb.sum.unavailable': '{names}: not readable from a browser (HTTP/3 without a CORS header) — not counted as a failure.',
 
-  'glb.find.rcode': '{sources}: {rcode} — the resolver refused or could not answer the question. Not a propagation delay.',
-  'glb.find.servfail': '{sources}: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that resolver cannot reach. A fault, not a propagation delay.',
+  'glb.find.rcode': '{sources}: {rcode} — the question was refused or could not be answered. Not a propagation delay.',
+  'glb.find.servfail': '{sources}: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that cannot be reached. A fault, not a propagation delay.',
   'glb.find.filtering': 'Only filtering resolvers give this answer, so they may also be blocking the name.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (the name does not exist), unlike the other answers. The name was created or deleted recently — each answer stays cached until its TTL expires (for NXDOMAIN, the zone’s SOA minimum) — or its name servers disagree.',
   'glb.find.nodata': '{sources}: an empty answer (no {type} records). A record added or removed recently (the empty answer stays cached for the zone’s SOA minimum), or a CNAME target without {type} records there.',
   'glb.find.private': '{sources}: private addresses ({ips}) — an internal (split-horizon) answer or a mistake in the record; nobody on the internet can reach them.',
   'glb.find.mixed': {
-    one: '{sources}: a direct address ({ips}) that is not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.',
-    other: '{sources}: direct addresses ({ips}) that are not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.'
+    one: '{sources}: a direct address ({ips}) that is not on {operators}. If the name moved onto or off the provider recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the provider on purpose.',
+    other: '{sources}: direct addresses ({ips}) that are not on {operators}. If the name moved onto or off the provider recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the provider on purpose.'
   },
-  'glb.find.cname': 'The record at {owner} differs between sources: {targets}. It changed recently and the old answer stays cached until its TTL expires, or its name servers disagree.',
+  'glb.find.cname': 'The record at {owner} differs between sources: {targets}. Either it changed recently and the old answer stays cached until its TTL expires, or its DNS sends sources to different names on purpose (GeoDNS, weighted or load-balanced records), or its name servers disagree.',
   'glb.find.cnameMove': 'The record at {owner} points to different providers depending on the source ({operators}): {targets}. A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
   'glb.find.operators': 'The {type} records of {name} point to different providers depending on the source ({operators}). A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
   'glb.find.addressRecords': '{type} records',
+  'glb.find.noRecords': 'no CNAME and no {type} records',
   'glb.find.direct': 'Different addresses, none on a CDN, platform or steering service this tool knows: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or GeoDNS / round-robin by an operator it does not recognise.',
   'glb.find.records': 'Different records: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or name servers that disagree.',
   'glb.find.more': '+{count} more',
@@ -204,7 +212,7 @@ registerStrings('tr', {
   'glb.how.geo': 'CDN’ler ve GeoDNS hizmetleri (Cloudflare, Akamai, CloudFront …) her bölgeye bilerek farklı ve yakın sunucular verir — konuma göre farklı IP’ler onlar için normaldir.',
   'glb.how.anycast': 'Genel çözümleyiciler anycast’tir: size en yakın erişim noktasına (PoP; çözümleyici NSID bildiriyorsa gösterilir) bağlanırsınız. Her PoP’un kendi önbelleği ve kendi GeoDNS görünümü vardır.',
   'glb.how.ttl': 'Bir DNS değişikliğinden hemen sonra çözümleyiciler eski yanıtı TTL süresi dolana kadar tutar — “DNS yayılması” (propagation) budur.',
-  'glb.how.filter': 'Filtreleyen çözümleyiciler (Quad9, Cloudflare Family, CleanBrowsing) bir adı bilerek engelleyebilir; bu farklı bir yanıt olarak değil “Engellendi” olarak gösterilir.',
+  'glb.how.filter': 'Filtreleyen çözümleyiciler (Quad9, Cloudflare Family, CleanBrowsing) bir adı bilerek engelleyebilir; bu farklı bir yanıt olarak değil “Engellendi” olarak gösterilir. SafeSearch yönlendirmesi de (bir arama motorunun adının forcesafesearch.google.com gibi güvenli arama adına gönderilmesi) onların politikasıdır ve farklılık sayılmaz.',
   'glb.how.browser': 'Bir web sayfası yalnızca CORS başlığı gönderen çözümleyicileri okuyabilir. Quad9 bu başlığı HTTP/3’te göndermiyor — Chrome, Edge ve diğer tarayıcılar Quad9 için HTTP/3 kullanıyor — bu yüzden satırlarında genellikle yanıt yerine “Tarayıcıda okunamıyor” görünür.',
   'glb.emptyTitle': 'DNS yanıtlarını dünya genelinde karşılaştırın',
   'glb.emptyBody': 'Bir host adı girin; 12 genel çözümleyiciye ve {count} konuma aynı anda sorulsun — DNS değişikliğinden sonra, CDN/GeoDNS yönlendirmesini kontrol etmek ya da bir adın kullandığı tüm IP adreslerini toplamak için.',
@@ -217,10 +225,14 @@ registerStrings('tr', {
   'glb.sum.geoBody': 'Konumlar {groups} farklı yanıt görüyor. CDN ve GeoDNS için bu normaldir: her bölge yakınındaki sunuculara yönlendirilir.',
   'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
   'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designSteered': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. Yol üzerinde {owner} kaynakları farklı adlara gönderiyor ({targets}), ama bunlar aynı CDN adlarına çıkıyor: adın kendi DNS’indeki ağırlıklı ya da yük dengeleyen kayıtlar, bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.nodataTitle': 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri tasarım gereği farklı ({operators})',
+  'glb.sum.nodataBody': 'Hiçbir kaynak bu ad için {type} kaydı döndürmüyor. CNAME zincirleri yalnızca yönlendirme (CDN / GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar) yüzünden farklı ve hepsi {operators} adlarına çıkıyor — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designMulti': 'Birden fazla sağlayıcı yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
   'glb.sum.designPart': '{operators} uç sunucuları arasındaki farklar tasarım gereği; şunlar öyle değil:',
   'glb.sum.differTitle': 'Yanıtlar farklı',
   'glb.sum.differBody': 'Kaynaklar {groups} farklı yanıt döndürüyor.',
+  'glb.sum.unresolvedTitle': 'Hiçbir kaynak adı çözümleyemedi',
   'glb.sum.failedTitle': 'Yanıt alınamadı',
   'glb.sum.failedBody': 'Tüm sorgular başarısız oldu. Bağlantınızı ya da bir tarayıcı eklentisinin veya güvenlik duvarının DNS-over-HTTPS’i engelleyip engellemediğini kontrol edin.',
   'glb.sum.errors': '{count} sorgu başarısız oldu (farklılık sayılmadı).',
@@ -228,20 +240,21 @@ registerStrings('tr', {
   'glb.sum.rewritten': '{names}: SafeSearch yönlendirmesi ({targets}); bu filtreleyen çözümleyicilerin politikası — farklılık sayılmadı.',
   'glb.sum.unavailable': '{names}: tarayıcıdan okunamıyor (HTTP/3’te CORS başlığı yok) — başarısız sayılmadı.',
 
-  'glb.find.rcode': '{sources}: {rcode} — çözümleyici soruyu reddetti ya da yanıtlayamadı. Bu bir yayılma gecikmesi değil.',
-  'glb.find.servfail': '{sources}: SERVFAIL — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da o çözümleyicinin ulaşamadığı ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
+  'glb.find.rcode': '{sources}: {rcode} — soru reddedildi ya da yanıtlanamadı. Bu bir yayılma gecikmesi değil.',
+  'glb.find.servfail': '{sources}: SERVFAIL — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da ulaşılamayan ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
   'glb.find.filtering': 'Bu yanıtı yalnızca filtreleyen çözümleyiciler veriyor; adı engelliyor da olabilirler.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (ad mevcut değil), diğer yanıtlardan farklı olarak. Ad yakın zamanda oluşturuldu ya da silindi — her yanıt TTL süresi dolana kadar önbellekte kalır (NXDOMAIN için bölgenin SOA minimum değeri) — ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.nodata': '{sources}: boş yanıt ({type} kaydı yok). Yakın zamanda eklenen ya da silinen bir kayıt (boş yanıt, bölgenin SOA minimum süresi boyunca önbellekte kalır) ya da orada {type} kaydı olmayan bir CNAME hedefi.',
   'glb.find.private': '{sources}: özel adresler ({ips}) — iç ağa ait bir yanıt (split-horizon) ya da kayıtta bir hata; internetten kimse bu adreslere ulaşamaz.',
   'glb.find.mixed': {
-    one: '{sources}: {operators} üzerinde olmayan doğrudan bir adres ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.',
-    other: '{sources}: {operators} üzerinde olmayan doğrudan adresler ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.'
+    one: '{sources}: {operators} üzerinde olmayan doğrudan bir adres ({ips}). Ad yakın zamanda sağlayıcıya taşındıysa ya da sağlayıcıdan çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar bilerek sağlayıcının dışına yönlendiriliyor.',
+    other: '{sources}: {operators} üzerinde olmayan doğrudan adresler ({ips}). Ad yakın zamanda sağlayıcıya taşındıysa ya da sağlayıcıdan çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar bilerek sağlayıcının dışına yönlendiriliyor.'
   },
-  'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor ya da ad sunucuları birbiriyle çelişiyor.',
+  'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Ya kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor, ya adın DNS’i kaynakları bilerek farklı adlara gönderiyor (GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar), ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.cnameMove': '{owner} kaydı kaynağa göre farklı sağlayıcıları gösteriyor ({operators}): {targets}. Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
   'glb.find.operators': '{name} adının {type} kayıtları kaynağa göre farklı sağlayıcıları gösteriyor ({operators}). Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
   'glb.find.addressRecords': '{type} kayıtları',
+  'glb.find.noRecords': 'CNAME ve {type} kaydı yok',
   'glb.find.direct': 'Farklı adresler; hiçbiri bu aracın tanıdığı bir CDN’de, platformda ya da yönlendirme hizmetinde değil: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da tanımadığı bir sağlayıcının GeoDNS / round-robin dağıtımı.',
   'glb.find.records': 'Farklı kayıtlar: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da birbiriyle çelişen ad sunucuları.',
   'glb.find.more': '+{count} tane daha',
@@ -1046,7 +1059,9 @@ export function mount(container, ctx) {
     // Several answers are a warning only when they are not explained (by design, GeoDNS, or a
     // filtering resolver's own answer next to answers that agree).
     const explained = verdict && ['agree', 'by-design', 'geo'].includes(verdict.state);
-    stats.groups.set({ value: answerGroups, variant: answerGroups > 1 ? (explained ? 'info' : 'warn') : answerGroups === 1 ? 'ok' : 'default' });
+    const variant = verdict && verdict.state === 'unresolved' ? 'error'
+      : answerGroups > 1 ? (explained ? 'info' : 'warn') : answerGroups === 1 ? 'ok' : 'default';
+    stats.groups.set({ value: answerGroups, variant });
     const ipRows = [...current.ips.values()];
     const mine = ipRows.filter((r) => r.servers.length).length;
     const kinds = new Map();
@@ -1095,12 +1110,28 @@ export function mount(container, ctx) {
     } else if (state === 'agree') {
       const agreeing = usable.length - verdict.rewritten.length;
       alert = Alert({ variant: 'ok', title: t('glb.sum.agreeTitle'), message: [t('glb.sum.agreeBody', { count: agreeing }), extra].filter(Boolean).join(' ') });
+    } else if (state === 'unresolved') {
+      alert = Alert({
+        variant: 'error',
+        title: t('glb.sum.unresolvedTitle'),
+        message: null,
+        children: [
+          h('ul', { class: 'glb-findings' }, verdict.findings.map(renderFinding)),
+          extra ? h('div', { class: 'alert-message' }, extra) : null
+        ]
+      });
     } else if (state === 'by-design') {
+      // No records of the type anywhere (AAAA of an IPv4-only CDN name): only the chains differ.
+      const type = current.type;
+      const steered = verdict.steering[0];
+      const body = verdict.noRecords ? t('glb.sum.nodataBody', { type, operators })
+        : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
+          : t('glb.sum.designBody');
       alert = Alert({
         variant: 'info',
         icon: 'globe',
-        title: t('glb.sum.designTitle', { operators }),
-        message: [t('glb.sum.designBody'), verdict.multiOperator ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
+        title: verdict.noRecords ? t('glb.sum.nodataTitle', { type, operators }) : t('glb.sum.designTitle', { operators }),
+        message: [body, verdict.multiOperator ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
       });
     } else if (state === 'geo') {
       const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
@@ -1159,7 +1190,9 @@ export function mount(container, ctx) {
         break;
       case 'cname': {
         const owner = f.owner || current.name;
-        const targets = f.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)).join(' · ');
+        // null: the chain ends there — in address records, or with no records at all.
+        const end = verdict.noRecords ? t('glb.find.noRecords', { type: current.type }) : t('glb.find.addressRecords', { type: current.type });
+        const targets = f.targets.map((x) => (x === null ? end : `CNAME ${x}`)).join(' · ');
         text = f.operators.length > 1 ? t('glb.find.cnameMove', { owner, targets, operators: providers }) : t('glb.find.cname', { owner, targets });
         break;
       }

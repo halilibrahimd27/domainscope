@@ -206,7 +206,13 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  * - search.example.com: Cloudflare Family rewrites it to forcesafesearch.google.com (SafeSearch),
  *   everyone else agrees — the filter's policy;
  * - example.org: Vercel's address at the apex, Netlify's on IIJ and CZ.NIC — a move between
- *   providers, not steering.
+ *   providers, not steering;
+ * - steered.example.com: weighted records send each source to zone1 or zone2, both CNAMEs to
+ *   the same Fastly name — steering in the name's own DNS, by design;
+ * - nov6.example.com: a shared name steers to Fastly or Cloudflare; for AAAA every answer is
+ *   empty (A records only), so only the CNAME chains are judged — by design;
+ * - broken.example.com: SERVFAIL everywhere — nobody resolves it, never "agree".
+ * An AAAA query gets the same answers without their A records.
  * Any other request to another origin gets a 503 and is recorded in window.__externalFetches.
  */
 const fakeGlobalDnsScript = () => `(() => {
@@ -216,6 +222,7 @@ const fakeGlobalDnsScript = () => `(() => {
   const NEW = '198.51.100.20';
   const CLOUDFRONT = ['13.32.0.10', '13.32.1.20', '13.33.2.30', '13.35.3.40'];
   const AKAMAI = ['2.16.10.10', '2.17.20.20'];
+  const FASTLY = ['151.101.1.52', '151.101.65.52'];
   const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
   const cn = (name, data) => ({ name, type: 'CNAME', ttl: 60, data });
   const a = (name, data) => ({ name, type: 'A', ttl: 60, data });
@@ -254,6 +261,16 @@ const fakeGlobalDnsScript = () => `(() => {
       return { answers: [a(qname, NEW)] };
     }
     if (qname === 'example.org') return { answers: [a(qname, resolver === 'iij' || resolver === 'cznic' ? '75.2.60.5' : '76.76.21.21')] };
+    if (qname === 'steered.example.com') {
+      const zone = (h % 2 ? 'zone1.' : 'zone2.') + qname;
+      return { answers: [cn(qname, zone), cn(zone, 'h3.example.map.fastly.net'), a('h3.example.map.fastly.net', FASTLY[(h >>> 1) % 2])] };
+    }
+    if (qname === 'nov6.example.com') {
+      const glb = 'glb.nov6.example.com';
+      const [target, ip] = h % 3 ? ['example-dynamic.map.fastly.net', FASTLY[h % 2]] : ['nov6.example.com.cdn.cloudflare.net', '104.16.1.1'];
+      return { answers: [cn(qname, glb), cn(glb, target), a(target, ip)] };
+    }
+    if (qname === 'broken.example.com') return { rcode: 'SERVFAIL', answers: [] };
     return { rcode: 'NXDOMAIN', answers: [] };
   };
   const realFetch = window.fetch.bind(window);
@@ -273,6 +290,7 @@ const fakeGlobalDnsScript = () => `(() => {
     const resolver = (RESOLVER_URLS.find(([u]) => url.startsWith(u + '?')) || [null, 'unknown'])[1];
     const ecs = query.edns && query.edns.ecs ? query.edns.ecs.subnet : null;
     const out = answer(String(q.name).toLowerCase().replace(/[.]$/, ''), resolver, ecs);
+    if (q.type === 'AAAA') out.answers = out.answers.filter((rr) => rr.type !== 'A');
     const edns = ecs ? { ecs: { address: ecs.split('/')[0], sourcePrefix: 24, scopePrefix: 24 } } : {};
     return new Response(wire.encodeMessage({
       id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode || 'NOERROR',
@@ -391,7 +409,7 @@ async function offlineVerdicts(browser, server) {
     const quad9 = await check('stale.example.com');
     assertEqual(quad9.findings.map((f) => f.code), ['rcode', 'direct'], 'Quad9: finding codes');
     await shot(page, 'global-offline-desktop-light-en-stale-quad9');
-    assert(/^Tiarap: REFUSED — the resolver refused or could not answer the question\./.test(quad9.findings[0].text) && !/DNSSEC/.test(quad9.findings[0].text), `REFUSED: ${quad9.findings[0].text}`);
+    assert(/^Tiarap: REFUSED — the question was refused or could not be answered\./.test(quad9.findings[0].text) && !/DNSSEC/.test(quad9.findings[0].text), `REFUSED: ${quad9.findings[0].text}`);
     const family = await check('new.example.com');
     assertEqual(family.findings.map((f) => f.code), ['nxdomain'], 'Cloudflare Family: finding codes');
     assert(/^Cloudflare Family: NXDOMAIN/.test(family.findings[0].text) && /they may also be blocking the name\.$/.test(family.findings[0].text), `nxdomain: ${family.findings[0].text}`);
@@ -420,6 +438,51 @@ async function offlineVerdicts(browser, server) {
     assertEqual(info.chips.map((c) => c.ops.join()), ['Vercel', 'Netlify'], 'chip operators');
     assertEqual(info.external, [], 'nothing left the page');
     await shot(page, 'global-offline-desktop-light-en-move');
+  });
+
+  await step('weighted records before one Fastly name: by design, and the steering is named', async () => {
+    await gotoHash(page, '#/global?name=steered.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'by-design', `state (${info.title}: ${info.message})`);
+    assertEqual(info.title, 'Differs by design: CDN / GeoDNS edges (Fastly)', 'title');
+    assert(/^Every answer is an edge .* On the way, steered\.example\.com sends sources to different names \(zone[12]\.steered\.example\.com, zone[12]\.steered\.example\.com\), but they lead to the same CDN names: weighted or load-balanced records/.test(info.message), `body: ${info.message}`);
+    assertEqual(info.findings, [], 'no findings');
+    assert(info.chips.every((c) => c.ops.join() === 'Fastly'), `every group on Fastly: ${JSON.stringify(info.chips)}`);
+    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+  });
+
+  await step('AAAA with no records anywhere: the CNAME chains to Fastly or Cloudflare differ by design', async () => {
+    await gotoHash(page, '#/global?name=nov6.example.com&type=AAAA', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'by-design', `state (${info.title}: ${info.message})`);
+    assertEqual(info.title, 'No AAAA records anywhere — the CNAME chains differ by design (Fastly, Cloudflare)', 'title');
+    assert(/^No source returns AAAA records for this name\./.test(info.message) && /multi-CDN/.test(info.message), `body: ${info.message}`);
+    assertEqual(info.chips.map((c) => c.ops.join()), ['Fastly', 'Cloudflare'], 'operator next to each empty answer');
+    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    // The A answers of the same name: edges of two CDNs behind one shared name.
+    await gotoHash(page, '#/global?name=nov6.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const a = await page.evaluate(verdictInfo);
+    assertEqual([a.state, a.title], ['by-design', 'Differs by design: CDN / GeoDNS edges (Fastly, Cloudflare)'], 'A verdict');
+    await shot(page, 'global-offline-desktop-light-en-nov6');
+  });
+
+  await step('SERVFAIL everywhere: an error, never "All answers agree" (EN / TR)', async () => {
+    await gotoHash(page, '#/global?name=broken.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'unresolved', `state (${info.title})`);
+    assertEqual(info.title, 'No source could resolve the name', 'title');
+    assertEqual(info.findings.map((f) => f.code), ['rcode'], 'finding codes');
+    assert(/: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that cannot be reached\./.test(info.findings[0].text), `servfail: ${info.findings[0].text}`);
+    assert(/stat-v-error/.test(info.groupsStat), `distinct answers stat is an error: ${info.groupsStat}`);
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === 'Hiçbir kaynak adı çözümleyemedi', { message: 'TR unresolved title' });
+    const tr = await page.evaluate(verdictInfo);
+    assert(/ulaşılamayan ad sunucuları/.test(tr.findings[0].text), `TR servfail: ${tr.findings[0].text}`);
+    await setLangUi(page, 'en');
   });
 
   await step('375 px phone: verdict and operator chips fit without horizontal scroll', async () => {

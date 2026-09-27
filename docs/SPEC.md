@@ -848,14 +848,14 @@ Hash routing `#/<view>?param=...` (shareable: e.g. `#/lookup?name=example.com&ty
      - Find certificate targets;
      - Compare with live DNS: shows the planned query count.
    - **Records:** type groups, proxied only, search, CSV / JSON, copy names; an expanded row shows its comment, tags and problems.
-   - **Origins & servers:** one row per proxied name (`proxiedOriginMap`), a by-address table (`addressMap`) and the sweep command (`zoneSweep` + `cmdline.buildSweepCommand` with the zone opt-ins). The command has a proxied-only / everything scope, POSIX / PowerShell, an "at least N TLS handshakes" estimate and the two-file form with `zone-names.txt` / `zone-targets.txt` downloads. It uses exact tokens only, never a /24.
+   - **Origins & servers:** one row per proxied name (`proxiedOriginMap`), a by-address table (`addressMap`; both re-matched when the Servers list changes) and the sweep command (`zoneSweep` + `cmdline.buildSweepCommand` with the zone opt-ins). The command has a proxied-only / everything scope, POSIX / PowerShell, an "at least N TLS handshakes" estimate and the two-file form with `zone-names.txt` / `zone-targets.txt` downloads. It uses exact tokens only, never a /24.
    - **Problems:** parse issues and lint findings, errors first; a click jumps to the record.
    - **Live check** (`planDrift` / `driftZone`): nothing is sent until you click Check.
      - The card shows the record sets, the query count, the resolvers and what is sent.
      - Internal names are skipped by default, and wildcard probing is optional.
      - Progress, Cancel and Re-run; the check keeps running while you are on another view.
      - Banners: serial, name servers, a zone that does not exist. Status chips filter the rows.
-     - CSV / JSON exports redact origins unless opted in.
+     - CSV / JSON exports redact origins unless opted in, also inside a value (an SPF `ip4:` / `ip6:` / `a:` term, an MX or SRV target).
    - **Hand-off contracts:**
      - `state.session.zone` = `zoneScanInput(...)` + `{ label, counts }`. It is published only once the zone name is confirmed, and cleared by Forget and "Delete all local data".
      - `state.session.zoneScanIntent` = `{ v: 1, target: 'subdomains'|'scan', domain, mode: 'exact'|'discover', autostart, at }`, one-shot. Exact mode maps to `runScan({ zone, exact: true })` and is never written to the stored options.

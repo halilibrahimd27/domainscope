@@ -36,7 +36,7 @@ import { downloadText, timestampedName } from '../ui/download.js';
 import {
   t, registerStrings, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, daysUntil
 } from '../i18n.js';
-import { parseHostList, baseDomainsFromNames, isPublicSuffix, stripWildcard } from '../lib/domain.js';
+import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
 import { runScan, SCAN_STAGES } from '../lib/scanner.js';
 import {
@@ -1066,6 +1066,20 @@ export function originLabel(origin) {
 }
 
 /**
+ * A streamed hit (hooks.onFound) as a Hosts-table row, with the certificate coverage lib/scanner
+ * gives the full record: names.txt ("only covered") and the certificate column then agree with
+ * the finished scan, even for a run cancelled before its resolve stage.
+ * @param {object} partial
+ * @param {{ hostnames?: string[] }|null} cert the scan's certificate (leaf), or null
+ * @returns {object}
+ */
+export function partialScanRecord(partial, cert) {
+  const record = partialHostRecord(partial);
+  record.cert = cert ? certCovers(cert.hostnames, partial.name) : null;
+  return record;
+}
+
+/**
  * One entry per name for a server's Hostnames cell: the first, i.e. the strongest match —
  * lib/scanner orders a server's hosts DNS, then zone file, then origin hint, and a name can
  * have several (a DNS match on one address and a hint on another).
@@ -1189,7 +1203,7 @@ function startRun(run, scanConfig, appState) {
     onFound(partial) {
       if (!partial || !partial.name) return;
       if (run.hosts.some((x) => x.name === partial.name)) return;
-      const record = partialHostRecord(partial);
+      const record = partialScanRecord(partial, scanConfig.cert);
       run.found.set(partial.name, record);
       emit(run, 'found', record);
     },
@@ -2454,7 +2468,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     toast(t('scan.exported', { file }), { type: 'success', timeout: 2500 });
     return file;
   };
-  const exportScan = () => ({ hosts: run.result ? run.result.hosts : run.hosts });
+  // What the Hosts table shows: a cancelled run exports the streamed hits found so far too.
+  const exportScan = () => ({ hosts: liveHosts(run) });
   function exportHosts(format, rows) {
     const list = rows || exportScan().hosts;
     if (format === 'json') saveFile('hosts', 'json', `${toJson(list)}\n`, 'application/json;charset=utf-8');
@@ -2500,7 +2515,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   }
 
   let onlyCovered = !!cert;
-  const namesText = () => namesForCli(run.result || { hosts: run.hosts }, { onlyCovered });
+  const namesText = () => namesForCli(run.result || { hosts: liveHosts(run) }, { onlyCovered });
   const targetsText = () => targetsForCli([
     ...state.inventory.servers,
     ...(run.result ? run.result.originHints : []),
@@ -2518,7 +2533,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function syncExports() {
     const done = !!run.result;
-    const anyHosts = run.hosts.length > 0 || (run.result && run.result.hosts.length > 0);
+    const anyHosts = liveHosts(run).length > 0;
     exportButtons.hosts.disabled = !anyHosts;
     exportButtons.names.disabled = !anyHosts;
     exportButtons.servers.disabled = !done;

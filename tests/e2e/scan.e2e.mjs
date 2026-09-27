@@ -656,6 +656,13 @@ async function main() {
       await page.waitFor(() => ![...document.querySelectorAll('.scan-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
         { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
       assert(info.run && !info.busy, 'run button back, not busy');
+      // The export bar covers what the table keeps (the offline group checks the files).
+      const bar = await page.evaluate(() => ({
+        rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
+        hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
+        names: document.querySelector('.scan-exports [data-export="names"]').disabled
+      }));
+      if (bar.rows) assert(!bar.hosts && !bar.names, `export bar enabled for the ${bar.rows} kept rows: ${JSON.stringify(bar)}`);
     });
 
     await run.step('a scan keeps running on another page; the toast leads back to the results', async () => {

@@ -2123,6 +2123,30 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.doesNotMatch(html, /every subdomain/i);
   });
 
+  test('SSL Targets: streamed hits carry certificate coverage, and a cancelled run exports them', async () => {
+    const { S, C } = await load();
+    const { namesForCli, scanHostRows } = await import('../../assets/js/lib/export.js');
+    const cert = { hostnames: ['*.example.net', 'example.net'] };
+    const www = C.partialScanRecord({ name: 'www.example.net', origin: 'wordlist', ipv4: ['203.0.113.5'] }, cert);
+    assert.equal(www._partial, true);
+    assert.deepEqual(www.cert, { covered: true, by: '*.example.net' }, 'the coverage lib/scanner gives the full record');
+    const mail = C.partialScanRecord({ name: 'mail.example.org', origin: 'wordlist', ipv4: ['203.0.113.6'] }, cert);
+    assert.deepEqual(mail.cert, { covered: false, by: null });
+    assert.equal(C.partialScanRecord({ name: 'www.example.net' }, null).cert, null, 'no certificate, no coverage');
+    // Cancelled before the resolve stage: no full record yet, only the streamed hits.
+    const run = { result: null, hosts: [], found: new Map([[www.name, www], [mail.name, mail]]) };
+    assert.equal(namesForCli({ hosts: S.liveHosts(run) }, { onlyCovered: true }), 'www.example.net\n', 'names.txt: the covered hit');
+    assert.equal(namesForCli({ hosts: S.liveHosts(run) }), 'www.example.net\nmail.example.org\n');
+    assert.equal(scanHostRows({ hosts: S.liveHosts(run) }).length, 2, 'hosts CSV rows');
+    // The export bar reads the same list as the Hosts table (the views cannot be mounted here).
+    const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    assert.match(src, /const exportScan = \(\) => \(\{ hosts: liveHosts\(run\) \}\);/);
+    assert.match(src, /const namesText = \(\) => namesForCli\(run\.result \|\| \{ hosts: liveHosts\(run\) \}, \{ onlyCovered \}\);/);
+    const sync = /function syncExports\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
+    assert.ok(sync && /const anyHosts = liveHosts\(run\)\.length > 0;/.test(sync[1]), 'syncExports counts the streamed hits');
+    assert.match(src, /const record = partialScanRecord\(partial, scanConfig\.cert\);/, 'startRun streams covered partials');
+  });
+
   test('SSL Targets Servers tab: one entry per name, the strongest match (DNS, then zone file, then hint)', async () => {
     const { C } = await load();
     const pick = (hosts) => C.strongestPerName(hosts).map((x) => `${x.name}:${x.via}`);

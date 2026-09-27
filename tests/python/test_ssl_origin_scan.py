@@ -4151,6 +4151,41 @@ class MonitorCliTests(unittest.TestCase):
         self.assertEqual(text.count('\x1b[32mHOSTED   \x1b[0m'), 1)
         self.assertEqual(text.count('\x1b[33mHOSTED   \x1b[0m'), 1)
 
+    def test_a_reader_that_went_away_does_not_stop_the_rest(self):
+        """`... | head`: the notification and the baseline still follow the summary."""
+        class Gone(io.StringIO):
+            def __init__(self, exc):
+                super().__init__()
+                self.exc = exc
+
+            def write(self, text):
+                raise self.exc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            args = ['-t', '127.0.0.1', '-n', WILD, '--baseline', state, '--json', state,
+                    '--notify', 'https://hooks.example.com/hook/x', '--fail-on-change']
+            for exc, want, message in (
+                    (BrokenPipeError(32, 'Broken pipe'), sos.EXIT_CHANGED, None),
+                    (OSError(28, 'No space left on device'), sos.EXIT_OUTPUT_ERROR,
+                     'error: cannot write to stdout: No space left on device')):
+                Path(state).write_text(sos.render_json(fleet_before()), encoding='utf-8')
+                err = io.StringIO()
+                with self.subTest(exc=exc), \
+                        mock.patch.object(sos, 'run_scan', return_value=fleet_after()), \
+                        mock.patch.object(sos, 'send_notification', return_value=None) as send, \
+                        contextlib.redirect_stdout(Gone(exc)), contextlib.redirect_stderr(err):
+                    code = sos.main(args)
+                    self.assertEqual(code, want, err.getvalue())
+                    self.assertEqual(send.call_count, 1)
+                    self.assertIn('Notification sent', err.getvalue())
+                    self.assertIn('JSON report written to %s' % state, err.getvalue())
+                    self.assertEqual(len(read_json(state)['changes']), 9)
+                    if message:
+                        self.assertIn(message, err.getvalue())
+                    else:
+                        self.assertNotIn('error', err.getvalue())
+
     def test_plain_http_to_another_host_is_a_warning(self):
         with mock.patch.object(sos, 'run_scan', return_value=fleet_before()), \
                 mock.patch.object(sos, 'send_notification', return_value=None) as send:

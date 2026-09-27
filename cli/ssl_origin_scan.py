@@ -5465,14 +5465,40 @@ def load_new_certificate(path: str, now: Optional[datetime] = None
 
 def _write_output(path: str, text: str, encoding: str = 'utf-8') -> None:
     if path == '-':
-        sys.stdout.write(text)
-        sys.stdout.flush()
+        _write_stdout(text)
         return
     try:
         with open(path, 'w', encoding=encoding, newline='') as handle:
             handle.write(text)
     except OSError as exc:
         raise UsageError('cannot write %s: %s' % (path, exc.strerror or exc))
+
+
+def _write_stdout(text: str) -> None:
+    """Write ``text`` to stdout. A reader that went away (``... | head``, ``| grep -q``)
+    is not an error: the rest goes to the null device, so what comes after the output -
+    the notification, the baseline - still happens. Any other failure (a full disk
+    behind ``> file``) is a :class:`UsageError`."""
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        _discard_stdout()
+    except OSError as exc:
+        raise UsageError('cannot write to stdout: %s' % (exc.strerror or exc))
+
+
+def _discard_stdout() -> None:
+    """Point stdout's file descriptor at the null device after a broken pipe, so the
+    output still buffered is dropped quietly instead of failing again at exit."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass  # not a real file (a test's StringIO): nothing is left to fail
 
 
 def _temp_path(path: str) -> str:
@@ -5790,7 +5816,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.baseline or args.warn_days is not None:
         monitor = build_monitor(report, baseline, args.baseline, args.warn_days)
 
-    failed, kept = [], []  # type: List[str], List[str]
+    failed, held_back = [], []  # type: List[str], List[str]
 
     def write_report(path: str, text: str, encoding: str = 'utf-8', atomic: bool = False
                      ) -> None:
@@ -5821,9 +5847,8 @@ def _run(args: argparse.Namespace) -> int:
             write_report(args.csv, render_csv(report), encoding='utf-8-sig')
     if args.json != '-' and args.csv != '-':
         width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
-        sys.stdout.write(render_summary(report, color=use_color(args.no_color, sys.stdout),
-                                        show_all=args.show_all, width=width, monitor=monitor))
-        sys.stdout.flush()
+        write_report('-', render_summary(report, color=use_color(args.no_color, sys.stdout),
+                                         show_all=args.show_all, width=width, monitor=monitor))
 
     notify_failed = interrupted = False
     if notify_url and notify_format and should_notify(monitor, args.notify_always):
@@ -5851,7 +5876,7 @@ def _run(args: argparse.Namespace) -> int:
         if undelivered:
             # This run's report would be the next baseline: the next run would compare
             # with it, find nothing and never send these changes. Keep the previous one.
-            kept.append(args.json)
+            held_back.append(args.json)
             print('%s: kept the previous baseline in %s (this report is not written there): '
                   'the %d change%s will be reported again on the next run' % (
                       PROG, args.json, undelivered, '' if undelivered == 1 else 's'), file=err)
@@ -5861,7 +5886,7 @@ def _run(args: argparse.Namespace) -> int:
             write_report(args.json, json_text, atomic=True)
     if not quiet:
         for path, label in ((args.json, 'JSON'), (args.csv, 'CSV')):
-            if path and path != '-' and path not in failed and path not in kept:
+            if path and path != '-' and path not in failed and path not in held_back:
                 print('%s report written to %s' % (label, path), file=err)
 
     if interrupted:
@@ -5929,12 +5954,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 if __name__ == '__main__':
     try:
         _code = main()
-    except BrokenPipeError:  # e.g. `... | head`
-        try:
-            _devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(_devnull, sys.stdout.fileno())
-        except OSError:
-            pass
+    except BrokenPipeError:  # e.g. `... --help | head`
+        _discard_stdout()
         _code = EXIT_OK
     if _code == EXIT_INTERRUPTED:
         # Do not wait for in-flight connections to time out: leave immediately.

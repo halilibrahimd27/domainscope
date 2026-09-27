@@ -85,6 +85,7 @@ PROBE_EXCLUDED = 'excluded'  # CSV only: a target address --exclude removed befo
 EXIT_OK = 0
 EXIT_NEEDS_UPDATE = 1
 EXIT_USAGE = 2
+EXIT_OUTPUT_ERROR = 3   # the scan ran, but a --json / --csv file could not be written
 EXIT_INTERRUPTED = 130
 
 DEFAULT_PORTS = '443'
@@ -3406,7 +3407,9 @@ statuses (per server, port and name):
   certificate. Names outside the new certificate are shown but do not count.
 
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update),
-            2 usage error, 130 interrupted (Ctrl-C)
+            2 usage error (report files that cannot be written are refused before
+            the scan), 3 a report file could not be written after the scan (the
+            summary and the other report are still written), 130 interrupted (Ctrl-C)
 
 output encoding: follows the reader - the console code page when piped on Windows
   (cmd, PowerShell), UTF-8 for files, Git Bash and other systems. PYTHONIOENCODING=utf-8
@@ -3541,6 +3544,9 @@ def _write_output(path: str, text: str, encoding: str = 'utf-8') -> None:
 
 
 def _check_output_path(path: Optional[str], option: str) -> None:
+    """Refuse a report file that cannot be written before the scan, not after it: a
+    missing directory, a directory, a read-only file or one another program holds open
+    (a CSV still open in Excel on Windows). Nothing is truncated or left behind."""
     if not path or path == '-':
         return
     directory = os.path.dirname(os.path.abspath(path))
@@ -3548,6 +3554,16 @@ def _check_output_path(path: Optional[str], option: str) -> None:
         raise UsageError('%s: directory does not exist: %s' % (option, directory))
     if os.path.isdir(path):
         raise UsageError('%s: %s is a directory' % (option, path))
+    try:
+        if os.path.isfile(path):
+            with open(path, 'r+b'):  # open for writing, without truncating
+                pass
+        elif not os.path.exists(path):
+            with open(path, 'xb'):
+                pass
+            os.remove(path)
+    except OSError as exc:
+        raise UsageError('%s: cannot write %s: %s' % (option, path, exc.strerror or exc))
 
 
 def _isatty(stream: TextIO) -> bool:
@@ -3770,16 +3786,27 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         progress.finish()
 
+    failed = []  # type: List[str]
+
+    def write_report(path: str, text: str, encoding: str = 'utf-8') -> None:
+        # The scan is done: a report that cannot be written (disk full, a lock taken since
+        # the check) is reported, and the other report and the summary still come out.
+        try:
+            _write_output(path, text, encoding)
+        except UsageError as exc:
+            print('%s: error: %s' % (PROG, exc), file=err)
+            failed.append(path)
+
     if args.json:
         # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
-        _write_output(args.json, render_json(
+        write_report(args.json, render_json(
             report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout)))
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
         if args.csv == '-':
-            _write_output('-', render_csv(report, lineterminator='\n'))
+            write_report('-', render_csv(report, lineterminator='\n'))
         else:
-            _write_output(args.csv, render_csv(report), encoding='utf-8-sig')
+            write_report(args.csv, render_csv(report), encoding='utf-8-sig')
     if args.json != '-' and args.csv != '-':
         width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
         sys.stdout.write(render_summary(report, color=use_color(args.no_color, sys.stdout),
@@ -3787,15 +3814,17 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
     if not quiet:
         for path, label in ((args.json, 'JSON'), (args.csv, 'CSV')):
-            if path and path != '-':
+            if path and path != '-' and path not in failed:
                 print('%s report written to %s' % (label, path), file=err)
+    if failed:
+        return EXIT_OUTPUT_ERROR
     if args.fail_on_needs_update and report.needs_update():
         return EXIT_NEEDS_UPDATE
     return EXIT_OK
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3 or 130)."""
     _configure_streams()
     parser = build_parser()
     try:

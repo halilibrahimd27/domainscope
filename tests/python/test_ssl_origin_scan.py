@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import socket
+import stat
 import ssl
 import subprocess
 import sys
@@ -2216,6 +2217,58 @@ class CliArgumentTests(unittest.TestCase):
         self.assertEqual(code, 130)
         self.assertIn('interrupted', err)
         self.assertEqual(out, '')
+
+    def test_unwritable_report_file_is_refused_before_the_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'report.csv')
+            Path(path).write_text('last run\n', encoding='utf-8')
+            os.chmod(path, stat.S_IREAD)  # like a CSV still open in Excel (sharing lock)
+            try:
+                try:
+                    open(path, 'r+b').close()
+                    self.skipTest('a read-only file is still writable here (root?)')
+                except OSError:
+                    pass
+                with mock.patch.object(sos, 'run_scan',
+                                       side_effect=AssertionError('must not scan')):
+                    code, _, err = run_main('-t', '127.0.0.1', '-n', 'a.example.com',
+                                            '--csv', path)
+            finally:
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            self.assertEqual(code, 2, err)
+            self.assertIn('--csv: cannot write %s' % path, err)
+            self.assertNotIn('must not scan', err)
+            # the check neither truncates an existing report nor leaves a new file behind
+            fresh = os.path.join(tmp, 'new.json')
+            with mock.patch.object(sos, 'run_scan', side_effect=KeyboardInterrupt):
+                code, _, _ = run_main('-t', '127.0.0.1', '-n', 'a.example.com', '--csv', path,
+                                      '--json', fresh)
+            self.assertEqual(code, 130)
+            self.assertEqual(Path(path).read_text(encoding='utf-8'), 'last run\n')
+            self.assertFalse(os.path.exists(fresh))
+
+    def test_report_write_failure_after_the_scan_keeps_the_rest(self):
+        real_write = sos._write_output
+
+        def failing_csv(path, text, encoding='utf-8'):
+            if path.endswith('.csv'):
+                raise sos.UsageError('cannot write %s: Permission denied' % path)
+            real_write(path, text, encoding)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, csv_path = os.path.join(tmp, 'r.json'), os.path.join(tmp, 'r.csv')
+            with mock.patch.object(sos, 'run_scan', return_value=sample_report()), \
+                    mock.patch.object(sos, '_write_output', side_effect=failing_csv):
+                code, out, err = run_main('-t', '127.0.0.1', '-n', 'a.example.com', '--csv',
+                                          csv_path, '--json', json_path,
+                                          '--fail-on-needs-update')
+            self.assertTrue(os.path.isfile(json_path))  # the other report is still written
+        self.assertEqual(code, sos.EXIT_OUTPUT_ERROR)
+        self.assertEqual(sos.EXIT_OUTPUT_ERROR, 3)
+        self.assertIn('SSL origin scan:', out)  # and the scan's summary is not lost
+        self.assertIn('error: cannot write %s' % csv_path, err)
+        self.assertIn('JSON report written to', err)
+        self.assertNotIn('CSV report written to', err)
 
     def test_json_on_non_utf8_stdout_is_ascii_escaped(self):
         report = sample_report()

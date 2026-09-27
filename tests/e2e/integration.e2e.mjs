@@ -10,9 +10,10 @@
  *   1. Servers   — a sample inventory file is imported through the file picker and saved; it
  *                  holds real direct IPs of the scan domain (found at run time), 8.8.8.8 and 10.0.0.5
  *   1b. Subdomains — the landing view: #/subdomains?domain=…&run=1 + one click on the link prompt
- *                  (Cloudflare rows, inventory match); with learned names switched on (opt-in),
- *                  the scan's bare labels land in this browser's learned-names store, which SSL
- *                  Targets then shows and uses too
+ *                  (Cloudflare rows, inventory match, the Hosts tab first; Overview, Origins and
+ *                  Sources are checked in the four modes too); with learned names switched on
+ *                  (opt-in), the scan's bare labels land in this browser's learned-names store,
+ *                  which SSL Targets then shows and uses too
  *   2. SSL Targets — the fixture certificate auto-fills its domain; then the domain's LIVE
  *                  certificate (fetched with node:tls) is loaded and the domain is scanned:
  *                  Cloudflare hosts, certificate coverage, the inventory server, CLI command
@@ -346,10 +347,17 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.sub-run').dataset.status), 'done', 'status');
       const info = await page.evaluate(() => {
         const rows = [...document.querySelectorAll('.sub-table tbody tr.dt-row')];
-        return { rows: rows.length, cf: rows.filter((r) => r.querySelector('[data-kind="cloudflare"]')).length, text: rows.map((r) => r.textContent).join(' ') };
+        return {
+          rows: rows.length,
+          cf: rows.filter((r) => r.querySelector('[data-kind="cloudflare"]')).length,
+          text: rows.map((r) => r.textContent).join(' '),
+          tab: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab || null,
+          shown: document.querySelector('.sub-table').getBoundingClientRect().height > 0
+        };
       });
       process.stdout.write(`        ${info.rows} rows, ${info.cf} behind Cloudflare\n`);
       assert(info.rows >= 3 && info.cf >= 1, JSON.stringify({ rows: info.rows, cf: info.cf }));
+      assert(info.tab === 'hosts' && info.shown, `hosts first: the Hosts tab shows the table (${info.tab})`);
       if (direct.length) assert(/web-origin/.test(info.text), 'inventory server shown for the direct host');
       // The scan taught this browser its naming vocabulary: bare labels only, never names or IPs.
       learnedAfterSub = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('ssds.learned.labels') || '{}').labels || {}));
@@ -357,6 +365,15 @@ async function main() {
       process.stdout.write(`        ${learnedAfterSub.length} labels learned in this browser\n`);
     });
     await run.step('Subdomains in four modes', () => fourModes('subdomains', SUB_DONE));
+    // The other result tabs (a picked tab is kept across the language re-mount of fourModes).
+    for (const tab of ['overview', 'origins', 'sources']) {
+      await run.step(`Subdomains › ${tab} tab in four modes`, async () => {
+        await page.click(`.sub-tabs .tab[data-tab="${tab}"]`);
+        const ready = `${SUB_DONE} && !!document.querySelector('.sub-tabs .tab[data-tab="${tab}"][aria-selected="true"]')`;
+        await waitDone(page, ready, `${tab} tab`, 10000);
+        await fourModes(`subdomains-${tab}`, ready);
+      });
+    }
 
     /* ---------------- 2. SSL Targets ---------------- */
     run.group('2. SSL Targets');

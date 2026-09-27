@@ -499,7 +499,7 @@ export function mount(container, ctx) {
     kind: 'ip',
     disabled: true,
     inventory: 'count',
-    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.at, stopped: current.stopped } : null),
+    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.finishedAt, stopped: current.stopped } : null),
     url: () => ctx.shareUrl(permalinkParams('ip', ctx.params, {
       exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
     }))
@@ -705,13 +705,12 @@ export function mount(container, ctx) {
   /**
    * Look up every address of `parsed`, or show `preset` rows (a kept or re-mounted run: no
    * network, the servers matched again). `text`: the input the run was made from; `at`: when a
-   * preset run finished.
+   * preset run finished (the summary's time); `stopped`: a preset run was stopped.
    */
-  async function run(parsed, preset = null, { text = '', at = null } = {}, presetAt = null, presetStopped = false) {
+  async function run(parsed, preset = null, { text = '', at = null, stopped = false } = {}) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    // `at`: when the lookup ended (the summary's time).
-    const state = { controller, rows: [], stopped: false, text, finishedAt: null, at: null };
+    const state = { controller, rows: [], stopped: false, text, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -726,9 +725,8 @@ export function mount(container, ctx) {
       renderStats(state.rows);
       state.controller = null;
       state.finishedAt = at ? new Date(at) : new Date();
-      state.at = presetAt ? new Date(presetAt) : null;
       // A lookup stopped before a re-mount still says so (its summary does too).
-      state.stopped = !!presetStopped;
+      state.stopped = !!stopped;
       if (state.stopped) note('info', t('ipi.stopped'));
       summary.setDisabled(!preset.length);
       return;
@@ -812,7 +810,6 @@ export function mount(container, ctx) {
       if (current === state) {
         state.controller = null;
         state.finishedAt = new Date();
-        state.at = new Date();
         for (const row of state.rows) {
           if (row.pending) {
             row.pending = false;
@@ -846,7 +843,7 @@ export function mount(container, ctx) {
   /* --- initial state ---------------------------------------------------------------- */
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
-    run(parseIpInput(text), restored.rows, { text, at: restored.at }, restored.at, restored.stopped);
+    run(parseIpInput(text), restored.rows, { text, at: restored.at, stopped: restored.stopped });
     setShareAction(lookupParams(text));
     // The kept rows under an address carried over from another tool: the box takes the address.
     if (isFillOnly(ctx.params) && paramText) takeCarried(splitList(paramText).join('\n'));
@@ -866,7 +863,7 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
         : null;
-      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, at: rows ? current.at : null, stopped: !!(rows && current.stopped) };
+      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, stopped: !!(rows && current.stopped) };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;

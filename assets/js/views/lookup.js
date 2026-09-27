@@ -1267,10 +1267,10 @@ export function mount(container, ctx) {
    * Query every type of `q`, or show `preset` answers (a kept or re-mounted run: no network) with
    * the time the run finished and took.
    */
-  async function run(q, preset = null, { at = null, elapsed = null } = {}, presetAt = null) {
+  async function run(q, preset = null, { at = null, elapsed = null } = {}) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null, at: null };
+    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -1284,13 +1284,10 @@ export function mount(container, ctx) {
       state.responses[i] = response;
       cards[i].set(response);
       if (state.responses.every(Boolean)) {
-        {
         state.elapsed = preset ? elapsed : performance.now() - state.startedAt;
         state.finishedAt = preset && at ? new Date(at) : new Date();
       }
-        state.at = preset && presetAt ? new Date(presetAt) : new Date();
-      }
-      renderSummary(q, state.responses, state.elapsed, state.at);
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt);
     };
 
     if (preset) {
@@ -1328,7 +1325,7 @@ export function mount(container, ctx) {
 
   /* --- initial state ------------------------------------------------------------------ */
   if (restored && restored.q && Array.isArray(restored.responses)) {
-    run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed }, restored.at);
+    run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed });
     setShareAction();
     // The kept answers under a name carried over from another tool: the box takes the name.
     if (isFillOnly(ctx.params) && ctx.params.name) takeCarried(ctx.params.name);
@@ -1364,7 +1361,7 @@ export function mount(container, ctx) {
         cd: cdField.checked
       };
       if (!current || current.controller) return { form, carried };
-      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed, at: current.at };
+      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
     },
     result() {
       if (!current || current.controller || !current.finishedAt) return null;

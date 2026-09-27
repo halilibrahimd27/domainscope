@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
-  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, certSummaryFacts, loadCertificateData, issuerDisplayName
+  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, certSummaryFacts, issuerDisplayName
 } from '../../assets/js/views/cert.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';

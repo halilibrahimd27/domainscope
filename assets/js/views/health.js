@@ -670,7 +670,7 @@ export function mount(container, ctx) {
   /* --- hero ------------------------------------------------------------------------------ */
   /**
    * @param {object} report
-   * @param {string|null} selectors the extra DKIM selectors the report was checked with (its permalink)
+   * @param {string[]} selectors the extra DKIM selectors the report was checked with (its permalink)
    */
   function renderHero(report, selectors) {
     clear(heroEl);
@@ -686,7 +686,7 @@ export function mount(container, ctx) {
     heroSummary = SummaryButton({
       kind: 'health',
       facts: () => ({ report }),
-      url: () => ctx.shareUrl(permalinkParams('health', { domain: report.domain, selectors }))
+      url: () => ctx.shareUrl(permalinkParams('health', checkParams({ domain: report.domain, selectors })))
     });
     const zoneLink = report.zone && report.zone !== report.domain
       ? h('a', { class: 'btn btn-secondary btn-sm', href: ctx.href('health', { domain: report.zone }) }, Icon('arrow-right', { size: 14 }), h('span', { class: 'btn-label' }, t('hlt.checkZone', { zone: report.zone })))
@@ -1360,11 +1360,8 @@ export function mount(container, ctx) {
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     const controller = new AbortController();
     const state = {
-      domain,
-      selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
-      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null,
-      selectors:
-    extraSelectors.length ? extraSelectors.join(',') : null
+      domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
+      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null
     };
     current = state;
     clear(errorEl);
@@ -1412,7 +1409,7 @@ export function mount(container, ctx) {
       domain: restored.report.domain, selectors: Array.isArray(restored.runSelectors) ? restored.runSelectors : [],
       controller: null, report: restored.report, selectorCount: restored.selectorCount,
       finishedAt: restored.at ? new Date(restored.at) : new Date(),
-      policy: policy && policy.status !== 'running' ? policy : null, selectors: restored.reportSelectors ?? null
+      policy: policy && policy.status !== 'running' ? policy : null
     };
     renderReport(restored.report, current.selectors);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
@@ -1448,8 +1445,6 @@ export function mount(container, ctx) {
         at: report ? current.finishedAt : null,
         runSelectors: report ? current.selectors : null,
         selectorCount: current ? current.selectorCount : null,
-        // The selectors the report was checked with (its permalink), next to the form's own.
-        reportSelectors: report ? current.selectors : null,
         policy
       };
     },

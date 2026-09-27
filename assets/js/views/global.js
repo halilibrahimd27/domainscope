@@ -1354,8 +1354,8 @@ export function mount(container, ctx) {
     }
     const rows = makeRows(geo);
     current = {
-      name, type, geo, rows, rowByKey: new Map(rows.map((r) => [r.key, r])), ips: new Map(), controller: null, done: false, cancelled: false, finishedAt: null,
-      finishedAt: null // when the check ended (the summary's time)
+      name, type, geo, rows, rowByKey: new Map(rows.map((r) => [r.key, r])), ips: new Map(), controller: null, done: false, cancelled: false,
+      finishedAt: null // when the check ended (the summary's time, the kept result's age)
     };
     filterKey = null;
     groups = [];
@@ -1435,7 +1435,6 @@ export function mount(container, ctx) {
     current.done = !!snap.done;
     current.cancelled = !snap.done;
     current.finishedAt = snap.at ? new Date(snap.at) : new Date();
-    current.finishedAt = snap.at ? new Date(snap.at) : null;
     if (renderTimer) {
       clearTimeout(renderTimer);
       renderTimer = null;
@@ -1474,7 +1473,7 @@ export function mount(container, ctx) {
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.some((r) => !r.pending)) return null;
       // The page header already has Re-run next to Copy link: the note offers no second one.
-      return { subject: current.name, at: current.finishedAt, params: checkParams(current), rerun: false, at: current.finishedAt };
+      return { subject: current.name, at: current.finishedAt, params: checkParams(current), rerun: false };
     },
     rerun() {
       rerunCheck();

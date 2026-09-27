@@ -284,6 +284,22 @@ test('ansible-inventory --list: gateway / DNS / NTP hostvars are neither servers
   assert.deepEqual(codes(bare), ['NO_IP']);
 });
 
+test('ansible-inventory --list: a shared group var (syslog_server) is never every host\'s own IP', () => {
+  // --list flattens [all:vars] into every host's hostvars
+  const vars = { syslog_server: '10.0.0.50', backup_server: '10.0.0.60' };
+  const r = parseInventory(JSON.stringify({
+    _meta: { hostvars: { web01: { ansible_host: '10.0.0.1', ...vars }, web02: { ansible_host: '10.0.0.2', ...vars }, db01: { ansible_host: '10.0.0.3', ...vars } } },
+    all: { children: ['ungrouped', 'web', 'db'] }, web: { hosts: ['web01', 'web02'] }, db: { hosts: ['db01'] }
+  }));
+  assert.deepEqual(ipsById(r), { syslog_server: ['10.0.0.50'], backup_server: ['10.0.0.60'], web01: ['10.0.0.1'], web02: ['10.0.0.2'], db01: ['10.0.0.3'] });
+  assert.ok(!codes(r).includes('DUPLICATE_IP'));
+  assert.deepEqual(lookupServers(['10.0.0.50'], buildIpIndex(r.servers)).map((x) => x.server.name), ['syslog_server']);
+  const yaml = parseInventory(['all:', '  hosts:', '    web01:', '      ansible_host: 10.0.0.1', '      syslog_server: 10.0.0.50',
+    '    web02:', '      ansible_host: 10.0.0.2', '      syslog_server: 10.0.0.50'].join('\n'));
+  assert.deepEqual(ipsById(yaml), { syslog_server: ['10.0.0.50'], web01: ['10.0.0.1'], web02: ['10.0.0.2'] });
+  assert.ok(!codes(yaml).includes('DUPLICATE_IP'));
+});
+
 test('Ansible YAML hostvars: gateway / DNS / NTP / version vars are ignored', () => {
   const r = parseInventory([
     'all:',

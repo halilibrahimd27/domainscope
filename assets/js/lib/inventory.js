@@ -409,10 +409,6 @@ function isTerraformOutput(v) {
 // IP_KEY_EXCLUDE_RE it spares web / site / url / link, common group and output names.
 const RECORD_ATTR_EXCLUDE_RE = /(^|_)(gateway|gw|netmask|mask|subnet|broadcast|cidr|routes?|dns|nameservers?|resolvers?|ntp|mac|ilo|idrac|ipmi|bmc|version|ver)(_|$)/;
 
-/** A scalar or a list of scalars: an attribute value, never a nested machine. */
-const isScalarish = (v) => v === null || typeof v !== 'object'
-  || (Array.isArray(v) && v.every((x) => x === null || typeof x !== 'object'));
-
 /**
  * A key holding the enclosing machine's own address: `ip`, `ips`, `address`,
  * `ansible_host`, `public_ip`… or a name key holding an IP. Deliberately not the
@@ -444,8 +440,7 @@ const NO_HOSTS = new Set();
  * names (terraform outputs, `{ web01: {...} }` maps) name what is below.
  * A listed Ansible host always names what is below it. In a machine record
  * (named, holding an address key, or an Ansible vars map) gateway / DNS / NTP /
- * iLO / version attributes are skipped, and in a vars map a scalar variable
- * never names another server.
+ * iLO / version attributes are skipped.
  * Returns groups of { ip, raw } not claimed by any name.
  * @param {Set<string>} [hosts] host names listed in Ansible groups or `_meta.hostvars`
  * @param {boolean} [isVars] `node` is a vars map: one of those hosts' (hostvars) or a group's `vars`
@@ -480,13 +475,13 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
     const kind = host ? 'name' : keyKind(key, value);
     const sub = [];
     const groups = visitStructured(value, depth + 1, sub, hosts, host || key === 'vars');
-    entries.push({ key, value, kind, host, groups, sub });
+    entries.push({ key, kind, host, groups, sub });
   }
   const strong = !!name || isVars;
   const record = strong || entries.some((e) => e.kind === 'field' && e.groups.length && isAddressKey(e.key));
   const own = [];
   const pass = [];
-  for (const { key, value, kind, host, groups, sub } of entries) {
+  for (const { key, kind, host, groups, sub } of entries) {
     // gateway, dns, ntp, iLO, version… A record known only by its address key
     // may still be a name map ({ ip-10-0-0-1: …, dns-1: … }): there a key shaped
     // like a host name stays.
@@ -497,9 +492,8 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
       own.push(...groups.flat());
       continue;
     }
-    const k = kind === 'name' && isVars && isScalarish(value) ? 'field' : kind;
-    if (k === 'field') own.push(...groups.flat());
-    else if (k === 'structural') pass.push(...groups);
+    if (kind === 'field') own.push(...groups.flat());
+    else if (kind === 'structural') pass.push(...groups);
     else found.push({ name: key, items: groups.flat() });
   }
   if (name) {

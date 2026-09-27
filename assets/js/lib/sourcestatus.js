@@ -50,6 +50,12 @@ export const IP_FIELD_SOURCES = Object.freeze({
 export const IP_FIELDS = Object.freeze(Object.keys(IP_FIELD_SOURCES));
 
 /**
+ * A cell a failed source left empty, in a CSV or JSON export (IP Intel, Bulk Resolve): the same
+ * token in every UI language, so a script can read the file.
+ */
+export const EXPORT_NA = 'n/a';
+
+/**
  * Chip groups of IP Intel: one chip per service (RIPEstat's two datasets are one service).
  * @type {Readonly<Record<string, ReadonlyArray<string>>>}
  */

@@ -35,7 +35,7 @@ import { errorKind, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { bulkFraction } from '../lib/jobprogress.js';
-import { ipFieldStatus, sourceStatus } from '../lib/sourcestatus.js';
+import { ipFieldStatus, sourceStatus, EXPORT_NA } from '../lib/sourcestatus.js';
 import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 
@@ -458,6 +458,31 @@ export function bulkStats(rows, ipRows) {
   }
   s.servers = servers.size;
   return s;
+}
+
+/**
+ * Does a failed source leave `field` of an IP row empty — the cells the table marks "⚠ n/a"?
+ * A failed intel source (lib/sourcestatus.js ipFieldStatus) or, for the PTR, a reverse lookup
+ * that could not be made (`ptrFailure`). False for a real "none" and for an address not looked up.
+ * @param {object|null|undefined} ipRow a row of `job.ips`
+ * @param {'ptr'|'network'|'location'|'prefix'} field
+ * @returns {boolean}
+ */
+export function ipCellNa(ipRow, field) {
+  if (!ipRow) return false;
+  if (ipRow.info && ipFieldStatus(ipRow.info, field)) return true;
+  return field === 'ptr' && !!ipRow.ptrFailure;
+}
+
+/**
+ * Export text (CSV / JSON) of an enrichment cell: its value, or "n/a" (lib/sourcestatus.js
+ * EXPORT_NA) where the table says "⚠ n/a" — as IP Intel's export does; empty for a real "none".
+ * @param {string} value
+ * @param {boolean} na {@link ipCellNa}
+ * @returns {string}
+ */
+export function exportCell(value, na) {
+  return value !== '' ? value : na ? EXPORT_NA : '';
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1180,6 +1205,8 @@ function buildJobUI(job, ctx, { onFinish }) {
     }
     return null;
   };
+  /** A host row's export of `field` says n/a when one of its addresses' cells does ({@link hostNa}). */
+  const hostCellNa = (row, field) => row.ips.some((ip) => ipCellNa(ipOf(ip), field));
 
   const copyBtn = (labelKey, getLines, action) => Button({
     label: t(labelKey),
@@ -1238,7 +1265,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         key: 'ptr', label: t('bulk.col.ptr'), mono: true, sortable: true,
         sortValue: (r) => ptrText(r)[0] || '',
         searchValue: (r) => ptrText(r).join(' '),
-        exportValue: (r) => ptrText(r).join(' '),
+        exportValue: (r) => exportCell(ptrText(r).join(' '), hostCellNa(r, 'ptr')),
         render: (r) => {
           const list = ptrText(r);
           if (list.length) return TruncatedList(list, { max: 2 });
@@ -1249,7 +1276,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
         sortValue: (r) => asnText(r)[0] || '',
         searchValue: (r) => asnText(r).join(' '),
-        exportValue: (r) => asnText(r).join(' | '),
+        exportValue: (r) => exportCell(asnText(r).join(' | '), hostCellNa(r, 'network')),
         render: (r) => {
           const list = asnText(r);
           if (list.length) return TruncatedList(list, { max: 2, mono: false });
@@ -1340,7 +1367,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         key: 'ptr', label: t('bulk.col.ptr'), sortable: true, mono: true,
         sortValue: (r) => (r.ptr && r.ptr[0]) || '',
         searchValue: (r) => (r.ptr || []).join(' '),
-        exportValue: (r) => (r.ptr || []).join(' '),
+        exportValue: (r) => exportCell((r.ptr || []).join(' '), ipCellNa(r, 'ptr')),
         render: (r) => (r.ptr && r.ptr.length ? TruncatedList(r.ptr, { max: 2 })
           : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : naOf(r, 'ptr')))
       } : null,
@@ -1348,7 +1375,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
         sortValue: (r) => (r.info && r.info.asn) || null,
         searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.holder || ''}` : ''),
-        exportValue: (r) => (r.info && r.info.asn ? `AS${r.info.asn} ${r.info.holder || ''}`.trim() : ''),
+        exportValue: (r) => exportCell(r.info && r.info.asn ? `AS${r.info.asn} ${r.info.holder || ''}`.trim() : '', ipCellNa(r, 'network')),
         render: (r) => (r.info && r.info.asn
           ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
           : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
@@ -1359,7 +1386,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         key: 'country', label: t('bulk.col.country'), sortable: true,
         sortValue: (r) => (r.info && r.info.country) || '',
         searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)}` : ''),
-        exportValue: (r) => (r.info && r.info.country) || '',
+        exportValue: (r) => exportCell((r.info && r.info.country) || '', ipCellNa(r, 'location')),
         render: (r) => (r.info && r.info.country
           ? h('span', { title: r.info.city || '' }, `${formatRegion(r.info.country, r.info.country)}`)
           : naOf(r, 'location'))
@@ -1367,7 +1394,7 @@ function buildJobUI(job, ctx, { onFinish }) {
       showAsn ? {
         key: 'prefix', label: t('bulk.col.prefix'), sortable: true, mono: true,
         sortValue: (r) => (r.info && r.info.prefix) || '',
-        exportValue: (r) => (r.info && r.info.prefix) || '',
+        exportValue: (r) => exportCell((r.info && r.info.prefix) || '', ipCellNa(r, 'prefix')),
         render: (r) => (r.info && r.info.prefix ? r.info.prefix : naOf(r, 'prefix'))
       } : null
     ].filter(Boolean)

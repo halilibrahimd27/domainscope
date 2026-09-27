@@ -6,7 +6,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseBulkInput, createJob, runJob } from '../../assets/js/views/bulk.js';
+import { parseBulkInput, createJob, runJob, ipCellNa, exportCell } from '../../assets/js/views/bulk.js';
 
 const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
@@ -116,6 +116,32 @@ describe('bulk view: job runner', () => {
     const limited = job.ips.get('192.0.2.3').ptrFailure;
     assert.deepEqual([limited.errorKind, limited.retryAfterMs, limited.rcode], ['rate-limit', 60000, null]);
     assert.equal(job.ipDone, 3, 'a failed lookup is still done');
+    // The export says n/a where the table does, and stays empty for "no PTR record".
+    assert.deepEqual([none, servfail, job.ips.get('192.0.2.3')].map((r) => exportCell((r.ptr || []).join(' '), ipCellNa(r, 'ptr'))), ['', 'n/a', 'n/a']);
+  });
+
+  test('ASN mode: a field a failed intel source left empty is n/a in the export, a known one keeps its value', async () => {
+    const names = ['a.example.com', 'b.example.com'];
+    const dns = fakeDns(names, async () => ['a.example.net']);
+    // RIPEstat answers 429 for 192.0.2.2 only; ipwho.is is out of quota for everyone.
+    const fetchImpl = async (url) => {
+      const u = new URL(url);
+      if (u.hostname === 'ipwho.is') return new Response(JSON.stringify({ success: false, message: 'You have exceeded the rate limit' }), { status: 200 });
+      if (u.searchParams.get('resource') === '192.0.2.2') return new Response('Too Many Requests', { status: 429 });
+      if (u.pathname.includes('prefix-overview')) {
+        return new Response(JSON.stringify({ status: 'ok', data: { announced: true, resource: '192.0.2.0/24', asns: [{ asn: 64500, holder: 'EXAMPLE-NET' }] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: 'ok', data: { located_resources: [{ locations: [{ country: 'NL', city: '', covered_percentage: 100 }] }] } }), { status: 200 });
+    };
+    const job = createJob(names, { ptr: false, asn: true, noCache: true, resolver: '' });
+    await runJob(job, { dns, index: null, concurrency: 2, fetchImpl });
+    const ok = job.ips.get('192.0.2.1');
+    const bad = job.ips.get('192.0.2.2');
+    assert.deepEqual(['network', 'location', 'prefix', 'ptr'].map((f) => ipCellNa(ok, f)), [false, false, false, false]);
+    assert.deepEqual(['network', 'location', 'prefix', 'ptr'].map((f) => ipCellNa(bad, f)), [true, true, true, false], 'the PTR answered');
+    assert.equal(exportCell(bad.info.prefix || '', ipCellNa(bad, 'prefix')), 'n/a');
+    assert.equal(exportCell(ok.info.prefix || '', ipCellNa(ok, 'prefix')), '192.0.2.0/24');
+    assert.deepEqual([ipCellNa(null, 'ptr'), ipCellNa(undefined, 'network')], [false, false], 'an address not in the job');
   });
 
   test('ASN mode sends the PTR queries to the resolver chosen for the run', async () => {

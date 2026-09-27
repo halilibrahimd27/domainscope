@@ -915,8 +915,19 @@ export function mount(container, ctx) {
     ]));
   }
 
-  /** Parsed view of the records of one type. */
+  /**
+   * Parsed view of the records of one type. RDATA the parser could not read (lib/dnswire's
+   * RFC 3597 form, `rr.error`) has no fields, so it goes to the generic table as text.
+   */
   function renderRecords(type, rrs, qname, cnames = []) {
+    const unread = rrs.filter((rr) => rr.error);
+    if (!unread.length) return renderParsed(type, rrs, qname, cnames);
+    const read = rrs.filter((rr) => !rr.error);
+    if (!read.length) return renderGeneric(unread);
+    return h('div', { class: 'stack-sm' }, renderParsed(type, read, qname, cnames), renderGeneric(unread));
+  }
+
+  function renderParsed(type, rrs, qname, cnames) {
     switch (type) {
       case 'A':
       case 'AAAA':

@@ -763,6 +763,21 @@ export function resolverNoteKey(r) {
   return null;
 }
 
+/**
+ * Which control of a resolver row takes the focus back after the settings list re-renders:
+ * the one the user acted on, else its nearest enabled neighbour (a row moved to the top has
+ * no enabled "Move up", an unticked row no order buttons at all).
+ * @param {'check'|'up'|'down'} kind the control the user acted on
+ * @param {number} pos the row's position in the new chain (-1: not in the chain)
+ * @param {number} len length of the new chain
+ * @returns {'check'|'up'|'down'}
+ */
+export function settingsFocusAfter(kind, pos, len) {
+  if (kind === 'check' || pos < 0) return 'check';
+  if (kind === 'up') return pos > 0 ? 'up' : (len > 1 ? 'down' : 'check');
+  return pos < len - 1 ? 'down' : (pos > 0 ? 'up' : 'check');
+}
+
 function resolverMeta(r) {
   const bits = [Badge(r.countryCode ? formatRegion(r.countryCode, r.location) : t('settings.anycast'), { icon: r.countryCode ? 'map-pin' : 'globe' })];
   if (r.dnssecValidating) bits.push(Badge(t('settings.flagDnssec'), { variant: 'ok', icon: 'shield' }));
@@ -781,24 +796,44 @@ function openSettings() {
   const list = h('ul', { class: 'settings-resolvers', attrs: { 'aria-describedby': 'settings-chain-hint' } });
   const errorEl = h('div', { class: 'field-error', hidden: true, attrs: { 'aria-live': 'polite' } });
 
-  const commit = (next) => {
+  // `focus` ({ id, kind }): the control the user acted on, focused again in the new list.
+  const commit = (next, focus = null) => {
     if (!next.length) {
       errorEl.textContent = t('settings.atLeastOne');
       errorEl.hidden = false;
+      renderList(focus); // the browser already unticked the refused checkbox: tick it again
       return;
     }
     errorEl.hidden = true;
     chain = state.updateSettings({ chain: next }).chain;
-    renderList();
+    renderList(focus);
+    const pos = focus ? chain.indexOf(focus.id) : -1;
+    if (focus && focus.kind !== 'check' && pos !== -1) announce(t('settings.position', { n: pos + 1 }));
   };
 
-  function renderList() {
+  function renderList(focus = null) {
     const ordered = [...chain.map((id) => getResolver(id)).filter(Boolean), ...RESOLVERS.filter((r) => !chain.includes(r.id))];
     clear(list);
     ordered.forEach((r) => {
       const pos = chain.indexOf(r.id);
       const active = pos !== -1;
       const cbId = `settings-res-${r.id}`;
+      const move = (dir) => {
+        const btn = IconButton({
+          icon: `arrow-${dir}`,
+          label: `${t(dir === 'up' ? 'common.moveUp' : 'common.moveDown')}: ${r.name}`,
+          size: 'sm',
+          disabled: dir === 'up' ? pos === 0 : pos === chain.length - 1,
+          onClick: () => {
+            const next = chain.slice();
+            const to = dir === 'up' ? pos - 1 : pos + 1;
+            [next[to], next[pos]] = [next[pos], next[to]];
+            commit(next, { id: r.id, kind: dir });
+          }
+        });
+        btn.dataset.move = dir;
+        return btn;
+      };
       list.append(h('li', { class: ['settings-resolver', { 'is-active': active }], dataset: { resolver: r.id } },
         h('input', {
           type: 'checkbox',
@@ -806,7 +841,7 @@ function openSettings() {
           id: cbId,
           checked: active,
           on: {
-            change: (e) => commit(e.target.checked ? [...chain, r.id] : chain.filter((id) => id !== r.id))
+            change: (e) => commit(e.target.checked ? [...chain, r.id] : chain.filter((id) => id !== r.id), { id: r.id, kind: 'check' })
           }
         }),
         h('div', { class: 'settings-resolver-main' },
@@ -814,26 +849,17 @@ function openSettings() {
           h('div', { class: 'settings-resolver-meta' }, resolverMeta(r))),
         active ? h('div', { class: 'settings-order' },
           h('span', { class: 'settings-pos', title: t('settings.position', { n: pos + 1 }) }, String(pos + 1)),
-          IconButton({
-            icon: 'arrow-up', label: `${t('common.moveUp')}: ${r.name}`, size: 'sm', disabled: pos === 0,
-            onClick: () => {
-              const next = chain.slice();
-              [next[pos - 1], next[pos]] = [next[pos], next[pos - 1]];
-              commit(next);
-              list.querySelector(`[data-resolver="${r.id}"] .btn-icon`)?.focus();
-            }
-          }),
-          IconButton({
-            icon: 'arrow-down', label: `${t('common.moveDown')}: ${r.name}`, size: 'sm', disabled: pos === chain.length - 1,
-            onClick: () => {
-              const next = chain.slice();
-              [next[pos + 1], next[pos]] = [next[pos], next[pos + 1]];
-              commit(next);
-              const btns = list.querySelectorAll(`[data-resolver="${r.id}"] .btn-icon`);
-              btns[btns.length - 1]?.focus();
-            }
-          })) : h('span')));
+          move('up'),
+          move('down')) : h('span')));
     });
+    if (!focus) return;
+    // The re-render replaced the focused control: without this, focus falls to <body>.
+    const row = [...list.children].find((li) => li.dataset.resolver === focus.id);
+    if (!row) return;
+    const want = settingsFocusAfter(focus.kind, chain.indexOf(focus.id), chain.length);
+    const check = row.querySelector('input[type="checkbox"]');
+    const target = want === 'check' ? check : row.querySelector(`[data-move="${want}"]`);
+    (target && !target.disabled ? target : check)?.focus();
   }
   renderList();
 
@@ -884,6 +910,7 @@ function openSettings() {
           const s = state.updateSettings({ chain: [], concurrency: NaN });
           chain = s.chain;
           concurrency.value = String(s.concurrency);
+          errorEl.hidden = true;
           renderList();
           return false; // keep the dialog open
         }

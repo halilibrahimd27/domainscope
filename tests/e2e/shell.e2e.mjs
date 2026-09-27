@@ -469,6 +469,80 @@ async function main() {
       }
     });
 
+    await step('settings dialog: keyboard focus survives every re-render; the last resolver stays ticked', async () => {
+      const waitChain = (want, message) => page.waitFor((w) => JSON.parse(localStorage.getItem('ssds.settings') || '{}').chain?.join(',') === w,
+        { args: [want.join(',')], message });
+      const focused = () => page.evaluate(() => {
+        const a = document.activeElement;
+        return {
+          id: a.id || null,
+          move: a.dataset.move || null,
+          disabled: !!a.disabled,
+          resolver: a.closest('[data-resolver]')?.dataset.resolver || null,
+          inDialog: !!a.closest('dialog.modal[open]')
+        };
+      });
+      const focusOn = (sel) => page.evaluate((s) => document.querySelector(`dialog.modal[open] ${s}`).focus(), sel);
+      const restoreDefaults = () => page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] .modal-foot button')][0].click());
+      const [first, second] = DEFAULT_CHAIN;
+      const last = DEFAULT_CHAIN[DEFAULT_CHAIN.length - 1];
+
+      await page.click('[data-control="settings"]');
+      try {
+        await page.waitForSelector('dialog.modal[open] .settings-resolvers');
+        // Space on a checkbox: the list is rebuilt and the new checkbox takes the focus back.
+        await focusOn(`[data-resolver="${second}"] input[type="checkbox"]`);
+        await page.press('Space');
+        await waitChain(DEFAULT_CHAIN.filter((id) => id !== second), `chain without ${second}`);
+        let f = await focused();
+        assertEqual([f.id, f.inDialog], [`settings-res-${second}`, true], 'focus after Space');
+        await restoreDefaults();
+        await waitChain(DEFAULT_CHAIN, 'defaults');
+
+        // Move up to the top: its Move up is disabled now, so Move down takes the focus.
+        await focusOn(`[data-resolver="${second}"] [data-move="up"]`);
+        await page.press('Enter');
+        const top = [second, first, ...DEFAULT_CHAIN.slice(2)];
+        await waitChain(top, `${second} moved to the top`);
+        f = await focused();
+        assertEqual([f.resolver, f.move, f.disabled, f.inDialog], [second, 'down', false, true], 'focus after a move to the top');
+        // Move down to the bottom: Move up takes the focus.
+        const penult = top[top.length - 2];
+        await focusOn(`[data-resolver="${penult}"] [data-move="down"]`);
+        await page.press('Enter');
+        const bottom = [...top.slice(0, -2), top[top.length - 1], penult];
+        await waitChain(bottom, `${penult} moved to the bottom`);
+        f = await focused();
+        assertEqual([f.resolver, f.move, f.disabled, f.inDialog], [penult, 'up', false, true], 'focus after a move to the bottom');
+        await restoreDefaults();
+        await waitChain(DEFAULT_CHAIN, 'defaults');
+
+        // Untick all but one, then the last one: refused, and its checkbox stays ticked.
+        for (let i = 0; i < DEFAULT_CHAIN.length - 1; i += 1) {
+          await page.click(`dialog.modal[open] [data-resolver="${DEFAULT_CHAIN[i]}"] input[type="checkbox"]`);
+          await waitChain(DEFAULT_CHAIN.slice(i + 1), `unticked ${DEFAULT_CHAIN[i]}`);
+        }
+        await focusOn(`[data-resolver="${last}"] input[type="checkbox"]`);
+        await page.press('Space');
+        await page.waitFor(() => !document.querySelector('dialog.modal[open] .field-error').hidden, { message: 'refusal shown' });
+        const refused = await page.evaluate((id) => ({
+          checked: document.getElementById(`settings-res-${id}`).checked,
+          ticked: [...document.querySelectorAll('dialog.modal[open] .settings-resolver input:checked')].map((c) => c.id),
+          chain: JSON.parse(localStorage.getItem('ssds.settings')).chain
+        }), last);
+        assertEqual(refused, { checked: true, ticked: [`settings-res-${last}`], chain: [last] }, 'the last resolver stays ticked and in the chain');
+        f = await focused();
+        assertEqual(f.id, `settings-res-${last}`, 'focus after the refusal');
+        await restoreDefaults();
+        await waitChain(DEFAULT_CHAIN, 'defaults');
+        assert(await page.evaluate(() => document.querySelector('dialog.modal[open] .field-error').hidden), 'restore defaults hides the error');
+        await page.press('Escape');
+        await page.waitFor(() => !document.querySelector('dialog.modal'), { message: 'dialog closed' });
+      } finally {
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+    });
+
     await step('getDns() lazily creates a shared DohClient from settings', async () => {
       const info = await page.evaluate(async () => {
         const app = await import('./assets/js/app.js');

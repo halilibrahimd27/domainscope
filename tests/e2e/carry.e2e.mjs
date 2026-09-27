@@ -12,12 +12,19 @@
  *   - DNS Lookup opens with example.com filled in and sends nothing; so do Global DNS,
  *     Subdomains, SSL Targets, Bulk Resolve and the Certificate view's "No file?" field; IP Intel
  *     and the Zone File URL get nothing;
- *   - back on Domain Health, the report is still there with "Result from <time>" and no new
- *     query; a language switch keeps both; "Run again" checks again and the note goes;
- *   - a lookup of www.example.com makes that the target, while Domain Health keeps its own
- *     result; the lookup comes back after a trip too (also in Turkish);
+ *   - back on Domain Health, the report is still there with "Result from <time>" (the URL with
+ *     `run=0`) and no new query; a language switch keeps both; "Run again" checks again and the
+ *     note goes;
+ *   - a certificate loaded in SSL Targets shows in the Certificate view without a note until that
+ *     view kept it, and then without "Run again" (a file);
+ *   - a lookup of www.example.com makes that the target: Domain Health gets it filled in (its
+ *     older report comes back on the bare route); the lookup comes back after a trip too (also
+ *     in Turkish);
+ *   - the second round: after Domain Health for shop.example.com, DNS Lookup and Bulk Resolve get
+ *     it filled in over their kept results; Bulk's "Run again" resolves the kept job's names;
  *   - the chip's × clears the target (focus stays on the page); "Delete all local data" forgets
- *     the target and the kept results;
+ *     the target and the kept results, Bulk Resolve's list and job too (also with Bulk Resolve
+ *     on screen: the tool opens again, bare);
  *   - a carried link opened in a new tab only fills the form.
  * Then at 375 px (light / dark, English / Turkish): the chip in place of the brand name, the note
  * under the title, no horizontal scroll. Fails on console errors, exceptions, CSP violations
@@ -53,6 +60,7 @@ const ZONE = {
 };
 
 const HEALTH_DONE = "!!document.querySelector('.hlt-hero') && !document.querySelector('[data-action=\"run\"]').hidden";
+const LOOKUP_DONE = "document.querySelectorAll('.lkp-cards [data-state]:not([data-state=\"pending\"])').length > 0 && !document.querySelector('.lkp-cards [data-state=\"pending\"]')";
 
 /** Fail (and record) every https request that would leave the page (the fake DNS answers in-page). */
 async function networkGuard(page) {
@@ -65,18 +73,22 @@ async function networkGuard(page) {
   return hits;
 }
 
-/** What the shell shows: the chip, the kept-result note, the nav links' hrefs, the route. */
+/**
+ * What the shell shows: the chip, the kept-result note (its text and its "Run again", or null),
+ * the nav links' hrefs, the route.
+ */
 function shellInfo() {
   const chip = document.querySelector('[data-role="target-chip"]');
   const note = document.querySelector('.page-kept:not([hidden]) .kept-note');
+  const rerun = note ? note.querySelector('[data-action="kept-rerun"]') : null;
   const hrefs = {};
   document.querySelectorAll('#app-nav a.nav-link[data-view]').forEach((a) => { hrefs[a.dataset.view] = a.getAttribute('href'); });
   return {
     chip: chip && !chip.closest('[hidden]') ? chip.querySelector('.target-chip-value').textContent : null,
     chipKind: chip ? chip.dataset.kind : null,
-    note: note ? note.textContent.replace(/\s+/g, ' ').trim() : null,
+    note: note ? note.querySelector('.kept-note-text').textContent.replace(/\s+/g, ' ').trim() : null,
     noteKind: note ? note.dataset.kept : null,
-    rerun: !!(note && note.querySelector('[data-action="kept-rerun"]')),
+    rerun: rerun ? rerun.textContent : null,
     hrefs,
     hash: location.hash,
     view: document.documentElement.dataset.view
@@ -92,6 +104,36 @@ async function clickNav(page, view) {
     && document.querySelector('#page-body')?.dataset.view === v
     && document.querySelector('#page-body').childElementCount > 0
     && !document.querySelector('#page-body .page-loading'), { args: [view], message: `view ${view}`, timeout: 15000 });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
+/** Wait for a Bulk Resolve job other than `prevId` to end. */
+async function waitJobDone(page, prevId) {
+  await page.waitFor((prev) => {
+    const el = document.querySelector('.bulk-results');
+    return el && el.dataset.job !== prev && ['done', 'cancelled', 'error'].includes(el.querySelector('.bulk-progress').dataset.status);
+  }, { args: [prevId || ''], timeout: 30000, message: 'bulk job finished' });
+}
+
+/** Settings › "Delete all local data", confirmed; `hint`: check that the hint names the page session. */
+async function deleteAllLocalData(page, { hint = false } = {}) {
+  await page.click('[data-control="settings"]');
+  try {
+    await page.waitForSelector('dialog.modal[open] .settings-danger');
+    if (hint) {
+      const text = await page.evaluate(() => document.querySelector('dialog.modal[open] .settings-danger .field-hint').textContent);
+      assert(/forgets the current target and the results kept in this tab/.test(text), `hint: ${text}`);
+    }
+    await page.click('dialog.modal[open] .settings-danger .btn-danger');
+    await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
+    await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
+    await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
+  } finally {
+    await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+  }
+  // The tool on screen opens again on its bare route once every listener has forgotten.
+  await page.waitFor(() => !location.hash.includes('?') && document.querySelector('#page-body')?.childElementCount > 0
+    && !document.querySelector('#page-body .page-loading'), { message: 'the tool opened again' });
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 
@@ -156,9 +198,9 @@ async function desktop(browser, server) {
       await clickNav(page, 'health');
       await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
       const s = await page.evaluate(shellInfo);
-      assertEqual(s.hash, `#/health?domain=${APEX}`, 'the URL shows the kept result');
-      assert(/^Result from \d{1,2}:\d{2}(\s[AP]M)?\s*·\s*Run again$/.test(s.note), `note: ${s.note}`);
-      assertEqual([s.noteKind, s.rerun], ['result', true], 'note kind + Run again');
+      assertEqual(s.hash, `#/health?domain=${APEX}&run=0`, 'the URL shows the kept result, and a reload only fills the form');
+      assert(/^Result from \d{1,2}:\d{2}(\s[AP]M)?$/.test(s.note), `note: ${s.note}`);
+      assertEqual([s.noteKind, s.rerun], ['result', 'Run again'], 'note kind + Run again');
       const hero = await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent);
       assertEqual(hero, APEX, 'the report of example.com');
       await page.waitFor(() => [...document.querySelectorAll('body > .sr-only[aria-live="polite"]')]
@@ -172,7 +214,8 @@ async function desktop(browser, server) {
       await setLangUi(page, 'tr');
       await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'report after the switch' });
       const s = await page.evaluate(shellInfo);
-      assert(/^Önceki sonuç: \d{1,2}:\d{2}\s*·\s*Yeniden çalıştır$/.test(s.note), `TR note: ${s.note}`);
+      assert(/^Önceki sonuç: \d{1,2}:\d{2}$/.test(s.note), `TR note: ${s.note}`);
+      assertEqual(s.rerun, 'Yeniden çalıştır', 'TR Run again');
       assertEqual(s.chip, APEX, 'chip kept');
       await assertQuiet(page, queries, 'language switch');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
@@ -216,26 +259,48 @@ async function desktop(browser, server) {
       assertEqual(await page.evaluate(() => location.hash), '#/zone', 'nothing in the Zone File URL');
     });
 
-    await run.step('a lookup makes its name the target; Domain Health keeps its own result', async () => {
+    await run.step('a certificate loaded in SSL Targets: the Certificate view has no note until it kept it (a file: no Run again)', async () => {
+      await clickNav(page, 'scan');
+      await page.click('[data-action="cert-sample"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="cert-details"]'), { message: 'sample certificate in SSL Targets' });
+      await clickNav(page, 'cert');
+      await page.waitFor(() => !!document.querySelector('.cert-content .cert-source-note'), { message: 'the shared certificate' });
+      assertEqual((await page.evaluate(shellInfo)).note, null, 'first visit with it: no "Result from"');
+      await clickNav(page, 'lookup');
+      await clickNav(page, 'cert');
+      const s = await page.evaluate(shellInfo);
+      assert(/^Result from /.test(s.note || ''), `kept on leave: ${s.note}`);
+      assertEqual([s.rerun, s.hash], [null, '#/cert'], 'a file has nothing to run again; its link is bare');
+      await assertQuiet(page, queries, 'certificate');
+    });
+
+    await run.step('a lookup makes its name the target: Domain Health gets it filled in, its report comes back on the bare route', async () => {
       await clickNav(page, 'lookup');
       await page.type('[data-role="lookup-name"]', `www.${APEX}`);
       await page.click('.lkp-form [data-action="run"]');
-      await page.waitFor(() => document.querySelectorAll('.lkp-cards [data-state]:not([data-state="pending"])').length > 0
-        && !document.querySelector('.lkp-cards [data-state="pending"]'), { timeout: 15000, message: 'lookup done' });
+      await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup done' });
       const s = await page.evaluate(shellInfo);
       assertEqual([s.chip, s.chipKind], [`www.${APEX}`, 'host'], 'chip follows the lookup');
-      assertEqual(s.hrefs.health, `#/health?domain=${APEX}&run=0`, 'Domain Health: back to its kept result');
+      assertEqual(s.hrefs.health, `#/health?domain=www.${APEX}&run=0`, 'Domain Health: the newer target, not its older report');
       assertEqual(s.hrefs.global, `#/global?name=www.${APEX}&run=0`, 'Global DNS: the new target');
+      assertEqual(s.hrefs.cert, `#/cert?host=www.${APEX}&run=0`, 'the Certificate view: the newer target for its "No file?" field');
       await shot(page, opts, 'carry-desktop-light-en-lookup-run');
       queries = await dnsCount(page);
       await clickNav(page, 'health');
+      const fresh = await page.evaluate(() => ({
+        domain: document.querySelector('[data-role="health-domain"]').value,
+        report: !!document.querySelector('.hlt-hero')
+      }));
+      assertEqual(fresh, { domain: `www.${APEX}`, report: false }, 'filled in, nothing run');
+      assertEqual((await page.evaluate(shellInfo)).note, null, 'no note');
+      await gotoRoute(page, '#/health');
       await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
       assertEqual(await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent), APEX, 'still example.com');
       assert((await page.evaluate(shellInfo)).note, 'with the note');
       await assertQuiet(page, queries, 'health kept again');
     });
 
-    await run.step('the lookup comes back too (Turkish), and a same-URL Back restores it without a query', async () => {
+    await run.step('the lookup comes back too (Turkish), with run=0 in its URL and no query', async () => {
       await setLangUi(page, 'tr');
       await clickNav(page, 'lookup');
       const info = await page.evaluate(() => ({
@@ -245,11 +310,46 @@ async function desktop(browser, server) {
       }));
       assertEqual(info.name, `www.${APEX}`, 'form');
       assert(info.cards > 0, 'answers kept');
-      assert(info.hash.startsWith(`#/lookup?name=www.${APEX}&type=`) && !info.hash.includes('run=0'), `hash: ${info.hash}`);
+      assert(info.hash.startsWith(`#/lookup?name=www.${APEX}&type=`) && info.hash.endsWith('&run=0'), `hash: ${info.hash}`);
       assert(/^Önceki sonuç/.test((await page.evaluate(shellInfo)).note || ''), 'TR note');
       await assertQuiet(page, queries, 'lookup kept');
       await shot(page, opts, 'carry-desktop-light-tr-lookup-kept');
       await setLangUi(page, 'en');
+    });
+
+    await run.step('the second round: after shop.example.com, DNS Lookup and Bulk Resolve get it over their kept results', async () => {
+      await clickNav(page, 'bulk');
+      await page.type('[data-role="bulk-input"]', APEX);
+      await page.click('[data-action="bulk-run"]');
+      await waitJobDone(page, '');
+      const firstJob = await page.evaluate(() => document.querySelector('.bulk-results').dataset.job);
+      await gotoRoute(page, `#/health?domain=shop.${APEX}`);
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [`shop.${APEX}`], timeout: 30000, message: 'health report of shop' });
+      const s = await page.evaluate(shellInfo);
+      assertEqual(s.chip, `shop.${APEX}`, 'chip');
+      assertEqual(s.hrefs.lookup, `#/lookup?name=shop.${APEX}&run=0`, 'DNS Lookup: the new target over its kept answers');
+      assertEqual(s.hrefs.bulk, `#/bulk?names=shop.${APEX}&run=0`, 'Bulk Resolve: the new target over its kept job');
+      queries = await dnsCount(page);
+      await clickNav(page, 'lookup');
+      const lk = await page.evaluate(() => ({ name: document.querySelector('[data-role="lookup-name"]').value, results: !document.querySelector('.lkp-results').hidden }));
+      assertEqual(lk, { name: `shop.${APEX}`, results: false }, 'DNS Lookup filled in, nothing run');
+      await clickNav(page, 'bulk');
+      const bk = await page.evaluate(() => ({
+        text: document.querySelector('[data-role="bulk-input"]').value.trim(),
+        job: document.querySelector('.bulk-results')?.dataset.job || null
+      }));
+      assertEqual(bk.text, `shop.${APEX}`, 'the box held the last job\'s names, so it takes the new target');
+      assertEqual(bk.job, firstJob, 'the kept job is still shown');
+      const note = await page.evaluate(shellInfo);
+      assert(/^Result from /.test(note.note || '') && note.rerun === 'Run again', `note: ${JSON.stringify(note)}`);
+      await assertQuiet(page, queries, 'second round');
+      await page.click('[data-action="kept-rerun"]');
+      await waitJobDone(page, firstJob);
+      const again = await page.evaluate(() => document.querySelector('[data-role="bulk-input"]').value.trim());
+      assertEqual(again, APEX, '"Run again" resolves the kept job\'s names, not the box');
+      assertEqual((await page.evaluate(shellInfo)).note, null, 'note gone');
+      queries = await dnsCount(page);
     });
 
     await run.step('the chip × clears the target: bare links again (kept results stay), focus on the page', async () => {
@@ -258,34 +358,48 @@ async function desktop(browser, server) {
       await page.waitFor(() => !document.querySelector('[data-role="target-chip"]'), { message: 'chip gone' });
       const s = await page.evaluate(shellInfo);
       assertEqual(s.hrefs.global, '#/global', 'Global DNS bare');
-      assertEqual(s.hrefs.health, `#/health?domain=${APEX}&run=0`, 'Domain Health keeps its result');
+      assertEqual(s.hrefs.health, `#/health?domain=shop.${APEX}&run=0`, 'Domain Health keeps its result');
       const focus = await page.evaluate(() => document.activeElement?.id);
       assertEqual(focus, 'page-title', 'focus on the page title, not <body>');
     });
 
-    await run.step('"Delete all local data" forgets the target and every kept result', async () => {
+    await run.step('"Delete all local data" forgets the target and every kept result, Bulk Resolve\'s too', async () => {
       await gotoRoute(page, `#/lookup?name=${APEX}&type=A`);
-      await page.waitFor(() => document.querySelectorAll('.lkp-cards .card').length > 0 && !document.querySelector('.lkp-cards [data-state="pending"]'), { timeout: 15000, message: 'lookup' });
+      await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup' });
       assertEqual((await page.evaluate(shellInfo)).chip, APEX, 'target set');
-      await page.click('[data-control="settings"]');
-      try {
-        await page.waitForSelector('dialog.modal[open] .settings-danger');
-        const hint = await page.evaluate(() => document.querySelector('dialog.modal[open] .settings-danger .field-hint').textContent);
-        assert(/forgets the current target and the results kept in this tab/.test(hint), `hint: ${hint}`);
-        await page.click('dialog.modal[open] .settings-danger .btn-danger');
-        await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
-        await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
-        await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
-      } finally {
-        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-      }
+      await deleteAllLocalData(page, { hint: true });
       const s = await page.evaluate(shellInfo);
       assertEqual(s.chip, null, 'no chip');
-      assertEqual([s.hrefs.health, s.hrefs.global, s.hrefs.subdomains], ['#/health', '#/global', '#/subdomains'], 'bare links');
+      assertEqual([s.hrefs.health, s.hrefs.global, s.hrefs.subdomains, s.hrefs.bulk], ['#/health', '#/global', '#/subdomains', '#/bulk'], 'bare links');
+      assertEqual([s.hash, s.note], ['#/lookup', null], 'the tool on screen opens again, bare');
+      assertEqual(await page.evaluate(() => document.querySelector('.lkp-results').hidden), true, 'its answers are gone');
       queries = await dnsCount(page);
       await clickNav(page, 'health');
       assertEqual(await page.evaluate(() => !!document.querySelector('.hlt-hero')), false, 'no kept report');
+      await clickNav(page, 'bulk');
+      const bk = await page.evaluate(() => ({
+        text: document.querySelector('[data-role="bulk-input"]').value,
+        results: !!document.querySelector('.bulk-results'),
+        intro: !!document.querySelector('.bulk-intro')
+      }));
+      assertEqual(bk, { text: '', results: false, intro: true }, 'Bulk Resolve: no list, no job');
+      assertEqual((await page.evaluate(shellInfo)).note, null, 'no note');
       await assertQuiet(page, queries, 'after deleting');
+    });
+
+    await run.step('"Delete all local data" with Bulk Resolve on screen: its job and note go at once', async () => {
+      await page.type('[data-role="bulk-input"]', `www.${APEX}`);
+      await page.click('[data-action="bulk-run"]');
+      await waitJobDone(page, '');
+      await clickNav(page, 'lookup');
+      await clickNav(page, 'bulk');
+      assert((await page.evaluate(shellInfo)).note, 'kept job with its note');
+      await deleteAllLocalData(page);
+      await page.waitFor(() => !document.querySelector('.bulk-results') && !!document.querySelector('.bulk-intro'), { message: 'job gone' });
+      const s = await page.evaluate(shellInfo);
+      assertEqual([s.note, s.hash, s.chip], [null, '#/bulk', null], 'no note, bare route, no chip');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="bulk-input"]').value), '', 'no list');
+      await assertQuiet(page, await dnsCount(page), 'after deleting on Bulk Resolve');
     });
 
     await run.step('nothing left the page; no console errors, CSP violations or missing keys', async () => {
@@ -346,12 +460,14 @@ async function phone(browser, server) {
               actionsLeft: Math.round(actions.left),
               value: document.querySelector('.target-chip-value').textContent,
               note: !!document.querySelector('.page-kept:not([hidden]) .kept-note'),
+              noteRight: Math.round(r('.page-kept .kept-note')?.right || 0),
               vw: document.documentElement.clientWidth
             };
           });
           assertEqual(layout.brandText, 'none', 'brand name hidden while a target shows');
           assert(layout.chip && layout.chip.width > 80 && layout.chip.right <= layout.actionsLeft, `chip fits before the controls: ${JSON.stringify(layout)}`);
           assertEqual([layout.value, layout.note], [APEX, true], 'chip value + note');
+          assert(layout.noteRight <= layout.vw, `the note fits: ${JSON.stringify(layout)}`);
           await assertNoHorizontalScroll(page, `phone ${lang} ${scheme}`);
           await page.evaluate(() => window.scrollTo(0, 0));
           await shot(page, opts, `carry-phone-${scheme}-${lang}-health-kept`);

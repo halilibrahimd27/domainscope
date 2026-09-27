@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   scanFraction, bulkFraction, advance, combineJobs, percentOf, progressTitle, faviconStep, badgedIcon, svgDataUrl,
-  offerNotify, shouldNotify, SCAN_STAGE_WEIGHTS, BRAND_ICON_SVG, LONG_JOB_MS
+  offerNotify, shouldNotify, SCAN_STAGE_WEIGHTS, BRAND_ICON_SVG, LONG_JOB_MS, ACTIVE_STAGE_CAP
 } from '../../assets/js/lib/jobprogress.js';
 import { SCAN_STAGES } from '../../assets/js/lib/scanner.js';
 import { applyStage, applyProgress, stopStages } from '../../assets/js/views/subdomains.js';
@@ -39,6 +39,22 @@ describe('scanFraction', () => {
     applyStage(run, 'bruteforce', { total: 1000 });
     applyProgress(run, { stage: 'bruteforce', done: 500, total: 1000 });
     assert.equal(scanFraction(run), (10 + 5 + 22.5) / 100);
+  });
+
+  test('a stage still active never counts as complete, even when its counter is', () => {
+    const run = run0();
+    applyStage(run, 'sources', { total: 6 });
+    applyProgress(run, { stage: 'sources', done: 6, total: 6 });
+    assert.equal(scanFraction(run), (10 * ACTIVE_STAGE_CAP) / 100, 'every source answered, the stage still running');
+    applyStage(run, 'wildcard', {});
+    applyStage(run, 'bruteforce', { total: 1000 });
+    applyProgress(run, { stage: 'bruteforce', done: 1000, total: 1000 });
+    // The brute-force stage waits for the passive sources before it ends.
+    const waiting = scanFraction(run);
+    assert.equal(waiting, (10 + 5 + 45 * ACTIVE_STAGE_CAP) / 100);
+    applyStage(run, 'permutations', { total: 10 });
+    assert.ok(scanFraction(run) > waiting, 'the next stage moves it on');
+    assert.equal(scanFraction(run), (10 + 5 + 45) / 100);
   });
 
   test('a skipped stage drops out; the end is 1', () => {

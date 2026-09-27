@@ -25,11 +25,20 @@ export const SCAN_STAGE_WEIGHTS = Object.freeze({
   sources: 10, mining: 0, wildcard: 5, bruteforce: 45, permutations: 20, resolve: 15, hints: 5, done: 0
 });
 
+/**
+ * The most of its weight a stage counts for while it is still active (or was stopped there): a
+ * stage whose counter is complete can keep running (the brute-force stage waits for the passive
+ * sources before it ends), and a stage that reads as complete while the job does not move on
+ * looks like a hang.
+ */
+export const ACTIVE_STAGE_CAP = 0.95;
+
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 
 /**
  * Overall fraction of a running scan (a Subdomains or SSL Targets run: `stages` as recorded by
- * their applyStage, `progress` the current stage's done / total).
+ * their applyStage, `progress` the current stage's done / total). A stage counts fully once it is
+ * done; while active, for its done / total up to {@link ACTIVE_STAGE_CAP}.
  * @param {{ stages?: Record<string, { state: string }>, progress?: { stage: string|null, done: number, total: number } }} run
  * @returns {number|null} 0…1, or null before the first stage (indeterminate)
  */
@@ -48,7 +57,7 @@ export function scanFraction(run) {
     if (state === 'done') done += weight;
     else if (state === 'active' || state === 'stopped') {
       const part = p.stage === stage && Number(p.total) > 0 ? clamp01(Number(p.done) / Number(p.total)) : 0;
-      done += weight * part;
+      done += weight * Math.min(ACTIVE_STAGE_CAP, part);
     }
   }
   return started && total ? clamp01(done / total) : null;

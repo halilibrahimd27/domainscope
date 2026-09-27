@@ -65,9 +65,9 @@ PROG = 'ssl_origin_scan.py'
 UPDATED = 'UPDATED'            # serves the new certificate (--cert) for the name
 NEEDS_UPDATE = 'NEEDS_UPDATE'  # serves a cert covering the name, but not the new one
 NOT_HOSTED = 'NOT_HOSTED'      # served cert does not cover the name (default cert)
-TLS_ERROR = 'TLS_ERROR'        # handshake failed
+TLS_ERROR = 'TLS_ERROR'        # handshake failed (or refused after the port check)
 TIMEOUT = 'TIMEOUT'            # no answer within --timeout
-CLOSED = 'CLOSED'              # port closed / host unreachable
+CLOSED = 'CLOSED'              # port closed / host unreachable (phase-1 port check)
 STATUSES = (UPDATED, NEEDS_UPDATE, NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED)
 
 OPEN = 'OPEN'  # endpoint state after a successful TCP connect (phase 1)
@@ -2356,7 +2356,13 @@ def _clean_ssl_message(exc: BaseException) -> str:
 
 
 def classify_exception(exc: BaseException) -> Tuple[str, str]:
-    """Map a connect/handshake exception to ``(status, short message)``."""
+    """Map a phase-2 (TLS handshake) exception to ``(status, short message)``.
+
+    Phase 2 only dials ports phase 1 found open, so a refused connection here is a
+    failure (a connection limiter, fail2ban, a restart), never CLOSED: a CLOSED name row
+    would make the server "not hosting any of the names". Phase 1 uses
+    :func:`classify_connect_exception`.
+    """
     if isinstance(exc, ssl.SSLError):
         if getattr(exc, 'reason', None) == 'TLSV1_UNRECOGNIZED_NAME':
             return NOT_HOSTED, 'server rejected the name (unrecognized_name alert)'
@@ -2366,7 +2372,7 @@ def classify_exception(exc: BaseException) -> Tuple[str, str]:
     if isinstance(exc, (socket.timeout, TimeoutError)):
         return TIMEOUT, 'timed out'
     if isinstance(exc, ConnectionRefusedError):
-        return CLOSED, 'connection refused'
+        return TLS_ERROR, 'connection refused during the TLS phase (the port was open before)'
     if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
         return TLS_ERROR, 'connection reset during the TLS handshake'
     if isinstance(exc, OSError):
@@ -3211,9 +3217,10 @@ statuses (per server, port and name):
   NEEDS_UPDATE  serves a certificate covering the name, but not the new one
   NOT_HOSTED    the certificate served does not cover the name (default cert), or
                 the server refused this name while other names work on that port
-  TLS_ERROR     the TLS handshake failed
+  TLS_ERROR     the TLS handshake failed (also: its connection was refused after
+                the port check found the port open)
   TIMEOUT       no answer within --timeout
-  CLOSED        port closed or host unreachable
+  CLOSED        port closed or host unreachable (the port check before any handshake)
   A server "needs the new certificate" when it serves a name the new certificate
   covers (or, without SNI, a default certificate covering such a name) with another
   certificate. Names outside the new certificate are shown but do not count.

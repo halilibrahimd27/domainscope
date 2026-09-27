@@ -1453,7 +1453,8 @@ class EngineTests(unittest.TestCase):
     def test_classify_exception(self):
         cases = [
             (socket.timeout('x'), sos.TIMEOUT), (TimeoutError(), sos.TIMEOUT),
-            (ConnectionRefusedError(), sos.CLOSED), (ConnectionResetError(), sos.TLS_ERROR),
+            # phase 2 only runs on ports phase 1 found open: a refusal there is an error
+            (ConnectionRefusedError(), sos.TLS_ERROR), (ConnectionResetError(), sos.TLS_ERROR),
             (ssl.SSLEOFError(8, 'eof'), sos.TLS_ERROR), (OSError(5, 'io'), sos.TLS_ERROR),
             (UnicodeError('label too long'), sos.TLS_ERROR), (RuntimeError('x'), sos.TLS_ERROR),
         ]
@@ -1464,6 +1465,28 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(sos.classify_exception(unrecognized)[0], sos.NOT_HOSTED)
         self.assertEqual(sos.classify_connect_exception(OSError(101, 'Network is unreachable')),
                          (sos.CLOSED, 'Network is unreachable'))
+        self.assertEqual(sos.classify_connect_exception(ConnectionRefusedError())[0], sos.CLOSED)
+        self.assertFalse(sos.is_refusal(ConnectionRefusedError()))  # never "not hosted"
+
+    def test_refused_handshake_after_open_port_is_a_handshake_error(self):
+        # the port was open in phase 1, then a rate limiter / fail2ban / restart refused the
+        # handshakes: the server must not be reported as "not hosting any of the names"
+        cases = {'some': lambda sni: CN_ONLY_DER if sni is None else ConnectionRefusedError(),
+                 'all': ConnectionRefusedError()}
+        for label, behaviour in cases.items():
+            with self.subTest(refused=label):
+                network = FakeNetwork({}, {'10.0.0.1': behaviour})
+                report = self.scan([sos.Server('s', ['10.0.0.1'])], ['a.wild.example.net'],
+                                   network, new_certs=[fixture_cert('cli_renewed_wild.pem')])
+                row = self.rows(report, probe=sos.PROBE_SNI)[('s', 443, 'a.wild.example.net')]
+                self.assertEqual(row.status, sos.TLS_ERROR)
+                self.assertIn('connection refused', row.error)
+                self.assertEqual(report.server_summaries()[0].status, sos.TLS_ERROR)
+                self.assertEqual(sos.report_to_dict(report)['servers'][0]['errors'],
+                                 ['a.wild.example.net'])
+                text = sos.render_summary(report)
+                self.assertIn('Handshake errors: 1', text)
+                self.assertNotIn('not hosting any of the names', text)
 
     def test_client_context_is_permissive(self):
         context = sos.make_client_context()

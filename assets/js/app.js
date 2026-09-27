@@ -1029,10 +1029,8 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   if (mounted && isCurrent(ctx)) {
     setKeptNote(keptNote({ note, plan, kept, result: resultOf(view, ctx), mountedAt, restorable: typeof view.snapshot === 'function' }));
   }
-  {
-    finishRoute(def);
-    preloadWhenIdle(def);
-  }
+  finishRoute(def);
+  preloadWhenIdle(def);
 }
 
 function finishRoute(def) {

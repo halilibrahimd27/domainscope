@@ -28,7 +28,8 @@
  * compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
  * It also clicks Copy summary (a clipboard recorder, scan.e2e.mjs stubClipboard): the Markdown and
  * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
- * refused clipboard gets.
+ * refused clipboard gets; then a second check that is stopped: the button is off while it runs,
+ * and the report left on screen is copied (and printed) with its own link, not the new route's.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -632,6 +633,34 @@ async function mtaStsGroup(browser, server) {
         await setLangUi(page, 'en');
       });
     }
+
+    await step('a second check stopped at once: Copy summary is off while it runs, then copies the report on screen with its own link (the print header too)', async () => {
+      await stubClipboard(page);
+      const shown = await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent);
+      const other = `www.${MAIL_APEX}`; // not a later step's hash: those navigate by hash change
+      // Start and stop in one task: the check never gets to answer, the old report stays.
+      const during = await page.evaluate((d) => {
+        document.querySelector('[data-role="health-domain"]').value = d;
+        document.querySelector('[data-action="run"]').click();
+        const disabled = [...document.querySelectorAll('.hlt-hero [data-summary="health"] button')].map((b) => b.disabled);
+        const hash = location.hash;
+        document.querySelector('[data-action="stop"]').click();
+        return { disabled, hash };
+      }, other);
+      assertEqual(during, { disabled: [true, true], hash: `#/health?domain=${other}` }, 'both buttons off while the check runs; the route already names the new domain');
+      await page.waitFor(() => !document.querySelector('[data-action="run"]').hidden
+        && !document.querySelector('.hlt-hero [data-action="copy-summary"]').disabled, { message: 'stopped, the button back on' });
+      assertEqual(await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent), shown, 'the previous report stays on screen');
+      await page.click('.hlt-hero [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+      const lines = (await takeClipboard(page))[0].trim().split(NL);
+      assertEqual(lines[0], `**Domain Health · \`${shown}\`**`, 'the report on screen');
+      assert(lines[lines.length - 1].endsWith(`/domainscope/#/health?domain=${shown}`), `its own link, not the route's: ${lines[lines.length - 1]}`);
+      await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+      const printed = await page.evaluate(() => document.querySelector('.print-head .print-permalink')?.getAttribute('href') || '');
+      await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+      assert(printed.endsWith(`/domainscope/#/health?domain=${shown}`), `the print header links to the printed report: ${printed}`);
+    });
 
     await step('a failed MX lookup: the DNS card says so, and the policy check says it compared nothing, never "no MX"', async () => {
       const domain = `mxfail.${MAIL_APEX}`;

@@ -20,7 +20,10 @@
  *
  * "Copy summary" in the hero (ui/summary-button.js): the verdict, score, counts and the worst
  * problems as Markdown for Jira / Slack, or plain text; the score and the traffic light come from
- * lib/summary.js, which the summary shares.
+ * lib/summary.js, which the summary shares. Its link is the report's (domain and the selectors it
+ * was checked with), never the route's: a new check changes the route before its report replaces
+ * the one on screen, and one stopped or failed leaves the old report there. It is disabled while a
+ * check runs.
  *
  * Shareable: `#/health?domain=example.com` (also `name=`) runs on open; with `run=0` (a domain
  * carried over from another tool, lib/session.js) it is only filled in. The finished report is
@@ -654,6 +657,8 @@ export function mount(container, ctx) {
   filterCtl.el.dataset.control = 'health-filter';
   const emptyEl = h('div', { class: 'card hlt-empty' }, EmptyState({ icon: 'activity', title: t('hlt.emptyTitle'), message: t('hlt.emptyBody') }));
   // No part of the form: Ctrl/Cmd+Enter on the checks filter starts no new check.
+  /** The hero's Copy summary (disabled while a check runs). */
+  let heroSummary = null;
   const results = h('div', { class: 'stack-lg hlt-results', hidden: true, dataset: { shortcutScope: 'results' } },
     heroEl,
     h('section', { class: 'stack hlt-checks-section' },
@@ -663,7 +668,11 @@ export function mount(container, ctx) {
   container.append(h('div', { class: 'stack-lg hlt-view' }, formCard, progress, errorEl, emptyEl, results));
 
   /* --- hero ------------------------------------------------------------------------------ */
-  function renderHero(report) {
+  /**
+   * @param {object} report
+   * @param {string|null} selectors the extra DKIM selectors the report was checked with (its permalink)
+   */
+  function renderHero(report, selectors) {
     clear(heroEl);
     const s = report.summary;
     const light = trafficLight(s);
@@ -674,6 +683,11 @@ export function mount(container, ctx) {
     const counts = h('div', { class: 'hlt-counts' }, SEVERITY_ORDER.map((sev) => h('span', {
       class: ['hlt-count', `hlt-count-${sev}`, { 'is-zero': !s[sev] }], dataset: { severity: sev, count: s[sev] }
     }, SeverityIcon(sev, { size: 15 }), h('span', null, t(`hlt.count.${sev}`, { count: s[sev] })))));
+    heroSummary = SummaryButton({
+      kind: 'health',
+      facts: () => ({ report }),
+      url: () => ctx.shareUrl(permalinkParams('health', { domain: report.domain, selectors }))
+    });
     const zoneLink = report.zone && report.zone !== report.domain
       ? h('a', { class: 'btn btn-secondary btn-sm', href: ctx.href('health', { domain: report.zone }) }, Icon('arrow-right', { size: 14 }), h('span', { class: 'btn-label' }, t('hlt.checkZone', { zone: report.zone })))
       : null;
@@ -694,11 +708,7 @@ export function mount(container, ctx) {
           h('span', { class: 'hlt-score-label' }, t('hlt.score'))),
         h('div', { class: 'hlt-hero-actions' },
           zoneLink,
-          SummaryButton({
-            kind: 'health',
-            facts: () => ({ report }),
-            url: () => ctx.shareUrl(permalinkParams('health', ctx.params))
-          }),
+          heroSummary,
           Button({
             label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
             onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')
@@ -1269,10 +1279,10 @@ export function mount(container, ctx) {
     detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard].map((card) => card(report)).filter(Boolean));
   }
 
-  function renderReport(report) {
+  function renderReport(report, selectors) {
     emptyEl.hidden = true;
     results.hidden = false;
-    renderHero(report);
+    renderHero(report, selectors);
     renderChecks(report);
     renderDetails(report);
   }
@@ -1284,6 +1294,8 @@ export function mount(container, ctx) {
     runBtn.hidden = on;
     stopBtn.hidden = !on;
     domainField.input.readOnly = on;
+    // The report on screen belongs to the previous check until this one finishes.
+    if (heroSummary) heroSummary.setDisabled(on);
     ctx.setBusy(on);
   }
 
@@ -1348,8 +1360,11 @@ export function mount(container, ctx) {
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     const controller = new AbortController();
     const state = {
-      domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
-      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null
+      domain,
+      selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
+      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null,
+      selectors:
+    extraSelectors.length ? extraSelectors.join(',') : null
     };
     current = state;
     clear(errorEl);
@@ -1375,7 +1390,7 @@ export function mount(container, ctx) {
       state.report = report;
       state.finishedAt = new Date();
       progress.done(`${t('common.done')} · ${formatDuration(performance.now() - startedAt)}`);
-      renderReport(report);
+      renderReport(report, state.selectors);
       setTimeout(() => { if (current === state) progress.el.hidden = true; }, 1200);
     } catch (err) {
       if (current !== state) return;
@@ -1397,9 +1412,9 @@ export function mount(container, ctx) {
       domain: restored.report.domain, selectors: Array.isArray(restored.runSelectors) ? restored.runSelectors : [],
       controller: null, report: restored.report, selectorCount: restored.selectorCount,
       finishedAt: restored.at ? new Date(restored.at) : new Date(),
-      policy: policy && policy.status !== 'running' ? policy : null
+      policy: policy && policy.status !== 'running' ? policy : null, selectors: restored.reportSelectors ?? null
     };
-    renderReport(restored.report);
+    renderReport(restored.report, current.selectors);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
     if (policy && policy.status === 'running') checkPolicy(policy);
     // The kept report under a domain carried over from another tool: the box takes the domain.
@@ -1433,6 +1448,8 @@ export function mount(container, ctx) {
         at: report ? current.finishedAt : null,
         runSelectors: report ? current.selectors : null,
         selectorCount: current ? current.selectorCount : null,
+        // The selectors the report was checked with (its permalink), next to the form's own.
+        reportSelectors: report ? current.selectors : null,
         policy
       };
     },

@@ -56,6 +56,7 @@ import {
 } from './lib/session.js';
 import { TargetChip, KeptNote } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summary.js';
+import { resultPermalink } from './ui/summary-button.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -1649,13 +1650,17 @@ function openSettings() {
 /* ------------------------------------------------------------------------ */
 
 /**
- * The permalink of the current view as printed: its own shareable params only
+ * The permalink printed on top of the page: the link of the result on paper — the one its Copy
+ * summary carries (ui/summary-button.resultPermalink), which a new run that was stopped or failed
+ * leaves behind the route — else the route with the view's own shareable params only
  * (lib/summary.permalinkParams: never inventory data or a file's contents).
  * @returns {string}
  */
 function printPermalink() {
   const base = globalThis.location.href.split('#')[0];
   if (!current) return base;
+  const shown = dom.main ? resultPermalink(dom.main) : null;
+  if (shown) return shown;
   const params = permalinkParams(current.id, current.params, { exclude: state.getInventoryIndex().keys() });
   return `${base}${buildRoute(current.id, params)}`;
 }

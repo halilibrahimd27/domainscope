@@ -8,8 +8,9 @@
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
  * leave the browser. Results stream into the table; CSV/JSON export.
  *
- * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js); its link leaves
- * out private and inventory addresses.
+ * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
+ * lookup ended; it says how many addresses are in the server list (never a server's name, the
+ * tooltip says so) and its link leaves out private and inventory addresses.
  *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
@@ -496,7 +497,8 @@ export function mount(container, ctx) {
   const summary = SummaryButton({
     kind: 'ip',
     disabled: true,
-    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows } : null),
+    inventory: 'count',
+    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.at } : null),
     url: () => ctx.shareUrl(permalinkParams('ip', ctx.params, {
       exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
     }))
@@ -704,10 +706,11 @@ export function mount(container, ctx) {
    * network, the servers matched again). `text`: the input the run was made from; `at`: when a
    * preset run finished.
    */
-  async function run(parsed, preset = null, { text = '', at = null } = {}) {
+  async function run(parsed, preset = null, { text = '', at = null } = {}, presetAt = null) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    const state = { controller, rows: [], stopped: false, text, finishedAt: null };
+    // `at`: when the lookup ended (the summary's time).
+    const state = { controller, rows: [], stopped: false, text, finishedAt: null, at: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -722,6 +725,7 @@ export function mount(container, ctx) {
       renderStats(state.rows);
       state.controller = null;
       state.finishedAt = at ? new Date(at) : new Date();
+      state.at = presetAt ? new Date(presetAt) : null;
       summary.setDisabled(!preset.length);
       return;
     }
@@ -804,6 +808,7 @@ export function mount(container, ctx) {
       if (current === state) {
         state.controller = null;
         state.finishedAt = new Date();
+        state.at = new Date();
         for (const row of state.rows) {
           if (row.pending) {
             row.pending = false;
@@ -837,7 +842,7 @@ export function mount(container, ctx) {
   /* --- initial state ---------------------------------------------------------------- */
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
-    run(parseIpInput(text), restored.rows, { text, at: restored.at });
+    run(parseIpInput(text), restored.rows, { text, at: restored.at }, restored.at);
     setShareAction(lookupParams(text));
     // The kept rows under an address carried over from another tool: the box takes the address.
     if (isFillOnly(ctx.params) && paramText) takeCarried(splitList(paramText).join('\n'));
@@ -857,7 +862,7 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
         : null;
-      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null };
+      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, at: rows ? current.at : null };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;

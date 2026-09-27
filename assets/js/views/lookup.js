@@ -7,7 +7,8 @@
  * dig-style presentation text with a copy button. Host names and IP addresses in the
  * results link to this view / IP Intel.
  *
- * "Copy summary" in the summary card: the answer in one line for Jira / Slack (lib/summary.js).
+ * "Copy summary" in the summary card: the answer in one line for Jira / Slack (lib/summary.js),
+ * with the link of that query and the time its last answer arrived.
  *
  * Shareable: `#/lookup?name=example.com&type=MX` (type may repeat or be comma-separated;
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
@@ -1223,7 +1224,13 @@ export function mount(container, ctx) {
     }
   }
 
-  function renderSummary(q, responses, elapsed) {
+  /**
+   * @param {object} q the query ({@link readForm})
+   * @param {Array<object|null>} responses
+   * @param {number|null} elapsed
+   * @param {Date|null} at when the last answer arrived
+   */
+  function renderSummary(q, responses, elapsed, at) {
     clear(summaryEl);
     clear(noteEl);
     if (q.ptrFor) noteEl.append(Alert({ variant: 'info', compact: true, icon: 'info', message: t('lkp.ptrNote', { name: q.name }) }));
@@ -1248,8 +1255,8 @@ export function mount(container, ctx) {
         SummaryButton({
           kind: 'lookup',
           disabled: done !== q.types.length,
-          facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec }),
-          url: () => ctx.shareUrl(permalinkParams('lookup', ctx.params))
+          facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at }),
+          url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
         }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
@@ -1260,27 +1267,30 @@ export function mount(container, ctx) {
    * Query every type of `q`, or show `preset` answers (a kept or re-mounted run: no network) with
    * the time the run finished and took.
    */
-  async function run(q, preset = null, { at = null, elapsed = null } = {}) {
+  async function run(q, preset = null, { at = null, elapsed = null } = {}, presetAt = null) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null };
+    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null, at: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
     clear(cardsEl);
     const cards = q.types.map((type) => makeCard(type));
     cardsEl.append(...cards.map((c) => c.el));
-    renderSummary(q, state.responses, null);
+    renderSummary(q, state.responses, null, null);
 
     const finish = (i, response) => {
       if (current !== state) return;
       state.responses[i] = response;
       cards[i].set(response);
       if (state.responses.every(Boolean)) {
+        {
         state.elapsed = preset ? elapsed : performance.now() - state.startedAt;
         state.finishedAt = preset && at ? new Date(at) : new Date();
       }
-      renderSummary(q, state.responses, state.elapsed);
+        state.at = preset && presetAt ? new Date(presetAt) : new Date();
+      }
+      renderSummary(q, state.responses, state.elapsed, state.at);
     };
 
     if (preset) {
@@ -1318,7 +1328,7 @@ export function mount(container, ctx) {
 
   /* --- initial state ------------------------------------------------------------------ */
   if (restored && restored.q && Array.isArray(restored.responses)) {
-    run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed });
+    run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed }, restored.at);
     setShareAction();
     // The kept answers under a name carried over from another tool: the box takes the name.
     if (isFillOnly(ctx.params) && ctx.params.name) takeCarried(ctx.params.name);
@@ -1354,7 +1364,7 @@ export function mount(container, ctx) {
         cd: cdField.checked
       };
       if (!current || current.controller) return { form, carried };
-      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
+      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed, at: current.at };
     },
     result() {
       if (!current || current.controller || !current.finishedAt) return null;

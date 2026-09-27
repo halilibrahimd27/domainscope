@@ -2520,7 +2520,8 @@ function buildRunUI(run, ctx, { onFinish }) {
   const exportBar = h('div', { class: 'scan-exports', attrs: { role: 'group', 'aria-label': t('scan.export.label') } });
 
   // "Copy summary": the stat cards, the servers that need the certificate (by name, as the Servers
-  // tab lists them — the tooltip says so) and the Verify headline (lib/summary.js).
+  // tab lists them — the tooltip says so) and the Verify headline (lib/summary.js). Only a finished
+  // scan has a result (a cancelled one keeps none).
   const VERIFY_MAIN = new Set(['vfy.head.all', 'vfy.head.some', 'vfy.head.none', 'vfy.head.partial', 'vfy.head.noAnswer']);
   const summaryFacts = () => {
     const r = run.result;
@@ -2530,7 +2531,6 @@ function buildRunUI(run, ctx, { onFinish }) {
     const c = { ...countHosts(r.hosts), ...pickStats(r.stats) };
     return {
       domains: run.config.domains,
-      status: run.status,
       cert: cert ? { name: certDisplayName(cert), issuer: issuerDisplayName(cert), notBefore: cert.notBefore, notAfter: cert.notAfter } : null,
       hosts: c.total,
       covered: c.covered,
@@ -2548,7 +2548,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     kind: 'scan',
     facts: summaryFacts,
     disabled: true,
-    inventory: true,
+    inventory: 'names',
     url: () => ctx.shareUrl(permalinkParams('scan', { domain: run.config.domains.join(','), run: '1' }))
   });
   const filters = { kind: 'all', covered: false, resolving: false, hideWildcard: false, matched: false };

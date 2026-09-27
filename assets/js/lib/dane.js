@@ -618,7 +618,8 @@ export async function checkDane({ leaf, chain = [] } = {}, {
   // 2. The endpoints: mail hosts (deduplicated across domains, MX order), then the HTTPS names.
   const endpoints = [];
   const smtpByHost = new Map();
-  let mxHostsOverCap = 0;
+  // Hosts past the cap, each counted once however many domains name it.
+  const mxOverCap = new Set();
   const covered = (host) => certCovers(leaf.hostnames, host).covered;
   for (const d of domains) {
     const hosts = d.implicit ? [d.domain] : d.mx.map((m) => m.exchange);
@@ -626,7 +627,7 @@ export async function checkDane({ leaf, chain = [] } = {}, {
       let ep = smtpByHost.get(host);
       if (!ep) {
         if (smtpByHost.size >= lim.mxHosts) {
-          mxHostsOverCap += 1;
+          mxOverCap.add(host);
           continue;
         }
         ep = {
@@ -681,7 +682,7 @@ export async function checkDane({ leaf, chain = [] } = {}, {
     },
     domains,
     endpoints: results,
-    skipped: { ...plan.skipped, mxHostsOverCap },
+    skipped: { ...plan.skipped, mxHostsOverCap: mxOverCap.size },
     queries
   };
 }
@@ -731,8 +732,10 @@ export function daneSummary(report) {
 }
 
 /**
- * The report as plain JSON (`domainscope.dane/1`): no certificate bytes, association data
- * limited to the digests (matching types 1 and 2).
+ * The report as plain JSON (`domainscope.dane/1`). The loaded certificates appear as their
+ * association digests (matching types 1 and 2), not as their bytes, with one exception: a
+ * record to add for a published matching-type-0 (Full) record, such as `3 1 0`, carries the
+ * full SPKI or certificate in hex, because that is the record to publish (public data).
  * @param {DaneReport} report
  * @param {{ app?: string, version?: string }} [meta]
  * @returns {object}

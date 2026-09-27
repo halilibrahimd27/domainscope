@@ -519,6 +519,12 @@ describe('checkDane', () => {
     assert.equal(report.endpoints.length, D.DANE_LIMITS.mxHosts);
     assert.equal(report.skipped.mxHostsOverCap, 5);
     assert.equal(D.daneSummary(report).headline, 'unused');
+    // A host past the cap that several domains name is one host not checked, not one per domain.
+    const shared = client({ 'example.net|MX': mx('example.net', hosts), 'example.com|MX': mx('example.com', hosts) });
+    const both = await D.checkDane({ leaf: { ...NEW, hostnames: ['example.net', 'example.com'] } }, { dns: shared.dns, https: false });
+    assert.equal(both.endpoints.length, D.DANE_LIMITS.mxHosts);
+    assert.deepEqual(both.endpoints[0].via, ['example.net', 'example.com']);
+    assert.equal(both.skipped.mxHostsOverCap, 5);
     const ctl = new AbortController();
     ctl.abort();
     await assert.rejects(D.checkDane({ leaf: NEW }, { dns, signal: ctl.signal }), { name: 'AbortError' });
@@ -563,6 +569,12 @@ describe('daneSummary / daneExportJson', () => {
     assert.equal(json.summary.headline, 'danger');
     const text = JSON.stringify(json);
     assert.ok(!text.includes(NEW_A[0][0]), 'no certificate bytes');
+    assert.ok(!text.includes(NEW_A[1][0]), 'no public key bytes');
     assert.deepEqual(JSON.parse(text).endpoints.length, 2);
+    // The documented exception: a published Full record (3 1 0) is answered with the full SPKI.
+    const zone = { ...RENEWAL_ZONE, '_25._tcp.mail.wild.example.net|TLSA': tlsa('_25._tcp.mail.wild.example.net', [rec(3, 1, 0, OLD_A[1][0])]) };
+    const full = D.daneExportJson(await D.checkDane({ leaf: NEW }, { dns: client(zone).dns, https: false }));
+    assert.deepEqual(full.endpoints.find((e) => e.qname === '_25._tcp.mail.wild.example.net').add,
+      [`_25._tcp.mail.wild.example.net. IN TLSA 3 1 0 ${NEW_A[1][0].toUpperCase()}`]);
   });
 });

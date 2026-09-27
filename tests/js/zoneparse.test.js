@@ -1129,6 +1129,15 @@ describe('origin inference (critic A1)', () => {
     // ... but not one at or below it (the sub-block above)
     assert.deepEqual(P(late, { filename: 'db.example.com' }).records.map((r) => r.name),
       ['example.com', 'example.com', 'www.example.com', 'mail.example.com']);
+    // a guess from one deep absolute owner gives way to a late $ORIGIN above it too
+    const deep = '$TTL 300\nmail.example.com. A 192.0.2.1\n$ORIGIN example.com.\n@ MX 10 mail\nwww A 192.0.2.2\nftp A 192.0.2.3\n';
+    for (const filename of [undefined, 'zone.txt']) {
+      const g = P(deep, { filename });
+      assert.deepEqual([g.origin, g.originSource, g.originConfidence], ['example.com', '$ORIGIN', 'low'], filename);
+      assert.deepEqual(g.records.map((r) => `${r.name} ${r.type}`),
+        ['mail.example.com A', 'example.com MX', 'www.example.com A', 'ftp.example.com A'], filename);
+      assert.ok(!codes(g).includes('OUT_OF_ZONE'), filename);
+    }
   });
 
   test('a $ORIGIN before the first record names the zone (directives may precede it)', () => {

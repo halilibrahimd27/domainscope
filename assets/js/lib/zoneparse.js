@@ -2284,8 +2284,9 @@ function parseBind(text, lines, zone, b, opts) {
       zone.originConfidence = cand.strong ? 'high' : 'low';
     }
     initial = zone.origin;
-    // a late $ORIGIN outside a mere file-name guess (`example.com.backup.txt`) names the zone better
-    const guessOnly = zone.originSource === 'filename' && zone.originConfidence === 'low';
+    // a late $ORIGIN outside a mere guess (a file name like `example.com.backup.txt`, or one
+    // deep record owner) names the zone better
+    const guessOnly = zone.originConfidence === 'low';
     if (lateOrigin && (!zone.origin || (guessOnly && !isSubdomainOf(lateOrigin, zone.origin)))) {
       // records before it stay RELATIVE_WITHOUT_ORIGIN; the UI asks the user to confirm
       zone.origin = lateOrigin;

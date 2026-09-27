@@ -2623,7 +2623,22 @@ export function ensureSmartCount() {
   return Promise.resolve(levelCount('smart'));
 }
 
-function startRun(run, scanConfig, appState) {
+/**
+ * Did a scan get less wordlist than it asked for (a tier or a locale pack failed to load)? In a
+ * tab left open across a deploy the data files under v/<version>/ are gone, so both scan views
+ * then ask the shell (ctx.checkOutdated) whether the page needs a reload.
+ * @param {object} result runScan result
+ * @returns {boolean}
+ */
+export function wordlistFellShort(result) {
+  return !!result && Array.isArray(result.warnings) && result.warnings.some((w) => w && w.code === 'WORDLIST_DEGRADED');
+}
+
+/**
+ * Start lib/scanner.runScan for a run; events are recorded on the run and re-emitted to the
+ * mounted view (if any). `onDataMissing` (ctx.checkOutdated) runs when the wordlist fell short.
+ */
+function startRun(run, scanConfig, appState, onDataMissing) {
   const hooks = {
     onStage(stage, info = {}) {
       applyStage(run, stage, info);
@@ -2656,6 +2671,7 @@ function startRun(run, scanConfig, appState) {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
+    if (wordlistFellShort(result) && onDataMissing) onDataMissing();
     // Bulk Resolve offers "use the names of the last scan".
     appState.setSession('scanHosts', {
       domains: result.domains,
@@ -3520,7 +3536,7 @@ export function mount(container, ctx) {
       maxConcurrency: scanConcurrency(state.settings.concurrency),
       dns,
       ...zoneCfg
-    }, state);
+    }, state, ctx.checkOutdated);
     const r = resultsHost.getBoundingClientRect();
     if (r.top > globalThis.innerHeight - 120) resultsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   }

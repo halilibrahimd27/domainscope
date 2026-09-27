@@ -349,6 +349,8 @@ state.subscribe(({ key }) => {
  * @property {(params?: object) => string} shareUrl  absolute URL of this view with params
  * @property {() => Promise<object>} getDns   shared DohClient
  * @property {() => Promise<object>} getGlobalping  shared Globalping client (one quota view; sends nothing by itself)
+ * @property {() => void} checkOutdated  a data file (wordlist tier, locale pack) failed to load: if this page
+ *                                         belongs to an earlier deploy, the shell offers a reload (once)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
  * @property {typeof toast} toast
  * @property {(...nodes: any[]) => void} setActions  put buttons into the page header (right side)
@@ -409,6 +411,7 @@ function makeContext(id, params, searchParams, controller, restored) {
     href: buildRoute,
     getDns,
     getGlobalping: () => getGlobalping(),
+    checkOutdated: () => noticeIfOutdated(pageIsOutdated),
     toast,
     getInventoryIndex: () => state.getInventoryIndex(),
     setParams(next, { merge = false } = {}) {

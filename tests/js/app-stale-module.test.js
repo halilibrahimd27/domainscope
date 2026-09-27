@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { isStaleModuleError, confirmStaleModule, pageIsOutdated, getGlobalping } from '../../assets/js/app.js';
+import { wordlistFellShort } from '../../assets/js/views/subdomains.js';
 import { hasString, t, setLang } from '../../assets/js/i18n.js';
 
 const named = (Ctor, message) => new Ctor(message);
@@ -87,6 +88,12 @@ test('a link error needs no probe; an unrelated error is not probed either', asy
   assert.equal(await confirmStaleModule(new TypeError('Failed to fetch'), { online: true, probe }), false);
   assert.equal(await confirmStaleModule(null, { online: true, probe }), false);
   assert.equal(probe.calls, 0);
+});
+
+test('a scan whose wordlist fell short asks the shell to check for a newer deploy', () => {
+  assert.equal(wordlistFellShort({ warnings: [{ code: 'WORDLIST_DEGRADED', detail: 'large→smart' }] }), true);
+  assert.equal(wordlistFellShort({ warnings: [{ code: 'TRUNCATED' }] }), false);
+  for (const v of [null, undefined, {}, { warnings: null }]) assert.equal(wordlistFellShort(v), false, String(v));
 });
 
 test('the outdated-page hint exists in English and Turkish and differs', () => {

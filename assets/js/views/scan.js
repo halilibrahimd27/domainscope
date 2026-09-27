@@ -55,7 +55,7 @@ import {
   applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary,
   liveHosts, originOverview, originSweep, partialHostRecord, planQueryRange,
   realOriginNetworks, reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
-  wordlistCount, wordlistPlan, wordlistPlanText, wordlistScanConfig,
+  wordlistCount, wordlistFellShort, wordlistPlan, wordlistPlanText, wordlistScanConfig,
   ZoneChip, isResolving, validZoneIntent, zoneForDomains, zoneScanOverrides
 } from './subdomains.js';
 import { describeNetwork } from '../lib/ipintel.js';
@@ -1182,9 +1182,10 @@ function emit(run, type, payload) {
 
 /**
  * Start lib/scanner.runScan for a run; events are recorded on the run and re-emitted to
- * the mounted view (if any).
+ * the mounted view (if any). `onDataMissing` (ctx.checkOutdated) runs when the wordlist fell
+ * short (see wordlistFellShort in subdomains.js).
  */
-function startRun(run, scanConfig, appState) {
+function startRun(run, scanConfig, appState, onDataMissing) {
   const hooks = {
     onStage(stage, info = {}) {
       // Shared with the Subdomains view (parallel mining, wordlist size, source plan).
@@ -1216,6 +1217,7 @@ function startRun(run, scanConfig, appState) {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
+    if (wordlistFellShort(result) && onDataMissing) onDataMissing();
     // Hand the names to Bulk Resolve ("Use the names of the last scan").
     appState.setSession('scanHosts', {
       domains: result.domains,
@@ -1932,7 +1934,7 @@ export function mount(container, ctx) {
       maxConcurrency: scanConcurrency(state.settings.concurrency),
       dns,
       ...zoneCfg
-    }, state);
+    }, state, ctx.checkOutdated);
     resultsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   }
 

@@ -4696,6 +4696,11 @@ _TEAMS_HOSTS = ('outlook.office.com', 'outlook.office365.com')
 # Teams incoming webhooks, Power Automate / Logic Apps workflow triggers
 _TEAMS_HOST_SUFFIXES = ('.webhook.office.com', '.logic.azure.com', '.api.powerplatform.com')
 _TELEGRAM_PATH_RE = re.compile(r'^/bot[^/]+/sendMessage$')
+# Path words of the webhook services above: not secrets, kept in error texts.
+_NOTIFY_PATH_WORDS = frozenset((
+    'api', 'automations', 'direct', 'hook', 'hooks', 'incomingwebhook', 'invoke', 'manual',
+    'paths', 'powerautomate', 'sendmessage', 'services', 'slack', 'triggers', 'webhook',
+    'webhookb2', 'webhooks', 'workflows'))
 _USER_AGENT = 'ssl_origin_scan/%s (+https://github.com/halilibrahimd27/domainscope)' % __version__
 
 
@@ -4727,7 +4732,8 @@ def _telegram_chat_id(query: str) -> Optional[Union[int, str]]:
 def check_notify_url(url: str, fmt: str = 'auto', source: str = '--notify') -> str:
     """Validate a ``--notify`` URL before the scan -> its payload format (``fmt``, or
     :func:`detect_notify_format` for ``auto``). The :class:`UsageError` never repeats
-    the URL: it holds the webhook's secret."""
+    the URL: it holds the webhook's secret. Credentials in it (``user:password@``) are
+    sent as HTTP Basic authentication (:func:`split_credentials`)."""
     if not url.isprintable() or any(char.isspace() for char in url):
         raise UsageError('%s: the URL contains spaces or control characters' % source)
     try:
@@ -4745,6 +4751,20 @@ def check_notify_url(url: str, fmt: str = 'auto', source: str = '--notify') -> s
         raise UsageError('%s: a Telegram URL looks like https://api.telegram.org/bot<token>/'
                          'sendMessage?chat_id=<chat id>' % source)
     return chosen
+
+
+def split_credentials(url: str) -> Tuple[str, Optional[str]]:
+    """``(URL without user info, Authorization header or None)``: urllib does not turn
+    ``https://user:password@host/`` into Basic authentication - it would take
+    ``password@host`` for a port and print it in the error."""
+    parts = urllib.parse.urlsplit(url)
+    userinfo, at, host = parts.netloc.rpartition('@')
+    if not at:
+        return url, None
+    user, _, password = userinfo.partition(':')
+    token = '%s:%s' % (urllib.parse.unquote(user), urllib.parse.unquote(password))
+    return (urllib.parse.urlunsplit(parts._replace(netloc=host)),
+            'Basic ' + base64.b64encode(token.encode('utf-8')).decode('ascii'))
 
 
 def notify_host(url: str) -> str:
@@ -4773,21 +4793,37 @@ def notify_is_plaintext(url: str) -> bool:
         return True
 
 
+def _secret_segment(segment: str) -> bool:
+    """A URL path segment that may be a token: 8 or more characters or a digit, and not
+    a path word of the webhook services (``services``, ``webhooks``, ``sendMessage``)."""
+    return (segment.lower() not in _NOTIFY_PATH_WORDS
+            and (len(segment) >= 8 or any(char.isdigit() for char in segment)))
+
+
 def redact_url(text: str, url: str) -> str:
     """``text`` (an error message, a response body) without the secret parts of ``url``:
-    the URL itself, its path, query and user info, their path segments and query values.
-    Webhook URLs are credentials - whoever has one can post."""
+    the URL (also without its user info), its path, query and fragment, the query
+    values, the path segments that may be tokens (:func:`_secret_segment`), and the user
+    name and password. Webhook URLs are credentials - whoever has one can post."""
+    unquote = urllib.parse.unquote
     parts = urllib.parse.urlsplit(url)
-    secrets = {url, parts.path, parts.query, parts.fragment,
-               urllib.parse.unquote(parts.path), urllib.parse.unquote(parts.query)}
-    if '@' in parts.netloc:
-        secrets.add(parts.netloc.rsplit('@', 1)[0])
+    secrets = {url, split_credentials(url)[0], parts.path, parts.query, parts.fragment,
+               unquote(parts.path), unquote(parts.query)}
     for segment in parts.path.split('/'):
-        secrets.update((segment, urllib.parse.unquote(segment)))
+        if _secret_segment(unquote(segment)):
+            secrets.update((segment, unquote(segment)))
     for _key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
         secrets.add(value)
     secrets.update(pair.split('=', 1)[-1] for pair in parts.query.split('&'))
-    for secret in sorted((s for s in secrets if len(s) >= 4), key=len, reverse=True):
+    userinfo, at, _host = parts.netloc.rpartition('@')
+    always = set()  # type: Set[str]
+    if at:
+        user, colon, password = userinfo.partition(':')
+        secrets.update((userinfo, unquote(userinfo), user, unquote(user)))
+        # the password however short - or the user name when it is the only credential
+        always.update((password, unquote(password)) if colon else (user, unquote(user)))
+    found = {secret for secret in secrets if len(secret) >= 4} | {s for s in always if s}
+    for secret in sorted(found, key=len, reverse=True):
         text = text.replace(secret, '***')
     return text
 
@@ -4978,10 +5014,13 @@ def _network_error_text(reason: Any) -> str:
 
 
 def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
-               timeout: float) -> Tuple[Optional[str], bool, Optional[float]]:
+               timeout: float, auth: Optional[str] = None
+               ) -> Tuple[Optional[str], bool, Optional[float]]:
     """One POST -> ``(error or None, worth a retry, Retry-After seconds)``."""
-    request = urllib.request.Request(url, data=body, method='POST', headers={
-        'Content-Type': 'application/json; charset=utf-8', 'User-Agent': _USER_AGENT})
+    headers = {'Content-Type': 'application/json; charset=utf-8', 'User-Agent': _USER_AGENT}
+    if auth:
+        headers['Authorization'] = auth
+    request = urllib.request.Request(url, data=body, method='POST', headers=headers)
     try:
         with opener.open(request, timeout=timeout) as response:
             response.read(65536)
@@ -5020,14 +5059,16 @@ def send_notification(url: str, payload: Dict[str, Any], timeout: float = NOTIFY
     Certificate-verified HTTPS (the system proxy settings apply), no redirects,
     ``timeout`` seconds per attempt, ``retries`` more attempts after ``retry_delay``
     seconds (a 429's Retry-After, up to 10 s) for network errors, 5xx and 429 - a 4xx
-    is the webhook's answer. The message never contains the URL (:func:`redact_url`).
+    is the webhook's answer. A ``user:password@`` in the URL is sent as Basic
+    authentication. The message never contains the URL (:func:`redact_url`).
     """
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
+    target, auth = split_credentials(url)
     problem = None  # type: Optional[str]
     for attempt in range(1 + max(0, retries)):
-        problem, retry, retry_after = _post_once(opener, url, body, timeout)
+        problem, retry, retry_after = _post_once(opener, target, body, timeout, auth)
         if problem is None:
             return None
         if not retry or attempt >= retries:

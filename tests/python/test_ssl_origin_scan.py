@@ -3382,6 +3382,31 @@ class NotifyFormatTests(unittest.TestCase):
         redacted = sos.redact_url('x user:pa55word s1gnature/value s1gnature%2Fvalue', url)
         self.assertNotIn('pa55word', redacted)
         self.assertNotIn('s1gnature', redacted)
+        # user name and password on their own, quoted or not, whatever text they are in
+        url = 'https://alerts:Hunter2%24ecret@hooks.example.com/hook'
+        redacted = sos.redact_url("nonnumeric port: 'Hunter2$ecret@hooks.example.com' "
+                                  "Hunter2%24ecret, user alerts", url)
+        self.assertEqual(redacted, "nonnumeric port: '***@hooks.example.com' ***, user ***")
+        self.assertEqual(sos.redact_url('bad password x', 'https://u:x@example.com/'),
+                         'bad password ***')  # a password however short
+        self.assertEqual(sos.redact_url('bad token k9Z', 'https://k9Z@example.com/'),
+                         'bad token ***')  # a user name that is the only credential
+        # only the path segments that may be tokens: host names and path words stay
+        for url, text, want in (
+                ('https://hooks.example.com/hook', 'hooks.example.com: 404 on hook',
+                 'hooks.example.com: 404 on hook'),
+                (SLACK_URL, 'services webhooks hooks.slack.com', 'services webhooks hooks.slack.com'),
+                (TELEGRAM_URL, 'sendMessage: token bot123456:TEST-token_value',
+                 'sendMessage: token ***'),
+                ('https://example.com/hooks/Zq8pLmW', 'unknown Zq8pLmW', 'unknown ***'),
+                ('https://example.com/hooks/abcdefghij', 'unknown abcdefghij', 'unknown ***')):
+            self.assertEqual(sos.redact_url(text, url), want, url)
+        self.assertEqual(sos.split_credentials(SLACK_URL), (SLACK_URL, None))
+        self.assertEqual(sos.split_credentials('https://a%40b:p%3Ass@example.com:8443/x?y=1'),
+                         ('https://example.com:8443/x?y=1',
+                          'Basic ' + base64.b64encode(b'a@b:p:ss').decode('ascii')))
+        self.assertEqual(sos.split_credentials('https://token@example.com/x'),
+                         ('https://example.com/x', 'Basic ' + base64.b64encode(b'token:').decode()))
         self.assertEqual(sos.notify_host(SLACK_URL), 'hooks.slack.com')
         self.assertEqual(sos.notify_host('http://[::1]:8080/x'), '[::1]:8080')
         self.assertEqual(sos.notify_host(url), 'example.com')
@@ -3728,6 +3753,44 @@ class NotifyDeliveryTests(unittest.TestCase):
                 as hook, no_proxy():
             problem = sos.send_notification(hook.url('/bot1:x/sendMessage'), {'text': 'x'})
         self.assertEqual(problem, 'HTTP 400 Bad Request: Bad Request: chat not found')
+
+    def test_credentials_in_the_url_are_basic_auth_and_never_printed(self):
+        password = 'Hunter2Secret'
+        basic = 'Basic ' + base64.b64encode(b'alerts:' + password.encode()).decode('ascii')
+        echo = (401, {}, ('bad credentials alerts:%s' % password).encode('ascii'))
+        with WebhookReceiver([200, echo]) as hook, no_proxy(), \
+                mock.patch.object(sos, 'run_scan', return_value=self.after), \
+                mock.patch.dict(os.environ, {sos.NOTIFY_ENV: ''}):
+            url = hook.url('/hook').replace('http://', 'http://alerts:%s@' % password)
+            code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', self.baseline,
+                                    '--notify', url)
+            self.assertEqual(code, 0, err)
+            code, _, err2 = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', self.baseline,
+                                     '--notify', url, '--fail-on-notify-error')
+        self.assertIn('Notification sent (json, 127.0.0.1:', err)
+        self.assertEqual(code, sos.EXIT_NOTIFY_ERROR)
+        self.assertIn('HTTP 401 Unauthorized: bad credentials ***', err2)
+        self.assertEqual([request['path'] for request in hook.requests], ['/hook', '/hook'])
+        headers = {k.lower(): v for k, v in hook.requests[0]['headers'].items()}
+        self.assertEqual(headers['authorization'], basic)
+        self.assertNotIn(password, err + err2)
+        # no port in the URL: urllib gets it without the user info, or it would take
+        # "Hunter2Secret@hooks.example.com" for a port and print it
+        posted = []
+
+        def post_once(opener, url, body, timeout, auth=None):
+            posted.append((url, auth))
+            return "nonnumeric port: '%s@hooks.example.com'" % password, False, None
+
+        with mock.patch.object(sos, '_post_once', side_effect=post_once), \
+                mock.patch.object(sos, 'run_scan', return_value=self.after):
+            code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', self.baseline,
+                                    '--notify', 'https://alerts:%s@hooks.example.com/hook'
+                                    % password)
+        self.assertEqual(posted, [('https://hooks.example.com/hook', basic)])
+        self.assertIn("error: notification failed (json, hooks.example.com): nonnumeric port: "
+                      "'***@hooks.example.com'", err)
+        self.assertNotIn(password, err)
 
     def test_send_notification_directly(self):
         with WebhookReceiver([500, 500]) as hook, no_proxy():

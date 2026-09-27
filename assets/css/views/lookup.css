@@ -109,18 +109,22 @@
   font-size: 13px;
 }
 
+/* The label in the text font, the type list in mono. */
 .lkp-nodata-summary {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
+  gap: 2px 5px;
   color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .lkp-nodata-summary .icon {
-  margin-right: 4px;
   color: var(--text-3);
+}
+
+.lkp-nodata-types {
+  font-size: 12.5px;
 }
 
 .lkp-nodata-box > .disclosure-body {

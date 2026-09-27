@@ -106,7 +106,7 @@ registerStrings('en', {
   'lkp.sum.records': { zero: 'no records', one: '{count} record', other: '{count} records' },
   'lkp.sum.time': 'in {time}',
   'lkp.sum.answeredBy': 'answered by {resolver}',
-  'lkp.noRecords': 'No records: {types}',
+  'lkp.noRecords': 'No records:',
   'lkp.noRecordsBody': 'The name exists but has no records of these types (NODATA).',
   'lkp.copyAll': 'Copy all (dig format)',
   'lkp.links': 'More about this name:',
@@ -259,7 +259,7 @@ registerStrings('tr', {
   'lkp.sum.records': { zero: 'kayıt yok', other: '{count} kayıt' },
   'lkp.sum.time': '{time} içinde',
   'lkp.sum.answeredBy': '{resolver} yanıtladı',
-  'lkp.noRecords': 'Kayıt yok: {types}',
+  'lkp.noRecords': 'Kayıt yok:',
   'lkp.noRecordsBody': 'Ad mevcut ama bu türlerde kaydı yok (NODATA).',
   'lkp.copyAll': 'Tümünü kopyala (dig biçimi)',
   'lkp.links': 'Bu ad hakkında daha fazlası:',
@@ -1199,7 +1199,9 @@ export function mount(container, ctx) {
     const neg = list.length ? negativeTtl(list[0]) : null;
     return h('div', { class: 'lkp-nodata', dataset: { types: types.join(' ') } },
       Disclosure({
-        summary: h('span', { class: 'lkp-nodata-summary' }, Icon('minus-circle', { size: 14 }), ' ', t('lkp.noRecords', { types: types.join(', ') })),
+        // The label in the text font, the type mnemonics in mono (spaced by the summary's gap).
+        summary: h('span', { class: 'lkp-nodata-summary' }, Icon('minus-circle', { size: 14 }), h('span', null, t('lkp.noRecords')), ' ',
+          h('span', { class: 'mono lkp-nodata-types' }, types.join(', '))),
         className: 'lkp-nodata-box',
         open,
         children: h('div', { class: 'stack-sm' },

@@ -35,6 +35,17 @@ describe('parseTarget', () => {
     assert.deepEqual(parseTarget('[2001:DB8::0:1]'), { value: '2001:db8::1', kind: 'ip' });
   });
 
+  test('an IP address written with a port or as a URL gives the address', () => {
+    assert.deepEqual(parseTarget('192.0.2.1:443'), { value: '192.0.2.1', kind: 'ip' });
+    assert.deepEqual(parseTarget('[2001:db8::1]:443'), { value: '2001:db8::1', kind: 'ip' });
+    assert.deepEqual(parseTarget('http://192.0.2.1/'), { value: '192.0.2.1', kind: 'ip' });
+    assert.deepEqual(parseTarget('https://user@[2001:DB8::1]:8443/status?x=1'), { value: '2001:db8::1', kind: 'ip' });
+    assert.deepEqual(parseTarget('2001:db8::1:443'), { value: '2001:db8::1:443', kind: 'ip' }, 'a bare IPv6 address stays whole');
+    assert.equal(parseTarget('192.0.2.0/24'), null, 'an address range is no target');
+    assert.equal(parseTarget('192.0.2.1:99999'), null);
+    assert.deepEqual(parseTarget('example.com:8080'), { value: 'example.com', kind: 'domain' }, 'host names as before');
+  });
+
   test('service labels name a record, not a host', () => {
     assert.deepEqual(parseTarget('_dmarc.example.com'), { value: 'example.com', kind: 'domain' });
     assert.deepEqual(parseTarget('s1._domainkey.example.org'), { value: 'example.org', kind: 'domain' });

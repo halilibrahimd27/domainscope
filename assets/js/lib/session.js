@@ -60,10 +60,28 @@ export const DEFAULT_LIMITS = Object.freeze({ entryBytes: 4 * 1024 * 1024, total
 /* ------------------------------------------------------------------------ */
 
 /**
+ * The address of an IP address written as a URL or with a port (`http://192.0.2.1/x`,
+ * `192.0.2.1:443`, `[2001:db8::1]:443`), not yet checked; anything else as it is.
+ * @param {string} raw
+ * @returns {string}
+ */
+function addressPart(raw) {
+  let s = raw;
+  const url = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(s);
+  if (url) s = url[1].slice(url[1].lastIndexOf('@') + 1);
+  const isPort = (p) => p === undefined || Number(p) <= 65535;
+  const v6 = /^\[([^\]]+)\](?::(\d{1,5}))?$/.exec(s);
+  if (v6) return isPort(v6[2]) ? v6[1] : s;
+  const port = /^([^:[\]]+):(\d{1,5})$/.exec(s);
+  return port && isPort(port[2]) ? port[1] : s;
+}
+
+/**
  * Read a target from what a tool worked on. URLs, ports, a trailing dot, a leading `*.` and IDNs
- * are normalised (lib/domain.normalizeHostname); service labels name a record, not a host, so
- * `_dmarc.example.com` and `_443._tcp.www.example.com` give `example.com` and `www.example.com`.
- * Public suffixes, `.arpa` names and single labels are no target.
+ * are normalised (lib/domain.normalizeHostname; an IP address written as a URL or with a port
+ * gives the address); service labels name a record, not a host, so `_dmarc.example.com` and
+ * `_443._tcp.www.example.com` give `example.com` and `www.example.com`. Public suffixes, `.arpa`
+ * names, single labels and address ranges are no target.
  * @param {unknown} input
  * @returns {{ value: string, kind: 'domain'|'host'|'ip' }|null}
  */
@@ -71,7 +89,7 @@ export function parseTarget(input) {
   if (typeof input !== 'string') return null;
   const raw = input.trim();
   if (!raw || raw.length > 2048) return null;
-  const ip = normalizeIP(raw);
+  const ip = normalizeIP(raw) || normalizeIP(addressPart(raw));
   if (ip) return { value: ip, kind: 'ip' };
   const host = normalizeHostname(raw, { allowWildcard: true });
   if (!host) return null;

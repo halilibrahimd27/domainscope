@@ -821,12 +821,15 @@ const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
  * Lowercase, strip trailing dot(s), IDN → punycode (via WHATWG URL, available everywhere), label
  * by label. Only a name whose ASCII part is label characters is converted: the URL parser would
  * read '@', ':', '/', '\', '?' or '#' as a user name, port or path and keep only part of the name
- * ('ä@victim.example' → 'victim.example'). A non-ASCII label must become one A-label ('xn--…'):
- * the IDNA mapping turns a soft hyphen, full-width letters or '。' into a plain ASCII name no TLS
- * client would match ('ｖｉｃｔｉｍ.example' → 'victim.example'). Such names stay as they are and
- * never cover anything.
+ * ('ä@victim.example' → 'victim.example'). A non-ASCII label must become one A-label ('xn--…')
+ * that decodes back to that very label: the IDNA mapping turns a soft hyphen, a zero-width space,
+ * full-width letters or '。' into another name no TLS client would match against this one
+ * ('ｖｉｃｔｉｍ.example' → 'victim.example', 'ｍüｎｃｈｅｎ.example' → 'xn--mnchen-3ya.example').
+ * Such names stay as they are and never cover anything. Shared with lib/verify.js.
+ * @param {string} name
+ * @returns {string}
  */
-function normalizeCertHostname(name) {
+export function normalizeCertHostname(name) {
   const h = String(name).trim().toLowerCase().replace(/\.+$/, '');
   if (!/[^\x00-\x7f]/.test(h) || !IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) return h;
   const labels = h.split('.');
@@ -838,10 +841,54 @@ function normalizeCertHostname(name) {
     } catch {
       /* not a label: keep the lowercase form */
     }
-    if (!label || !/^xn--[a-z0-9-]+$/.test(label)) return h;
+    if (!label || !/^xn--[a-z0-9-]+$/.test(label) || punycodeDecode(label.slice(4)) !== labels[i]) return h;
     labels[i] = label;
   }
   return labels.join('.');
+}
+
+/**
+ * RFC 3492 decoding of the part of an A-label after 'xn--', or null when it is malformed.
+ * @param {string} input
+ * @returns {string|null}
+ */
+function punycodeDecode(input) {
+  const BASE = 36, T_MIN = 1, T_MAX = 26, SKEW = 38, DAMP = 700;
+  const cut = input.lastIndexOf('-');
+  const out = cut > 0 ? [...input.slice(0, cut)].map((c) => c.codePointAt(0)) : [];
+  let n = 128;
+  let i = 0;
+  let bias = 72;
+  for (let p = cut > 0 ? cut + 1 : 0; p < input.length;) {
+    const oldi = i;
+    let w = 1;
+    for (let k = BASE; ; k += BASE) {
+      if (p >= input.length) return null;
+      const c = input.charCodeAt(p++);
+      const digit = c >= 48 && c <= 57 ? c - 22 : c >= 97 && c <= 122 ? c - 97 : c >= 65 && c <= 90 ? c - 65 : BASE;
+      if (digit >= BASE) return null;
+      i += digit * w;
+      if (i > 0x10ffff * (out.length + 1)) return null;
+      const t = k <= bias ? T_MIN : k >= bias + T_MAX ? T_MAX : k - bias;
+      if (digit < t) break;
+      w *= BASE - t;
+    }
+    const len = out.length + 1;
+    let delta = oldi === 0 ? Math.floor(i / DAMP) : Math.floor((i - oldi) / 2);
+    delta += Math.floor(delta / len);
+    let k = 0;
+    while (delta > ((BASE - T_MIN) * T_MAX) >> 1) {
+      delta = Math.floor(delta / (BASE - T_MIN));
+      k += BASE;
+    }
+    bias = k + Math.floor(((BASE - T_MIN + 1) * delta) / (delta + SKEW));
+    n += Math.floor(i / len);
+    i %= len;
+    if (n > 0x10ffff) return null;
+    out.splice(i, 0, n);
+    i += 1;
+  }
+  return String.fromCodePoint(...out);
 }
 
 const LABEL_RE = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;

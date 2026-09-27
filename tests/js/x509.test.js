@@ -858,6 +858,13 @@ describe('extensions', () => {
     for (const name of ['vic­tim.example', 'ｖｉｃｔｉｍ.example', 'victim。example']) {
       assert.deepEqual(fallback(name), [], `CN ${name}`);
     }
+    // a label the mapping changes but keeps non-ASCII would become another IDN name
+    const shy = withExt(san(dns('m\u00fc\u00adnchen.example'))).hostnames; // dns() writes Latin-1 bytes
+    assert.deepEqual(shy, ['m\u00fc\u00adnchen.example']);
+    assert.equal(certCovers(shy, 'xn--mnchen-3ya.example').covered, false);
+    for (const name of ['ｍüｎｃｈｅｎ.example', 'm\u00fc\u00adnchen.example', '\u00e4\u200bvictim.example']) {
+      assert.deepEqual(fallback(name), [], `CN ${name}`);
+    }
     assert.deepEqual(withExt(san(dns('*.MÜNCHEN.example.'))).hostnames, ['*.xn--mnchen-3ya.example']);
     // SAN with only IP addresses → CN fallback still applies (no dnsNames)
     const ipOnly = parseCertificate(makeCert({ subject: cn('ip-only.example.com'), extensions: [san(ctx(7, false, Buffer.from([1, 2, 3, 4])))] }));

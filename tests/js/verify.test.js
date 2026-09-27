@@ -200,7 +200,7 @@ describe('servedCert', () => {
   test('a non-ASCII name the IDNA mapping would make another ASCII name of stays as it is (x509 parity)', () => {
     const alt = 'DNS:"vic\\u00adtim.example"';
     assert.deepEqual(V.servedCert(synthTls({ subject: { CN: 'www.example.com', alt } })).hostnames, ['vic­tim.example']);
-    for (const CN of ['ｖｉｃｔｉｍ.example', 'victim。example']) {
+    for (const CN of ['ｖｉｃｔｉｍ.example', 'victim。example', 'ｍüｎｃｈｅｎ.example', 'm\u00fc\u00adnchen.example', '\u00e4\u200bvictim.example']) {
       assert.deepEqual(V.servedCert(synthTls({ subject: { CN, alt: undefined } })).hostnames, [], CN);
     }
     const v = V.classifyTest(withTls(synthTls({ subject: { CN: 'www.example.com', alt } })), { name: 'victim.example', expect: OTHER, now: NOW });

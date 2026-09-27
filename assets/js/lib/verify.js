@@ -33,7 +33,7 @@ import {
 } from './globalping.js';
 import { certCovers, sortHostnames } from './domain.js';
 import { isPrivateIP, matchProviderByIP, normalizeIP, parseIP } from './netinfo.js';
-import { computeFingerprints } from './x509.js';
+import { computeFingerprints, normalizeCertHostname } from './x509.js';
 
 /* ------------------------------------------------------------------------ */
 /* Vocabularies (frozen; the i18n coverage test derives keys from them)      */
@@ -162,33 +162,6 @@ const toHex = (bytes) => Array.from(bytes || [], (b) => b.toString(16).padStart(
 const nowMs = (now) => (now instanceof Date ? now.getTime() : Number(now));
 const isDnsLike = (via) => via !== 'hint';
 const serverKeyOf = (row) => (row.server ? `s:${row.server.id}` : `ip:${row.ip}`);
-
-const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
-
-/**
- * Lowercase, strip trailing dots, IDN → punycode label by label (x509's private
- * normalizeCertHostname): only a name whose ASCII part is label characters, so the URL parser
- * never drops a user name, port or path ('ä@victim.example' stays as it is, never
- * 'victim.example'), and only into A-labels, so the IDNA mapping never makes another ASCII name
- * of it ('ｖｉｃｔｉｍ.example' stays as it is too).
- */
-function normalizeCertHostname(name) {
-  const h = String(name).trim().toLowerCase().replace(/\.+$/, '');
-  if (!/[^\x00-\x7f]/.test(h) || !IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) return h;
-  const labels = h.split('.');
-  for (let i = 0; i < labels.length; i += 1) {
-    if (!/[^\x00-\x7f]/.test(labels[i])) continue;
-    let label = null;
-    try {
-      label = new URL(`http://${labels[i]}/`).hostname;
-    } catch {
-      /* not a label: keep the lowercase form */
-    }
-    if (!label || !/^xn--[a-z0-9-]+$/.test(label)) return h;
-    labels[i] = label;
-  }
-  return labels.join('.');
-}
 
 const CERT_LABEL_RE = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
 

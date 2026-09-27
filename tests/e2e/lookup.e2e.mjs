@@ -9,7 +9,8 @@
  * (scan.e2e.mjs zoneHandoffScript). NODATA types fold into one "No records" line of the summary,
  * the resolver and the header flags are said once there, a card repeats only what differs; a
  * query that got no answer (HTTP 429 from every resolver) keeps its card with the reason and a
- * Retry that asks that type alone again; 1440 and 375 px, light and dark, English and Turkish.
+ * Retry that asks that type alone again, also while a slower type of the same lookup still runs;
+ * 1440 and 375 px, light and dark, English and Turkish.
  *
  * Covers: pure helpers (Node); shared link with many types + DNSSEC (parsed A/AAAA, MX, TXT,
  * SOA, CAA, HTTPS, DS, DNSKEY cards, AD flag, RRSIG section, raw dig text); IP → PTR; NXDOMAIN;
@@ -266,22 +267,30 @@ const APEX_ZONE = {
 
 /**
  * Every DoH query for a type in `window.__dohFail.types` gets HTTP 429 from every resolver (a
- * rate limit), before the zone script answers the rest. Installed after the zone script.
+ * rate limit), and a type in `window.__dohFail.slow` (type → ms) is answered that much later,
+ * before the zone script answers the rest. `asked` lists the type of every query. Installed
+ * after the zone script.
  */
 const DOH_FAIL_SCRIPT = `(() => {
   const inner = window.fetch;
   let wire = null;
-  const fail = window.__dohFail = { types: [], hits: 0 };
+  const fail = window.__dohFail = { types: [], slow: {}, hits: 0, asked: [] };
+  const wait = (ms, signal) => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const m = /[?&]dns=([^&]+)/.exec(url);
-    if (m && fail.types.length) {
+    if (m) {
       wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
       const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+      fail.asked.push(q.type);
       if (fail.types.includes(q.type)) {
         fail.hits += 1;
         return new Response('Too Many Requests', { status: 429 });
       }
+      if (fail.slow[q.type]) await wait(fail.slow[q.type], init && init.signal);
     }
     return inner(input, init);
   };
@@ -320,25 +329,31 @@ async function offlineGroup(browser, server) {
       await shot(page, 'lookup-offline-desktop-light-en');
     });
 
-    await step('a query that got no answer keeps its card, with the reason and a Retry of that type alone', async () => {
-      await page.evaluate(() => { window.__dohFail.types = ['MX']; });
-      await gotoHash(page, '#/lookup?name=example.com&type=A,MX,CAA', 'lookup');
-      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'answered' });
+    await step('a query that got no answer keeps its card, with the reason and a Retry of that type alone (also while a slow type still runs)', async () => {
+      // MX is rate limited at once; TXT takes 4 s, so the lookup is still running when MX fails.
+      await page.evaluate(() => { window.__dohFail.types = ['MX']; window.__dohFail.slow = { TXT: 4000 }; });
+      await gotoHash(page, '#/lookup?name=example.com&type=A,MX,TXT,CAA', 'lookup');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="MX"]')?.dataset.state === 'error', { timeout: 15000, message: 'MX failed' });
       let c = await page.evaluate(cardsInfo);
-      assertEqual([c.MX.state, Object.keys(c)], ['error', ['A', 'MX']], 'the failed MX card stays; CAA folds');
+      assertEqual([c.MX.state, c.TXT.state], ['error', 'pending'], 'MX failed while TXT is still asked');
       assert(/Every resolver tried: rate limited — try again in a few minutes/.test(c.MX.text), `reason: ${c.MX.text.slice(0, 300)}`);
       assert(/1 × The query failed/.test((await page.evaluate(summaryInfo)).meta), 'the summary counts the failure');
       await page.evaluate(() => { window.__dohFail.types = []; });
-      const before = await page.evaluate(() => window.__zoneDnsQueries);
+      const before = await page.evaluate(() => window.__dohFail.asked.length);
       await page.evaluate(() => document.querySelector('.lkp-card[data-type="MX"] [data-action="retry-source"]').focus());
       await page.press('Enter');
-      await page.waitFor(() => document.querySelector('.lkp-card[data-type="MX"]')?.dataset.state === 'noerror', { timeout: 15000, message: 'MX answered' });
+      // The Retry works during the run: it does not wait for TXT.
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="MX"]')?.dataset.state === 'noerror', { timeout: 3000, message: 'MX answered during the run' });
       c = await page.evaluate(cardsInfo);
-      assertEqual(c.MX.count, 2, 'MX records');
-      const after = await page.evaluate(() => ({ queries: window.__zoneDnsQueries, focus: document.activeElement?.dataset?.type || document.activeElement?.tagName }));
-      assertEqual(after.queries - before, 1, 'the Retry asked one query: MX');
+      assertEqual([c.MX.count, c.TXT.state], [2, 'pending'], 'MX records while TXT is still on its way');
+      const after = await page.evaluate(() => ({ asked: window.__dohFail.asked.slice(), focus: document.activeElement?.dataset?.type || document.activeElement?.tagName }));
+      assertEqual(after.asked.slice(before), ['MX'], 'the Retry asked one query: MX');
       assertEqual(after.focus, 'MX', 'keyboard focus on the MX card');
+      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'answered' });
+      c = await page.evaluate(cardsInfo);
+      assertEqual([Object.keys(c), c.MX.state, c.MX.count, c.TXT.state], [['A', 'MX', 'TXT'], 'noerror', 2, 'noerror'], 'the run ends with MX answered; CAA folds');
       assert(!(await page.evaluate(summaryInfo)).meta.includes('failed'), 'no failure left in the summary');
+      await page.evaluate(() => { window.__dohFail.slow = {}; });
     });
 
     for (const [scheme, lang, width] of [['light', 'en', 375], ['dark', 'tr', 375], ['dark', 'tr', 1440]]) {
@@ -346,7 +361,7 @@ async function offlineGroup(browser, server) {
         await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });
         await page.emulateMedia({ 'prefers-color-scheme': scheme });
         await setLangUi(page, lang);
-        await page.evaluate(() => { window.__dohFail.types = ['HTTPS']; });
+        await page.evaluate(() => { window.__dohFail.types = ['HTTPS']; window.__dohFail.slow = {}; });
         await gotoHash(page, '#/about', 'about');
         await gotoHash(page, '#/lookup?name=example.com&type=ALL', 'lookup');
         await page.waitFor(ALL_DONE, { timeout: 30000, message: 'answered' });

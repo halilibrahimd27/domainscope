@@ -1402,9 +1402,13 @@ export function mount(container, ctx) {
       renderSummary(q, state.responses, state.elapsed, state.finishedAt, layout);
     };
 
-    /** Retry of a query that got no answer: that type alone, the old answer kept until the new one. */
+    /**
+     * Retry of a query that got no answer: that type alone, the old answer kept until the new one.
+     * Offered as soon as the query fails, also while other types of the lookup still run (`life`
+     * cancels it with the lookup).
+     */
     async function retry(i) {
-      if (current !== state || state.controller) return;
+      if (current !== state || life.signal.aborted) return;
       cards[i].setQuerying();
       let response;
       try {

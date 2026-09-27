@@ -2750,7 +2750,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
         return running[key] >= MAX_PER_ENDPOINT and not silent
 
     def tls_jobs() -> Iterable[Any]:
-        pending = list(open_keys)
+        pending = list(open_keys) if snis else []  # probes=[] and no default probe: nothing to do
         while pending:
             progressed = False
             for key in pending:

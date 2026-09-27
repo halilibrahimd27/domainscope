@@ -1730,6 +1730,11 @@ class EngineTests(unittest.TestCase):
                            default_probe=False)
         self.assertNotIn(None, [sni for _, _, sni in network.calls])
         self.assertEqual({r.probe for r in report.results}, {sos.PROBE_SNI})
+        # nothing to probe at all: an empty report, not an IndexError
+        empty = sos.run_scan([sos.Server('s', ['10.0.0.1'])], [], [443], timeout=0.1, workers=2,
+                             default_probe=False, connect_fn=lambda *a: None,
+                             tls_fn=lambda *a: sos.TlsResult(der=EC_DER))
+        self.assertEqual(empty.results, [])
 
     def test_unparseable_certificate_and_unexpected_errors(self):
         network = FakeNetwork({}, {'10.0.0.1': b'\x30\x03\x02\x01\x01',

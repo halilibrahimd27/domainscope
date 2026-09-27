@@ -2773,12 +2773,30 @@ CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covere
                'new_cert_covers', 'cert_subject_cn', 'cert_issuer', 'cert_serial',
                'cert_not_after', 'cert_days_left', 'cert_sha256', 'tls_version', 'error')
 
+# Leading characters that make a spreadsheet evaluate a cell (CSV injection); the same set
+# as FORMULA_START in assets/js/lib/export.js.
+_CSV_FORMULA_START = ('=', '+', '-', '@', '\t', '\r')
+
+
+def _csv_cell(value: Any) -> Any:
+    """A spreadsheet-safe cell: text starting with ``= + - @`` TAB or CR gets a leading
+    apostrophe, like the web app's ``toCsv``, and control characters are escaped
+    (:func:`display_text`, for ``--csv -`` on a terminal). Numbers are left untouched."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith(_CSV_FORMULA_START):
+        value = "'" + value
+    return display_text(value)
+
 
 def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
     """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`.
 
     With ``--exclude``, one more row per excluded target address follows the results:
     probe ``excluded``, status ``EXCLUDED``, empty port, the matching rule in ``error``.
+    Certificate fields come from whatever server answered, so every text cell goes
+    through :func:`_csv_cell` (a certificate CN ``=HYPERLINK(...)`` stays text in Excel);
+    the JSON report keeps the exact values.
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
@@ -2786,7 +2804,7 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
     for row in report.results:
         data = _row_dict(row, report.finished_at)
         covers = data['newCertCovers']
-        writer.writerow([
+        writer.writerow([_csv_cell(value) for value in (
             data['server'], data['ip'], data['port'], data['probe'], data['name'] or '',
             data['sni'] or '', data['status'], data['coveredBy'] or '',
             '' if covers is None else ('yes' if covers else 'no'),
@@ -2794,12 +2812,12 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
             data['certNotAfter'] or '',
             '' if data['certDaysLeft'] is None else data['certDaysLeft'],
             data['certSha256'] or '', data['tlsVersion'] or '', data['error'] or '',
-        ])
+        )])
     for entry in report.excluded:
         row = dict.fromkeys(CSV_COLUMNS, '')  # type: Dict[str, Any]
         row.update(server=entry.server, ip=entry.ip, probe=PROBE_EXCLUDED, status=EXCLUDED,
                    error='excluded by --exclude %s (never probed)' % entry.rule)
-        writer.writerow([row[column] for column in CSV_COLUMNS])
+        writer.writerow([_csv_cell(row[column]) for column in CSV_COLUMNS])
     return buffer.getvalue()
 
 

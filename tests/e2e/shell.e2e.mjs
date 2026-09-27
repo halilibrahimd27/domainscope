@@ -36,7 +36,7 @@ import { assembleSite } from '../../tools/assemble-site.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const ROUTES = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);

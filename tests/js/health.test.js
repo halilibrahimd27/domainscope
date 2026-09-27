@@ -1169,6 +1169,8 @@ test('RDAP checks: expiry thresholds, statuses, unsupported TLD, errors', async 
   has(r, 'rdap.hold', 'error');
   has(r, 'rdap.pending-delete', 'error');
   has(r, 'rdap.transfer-unlocked', 'info');
+  // "kilidini açın" means "unlock it": the advice is to turn the lock on
+  assert.doesNotMatch(HEALTH_I18N.tr['health.rdap.transfer-unlocked.detail'], /kilidini açın/);
   r = await check(rdapBody({ status: ['server transfer prohibited'] }));
   lacks(r, 'rdap.transfer-unlocked');
   r = await check(404);

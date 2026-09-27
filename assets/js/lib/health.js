@@ -2124,7 +2124,7 @@ const STRINGS = [
     ['Status: {status}. Restore it with the registrar before it is released.', 'Durum: {status}. Serbest bırakılmadan önce kayıt firması üzerinden geri alın.']],
   ['rdap.transfer-unlocked', ['No transfer lock', 'Transfer kilidi yok'],
     ['"client transfer prohibited" is not set; enable the registrar lock to prevent unauthorized transfers.',
-      '"client transfer prohibited" ayarlı değil; yetkisiz transferleri önlemek için kayıt firmasında transfer kilidini açın.']]
+      '"client transfer prohibited" ayarlı değil; yetkisiz transferleri önlemek için kayıt firmasında transfer kilidini etkinleştirin.']]
 ];
 
 /**

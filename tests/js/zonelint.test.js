@@ -159,6 +159,14 @@ describe('duplicates and occlusion', () => {
     assert.deepEqual([...res.occludedIds].sort(), [3, 4, 5]);
   });
 
+  test('an in-domain name server named after the cut keeps its glue at the cut', () => {
+    const z = zone([['dev', 'NS', 'dev'], ['dev', 'A', '192.0.2.60'], ['dev', 'AAAA', '2001:db8::60'], ['dev', 'TXT', 'x']]);
+    assert.deepEqual(find(z, 'OCCLUDED_BY_DELEGATION').map((f) => `${f.name} ${f.type}`), ['dev.example.com TXT']);
+    const res = lintZone(z);
+    assert.deepEqual([...res.occludedIds], [3]);
+    assert.equal(res.occluded.has('dev.example.com'), false);
+  });
+
   test("Cloudflare's meta.shadowed_by (occludedBy) counts, one finding per RRset", () => {
     const z = cfZone([['old.dev', 'A', '192.0.2.60', { occludedBy: 'delegation' }], ['old.dev', 'A', '192.0.2.61', { occludedBy: 'delegation' }]],
       { format: 'cloudflare-api', dialect: null });

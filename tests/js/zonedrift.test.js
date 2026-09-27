@@ -315,6 +315,14 @@ describe('what is never sent', () => {
     assert.equal(explicit.asked('example.com', 'A'), false);
   });
 
+  test('glue at a cut (dev NS dev.example.com.) is compared, not occluded', async () => {
+    const z = zone([SOA, ['dev', 'NS', 'dev'], ['dev', 'A', '192.0.2.60'], ['dev', 'TXT', 'x']]);
+    const r = await drift(z, { 'dev.example.com|NS': [{ type: 'NS', data: 'dev.example.com' }], 'dev.example.com|A': [A('192.0.2.60')] });
+    assert.equal(status(r.row('dev.example.com|A')), 'match');
+    assert.equal(status(r.row('dev.example.com|TXT')), 'occluded');
+    assert.equal(r.dns.log.length, planDrift(z).queries);
+  });
+
   test('names outside the zone (the parser\'s OUT_OF_ZONE, ignored by name servers) are never sent', async () => {
     const z = zone([SOA, ['www', 'A', '192.0.2.10'], ['staging.example.org.', 'A', '192.0.2.77'], ['*.dev.example.org.', 'A', '192.0.2.78']]);
     const r = await drift(z, { 'www.example.com|A': [A('192.0.2.10')] });

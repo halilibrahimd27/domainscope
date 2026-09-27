@@ -351,7 +351,7 @@ const INDEX_CACHE = new WeakMap();
  * @property {Set<string>} nodes owners plus the empty non-terminals inside the zone
  * @property {Set<string>} cuts non-apex NS owners inside the zone (delegation points)
  * @property {Set<string>} dnames DNAME owners
- * @property {Set<string>} nsTargets effective NS targets (glue below a cut is exempt)
+ * @property {Set<string>} nsTargets effective NS targets (glue at or below a cut is exempt)
  * @property {Map<object, { kind: 'cut'|'dname', by: string|null }>} occludedRecords
  * @property {Map<string, 'cut'|'dname'>} occludedNames names whose every record is occluded
  * @property {(r: object) => number} idOf the record's `id` (its file position when absent)
@@ -433,8 +433,9 @@ function buildIndex(z, list) {
   for (const r of unique) {
     let occ = null;
     const cutUp = above(cuts, r.name);
-    if (cutUp && !(ADDRESS_TYPES.has(r.type) && nsTargets.has(r.name))) occ = { kind: 'cut', by: cutUp };
-    else if (cuts.has(r.name) && !AT_CUT_TYPES.has(r.type)) occ = { kind: 'cut', by: r.name };
+    const glue = ADDRESS_TYPES.has(r.type) && nsTargets.has(r.name);
+    if (cutUp && !glue) occ = { kind: 'cut', by: cutUp };
+    else if (cuts.has(r.name) && !AT_CUT_TYPES.has(r.type) && !glue) occ = { kind: 'cut', by: r.name };
     else {
       const d = above(dnames, r.name);
       if (d) occ = { kind: 'dname', by: d };

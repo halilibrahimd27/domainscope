@@ -5379,10 +5379,10 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
   DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord,
-  Telegram veya Google Chat'e kısa bir özet gönderir. Aynı dosya hem --baseline hem --json ise ve
-  bildirim gönderilemezse önceki rapor korunur; değişiklikler bir sonraki
-  çalıştırmada yeniden bildirilir. Özet dosyaya yazılırsa cron yalnızca hataları
-  e-postayla gönderir. Örnek:
+  Telegram veya Google Chat'e kısa bir özet gönderir. Aynı dosya hem --baseline
+  hem --json ise ve bildirim gönderilemezse önceki rapor korunur; değişiklikler
+  bir sonraki çalıştırmada yeniden bildirilir. Özet dosyaya yazılırsa cron
+  yalnızca hataları e-postayla gönderir. Örnek:
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni.pem --baseline son.json \\
     --json son.json --warn-days 21 -q > son.txt
 """

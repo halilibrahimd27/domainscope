@@ -2538,7 +2538,7 @@ def classify_exception(exc: BaseException) -> Tuple[str, str]:
     if isinstance(exc, ssl.SSLError):
         if getattr(exc, 'reason', None) == 'TLSV1_UNRECOGNIZED_NAME':
             return NOT_HOSTED, 'server rejected the name (unrecognized_name alert)'
-        if isinstance(exc, ssl.SSLEOFError):
+        if isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError)):
             return TLS_ERROR, 'connection closed during the TLS handshake'
         return TLS_ERROR, _clean_ssl_message(exc)
     if isinstance(exc, (socket.timeout, TimeoutError)):
@@ -2560,7 +2560,7 @@ def is_refusal(exc: BaseException) -> bool:
     Cloudflare, for example, answers an SNI it does not serve with a ``handshake_failure``
     alert, and HAProxy ``strict-sni`` simply closes the connection.
     """
-    if isinstance(exc, ssl.SSLEOFError):
+    if isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError)):
         return True
     if isinstance(exc, ssl.SSLError):
         return 'ALERT' in str(getattr(exc, 'reason', '') or '')
@@ -2572,9 +2572,10 @@ def is_transient(exc: BaseException) -> bool:
 
     A server that does not host a name says so with an alert or a close, but a per-client
     connection limiter (nginx stream ``limit_conn``, HAProxy ``src_conn_cur``, a WAF)
-    also closes or resets - so these failures are worth one retry.
+    also closes or resets - so these failures are worth one retry. On Linux a close before
+    any TLS record can surface as ``SSLZeroReturnError`` instead of ``SSLEOFError``.
     """
-    return isinstance(exc, (ssl.SSLEOFError, ConnectionError))
+    return isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError, ConnectionError))
 
 
 def classify_connect_exception(exc: BaseException) -> Tuple[str, str]:

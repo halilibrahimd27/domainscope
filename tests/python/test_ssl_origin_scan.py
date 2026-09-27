@@ -1619,12 +1619,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(calls[('10.0.0.2', 'www.example-test.com.tr')], 1)
         self.assertEqual({count for (ip, _), count in calls.items() if ip != '10.0.0.2'}, {1})
         self.assertTrue(sos.is_refusal(ssl.SSLEOFError()))
+        self.assertTrue(sos.is_refusal(ssl.SSLZeroReturnError()))
         self.assertTrue(sos.is_refusal(ConnectionResetError()))
         self.assertFalse(sos.is_refusal(socket.timeout()))
         self.assertFalse(sos.is_refusal(ssl.SSLError(1, 'no reason')))
-        for exc in (ssl.SSLEOFError(), ConnectionResetError(), ConnectionAbortedError(),
-                    ConnectionRefusedError(), BrokenPipeError()):
+        # a bare close before any TLS record is SSLZeroReturnError on some Linux builds
+        for exc in (ssl.SSLEOFError(), ssl.SSLZeroReturnError(), ConnectionResetError(),
+                    ConnectionAbortedError(), ConnectionRefusedError(), BrokenPipeError()):
             self.assertTrue(sos.is_transient(exc), exc)
+        self.assertEqual(sos.classify_exception(ssl.SSLZeroReturnError())[1],
+                         'connection closed during the TLS handshake')
         for exc in (alert('SSLV3_ALERT_HANDSHAKE_FAILURE'), socket.timeout(), OSError(5, 'io')):
             self.assertFalse(sos.is_transient(exc), exc)
 
@@ -3130,7 +3134,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertGreater(server.dropped, 0)  # the limiter really cut connections
         doc = json.loads(out)
         statuses = {row['name']: row['status'] for row in doc['results'] if row['name']}
-        self.assertEqual(set(statuses.values()), {'NEEDS_UPDATE'}, statuses)
+        errors = {row['name']: row.get('error') for row in doc['results']
+                  if row['name'] and row['status'] != 'NEEDS_UPDATE'}
+        self.assertEqual(set(statuses.values()), {'NEEDS_UPDATE'}, errors)
         self.assertEqual(len(doc['servers'][0]['needsUpdate']), 30)
 
     def test_tls_error_and_handshake_timeout(self):

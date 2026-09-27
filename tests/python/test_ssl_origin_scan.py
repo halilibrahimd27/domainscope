@@ -3130,6 +3130,14 @@ class CompatibilityTests(unittest.TestCase):
                 # builtin generics (list[str]) only appear inside string annotations
                 self.assertNotIn(node.value.id, ('list', 'dict', 'tuple', 'set', 'type'),
                                  ast.dump(node))
+        # ... nor deprecated ones: a positional maxsplit / count / flags to re.split /
+        # re.sub / re.subn warns on Python 3.13+, on stderr of every run (__main__)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == 're'
+                    and node.func.attr in ('split', 'sub', 'subn')):
+                self.assertLessEqual(len(node.args), 2 if node.func.attr == 'split' else 3,
+                                     'line %d' % node.lineno)
         for api in ('removeprefix', 'removesuffix', 'functools.cache', 'zoneinfo', ' | None',
                     'strict=True)', 'BooleanOptionalAction'):
             self.assertNotIn(api, source, api)

@@ -1314,7 +1314,7 @@ def _malformed_ip_block(token: str) -> bool:
     letter (``10.0.0.5-web.example.com``) is a host name, not a typo.
     """
     token = token.strip()
-    head = re.split(r'[/-]', token, 1)[0]
+    head = re.split(r'[/-]', token, maxsplit=1)[0]
     if head == token or normalize_ip(head) is None:
         return False
     if re.match(r'[a-z]', token.rsplit('.', 1)[-1], re.I):

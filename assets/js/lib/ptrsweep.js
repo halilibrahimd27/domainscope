@@ -1248,20 +1248,36 @@ export function inventoryLines(additions) {
 
 const NAME_KEY_RE = /^(?:name|host_?name|fqdn|server(?:_?name)?|host|inventory_hostname)$/i;
 
-/** The name and address keys of a record to copy (the first element of a JSON / YAML list). */
+/**
+ * The name and address keys of a record to copy (the first element of a JSON / YAML list, the
+ * first line of JSON Lines), and whether it holds its addresses as a list (`list`: then even one
+ * address is written as one). `found`: the record has such keys (else `name` / `ip`).
+ */
 function recordKeys(first) {
-  const keys = { name: 'name', ip: 'ip' };
+  const keys = { name: 'name', ip: 'ip', list: false, found: false };
   if (!first || typeof first !== 'object' || Array.isArray(first)) return keys;
   const entries = Object.entries(first);
   const name = entries.find(([k, v]) => NAME_KEY_RE.test(k) && typeof v === 'string' && !normalizeIP(v));
   const ip = entries.find(([, v]) => (typeof v === 'string' && normalizeIP(v))
     || (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && normalizeIP(x))));
-  if (name && ip && name[0] !== ip[0]) return { name: name[0], ip: ip[0] };
+  if (name && ip && name[0] !== ip[0]) return { name: name[0], ip: ip[0], list: Array.isArray(ip[1]), found: true };
   return keys;
 }
 
-/** One host as a record: the address as a string, several as a list. */
-const hostRecord = (a, keys) => ({ [keys.name]: a.name, [keys.ip]: a.ips.length === 1 ? a.ips[0] : [...a.ips] });
+/** The first `{…}` line of a text as an object (JSON Lines), or null. */
+function firstJsonLine(text) {
+  const line = text.split(/\r\n|\r|\n/).map((l) => l.trim()).find((l) => l.startsWith('{'));
+  try {
+    return line ? JSON.parse(line) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A host's addresses in the record's shape: a string for one, a list for several (or when the list's records use lists). */
+const recordIps = (a, keys) => (a.ips.length === 1 && !keys.list ? a.ips[0] : [...a.ips]);
+/** One host as a record. */
+const hostRecord = (a, keys) => ({ [keys.name]: a.name, [keys.ip]: recordIps(a, keys) });
 
 /** A CSV cell, quoted when it holds the delimiter, a quote or a line break. */
 const csvField = (value, delimiter) => (value.includes(delimiter) || /["\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
@@ -1271,7 +1287,56 @@ const yamlValue = (v) => (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(v)
   || (/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(v) && /[A-Za-z]/.test(v) && !/^(?:true|false|yes|no|on|off|null)$/i.test(v))
   ? v
   : JSON.stringify(v));
-const yamlList = (ips) => (ips.length === 1 ? yamlValue(ips[0]) : `[${ips.map(yamlValue).join(', ')}]`);
+const yamlList = (ips, list = false) => (ips.length === 1 && !list ? yamlValue(ips[0]) : `[${ips.map(yamlValue).join(', ')}]`);
+const indentOf = (line) => /^ */.exec(line)[0].length;
+/** A line with content: not blank, not a comment only. */
+const yamlContent = (line) => /\S/.test(line) && !/^\s*#/.test(line);
+
+/** Nothing but a comment (or nothing) after a YAML key's colon. */
+const noValue = (rest) => /^\s*(#.*)?$/.test(rest);
+
+/**
+ * `hostLines(indent, unit)` inserted under the `hosts:` of the top-level `group` of an Ansible
+ * YAML inventory, after its last host (a `hosts:` key is added to a group without one),
+ * wherever the group sits in the file; `unit` is the file's indentation step. Null when the
+ * group or its `hosts:` is not a block map (a flow value such as `hosts: {}`): the caller then
+ * uses a group of another name.
+ * @param {string} text
+ * @param {string} group
+ * @param {(indent: string, unit: string) => string[]} hostLines
+ * @returns {string|null}
+ */
+function yamlAddToGroup(text, group, hostLines) {
+  const lines = text.split(/\r\n|\r|\n/);
+  const start = lines.findIndex((l) => l.startsWith(`${group}:`) && noValue(l.slice(group.length + 1)));
+  if (start === -1) return null;
+  let end = lines.findIndex((l, i) => i > start && /^[^\s#]/.test(l));
+  if (end === -1) end = lines.length;
+  const lastContent = (from, to) => {
+    for (let i = to - 1; i > from; i -= 1) if (yamlContent(lines[i])) return i;
+    return from;
+  };
+  const first = lines.findIndex((l, i) => i > start && i < end && yamlContent(l));
+  const unit = ' '.repeat(first === -1 ? 2 : indentOf(lines[first]));
+  if (!unit) return null;
+  const hosts = lines.findIndex((l, i) => i > start && i < end && indentOf(l) === unit.length && /^\s*hosts:(\s|$)/.test(l));
+  let at;
+  let add;
+  if (hosts === -1) {
+    // A group with vars / children only (or nothing yet): its hosts go into a new `hosts:` key.
+    at = lastContent(start, end);
+    add = [`${unit}hosts:`, ...hostLines(unit.repeat(2), unit)];
+  } else {
+    if (!noValue(lines[hosts].trim().slice('hosts:'.length))) return null;
+    let stop = lines.findIndex((l, i) => i > hosts && i < end && yamlContent(l) && indentOf(l) <= unit.length);
+    if (stop === -1) stop = end;
+    const host = lines.findIndex((l, i) => i > hosts && i < stop && yamlContent(l));
+    at = lastContent(hosts, stop);
+    add = hostLines(host === -1 ? unit.repeat(2) : ' '.repeat(indentOf(lines[host])), unit);
+  }
+  lines.splice(at + 1, 0, ...add);
+  return `${lines.join('\n').replace(/\s+$/, '')}\n`;
+}
 
 /** Does `after` parse to exactly the servers of `before` plus the additions, with no new warning? */
 function addsExactly(before, after, additions) {
@@ -1288,11 +1353,14 @@ function addsExactly(before, after, additions) {
  * (inventory.inventoryFormat), for `state.session.inventoryDraft`: the user reviews and saves
  * it, nothing is saved here.
  * - plain lines and an empty text: `name ip …` lines under a comment line (`ip name` in a hosts file);
- * - Ansible INI: `name ansible_host=ip` lines under their own `[reverse_dns]` group ({@link INVENTORY_GROUP});
- * - JSON Lines: one object per line; a JSON array: one element per host, with the name and
- *   address keys of the array's first element when it has plain ones (`name` / `ip` otherwise);
+ * - Ansible INI: `name ansible_host=ip` lines under a `[reverse_dns]` header ({@link INVENTORY_GROUP};
+ *   a second one when the file has the group already, which Ansible merges);
+ * - JSON Lines (a host record alone on one line too): one object per line; a JSON array: one
+ *   element per host. Both with the name and address keys of the first record when it has plain
+ *   ones (`name` / `ip` otherwise), and its addresses as a list when that record holds them so;
  * - CSV: one row per host in the header's column order (the name and first address columns);
- * - YAML: an Ansible inventory gets a top-level `reverse_dns` group, a list one item per host.
+ * - YAML: an Ansible inventory gets a top-level `reverse_dns` group, or, when it has one (an
+ *   earlier addition), the hosts go under that group's `hosts:`; a list gets one item per host.
  * Anything else (a JSON object such as Terraform or ansible-inventory output, a YAML map of
  * another shape, a CSV without a name column) is not rewritten: `text` is null with
  * `reason: 'format'`, and the caller offers `lines` to copy. The new text is always parsed
@@ -1301,14 +1369,16 @@ function addsExactly(before, after, additions) {
  * @param {string} base the editor's current text (an unsaved draft, else the saved inventory)
  * @param {Array<{ name: string, ips: string[] }>} additions
  * @param {{ label?: string, date?: Date }} [opts] the sweep's target and the date, for the comment line
- * @returns {{ text: string|null, format: string, reason: null|'format'|'check', group: string|null, lines: string[] }}
+ * @returns {{ text: string|null, format: string, reason: null|'format'|'check', group: string|null,
+ *   newGroup: boolean, lines: string[] }} `group`: the Ansible group the hosts went into, `newGroup`: the list did not
+ *   have it before
  */
 export function inventoryDraft(base, additions, { label = '', date = new Date() } = {}) {
   const head = String(base ?? '').replace(/\s+$/, '');
   const list = (Array.isArray(additions) ? additions : []).filter((a) => a && a.name && Array.isArray(a.ips) && a.ips.length);
   const lines = inventoryLines(list);
   const info = inventoryFormat(head);
-  const out = { text: null, format: info.format, reason: null, group: null, lines };
+  const out = { text: null, format: info.format, reason: null, group: null, newGroup: false, lines };
   if (!list.length) return { ...out, text: head ? `${head}\n` : '' };
   const day = date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString().slice(0, 10) : '';
   // The label is user text: one line, no comment-breaking characters.
@@ -1328,12 +1398,21 @@ export function inventoryDraft(base, additions, { label = '', date = new Date() 
     }
     case 'ini':
       out.group = INVENTORY_GROUP;
+      out.newGroup = !head.split(/\r\n|\r|\n/).some((l) => l.trim() === `[${INVENTORY_GROUP}]`);
       text = append([comment, `[${INVENTORY_GROUP}]`, ...perAddress.map((x) => `${x.name} ansible_host=${x.ip}`)]);
       break;
-    case 'jsonl':
-      text = append(list.map((a) => JSON.stringify(hostRecord(a, recordKeys(null)))), '\n');
+    case 'jsonl': {
+      const keys = recordKeys(firstJsonLine(head));
+      text = append(list.map((a) => JSON.stringify(hostRecord(a, keys))), '\n');
       break;
+    }
     case 'json': {
+      // One host record alone on one line is JSON Lines of one host: each addition gets a line.
+      const one = info.data && typeof info.data === 'object' && !Array.isArray(info.data) && !/[\r\n]/.test(head) ? recordKeys(info.data) : null;
+      if (one && one.found) {
+        text = append(list.map((a) => JSON.stringify(hostRecord(a, one))), '\n');
+        break;
+      }
       if (!Array.isArray(info.data) || !info.data.every((x) => x && typeof x === 'object' && !Array.isArray(x))) break;
       const keys = recordKeys(info.data[0]);
       const items = list.map((a) => JSON.stringify(hostRecord(a, keys)));
@@ -1362,22 +1441,35 @@ export function inventoryDraft(base, additions, { label = '', date = new Date() 
         const keys = recordKeys(data[0]);
         const indent = (/^([ \t]*)-[ \t]/m.exec(head) || [null, ''])[1];
         text = append([comment, ...list.flatMap((a) => [
-          `${indent}- ${keys.name}: ${yamlValue(a.name)}`, `${indent}  ${keys.ip}: ${yamlList(a.ips)}`
+          `${indent}- ${keys.name}: ${yamlValue(a.name)}`, `${indent}  ${keys.ip}: ${yamlList(a.ips, keys.list)}`
         ])]);
-      } else if (data && !Array.isArray(data) && ('all' in data || /(^|\s)ansible_host\s*:/m.test(head)) && !(INVENTORY_GROUP in data)) {
-        // A top-level group next to `all`; a host's further addresses go into `ips`.
-        out.group = INVENTORY_GROUP;
-        text = append([comment, `${INVENTORY_GROUP}:`, '  hosts:', ...list.flatMap((a) => [
-          `    ${yamlValue(a.name)}:`, `      ansible_host: ${yamlValue(a.ips[0])}`, ...(a.ips.length > 1 ? [`      ips: ${yamlList(a.ips)}`] : [])
-        ])]);
+      } else if (data && !Array.isArray(data) && ('all' in data || /(^|\s)ansible_host\s*:/m.test(head))) {
+        // A top-level group next to `all` (a host's further addresses go into `ips`): the
+        // reverse_dns group an earlier click wrote gets the new hosts under its `hosts:`; when
+        // that cannot be done, a group of the next free name (reverse_dns_2 …) is added.
+        const hosts = (pad, unit = '  ') => list.flatMap((a) => [
+          `${pad}${yamlValue(a.name)}:`, `${pad}${unit}ansible_host: ${yamlValue(a.ips[0])}`,
+          ...(a.ips.length > 1 ? [`${pad}${unit}ips: ${yamlList(a.ips)}`] : [])
+        ]);
+        const into = INVENTORY_GROUP in data ? yamlAddToGroup(head, INVENTORY_GROUP, (pad, unit) => [`${pad}${comment}`, ...hosts(pad, unit)]) : null;
+        if (into && addsExactly(head, into, list)) {
+          out.group = INVENTORY_GROUP;
+          text = into;
+          break;
+        }
+        const group = [INVENTORY_GROUP, ...Array.from({ length: 98 }, (_, i) => `${INVENTORY_GROUP}_${i + 2}`)].find((g) => !(g in data));
+        if (!group) break;
+        out.group = group;
+        out.newGroup = true;
+        text = append([comment, `${group}:`, '  hosts:', ...hosts('    ')]);
       }
       break;
     }
     default:
       break;
   }
-  if (text === null) return { ...out, group: null, reason: 'format' };
-  if (!addsExactly(head, text, list)) return { ...out, group: null, reason: 'check' };
+  if (text === null) return { ...out, group: null, newGroup: false, reason: 'format' };
+  if (!addsExactly(head, text, list)) return { ...out, group: null, newGroup: false, reason: 'check' };
   return { ...out, text };
 }
 

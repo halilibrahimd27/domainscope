@@ -228,6 +228,7 @@ registerStrings('en', {
   'ptr.toInventoryTitle': { one: 'Add the {count} forward-confirmed host that is not in your server list yet to the Servers editor (you review and save)', other: 'Add the {count} forward-confirmed hosts that are not in your server list yet to the Servers editor (you review and save)' },
   'ptr.inv.added': { one: '{count} host added to the Servers editor — review it and press Save.', other: '{count} hosts added to the Servers editor — review them and press Save.' },
   'ptr.inv.addedGroup': { one: '{count} host added to the Servers editor, in a new {group} group — review it and press Save.', other: '{count} hosts added to the Servers editor, in a new {group} group — review them and press Save.' },
+  'ptr.inv.addedToGroup': { one: '{count} host added to the Servers editor, under your {group} group — review it and press Save.', other: '{count} hosts added to the Servers editor, under your {group} group — review them and press Save.' },
   'ptr.inv.none': 'Every forward-confirmed host is already in your server list.',
   'ptr.inv.inDraft': 'Every forward-confirmed host is already in the Servers editor (not saved yet).',
   'ptr.inv.manualTitle': 'Add the hosts to your server list yourself',
@@ -406,6 +407,7 @@ registerStrings('tr', {
   'ptr.toInventoryTitle': 'Sunucu listenizde henüz olmayan {count} ileri doğrulanmış host’u Sunucular düzenleyicisine ekle (siz kontrol edip kaydedersiniz)',
   'ptr.inv.added': '{count} host Sunucular düzenleyicisine eklendi — kontrol edip Kaydet’e basın.',
   'ptr.inv.addedGroup': '{count} host Sunucular düzenleyicisine, yeni bir {group} grubuna eklendi — kontrol edip Kaydet’e basın.',
+  'ptr.inv.addedToGroup': '{count} host Sunucular düzenleyicisine, {group} grubunuzun altına eklendi — kontrol edip Kaydet’e basın.',
   'ptr.inv.none': 'İleri doğrulanan her host zaten sunucu listenizde.',
   'ptr.inv.inDraft': 'İleri doğrulanan her host zaten Sunucular düzenleyicisinde (henüz kaydedilmedi).',
   'ptr.inv.manualTitle': 'Host’ları sunucu listenize kendiniz ekleyin',
@@ -1459,7 +1461,9 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
       return;
     }
     state.setSession('inventoryDraft', out.text);
-    const message = out.group ? t('ptr.inv.addedGroup', { count: adds.length, group: out.group }) : t('ptr.inv.added', { count: adds.length });
+    const message = out.group
+      ? t(out.newGroup ? 'ptr.inv.addedGroup' : 'ptr.inv.addedToGroup', { count: adds.length, group: out.group })
+      : t('ptr.inv.added', { count: adds.length });
     toast(message, { type: 'info', timeout: 8000 });
     ctx.navigate('inventory');
   }

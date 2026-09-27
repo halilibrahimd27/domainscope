@@ -815,6 +815,11 @@ describe('rows, summary, exports and hand-offs', async () => {
     assert.match(out.text, /\n\[reverse_dns\]\nmail\.example\.com ansible_host=192\.0\.2\.1\nvpn\.example\.com ansible_host=192\.0\.2\.6\nvpn\.example\.com ansible_host=2001:db8::6\n$/);
     const groups = Object.fromEntries(parseInventory(out.text).servers.map((s) => [s.name, s.groups]));
     assert.deepEqual(groups, { web01: ['web'], db01: ['db'], 'mail.example.com': ['reverse_dns'], 'vpn.example.com': ['reverse_dns'] });
+    assert.equal(out.newGroup, true);
+    // a second addition repeats the header (Ansible merges the sections): the group is not new
+    const again = P.inventoryDraft(out.text, [{ name: 'ns1.example.org', ips: ['198.51.100.1'] }], { date: DAY });
+    assert.deepEqual([again.reason, again.group, again.newGroup], [null, 'reverse_dns', false]);
+    assert.deepEqual(parseInventory(again.text).servers.find((s) => s.name === 'ns1.example.org').groups, ['reverse_dns']);
   });
 
   test('inventoryDraft: JSON arrays get elements (with the array’s own keys), JSON Lines get lines', () => {
@@ -827,6 +832,18 @@ describe('rows, summary, exports and hand-offs', async () => {
     assert.equal(JSON.parse(drafted('[]').text).length, 2);
     const lines = drafted('{"name":"web01","ip":"192.0.2.10"}\n{"name":"web02","ip":"192.0.2.11"}', { format: 'jsonl' });
     assert.ok(lines.text.split('\n').filter(Boolean).every((l) => JSON.parse(l)), 'every line is JSON');
+    // records that hold their addresses as a list get a list, even for one address
+    const listed = drafted('[{"name": "web01", "ips": ["192.0.2.10"]}]', { format: 'json' });
+    assert.deepEqual(JSON.parse(listed.text).slice(1), [{ name: 'mail.example.com', ips: ['192.0.2.1'] }, { name: 'vpn.example.com', ips: ['192.0.2.6', '2001:db8::6'] }]);
+    // JSON Lines keep the first line's keys; one host record alone on a line is JSON Lines too
+    const keyed = drafted('{"host": "web01", "address": "192.0.2.10"}\n{"host": "web02", "address": "192.0.2.11"}', { format: 'jsonl' });
+    assert.deepEqual(keyed.text.trim().split('\n').slice(2).map((l) => JSON.parse(l)), [
+      { host: 'mail.example.com', address: '192.0.2.1' }, { host: 'vpn.example.com', address: ['192.0.2.6', '2001:db8::6'] }
+    ]);
+    const single = drafted('{"name": "web01", "ip": "192.0.2.10"}', { format: 'json' });
+    assert.equal(single.text, '{"name": "web01", "ip": "192.0.2.10"}\n{"name":"mail.example.com","ip":"192.0.2.1"}\n{"name":"vpn.example.com","ip":["192.0.2.6","2001:db8::6"]}\n');
+    // an object that is no host record (a map of names) is still left alone
+    assert.equal(P.inventoryDraft('{"web01": "192.0.2.10"}', ADDS, { date: DAY }).reason, 'format');
   });
 
   test('inventoryDraft: CSV rows follow the header’s column order and delimiter', () => {
@@ -840,8 +857,36 @@ describe('rows, summary, exports and hand-offs', async () => {
   test('inventoryDraft: YAML — an Ansible inventory gets a reverse_dns group, a list gets items', () => {
     const ansible = drafted('all:\n  children:\n    web:\n      hosts:\n        web01:\n          ansible_host: 192.0.2.10\n', { format: 'yaml', group: 'reverse_dns' });
     assert.match(ansible.text, /\nreverse_dns:\n {2}hosts:\n {4}mail\.example\.com:\n {6}ansible_host: 192\.0\.2\.1\n {4}vpn\.example\.com:\n {6}ansible_host: 192\.0\.2\.6\n {6}ips: \[192\.0\.2\.6, "2001:db8::6"\]\n$/);
+    assert.equal(ansible.newGroup, true);
     const list = drafted('- name: web01\n  ip: 192.0.2.10\n- name: web02\n  ip: 192.0.2.11\n', { format: 'yaml', group: null });
     assert.match(list.text, /\n- name: mail\.example\.com\n {2}ip: 192\.0\.2\.1\n- name: vpn\.example\.com\n {2}ip: \[192\.0\.2\.6, "2001:db8::6"\]\n$/);
+    const listed = drafted('- name: web01\n  ips: [192.0.2.10]\n', { format: 'yaml' });
+    assert.match(listed.text, /\n- name: mail\.example\.com\n {2}ips: \[192\.0\.2\.1\]\n/);
+  });
+
+  test('inventoryDraft: YAML — a second addition goes under the reverse_dns group the first one wrote', () => {
+    const NS = [{ name: 'ns1.example.org', ips: ['198.51.100.1'] }];
+    const groupsOf = (text) => Object.fromEntries(parseInventory(text).servers.map((s) => [s.name, [s.ips.join(' '), s.groups.join(' ')]]));
+    const first = drafted('all:\n  hosts:\n    web01:\n      ansible_host: 198.51.100.10\n', { group: 'reverse_dns', newGroup: true });
+    const second = P.inventoryDraft(first.text, NS, { label: '198.51.100.0/28', date: DAY });
+    assert.deepEqual([second.reason, second.group, second.newGroup], [null, 'reverse_dns', false]);
+    assert.equal(second.text, `${first.text.replace(/\n$/, '')}\n    # reverse DNS sweep of 198.51.100.0/28 (2026-09-27): forward-confirmed hosts\n    ns1.example.org:\n      ansible_host: 198.51.100.1\n`);
+    assert.deepEqual(groupsOf(second.text), {
+      web01: ['198.51.100.10', ''], 'mail.example.com': ['192.0.2.1', 'reverse_dns'], 'vpn.example.com': ['192.0.2.6 2001:db8::6', 'reverse_dns'],
+      'ns1.example.org': ['198.51.100.1', 'reverse_dns']
+    });
+    // wherever the group is, whatever the indentation; a group with vars only gets a hosts key
+    const before = (group) => `${group}\nall:\n    hosts:\n        web01:\n            ansible_host: 198.51.100.10\n`;
+    const moved = P.inventoryDraft(before('reverse_dns:\n    hosts:\n        old.example.com:\n            ansible_host: 192.0.2.9\n    vars:\n        ansible_user: ops'), NS, { date: DAY });
+    assert.equal(moved.reason, null);
+    assert.match(moved.text, /\n {8}old\.example\.com:\n {12}ansible_host: 192\.0\.2\.9\n {8}# reverse DNS sweep \(2026-09-27\): forward-confirmed hosts\n {8}ns1\.example\.org:\n {12}ansible_host: 198\.51\.100\.1\n {4}vars:\n/);
+    const vars = P.inventoryDraft(before('reverse_dns:\n    vars:\n        ansible_user: ops'), NS, { date: DAY });
+    assert.match(vars.text, /^reverse_dns:\n {4}vars:\n {8}ansible_user: ops\n {4}hosts:\n {8}# reverse DNS sweep/);
+    assert.deepEqual(groupsOf(vars.text)['ns1.example.org'], ['198.51.100.1', 'reverse_dns']);
+    // a flow value cannot take a host: the next free group name does
+    const flow = P.inventoryDraft('all:\n  hosts:\n    web01:\n      ansible_host: 198.51.100.10\nreverse_dns:\n  hosts: {}\nreverse_dns_2:\n  hosts: {}\n', NS, { date: DAY });
+    assert.deepEqual([flow.reason, flow.group, flow.newGroup], [null, 'reverse_dns_3', true]);
+    assert.deepEqual(groupsOf(flow.text)['ns1.example.org'], ['198.51.100.1', 'reverse_dns_3']);
   });
 
   test('inventoryDraft: a shape it does not write, or an addition that would not read back, leaves the text alone', () => {

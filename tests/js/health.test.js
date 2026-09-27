@@ -473,6 +473,20 @@ test('CNAME to another zone: SOA / NS of the target are not attributed to the al
   for (const id of ['ns.none', 'ns.single', 'dnssec.unsigned']) lacks(r, id);
 });
 
+test('an alias whose zone cannot be found does not name a zone "?"', async () => {
+  const zone = goodZone();
+  zone['example.net'] = { SOA: SOA('example.net'), NS: ['ns1.example.net'], A: ['192.0.2.80'] };
+  zone['ns1.example.net'] = { A: ['198.51.100.80'] };
+  zone['example.com'] = { CNAME: 'example.net' }; // the registrable domain itself is an alias
+  const r = await run('example.com', fakeDns(zone));
+  assertRenderable(r);
+  assert.equal(r.zone, null);
+  has(r, 'soa.zone-unknown', 'warn');
+  lacks(r, 'soa.not-apex');
+  for (const id of ['ns.none', 'ns.single', 'dnssec.unsigned']) lacks(r, id);
+  assert.ok(!r.checks.some((c) => Object.values(c.params).includes('?')));
+});
+
 test('NS: single, unresolvable, private, same subnet, single provider, no IPv6', async () => {
   const zone = goodZone();
   zone['example.com'].NS = ['ns1.example.com'];

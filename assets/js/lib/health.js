@@ -1098,7 +1098,9 @@ async function analyzeSoa(name, soaR, d) {
   }
   // For an alias (CNAME) the resolver answers with the target's SOA: ask the parents instead.
   zone = enclosingSoaOwner(soaR, name) || await parentZone(name, d);
-  if (soaR.rcode === 'NOERROR') checks.push(makeCheck('soa.not-apex', 'warn', { domain: name, zone: zone || '?' }));
+  if (soaR.rcode === 'NOERROR') {
+    checks.push(zone ? makeCheck('soa.not-apex', 'warn', { domain: name, zone }) : makeCheck('soa.zone-unknown', 'warn', { domain: name }));
+  }
   return { checks, soa, zone, apex: false };
 }
 
@@ -1910,6 +1912,9 @@ const STRINGS = [
   ['soa.not-apex', ['Not a zone apex', 'Bölge (zone) kökü değil'],
     ['{domain} is not the apex of a DNS zone; it belongs to the zone {zone}. Run the check on {zone} for NS, SOA and DNSSEC results.',
       '{domain} bir DNS bölgesinin kökü değil; {zone} bölgesine ait. NS, SOA ve DNSSEC sonuçları için kontrolü {zone} üzerinde çalıştırın.']],
+  ['soa.zone-unknown', ['Not a zone apex', 'Bölge (zone) kökü değil'],
+    ['{domain} has no SOA record of its own, so it is not the apex of a DNS zone, and the zone it belongs to could not be determined.',
+      '{domain} adının kendi SOA kaydı yok; yani bir DNS bölgesinin kökü değil ve ait olduğu bölge belirlenemedi.']],
   ['soa.retry', ['SOA retry is not below refresh', 'SOA retry değeri refresh değerinden küçük değil'],
     ['retry ({retry}s) should be lower than refresh ({refresh}s) so secondaries retry a failed transfer sooner than the next regular refresh.',
       'İkincil sunucuların başarısız aktarımı bir sonraki yenilemeden önce tekrar denemesi için retry ({retry} sn), refresh değerinden ({refresh} sn) küçük olmalı.']],

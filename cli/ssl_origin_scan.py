@@ -4175,15 +4175,17 @@ def _index_report(doc: Dict[str, Any]
                                                    'view': _row_view(row)})
         if server and server not in entry['servers']:
             entry['servers'].append(server)
-    names = []  # type: List[str]
+    names = {}  # type: Dict[str, None]
     for probe in doc.get('names') or []:
         name = probe.get('name') if isinstance(probe, dict) else None
-        if isinstance(name, str) and name not in names:
-            names.append(name)
+        if isinstance(name, str):
+            names.setdefault(name)
     if not names:  # a report without "names": what its rows probed
         for endpoint in endpoints.values():
-            names.extend(name for name in endpoint['rows'] if name and name not in names)
-    return endpoints, names
+            for name in endpoint['rows']:
+                if name:
+                    names.setdefault(name)
+    return endpoints, list(names)
 
 
 def _status_counts(statuses: Iterable[str]) -> Dict[str, int]:
@@ -4293,8 +4295,9 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
     """
     old_endpoints, old_names = _index_report(before)
     new_endpoints, new_names = _index_report(after)
-    added = [name for name in new_names if name not in old_names]
-    removed = [name for name in old_names if name not in new_names]
+    old_set, new_set = set(old_names), set(new_names)
+    added = [name for name in new_names if name not in old_set]
+    removed = [name for name in old_names if name not in new_set]
     changes = [_change('appeared', 'name', name=name, after=_name_view(new_endpoints, name))
                for name in added]
     changes.extend(_change('disappeared', 'name', name=name,
@@ -4352,10 +4355,11 @@ def baseline_info(before: Dict[str, Any], after: Dict[str, Any],
         return value if isinstance(value, str) else None
 
     old_ports, new_ports = ports(before), ports(after)
+    old_set, new_set = set(old_ports), set(new_ports)
     return {'file': file, 'missing': False, 'version': text('version'),
             'startedAt': text('startedAt'), 'finishedAt': text('finishedAt'),
-            'portsAdded': [port for port in new_ports if port not in old_ports],
-            'portsRemoved': [port for port in old_ports if port not in new_ports],
+            'portsAdded': [port for port in new_ports if port not in old_set],
+            'portsRemoved': [port for port in old_ports if port not in new_set],
             'newCertificateChanged': new_fps(before) != new_fps(after)}
 
 
@@ -4372,6 +4376,9 @@ def expiring_certificates(doc: Dict[str, Any], warn_days: int) -> List[Dict[str,
     """
     certificates = doc.get('certificates') if isinstance(doc.get('certificates'), dict) else {}
     found = {}  # type: Dict[str, Dict[str, Any]]
+    # (sha256, server, ip, port) -> (endpoint entry, its names as a set): a wildcard
+    # certificate served by thousands of endpoints must not cost a scan of a list per row
+    where_index = {}  # type: Dict[Tuple[Any, ...], Tuple[Dict[str, Any], Set[str]]]
     for row in doc.get('results') or []:
         if (not isinstance(row, dict) or row.get('probe') not in _ROW_PROBES
                 or not _covers_name(row.get('status'))):
@@ -4387,16 +4394,17 @@ def expiring_certificates(doc: Dict[str, Any], warn_days: int) -> List[Dict[str,
                 'issuer': row.get('certIssuer'), 'serialHex': row.get('certSerial'),
                 'notAfter': row.get('certNotAfter'), 'daysLeft': days, 'expired': days < 0,
                 'isNewCert': bool(info.get('isNewCert')), 'endpoints': []}
-        where = (row.get('server'), row.get('ip'), row.get('port'))
-        endpoint = next((e for e in entry['endpoints']
-                         if (e['server'], e['ip'], e['port']) == where), None)
-        if endpoint is None:
-            endpoint = {'server': where[0], 'ip': where[1], 'port': where[2], 'names': [],
+        where = (sha, row.get('server'), row.get('ip'), row.get('port'))
+        if where not in where_index:
+            endpoint = {'server': where[1], 'ip': where[2], 'port': where[3], 'names': [],
                         'defaultCert': False}
             entry['endpoints'].append(endpoint)
+            where_index[where] = (endpoint, set())
+        endpoint, seen = where_index[where]
         if row['probe'] == PROBE_DEFAULT:
             endpoint['defaultCert'] = True
-        elif row.get('name') and row['name'] not in endpoint['names']:
+        elif row.get('name') and row['name'] not in seen:
+            seen.add(row['name'])
             endpoint['names'].append(row['name'])
     return sorted(found.values(), key=lambda entry: (entry['daysLeft'], entry['sha256']))
 

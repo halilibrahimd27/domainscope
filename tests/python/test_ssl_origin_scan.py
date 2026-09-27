@@ -3191,6 +3191,26 @@ class ExpiryTests(unittest.TestCase):
         self.assertEqual(sos.render_json(report), sos.render_json(report, monitor=None))
         self.assertNotIn('warnDays', sos.report_to_dict(report)['options'])
 
+    def test_one_certificate_on_thousands_of_endpoints_is_linear(self):
+        """A fleet-wide wildcard expiring: 30,000 rows took ~27 s with a list scan per row."""
+        sha = 'ab' * 32
+        rows = [{'server': 'web-%d' % i, 'ip': '10.%d.%d.%d' % (i >> 16, (i >> 8) & 255, i & 255),
+                 'port': 443, 'probe': 'sni', 'name': 'n%d.example.com' % n,
+                 'status': 'NEEDS_UPDATE', 'certSha256': sha, 'certSubjectCN': '*.example.com',
+                 'certDaysLeft': 5, 'certNotAfter': '2034-06-01T00:00:00.000Z'}
+                for i in range(6000) for n in range(5)]
+        rows.extend(dict(rows[i * 5], probe='default', name=None) for i in range(6000))
+        rows.append(dict(rows[0]))  # a repeated row adds nothing
+        started = time.monotonic()
+        expiring = sos.expiring_certificates({'results': rows, 'certificates': {}}, 30)
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertEqual(len(expiring), 1)
+        endpoints = expiring[0]['endpoints']
+        self.assertEqual(len(endpoints), 6000)
+        self.assertEqual(endpoints[0], {'server': 'web-0', 'ip': '10.0.0.0', 'port': 443,
+                                        'names': ['n%d.example.com' % n for n in range(5)],
+                                        'defaultCert': True})
+
 
 class ChangeSummaryTests(unittest.TestCase):
 

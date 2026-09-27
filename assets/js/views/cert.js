@@ -1750,8 +1750,17 @@ export function mount(container, ctx) {
     }));
   }
 
+  // The DANE panel on screen: it listens on its holder (kept across re-mounts), so a panel that
+  // is replaced (another certificate or tab render, a re-mount) must stop listening.
+  let daneUi = null;
+  const disposeDane = () => {
+    if (daneUi) daneUi.dispose();
+    daneUi = null;
+  };
+
   function render() {
     renderLoader();
+    disposeDane();
     clear(content);
     if (!load) {
       content.append(EmptyState({ icon: 'shield', title: t('cert.emptyTitle'), message: t('cert.emptyBody') }));
@@ -2338,12 +2347,14 @@ export function mount(container, ctx) {
       const leaf = result.leaf;
       const key = certKey(leaf);
       if (!daneHolders.has(key)) daneHolders.set(key, {});
+      disposeDane();
       const panel = DanePanel({
         certs: { leaf, chain: result.certificates },
         ctx,
         holder: daneHolders.get(key),
         subject: certDisplayName(leaf)
       });
+      daneUi = panel;
       if (shown === leaf) return panel.el;
       return h('div', { class: 'stack' },
         Alert({ variant: 'info', compact: true, message: t('cert.dane.leaf', { name: certDisplayName(leaf) }) }), panel.el);
@@ -2471,7 +2482,10 @@ export function mount(container, ctx) {
     load = next;
     render();
   });
-  teardown = () => off();
+  teardown = () => {
+    off();
+    disposeDane();
+  };
 }
 
 /** Stop listening for session changes. */

@@ -10,7 +10,8 @@
  * - once a job has run 30 s (lib/jobprogress.js LONG_JOB_MS), its panel offers "Notify me when done"
  *   ({@link NotifyButton}): the browser asks for permission only on that click, the choice lasts
  *   for the page session, and a desktop notification is sent when a long job finishes or fails
- *   while the user is not looking at it.
+ *   while the user is not looking at it. Not offered where the page cannot show one itself
+ *   (Chromium on Android); a browser that still refuses one turns the opt-in off and says so.
  * With `prefers-reduced-motion` the ring does not spin and the favicon changes in 10 % steps.
  *
  * The shell sets the page's own title through {@link setBaseTitle} and calls
@@ -19,11 +20,12 @@
  */
 
 import { h, svg } from './dom.js';
-import { Button, announce, setButtonBusy } from './components.js';
+import { Button, announce, setButtonBusy, toast } from './components.js';
 import { t, registerStrings, formatPercent } from '../i18n.js';
 import { state } from '../state.js';
 import {
-  advance, combineJobs, percentOf, progressTitle, faviconStep, badgedIcon, svgDataUrl, offerNotify, shouldNotify
+  advance, combineJobs, percentOf, progressTitle, faviconStep, badgedIcon, svgDataUrl, offerNotify, shouldNotify,
+  pageNotifications
 } from '../lib/jobprogress.js';
 
 registerStrings('en', {
@@ -34,6 +36,7 @@ registerStrings('en', {
   'jobs.notifyBlocked': 'Desktop notifications are blocked for this site in your browser.',
   'jobs.notifyReady': 'You will get a desktop notification when it finishes.',
   'jobs.notifyOff': 'No desktop notification.',
+  'jobs.notifyFailed': 'This browser did not show the desktop notification, so it is off for this page.',
   'jobs.doneTitle': '{view} finished',
   'jobs.failedTitle': '{view} stopped with an error'
 });
@@ -46,6 +49,7 @@ registerStrings('tr', {
   'jobs.notifyBlocked': 'Bu site için masaüstü bildirimleri tarayıcınızda engellenmiş.',
   'jobs.notifyReady': 'Bitince masaüstü bildirimi alacaksınız.',
   'jobs.notifyOff': 'Masaüstü bildirimi yok.',
+  'jobs.notifyFailed': 'Bu tarayıcı masaüstü bildirimini göstermedi; bu sayfada bildirim kapatıldı.',
   'jobs.doneTitle': '{view} tamamlandı',
   'jobs.failedTitle': '{view} bir hatayla durdu'
 });
@@ -57,6 +61,8 @@ let counter = 0;
 let baseTitle = null;
 /** Opted in to desktop notifications for this page session (never stored). */
 let notifyOptIn = false;
+/** The browser refused to show one (constructor threw): not offered again this page session. */
+let notifyRefused = false;
 /** The favicon <link> and its own href, while a badge replaces it. */
 let icon = null;
 let shownIcon = undefined;
@@ -210,9 +216,12 @@ function renderFavicon(doc, fraction) {
 /* Desktop notification (opt-in, page session)                              */
 /* ------------------------------------------------------------------------ */
 
+/** The Notification constructor, where the page can show a notification itself; else null. */
 function notificationApi() {
   const N = globalThis.Notification;
-  return typeof N === 'function' ? N : null;
+  const nav = globalThis.navigator || {};
+  if (notifyRefused || !pageNotifications({ api: N, userAgentData: nav.userAgentData, userAgent: nav.userAgent })) return null;
+  return N;
 }
 
 function permission() {
@@ -239,7 +248,12 @@ function notify(job, status, body) {
       n.close();
     };
   } catch {
-    // Some browsers only notify from a service worker: the toast of the view still says it.
+    // A browser that only notifies from a service worker: the view's own toast still says the job
+    // ended; the opt-in the user relied on is turned off and said, not lost silently.
+    notifyRefused = true;
+    notifyOptIn = false;
+    emit();
+    toast(t('jobs.notifyFailed'), { type: 'warn' });
   }
 }
 
@@ -247,28 +261,28 @@ function notify(job, status, body) {
  * "Notify me when done" for a running job's panel. Offered once the job has run
  * 30 s (at once when this page session already opted in); the permission is asked
  * only on a click. A toggle: its label stays, `aria-pressed` (and a pressed look) says it is on,
- * and pressing it again turns the opt-in off. Hidden when the browser has no
- * notifications; a blocked permission is said instead of offering the button.
+ * and pressing it again turns the opt-in off. Hidden when the page cannot show a notification
+ * ({@link pageNotifications}); a blocked permission is said instead of offering the button.
  * @param {JobHandle|(() => JobHandle|null)|null} source the job, or a getter for one a panel built
  *   just before its job starts
  * @returns {HTMLElement}
  */
 export function NotifyButton(source) {
   const el = h('span', { class: 'job-notify', hidden: true });
-  const N = notificationApi();
-  if (!source || !N) return el;
+  if (!source || !notificationApi()) return el;
   const job = typeof source === 'function'
     ? { get startedAt() { return (source() || {}).startedAt || new Date(); }, running: () => { const j = source(); return j ? j.running() : true; } }
     : source;
   const btn = Button({ label: t('jobs.notify'), icon: 'bell', size: 'sm', variant: 'ghost', title: t('jobs.notifyTitle'), dataset: { action: 'job-notify' } });
-  const blocked = h('span', { class: 'muted text-xs job-notify-blocked', hidden: true }, t('jobs.notifyBlocked'));
+  // Focusable from script only: a refusal hides the focused button, and focus moves here.
+  const blocked = h('span', { class: 'muted text-xs job-notify-blocked', tabindex: -1, hidden: true }, t('jobs.notifyBlocked'));
   el.append(btn, blocked);
 
   const draw = () => {
     const live = job.running();
     const perm = permission();
     // A blocked permission is said (at the same moment the button would appear) rather than offered.
-    const offer = offerNotify({ elapsedMs: Date.now() - job.startedAt, supported: true, permission: perm === 'denied' ? 'default' : perm, optedIn: notifyOptIn });
+    const offer = offerNotify({ elapsedMs: Date.now() - job.startedAt, supported: !!notificationApi(), permission: perm === 'denied' ? 'default' : perm, optedIn: notifyOptIn });
     el.hidden = !live || !offer;
     btn.hidden = perm === 'denied';
     blocked.hidden = perm !== 'denied';
@@ -286,6 +300,8 @@ export function NotifyButton(source) {
       emit();
       return;
     }
+    const N = notificationApi();
+    if (!N) return;
     let perm = permission();
     if (perm === 'default') {
       setButtonBusy(btn, true);
@@ -300,7 +316,10 @@ export function NotifyButton(source) {
     notifyOptIn = perm === 'granted';
     // A prompt closed without an answer ('default') blocks nothing: only a refusal is called that.
     announce(t(notifyOptIn ? 'jobs.notifyReady' : perm === 'denied' ? 'jobs.notifyBlocked' : 'jobs.notifyOff'));
+    const hadFocus = globalThis.document && globalThis.document.activeElement === btn;
     emit();
+    // A refusal hides the button: keep the keyboard where it was, on the sentence that replaced it.
+    if (hadFocus && btn.hidden && !blocked.hidden && !el.hidden) blocked.focus();
   });
 
   // Appear at the 30 s mark and follow opt-in changes made in another panel; stop with the job.

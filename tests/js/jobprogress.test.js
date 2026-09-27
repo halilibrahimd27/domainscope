@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   scanFraction, bulkFraction, advance, combineJobs, percentOf, progressTitle, faviconStep, badgedIcon, svgDataUrl,
-  offerNotify, shouldNotify, SCAN_STAGE_WEIGHTS, BRAND_ICON_SVG, LONG_JOB_MS, ACTIVE_STAGE_CAP
+  offerNotify, shouldNotify, pageNotifications, SCAN_STAGE_WEIGHTS, BRAND_ICON_SVG, LONG_JOB_MS, ACTIVE_STAGE_CAP
 } from '../../assets/js/lib/jobprogress.js';
 import { SCAN_STAGES } from '../../assets/js/lib/scanner.js';
 import { applyStage, applyProgress, stopStages } from '../../assets/js/views/subdomains.js';
@@ -188,6 +188,22 @@ describe('desktop notification', () => {
     assert.equal(offerNotify({ elapsedMs: 0, supported: true, permission: 'granted', optedIn: true }), true, 'already on for this session');
     assert.equal(offerNotify({ elapsedMs: LONG_JOB_MS, supported: true, permission: 'denied' }), false);
     assert.equal(offerNotify({ elapsedMs: LONG_JOB_MS, supported: false, permission: null }), false);
+  });
+
+  test('never offered where the page cannot show one itself (Chromium on Android)', () => {
+    const api = function Notification() {};
+    const androidChrome = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36';
+    const desktopChrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+    const androidFirefox = 'Mozilla/5.0 (Android 14; Mobile; rv:130.0) Gecko/130.0 Firefox/130.0';
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: false }, userAgent: desktopChrome }), true);
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: true }, userAgent: androidChrome }), false, 'Chrome, Samsung Internet, Edge on Android');
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: true }, userAgent: desktopChrome }), false, 'userAgentData decides over the string');
+    assert.equal(pageNotifications({ api, userAgent: androidChrome }), false, 'a Chromium without userAgentData');
+    assert.equal(pageNotifications({ api, userAgent: desktopChrome }), true);
+    assert.equal(pageNotifications({ api, userAgent: androidFirefox }), true, 'Firefox on Android has the constructor');
+    assert.equal(pageNotifications({ api }), true);
+    assert.equal(pageNotifications({ api: undefined, userAgentData: { mobile: false } }), false, 'no API at all');
+    assert.equal(pageNotifications({ api: {}, userAgentData: { mobile: false } }), false);
   });
 
   test('sent only when opted in, granted, long, finished or failed, and not being watched', () => {

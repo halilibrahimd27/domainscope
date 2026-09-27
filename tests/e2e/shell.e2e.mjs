@@ -205,10 +205,10 @@ async function dismissToasts(page) {
 /* A long job outside its view (ui/jobs.js)                                 */
 /* ------------------------------------------------------------------------ */
 
-/** 60 names under example.com per run (runs a, b, c: the DoH client caches answers), answered in the page. */
+/** 60 names under example.com per run (runs a–d: the DoH client caches answers), answered in the page. */
 const jobNames = (run) => Array.from({ length: 60 }, (_, i) => `${run}-host${i + 1}.example.com`);
 const JOB_ZONE = Object.fromEntries([['example.com', { A: ['203.0.113.10'] }],
-  ...['a', 'b', 'c'].flatMap((run) => jobNames(run).map((n, i) => [n, { A: [`203.0.113.${100 + i}`] }]))]);
+  ...['a', 'b', 'c', 'd'].flatMap((run) => jobNames(run).map((n, i) => [n, { A: [`203.0.113.${100 + i}`] }]))]);
 
 /**
  * Before the app loads: every DoH answer waits `window.__dnsDelay` ms (so a Bulk Resolve of 60
@@ -319,6 +319,17 @@ async function jobsGroup(browser, server) {
       const dismissed = await jobs.evaluate(`({ text: ${live}, pressed: document.querySelector('[data-action="job-notify"]').getAttribute('aria-pressed'),
         blocked: !document.querySelector('.job-notify-blocked')?.hidden })`);
       assertEqual([dismissed.text.includes('blocked'), dismissed.pressed, dismissed.blocked], [false, 'false', false], 'a dismissed prompt is not "blocked"');
+      // A refusal: the button goes, and the keyboard lands on the sentence that replaced it.
+      await jobs.evaluate(() => { window.__permAnswer = 'denied'; });
+      await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
+      await jobs.press('Enter');
+      await jobs.waitFor(`${live}.includes('blocked for this site')`, { timeout: 3000, message: 'refusal announced' });
+      const denied = await jobs.evaluate(() => ({ btn: document.querySelector('[data-action="job-notify"]').hidden,
+        blocked: document.querySelector('.job-notify-blocked').hidden, focus: document.activeElement.textContent }));
+      assertEqual(denied, { btn: true, blocked: false, focus: 'Desktop notifications are blocked for this site in your browser.' }, 'refused: said, focus kept');
+      // Unblocked in the browser's site settings: offered again at the next tick.
+      await jobs.evaluate(() => { window.Notification.permission = 'default'; });
+      await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]')?.hidden === false, { timeout: 3000, message: 'offered again once unblocked' });
       await jobs.evaluate(() => { window.__permAnswer = 'granted'; window.Notification.permission = 'default'; });
       await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
       await jobs.press('Enter');
@@ -328,7 +339,7 @@ async function jobsGroup(browser, server) {
         return { asked: window.__permAsked, label: btn.textContent.trim(), on: btn.classList.contains('is-on') };
       });
       // A toggle: the label stays (a screen reader hears "pressed" once, not a new label as well).
-      assertEqual(state, { asked: 2, label: 'Notify me when done', on: true }, 'opted in for this page session');
+      assertEqual(state, { asked: 3, label: 'Notify me when done', on: true }, 'opted in for this page session');
       await shot(jobs, 'desktop-light-en-job-notify');
     });
 
@@ -386,12 +397,75 @@ async function jobsGroup(browser, server) {
       await setLangUi(jobs, 'en');
     });
 
+    await step('a browser that refuses to show the notification: the opt-in goes off and a toast says so', async () => {
+      // Granted and opted in (above), but the constructor throws, as where only a service worker may notify.
+      await jobs.evaluate(() => {
+        const Prev = window.Notification;
+        window.Notification = class {
+          constructor() { throw new TypeError('Illegal constructor.'); }
+          static requestPermission() { return Prev.requestPermission(); }
+        };
+        window.Notification.permission = 'granted';
+        window.__notes = [];
+        window.__dnsDelay = 60;
+      });
+      await startBulk('d');
+      await gotoRoute(jobs, 'about');
+      await jobs.evaluate(() => { window.__dnsDelay = 0; });
+      await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });
+      await jobs.waitFor(() => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes('did not show the desktop notification')),
+        { timeout: 3000, message: 'refusal said' });
+      const after = await jobs.evaluate(async () => {
+        const { NotifyButton } = await import('./assets/js/ui/jobs.js');
+        const el = NotifyButton({ startedAt: new Date(0), running: () => true });
+        return { notes: window.__notes.length, hidden: el.hidden, button: !!el.querySelector('button') };
+      });
+      assertEqual(after, { notes: 0, hidden: true, button: false }, 'not offered again this page session');
+      await dismissToasts(jobs);
+    });
+
     await step('jobs page: nothing blocked, no console errors, exceptions or CSP violations (the data: favicon included)', async () => {
       assertEqual(await jobs.evaluate(() => window.__zoneBlocked.slice()), [], 'requests outside the page');
       await assertClean(jobs, 'jobs');
     });
   } finally {
     await jobs.close();
+  }
+
+  // Chromium on Android has the API and its prompt but no `new Notification()` (service worker only).
+  const phone = await browser.newPage('about:blank', { width: 375, height: 812, mobile: true });
+  await phone.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript('example.com', JOB_ZONE) });
+  await phone.send('Page.addScriptToEvaluateOnNewDocument', { source: JOB_PAGE_SCRIPT });
+  await phone.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `Object.defineProperty(Navigator.prototype, 'userAgentData', { configurable: true,
+      get: () => ({ mobile: true, platform: 'Android', brands: [] }) });`
+  });
+  try {
+    await step('Chromium on Android: "Notify me when done" is never offered and no permission is asked', async () => {
+      await phone.goto(`${server.url}#/bulk`);
+      await waitReady(phone);
+      await setLangUi(phone, 'en');
+      await phone.evaluate(async () => {
+        (await import('./assets/js/state.js')).state.updateSettings({ concurrency: 2 });
+        window.__dnsDelay = 100;
+      });
+      await phone.type('[data-role="bulk-input"]', jobNames('a').join('\n'));
+      await phone.click('[data-action="bulk-run"]');
+      await phone.waitFor(() => !!document.querySelector('.bulk-progress[data-status="running"]'), { message: 'bulk job running' });
+      await phone.evaluate(() => { window.__clockSkew = 31000; });
+      await phone.evaluate(() => new Promise((r) => { setTimeout(r, 1500); })); // past the 1 s re-check
+      const offered = await phone.evaluate(() => {
+        const el = document.querySelector('.bulk-progress .job-notify');
+        return { panel: !!el, hidden: el ? el.hidden : null, button: !!document.querySelector('[data-action="job-notify"]'), asked: window.__permAsked };
+      });
+      assertEqual(offered, { panel: true, hidden: true, button: false, asked: 0 }, 'nothing offered, nothing asked');
+      await phone.evaluate(() => { window.__dnsDelay = 0; });
+      await phone.waitFor(() => !document.querySelector('.bulk-progress[data-status="running"]'), { timeout: 30000, message: 'job finished' });
+      assertEqual(await phone.evaluate(() => [window.__permAsked, window.__notes.length]), [0, 0], 'nothing asked or sent at the end');
+      await assertClean(phone, 'android notify');
+    });
+  } finally {
+    await phone.close();
   }
 }
 

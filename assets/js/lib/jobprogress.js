@@ -188,6 +188,22 @@ export function svgDataUrl(svg) {
 }
 
 /**
+ * Can the page show a notification itself (`new Notification()`)? Chromium on Android (Chrome,
+ * Samsung Internet, Edge, Opera: `navigator.userAgentData.mobile`) has the API and its permission
+ * prompt but turns the constructor off ("Illegal constructor. Use
+ * ServiceWorkerRegistration.showNotification() instead"). This app has no service worker, so there
+ * "Notify me when done" would ask for a permission it can never use. A Chromium without
+ * `userAgentData` (older, or a page that is not a secure context) is recognised by its user agent.
+ * @param {{ api: unknown, userAgentData?: { mobile?: boolean }|null, userAgent?: string }} env
+ * @returns {boolean}
+ */
+export function pageNotifications({ api, userAgentData = null, userAgent = '' }) {
+  if (typeof api !== 'function') return false;
+  if (userAgentData && typeof userAgentData.mobile === 'boolean') return !userAgentData.mobile;
+  return !/\bAndroid\b.*\bChrome\/\d/.test(String(userAgent || ''));
+}
+
+/**
  * May the view offer "Notify me when done" for a running job? Once it has run {@link LONG_JOB_MS}
  * (or the page session already opted in), where the browser has notifications and has not
  * blocked them for the site.

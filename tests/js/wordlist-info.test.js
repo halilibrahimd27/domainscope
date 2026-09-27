@@ -8,7 +8,9 @@ import { readFileSync, statSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { wordlistInfo, parseCustomWordlist, LOCALE_PACK_CODES } from '../../assets/js/lib/wordlist.js';
+import { fileDigest } from '../../tools/build-wordlists.mjs';
 
 const DATA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'data');
 const linesOf = (buf) => buf.toString('utf8').split(/\r?\n/).filter(Boolean).length;
@@ -39,6 +41,18 @@ describe('wordlistInfo', () => {
     assert.equal(info.levels.smart.bytes, statSync(join(DATA, 'wordlist-base.txt')).size);
     assert.equal(info.levels.large.bytes, statSync(join(DATA, 'wordlist-large.txt.gz')).size);
     assert.equal(info.levels.huge.bytes, statSync(join(DATA, 'wordlist-huge.txt.gz')).size);
+  });
+
+  test('wordlist-manifest.json carries the SHA-256 of every tier and locale pack (the service worker\'s cache key)', () => {
+    const manifest = JSON.parse(readFileSync(join(DATA, 'wordlist-manifest.json'), 'utf8'));
+    const digest = (rel) => createHash('sha256').update(readFileSync(join(DATA, rel))).digest('hex');
+    const files = Object.values(manifest.tiers).filter((tier) => tier.file);
+    assert.deepEqual(files.map((tier) => tier.file), ['wordlist-base.txt', 'wordlist-large.txt.gz', 'wordlist-huge.txt.gz']);
+    for (const tier of files) assert.equal(tier.sha256, digest(tier.file), tier.file);
+    assert.deepEqual(Object.keys(manifest.locales).sort(), [...LOCALE_PACK_CODES].sort());
+    for (const [cc, info] of Object.entries(manifest.locales)) assert.equal(info.sha256, digest(`locale/${cc}.txt`), cc);
+    // the builder writes the same digest it reports
+    assert.deepEqual(fileDigest(Buffer.from('api\nwww\n')), { bytes: 8, sha256: createHash('sha256').update('api\nwww\n').digest('hex') });
   });
 
   test('gz tiers stay comfortably under 1.5 MiB', () => {

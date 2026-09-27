@@ -1,7 +1,7 @@
 {
   "generatedBy": "tools/build-wordlists.mjs",
   "generatedAt": "2026-09-23",
-  "note": "Counts are computed at build time; assets/js/lib/wordlist.js embeds a copy for the UI. A unit test asserts the embedded counts match these files.",
+  "note": "Counts are computed at build time; assets/js/lib/wordlist.js embeds a copy for the UI. A unit test asserts the embedded counts match these files. sha256 keys the wordlist cache of the service worker.",
   "licenseFile": "THIRD_PARTY_LICENSES.txt",
   "tiers": {
     "small": {
@@ -18,6 +18,7 @@
       "id": "smart",
       "approxCount": 7000,
       "bytes": 42399,
+      "sha256": "38207528f4196d394f55ecb351faca374db91893a6e2570303490db356bd0b06",
       "file": "wordlist-base.txt",
       "sources": [
         "DomainScope curated core",
@@ -33,6 +34,7 @@
       "id": "large",
       "approxCount": 50000,
       "bytes": 182788,
+      "sha256": "9d7250e015cfa17ade99269dc964e9c1fab06a34de71d2ccd677d0fffc798aa8",
       "file": "wordlist-large.txt.gz",
       "sources": [
         "SecLists top-1M",
@@ -45,6 +47,7 @@
       "id": "huge",
       "approxCount": 130000,
       "bytes": 588172,
+      "sha256": "9019ace21611ca92432492ee00b806af689edb788c81412d49c98453cc3b0e39",
       "file": "wordlist-huge.txt.gz",
       "sources": [
         "SecLists top-1M",
@@ -57,51 +60,63 @@
   "locales": {
     "tr": {
       "count": 283,
-      "bytes": 2419
+      "bytes": 2419,
+      "sha256": "764c4fd0c23453e1a0a1a6eb915af38810a68ddfef8c7a7436adc2963c38b2c5"
     },
     "de": {
       "count": 181,
-      "bytes": 1689
+      "bytes": 1689,
+      "sha256": "84651e4052b4bfe38df461ec3a56530b2fe5d62ae9fab3f312ee72a86a529eac"
     },
     "fr": {
       "count": 171,
-      "bytes": 1531
+      "bytes": 1531,
+      "sha256": "d654a9c800edc26ac644f81af41f532bbb5d18a954a3c33eb062cd0ffe83d666"
     },
     "es": {
       "count": 180,
-      "bytes": 1615
+      "bytes": 1615,
+      "sha256": "408061078640f04ee96aeaae48fcbc57e80704b99a6c137a0e75b8a6665dc592"
     },
     "pt": {
       "count": 169,
-      "bytes": 1494
+      "bytes": 1494,
+      "sha256": "187eb746f23bd8c03fc1f088bf966e55e7c93aea4feace2a93f92f0b38cd60d7"
     },
     "it": {
       "count": 152,
-      "bytes": 1375
+      "bytes": 1375,
+      "sha256": "c38965d2ef608acb82550a03f4f5c7787d65e7fc7314b08bee28ccec608f5629"
     },
     "nl": {
       "count": 124,
-      "bytes": 1163
+      "bytes": 1163,
+      "sha256": "74f741db674cca70a7cbc5a479f6b26e265e46a61a052eb3a461bf5925802667"
     },
     "pl": {
       "count": 127,
-      "bytes": 1057
+      "bytes": 1057,
+      "sha256": "ce81a127f13b387242bb194f1ea9d7e66b72c6d43016049fe0343c8da710786a"
     },
     "ru": {
       "count": 126,
-      "bytes": 1039
+      "bytes": 1039,
+      "sha256": "ba7ae2b2ba106e892bc82db976727ac3d6dd66399cced6b30a1edd7bf24c32ed"
     },
     "ar": {
       "count": 128,
-      "bytes": 940
+      "bytes": 940,
+      "sha256": "6142ee041bcf8b271253d02502b0d96d56eb60a9275efc1fcb8efc14c84db74b"
     },
     "ja": {
       "count": 83,
-      "bytes": 602
+      "bytes": 602,
+      "sha256": "8090d50882bbdae7bd5d5179df1514e02b932b414628631bb3d629d2d97aff19"
     },
     "zh": {
       "count": 93,
-      "bytes": 698
+      "bytes": 698,
+      "sha256": "df4090cab52f1a846f4c82d169f4d2f780644ce52acfc70546e009c8a5b60b20"
     }
   },
   "localeNote": "Original curation for DomainScope (MIT). ASCII-folded generic business / public-service / e-commerce / accounting / e-government vocabulary for the market; never sourced from any single organisation's DNS zone.",

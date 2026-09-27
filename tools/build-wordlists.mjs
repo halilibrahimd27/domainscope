@@ -12,7 +12,7 @@
  *   assets/data/wordlist-large.txt.gz    ~50k base ∪ ranked extension (gzip)
  *   assets/data/wordlist-huge.txt.gz     ~130k full ranked list (gzip)
  *   assets/data/locale/<cc>.txt          curated market packs (plain text)
- *   assets/data/wordlist-manifest.json   counts / bytes / sources / licences
+ *   assets/data/wordlist-manifest.json   counts / bytes / SHA-256 / sources / licences
  *
  * Ranking: reciprocal-rank fusion (RRF) across the ranked sources, with the
  * SecLists top-1M list (Cloudflare-derived real usage) as the primary signal,
@@ -33,6 +33,7 @@
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -297,10 +298,20 @@ const HUGE_N = 130000;
 
 function toFile(labels) { return labels.join('\n') + '\n'; }
 
+/**
+ * Size and SHA-256 (hex) of a written file. The service worker keys its wordlist cache by the
+ * hash, so a tier downloaded once is reused across deploys until its content changes.
+ * @param {Buffer} buf
+ * @returns {{ bytes: number, sha256: string }}
+ */
+export function fileDigest(buf) {
+  return { bytes: buf.length, sha256: createHash('sha256').update(buf).digest('hex') };
+}
+
 async function writeText(name, labels) {
-  const body = toFile(labels);
+  const body = Buffer.from(toFile(labels));
   await writeFile(join(DATA, name), body);
-  return Buffer.byteLength(body);
+  return fileDigest(body);
 }
 
 async function writeGz(name, labels) {
@@ -310,7 +321,7 @@ async function writeGz(name, labels) {
   // different platforms. Pin it to 0xff ("unknown"); MTIME is already 0.
   if (gz.length > 9) gz[9] = 0xff;
   await writeFile(join(DATA, name), gz);
-  return gz.length;
+  return fileDigest(gz);
 }
 
 /** Build a locale pack: normalise + dedupe + content filter, preserving order. */
@@ -390,16 +401,19 @@ async function main() {
   }
 
   // 3. Write tiers.
-  const baseBytes = await writeText('wordlist-base.txt', base);
-  const largeBytes = await writeGz('wordlist-large.txt.gz', large);
-  const hugeBytes = await writeGz('wordlist-huge.txt.gz', huge);
+  const baseFile = await writeText('wordlist-base.txt', base);
+  const largeFile = await writeGz('wordlist-large.txt.gz', large);
+  const hugeFile = await writeGz('wordlist-huge.txt.gz', huge);
+  const baseBytes = baseFile.bytes;
+  const largeBytes = largeFile.bytes;
+  const hugeBytes = hugeFile.bytes;
 
   // 4. Locale packs.
   const localeInfo = {};
   for (const [cc, words] of Object.entries(LOCALE_PACKS)) {
     const pack = buildPack(words);
-    const bytes = await writeText(join('locale', `${cc}.txt`), pack);
-    localeInfo[cc] = { count: pack.length, bytes };
+    const { bytes, sha256 } = await writeText(join('locale', `${cc}.txt`), pack);
+    localeInfo[cc] = { count: pack.length, bytes, sha256 };
   }
 
   // 5. Manifest.
@@ -410,17 +424,17 @@ async function main() {
       ? new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000)
       : new Date()).toISOString().slice(0, 10),
     note: 'Counts are computed at build time; assets/js/lib/wordlist.js embeds a copy for the UI. ' +
-      'A unit test asserts the embedded counts match these files.',
+      'A unit test asserts the embedded counts match these files. sha256 keys the wordlist cache of the service worker.',
     licenseFile: 'THIRD_PARTY_LICENSES.txt',
     tiers: {
       small: { id: 'small', approxCount: WORDLIST_SMALL.length, bytes: 0, file: null,
         sources: ['DomainScope curated core'], licence: 'MIT' },
-      smart: { id: 'smart', approxCount: base.length, bytes: baseBytes, file: 'wordlist-base.txt',
+      smart: { id: 'smart', approxCount: base.length, bytes: baseBytes, sha256: baseFile.sha256, file: 'wordlist-base.txt',
         sources: ['DomainScope curated core', 'SecLists', 'bitquark/dnspop', 'commonspeak2', 'dnsgen', 'altdns'],
         licence: 'MIT / Apache-2.0' },
-      large: { id: 'large', approxCount: large.length, bytes: largeBytes, file: 'wordlist-large.txt.gz',
+      large: { id: 'large', approxCount: large.length, bytes: largeBytes, sha256: largeFile.sha256, file: 'wordlist-large.txt.gz',
         sources: ['SecLists top-1M', 'bitquark top-100k', 'commonspeak2'], licence: 'MIT / Apache-2.0' },
-      huge: { id: 'huge', approxCount: huge.length, bytes: hugeBytes, file: 'wordlist-huge.txt.gz',
+      huge: { id: 'huge', approxCount: huge.length, bytes: hugeBytes, sha256: hugeFile.sha256, file: 'wordlist-huge.txt.gz',
         sources: ['SecLists top-1M', 'bitquark top-100k', 'commonspeak2'], licence: 'MIT / Apache-2.0' }
     },
     locales: localeInfo,

@@ -1907,7 +1907,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(text, 'a\\x1b[2Kb\\x07\\x9b\\u202ec\\x0d\\x0a\\u2028\\x7f')
         self.assertTrue(text.isprintable())
         for kept in ('Let’s Encrypt', 'Türkçe Şirket A.Ş.', '*.example.com',
-                     'a b', ''):
+                     'a\xa0b', ''):
             self.assertEqual(sos.display_text(kept), kept)
 
     def test_summary_escapes_certificate_controls(self):

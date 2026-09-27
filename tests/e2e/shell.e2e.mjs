@@ -20,7 +20,11 @@
  * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
  * the app boots from it, About's links resolve, a view that fails to load offline (or blocked)
  * keeps the plain network error with Retry, and after a second "deploy" a view opened in the
- * old tab offers a page reload that brings the new version.
+ * old tab offers a page reload that brings the new version (that tab has no service worker).
+ * Finally the installable app, on a bundle and origin of its own: the service worker installs and
+ * precaches the version; with the server dropping every request the app reloads from the cache,
+ * Certificate, Zone File and Servers work and DNS Lookup says it needs the network and sends
+ * nothing; a second deploy brings "Update ready — Reload", which loads it.
  * No network access is needed: the shell views never call external APIs.
  */
 

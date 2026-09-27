@@ -827,6 +827,8 @@ export function mount(container, ctx) {
       targetField.focus();
       return;
     }
+    // Offline: a toast says the sweep needs the network, and nothing is sent.
+    if (!ctx.requireOnline()) return;
     if (parsed.kind === 'asn') {
       if (!(isListing() && session.asn.asn === parsed.asn)) listPrefixes(parsed.asn);
       return;
@@ -1040,7 +1042,7 @@ export function mount(container, ctx) {
 
     function sweepSelected() {
       const s = prefixSelection(r.prefixes, entry.selected);
-      if (!s.count || s.over || isRunning()) return;
+      if (!s.count || s.over || isRunning() || !ctx.requireOnline()) return;
       const target = parseSweepTarget(s.cidrs.join('\n'));
       clear(pickIssues);
       if (!target.ok) {

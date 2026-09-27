@@ -149,6 +149,42 @@ describe('mineDnsNames', () => {
     await assert.rejects(mineDnsNames(APEX, { dns, signal: ctl.signal }), (e) => e.name === 'AbortError');
   });
 
+  test('service labels are never reported as names (CNAME\'d _dmarc / SRV, in-domain _spf include)', async () => {
+    const vendor = `${APEX}._d.dmarcvendor.example`;
+    const zone = {
+      ...ZONE,
+      [`${APEX}|TXT`]: [{ name: APEX, type: 'TXT', ttl: 3600, data: ['v=spf1 include:_spf.example.net ~all'] }],
+      // hosted DMARC: the probed name CNAMEs to the vendor, which holds the TXT
+      [`_dmarc.${APEX}|TXT`]: [
+        { name: `_dmarc.${APEX}`, type: 'CNAME', ttl: 3600, data: vendor },
+        { name: vendor, type: 'TXT', ttl: 3600, data: ['v=DMARC1; p=reject; rua=mailto:agg@reports.example.net'] }
+      ],
+      [`_autodiscover._tcp.${APEX}|SRV`]: [
+        { name: `_autodiscover._tcp.${APEX}`, type: 'CNAME', ttl: 3600, data: APEX }
+      ]
+    };
+    const { names, evidence } = await mineDnsNames(APEX, { dns: makeDns(zone) });
+    for (const n of [`_dmarc.${APEX}`, `_autodiscover._tcp.${APEX}`, `_spf.${APEX}`]) {
+      assert.ok(!names.includes(n), `service label reported: ${n}`);
+    }
+    assert.ok(names.every((n) => !n.split('.').some((l) => l.startsWith('_'))), names.join(', '));
+    assert.ok(evidence.every((e) => !e.name.split('.').some((l) => l.startsWith('_'))));
+    // the DMARC record is still read through the CNAME'd _dmarc
+    assert.ok(names.includes('reports.example.net'));
+  });
+
+  test('a wildcard CNAME to the apex adds nothing', async () => {
+    const dns = {
+      async query(name) {
+        const answers = name === APEX ? [] : [{ name, type: 'CNAME', ttl: 300, data: APEX }];
+        return { ok: true, rcode: 'NOERROR', answers, authorities: [], additionals: [] };
+      }
+    };
+    const { names, evidence } = await mineDnsNames(APEX, { dns });
+    assert.deepEqual(names, []);
+    assert.deepEqual(evidence, []);
+  });
+
   test('invalid input returns empty', async () => {
     assert.deepEqual(await mineDnsNames('', { dns: makeDns() }), { names: [], evidence: [], externalRefs: [] });
     assert.deepEqual(await mineDnsNames(APEX, {}), { names: [], evidence: [], externalRefs: [] });

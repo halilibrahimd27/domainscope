@@ -240,6 +240,26 @@ describe('discovery engine v2: DNS record mining', () => {
     assert.ok(scan.stats.fromDns >= 4);
     assert.ok(scan.mineEvidence.some((e) => e.name === `mail.${A}` && e.from === 'MX'));
   });
+
+  test('a hosted-DMARC CNAME (TXT-only target) is not a host, so no false dangling alert', async () => {
+    const A = 'mine.example';
+    const vendor = `${A}._d.dmarcvendor.example`;
+    const zone = {
+      [A]: { A: ['203.0.113.1'], TXT: [[`v=spf1 include:_spf.${A} -all`]] },
+      [`_dmarc.${A}`]: { CNAME: vendor },
+      [vendor]: { TXT: [['v=DMARC1; p=reject']] },
+      [`_spf.${A}`]: { TXT: [['v=spf1 ip4:203.0.113.9 -all']] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'off', mine: true, permutationBudget: 0, recursive: false,
+      originHints: false, balance: false, dns, fetchImpl
+    });
+    const serviceLabel = (n) => n.split('.').some((l) => l.startsWith('_'));
+    assert.deepEqual(scan.hosts.filter((x) => serviceLabel(x.name)).map((x) => x.name), []);
+    assert.ok(scan.hosts.every((x) => !x.classification.dangling));
+    assert.equal(scan.stats.dangling, 0);
+  });
 });
 
 describe('discovery engine v2: multi-level wildcard filtering', () => {

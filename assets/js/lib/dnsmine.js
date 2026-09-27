@@ -15,7 +15,9 @@
  * Names that belong to the queried domain are returned in `names` (with
  * per-record `evidence`); names outside it (external NS, SPF includes, CA
  * `issue` domains, cross-org DMARC report domains) are returned as
- * `externalRefs` for context.
+ * `externalRefs` for context. `names` never holds a name with a `_`-prefixed
+ * label: `_dmarc`, `_sip._tls` or `_spf` name a record, not a host, so the
+ * probed query names (and in-domain `include:_spf.<domain>`) are not reported.
  */
 
 import { normalizeHostname, isSubdomainOf, sortHostnames } from './domain.js';
@@ -60,6 +62,11 @@ function txtString(rr) {
   return typeof rr.data === 'string' ? rr.data : '';
 }
 
+/** Does a name carry a service label (`_dmarc`, `_tcp`, `_spf` …)? Those name records, not hosts. */
+function hasServiceLabel(name) {
+  return name.split('.').some((label) => label.startsWith('_'));
+}
+
 /** Extract the host part of a `mailto:` / URL value (for iodef, rua, ruf). */
 function hostFromUri(uri) {
   const s = String(uri || '').trim();
@@ -95,12 +102,17 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
   const external = new Set();
   const ips = new Set();
 
-  /** Record a referenced name: in-domain → names + evidence, else externalRefs. */
+  /**
+   * Record a referenced name: in-domain → names + evidence, else externalRefs.
+   * An in-domain service-label name (`_dmarc.<domain>`, a CNAME'd probe name)
+   * is dropped.
+   */
   const addName = (value, from, record) => {
     const norm = normalizeHostname(String(value ?? ''), { allowSingleLabel: true });
     if (!norm) return;
     if (isSubdomainOf(norm, apex)) {
       if (norm === apex) return; // the apex itself is not a discovery
+      if (hasServiceLabel(norm)) return; // a record name, never a host
       names.add(norm);
       evidence.push({ name: norm, from, record: String(record ?? norm) });
     } else {
@@ -132,7 +144,9 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
     return { item, res };
   }));
 
-  // First pass: harvest CNAME targets and address records from every answer.
+  // First pass: harvest CNAME targets and address records from every answer. The
+  // owner of a CNAME is harvested too; a probed service name (`_dmarc`,
+  // `_sip._tls` CNAME'd to a vendor) is dropped by addName, never a host.
   for (const { res } of responses) {
     if (!res || !res.ok || !Array.isArray(res.answers)) continue;
     for (const rr of res.answers) {

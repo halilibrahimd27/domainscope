@@ -67,9 +67,9 @@ import {
   baseDomainsFromNames
 } from '../lib/domain.js';
 import { normalizeIP } from '../lib/netinfo.js';
-import { describeNetwork } from '../lib/ipintel.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
-import { runScan, learnedLabelsFromScan, estimateQueries, SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS } from '../lib/scanner.js';
+// The pure plan parts of the engine; lib/scanner.js itself loads when a scan starts (loadScanner).
+import { learnedLabelsFromScan, estimateQueries, SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS } from '../lib/scanplan.js';
 import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
@@ -80,7 +80,7 @@ import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
 import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, subTabParams, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
-import { errorKind, splitList } from '../lib/util.js';
+import { errorKind, splitList, onceAsync } from '../lib/util.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
 
@@ -110,7 +110,7 @@ export const DEFAULT_PERMUTATION_BUDGET = 1500;
 export const PROBE_RATE_QPS = 120;
 /**
  * Candidates the scanner tries per scanned domain at each level at most (mirrors
- * lib/scanner MAX_BRUTEFORCE_PER_BASE; a unit test keeps the two in step) and across all
+ * lib/scanplan MAX_BRUTEFORCE_PER_BASE; a unit test keeps the two in step) and across all
  * domains of one scan (MAX_BRUTEFORCE_TOTAL). Custom and learned names count towards the cap.
  */
 export const BRUTEFORCE_CAPS = Object.freeze({ small: 4000, smart: 20000, large: 80000, huge: 160000 });
@@ -1417,7 +1417,7 @@ export function wordlistPlanText(plan, sweep = MAX_SWEEP_CONCURRENCY, queries = 
 }
 
 /**
- * The honest DNS-query estimate range for a planned scan, from lib/scanner.estimateQueries: the
+ * The honest DNS-query estimate range for a planned scan, from lib/scanplan.estimateQueries: the
  * wordlist plus permutations, the deeper round and the origin-hint queries — the numbers the old
  * wordlist-only plan under-counted. Pure.
  * @param {{ level: string, domains: string[], locales?: string[]|null, custom?: number, learned?: number,
@@ -1568,7 +1568,7 @@ function inScopeHosts(result) {
 
 /**
  * After a finished scan: remember the bare left-most labels of the names that resolved under the
- * scanned domains (lib/scanner.learnedLabelsFromScan — never full names or IPs; names outside
+ * scanned domains (lib/scanplan.learnedLabelsFromScan — never full names or IPs; names outside
  * every scanned domain contribute nothing). Never throws.
  * @param {object} result ScanResult
  * @param {boolean} enabled the "learned names" switch of the scan
@@ -2907,8 +2907,49 @@ export function wordlistFellShort(result) {
 }
 
 /**
+ * The discovery engine (lib/scanner.js and the DoH client it imports), loaded when the first
+ * scan starts rather than with the page: the shell preloads it once the browser is idle
+ * (app.js VIEWS[].preload), so Start rarely waits. A failed import is not kept (the next Start
+ * tries again). Shared with SSL Targets.
+ * @returns {Promise<typeof import('../lib/scanner.js')>}
+ */
+export const loadScanner = onceAsync(() => import('../lib/scanner.js'));
+
+/** lib/ipintel.js, loaded on the first "Look up owner" click. */
+const loadIpIntel = onceAsync(() => import('../lib/ipintel.js'));
+
+/**
+ * lib/scanner.runScan once the engine has loaded. A failed import rejects like a failed scan
+ * (the run shows the error) after calling `onLoadFailed` (ctx.checkOutdated: in a tab left open
+ * across a deploy the old version's module is gone). Shared with SSL Targets.
+ * @param {object} config runScan config
+ * @param {object} hooks runScan hooks
+ * @param {() => void} [onLoadFailed]
+ * @returns {Promise<object>} the ScanResult
+ */
+export function runScanner(config, hooks, onLoadFailed) {
+  return loadScanner().then(({ runScan }) => runScan(config, hooks), (err) => {
+    if (onLoadFailed) onLoadFailed();
+    throw err;
+  });
+}
+
+/**
+ * The AS owner of a network (lib/ipintel.describeNetwork: one RIPEstat request), the module
+ * loaded on the first lookup. Shared with SSL Targets.
+ * @param {string} cidr
+ * @param {{ signal?: AbortSignal }} [opts]
+ * @returns {Promise<object>}
+ */
+export async function networkOwner(cidr, opts) {
+  const { describeNetwork } = await loadIpIntel();
+  return describeNetwork(cidr, opts);
+}
+
+/**
  * Start lib/scanner.runScan for a run; events are recorded on the run and re-emitted to the
- * mounted view (if any). `onDataMissing` (ctx.checkOutdated) runs when the wordlist fell short.
+ * mounted view (if any). `onDataMissing` (ctx.checkOutdated) runs when the wordlist fell short
+ * or the engine could not be loaded.
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
   const hooks = {
@@ -2939,7 +2980,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       emit(run, 'progress', { ...run.progress, pills });
     }
   };
-  runScan({ ...scanConfig, signal: run.controller.signal }, hooks).then((result) => {
+  runScanner({ ...scanConfig, signal: run.controller.signal }, hooks, onDataMissing).then((result) => {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
@@ -4908,7 +4949,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         clear(el);
         el.append(h('span', { class: 'sub-org-owner-looking' }, t('sub.org.owner.looking')));
         try {
-          const d = await describeNetwork(net.cidr, { signal: ownerCtl.signal });
+          const d = await networkOwner(net.cidr, { signal: ownerCtl.signal });
           ownerCache.set(net.cidr, d);
           fillOwner(el, d);
         } catch (err) {

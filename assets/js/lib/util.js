@@ -712,6 +712,29 @@ export function createCache({ maxEntries = 5000, ttlMs = 0, now = Date.now } = {
 }
 
 /**
+ * Share one run of an async loader (a module imported on first use, a client): every call gets
+ * the same promise while it is pending and once it has resolved. A rejection is forgotten, so the
+ * next call runs the loader again (offline, a dropped connection); a loader that throws
+ * synchronously rejects the same way.
+ * @template T
+ * @param {() => Promise<T>|T} load
+ * @returns {() => Promise<T>}
+ */
+export function onceAsync(load) {
+  let pending = null;
+  return () => {
+    if (!pending) {
+      const promise = Promise.resolve().then(load);
+      pending = promise;
+      promise.catch(() => {
+        if (pending === promise) pending = null;
+      });
+    }
+    return pending;
+  };
+}
+
+/**
  * Split free text into items on whitespace, commas, semicolons and newlines.
  * Whole-line comments (`#...`) and inline comments (` # ...`) are dropped.
  * @param {string|string[]|null|undefined} text

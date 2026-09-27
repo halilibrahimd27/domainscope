@@ -1219,14 +1219,14 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.deepEqual(off.customWordlist, ['api'], 'the scan\'s own custom list still seeds permutations');
   });
 
-  test('wordlist caps and the probe rate: one constant each, in step with lib/scanner', async () => {
+  test('wordlist caps and the probe rate: one constant each, in step with lib/scanplan', async () => {
     const { S } = await load();
+    const plan = await import('../../assets/js/lib/scanplan.js');
+    assert.deepEqual({ ...plan.MAX_BRUTEFORCE_PER_BASE }, { ...S.BRUTEFORCE_CAPS }, 'per-domain caps mirror the scanner');
+    assert.equal(plan.MAX_BRUTEFORCE_TOTAL, S.BRUTEFORCE_TOTAL_CAP, 'multi-domain cap mirrors the scanner');
+    // lib/scanner.js declares no cap of its own: it imports these.
     const src = await readFile(new URL('../../assets/js/lib/scanner.js', import.meta.url), 'utf8');
-    const perBase = /const MAX_BRUTEFORCE_PER_BASE = \{([^}]+)\}/.exec(src);
-    assert.ok(perBase, 'scanner declares MAX_BRUTEFORCE_PER_BASE');
-    const caps = Object.fromEntries([...perBase[1].matchAll(/(\w+):\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
-    assert.deepEqual(caps, { ...S.BRUTEFORCE_CAPS }, 'per-domain caps mirror the scanner');
-    assert.equal(Number(/const MAX_BRUTEFORCE_TOTAL = (\d+)/.exec(src)[1]), S.BRUTEFORCE_TOTAL_CAP, 'multi-domain cap mirrors the scanner');
+    assert.doesNotMatch(src, /const (?:MAX_BRUTEFORCE_PER_BASE|MAX_BRUTEFORCE_TOTAL) =/);
     assert.ok(S.BRUTEFORCE_CAPS.huge >= S.levelCount('huge'), 'one huge scan can try the whole huge tier');
     // Every estimate derives from PROBE_RATE_QPS at the full sweep width.
     assert.equal(S.probeRate(), S.PROBE_RATE_QPS);

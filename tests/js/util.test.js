@@ -4,7 +4,7 @@ import {
   AbortError, TimeoutError, HttpError, RateLimitError, ParseError,
   sleep, createLimiter, fetchWithTimeout, fetchAndRead, fetchJson, fetchText, retry,
   defaultShouldRetry, errorKind, uniq, chunk, randomLabel, createCache,
-  mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError
+  mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError, onceAsync
 } from '../../assets/js/lib/util.js';
 
 /** A Response-like object for the fetch mocks (no real network). */
@@ -445,4 +445,36 @@ test('throwIfAborted throws the mapped reason', () => {
   assert.doesNotThrow(() => throwIfAborted(ctl.signal));
   ctl.abort();
   assert.throws(() => throwIfAborted(ctl.signal), (e) => e.name === 'AbortError');
+});
+
+test('onceAsync shares one load while pending and after it resolved', async () => {
+  let calls = 0;
+  let release;
+  const load = onceAsync(() => {
+    calls += 1;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const a = load();
+  const b = load();
+  assert.equal(a, b, 'the same promise while pending');
+  await Promise.resolve(); // the loader runs on the next microtask
+  release({ ready: true });
+  assert.deepEqual(await a, { ready: true });
+  assert.equal(await load(), await a);
+  assert.equal(calls, 1);
+});
+
+test('onceAsync forgets a failed load (sync throw or rejection) so the next call retries', async () => {
+  let calls = 0;
+  const load = onceAsync(() => {
+    calls += 1;
+    if (calls === 1) throw new TypeError('Failed to fetch dynamically imported module');
+    if (calls === 2) return Promise.reject(new TypeError('offline'));
+    return 'module';
+  });
+  await assert.rejects(load(), /dynamically imported/);
+  await assert.rejects(load(), /offline/);
+  assert.equal(await load(), 'module');
+  assert.equal(await load(), 'module');
+  assert.equal(calls, 3);
 });

@@ -55,7 +55,7 @@ import {
 } from '../i18n.js';
 import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
-import { runScan, SCAN_STAGES } from '../lib/scanner.js';
+import { SCAN_STAGES } from '../lib/scanplan.js';
 import { FORM_STEPS, formProgress, optionChanges, barStuck } from '../lib/scanform.js';
 import {
   toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
@@ -73,12 +73,11 @@ import {
 import {
   LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
   applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary,
-  liveHosts, originOverview, originSweep, partialHostRecord, planQueryRange,
-  realOriginNetworks, reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
-  wordlistCount, wordlistFellShort, wordlistPlan, wordlistPlanText, wordlistScanConfig,
+  liveHosts, networkOwner, originOverview, originSweep, partialHostRecord, planQueryRange,
+  realOriginNetworks, reasonText, rememberLearned, runScanner, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages,
+  techniqueCounts, wordlistCount, wordlistFellShort, wordlistPlan, wordlistPlanText, wordlistScanConfig,
   ZoneChip, isResolving, validZoneIntent, zoneChipCounts, zoneForDomains, zoneScanOverrides
 } from './subdomains.js';
-import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 import { summarizeVerify, verifyHeadline } from '../lib/verify.js';
@@ -1285,7 +1284,7 @@ function emit(run, type, payload) {
 /**
  * Start lib/scanner.runScan for a run; events are recorded on the run and re-emitted to
  * the mounted view (if any). `onDataMissing` (ctx.checkOutdated) runs when the wordlist fell
- * short (see wordlistFellShort in subdomains.js).
+ * short (see wordlistFellShort in subdomains.js) or the engine could not be loaded (runScanner).
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
   const hooks = {
@@ -1315,7 +1314,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       emit(run, 'progress', { ...run.progress, pills });
     }
   };
-  runScan({ ...scanConfig, signal: run.controller.signal }, hooks).then((result) => {
+  runScanner({ ...scanConfig, signal: run.controller.signal }, hooks, onDataMissing).then((result) => {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
@@ -3153,7 +3152,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           clear(el);
           el.append(h('span', { class: 'muted' }, t('sub.org.owner.looking')));
           try {
-            const d = await describeNetwork(net.cidr, { signal: cdnOwnerCtl.signal });
+            const d = await networkOwner(net.cidr, { signal: cdnOwnerCtl.signal });
             cdnOwnerCache.set(net.cidr, d);
             fill(d);
           } catch (err) {

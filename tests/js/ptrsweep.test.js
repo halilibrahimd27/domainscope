@@ -530,7 +530,9 @@ describe('ptrTemplate', () => {
     ['20010db8000000000000000000000005.v6.isp.example.net', '2001:db8::5', 'embedded', '{ip}.v6.isp.example.net'],
     ['dsl-pool-4471.isp.example.net', '192.0.2.7', 'generic', 'dsl-pool-{n}.isp.example.net'],
     ['c-2-7.cust.isp.example.net', '192.0.2.7', 'generic', 'c-{n}-{n}.cust.isp.example.net'],
-    ['dynamic12.example.net', '192.0.2.7', 'generic', 'dynamic{n}.example.net']
+    ['dynamic4471.example.net', '192.0.2.7', 'generic', 'dynamic{n}.example.net'],
+    ['dhcp-5-7.isp.example.net', '192.0.2.7', 'generic', 'dhcp-{n}-{n}.isp.example.net'],
+    ['ppp-1234.dialup.isp.example.net', '192.0.2.7', 'generic', 'ppp-{n}.dialup.isp.example.net']
   ];
   for (const [name, ip, kind, template] of cases) {
     test(`${name} → ${kind} ${template}`, () => {
@@ -546,7 +548,12 @@ describe('ptrTemplate', () => {
     for (const [name, ip] of [
       ['mail.example.com', '192.0.2.7'], ['web10.example.com', '192.0.2.10'], ['web02.example.com', '192.0.2.2'],
       ['node-12.cluster.example.net', '192.0.2.12'], ['static.example.com', '192.0.2.7'], ['pool.example.com', '192.0.2.7'],
-      ['srv-192-0-2-70.example.net', '192.0.2.7'], ['x1192-0-2-77.example.net', '192.0.2.7'], ['', '192.0.2.7'], ['mail.example.com', 'nope']
+      ['srv-192-0-2-70.example.net', '192.0.2.7'], ['x1192-0-2-77.example.net', '192.0.2.7'], ['', '192.0.2.7'], ['mail.example.com', 'nope'],
+      // a pool word next to one short number names servers too; so does a word inside another one
+      ['static1.example.com', '192.0.2.7'], ['static-01.example.com', '192.0.2.7'], ['dhcp1.example.com', '192.0.2.7'],
+      ['client2.vpn.example.com', '192.0.2.7'], ['pool2.example.com', '192.0.2.7'], ['cust-web01.example.com', '192.0.2.7'],
+      ['dynamic12.example.net', '192.0.2.7'], ['static-01.dc2.example.com', '192.0.2.7'], ['web1234.staticsite.example.com', '192.0.2.7'],
+      ['dsl1.example123.com', '192.0.2.7']
     ]) assert.equal(P.ptrTemplate(name, ip), null, name);
     assert.equal(P.isTemplatedPtr('192-0-2-7.isp.example.net', '192.0.2.7'), true);
     assert.equal(P.isTemplatedPtr('mail.example.com', '192.0.2.7'), false);

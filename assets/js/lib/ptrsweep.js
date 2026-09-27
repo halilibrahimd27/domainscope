@@ -747,7 +747,9 @@ export async function checkFcrdns(ip, { dns, signal, balance = false, maxNames =
 /**
  * Words ISPs put into generated names (with a number): dynamic / static pools, DSL, cable,
  * dial-up, customer premises, CGNAT, fibre access. Deliberately narrow: `web`, `host`, `srv`,
- * `node` … name real servers too.
+ * `node` … name real servers too. A word counts only as a token of its own (`dsl-pool-4471`,
+ * `dynamic4471`), and only next to a number of three digits or more, or two numbers in one
+ * label: `static1`, `dhcp-01`, `client2.vpn` or `cust-web01` are how people name servers too.
  */
 export const GENERIC_PTR_WORDS = Object.freeze([
   'dynamic', 'dyn', 'dynip', 'dhcp', 'pool', 'static', 'dsl', 'adsl', 'vdsl', 'xdsl', 'sdsl', 'cable', 'dial', 'dialup',
@@ -755,6 +757,8 @@ export const GENERIC_PTR_WORDS = Object.freeze([
   'cgnat', 'ftth', 'fttx', 'fttb', 'fttc', 'gpon', 'unassigned', 'unused'
 ]);
 const GENERIC_SET = new Set(GENERIC_PTR_WORDS);
+/** A name token that is a word, alone or with a number after it (`pool`, `dsl4471`). */
+const WORD_TOKEN_RE = /^([a-z]+)\d*$/;
 const IP_PLACEHOLDER = '{ip}';
 const NUM_PLACEHOLDER = '{n}';
 
@@ -809,8 +813,10 @@ function findForm(name, form) {
  * - `embedded`: the address is written into the name (dashes, dots, zero-padded, reversed, hex,
  *   as one number, or its last three octets): `203-0-113-5.isp.example.net` →
  *   `{ip}.isp.example.net`, `ec2-…compute.amazonaws.com`, `5.113.0.203.bc.googleusercontent.com`.
- * - `generic`: a pool word ({@link GENERIC_PTR_WORDS}) and a number: `dsl-pool-4471.isp.example.net`
- *   → `dsl-pool-{n}.isp.example.net`.
+ * - `generic`: a pool word ({@link GENERIC_PTR_WORDS}) as a token of its own, and in the labels
+ *   left of the registrable domain a number of three digits or more, or two numbers in one
+ *   label: `dsl-pool-4471.isp.example.net` → `dsl-pool-{n}.isp.example.net`,
+ *   `c-2-7.cust.isp.example.net` → `c-{n}-{n}.cust.isp.example.net` (not `static1.example.com`).
  * @param {string} name
  * @param {string} ip the address the name was found for
  * @returns {{ key: string, template: string, kind: 'embedded'|'generic', word: string|null }|null}
@@ -830,8 +836,17 @@ export function ptrTemplate(name, ip) {
     return { key: `embedded:${template}`, template, kind: 'embedded', word: null };
   }
   if (!/\d/.test(n)) return null;
-  const word = n.split(/[.\-_]/).map((tok) => tok.replace(/\d+/g, '')).find((tok) => GENERIC_SET.has(tok)) || null;
-  if (!word) return null;
+  const token = n.split(/[.\-_]/).map((tok) => WORD_TOKEN_RE.exec(tok)).find((m) => m && GENERIC_SET.has(m[1]));
+  if (!token) return null;
+  const word = token[1];
+  // The numbers of the host part (the registrable domain's own digits do not count).
+  const reg = registrableDomain(n);
+  const host = reg && n.endsWith(`.${reg}`) ? n.slice(0, -(reg.length + 1)) : n;
+  const generated = host.split('.').some((label) => {
+    const numbers = label.match(/\d+/g) || [];
+    return numbers.length >= 2 || numbers.some((d) => d.length >= 3);
+  });
+  if (!generated) return null;
   const template = n.replace(/\d+/g, NUM_PLACEHOLDER);
   return { key: `generic:${template}`, template, kind: 'generic', word };
 }

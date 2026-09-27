@@ -802,13 +802,14 @@ export function setCurrentCert(appState, load) {
 /**
  * What a loaded certificate is about, as the page session's current target: the host name a
  * Certificate Transparency load was asked for, else the leaf's first DNS name (a wildcard as
- * its base name); null without a leaf or a name.
+ * its base name); null without a leaf or a name, and for the bundled sample (a demo: its name is
+ * nothing the user worked on).
  * @param {CertLoad|null} load
  * @returns {string|null}
  */
 export function certTarget(load) {
   const leaf = load && load.result ? load.result.leaf : null;
-  if (!leaf) return null;
+  if (!leaf || load.source === 'sample') return null;
   if (load.source === 'ct' && load.ct && load.ct.host) return stripWildcard(load.ct.host).base;
   const names = Array.isArray(leaf.hostnames) ? leaf.hostnames : [];
   return names.length ? stripWildcard(names[0]).base : null;

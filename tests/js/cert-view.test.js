@@ -177,7 +177,7 @@ describe('cert view: a certificate from Certificate Transparency', () => {
     assert.deepEqual(load.ct, { host: 'shop.wild.example.net', provider: 'certspotter', issuance, precertificate: false, newerPrecertificate: null, truncated: true });
   });
 
-  test('certTarget: the looked-up host of a CT load, else the first DNS name (a wildcard as its base)', () => {
+  test('certTarget: the looked-up host of a CT load, else the first DNS name (a wildcard as its base); the sample is none', () => {
     const der = parseCertificates(readFileSync(join(FIX, 'ec_wildcard.pem'))).leaf.der;
     const ct = ctCertLoad({ host: 'shop.wild.example.net', provider: 'certspotter', der, issuance: null, precertificate: false, newerPrecertificate: null, truncated: false });
     assert.equal(certTarget(ct), 'shop.wild.example.net');
@@ -185,7 +185,9 @@ describe('cert view: a certificate from Certificate Transparency', () => {
     assert.equal(file.result.leaf.hostnames[0], '*.wild.example.net');
     assert.equal(certTarget(file), 'wild.example.net');
     const sample = loadCertificateData(readFileSync(join(FIX, '..', '..', 'assets', 'data', 'sample-cert.pem'), 'utf8'), { source: 'sample' });
-    assert.equal(certTarget(sample), 'example.com');
+    assert.equal(sample.result.leaf.hostnames[0], 'example.com');
+    assert.equal(certTarget(sample), null, 'trying the sample makes no domain the target');
+    assert.equal(certTarget({ ...sample, source: 'paste' }), 'example.com', 'the same certificate pasted is one');
     assert.equal(certTarget(loadCertificateData('not a certificate')), null, 'no leaf');
     assert.equal(certTarget(null), null);
   });

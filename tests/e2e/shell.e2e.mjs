@@ -1933,6 +1933,7 @@ async function main() {
         assertEqual(sent, 0, 'no DoH request');
         await shot(pwa, 'desktop-light-en-offline-lookup');
         await assertClean(pwa, 'offline', { offline: true });
+        await pwa.resetProblems(); // the browser's own offline failures must not count once it is back online
       });
 
       await step('back online, a new deploy: "Update ready — Reload" loads it and drops the old version\'s cache', async () => {

@@ -7,16 +7,25 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# One run at a time, in push order: a newer push waits for the running deployment instead of
+# cancelling it (a still-queued older run is replaced by the newer one).
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  # The whole CI workflow (unit, CLI and offline E2E tests): a red commit is never published.
+  test:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

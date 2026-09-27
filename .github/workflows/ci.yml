@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # pages.yml runs this whole workflow first and deploys only when it passes
+  workflow_call:
 
 permissions:
   contents: read
@@ -40,3 +43,21 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests/python -v
+
+  e2e:
+    name: E2E offline suites (headless Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # Ubuntu 24.04's AppArmor may refuse the user namespaces Chrome's sandbox uses; not every
+      # image has the switch, so a missing one is fine
+      - name: Allow the Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      # shell, zone and verify never leave the machine (fake DoH / Globalping inside the page,
+      # every other https:// request blocked); the other suites hit live, quota-limited APIs
+      # and are run by hand. Uses the runner's Google Chrome (/usr/bin/google-chrome).
+      - name: Offline E2E (shell, zone, verify)
+        run: npm run test:e2e:offline

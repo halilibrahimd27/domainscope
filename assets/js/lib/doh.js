@@ -748,8 +748,13 @@ export class DohClient {
 
   /**
    * Detect a wildcard record below `domain` by resolving two random labels.
+   * A probe is a hit when it answered NOERROR with addresses, or with a CNAME
+   * chain whatever the final rcode: a `*` CNAME to a target that no longer
+   * exists answers NXDOMAIN with the CNAME (RFC 6604), the takeover-prone case
+   * (detectWildcardDeep classifies it the same way).
    * Extensions: `probes` ([{ name, status }]), `ttl`, `error` (set when no
-   * probe got a DNS answer — the result is then inconclusive, wildcard=false).
+   * probe got a DNS answer — the result is then inconclusive, wildcard=false),
+   * `dangling` (every hit's chain ends in NXDOMAIN with no address).
    * @param {string} domain
    * @param {{ signal?: AbortSignal }} [opts]
    * @returns {Promise<{ wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[] }>}
@@ -758,11 +763,12 @@ export class DohClient {
     checkAbort(signal);
     const base = normalizeHostname(String(domain ?? ''), { allowSingleLabel: true });
     if (!base) {
-      return { wildcard: false, ipv4: [], ipv6: [], cnames: [], probes: [], ttl: null, error: 'Invalid domain' };
+      return { wildcard: false, ipv4: [], ipv6: [], cnames: [], probes: [], ttl: null, error: 'Invalid domain', dangling: false };
     }
     const names = [`${randomLabel(12)}.${base}`, `${randomLabel(12)}.${base}`];
     const results = await Promise.all(names.map((n) => this.resolveHost(n, { signal })));
-    const hits = results.filter((r) => r.status === 'NOERROR' && (r.ipv4.length || r.ipv6.length || r.cnames.length));
+    const hits = results.filter((r) => r.status !== 'ERROR'
+      && (r.cnames.length || (r.status === 'NOERROR' && (r.ipv4.length || r.ipv6.length))));
     const merge = (key) => {
       const out = [];
       for (const r of hits) for (const v of r[key]) if (!out.includes(v)) out.push(v);
@@ -777,7 +783,8 @@ export class DohClient {
       cnames: hits.length ? [...hits[0].cnames] : [],
       probes: results.map((r) => ({ name: r.name, status: r.status })),
       ttl: ttls.length ? Math.min(...ttls) : null,
-      error: answered ? null : results[0].error
+      error: answered ? null : results[0].error,
+      dangling: hits.length > 0 && hits.every((r) => r.status === 'NXDOMAIN' && !r.ipv4.length && !r.ipv6.length)
     };
   }
 

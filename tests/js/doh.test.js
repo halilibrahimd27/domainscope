@@ -4,7 +4,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DohClient, hostResolutionFrom, followCnames } from '../../assets/js/lib/doh.js';
+import { DohClient, hostResolutionFrom, followCnames, detectWildcardDeep } from '../../assets/js/lib/doh.js';
 import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { AbortError } from '../../assets/js/lib/util.js';
@@ -803,6 +803,22 @@ describe('detectWildcard', () => {
     assert.equal(w.wildcard, true);
     assert.deepEqual(w.cnames, ['lb.example.net']);
     assert.deepEqual(w.ipv4, ['203.0.113.9']);
+    assert.equal(w.dangling, false);
+  });
+
+  test('dangling wildcard CNAME (NXDOMAIN + CNAME) is still a wildcard, flagged dangling', async () => {
+    const { fetchImpl } = zoneFetch({ ...ZONE, '*.dw.example.org': { CNAME: 'gone.herokuapp.com' } });
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    const w = await dns.detectWildcard('dw.example.org');
+    assert.equal(w.wildcard, true);
+    assert.deepEqual(w.cnames, ['gone.herokuapp.com']);
+    assert.deepEqual(w.ipv4, []);
+    assert.equal(w.dangling, true);
+    assert.equal(w.error, null);
+    assert.deepEqual(w.probes.map((p) => p.status), ['NXDOMAIN', 'NXDOMAIN']);
+    // both detectors agree on the same zone
+    const deep = await detectWildcardDeep(dns, 'dw.example.org');
+    assert.equal(deep.kind, 'CNAME');
   });
 
   test('no wildcard; failures are inconclusive; invalid domains', async () => {

@@ -316,7 +316,7 @@ export class DohClient {
   constructor({ chain = DEFAULT_CHAIN, concurrency = 12, timeoutMs = 8000, retries = 1, fetchImpl = globalThis.fetch, cache = true } = {})
   async query(name, type = 'A', { resolver /* id: query only this one, no failover */, ecs, dnssec = false /* DO bit */, cd = false, signal, noCache = false } = {}) -> DnsResponse
   async resolveHost(name, { signal, resolver } = {}) -> HostResolution          // A + AAAA concurrently
-  async detectWildcard(domain, { signal } = {}) -> { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[] }   // 2 random labels
+  async detectWildcard(domain, { signal } = {}) -> { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[] }   // 2 random labels; a hit = NOERROR with addresses, or a CNAME chain whatever the rcode (a `*` CNAME to a gone target answers NXDOMAIN + CNAME); extensions: probes, ttl, error, dangling (every hit ends in NXDOMAIN with no address)
   async ptr(ip, { signal } = {}) -> string[]
   setConcurrency(n) ; stats() -> { queries, cacheHits, failures, byResolver: { [id]: { ok, fail, avgMs } } }
 }

@@ -1906,6 +1906,17 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     }
   });
 
+  test('a finished Subdomains run redraws its streamed rows, so the "origin?" badge follows the ORIGIN panel', async () => {
+    // Wiring guard (the view cannot be mounted on the fake DOM; the Zone File hand-off E2E counts the badges).
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const done = /\n {4}if \(run\.status === 'done'\) \{([\s\S]*?)\n {4}\}/.exec(src);
+    assert.ok(done, "finish()'s done branch");
+    const at = (s) => done[1].indexOf(s);
+    assert.ok(at('renderOrigin();') !== -1 && at('renderOrigin();') < at('table.setRows(run.result.hosts);'), 'the panel fills originCandidates first');
+    // setRows keeps the rows drawn while resolving (cached per object, before any badge existed).
+    assert.ok(at('table.setRows(run.result.hosts);') < at('table.refresh();'), 'then every cached row is drawn again');
+  });
+
   test('Subdomains plan line: exact zone mode describes the zone run, not the stored wordlist', async () => {
     await load();
     inLang('en', () => assert.equal(i18n.t('sub.plan.zoneExact', { count: 6 }), 'Exact mode: only the 6 names from your zone file are resolved; the wordlist, variations and passive sources are not used for this scan.'));

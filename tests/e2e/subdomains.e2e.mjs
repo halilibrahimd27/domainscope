@@ -312,6 +312,20 @@ const multiZoneScript = (apexes, zone) => `(() => {
 })();`;
 
 /**
+ * Real DoH latency for a DoH stub installed before it: every answer waits `window.__dnsDelay` ms
+ * (0 at first). Streamed rows are then drawn before the scan ends, and a scan can be caught running.
+ */
+const slowDnsScript = `(() => {
+  window.__dnsDelay = 0;
+  const inner = window.fetch;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (window.__dnsDelay && /[?&]dns=/.test(url)) await new Promise((r) => setTimeout(r, window.__dnsDelay));
+    return inner(input, init);
+  };
+})();`;
+
+/**
  * Elements of a panel that stick out of the viewport on the right (text or a control cut off on
  * a phone). Content inside a scrolling wrapper (the tables) is allowed to be wider.
  */
@@ -1268,6 +1282,50 @@ async function main() {
         await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('zone', undefined));
         await tab.waitFor(() => !document.querySelector('[data-role="zone-chip"]'), { message: 'chip gone after Forget' });
         await assertClean(tab, 'zone hand-off (Subdomains)', origin);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /** What the Zone File view does on "Scan now": publish the zone, a one-shot intent, open Subdomains. */
+    const zoneScanNow = (tab) => tab.evaluate(async (zone) => {
+      const { state } = await import('./assets/js/state.js');
+      state.setSession('zone', zone);
+      state.setSession('zoneScanIntent', { v: 1, target: 'subdomains', domain: zone.origin, mode: 'exact', autostart: true, at: Date.now() });
+      location.hash = `#/subdomains?domain=${zone.origin}`;
+    }, ZONE_HANDOFF_INPUT);
+
+    await run.step('slow DNS: the rows drawn while resolving get their "origin?" badge as soon as the zone scan ends', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS) });
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: slowDnsScript });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        await tab.evaluate(() => { window.__dnsDelay = 40; });
+        await zoneScanNow(tab);
+        await tab.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'the intent started the scan' });
+        const id = await currentRunId(tab);
+        // Rows on screen while the scan still runs: the case where the table reuses rows drawn
+        // before the ORIGIN panel knew which hosts have an exact origin.
+        const early = await tab.waitFor(() => {
+          if (document.querySelector('.sub-run')?.dataset.status !== 'running') return 'after';
+          return document.querySelector('.sub-table tbody tr.dt-row') ? 'while running' : false;
+        }, { timeout: 60000, message: 'rows or the end of the scan' });
+        if (early !== 'while running') process.stdout.write('        note: no row was drawn before the scan ended; the badge check below is weaker\n');
+        assertEqual(await tab.waitFor(DONE(id), { timeout: 60000, message: 'slow zone scan done' }), 'done', 'status');
+        const info = await tab.evaluate(() => ({
+          badges: [...document.querySelectorAll('.sub-table tbody tr.dt-row')].filter((tr) => tr.querySelector('.sub-origin-hint'))
+            .map((tr) => tr.querySelector('.sub-host-name').textContent).sort(),
+          candidates: [...new Set([...document.querySelectorAll('.sub-org-block li[data-host]')].map((li) => li.dataset.host))].sort()
+        }));
+        assert(info.candidates.includes('www.example.net'), `the zone's exact origin is in the panel: ${info.candidates}`);
+        assertEqual(info.badges, info.candidates, 'every host with an exact origin has its "origin?" badge, without leaving the page');
+        await tab.evaluate(() => document.querySelector('.sub-table .sub-origin-hint').click());
+        await tab.waitFor(() => document.activeElement?.classList.contains('sub-org-title'), { message: 'the badge jumps to the ORIGIN panel' });
+        await assertClean(tab, 'slow zone scan', origin);
       } finally {
         await tab.close();
       }

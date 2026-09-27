@@ -4457,6 +4457,9 @@ function buildRunUI(run, ctx, { onFinish }) {
       // The origin panel first: it decides which rows get the "origin?" jump badge.
       renderOrigin();
       table.setRows(run.result.hosts);
+      // Rows streamed during resolve were drawn (and cached per object) before renderOrigin filled
+      // originCandidates, and setRows keeps that cache: redraw them so their badges appear now.
+      table.refresh();
       applyFilter();
       announce(t('sub.doneToast', { count: countHosts(run.result.hosts).found }));
     } else if (run.found && run.found.size) {

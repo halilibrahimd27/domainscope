@@ -8,7 +8,8 @@
  * validity, crt.sh row filtering, Punycode, hand-over shapes).
  *
  * Browser side (fixtures from tests/fixtures, uploaded with DOM.setFileInputFiles or pasted):
- *   - chain.pem: overview, SAN table (IDN shown as Unicode), "does it cover …?" check,
+ *   - chain.pem: overview, Copy summary (Markdown and plain text, a bare #/cert link), SAN table
+ *     (IDN shown as Unicode), "does it cover …?" check,
  *     fingerprints and public-key SHA-256 (compared with Node's crypto), chain order,
  *     certificate picker, PEM tab, downloads (captured in the page)
  *   - chain_reversed.pem (wrong order), real_google_chain.pem (ends at a cross-signed root),
@@ -38,7 +39,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, takeDownloads, waitReady
+  createRunner, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const fixture = (name) => path.join(FIXTURES, name);
@@ -571,6 +572,27 @@ async function main() {
       assertEqual(info.picker, ['Server certificate: www.example-test.com.tr', 'Root CA: Subdomain Scanner Test Root CA'], 'picker');
       assert(!info.fullchainBtn, 'no separate fullchain button when the bundle is only the leaf');
       await shot(page, opts, 'cert-desktop-light-en-names');
+    });
+
+    await run.step('Copy summary: issuer, names, validity and the file-stays line as Markdown and plain text, a bare #/cert link', async () => {
+      await stubClipboard(page);
+      const { tip, issuer } = await page.evaluate(() => ({
+        tip: document.querySelector('[data-summary="cert"] [data-action="copy-summary"]').title,
+        issuer: document.querySelector('.cert-overview-issuer').textContent
+      }));
+      assert(/nothing from your server list/.test(tip) && /without any file contents/.test(tip), `tooltip: ${tip}`);
+      await page.click('[data-summary="cert"] [data-action="copy-summary"]');
+      await page.click('[data-summary="cert"] [data-action="copy-summary-text"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+      const [md, plain] = await takeClipboard(page);
+      const lines = md.trim().split('\n');
+      assertEqual(lines[0], '**Certificate · `www.example-test.com.tr`**', 'title');
+      assertEqual(lines[1], `- ${issuer.replace(/^Issued by/, 'issued by')}`, 'the issuer the overview shows');
+      assert(/^- 5 DNS names: `[^`]+`, `[^`]+`, `[^`]+`, `[^`]+` \+1 more$/.test(lines[2]), `names, as the badge counts them: ${lines[2]}`);
+      assert(/^- valid until \d{4}-\d{2}-\d{2} \(\d[\d,]* days? left\)$/.test(lines[3]), `validity: ${lines[3]}`);
+      assertEqual(lines[lines.length - 2], '- The certificate file stays in this browser: the link opens the Certificate tool without it', 'file-stays line');
+      assert(new RegExp(`^DomainScope · as of \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/cert$`).test(lines[lines.length - 1]), `footer: ${lines[lines.length - 1]}`);
+      assertEqual(plain, md.replace(/\*\*|`/g, ''), 'the same lines in plain text');
     });
 
     await run.step('Names tab: 8 SANs, IDN in Unicode, registrable domain links to a scan', async () => {

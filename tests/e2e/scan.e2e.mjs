@@ -32,7 +32,9 @@
  *     requirement line and Start's error say why
  *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
  *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
- *     names.txt with coverage), reduced motion (no smooth scroll), and one shell choice shared
+ *     names.txt with coverage; Copy summary stays off without a result), reduced motion (no
+ *     smooth scroll), Copy summary of the finished scan (the servers that need the certificate
+ *     by name, the inventory tooltip, a link with only the domain), and one shell choice shared
  *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card
  *   - zero console errors, exceptions and CSP violations; failures of the third-party APIs
  *     themselves (crt.sh 502 without CORS, 429s) are reported but do not fail the run.
@@ -1489,6 +1491,8 @@ async function main() {
           const covered = kept.names.filter((n) => n === 'wild.example.net' || /^[^.]+\.wild\.example\.net$/.test(n));
           assert(covered.length >= 1, `a covered name among ${kept.names}`);
           assertEqual(names.text.split('\n').filter(Boolean).sort(), [...covered].sort(), 'names.txt: the covered hits found so far');
+          assertEqual(await tab.evaluate(() => [...document.querySelectorAll('[data-summary="scan"] button')].map((b) => b.disabled)), [true, true],
+            'a cancelled scan keeps no result: Copy summary stays off');
         });
 
         await run.step('reduced motion: Start jumps to the results instead of scrolling smoothly', async () => {
@@ -1506,6 +1510,26 @@ async function main() {
           const jump = await earlyScroll();
           assert(jump.last > 0 && jump.distinct <= 2, `one jump to the results, no animation: ${JSON.stringify(jump)}`);
           await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+        });
+
+        await run.step('Copy summary names the servers from the list that need the certificate (the tooltip says so); its link carries only the domain', async () => {
+          await stubClipboard(tab);
+          const tip = await tab.evaluate(() => document.querySelector('[data-summary="scan"] [data-action="copy-summary"]').title);
+          assert(/names the servers from your list that need the certificate/.test(tip) && /the link carries only the domains/.test(tip), `tooltip: ${tip}`);
+          await tab.click('[data-summary="scan"] [data-action="copy-summary"]');
+          await tab.click('[data-summary="scan"] [data-action="copy-summary-text"]');
+          await tab.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+          const [md, plain] = await takeClipboard(tab);
+          const lines = md.trim().split('\n');
+          assertEqual(lines[0], '**SSL Targets · `*.wild.example.net`**', 'title: the certificate');
+          assert(/^- Certificate `\*\.wild\.example\.net` · issued by .+ · valid until 2051-01-01 \(\d[\d,]* days left\)$/.test(lines[1]), `certificate line: ${lines[1]}`);
+          assert(/^- \d+ hosts found · \d+ covered by the certificate$/.test(lines[2]), `hosts line: ${lines[2]}`);
+          assertEqual(lines[3], '- 2 servers in your list need the certificate: `db01`, `web01`', 'the servers that need it, by name, as the Servers tab lists them');
+          assert(lines.includes('- Verify: not checked from the internet yet'), `Verify line: ${md}`);
+          const foot = lines[lines.length - 1];
+          assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/scan\\?domain=example\\.net&run=1$`).test(foot), `footer: ${foot}`);
+          assert(!/web01|db01|203\.0\.113\.20|10\.0\.0\.5/.test(foot), 'no inventory data in the link');
+          assertEqual(plain, md.replace(/\*\*|`/g, '').replace(/\\/g, ''), 'the same lines in plain text');
         });
 
         await run.step('Behind CDN and Verify share one shell: step 3, the sweep and both toggles follow a change in either card', async () => {

@@ -2,7 +2,8 @@
  * views/cert.js pure helpers: the copy-ready `openssl s_client` command must never carry a
  * certificate name that is not a plain host name (a hostile SAN would run in the user's shell);
  * the bundled "Try a sample" certificate, the CertLoad of a Certificate Transparency lookup and
- * the text of a lookup that loaded nothing (why crt.sh was asked, Cert Spotter's hourly limit).
+ * the text of a lookup that loaded nothing (why crt.sh was asked, Cert Spotter's hourly limit), and
+ * what Copy summary says about a certificate (certSummaryFacts).
  * Pure Node (the view is DOM-free at import time). Names are documentation data only.
  */
 import { test, describe, after } from 'node:test';
@@ -13,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
-  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData
+  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, certSummaryFacts, loadCertificateData, issuerDisplayName
 } from '../../assets/js/views/cert.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';
@@ -363,5 +364,41 @@ describe('cert view: the keyboard focus after a certificate loads from the "No f
     const gone = fakeEl({ connected: false });
     assert.equal(focusLoadedCert(gone), false);
     assert.deepEqual(gone.calls, []);
+  });
+});
+
+describe('cert view: what Copy summary says about a certificate (certSummaryFacts)', () => {
+  const load = (file, opts = {}) => loadCertificateData(readFileSync(join(FIX, file)), { name: file, ...opts });
+
+  test('the leaf: its name, issuer, DNS names and validity; a file-loaded certificate says "file"', () => {
+    const l = load('chain.pem');
+    const f = certSummaryFacts(l);
+    assert.equal(f.name, 'www.example-test.com.tr');
+    assert.equal(f.issuer, issuerDisplayName(l.result.leaf));
+    assert.deepEqual(f.dnsNames, l.result.leaf.dnsNames);
+    assert.equal(f.dnsNames.length, 5);
+    assert.deepEqual([f.notBefore, f.notAfter], [l.result.leaf.notBefore, l.result.leaf.notAfter]);
+    assert.deepEqual(f.warnings, []);
+    assert.equal(f.source, 'pick', 'as it was loaded (the summary words only ct and sample)');
+    assert.equal(certSummaryFacts({ ...l, source: undefined }).source, 'file');
+  });
+
+  test('the warnings the overview shows: self-signed, CA, no DNS names, precertificate, weak key', () => {
+    const codes = (file) => certSummaryFacts(load(file)).warnings;
+    assert.deepEqual(codes('ec_wildcard.pem'), ['SELF_SIGNED']);
+    assert.deepEqual(codes('ca.pem'), ['SELF_SIGNED', 'CA'], 'a CA certificate is not flagged for missing DNS names');
+    assert.deepEqual(codes('cn_only.pem'), ['SELF_SIGNED', 'NO_SAN']);
+    assert.deepEqual(codes('x509_rsa1025.pem'), ['NO_SAN', 'WEAK'], 'RSA under 2048 bits');
+    assert.deepEqual(codes('x509_ext_torture.pem'), ['CA', 'PRECERT']);
+  });
+
+  test('a certificate from CT or the sample keeps its source', () => {
+    const der = parseCertificates(readFileSync(join(FIX, 'ec_wildcard.pem'))).leaf.der;
+    const issuance = { id: '17000000001', notBefore: new Date('2025-01-01T00:00:00Z'), notAfter: new Date('2051-01-01T00:00:00Z'), dnsNames: ['*.wild.example.net'], sha256: null, url: null };
+    const ct = ctCertLoad({ host: 'shop.wild.example.net', provider: 'certspotter', der, issuance, precertificate: false, newerPrecertificate: null, truncated: false });
+    assert.equal(certSummaryFacts(ct).source, 'ct');
+    assert.equal(certSummaryFacts(ct).name, '*.wild.example.net');
+    const sample = loadCertificateData(readFileSync(join(FIX, '..', '..', 'assets', 'data', 'sample-cert.pem')), { name: 'sample-cert.pem', source: 'sample' });
+    assert.deepEqual([certSummaryFacts(sample).source, certSummaryFacts(sample).name, certSummaryFacts(sample).warnings], ['sample', 'example.com', []]);
   });
 });

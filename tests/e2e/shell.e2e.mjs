@@ -11,7 +11,8 @@
  *   - exercises the router (default/unknown/anchor hashes), skip link, language + theme toggles,
  *     the settings dialog, the Servers view (typing, file import, warnings, save → reload, clear)
  *   - builds a component gallery (badges, kinds, stats, alerts, progress, tabs, fields, DataTable)
- *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation
+ *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation, CopyButton's
+ *     own toast text and its onFail hand-over (Copy summary's dialog), and the table's print styles
  *   - prints from dark mode (print media): the light palette, no shell or controls, Disclosures
  *     opened and the print header (title, UTC time, permalink) on beforeprint, undone afterwards
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
@@ -267,7 +268,9 @@ async function buildGallery() {
         C.Button({ label: 'Delete', variant: 'danger', icon: 'trash' }),
         C.Button({ label: 'Small', size: 'sm' }),
         C.IconButton({ icon: 'sliders', label: 'Settings' }),
-        C.CopyButton('copied text'),
+        C.CopyButton('copied text', { className: 'gallery-copy' }),
+        // Copy summary's options: its own toast text, and the text handed over when copying fails.
+        C.CopyButton('summary text', { label: 'Copy summary', toastOnCopy: 'Summary copied', className: 'gallery-copy-summary', onFail: (text) => { window.__copyFailed = text; } }),
         busyBtn,
         C.ExternalLink('https://crt.sh/?q=example.com', 'crt.sh'))
     }),
@@ -847,6 +850,69 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await shot(page, 'desktop-dark-en-gallery');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    await step('CopyButton: a text toastOnCopy toasts that text; onFail gets the text in place of the "could not copy" toast', async () => {
+      // A clipboard recorder (or a refusing one) in place of the page's clipboard, removed afterwards.
+      const clipboard = (mode) => page.evaluate((m) => {
+        window.__clip = [];
+        window.__copyFailed = null;
+        if (m === 'real') {
+          delete navigator.clipboard;
+          delete document.execCommand;
+          return;
+        }
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async (text) => {
+              if (m === 'fail') throw new DOMException('Write permission denied.', 'NotAllowedError');
+              window.__clip.push(String(text));
+            }
+          }
+        });
+        if (m === 'fail') document.execCommand = () => false;
+      }, mode);
+      const toasts = () => page.evaluate(() => [...document.querySelectorAll('.toast')].map((el) => ({ type: el.className, text: el.textContent })));
+      try {
+        await dismissToasts(page);
+        await clipboard('ok');
+        await page.click('#gallery .gallery-copy-summary');
+        const copied = await page.waitFor(() => (window.__clip.length && document.querySelector('.toast') ? window.__clip : false), { message: 'copied + toast' });
+        assertEqual(copied, ['summary text'], 'copied');
+        const [shown] = await toasts();
+        assert(/Summary copied/.test(shown.text) && /success/.test(shown.type), `its own toast text: ${JSON.stringify(shown)}`);
+        await dismissToasts(page);
+        await clipboard('fail');
+        await page.click('#gallery .gallery-copy-summary');
+        await page.waitFor(() => window.__copyFailed === 'summary text', { message: 'onFail called with the text' });
+        await page.evaluate(() => new Promise((r) => { setTimeout(r, 150); }));
+        assertEqual(await toasts(), [], 'no "could not copy" toast when onFail takes over');
+        await page.click('#gallery .gallery-copy');
+        const failed = await page.waitFor(() => document.querySelector('.toast')?.textContent || false, { message: 'error toast without onFail' });
+        assert(/Could not copy/.test(failed), `a plain CopyButton still says it failed: ${failed}`);
+      } finally {
+        await clipboard('real');
+        await dismissToasts(page);
+      }
+    });
+
+    await step('print: a sortable header keeps its label as header text (repeated on every page); cells break between words only', async () => {
+      await page.send('Emulation.setEmulatedMedia', { media: 'print' });
+      try {
+        const css = await page.evaluate(() => {
+          const th = document.querySelector('#gallery th[data-key="name"]');
+          return {
+            sort: getComputedStyle(th.querySelector('.dt-sort')).display,
+            label: th.textContent.trim(),
+            cell: getComputedStyle(document.querySelector('#gallery .dt-table tbody td')).overflowWrap,
+            item: getComputedStyle(document.querySelector('#gallery .tlist-item')).overflowWrap
+          };
+        });
+        assertEqual(css, { sort: 'contents', label: 'Name', cell: 'break-word', item: 'break-word' }, 'print styles of the table');
+      } finally {
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      }
     });
 
     await step('DataTable keeps keyboard focus on a row control when rows stream in, on refresh and on expand', async () => {

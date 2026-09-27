@@ -11,7 +11,7 @@
  * counts), the Records filters, the proxied-origin map with the inventory (also servers added
  * or renamed after the import), the exact sweep
  * command (no /24, host target, wildcard name, PowerShell), the zone-targets.txt download, the
- * Problems → Records jump, the live check (nothing sent before the click, planned query count,
+ * Problems → Records jump, Copy summary (counts, the worst problems, a bare #/zone link), the live check (nothing sent before the click, planned query count,
  * hidden targets / internal names never queried, statuses, redacted export, cancel, kept for the
  * page session with "Live check from" and Run again; the note gone with the Live tab's own Run,
  * a new import and Forget), the exact-mode hand-off contract, Route 53 (incomplete export) and
@@ -31,7 +31,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, sleep, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const ZONES = path.join(FIXTURES, 'zones');
@@ -330,6 +330,31 @@ async function main() {
         && document.querySelector('.zone-records .dt-search-input')?.value === 'ftp.example.com', { message: 'records filtered' });
       assert(await count(page, '.zone-records tr.zone-row-hit') >= 1, 'line highlighted');
       assert(/tab=records/.test(await page.evaluate(() => location.hash)), 'hash tab');
+    });
+
+    await run.step('Copy summary: counts, the worst problems as the Problems tab words them, the privacy line, a bare #/zone link', async () => {
+      await stubClipboard(page);
+      await clickTab(page, 'problems');
+      await page.click('.zone-prob-filter [data-value="all"]');
+      const shown = await page.evaluate(() => ({
+        tip: document.querySelector('[data-summary="zone"] [data-action="copy-summary"]').title,
+        problems: [...document.querySelectorAll('.zone-problems-all .zone-problem')].filter((li) => li.dataset.severity === 'error' || li.dataset.severity === 'warn')
+          .map((li) => `- ${li.dataset.severity === 'error' ? 'Error' : 'Warning'}: ${li.querySelector('.zone-problem-title').textContent}`)
+      }));
+      assert(/nothing from your server list/.test(shown.tip) && /without any file contents/.test(shown.tip), `tooltip: ${shown.tip}`);
+      await page.click('[data-summary="zone"] [data-action="copy-summary"]');
+      await page.click('[data-summary="zone"] [data-action="copy-summary-text"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+      const [md, plain] = await takeClipboard(page);
+      const lines = md.trim().split('\n');
+      assertEqual(lines.slice(0, 2), ['**Zone File · `example.com`**', '- Cloudflare export (BIND): 39 records · 26 names · 10 proxied'], 'title and counts');
+      assert(/^- Problems: \d+ errors? · \d+ warnings?/.test(lines[2]), `problems line: ${lines[2]}`);
+      assertEqual(plain.trim().split('\n').slice(3, 6), shown.problems.slice(0, 3), 'the worst three, worded as on the Problems tab');
+      assertEqual(lines[lines.length - 2], '- The zone file stays in this browser: the link opens Zone File without it', 'privacy line');
+      assert(new RegExp(`^DomainScope · as of \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/zone$`).test(lines[lines.length - 1]),
+        `a bare #/zone link (no tab, nothing of the file): ${lines[lines.length - 1]}`);
+      assert(lines.length >= 5 && lines.length <= 12, `5–12 lines: ${lines.length}`);
+      assertEqual(await page.evaluate(() => window.__fakeDnsLog.length), 0, 'no DNS query');
     });
 
     await run.step('Live check: disclosure first, nothing sent before Run; planned queries; hidden names never sent', async () => {

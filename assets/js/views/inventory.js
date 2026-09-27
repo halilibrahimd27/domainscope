@@ -15,6 +15,7 @@ import {
 import { downloadText } from '../ui/download.js';
 import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
 import { parseInventory } from '../lib/inventory.js';
+import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
 
 /** Route id. */
@@ -188,12 +189,14 @@ registerStrings('tr', {
 let teardown = null;
 
 /**
- * "name ip ip…" lines for the CLI's -t option.
+ * "name ip ip…" lines for the CLI's -t option, one per server. The name is made one CLI token
+ * (lib/export.cliServerName), so "Web Server 1" or "#bastion" is neither split, merged with
+ * another server nor read as a comment.
  * @param {Array<{ name: string, ips: string[] }>} servers
  * @returns {string}
  */
 export function targetsText(servers) {
-  const lines = servers.filter((s) => s.ips.length).map((s) => `${s.name} ${s.ips.join(' ')}`);
+  const lines = servers.filter((s) => s.ips.length).map((s) => [cliServerName(s.name), ...s.ips].filter(Boolean).join(' '));
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 

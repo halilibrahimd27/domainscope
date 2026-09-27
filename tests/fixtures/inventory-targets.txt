@@ -1,0 +1,12 @@
+Web_Server_1 192.0.2.11
+Web_Server_2 192.0.2.12
+_bastion 192.0.2.13
+[prod]_api 192.0.2.14
+Web_2 198.51.100.2
+_legacy 198.51.100.3
+db_backup 198.51.100.4
+role_web 198.51.100.5
+db_primary 203.0.113.1 2001:db8::1
+db_replica 203.0.113.2
+rack_web 203.0.113.3
+203.0.113.9

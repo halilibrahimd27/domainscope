@@ -311,9 +311,19 @@ export function namesForCli(scan, { onlyCovered = false } = {}) {
   return list.length ? `${list.join('\n')}\n` : '';
 }
 
-/** Server names become one whitespace-free token (the CLI splits on whitespace / commas). */
-function cliToken(name) {
-  return String(name ?? '').trim().replace(/[\s,;#]+/g, '_');
+/**
+ * A server name as ONE token of a `-t targets.txt` line, or '' when nothing usable is left (the
+ * IPs are then written bare). The CLI splits a line on whitespace, ',' and ';', drops `#`, `;` and
+ * `//` comments (also after a space), skips `key=value` Ansible variables and, like Python's
+ * `splitlines()`, breaks lines on control characters — so every run of those becomes '_'. A name
+ * that is itself an IP address is dropped: the CLI would probe it as one.
+ * @param {unknown} name
+ * @returns {string}
+ */
+export function cliServerName(name) {
+  // eslint-disable-next-line no-control-regex
+  const token = String(name ?? '').trim().replace(/[\s\x00-\x1f\x7f\x85,;#=/]+/g, '_');
+  return token && !normalizeIP(token) ? token : '';
 }
 
 /**
@@ -332,8 +342,8 @@ export function targetsForCli(servers) {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip || seen.has(ip)) return;
     seen.add(ip);
-    const token = cliToken(name);
-    lines.push(token && normalizeIP(token) !== ip ? `${token} ${ip}` : ip);
+    const token = cliServerName(name);
+    lines.push(token ? `${token} ${ip}` : ip);
   };
   for (const item of Array.isArray(servers) ? servers : []) {
     if (!item) continue;

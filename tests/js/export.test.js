@@ -3,7 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
+  toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliServerName, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
 } from '../../assets/js/lib/export.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { classifyResolution, getProvider } from '../../assets/js/lib/netinfo.js';
@@ -264,6 +264,35 @@ describe('CLI helpers', () => {
     ].join('\n'));
     assert.equal(targetsForCli([]), '');
     assert.equal(targetsForCli(undefined), '');
+  });
+
+  test('cliServerName: one token the CLI reads as the whole name (never a comment, variable or IP)', () => {
+    const cases = [
+      ['web01', 'web01'],
+      ['Web Server 1', 'Web_Server_1'],
+      ['#bastion', '_bastion'],
+      ['Web #2', 'Web_2'],
+      ['// legacy', '_legacy'],
+      ['db;primary', 'db_primary'],
+      ['a, b', 'a_b'],
+      ['role=web', 'role_web'],
+      ['rack/web01', 'rack_web01'],
+      ['rack\u001cweb', 'rack_web'], // Python's splitlines() breaks a line here
+      ['a\u0085b', 'a_b'],
+      ['a\u2028b', 'a_b'],
+      ['  [prod] api  ', '[prod]_api'],
+      ['şube-01', 'şube-01'],
+      ['203.0.113.9', ''], // an IP as the name would be probed as one
+      ['2001:db8::1', ''],
+      ['   ', ''],
+      [null, '']
+    ];
+    for (const [name, want] of cases) assert.equal(cliServerName(name), want, JSON.stringify(name));
+    assert.equal(targetsForCli([
+      { name: 'Web Server 1', ips: ['192.0.2.11'] },
+      { name: '#bastion', ips: ['192.0.2.13'] },
+      { name: '203.0.113.8', ips: ['203.0.113.9'] }
+    ]), 'Web_Server_1 192.0.2.11\n_bastion 192.0.2.13\n203.0.113.9\n');
   });
 
   test('cliCommand', () => {

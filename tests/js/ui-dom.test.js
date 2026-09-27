@@ -1003,6 +1003,23 @@ describe('routing', () => {
     assert.deepEqual(lineRange(text, 0), [0, 1], 'clamped to the first line');
     assert.equal(targetsText([{ name: 'web01', ips: ['10.0.0.1', '2001:db8::1'] }, { name: 'x', ips: [] }]), 'web01 10.0.0.1 2001:db8::1\n');
     assert.equal(targetsText([]), '');
+    // Names with spaces, '#', '//', ';' or '=' (CSV columns, AWS Name tags) stay one CLI token per
+    // server; tests/python/test_inventory_targets.py parses the same file with the CLI.
+    const expected = await readFile(path.join(ROOT, 'tests/fixtures/inventory-targets.txt'), 'utf8');
+    assert.equal(targetsText([
+      { name: 'Web Server 1', ips: ['192.0.2.11'] },
+      { name: 'Web Server 2', ips: ['192.0.2.12'] },
+      { name: '#bastion', ips: ['192.0.2.13'] },
+      { name: '[prod] api', ips: ['192.0.2.14'] },
+      { name: 'Web #2', ips: ['198.51.100.2'] },
+      { name: '// legacy', ips: ['198.51.100.3'] },
+      { name: 'db;backup', ips: ['198.51.100.4'] },
+      { name: 'role=web', ips: ['198.51.100.5'] },
+      { name: 'db primary', ips: ['203.0.113.1', '2001:db8::1'] },
+      { name: 'db replica', ips: ['203.0.113.2'] },
+      { name: 'rack\u001cweb', ips: ['203.0.113.3'] },
+      { name: '203.0.113.9', ips: ['203.0.113.9'] }
+    ]), expected);
   });
 });
 

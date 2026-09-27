@@ -1,6 +1,7 @@
 /**
- * views/bulk.js — the parts that run without a DOM: the job runner (cancelling mid-enrichment).
- * A fake DNS client stands in for the network. Documentation data only (example.com, 192.0.2.0/24).
+ * views/bulk.js — the parts that run without a DOM: the job runner (cancelling mid-enrichment,
+ * the resolver of the run for every PTR query).
+ * A fake DNS client and fetch stand in for the network. Documentation data only (example.com, 192.0.2.0/24).
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -56,5 +57,19 @@ describe('bulk view: job runner', () => {
     }
     assert.equal(job.ipTotal, 12);
     assert.equal(job.ipDone, 1, 'aborted lookups are not counted as done');
+  });
+
+  test('ASN mode sends the PTR queries to the resolver chosen for the run', async () => {
+    const names = ['a.example.com'];
+    const dns = fakeDns(names, async () => ['a.example.net']);
+    const fetchImpl = async () => new Response('{}', { status: 404 }); // RIPEstat / ipwho.is: nothing
+    const job = createJob(names, { ptr: false, asn: true, noCache: false, resolver: 'quad9' });
+    await runJob(job, { dns, index: null, concurrency: 2, fetchImpl });
+    assert.deepEqual(dns.calls, [{ ip: '192.0.2.1', resolver: 'quad9' }]);
+    assert.deepEqual(job.ips.get('192.0.2.1').ptr, ['a.example.net']);
+    const auto = createJob(names, { ptr: false, asn: true, noCache: false, resolver: '' });
+    dns.calls.length = 0;
+    await runJob(auto, { dns, index: null, concurrency: 2, fetchImpl });
+    assert.deepEqual(dns.calls, [{ ip: '192.0.2.1', resolver: undefined }], 'no resolver chosen: the Settings chain');
   });
 });

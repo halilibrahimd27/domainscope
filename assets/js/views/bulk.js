@@ -512,14 +512,17 @@ export function createJob(names, options) {
  * Resolve every name, then enrich each new IP (PTR, or ASN / owner with its PTR); rejects with
  * AbortError when the job's controller aborts. Internal: exported for the tests only.
  * @param {BulkJob} job
- * @param {{ dns: object, index: object|null, concurrency: number }} deps
+ * @param {{ dns: object, index: object|null, concurrency: number, fetchImpl?: typeof fetch }} deps
+ *   fetchImpl: for the intel APIs (tests)
  * @returns {Promise<void>}
  */
-export async function runJob(job, { dns, index, concurrency }) {
+export async function runJob(job, { dns, index, concurrency, fetchImpl }) {
   const { signal } = job.controller;
   const opts = job.options;
   const resolver = opts.resolver || undefined;
-  const intel = opts.asn ? createIpIntel({ dns, concurrency: 4 }) : null;
+  // The intel service looks the PTR up itself: send it to the resolver chosen for this run too.
+  const intelDns = resolver ? { ptr: (ip, o = {}) => dns.ptr(ip, { ...o, resolver }) } : dns;
+  const intel = opts.asn ? createIpIntel({ dns: intelDns, concurrency: 4, fetchImpl }) : null;
   const enrichQueue = [];
   let enrichRunning = 0;
   let enrichIdle = null;

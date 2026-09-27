@@ -746,8 +746,10 @@ export function mount(container, ctx) {
     promptEl.hidden = false;
     let message;
     if (session.pending) {
+      // A target that reads as nothing is named by its first token (a link can carry anything).
       const next = parseSweepTarget(session.pending.text);
-      message = t('ptr.link.waiting', { target: next.label || targetTokens(session.pending.text).slice(0, 3).join(', ') });
+      const first = session.pending.text.split('\n')[0];
+      message = t('ptr.link.waiting', { target: next.label || (first.length > 60 ? `${first.slice(0, 59)}…` : first) });
     } else {
       message = parsed.kind === 'asn'
         ? t('ptr.link.promptAsn', { asn: `AS${parsed.asn}` })

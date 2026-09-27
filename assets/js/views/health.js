@@ -403,7 +403,7 @@ registerStrings('tr', {
   'hlt.fcrdns.st.error': 'sorgu başarısız',
   'hlt.fcrdns.provider': 'sağlayıcı',
   'hlt.fcrdns.providerTitle': 'Bu MX sunucusu başka bir alan adına (e-posta sağlayıcınıza) ait; ters DNS’ini sağlayıcı ayarlar.',
-  'hlt.fcrdns.generic': 'genel ad',
+  'hlt.fcrdns.generic': 'şablon ad',
   'hlt.fcrdns.sweep': 'Ters DNS',
   'hlt.fcrdns.sweepTitle': '{ip} adresini Ters DNS görünümünde aç',
   'hlt.fcrdns.capped': '{total} adresin ilk {checked} tanesi kontrol edildi.',

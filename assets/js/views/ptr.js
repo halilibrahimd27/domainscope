@@ -282,8 +282,8 @@ registerStrings('tr', {
   'ptr.issue.nothing': 'Taranacak bir şey yok.',
   'ptr.issue.use': '{suggestion} kullan',
 
-  'ptr.link.prompt': 'Bir bağlantıdan açıldı: {target} ({count} adres) ters DNS’ine bakmak için Tara’ya basın. Henüz hiçbir şey gönderilmedi.',
-  'ptr.link.promptAsn': 'Bir bağlantıdan açıldı: {asn} numarasının neleri duyurduğunu görmek için Önekleri listele’ye basın. Henüz hiçbir şey gönderilmedi.',
+  'ptr.link.prompt': 'Bir bağlantıdan açıldı: {target} için ({count} adres) ters DNS’e bakmak üzere Tara’ya basın. Henüz hiçbir şey gönderilmedi.',
+  'ptr.link.promptAsn': 'Bir bağlantıdan açıldı: {asn} tarafından duyurulan önekleri görmek için Önekleri listele’ye basın. Henüz hiçbir şey gönderilmedi.',
 
   'ptr.asn.title': 'AS{asn} tarafından duyurulan önekler',
   'ptr.asn.loading': 'AS{asn} önekleri RIPEstat’a soruluyor…',
@@ -309,7 +309,7 @@ registerStrings('tr', {
   'ptr.asn.reservedTitle': 'Multicast ya da ayrılmış adres alanında taranacak host adresi yoktur.',
   'ptr.asn.gone': 'artık duyurulmuyor',
   'ptr.asn.goneTitle': 'Son iki haftada görüldü, ama o sürenin sonunda görülmedi.',
-  'ptr.asn.selected': { zero: 'Henüz bir şey seçilmedi', other: 'Seçilen: {count} önek · en çok {max} adresten {addresses} adres' },
+  'ptr.asn.selected': { zero: 'Henüz bir şey seçilmedi', other: 'Seçilen: {count} önek · {addresses} adres (en çok {max})' },
   'ptr.asn.over': 'Sınırın üstünde: bazı öneklerin işaretini kaldırın.',
   'ptr.asn.sweep': 'Seçilenleri tara',
   'ptr.asn.clear': 'Seçimi temizle',
@@ -348,7 +348,7 @@ registerStrings('tr', {
   'ptr.col.ip': 'Adres',
   'ptr.col.ptr': 'Ters DNS (PTR)',
   'ptr.col.check': 'İleri doğrulama',
-  'ptr.col.operator': 'İşleten',
+  'ptr.col.operator': 'Sağlayıcı',
   'ptr.col.server': 'Sunucunuz',
   'ptr.st.confirmed': 'doğrulandı',
   'ptr.st.confirmed.title': 'PTR adı yine bu adrese çözülüyor (ileri doğrulanmış ters DNS).',
@@ -392,7 +392,7 @@ registerStrings('tr', {
   'ptr.d.resolver': 'Yanıtlayan',
   'ptr.d.error': 'Hata',
   'ptr.d.template': 'Şablon',
-  'ptr.d.operator': 'İşleten',
+  'ptr.d.operator': 'Sağlayıcı',
   'ptr.d.members': 'Adresler',
   'ptr.d.links': 'Şurada aç',
 

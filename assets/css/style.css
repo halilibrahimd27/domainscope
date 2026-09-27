@@ -1232,6 +1232,11 @@ button.nav-status:hover {
 
 /* Phones & small tablets: nav becomes a horizontal, sticky scroller */
 @media (max-width: 900px) {
+  /* A field focused from the keyboard ('/', a start-page job) never lands under the sticky nav. */
+  :root {
+    scroll-padding-top: 60px;
+  }
+
   .app {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto 1fr;

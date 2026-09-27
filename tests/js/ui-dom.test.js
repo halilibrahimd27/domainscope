@@ -2292,11 +2292,16 @@ describe('security & shell invariants', () => {
     for (const file of files) {
       const src = await readFile(file, 'utf8');
       for (const m of src.matchAll(/\.(?:append|prepend|replaceChildren)\(/g)) {
-        const args = callArgs(src, m.index + m[0].length - 1) || [];
-        const code = (a) => a.replace(/^(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*/g, '');
-        if (args.some((a) => /^(?:null|undefined)$|\?[\s\S]*:\s*(?:null|undefined)$/.test(code(a)))) {
-          hits.push(`${path.relative(ROOT, file)}:${src.slice(0, m.index).split('\n').length}`);
+        const where = `${path.relative(ROOT, file)}:${src.slice(0, m.index).split('\n').length}`;
+        const args = callArgs(src, m.index + m[0].length - 1);
+        // a call this reader cannot split (a regex literal holding a quote or a bracket) fails
+        // the guard instead of passing unread
+        if (!args) {
+          hits.push(`${where} (unreadable)`);
+          continue;
         }
+        const code = (a) => a.replace(/^(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*/g, '');
+        if (args.some((a) => /^(?:null|undefined)$|\?[\s\S]*:\s*(?:null|undefined)$/.test(code(a)))) hits.push(where);
       }
     }
     assert.deepEqual(hits, [], 'use dom.js append(parent, …) for nullable children');

@@ -16,7 +16,7 @@ import { createState, sanitizeSettings, DEFAULT_SETTINGS, STORAGE_PREFIX } from 
 import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
-  compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS
+  compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -907,6 +907,27 @@ describe('components.js helpers', () => {
     assert.deepEqual(describeError('plain message'), { kind: 'unknown', message: 'plain message', detail: '' });
     assert.equal(describeError(undefined).kind, 'unknown');
   });
+
+  test('CliText keeps each CLI option in one unbreakable code element, the rest as text', () => withFakeDocument(() => {
+    const el = CliText('a --strict-public b');
+    assert.equal(el.tagName, 'SPAN');
+    assert.deepEqual(el.childNodes.map((c) => [c.nodeType, c.tagName ?? null, c.textContent]), [
+      [3, null, 'a '], [1, 'CODE', '--strict-public'], [3, null, ' b']
+    ]);
+    assert.equal(el.childNodes[1].getAttribute('class'), 'nowrap');
+    // options at the edges and side by side leave no empty text nodes
+    const edges = CliText('--private-ca FILE and --fail-on-needs-update');
+    assert.deepEqual(edges.childNodes.map((c) => c.textContent), ['--private-ca', ' FILE and ', '--fail-on-needs-update']);
+    assert.deepEqual(CliText('--a --b').childNodes.map((c) => c.tagName ?? c.textContent), ['CODE', ' ', 'CODE']);
+    // no option (a lone dash, an en dash, 2-3): text only, never a code element
+    for (const text of ['Not counted as old - see below', 'port 1–65535', '']) {
+      const plain = CliText(text);
+      assert.ok(plain.childNodes.every((c) => c.nodeType === 3), text);
+      assert.equal(plain.textContent, text);
+    }
+    assert.equal(CliText(null).textContent, '');
+    assert.equal(CliText('<b>--x</b>').textContent, '<b>--x</b>', 'text, never parsed as HTML');
+  }));
 
   test('icon set covers every navigation and kind icon', () => {
     for (const v of VIEWS) assert.ok(ICON_NAMES.includes(v.icon), v.icon);

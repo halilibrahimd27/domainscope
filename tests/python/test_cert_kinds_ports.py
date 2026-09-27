@@ -422,6 +422,58 @@ class InventoryPortTests(unittest.TestCase):
             'web05': (['203.0.113.15'], [], {}),
         })
 
+    def test_a_host_name_with_a_port_next_to_an_address_is_a_warning(self):
+        inventory = sos.parse_inventory('\n'.join([
+            'web01 203.0.113.10 db.example.net:5432',
+            'web02 203.0.113.11 web02.example.net:8443',
+            'web03 203.0.113.12 web03.example.net',
+            'web04 web04.example.net:8443',
+        ]), 'inv.txt')
+        warnings = [(w.line, w.code, w.text) for w in inventory.warnings]
+        self.assertEqual([w[:2] for w in warnings], [(1, 'PARSE'), (2, 'PARSE')])
+        self.assertTrue(warnings[0][2].startswith('db.example.net:5432: a host name with a port '
+                                                  'next to an address is not resolved'))
+        self.assertIn('ADDRESS:PORT', warnings[1][2])
+        # the address is kept; a host name without a port there is a hosts-file alias, as before
+        self.assertEqual(by_name(inventory), {
+            'web01': (['203.0.113.10'], [], {}),
+            'web02': (['203.0.113.11'], [], {}),
+            'web03': (['203.0.113.12'], [], {}),
+            'web04': ([], ['web04.example.net'], {'web04.example.net': [8443]}),
+        })
+
+    def test_name_equals_host_as_the_first_token_is_a_target_as_with_t(self):
+        inventory = sos.parse_inventory('\n'.join([
+            'web01=web01.example.net:8443',
+            'web02=web02.example.net',
+            'web03=web03.example.net:8443 203.0.113.13',
+            'user=root',
+            'version=1.2',
+            'timeout=30',
+            'web04=2026092401:8443',
+        ]), 'inv.txt')
+        self.assertEqual(by_name(inventory), {
+            'web01': ([], ['web01.example.net'], {'web01.example.net': [8443]}),
+            'web02': ([], ['web02.example.net'], {}),
+            'web03': (['203.0.113.13'], [], {}),
+        })
+        self.assertEqual([(w.line, w.code) for w in inventory.warnings],
+                         [(3, 'PARSE'), (7, 'INVALID_IP')])
+        self.assertIn('reads it as the IPv4 address', inventory.warnings[1].text)
+        # the same token on the command line
+        self.assertEqual(by_name(sos.parse_target_tokens('web01=web01.example.net:8443')),
+                         by_name(sos.parse_inventory('web01=web01.example.net:8443', 'inv.txt')))
+
+    def test_a_time_of_day_is_no_host_and_port(self):
+        inventory = sos.parse_inventory('backup 10:30 203.0.113.10\nweb01 203.0.113.11 12:00\n'
+                                        'web02 203.0.113.12 10:30:00\n', 'inv.txt')
+        self.assertEqual(inventory.warnings, [])
+        self.assertEqual(by_name(inventory), {'backup': (['203.0.113.10'], [], {}),
+                                              'web01': (['203.0.113.11'], [], {}),
+                                              'web02': (['203.0.113.12'], [], {})})
+        with self.assertRaisesRegex(sos.UsageError, 'invalid target'):
+            sos.parse_target_tokens('10:30')
+
     def test_csv_json_and_yaml(self):
         csv_inv = sos.parse_inventory('name,ip\nweb01,203.0.113.10:8443\n'
                                       '203.0.113.11:9443,\n', 'x.csv')

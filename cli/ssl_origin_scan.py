@@ -1456,6 +1456,9 @@ _ENDPOINT_BRACKET_RE = re.compile(r'^\[([^\[\]\s:]*:[^\[\]\s]*|\d{1,3}(?:\.\d{1,
                                   r'(?::(.*))?$')
 _ENDPOINT_V4_RE = re.compile(r'^(\d{1,3}(?:\.\d{1,3}){3}):(.*)$')
 _ENDPOINT_HOST_RE = re.compile(r'^([^\s:\[\]@=]+):(\d+)$')
+# A time of day in a free-form line ("backup 10:30 203.0.113.10"): neither a host and its port
+# nor an IPv6 address (lib/inventory.js looksLikeIp skips it the same way).
+_CLOCK_RE = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?$')
 
 
 def _endpoint_port(text: Optional[str]) -> Optional[int]:
@@ -1604,9 +1607,13 @@ class _InventoryBuilder:
 
         An address or host name written with a port (``203.0.113.10:8443``,
         ``[2001:db8::1]:8443``, ``web01.example.net:8443``) keeps it; one whose port or
-        address cannot be read is an INVALID_IP warning, never dropped silently.
+        address cannot be read is an INVALID_IP warning, never dropped silently. Host names
+        are resolved only when the entry has no address; there, one without a port is a
+        hosts-file alias, but one with a port (``web01 203.0.113.10 db.example.net:5432``)
+        was meant as a target, so it is a PARSE warning, as lib/inventory.js has it.
         """
         ips, hosts = [], []  # type: List[TargetItem], List[TargetItem]
+        ported = []  # type: List[str]
         for value in values:
             value = value.strip().strip('\'"')
             if not value:
@@ -1633,6 +1640,8 @@ class _InventoryBuilder:
                     ips.append((ip, port))
                 elif host:
                     hosts.append((host, port))
+                    if port is not None:
+                        ported.append(value)
                 elif is_numeric_host(target):
                     self.warn(line, 'INVALID_IP', numeric_host_note(target))
                 else:
@@ -1653,6 +1662,11 @@ class _InventoryBuilder:
                 hosts.append(host)
             else:
                 self.warn(line, 'PARSE', value)
+        if ips:
+            for value in ported:
+                self.warn(line, 'PARSE', '%s: a host name with a port next to an address is not '
+                          'resolved - write the address with the port (ADDRESS:PORT); ignored'
+                          % value)
         if ips or hosts:
             self.add(name, ips, line, groups, [] if ips else hosts)
 
@@ -1827,22 +1841,28 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                 if key.lower() in _IP_KEYS:
                     values.append(value)
                 elif index == 0 and key and not key.lower().startswith('ansible_'):
-                    # "web01=203.0.113.10" or "web01=203.0.113.10:8443": NAME=IP as -t takes it
-                    # (lib/inventory.js reads it too); a bad address or port is a warning.
+                    # "web01=203.0.113.10", "web01=203.0.113.10:8443", "web01=web01.example.net"
+                    # or "web01=web01.example.net:8443": NAME=TARGET as -t takes it
+                    # (lib/inventory.js reads the address forms and warns about the host names
+                    # it cannot resolve); a bad address or port is a warning. A value without
+                    # a dot or a port (user=root) stays a variable.
                     try:
                         endpoint = split_endpoint(value)
                     except ValueError as exc:
                         builder.warn(number, 'INVALID_IP', '%s (%s)' % (value, exc))
                         had_invalid = True
                         continue
-                    if normalize_ip(value) or (endpoint is not None
-                                               and normalize_ip(endpoint[0])):
+                    if (normalize_ip(value) or endpoint is not None
+                            or ('.' in value and not _looks_like_ip(value)
+                                and normalize_hostname(value))):
                         name = key
                         values.append(value)
                     elif _looks_like_ip(value):
                         builder.warn(number, 'INVALID_IP', value)
                         had_invalid = True
                 continue  # other Ansible variables (ansible_user=...) are irrelevant
+            if _CLOCK_RE.match(token):
+                continue  # "backup 10:30 203.0.113.10": a time of day, not a host and its port
             if normalize_ip(token) or is_ip_block(token):
                 values.append(token)
                 continue
@@ -3945,7 +3965,8 @@ targets (-t, repeatable):
   instead of -p; -p applies to every target written without one (list a target twice,
   with and without the port, to get both). IPv6 needs the brackets. A port that is not
   1-65535 is an error on the command line and a warning in a file; a CIDR or range
-  takes no port.
+  takes no port. Next to an address on the same line, a hostname with a port is a
+  warning, not a target: write the address with the port.
   CIDRs/ranges larger than a /16 need --allow-large.
   Numeric "hostnames" such as 2026092401, 127.1 or 0x7f.0x1 are refused (usage error
   on the command line, skipped in files): the system resolver would read them as an

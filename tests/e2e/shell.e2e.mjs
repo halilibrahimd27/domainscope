@@ -696,11 +696,14 @@ async function main() {
       const ui = await page.evaluate(() => ({
         ips: [...document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row')]
           .map((tr) => [...tr.querySelectorAll('.inv-ip')].map((s) => s.firstChild.textContent)),
-        warnings: [...document.querySelectorAll('.inv-warning')].map((w) => [Number(w.dataset.line), w.dataset.code])
+        warnings: [...document.querySelectorAll('.inv-warning')].map((w) => [Number(w.dataset.line), w.dataset.code]),
+        texts: [...document.querySelectorAll('.inv-warning .inv-warning-code')].map((c) => c.textContent)
       }));
       assertEqual(ui.ips, [['203.0.113.10:8443'], ['[2001:db8::2]:8443', '203.0.113.12'], ['10.0.0.13', '10.0.0.13:8443']],
         'ip:port in the table');
       assertEqual(ui.warnings, [[4, 'INVALID_IP'], [5, 'PARSE'], [5, 'NO_IP']], 'bad port and host:port warned');
+      assertEqual(ui.texts.slice(0, 2), ['Invalid port — a port is a number from 1 to 65535',
+        'Host name with a port — servers are matched by address here, so write the address with the port'], 'the warnings say what is wrong');
       const file = await page.evaluate(async () => {
         // Capture the download: ui/download.js creates a Blob URL and clicks a temporary <a download>.
         const create = URL.createObjectURL;

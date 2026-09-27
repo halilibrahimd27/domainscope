@@ -449,13 +449,19 @@ test('tests/fixtures/inventory-ports.txt: the endpoints and warnings the CLI rea
     web04: ['203.0.113.14'],
     web05: ['203.0.113.15:9443'],
     web06: ['[2001:db8::16]:443'],
-    '203.0.113.17': ['203.0.113.17:8443']
+    '203.0.113.17': ['203.0.113.17:8443'],
+    web11: ['203.0.113.22'],
+    web13: ['203.0.113.23']
   });
-  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [
-    [10, 'INVALID_IP', '203.0.113.18:99999'],
-    [11, 'INVALID_IP', '[2001:db8::19]:https'],
-    [12, 'INVALID_IP', '203.0.113.20:0'],
-    [13, 'INVALID_IP', '203.0.113.21:70000']
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail, w.reason]), [
+    [10, 'INVALID_IP', '203.0.113.18:99999', 'port'],
+    [11, 'INVALID_IP', '[2001:db8::19]:https', 'port'],
+    [12, 'INVALID_IP', '203.0.113.20:0', 'port'],
+    [13, 'INVALID_IP', '203.0.113.21:70000', 'port'],
+    // the CLI warns about line 14 too, and resolves line 15's host name (servers here are matched by address)
+    [14, 'PARSE', 'db.example.net:5432', 'hostPort'],
+    [15, 'PARSE', 'web12.example.net:8443', 'hostPort'],
+    [15, 'NO_IP', 'web12', undefined]
   ], 'a port that cannot be used is a warning, never a silently dropped address');
   assert.deepEqual(r.servers.find((s) => s.id === 'web03').ports, { '203.0.113.13': [null, 8443] }, 'null: also on -p');
   assert.equal(r.servers.find((s) => s.id === 'web04').ports, undefined, 'an empty port is none');
@@ -499,6 +505,23 @@ test('a host name with a port (the CLI resolves it) is a PARSE warning here, nev
     [2, 'PARSE', 'web02.example.net:8443'],
     [2, 'NO_IP', 'web02']
   ]);
+});
+
+test('NAME=HOST[:PORT] as the first token: the server has no IP here, and says so (the CLI resolves it)', () => {
+  const r = parseInventory(['web01=web01.example.net:8443', 'web02=web02.example.net', 'web03=web03.example.net:8443 203.0.113.13',
+    'web04 ansible_host=web04.example.net:8443', 'user=root', 'version=1.2', 'timeout=30', 'web05 203.0.113.15 10:30'].join('\n'));
+  assert.deepEqual(targetsById(r), { web03: ['203.0.113.13'], web05: ['203.0.113.15'] });
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail, w.reason]), [
+    [1, 'PARSE', 'web01.example.net:8443', 'hostPort'],
+    [1, 'NO_IP', 'web01', undefined],
+    [2, 'NO_IP', 'web02', undefined],
+    [3, 'PARSE', 'web03.example.net:8443', 'hostPort'],
+    [4, 'PARSE', 'web04.example.net:8443', 'hostPort'],
+    [4, 'NO_IP', 'web04', undefined]
+  ], 'variables (user=root) and a time of day stay silent');
+  // A bad address is INVALID_IP without a reason; only an address with an unusable port has 'port'.
+  const bad = parseInventory('web01 203.0.113.300:8443\nweb02 203.0.113.12:08443x');
+  assert.deepEqual(bad.warnings.map((w) => [w.code, w.reason]), [['INVALID_IP', undefined], ['INVALID_IP', 'port']]);
 });
 
 test('formatEndpoint, addressTargets and serverTargets', () => {

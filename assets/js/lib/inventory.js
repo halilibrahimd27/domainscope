@@ -39,6 +39,10 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  * @property {'NO_IP'|'INVALID_IP'|'DUPLICATE_IP'|'PARSE'} code
  * @property {string} text  The offending line (trimmed, ≤ 200 chars).
  * @property {string} [detail] Extension: offending token / IP / server name.
+ * @property {'port'|'hostPort'} [reason] Extension, a finer cause: 'port' — an INVALID_IP whose
+ *   address is fine but whose port is not 1–65535 (`203.0.113.10:99999`); 'hostPort' — a PARSE
+ *   for a host name with a port (`web01.example.net:8443`), which the CLI can resolve but a server
+ *   here is only matched by address.
  */
 
 const MAX_INPUT = 10 * 1024 * 1024;
@@ -104,6 +108,16 @@ function parseIpToken(token) {
   return withPort(normalizeIP(t), '');
 }
 
+/**
+ * An `ip:port` / `[ip]:port` token whose address is valid but whose port is not
+ * (`203.0.113.10:99999`, `[2001:db8::1]:https`): the INVALID_IP it makes is about the port.
+ */
+function isBadPort(token) {
+  const t = unwrap(token);
+  const m = /^\[([^\]]+)\]:(.*)$/.exec(t) || /^(\d{1,3}(?:\.\d{1,3}){3}):(.*)$/.exec(t);
+  return !!(m && normalizeIP(m[1]) && !parseIpToken(t));
+}
+
 /** {@link parseIpToken} without the port: the canonical IP or null. */
 function cleanIpToken(token) {
   const hit = parseIpToken(token);
@@ -143,6 +157,9 @@ function isNameToken(t) {
 }
 
 const isHostish = (t) => /[\d._-]/.test(t);
+
+/** A dotted host name (`web01.example.net`), as the CLI resolves the value of `NAME=HOST`. */
+const isDottedHost = (t) => t.includes('.') && /\p{L}/u.test(t) && isNameToken(t) && !looksLikeIp(t);
 
 /** Header/key normalisation: camelCase split, Turkish folding, snake_case. */
 function normalizeKey(key) {
@@ -191,9 +208,10 @@ function createCollector(text, lines) {
 
   return {
     lines,
-    warn(line, code, textOverride, detail) {
+    warn(line, code, textOverride, detail, reason) {
       const w = { line, code, text: textOverride !== undefined ? String(textOverride).slice(0, 200) : lineText(line) };
       if (detail !== undefined) w.detail = String(detail).slice(0, 200);
+      if (reason) w.reason = reason;
       warnings.push(w);
     },
     lineText,
@@ -1002,7 +1020,7 @@ function parseCsv(text, csv, ctx) {
           eps.push(hit);
         } else if (strict && looksLikeIp(part)) {
           invalid += 1;
-          ctx.warn(rec.line, 'INVALID_IP', undefined, part);
+          ctx.warn(rec.line, 'INVALID_IP', undefined, part, isBadPort(part) ? 'port' : undefined);
         }
       }
     };
@@ -1119,15 +1137,24 @@ function parseHostLine(line, lineNo, group, ctx) {
       const hit = parseIpToken(value);
       const ip = hit ? hit.ip : null;
       const nk = normalizeKey(key);
-      if (ip && (isIpKey(nk) || /(^|_)host$/.test(nk))) {
+      const addrKey = isIpKey(nk) || /(^|_)host$/.test(nk);
+      // The first token "web01=…" names the server (NAME=TARGET, as the CLI's -t takes it).
+      const nameKey = i === 0 && isNameToken(key) && !/^ansible_/.test(nk);
+      if (ip && addrKey) {
         ips.push(ip);
         eps.push(hit);
-      } else if (ip && i === 0 && isNameToken(key) && !/^ansible_/.test(nk)) {
+      } else if (ip && nameKey) {
         names.push(key); // "web01=10.0.0.1"
         ips.push(ip);
         eps.push(hit);
-      } else if (!ip && looksLikeIp(value) && (isIpKey(nk) || (i === 0 && isNameToken(key) && !/^ansible_/.test(nk)))) {
+      } else if (!ip && looksLikeIp(value) && (isIpKey(nk) || nameKey)) {
         invalid.push(value); // "web01=10.0.0.300", "web01=10.0.0.1:99999": a warning, never dropped silently
+      } else if (!ip && (addrKey || nameKey) && HOST_PORT_RE.test(value)) {
+        // "web01=web01.example.net:8443", "ansible_host=web01.example.net:8443": the CLI resolves it
+        if (nameKey && !addrKey) names.push(key);
+        hostPorts.push(value);
+      } else if (!ip && nameKey && !addrKey && isDottedHost(value)) {
+        names.push(key); // "web01=web01.example.net": the CLI resolves it, here the server has no IP
       }
       return;
     }
@@ -1158,8 +1185,8 @@ function parseHostLine(line, lineNo, group, ctx) {
     else others.push(tok);
   });
 
-  for (const bad of invalid) ctx.warn(lineNo, 'INVALID_IP', undefined, bad);
-  for (const hp of hostPorts) ctx.warn(lineNo, 'PARSE', undefined, hp);
+  for (const bad of invalid) ctx.warn(lineNo, 'INVALID_IP', undefined, bad, isBadPort(bad) ? 'port' : undefined);
+  for (const hp of hostPorts) ctx.warn(lineNo, 'PARSE', undefined, hp, 'hostPort');
   const groups = group && !IGNORED_GROUPS.has(group) ? [group] : [];
   const hostish = names.filter(isHostish);
   const plain = names.filter((n) => PLAIN_WORD_RE.test(n));

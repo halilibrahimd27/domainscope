@@ -7,7 +7,8 @@ asserts that). The CLI must read one server per line, each with only its own add
 tests/fixtures/inventory-ports.txt holds addresses written with their own port: the CLI must read
 the same servers, ip:port endpoints and warning lines as lib/inventory.js (tests/js/inventory.test.js),
 and inventory-ports-targets.txt, the targets.txt the web app writes from it, back to the same
-endpoints.
+endpoints. Only a host name with a port on a line of its own differs: the CLI resolves it, the web
+app (which matches servers by address) warns.
 
 Run from the repository root:
     python -m unittest discover -s tests/python -v
@@ -24,16 +25,19 @@ TARGETS = ROOT / 'tests' / 'fixtures' / 'inventory-targets.txt'
 PORTS = ROOT / 'tests' / 'fixtures' / 'inventory-ports.txt'
 PORTS_TARGETS = ROOT / 'tests' / 'fixtures' / 'inventory-ports-targets.txt'
 
-# What both parsers read from inventory-ports.txt: server -> its -t endpoints (None = the -p ports).
-PORT_ENDPOINTS = [
-    ('web01', ['203.0.113.10:8443']),
-    ('web02', ['[2001:db8::2]:8443', '203.0.113.12']),
-    ('web03', ['203.0.113.13', '203.0.113.13:8443']),
-    ('web04', ['203.0.113.14']),
-    ('web05', ['203.0.113.15:9443']),
-    ('web06', ['[2001:db8::16]:443']),
-    ('203.0.113.17', ['203.0.113.17:8443']),
-]
+# What both parsers read from inventory-ports.txt: server -> its -t endpoints (a bare address is
+# scanned on the -p ports). The web app writes its named servers first in targets.txt.
+PORT_ENDPOINTS = {
+    'web01': ['203.0.113.10:8443'],
+    'web02': ['[2001:db8::2]:8443', '203.0.113.12'],
+    'web03': ['203.0.113.13', '203.0.113.13:8443'],
+    'web04': ['203.0.113.14'],
+    'web05': ['203.0.113.15:9443'],
+    'web06': ['[2001:db8::16]:443'],
+    '203.0.113.17': ['203.0.113.17:8443'],
+    'web11': ['203.0.113.22'],
+    'web13': ['203.0.113.23'],
+}
 
 
 def _load_cli():
@@ -81,15 +85,23 @@ def endpoints(server):
 class InventoryPortsParity(unittest.TestCase):
     def test_the_same_endpoints_and_warnings_as_the_web_app(self):
         inventory = sos.parse_inventory(PORTS.read_text(encoding='utf-8'), str(PORTS))
-        self.assertEqual([(s.name, endpoints(s)) for s in inventory.servers], PORT_ENDPOINTS)
-        self.assertTrue(all(not s.hostnames for s in inventory.servers))
+        self.assertEqual({s.name: endpoints(s) for s in inventory.servers if s.ips}, PORT_ENDPOINTS)
+        # line 15: the host name with a port the web app can only warn about is resolved here
+        self.assertEqual([(s.name, s.hostnames, s.ports) for s in inventory.servers if not s.ips],
+                         [('web12', ['web12.example.net'], {'web12.example.net': [8443]})])
+        # the web app has these lines too, plus PARSE and NO_IP on line 15
         self.assertEqual([(w.line, w.code) for w in inventory.warnings],
-                         [(10, 'INVALID_IP'), (11, 'INVALID_IP'), (12, 'INVALID_IP'), (13, 'INVALID_IP')])
+                         [(10, 'INVALID_IP'), (11, 'INVALID_IP'), (12, 'INVALID_IP'), (13, 'INVALID_IP'),
+                          (14, 'PARSE')])
+        self.assertIn('port 99999 is outside 1-65535', inventory.warnings[0].text)
+        self.assertIn('db.example.net:5432: a host name with a port next to an address',
+                      inventory.warnings[4].text)
 
     def test_the_web_apps_targets_txt_reads_back_to_the_same_endpoints(self):
         inventory = sos.parse_inventory(PORTS_TARGETS.read_text(encoding='utf-8'), str(PORTS_TARGETS))
         self.assertEqual(inventory.warnings, [])
-        self.assertEqual([(s.name, endpoints(s)) for s in inventory.servers], PORT_ENDPOINTS)
+        self.assertEqual({s.name: endpoints(s) for s in inventory.servers}, PORT_ENDPOINTS)
+        self.assertEqual(len(inventory.servers), len(PORT_ENDPOINTS))
 
     def test_name_equals_address_lines_as_the_web_app_reads_them(self):
         inventory = sos.parse_inventory('web01=203.0.113.10\nweb02=[2001:db8::2]:8443\n'

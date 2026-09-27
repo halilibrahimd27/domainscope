@@ -109,6 +109,8 @@ registerStrings('en', {
   'inv.warn.INVALID_IP': 'Invalid IP address',
   'inv.warn.DUPLICATE_IP': 'The same IP address belongs to several servers',
   'inv.warn.PARSE': 'Line could not be understood',
+  'inv.warn.INVALID_IP.port': 'Invalid port — a port is a number from 1 to 65535',
+  'inv.warn.PARSE.hostPort': 'Host name with a port — servers are matched by address here, so write the address with the port',
   'inv.lineN': 'line {n}',
   'inv.wholeInput': 'input',
   'inv.formatsTitle': 'Supported formats & examples',
@@ -170,6 +172,8 @@ registerStrings('tr', {
   'inv.warn.INVALID_IP': 'Geçersiz IP adresi',
   'inv.warn.DUPLICATE_IP': 'Aynı IP adresi birden fazla sunucuya ait',
   'inv.warn.PARSE': 'Satır anlaşılamadı',
+  'inv.warn.INVALID_IP.port': 'Geçersiz port — port 1 ile 65535 arasında bir sayıdır',
+  'inv.warn.PARSE.hostPort': 'Portlu ana makine adı — burada sunucular adresle eşleştirilir, adresi portuyla yazın',
   'inv.lineN': '{n}. satır',
   'inv.wholeInput': 'girdi',
   'inv.formatsTitle': 'Desteklenen biçimler ve örnekler',
@@ -421,13 +425,13 @@ export function mount(container, ctx) {
       warningsList.append(h('li', null, h('button', {
         type: 'button',
         class: 'inv-warning',
-        dataset: { code: w.code, line: w.line },
+        dataset: { code: w.code, line: w.line, reason: w.reason },
         disabled: !w.line,
         on: { click: () => jumpToLine(w.line) }
       },
       h('span', { class: 'inv-warning-line num' }, w.line ? t('inv.lineN', { n: w.line }) : t('inv.wholeInput')),
       h('span', { class: 'inv-warning-body' },
-        h('span', { class: 'inv-warning-code' }, t(`inv.warn.${w.code}`)),
+        h('span', { class: 'inv-warning-code' }, t(w.reason ? `inv.warn.${w.code}.${w.reason}` : `inv.warn.${w.code}`)),
         w.text ? h('code', { class: 'inv-warning-text' }, w.text) : null,
         w.detail && w.detail !== w.text ? h('span', { class: 'inv-warning-detail mono' }, w.detail) : null))));
     }

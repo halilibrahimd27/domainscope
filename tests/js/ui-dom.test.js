@@ -2149,6 +2149,14 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /options = \{ \.\.\.options, permutationBudget: Number\(v\) \};\s*saveOptions\(options\);\s*renderVocab\(\);/, 'budget select');
     assert.match(src, /options = \{ \.\.\.options, originHints: on \};\s*saveOptions\(options\);\s*renderVocab\(\);/, 'origin hints box');
   });
+
+  test('SSL Targets: Start and Cancel hand the keyboard focus to each other as they hide', async () => {
+    const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    const running = /function setRunning\(on\) \{([\s\S]*?)\n {2}\}/.exec(src);
+    assert.ok(running, 'setRunning found');
+    assert.match(running[1], /const hadFocus = [^\n]*activeElement === runBtn \|\| [^\n]*activeElement === cancelBtn/);
+    assert.match(running[1], /if \(hadFocus\) \(on \? cancelBtn : runBtn\)\.focus\(\{ preventScroll: true \}\);/);
+  });
 });
 
 /* ------------------------------------------------------------------------ */

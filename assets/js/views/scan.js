@@ -1736,9 +1736,14 @@ export function mount(container, ctx) {
   }
 
   function setRunning(on) {
+    // The button just used hides itself: its keyboard focus moves to the one shown in its
+    // place (Start → Cancel, and back when the run ends) instead of falling to <body>.
+    const doc = globalThis.document;
+    const hadFocus = !!doc && (doc.activeElement === runBtn || doc.activeElement === cancelBtn);
     runBtn.hidden = on;
     cancelBtn.hidden = !on;
     runBtn.querySelector('.btn-label').textContent = session.run && !on ? t('scan.runAgain') : t('scan.run');
+    if (hadFocus) (on ? cancelBtn : runBtn).focus({ preventScroll: true });
     if (on) ctx.setBusy(t('scan.busy'));
     else ctx.setBusy(false);
   }

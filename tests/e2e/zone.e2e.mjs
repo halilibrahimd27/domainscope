@@ -403,6 +403,7 @@ async function main() {
       const note = await keptNote(page);
       assert(/^Live check from \d{1,2}:\d{2}(\s[AP]M)?$/.test(note.text), `the note names the live check on the Overview tab: ${note.text}`);
       assertEqual([note.rerun, note.hash], [true, '#/zone'], 'Run again; nothing in the URL');
+      await shot(page, opts, 'zone-kept-desktop-light-en');
       const sent = await page.evaluate(() => window.__fakeDnsLog.length);
       await page.click('[data-action="kept-rerun"]');
       await page.waitFor((n) => window.__fakeDnsLog.length > n && !document.querySelector('.zone-tabs .tabpanel[data-tab="live"]')?.hidden
@@ -431,6 +432,9 @@ async function main() {
       await leaveAndReturn(page);
       const note = await keptNote(page);
       assert(/^Önceki canlı kontrol: \d{1,2}:\d{2}$/.test(note.text), `TR note: ${note.text}`);
+      await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await shot(page, opts, 'zone-kept-desktop-dark-tr');
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
       assert(/^Live check from /.test((await keptNote(page)).text), 'kept through the language switch');
     });

@@ -5,7 +5,10 @@
  * Chrome/Edge.
  *
  *   node tests/e2e/subdomains.e2e.mjs [--domain npmjs.com] [--sources crtsh,anubis,hackertarget]
- *                                     [--browser chrome|edge] [--headed] [--no-shots]
+ *                                     [--browser chrome|edge] [--headed] [--no-shots] [--offline]
+ *
+ * --offline skips the steps that need the live services and runs the Node checks and the
+ * emulated groups (DNS answered inside the page, no passive source) only.
  *
  * Free source quotas are small (Cert Spotter ≈ 10 requests/hour, HackerTarget ≈ 50/day), so
  * the live scan uses crt.sh, Anubis and HackerTarget only (set through the Advanced options,
@@ -35,6 +38,11 @@
  *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has
  *   - the Zone File hand-off (emulated DNS): exact mode, the "origin?" badges right after a scan with
  *     slow DNS, and a "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
+ *   - the results tabs (emulated zone, no network): Sources while nothing is found, Hosts from the
+ *     first host, live counts on the labels, a picked tab kept while hosts stream in, arrow keys /
+ *     Home / End with a roving tabindex, `tab=` in the URL kept across a language switch and a
+ *     visit to another view, stat cards and the "origin?" links opening their tab, and at 375 px
+ *     (TR/EN × light/dark) all four tabs in view, host names wrapping only after a dot, IPs whole
  *   - zero console errors, exceptions and CSP violations (third-party API failures such as a
  *     crt.sh 502 without CORS are reported, not counted); no missing i18n keys
  */
@@ -188,6 +196,30 @@ async function setSources(page, sources) {
 
 const currentRunId = (page) => page.evaluate(() => document.querySelector('.sub-run-ui')?.dataset.run || null);
 
+/** The results tab shown now (its data-tab), or null before a run. */
+const selectedTab = (page) => page.evaluate(() => document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab || null);
+
+/**
+ * Open a results tab with a click (a user's choice, so it goes into the URL) and wait for its
+ * panel. Every panel is in the DOM from the start; only the chosen one is visible and clickable.
+ */
+async function openTab(page, id) {
+  await page.click(`.sub-tabs .tab[data-tab="${id}"]`);
+  await page.waitFor((tab) => {
+    const el = document.querySelector(`.sub-tabs .tab[data-tab="${tab}"]`);
+    return el && el.getAttribute('aria-selected') === 'true' && !document.getElementById(el.getAttribute('aria-controls')).hidden;
+  }, { args: [id], message: `results tab ${id}` });
+}
+
+/** The counts on the tab labels: { overview, hosts, origins, sources } → text, or null without one. */
+const tabBadges = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.sub-tabs .tab')].map((tab) => {
+  const b = tab.querySelector('.tab-badge');
+  return [tab.dataset.tab, b && !b.hidden ? b.textContent : null];
+})));
+
+/** The route's `tab=` (null without one). */
+const routeTab = (page) => page.evaluate(() => new URLSearchParams(location.hash.split('?')[1] || '').get('tab'));
+
 /**
  * Screenshot one element (clipped, beyond the viewport if needed) — a focused image of a panel
  * to review, next to the full-page shots. Skipped with --no-shots.
@@ -328,6 +360,13 @@ const slowDnsScript = `(() => {
 })();`;
 
 /**
+ * The zone of the results-tab steps: {@link FAKE_ZONE} plus a long name two labels deep with an
+ * IPv6 address (a custom wordlist entry finds it), which a 375 px card has to wrap — at a dot.
+ */
+const TABS_LONG = 'customer-portal-staging-v2.eu-west-1.example.net';
+const TABS_ZONE = { ...FAKE_ZONE, [TABS_LONG]: { A: ['198.51.100.23'], AAAA: ['2001:db8:85a3:1234:5678:8a2e:370:7334'] } };
+
+/**
  * Elements of a panel that stick out of the viewport on the right (text or a control cut off on
  * a phone). Content inside a scrolling wrapper (the tables) is allowed to be wider.
  */
@@ -353,7 +392,14 @@ async function main() {
   const opts = cliOptions();
   const DOMAIN = opts.value('--domain', 'npmjs.com');
   const SOURCES = opts.value('--sources', DEFAULT_SOURCES.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+  const OFFLINE = opts.has('--offline');
   const run = createRunner();
+  /** A step that needs the live services (DoH resolvers, passive sources): skipped with --offline. */
+  const liveStep = (name, fn) => {
+    if (!OFFLINE) return run.step(name, fn);
+    process.stdout.write(`  SKIP  ${name} (--offline)\n`);
+    return Promise.resolve();
+  };
 
   await nodeChecks(run);
 
@@ -361,7 +407,9 @@ async function main() {
   const origin = new URL(server.url).origin;
   const browser = await launchBrowser({ browser: opts.browser, headless: !opts.headed });
   const version = await browser.version();
-  process.stdout.write(`\nServing ${server.url} — ${version.product}; live domain ${DOMAIN}, sources ${SOURCES.join(', ')}\n`);
+  process.stdout.write(OFFLINE
+    ? `\nServing ${server.url} — ${version.product}; offline: live steps skipped\n`
+    : `\nServing ${server.url} — ${version.product}; live domain ${DOMAIN}, sources ${SOURCES.join(', ')}\n`);
   let scanRunId = null;
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
@@ -567,7 +615,7 @@ async function main() {
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
     });
 
-    await run.step(`live scan of ${DOMAIN} (Enter): shareable URL, Cancel, stages and source chips while running`, async () => {
+    await liveStep(`live scan of ${DOMAIN} (Enter): shareable URL, Cancel, stages and source chips while running`, async () => {
       await typeAndSubmit(page, `https://www.${DOMAIN}/`);
       await page.waitFor(() => document.querySelector('.sub-run-ui'), { message: 'run UI' });
       scanRunId = await currentRunId(page);
@@ -580,9 +628,14 @@ async function main() {
         stages: [...document.querySelectorAll('.sub-stage')].map((s) => s.dataset.stage),
         chips: [...document.querySelectorAll('.sub-chip')].map((c) => c.dataset.source),
         live: !!document.querySelector('.sub-progress [aria-live="polite"]'),
-        busy: document.getElementById('main').getAttribute('aria-busy')
+        busy: document.getElementById('main').getAttribute('aria-busy'),
+        tabs: [...document.querySelectorAll('.sub-tabs .tab')].map((t) => t.dataset.tab),
+        tab: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab,
+        rows: document.querySelectorAll('.sub-table tbody tr.dt-row').length
       }));
       assertEqual(info.hash, `#/subdomains?domain=${DOMAIN}`, 'URL (no run=1: a reload must not scan again)');
+      assertEqual(info.tabs, ['overview', 'hosts', 'origins', 'sources'], 'results tabs');
+      assert(info.tab === 'sources' || info.rows > 0, `the stages and sources show until a host is listed: ${info.tab}, ${info.rows} rows`);
       assertEqual(info.value, DOMAIN, 'www. dropped from the URL input');
       assert(info.cancel && !info.run && !info.intro, `buttons / intro while running: ${JSON.stringify(info)}`);
       assertEqual(info.stages, ['sources', 'mining', 'wildcard', 'bruteforce', 'permutations', 'resolve', 'hints'], 'stages');
@@ -592,7 +645,7 @@ async function main() {
       await shot(page, opts, 'subdomains-desktop-light-en-running');
     });
 
-    await run.step('hosts stream into the table; the scan finishes with Cloudflare-classified rows', async () => {
+    await liveStep('hosts stream into the table; the scan finishes with Cloudflare-classified rows', async () => {
       // Streaming: rows appear while the run is still going (resolve stage) — or the run was simply fast.
       const streamed = await page.waitFor((id) => {
         const p = document.querySelector(`.sub-run-ui[data-run="${id}"] .sub-run`);
@@ -625,11 +678,17 @@ async function main() {
       const cf = await statValue(page, 'cloudflare');
       assert(cf >= 1, 'Behind Cloudflare stat');
       assert(await page.evaluate(() => !!document.querySelector('.sub-summary [data-summary="cloudflare"]')), 'Cloudflare note');
+      // Hosts first: the table is the tab a finished run shows, and its label counts the names.
+      assertEqual([await selectedTab(page), await routeTab(page)], ['hosts', null], 'Hosts is the automatic tab (nothing in the URL)');
+      const badges = await tabBadges(page);
+      assertEqual(Number(badges.hosts.replace(/\D/g, '')), found, 'the Hosts label counts the hosts');
+      assert(Number(badges.origins) >= cf, `the Origins label counts the proxied hosts: ${JSON.stringify(badges)}`);
+      assert(/^\d+\/\d+$/.test(badges.sources), `the Sources label reads worked/asked: ${badges.sources}`);
       await assertNoHorizontalScroll(page, 'results');
       await shot(page, opts, 'subdomains-desktop-light-en-results');
     });
 
-    await run.step('engine v2: stage counts, "found through DNS" chips, readable origin ids', async () => {
+    await liveStep('engine v2: stage counts, "found through DNS" chips, readable origin ids', async () => {
       const info = await page.evaluate(() => ({
         stages: Object.fromEntries([...document.querySelectorAll('.sub-stage')].map((s) => [s.dataset.stage, `${s.dataset.state}${s.dataset.found !== undefined ? `+${s.dataset.found}` : ''}`])),
         summary: document.querySelector('.sub-tech-summary')?.textContent || '',
@@ -645,7 +704,7 @@ async function main() {
       assert(!info.origins.some((o) => /=(dns-mine:|wordlist$|permutation$|recursive$)/.test(o)), `origin ids are labelled: ${info.origins}`);
     });
 
-    await run.step('learned names: the finished scan saved bare labels only; the wordlist line says what was used', async () => {
+    await liveStep('learned names: the finished scan saved bare labels only; the wordlist line says what was used', async () => {
       const info = await page.waitFor(() => {
         const raw = localStorage.getItem('ssds.learned.labels');
         const label = document.querySelector('.sub-learned .check-text')?.textContent || '';
@@ -674,7 +733,7 @@ async function main() {
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
     });
 
-    await run.step('source status: quota / outage texts instead of generic errors (HackerTarget quota is often used up)', async () => {
+    await liveStep('source status: quota / outage texts instead of generic errors (HackerTarget quota is often used up)', async () => {
       const info = await page.evaluate(() => ({
         chips: [...document.querySelectorAll('.sub-chip')].map((c) => ({ id: c.dataset.source, state: c.dataset.state, health: c.dataset.health || '', value: c.querySelector('.sub-chip-value').textContent, title: c.title })),
         notes: [...document.querySelectorAll('.sub-src-note')].map((n) => ({ id: n.dataset.source, health: n.dataset.health, text: n.textContent }))
@@ -693,7 +752,7 @@ async function main() {
       if (ht) process.stdout.write(`        note: HackerTarget chip: ${ht.state}/${ht.health} "${ht.value}"\n`);
     });
 
-    await run.step('ORIGIN panel: proxied hosts, origin networks, candidates and the CLI sweep command', async () => {
+    await liveStep('ORIGIN panel: proxied hosts, origin networks, candidates and the CLI sweep command', async () => {
       const info = await page.evaluate(() => {
         const panel = document.querySelector('.sub-org');
         if (!panel) return null;
@@ -721,6 +780,7 @@ async function main() {
         assert(info.command && info.command.startsWith('python3 ssl_origin_scan.py -t ') && info.networks.filter((c) => !c.includes(':')).every(covered)
           && !/:\S*\/48\b/.test(info.command), `command sweeps the networks: ${info.command}`);
       }
+      await openTab(page, 'origins');
       if (info.command) {
         // The same (validated, quoted-when-needed) tokens for PowerShell, launched with `python`.
         await page.click('.sub-org-shell .seg-btn[data-value="powershell"]');
@@ -736,9 +796,15 @@ async function main() {
       await shot(page, opts, 'subdomains-desktop-light-en-origin');
       await shotEl(page, opts, 'subdomains-origin-desktop-light-en', '.sub-org');
       await page.evaluate(() => window.scrollTo(0, 0));
+      // The Sources tab: the stage pills, the source chips and their free limits.
+      await openTab(page, 'sources');
+      assert(await page.evaluate(() => document.querySelectorAll('.sub-tab-sources .sub-stage').length === 7
+        && document.querySelectorAll('.sub-tab-sources .sub-chip').length > 0 && document.querySelectorAll('.sub-src-quota').length > 0), 'stages, chips and limits in the Sources tab');
+      await shot(page, opts, 'subdomains-desktop-light-en-sources');
+      await openTab(page, 'hosts');
     });
 
-    await run.step('filters: segmented control, stat cards and search narrow the table', async () => {
+    await liveStep('filters: segmented control, stat cards and search narrow the table', async () => {
       const all = (await tableInfo(page)).rows;
       await page.click('.sub-filter [data-value="resolving"]');
       let info = await tableInfo(page);
@@ -752,10 +818,15 @@ async function main() {
       await page.click('.sub-filter [data-value="unresolved"]');
       info = await tableInfo(page);
       assertEqual(info.withIp, 0, 'no IPs among the non-resolving');
+      await openTab(page, 'overview');
       await page.click('.sub-stats [data-stat="direct"]');
+      // A stat card filters the hosts and opens their tab, with the focus on it (the card is hidden now).
+      assertEqual(await page.evaluate(() => [document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab, document.activeElement?.dataset.tab]),
+        ['hosts', 'hosts'], 'the Hosts tab is open and focused');
       info = await tableInfo(page);
       assert(info.kinds.every((k) => k === 'direct' || k === 'private'), `direct only: ${info.kinds}`);
       assertEqual(info.pressed, 'direct', 'segmented follows the stat card');
+      await openTab(page, 'overview');
       await page.click('.sub-stats [data-stat="cdn"]');
       info = await tableInfo(page);
       assert(info.kinds.every((k) => k === 'cdn' || k === 'platform'), `cdn only: ${info.kinds}`);
@@ -769,7 +840,7 @@ async function main() {
       await page.waitFor((n) => document.querySelectorAll('.sub-table tbody tr.dt-row').length === n, { args: [all], message: 'search cleared' });
     });
 
-    await run.step('links: subdomain → DNS Lookup, IP → IP Intel; sources shown as badges', async () => {
+    await liveStep('links: subdomain → DNS Lookup, IP → IP Intel; sources shown as badges', async () => {
       const links = await page.evaluate(() => ({
         host: document.querySelector('.sub-table .sub-host-name')?.getAttribute('href'),
         ip: document.querySelector('.sub-table .sub-ip')?.getAttribute('href'),
@@ -782,7 +853,7 @@ async function main() {
       assert(/mono|Consolas|Menlo|Courier/i.test(links.mono), `monospace names: ${links.mono}`);
     });
 
-    await run.step('exports: copy, names.txt, CSV and JSON; "resolving only" narrows them', async () => {
+    await liveStep('exports: copy, names.txt, CSV and JSON; "resolving only" narrows them', async () => {
       const found = await statValue(page, 'found');
       const resolving = await statValue(page, 'resolving');
       const count = () => page.evaluate(() => Number(document.querySelector('.sub-act-count').textContent.replace(/[^\d]/g, '')));
@@ -824,7 +895,7 @@ async function main() {
       assertEqual(await count(), found, 'count restored');
     });
 
-    await run.step('wildcard suspects are hidden by default and can be shown', async () => {
+    await liveStep('wildcard suspects are hidden by default and can be shown', async () => {
       const wild = await page.evaluate(() => {
         const box = document.querySelector('.sub-wild-toggle');
         return box && !box.hidden ? Number(box.textContent.replace(/[^\d]/g, '')) : 0;
@@ -840,7 +911,7 @@ async function main() {
       await page.click('.sub-wild-toggle .check-label');
     });
 
-    await run.step('results survive DNS Lookup + Back (no re-scan)', async () => {
+    await liveStep('results survive DNS Lookup + Back (no re-scan)', async () => {
       const name = await page.evaluate(() => document.querySelector('.sub-table .sub-host-name').textContent);
       await page.click('.sub-table .sub-host-name');
       await page.waitFor(() => document.documentElement.dataset.view === 'lookup', { message: 'lookup view' });
@@ -853,10 +924,12 @@ async function main() {
       assertEqual(await currentRunId(page), scanRunId, 'same run');
       assertEqual(await page.evaluate(() => document.querySelector('.sub-run').dataset.status), 'done', 'not re-running');
       assert((await tableInfo(page)).rows >= 3, 'rows still there');
+      assertEqual(await selectedTab(page), 'hosts', 'the Hosts tab again');
     });
 
-    await run.step('hand-over: "Open in SSL Targets" pre-fills the domain there', async () => {
+    await liveStep('hand-over: "Open in SSL Targets" (Overview) pre-fills the domain there', async () => {
       assert(await page.evaluate(() => /Which servers need the certificate/.test(document.querySelector('.sub-cta').textContent)), 'CTA text');
+      await openTab(page, 'overview');
       await page.click('[data-action="sub-cta"]');
       await page.waitFor(() => document.documentElement.dataset.view === 'scan' && document.querySelector('[data-role="scan-domains"]'), { timeout: 15000, message: 'scan view' });
       const info = await page.evaluate(() => ({ hash: location.hash, value: document.querySelector('[data-role="scan-domains"]').value }));
@@ -864,10 +937,12 @@ async function main() {
       assert(info.value.includes(DOMAIN), `domain pre-filled: ${info.value}`);
       await gotoRoute(page, '#/subdomains');
       assertEqual(await currentRunId(page), scanRunId, 'results still there');
+      assertEqual(await selectedTab(page), 'overview', 'the tab picked on this page comes back with them');
+      await openTab(page, 'hosts');
     });
 
     run.group('Turkish, dark mode, phone');
-    await run.step('Turkish re-mount keeps the results; natural Turkish labels', async () => {
+    await liveStep('Turkish re-mount keeps the results; natural Turkish labels', async () => {
       await setLangUi(page, 'tr');
       await page.waitFor(() => document.querySelector('.sub-run-ui'));
       const info = await page.evaluate(() => ({
@@ -878,18 +953,22 @@ async function main() {
         stat: document.querySelector('[data-stat="cloudflare"] .stat-label').textContent,
         segs: [...document.querySelectorAll('.sub-filter .seg-btn')].map((b) => b.textContent),
         cta: document.querySelector('[data-action="sub-cta"]').textContent.trim(),
-        rows: document.querySelectorAll('.sub-table tbody tr.dt-row').length
+        rows: document.querySelectorAll('.sub-table tbody tr.dt-row').length,
+        tabs: [...document.querySelectorAll('.sub-tabs .tab-label')].map((l) => l.textContent),
+        tab: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab
       }));
       assertEqual([info.h1, info.group, info.run, info.title], ['Subdomain Tarama', 'Keşif', 'Tara', 'Hangi alan adını tarayalım?'], 'TR labels');
       assertEqual(info.stat, 'Cloudflare arkasında', 'TR stat');
       assertEqual(info.segs, ['Tümü', 'Çözümlenen', 'Cloudflare', 'Doğrudan', 'Çözümlenmeyen'], 'TR filters');
       assertEqual(info.cta, 'SSL Hedefleri’nde aç', 'TR CTA');
+      assertEqual(info.tabs, ['Genel bakış', 'Host’lar', 'Origin’ler', 'Kaynaklar'], 'TR tabs');
+      assertEqual(info.tab, 'hosts', 'the tab survives the language re-mount');
       assert(info.rows >= 3, 'rows kept');
       assertEqual(await currentRunId(page), scanRunId, 'same run after the re-mount');
       await shot(page, opts, 'subdomains-desktop-light-tr-results');
     });
 
-    await run.step('dark mode (TR + EN) has no horizontal scroll', async () => {
+    await liveStep('dark mode (TR + EN) has no horizontal scroll', async () => {
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await sleep(150);
       await assertNoHorizontalScroll(page, 'dark');
@@ -901,7 +980,7 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 
-    await run.step('phone 390×844 (TR, light + dark): the results stack into cards, name + classification on screen, never a page scroll', async () => {
+    await liveStep('phone 390×844 (TR, light + dark): the results stack into cards, name + classification on screen, never a page scroll', async () => {
       await page.setViewport({ width: 390, height: 844, mobile: true });
       await setLangUi(page, 'tr');
       await sleep(200);
@@ -942,6 +1021,8 @@ async function main() {
       // Show every control: a manual language choice and a custom list with a rejected entry.
       await page.click('.sub-lang-auto-toggle .check-label');
       await page.type('[data-role="sub-custom"]', 'api\nkunden\n-bad-');
+      // The ORIGIN panel is in the Origins tab (a picked tab survives the language re-mounts below).
+      if (await page.evaluate(() => !!document.querySelector('.sub-org'))) await openTab(page, 'origins');
       try {
         for (const lang of ['en', 'tr']) {
           for (const scheme of ['light', 'dark']) {
@@ -968,6 +1049,7 @@ async function main() {
         await page.click('[data-action="sub-custom-clear"]');
         await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
         await page.setViewport({ width: 1440, height: 900 });
+        if (await page.evaluate(() => !!document.querySelector('.sub-tabs'))) await openTab(page, 'hosts');
       }
       assertEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.subdomains.options')).locales), null, 'back to automatic languages');
     });
@@ -982,7 +1064,7 @@ async function main() {
       assertEqual(await currentRunId(page), scanRunId, 'no new scan');
     });
 
-    await run.step('Cancel stops a running scan and keeps what was found', async () => {
+    await liveStep('Cancel stops a running scan and keeps what was found', async () => {
       await setSources(page, ['anubis']);
       await page.click('input[name="sub-bruteforce"][value="smart"]');
       await typeAndSubmit(page, 'github.com');
@@ -1036,7 +1118,7 @@ async function main() {
       await phone.close();
     });
 
-    await run.step('#/subdomains?domain=…&run=1 asks for one click, then scans (sources, wordlist, permutations and hints off); a reload does not scan', async () => {
+    await liveStep('#/subdomains?domain=…&run=1 asks for one click, then scans (sources, wordlist, permutations and hints off); a reload does not scan', async () => {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
       // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
@@ -1118,6 +1200,7 @@ async function main() {
         assertEqual([info.proxied, info.networks], [2, ['203.0.113.0/24']], 'proxied hosts + the DNS-only network');
         assertEqual(info.command, 'python3 ssl_origin_scan.py -t 203.0.113.0/24 -n shop.example.net www.example.net', 'POSIX command');
         assertEqual(info.shells, ['posix:true', 'powershell:false'], 'shell toggle');
+        await openTab(tab, 'origins');
         await tab.click('.sub-org-shell .seg-btn[data-value="powershell"]');
         const ps = await tab.waitFor(() => {
           const c = document.querySelector('.sub-org-command code')?.textContent || '';
@@ -1139,11 +1222,13 @@ async function main() {
         }, { message: '--exclude in the command' });
         assertEqual(shown, `python ssl_origin_scan.py ${withExclude}`, 'PowerShell command with --exclude');
         await takeDownloads(tab);
+        await openTab(tab, 'hosts');
         await tab.click('[data-export="json"]');
         await tab.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON export' });
         const exported = JSON.parse((await takeDownloads(tab))[0].text).origin;
         assertEqual([exported.cliSuggestion, exported.exclude && exported.exclude.requested], [`python3 ssl_origin_scan.py ${withExclude}`, ['203.0.113.12']],
           'the exported command honours the exclusions');
+        await openTab(tab, 'origins');
         // Phone: the panel (networks, command, toggle) fits in both languages and themes.
         await tab.setViewport({ width: 390, height: 844, mobile: true });
         for (const lang of ['en', 'tr']) {
@@ -1206,12 +1291,186 @@ async function main() {
         assert(info.siblingCands.some((tx) => /ticket\.example\.org/.test(tx) && /203\.0\.113\.20/.test(tx)),
           `ticket.example.net shows ticket.example.org (203.0.113.20) as a sibling-domain candidate: ${JSON.stringify(info.siblingCands)}`);
         assert(info.ticketRow && /203\.0\.113\.20/.test(info.ticketRow), `the candidate is on the ticket.example.net row: ${info.ticketRow}`);
+        await openTab(tab, 'origins');
         await shotEl(tab, opts, 'subdomains-origin-siblings-desktop-light-en', '.sub-org');
         await assertClean(tab, 'sibling zone', origin);
       } finally {
         await tab.close();
       }
     });
+
+    run.group('Results tabs (emulated zone, no network)');
+    const tt = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await tt.emulateMedia({ 'prefers-color-scheme': 'light' });
+    try {
+      await run.step('a live run shows Sources until a host is listed, then Hosts; the labels count live; a picked tab stays while hosts stream in', async () => {
+        await tt.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(FAKE_APEX, TABS_ZONE) });
+        await tt.send('Page.addScriptToEvaluateOnNewDocument', { source: slowDnsScript });
+        await tt.goto(`${server.url}#/about`);
+        await waitReady(tt);
+        await setLangUi(tt, 'en');
+        await tt.evaluate((label) => {
+          localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
+          sessionStorage.setItem('ssds.wordlist.custom', label);
+        }, TABS_LONG.slice(0, -FAKE_APEX.length - 1));
+        await tt.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, FAKE_APEX);
+        await tt.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
+        // Record every tab the run shows (and the Hosts count) while it streams.
+        await tt.evaluate(() => {
+          window.__dnsDelay = 250;
+          window.__tabLog = [];
+          window.__hostCounts = [];
+          window.__tabTimer = setInterval(() => {
+            const sel = document.querySelector('.sub-tabs .tab[aria-selected="true"]');
+            if (!sel) return;
+            const status = document.querySelector('.sub-run')?.dataset.status;
+            const entry = `${sel.dataset.tab}:${status}`;
+            if (window.__tabLog[window.__tabLog.length - 1] !== entry) window.__tabLog.push(entry);
+            const b = document.querySelector('.sub-tabs .tab[data-tab="hosts"] .tab-badge');
+            if (status === 'running' && b && !b.hidden && !window.__hostCounts.includes(b.textContent)) window.__hostCounts.push(b.textContent);
+          }, 10);
+        });
+        await tt.click('[data-action="sub-link-start"]');
+        await tt.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'started' });
+        const id = await currentRunId(tt);
+        // Hosts takes over from Sources while the run is still live (the first host streamed in).
+        const auto = await tt.waitFor(() => {
+          const status = document.querySelector('.sub-run')?.dataset.status;
+          if (status !== 'running') return 'ended';
+          return document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab === 'hosts' ? 'hosts' : false;
+        }, { timeout: 60000, interval: 20, message: 'Hosts while running' });
+        assertEqual(auto, 'hosts', 'Hosts is shown while the run still streams');
+        assertEqual(await routeTab(tt), null, 'an automatic tab is not written into the URL');
+        // A tab the user picks stays, and the hidden Hosts panel keeps filling.
+        await openTab(tt, 'sources');
+        const picked = await tt.evaluate(() => document.querySelector('.sub-run').dataset.status);
+        assertEqual(await routeTab(tt), 'sources', 'the picked tab is in the URL');
+        assertEqual(new URLSearchParams((await tt.evaluate(() => location.hash)).split('?')[1]).get('domain'), FAKE_APEX, 'next to the domain');
+        await tt.evaluate(() => { window.__dnsDelay = 0; });
+        assertEqual(await tt.waitFor(DONE(id), { timeout: 60000, message: 'tabs scan done' }), 'done', 'status');
+        await sleep(300);
+        const log = await tt.evaluate(() => {
+          clearInterval(window.__tabTimer);
+          return { tabs: window.__tabLog, counts: window.__hostCounts };
+        });
+        process.stdout.write(`        note: tabs ${log.tabs.join(' → ')}; Hosts label while running ${log.counts.join(', ')}; Sources picked while ${picked}\n`);
+        assertEqual(log.tabs.slice(0, 2), ['sources:running', 'hosts:running'], 'Sources first, then Hosts with the first host');
+        assertEqual(log.tabs[log.tabs.length - 1], 'sources:done', 'the picked tab stays when the run ends');
+        assert(log.counts.length > 0 && log.counts.every((c) => /^\d+$/.test(c) && Number(c) > 0), `the Hosts label counted while running: ${log.counts}`);
+        const end = await tt.evaluate(() => ({
+          rows: [...document.querySelectorAll('.sub-table tbody tr.dt-row .sub-host-name')].map((a) => a.textContent).sort(),
+          hostsHidden: document.querySelector('.sub-tab-hosts').closest('[role="tabpanel"]').hidden
+        }));
+        assertEqual(end.rows, [...Object.keys(TABS_ZONE)].sort(), 'every host is in the (hidden) Hosts table');
+        assert(end.hostsHidden, 'the Hosts panel is hidden while Sources is shown');
+        assertEqual(await tabBadges(tt), { overview: null, hosts: '6', origins: '2', sources: null }, 'the final counts (no passive source asked)');
+        await shot(tt, opts, 'subdomains-tabs-desktop-light-en-sources');
+      });
+
+      await run.step('keyboard: arrow keys, Home and End move a roving tabindex; the choice is in the URL and survives a language switch and another view', async () => {
+        await tt.evaluate(() => document.querySelector('.sub-tabs .tab[aria-selected="true"]').focus());
+        const state = () => tt.evaluate(() => {
+          const tabs = [...document.querySelectorAll('.sub-tabs .tab')];
+          return {
+            selected: tabs.find((t) => t.getAttribute('aria-selected') === 'true')?.dataset.tab,
+            focused: document.activeElement?.dataset.tab || null,
+            tabbable: tabs.filter((t) => t.tabIndex === 0).map((t) => t.dataset.tab),
+            route: new URLSearchParams(location.hash.split('?')[1] || '').get('tab'),
+            visible: [...document.querySelectorAll('.sub-tabs [role="tabpanel"]')].filter((p) => !p.hidden).map((p) => p.dataset.tab)
+          };
+        });
+        for (const [key, want] of [['ArrowRight', 'overview'], ['End', 'sources'], ['Home', 'overview'], ['ArrowRight', 'hosts'], ['ArrowLeft', 'overview'], ['ArrowLeft', 'sources'], ['ArrowLeft', 'origins']]) {
+          await tt.press(key);
+          assertEqual(await state(), { selected: want, focused: want, tabbable: [want], route: want, visible: [want] }, `${key} → ${want}`);
+        }
+        // A language switch re-mounts the view: the same tab, in Turkish.
+        await setLangUi(tt, 'tr');
+        await tt.waitFor(() => document.querySelector('.sub-tabs'), { message: 'tabs after the re-mount' });
+        const tr = await tt.evaluate(() => ({
+          selected: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab,
+          label: document.querySelector('.sub-tabs .tab[aria-selected="true"] .tab-label')?.textContent,
+          panel: document.querySelector('.sub-org')?.getBoundingClientRect().height > 0
+        }));
+        assertEqual(tr, { selected: 'origins', label: 'Origin’ler', panel: true }, 'the Origins tab after the switch to Turkish');
+        // Another view and Back, and the plain nav link: the same tab again.
+        await gotoRoute(tt, '#/about');
+        await tt.evaluate(() => history.back());
+        await tt.waitFor(() => document.documentElement.dataset.view === 'subdomains' && document.querySelector('.sub-tabs'), { message: 'back to Subdomains' });
+        assertEqual(await selectedTab(tt), 'origins', 'after Back');
+        await gotoRoute(tt, '#/lookup');
+        await gotoRoute(tt, '#/subdomains');
+        assertEqual([await selectedTab(tt), await routeTab(tt)], ['origins', null], 'from the nav link: the page session keeps the tab');
+        await setLangUi(tt, 'en');
+        // An edited `tab=` opens that tab without a re-mount.
+        await tt.evaluate(() => { document.querySelector('.sub-view').dataset.marker = 'kept'; });
+        await tt.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&tab=sources`; }, FAKE_APEX);
+        await tt.waitFor(() => document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab === 'sources', { message: 'tab= from the URL' });
+        assertEqual(await tt.evaluate(() => document.querySelector('.sub-view').dataset.marker), 'kept', 'no re-mount');
+      });
+
+      await run.step('Overview: a stat card filters the hosts and opens their tab with the focus on it; "See the origin candidates" opens Origins', async () => {
+        await openTab(tt, 'overview');
+        await tt.click('.sub-stats [data-stat="cloudflare"]');
+        const info = await tt.evaluate(() => ({
+          selected: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab,
+          focused: document.activeElement?.dataset.tab || null,
+          kinds: [...document.querySelectorAll('.sub-table tbody tr.dt-row .sub-kind [data-kind]')].map((k) => k.dataset.kind),
+          route: new URLSearchParams(location.hash.split('?')[1] || '').get('tab')
+        }));
+        assertEqual(info, { selected: 'hosts', focused: 'hosts', kinds: ['cloudflare', 'cloudflare'], route: 'hosts' }, 'filtered Hosts, focused');
+        await tt.click('.sub-filter [data-value="all"]');
+        await openTab(tt, 'overview');
+        await tt.click('[data-action="sub-origin-link"]');
+        await tt.waitFor(() => document.activeElement?.classList.contains('sub-org-title'), { message: 'focus on the ORIGIN panel title' });
+        assertEqual([await selectedTab(tt), await routeTab(tt)], ['origins', 'origins'], 'the link opened Origins');
+      });
+
+      await run.step('phone 375 px (EN/TR × light/dark): all four tabs in view; a host name wraps only after a dot, an IP never breaks', async () => {
+        await tt.setViewport({ width: 375, height: 812, mobile: true });
+        await openTab(tt, 'hosts');
+        try {
+          for (const lang of ['en', 'tr']) {
+            for (const scheme of ['light', 'dark']) {
+              await setLangUi(tt, lang);
+              await tt.emulateMedia({ 'prefers-color-scheme': scheme });
+              await tt.waitFor(() => document.querySelector('.sub-tabs .tab[data-tab="hosts"][aria-selected="true"]'), { message: 'Hosts after re-mount' });
+              await sleep(150);
+              await assertNoHorizontalScroll(tt, `tabs ${lang} ${scheme}`);
+              const m = await tt.evaluate((long) => {
+                const vw = document.documentElement.clientWidth;
+                const out = (el) => {
+                  const r = el.getBoundingClientRect();
+                  return r.left < -1 || r.right > vw + 1;
+                };
+                const lines = (el) => new Set([...el.getClientRects()].map((r) => Math.round(r.top))).size;
+                const name = [...document.querySelectorAll('.sub-table .sub-host-name')].find((a) => a.textContent === long);
+                return {
+                  tabsOut: [...document.querySelectorAll('.sub-tabs .tab')].filter(out).map((t) => t.dataset.tab),
+                  cardsOut: [...document.querySelectorAll('.sub-table tbody tr.dt-row')].filter(out).length,
+                  segs: document.querySelectorAll('.sub-table .sub-host-name .sub-seg').length,
+                  splitSegs: [...document.querySelectorAll('.sub-table .sub-host-name .sub-seg')].filter((x) => lines(x) > 1).map((x) => x.textContent),
+                  ips: document.querySelectorAll('.sub-table .sub-ip').length,
+                  splitIps: [...document.querySelectorAll('.sub-table .sub-ip')].filter((x) => lines(x) > 1).map((x) => x.textContent),
+                  // The name is a block (a flex item): count the lines its label runs sit on.
+                  longLines: name ? new Set([...name.querySelectorAll('.sub-seg')].map((x) => Math.round(x.getBoundingClientRect().top))).size : 0
+                };
+              }, TABS_LONG);
+              assertEqual([m.tabsOut, m.cardsOut, m.splitSegs, m.splitIps], [[], 0, [], []], `${lang} ${scheme}: tabs and cards on screen, no label or IP split (${JSON.stringify(m)})`);
+              assert(m.segs >= 13 && m.ips >= 7, `labels and IPs measured: ${JSON.stringify(m)}`);
+              assert(m.longLines >= 2, `the long name wraps (after a dot): ${JSON.stringify(m)}`);
+              await shot(tt, opts, `subdomains-tabs-mobile-${scheme}-${lang}-hosts`);
+            }
+          }
+        } finally {
+          await tt.emulateMedia({ 'prefers-color-scheme': 'light' });
+          await setLangUi(tt, 'en');
+          await tt.setViewport({ width: 1440, height: 900 });
+        }
+        await assertClean(tt, 'results tabs', origin);
+      });
+    } finally {
+      await tt.close();
+    }
 
     run.group('Zone File hand-off (emulated DNS, nothing else leaves the page)');
     await run.step('"Scan now" in exact mode: chip, banner, zone names only (no sources / wordlist / permutations), exact origins + host targets in the command', async () => {
@@ -1281,6 +1540,7 @@ async function main() {
         }, { message: 'PowerShell command' });
         assert(ps.includes("'*.apps.example.net'") && ps.split(/\s+/).includes('192.0.2.10'), `PowerShell command: ${ps}`);
         await shotEl(tab, opts, 'subdomains-zone-chip-desktop-light-en', '.sub-hero');
+        await openTab(tab, 'origins');
         await shotEl(tab, opts, 'subdomains-zone-origin-desktop-light-en', '.sub-org');
         // "Include in discovery" / "Leave out" only change the next run (nothing starts).
         await tab.evaluate(() => document.querySelector('.sub-zone-mode .seg-btn[data-value="discover"]').click());

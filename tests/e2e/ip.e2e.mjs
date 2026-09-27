@@ -281,6 +281,29 @@ async function networkGuard(page) {
   return hits;
 }
 
+/** The CSV and JSON exports of the IP table, captured in the page: [{ name, text }] (CSV first). */
+function exportFiles(page) {
+  return page.evaluate(async () => {
+    const captured = [];
+    const origCreate = URL.createObjectURL;
+    const origClick = HTMLAnchorElement.prototype.click;
+    const blobs = new Map();
+    URL.createObjectURL = (blob) => { const url = origCreate.call(URL, blob); blobs.set(url, blob); return url; };
+    HTMLAnchorElement.prototype.click = function click() {
+      if (this.download && blobs.has(this.href)) captured.push({ name: this.download, blob: blobs.get(this.href) });
+      else origClick.call(this);
+    };
+    try {
+      document.querySelector('.ipi-results [data-export="csv"]').click();
+      document.querySelector('.ipi-results [data-export="json"]').click();
+    } finally {
+      URL.createObjectURL = origCreate;
+      HTMLAnchorElement.prototype.click = origClick;
+    }
+    return Promise.all(captured.map(async (f) => ({ name: f.name, text: await f.blob.text() })));
+  });
+}
+
 /** Per address: which cells say n/a (with their tooltips), the row's Retry, the chips and the folded stats. */
 function failureInfo() {
   const rows = {};
@@ -347,25 +370,7 @@ async function offlineGroup(browser, server) {
     });
 
     await step('the JSON export says which fields are unavailable and why; CSV says n/a', async () => {
-      const files = await page.evaluate(async () => {
-        const captured = [];
-        const origCreate = URL.createObjectURL;
-        const origClick = HTMLAnchorElement.prototype.click;
-        const blobs = new Map();
-        URL.createObjectURL = (blob) => { const url = origCreate.call(URL, blob); blobs.set(url, blob); return url; };
-        HTMLAnchorElement.prototype.click = function click() {
-          if (this.download && blobs.has(this.href)) captured.push({ name: this.download, blob: blobs.get(this.href) });
-          else origClick.call(this);
-        };
-        try {
-          document.querySelector('.ipi-results [data-export="csv"]').click();
-          document.querySelector('.ipi-results [data-export="json"]').click();
-        } finally {
-          URL.createObjectURL = origCreate;
-          HTMLAnchorElement.prototype.click = origClick;
-        }
-        return Promise.all(captured.map(async (f) => ({ name: f.name, text: await f.blob.text() })));
-      });
+      const files = await exportFiles(page);
       const row = JSON.parse(files[1].text).find((r) => r.ip === '203.0.113.7');
       assertEqual(row.unavailable, { network: ['ripestat', 'ipwhois'], prefix: ['ripestat'], location: ['ripestat-geo', 'ipwhois'] }, 'unavailable');
       assert(row.sourceErrors.some((e) => e.source === 'ripestat' && e.status === 429 && e.errorKind === 'rate-limit'), `sourceErrors: ${JSON.stringify(row.sourceErrors)}`);
@@ -427,6 +432,13 @@ async function offlineGroup(browser, server) {
         if (lang === 'tr') {
           assert(i.rows[ip].na.prefix.title === 'RIPEstat: hız sınırı — birkaç dakika sonra tekrar deneyin', `TR tooltip: ${i.rows[ip].na.prefix.title}`);
           assertEqual(i.zero, 'Bu adreslerin hiçbiri CDN / proxy arkasında değil.', 'TR sentence');
+          assertEqual(i.rows[ip].na.prefix.sr.startsWith('alınamadı: '), true, 'TR screen-reader text');
+          if (width > 600) {
+            // The CSV mark does not follow the UI language: a script reads the same file either way.
+            const [csv] = await exportFiles(page);
+            const line = csv.text.split(/\r?\n/).find((l) => l.startsWith(ip));
+            assert(/,n\/a,n\/a,n\/a,/.test(line) && !csv.text.includes('alınamadı'), `TR CSV row: ${line}`);
+          }
         }
         await assertNoHorizontalScroll(page, `${scheme} ${lang} ${width}`);
         await shot(page, `ip-offline-${width < 600 ? 'mobile' : 'desktop'}-${scheme}-${lang}-failed`);

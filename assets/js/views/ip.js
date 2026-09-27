@@ -56,6 +56,8 @@ export const MAX_IPS = 250;
 export const MAX_HOSTS = 100;
 
 const EXAMPLE = '8.8.8.8\n1.1.1.1\n2606:4700:4700::1111\n9.9.9.9\ngithub.com\n';
+/** A cell a failed source left empty, in CSV (never translated). */
+const CSV_NA = 'n/a';
 
 registerStrings('en', {
   'ipi.inputLabel': 'IP addresses or host names',
@@ -422,8 +424,11 @@ export function mount(container, ctx) {
       sourceErrors: r.info ? r.info.errors.map((e) => ({ source: e.source, error: e.error, errorKind: e.errorKind, status: e.status ?? null })) : []
     }))
   };
-  /** CSV text of a cell: its value, or "n/a" when a failed source left it empty. */
-  const csvValue = (r, field, value) => (value ? value : ipFieldStatus(r.info, field) ? t('srcst.na') : '');
+  /**
+   * CSV text of a cell: its value, or "n/a" when a failed source left it empty — the same token in
+   * every UI language, so a script can read the file.
+   */
+  const csvValue = (r, field, value) => (value ? value : ipFieldStatus(r.info, field) ? CSV_NA : '');
 
   const table = DataTable({
     caption: t('nav.ip'),

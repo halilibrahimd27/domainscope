@@ -26,6 +26,9 @@
  *     resolves the kept job's names;
  *     the same target run again (after a Bulk job about several names) is newer than that job,
  *     and the Bulk Resolve link says so at once;
+ *   - three targets in a row (DNS Lookup runs): every tool's box follows the latest one, not only
+ *     the first, while a draft typed in Domain Health or Subdomains stays; DNS Lookup's box
+ *     follows two Domain Health runs in a row over its kept answers;
  *   - the chip's × clears the target (focus stays on the page); "Delete all local data" forgets
  *     the target and the kept results, Bulk Resolve's list and job too (also with Bulk Resolve
  *     on screen: the tool opens again, bare);
@@ -458,6 +461,64 @@ async function desktop(browser, server) {
       }));
       assertEqual(bk, { text: APEX, job }, 'filled in over the last job\'s names; the job still shown');
       await assertQuiet(page, queries, 'same target again');
+    });
+
+    await run.step('three targets in a row: every box follows the latest one, never over a draft', async () => {
+      const boxes = {
+        health: '[data-role="health-domain"]',
+        global: '[data-role="global-name"]',
+        subdomains: '[data-role="sub-domain"]',
+        scan: '[data-role="scan-domains"]',
+        bulk: '[data-role="bulk-input"]',
+        cert: '[data-role="ct-host"]'
+      };
+      const drafts = { health: 'example.org', subdomains: 'example.net' };
+      // Names no kept result is about (a link about the same thing leads back to that result).
+      const hops = [`shop.${APEX}`, `mx.${APEX}`, `ns1.${APEX}`];
+      for (const [i, name] of hops.entries()) {
+        await clickNav(page, 'lookup');
+        await page.type('[data-role="lookup-name"]', name);
+        await page.click('.lkp-form [data-action="run"]');
+        await page.waitFor((n) => document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent === n,
+          { args: [name], message: `target ${name}` });
+        await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: `lookup of ${name}` });
+        queries = await dnsCount(page);
+        const last = i === hops.length - 1;
+        for (const [view, sel] of Object.entries(boxes)) {
+          await clickNav(page, view);
+          const info = await page.evaluate((s) => ({
+            box: document.querySelector(s)?.value.trim(),
+            hash: location.hash,
+            report: document.querySelector('.hlt-hero-domain')?.textContent || null
+          }), sel);
+          const want = last && drafts[view] ? drafts[view] : name;
+          assertEqual(info.box, want, `hop ${i + 1}, ${view}: ${last && drafts[view] ? 'the draft stays' : 'the latest target'} (${info.hash})`);
+          assert(info.hash.includes(`=${name}&run=0`), `hop ${i + 1}, ${view}: the URL carries ${name} (${info.hash})`);
+          if (view === 'health') assertEqual(info.report, APEX, `hop ${i + 1}: Domain Health still shows its kept report under it`);
+          // Before the last hop the user starts typing in two of the boxes: those are drafts now.
+          if (i === hops.length - 2 && drafts[view]) await page.type(sel, drafts[view]);
+        }
+        await assertQuiet(page, queries, `hop ${i + 1}`);
+      }
+    });
+
+    await run.step('DNS Lookup follows the targets Domain Health sets, twice in a row, over its kept answers', async () => {
+      for (const name of [`www.${APEX}`, `shop.${APEX}`]) {
+        await clickNav(page, 'health');
+        await page.type('[data-role="health-domain"]', name);
+        await page.click('[data-action="run"]');
+        await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+          { args: [name], timeout: 30000, message: `health report of ${name}` });
+        queries = await dnsCount(page);
+        await clickNav(page, 'lookup');
+        const lk = await page.evaluate(() => ({
+          name: document.querySelector('[data-role="lookup-name"]').value,
+          results: !document.querySelector('.lkp-results').hidden,
+          hash: location.hash
+        }));
+        assertEqual(lk, { name, results: true, hash: `#/lookup?name=${name}&run=0` }, `DNS Lookup takes ${name}, its kept answers of ns1.${APEX} under it`);
+        await assertQuiet(page, queries, `lookup under ${name}`);
+      }
     });
 
     await run.step('nothing left the page; no console errors, CSP violations or missing keys', async () => {

@@ -62,6 +62,7 @@ import { TargetChip, KeptNote } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summary.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
+import { setBaseTitle, refreshJobIndicators } from './ui/jobs.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -833,7 +834,7 @@ function renderPageHeader(def, view = null) {
       dom.pageActions),
     dom.offlineNote,
     dom.pageBody);
-  document.title = `${t(titleKey)} · ${t('app.name')}`;
+  setBaseTitle(`${t(titleKey)} · ${t('app.name')}`);
   renderOfflineNote();
 }
 
@@ -997,7 +998,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   const view = mod && mod.default && typeof mod.default.mount === 'function' ? mod.default : mod;
   if (titleKeyOf(def, view) !== `nav.${def.id}`) {
     dom.pageTitle.textContent = t(titleKeyOf(def, view));
-    document.title = `${t(titleKeyOf(def, view))} · ${t('app.name')}`;
+    setBaseTitle(`${t(titleKeyOf(def, view))} · ${t('app.name')}`);
   }
   const controller = new AbortController();
   const { ctx, cleanups } = makeContext(def.id, params, sp, controller, restored);
@@ -1222,6 +1223,8 @@ function renderNav() {
   dom.nav.setAttribute('aria-label', t('nav.label'));
   dom.nav.append(dom.navMenuBar, ...groups, foot);
   updateNavStatus();
+  // The progress rings of jobs running in other views (ui/jobs.js).
+  refreshJobIndicators();
 }
 
 /**
@@ -1647,7 +1650,7 @@ function renderChrome() {
     setNavActive(current.id);
     const key = titleKeyOf(current.def, current.view);
     if (dom.pageTitle) dom.pageTitle.textContent = t(key);
-    document.title = `${t(key)} · ${t('app.name')}`;
+    setBaseTitle(`${t(key)} · ${t('app.name')}`);
   }
 }
 

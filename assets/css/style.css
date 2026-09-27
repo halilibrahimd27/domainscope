@@ -714,6 +714,67 @@ hr {
   }
 }
 
+/* A job running in this view (ui/jobs.js): a small progress ring after the label, also while
+   another view is open. It replaces the busy dot. */
+.nav-job {
+  display: inline-flex;
+  flex: none;
+  margin-left: auto;
+  line-height: 0;
+}
+
+.nav-link.has-job::after {
+  display: none;
+}
+
+.nav-job-ring {
+  display: block;
+}
+
+.nav-job-track,
+.nav-job-bar {
+  fill: none;
+  stroke-width: 2.6;
+}
+
+.nav-job-track {
+  stroke: var(--border-strong);
+}
+
+.nav-job-bar {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.4s var(--ease);
+}
+
+.nav-job.is-indeterminate .nav-job-ring {
+  animation: job-spin 1.1s linear infinite;
+}
+
+@keyframes job-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* "Notify me when done" in a running job's panel */
+.job-notify {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-left: auto;
+}
+
+.job-notify[hidden],
+.job-notify [hidden] {
+  display: none;
+}
+
+.job-notify .btn.is-on {
+  color: var(--ok);
+}
+
 .nav-foot {
   margin-top: auto;
   padding: 14px 6px 2px;
@@ -3852,6 +3913,11 @@ button.nav-status:hover {
   .nav-link.is-busy::after,
   .nav-menu-bar.is-busy .nav-menu-current::after,
   .navmenu-link.is-busy::after {
+    animation: none !important;
+  }
+
+  /* An indeterminate job ring stands still as a quarter arc. */
+  .nav-job.is-indeterminate .nav-job-ring {
     animation: none !important;
   }
 }

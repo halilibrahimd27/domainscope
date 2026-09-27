@@ -34,6 +34,8 @@ import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
+import { bulkFraction } from '../lib/jobprogress.js';
+import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 
 /** Route id. */
 export const id = 'bulk';
@@ -703,9 +705,20 @@ export async function runJob(job, { dns, index, concurrency, fetchImpl }) {
 }
 
 function startJob(job, deps) {
+  // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
+  job.handle = trackJob({ view: 'bulk' });
+  const progressListener = (type) => {
+    if (type === 'row' || type === 'ip') job.handle.update(bulkFraction(job));
+  };
+  job.listeners.add(progressListener);
+  const untrack = (status, body) => {
+    job.listeners.delete(progressListener);
+    job.handle.finish({ status, body });
+  };
   runJob(job, deps).then(() => {
     job.status = 'done';
     job.finishedAt = new Date();
+    untrack('done', t('bulk.doneToast', { count: job.rows.length }));
     emit(job, 'done', null);
     if (!active) {
       toast(t('bulk.doneToast', { count: job.rows.length }), {
@@ -723,10 +736,12 @@ function startJob(job, deps) {
     job.finishedAt = new Date();
     if (errorKind(err) === 'abort') {
       job.status = 'cancelled';
+      untrack('cancelled');
       emit(job, 'cancelled', null);
     } else {
       job.status = 'error';
       job.error = err;
+      untrack('error', String((err && err.message) || err));
       emit(job, 'error', err);
     }
   });
@@ -954,8 +969,9 @@ export function mount(container, ctx) {
     job.inventoryServers = state.inventory.servers.length;
     session.job = job;
     session.carried = null;
-    attach(job);
+    // Started first so the panel gets the job's progress handle (its first event comes after an await).
     startJob(job, { dns, index: ctx.getInventoryIndex(), concurrency: state.settings.concurrency });
+    attach(job);
   }
 
   function cancel() {
@@ -1333,7 +1349,7 @@ function buildJobUI(job, ctx, { onFinish }) {
   ], { label: t('nav.bulk'), className: 'bulk-tabs' });
 
   const progressCard = h('div', { class: 'card bulk-progress', dataset: { status: job.status } },
-    h('div', { class: 'stack-sm' }, progress, h('div', { class: 'bulk-progress-foot' }, meta, enrichLine)), notice);
+    h('div', { class: 'stack-sm' }, progress, h('div', { class: 'bulk-progress-foot' }, meta, enrichLine, NotifyButton(job.handle || null))), notice);
   const el = h('div', { class: 'stack bulk-results', dataset: { job: job.id } }, progressCard, statsGrid, tabs);
 
   /* live rendering */

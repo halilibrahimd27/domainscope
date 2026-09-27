@@ -83,6 +83,8 @@ import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList, onceAsync } from '../lib/util.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { scanFraction } from '../lib/jobprogress.js';
+import { startJob, NotifyButton } from '../ui/jobs.js';
 
 /** Route id. */
 export const id = 'subdomains';
@@ -2966,9 +2968,12 @@ export function networkOwner(cidr, opts, onLoadFailed) {
  * or the engine could not be loaded.
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
+  // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
+  run.job = startJob({ view: 'subdomains' });
   const hooks = {
     onStage(stage, info = {}) {
       applyStage(run, stage, info);
+      run.job.update(scanFraction(run));
       emit(run, 'stage', { stage, info });
     },
     onSource(result) {
@@ -2991,6 +2996,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     },
     onProgress(p) {
       const pills = applyProgress(run, p);
+      run.job.update(scanFraction(run));
       emit(run, 'progress', { ...run.progress, pills });
     }
   };
@@ -2998,6 +3004,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
+    run.job.finish({ status: 'done', body: t('sub.doneToast', { count: result.hosts.filter((x) => !x.wildcardSuspect).length }) });
     if (wordlistFellShort(result) && onDataMissing) onDataMissing();
     // Bulk Resolve offers "use the names of the last scan".
     appState.setSession('scanHosts', {
@@ -3030,10 +3037,12 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     stopStages(run);
     if (errorKind(err) === 'abort') {
       run.status = 'cancelled';
+      run.job.finish({ status: 'cancelled' });
       emit(run, 'cancelled', null);
     } else {
       run.status = 'error';
       run.error = err;
+      run.job.finish({ status: 'error', body: String((err && err.message) || err) });
       emit(run, 'error', err);
     }
   });
@@ -4167,7 +4176,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     h('div', { class: 'sub-run-head' },
       h('span', { class: 'sub-run-icon', attrs: { 'aria-hidden': 'true' } }, Icon('layers', { size: 18 })),
       h('div', { class: 'sub-run-titles' }, title, meta),
-      summary.el),
+      summary.el,
+      NotifyButton(run.job || null)),
     progress, zoneBanner, handoffBanner, notice, sourceLive);
 
   /** Source lines already spoken: a re-render (every source event redraws them) says nothing new. */

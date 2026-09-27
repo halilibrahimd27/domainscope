@@ -65,6 +65,8 @@ import { pemEncode } from '../lib/x509.js';
 import { errorKind, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
+import { scanFraction } from '../lib/jobprogress.js';
+import { startJob, NotifyButton } from '../ui/jobs.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   certDisplayName, issuerDisplayName, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
@@ -1287,10 +1289,13 @@ function emit(run, type, payload) {
  * short (see wordlistFellShort in subdomains.js) or the engine could not be loaded (runScanner).
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
+  // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
+  run.job = startJob({ view: 'scan' });
   const hooks = {
     onStage(stage, info = {}) {
       // Shared with the Subdomains view (parallel mining, wordlist size, source plan).
       applyStage(run, stage, info);
+      run.job.update(scanFraction(run));
       emit(run, 'stage', { stage, info });
     },
     onSource(result) {
@@ -1311,6 +1316,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     },
     onProgress(p) {
       const pills = applyProgress(run, p);
+      run.job.update(scanFraction(run));
       emit(run, 'progress', { ...run.progress, pills });
     }
   };
@@ -1318,6 +1324,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     run.result = result;
     run.status = 'done';
     run.finishedAt = new Date();
+    run.job.finish({ status: 'done', body: t('scan.doneToast', { count: result.hosts.length }) });
     if (wordlistFellShort(result) && onDataMissing) onDataMissing();
     // Hand the names to Bulk Resolve ("Use the names of the last scan").
     appState.setSession('scanHosts', {
@@ -1347,10 +1354,12 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     stopStages(run);
     if (errorKind(err) === 'abort') {
       run.status = 'cancelled';
+      run.job.finish({ status: 'cancelled' });
       emit(run, 'cancelled', null);
     } else {
       run.status = 'error';
       run.error = err;
+      run.job.finish({ status: 'error', body: String((err && err.message) || err) });
       emit(run, 'error', err);
     }
   });
@@ -2397,7 +2406,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     zoneBanner.dataset.zoneMode = run.config.zoneMode;
   }
   const panel = h('section', { class: 'scan-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
-    h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta)),
+    h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta), NotifyButton(run.job || null)),
     zoneBanner, stageList, progress, sourceWaitNote, chips, runNotice);
 
   const SOURCE_GRACE_SECONDS = 12;

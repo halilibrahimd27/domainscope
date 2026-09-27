@@ -150,7 +150,8 @@ const ICONS = {
   lightbulb: [['path', { d: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.2 1.1 2V16h5v-.2c0-.8.4-1.5 1.1-2A6 6 0 0 0 12 3z' }]],
   layers: [['path', { d: 'M12 3l9 5-9 5-9-5z' }], ['path', { d: 'M3 13l9 5 9-5' }]],
   'git-branch': [['circle', { cx: 6, cy: 5.5, r: 2.5 }], ['circle', { cx: 6, cy: 18.5, r: 2.5 }], ['circle', { cx: 18, cy: 7.5, r: 2.5 }], ['path', { d: 'M6 8v8M18 10c0 4-4 4.5-12 6' }]],
-  users: [['circle', { cx: 9, cy: 8, r: 3.5 }], ['path', { d: 'M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20' }]]
+  users: [['circle', { cx: 9, cy: 8, r: 3.5 }], ['path', { d: 'M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20' }]],
+  bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]]
 };
 
 /** Names of every built-in icon (for docs/tests). */

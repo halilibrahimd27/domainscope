@@ -499,7 +499,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 12px;
+  gap: 8px 12px;
 }
 
 .sub-run-icon {
@@ -525,7 +525,7 @@
 }
 
 .sub-run-titles {
-  flex: 1 1 220px;
+  flex: 1 1 220px 1 12rem;
   min-width: 0;
 }
 

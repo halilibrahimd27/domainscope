@@ -42,6 +42,7 @@ import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 import { REPO_URL, VIEW_CSS_ORDER } from '../../assets/js/app.js';
 import { REPO_ROOT, ROOT_DIRS, ROOT_FILES, VERSIONED_DIR, assembleSite } from '../../tools/assemble-site.mjs';
 import { cacheNames } from '../../assets/js/lib/pwa.js';
+import { zoneHandoffScript } from './scan.e2e.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
@@ -198,6 +199,184 @@ async function setLangUi(page, lang) {
 
 async function dismissToasts(page) {
   await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+}
+
+/* ------------------------------------------------------------------------ */
+/* A long job outside its view (ui/jobs.js)                                 */
+/* ------------------------------------------------------------------------ */
+
+/** 60 names under example.com per run (runs a, b, c: the DoH client caches answers), answered in the page. */
+const jobNames = (run) => Array.from({ length: 60 }, (_, i) => `${run}-host${i + 1}.example.com`);
+const JOB_ZONE = Object.fromEntries([['example.com', { A: ['203.0.113.10'] }],
+  ...['a', 'b', 'c'].flatMap((run) => jobNames(run).map((n, i) => [n, { A: [`203.0.113.${100 + i}`] }]))]);
+
+/**
+ * Before the app loads: every DoH answer waits `window.__dnsDelay` ms (so a Bulk Resolve of 60
+ * names takes seconds), `Date.now()` can be moved forward by `window.__clockSkew` ms (the 30 s
+ * mark of "Notify me when done" without waiting for it), and a fake Notification API records
+ * what would be shown (window.__notes) and how often permission was asked (__permAsked).
+ */
+const JOB_PAGE_SCRIPT = `(() => {
+  const inner = window.fetch;
+  window.__dnsDelay = 0;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (window.__dnsDelay && /[?&]dns=/.test(url)) await new Promise((r) => setTimeout(r, window.__dnsDelay));
+    return inner(input, init);
+  };
+  const realNow = Date.now.bind(Date);
+  window.__clockSkew = 0;
+  Date.now = () => realNow() + window.__clockSkew;
+  window.__notes = [];
+  window.__permAsked = 0;
+  window.Notification = class {
+    constructor(title, opts) { window.__notes.push({ title, body: (opts && opts.body) || '' }); }
+    close() {}
+    static async requestPermission() {
+      window.__permAsked += 1;
+      window.Notification.permission = 'granted';
+      return 'granted';
+    }
+  };
+  window.Notification.permission = 'default';
+  try { localStorage.setItem('ssds.bulk.options', JSON.stringify({ ptr: false, asn: false })); } catch { /* private mode */ }
+})();`;
+
+/** What the signals outside the view show: tab title, the nav ring of a view, the favicon. */
+function jobSignals(view) {
+  const link = document.querySelector(`#app-nav .nav-link[data-view="${view}"]`);
+  const ring = link && link.querySelector('.nav-job');
+  const icon = document.querySelector('link[rel~="icon"]');
+  const href = icon ? icon.getAttribute('href') : '';
+  const arc = /stroke-dasharray%3D%22(\d+)%20100%22/.exec(href);
+  return {
+    title: document.title,
+    ring: ring ? { percent: ring.dataset.percent, sr: ring.querySelector('.sr-only').textContent, dash: ring.querySelector('.nav-job-bar').getAttribute('stroke-dasharray') } : null,
+    linkClass: link ? link.className : '',
+    icon: href.startsWith('data:image/svg+xml,') ? 'badge' : href,
+    iconArc: arc ? Number(arc[1]) : null
+  };
+}
+
+async function jobsGroup(browser, server) {
+  group('A long job while another view is open (Bulk Resolve, DoH answered in the page)');
+  const jobs = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  await jobs.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript('example.com', JOB_ZONE) });
+  await jobs.send('Page.addScriptToEvaluateOnNewDocument', { source: JOB_PAGE_SCRIPT });
+  await jobs.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const signals = (view = 'bulk') => jobs.evaluate(jobSignals, view);
+  const startBulk = async (run) => {
+    await gotoRoute(jobs, 'bulk');
+    await jobs.type('[data-role="bulk-input"]', jobNames(run).join('\n'));
+    await dismissToasts(jobs); // the last job's "finished" toast may cover the button
+    await jobs.click('[data-action="bulk-run"]');
+    await jobs.waitFor(() => !!document.querySelector('.bulk-progress[data-status="running"]'), { message: 'bulk job running' });
+  };
+  try {
+    await step('while it runs elsewhere: "(n%)" in the tab title, a ring on its nav entry, a badge on the favicon', async () => {
+      await jobs.goto(`${server.url}#/about`);
+      await waitReady(jobs);
+      await setLangUi(jobs, 'en');
+      await jobs.evaluate(async () => {
+        (await import('./assets/js/state.js')).state.updateSettings({ concurrency: 2 });
+        window.__dnsDelay = 120;
+      });
+      const idle = await signals();
+      assertEqual([idle.title, idle.ring, idle.icon], ['About · DomainScope', null, 'favicon.svg'], 'no job: nothing extra');
+      await startBulk('a');
+      await gotoRoute(jobs, 'about');
+      await jobs.waitFor(() => /^\(\d{1,2}%\) About · DomainScope$/.test(document.title), { timeout: 5000, message: 'title prefix' });
+      const a = await signals();
+      assert(a.ring && /^\d+$/.test(a.ring.percent), `ring on Bulk Resolve: ${JSON.stringify(a.ring)}`);
+      assert(/^, running, \d+% done$/.test(a.ring.sr), `screen-reader text: ${a.ring.sr}`);
+      assert(/\bhas-job\b/.test(a.linkClass), 'the nav entry is marked');
+      assertEqual(a.icon, 'badge', 'favicon badge');
+      assert(a.iconArc === null || a.iconArc % 5 === 0, `favicon steps of 5 %: ${a.iconArc}`);
+      await jobs.waitFor((p) => {
+        const m = /^\((\d+)%\)/.exec(document.title);
+        return m && Number(m[1]) > Number(p);
+      }, { args: [a.ring.percent], timeout: 10000, message: 'progress moves on' });
+      const other = await signals('about');
+      assertEqual(other.ring, null, 'no ring on the open view');
+      await shot(jobs, 'desktop-light-en-job-elsewhere');
+    });
+
+    await step('"Notify me when done" appears at the 30 s mark; permission is asked only on the click', async () => {
+      await gotoRoute(jobs, 'bulk');
+      const hidden = () => jobs.evaluate(() => document.querySelector('.bulk-progress .job-notify')?.hidden);
+      assertEqual(await hidden(), true, 'not offered before 30 s');
+      assertEqual(await jobs.evaluate(() => window.__permAsked), 0, 'nothing asked yet');
+      await jobs.evaluate(() => { window.__clockSkew = 31000; });
+      await jobs.waitFor(() => document.querySelector('.bulk-progress .job-notify')?.hidden === false, { timeout: 3000, message: 'offered at 30 s' });
+      await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
+      await jobs.press('Enter');
+      await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]')?.getAttribute('aria-pressed') === 'true', { message: 'opted in' });
+      const state = await jobs.evaluate(() => ({ asked: window.__permAsked, label: document.querySelector('[data-action="job-notify"]').textContent.trim() }));
+      assertEqual(state, { asked: 1, label: 'Notifying when done' }, 'opted in for this page session');
+      await shot(jobs, 'desktop-light-en-job-notify');
+    });
+
+    await step('done while the user is elsewhere: one desktop notification, and every signal goes back', async () => {
+      await gotoRoute(jobs, 'about');
+      await jobs.evaluate(() => { window.__dnsDelay = 0; });
+      await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });
+      await jobs.waitFor(() => document.title === 'About · DomainScope', { timeout: 3000, message: 'title restored' });
+      const s = await signals();
+      assertEqual([s.ring, s.icon], [null, 'favicon.svg'], 'ring gone, favicon restored');
+      const notes = await jobs.evaluate(() => window.__notes.slice());
+      assertEqual(notes, [{ title: 'Bulk Resolve finished', body: 'Bulk resolve finished: 60 hostnames' }], 'the notification');
+    });
+
+    await step('reduced motion: the favicon moves in 10 % steps, the ring does not animate; a Turkish title reads "(%n)"', async () => {
+      await jobs.emulateMedia({ 'prefers-color-scheme': 'dark', 'prefers-reduced-motion': 'reduce' });
+      await setLangUi(jobs, 'tr');
+      await jobs.evaluate(() => { window.__dnsDelay = 120; window.__notes = []; });
+      await startBulk('b');
+      await gotoRoute(jobs, 'about');
+      await jobs.waitFor(() => /^\(%\d{1,2}\) /.test(document.title), { timeout: 5000, message: 'TR title prefix' });
+      const arcs = new Set();
+      for (let i = 0; i < 8; i += 1) {
+        const s = await signals();
+        if (s.iconArc !== null) arcs.add(s.iconArc);
+        await jobs.evaluate(() => new Promise((r) => { setTimeout(r, 150); }));
+      }
+      assert([...arcs].every((x) => x % 10 === 0), `favicon steps of 10 %: ${[...arcs]}`);
+      const motion = await jobs.evaluate(() => {
+        const bar = document.querySelector('#app-nav .nav-job-bar');
+        return bar ? parseFloat(getComputedStyle(bar).transitionDuration) : null;
+      });
+      assert(motion !== null && motion < 0.01, `ring transition off: ${motion}`);
+      const sr = (await signals()).ring.sr;
+      assert(/^, çalışıyor, %\d+ tamam$/.test(sr), `TR screen-reader text: ${sr}`);
+      await shot(jobs, 'desktop-dark-tr-job-elsewhere');
+      await jobs.evaluate(() => { window.__dnsDelay = 0; });
+      await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });
+      assertEqual((await jobs.evaluate(() => window.__notes.slice())).length, 1, 'opt-in kept for the page session');
+    });
+
+    await step('on a phone the ring sits in the horizontal nav and the page does not scroll sideways', async () => {
+      await jobs.setViewport({ width: 375, height: 812, mobile: true });
+      await jobs.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await jobs.evaluate(() => { window.__dnsDelay = 150; });
+      await startBulk('c');
+      await gotoRoute(jobs, 'ip');
+      await jobs.waitFor(() => !!document.querySelector('#app-nav .nav-link[data-view="bulk"] .nav-job'), { message: 'ring' });
+      await assertNoHorizontalScroll(jobs, 'phone with a job');
+      await jobs.evaluate(() => { document.querySelector('#app-nav .nav-link[data-view="bulk"]').scrollIntoView({ inline: 'center' }); });
+      await shot(jobs, 'mobile-light-tr-job-elsewhere');
+      await jobs.evaluate(() => { window.__dnsDelay = 0; });
+      await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });
+      await jobs.setViewport({ width: 1440, height: 900 });
+      await setLangUi(jobs, 'en');
+    });
+
+    await step('jobs page: nothing blocked, no console errors, exceptions or CSP violations (the data: favicon included)', async () => {
+      assertEqual(await jobs.evaluate(() => window.__zoneBlocked.slice()), [], 'requests outside the page');
+      await assertClean(jobs, 'jobs');
+    });
+  } finally {
+    await jobs.close();
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1130,6 +1309,9 @@ async function main() {
       await assertClean(page, 'desktop');
     });
     await page.close();
+
+    /* ---------------- A long job while another view is open ---------------- */
+    await jobsGroup(browser, server);
 
     /* ---------------- Mobile ---------------- */
     group('Phone 390×844 (Turkish)');

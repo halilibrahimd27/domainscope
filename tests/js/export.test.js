@@ -284,6 +284,16 @@ describe('CLI helpers', () => {
     ].join('\n'));
   });
 
+  test('targetsForCli: a server sharing an address still gets the endpoints no earlier line wrote', () => {
+    const { servers } = parseInventory('web01 203.0.113.10:8443\nweb02 203.0.113.10\nweb03 203.0.113.10:8443\nweb04 203.0.113.11\nweb05 203.0.113.11');
+    assert.equal(targetsForCli([...servers, { ip: '203.0.113.10', servers: [{ name: 'hint' }] }]), [
+      'web01 203.0.113.10:8443',
+      'web02 203.0.113.10', // scanned on -p, as the CLI reading the inventory does
+      'web04 203.0.113.11', // web03 and web05 add no endpoint: the first name wins
+      ''
+    ].join('\n'));
+  });
+
   test('cliServerName: one token the CLI reads as the whole name (never a comment, variable or IP)', () => {
     const cases = [
       ['web01', 'web01'],

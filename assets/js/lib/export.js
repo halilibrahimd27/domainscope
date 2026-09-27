@@ -346,19 +346,29 @@ function isIpRangeToken(token) {
  * strings; IPs without a server name are written bare. An inventory address
  * written with its own port (`Server.ports`) keeps it, as the CLI would scan it
  * reading the inventory: "web01 203.0.113.10:8443" (inventory.addressTargets).
- * De-duplicated by IP (the first name wins, with all its ports), in input
- * order, with a trailing newline.
+ * De-duplicated by endpoint, in input order, with a trailing newline: a
+ * server's address keeps only the endpoints no earlier line wrote (the first
+ * name wins), so another server on the same address with a port of its own
+ * still gets its line ("web02 203.0.113.10" after "web01 203.0.113.10:8443",
+ * as the CLI scans both reading the inventory); a hint or an unmatched IP is
+ * left out when any line has its address.
  * @param {Array<object|string>} servers
  * @returns {string}
  */
 export function targetsForCli(servers) {
-  const seen = new Set();
+  const seenIps = new Set();
+  const seenTargets = new Set();
   const lines = [];
   const add = (name, rawIp, server = null) => {
     const ip = normalizeIP(String(rawIp ?? ''));
-    if (!ip || seen.has(ip)) return;
-    seen.add(ip);
-    lines.push([cliServerName(name), ...(server ? addressTargets(server, ip) : [ip])].filter(Boolean).join(' '));
+    if (!ip) return;
+    const targets = server
+      ? addressTargets(server, ip).filter((target) => !seenTargets.has(target))
+      : seenIps.has(ip) ? [] : [ip];
+    if (!targets.length) return;
+    seenIps.add(ip);
+    for (const target of targets) seenTargets.add(target);
+    lines.push([cliServerName(name), ...targets].filter(Boolean).join(' '));
   };
   for (const item of Array.isArray(servers) ? servers : []) {
     if (!item) continue;

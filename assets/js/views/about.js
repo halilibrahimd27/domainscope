@@ -155,7 +155,7 @@ registerStrings('en', {
   'about.st.CLOSED': 'The port is closed.',
 
   'about.selfhostTitle': 'Run it yourself',
-  'about.selfhostBody': 'It is a static site with no build step. Fork the repository and enable GitHub Pages (the included workflow publishes it), or serve the folder locally:',
+  'about.selfhostBody': 'It is a static site with no build step. To publish your own copy, fork the repository, enable workflows on the fork’s Actions tab, set Settings › Pages › Source to “GitHub Actions”, then push to main or run the “Deploy to GitHub Pages” workflow once (it publishes only after the tests pass). Or serve the folder locally:',
 
   'about.licenseTitle': 'Credits & license',
   'about.licenseBody': 'Open source under the MIT license. Contributions and issue reports are welcome.',
@@ -274,7 +274,7 @@ registerStrings('tr', {
   'about.st.CLOSED': 'Port kapalı.',
 
   'about.selfhostTitle': 'Kendiniz çalıştırın',
-  'about.selfhostBody': 'Derleme adımı olmayan statik bir sitedir. Depoyu çatallayıp (fork) GitHub Pages’i açın (içerideki iş akışı yayınlar) ya da klasörü yerelde sunun:',
+  'about.selfhostBody': 'Derleme adımı olmayan statik bir sitedir. Kendi kopyanızı yayınlamak için depoyu çatallayın (fork), fork’un Actions sekmesinde iş akışlarını etkinleştirin, Settings › Pages › Source ayarını “GitHub Actions” yapın, sonra main’e push edin ya da “Deploy to GitHub Pages” iş akışını bir kez elle çalıştırın (yalnızca testler geçince yayınlar). Ya da klasörü yerelde sunun:',
 
   'about.licenseTitle': 'Katkılar ve lisans',
   'about.licenseBody': 'MIT lisansıyla açık kaynak. Katkılar ve hata bildirimleri memnuniyetle karşılanır.',

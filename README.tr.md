@@ -5,6 +5,10 @@ Bir domainin subdomainlerini keşfeder; nereye çözümlendiklerini, hangilerini
 
 **▶ Hemen kullan: https://halilibrahimd27.github.io/domainscope/**
 
+[![CI](https://github.com/halilibrahimd27/domainscope/actions/workflows/ci.yml/badge.svg)](https://github.com/halilibrahimd27/domainscope/actions/workflows/ci.yml)
+[![Deploy](https://github.com/halilibrahimd27/domainscope/actions/workflows/pages.yml/badge.svg)](https://github.com/halilibrahimd27/domainscope/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 [English README](README.md)
 
 ---
@@ -38,7 +42,7 @@ Arayüz Türkçe ve İngilizce, açık/koyu tema destekli ve mobil uyumlu. Her e
 
 ## Nasıl çalışır?
 
-Backend yok, tamamen statik bir site. Her şey tarayıcında, açık API'lere karşı çalışıyor: crt.sh, Cert Spotter, HackerTarget, AnubisDB, AlienVault OTX, ip.thc.org (subdomain kaynakları); 12 DoH resolver; RIPEstat ve ipwho.is (IP bilgisi; RIPEstat ayrıca "Sahibini bul"a tıkladığında bir origin ağının sahibini söyler); RDAP (domain kaydı; `.de`, `.jp`, `.tr` gibi bazı ülke uzantılarında public RDAP yok); [Globalping](https://globalping.io) (jsDelivr'ın ücretsiz ölçüm ağı; yalnızca SSL Hedefleri › Doğrula'da ve yalnızca "İnternetten kontrol et"e bastığında). Bunların hepsi CORS'a izin verir; tek istisna Quad9 ve Quad9 (ECS): tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan cevap verdikleri için Chrome, Edge ve çoğu tarayıcı onları genellikle okuyamaz. Global DNS bu satırları "Tarayıcıda okunamıyor" olarak bir `dig` komutuyla gösterir, keşif de Quad9'u varsayılan resolver zincirine koymaz. Terminalden ve QUIC'i engelleyen ağlarda tarayıcıdan çalışırlar.
+Backend yok, tamamen statik bir site. Her şey tarayıcında, açık API'lere karşı çalışıyor: crt.sh, Cert Spotter, HackerTarget, AnubisDB, AlienVault OTX, ip.thc.org (subdomain kaynakları); 12 DoH resolver (Cloudflare, Cloudflare Family, Google Public DNS, Quad9, Quad9 (ECS), Control D, DNS.SB, IIJ Public DNS, CleanBrowsing, Tiarap, seby.io, CZ.NIC ODVR); RIPEstat, ipwho.is ve HackerTarget reverse IP (IP bilgisi; RIPEstat ayrıca "Sahibini bul"a tıkladığında bir origin ağının sahibini söyler); RDAP (domain kaydı; `.de`, `.jp`, `.tr` gibi bazı ülke uzantılarında public RDAP yok); [Globalping](https://globalping.io) (jsDelivr'ın ücretsiz ölçüm ağı; yalnızca SSL Hedefleri › Doğrula'da ve yalnızca "İnternetten kontrol et"e bastığında). Bunların hepsi CORS'a izin verir; tek istisna Quad9 ve Quad9 (ECS): tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan cevap verdikleri için Chrome, Edge ve çoğu tarayıcı onları genellikle okuyamaz. Global DNS bu satırları "Tarayıcıda okunamıyor" olarak bir `dig` komutuyla gösterir, keşif de Quad9'u varsayılan resolver zincirine koymaz. Terminalden ve QUIC'i engelleyen ağlarda tarayıcıdan çalışırlar.
 
 Ücretsiz kotalar **ziyaretçi IP'si başına** işliyor, herkes aynı kotayı paylaşmıyor. Yaklaşık değerler: HackerTarget günde ~50 istek, Cert Spotter saatte ~10 tam alan adı araması (bir tarama, kapsadığı her kayıtlı alan adı için en fazla 5 kullanır; yani `example.com example.net` birlikte taranırsa 10'unun hepsi gidebilir); OTX anonim kullanımda sınırlı. Globalping hesapsız saatte 250 ölçüm verir ve bu kota IP adresinin arkasındaki herkesle ortaktır; Doğrula'daki her kontrol bir ölçüm harcar (bir ölçüm noktası hata verirse başka bir noktada yeniden denenir; parti başına en fazla 5 ek ölçüm), sekme herhangi bir hedef göndermeden önce kalan kotayı gösterir. Bir kaynak hata verirse tarama devam eder: önce-DNS keşfi (kayıt tarama, wordlist, varyasyonlar) hiçbir üçüncü taraf kotasına ihtiyaç duymaz, yalnızca public DoH resolver'ları kullanır.
 
@@ -72,6 +76,7 @@ DNS'te "bütün kayıtları listele" diye bir sorgu yok; Cloudflare gibi sağlay
 Tarayıcı rastgele IP'lere ham TLS bağlantısı açamaz, ama [`cli/ssl_origin_scan.py`](cli/ssl_origin_scan.py) açabilir. Tek dosya; Python 3.8+ yeterli, ek paket gerekmez. İç ağındaki bir makineden (örneğin jump host) çalıştırırsın. Envanterdeki her IP'ye bağlanır, her hostname'i SNI ile ister ve dönen sertifikayı yenisiyle karşılaştırır.
 
 ```bash
+# Siteden ya da repodan indir
 curl -O https://halilibrahimd27.github.io/domainscope/cli/ssl_origin_scan.py
 
 # Hangi sunucular hâlâ eski sertifikayı sunuyor?
@@ -93,6 +98,8 @@ python3 ssl_origin_scan.py -t 203.0.113.0/24 --exclude 203.0.113.25 203.0.113.64
 python3 ssl_origin_scan.py -t zone-targets.txt -n zone-names.txt
 ```
 
+Her sunucu, port ve ad için bir durum raporlar:
+
 | Durum | Anlamı |
 |---|---|
 | `UPDATED` | Sunucu yeni sertifikayı zaten sunuyor. |
@@ -100,13 +107,13 @@ python3 ssl_origin_scan.py -t zone-targets.txt -n zone-names.txt
 | `NOT_HOSTED` | Bu isim bu sunucuda yok (sunucu varsayılan sertifikasını döndürüyor). |
 | `TLS_ERROR` / `TIMEOUT` / `CLOSED` | Sunucuya ulaşılamadı ya da handshake başarısız oldu. |
 
-`--exclude` IP, CIDR, aralık ya da bunları içeren bir dosya alır. Adlar çözümlendikten sonra ve hiçbir bağlantı açılmadan önce uygulanır. Hariç tutulan adresler özette, JSON'da ve CSV'de (`EXCLUDED`) listelenir. `2026092401`, `127.1` ya da `0x7f.0x1` gibi sayısal "host adları" reddedilir, çünkü sistem resolver'ı bunları IPv4 adresi olarak okur. Başında sıfır olan adresler (`010.0.0.1`) de reddedilir. `0.0.0.0/8`, multicast ve broadcast adresleri hiç taranmaz.
+Hedefler IP, CIDR, aralık, host adı ya da envanter dosyası olabilir; web uygulamasının kabul ettiği formatların aynısı. `--exclude` IP, CIDR, aralık ya da bunları içeren bir dosya alır. Adlar çözümlendikten sonra ve hiçbir bağlantı açılmadan önce uygulanır. Hariç tutulan adresler özette, JSON'da ve CSV'de (`EXCLUDED`) listelenir. `2026092401`, `127.1` ya da `0x7f.0x1` gibi sayısal "host adları" reddedilir, çünkü sistem resolver'ı bunları IPv4 adresi olarak okur. Başında sıfır olan adresler (`010.0.0.1`) de reddedilir. `0.0.0.0/8`, multicast ve broadcast adresleri hiç taranmaz. Geri kalan her şey için `python3 ssl_origin_scan.py --help` çalıştır.
 
 Subdomain Tarama'daki asıl sunucu paneli ve SSL Hedefleri'ndeki CDN Arkası sekmesi tarama komutunu senin için yazar: **Linux / macOS** (`python3 …`) ya da **Windows PowerShell** (`python …`) için. IPv4 ağları, içinde birden fazla asıl sunucu ya da envanterindeki bir sunucu varsa /24 olarak, yoksa tek tek adresler olarak eklenir. Paylaşımlı bulut / hosting / CDN alanındaki, senin sunucunu içermeyen bir /24 de yalnızca bilinen adresleriyle eklenir. IPv6 her zaman tek tek adreslerle eklenir (bir /48 taranamayacak kadar büyük). **Hariç tutulacak adresler** kutusuna yazdıkların `--exclude` olur; tamamen kapsanan bir ağ taramadan düşer. Zone Dosyası ise yalnızca dosyadaki kesin origin'leri kullanır: adresler ve host adları, asla bir /24 değil; `*.x` adları tırnaklanır. Her hedef bir IP adresi ya da ağ, her ad geçerli bir host adı olmak zorunda: geri kalan her şey — örneğin bir CT kaydından gelen kötü niyetli bir ad — komuta hiç yazılmaz, yalnızca sayısı gösterilir; kalan parçalar da seçilen kabuğa göre tırnaklanır.
 
 ## Tipik SSL rollout akışı
 
-0. **Subdomain Tarama (isteğe bağlı):** önce her şeyi gör — tüm isimler, hangilerinin proxy'li olduğu ve kabuğuna uygun tarama komutuyla birlikte asıl sunucu ağları. Zone'u export edebiliyorsan onun yerine **Zone Dosyası**'na bırak: tüm adları ve proxy'li her kaydın kesin origin'ini görürsün; sonra **Sertifika hedeflerini bul**'a bas ya da kesin tarama komutunu kopyala.
+0. **Subdomain Tarama (isteğe bağlı):** önce her şeyi gör — tüm isimler, hangilerinin proxy'li olduğu ve kabuğuna uygun tarama komutuyla birlikte asıl sunucu ağları, örneğin `python3 ssl_origin_scan.py -t 203.0.113.0/24 -n api.example.com shop.example.com`. Zone'u export edebiliyorsan onun yerine **Zone Dosyası**'na bırak: tüm adları ve proxy'li her kaydın kesin origin'ini görürsün; sonra **Sertifika hedeflerini bul**'a bas ya da kesin tarama komutunu kopyala.
 1. **SSL Hedefleri** ekranında yeni sertifikayı bırak, domaini onayla ve taramayı başlat. Envanterin otomatik eşleşir.
 2. **Sunucular** sekmesi, DNS'i sertifikanın kapsadığı bir isme işaret eden sunucuları listeler. **CDN Arkası** sekmesi proxy'li hostları, origin ipuçlarını ve CLI komutunu gösterir.
 3. Sertifikayı kur, ardından **Doğrula** sekmesini açıp **İnternetten kontrol et**'e bas: her genel sunucu sunması gereken her ad için kontrol edilir, "Yeniden kontrol et" yalnızca henüz tamamlanmayanları yeniden dener. Özel adresler ve CDN arkasındaki asıl sunucular için sekmenin verdiği CLI komutunu (`--cert new-cert.pem`) çalıştır. Her sunucu `UPDATED` olana kadar tekrarla.
@@ -121,11 +128,13 @@ cd domainscope
 npm run serve            # veya: python -m http.server 8080
 ```
 
-Kendi kopyanı yayınlamak için repoyu fork'la ve **Settings → Pages → Source: GitHub Actions** ayarını yap. Repodaki workflow, `main`'e yapılan her push'ta siteyi deploy eder.
+Kendi kopyanı yayınlamak için repoyu fork'la, fork'un **Actions** sekmesinde workflow'ları etkinleştir (GitHub yeni fork'larda onları kapalı başlatır) ve **Settings → Pages → Source: GitHub Actions** ayarını yap. Sonra `main`'e push et ya da Actions sekmesinden **Deploy to GitHub Pages** workflow'unu bir kez çalıştır. Repodaki workflow, `main`'e yapılan her push'u CI (birim, CLI ve çevrimdışı uçtan uca testler) geçtikten sonra deploy eder; testleri geçmeyen bir commit hiç yayınlanmaz. `assets/` klasörünü `v/<commit>/` altına kopyalar ([`tools/assemble-site.mjs`](tools/assemble-site.mjs)); böylece tarayıcılar iki deploy'un önbellekteki modüllerini asla karıştırmaz, bir deploy sırasında açık kalan sekme de sayfayı yenilemeyi önerir. Hiçbir şey derlenmez; yerelde repo olduğu gibi sunulur. Uygulamadaki GitHub linkleri `assets/js/app.js` içindeki `REPO_URL`'yi gösterir; fork'unda onu değiştir.
 
 ## Geliştirme
 
-Klasör yapısı ve komutlar için [README.md → Development](README.md#development). Kısaca: `npm test` (birim testleri; `node --test tests/js/` de aynı şeyi yapar), `npm run test:py` (CLI testleri), `node tests/e2e/run-all.mjs` (gerçek Chrome/Edge ile uçtan uca; verify paketi çevrimdışıdır, hiç Globalping ölçümü harcamaz). Kelime listeleri (Akıllı düz metin, Büyük ve Dev gzip) ve 12 pazar paketi `assets/data/` altında, `tools/build-wordlists.mjs` ile üretilir. Testler ve dokümanlar yalnızca örnek isimler (`example.com`, `example.net`) ve dokümantasyon IP blokları (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) kullanır; `tests/js/repo-hygiene.test.js` bunların dışındaki, bilinen public altyapıya ait olmayan her IPv4 adresinde hata verir.
+Klasör yapısı ve komutlar için [README.md → Development](README.md#development). Kısaca: `npm test` (birim testleri; `node --test tests/js/` de aynı şeyi yapar), `npm run test:py` (CLI testleri), `npm run test:e2e:offline` (çevrimdışı uçtan uca paketler: shell, zone, verify; CI'ın çalıştırdığı gibi), `node tests/e2e/run-all.mjs` (gerçek Chrome/Edge ile tüm uçtan uca paketler, çoğu canlı API'lere karşı; verify paketi çevrimdışıdır, hiç Globalping ölçümü harcamaz). `.github/workflows/` altında CI (birim, CLI ve çevrimdışı uçtan uca testler) ve önce CI'ı çalıştıran Pages deploy'u var; Pages paketini yerelde görmek için `node tools/assemble-site.mjs _site && node tests/e2e/serve.mjs --root _site`. Kelime listeleri (Akıllı düz metin, Büyük ve Dev gzip) ve 12 pazar paketi `assets/data/` altında, `tools/build-wordlists.mjs` ile üretilir. Testler ve dokümanlar yalnızca örnek isimler (`example.com`, `example.net`) ve dokümantasyon IP blokları (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) kullanır; `tests/js/repo-hygiene.test.js` bunların dışındaki, bilinen public altyapıya ait olmayan her IPv4 adresinde hata verir. Canlı script'ler kendi hedeflerini yalnızca gitignore'daki `tests/live/targets.local.json` dosyasından okur.
+
+Katkılar memnuniyetle karşılanır. Bağımlılık ekleme, `lib/` klasörünü DOM'suz tut ve CSP'ye uy (güvenilmeyen veriyi asla `innerHTML`'e atama).
 
 ## Lisans
 

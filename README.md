@@ -138,7 +138,7 @@ cd domainscope
 npm run serve            # or: python -m http.server 8080
 ```
 
-To host your own copy, fork the repo and set **Settings → Pages → Source: GitHub Actions**. The included workflow deploys every push to `main`.
+To host your own copy, fork the repo, enable workflows on the fork's **Actions** tab (GitHub turns them off in new forks) and set **Settings → Pages → Source: GitHub Actions**. Then push to `main`, or run **Deploy to GitHub Pages** once from the Actions tab. The included workflow deploys every push to `main` once CI passes (unit, CLI and offline E2E tests); a red commit is never published. It copies `assets/` under `v/<commit>/` ([`tools/assemble-site.mjs`](tools/assemble-site.mjs)), so browsers never mix cached modules of two deploys, and a tab left open across a deploy offers a reload. Nothing is built; locally the repository is served as it is. The GitHub links in the app point to `REPO_URL` in `assets/js/app.js`; change it in your fork.
 
 ## Development
 
@@ -151,10 +151,12 @@ assets/js/views/         one module per tool (subdomains.js is the start page)
 assets/js/ui/            safe DOM builder + component library (+ verify-panel.js, the SSL Targets › Verify tab)
 assets/data/             bundled wordlists (Smart plain text, Large + Huge gzip), 12 locale packs, manifest + licences
 tools/build-wordlists.mjs  rebuilds assets/data from pinned upstream lists (maintainers only)
+tools/assemble-site.mjs  the GitHub Pages bundle: copies the site, assets/ under v/<commit>/ (deploy only)
 cli/ssl_origin_scan.py   companion CLI (stdlib only)
 tests/js/                node:test unit tests (no network), incl. a repo-hygiene check for real IPs
 tests/python/            CLI tests, including local TLS servers with SNI
 tests/e2e/               headless Chrome E2E via the DevTools protocol (no dependencies)
+.github/workflows/       CI (unit, CLI and offline E2E tests) and the Pages deploy, which runs CI first
 tests/live/              live smoke tests and the discovery benchmark (network; never run in CI; the Globalping smoke never sends your own targets)
 docs/                    SPEC (module contracts), ROADMAP, RESEARCH
 ```
@@ -162,7 +164,9 @@ docs/                    SPEC (module contracts), ROADMAP, RESEARCH
 ```bash
 npm test                 # JavaScript unit tests (node --test "tests/js/*.test.js"; `node --test tests/js/` is equivalent)
 npm run test:py          # CLI tests
-node tests/e2e/run-all.mjs   # end-to-end, against live APIs (needs Chrome or Edge); the verify suite is offline: 0 Globalping probes
+npm run test:e2e:offline # the offline E2E suites (shell, zone, verify; needs Chrome or Edge), as CI runs them
+node tests/e2e/run-all.mjs   # every E2E suite, most against live APIs; verify is offline: 0 Globalping probes
+node tools/assemble-site.mjs _site && node tests/e2e/serve.mjs --root _site   # preview the Pages bundle
 ```
 
 Tests and docs use reserved example names (`example.com`, `example.net`) and documentation IP ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`); `tests/js/repo-hygiene.test.js` fails on any other IPv4 address that is not well-known public infrastructure. Live scripts read your own targets only from the gitignored `tests/live/targets.local.json`.

@@ -44,7 +44,7 @@ import { RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
 import {
   BASE, FIXTURES, cliOptions, createRunner, assert, assertEqual, sleep, installDownloadCapture,
   takeDownloads, waitReady, gotoRoute, setLangUi, assertNoHorizontalScroll, shot, splitProblems,
-  assertNoMissingKeys
+  assertNoMissingKeys, openScanOptions
 } from './scan.e2e.mjs';
 
 const DESKTOP = { width: 1440, height: 900, mobile: false };
@@ -389,6 +389,7 @@ async function main() {
       await page.evaluate((srcs) => {
         for (const input of document.querySelectorAll('input[name="scan-sources"]')) if (input.checked !== srcs.includes(input.value)) input.click();
       }, SOURCES);
+      await openScanOptions(page);
       await page.click('input[name="scan-bruteforce"][value="small"]');
       await page.type('[data-role="scan-domains"]', DOMAIN);
       const prev = await page.evaluate(() => document.querySelector('.scan-run-ui')?.dataset.run || '');

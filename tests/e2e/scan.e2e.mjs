@@ -12,6 +12,9 @@
  *
  * What is checked:
  *   - pure helpers of views/scan.js (Node side)
+ *   - the setup form: one requirement line (a check once met) instead of "optional" labels, a
+ *     check on each completed step, Options as one collapsed line listing what differs from the
+ *     defaults
  *   - the fixture certificate (tests/fixtures/rsa_multi_san.pem) uploaded through the file input
  *     (DOM.setFileInputFiles) auto-fills the domains; validation of empty / public-suffix input
  *   - Cancel, and a scan that keeps running while another tool is open (toast → back to results)
@@ -21,6 +24,10 @@
  *     (downloads are captured in the page, nothing is written to disk)
  *   - route params (#/scan?domain=…), language switch keeping the results, dark mode,
  *     390 px phone layout without horizontal scrolling, screenshots in tests/e2e/screenshots/
+ *   - offline at 375×667: the sticky run bar keeps Start on screen without scrolling once a
+ *     domain is entered, never covers the focused field, rests at the form's end, keeps focus
+ *     Start ⇄ Cancel, floats with a shadow in both themes (TR too), no transition with reduced
+ *     motion, and stays in the flow on a wide screen
  *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
  *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
  *     names.txt with coverage), reduced motion (no smooth scroll), and one shell choice shared
@@ -373,7 +380,16 @@ async function findDirectIp(page, domain) {
   }, domain);
 }
 
+/** Open the collapsed Options step (a <details>): its controls are not rendered while closed. */
+export async function openScanOptions(page) {
+  await page.evaluate(() => {
+    const box = document.querySelector('.scan-options-box');
+    if (box && !box.open) box.open = true;
+  });
+}
+
 async function setOptions(page, { sources, bruteforce }) {
+  await openScanOptions(page);
   await page.evaluate((srcs) => {
     for (const input of document.querySelectorAll('input[name="scan-sources"]')) {
       if (input.checked !== srcs.includes(input.value)) input.click();
@@ -551,6 +567,20 @@ async function main() {
       const steps = await page.evaluate(() => [...document.querySelectorAll('.scan-step')].map((s) => s.dataset.step));
       assertEqual(steps, ['cert', 'domains', 'inventory', 'options'], 'steps');
       assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no results yet');
+      // One requirement line instead of "optional" on every step; Options is one collapsed line.
+      const form = await page.evaluate(() => ({
+        req: document.querySelector('[data-role="scan-requirement"]').textContent,
+        reqState: document.querySelector('[data-role="scan-requirement"]').dataset.state,
+        heads: [...document.querySelectorAll('.scan-step-head')].map((x) => x.textContent).join(' | '),
+        done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].length,
+        optionsOpen: document.querySelector('.scan-options-box').open,
+        optSummary: document.querySelector('[data-role="scan-opt-summary"]').textContent
+      }));
+      assertEqual([form.req, form.reqState, form.done], ['A certificate or at least one domain is required', 'unmet', 0], 'requirement line');
+      assert(!/optional/i.test(form.heads), `no step is labelled optional: ${form.heads}`);
+      assertEqual([form.optionsOpen, form.optSummary], [false, 'recommended defaults'], 'Options collapsed, defaults');
+      await page.click('.scan-options-box > summary');
+      assert(await page.evaluate(() => document.querySelector('.scan-options-box').open), 'Options open on a click');
       const bf = await page.waitFor(() => {
         const smart = document.querySelector('.scan-bf [data-level="smart"]')?.textContent || '';
         return /\d{1,3}(,\d{3})+|\d{4,}/.test(smart) ? {
@@ -568,8 +598,11 @@ async function main() {
       await page.click('[data-role="scan-permutations"]');
       const noPerm = await page.evaluate(() => document.querySelector('.scan-runbar-summary').textContent);
       assert(/smart wordlist\s*·\s*no certificate/.test(noPerm) && !/null|undefined|permutations/.test(noPerm), `run summary without variations: ${noPerm}`);
+      // The Options line lists what differs from the defaults.
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'no permutations', 'Options summary');
       await page.click('[data-role="scan-permutations"]');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-permutations"]').checked), true, 'variations back on');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'recommended defaults', 'Options summary back');
       assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), DEFAULT_ENABLED, 'all sources on by default');
       await assertNoHorizontalScroll(page, 'setup');
       await shot(page, opts, 'scan-desktop-light-en-setup');
@@ -604,11 +637,15 @@ async function main() {
         cn: document.querySelector('.cert-summary-cn').textContent,
         domains: document.querySelector('[data-role="scan-domains"]').value,
         badge: document.querySelector('.scan-step-cert .scan-step-status').textContent,
+        done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].map((n) => n.closest('.scan-step').dataset.step),
+        req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
         summary: document.querySelector('.scan-runbar-summary').textContent
       }));
       assertEqual(info.cn, 'www.example-test.com.tr', 'CN');
       assertEqual(info.domains, 'example-test.com.tr', 'auto-filled domains');
       assert(/ready/.test(info.badge), 'step badge');
+      // The certificate and its domains complete steps 1 and 2 (the inventory was seeded above).
+      assertEqual([info.done, info.req], [['cert', 'domains', 'inventory'], 'met'], 'checked steps + requirement met');
       assert(/with certificate/.test(info.summary), `run summary: ${info.summary}`);
       await shot(page, opts, 'scan-desktop-light-en-cert');
     });
@@ -1038,11 +1075,14 @@ async function main() {
           pressed: document.querySelector('.sub-zone-mode .seg-btn[aria-pressed="true"]')?.dataset.value,
           started: !!document.querySelector('.scan-run-ui'),
           summary: document.querySelector('.scan-runbar-summary').textContent,
+          plan: document.querySelector('[data-role="scan-wl-plan"]').textContent,
           queries: window.__zoneDnsQueries
         }));
         assertEqual([before.domains, before.pressed, before.started, before.queries], ['example.net', 'exact', false, 0], 'pre-filled, exact, nothing started or sent');
         assert(/6 names, 3 exact origins/.test(before.chip), `chip: ${before.chip}`);
         assert(/no passive sources/.test(before.summary) && /Zone file/.test(before.summary), `run summary: ${before.summary}`);
+        // The run bar's estimate is the zone's names, not the stored wordlist the run will not use.
+        assert(/^Exact mode: only the 6 names from your zone file/.test(before.plan), `plan line: ${before.plan}`);
         // DOM clicks: the results scroll smoothly into view, which can move a coordinate click.
         await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
         const done = await tab.waitFor(() => {
@@ -1110,6 +1150,159 @@ async function main() {
         }, saved);
       }
     });
+
+    run.group('Setup form at 375 px: sticky run bar (emulated DNS, nothing else leaves the page)');
+    {
+      const tab = await browser.newPage('about:blank', { width: 375, height: 667, mobile: true });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }))
+        .catch(() => null);
+      /** Where Start, the bar and a field sit on screen right now (no scrolling done here). */
+      const layout = (field) => tab.evaluate((sel) => {
+        const bar = document.querySelector('[data-role="scan-runbar"]');
+        const btn = document.querySelector('[data-action="scan-run"]');
+        const b = btn.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        const f = sel ? document.querySelector(sel).getBoundingClientRect() : null;
+        return {
+          scrollY: Math.round(window.scrollY),
+          startVisible: !btn.hidden && b.top >= 0 && b.bottom <= window.innerHeight && !!hit && btn.contains(hit),
+          stuck: bar.dataset.stuck,
+          position: getComputedStyle(bar).position,
+          barTop: Math.round(bar.getBoundingClientRect().top),
+          barBottom: Math.round(bar.getBoundingClientRect().bottom),
+          fieldTop: f ? Math.round(f.top) : null,
+          fieldBottom: f ? Math.round(f.bottom) : null,
+          vh: window.innerHeight
+        };
+      }, field || null);
+      const frames = () => tab.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50)))));
+      try {
+        await run.step('375×667: one requirement line, Options collapsed, Start on screen before any input; an empty Start focuses the domains field above the bar', async () => {
+          await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(OFFLINE_APEX, OFFLINE_DNS) });
+          await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: dnsDelayScript });
+          await tab.goto(`${server.url}#/about`);
+          await waitReady(tab);
+          await setLangUi(tab, 'en');
+          const known = LIB_SOURCES.map((s) => s.id);
+          await tab.evaluate((k) => {
+            localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'small', permutations: false, originHints: true }));
+            localStorage.removeItem('ssds.inventory');
+          }, known);
+          await tab.reload();
+          await waitReady(tab);
+          await gotoRoute(tab, 'scan');
+          await tab.evaluate(() => window.scrollTo(0, 0));
+          await frames();
+          const top = await layout();
+          assert(top.startVisible && top.position === 'sticky' && top.stuck === 'true', `Start floats on screen at the top of the page: ${JSON.stringify(top)}`);
+          const form = await tab.evaluate(() => ({
+            req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
+            open: document.querySelector('.scan-options-box').open,
+            opt: document.querySelector('[data-role="scan-opt-summary"]').textContent,
+            rootVar: document.documentElement.style.getPropertyValue('--scan-runbar-h')
+          }));
+          assertEqual([form.req, form.open], ['unmet', false], 'requirement unmet, Options collapsed');
+          // The stored options differ from the defaults: the collapsed line says how.
+          assertEqual(form.opt, 'no passive sources · small wordlist · no permutations', 'Options summary');
+          assert(/^\d+px$/.test(form.rootVar), `the bar's height is published for scroll-padding: ${form.rootVar}`);
+          // Start with nothing entered: the error focuses the domains field, scrolled clear of the bar.
+          await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').focus({ preventScroll: true }));
+          await tab.press('Enter');
+          await tab.waitFor(() => document.activeElement?.dataset.role === 'scan-domains'
+            && /least one domain/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''), { message: 'error + focus on the domains field' });
+          await frames();
+          const err = await layout('[data-role="scan-domains"]');
+          assert(err.fieldTop >= 0 && err.fieldBottom <= err.barTop, `the focused field is not under the bar: ${JSON.stringify(err)}`);
+        });
+
+        await run.step('375×667: a domain entered — Start is visible without scrolling, the requirement and step 2 turn into checks, the estimate sits next to Start', async () => {
+          await tab.type('[data-role="scan-domains"]', OFFLINE_APEX);
+          await frames();
+          const typed = await layout('[data-role="scan-domains"]');
+          assert(typed.startVisible, `Start on screen where the domain was typed: ${JSON.stringify(typed)}`);
+          assert(typed.fieldBottom <= typed.barTop, `the bar does not cover the field being typed in: ${JSON.stringify(typed)}`);
+          const info = await tab.evaluate(() => ({
+            req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
+            via: document.querySelector('[data-role="scan-requirement"]').dataset.via,
+            done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].map((n) => n.closest('.scan-step').dataset.step),
+            heading: document.querySelector('#scan-step-domains').textContent,
+            plan: document.querySelector('[data-role="scan-runbar"] [data-role="scan-wl-plan"]')?.textContent || ''
+          }));
+          assertEqual([info.req, info.via, info.done], ['met', 'domains', ['domains']], 'requirement met through the domain, step 2 checked');
+          assert(/\(done\)$/.test(info.heading), `the check is spoken too: ${info.heading}`);
+          assert(/DNS queries for 1 domain/.test(info.plan), `plan line in the bar: ${info.plan}`);
+          // And from the very top of the page, before any scrolling.
+          await tab.evaluate(() => window.scrollTo(0, 0));
+          await frames();
+          assert((await layout()).startVisible, 'Start on screen at the top of the page');
+          await shot(tab, opts, 'scan-form-375-light-en-top');
+          // At the end of the form the bar rests in its own place, below the Options line.
+          await tab.evaluate(() => document.querySelector('.scan-options-box').scrollIntoView({ block: 'start' }));
+          await tab.evaluate(() => window.scrollBy(0, 400));
+          await frames();
+          const end = await layout('.scan-options-box');
+          assert(end.stuck === 'false' && end.fieldBottom <= end.barTop, `the bar rests after the Options line: ${JSON.stringify(end)}`);
+          await assertNoHorizontalScroll(tab, 'setup form 375 px');
+        });
+
+        await run.step('375 px keyboard: Start → focus on Cancel in the bar → Enter cancels → focus back on Start', async () => {
+          await tab.evaluate(() => {
+            window.__dnsDelay = 250;
+            window.scrollTo(0, 0);
+            document.querySelector('[data-action="scan-run"]').focus({ preventScroll: true });
+          });
+          await tab.press('Enter');
+          await tab.waitFor(() => document.querySelector('.scan-run-ui .scan-run')?.dataset.status === 'running'
+            && document.activeElement?.dataset.action === 'scan-cancel', { timeout: 15000, message: 'running, keyboard focus on Cancel (not <body>)' });
+          await tab.press('Enter');
+          await tab.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled', { timeout: 15000, message: 'cancelled' });
+          await tab.waitFor(() => document.activeElement?.dataset.action === 'scan-run', { timeout: 5000, message: 'keyboard focus back on Start' });
+          await tab.evaluate(() => { window.__dnsDelay = 0; });
+        });
+
+        await run.step('375 px in Turkish and dark: the bar floats with its shadow, no horizontal scroll; wide screens keep it in the flow', async () => {
+          await setLangUi(tab, 'tr');
+          for (const scheme of ['dark', 'light']) {
+            await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+            await tab.evaluate(() => window.scrollTo(0, 0));
+            await frames();
+            const l = await layout();
+            const shadow = await tab.evaluate(() => getComputedStyle(document.querySelector('[data-role="scan-runbar"]')).boxShadow);
+            assert(l.startVisible && l.stuck === 'true' && shadow !== 'none', `${scheme}: ${JSON.stringify({ ...l, shadow })}`);
+            assertEqual(await tab.evaluate(() => document.querySelector('[data-role="scan-requirement"]').textContent), 'Bir sertifika ya da en az bir alan adı gerekli (tamam)', 'Turkish requirement line');
+            await assertNoHorizontalScroll(tab, `setup form 375 px ${scheme} tr`);
+            await shot(tab, opts, `scan-form-375-${scheme}-tr-top`);
+          }
+          // Reduced motion: the stuck shadow appears without a transition.
+          await tab.emulateMedia({ 'prefers-color-scheme': 'light', 'prefers-reduced-motion': 'reduce' });
+          const dur = await tab.evaluate(() => parseFloat(getComputedStyle(document.querySelector('[data-role="scan-runbar"]')).transitionDuration) || 0);
+          assert(dur < 0.001, `no transition with reduced motion: ${dur}s`);
+          await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+          await tab.setViewport({ width: 1440, height: 900 });
+          await tab.evaluate(() => window.dispatchEvent(new Event('resize')));
+          await frames();
+          const wide = await layout();
+          assert(wide.position !== 'sticky' && wide.stuck === 'false', `in the flow on a wide screen: ${JSON.stringify(wide)}`);
+          await setLangUi(tab, 'en');
+          // Leaving the view takes the bar's height off the root again.
+          await gotoRoute(tab, 'about');
+          assertEqual(await tab.evaluate(() => document.documentElement.style.getPropertyValue('--scan-runbar-h')), '', 'root variable removed on unmount');
+          assertEqual(await tab.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS for the zone left the page');
+          await assertClean(tab, 'setup form 375 px', origin);
+        });
+      } finally {
+        await tab.close();
+        if (saved) {
+          await page.evaluate((s) => {
+            for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
+              if (value === null) localStorage.removeItem(key);
+              else localStorage.setItem(key, value);
+            }
+          }, saved);
+        }
+      }
+    }
 
     run.group('Offline certificate scan (emulated DNS, nothing else leaves the page)');
     {

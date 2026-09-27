@@ -57,7 +57,7 @@ import { orderSuites } from './run-all.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, csvHeader, gotoRoute, installDownloadCapture, setLangUi, sleep, takeDownloads, waitReady
+  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, setLangUi, sleep, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 /* ------------------------------------------------------------------------ */
@@ -511,6 +511,8 @@ async function main() {
       await page.setFileInput('.scan-step-cert .filedrop-input', [CERT_FILE]);
       await page.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), APEX, 'domain filled from the certificate');
+      // Extra hostnames sit in the collapsed Options step.
+      await openScanOptions(page);
       await page.type('textarea[data-role="scan-extra"]', Object.keys(ZONE).join('\n'));
       run1 = await runScan(page);
       assert(await page.evaluate(() => window.__fakeDnsQueries > 10), 'the zone answered the scan');

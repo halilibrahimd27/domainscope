@@ -116,6 +116,7 @@ const ICONS = {
   'arrow-up': [['path', { d: 'M12 19V5M6 11l6-6 6 6' }]],
   'arrow-down': [['path', { d: 'M12 5v14M6 13l6 6 6-6' }]],
   'arrow-right': [['path', { d: 'M5 12h14M13 6l6 6-6 6' }]],
+  swap: [['path', { d: 'M4 8h14M14.5 4.5L18 8l-3.5 3.5' }], ['path', { d: 'M20 16H6M9.5 12.5L6 16l3.5 3.5' }]],
   sort: [['path', { d: 'M8 9.5l4-4 4 4M8 14.5l4 4 4-4' }]],
   filter: [['path', { d: 'M4 5h16l-6.2 7.6V19l-3.6 1.8v-8.2z' }]],
   cloud: [['path', { d: 'M7 18.5h10.5a4.5 4.5 0 0 0 .6-8.96A6 6 0 0 0 6.4 10.6 4 4 0 0 0 7 18.5z' }]],

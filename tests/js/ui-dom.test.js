@@ -27,7 +27,7 @@ import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'health', 'inventory', 'about'];
+const VIEW_IDS = ['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */

@@ -44,6 +44,7 @@ export const VIEWS = Object.freeze([
   { id: 'lookup', group: 'dns', icon: 'search', load: () => import('./views/lookup.js') },
   { id: 'bulk', group: 'dns', icon: 'list', load: () => import('./views/bulk.js') },
   { id: 'ip', group: 'dns', icon: 'network', load: () => import('./views/ip.js') },
+  { id: 'ptr', group: 'dns', icon: 'swap', load: () => import('./views/ptr.js') },
   { id: 'health', group: 'dns', icon: 'activity', load: () => import('./views/health.js') },
   { id: 'inventory', group: 'data', icon: 'server', load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', load: () => import('./views/about.js') }

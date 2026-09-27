@@ -1,0 +1,284 @@
+/*
+ * views/ptr.css — "Reverse DNS" view (.ptr-*). The form (target | focus domain), the AS prefix
+ * picker, then the results at full width. Uses the design tokens from style.css only.
+ */
+
+/* Form: the target list next to the focus domain on wide screens, stacked on phones. */
+.ptr-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
+  gap: 14px 24px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .ptr-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.ptr-target .textarea {
+  min-height: 92px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.ptr-parsed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--text-2);
+}
+
+.ptr-parsed:empty,
+.ptr-issues:empty {
+  display: none;
+}
+
+.ptr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.ptr-run {
+  margin-left: auto;
+}
+
+.ptr-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+}
+
+.ptr-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+@media (max-width: 600px) {
+  .ptr-run {
+    width: 100%;
+  }
+
+  .ptr-run .btn {
+    flex: 1;
+  }
+}
+
+.ptr-empty .empty {
+  padding: 48px 24px;
+}
+
+/* AS prefix picker */
+.ptr-asn-summary {
+  margin: 0;
+}
+
+.ptr-asn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.ptr-asn-selected {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.ptr-asn-over {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--error);
+}
+
+.ptr-asn-table .check-input {
+  margin: 0;
+}
+
+/* Results */
+.ptr-results-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ptr-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.ptr-stats {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.ptr-stats .stat-top {
+  align-items: flex-start;
+}
+
+.ptr-stats .stat-label {
+  white-space: normal;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1280px) {
+  .ptr-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ptr-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.ptr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.ptr-filter {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.ptr-filter .field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.ptr-filter .select {
+  width: auto;
+  min-width: 10rem;
+}
+
+.ptr-expand {
+  font-size: 13px;
+}
+
+.ptr-ip {
+  font-weight: 600;
+}
+
+.ptr-ipcell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ptr-count {
+  font-weight: 650;
+}
+
+.ptr-names,
+.ptr-pattern {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.ptr-name.is-focus a {
+  font-weight: 650;
+  color: var(--accent-text);
+}
+
+/* A row with a name under the focus domain: an accent bar on its first cell. */
+.ptr-row.is-focus td:first-child,
+.ptr-row.is-focus td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.ptr-template {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* The generated part of a template ({ip}, {n}) as a small chip. */
+.ptr-ph {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 5px;
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: 0.05em;
+}
+
+.ptr-forward {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.ptr-fwd {
+  font-weight: 600;
+}
+
+.ptr-fwd-match {
+  color: var(--ok);
+}
+
+.ptr-fwd-other,
+.ptr-fwd-nodata,
+.ptr-fwd-nxdomain {
+  color: var(--warn);
+}
+
+.ptr-fwd-error {
+  color: var(--error);
+}
+
+.ptr-member {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+}
+
+.ptr-details {
+  max-width: 980px;
+}
+
+/* Table scrollers contain their .sr-only labels (never widen the page). */
+.ptr-view .dt-scroll {
+  position: relative;
+}
+
+@media (max-width: 600px) {
+  .ptr-filter,
+  .ptr-toolbar {
+    width: 100%;
+  }
+
+  .ptr-filter .select {
+    flex: 1;
+    min-width: 0;
+  }
+}

@@ -650,6 +650,30 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     });
   }
 
+  test('a decoded real message re-encodes to the same records (compressed RDATA names are rebuilt)', () => {
+    const sections = ['answers', 'authorities', 'additionals'];
+    for (const f of MANIFEST.fixtures) {
+      const m = fixture(f.id);
+      const again = decodeMessage(encodeMessage({
+        id: m.id, flags: m.flags, rcode: m.rcode, questions: m.questions,
+        answers: m.answers, authorities: m.authorities, additionals: m.additionals
+      }));
+      for (const s of sections) {
+        assert.deepEqual(again[s].map((rr) => `${rr.name} ${rr.type} ${rr.text}`), m[s].map((rr) => `${rr.name} ${rr.type} ${rr.text}`), `${f.id} ${s}`);
+      }
+    }
+    // explicitly: the SOA RNAME and a CNAME chain (both compressed on the wire)
+    const soa = decodeMessage(encodeMessage({ answers: fixture('cf-soa-example.com').answers })).answers[0];
+    assert.equal(soa.text, fixture('cf-soa-example.com').answers[0].text);
+    const chain = fixture('cf-a-cname-chain');
+    assert.deepEqual(decodeMessage(encodeMessage({ answers: chain.answers })).answers.map((rr) => rr.text), chain.answers.map((rr) => rr.text));
+  });
+
+  test('raw rdata alone is still written as given (hand-crafted wire)', () => {
+    const rr = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'CNAME', rdata: encodeName('t.example') }] })).answers[0];
+    assert.equal(rr.text, 't.example.');
+  });
+
   test('AAAA text is identical to netinfo.normalizeIP (IP strings are compared across modules)', async (t) => {
     let netinfo;
     try {

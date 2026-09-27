@@ -1295,7 +1295,8 @@ function parseEcsOption(data) {
  * TTLs with the most significant bit set are treated as 0 (RFC 2181 §8).
  *
  * RR objects: { name, type, typeNum, class, className, ttl, data, text, rdata } where
- * `rdata` is the raw RDATA view (may contain compression pointers) and `error`
+ * `rdata` is the raw RDATA view (may contain compression pointers into THIS message,
+ * so it is not portable on its own; encodeMessage rebuilds such types from `data`) and `error`
  * is set only when a known type's RDATA was malformed (data/text are then the
  * RFC 3597 generic hex form).
  *
@@ -1516,6 +1517,9 @@ const RDATA_WRITERS = {
   [TYPES.PTR]: (w, d) => w.name(d),
   [TYPES.DNAME]: (w, d) => w.name(d),
   [TYPES.MX]: (w, d) => { w.u16(d.preference); w.name(d.exchange); },
+  [TYPES.AFSDB]: (w, d) => { w.u16(d.subtype); w.name(d.hostname); },
+  [TYPES.KX]: (w, d) => { w.u16(d.preference); w.name(d.exchanger); },
+  [TYPES.RP]: (w, d) => { w.name(d.mbox); w.name(d.txt); },
   [TYPES.TXT]: (w, d) => { for (const s of toStringList(d)) writeCharString(w, s); },
   [TYPES.SPF]: (w, d) => { for (const s of toStringList(d)) writeCharString(w, s); },
   [TYPES.HINFO]: (w, d) => { writeCharString(w, d.cpu); writeCharString(w, d.os); },
@@ -1571,6 +1575,15 @@ function writeSvcb(w, d) {
   w.u16(d.priority); w.name(d.target ?? '.'); writeSvcParams(w, d.params);
 }
 
+/**
+ * Types whose RDATA names a sender may compress (RFC 1035, RFC 3597 §4). A decoded
+ * RR's raw `rdata` may then hold pointers into ITS message, so when the RR also
+ * carries a valid `data` it is rebuilt from that (names written uncompressed).
+ */
+const COMPRESSIBLE_RDATA = new Set([
+  TYPES.NS, TYPES.CNAME, TYPES.PTR, TYPES.DNAME, TYPES.MX, TYPES.SOA, TYPES.SRV, TYPES.AFSDB, TYPES.KX, TYPES.RP
+]);
+
 function writeRR(w, rr) {
   const typeNum = typeToNumber(rr.type ?? rr.typeNum);
   if (typeNum === null) throw new DnsWireError(`unknown RR type "${rr.type}"`);
@@ -1581,10 +1594,11 @@ function writeRR(w, rr) {
   const lenPos = w.len;
   w.u16(0);
   const start = w.len;
-  if (rr.rdata instanceof Uint8Array) {
+  const writer = RDATA_WRITERS[typeNum];
+  const rebuild = writer && COMPRESSIBLE_RDATA.has(typeNum) && rr.data !== undefined && rr.data !== null && !rr.error;
+  if (rr.rdata instanceof Uint8Array && !rebuild) {
     w.bytes(rr.rdata);
   } else {
-    const writer = RDATA_WRITERS[typeNum];
     if (!writer) {
       if (typeof rr.data !== 'string') throw new DnsWireError(`no RDATA writer for ${typeToName(typeNum)}: pass rdata bytes or hex data`);
       w.bytes(hexDecode(rr.data));
@@ -1598,7 +1612,10 @@ function writeRR(w, rr) {
 /**
  * Encode a complete DNS message (no name compression). Mainly for tests and mocks:
  * the RR `data` shapes are the same as the decoder's output, so a decoded message can
- * be re-encoded. RRs may pass raw `rdata` (Uint8Array) instead of `data`.
+ * be re-encoded. RRs may pass raw `rdata` (Uint8Array) instead of `data`; when an RR
+ * carries both (a decoded RR), `rdata` is written as is, except for the types whose RDATA
+ * names may be compressed (NS, CNAME, PTR, DNAME, MX, SOA, SRV, AFSDB, KX, RP): those
+ * are rebuilt from a valid `data`, since the raw bytes may point into the old message.
  *
  * @param {object} msg
  * @param {number} [msg.id=0]

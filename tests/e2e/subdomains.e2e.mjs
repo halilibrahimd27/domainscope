@@ -405,7 +405,10 @@ async function main() {
 
   const server = await startServer({ base: BASE });
   const origin = new URL(server.url).origin;
-  const browser = await launchBrowser({ browser: opts.browser, headless: !opts.headed });
+  // --offline: no host name but the local server's resolves, so no step reaches a live service.
+  const browser = await launchBrowser({
+    browser: opts.browser, headless: !opts.headed, args: OFFLINE ? ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] : []
+  });
   const version = await browser.version();
   process.stdout.write(OFFLINE
     ? `\nServing ${server.url} — ${version.product}; offline: live steps skipped\n`

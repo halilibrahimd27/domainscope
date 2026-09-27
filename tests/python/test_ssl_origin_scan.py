@@ -775,6 +775,29 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual([(s.name, s.ips) for s in servers], [('web01', ['10.0.0.5'])])
         self.assertEqual((resolver.calls, warnings), ([], []))
 
+    def test_host_names_that_look_like_headings_are_resolved(self):
+        # EC2-style default names, ipv6. / addr. host names and one-word hosts: a heading
+        # check that dropped them would lose these servers without a warning
+        hosts = ['ip-10-0-1-23.eu-west-1.compute.example.net', 'ip-10-0-1-24',
+                 'ipv6.example.com', 'ip6.example.net', 'addr.example.com', 'node', 'server']
+        table = {host: ['192.0.2.%d' % number] for number, host in enumerate(hosts, 11)}
+        resolver = RecordingResolver(table)
+        text = ('# zone-targets.txt\nweb01 192.0.2.10\n' + '\n'.join(hosts)
+                + '\nhostname   ip\nSunucu Adı   IP Adresi   Ortam\nName;Public IP;Env\n'
+                '| name | ipv4 | ipv6 |\nwww.example.com\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'zone-targets.txt')
+            Path(path).write_text(text, encoding='utf-8')
+            servers, warnings = sos.load_targets([path], resolver=resolver)
+        self.assertEqual(sorted(resolver.calls), sorted(hosts + ['www.example.com']))
+        self.assertEqual({s.name: s.ips for s in servers}, dict(table, web01=['192.0.2.10']))
+        self.assertEqual(len(warnings), 1)  # www.example.com does not resolve here
+        for heading in (['hostname', 'ip'], ['host', 'ip2', 'ipv6'], ['Server', 'Name', 'IP']):
+            self.assertTrue(sos._is_header_like(heading), heading)
+        for line in (['hostname'], ['ip'], ['web01', 'ip'], ['ipv6.example.com', 'name'],
+                     ['ip-10-0-1-23', 'host'], ['hostname', 'gateway']):
+            self.assertFalse(sos._is_header_like(line), line)
+
     @unittest.skipUnless(_node_major() >= 22, 'needs Node 22+ to run assets/js/lib/inventory.js')
     def test_inventory_cases_match_the_web_app(self):
         script = ('import { parseInventory } from %s;\n'

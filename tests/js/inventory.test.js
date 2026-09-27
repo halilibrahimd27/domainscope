@@ -80,6 +80,13 @@ test('invalid IP and no-IP warnings', () => {
   assert.equal(r.servers.length, 1); // only web02 has a valid IP
 });
 
+test('heading lines are skipped, host names that start like a heading are not', () => {
+  const hosts = ['ip-10-0-1-23.eu-west-1.compute.example.net', 'ipv6.example.com', 'ip6.example.net', 'addr.example.com'];
+  const r = parseInventory(['hostname   ip', 'Sunucu Adı  IP Adresi', 'name | ipv4 | ipv6', ...hosts, 'web01 10.0.0.1'].join('\n'));
+  assert.deepEqual(ipsById(r), { web01: ['10.0.0.1'] });
+  assert.deepEqual(r.warnings.map((w) => [w.code, w.detail]), hosts.map((h) => ['NO_IP', h]));
+});
+
 test('prose lines: IPs stand alone, no bogus server names', () => {
   const r = parseInventory('lutfen sunuculari guncelleyin 10.1.1.1 ve 10.1.1.2 tesekkurler');
   assert.deepEqual(r.servers.map((s) => s.id).sort(), ['10.1.1.1', '10.1.1.2']);

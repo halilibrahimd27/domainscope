@@ -1219,11 +1219,23 @@ def _is_ip_header(header: str) -> bool:
             and bool(_IP_HEADER_RE.search(header)))
 
 
+def _is_host_word(token: str) -> bool:
+    """A word no heading has: a dot or a digit group other than ``ip2`` / ``ipv4`` / ``ipv6``
+    (``ip-10-0-1-23.ec2.internal``, ``ipv6.example.com``, ``web01``) makes it a host name."""
+    return '.' in token or any(re.search(r'\d', part) and not re.match(r'^ipv?\d+$', part)
+                               for part in _normalize_header(token).split('_'))
+
+
 def _is_header_like(tokens: Sequence[str]) -> bool:
-    """A plain line that is a column heading (``hostname   ip``), as lib/inventory.js skips."""
+    """A plain line that is a column heading (``hostname   ip``), as lib/inventory.js skips.
+
+    Only a line of two or more words, none of them host-like (:func:`_is_host_word`). The
+    web app also skips a lone ``hostname`` or ``ip``; here a lone word (``node``, ``vm``)
+    is a server to resolve, since dropping it would lose a server without a word.
+    """
+    if len(tokens) < 2 or any(_is_host_word(token) for token in tokens):
+        return False
     keys = [_normalize_header(token) for token in tokens]
-    if len(keys) == 1:
-        return _is_ip_header(keys[0]) or keys[0] in _NAME_RANK
     return (any(_is_ip_header(key) for key in keys)
             and any(key in _NAME_RANK or key in _GROUP_HEADERS for key in keys))
 

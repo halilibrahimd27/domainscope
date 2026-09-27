@@ -957,8 +957,14 @@ function stripInlineComment(line) {
   return line.replace(/\s(#|\/\/).*$/, '').trim();
 }
 
+/** A word no heading has: a dot, or a digit group other than ip2 / ipv4 / ipv6. */
+function isHostWord(token) {
+  return token.includes('.') || normalizeKey(token).split('_').some((p) => /\d/.test(p) && !/^ipv?\d+$/.test(p));
+}
+
 function isHeaderLike(tokens) {
-  if (tokens.length === 0) return false;
+  // "ip-10-0-1-23.ec2.internal", "ipv6.example.com": a host without an IP (NO_IP), not a heading
+  if (tokens.length === 0 || tokens.some(isHostWord)) return false;
   const keys = tokens.map(normalizeKey);
   if (tokens.length === 1) return isIpKey(keys[0]) || NAME_HEADER_RANK.has(keys[0]);
   return keys.some(isIpKey) && keys.some((k) => NAME_HEADER_RANK.has(k) || GROUP_HEADERS.has(k));

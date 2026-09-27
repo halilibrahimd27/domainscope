@@ -1136,6 +1136,68 @@ button.nav-status:hover {
     position: static;
     margin-left: auto;
   }
+
+  /* The start page's strip: two columns of short chips, so the tool's own field stays near the top */
+  .start-picker-lead {
+    display: none;
+  }
+
+  .start-picker .start-tasks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .start-picker .start-task-item:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .start-picker .start-task {
+    gap: 9px;
+    min-height: 44px;
+    padding: 7px 9px;
+  }
+
+  .start-picker .start-task-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+  }
+
+  .start-picker .start-task-icon .icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .start-picker .start-task-title {
+    font-size: 13px;
+    line-height: 1.25;
+  }
+
+  /* Still read out with the job (the link's name), not shown: the job says it. */
+  .start-picker .start-task-tool {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .start-picker .start-task-arrow {
+    display: none;
+  }
+}
+
+@media (max-width: 359.98px) {
+  .start-picker .start-tasks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Touch-only devices: no keyboard for the shortcuts to serve */
+@media (hover: none) and (pointer: coarse) {
+  .footer-button {
+    display: none;
+  }
 }
 
 .boot {
@@ -1331,6 +1393,16 @@ button.nav-status:hover {
 @media (max-width: 719.98px) {
   .app-nav {
     overflow: visible;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  /* The one navigation control on a phone: a full touch target */
+  .btn.nav-menu-btn {
+    --btn-h: 44px;
+    padding: 0 14px;
+    gap: 7px;
+    font-size: 14px;
   }
 
   .app-nav .nav-group {

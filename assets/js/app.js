@@ -994,7 +994,8 @@ function startPicker() {
   const strip = h('section', { class: 'start-picker card', dataset: { role: 'start-picker' }, attrs: { 'aria-labelledby': titleId } },
     h('div', { class: 'start-picker-head' },
       h('div', { class: 'start-picker-titles' },
-        h('h2', { class: 'start-picker-title', id: titleId }, t('start.title')),
+        // Not a heading: the strip comes before the page's <h1>; its title names the region instead.
+        h('p', { class: 'start-picker-title', id: titleId }, t('start.title')),
         h('p', { class: 'start-picker-lead' }, t('start.lead'))),
       hide),
     StartTaskList({

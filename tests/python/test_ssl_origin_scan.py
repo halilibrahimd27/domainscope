@@ -267,6 +267,34 @@ class DerParserTests(unittest.TestCase):
             self.assertTrue(warnings, data)
             self.assertIn(warnings[-1][0], ('PARSE_ERROR', 'NO_CERTIFICATE'), data)
 
+    def test_utf16_and_bom_prefixed_text(self):
+        # PowerShell 5.1 `Get-Content cert.crt > new-cert.pem` writes UTF-16LE with a BOM
+        text = fixture_bytes('cli_renewed_wild.pem').decode('ascii')
+        bare = base64.b64encode(fixture_cert('cli_renewed_wild.pem').der).decode('ascii')
+        variants = {
+            'UTF-16LE with BOM': b'\xff\xfe' + text.encode('utf-16-le'),
+            'UTF-16BE with BOM': b'\xfe\xff' + text.encode('utf-16-be'),
+            'UTF-16LE without BOM': text.encode('utf-16-le'),
+            'UTF-8 with BOM': b'\xef\xbb\xbf' + text.encode('ascii'),
+            'bare base64, UTF-16LE with BOM': b'\xff\xfe' + bare.encode('utf-16-le'),
+            'bare base64, UTF-8 with BOM': b'\xef\xbb\xbf' + bare.encode('ascii'),
+        }
+        for label, data in variants.items():
+            with self.subTest(encoding=label):
+                certs, warnings = sos.load_certificates(data)
+                self.assertEqual(warnings, [])
+                self.assertEqual([c.sha256 for c in certs], [RENEWED_WILD_SHA256])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'new-cert.pem')
+            Path(path).write_bytes(variants['UTF-16LE with BOM'])
+            leaf, _ = sos.load_new_certificate(path, NOW)
+        self.assertEqual(leaf.sha256, RENEWED_WILD_SHA256)
+        for name in ('rsa_multi_san.der', 'chain_der.p7b', 'cli_chain.p7b'):  # DER untouched
+            with self.subTest(fixture=name):
+                certs, warnings = sos.load_certificates(fixture_bytes(name))
+                self.assertTrue(certs)
+                self.assertEqual(warnings, [])
+
     def test_bad_base64_inside_pem(self):
         pem = '-----BEGIN CERTIFICATE-----\n!!!notbase64!!!\n-----END CERTIFICATE-----'
         certs, warnings = sos.load_certificates(pem)
@@ -714,8 +742,8 @@ class InventoryTests(unittest.TestCase):
     def test_email_addresses_are_never_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'inv.csv')
-            Path(path).write_text(INVENTORY_PARITY_CASES['e-mail column'] + 'db03,ops@mail.example.com,\n',
-                                  encoding='utf-8')
+            Path(path).write_text(INVENTORY_PARITY_CASES['e-mail column']
+                                  + 'db03,ops@mail.example.com,\n', encoding='utf-8')
             resolver = RecordingResolver({'db02': ['10.0.0.10']})
             servers, warnings = sos.load_targets([path], resolver=resolver)
         # db02 (no IP) is resolved by its own name, as any name-only row; never the mailbox's host

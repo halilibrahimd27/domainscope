@@ -751,17 +751,32 @@ def _load_der(buf: bytes, certs: List[CertInfo], warnings: List[CertWarning]) ->
         warnings.append(('PARSE_ERROR', str(exc)))
 
 
+def _text_bytes(raw: bytes) -> bytes:
+    """UTF-16 text -> latin-1 bytes, and a UTF-8 BOM dropped, like lib/x509.js decodeText:
+    a BOM, or ASCII with NUL high bytes (UTF-16LE without BOM). PowerShell 5.1's ``>`` and
+    ``Out-File`` write UTF-16LE. Raw DER (``30 82 ...``) never looks like either."""
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return raw.decode('utf-16', 'replace').encode('latin-1', 'replace')
+    if len(raw) >= 4 and raw[0] and not raw[1] and raw[2] and not raw[3]:
+        return raw.decode('utf-16-le', 'replace').encode('latin-1', 'replace')
+    if raw.startswith(b'\xef\xbb\xbf'):
+        return raw[3:]
+    return raw
+
+
 def load_certificates(data: Union[bytes, str]) -> Tuple[List[CertInfo], List[CertWarning]]:
     """Parse every certificate in ``data``; never raises for bad input.
 
     Accepts PEM (one or many blocks, CRLF, surrounding text such as an e-mail), raw DER,
-    bare base64 DER and PKCS#7 (.p7b, PEM or DER). Detects PKCS#12 and CSRs. Private
-    keys are never decoded - their presence only produces a PRIVATE_KEY_PRESENT warning.
+    bare base64 DER and PKCS#7 (.p7b, PEM or DER), as UTF-8 or UTF-16 text. Detects
+    PKCS#12 and CSRs. Private keys are never decoded - their presence only produces a
+    PRIVATE_KEY_PRESENT warning.
     Returns ``(certificates in input order, [(code, detail), ...])``.
     """
     certs = []  # type: List[CertInfo]
     warnings = []  # type: List[CertWarning]
-    raw = data.encode('latin-1', 'replace') if isinstance(data, str) else bytes(data)
+    raw = (data.lstrip('﻿').encode('latin-1', 'replace') if isinstance(data, str)
+           else _text_bytes(bytes(data)))
     text = raw.decode('latin-1')
     if '-----BEGIN ' in text:
         for match in _PEM_RE.finditer(text):

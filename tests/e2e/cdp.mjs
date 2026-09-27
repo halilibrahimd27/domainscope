@@ -352,10 +352,14 @@ export class Page {
     await loaded;
   }
 
-  /** Reload and wait for the load event. */
-  async reload({ timeout = 30000 } = {}) {
+  /**
+   * Reload and wait for the load event.
+   * @param {{ timeout?: number, ignoreCache?: boolean }} [opts] ignoreCache (default): a hard reload;
+   *   false: a normal one, which a service worker answers
+   */
+  async reload({ timeout = 30000, ignoreCache = true } = {}) {
     const loaded = this.conn.once('Page.loadEventFired', this.sessionId, () => true, timeout);
-    await this.send('Page.reload', { ignoreCache: true });
+    await this.send('Page.reload', { ignoreCache });
     await loaded;
   }
 

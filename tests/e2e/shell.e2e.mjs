@@ -169,8 +169,9 @@ async function shot(page, name) {
 
 async function assertClean(page, where, { offline = false } = {}) {
   const p = await page.problems();
-  // Offline, the browser's own requests (the favicon on Linux Chrome) fail on purpose.
-  const logErrors = offline ? p.logErrors.filter((e) => !/ERR_INTERNET_DISCONNECTED/.test(e.text)) : p.logErrors;
+  // Offline, the browser's own requests (the favicon on Linux Chrome) fail on purpose; so do those that
+  // reach a test server told to drop every request (setOffline) — what must work offline is checked by the steps.
+  const logErrors = offline ? p.logErrors.filter((e) => !/ERR_(?:INTERNET_DISCONNECTED|EMPTY_RESPONSE|CONNECTION_(?:RESET|CLOSED))/.test(e.text)) : p.logErrors;
   const issues = [
     ...p.consoleErrors.map((m) => `console.${m.type}: ${m.text}`),
     ...p.exceptions.map((e) => `exception: ${e.text}`),
@@ -1898,10 +1899,7 @@ async function main() {
 
       await step('offline: the app starts from the cache; Certificate, Zone File and Servers work', async () => {
         await network(false);
-        // A normal reload (not a hard one, which would skip the service worker).
-        const loaded = pwa.conn.once('Page.loadEventFired', pwa.sessionId, () => true, 30000);
-        await pwa.send('Page.reload', { ignoreCache: false });
-        await loaded;
+        await pwa.reload({ ignoreCache: false }); // a normal reload: a hard one would skip the service worker
         await waitReady(pwa);
         assertEqual(await pwaSrc(), 'v/app-one/assets/js/app.js', 'the cached index.html');
         await gotoRoute(pwa, 'cert');

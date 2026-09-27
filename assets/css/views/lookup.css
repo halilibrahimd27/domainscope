@@ -149,6 +149,11 @@
   margin-bottom: 16px;
 }
 
+/* Settled cards keep their column (views/lookup.js pins the first card of each further one). */
+.lkp-cards > .lkp-card.lkp-col-start {
+  break-before: column;
+}
+
 .lkp-cards > .lkp-card:focus {
   outline: none;
 }

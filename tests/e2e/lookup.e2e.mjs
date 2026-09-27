@@ -262,7 +262,17 @@ const APEX_ZONE = {
     SOA: [{ mname: 'ns1.example.com', rname: 'hostmaster.example.com', serial: 2026092701, refresh: 7200, retry: 3600, expire: 1209600, minimum: 3600 }]
   },
   'mx1.example.com': { A: ['203.0.113.25'] },
-  'mx2.example.com': { A: ['203.0.113.26'] }
+  'mx2.example.com': { A: ['203.0.113.26'] },
+  // Seven cards: balanced columns would move TXT between them when the SOA or CAA raw answer opens.
+  'cols.example.com': {
+    A: ['203.0.113.11'],
+    AAAA: ['2001:db8::11'],
+    MX: [{ preference: 10, exchange: 'mx1.example.com' }, { preference: 20, exchange: 'mx2.example.com' }],
+    NS: ['ns1.example.com', 'ns2.example.com'],
+    TXT: [['v=spf1 mx -all'], ['google-site-verification=abcdefghijklmnopqrstuvwxyz0123456789']],
+    SOA: [{ mname: 'ns1.example.com', rname: 'hostmaster.example.com', serial: 2026092701, refresh: 7200, retry: 3600, expire: 1209600, minimum: 3600 }],
+    CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'iodef', value: 'mailto:security@example.com' }]
+  }
 };
 
 /**
@@ -327,6 +337,35 @@ async function offlineGroup(browser, server) {
       assertEqual(cols, '480px', 'record cards flow in CSS columns');
       await assertNoHorizontalScroll(page, 'density desktop');
       await shot(page, 'lookup-offline-desktop-light-en');
+    });
+
+    await step('opening a raw answer grows its own column only: the other cards keep their place', async () => {
+      const rects = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.lkp-card')].map((card) => {
+        const r = card.getBoundingClientRect();
+        return [card.dataset.type, { left: Math.round(r.left), top: Math.round(r.top + scrollY) }];
+      })));
+      await gotoHash(page, '#/lookup?name=cols.example.com&type=ALL', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'all types answered' });
+      await page.waitFor(() => document.querySelector('.lkp-card.lkp-col-start'), { timeout: 3000, message: 'columns pinned' });
+      const before = await rects();
+      assertEqual(Object.keys(before), ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CAA'], 'cards');
+      assert(new Set(Object.values(before).map((r) => r.left)).size === 2, `two columns at 1440 px: ${JSON.stringify(before)}`);
+      for (const type of ['A', 'SOA', 'CAA']) {
+        await page.click(`.lkp-card[data-type="${type}"] .lkp-raw summary`);
+        await page.waitFor((x) => document.querySelector(`.lkp-card[data-type="${x}"] .lkp-raw`)?.open, { args: [type], message: `${type} raw answer open` });
+        const after = await rects();
+        const moved = Object.keys(before).filter((k) => after[k].left !== before[k].left
+          || (before[k].left !== before[type].left && after[k].top !== before[k].top));
+        assertEqual(moved, [], `cards that moved when the ${type} raw answer opened`);
+        await page.click(`.lkp-card[data-type="${type}"] .lkp-raw summary`);
+      }
+      // One column on a narrower window: no pin is left to push a card into an overflow column.
+      await page.setViewport({ width: 900, height: 900 });
+      await page.waitFor(() => !document.querySelector('.lkp-card.lkp-col-start'), { timeout: 3000, message: 'pins dropped at 900 px' });
+      await assertNoHorizontalScroll(page, 'one column');
+      await page.setViewport({ width: 1440, height: 900 });
+      await page.waitFor(() => document.querySelector('.lkp-card.lkp-col-start'), { timeout: 3000, message: 'pinned again at 1440 px' });
+      assertEqual(await rects(), before, 'the same layout as before');
     });
 
     await step('a query that got no answer keeps its card, with the reason and a Retry of that type alone (also while a slow type still runs)', async () => {

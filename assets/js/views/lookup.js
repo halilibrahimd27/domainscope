@@ -18,8 +18,9 @@
  * Density (lib/density.js lookupLayout): plain NODATA types get no card but a place in one "No
  * records: AAAA, CAA, …" line of the summary; the resolver that answered, its PoP and the header
  * flags are said once in the summary, and a card repeats only what differs; on wide screens the
- * cards flow in CSS columns. A query that got no answer keeps its card, says which resolver
- * failed and why (lib/sourcestatus.js), and its Retry asks that type again.
+ * cards flow in CSS columns and keep the column they settled in (opening a raw answer grows its
+ * own column only). A query that got no answer keeps its card, says which resolver failed and
+ * why (lib/sourcestatus.js), and its Retry asks that type again.
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -702,6 +703,59 @@ export function mount(container, ctx) {
   const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, cardsEl);
   container.append(h('div', { class: 'stack-lg lkp-view' }, formCard, emptyEl, results));
 
+  /*
+   * Balanced CSS columns move cards between columns whenever one grows (a raw answer opened).
+   * Once every answer is in, the first card of each further column is pinned there
+   * (`break-before: column`): a card that grows then lengthens its own column only. The pins
+   * are made again when an answer changes (a Retry) or the width fits another number of columns.
+   */
+  const raf = globalThis.requestAnimationFrame || ((cb) => setTimeout(cb, 16));
+  const cancelRaf = globalThis.cancelAnimationFrame || clearTimeout;
+  let pinnedFor = 0; // the column count the pins were made for (0: none made)
+  let pinFrame = 0;
+  const settled = () => !!current && current.responses.every(Boolean);
+
+  /** How many columns the card area fits (the multi-column rule: column-width, column-gap). */
+  function columnCount() {
+    const width = cardsEl.clientWidth;
+    const cs = globalThis.getComputedStyle ? globalThis.getComputedStyle(cardsEl) : null;
+    const col = cs ? parseFloat(cs.columnWidth) : NaN;
+    const gap = cs ? parseFloat(cs.columnGap) || 0 : 0;
+    if (!width || !(col > 0)) return 1;
+    return Math.max(1, Math.floor((width + gap) / (col + gap)));
+  }
+
+  function unpinColumns() {
+    if (pinFrame) cancelRaf(pinFrame);
+    pinFrame = 0;
+    pinnedFor = 0;
+    for (const el of cardsEl.querySelectorAll('.lkp-col-start')) el.classList.remove('lkp-col-start');
+  }
+
+  /** Pin the balanced layout the settled cards have now (next frame: after they are drawn). */
+  function pinColumns() {
+    unpinColumns();
+    pinFrame = raf(() => {
+      pinFrame = 0;
+      if (!settled() || !cardsEl.isConnected) return;
+      const n = columnCount();
+      pinnedFor = n;
+      if (n < 2) return;
+      const cards = [...cardsEl.children];
+      const lefts = cards.map((el) => Math.round(el.getBoundingClientRect().left));
+      cards.forEach((el, i) => { if (i > 0 && lefts[i] !== lefts[i - 1]) el.classList.add('lkp-col-start'); });
+    });
+  }
+
+  // A width that fits another number of columns (the pins would break the layout), or settled
+  // cards first drawn now (a restored lookup mounted before it was shown): pin them again.
+  const columnObserver = typeof globalThis.ResizeObserver === 'function'
+    ? new globalThis.ResizeObserver(() => {
+      if (settled() && !pinFrame && columnCount() !== pinnedFor) pinColumns();
+    })
+    : null;
+  if (columnObserver) columnObserver.observe(cardsEl);
+
   /* --- record renderers ---------------------------------------------------------------- */
 
   function renderAddresses(rrs, cnames = []) {
@@ -1381,6 +1435,7 @@ export function mount(container, ctx) {
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
+    unpinColumns();
     clear(cardsEl);
     clear(summaryEl); // a new lookup starts with its "No records" line closed
     const cards = q.types.map((type, i) => makeCard(type, { onRetry: () => retry(i) }));
@@ -1402,6 +1457,8 @@ export function mount(container, ctx) {
         state.finishedAt = preset && at ? new Date(at) : new Date();
       }
       renderSummary(q, state.responses, state.elapsed, state.finishedAt, layout);
+      if (state.responses.every(Boolean)) pinColumns();
+      else unpinColumns();
     };
 
     /**
@@ -1486,6 +1543,8 @@ export function mount(container, ctx) {
     teardown() {
       if (current && current.controller) current.controller.abort();
       if (current) current.life.abort();
+      unpinColumns();
+      if (columnObserver) columnObserver.disconnect();
     },
     snapshot() {
       const form = {

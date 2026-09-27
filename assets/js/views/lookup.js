@@ -1194,13 +1194,14 @@ export function mount(container, ctx) {
    * The "No records: AAAA, CAA, …" line of the summary: the NODATA types in one place (their
    * negative-caching time and raw answers one click away), instead of a card each.
    */
-  function noRecordsLine(q, responses, types) {
+  function noRecordsLine(q, responses, types, open = false) {
     const list = types.map((type) => responses[q.types.indexOf(type)]).filter(Boolean);
     const neg = list.length ? negativeTtl(list[0]) : null;
     return h('div', { class: 'lkp-nodata', dataset: { types: types.join(' ') } },
       Disclosure({
         summary: h('span', { class: 'lkp-nodata-summary' }, Icon('minus-circle', { size: 14 }), ' ', t('lkp.noRecords', { types: types.join(', ') })),
         className: 'lkp-nodata-box',
+        open,
         children: h('div', { class: 'stack-sm' },
           h('p', { class: 'text-sm lkp-nodata-body' }, [t('lkp.noRecordsBody'), neg].filter(Boolean).join(' ')),
           Disclosure({ summary: t('lkp.card.raw'), className: 'lkp-raw', children: CodeBlock(list.map(responseText).join('\n\n'), { wrap: true }) }))
@@ -1316,6 +1317,8 @@ export function mount(container, ctx) {
    * @param {Date|null} at when the last answer arrived
    */
   function renderSummary(q, responses, elapsed, at, layout = lookupLayout(q.types, responses)) {
+    // A "No records" line the user opened stays open while later answers (or a Retry) redraw the summary.
+    const openBefore = !!summaryEl.querySelector('.lkp-nodata-box[open]');
     clear(summaryEl);
     clear(noteEl);
     if (q.ptrFor) noteEl.append(Alert({ variant: 'info', compact: true, icon: 'info', message: t('lkp.ptrNote', { name: q.name }) }));
@@ -1352,7 +1355,7 @@ export function mount(container, ctx) {
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
         !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null),
-      layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords) : null));
+      layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords, openBefore) : null));
   }
 
   /** Ask one type of the current lookup (a run, or the Retry of a query that got no answer). */
@@ -1377,6 +1380,7 @@ export function mount(container, ctx) {
     emptyEl.hidden = true;
     results.hidden = false;
     clear(cardsEl);
+    clear(summaryEl); // a new lookup starts with its "No records" line closed
     const cards = q.types.map((type, i) => makeCard(type, { onRetry: () => retry(i) }));
     cardsEl.append(...cards.map((c) => c.el));
     renderSummary(q, state.responses, null, null);

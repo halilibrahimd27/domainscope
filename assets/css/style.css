@@ -2365,6 +2365,7 @@ button.nav-status:hover {
   align-items: center;
   gap: 4px;
   color: var(--warn);
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -2385,6 +2386,16 @@ button.nav-status:hover {
 
 .src-chips[hidden] {
   display: none;
+}
+
+/* The group takes the keyboard focus back when the Retry that had it is gone. */
+.src-chips:focus {
+  outline: none;
+}
+
+.src-chips:focus-visible {
+  border-radius: var(--radius);
+  box-shadow: var(--focus-ring);
 }
 
 .src-chip {

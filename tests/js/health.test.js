@@ -465,6 +465,12 @@ test('CNAME to another zone: SOA / NS of the target are not attributed to the al
     for (const id of ['ns.single', 'ns.no-ipv6', 'ns.ok', 'ns.none']) lacks(r, id);
     assert.deepEqual(r.records.ns, []);
   }
+
+  // the SOA lookup failed: the CNAME still shows the alias is no zone apex
+  const r = await run('www.example.com', fakeDns(zone, { fail: { 'www.example.com|SOA': 'timeout' } }));
+  assertRenderable(r);
+  has(r, 'soa.error', 'warn');
+  for (const id of ['ns.none', 'ns.single', 'dnssec.unsigned']) lacks(r, id);
 });
 
 test('NS: single, unresolvable, private, same subnet, single provider, no IPv6', async () => {

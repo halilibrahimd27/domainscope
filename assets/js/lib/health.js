@@ -1112,7 +1112,8 @@ async function analyzeNs(name, nsR, d, isApex) {
     return out;
   }
   if (!hosts.length) {
-    if (isApex !== false) checks.push(makeCheck('ns.none', 'error', { domain: name }));
+    // Below the apex no NS is expected, and an alias's NS answer (also when the SOA lookup failed) is its target's.
+    if (isApex !== false && !cnameChain(nsR.answers, name).length) checks.push(makeCheck('ns.none', 'error', { domain: name }));
     return out;
   }
   if (hosts.length === 1) checks.push(makeCheck('ns.single', 'warn', { host: hosts[0] }));
@@ -1495,11 +1496,13 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex, zone }) {
   else info.validated = !!dnskeyR.flags.ad;
   const algNums = uniq([...ds.map((x) => x.algorithm), ...dnskey.map((x) => x.algorithm)].filter(Number.isInteger));
   info.algorithms = algNums.map((n) => DNSSEC_ALGORITHMS[n] || `ALG${n}`);
-  if (isApex === false && !ds.length && !dnskey.length) {
+  // A CNAME owner is never a zone apex, also when the SOA lookup failed.
+  const alias = cnameChain(dnskeyR.answers, name).length > 0;
+  const belowApex = isApex === false || alias;
+  if (belowApex && !ds.length && !dnskey.length) {
     // Below the zone apex there is no DS / DNSKEY of its own: report the enclosing zone's state. AD=1 on the
     // (NODATA) DNSKEY answer proves it signed and validated. Otherwise ask the zone itself (a DS at its cut
     // means signed), and through a CNAME, where AD=0 may only describe the target's zone, its DNSKEY's AD too.
-    const alias = cnameChain(dnskeyR.answers, name).length > 0;
     info.signed = info.validated === true ? true : alias ? null : info.validated;
     if (info.validated !== true && zone) {
       const [zoneDs, zoneKey] = await Promise.all([
@@ -1519,7 +1522,7 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex, zone }) {
     return out;
   }
   if (!ds.length && !dnskey.length) {
-    if (isApex !== false) checks.push(makeCheck('dnssec.unsigned', 'info', { domain: name }));
+    if (!belowApex) checks.push(makeCheck('dnssec.unsigned', 'info', { domain: name }));
     return out;
   }
   if (ds.length && !dnskey.length) {

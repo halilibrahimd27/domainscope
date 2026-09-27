@@ -387,12 +387,15 @@ export function subdomainsSummary(facts, opts) {
 }
 
 /**
- * SSL Targets: the certificate, hosts found and covered, the inventory servers that need the
- * certificate (by name, as the Servers tab lists them), hosts behind a CDN and the Verify state.
+ * SSL Targets: the scanned domains (the title), the certificate, hosts found and covered, passive
+ * sources that failed (the host list may be incomplete, so the lines after it may miss a host),
+ * the inventory servers that need the certificate (by name, as the Servers tab lists them), hosts
+ * behind a CDN and the Verify state.
  * @param {{ domains: string[], cert: { name: string, issuer: string, notBefore?: Date,
- *   notAfter: Date }|null, hosts: number, covered?: number, inventory: number, needsCert?: string[],
- *   matched?: number, hiddenOrigin?: number, networks?: number, verify?: { key: string, params?: object }|null,
- *   dangling?: string[], at?: Date }} facts of a finished scan (SSL Targets keeps no result of a cancelled one)
+ *   notAfter: Date }|null, hosts: number, covered?: number, failedSources?: number, inventory: number,
+ *   needsCert?: string[], matched?: number, hiddenOrigin?: number, networks?: number,
+ *   verify?: { key: string, params?: object }|null, dangling?: string[], at?: Date }} facts of a
+ *   finished scan (SSL Targets keeps no result of a cancelled one)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -401,7 +404,6 @@ export function scanSummary(facts, opts) {
   const { t } = k;
   const now = opts.now || new Date();
   const cert = facts.cert;
-  const subject = cert ? [code(cert.name)] : k.domains(facts.domains);
   const lines = [];
   lines.push(cert
     ? [t('sum.scan.cert'), ' ', code(cert.name), ' · ', ...issuedBy(t, cert.issuer), ' · ', validityText(k, cert, now)]
@@ -409,6 +411,8 @@ export function scanSummary(facts, opts) {
   const hosts = [t('sum.scan.hosts', { count: Number(facts.hosts) || 0 })];
   if (cert) hosts.push(' · ', t('sum.scan.covered', { count: Number(facts.covered) || 0 }));
   lines.push(hosts);
+  // Right under the host count: every line after it is built from that (maybe incomplete) list.
+  if (facts.failedSources > 0) lines.push([t('sum.sub.sourcesFailed', { count: facts.failedSources })]);
   if (!(facts.inventory > 0)) lines.push([t('sum.scan.noInventory')]);
   else if (cert) {
     const needs = facts.needsCert || [];
@@ -422,6 +426,10 @@ export function scanSummary(facts, opts) {
   if (cert) lines.push(facts.verify && facts.verify.key ? [`${t('sum.scan.verify')} `, t(facts.verify.key, facts.verify.params || {})] : [t('sum.scan.verifyNone')]);
   const dangling = facts.dangling || [];
   if (dangling.length) lines.push([t('sum.sub.dangling', { count: dangling.length }), ': ', ...k.values(dangling)]);
+  // The title names what was scanned, as the results title does (the certificate is line 1: its
+  // name may be another domain's).
+  const scanned = k.domains(facts.domains);
+  const subject = scanned.length ? scanned : cert ? [code(cert.name)] : [];
   return doc('scan', k.title('scan', subject), lines, { when: whenText(t, 'sum.at.scanned', facts.at, now), url: opts.url });
 }
 

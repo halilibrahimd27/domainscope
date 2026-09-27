@@ -34,8 +34,9 @@
  *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
  *     names.txt with coverage; Copy summary stays off without a result), reduced motion (no
  *     smooth scroll), Copy summary of the finished scan (the servers that need the certificate
- *     by name, the inventory tooltip, a link with only the domain), and one shell choice shared
- *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card
+ *     by name, the inventory tooltip, a link with only the domain), one shell choice shared
+ *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card, and a rescan with crt.sh
+ *     failing in the page (Copy summary says the host list may be incomplete)
  *   - zero console errors, exceptions and CSP violations; failures of the third-party APIs
  *     themselves (crt.sh 502 without CORS, 429s) are reported but do not fail the run.
  *
@@ -1521,7 +1522,7 @@ async function main() {
           await tab.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
           const [md, plain] = await takeClipboard(tab);
           const lines = md.trim().split('\n');
-          assertEqual(lines[0], '**SSL Targets · `*.wild.example.net`**', 'title: the certificate');
+          assertEqual(lines[0], '**SSL Targets · `example.net`**', 'title: the scanned domain (the certificate is line 1)');
           // A self-signed wildcard names itself as the issuer: a code span (no backslash for Slack to show).
           assert(/^- Certificate `\*\.wild\.example\.net` · issued by `[^`\\]+` · valid until 2051-01-01 \(\d[\d,]* days left\)$/.test(lines[1]), `certificate line: ${lines[1]}`);
           assert(/^- \d+ hosts found · \d+ covered by the certificate$/.test(lines[2]), `hosts line: ${lines[2]}`);
@@ -1575,6 +1576,28 @@ async function main() {
           const after = await tab.evaluate(() => ({ blocked: window.__zoneBlocked }));
           assertEqual(after.blocked, [], 'nothing but DNS for the zone left the page');
           await assertClean(tab, 'offline certificate scan', origin);
+        });
+
+        await run.step('a passive source that fails (crt.sh, stopped in the page): Copy summary says the host list may be incomplete, right under the host count', async () => {
+          await setOptions(tab, { sources: ['crtsh'], bruteforce: 'small' });
+          const before = await runStatus(tab);
+          await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+          await tab.waitFor((prev) => {
+            const ui = document.querySelector('.scan-run-ui');
+            return ui && ui.dataset.run !== prev && ui.querySelector('.scan-run').dataset.status === 'done';
+          }, { args: [before.id], timeout: 60000, message: 'offline scan with crt.sh done' });
+          const shown = await tab.evaluate(() => ({
+            warning: document.querySelector('.scan-summary [data-summary="sources-failed"]')?.textContent || '',
+            blocked: window.__zoneBlocked.filter((u) => /crt\.sh/.test(u)).length
+          }));
+          assert(shown.blocked > 0 && /1 source failed/.test(shown.warning), `the results warn about crt.sh: ${JSON.stringify(shown)}`);
+          await stubClipboard(tab);
+          await tab.click('[data-summary="scan"] [data-action="copy-summary"]');
+          await tab.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+          const lines = (await takeClipboard(tab))[0].trim().split('\n');
+          assert(/^- \d+ hosts found · \d+ covered by the certificate$/.test(lines[2]), `hosts line: ${lines[2]}`);
+          assertEqual(lines[3], '- 1 passive source failed: the list may be incomplete', 'the failed source, before the servers line');
+          assertEqual(lines[4], '- 2 servers in your list need the certificate: `db01`, `web01`', 'the servers line follows');
         });
       } finally {
         await tab.close();

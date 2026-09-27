@@ -359,7 +359,7 @@ describe('scan (SSL Targets)', () => {
     const ls = lines(md(doc));
     assertShape(doc);
     assert.deepEqual(ls.slice(0, 6), [
-      '**SSL Targets · `*.example.com`**',
+      '**SSL Targets · `example.com`**',
       '- Certificate `*.example.com` · issued by `Example CA (R1)` · valid until 2026-12-01 (64 days left)',
       '- 42 hosts found · 30 covered by the certificate',
       '- 6 servers in your list need the certificate: `web01`, `web02`, `web03`, `lb-1`, `lb-2` +1 more',
@@ -384,6 +384,34 @@ describe('scan (SSL Targets)', () => {
     assert.ok(out.includes('- No certificate loaded: names and servers only') && out.includes('- 4 servers in your list serve these names'));
     assert.doesNotMatch(out, /covered|Verify/);
     assert.ok(out.includes('- 1 dangling CNAME (possible takeover): `old.example.com`'));
+  });
+
+  test('the title names the scanned domains, not the certificate\'s (line 1 names that)', () => {
+    const other = S.scanSummary({ ...facts, domains: ['example.net'], cert: { ...cert, name: 'example.com' } }, opts());
+    const ls = lines(md(other));
+    assert.equal(ls[0], '**SSL Targets · `example.net`**');
+    assert.match(ls[1], /^- Certificate `example\.com` · issued by /);
+    const many = S.scanSummary({ ...facts, domains: ['example.com', 'example.net', 'example.org', 'example.edu'] }, opts());
+    assert.equal(lines(md(many))[0], '**SSL Targets · `example.com`, `example.net`, `example.org` +1 more**');
+    // No domain known (never from the view, which names the certificate's base domains): the certificate.
+    assert.equal(lines(md(S.scanSummary({ ...facts, domains: [] }, opts())))[0], '**SSL Targets · `*.example.com`**');
+  });
+
+  test('passive sources that failed: right under the host count, before "no server needs it"; Turkish', () => {
+    const doc = S.scanSummary({ ...facts, failedSources: 1, needsCert: [] }, opts());
+    const ls = lines(md(doc));
+    assertShape(doc);
+    assert.deepEqual(ls.slice(2, 5), [
+      '- 42 hosts found · 30 covered by the certificate',
+      '- 1 passive source failed: the list may be incomplete',
+      '- No server in your list needs the certificate'
+    ]);
+    assert.equal(lines(md(S.scanSummary({ ...facts, failedSources: 2 }, opts())))[3], '- 2 passive sources failed: the list may be incomplete');
+    const tr = lines(md(S.scanSummary({ ...facts, failedSources: 2 }, opts('tr'))));
+    assert.deepEqual(tr.slice(2, 4), ['- 42 host bulundu · 30 tanesi sertifikanın kapsamında', '- 2 pasif kaynak başarısız: liste eksik olabilir']);
+    const noCert = md(S.scanSummary({ ...facts, cert: null, matched: 4, failedSources: 1 }, opts()));
+    assert.ok(noCert.includes('- 42 hosts found\n- 1 passive source failed: the list may be incomplete\n'), noCert);
+    assert.doesNotMatch(md(S.scanSummary(facts, opts())), /passive source/, 'every source answered: nothing to say');
   });
 
   test('an expired certificate, Turkish', () => {

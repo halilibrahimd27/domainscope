@@ -2519,9 +2519,9 @@ function buildRunUI(run, ctx, { onFinish }) {
   const summaryHost = h('div', { class: 'stack-sm scan-summary' });
   const exportBar = h('div', { class: 'scan-exports', attrs: { role: 'group', 'aria-label': t('scan.export.label') } });
 
-  // "Copy summary": the stat cards, the servers that need the certificate (by name, as the Servers
-  // tab lists them — the tooltip says so) and the Verify headline (lib/summary.js). Only a finished
-  // scan has a result (a cancelled one keeps none).
+  // "Copy summary": the stat cards, the passive sources that failed, the servers that need the
+  // certificate (by name, as the Servers tab lists them — the tooltip says so) and the Verify
+  // headline (lib/summary.js). Only a finished scan has a result (a cancelled one keeps none).
   const VERIFY_MAIN = new Set(['vfy.head.all', 'vfy.head.some', 'vfy.head.none', 'vfy.head.partial', 'vfy.head.noAnswer']);
   const summaryFacts = () => {
     const r = run.result;
@@ -2534,6 +2534,8 @@ function buildRunUI(run, ctx, { onFinish }) {
       cert: cert ? { name: certDisplayName(cert), issuer: issuerDisplayName(cert), notBefore: cert.notBefore, notAfter: cert.notAfter } : null,
       hosts: c.total,
       covered: c.covered,
+      // As the results warning counts them: the host list may be incomplete.
+      failedSources: sourceHealthSummary(r.sources || run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
       inventory: run.config.inventoryServers,
       needsCert: r.servers.filter((g) => g.needsCert).map((g) => g.server.name),
       matched: r.stats.matchedServers,

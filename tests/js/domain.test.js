@@ -24,6 +24,13 @@ test('normalizeHostname converts IDN to punycode', () => {
   assert.equal(normalizeHostname('xn--mnchen-3ya.de'), 'xn--mnchen-3ya.de');
 });
 
+test('normalizeHostname applies the bidi rule itself, whatever the runtime URL parser does', () => {
+  assert.equal(normalizeHostname('ςא.example.com'), null);
+  assert.equal(normalizeHostname('aא.example.com'), null);
+  assert.equal(normalizeHostname('אב.example.com'), 'xn--4dbc.example.com');
+  assert.equal(normalizeHostname('אב.straße.example.com'), 'xn--4dbc.xn--strae-oqa.example.com');
+});
+
 test('normalizeHostname allows underscore labels (_dmarc, DKIM)', () => {
   assert.equal(normalizeHostname('_dmarc.example.com'), '_dmarc.example.com');
   assert.equal(normalizeHostname('selector._domainkey.example.com'), 'selector._domainkey.example.com');

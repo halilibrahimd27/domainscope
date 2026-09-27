@@ -192,10 +192,21 @@ export function normalizeHostname(input, { allowWildcard = false, allowSingleLab
   return out.length <= 253 ? out : null;
 }
 
+// Letters of the right-to-left scripts (bidi class R / AL), and every other letter (class L).
+const RTL_SCRIPTS = '\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}'
+  + '\\p{Script=Nko}\\p{Script=Samaritan}\\p{Script=Mandaic}\\p{Script=Adlam}\\p{Script=Hanifi_Rohingya}';
+const RTL_LETTER_RE = new RegExp(`(?=\\p{L})[${RTL_SCRIPTS}]`, 'u');
+const LTR_LETTER_RE = new RegExp(`(?![${RTL_SCRIPTS}])\\p{L}`, 'u');
+
 /** IDN → punycode through the WHATWG URL parser; null on failure. */
 function toAsciiHost(host) {
   // Characters that would change how the URL parser splits the string.
   if (/[\s/?#@:[\]\\%]/.test(host)) return null;
+  // The bidi rule (a right-to-left label holds no left-to-right letter, `ςא`): browsers and
+  // Node 24 refuse such a label, Node 22's URL parser does not, so it is checked here.
+  for (const label of host.split(/[.。．｡]/)) {
+    if (RTL_LETTER_RE.test(label) && LTR_LETTER_RE.test(label)) return null;
+  }
   let hostname;
   try {
     hostname = new URL(`http://${host}`).hostname;

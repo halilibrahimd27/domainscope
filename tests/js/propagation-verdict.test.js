@@ -2,7 +2,7 @@
 // CDN / GeoDNS edges by design, or propagation / a misconfiguration. No network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { propagationVerdict, splitChain, VERDICT_FINDINGS, VERDICT_STATES } from '../../assets/js/lib/propagation.js';
+import { propagationVerdict, splitChain, SAFE_SEARCH_TARGETS, VERDICT_FINDINGS, VERDICT_STATES } from '../../assets/js/lib/propagation.js';
 import { getResolver } from '../../assets/js/lib/resolvers.js';
 
 /** One answer item as checkPropagation / the view produce it: values = answerValues(). */
@@ -20,7 +20,7 @@ const STEER = cname('tp.frontier.example.com');
 describe('propagationVerdict', () => {
   test('exports its states and finding codes', () => {
     assert.deepEqual(VERDICT_STATES, ['none', 'agree', 'by-design', 'geo', 'differ']);
-    assert.deepEqual(VERDICT_FINDINGS, ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'direct', 'records']);
+    assert.deepEqual(VERDICT_FINDINGS, ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']);
     assert.deepEqual(splitChain(['192.0.2.1', 'CNAME a.example.net', 'CNAME b.example.net']), { plain: ['192.0.2.1'], chain: ['a.example.net', 'b.example.net'] });
   });
 
@@ -215,6 +215,12 @@ describe('propagationVerdict', () => {
     assert.deepEqual(v.findings[1].ips, ['10.0.0.5']);
     assert.equal(v.groups.find((g) => g.members.includes('resolver:dnssb')).status, 'nodata');
     assert.equal(v.groups.find((g) => g.key === '10.0.0.5').operators[0].kind, 'private');
+    // A private address is never an edge, even behind a CDN's CNAME.
+    const cdn = propagationVerdict([
+      item('resolver:cloudflare', '2.16.1.10', ...cname('www.example.com.edgekey.net', 'e1.a.akamaiedge.net')),
+      item('resolver:google', '10.0.0.5', ...cname('www.example.com.edgekey.net', 'e1.a.akamaiedge.net'))
+    ]);
+    assert.deepEqual([cdn.state, codes(cdn), cdn.findings[0].ips], ['differ', ['private'], ['10.0.0.5']]);
   });
 
   test('direct addresses: resolvers that disagree look like propagation; only locations differing is GeoDNS', () => {
@@ -287,9 +293,10 @@ describe('propagationVerdict', () => {
     assert.deepEqual(codes(nx), ['nxdomain']);
   });
 
-  test('an answer only filtering resolvers give (SafeSearch CNAME) is their policy, not a difference', () => {
+  test('a SafeSearch rewrite only filtering resolvers give is their policy, not a difference', () => {
     const row = (id, ...values) => ({ key: `resolver:${id}`, kind: 'resolver', resolver: getResolver(id), values });
-    const safe = ['192.0.2.99', ...cname('forcesafesearch.example.com')];
+    // Cloudflare Family answers www.google.com with CNAME forcesafesearch.google.com.
+    const safe = ['192.0.2.99', ...cname('forcesafesearch.google.com')];
     const v = propagationVerdict([
       row('cloudflare', '192.0.2.1'),
       row('google', '192.0.2.1'),
@@ -299,8 +306,15 @@ describe('propagationVerdict', () => {
     ]);
     assert.equal(v.state, 'agree');
     assert.deepEqual(v.rewritten, ['resolver:cloudflare-family', 'resolver:cleanbrowsing']);
+    assert.deepEqual(v.rewriteTargets, ['forcesafesearch.google.com']);
     assert.deepEqual(v.groups.map((g) => g.rewritten), [false, true]);
     assert.deepEqual(v.findings, []);
+    assert.ok(SAFE_SEARCH_TARGETS.includes('strict.bing.com') && SAFE_SEARCH_TARGETS.includes('safe.duckduckgo.com'));
+    // Deeper in the chain (an alias of www.google.com), or as the record of a CNAME query.
+    const deep = propagationVerdict([row('cloudflare', '192.0.2.1', ...cname('www.google.com')), row('cloudflare-family', '192.0.2.99', ...cname('www.google.com', 'forcesafesearch.google.com.'))]);
+    assert.deepEqual([deep.state, deep.rewriteTargets], ['agree', ['forcesafesearch.google.com']]);
+    const q = propagationVerdict([row('cloudflare', 'www.example.net.'), row('cloudflare-family', 'safe.duckduckgo.com.')], { type: 'CNAME' });
+    assert.deepEqual([q.state, q.rewritten], ['agree', ['resolver:cloudflare-family']]);
 
     // A location (even through a filtering ECS resolver) or an unfiltered resolver giving it
     // too makes it an ordinary answer again.
@@ -314,14 +328,115 @@ describe('propagationVerdict', () => {
     const shared = propagationVerdict([row('cloudflare', '192.0.2.1'), row('google', ...safe), row('cloudflare-family', ...safe)]);
     assert.deepEqual(shared.rewritten, []);
     assert.equal(shared.state, 'differ');
+    // Only filtering resolvers answered: nothing to compare with, so their answers are judged.
+    const alone = propagationVerdict([row('cloudflare-family', ...safe), row('cleanbrowsing', '198.51.100.1')]);
+    assert.deepEqual(alone.rewritten, []);
+    assert.equal(alone.state, 'differ');
+  });
+
+  test('any other answer only filtering resolvers give stays a difference (a stale cache looks the same)', () => {
+    const row = (id, ...values) => ({ key: `resolver:${id}`, kind: 'resolver', resolver: getResolver(id), values });
+    const rest = (...values) => [
+      row('cloudflare', ...values), row('google', ...values), row('dnssb', ...values),
+      { key: 'geo:de-ham', kind: 'geo', resolver: getResolver('google'), values }
+    ];
+    // Quad9 still returns the old address.
+    const quad9 = propagationVerdict([...rest('198.51.100.20'), row('quad9', '192.0.2.10')]);
+    assert.equal(quad9.state, 'differ');
+    assert.deepEqual(codes(quad9), ['direct']);
+    assert.deepEqual(quad9.rewritten, []);
+    assert.ok(quad9.groups.every((g) => !g.rewritten));
+    // A new name that Cloudflare Family still has cached as NXDOMAIN.
+    const family = propagationVerdict([...rest('198.51.100.20'), row('cloudflare-family', 'NXDOMAIN')]);
+    assert.equal(family.state, 'differ');
+    assert.deepEqual(codes(family), ['nxdomain']);
+    assert.deepEqual(family.findings[0].members, ['resolver:cloudflare-family']);
+    assert.equal(family.findings[0].filtering, true, 'only filtering resolvers give it: it may also be their block');
+    // CleanBrowsing still has the old CNAME to an ordinary name.
+    const clean = propagationVerdict([...rest('198.51.100.20', ...cname('new.example.net')), row('cleanbrowsing', '192.0.2.10', ...cname('old.example.net'))]);
+    assert.equal(clean.state, 'differ');
+    assert.deepEqual(clean.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, ['new.example.net', 'old.example.net']]]);
+    // A CloudFront distribution change that only Quad9 has not seen yet.
+    const dist = propagationVerdict([
+      ...rest(CF_A[0], ...cname('d222222abcdef8.cloudfront.net')),
+      row('quad9', CF_A[1], ...cname('d111111abcdef8.cloudfront.net'))
+    ]);
+    assert.equal(dist.state, 'differ');
+    assert.deepEqual(codes(dist), ['cname']);
     // Just another edge from a filtering resolver's own cache: an ordinary, by-design answer.
     const edge = propagationVerdict([row('cloudflare', CF_A[0]), row('google', CF_A[1]), row('cleanbrowsing', CF_A[2])]);
     assert.equal(edge.state, 'by-design');
-    assert.deepEqual(edge.rewritten, []);
-    // Only filtering resolvers answered: nothing to compare with, so their answers are judged.
-    const alone = propagationVerdict([row('cloudflare-family', '192.0.2.1'), row('cleanbrowsing', '198.51.100.1')]);
-    assert.deepEqual(alone.rewritten, []);
-    assert.deepEqual(codes(alone), ['direct']);
+    // NXDOMAIN from an unfiltered resolver too: not only a filtering resolver's answer.
+    const both = propagationVerdict([...rest('198.51.100.20'), row('quad9', 'NXDOMAIN'), row('iij', 'NXDOMAIN')]);
+    assert.equal(both.findings[0].filtering, false);
+  });
+
+  test('different operators at the queried name are a move between providers, not steering', () => {
+    // Netlify → Vercel at the apex: only address records, each on its platform's address.
+    const apex = propagationVerdict([
+      item('resolver:cloudflare', '76.76.21.21'),
+      item('resolver:google', '76.76.21.21'),
+      item('resolver:iij', '75.2.60.5')
+    ]);
+    assert.equal(apex.state, 'differ');
+    assert.deepEqual(codes(apex), ['operators']);
+    assert.deepEqual(ids(apex.findings[0].operators), ['vercel', 'netlify']);
+    assert.equal(apex.findings[0].groups.length, 2);
+    assert.equal(apex.designPart, false);
+    // Cloudflare edges vs CloudFront edges at the apex.
+    const edges = propagationVerdict([item('resolver:cloudflare', '104.16.1.1'), item('resolver:google', CF_A[0])]);
+    assert.deepEqual(codes(edges), ['operators']);
+    // CloudFront → Cloudflare by CNAME at the queried name.
+    const moved = propagationVerdict([
+      item('resolver:cloudflare', CF_A[0], ...cname('d111111abcdef8.cloudfront.net')),
+      item('resolver:google', '104.16.1.1', ...cname('www.example.com.cdn.cloudflare.net')),
+      item('geo:de-ham', '104.16.1.1', ...cname('www.example.com.cdn.cloudflare.net'))
+    ]);
+    assert.equal(moved.state, 'differ');
+    assert.deepEqual(moved.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, ['www.example.com.cdn.cloudflare.net', 'd111111abcdef8.cloudfront.net']]]);
+    assert.deepEqual(ids(moved.findings[0].operators), ['cloudflare', 'cloudfront']);
+    // Heroku → Vercel, and a direct CNAME to a CDN next to one through the customer's own name.
+    const platforms = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.10', ...cname('foo.herokuapp.com')),
+      item('resolver:google', '76.76.21.21', ...cname('cname.vercel-dns.com'))
+    ]);
+    assert.deepEqual(platforms.findings.map((f) => [f.code, ids(f.operators)]), [['cname', ['heroku', 'vercel']]]);
+    const via = propagationVerdict([
+      item('resolver:cloudflare', CF_A[0], ...cname('d111111abcdef8.cloudfront.net')),
+      item('resolver:google', '2.16.1.10', ...cname('lb.example.com', 'www.example.com.edgekey.net', 'e1.a.akamaiedge.net'))
+    ]);
+    assert.deepEqual(via.findings.map((f) => [f.code, f.owner]), [['cname', null]]);
+
+    // One platform, another site: old-site.netlify.app → new-site.netlify.app, GitHub Pages
+    // users, Heroku apps, S3 buckets. The same operator, so no provider list.
+    for (const [a, b] of [
+      ['old-site.netlify.app', 'new-site.netlify.app'],
+      ['olduser.github.io', 'newuser.github.io'],
+      ['old-app.herokudns.com', 'new-app.herokudns.com'],
+      ['old-bucket.s3.amazonaws.com', 'new-bucket.s3.amazonaws.com']
+    ]) {
+      const v = propagationVerdict([item('resolver:cloudflare', '192.0.2.10', ...cname(a)), item('resolver:google', '192.0.2.11', ...cname(b))]);
+      assert.equal(v.state, 'differ', `${a} vs ${b}`);
+      assert.deepEqual(v.findings.map((f) => [f.code, f.owner, f.targets, f.operators.length]), [['cname', null, [a, b], 0]], `${a} vs ${b}`);
+    }
+
+    // www.amazon.com: every source shares tp.…frontier.amazon.com, which steers to CloudFront
+    // (by address) or Akamai (edgekey.net): by design.
+    const tp = 'tp.47cf2c8c9-frontier.example.com';
+    const amazon = propagationVerdict([
+      item('resolver:cloudflare', CF_A[0], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
+      item('resolver:google', CF_A[1], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
+      item('geo:tr-ist-tt', '2.17.225.198', ...cname(tp, 'www.example.com.edgekey.net', 'e15316.dsca.akamaiedge.net')),
+      item('geo:br-sao', '2.17.225.199', ...cname(tp, 'www.example.com.edgekey.net', 'e15316.dscb.akamaiedge.net'))
+    ]);
+    assert.equal(amazon.state, 'by-design');
+    assert.deepEqual(ids(amazon.operators), ['cloudfront', 'akamai']);
+    // The same answers, but the Akamai side no longer shares the steering name: a move.
+    const unshared = propagationVerdict([
+      item('resolver:cloudflare', CF_A[0], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
+      item('geo:tr-ist-tt', '2.17.225.198', ...cname('www.example.com.edgekey.net', 'e15316.dsca.akamaiedge.net'))
+    ]);
+    assert.deepEqual(unshared.findings.map((f) => [f.code, f.owner, ids(f.operators)]), [['cname', null, ['cloudfront', 'akamai']]]);
   });
 
   test('failures, blocked and pending answers are ignored; none and agree', () => {

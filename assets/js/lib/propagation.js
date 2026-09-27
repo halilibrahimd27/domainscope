@@ -173,18 +173,47 @@ export const VERDICT_STATES = Object.freeze(['none', 'agree', 'by-design', 'geo'
  * Finding codes of propagationVerdict, most serious first: `rcode` (SERVFAIL, REFUSED …
  * from some sources), `nxdomain`, `nodata` (no records of the type, or a CNAME chain without
  * addresses), `private` (internal addresses), `mixed` (direct addresses next to CDN /
- * platform edges), `cname` (the CNAME chain differs before it reaches a CDN), `direct`
+ * platform edges), `cname` (the CNAME chain differs before it reaches a CDN), `operators`
+ * (the queried name's own address records point to different operators), `direct`
  * (different addresses, no known operator) and `records` (other record types differ).
  */
-export const VERDICT_FINDINGS = Object.freeze(['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'direct', 'records']);
+export const VERDICT_FINDINGS = Object.freeze(['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']);
+
+/**
+ * Names filtering resolvers rewrite search engines to (SafeSearch / restricted mode), as the
+ * engines publish them for network-level enforcement. Measured on Cloudflare Family
+ * (2026-09-27): www.google.com → forcesafesearch.google.com, www.bing.com → strict.bing.com,
+ * duckduckgo.com → safe.duckduckgo.com. Blocks need no list: Cloudflare Family answers
+ * 0.0.0.0 / :: with an EDE (isFilteredResponse), Quad9 and CleanBrowsing answer NXDOMAIN —
+ * which a stale negative cache does too, so it is never taken for policy.
+ */
+export const SAFE_SEARCH_TARGETS = Object.freeze([
+  'forcesafesearch.google.com', 'restrict.youtube.com', 'restrictmoderate.youtube.com', 'strict.bing.com',
+  'safe.duckduckgo.com', 'familysearch.yandex.ru', 'safesearch.pixabay.com'
+]);
+const SAFE_SEARCH = new Set(SAFE_SEARCH_TARGETS);
 
 /** Record types whose answers are addresses, so the verdict can tell who operates them. */
 const ADDRESS_TYPES = new Set(['A', 'AAAA']);
 /** Classification kinds whose addresses the operator picks (edges): they differ by design. */
 const EDGE_KINDS = new Set(['cloudflare', 'cdn', 'platform']);
-/** netinfo provider categories of global edge networks (one entry name per property). */
-const GLOBAL_EDGE_CATEGORIES = new Set(['cdn', 'waf']);
+/**
+ * netinfo provider categories whose entry name may differ by design: regional load balancers
+ * behind latency routing (web-eu.….elb.amazonaws.com vs web-us.…). Every other operator (CDN,
+ * WAF, platform) has one entry name per site, so another one is another site.
+ */
+const REGIONAL_ENTRY_CATEGORIES = new Set(['loadbalancer']);
 const RCODE_VALUE_RE = /^[A-Z][A-Z0-9]*$/;
+
+/** The SafeSearch name an answer's CNAME chain (or, for a CNAME query, its record) reaches, or null. */
+function safeSearchTarget(values, qtype) {
+  for (const v of values) {
+    const name = v.startsWith('CNAME ') ? v.slice(6) : qtype === 'CNAME' ? v : null;
+    const bare = name && name.toLowerCase().replace(/\.$/, '');
+    if (bare && SAFE_SEARCH.has(bare)) return bare;
+  }
+  return null;
+}
 
 /** 'answer' | 'nxdomain' | 'nodata' | 'rcode' for one answer's values (answerValues). */
 function valuesStatus(values) {
@@ -237,8 +266,12 @@ function hintedOperator(ip, info) {
   return provider ? operatorFrom({ kind: 'cdn', provider, reasonKey: `class.${provider.category}.ip` }, 'asn') : null;
 }
 
-/** Operator of one answer address, reached through `chain` (netinfo classification first). */
+/**
+ * Operator of one answer address, reached through `chain` (netinfo classification first). A
+ * private address is 'private' whatever the chain says: no CDN edge answers from one.
+ */
 function addressOperator(ip, chain, info) {
+  if (isPrivateIP(ip)) return operatorFrom({ kind: 'private', provider: null, reasonKey: 'class.private' });
   const v = ipVersion(ip);
   const c = classifyResolution({ status: 'NOERROR', ipv4: v === 4 ? [ip] : [], ipv6: v === 6 ? [ip] : [], cnames: chain });
   if (c.kind === 'direct' && !c.provider) return hintedOperator(ip, info) || operatorFrom(c);
@@ -257,56 +290,92 @@ function entryDepth(group) {
 }
 
 /**
- * How far two answers' chains must agree: up to where either enters an operator's name space,
- * and through that entry name when both enter the same CDN / WAF there. A global edge network
- * has one entry name per property (d111….cloudfront.net, www.example.com.edgekey.net) and
- * steers only behind it, so another one is another property. Regional platforms (one load
- * balancer per region behind latency routing) may differ at the entry by design.
+ * Who an answer enters at entryDepth: `{ id, category }` of the provider of its entry CNAME,
+ * else of the managed operators of its addresses (ids joined; category only for a single one).
+ * Null for an answer that never enters one.
  */
-function agreeLimit(ga, gb) {
-  const da = entryDepth(ga);
-  const db = entryDepth(gb);
-  if (da === Infinity && db === Infinity) return Math.max(ga.chain.length, gb.chain.length) + 1;
-  if (da !== db || da >= ga.chain.length || da >= gb.chain.length) return Math.min(da, db);
-  const pa = matchProviderByCname(ga.chain[da]);
-  const pb = matchProviderByCname(gb.chain[db]);
-  return pa.id === pb.id && GLOBAL_EDGE_CATEGORIES.has(pa.category) ? da + 1 : da;
+function entryOf(group) {
+  const depth = entryDepth(group);
+  if (depth === Infinity) return null;
+  if (depth < group.chain.length) {
+    const p = matchProviderByCname(group.chain[depth]);
+    return { depth, id: p.id, category: p.category };
+  }
+  const ops = [...new Map(group.perIp.filter(({ op }) => op.managed).map(({ op }) => [op.id, op])).values()];
+  return { depth, id: ops.map((op) => op.id).sort().join(' '), category: ops.length === 1 ? ops[0].provider.category : null };
 }
 
 /**
- * CNAME conflicts before the CDN: for every pair of answers, the first position within
- * agreeLimit where they differ. Returned per owner (the name whose record differs; null = the
- * queried name), shallowest first.
+ * How far two answers' chains must agree (positions in [...chain, <addresses>]):
+ * - neither enters an operator: all of it;
+ * - both enter the same operator at the same depth: through that entry name. A CDN / WAF /
+ *   platform has one entry name per site (d111….cloudfront.net, www.example.com.edgekey.net,
+ *   site.netlify.app) and steers only behind it, so another one is another site; regional load
+ *   balancers behind latency routing may differ at the entry by design;
+ * - otherwise: up to where either enters one, and at least the queried name's own record.
+ *   Different operators are steering by design only behind a name both share (Amazon's
+ *   tp.…frontier.amazon.com); one that differs at the queried name is a move between them.
+ * One direct and one managed answer compare only the names before the entry: the direct
+ * addresses are a finding of their own ('mixed').
+ */
+function agreeLimit(ga, gb, ea = entryOf(ga), eb = entryOf(gb)) {
+  if (!ea && !eb) return Math.max(ga.chain.length, gb.chain.length) + 1;
+  if (!ea || !eb) return (ea || eb).depth;
+  if (ea.depth === eb.depth && ea.id === eb.id) return REGIONAL_ENTRY_CATEGORIES.has(ea.category) ? ea.depth : ea.depth + 1;
+  return Math.max(Math.min(ea.depth, eb.depth), 1);
+}
+
+/**
+ * Where two answers' chains conflict: for every pair of answers, the first position within
+ * agreeLimit where they differ — code 'cname', per owner (the name whose record differs; null =
+ * the queried name) — or, when the queried name's own address records agree in shape but name
+ * different operators (Netlify's address at the apex on one side, Vercel's on the other), code
+ * 'operators'. `move`: the answers involved enter different operators. Shallowest first.
  */
 function chainConflicts(answers) {
+  const entries = new Map(answers.map((g) => [g, entryOf(g)]));
   const byOwner = new Map();
+  const conflict = (code, depth, owner) => {
+    const id = `${code}\n${depth}\n${owner}`;
+    let c = byOwner.get(id);
+    if (!c) {
+      c = { code, depth, owner, targets: [], groups: [], operators: new Set() };
+      byOwner.set(id, c);
+    }
+    return c;
+  };
+  const addTo = (c, pairs) => {
+    for (const [g, target] of pairs) {
+      if (target !== undefined && c.code === 'cname' && !c.targets.includes(target)) c.targets.push(target);
+      if (!c.groups.includes(g)) c.groups.push(g);
+      if (entries.get(g)) c.operators.add(entries.get(g).id);
+    }
+  };
   for (let a = 0; a < answers.length; a += 1) {
     for (let b = a + 1; b < answers.length; b += 1) {
       const ga = answers[a];
       const gb = answers[b];
       const seqA = [...ga.chain, null];
       const seqB = [...gb.chain, null];
-      const limit = agreeLimit(ga, gb);
-      for (let i = 0; i < limit; i += 1) {
+      const ea = entries.get(ga);
+      const eb = entries.get(gb);
+      const limit = agreeLimit(ga, gb, ea, eb);
+      let differs = false;
+      for (let i = 0; i < limit && !differs; i += 1) {
         const x = i < seqA.length ? seqA[i] : undefined;
         const y = i < seqB.length ? seqB[i] : undefined;
         if (x === y) continue;
-        const owner = i === 0 ? null : seqA[i - 1];
-        const id = `${i}\n${owner}`;
-        let c = byOwner.get(id);
-        if (!c) {
-          c = { depth: i, owner, targets: [], groups: [] };
-          byOwner.set(id, c);
-        }
-        for (const [g, target] of [[ga, x], [gb, y]]) {
-          if (target !== undefined && !c.targets.includes(target)) c.targets.push(target);
-          if (!c.groups.includes(g)) c.groups.push(g);
-        }
-        break;
+        differs = true;
+        addTo(conflict('cname', i, i === 0 ? null : seqA[i - 1]), [[ga, x], [gb, y]]);
+      }
+      if (!differs && limit >= 1 && !ga.chain.length && !gb.chain.length && ea && eb && ea.id !== eb.id) {
+        addTo(conflict('operators', 0, null), [[ga], [gb]]);
       }
     }
   }
-  return [...byOwner.values()].sort((a, b) => a.depth - b.depth);
+  return [...byOwner.values()]
+    .sort((a, b) => a.depth - b.depth)
+    .map(({ operators, ...c }) => ({ ...c, move: operators.size > 1 }));
 }
 
 const uniqueList = (list) => [...new Set(list)];
@@ -324,23 +393,32 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * - 'none': no usable answer; 'agree': one distinct answer;
  * - 'by-design': A/AAAA answers that differ, every one an edge of a known operator
  *   (CDN / WAF / platform, or DNS-level steering), the CNAME chains agree until each enters
- *   the operator's name space (e.g. tp.example.com → a CloudFront edge in one region, and
- *   tp.example.com → *.edgekey.net → *.akamaiedge.net in another) — through the entry name
- *   when both enter the same CDN / WAF (d111….cloudfront.net vs d222….cloudfront.net are two
- *   distributions) — and no NXDOMAIN / NODATA / SERVFAIL / private address anywhere;
+ *   the operator's name space — through the entry name when both enter the same operator
+ *   (d111….cloudfront.net vs d222….cloudfront.net are two distributions, old-site.netlify.app
+ *   vs new-site.netlify.app two sites; only regional load balancers may differ there) — and
+ *   different operators diverge only behind a name every answer shares (e.g. tp.example.com →
+ *   a CloudFront edge in one region, and tp.example.com → *.edgekey.net → *.akamaiedge.net in
+ *   another), never at the queried name itself; no NXDOMAIN / NODATA / rcode / private address
+ *   anywhere;
  * - 'geo': the resolvers agree and only the ECS locations differ, without anything above
  *   that looks wrong, and not every answer is a known edge (the classic GeoDNS case);
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
- * while an unfiltered source answers differently, and that a finding points at — Cloudflare
- * Family's SafeSearch CNAME for www.google.com, a block page — is their policy: its group is
- * marked `rewritten`, its sources are listed in `rewritten`, and the answers are judged again
- * without it, like a blocked answer. One that is just another CDN edge stays in.
+ * while an unfiltered source answers differently is their policy only when it is recognisably
+ * a rewrite: its CNAME chain reaches a SafeSearch name (SAFE_SEARCH_TARGETS; Cloudflare
+ * Family's forcesafesearch.google.com for www.google.com). Its group is marked `rewritten`, its
+ * sources and targets are listed in `rewritten` / `rewriteTargets`, and the rest is judged
+ * without it. Any other answer only they give — an address, NXDOMAIN, NODATA, a CNAME to an
+ * ordinary name — stays in: it is what a stale cache looks like; `filtering` on an rcode /
+ * nxdomain / nodata finding only says that filtering resolvers alone give it.
  *
  * Findings (VERDICT_FINDINGS order): `{ code, groups: string[] (group keys), members: string[] }`
- * plus `rcode` ('rcode'), `ips` ('private', 'mixed': the offending addresses) and
- * `owner` (null = the queried name) / `targets` (string, or null = address records) ('cname').
+ * plus `rcode` ('rcode'), `filtering` ('rcode', 'nxdomain', 'nodata'), `ips` ('private',
+ * 'mixed': the offending addresses), `owner` (null = the queried name) / `targets` (string, or
+ * null = address records) ('cname') and `operators` ('cname', 'operators': the managed
+ * operators of the answers involved when they enter different ones — a move between
+ * providers — else []).
  *
  * @param {Array<{ key?: string, kind?: 'resolver'|'geo', values?: string[], filtered?: boolean,
  *   pending?: boolean, resolver?: { filtering?: string|null }|null }>} items resolver / geo results
@@ -351,7 +429,7 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   groups: Array<{ key: string, values: string[], members: string[], status: 'answer'|'nxdomain'|'nodata'|'rcode',
  *     chain: string[], addresses: string[], operators: object[], managed: boolean, rewritten: boolean }>,
  *   operators: object[], findings: object[], resolversAgree: boolean, designPart: boolean, multiOperator: boolean,
- *   rewritten: string[] }}
+ *   rewritten: string[], rewriteTargets: string[] }}
  *   Operators: `{ id, name, kind (netinfo kind), provider, via: 'ip'|'cname'|'ptr'|'asn'|null, reasonKey,
  *   managed, steering }`; the top-level list holds the managed ones with their `members`, most sources first.
  */
@@ -390,32 +468,31 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
       if (address && status === 'answer' && !addresses.length) status = 'nodata'; // a chain without addresses
       const perIp = addresses.map((ip) => ({ ip, op: addressOperator(ip, chain, infoOf(ip)) }));
       const operators = [...new Map(perIp.map(({ op }) => [op.id, op])).values()];
-      return { ...g, status, chain, addresses, operators, managed: perIp.length > 0 && perIp.every(({ op }) => op.managed), perIp };
+      const rewrite = g.filteringOnly && status === 'answer' ? safeSearchTarget(g.values, qtype) : null;
+      return { ...g, status, chain, addresses, operators, managed: perIp.length > 0 && perIp.every(({ op }) => op.managed), perIp, rewrite };
     });
 
-  // An answer only filtering resolvers give, while an unfiltered source answers differently, is
-  // their policy (SafeSearch CNAMEs, block pages …) when it is what looks wrong: judged again
-  // without it. One that is just another edge (a filtering resolver's own cache) stays in.
-  let result = judgeGroups(groups, address);
-  const policy = groups.filter((g) => g.filteringOnly && result.findings.some((f) => f.groups.includes(g.key)));
-  if (policy.length) result = judgeGroups(groups.filter((g) => !policy.includes(g)), address);
-  const { state, findings } = result;
+  // A SafeSearch rewrite only filtering resolvers give is their policy: judged without it.
+  const policy = groups.filter((g) => g.rewrite);
+  const { state, operators, findings, resolversAgree, managed } = judgeGroups(groups.filter((g) => !g.rewrite), address);
   return {
     state: usable.length ? state : 'none',
     type: qtype,
-    groups: groups.map(({ perIp, geo, filteringOnly, ...g }) => ({ ...g, rewritten: policy.some((p) => p.key === g.key) })),
-    operators: result.operators,
+    groups: groups.map(({ perIp, geo, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
+    operators,
     findings: state === 'differ' ? findings : [],
-    resolversAgree: result.resolversAgree,
-    designPart: state === 'differ' && result.managed > 1 && !findings.some((f) => f.code === 'cname'),
-    multiOperator: result.operators.length > 1,
-    rewritten: membersOf(policy)
+    resolversAgree,
+    designPart: state === 'differ' && managed > 1 && !findings.some((f) => f.code === 'cname' || f.code === 'operators'),
+    multiOperator: operators.length > 1,
+    rewritten: membersOf(policy),
+    rewriteTargets: uniqueList(policy.map((g) => g.rewrite))
   };
 }
 
 /**
- * The judgement of propagationVerdict over prepared answer groups (with `perIp` operators and
- * `geo`: only ECS locations gave it): managed operators, findings and the state.
+ * The judgement of propagationVerdict over prepared answer groups (with `perIp` operators,
+ * `geo`: only ECS locations gave it, and `filteringOnly`): managed operators, findings and
+ * the state.
  */
 function judgeGroups(groups, address) {
   const answers = groups.filter((g) => g.status === 'answer');
@@ -429,15 +506,20 @@ function judgeGroups(groups, address) {
     }
   }
   const operators = [...opMembers.values()].sort((a, b) => b.members.length - a.members.length);
+  /** Managed operators of some groups, most sources first (as in `operators`). */
+  const operatorsOf = (list) => operators.filter((op) => list.some((g) => g.perIp.some((x) => x.op.id === op.id)));
 
   const findings = [];
   const add = (code, list, extra = {}) => {
     if (list.length) findings.push({ code, groups: list.map((g) => g.key), members: membersOf(list), ...extra });
   };
+  const filtering = (list) => list.every((g) => g.filteringOnly);
   if (groups.length > 1) {
-    for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0] });
-    add('nxdomain', groups.filter((g) => g.status === 'nxdomain'));
-    add('nodata', groups.filter((g) => g.status === 'nodata'));
+    for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0], filtering: filtering([g]) });
+    for (const status of ['nxdomain', 'nodata']) {
+      const list = groups.filter((g) => g.status === status);
+      add(status, list, { filtering: filtering(list) });
+    }
     const ipsOf = (g, pred) => g.perIp.filter(({ op }) => pred(op)).map(({ ip }) => ip);
     const privateGroups = answers.filter((g) => ipsOf(g, (op) => op.kind === 'private').length);
     add('private', privateGroups, { ips: uniqueList(privateGroups.flatMap((g) => ipsOf(g, (op) => op.kind === 'private'))) });
@@ -447,9 +529,15 @@ function judgeGroups(groups, address) {
       add('mixed', mixedGroups, { ips: uniqueList(mixedGroups.flatMap((g) => ipsOf(g, direct))) });
     }
     if (address) {
-      for (const c of chainConflicts(answers)) add('cname', c.groups, { owner: c.owner, targets: c.targets });
+      const conflicts = chainConflicts(answers);
+      for (const code of ['cname', 'operators']) {
+        for (const c of conflicts.filter((x) => x.code === code)) {
+          const extra = { operators: c.move ? operatorsOf(c.groups) : [] };
+          add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra } : extra);
+        }
+      }
     }
-    if (!findings.some((f) => f.code === 'cname')) {
+    if (!findings.some((f) => f.code === 'cname' || f.code === 'operators')) {
       // Public addresses that differ with no operator to explain it (private ones are named above).
       const publicAnswers = answers.filter((g) => ipsOf(g, (op) => op.kind !== 'private').length);
       if (!address && answers.length > 1) add('records', answers);

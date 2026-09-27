@@ -8,8 +8,9 @@
  *   information never depends on colour alone, and shows who operates its addresses. Clicking a
  *   group filters both tables.
  * - The summary says why answers differ (lib/propagation.propagationVerdict): CDN / GeoDNS edges
- *   differ by design; NXDOMAIN, SERVFAIL, private or direct addresses among CDN edges and a CNAME
- *   that differs before the CDN are named as propagation or a misconfiguration.
+ *   differ by design; NXDOMAIN, SERVFAIL, private or direct addresses among CDN edges, a CNAME
+ *   that differs before the CDN and a name that points to different providers are named as
+ *   propagation or a misconfiguration. A filtering resolver's SafeSearch rewrite is its policy.
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
@@ -93,18 +94,22 @@ registerStrings('en', {
   'glb.sum.failedBody': 'Every query failed. Check your connection, or whether a browser extension or firewall blocks DNS-over-HTTPS.',
   'glb.sum.errors': { one: '{count} query failed (not counted as a difference).', other: '{count} queries failed (not counted as a difference).' },
   'glb.sum.blocked': { one: '{count} answer was blocked by a filtering resolver.', other: '{count} answers were blocked by filtering resolvers.' },
-  'glb.sum.rewritten': '{names}: an answer only filtering resolvers give — usually a deliberate rewrite (SafeSearch, a content filter), so it is not counted as a difference.',
+  'glb.sum.rewritten': '{names}: a SafeSearch rewrite ({targets}), the policy of these filtering resolvers — not counted as a difference.',
   'glb.sum.unavailable': '{names}: not readable from a browser (HTTP/3 without a CORS header) — not counted as a failure.',
 
-  'glb.find.rcode': '{sources}: {rcode} — no answer at all, typically a DNSSEC validation failure or name servers that resolver cannot reach. A fault, not a propagation delay.',
+  'glb.find.rcode': '{sources}: {rcode} — the resolver refused or could not answer the question. Not a propagation delay.',
+  'glb.find.servfail': '{sources}: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that resolver cannot reach. A fault, not a propagation delay.',
+  'glb.find.filtering': 'Only filtering resolvers give this answer, so they may also be blocking the name.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (the name does not exist), unlike the other answers. The name was created or deleted recently — each answer stays cached until its TTL expires (for NXDOMAIN, the zone’s SOA minimum) — or its name servers disagree.',
   'glb.find.nodata': '{sources}: an empty answer (no {type} records). A record added or removed recently (the empty answer stays cached for the zone’s SOA minimum), or a CNAME target without {type} records there.',
   'glb.find.private': '{sources}: private addresses ({ips}) — an internal (split-horizon) answer or a mistake in the record; nobody on the internet can reach them.',
   'glb.find.mixed': {
-    one: 'Group {groups} has a direct address ({ips}) that is not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.',
-    other: 'Groups {groups} have direct addresses ({ips}) that are not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.'
+    one: '{sources}: a direct address ({ips}) that is not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.',
+    other: '{sources}: direct addresses ({ips}) that are not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.'
   },
   'glb.find.cname': 'The record at {owner} differs between sources: {targets}. It changed recently and the old answer stays cached until its TTL expires, or its name servers disagree.',
+  'glb.find.cnameMove': 'The record at {owner} points to different providers depending on the source ({operators}): {targets}. A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
+  'glb.find.operators': 'The {type} records of {name} point to different providers depending on the source ({operators}). A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
   'glb.find.addressRecords': '{type} records',
   'glb.find.direct': 'Different addresses, none on a CDN, platform or steering service this tool knows: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or GeoDNS / round-robin by an operator it does not recognise.',
   'glb.find.records': 'Different records: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or name servers that disagree.',
@@ -211,8 +216,8 @@ registerStrings('tr', {
   'glb.sum.geoTitle': 'Çözümleyiciler aynı — konumlar farklı',
   'glb.sum.geoBody': 'Konumlar {groups} farklı yanıt görüyor. CDN ve GeoDNS için bu normaldir: her bölge yakınındaki sunuculara yönlendirilir.',
   'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
-  'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu işletenler her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
-  'glb.sum.designMulti': 'Birden fazla işleten yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
+  'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designMulti': 'Birden fazla sağlayıcı yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
   'glb.sum.designPart': '{operators} uç sunucuları arasındaki farklar tasarım gereği; şunlar öyle değil:',
   'glb.sum.differTitle': 'Yanıtlar farklı',
   'glb.sum.differBody': 'Kaynaklar {groups} farklı yanıt döndürüyor.',
@@ -220,20 +225,24 @@ registerStrings('tr', {
   'glb.sum.failedBody': 'Tüm sorgular başarısız oldu. Bağlantınızı ya da bir tarayıcı eklentisinin veya güvenlik duvarının DNS-over-HTTPS’i engelleyip engellemediğini kontrol edin.',
   'glb.sum.errors': '{count} sorgu başarısız oldu (farklılık sayılmadı).',
   'glb.sum.blocked': '{count} yanıt filtreleyen çözümleyiciler tarafından engellendi.',
-  'glb.sum.rewritten': '{names}: yalnızca filtreleyen çözümleyicilerin verdiği bir yanıt — genellikle bilinçli bir yeniden yazma (SafeSearch, içerik filtresi), bu yüzden farklılık sayılmadı.',
+  'glb.sum.rewritten': '{names}: SafeSearch yönlendirmesi ({targets}); bu filtreleyen çözümleyicilerin politikası — farklılık sayılmadı.',
   'glb.sum.unavailable': '{names}: tarayıcıdan okunamıyor (HTTP/3’te CORS başlığı yok) — başarısız sayılmadı.',
 
-  'glb.find.rcode': '{sources}: {rcode} — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da o çözümleyicinin ulaşamadığı ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
+  'glb.find.rcode': '{sources}: {rcode} — çözümleyici soruyu reddetti ya da yanıtlayamadı. Bu bir yayılma gecikmesi değil.',
+  'glb.find.servfail': '{sources}: SERVFAIL — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da o çözümleyicinin ulaşamadığı ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
+  'glb.find.filtering': 'Bu yanıtı yalnızca filtreleyen çözümleyiciler veriyor; adı engelliyor da olabilirler.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (ad mevcut değil), diğer yanıtlardan farklı olarak. Ad yakın zamanda oluşturuldu ya da silindi — her yanıt TTL süresi dolana kadar önbellekte kalır (NXDOMAIN için bölgenin SOA minimum değeri) — ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.nodata': '{sources}: boş yanıt ({type} kaydı yok). Yakın zamanda eklenen ya da silinen bir kayıt (boş yanıt, bölgenin SOA minimum süresi boyunca önbellekte kalır) ya da orada {type} kaydı olmayan bir CNAME hedefi.',
   'glb.find.private': '{sources}: özel adresler ({ips}) — iç ağa ait bir yanıt (split-horizon) ya da kayıtta bir hata; internetten kimse bu adreslere ulaşamaz.',
   'glb.find.mixed': {
-    one: '{groups} grubunda {operators} üzerinde olmayan doğrudan bir adres var ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.',
-    other: '{groups} gruplarında {operators} üzerinde olmayan doğrudan adresler var ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.'
+    one: '{sources}: {operators} üzerinde olmayan doğrudan bir adres ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.',
+    other: '{sources}: {operators} üzerinde olmayan doğrudan adresler ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.'
   },
   'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor ya da ad sunucuları birbiriyle çelişiyor.',
+  'glb.find.cnameMove': '{owner} kaydı kaynağa göre farklı sağlayıcıları gösteriyor ({operators}): {targets}. Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
+  'glb.find.operators': '{name} adının {type} kayıtları kaynağa göre farklı sağlayıcıları gösteriyor ({operators}). Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
   'glb.find.addressRecords': '{type} kayıtları',
-  'glb.find.direct': 'Farklı adresler; hiçbiri bu aracın tanıdığı bir CDN’de, platformda ya da yönlendirme hizmetinde değil: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da tanımadığı bir işletenin GeoDNS / round-robin dağıtımı.',
+  'glb.find.direct': 'Farklı adresler; hiçbiri bu aracın tanıdığı bir CDN’de, platformda ya da yönlendirme hizmetinde değil: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da tanımadığı bir sağlayıcının GeoDNS / round-robin dağıtımı.',
   'glb.find.records': 'Farklı kayıtlar: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da birbiriyle çelişen ad sunucuları.',
   'glb.find.more': '+{count} tane daha',
 
@@ -1066,7 +1075,7 @@ export function mount(container, ctx) {
     const extra = [
       failed ? t('glb.sum.errors', { count: failed }) : null,
       blocked ? t('glb.sum.blocked', { count: blocked }) : null,
-      verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten) }) : null,
+      verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten), targets: verdict.rewriteTargets.join(', ') }) : null,
       unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
       current.cancelled ? t('glb.cancelled') : null
     ].filter(Boolean).join(' ');
@@ -1115,42 +1124,49 @@ export function mount(container, ctx) {
   }
 
   /** "a, b, c +2 more" — the first `max` entries of a list. */
-  function shortList(list, max = 3) {
-    return list.length > max ? `${list.slice(0, max).join(', ')} ${t('glb.find.more', { count: list.length - max })}` : list.join(', ');
+  function shortList(list, max = 3, separator = ', ') {
+    return list.length > max ? `${list.slice(0, max).join(separator)} ${t('glb.find.more', { count: list.length - max })}` : list.join(separator);
   }
 
-  /** Display names of answer sources (resolver names, location names), de-duplicated. */
+  /**
+   * Display names of answer sources (resolver names, location names), de-duplicated. Joined
+   * with "; ": a location name has a comma of its own ("Istanbul, Türkiye").
+   */
   function sourceNames(keys) {
     const names = keys.map((key) => {
       const row = current.rowByKey.get(key);
       if (!row) return key;
       return row.kind === 'geo' ? vantageName(row.vantage) : row.resolver.name;
     });
-    return shortList([...new Set(names)]);
+    return shortList([...new Set(names)], 3, '; ');
   }
 
   /** One verdict finding: the groups it is about (letter marks) and what it most likely means. */
   function renderFinding(f) {
-    const letters = f.groups.map((key) => groupByKey.get(key)?.letter).filter(Boolean);
+    const sources = sourceNames(f.members);
+    const providers = shortList((f.operators || []).map((op) => op.name));
     let text;
     switch (f.code) {
-      case 'rcode': text = t('glb.find.rcode', { sources: sourceNames(f.members), rcode: f.rcode }); break;
-      case 'nxdomain': text = t('glb.find.nxdomain', { sources: sourceNames(f.members) }); break;
-      case 'nodata': text = t('glb.find.nodata', { sources: sourceNames(f.members), type: current.type }); break;
-      case 'private': text = t('glb.find.private', { sources: sourceNames(f.members), ips: shortList(f.ips) }); break;
+      case 'rcode':
+        // SERVFAIL is a failure to resolve; REFUSED and the rest a resolver's own choice.
+        text = f.rcode === 'SERVFAIL' ? t('glb.find.servfail', { sources }) : t('glb.find.rcode', { sources, rcode: f.rcode });
+        break;
+      case 'nxdomain': text = t('glb.find.nxdomain', { sources }); break;
+      case 'nodata': text = t('glb.find.nodata', { sources, type: current.type }); break;
+      case 'private': text = t('glb.find.private', { sources, ips: shortList(f.ips) }); break;
       case 'mixed':
-        text = t('glb.find.mixed', {
-          count: letters.length, groups: letters.join(', '), ips: shortList(f.ips), operators: shortList(verdict.operators.map((op) => op.name))
-        });
+        text = t('glb.find.mixed', { count: f.ips.length, sources, ips: shortList(f.ips), operators: shortList(verdict.operators.map((op) => op.name)) });
         break;
-      case 'cname':
-        text = t('glb.find.cname', {
-          owner: f.owner || current.name,
-          targets: f.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)).join(' · ')
-        });
+      case 'cname': {
+        const owner = f.owner || current.name;
+        const targets = f.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)).join(' · ');
+        text = f.operators.length > 1 ? t('glb.find.cnameMove', { owner, targets, operators: providers }) : t('glb.find.cname', { owner, targets });
         break;
+      }
+      case 'operators': text = t('glb.find.operators', { type: current.type, name: current.name, operators: providers }); break;
       default: text = t(`glb.find.${f.code}`);
     }
+    if (f.filtering) text = `${text} ${t('glb.find.filtering')}`;
     // Marks in legend order; none when the finding is about every answer group ('direct',
     // 'records', a CNAME that differs everywhere), where they would only repeat the legend.
     const keys = groups.filter((g) => f.groups.includes(g.key)).map((g) => g.key);

@@ -187,8 +187,8 @@ function tableInfo() {
 
 /** Resolver DoH URL → id, so the fake can answer per resolver. */
 const RESOLVER_URLS = RESOLVERS.map((r) => [r.url, r.id]);
-/** Locations whose ECS queries get a SERVFAIL for mixed.example.com. */
-const SERVFAIL_SUBNET = GEO_VANTAGES[0].subnet;
+/** Locations whose ECS queries get a SERVFAIL for mixed.example.com (Istanbul, Ankara). */
+const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
 
 /**
  * Answers every DoH query inside the page (installed before the app loads):
@@ -196,15 +196,24 @@ const SERVFAIL_SUBNET = GEO_VANTAGES[0].subnet;
  *   CloudFront edges (several addresses) and some ECS locations through *.edgekey.net to
  *   Akamai — every answer differs by design;
  * - mixed.example.com: Cloudflare edges, but IIJ and CZ.NIC still return a direct address
- *   (203.0.113.10), DNS.SB answers NXDOMAIN and one location SERVFAIL — a warning that names
+ *   (203.0.113.10), DNS.SB answers NXDOMAIN and two locations SERVFAIL — a warning that names
  *   each part;
  * - moved.example.com: CNAME to one CloudFront distribution on Google, DNS.SB and every ECS
- *   location (Google answers those), to another one elsewhere — a change still propagating.
+ *   location (Google answers those), to another one elsewhere — a change still propagating;
+ * - stale / new / renamed.example.com: only one filtering resolver still has the old answer
+ *   (Quad9 an address, Cloudflare Family NXDOMAIN, CleanBrowsing a CNAME), Tiarap REFUSES
+ *   stale.example.com — stale caches, never taken for a filter's policy;
+ * - search.example.com: Cloudflare Family rewrites it to forcesafesearch.google.com (SafeSearch),
+ *   everyone else agrees — the filter's policy;
+ * - example.org: Vercel's address at the apex, Netlify's on IIJ and CZ.NIC — a move between
+ *   providers, not steering.
  * Any other request to another origin gets a 503 and is recorded in window.__externalFetches.
  */
 const fakeGlobalDnsScript = () => `(() => {
   const RESOLVER_URLS = ${JSON.stringify(RESOLVER_URLS)};
-  const SERVFAIL_SUBNET = ${JSON.stringify(SERVFAIL_SUBNET)};
+  const SERVFAIL_SUBNETS = ${JSON.stringify(SERVFAIL_SUBNETS)};
+  const OLD = '192.0.2.10';
+  const NEW = '198.51.100.20';
   const CLOUDFRONT = ['13.32.0.10', '13.32.1.20', '13.33.2.30', '13.35.3.40'];
   const AKAMAI = ['2.16.10.10', '2.17.20.20'];
   const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
@@ -220,7 +229,7 @@ const fakeGlobalDnsScript = () => `(() => {
       return { answers: [...head, cn('tp.edge.example.com', 'cf.edge.example.com'), a('cf.edge.example.com', CLOUDFRONT[h % 4])] };
     }
     if (qname === 'mixed.example.com') {
-      if (ecs === SERVFAIL_SUBNET) return { rcode: 'SERVFAIL', answers: [] };
+      if (SERVFAIL_SUBNETS.includes(ecs)) return { rcode: 'SERVFAIL', answers: [] };
       if (resolver === 'dnssb') return { rcode: 'NXDOMAIN', answers: [] };
       if (resolver === 'iij' || resolver === 'cznic') return { answers: [a(qname, '203.0.113.10')] };
       return { answers: [a(qname, h % 2 ? '104.16.1.1' : '104.16.1.2')] };
@@ -229,6 +238,22 @@ const fakeGlobalDnsScript = () => `(() => {
       const target = resolver === 'google' || resolver === 'dnssb' ? 'd222222abcdef8.cloudfront.net' : 'd111111abcdef8.cloudfront.net';
       return { answers: [cn(qname, target), a(target, CLOUDFRONT[h % 4])] };
     }
+    if (qname === 'stale.example.com') {
+      if (resolver === 'tiar') return { rcode: 'REFUSED', answers: [] };
+      return { answers: [a(qname, resolver === 'quad9' ? OLD : NEW)] };
+    }
+    if (qname === 'new.example.com') {
+      return resolver === 'cloudflare-family' ? { rcode: 'NXDOMAIN', answers: [] } : { answers: [a(qname, NEW)] };
+    }
+    if (qname === 'renamed.example.com') {
+      const target = resolver === 'cleanbrowsing' ? 'old.example.net' : 'new.example.net';
+      return { answers: [cn(qname, target), a(target, target === 'old.example.net' ? OLD : NEW)] };
+    }
+    if (qname === 'search.example.com') {
+      if (resolver === 'cloudflare-family') return { answers: [cn(qname, 'forcesafesearch.google.com'), a('forcesafesearch.google.com', '192.0.2.99')] };
+      return { answers: [a(qname, NEW)] };
+    }
+    if (qname === 'example.org') return { answers: [a(qname, resolver === 'iij' || resolver === 'cznic' ? '75.2.60.5' : '76.76.21.21')] };
     return { rcode: 'NXDOMAIN', answers: [] };
   };
   const realFetch = window.fetch.bind(window);
@@ -308,9 +333,9 @@ async function offlineVerdicts(browser, server) {
     assert(/The differences between Cloudflare edges are by design/.test(info.message), `design part: ${info.message}`);
     assertEqual(info.findings.map((f) => f.code), ['rcode', 'nxdomain', 'mixed'], 'finding codes');
     const [rcode, nx, mixed] = info.findings;
-    assert(/SERVFAIL/.test(rcode.text) && /DNSSEC/.test(rcode.text), `rcode: ${rcode.text}`);
+    assert(/^Istanbul, Türkiye; Ankara, Türkiye: SERVFAIL — /.test(rcode.text) && /DNSSEC/.test(rcode.text), `rcode: ${rcode.text}`);
     assert(/^DNS\.SB: NXDOMAIN/.test(nx.text), `nxdomain: ${nx.text}`);
-    assert(/203\.0\.113\.10/.test(mixed.text) && /not on Cloudflare/.test(mixed.text), `mixed: ${mixed.text}`);
+    assert(/^IIJ Public DNS; CZ\.NIC ODVR: a direct address \(203\.0\.113\.10\) that is not on Cloudflare\./.test(mixed.text), `mixed: ${mixed.text}`);
     assert(info.findings.every((f) => f.marks.length === 1), `one group mark per finding: ${JSON.stringify(info.findings.map((f) => f.marks))}`);
     const direct = info.chips.find((c) => c.ops.includes('Direct'));
     assert(direct && mixed.marks[0] === direct.group, `the mixed finding points at the "Direct" group: ${JSON.stringify(info.chips)}`);
@@ -330,7 +355,12 @@ async function offlineVerdicts(browser, server) {
     await page.waitFor(DONE, { timeout: 20000 });
     const design = await page.evaluate(verdictInfo);
     assert(/^Tasarım gereği farklı: CDN \/ GeoDNS uç sunucuları \(Amazon CloudFront, Akamai\)$/.test(design.title), `TR title: ${design.title}`);
+    assert(/Bu sağlayıcılar/.test(design.message) && /Birden fazla sağlayıcı/.test(design.message), `TR body: ${design.message}`);
     await shot(page, 'global-offline-desktop-dark-tr-by-design');
+    await gotoHash(page, '#/global?name=example.org&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000 });
+    const move = await page.evaluate(verdictInfo);
+    assert(/^example\.org adının A kayıtları kaynağa göre farklı sağlayıcıları gösteriyor \(Vercel, Netlify\)\./.test(move.findings[0]?.text || ''), `TR move: ${JSON.stringify(move.findings)}`);
     await setLangUi(page, 'en');
   });
 
@@ -347,11 +377,56 @@ async function offlineVerdicts(browser, server) {
     assert(info.chips.every((c) => c.ops.join() === 'Amazon CloudFront'), `every group is still on CloudFront: ${JSON.stringify(info.chips)}`);
   });
 
+  await step('an old answer only one filtering resolver still has stays a difference (Quad9 A, Cloudflare Family NXDOMAIN, CleanBrowsing CNAME)', async () => {
+    await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    const check = async (name) => {
+      await gotoHash(page, `#/global?name=${name}&type=A`, 'global');
+      await page.waitFor(DONE, { timeout: 20000, message: `offline check done (${name})` });
+      const info = await page.evaluate(verdictInfo);
+      assertEqual(info.state, 'differ', `${name}: state (${info.title}: ${info.message})`);
+      assert(/stat-v-warn/.test(info.groupsStat), `${name}: distinct answers stat warns: ${info.groupsStat}`);
+      assert(!/SafeSearch/.test(info.message), `${name}: not called a rewrite: ${info.message}`);
+      return info;
+    };
+    const quad9 = await check('stale.example.com');
+    assertEqual(quad9.findings.map((f) => f.code), ['rcode', 'direct'], 'Quad9: finding codes');
+    await shot(page, 'global-offline-desktop-light-en-stale-quad9');
+    assert(/^Tiarap: REFUSED — the resolver refused or could not answer the question\./.test(quad9.findings[0].text) && !/DNSSEC/.test(quad9.findings[0].text), `REFUSED: ${quad9.findings[0].text}`);
+    const family = await check('new.example.com');
+    assertEqual(family.findings.map((f) => f.code), ['nxdomain'], 'Cloudflare Family: finding codes');
+    assert(/^Cloudflare Family: NXDOMAIN/.test(family.findings[0].text) && /they may also be blocking the name\.$/.test(family.findings[0].text), `nxdomain: ${family.findings[0].text}`);
+    const clean = await check('renamed.example.com');
+    assertEqual(clean.findings.map((f) => f.code), ['cname'], 'CleanBrowsing: finding codes');
+    assert(/^The record at renamed\.example\.com differs between sources: CNAME new\.example\.net · CNAME old\.example\.net\./.test(clean.findings[0].text), `cname: ${clean.findings[0].text}`);
+  });
+
+  await step('a SafeSearch rewrite by Cloudflare Family is its policy: the others agree', async () => {
+    await gotoHash(page, '#/global?name=search.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'agree', `state (${info.title})`);
+    assert(/Cloudflare Family: a SafeSearch rewrite \(forcesafesearch\.google\.com\), the policy of these filtering resolvers/.test(info.message), `body: ${info.message}`);
+    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+  });
+
+  await step('Netlify → Vercel at the apex: a move between providers, not "by design"', async () => {
+    await gotoHash(page, '#/global?name=example.org&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'differ', `state (${info.title})`);
+    assertEqual(info.findings.map((f) => f.code), ['operators'], 'finding codes');
+    assert(/^The A records of example\.org point to different providers depending on the source \(Vercel, Netlify\)\. A move between them that is still propagating/.test(info.findings[0].text), `operators: ${info.findings[0].text}`);
+    assert(!/by design/.test(info.message), `no design part: ${info.message}`);
+    assertEqual(info.chips.map((c) => c.ops.join()), ['Vercel', 'Netlify'], 'chip operators');
+    assertEqual(info.external, [], 'nothing left the page');
+    await shot(page, 'global-offline-desktop-light-en-move');
+  });
+
   await step('375 px phone: verdict and operator chips fit without horizontal scroll', async () => {
     await page.setViewport({ width: 375, height: 812, mobile: true });
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ 'prefers-color-scheme': scheme });
-      for (const name of ['www.example.com', 'mixed.example.com']) {
+      for (const name of ['www.example.com', 'example.org', 'mixed.example.com']) {
         await gotoHash(page, `#/global?name=${name}&type=A`, 'global');
         await page.waitFor(DONE, { timeout: 20000 });
         await assertNoHorizontalScroll(page, `375 px ${scheme} ${name}`);

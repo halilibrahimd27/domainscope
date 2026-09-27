@@ -1532,6 +1532,18 @@ async function main() {
       await kb.waitFor((sel) => document.querySelector(sel).value === '', { args: [filter], message: 'the filter cleared' });
       assert(await kb.evaluate(() => !document.querySelector('[data-action="bulk-cancel"]').hidden
         && document.getElementById('app-header').classList.contains('is-busy')), 'the run goes on');
+      // The app clears it, not only the browser (Firefox leaves a search field alone on Esc): a synthetic
+      // Esc has no default action, yet the filter empties and the table follows.
+      await kb.type(filter, 'www');
+      const cleared = await kb.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        let heard = false;
+        el.addEventListener('input', () => { heard = true; }, { once: true });
+        const taken = !el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        return { value: el.value, taken, heard };
+      }, filter);
+      assertEqual(cleared, { value: '', taken: true, heard: true }, 'Esc empties the filter in every browser');
+      assert(await kb.evaluate(() => !document.querySelector('[data-action="bulk-cancel"]').hidden), 'the run still goes on');
       // In the emptied filter, the next Esc cancels.
       await kb.press('Escape');
       await kb.waitFor(() => {
@@ -1566,7 +1578,7 @@ async function main() {
       assertEqual(await kb.evaluate(() => document.documentElement.dataset.view), 'bulk', 'still on Bulk Resolve');
     });
 
-    await step('Zone File: Ctrl+Enter imports from the importer\'s fields, runs the live check from its options, nothing from a table', async () => {
+    await step('Zone File: Ctrl+Enter imports from the importer\'s fields, runs the live check from its options, nothing from a table; Esc stops the check from another tab', async () => {
       await releaseFetches(kb);
       await gotoRoute(kb, 'zone');
       await kb.evaluate(() => { document.querySelector('.zone-paste').open = true; });
@@ -1596,9 +1608,13 @@ async function main() {
       await kb.press('Enter', { ctrl: true });
       await kb.waitFor(() => !!document.querySelector('[data-action="zone-live-cancel"]') && window.__heldFetches > 0,
         { message: 'the live check started from its option' });
+      // Its Stop button in a closed tab still answers Esc: the check runs on while another tab is read.
+      await kb.click('.zone-tabs .tab[data-tab="records"]');
+      assert(await kb.evaluate(() => !document.querySelector('[data-action="zone-live-cancel"]').checkVisibility()), 'Stop out of sight');
       await kb.press('Escape');
       await kb.waitFor(() => !document.querySelector('[data-action="zone-live-cancel"]')
-        && /Stopped/.test(document.querySelector('.zone-live')?.textContent || ''), { message: 'stopped with Esc' });
+        && /Stopped/.test(document.querySelector('.zone-live')?.textContent || ''), { message: 'stopped with Esc from the Records tab' });
+      assertEqual(await kb.evaluate(() => document.querySelector('.zone-tabs .tab[aria-selected="true"]').dataset.tab), 'records', 'the open tab stays');
       await releaseFetches(kb);
     });
 

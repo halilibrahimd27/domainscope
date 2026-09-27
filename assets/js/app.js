@@ -19,9 +19,9 @@
  * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
  * clicks the `data-shortcut="submit"` control of the field's form (the view's Run; inside a
  * `data-shortcut-scope` sub-form such as a paste box, that sub-form's own button; in one without
- * a submit — a view's results area, a DataTable — nothing), Esc the view's visible `"cancel"`
- * one (not in a search field with text: Esc clears it there), '/' focuses its `"focus"` input
- * (else its first text field), '?' opens the shortcuts dialog.
+ * a submit — a view's results area, a DataTable — nothing), Esc the view's `"cancel"` one (on
+ * screen, else in a closed tab; in a search field with text Esc clears it), '/' focuses its
+ * `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
  */
 
 import {
@@ -36,7 +36,7 @@ import {
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 import {
   groupViews, isPlainClick, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
-  isTypingTarget
+  isTypingTarget, isSearchClear
 } from './lib/shellnav.js';
 import { StartTaskList } from './ui/start-tasks.js';
 
@@ -1069,6 +1069,23 @@ function usableControl(el) {
   return el.getClientRects().length > 0;
 }
 
+/**
+ * Is the element a Stop button that only the view's tabs keep out of sight? Enabled and shown but
+ * for one or more closed tab panels (`hidden` [role=tabpanel]) between it and the page body: the
+ * Zone File live check or a DANE check running while another tab is open.
+ */
+function behindClosedTab(el) {
+  const root = dom.pageBody;
+  if (!el || !root || !root.contains(el) || el.disabled || el.closest('[inert]') || inClosedDetails(el)) return false;
+  let tab = false;
+  for (let node = el; node && node !== root; node = node.parentElement) {
+    if (!node.hidden && globalThis.getComputedStyle(node).display !== 'none') continue;
+    if (node.getAttribute('role') !== 'tabpanel') return false;
+    tab = true;
+  }
+  return tab;
+}
+
 /** The ancestors of `from` inside `root`, nearest first, then `root` itself. */
 function scopesFrom(from, root) {
   const scopes = [];
@@ -1089,7 +1106,7 @@ function shortcutScopeOf(node) {
  * the focused element (lib/shellnav.js pickShortcutTarget). A submit answers the field's own
  * form only: a sub-form's action (`data-shortcut-scope`: a paste box's Read) its own fields, the
  * view's Run every other field, and it never falls through to another form's button. A cancel
- * stops whatever runs, nearest first.
+ * stops whatever runs, nearest first — a Stop button on screen, else one in a closed tab.
  * @param {'submit'|'cancel'} kind
  * @param {Element|null} from
  * @returns {HTMLElement|null}
@@ -1098,15 +1115,17 @@ function shortcutControl(kind, from) {
   const root = dom.pageBody;
   if (!root || !current) return null;
   const submit = kind === 'submit';
-  return pickShortcutTarget({
+  const pick = (usable) => pickShortcutTarget({
     candidates: [...root.querySelectorAll(`[data-shortcut="${kind}"]`)],
     scopes: scopesFrom(from, root),
     contains: (scope, el) => scope.contains(el),
-    usable: usableControl,
+    usable,
     strict: submit,
     from,
     localOf: submit ? shortcutScopeOf : null
   });
+  const shown = pick(usableControl);
+  return shown || submit ? shown : pick(behindClosedTab);
 }
 
 /** The view's main input: the one marked `data-shortcut="focus"`, else its first visible text field. */
@@ -1126,9 +1145,20 @@ function focusMainInput() {
   return true;
 }
 
+/** Esc in a search field with text: empty it as Chrome does (with an `input` event), in every browser. */
+function clearSearchField(field) {
+  field.value = '';
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 /** The app's one keydown listener for the shortcuts (see the module comment). */
 function onShortcutKey(event) {
   if (event.defaultPrevented) return; // a field's own Enter handler, a Tabs arrow key, …
+  if (isSearchClear(event)) {
+    event.preventDefault();
+    clearSearchField(event.target);
+    return;
+  }
   const command = shortcutFor(event);
   if (!command) return;
   // A dialog (settings, a confirmation, the Tools menu, the shortcut list) owns the keyboard; Esc closes it.

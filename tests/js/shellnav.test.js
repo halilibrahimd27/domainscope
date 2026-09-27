@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   NAV_GROUPS, OTHER_GROUP, groupViews, isPlainClick, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
-  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, escClearsField, shortcutFor,
-  pickShortcutTarget
+  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, escClearsField, isSearchClear,
+  shortcutFor, pickShortcutTarget
 } from '../../assets/js/lib/shellnav.js';
 import { VIEWS, DEFAULT_VIEW } from '../../assets/js/app.js';
 import { hasString } from '../../assets/js/i18n.js';
@@ -228,7 +228,7 @@ describe('keyboard shortcuts — which key means what', () => {
     assert.equal(shortcutFor(key('Escape', { ctrlKey: true })), null);
   });
 
-  test('Esc in a search field with text clears it (the browser\'s own key there); in the emptied field it cancels', () => {
+  test('Esc in a search field with text clears it; in the emptied field it cancels', () => {
     const search = (value) => el('input', { type: 'search', value });
     assert.equal(escClearsField(search('www')), true);
     assert.equal(escClearsField(el('input', { type: 'SEARCH', value: ' ' })), true);
@@ -240,6 +240,21 @@ describe('keyboard shortcuts — which key means what', () => {
     assert.equal(shortcutFor(key('Escape', { target: search('www') })), null, 'the filter clears, the job goes on');
     assert.equal(shortcutFor(key('Escape', { target: search('') })), 'cancel', 'the next Esc cancels');
     assert.equal(shortcutFor(key('Escape', { target: el('input', { type: 'text', value: 'example.com' }) })), 'cancel');
+  });
+
+  test('the shell clears the search field itself (Firefox does not on Esc): plain Esc only', () => {
+    const search = (value) => el('input', { type: 'search', value });
+    assert.equal(isSearchClear(key('Escape', { target: search('www') })), true);
+    assert.equal(isSearchClear(key('Esc', { target: search('www') })), true, 'old key name');
+    assert.equal(isSearchClear(key('Escape', { target: search('') })), false, 'empty: that Esc cancels instead');
+    assert.equal(isSearchClear(key('Escape', { target: el('input', { type: 'text', value: 'www' }) })), false);
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'repeat', 'isComposing']) {
+      assert.equal(isSearchClear(key('Escape', { [mod]: true, target: search('www') })), false, mod);
+    }
+    assert.equal(isSearchClear(key('Escape', { keyCode: 229, target: search('www') })), false, 'an input method at work');
+    assert.equal(isSearchClear(key('Enter', { target: search('www') })), false);
+    assert.equal(isSearchClear(key('Escape')), false, 'nothing focused');
+    assert.equal(isSearchClear(null), false);
   });
 
   test('/ and ? act only while not typing; Shift and AltGr are fine, Ctrl / Alt / ⌘ alone are not', () => {

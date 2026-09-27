@@ -195,14 +195,29 @@ export function isFormField(target) {
 }
 
 /**
- * Does Esc already mean something in this field? A search field with text in it: the browser
- * clears the text with Esc (a table's filter, for one), so there it is not the "cancel the job"
- * shortcut. In the emptied field the next Esc is.
+ * Does Esc already mean something in this field? A search field with text in it: Esc clears the
+ * text (a table's filter, for one), so there it is not the "cancel the job" shortcut. In the
+ * emptied field the next Esc is.
  * @param {{ tagName?: string, type?: string, value?: string }|null} target
  * @returns {boolean}
  */
 export function escClearsField(target) {
   return tagOf(target) === 'input' && String(target.type || '').toLowerCase() === 'search' && String(target.value || '') !== '';
+}
+
+/**
+ * Is this key press the Esc that empties a search field ({@link escClearsField})? Chrome and
+ * Safari clear the field themselves, Firefox does not: the shell does it, so the key means the same
+ * everywhere. No modifier, no held key, not while an input method composes text.
+ * @param {{ key?: string, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean,
+ *   repeat?: boolean, isComposing?: boolean, keyCode?: number, target?: object|null }} event
+ * @returns {boolean}
+ */
+export function isSearchClear(event) {
+  if (!event || event.repeat || event.isComposing || event.keyCode === 229) return false;
+  if (event.key !== 'Escape' && event.key !== 'Esc') return false;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+  return escClearsField(event.target || null);
 }
 
 /**

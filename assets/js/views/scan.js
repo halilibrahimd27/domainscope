@@ -26,7 +26,7 @@
  * starts the scan on its own.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, append } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
@@ -1704,7 +1704,8 @@ export function mount(container, ctx) {
     // Exact zone mode (one run): the zone's names only — no sources, wordlist or permutations.
     const zone = activeZone();
     const exact = !!zone && zoneModes.get(zone) === 'exact';
-    runSummary.append(
+    // dom.js append(): the parts left out are null, which Element.append would print as "null".
+    append(runSummary,
       h('span', null, domainsText),
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
       h('span', null, t('scan.summary.sources', { count: exact ? 0 : options.sources.length })),

@@ -2114,7 +2114,69 @@ async function listFiles(dir, pred) {
   return out;
 }
 
+/**
+ * Index of the bracket closing the one at `open` in JavaScript source (strings, template
+ * literals and comments skipped), or -1. `onComma` sees the commas directly inside it.
+ */
+function closingIndex(src, open, onComma = null) {
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === '/' && (src[i + 1] === '/' || src[i + 1] === '*')) {
+      i = src[i + 1] === '/' ? src.indexOf('\n', i) : src.indexOf('*/', i) + 1;
+      if (i <= 0) return -1;
+    } else if (c === '\'' || c === '"' || c === '`') {
+      for (i += 1; i < src.length && src[i] !== c; i += 1) {
+        if (src[i] === '\\') i += 1;
+        else if (c === '`' && src[i] === '$' && src[i + 1] === '{') {
+          i = closingIndex(src, i + 1);
+          if (i === -1) return -1;
+        }
+      }
+    } else if ('([{'.includes(c)) {
+      depth += 1;
+    } else if (')]}'.includes(c)) {
+      depth -= 1;
+      if (!depth) return i;
+    } else if (c === ',' && depth === 1 && onComma) {
+      onComma(i);
+    }
+  }
+  return -1;
+}
+
+/** The top-level argument texts of the call whose `(` is at `open`. */
+function callArgs(src, open) {
+  const cuts = [];
+  const close = closingIndex(src, open, (i) => cuts.push(i));
+  if (close === -1) return null;
+  const bounds = [open, ...cuts, close];
+  return bounds.slice(1).map((end, k) => src.slice(bounds[k] + 1, end).trim()).filter(Boolean);
+}
+
 describe('security & shell invariants', () => {
+  test('callArgs splits a call at its own commas only', () => {
+    const src = "el.append(a(1, 2), `x ${t(`k.${b}`, { n: 1 })}`, 'c, d', // e, f\n  ok ? h('i', null, ')') : null)";
+    assert.deepEqual(callArgs(src, src.indexOf('(')), ['a(1, 2)', '`x ${t(`k.${b}`, { n: 1 })}`', "'c, d'", "// e, f\n  ok ? h('i', null, ')') : null"]);
+  });
+
+  test('a native append / prepend / replaceChildren never gets a nullable child (the DOM prints "null")', async () => {
+    // dom.js append() and h() skip null; Element.append(null) inserts the text "null".
+    const files = (await listFiles(path.join(ROOT, 'assets/js'), (n) => n.endsWith('.js'))).filter((f) => !f.includes(`${path.sep}lib${path.sep}`));
+    const hits = [];
+    for (const file of files) {
+      const src = await readFile(file, 'utf8');
+      for (const m of src.matchAll(/\.(?:append|prepend|replaceChildren)\(/g)) {
+        const args = callArgs(src, m.index + m[0].length - 1) || [];
+        const code = (a) => a.replace(/^(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*/g, '');
+        if (args.some((a) => /^(?:null|undefined)$|\?[\s\S]*:\s*(?:null|undefined)$/.test(code(a)))) {
+          hits.push(`${path.relative(ROOT, file)}:${src.slice(0, m.index).split('\n').length}`);
+        }
+      }
+    }
+    assert.deepEqual(hits, [], 'use dom.js append(parent, …) for nullable children');
+  });
+
   test('index.html carries exactly the spec CSP and no inline script/style', async () => {
     const html = await readFile(path.join(ROOT, 'index.html'), 'utf8');
     const m = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i);

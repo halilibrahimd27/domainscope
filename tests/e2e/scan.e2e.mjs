@@ -518,6 +518,13 @@ async function main() {
       }, { message: 'wordlist levels' });
       assertEqual([bf.values, bf.checked, bf.perm], [['off', 'small', 'smart', 'large', 'huge'], 'smart', true], 'wordlist levels + permutations');
       assert(/smart wordlist\s*·\s*permutations/.test(bf.summary), `run summary: ${bf.summary}`);
+      // The parts left out (no zone, no variations) leave nothing behind — not even a "null".
+      assert(!/null|undefined/.test(bf.summary), `run summary without "null": ${bf.summary}`);
+      await page.click('[data-role="scan-permutations"]');
+      const noPerm = await page.evaluate(() => document.querySelector('.scan-runbar-summary').textContent);
+      assert(/smart wordlist\s*·\s*no certificate/.test(noPerm) && !/null|undefined|permutations/.test(noPerm), `run summary without variations: ${noPerm}`);
+      await page.click('[data-role="scan-permutations"]');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-permutations"]').checked), true, 'variations back on');
       assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), DEFAULT_ENABLED, 'all sources on by default');
       await assertNoHorizontalScroll(page, 'setup');
       await shot(page, opts, 'scan-desktop-light-en-setup');

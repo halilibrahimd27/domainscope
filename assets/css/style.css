@@ -503,6 +503,11 @@ hr {
   margin-left: 6px;
 }
 
+/* The chip shrinks (its value ellipsised) before the brand does. */
+.app-header.has-target .brand {
+  flex: none;
+}
+
 .target-chip {
   display: inline-flex;
   align-items: center;
@@ -1573,6 +1578,13 @@ button.nav-status:hover {
     align-items: center;
     gap: 12px;
     min-width: 0;
+  }
+}
+
+/* Small tablets: a current target takes the brand's subtitle place. */
+@media (max-width: 760px) {
+  .app-header.has-target .brand-sub {
+    display: none;
   }
 }
 

@@ -2859,6 +2859,27 @@ def _enable_windows_ansi(stream: TextIO) -> bool:
         return False
 
 
+def display_text(text: str) -> str:
+    """``text`` made safe for a terminal: control, format and line-separator characters
+    (ESC, BEL, CR, the C1 CSI, bidi overrides, U+2028) become ``\\xNN`` / ``\\uNNNN``.
+
+    A certificate's subject and issuer come from whatever server answered: printed raw,
+    they could erase or rewrite earlier lines of the summary or set the window title,
+    ``--no-color`` or not. Only the display is escaped; the JSON keeps the exact values.
+    """
+    if text.isprintable():
+        return text
+    out = []
+    for char in text:
+        if unicodedata.category(char) in ('Cc', 'Cf', 'Zl', 'Zp'):
+            code = ord(char)
+            out.append('\\x%02x' % code if code < 0x100 else
+                       '\\u%04x' % code if code < 0x10000 else '\\U%08x' % code)
+        else:
+            out.append(char)
+    return ''.join(out)
+
+
 def _endpoint_label(ip: str, port: int) -> str:
     return '[%s]:%d' % (ip, port) if ':' in ip else '%s:%d' % (ip, port)
 
@@ -2879,8 +2900,8 @@ def _days_text(cert: CertInfo, now: datetime, style: Style) -> str:
 def cert_line(cert: CertInfo, now: datetime, style: Style) -> str:
     """``CN | expires DATE (N days left) | issuer: X`` - what an operator needs first."""
     return '%s | expires %s (%s) | issuer: %s' % (
-        cert.short_label(), cert.not_after.strftime('%Y-%m-%d'), _days_text(cert, now, style),
-        cert.issuer_label())
+        display_text(cert.short_label()), cert.not_after.strftime('%Y-%m-%d'),
+        _days_text(cert, now, style), display_text(cert.issuer_label()))
 
 
 def cert_ids(cert: CertInfo) -> str:
@@ -2908,12 +2929,12 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
                    now: datetime, has_new_cert: bool) -> List[str]:
     """Lines for one server: per endpoint, names grouped by (status, served certificate)."""
     server = summary.server
-    head = '  ' + style.paint(server.name, 'bold')
+    head = '  ' + style.paint(display_text(server.name), 'bold')
     extra_ips = [ip for ip in server.ips if ip != server.name]
     if extra_ips:
         head += '  ' + style.paint(', '.join(extra_ips), 'dim')
     if server.groups:
-        head += '  ' + style.paint('[%s]' % ', '.join(server.groups), 'dim')
+        head += '  ' + style.paint(display_text('[%s]' % ', '.join(server.groups)), 'dim')
     out = [head]
     by_endpoint = {}  # type: Dict[Tuple[str, int], List[ProbeResult]]
     for row in summary.rows:
@@ -2926,7 +2947,8 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
         if connect is not None:
             if show_all or summary.status in (CLOSED, TIMEOUT):
                 out.append('    %s  %s  %s' % (label, style.status(connect.status),
-                                               style.paint(connect.error or '', 'dim')))
+                                               style.paint(display_text(connect.error or ''),
+                                                           'dim')))
             continue
         default = next((r for r in rows if r.probe == PROBE_DEFAULT), None)
         all_named = [r for r in rows if r.probe in (PROBE_SNI, PROBE_WILDCARD)]
@@ -2957,13 +2979,13 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
                 out.append(' ' * indent + 'current: ' + cert_line(cert, now, style))
                 out.append(' ' * (indent + 9) + style.paint(cert_ids(cert), 'dim'))
             elif error:  # handshake failures, names the server refused
-                out.append(' ' * indent + style.paint(error, 'dim'))
+                out.append(' ' * indent + style.paint(display_text(error), 'dim'))
         if show_default and default is not None:
             text = '      default certificate (no SNI): %s' % style.status(default.status)
             if default.cert is not None:
                 text += '  ' + cert_line(default.cert, now, style)
             elif default.error:
-                text += '  ' + style.paint(default.error, 'dim')
+                text += '  ' + style.paint(display_text(default.error), 'dim')
             out.append(text)
     return out
 
@@ -3464,8 +3486,8 @@ def _run(args: argparse.Namespace) -> int:
     quiet = args.quiet
 
     def warn(message: str) -> None:
-        if not quiet:
-            print('warning: %s' % message, file=err)
+        if not quiet:  # messages echo certificate labels and inventory lines
+            print('warning: %s' % display_text(message), file=err)
 
     def warn_many(messages: Sequence[str]) -> None:
         for message in messages[:MAX_PRINTED_WARNINGS]:

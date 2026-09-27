@@ -1498,11 +1498,69 @@ def sample_report():
     return report
 
 
+# ec_wildcard.pem with the subject and issuer CN (UTF8String, 18 bytes) replaced by terminal
+# escapes: erase the line, move up, set the window title. The SAN still covers the names.
+HOSTILE_CN = b'\x1b[2K\x1b[1A\x1b]0;x\x07ok'.ljust(18, b'X')
+
+
+def hostile_cn_der() -> bytes:
+    pattern = b'\x06\x03\x55\x04\x03\x0c\x12*.wild.example.net'
+    der = EC_DER
+    assert der.count(pattern) == 2
+    return der.replace(pattern, pattern[:7] + HOSTILE_CN)
+
+
 class OutputTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         cls.report = sample_report()
+
+    def test_display_text_escapes_controls(self):
+        text = sos.display_text('a\x1b[2Kb\x07\x9b‮c\r\n \x7f')
+        self.assertEqual(text, 'a\\x1b[2Kb\\x07\\x9b\\u202ec\\x0d\\x0a\\u2028\\x7f')
+        self.assertTrue(text.isprintable())
+        for kept in ('Let’s Encrypt', 'Türkçe Şirket A.Ş.', '*.example.com',
+                     'a b', ''):
+            self.assertEqual(sos.display_text(kept), kept)
+
+    def test_summary_escapes_certificate_controls(self):
+        network = FakeNetwork({}, {'10.0.0.1': hostile_cn_der()})
+        report = sos.run_scan([sos.Server('s', ['10.0.0.1'])],
+                              sos.build_probe_names(['a.wild.example.net']), [443],
+                              new_certs=[fixture_cert('cli_renewed_wild.pem')], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        self.assertEqual(report.server_summaries()[0].status, sos.NEEDS_UPDATE)
+        for color in (False, True):
+            with self.subTest(color=color):
+                text = sos.render_summary(report, color=color, show_all=True)
+                plain = re.sub(r'\x1b\[[0-9;]*m', '', text)  # the tool's own colours only
+                self.assertNotIn('\x1b', plain)
+                self.assertNotIn('\x07', plain)
+                lines = plain.splitlines()
+                current = next(line for line in lines if 'current:' in line)
+                self.assertIn('current: \\x1b[2K\\x1b[1A\\x1b]0;x\\x07okXX | expires', current)
+                self.assertIn('issuer: \\x1b[2K', current)
+                default = next(line for line in lines if 'default certificate (no SNI)' in line)
+                self.assertIn('NEEDS_UPDATE  \\x1b[2K', default)
+        # the data itself is unchanged: JSON escapes controls on its own
+        sha = report.results[0].cert.sha256
+        self.assertEqual(json.loads(sos.render_json(report))['certificates'][sha]['subjectCN'],
+                         HOSTILE_CN.decode('ascii'))
+
+    def test_render_server_escapes_names_groups_and_errors(self):
+        server = sos.Server('web\x1b[2K', ['10.0.0.1'], ['prod\x07'])
+        rows = [sos.ProbeResult(server.name, '10.0.0.1', 443, sos.PROBE_SNI, 'a.example.com',
+                                'a.example.com', sos.TLS_ERROR, error='bad\rrow')]
+        lines = sos._render_server(sos.ServerSummary(server, sos.TLS_ERROR, rows),
+                                   sos.Style(False), False, 100, NOW, False)
+        text = '\n'.join(lines)
+        self.assertNotIn('\x1b', text)
+        self.assertNotIn('\x07', text)
+        self.assertNotIn('\r', text)
+        self.assertIn('web\\x1b[2K', text)
+        self.assertIn('[prod\\x07]', text)
+        self.assertIn('bad\\x0drow', text)
 
     def test_json_document_shape(self):
         doc = json.loads(sos.render_json(self.report))
@@ -1809,6 +1867,18 @@ class CliArgumentTests(unittest.TestCase):
             code, _, err = run_main('-t', '127.0.0.1', '--cert', csr)
         self.assertEqual(code, 2)
         self.assertIn('signing request', err)
+
+    def test_certificate_text_in_warnings_is_escaped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'chain.pem')
+            Path(path).write_bytes(pem_of(hostile_cn_der()) + fixture_bytes('ca.pem'))
+            with mock.patch.object(sos, 'tcp_connect', side_effect=ConnectionRefusedError()):
+                code, out, err = run_main('-t', '127.0.0.1', '--cert', path, '--no-color')
+        self.assertEqual(code, 0, err)
+        self.assertIn('holds 2 certificates; using the leaf \\x1b[2K\\x1b[1A', err)
+        self.assertIn('New certificate: \\x1b[2K', out)
+        self.assertNotIn('\x1b', err + out)
+        self.assertNotIn('\x07', err + out)
 
     def test_hostile_cert_file_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:

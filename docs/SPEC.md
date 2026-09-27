@@ -888,6 +888,9 @@ python3 ssl_origin_scan.py -t targets.txt [-t 10.0.0.0/24 -t web01.internal ...]
 - Status per (server, port, name): `UPDATED` (serves the new cert), `NEEDS_UPDATE` (served cert covers the name but is not the new cert — show its expiry), `NOT_HOSTED` (served cert does not cover the name / only default cert), `TLS_ERROR`, `CLOSED`, `TIMEOUT`.
 - Output: human-readable summary grouped by server ("servers that need the new certificate: N") with colors (auto-disabled when not a TTY/`--no-color`/`NO_COLOR`), plus `--json` / `--csv`. Exit code 0 always unless usage error (2); `--fail-on-needs-update` → exit 1 when any NEEDS_UPDATE (for CI).
 - Robust: Ctrl-C handling, per-connection timeout, thread pool, IPv6 support, no stack traces for expected errors.
+- Untrusted certificates: any server in a swept range can answer with any certificate.
+  - A certificate the parser cannot read (malformed, out-of-range times, oversized OIDs) becomes a `TLS_ERROR` row (`unparseable certificate: ...`), or a `PARSE_ERROR` for `--cert`, never a crash.
+  - The summary and the warnings escape control, format and line-separator characters of certificate text and inventory names (`\x1b[2K` is printed as the text `\x1b[2K`), so a subject cannot move the cursor, rewrite lines or set the window title. The JSON keeps the exact values.
 - `--exclude ADDR [ADDR ...]` (repeatable) takes IPs, CIDRs (v4 / v6), ranges, `-` for stdin, or a file of them (`#` comments).
   - Host names are refused (exit 2).
   - IPv4-mapped addresses match both ways.

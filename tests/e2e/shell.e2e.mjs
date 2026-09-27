@@ -164,12 +164,14 @@ async function shot(page, name) {
   await page.screenshot(path.join(SHOTS, `${name}.png`), { fullPage: true });
 }
 
-async function assertClean(page, where) {
+async function assertClean(page, where, { offline = false } = {}) {
   const p = await page.problems();
+  // Offline, the browser's own requests (the favicon on Linux Chrome) fail on purpose.
+  const logErrors = offline ? p.logErrors.filter((e) => !/ERR_INTERNET_DISCONNECTED/.test(e.text)) : p.logErrors;
   const issues = [
     ...p.consoleErrors.map((m) => `console.${m.type}: ${m.text}`),
     ...p.exceptions.map((e) => `exception: ${e.text}`),
-    ...p.logErrors.map((e) => `log(${e.source}): ${e.text} ${e.url || ''}`),
+    ...logErrors.map((e) => `log(${e.source}): ${e.text} ${e.url || ''}`),
     ...p.csp.map((c) => `CSP: ${JSON.stringify(c).slice(0, 300)}`)
   ];
   assert(issues.length === 0, `${where}: ${issues.length} problem(s):\n          ${issues.join('\n          ')}`);
@@ -1060,7 +1062,7 @@ async function main() {
         // the rest of the app keeps working
         await tab.resetProblems(); // the failed import is logged on purpose
         await gotoRoute(tab, 'about');
-        await assertClean(tab, `after ${id}`);
+        await assertClean(tab, `after ${id}`, { offline: await tab.evaluate(() => !navigator.onLine) });
       };
 
       await step('offline, a view that fails to load shows the network error and Retry, not "updated"', async () => {

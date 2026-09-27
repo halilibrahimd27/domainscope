@@ -70,14 +70,19 @@ describe('ci.yml', () => {
 
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
-    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,verify,dane,global,ptr,carry --offline --no-shots$/);
-    for (const suite of ['shell', 'subdomains', 'zone', 'verify', 'dane', 'global', 'ptr', 'carry']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
+    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,verify,dane,global,ptr,carry,ip,lookup,health --offline --no-shots$/);
+    for (const suite of ['shell', 'subdomains', 'zone', 'verify', 'dane', 'global', 'ptr', 'carry', 'ip', 'lookup', 'health']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
     // global also has live resolver groups: --offline keeps it to its fake-DoH steps.
     assert.match(readFileSync(join(ROOT, 'tests', 'e2e', 'global.e2e.mjs'), 'utf8'), /if \(OFFLINE\)[^\n]*\n\s*else await liveChecks\(/);
     // subdomains too (live scans): --offline skips them, and only the local server resolves.
     const sub = readFileSync(join(ROOT, 'tests', 'e2e', 'subdomains.e2e.mjs'), 'utf8');
     assert.match(sub, /const liveStep = \(name, fn\) => \{\s*if \(!OFFLINE\) return run\.step\(name, fn\);/);
     assert.match(sub, /args: OFFLINE \? \['--host-resolver-rules=MAP \* ~NOTFOUND , EXCLUDE 127\.0\.0\.1'\] : \[\]/);
+    // ip, lookup and health have live API groups: --offline keeps them to their offline group.
+    for (const suite of ['ip', 'lookup']) {
+      assert.match(readFileSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`), 'utf8'), /if \(!OFFLINE\) await liveGroups\(/, suite);
+    }
+    assert.match(readFileSync(join(ROOT, 'tests', 'e2e', 'health.e2e.mjs'), 'utf8'), /if \(OFFLINE\)[^\n]*\n\s*else await liveGroups\(/);
   });
 });
 

@@ -929,6 +929,10 @@ test('parseCaa: RRs, data objects, strings, critical flag, unknown tags', () => 
   assert.deepEqual(p.unknown.map((u) => u.tag), ['tbs', 'future']);
   assert.equal(parseCaa([]).count, 0);
   assert.equal(parseCaa(undefined).count, 0);
+  // malformed values authorize nobody (RFC 8659 §4.2), so they are not listed as issuers
+  assert.deepEqual(parseCaa(['0 issue "Let\'s Encrypt"', '0 issuewild "lets encrypt"']).issuers, []);
+  assert.deepEqual(parseCaa(['0 issue "Let\'s Encrypt"', '0 issuewild "lets encrypt"']).wildIssuers, []);
+  assert.deepEqual(parseCaa(['0 issue "letsencrypt.org"', '0 issue "pki.goog; bad"']).issuers, ['letsencrypt.org']);
 });
 
 test('caaDomainsForIssuer / caaIssuerInfo', () => {
@@ -1074,8 +1078,9 @@ test('CAA checks in domainHealth: missing, deny-all, invalid, critical, distrust
   has(r, 'caa.cert-allowed', 'ok');
   assert.equal(r.caaCert.allowed, true);
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: "CN=R11,O=Let's Encrypt,C=US", wildcardCert: true });
-  const denied = has(r, 'caa.cert-denied', 'error');
+  const denied = has(r, 'caa.cert-blocked', 'error'); // issuewild ";" lets no CA issue wildcards
   assert.equal(denied.params.property, 'issuewild');
+  assert.equal(denied.params.reason, 'deny-all');
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: 'CN=DigiCert Global G2 TLS RSA SHA256 2020 CA1,O=DigiCert Inc,C=US' });
   assert.equal(find(r, 'caa.cert-denied').params.issuer, 'DigiCert');
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: 'CN=Corp CA' });
@@ -1083,6 +1088,36 @@ test('CAA checks in domainHealth: missing, deny-all, invalid, critical, distrust
   assertRenderable(r);
   r = await run('example.com', fakeDns(goodZone(), { fail: { 'example.com|CAA': 'down' } }));
   has(r, 'caa.error', 'warn');
+});
+
+test('CAA: only malformed issue values forbid every CA; a blocked CA is not "missing from the list"', async () => {
+  const LE = "CN=R11,O=Let's Encrypt,C=US";
+  const zone = goodZone();
+  zone['example.com'].CAA = [{ flags: 0, tag: 'issue', value: "Let's Encrypt" }];
+  let r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  assertRenderable(r);
+  has(r, 'caa.invalid', 'warn');
+  has(r, 'caa.deny-all', 'warn');
+  lacks(r, 'caa.present');
+  lacks(r, 'caa.cert-denied');
+  assert.equal(has(r, 'caa.cert-blocked', 'error').params.reason, 'deny-all');
+
+  // a malformed value next to a valid one: only the valid CA is listed
+  zone['example.com'].CAA = [{ flags: 0, tag: 'issue', value: "Let's Encrypt" }, { flags: 0, tag: 'issue', value: 'letsencrypt.org' }];
+  r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  assert.equal(has(r, 'caa.present', 'ok').params.issuers, 'letsencrypt.org');
+  has(r, 'caa.cert-allowed', 'ok');
+
+  // an unknown critical tag blocks even a listed CA
+  zone['example.com'].CAA = [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 128, tag: 'weird', value: 'x' }];
+  r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  assertRenderable(r);
+  lacks(r, 'caa.cert-denied');
+  assert.equal(has(r, 'caa.cert-blocked', 'error').params.reason, 'critical-unknown');
+
+  // a CA missing from a real list is still "not in the list"
+  r = await run('example.com', fakeDns(goodZone()), { issuerDN: 'CN=GTS CA 1C3,O=Google Trust Services LLC,C=US' });
+  assert.equal(has(r, 'caa.cert-denied', 'error').params.authorized, 'letsencrypt.org');
 });
 
 /* ==================================================================== */

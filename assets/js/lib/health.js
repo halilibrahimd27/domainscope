@@ -837,7 +837,7 @@ function caaItem(r) {
  *   other: Array<{ tag: string, value: string, critical: boolean }>, unknown: Array<{ tag: string, value: string, critical: boolean }>,
  *   unknownCritical: boolean, issuers: string[], wildIssuers: string[], count: number }}
  *   `other` holds known non-issuance tags (issuemail, issuevmc, contactemail, contactphone);
- *   `issuers` / `wildIssuers` list the non-empty issuer domains.
+ *   `issuers` / `wildIssuers` list the valid, non-empty issuer domains (a malformed value authorizes no CA).
  */
 export function parseCaa(rrs) {
   const out = { issue: [], issuewild: [], iodef: [], other: [], unknown: [], unknownCritical: false, issuers: [], wildIssuers: [], count: 0 };
@@ -858,8 +858,8 @@ export function parseCaa(rrs) {
       if (critical) out.unknownCritical = true;
     }
   }
-  out.issuers = uniq(out.issue.filter((x) => x.issuer).map((x) => x.issuer));
-  out.wildIssuers = uniq(out.issuewild.filter((x) => x.issuer).map((x) => x.issuer));
+  out.issuers = uniq(out.issue.filter((x) => x.valid && x.issuer).map((x) => x.issuer));
+  out.wildIssuers = uniq(out.issuewild.filter((x) => x.valid && x.issuer).map((x) => x.issuer));
   return out;
 }
 
@@ -1400,7 +1400,8 @@ async function analyzeCaa(name, d, { issuerDN, wildcardCert }) {
       authorized: certCheck.authorized, reason: certCheck.reason
     };
     if (certCheck.allowed === true) checks.push(makeCheck('caa.cert-allowed', 'ok', params));
-    else if (certCheck.allowed === false) checks.push(makeCheck('caa.cert-denied', 'error', params));
+    else if (certCheck.reason === 'not-listed') checks.push(makeCheck('caa.cert-denied', 'error', params));
+    else if (certCheck.allowed === false) checks.push(makeCheck('caa.cert-blocked', 'error', params)); // deny-all, critical-unknown
     else checks.push(makeCheck('caa.cert-unknown', 'info', params));
   }
   return { checks, caa, certCheck };
@@ -2053,8 +2054,8 @@ const STRINGS = [
   ['caa.error', ['CAA lookup failed', 'CAA sorgusu başarısız'],
     ['CAs must refuse to issue when the CAA lookup fails ({error}).', 'CAA sorgusu başarısız olduğunda sertifika otoriteleri sertifika vermeyi reddetmelidir ({error}).']],
   ['caa.deny-all', ['CAA forbids all certificates', 'CAA tüm sertifikaları yasaklıyor'],
-    ['The CAA set at {foundAt} only contains empty issue values (";"): no CA may issue certificates.',
-      '{foundAt} üzerindeki CAA kayıtları yalnızca boş issue değerleri (";") içeriyor: hiçbir otorite sertifika veremez.']],
+    ['The CAA set at {foundAt} names no valid CA (its issue values are empty ";" or malformed): no CA may issue certificates.',
+      '{foundAt} üzerindeki CAA kayıtları geçerli bir otorite içermiyor (issue değerleri boş ";" ya da hatalı): hiçbir otorite sertifika veremez.']],
   ['caa.invalid', ['Malformed CAA values', 'Hatalı CAA değerleri'],
     ['These values do not follow RFC 8659 and match no CA: {values}.', 'Bu değerler RFC 8659’a uymuyor ve hiçbir otoriteyle eşleşmiyor: {values}.']],
   ['caa.critical-unknown', ['Unknown critical CAA tag', 'Bilinmeyen kritik CAA etiketi'],
@@ -2067,6 +2068,9 @@ const STRINGS = [
   ['caa.cert-denied', ['CAA does not allow this certificate\'s CA', 'CAA bu sertifikanın otoritesine izin vermiyor'],
     ['{issuer} is not in the {property} list ({authorized}); renewals from this CA will fail.',
       '{issuer}, {property} listesinde değil ({authorized}); bu otoriteden yenileme başarısız olur.']],
+  ['caa.cert-blocked', ['CAA forbids this kind of certificate', 'CAA bu tür sertifikayı yasaklıyor'],
+    ['This CAA set lets no CA issue such a certificate, {issuer} included (see the CAA findings above); renewals from this CA will fail.',
+      'Bu CAA kümesi hiçbir otoritenin bu tür bir sertifika vermesine izin vermiyor, {issuer} de dahil (yukarıdaki CAA bulgularına bakın); bu otoriteden yenileme başarısız olur.']],
   ['caa.cert-unknown', ['CA not recognised for CAA', 'Otorite CAA için tanınmadı'],
     ['Could not map "{issuer}" to a CAA identifier; check the CA\'s documentation.', '"{issuer}" bir CAA tanımlayıcısıyla eşleştirilemedi; otoritenin belgelerine bakın.']],
   ['caa.reason.none', ['No CAA records: any CA may issue', 'CAA kaydı yok: her otorite sertifika verebilir']],

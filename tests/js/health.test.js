@@ -1327,11 +1327,11 @@ test('DNSSEC broken needs a DS and a failing SOA: other SERVFAILs keep their own
   const unsigned = goodZone();
   delete unsigned['example.com'].DS;
   delete unsigned['example.com'].DNSKEY;
-  /** SERVFAIL for some example.com types unless CD=1 (a flaky server, not DNSSEC). */
-  const flaky = (zone, types) => {
+  /** SERVFAIL for some `host` types unless CD=1 (a flaky server, not DNSSEC), optionally with EDE codes. */
+  const flaky = (zone, types, host = 'example.com', ede = []) => {
     const dns = fakeDns(zone);
-    dns.query = ((orig) => async (n, t, o = {}) => (!o.cd && n === 'example.com' && types.includes(t)
-      ? { ...(await orig(n, t, o)), rcode: 'SERVFAIL', answers: [], authorities: [] }
+    dns.query = ((orig) => async (n, t, o = {}) => (!o.cd && n === host && types.includes(t)
+      ? { ...(await orig(n, t, o)), rcode: 'SERVFAIL', answers: [], authorities: [], ede }
       : orig(n, t, o)))(dns.query);
     return dns;
   };
@@ -1352,6 +1352,23 @@ test('DNSSEC broken needs a DS and a failing SOA: other SERVFAILs keep their own
     has(r, 'soa.ok');
     has(r, 'dnssec.error', 'warn');
   }
+
+  // below the apex the DS is asked of the same servers as the SOA: both failing is no proof of DNSSEC …
+  unsigned['www.example.com'] = { A: ['192.0.2.40'] };
+  r = await run('www.example.com', flaky(unsigned, ['SOA', 'DS'], 'www.example.com'));
+  assertRenderable(r);
+  assert.equal(r.dnssec.broken, false);
+  has(r, 'soa.error', 'warn');
+  // … unless the SERVFAIL says DNSSEC (EDE 6 DNSSEC Bogus) or the registrable domain has a DS
+  r = await run('www.example.com', flaky(unsigned, ['SOA', 'DS'], 'www.example.com', [{ code: 6, text: '' }]));
+  assert.equal(r.dnssec.broken, true);
+  r = await run('www.example.com', flaky(unsigned, ['SOA', 'DS'], 'www.example.com', [{ code: 3, text: '' }]));
+  assert.equal(r.dnssec.broken, false, 'EDE 3 (stale answer) is not a DNSSEC failure');
+  const signedZone = goodZone();
+  signedZone['www.example.com'] = { A: ['192.0.2.40'] };
+  r = await run('www.example.com', flaky(signedZone, ['SOA', 'DS'], 'www.example.com'));
+  assert.equal(r.dnssec.broken, true);
+  has(r, 'dnssec.broken', 'error');
 });
 
 /* ==================================================================== */

@@ -1434,6 +1434,8 @@ async function analyzeCaa(name, d, { issuerDN, wildcardCert }) {
 }
 
 const DEPRECATED_DNSSEC_ALGS = new Set([1, 3, 5, 6, 7, 12]);
+/** RFC 8914 EDE codes that report a DNSSEC validation failure (not 3 Stale Answer / 4 Forged Answer). */
+const DNSSEC_EDE_CODES = new Set([1, 2, 5, 6, 7, 8, 9, 10, 11, 12]);
 const LOOKUP_FAILURE_IDS = new Set([
   'soa.error', 'ns.error', 'mx.error', 'spf.error', 'dmarc.error', 'dkim.error', 'caa.error', 'wildcard.error', 'dnssec.error'
 ]);
@@ -1468,7 +1470,15 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex, zone }) {
       return `${e.code}${EDE_CODES[e.code] ? ` ${EDE_CODES[e.code]}` : ''}${text ? `: ${text}` : ''}`;
     }));
   }
-  if (servfail(soaR) && (records(dsR, 'DS').length > 0 || servfail(dsR))) {
+  // Below the registrable domain the DS is asked of the same (maybe just flaky) servers as the SOA, so its
+  // SERVFAIL counts only with a DNSSEC EDE code or a DS higher up, at the registrable domain.
+  const dsFailureIsDnssec = async () => {
+    const reg = registryDomain(name);
+    if (!reg || reg === name || !isSubdomainOf(name, reg)) return true;
+    if ([soaR, dsR].some((r) => arr(r.ede).some((e) => e && DNSSEC_EDE_CODES.has(e.code)))) return true;
+    return records(await d.query(reg, 'DS', { dnssec: true }), 'DS', reg).length > 0;
+  };
+  if (servfail(soaR) && (records(dsR, 'DS').length > 0 || (servfail(dsR) && await dsFailureIsDnssec()))) {
     const cdRes = await d.query(name, 'SOA', { cd: true });
     if (cdRes.ok && (cdRes.rcode === 'NOERROR' || cdRes.rcode === 'NXDOMAIN')) {
       info.broken = true;

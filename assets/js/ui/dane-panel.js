@@ -686,7 +686,7 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
   const runBtn = Button({
     label: t('dane.run'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'dane-run' },
     disabled: !hasPlan,
-    onClick: () => startDane(holder, { certs, ctx, extraNames })
+    onClick: () => ctx.requireOnline() && startDane(holder, { certs, ctx, extraNames })
   });
   // Shown in the run button's place while a check runs (the queries may wait for slow resolvers).
   const stopBtn = Button({
@@ -752,7 +752,7 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
     if (job.status === 'error') {
       statusHost.append(job.error && job.error.code === 'no-crypto'
         ? Alert({ variant: 'warn', compact: true, message: t('dane.noCrypto') })
-        : ErrorBanner(job.error, { title: t('dane.failed'), onRetry: () => startDane(holder, { certs, ctx, extraNames }) }));
+        : ErrorBanner(job.error, { title: t('dane.failed'), onRetry: () => ctx.requireOnline() && startDane(holder, { certs, ctx, extraNames }) }));
       return;
     }
     renderReport(job.report);

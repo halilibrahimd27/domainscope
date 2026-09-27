@@ -1178,6 +1178,7 @@ export function mount(container, ctx) {
       typeGroup.values = ['PTR'];
       otherField.value = '';
     }
+    if (!ctx.requireOnline()) return;
     ctx.setParams(queryParams(q));
     setShareAction();
     ctx.runStarted(q.input);

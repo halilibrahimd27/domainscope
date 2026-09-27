@@ -3839,6 +3839,7 @@ export function mount(container, ctx) {
     domainField.value = v.domains.join(', ');
     session.text = domainField.value;
     renderScope();
+    if (!ctx.requireOnline()) return;
     let dns;
     starting = true;
     try {
@@ -4946,6 +4947,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       ariaLabel: t('sub.org.owner.lookupFor', { cidr: net.cidr }), title: t('sub.org.owner.lookupFor', { cidr: net.cidr }),
       dataset: { action: 'sub-org-owner', cidr: net.cidr },
       onClick: async () => {
+        if (!ctx.requireOnline()) return;
         clear(el);
         el.append(h('span', { class: 'sub-org-owner-looking' }, t('sub.org.owner.looking')));
         try {

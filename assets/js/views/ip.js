@@ -649,6 +649,7 @@ export function mount(container, ctx) {
       return;
     }
     carried = null;
+    if (!ctx.requireOnline()) return;
     const tokens = [...parsed.ips, ...parsed.hosts];
     const params = lookupParams(input.value);
     ctx.setParams(params);
@@ -824,6 +825,7 @@ export function mount(container, ctx) {
   }
 
   async function reverseLookup(row) {
+    if (!ctx.requireOnline()) return;
     row.reverse = { state: 'loading', result: null };
     table.updateRow(row);
     try {

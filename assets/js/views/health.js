@@ -1092,7 +1092,7 @@ export function mount(container, ctx) {
     const domain = report.domain;
     const host = mtaStsPolicyHost(domain);
     const prev = s.policy && s.policy.domain === domain ? s.policy : null;
-    if (!host || (prev && prev.status === 'running')) return;
+    if (!host || (prev && prev.status === 'running') || !ctx.requireOnline()) return;
     policyFocus = !pending && focusInPolicy();
     const job = {
       domain, host, status: 'running', phase: 'gate', controller: new AbortController(),
@@ -1349,6 +1349,7 @@ export function mount(container, ctx) {
     domainField.value = domain;
     carried = null;
     const extra = parseSelectors(selectorsField.value);
+    if (!ctx.requireOnline()) return;
     ctx.setParams({ domain, selectors: extra.length ? extra.join(',') : null });
     setShareAction();
     ctx.runStarted(domain);

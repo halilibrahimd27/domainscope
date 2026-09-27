@@ -1334,7 +1334,7 @@ export function ctOutcomeMessage(r, { now = Date.now() } = {}) {
  * @returns {{ el: HTMLElement, input: HTMLInputElement, search: (host: string) => void }} search: look a host
  *   name up as if it were typed and Load pressed
  */
-export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null, focusTarget = null }) {
+export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null, focusTarget = null, requireOnline = () => true }) {
   const status = h('div', { class: 'cert-alt-status', attrs: { 'aria-live': 'polite' } });
   let running = null;
   const field = textInput({
@@ -1417,6 +1417,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
       return;
     }
     setFieldError(null);
+    if (!requireOnline()) return;
     stopCtLookup();
     const ctl = new AbortController();
     running = ctl;
@@ -1862,6 +1863,7 @@ export function mount(container, ctx) {
       signal: ctx.signal,
       onBusy: ctx.setBusy,
       onStale: ctx.checkOutdated,
+      requireOnline: ctx.requireOnline,
       focusTarget: () => content.querySelector('.cert-source-note') || content.querySelector('.cert-overview-cn')
     });
     if (!load) {
@@ -2440,6 +2442,7 @@ export function mount(container, ctx) {
           show(cached);
           return;
         }
+        if (!ctx.requireOnline()) return;
         const issuer = cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN;
         const list = names.slice(0, CAA_MAX_NAMES);
         show(startTask(caaCache, key, async () => {
@@ -2559,6 +2562,7 @@ export function mount(container, ctx) {
           show(cached);
           return;
         }
+        if (!ctx.requireOnline()) return;
         show(startTask(ctCache, key, async () => {
           const json = await retry(() => fetchJson(`${serialUrl}&output=json`, {
             signal: ctx.signal, timeoutMs: 60000, headers: { accept: 'application/json' }

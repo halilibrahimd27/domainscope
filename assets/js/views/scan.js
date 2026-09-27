@@ -1529,6 +1529,7 @@ export function mount(container, ctx) {
       if (!(session.run && session.run.status === 'running')) ctx.setBusy(busy);
     },
     onStale: ctx.checkOutdated,
+    requireOnline: ctx.requireOnline,
     focusTarget: () => certBody.querySelector('.cert-source-note') || certBody.querySelector('.cert-summary')
   }).el;
 
@@ -2163,7 +2164,7 @@ export function mount(container, ctx) {
     // `starting` covers the await below, so a double click cannot start two scans.
     if (starting || (session.run && session.run.status === 'running')) return;
     const v = validate();
-    if (!v) return;
+    if (!v || !ctx.requireOnline()) return;
     let dns;
     starting = true;
     try {
@@ -3149,6 +3150,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         label: t('sub.org.owner.lookup'), icon: 'search', size: 'sm', variant: 'ghost', dataset: { action: 'scan-net-owner', cidr: net.cidr },
         ariaLabel: t('sub.org.owner.lookupFor', { cidr: net.cidr }), title: t('sub.org.owner.lookupFor', { cidr: net.cidr }),
         onClick: async () => {
+          if (!ctx.requireOnline()) return;
           clear(el);
           el.append(h('span', { class: 'muted' }, t('sub.org.owner.looking')));
           try {

@@ -1938,6 +1938,7 @@ export function mount(container, ctx) {
    * subject for the page session: the note about the check kept before goes, the target stays.
    */
   const runDrift = async (z) => {
+    if (!ctx.requireOnline()) return;
     const plan = planDrift(z, { skipPrivate: S.live.skipPrivate, wildcardProbes: S.live.wildcards });
     abortDrift();
     ctx.runStarted(null);

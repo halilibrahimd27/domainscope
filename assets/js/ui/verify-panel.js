@@ -1940,6 +1940,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
 
   /** Start / Check again (lib-free flow in {@link launchVerify}); focus comes back to the action button. */
   async function launch() {
+    if (!ctx.requireOnline()) return;
     const doc = globalThis.document;
     pendingFocus = focusKeyOf(doc && doc.activeElement);
     try {

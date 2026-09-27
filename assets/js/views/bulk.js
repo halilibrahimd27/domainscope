@@ -935,6 +935,7 @@ export function mount(container, ctx) {
       area.focus();
       return;
     }
+    if (!ctx.requireOnline()) return;
     let dns;
     starting = true;
     try {

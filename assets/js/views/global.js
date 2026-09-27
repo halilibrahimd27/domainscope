@@ -1334,6 +1334,7 @@ export function mount(container, ctx) {
     carried = null;
     const type = GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A';
     const geo = geoField.checked;
+    if (!ctx.requireOnline()) return;
     ctx.setParams({ name, type, geo: geo ? null : '0' });
     ctx.runStarted(name);
     await runCheck(name, type, geo);

@@ -1167,12 +1167,14 @@ async function main() {
         { message: 'Domain Health opened, menu closed' });
       await sm.waitFor(() => document.activeElement?.id === 'page-title', { message: 'focus on the new page title' });
       assertEqual(await sm.evaluate(() => document.querySelector('.nav-menu-current').textContent), 'Domain Health', 'current tool in the bar');
-      // The current tool's own link just closes the menu.
+      // The open tool's own entry only closes the menu: the route (and its params) stays.
+      await sm.evaluate(() => window.history.replaceState(null, '', '#/health?keep=1'));
       await sm.click('[data-control="nav-menu"]');
       await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
       await sm.click('.navmenu-link[data-view="health"]');
       await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal') && document.activeElement?.dataset.control === 'nav-menu',
         { message: 'closed, focus back on the button' });
+      assertEqual(await sm.evaluate(() => window.location.hash), '#/health?keep=1', 'route kept');
     });
 
     await step('start page and menu: no console errors, exceptions, failed requests or CSP violations', async () => {

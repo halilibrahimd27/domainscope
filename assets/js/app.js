@@ -919,7 +919,13 @@ function openNavMenu() {
           href: buildRoute(v.id),
           dataset: { view: v.id, autofocus: here ? '1' : null },
           attrs: { 'aria-current': here ? 'page' : null },
-          on: { click: () => menu.close({ view: v.id }) }
+          on: {
+            click: (event) => {
+              // The open tool's entry only closes the menu: following it would drop the page's params.
+              if (here) event.preventDefault();
+              menu.close({ view: v.id });
+            }
+          }
         }, Icon(v.icon, { size: 18 }), h('span', { class: 'navmenu-name' }, t(`nav.${v.id}`)),
         here ? Icon('check', { size: 16, className: 'navmenu-check' }) : null));
       })));

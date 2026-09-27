@@ -404,8 +404,25 @@ function isTerraformOutput(v) {
   return Object.keys(v).every((k) => k === 'value' || k === 'type' || k === 'sensitive');
 }
 
+// Network, management and version attributes of a machine record: never its own
+// address, never another server's name (cf. the CLI's _JSON_SKIP_KEY_RE). Unlike
+// IP_KEY_EXCLUDE_RE it spares web / site / url / link, common group and output names.
+const RECORD_ATTR_EXCLUDE_RE = /(^|_)(gateway|gw|netmask|mask|subnet|broadcast|cidr|routes?|dns|nameservers?|resolvers?|ntp|mac|ilo|idrac|ipmi|bmc|version|ver)(_|$)/;
+
+/** A scalar or a list of scalars: an attribute value, never a nested machine. */
+const isScalarish = (v) => v === null || typeof v !== 'object'
+  || (Array.isArray(v) && v.every((x) => x === null || typeof x !== 'object'));
+
+/** A key holding the enclosing machine's own address (ip, ansible_host, name: <ip>…). */
+function isIpField(key) {
+  if (NAME_KEY_SET.has(key)) return true;
+  const nk = normalizeKey(key);
+  return !IP_KEY_EXCLUDE_RE.test(nk) && IP_FIELD_KEY_RE.test(nk);
+}
+
 function keyKind(key, value) {
   if (isTerraformOutput(value)) return 'name';
+  if (NAME_KEY_SET.has(key)) return 'field'; // { name: '10.0.0.1' }: an unnamed server's IP, not a server "name"
   if (STRUCTURAL_KEYS.has(String(key).toLowerCase())) return 'structural';
   const nk = normalizeKey(key);
   if (!IP_KEY_EXCLUDE_RE.test(nk) && IP_FIELD_KEY_RE.test(nk)) return 'field';
@@ -413,13 +430,20 @@ function keyKind(key, value) {
   return isNameToken(String(key)) ? 'name' : 'field';
 }
 
+const NO_HOSTS = new Set();
+
 /**
  * Walk a JSON/YAML value. Named objects claim every IP below them; unnamed
  * objects pass their IPs up (one group per object); keys that look like
  * names (terraform outputs, `{ web01: {...} }` maps) name what is below.
+ * In a machine record (named, holding an address field, or an Ansible vars map)
+ * gateway / DNS / NTP / iLO / version attributes are skipped and a scalar
+ * attribute never names another server.
  * Returns groups of { ip, raw } not claimed by any name.
+ * @param {Set<string>} [hosts] host names listed in Ansible groups
+ * @param {boolean} [isVars] `node` is a vars map: one of those hosts' (hostvars) or a group's `vars`
  */
-function visitStructured(node, depth, found) {
+function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
   if (depth > MAX_DEPTH || node === null || node === undefined) return [];
   if (typeof node === 'string') {
     const items = [];
@@ -432,25 +456,36 @@ function visitStructured(node, depth, found) {
   }
   if (Array.isArray(node)) {
     const out = [];
-    for (const el of node) out.push(...visitStructured(el, depth + 1, found));
+    for (const el of node) out.push(...visitStructured(el, depth + 1, found, hosts));
     return out;
   }
   if (typeof node !== 'object') return [];
 
   const name = pickName(node);
-  const own = [];
-  const pass = [];
+  // Visit every value first (what it names goes to `sub`): whether this is a
+  // machine record, and so which keys are attributes, depends on all of them.
+  const entries = [];
   for (const [key, value] of Object.entries(node)) {
     if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
-    const groups = visitStructured(value, depth + 1, found);
+    const kind = keyKind(key, value);
+    const sub = [];
+    const groups = visitStructured(value, depth + 1, sub, hosts, key === 'vars' || hosts.has(key));
+    entries.push({ key, value, kind, groups, sub });
+  }
+  const record = !!name || isVars || entries.some((e) => e.kind === 'field' && e.groups.length && isIpField(e.key));
+  const own = [];
+  const pass = [];
+  for (const { key, value, kind, groups, sub } of entries) {
+    if (record && RECORD_ATTR_EXCLUDE_RE.test(normalizeKey(key))) continue; // gateway, dns, ntp, iLO, version…
+    found.push(...sub);
     if (groups.length === 0) continue;
     if (name) {
       own.push(...groups.flat());
       continue;
     }
-    const kind = keyKind(key, value);
-    if (kind === 'field') own.push(...groups.flat());
-    else if (kind === 'structural') pass.push(...groups);
+    const k = kind === 'name' && record && isScalarish(value) ? 'field' : kind;
+    if (k === 'field') own.push(...groups.flat());
+    else if (k === 'structural') pass.push(...groups);
     else found.push({ name: key, items: groups.flat() });
   }
   if (name) {
@@ -461,9 +496,13 @@ function visitStructured(node, depth, found) {
   return pass;
 }
 
-/** Collect Ansible group definitions ({group: {hosts, children, vars}}). */
+/**
+ * Collect Ansible group definitions ({group: {hosts, children, vars}}).
+ * @returns {Set<string>} every host listed under a group's `hosts`
+ */
 function collectGroupDefs(root, ctx) {
-  if (!root || typeof root !== 'object' || Array.isArray(root)) return;
+  const listed = new Set();
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return listed;
   const seen = new Set();
   const scan = (name, obj, depth) => {
     if (depth > MAX_DEPTH) return;
@@ -476,6 +515,7 @@ function collectGroupDefs(root, ctx) {
     } else if (hosts && typeof hosts === 'object') {
       for (const h of Object.keys(hosts)) def.hosts.add(h);
     }
+    for (const h of def.hosts) listed.add(h);
     if (Array.isArray(children)) {
       for (const c of children) {
         if (typeof c !== 'string') continue;
@@ -496,12 +536,13 @@ function collectGroupDefs(root, ctx) {
       scan(key, value, 0);
     }
   }
+  return listed;
 }
 
 function extractStructured(root, ctx, fixedLine = null) {
-  collectGroupDefs(root, ctx);
+  const hosts = collectGroupDefs(root, ctx);
   const found = [];
-  const leftovers = visitStructured(root, 0, found);
+  const leftovers = visitStructured(root, 0, found, hosts);
   for (const items of leftovers) found.push({ name: null, items });
   for (const f of found) {
     const ips = [...new Set(f.items.map((i) => i.ip))];

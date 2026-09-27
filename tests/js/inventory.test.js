@@ -256,6 +256,110 @@ test('JSON Lines mixed with plain lines', () => {
 });
 
 /* -------------------------------------------------------------------- */
+/* JSON / YAML: network, management and version attributes              */
+/* -------------------------------------------------------------------- */
+
+test('ansible-inventory --list: gateway / DNS / NTP hostvars are neither servers nor server IPs', () => {
+  const r = parseInventory(JSON.stringify({
+    _meta: { hostvars: {
+      web01: { ansible_host: '10.0.0.1', ntp_server: '10.0.0.9', dns_servers: ['1.1.1.1', '8.8.8.8'], gateway: '10.0.0.254' },
+      web02: { ansible_host: '10.0.0.2', ntp_server: '10.0.0.9', dns_servers: ['1.1.1.1', '8.8.8.8'], gateway: '10.0.0.254' }
+    } },
+    all: { children: ['ungrouped', 'web'] },
+    web: { hosts: ['web01', 'web02'] }
+  }));
+  assert.deepEqual(ipsById(r), { web01: ['10.0.0.1'], web02: ['10.0.0.2'] });
+  assert.deepEqual(groupsById(r), { web01: ['web'], web02: ['web'] });
+  assert.deepEqual(r.warnings, []);
+  // a host whose only address-looking vars are attributes has no IP of its own
+  const bare = parseInventory(JSON.stringify({ _meta: { hostvars: { web01: { ntp_server: '10.0.0.9' } } }, web: { hosts: ['web01'] } }));
+  assert.deepEqual(bare.servers, []);
+  assert.deepEqual(codes(bare), ['NO_IP']);
+});
+
+test('Ansible YAML hostvars: gateway / DNS / NTP / version vars are ignored', () => {
+  const r = parseInventory([
+    'all:',
+    '  children:',
+    '    web:',
+    '      hosts:',
+    '        web01:',
+    '          ansible_host: 10.0.0.1',
+    '          ntp_server: 10.0.0.9',
+    '          dns_servers: [1.1.1.1, 8.8.8.8]',
+    '          gateway: 10.0.0.254',
+    '          app_version: 10.2.0.1',
+    '        web02:',
+    '          ansible_host: 10.0.0.2'
+  ].join('\n'));
+  assert.deepEqual(ipsById(r), { web01: ['10.0.0.1'], web02: ['10.0.0.2'] });
+  assert.deepEqual(r.warnings, []);
+  // a plain YAML map of hosts (no groups): the ansible_host field makes each a machine record
+  const plain = parseInventory('web01:\n  ansible_host: 10.0.0.1\n  app_version: 10.2.0.1\n  ilo_ip: 10.9.9.1\n');
+  assert.deepEqual(ipsById(plain), { web01: ['10.0.0.1'] });
+  // group vars, like an INI [all:vars] section
+  const vars = parseInventory([
+    'all:',
+    '  vars:',
+    '    ntp_server: 10.0.0.9',
+    '    dns_servers: [1.1.1.1, 8.8.8.8]',
+    '  children:',
+    '    web:',
+    '      hosts:',
+    '        web01:',
+    '          ansible_host: 10.0.0.1'
+  ].join('\n'));
+  assert.deepEqual(ipsById(vars), { web01: ['10.0.0.1'] });
+});
+
+test('named JSON records: gateway, netmask and DNS IPs are not attached to every server', () => {
+  const rec = (name, ip) => ({ name, ip, gateway: '10.0.0.254', netmask: '255.255.255.0', dns: ['1.1.1.1', '8.8.8.8'], mac: '00:11:22:33:44:55' });
+  const r = parseInventory(JSON.stringify([rec('web01', '10.0.0.1'), rec('web02', '10.0.0.2')]));
+  assert.deepEqual(ipsById(r), { web01: ['10.0.0.1'], web02: ['10.0.0.2'] });
+  assert.ok(!codes(r).includes('DUPLICATE_IP'));
+  assert.deepEqual(lookupServers(['8.8.8.8'], buildIpIndex(r.servers)), []);
+});
+
+test('a name / hostname / server key holding an IP identifies an unnamed server, never a server "name"', () => {
+  for (const records of [
+    [{ name: '10.0.0.1', ip: '10.0.0.1' }, { name: '10.0.0.2', ip: '10.0.0.2' }],
+    [{ hostname: '10.0.0.1' }, { hostname: '10.0.0.2' }],
+    [{ server: '10.0.0.1', port: 443 }, { server: '10.0.0.2', port: 443 }]
+  ]) {
+    const r = parseInventory(JSON.stringify(records));
+    assert.deepEqual(ipsById(r), { '10.0.0.1': ['10.0.0.1'], '10.0.0.2': ['10.0.0.2'] }, JSON.stringify(records));
+  }
+});
+
+test('unnamed JSON record: an iLO address is dropped, as in CSV and INI', () => {
+  const r = parseInventory(JSON.stringify([{ ip: '10.0.0.1', ilo_ip: '10.9.9.1' }]));
+  assert.deepEqual(ipsById(r), { '10.0.0.1': ['10.0.0.1'] });
+});
+
+test('regression: name maps and hosts that only look like attributes keep their servers', () => {
+  const flat = parseInventory(JSON.stringify({ 'dns-01': '10.0.0.53', 'mail-gw': '10.0.0.25', ntp: '10.0.0.9', web01: '10.0.0.1' }));
+  assert.deepEqual(ipsById(flat), { 'dns-01': ['10.0.0.53'], 'mail-gw': ['10.0.0.25'], ntp: ['10.0.0.9'], web01: ['10.0.0.1'] });
+  const infra = parseInventory([
+    'all:',
+    '  children:',
+    '    infra:',
+    '      hosts:',
+    '        ntp:',
+    '          ansible_host: 10.0.0.9',
+    '        dns:',
+    '          ansible_host: 10.0.0.53'
+  ].join('\n'));
+  assert.deepEqual(ipsById(infra), { ntp: ['10.0.0.9'], dns: ['10.0.0.53'] });
+  assert.deepEqual(groupsById(infra), { ntp: ['infra'], dns: ['infra'] });
+  // the Servers view's own YAML and JSON examples
+  const yaml = parseInventory('all:\n  children:\n    web:\n      hosts:\n        web01:\n          ansible_host: 10.0.1.11\n        web02:\n          ansible_host: 10.0.1.12\n');
+  assert.deepEqual(ipsById(yaml), { web01: ['10.0.1.11'], web02: ['10.0.1.12'] });
+  assert.deepEqual(groupsById(yaml), { web01: ['web'], web02: ['web'] });
+  const json = parseInventory('[\n  { "name": "web01", "ip": "10.0.1.11" },\n  { "name": "web02", "ips": ["10.0.1.12", "2001:db8::12"] }\n]\n');
+  assert.deepEqual(ipsById(json), { web01: ['10.0.1.11'], web02: ['10.0.1.12', '2001:db8::12'] });
+});
+
+/* -------------------------------------------------------------------- */
 /* Duplicates / edge cases                                             */
 /* -------------------------------------------------------------------- */
 

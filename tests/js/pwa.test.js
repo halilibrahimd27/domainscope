@@ -219,6 +219,24 @@ describe('web app manifests', () => {
     }
   });
 
+  test('the texts that name the offline tools name exactly VIEWS[].offline', async () => {
+    await import('../../assets/js/views/about.js'); // registers about.privOffline
+    const offline = VIEWS.filter((v) => v.offline).map((v) => v.id);
+    assert.deepEqual(offline, ['zone', 'cert', 'inventory', 'about']);
+    const prev = getLang();
+    try {
+      for (const [m, lang] of [[en, 'en'], [tr, 'tr']]) {
+        setLang(lang);
+        for (const id of offline) {
+          assert.ok(m.description.includes(t(`nav.${id}`)), `${lang} manifest description: ${id}`);
+          assert.ok(t('about.privOffline').includes(t(`nav.${id}`)), `${lang} About: ${id}`);
+        }
+      }
+    } finally {
+      setLang(prev);
+    }
+  });
+
   test('index.html links the English manifest; boot.js and manifestFor pick the Turkish one', () => {
     const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
     assert.match(html, /<link rel="manifest" href="manifest\.webmanifest">/);

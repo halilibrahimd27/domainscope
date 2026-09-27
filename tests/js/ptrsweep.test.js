@@ -675,6 +675,44 @@ describe('rows, summary, exports and hand-offs', async () => {
     for (const f of P.SWEEP_FILTERS) assert.ok(Array.isArray(keys(f)));
   });
 
+  test('sweepRowResults: a pattern row gives only the members that pass the filter and the search on their own', async () => {
+    // one of the eight templated names does not resolve back
+    const zone = { ...sweepZone(), ...a('192-0-2-10.dyn.isp.example.net', '198.51.100.10') };
+    const { results: swept } = await P.runPtrSweep(P.parseSweepTarget('192.0.2.0/28').addresses, { dns: client(zone).dns });
+    const rows = P.sweepRows(swept, { focus: 'example.com' });
+    const pattern = rows.find((r) => r.type === 'pattern');
+    assert.deepEqual([pattern.members.length, pattern.counts.confirmed, pattern.counts.mismatch], [8, 7, 1]);
+    const exported = (filter, match = null) => rows.filter((r) => P.sweepRowMatches(r, filter))
+      .flatMap((r) => P.sweepRowResults(r, filter, { match })).map((r) => r.ip);
+    assert.deepEqual(exported('mismatch'), ['192.0.2.2', '192.0.2.10'], 'not the 7 confirmed members');
+    assert.equal(exported('confirmed').length, 10);
+    assert.ok(!exported('confirmed').includes('192.0.2.10'));
+    assert.equal(exported('ptr').length, 12);
+    assert.equal(exported('all').length, 16);
+    assert.deepEqual(exported('focus'), ['192.0.2.1', '192.0.2.2']);
+    assert.deepEqual(exported('none'), ['192.0.2.0', '192.0.2.4', '192.0.2.6']);
+    // the search narrows a pattern to the members it names
+    assert.deepEqual(exported('all', (r) => r.ip === '192.0.2.10'), ['192.0.2.10']);
+    assert.deepEqual(P.sweepRowResults(pattern, 'all', { match: (r) => r.ip === '192.0.2.9' }).map((r) => r.ip), ['192.0.2.9']);
+    assert.deepEqual(P.sweepRowResults(pattern, 'focus'), []);
+    const single = rows.find((r) => r.key === '192.0.2.2');
+    assert.deepEqual([P.sweepRowResults(single, 'mismatch').length, P.sweepRowResults(single, 'confirmed').length, P.sweepRowResults(single, 'mismatch', { match: () => false }).length], [1, 0, 0]);
+    // the JSON export of the 'mismatch' filter: exactly those two addresses, the whole sweep's summary
+    const j = P.sweepExportJson(swept, { exported: swept.filter((r) => ['192.0.2.2', '192.0.2.10'].includes(r.ip)), filter: { show: 'mismatch', search: '' } });
+    assert.deepEqual([j.exported, j.results.map((r) => r.status), j.summary.byStatus.mismatch, j.summary.done], [2, ['mismatch', 'mismatch'], 2, 16]);
+  });
+
+  test('sweepResultMatches: one address against every filter', () => {
+    const byIp = Object.fromEntries(results.map((r) => [r.ip, r]));
+    const pass = (ip, focus = null) => P.SWEEP_FILTERS.filter((f) => P.sweepResultMatches(byIp[ip], f, { focus }));
+    assert.deepEqual(pass('192.0.2.1', 'example.com'), ['all', 'ptr', 'focus', 'confirmed']);
+    assert.deepEqual(pass('192.0.2.1'), ['all', 'ptr', 'confirmed'], 'no focus domain');
+    assert.deepEqual(pass('192.0.2.2', 'example.com'), ['all', 'ptr', 'focus', 'mismatch']);
+    assert.deepEqual(pass('192.0.2.0'), ['all', 'none']);
+    assert.deepEqual(pass('192.0.2.6'), ['all', 'none']);
+    assert.deepEqual(pass('192.0.2.5'), ['all', 'failed']);
+  });
+
   test('sweepSummary', () => {
     const s = P.sweepSummary(results, { focus: 'example.com' });
     assert.deepEqual(s.byStatus, { confirmed: 11, mismatch: 1, 'no-ptr': 1, nxdomain: 2, servfail: 1, error: 0 });

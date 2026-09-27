@@ -59,8 +59,8 @@ export const SWEEP_MAX_CONCURRENCY = 64;
  * - no-ptr: the reverse name exists but holds no PTR record (NOERROR, empty);
  * - nxdomain: no reverse record at all;
  * - servfail: the reverse lookup failed with SERVFAIL (a broken or lame reverse delegation);
- * - error: no answer (transport failure, timeout, another rcode), or every forward lookup of a
- *   name failed that way (`stage: 'forward'`).
+ * - error: no answer (transport failure, timeout, another rcode), or (`stage: 'forward'`) no PTR
+ *   name confirmed and at least one forward lookup failed that way, so a mismatch cannot be claimed.
  */
 export const FCRDNS_STATUSES = Object.freeze(['confirmed', 'mismatch', 'no-ptr', 'nxdomain', 'servfail', 'error']);
 /** What a PTR name's forward lookup gave: the address, only other addresses, no record, no name, a failure. */
@@ -1032,23 +1032,50 @@ export function sweepRows(results, { focus = null, collapse = true, minPattern =
 }
 
 /**
+ * Does one address pass a results filter ({@link SWEEP_FILTERS}) on its own?
+ * @param {SweepResult} result
+ * @param {string} filter
+ * @param {{ focus?: string|null }} [opts] the focus domain, for the 'focus' filter
+ * @returns {boolean}
+ */
+export function sweepResultMatches(result, filter, { focus = null } = {}) {
+  switch (filter) {
+    case 'ptr': return hasPtr(result);
+    case 'focus': return result.names.some((n) => isFocusName(n, focus));
+    case 'confirmed': return result.status === 'confirmed';
+    case 'mismatch': return result.status === 'mismatch';
+    case 'none': return result.status === 'no-ptr' || result.status === 'nxdomain';
+    case 'failed': return failedStatus(result.status);
+    default: return true;
+  }
+}
+
+/**
  * Does a row pass a results filter ({@link SWEEP_FILTERS})? A pattern row passes when one of
- * its members does.
+ * its members does (a name under the focus domain is never in a pattern).
  * @param {SweepRow} row
  * @param {string} filter
  * @returns {boolean}
  */
 export function sweepRowMatches(row, filter) {
-  const results = row.type === 'pattern' ? row.members : [row.result];
-  switch (filter) {
-    case 'ptr': return results.some(hasPtr);
-    case 'focus': return row.focus;
-    case 'confirmed': return results.some((r) => r.status === 'confirmed');
-    case 'mismatch': return results.some((r) => r.status === 'mismatch');
-    case 'none': return results.some((r) => r.status === 'no-ptr' || r.status === 'nxdomain');
-    case 'failed': return results.some((r) => failedStatus(r.status));
-    default: return true;
-  }
+  if (filter === 'focus') return row.focus;
+  return (row.type === 'pattern' ? row.members : [row.result]).some((r) => sweepResultMatches(r, filter));
+}
+
+/**
+ * The addresses of a row that pass a results filter, and `match` (the view's search), each on
+ * its own: an address row gives its address or nothing, a pattern row the members that pass
+ * (one mismatch among eight confirmed names is what the 'mismatch' filter asks for, not the
+ * eight). What an export of a filtered table writes.
+ * @param {SweepRow} row
+ * @param {string} filter
+ * @param {{ match?: ((result: SweepResult) => boolean)|null }} [opts]
+ * @returns {SweepResult[]}
+ */
+export function sweepRowResults(row, filter, { match = null } = {}) {
+  const pass = (r) => !match || match(r);
+  if (row.type !== 'pattern') return sweepRowMatches(row, filter) && pass(row.result) ? [row.result] : [];
+  return filter === 'focus' ? [] : row.members.filter((r) => sweepResultMatches(r, filter) && pass(r));
 }
 
 /**
@@ -1057,7 +1084,8 @@ export function sweepRowMatches(row, filter) {
  * @param {{ focus?: string|null, minPattern?: number }} [opts]
  * @returns {{ done: number, byStatus: Record<string, number>, withPtr: number, noReverse: number, failed: number,
  *   forwardFailed: number, templated: number, patterns: number, focus: number, names: number, v6: number }}
- *   `forwardFailed`: addresses with a PTR name whose forward lookups all failed (an 'error' at the forward stage)
+ *   `forwardFailed`: addresses with PTR names none of which confirmed, where at least one forward lookup failed
+ *   (an 'error' at the forward stage: a mismatch cannot be claimed)
  */
 export function sweepSummary(results, { focus = null, minPattern = 2 } = {}) {
   const list = (Array.isArray(results) ? results : []).filter(Boolean);

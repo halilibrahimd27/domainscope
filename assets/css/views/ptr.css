@@ -216,6 +216,14 @@
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* A pattern row the filter or the search keeps only partly: "1 of 8 match" under its badge. */
+.ptr-check {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 .ptr-template {
   font-size: 12.5px;
   overflow-wrap: anywhere;

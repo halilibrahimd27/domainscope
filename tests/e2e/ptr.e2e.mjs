@@ -53,10 +53,11 @@ function fakeTable() {
   add(rev('192.0.2.3'), 'PTR', 'host.example.net');
   add('host.example.net', 'A', '192.0.2.3');
   T[rev('192.0.2.6')] = {};
+  // eight provider-generated names; the one of 192.0.2.10 does not resolve back
   for (let i = 7; i <= 14; i += 1) {
     const name = `192-0-2-${i}.dyn.isp.example.net`;
     add(rev(`192.0.2.${i}`), 'PTR', name);
-    add(name, 'A', `192.0.2.${i}`);
+    add(name, 'A', i === 10 ? '198.51.100.10' : `192.0.2.${i}`);
   }
   add(rev('192.0.2.15'), 'PTR', 'server-192-0-2-15.fra50.r.cloudfront.net');
   add('server-192-0-2-15.fra50.r.cloudfront.net', 'A', '192.0.2.15');
@@ -267,7 +268,7 @@ async function main() {
       assert(/web01/.test(r[0].server), 'inventory match');
       assertEqual(r.slice(5).map((x) => x.status), ['nxdomain', 'nxdomain', 'no-ptr', 'servfail'], 'no name, then failures');
       const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ptr-stats .stat')].filter((s) => !s.hidden).map((s) => [s.dataset.stat, s.querySelector('.stat-value').textContent])));
-      assertEqual(stats, { addresses: '16', named: '12', confirmed: '11', none: '3', failed: '1', focus: '2' }, 'stats');
+      assertEqual(stats, { addresses: '16', named: '12', confirmed: '10', none: '3', failed: '1', focus: '2' }, 'stats');
       assert(/Under example\.com/.test(await text(page, '.ptr-stats [data-stat="focus"]')), 'focus card');
       const queried = await page.evaluate(() => new Set(window.__fakeDnsLog.filter((q) => q.type === 'PTR').map((q) => q.name)).size);
       assertEqual(queried, 16, 'one reverse name per address');
@@ -305,13 +306,45 @@ async function main() {
       assertEqual([j.summary.done, j.summary.byStatus.nxdomain, j.summary.noReverse], [16, 2, 3], 'the whole sweep');
     });
 
+    await run.step('a filter or a search keeps only the pattern members that pass: "1 of 8 match", and the export writes only them', async () => {
+      const exported = async () => {
+        await takeDownloads(page);
+        // (a click from JS: the export toasts can sit over the table's footer)
+        await jsClick(page, '.ptr-table [data-export="csv"]');
+        await jsClick(page, '.ptr-table [data-export="json"]');
+        await sleep(150);
+        const files = await takeDownloads(page);
+        const csv = files.find((f) => f.name.endsWith('.csv')).text.trim().split(/\r?\n/).slice(1).map((l) => l.split(',').slice(0, 2).join(' '));
+        const j = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
+        return { csv, json: j.results.map((r) => `${r.ip} ${r.status}`), filter: j.filter, done: j.summary.done };
+      };
+      const matching = () => page.evaluate(() => document.querySelector('.ptr-row-pattern .ptr-matching')?.textContent || '');
+      await setSelect(page, '[data-role="ptr-filter"]', 'mismatch');
+      await sleep(150);
+      assertEqual((await rows(page)).map((x) => x.pattern ? 'pattern' : x.ip), ['192.0.2.2', 'pattern'], 'the mismatch and the pattern that holds one');
+      assertEqual(await matching(), '1 of 8 matches', 'pattern note');
+      const mismatch = await exported();
+      assertEqual(mismatch.csv, ['192.0.2.2 mismatch', '192.0.2.10 mismatch'], 'CSV: not the seven confirmed members');
+      assertEqual([mismatch.json, mismatch.filter, mismatch.done], [['192.0.2.2 mismatch', '192.0.2.10 mismatch'], { show: 'mismatch', search: '' }, 16], 'JSON');
+      await shot(page, opts, 'ptr-filter-pattern-desktop-light-en');
+      // the search judges a pattern's members one by one too
+      await setSelect(page, '[data-role="ptr-filter"]', 'all');
+      await page.type('.ptr-table .dt-search-input', '192.0.2.9');
+      await page.waitFor(() => /1 of 8/.test(document.querySelector('.ptr-row-pattern .ptr-matching')?.textContent || ''), { message: 'search note' });
+      assertEqual((await rows(page)).length, 1, 'only the pattern row');
+      const searched = await exported();
+      assertEqual([searched.csv, searched.filter], [['192.0.2.9 confirmed'], { show: 'all', search: '192.0.2.9' }], 'searched export');
+      await page.type('.ptr-table .dt-search-input', '');
+      await page.waitFor(() => document.querySelectorAll('.ptr-table tbody tr.dt-row').length === 9 && !document.querySelector('.ptr-matching'), { message: 'search cleared' });
+    });
+
     await run.step('exports: CSV one line per address, JSON, names.txt without generated names', async () => {
       await setSelect(page, '[data-role="ptr-filter"]', 'all');
       await sleep(100);
       await takeDownloads(page);
-      await page.click('.ptr-table [data-export="csv"]');
-      await page.click('.ptr-table [data-export="json"]');
-      await page.click('[data-action="ptr-names"]');
+      await jsClick(page, '.ptr-table [data-export="csv"]');
+      await jsClick(page, '.ptr-table [data-export="json"]');
+      await jsClick(page, '[data-action="ptr-names"]');
       await sleep(150);
       const files = await takeDownloads(page);
       const csv = files.find((f) => f.name.endsWith('.csv'));
@@ -320,7 +353,7 @@ async function main() {
       assertEqual(lines.length, 17, 'header + 16 addresses');
       assert(csv.bom, 'BOM');
       const j = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
-      assertEqual([j.schema, j.results.length, j.focus, j.summary.byStatus.confirmed, j.filter], ['domainscope.ptr-sweep/1', 16, 'example.com', 11, null], 'JSON');
+      assertEqual([j.schema, j.results.length, j.focus, j.summary.byStatus.confirmed, j.filter], ['domainscope.ptr-sweep/1', 16, 'example.com', 10, null], 'JSON');
       assertEqual(files.find((f) => f.name === 'names.txt').text, 'mail.example.com\nwww.example.com\nhost.example.net\n', 'names.txt');
     });
 

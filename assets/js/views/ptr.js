@@ -27,15 +27,15 @@
 import { h, clear, debounce, uid } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, EmptyState, ErrorBanner, Icon, KeyValueList, KindBadge,
-  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, select, textInput, textarea, toast
+  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, normalizeSearch, select, textInput, textarea, toast
 } from '../ui/components.js';
 import {
   t, registerStrings, formatNumber, formatDuration, formatDateTime
 } from '../i18n.js';
 import {
-  SWEEP_MAX_ADDRESSES, SWEEP_MAX_CONCURRENCY, SWEEP_FILTERS, SWEEP_CSV_COLUMNS, parseSweepTarget, announcedPrefixes,
-  prefixSelection, runPtrSweep, sweepRows, sweepRowMatches, sweepSummary, sweepExportRows, sweepExportJson, sweepNames,
-  inventoryAdditions, inventoryDraft, scanHandoff, isFocusName
+  SWEEP_MAX_ADDRESSES, SWEEP_MAX_CONCURRENCY, SWEEP_FILTERS, SWEEP_CSV_COLUMNS, FCRDNS_STATUSES, parseSweepTarget, announcedPrefixes,
+  prefixSelection, runPtrSweep, sweepRows, sweepRowMatches, sweepRowResults, sweepSummary, sweepExportRows, sweepExportJson,
+  sweepNames, inventoryAdditions, inventoryDraft, scanHandoff, isFocusName
 } from '../lib/ptrsweep.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { parseInventory } from '../lib/inventory.js';
@@ -186,6 +186,8 @@ registerStrings('en', {
   'ptr.pattern.generic': 'A provider’s pool name (dynamic, static, DSL, customer …) with a number.',
   'ptr.pattern.title': 'Names a provider generates carry no information about who runs the host, so {count} addresses are folded into this row. “Expand patterns” lists them one by one.',
   'ptr.pattern.check': '{confirmed} of {count} confirm',
+  'ptr.pattern.matching': { one: '{count} of {total} matches', other: '{count} of {total} match' },
+  'ptr.pattern.matchingTitle': 'The filter or the search keeps only these addresses of the pattern; an export writes only them.',
   'ptr.templated': 'generated',
   'ptr.templatedTitle': 'This name follows a provider template (the address is written into it, or a dynamic / pool word).',
   'ptr.focusBadge': 'your domain',
@@ -362,6 +364,8 @@ registerStrings('tr', {
   'ptr.pattern.generic': 'Sağlayıcının havuz adı (dynamic, static, DSL, customer …) ve bir sayı.',
   'ptr.pattern.title': 'Sağlayıcının ürettiği adlar, host’u kimin çalıştırdığı hakkında bilgi vermez; bu yüzden {count} adres bu satırda toplandı. “Şablonları aç” hepsini tek tek listeler.',
   'ptr.pattern.check': '{count} adresten {confirmed} tanesi doğrulandı',
+  'ptr.pattern.matching': '{total} adresten {count} tanesi uyuyor',
+  'ptr.pattern.matchingTitle': 'Filtre ya da arama bu şablondan yalnızca bu adresleri tutuyor; dışa aktarma da yalnızca onları yazar.',
   'ptr.templated': 'üretilmiş',
   'ptr.templatedTitle': 'Bu ad bir sağlayıcı şablonuna uyuyor (adres adın içine yazılmış ya da dynamic / pool gibi bir sözcük var).',
   'ptr.focusBadge': 'alan adınız',
@@ -1158,7 +1162,82 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     ? h('div', { class: 'cluster' }, servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server', title: s.ip })))
     : null);
 
-  const table = DataTable({
+  // A pattern row's search text holds every member's (addresses, names, statuses, operators,
+  // servers), so a member that matches on its own never sits in a row the search hides.
+  const providerName = (c) => (c && c.provider ? c.provider.name : '');
+  const columns = [
+    {
+      key: 'ip', label: t('ptr.col.ip'), sortable: true, sortValue: (r) => r.sortKey,
+      searchValue: (r) => (r.type === 'pattern' ? r.members.map((m) => m.ip).join(' ') : r.result.ip),
+      render: (r) => (r.type === 'pattern'
+        ? h('div', { class: 'ptr-ipcell' },
+          h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
+          h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
+        : h('span', { class: 'mono ptr-ip' }, r.result.ip))
+    },
+    {
+      key: 'ptr', label: t('ptr.col.ptr'), sortable: true,
+      sortValue: (r) => (r.type === 'pattern' ? r.template : r.result.names[0] || null),
+      searchValue: (r) => (r.type === 'pattern' ? `${r.template} ${r.members.flatMap((m) => m.names).join(' ')}` : r.result.names.join(' ')),
+      render: (r) => {
+        if (r.type === 'pattern') {
+          return h('div', { class: 'ptr-pattern', title: t('ptr.pattern.title', { count: r.members.length }) },
+            templateEl(r.template), Badge(t('ptr.pattern.badge'), { variant: 'info', icon: 'layers' }));
+        }
+        const res = r.result;
+        if (!res.names.length) return null;
+        const f = focus();
+        return h('div', { class: 'ptr-names' },
+          TruncatedList(res.names, {
+            max: 2,
+            render: (n) => h('span', { class: ['ptr-name', { 'is-focus': isFocusName(n, f) }] }, hostLink(n))
+          }),
+          r.focus ? Badge(t('ptr.focusBadge'), { variant: 'accent' }) : null,
+          res.template && !r.focus ? Badge(t('ptr.templated'), { title: t('ptr.templatedTitle') }) : null);
+      }
+    },
+    {
+      key: 'check', label: t('ptr.col.check'), sortable: true,
+      sortValue: (r) => (r.type === 'pattern' ? 'confirmed' : r.result.status),
+      searchValue: (r) => (r.type === 'pattern'
+        ? FCRDNS_STATUSES.filter((s) => r.counts[s]).map((s) => `${s} ${t(`ptr.st.${s}`)}`).join(' ')
+        : `${r.result.status} ${t(`ptr.st.${r.result.status}`)}`),
+      render: (r) => {
+        if (r.type === 'pattern') {
+          const all = r.counts.confirmed === r.members.length;
+          const badge = Badge(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
+          // The filter or the search keeps only some of the pattern's addresses (and so does an export).
+          const kept = narrowed() ? rowResults(r).length : r.members.length;
+          return kept < r.members.length
+            ? h('div', { class: 'ptr-check' }, badge, h('span', { class: 'ptr-matching text-xs muted', title: t('ptr.pattern.matchingTitle'), dataset: { kept: String(kept) } },
+              t('ptr.pattern.matching', { count: kept, total: formatNumber(r.members.length) })))
+            : badge;
+        }
+        const el = statusBadge(r.result.status);
+        el.dataset.status = r.result.status;
+        return el;
+      }
+    },
+    {
+      key: 'operator', label: t('ptr.col.operator'), sortable: true,
+      sortValue: (r) => (r.type === 'address' && r.result.classification.provider ? r.result.classification.provider.name : null),
+      searchValue: (r) => (r.type === 'pattern' ? [...new Set(r.members.map((m) => providerName(m.classification)))].join(' ') : providerName(r.result.classification)),
+      render: (r) => {
+        const c = r.type === 'pattern' ? r.classification : r.result.classification;
+        return c && c.provider ? KindBadge(c) : null;
+      }
+    },
+    {
+      key: 'server', label: t('ptr.col.server'), sortable: true,
+      sortValue: (r) => (r.servers[0] ? r.servers[0].name : null),
+      searchValue: (r) => r.servers.map((s) => s.name).join(' '),
+      render: (r) => serversCell(r.servers)
+    }
+  ];
+  /** The search text the table last filtered pattern rows by (a new one re-applies the filter). */
+  let appliedSearch = '';
+  let table = null;
+  table = DataTable({
     caption: t('ptr.results', { target: job.label }),
     search: true,
     pageSize: 200,
@@ -1171,69 +1250,43 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     toolbar: h('div', { class: 'ptr-toolbar' }, filterSel.el, expandBox.el, namesBtn, scanBtn, invBtn),
     details: (r) => (r.type === 'pattern' ? patternDetails(r) : addressDetails(r)),
     export: { formats: ['csv', 'json'], onExport: (format, rows) => exportRows(format, rows) },
-    columns: [
-      {
-        key: 'ip', label: t('ptr.col.ip'), sortable: true, sortValue: (r) => r.sortKey,
-        searchValue: (r) => (r.type === 'pattern' ? r.members.map((m) => m.ip).join(' ') : r.result.ip),
-        render: (r) => (r.type === 'pattern'
-          ? h('div', { class: 'ptr-ipcell' },
-            h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
-            h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
-          : h('span', { class: 'mono ptr-ip' }, r.result.ip))
-      },
-      {
-        key: 'ptr', label: t('ptr.col.ptr'), sortable: true,
-        sortValue: (r) => (r.type === 'pattern' ? r.template : r.result.names[0] || null),
-        searchValue: (r) => (r.type === 'pattern' ? `${r.template} ${r.members.flatMap((m) => m.names).join(' ')}` : r.result.names.join(' ')),
-        render: (r) => {
-          if (r.type === 'pattern') {
-            return h('div', { class: 'ptr-pattern', title: t('ptr.pattern.title', { count: r.members.length }) },
-              templateEl(r.template), Badge(t('ptr.pattern.badge'), { variant: 'info', icon: 'layers' }));
-          }
-          const res = r.result;
-          if (!res.names.length) return null;
-          const f = focus();
-          return h('div', { class: 'ptr-names' },
-            TruncatedList(res.names, {
-              max: 2,
-              render: (n) => h('span', { class: ['ptr-name', { 'is-focus': isFocusName(n, f) }] }, hostLink(n))
-            }),
-            r.focus ? Badge(t('ptr.focusBadge'), { variant: 'accent' }) : null,
-            res.template && !r.focus ? Badge(t('ptr.templated'), { title: t('ptr.templatedTitle') }) : null);
-        }
-      },
-      {
-        key: 'check', label: t('ptr.col.check'), sortable: true,
-        sortValue: (r) => (r.type === 'pattern' ? 'confirmed' : r.result.status),
-        searchValue: (r) => (r.type === 'pattern' ? '' : `${r.result.status} ${t(`ptr.st.${r.result.status}`)}`),
-        render: (r) => {
-          if (r.type === 'pattern') {
-            const all = r.counts.confirmed === r.members.length;
-            return Badge(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
-          }
-          const el = statusBadge(r.result.status);
-          el.dataset.status = r.result.status;
-          return el;
-        }
-      },
-      {
-        key: 'operator', label: t('ptr.col.operator'), sortable: true,
-        sortValue: (r) => (r.type === 'address' && r.result.classification.provider ? r.result.classification.provider.name : null),
-        searchValue: (r) => (r.classification && r.classification.provider ? r.classification.provider.name : (r.result && r.result.classification.provider ? r.result.classification.provider.name : '')),
-        render: (r) => {
-          const c = r.type === 'pattern' ? r.classification : r.result.classification;
-          return c && c.provider ? KindBadge(c) : null;
-        }
-      },
-      {
-        key: 'server', label: t('ptr.col.server'), sortable: true,
-        sortValue: (r) => (r.servers[0] ? r.servers[0].name : null),
-        searchValue: (r) => r.servers.map((s) => s.name).join(' '),
-        render: (r) => serversCell(r.servers)
-      }
-    ]
+    columns,
+    onChange: () => {
+      if (table && table.getSearch() !== appliedSearch) applyFilter();
+    }
   });
-  table.setFilter(session.filter === 'all' ? null : (row) => sweepRowMatches(row, session.filter));
+
+  /* the filter and the search judge a pattern row's addresses one by one */
+  const searchable = columns.filter((c) => c.searchable !== false && c.searchValue);
+  /** The search box's terms, normalised and split as the table does. */
+  const searchTerms = () => normalizeSearch(table ? table.getSearch() : '').split(/\s+/).filter(Boolean);
+  const narrowed = () => session.filter !== 'all' || searchTerms().length > 0;
+  /**
+   * A pattern member against the search terms, as its own row would be (what "Expand patterns"
+   * lists): its address, names, status, operator and matched server.
+   */
+  const memberMatch = (row, terms) => (terms.length ? (m) => {
+    const own = { type: 'address', key: m.ip, result: m, focus: false, servers: row.servers.filter((s) => s.ip === m.ip) };
+    const text = normalizeSearch(searchable.map((c) => String(c.searchValue(own) ?? '')).join('\u0001'));
+    return terms.every((term) => text.includes(term));
+  } : null);
+  /** The addresses a shown row stands for under the current filter and search (what an export writes). */
+  const rowResults = (row, terms = searchTerms()) => sweepRowResults(row, session.filter, { match: row.type === 'pattern' ? memberMatch(row, terms) : null });
+
+  /**
+   * Apply the filter and the search: an address row by lib/ptrsweep sweepRowMatches (the table
+   * applies the search), a pattern row while one of its addresses passes both on its own. The
+   * pattern rows are re-rendered for their "N of M match" note.
+   */
+  function applyFilter() {
+    appliedSearch = table.getSearch();
+    const terms = searchTerms();
+    table.setFilter(narrowed()
+      ? (row) => (row.type === 'pattern' ? rowResults(row, terms).length > 0 : sweepRowMatches(row, session.filter))
+      : null);
+    for (const row of table.getRows()) if (row.type === 'pattern') table.updateRow(row);
+  }
+  applyFilter();
 
   const resultsTitleId = uid('ptr-results');
   const el = h('section', { class: 'stack ptr-results', attrs: { 'aria-labelledby': resultsTitleId }, dataset: { job: job.id } },
@@ -1259,10 +1312,11 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
   const syncSoon = throttle(syncRows, 250);
 
+  /** Show `f` ({@link SWEEP_FILTERS}). */
   function setFilter(f) {
     session.filter = SWEEP_FILTERS.includes(f) ? f : 'all';
     filterSel.value = session.filter;
-    table.setFilter(session.filter === 'all' ? null : (row) => sweepRowMatches(row, session.filter));
+    applyFilter();
     for (const [k, v] of Object.entries(statFilters)) stat[k].set({ pressed: v === session.filter });
   }
 
@@ -1351,12 +1405,10 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
 
   /* exports and hand-offs */
-  function visibleResults(rows) {
-    return rows.flatMap((r) => (r.type === 'pattern' ? r.members : [r.result])).sort((a, b) => a.index - b.index);
-  }
-
+  /** The export writes the addresses the shown rows stand for: of a pattern row, the members that pass on their own. */
   function exportRows(format, rows) {
-    const results = visibleResults(rows);
+    const terms = searchTerms();
+    const results = rows.flatMap((r) => rowResults(r, terms)).sort((a, b) => a.index - b.index);
     const f = focus();
     const subject = job.label.replace(/[^0-9a-z.:-]+/gi, '_').slice(0, 40);
     const name = timestampedName('reverse-dns', format, subject);

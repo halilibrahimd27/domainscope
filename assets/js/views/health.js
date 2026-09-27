@@ -1313,14 +1313,23 @@ export function mount(container, ctx) {
   };
 
   /**
+   * The domain the box last took from a carried target: a newer one replaces it while the box
+   * still holds it (lib/session.js fillReplaces). A re-mount keeps it (snapshot); a check forgets it.
+   */
+  let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null)
+    : (isFillOnly(ctx.params) && initialDomain) || null;
+
+  /**
    * A domain carried over from another tool (`run=0`) goes into the box while it is empty or still
-   * holds the report's domain — never over a draft — and nothing runs; the report stays.
+   * holds the report's domain or the domain carried before — never over a draft — and nothing
+   * runs; the report stays.
    */
   function takeCarried(domain) {
     const last = current && current.report ? [current.report.domain] : null;
-    if (fillReplaces(domainField.value, last, boxDomains)) {
+    if (fillReplaces(domainField.value, last, boxDomains, carried)) {
       domainField.value = domain;
       domainField.setError(null);
+      carried = domain;
     }
   }
 
@@ -1334,6 +1343,7 @@ export function mount(container, ctx) {
       return;
     }
     domainField.value = domain;
+    carried = null;
     const extra = parseSelectors(selectorsField.value);
     ctx.setParams({ domain, selectors: extra.length ? extra.join(',') : null });
     setShareAction();
@@ -1424,6 +1434,7 @@ export function mount(container, ctx) {
       else if (p && p.pendingId) policy = { domain: p.domain, status: 'running', pendingId: p.pendingId };
       return {
         domain: domainField.value,
+        carried,
         selectors: selectorsField.value,
         filter,
         report,

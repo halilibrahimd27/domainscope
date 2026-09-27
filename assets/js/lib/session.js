@@ -16,12 +16,12 @@
  *
  * Route contract: a carried target goes into the view's main input param (`TARGET_ROUTES`, the
  * params the views already read) together with `run=0` (`FILL_PARAM` = `FILL_VALUE`): the view
- * fills its input (while empty, or while it still holds the tool's last run) and never runs, so
- * opening a tool never sends a request by itself. A link back to a kept result carries the
- * result's own params with `run=0` too, so the same link opened in a new tab only fills the form.
- * A target set after the result was kept, about something else, wins the link: the tool opens
- * with the target in its box and its kept result under it (`restorePlan` → 'carry'), as the
- * tools that keep their own state do.
+ * fills its input (while empty, or while it still holds the tool's last run or the target it took
+ * before: {@link fillReplaces}) and never runs, so opening a tool never sends a request by itself.
+ * A link back to a kept result carries the result's own params with `run=0` too, so the same link
+ * opened in a new tab only fills the form. A target set after the result was kept, about
+ * something else, wins the link: the tool opens with the target in its box and its kept result
+ * under it (`restorePlan` → 'carry'), as the tools that keep their own state do.
  *
  * @example
  *   const session = createSessionStore();
@@ -170,22 +170,28 @@ export function isFillOnly(params) {
 }
 
 /**
- * May a carried target (`run=0`) replace the text in a tool's box? Only when the box is empty or
- * still holds exactly what the tool last ran (the same entries, in any order) — never a draft of
- * the user's. For the tools whose box outlives a visit (Subdomains, SSL Targets, Bulk Resolve,
- * the Certificate view's "No file?" field).
+ * May a carried target (`run=0`) replace the text in a tool's box? Only when the box is empty,
+ * still holds exactly what the tool last ran, or still holds exactly what the tool last took from
+ * a carried target (the same entries, in any order) — never a draft of the user's. So the box
+ * follows every newer target, not only the first one, until the user types in it. The tool
+ * remembers `carried` (its box text right after it took a target) until its next run.
  * @param {string} text the box's text
  * @param {string[]|null|undefined} lastRun the entries of the tool's last run (null: none)
  * @param {(text: string) => string[]} entries how the tool reads its box
+ * @param {string|null} [carried] the text the tool last took from a carried target (null: none)
  * @returns {boolean}
  */
-export function fillReplaces(text, lastRun, entries) {
+export function fillReplaces(text, lastRun, entries, carried = null) {
   const s = String(text ?? '');
   if (!s.trim()) return true;
-  if (!Array.isArray(lastRun) || !lastRun.length || typeof entries !== 'function') return false;
-  const a = [...new Set(entries(s))].sort();
-  const b = [...new Set(lastRun)].sort();
-  return a.length === b.length && a.every((x, i) => x === b[i]);
+  if (typeof entries !== 'function') return false;
+  const box = [...new Set(entries(s))].sort();
+  const holds = (list) => {
+    const b = [...new Set(list)].sort();
+    return b.length > 0 && box.length === b.length && box.every((x, i) => x === b[i]);
+  };
+  if (Array.isArray(lastRun) && holds(lastRun)) return true;
+  return typeof carried === 'string' && !!carried.trim() && holds(entries(carried));
 }
 
 /* ------------------------------------------------------------------------ */

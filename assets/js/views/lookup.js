@@ -1166,6 +1166,7 @@ export function mount(container, ctx) {
   function start() {
     const q = readForm();
     if (!q) return;
+    carried = null;
     if (!q.ptrFor) nameField.value = q.name;
     else if (q.types.length === 1 && q.types[0] === 'PTR') {
       // Keep the form honest: an IP address is looked up as PTR only.
@@ -1198,14 +1199,23 @@ export function mount(container, ctx) {
   };
 
   /**
+   * The name the box last took from a carried target: a newer one replaces it while the box still
+   * holds it (lib/session.js fillReplaces). A re-mount keeps it (snapshot); a query forgets it.
+   */
+  let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null)
+    : (isFillOnly(ctx.params) && ctx.params.name) || null;
+
+  /**
    * A name carried over from another tool (`run=0`) goes into the box while it is empty or still
-   * holds the finished query's name — never over a draft — and nothing is queried; the answers stay.
+   * holds the finished query's name or the name carried before — never over a draft — and nothing
+   * is queried; the answers stay.
    */
   function takeCarried(name) {
     const last = current && !current.controller ? [current.q.input] : null;
-    if (fillReplaces(nameField.value, last, boxNames)) {
+    if (fillReplaces(nameField.value, last, boxNames, carried)) {
       nameField.value = name;
       nameField.setError(null);
+      carried = name;
     }
   }
 
@@ -1333,8 +1343,8 @@ export function mount(container, ctx) {
         dnssec: dnssecField.checked,
         cd: cdField.checked
       };
-      if (!current || current.controller) return { form };
-      return { form, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
+      if (!current || current.controller) return { form, carried };
+      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
     },
     result() {
       if (!current || current.controller || !current.finishedAt) return null;

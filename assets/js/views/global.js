@@ -1266,14 +1266,23 @@ export function mount(container, ctx) {
   };
 
   /**
+   * The name the box last took from a carried target: a newer one replaces it while the box still
+   * holds it (lib/session.js fillReplaces). A re-mount keeps it (snapshot); a check forgets it.
+   */
+  let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null)
+    : (isFillOnly(ctx.params) && initialName) || null;
+
+  /**
    * A name carried over from another tool (`run=0`) goes into the box while it is empty or still
-   * holds the finished check's name — never over a draft — and nothing is queried; the check stays.
+   * holds the finished check's name or the name carried before — never over a draft — and nothing
+   * is queried; the check stays.
    */
   function takeCarried(name) {
     const last = current && !current.controller ? [current.name] : null;
-    if (fillReplaces(nameField.value, last, boxNames)) {
+    if (fillReplaces(nameField.value, last, boxNames, carried)) {
       nameField.value = name;
       nameField.setError(null);
+      carried = name;
     }
   }
 
@@ -1293,6 +1302,7 @@ export function mount(container, ctx) {
       return;
     }
     nameField.value = name;
+    carried = null;
     const type = GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A';
     const geo = geoField.checked;
     ctx.setParams({ name, type, geo: geo ? null : '0' });
@@ -1418,13 +1428,13 @@ export function mount(container, ctx) {
       if (current && current.controller) current.controller.abort();
     },
     snapshot() {
-      if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked };
+      if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried };
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
         key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix
       }));
       return {
         name: current.name, type: current.type, geo: current.geo, items, done: current.done, at: current.finishedAt,
-        draft: nameField.value
+        draft: nameField.value, carried
       };
     },
     result() {

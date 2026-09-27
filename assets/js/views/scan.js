@@ -34,7 +34,8 @@
  * Route params: `#/scan?domain=example.com` (repeatable or comma-separated) pre-fills the
  * domains; `&run=1` (a shared link) also shows a note to press "Start scan" — a link never
  * starts the scan on its own. With `run=0` (a domain carried over from another tool,
- * lib/session.js) only an empty step 2 or one that still holds the last scan's domains takes it.
+ * lib/session.js) only an empty step 2 or one that still holds the last scan's domains or the
+ * domain carried before takes it.
  * "Delete all local data" forgets step 2 and the last scan (a running one is stopped), whether
  * or not the view is mounted.
  */
@@ -1164,9 +1165,14 @@ export function strongestPerName(hosts) {
 /* Scan runs (module-owned: they outlive a mounted view)                    */
 /* ------------------------------------------------------------------------ */
 
-/** Current / last scan and the setup fields, kept for this page session. */
+/**
+ * Current / last scan and the setup fields, kept for this page session. `carried`: the text step 2
+ * last took from a domain carried over from another tool (a newer one replaces it while step 2
+ * still holds it, lib/session.js fillReplaces); a scan forgets it.
+ */
 const session = {
   domainsText: '',
+  carried: null,
   domainsFromCert: false,
   certKeyForDomains: null,
   extraText: '',
@@ -1202,7 +1208,7 @@ stateSingleton.subscribe(({ key }) => {
     cancelVerify(run);
     cancelDane(run);
   }
-  Object.assign(session, { domainsText: '', domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
+  Object.assign(session, { domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
 });
 
 /**
@@ -1407,9 +1413,11 @@ export function mount(container, ctx) {
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeDomains(ctx.searchParams, ctx.params);
   // A domain carried over from another tool (`run=0`, lib/session.js) never replaces what step 2
-  // holds (typed, or filled from the certificate) unless that is the last scan's domains.
-  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.domainsText, lastRunDomains(), stepDomains))) {
+  // holds (typed, or filled from the certificate) unless that is the last scan's domains or the
+  // domain carried before.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.domainsText, lastRunDomains(), stepDomains, session.carried))) {
     session.domainsText = fromRoute.join('\n');
+    session.carried = isFillOnly(ctx.params) ? session.domainsText : null;
     session.domainsFromCert = false;
   }
 
@@ -2201,6 +2209,7 @@ export function mount(container, ctx) {
       cancelDane(session.run);
     }
     run.domainsInput = v.domains.slice();
+    session.carried = null;
     session.scanTab = null;
     session.run = run;
     hideLinkPrompt();
@@ -2270,8 +2279,9 @@ export function mount(container, ctx) {
     },
     applyParams(p, sp) {
       const list = routeDomains(sp, p);
-      if (list.length && (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains))) {
+      if (list.length && (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains, session.carried))) {
         session.domainsText = list.join('\n');
+        session.carried = isFillOnly(p) ? session.domainsText : null;
         session.domainsFromCert = false;
         domainsField.value = session.domainsText;
         domainsField.setError(null);

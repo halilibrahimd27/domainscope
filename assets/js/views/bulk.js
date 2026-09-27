@@ -14,7 +14,7 @@
  *
  * Route params: `#/bulk?names=a.example.com,b.example.com` pre-fills the list; with `run=0` (a
  * name carried over from another tool, lib/session.js) only an empty list or one that still holds
- * the last job's names takes it. "Delete all local data" forgets the list and the last job (a
+ * the last job's names or the name carried before takes it. "Delete all local data" forgets the list and the last job (a
  * running one is stopped), whether or not the view is mounted.
  */
 
@@ -460,7 +460,12 @@ export function bulkStats(rows, ipRows) {
 /* Jobs (module-owned: they outlive a mounted view)                         */
 /* ------------------------------------------------------------------------ */
 
-const session = { text: null, job: null };
+/**
+ * The pasted list and the last job, kept for this page session. `carried`: the text the list last
+ * took from a name carried over from another tool (a newer one replaces it while the list still
+ * holds it, lib/session.js fillReplaces); a job forgets it.
+ */
+const session = { text: null, carried: null, job: null };
 let jobCounter = 0;
 let active = null;
 
@@ -477,6 +482,7 @@ stateSingleton.subscribe(({ key }) => {
   if (job && job.status === 'running') job.controller.abort();
   session.job = null;
   session.text = null;
+  session.carried = null;
 });
 
 function loadOptions() {
@@ -760,9 +766,10 @@ export function mount(container, ctx) {
   const routeNames = ctx.searchParams && ctx.searchParams.getAll ? ctx.searchParams.getAll('names') : [ctx.params.names || ''];
   const fromRoute = splitList(routeNames.join('\n'));
   // A name carried over from another tool (`run=0`, lib/session.js) never replaces a pasted list:
-  // only an empty one or the last job's names.
-  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastJobNames(), listNames))) {
+  // only an empty one, the last job's names or the name carried before.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastJobNames(), listNames, session.carried))) {
     session.text = fromRoute.join('\n');
+    session.carried = isFillOnly(ctx.params) ? session.text : null;
   }
   if (session.text === null) session.text = '';
 
@@ -945,6 +952,7 @@ export function mount(container, ctx) {
     const job = createJob(parsed.names.slice(), { ...options });
     job.inventoryServers = state.inventory.servers.length;
     session.job = job;
+    session.carried = null;
     attach(job);
     startJob(job, { dns, index: ctx.getInventoryIndex(), concurrency: state.settings.concurrency });
   }
@@ -984,9 +992,10 @@ export function mount(container, ctx) {
     applyParams(p) {
       const list = splitList(p.names || '');
       if (!list.length) return;
-      if (isFillOnly(p) && !fillReplaces(area.value, lastJobNames(), listNames)) return;
+      if (isFillOnly(p) && !fillReplaces(area.value, lastJobNames(), listNames, session.carried)) return;
       area.value = list.join('\n');
       session.text = area.value;
+      session.carried = isFillOnly(p) ? session.text : null;
       renderParse();
     }
   };

@@ -126,6 +126,32 @@ describe('routes', () => {
     assert.equal(fillReplaces('bad!', [], read), false, 'junk the user typed is a draft too');
   });
 
+  test('fillReplaces: the target the tool took before is no draft either, so the box follows every newer one', () => {
+    const read = (text) => text.split(/[\s,]+/).filter(Boolean).map((x) => x.toLowerCase());
+    assert.equal(fillReplaces('example.com', null, read, 'example.com'), true, 'carried before, never run');
+    assert.equal(fillReplaces('www.example.com', ['example.com'], read, 'www.example.com'), true, 'carried over a kept result');
+    assert.equal(fillReplaces(' WWW.example.com ', null, read, 'www.example.com'), true, 'as the tool reads its box');
+    assert.equal(fillReplaces('example.org', null, read, 'example.com'), false, 'typed over the carried target');
+    assert.equal(fillReplaces('example.org', ['example.com'], read, 'www.example.com'), false, 'neither the run nor the carried target');
+    assert.equal(fillReplaces('example.com, example.org', null, read, 'example.com'), false, 'one added');
+    assert.equal(fillReplaces('example.com', null, read, ''), false, 'nothing carried');
+    assert.equal(fillReplaces('bad!', null, () => [], 'bad?'), false, 'nothing read on either side: still a draft');
+
+    // Three targets in a row, the tool never run: the box takes each one.
+    let box = '';
+    let carried = null;
+    for (const target of ['example.com', 'www.example.com', 'shop.example.com']) {
+      if (fillReplaces(box, null, read, carried)) {
+        box = target;
+        carried = target;
+      }
+    }
+    assert.equal(box, 'shop.example.com', 'the box follows the latest target');
+    box = 'example.org';
+    if (fillReplaces(box, null, read, carried)) box = 'mail.example.com';
+    assert.equal(box, 'example.org', 'until the user types in it');
+  });
+
   test('isFillOnly and routeKey', () => {
     assert.equal(isFillOnly({ name: 'x', run: '0' }), true);
     assert.equal(isFillOnly({ name: 'x', run: '1' }), false);

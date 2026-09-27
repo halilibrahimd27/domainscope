@@ -37,8 +37,8 @@
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
  * reload or a restored tab pre-fills the box instead of silently scanning again. A domain carried
  * over from another tool (`run=0`, lib/session.js) fills the box only while it is empty or still
- * holds the last scan's domains. "Delete all local data" forgets the box and the last scan (a
- * running one is stopped), whether or not the view is mounted.
+ * holds the last scan's domains or the domain carried before. "Delete all local data" forgets the
+ * box and the last scan (a running one is stopped), whether or not the view is mounted.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
@@ -2670,9 +2670,14 @@ function timeThrottle(fn, ms) {
 /* Scan runs (module-owned: they outlive a mounted view)                    */
 /* ------------------------------------------------------------------------ */
 
-/** Search box, filters and the current / last run, kept for this page session. */
+/**
+ * Search box, filters and the current / last run, kept for this page session. `carried`: the text
+ * the box last took from a target carried over from another tool (a newer one replaces it while
+ * the box still holds it, lib/session.js fillReplaces); a scan forgets it.
+ */
 const session = {
   text: '',
+  carried: null,
   extraText: '',
   advancedOpen: false,
   filter: 'all',
@@ -2711,6 +2716,7 @@ function forgetRuns() {
   if (run && run.status === 'running') run.controller.abort();
   session.run = null;
   session.text = '';
+  session.carried = null;
   session.extraText = '';
 }
 
@@ -2913,9 +2919,10 @@ export function mount(container, ctx) {
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeTargets(ctx.searchParams, ctx.params);
   // A domain carried over from another tool (`run=0`) never replaces what the user typed: only an
-  // empty box or the last scan's domains.
-  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastRunDomains(), boxDomains))) {
+  // empty box, the last scan's domains or the domain carried before.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastRunDomains(), boxDomains, session.carried))) {
     session.text = fromRoute.join(', ');
+    session.carried = isFillOnly(ctx.params) ? session.text : null;
   }
 
   /* --- Zone File hand-off ------------------------------------------------------ */
@@ -3739,6 +3746,7 @@ export function mount(container, ctx) {
     const handoffCfg = handoffScanOverrides(handoff);
     const extraNames = handoff ? [...new Set([...v.extraNames, ...handoff.names])] : v.extraNames;
     const exact = zoneCfg.exact === true || handoffCfg.exact === true;
+    session.carried = null;
     const run = createRun({
       domains: v.domains,
       extraNames: v.extraNames,
@@ -3881,9 +3889,10 @@ export function mount(container, ctx) {
     applyParams(params) {
       const list = routeTargets(new URLSearchParams(params), params);
       if (!list.length) return;
-      if (isFillOnly(params) && !fillReplaces(domainField.value, lastRunDomains(), boxDomains)) return;
+      if (isFillOnly(params) && !fillReplaces(domainField.value, lastRunDomains(), boxDomains, session.carried)) return;
       domainField.value = list.join(', ');
       session.text = domainField.value;
+      session.carried = isFillOnly(params) ? session.text : null;
       domainField.setError(null);
       renderScope();
       renderZoneChip();

@@ -630,6 +630,7 @@ export function mount(container, ctx) {
       input.focus();
       return;
     }
+    carried = null;
     const tokens = [...parsed.ips, ...parsed.hosts];
     const params = lookupParams(input.value);
     ctx.setParams(params);
@@ -662,16 +663,24 @@ export function mount(container, ctx) {
   }
 
   /**
+   * The address the box last took from a carried target: a newer one replaces it while the box
+   * still holds it (lib/session.js fillReplaces). A re-mount keeps it (snapshot); a run forgets it.
+   */
+  let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null)
+    : (isFillOnly(ctx.params) && initialText) || null;
+
+  /**
    * An address carried over from another tool (`run=0`) goes into the box while it is empty or
-   * still holds the finished run's entries — never over a draft — and nothing is looked up; the
-   * rows stay.
+   * still holds the finished run's entries or the address carried before — never over a draft —
+   * and nothing is looked up; the rows stay.
    */
   function takeCarried(text) {
     const last = current && !current.controller ? entriesOf(current.text) : null;
-    if (fillReplaces(input.value, last, entriesOf)) {
+    if (fillReplaces(input.value, last, entriesOf, carried)) {
       input.value = text;
       input.setError(null);
       updateParsed();
+      carried = text;
     }
   }
 
@@ -832,7 +841,7 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
         : null;
-      return { text: input.value, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null };
+      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;

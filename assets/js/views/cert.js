@@ -20,11 +20,11 @@
  *
  * Page session (lib/session.js): loading a certificate here makes its name the current target
  * ({@link certTarget}); `#/cert?host=example.com&run=0` (a host carried over from another tool)
- * fills the "No file?" field while it is empty or still holds the last lookup, and loading still
- * takes a click. Coming back to a certificate that was shown here when the view was left says
- * "Result from <time>"; for one from Certificate Transparency, "Run again" looks its host name up
- * again (a file or the sample has nothing to run again). "Delete all local data" forgets the
- * field, its last outcome and the CAA / CT / DANE results kept per certificate.
+ * fills the "No file?" field while it is empty or still holds the last lookup or the host carried
+ * before, and loading still takes a click. Coming back to a certificate that was shown here when
+ * the view was left says "Result from <time>"; for one from Certificate Transparency, "Run again"
+ * looks its host name up again (a file or the sample has nothing to run again). "Delete all local
+ * data" forgets the field, its last outcome and the CAA / CT / DANE results kept per certificate.
  */
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
@@ -1187,11 +1187,13 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
 
 /**
  * The host-name form's state across re-mounts (a language switch, the other view): the typed
- * text, the last outcome that is not a loaded certificate (not found, crt.sh links, error) and
- * the AbortController of the lookup in progress (stopped by {@link setCurrentCert}).
- * @type {{ text: string, last: object|null, running: AbortController|null }}
+ * text, the host name it last took from another tool (`carried`: a newer one replaces it while
+ * the field still holds it, lib/session.js fillReplaces; a lookup forgets it), the last outcome
+ * that is not a loaded certificate (not found, crt.sh links, error) and the AbortController of
+ * the lookup in progress (stopped by {@link setCurrentCert}).
+ * @type {{ text: string, carried: string|null, last: object|null, running: AbortController|null }}
  */
-const ctForm = { text: '', last: null, running: null };
+const ctForm = { text: '', carried: null, last: null, running: null };
 
 /** Stop the host-name lookup in progress, if any (its block is being replaced). */
 function stopCtLookup() {
@@ -1389,6 +1391,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     running = ctl;
     ctForm.running = ctl;
     ctForm.last = null;
+    ctForm.carried = null;
     // "Try again" is cleared with the outcome: its keyboard focus moves to Load, now Cancel.
     const doc = globalThis.document;
     const fromOutcome = !!doc && status.contains(doc.activeElement);
@@ -1710,6 +1713,7 @@ stateSingleton.subscribe(({ key }) => {
   if (key !== 'cleared') return;
   stopCtLookup();
   ctForm.text = '';
+  ctForm.carried = null;
   ctForm.last = null;
   caaCache.clear();
   ctCache.clear();
@@ -1776,11 +1780,13 @@ export function mount(container, ctx) {
   const { state } = ctx;
   let load = getCurrentCert(state);
   // A host name carried over from another tool fills the "No file?" field while it is empty or
-  // still holds the last lookup (never a host the user typed); an outcome for another host goes.
+  // still holds the last lookup or the host carried before (never a host the user typed); an
+  // outcome for another host goes.
   const carried = normalizeCtHost(ctx.params.host || '');
-  if (carried && fillReplaces(ctForm.text, lastCtLookup(load), ctFieldHosts)) {
+  if (carried && fillReplaces(ctForm.text, lastCtLookup(load), ctFieldHosts, ctForm.carried)) {
     if (ctForm.last && ctForm.last.host !== carried) ctForm.last = null;
     ctForm.text = carried;
+    ctForm.carried = carried;
   }
 
   const loaderHost = h('div');

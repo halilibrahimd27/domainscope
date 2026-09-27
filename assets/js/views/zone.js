@@ -1628,7 +1628,7 @@ export function mount(container, ctx) {
       },
       columns: [
         { key: 'line', label: t('zone.col.line'), sortable: true, align: 'end', width: '4.5rem', className: 'num', sortValue: (r) => r.source * 1e7 + r.line,
-          render: (r) => (multi ? `${(S.files[r.source] || {}).name || ''}:${r.line}` : String(r.line)), exportValue: (r) => r.line },
+          render: (r) => (multi ? `${((z.sources || [])[r.source] || {}).name || ''}:${r.line}` : String(r.line)), exportValue: (r) => r.line },
         { key: 'name', label: t('zone.col.name'), sortable: true, sortValue: (r) => r.name, searchValue: (r) => `${r.name} ${r.comment || ''}`, exportValue: (r) => r.name,
           render: (r) => {
             const rel = relativeName(r.name, origin);

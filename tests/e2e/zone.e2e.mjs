@@ -14,15 +14,17 @@
  * Problems → Records jump, the live check (nothing sent before the click, planned query count,
  * hidden targets / internal names never queried, statuses, redacted export, cancel), the
  * exact-mode hand-off contract, Route 53 (incomplete export) and cPanel imports, a certificate
- * pasted by mistake, two API pages, Forget, "Delete all local data", nothing persisted, TR/EN,
- * light/dark, 390 px, zero console errors / CSP violations / missing i18n keys.
+ * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
+ * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
+ * CSP violations / missing i18n keys.
  *
  * Fixtures are documentation data only (example.com, 192.0.2.0/24, 198.51.100.0/24, 2001:db8::/32,
  * the fake Cloudflare edge 104.16.1.1).
  */
 
+import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
@@ -447,6 +449,32 @@ async function main() {
       await page.setFileInput('.zone-drop .filedrop-input', [path.join(ZONES, 'cloudflare-api-page1.json'), path.join(ZONES, 'cloudflare-api-page2.json')]);
       await page.waitFor(() => /Cloudflare API/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'API pages' });
       assert(/cloudflare-api-page1\.json, cloudflare-api-page2\.json/.test(await text(page, '.zone-files')), 'both files');
+    });
+
+    await run.step('an $INCLUDE part dropped before its main file: one zone, each row names its own file', async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-zone-e2e-'));
+      try {
+        const part = path.join(dir, 'mail.inc');
+        const main = path.join(dir, 'db.example.com');
+        await writeFile(part, 'mail IN A 192.0.2.80\n@ IN MX 10 mail\n');
+        await writeFile(main, '$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE mail.inc\n');
+        await page.setFileInput('.zone-drop .filedrop-input', [part, main]);
+        await page.waitFor(() => /mail\.inc, db\.example\.com/.test(document.querySelector('.zone-files')?.textContent || ''), { message: 'include pair' });
+        assertEqual(await text(page, '.zone-summary-title'), 'Zone example.com', 'one zone');
+        await clickTab(page, 'records');
+        const rows = await page.evaluate(() => {
+          const keys = [...document.querySelectorAll('.zone-records thead th')].map((th) => th.dataset.key || '');
+          const cell = (tr, key) => tr.cells[keys.indexOf(key)];
+          return Object.fromEntries([...document.querySelectorAll('.zone-records tbody tr.dt-row')].map((tr) => [
+            `${cell(tr, 'name').querySelector('.zone-name')?.title} ${cell(tr, 'type').textContent.trim()}`, cell(tr, 'line').textContent.trim()]));
+        });
+        assertEqual(rows, {
+          'mail.example.com A': 'mail.inc:1', 'example.com MX': 'mail.inc:2',
+          'example.com SOA': 'db.example.com:3', 'example.com NS': 'db.example.com:4', 'ns1.example.com A': 'db.example.com:5'
+        }, 'line column');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
 
     await run.step('Forget → empty state, toast, session cleared; nothing persisted; hash only tab=', async () => {

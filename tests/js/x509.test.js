@@ -364,6 +364,19 @@ describe('parseCertificates input formats', () => {
     assert.equal(only(`"${pemText.trim().split('\n').join('",\n"')}"`).serialHex, 'f1e2d3c4b5a69788');
   });
 
+  test('PEM from JSON encoders that escape more than the newline: PHP (\\/) and .NET (\\u002B)', () => {
+    const json = JSON.stringify({ certificate: pemText });
+    const php = json.replace(/\//g, '\\/');
+    const dotnet = json.replace(/\+/g, '\\u002B');
+    for (const text of [php, dotnet, php.slice(php.indexOf('-----'), php.lastIndexOf('"'))]) {
+      assert.equal(only(text).serialHex, 'f1e2d3c4b5a69788');
+    }
+    // the same escapes around bare base64 (a JSON field holding the DER)
+    const der = JSON.stringify({ der: body.replace(/\s+/g, '') });
+    assert.equal(only(der.replace(/\//g, '\\/')).serialHex, 'f1e2d3c4b5a69788');
+    assert.equal(only(der.replace(/\+/g, '\\u002B')).serialHex, 'f1e2d3c4b5a69788');
+  });
+
   test('bare base64 (multi-line, single line, URL-safe, unpadded)', () => {
     assert.equal(only(body).serialHex, 'f1e2d3c4b5a69788');
     const single = body.replace(/\s+/g, '');

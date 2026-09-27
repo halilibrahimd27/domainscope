@@ -13,9 +13,10 @@
  *   fields keep their defaults.
  * - `parseCertificates(input)` is the forgiving front door used by the UI. It
  *   accepts PEM (any number of blocks, CRLF, indentation, e-mail `>` quoting,
- *   JSON-escaped `\n`, surrounding prose), raw DER (also several concatenated),
- *   bare base64, base64 of a PEM file (e.g. Kubernetes `tls.crt`), PKCS#7 /
- *   .p7b (PEM or DER, BER indefinite lengths tolerated in the container), and it
+ *   JSON escapes such as `\n`, `\/` and `\u002B`, surrounding prose),
+ *   raw DER (also several concatenated), bare base64, base64 of a PEM file
+ *   (e.g. Kubernetes `tls.crt`), PKCS#7 / .p7b (PEM or DER, BER indefinite
+ *   lengths tolerated in the container), and it
  *   recognises PKCS#12, CSRs and private keys (which are reported, never
  *   decoded or returned). It never throws.
  * - Distinguished names are rendered like `openssl x509 -nameopt RFC2253`:
@@ -1434,8 +1435,16 @@ function decodeText(bytes) {
   return new TextDecoder('utf-8').decode(bytes); // strips a UTF-8 BOM
 }
 
+/**
+ * JSON string escapes that base64 can carry besides the newline: PHP's json_encode writes every
+ * '/' as `\/`, .NET's default encoder writes '+' as `\u002B`.
+ */
+function unescapeJson(text) {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/\\\//g, '/');
+}
+
 function cleanPemBody(body) {
-  return body
+  return unescapeJson(body)
     .replace(/\\r\\n|\\n|\\r/g, '\n') // JSON / YAML escaped newlines
     .split(/\r\n|\r|\n/)
     .map((line) => line.replace(/^[\s>|"']+/, '').replace(/[\s"',\\]+$/, '')) // e-mail quoting, string noise
@@ -1519,13 +1528,14 @@ function ingestText(input, ctx, depth) {
     }
     return;
   }
-  const compact = text.replace(/\s+/g, '').replace(/^["']+|["',]+$/g, '');
+  const plain = unescapeJson(text);
+  const compact = plain.replace(/\s+/g, '').replace(/^["']+|["',]+$/g, '');
   if (compact.length >= 16 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
     ingestBase64Token(compact, ctx, depth, false);
     return;
   }
-  // Base64 blobs embedded in other text, e.g. `kubectl get secret -o yaml` (tls.crt / tls.key).
-  for (const token of text.match(/[A-Za-z0-9+/]{64,}={0,2}/g) || []) ingestBase64Token(token, ctx, depth, true);
+  // Base64 blobs embedded in other text, e.g. `kubectl get secret -o yaml` (tls.crt / tls.key) or JSON.
+  for (const token of plain.match(/[A-Za-z0-9+/]{64,}={0,2}/g) || []) ingestBase64Token(token, ctx, depth, true);
 }
 
 function ingestBase64Token(token, ctx, depth, quiet) {
@@ -1586,7 +1596,7 @@ function pickLeaf(certs) {
  * Extracts certificates from whatever the user dropped or pasted. Never throws.
  *
  * Accepted: PEM (one or many blocks, CRLF, indentation, surrounding text,
- * e-mail quoting, JSON-escaped newlines), raw DER (possibly concatenated), bare
+ * e-mail quoting, JSON escapes: newlines, `\/`, `\uXXXX`), raw DER (possibly concatenated), bare
  * base64, base64-encoded PEM, PKCS#7 (PEM "PKCS7"/"CMS" or DER SignedData),
  * UTF-16 text files. Detected and reported: PKCS#12 (PKCS12_UNSUPPORTED), CSRs
  * (CSR_NOT_CERT), private keys (PRIVATE_KEY_PRESENT — never decoded or

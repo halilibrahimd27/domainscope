@@ -2,7 +2,7 @@
  * sw.js, the service worker, run in a node:vm context with a fake Cache Storage, fetch and
  * worker scope: as the repository ships it (no manifest: it answers nothing, and only clears a
  * deploy's caches when it replaces one) and as tools/assemble-site.mjs writes it for a deploy —
- * the precache at install (past the HTTP cache,
+ * the precache at install (the site-root files past the HTTP cache,
  * refusing a stale index.html), the clean-up at activation (earlier versions, dropped wordlists,
  * nothing it does not own), the routing (the app shell cache first, wordlists by content hash)
  * and above all what it must leave alone: third-party APIs, query strings, other methods and
@@ -171,13 +171,18 @@ describe('sw.js in the repository (no build)', () => {
 });
 
 describe('install', () => {
-  test('precaches the app shell of this version past the HTTP cache, index.html as ./', async () => {
+  test('precaches the app shell of this version, index.html as ./; only the site-root files past the HTTP cache', async () => {
     const build = deploy('one');
     const worker = loadWorker({ build, network: site('one') });
     await extendable(worker.listeners.install);
     const urls = build.precache.map((p) => new URL(p, SCOPE).href).sort();
     assert.deepEqual(worker.caches.urls('domainscope-shell-one'), urls);
-    assert.ok(worker.sent.every((r) => r.cache === 'reload'), 'past the HTTP cache');
+    // index.html and the favicon keep their URL across deploys; a v/<version>/ file never changes at
+    // its URL, so the copy the page has just downloaded is not fetched a second time.
+    const modes = Object.fromEntries(worker.sent.map((r) => [r.url.slice(SCOPE.length), r.cache]));
+    assert.deepEqual(modes, Object.fromEntries(build.precache.map((p) => [p === './' ? '' : p, p.startsWith('v/one/') ? 'default' : 'reload'])));
+    assert.equal(modes[''], 'reload', 'index.html past the HTTP cache');
+    assert.equal(modes['v/one/assets/js/app.js'], 'default');
     assert.ok(!worker.sent.some((r) => /wordlist|locale/.test(r.url)), 'no wordlist downloaded at install');
     assert.match(await (await worker.caches.store.get('domainscope-shell-one').match(SCOPE)).text(), /v\/one\/assets\/js\/app\.js/);
   });

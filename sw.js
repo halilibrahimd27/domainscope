@@ -9,9 +9,10 @@
  * update check installs this file over the bundle's worker, and it takes over at once and deletes
  * the bundle's caches, so the next load is the checkout rather than a cached deploy.
  *
- * - install: precache this version's app shell into domainscope-shell-<version>, past the HTTP
- *   cache. The index.html fetched must be this version's: a CDN still serving the previous one
- *   fails the install, and the browser tries again at its next update check.
+ * - install: precache this version's app shell into domainscope-shell-<version>: the site-root
+ *   files past the HTTP cache, the versioned ones (immutable at their URL) from it when the page
+ *   has just loaded them. The index.html fetched must be this version's: a CDN still serving the
+ *   previous one fails the install, and the browser tries again at its next update check.
  * - activate: delete the shell caches of other versions and the wordlists this version does not
  *   list, then take control of the open pages (the tab that installed it keeps working offline).
  * - fetch, same-origin GETs inside the scope only:
@@ -53,11 +54,20 @@ async function unredirected(res) {
   return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
+/**
+ * The HTTP cache mode for a precached file. A file under v/<version>/ never changes at its URL, so
+ * the copy the page has just downloaded will do (no second download); a site-root file (index.html,
+ * the favicon, the manifests) keeps its URL across deploys and is fetched past the HTTP cache.
+ */
+function cacheMode(build, path) {
+  return path.startsWith(`v/${build.version}/`) ? 'default' : 'reload';
+}
+
 async function precache(build) {
   const cache = await caches.open(build.shellCache);
   const marker = `v/${build.version}/assets/`;
   await Promise.all(build.precache.map(async (path) => {
-    const res = await fetch(new Request(keyUrl(path), { cache: 'reload', credentials: 'same-origin' }));
+    const res = await fetch(new Request(keyUrl(path), { cache: cacheMode(build, path), credentials: 'same-origin' }));
     if (!res.ok) throw new Error(`precache ${path}: HTTP ${res.status}`);
     if (path === './' && !(await res.clone().text()).includes(marker)) {
       throw new Error(`precache: index.html is not version ${build.version} yet`);

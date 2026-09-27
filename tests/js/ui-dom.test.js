@@ -2085,6 +2085,21 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
   });
 
+  test('on a phone a host name still breaks inside a label too long for its card (subdomains.css)', async () => {
+    const css = (await readFile(path.join(ROOT, 'assets/css/views/subdomains.css'), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
+    const start = css.indexOf('@media (max-width: 640px) {');
+    const phone = css.slice(css.indexOf('{', start) + 1, css.indexOf('@media (max-width: 480px)', start));
+    const rules = [...phone.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, sel, body]) => ({ sel: sel.split(',').map((x) => x.trim()), body }));
+    const wrap = (selector) => rules.filter((r) => r.sel.includes(selector) && /overflow-wrap:/.test(r.body)).map((r) => /overflow-wrap:\s*([\w-]+)/.exec(r.body)[1]);
+    // Each label is one nowrap run (hostNameNodes), so only a label too long for the line (plain
+    // text) breaks inside; `normal` there would push the card and the page sideways.
+    assert.match(css, /\.sub-seg \{\s*white-space: nowrap;\s*\}/);
+    assert.deepEqual(wrap('.sub-table .sub-host-name'), ['anywhere'], 'host table cards');
+    assert.deepEqual(wrap('.sub-org-table td:first-child'), ['anywhere'], 'proxied-hosts table');
+    assert.deepEqual(wrap('.sub-org-name'), [], 'the ORIGIN lists keep their base rule');
+    assert.match(css, /\.sub-org-name \{\s*font-weight: 600;\s*overflow-wrap: anywhere;\s*\}/);
+  });
+
   test('a finished Subdomains run redraws its streamed rows, so the "origin?" badge follows the ORIGIN panel', async () => {
     // Wiring guard (the view cannot be mounted on the fake DOM; the Zone File hand-off E2E counts the badges).
     const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');

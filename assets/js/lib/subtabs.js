@@ -134,8 +134,9 @@ function sourcesBadge(asked, health) {
  * Where a host name may wrap: after a dot, never inside a label (a hyphen is no break, so
  * `old-shop.example.com` never reads as `old-` / `shop…`). Each segment is one label with its
  * dot; the view draws a kept segment as an unbreakable run with a line-break opportunity after
- * it. A label longer than `maxLabel` characters stays breakable (`keep: false`), so one freak
- * 63-character label cannot push a phone's card sideways.
+ * it. A label longer than `maxLabel` characters is not kept (`keep: false`): drawn as plain text
+ * in a name that may break anywhere (CSS `overflow-wrap: anywhere`), one freak 63-character label
+ * wraps inside itself instead of pushing a phone's card sideways.
  * @param {string} name
  * @param {{ maxLabel?: number }} [opts]
  * @returns {Array<{ text: string, keep: boolean }>} the segments, joined, are `name`

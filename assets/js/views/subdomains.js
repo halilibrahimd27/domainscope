@@ -2616,7 +2616,8 @@ function hostSortKey(name) {
 /**
  * A host name as text runs that wrap only after a dot (lib/subtabs.hostSegments): each label is
  * one unbreakable run (`.sub-seg`) with a <wbr> before the next, so a narrow cell never splits
- * `old-shop` at its hyphen. The text (and a copy of it) is the name, unchanged.
+ * `old-shop` at its hyphen. A label too long to keep is plain text, which the name's
+ * `overflow-wrap: anywhere` breaks where it must. The text (and a copy of it) is the name, unchanged.
  * @param {string} name
  * @returns {Array<Node|string>}
  */

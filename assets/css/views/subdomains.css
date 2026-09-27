@@ -1314,6 +1314,7 @@
   background: var(--ok-bg);
 }
 
+/* Breaks after a dot (hostNameNodes' nowrap runs), or inside a label too long for the line. */
 .sub-org-name {
   font-weight: 600;
   overflow-wrap: anywhere;
@@ -1719,6 +1720,13 @@
     min-width: 0;
   }
 
+  /* The name itself may break anywhere: its labels are nowrap runs (.sub-seg), so only a label
+     too long for a line (hostSegments leaves it plain text) breaks inside — without this, one long
+     label with no hyphen would push the card, and the page, sideways. */
+  .sub-table .sub-host-name {
+    overflow-wrap: anywhere;
+  }
+
   /* Keep name (1), IPs (2) and classification (3); drop CNAME / Found by / server on the phone. */
   .sub-table tbody tr.dt-row td:nth-child(n + 4) {
     display: none;
@@ -1750,9 +1758,13 @@
   }
 
   .sub-org-cand-nets,
-  .sub-org-name,
   .sub-org-detail {
     overflow-wrap: normal;
+  }
+
+  /* The proxied host's name, like a card's: a label too long for the line breaks inside. */
+  .sub-org-table td:first-child {
+    overflow-wrap: anywhere;
   }
 
   .sub-src-section {

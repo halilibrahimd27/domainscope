@@ -36,13 +36,15 @@
  *     with every control inside the viewport
  *   - an emulated zone (example.net answered inside the page, no network): proxied + DNS-only
  *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has
- *   - the Zone File hand-off (emulated DNS): exact mode, the "origin?" badges right after a scan with
- *     slow DNS, and a "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
+ *   - the Zone File hand-off (emulated DNS): exact mode, a zone origin whose name has a 48-character
+ *     label inside its 375 px card, the "origin?" badges right after a scan with slow DNS, and a
+ *     "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
  *   - the results tabs (emulated zone, no network): Sources while nothing is found, Hosts from the
  *     first host, live counts on the labels, a picked tab kept while hosts stream in, arrow keys /
  *     Home / End with a roving tabindex, `tab=` in the URL kept across a language switch and a
  *     visit to another view, stat cards and the "origin?" links opening their tab, and at 375 px
- *     (TR/EN × light/dark) all four tabs in view, host names wrapping only after a dot, IPs whole
+ *     (TR/EN × light/dark) all four tabs in view, host names wrapping only after a dot (a label
+ *     wider than the card inside itself), IPs whole, no page scrolling sideways on Hosts or Origins
  *   - zero console errors, exceptions and CSP violations (third-party API failures such as a
  *     crt.sh 502 without CORS are reported, not counted); no missing i18n keys
  */
@@ -361,10 +363,20 @@ const slowDnsScript = `(() => {
 
 /**
  * The zone of the results-tab steps: {@link FAKE_ZONE} plus a long name two labels deep with an
- * IPv6 address (a custom wordlist entry finds it), which a 375 px card has to wrap — at a dot.
+ * IPv6 address, which a 375 px card has to wrap — at a dot, and a name whose first label is 48
+ * characters with no hyphen (wider than the card: it has to break inside that label). Custom
+ * wordlist entries find both; the second is DNS-only in 203.0.113.0/24, so it is also a member of
+ * the ORIGIN panel's origin network.
  */
 const TABS_LONG = 'customer-portal-staging-v2.eu-west-1.example.net';
-const TABS_ZONE = { ...FAKE_ZONE, [TABS_LONG]: { A: ['198.51.100.23'], AAAA: ['2001:db8:85a3:1234:5678:8a2e:370:7334'] } };
+const TABS_FREAK = `${'a'.repeat(48)}.example.net`;
+const TABS_ZONE = {
+  ...FAKE_ZONE,
+  [TABS_LONG]: { A: ['198.51.100.23'], AAAA: ['2001:db8:85a3:1234:5678:8a2e:370:7334'] },
+  [TABS_FREAK]: { A: ['203.0.113.15'] }
+};
+/** The custom wordlist of the results-tab steps: the labels under the apex that find TABS_LONG and TABS_FREAK. */
+const TABS_WORDS = [TABS_LONG, TABS_FREAK].map((n) => n.slice(0, -FAKE_APEX.length - 1)).join('\n');
 
 /**
  * Elements of a panel that stick out of the viewport on the right (text or a control cut off on
@@ -1312,10 +1324,10 @@ async function main() {
         await tt.goto(`${server.url}#/about`);
         await waitReady(tt);
         await setLangUi(tt, 'en');
-        await tt.evaluate((label) => {
+        await tt.evaluate((words) => {
           localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
-          sessionStorage.setItem('ssds.wordlist.custom', label);
-        }, TABS_LONG.slice(0, -FAKE_APEX.length - 1));
+          sessionStorage.setItem('ssds.wordlist.custom', words);
+        }, TABS_WORDS);
         await tt.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, FAKE_APEX);
         await tt.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
         // Record every tab the run shows (and the Hosts count) while it streams.
@@ -1366,7 +1378,7 @@ async function main() {
         }));
         assertEqual(end.rows, [...Object.keys(TABS_ZONE)].sort(), 'every host is in the (hidden) Hosts table');
         assert(end.hostsHidden, 'the Hosts panel is hidden while Sources is shown');
-        assertEqual(await tabBadges(tt), { overview: null, hosts: '6', origins: '2', sources: null }, 'the final counts (no passive source asked)');
+        assertEqual(await tabBadges(tt), { overview: null, hosts: '7', origins: '2', sources: null }, 'the final counts (no passive source asked)');
         await shot(tt, opts, 'subdomains-tabs-desktop-light-en-sources');
       });
 
@@ -1428,7 +1440,7 @@ async function main() {
         assertEqual([await selectedTab(tt), await routeTab(tt)], ['origins', 'origins'], 'the link opened Origins');
       });
 
-      await run.step('phone 375 px (EN/TR × light/dark): all four tabs in view; a host name wraps only after a dot, an IP never breaks', async () => {
+      await run.step('phone 375 px (EN/TR × light/dark): all four tabs in view; a host name wraps only after a dot (or inside a label too long for the card), an IP never breaks', async () => {
         await tt.setViewport({ width: 375, height: 812, mobile: true });
         await openTab(tt, 'hosts');
         try {
@@ -1439,29 +1451,50 @@ async function main() {
               await tt.waitFor(() => document.querySelector('.sub-tabs .tab[data-tab="hosts"][aria-selected="true"]'), { message: 'Hosts after re-mount' });
               await sleep(150);
               await assertNoHorizontalScroll(tt, `tabs ${lang} ${scheme}`);
-              const m = await tt.evaluate((long) => {
+              const m = await tt.evaluate((long, freak) => {
                 const vw = document.documentElement.clientWidth;
                 const out = (el) => {
                   const r = el.getBoundingClientRect();
                   return r.left < -1 || r.right > vw + 1;
                 };
                 const lines = (el) => new Set([...el.getClientRects()].map((r) => Math.round(r.top))).size;
-                const name = [...document.querySelectorAll('.sub-table .sub-host-name')].find((a) => a.textContent === long);
+                const byText = (text) => [...document.querySelectorAll('.sub-table .sub-host-name')].find((a) => a.textContent === text);
+                const name = byText(long);
+                // The 48-character label is plain text, the name's first node: count its line boxes.
+                const freakName = byText(freak);
+                const range = document.createRange();
+                if (freakName) range.selectNodeContents(freakName.firstChild);
                 return {
                   tabsOut: [...document.querySelectorAll('.sub-tabs .tab')].filter(out).map((t) => t.dataset.tab),
                   cardsOut: [...document.querySelectorAll('.sub-table tbody tr.dt-row')].filter(out).length,
+                  // A name sticking out of its card (which alone may still fit the screen).
+                  namesOut: [...document.querySelectorAll('.sub-table tbody tr.dt-row')].filter((row) => {
+                    const a = row.querySelector('.sub-host-name');
+                    return a && a.getBoundingClientRect().right > row.getBoundingClientRect().right + 1;
+                  }).map((row) => row.querySelector('.sub-host-name').textContent),
                   segs: document.querySelectorAll('.sub-table .sub-host-name .sub-seg').length,
                   splitSegs: [...document.querySelectorAll('.sub-table .sub-host-name .sub-seg')].filter((x) => lines(x) > 1).map((x) => x.textContent),
                   ips: document.querySelectorAll('.sub-table .sub-ip').length,
                   splitIps: [...document.querySelectorAll('.sub-table .sub-ip')].filter((x) => lines(x) > 1).map((x) => x.textContent),
                   // The name is a block (a flex item): count the lines its label runs sit on.
-                  longLines: name ? new Set([...name.querySelectorAll('.sub-seg')].map((x) => Math.round(x.getBoundingClientRect().top))).size : 0
+                  longLines: name ? new Set([...name.querySelectorAll('.sub-seg')].map((x) => Math.round(x.getBoundingClientRect().top))).size : 0,
+                  freakLines: freakName ? new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size : 0
                 };
-              }, TABS_LONG);
-              assertEqual([m.tabsOut, m.cardsOut, m.splitSegs, m.splitIps], [[], 0, [], []], `${lang} ${scheme}: tabs and cards on screen, no label or IP split (${JSON.stringify(m)})`);
-              assert(m.segs >= 13 && m.ips >= 7, `labels and IPs measured: ${JSON.stringify(m)}`);
+              }, TABS_LONG, TABS_FREAK);
+              assertEqual([m.tabsOut, m.cardsOut, m.namesOut, m.splitSegs, m.splitIps], [[], 0, [], [], []],
+                `${lang} ${scheme}: tabs, cards and names on screen, no label or IP split (${JSON.stringify(m)})`);
+              assert(m.segs >= 15 && m.ips >= 8, `labels and IPs measured: ${JSON.stringify(m)}`);
               assert(m.longLines >= 2, `the long name wraps (after a dot): ${JSON.stringify(m)}`);
+              assert(m.freakLines >= 2, `the 48-character label wraps inside itself: ${JSON.stringify(m)}`);
               await shot(tt, opts, `subdomains-tabs-mobile-${scheme}-${lang}-hosts`);
+              // Origins: the same name is a member of the origin network, and fits its card there too.
+              await openTab(tt, 'origins');
+              await sleep(100);
+              await assertNoHorizontalScroll(tt, `origins ${lang} ${scheme}`);
+              assertEqual(await overflowingIn(tt, '.sub-tab-origins'), [], `the ORIGIN panel inside 375 px (${lang} ${scheme})`);
+              const member = await tt.evaluate((freak) => [...document.querySelectorAll('.sub-org-member a')].some((a) => a.textContent === freak), TABS_FREAK);
+              assert(member, `${lang} ${scheme}: the 48-character name is listed in its origin network`);
+              await openTab(tt, 'hosts');
             }
           }
         } finally {
@@ -1573,12 +1606,75 @@ async function main() {
     });
 
     /** What the Zone File view does on "Scan now": publish the zone, a one-shot intent, open Subdomains. */
-    const zoneScanNow = (tab) => tab.evaluate(async (zone) => {
+    const zoneScanNow = (tab, input = ZONE_HANDOFF_INPUT) => tab.evaluate(async (zone) => {
       const { state } = await import('./assets/js/state.js');
       state.setSession('zone', zone);
       state.setSession('zoneScanIntent', { v: 1, target: 'subdomains', domain: zone.origin, mode: 'exact', autostart: true, at: Date.now() });
       location.hash = `#/subdomains?domain=${zone.origin}`;
-    }, ZONE_HANDOFF_INPUT);
+    }, input);
+
+    await run.step('phone 375 px: a proxied name with a 48-character label wraps inside its zone-origin card and its table cell', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      // The hand-off zone plus one proxied name whose first label (no hyphen) is wider than the card.
+      const long = `${'b'.repeat(48)}.${ZONE_HANDOFF_APEX}`;
+      const input = {
+        ...ZONE_HANDOFF_INPUT,
+        names: [...ZONE_HANDOFF_INPUT.names, long],
+        proxied: [...ZONE_HANDOFF_INPUT.proxied, { name: long, ips: ['192.0.2.12'], host: null }],
+        counts: { ...ZONE_HANDOFF_INPUT.counts, names: ZONE_HANDOFF_INPUT.counts.names + 1, origins: ZONE_HANDOFF_INPUT.counts.origins + 1 }
+      };
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, { ...ZONE_HANDOFF_DNS, [long]: { A: ['104.16.5.5'] } }) });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        await zoneScanNow(tab, input);
+        await tab.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'the intent started the scan' });
+        const id = await currentRunId(tab);
+        assertEqual(await tab.waitFor(DONE(id), { timeout: 60000, message: 'long-label zone scan done' }), 'done', 'status');
+        await openTab(tab, 'origins');
+        await tab.setViewport({ width: 375, height: 812, mobile: true });
+        for (const [lang, scheme] of [['en', 'light'], ['tr', 'dark']]) {
+          await setLangUi(tab, lang);
+          await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+          await tab.waitFor(() => document.querySelector('.sub-org-block[data-block="zone"]'), { message: 'zone origins after re-mount' });
+          await sleep(150);
+          await assertNoHorizontalScroll(tab, `long label ${lang} ${scheme}`);
+          assertEqual(await overflowingIn(tab, '.sub-org'), [], `ORIGIN panel inside 375 px (${lang} ${scheme})`);
+          const m = await tab.evaluate((host) => {
+            const li = document.querySelector(`.sub-org-block[data-block="zone"] .sub-org-leak[data-host="${host}"]`);
+            const name = li && li.querySelector('.sub-org-name');
+            if (!name) return null;
+            // The long label is plain text, the name's first node: count its line boxes.
+            const lines = (node) => {
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+            };
+            const split = (el) => [...el.querySelectorAll('.sub-seg')].filter((x) => new Set([...x.getClientRects()].map((r) => Math.round(r.top))).size > 1).length;
+            // The same name in the proxied-hosts table (its first column).
+            const cell = [...document.querySelectorAll('.sub-org-table tbody tr.dt-row td:first-child')].find((td) => td.textContent === host);
+            return {
+              text: name.textContent,
+              lines: lines(name.firstChild),
+              inCard: name.getBoundingClientRect().right <= li.getBoundingClientRect().right + 1,
+              splitSegs: split(name),
+              tableLines: cell ? lines(cell.firstChild) : 0,
+              tableSplitSegs: cell ? split(cell) : -1
+            };
+          }, long);
+          assert(m && m.text === long, `the zone origin of the long name is listed: ${JSON.stringify(m)}`);
+          assert(m.lines >= 2 && m.inCard && m.splitSegs === 0, `${lang} ${scheme}: the 48-character label wraps inside its card, the other labels stay whole: ${JSON.stringify(m)}`);
+          assert(m.tableLines >= 2 && m.tableSplitSegs === 0, `${lang} ${scheme}: and inside its cell of the proxied-hosts table: ${JSON.stringify(m)}`);
+          await shotEl(tab, opts, `subdomains-zone-long-label-mobile-${scheme}-${lang}`, '.sub-org');
+        }
+        await setLangUi(tab, 'en');
+        await assertClean(tab, 'long label zone origin', origin);
+      } finally {
+        await tab.close();
+      }
+    });
 
     await run.step('slow DNS: the rows drawn while resolving get their "origin?" badge as soon as the zone scan ends', async () => {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });

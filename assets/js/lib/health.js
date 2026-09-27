@@ -1861,6 +1861,8 @@ function analyzeHttps(httpsR) {
 
 function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
   const checks = [];
+  // A failed lookup is not a missing record: its null is "not known".
+  const failedLookups = [[mtaR, 'mtaSts'], [tlsR, 'tlsRpt'], [bimiR, 'bimi']].filter(([r]) => failed(r)).map(([, key]) => key);
   const mta = failed(mtaR) ? [] : txtStrings(mtaR).filter((s) => /^v=STSv1\s*(;|$)/i.test(s));
   const tls = failed(tlsR) ? [] : txtStrings(tlsR).filter((s) => /^v=TLSRPTv1\s*(;|$)/i.test(s));
   const bimi = failed(bimiR) ? [] : txtStrings(bimiR).filter((s) => /^v=BIMI1\s*(;|$)/i.test(s));
@@ -1872,14 +1874,14 @@ function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
   else if (mta.length) {
     const id = tag(mta[0], 'id');
     checks.push(id ? makeCheck('mta-sts.present', 'ok', { id }) : makeCheck('mta-sts.invalid', 'warn', { count: 1 }));
-  } else if (hasMail) checks.push(makeCheck('mta-sts.missing', 'info', {}));
+  } else if (hasMail && !failed(mtaR)) checks.push(makeCheck('mta-sts.missing', 'info', {}));
   if (tls.length) checks.push(makeCheck('tls-rpt.present', 'ok', { rua: tag(tls[0], 'rua') || '—' }));
-  else if (hasMail) checks.push(makeCheck('tls-rpt.missing', 'info', {}));
+  else if (hasMail && !failed(tlsR)) checks.push(makeCheck('tls-rpt.missing', 'info', {}));
   if (bimi.length) {
     checks.push(makeCheck('bimi.present', 'ok', { logo: tag(bimi[0], 'l') || '—' }));
     if (dmarcPolicy !== 'quarantine' && dmarcPolicy !== 'reject') checks.push(makeCheck('bimi.dmarc-weak', 'warn', { policy: dmarcPolicy || '—' }));
   }
-  return { checks, mtaSts: mta[0] || null, tlsRpt: tls[0] || null, bimi: bimi[0] || null };
+  return { checks, mtaSts: mta[0] || null, tlsRpt: tls[0] || null, bimi: bimi[0] || null, failedLookups };
 }
 
 function analyzeRdap(r, now) {
@@ -1941,6 +1943,8 @@ function analyzeRdap(r, now) {
  *   For a name below its zone apex (`zone` !== `domain`) `dnssec` is the enclosing zone's state: signed
  *   from its DS, validated from the AD bit (the zone's own DNSKEY answer when the name is a CNAME);
  *   `zone` is the name's own zone, also when it is a CNAME.
+ *   `failedLookups` names the mail-extra records (`records.mtaSts` / `tlsRpt` / `bimi`) whose TXT
+ *   lookup failed: their null means "not known", not "not published" (and no `*.missing` check).
  * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
  *     aaaa: string[], txt: string[], spf: string|null, dmarc: string|null,
@@ -1948,6 +1952,7 @@ function analyzeRdap(r, now) {
  *       testing: boolean, cname: string|null }>,
  *     caa: Array<{ flags: number, tag: string, value: string }>, mtaSts: string|null, tlsRpt: string|null,
  *     bimi: string|null, ds: object[], dnskey: object[], https: object[] },
+ *   failedLookups: Array<'mtaSts'|'tlsRpt'|'bimi'>,
  *   dnssec: { signed: boolean|null, validated: boolean|null, broken: boolean, dsCount: number, dnskeyCount: number,
  *     algorithms: string[], ede: string[] },
  *   rdap: object|null, wildcard: { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[], error: string|null }|null,
@@ -2025,7 +2030,7 @@ export async function domainHealth(domain, {
       dnssec: { signed: null, validated: null, broken: false, dsCount: 0, dnskeyCount: 0, algorithms: [], ede: [] },
       rdap: rdapResult, wildcard: null, spf: { record: null, parsed: null, lookups: null },
       dmarc: { record: null, parsed: null, foundAt: null, inherited: false }, caa: null, caaCert: null,
-      nsAddresses: {}, mxHosts: {}, checks
+      nsAddresses: {}, mxHosts: {}, failedLookups: [], checks
     });
   }
 
@@ -2108,6 +2113,7 @@ export async function domainHealth(domain, {
     caaCert: caa.certCheck || null,
     nsAddresses: ns.addresses,
     mxHosts: mx.hosts,
+    failedLookups: extras.failedLookups,
     checks
   });
 }

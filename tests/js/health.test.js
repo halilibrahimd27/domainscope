@@ -1671,6 +1671,19 @@ test('mail extras: MTA-STS invalid/missing, TLS-RPT missing, BIMI with weak DMAR
   has(r, 'mta-sts.missing', 'info');
   lacks(r, 'bimi.present');
   lacks(r, 'bimi.dmarc-weak');
+  assert.deepEqual(r.failedLookups, [], 'an absent record is known to be absent');
+});
+
+test('mail extras: a failed _mta-sts / _smtp._tls lookup is "not known", never "not published"', async () => {
+  const zone = goodZone();
+  const r = await run('example.com', fakeDns(zone, { fail: { '_mta-sts.example.com|TXT': 'timeout', '_smtp._tls.example.com|TXT': 'timeout' } }));
+  assertRenderable(r);
+  assert.deepEqual([r.records.mtaSts, r.records.tlsRpt, r.failedLookups], [null, null, ['mtaSts', 'tlsRpt']]);
+  lacks(r, 'mta-sts.missing');
+  lacks(r, 'tls-rpt.missing');
+  lacks(r, 'mta-sts.present');
+  const nx = await run('nothing.example.com', fakeDns(zone));
+  assert.deepEqual(nx.failedLookups, [], 'NXDOMAIN reports carry the field too');
 });
 
 /* ==================================================================== */

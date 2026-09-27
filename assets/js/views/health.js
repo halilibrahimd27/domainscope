@@ -184,6 +184,7 @@ registerStrings('en', {
   'hlt.mail.extras': 'MTA-STS · TLS-RPT · BIMI',
   'hlt.present': 'present',
   'hlt.missing': 'not published',
+  'hlt.lookupFailed': 'lookup failed',
 
   'hlt.caa.title': 'Which CAs may issue certificates?',
   'hlt.caa.none': 'No CAA record — any certificate authority may issue certificates for this domain.',
@@ -368,6 +369,7 @@ registerStrings('tr', {
   'hlt.mail.extras': 'MTA-STS · TLS-RPT · BIMI',
   'hlt.present': 'var',
   'hlt.missing': 'yayınlanmamış',
+  'hlt.lookupFailed': 'sorgu başarısız',
 
   'hlt.caa.title': 'Hangi sertifika otoriteleri sertifika verebilir?',
   'hlt.caa.none': 'CAA kaydı yok — herhangi bir sertifika otoritesi bu alan adı için sertifika verebilir.',
@@ -489,6 +491,16 @@ export function parseSelectors(text) {
     if (/^[a-z0-9_]([a-z0-9_.-]*[a-z0-9_])?$/.test(s) && !DEFAULT_DKIM_SELECTORS.includes(s) && !out.includes(s)) out.push(s);
   }
   return out;
+}
+
+/** Did the report's lookup of a mail-extra record ('mtaSts', 'tlsRpt', 'bimi') fail? Its null is then "not known". */
+function lookupFailed(report, key) {
+  return Array.isArray(report.failedLookups) && report.failedLookups.includes(key);
+}
+
+/** A mail-extra record for lib/mtasts: the record, null when not published, undefined when not known. */
+function knownRecord(report, key) {
+  return lookupFailed(report, key) ? undefined : report.records[key] ?? null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -802,14 +814,15 @@ export function mount(container, ctx) {
           : Badge(t('hlt.dkim.active'), { variant: k.keyBits && k.keyBits < 1024 ? 'error' : k.keyBits && k.keyBits < 2048 ? 'info' : 'ok', icon: 'key' })
       ])) : h('p', { class: 'muted text-sm' }, t('hlt.dkim.none', { count: selectorsTried })));
 
-    const extra = (label, value) => h('div', { class: 'hlt-extra' },
+    const extra = (label, key) => h('div', { class: 'hlt-extra' },
       h('span', { class: 'hlt-extra-label' }, label),
-      value ? h('span', { class: 'mono text-xs hlt-extra-value' }, value) : h('span', { class: 'muted text-xs' }, t('hlt.missing')));
+      report.records[key] ? h('span', { class: 'mono text-xs hlt-extra-value' }, report.records[key])
+        : h('span', { class: 'muted text-xs' }, t(lookupFailed(report, key) ? 'hlt.lookupFailed' : 'hlt.missing')));
     const extrasBlock = h('div', { class: 'stack-sm hlt-mail-block', dataset: { block: 'extras' } },
       h('div', { class: 'hlt-subtitle' }, t('hlt.mail.extras')),
-      extra('MTA-STS', report.records.mtaSts),
-      extra('TLS-RPT', report.records.tlsRpt),
-      extra('BIMI', report.records.bimi));
+      extra('MTA-STS', 'mtaSts'),
+      extra('TLS-RPT', 'tlsRpt'),
+      extra('BIMI', 'bimi'));
 
     return Card({
       title: t('hlt.mail.title'), icon: 'mail', className: 'hlt-card hlt-mail',
@@ -924,7 +937,8 @@ export function mount(container, ctx) {
     policyEl.append(KeyValueList([
       {
         key: t('hlt.mtasts.txt'),
-        value: report.records.mtaSts ? h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts) : h('span', { class: 'muted text-sm' }, t('hlt.missing'))
+        value: report.records.mtaSts ? h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts)
+          : h('span', { class: 'muted text-sm' }, t(lookupFailed(report, 'mtaSts') ? 'hlt.lookupFailed' : 'hlt.missing'))
       },
       { key: t('hlt.mtasts.url'), value: h('span', { class: 'mono text-sm hlt-mtasts-url' }, url), copy: url }
     ], { className: 'hlt-kv' }));
@@ -1013,7 +1027,7 @@ export function mount(container, ctx) {
       if (!live()) return;
       const fetch = interpretPolicyFetch(measurement, { host });
       const validation = validateMtaSts({
-        domain, fetch, mxHosts: (report.records.mx || []).map((m) => m.exchange), txt: report.records.mtaSts ?? null, tlsRpt: report.records.tlsRpt ?? null
+        domain, fetch, mxHosts: (report.records.mx || []).map((m) => m.exchange), txt: knownRecord(report, 'mtaSts'), tlsRpt: knownRecord(report, 'tlsRpt')
       });
       Object.assign(job, { status: 'done', pendingId: null, fetch, validation, checkedAt: new Date() });
       announce(t(`mtasts.head.${validation.headline}`));

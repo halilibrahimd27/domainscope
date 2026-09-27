@@ -1158,6 +1158,7 @@ export function inventoryDraft(base, additions, { label, date }) -> { text: stri
   // one item per host. `group` = the Ansible group the hosts went into, `newGroup` = the list did not have it. Other shapes (a JSON object that is no
   // host record, another YAML map, a CSV without a name column) → text null, reason 'format'. The text is parsed back: unless its servers are exactly the old
   // ones plus the additions, with no new warning → text null, reason 'check'. The caller then offers `lines` to copy and leaves the editor alone.
+  // A base text with CRLF line endings gets its additions with CRLF too.
 export function scanHandoff(results, { focus, maxDomains = 5, maxNames = 2000 }) -> { names, domains, moreDomains }   // names under the focus (else all, not templated); the focus, else the most frequent registrable domains
 ### 5.28 `lib/shellnav.js` — the shell's navigation, first-visit jobs and keyboard shortcuts as data
 Pure: no DOM, storage, network, clock or i18n. `app.js` feeds it the view registry (`VIEWS`), storage keys, state changes, key events and element lists (duck-typed objects), and renders and clicks; `ui/start-tasks.js` draws the job cards.

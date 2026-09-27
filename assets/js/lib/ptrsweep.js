@@ -1398,7 +1398,8 @@ function addsExactly(before, after, additions) {
  * another shape, a CSV without a name column) is not rewritten: `text` is null with
  * `reason: 'format'`, and the caller offers `lines` to copy. The new text is always parsed
  * back: unless it gives exactly the old servers plus the additions, with no new warning,
- * `text` is null with `reason: 'check'`.
+ * `text` is null with `reason: 'check'`. A list with Windows line endings (CRLF) gets its
+ * additions with CRLF too, so the draft never mixes the two.
  * @param {string} base the editor's current text (an unsaved draft, else the saved inventory)
  * @param {Array<{ name: string, ips: string[] }>} additions
  * @param {{ label?: string, date?: Date }} [opts] the sweep's target and the date, for the comment line
@@ -1504,6 +1505,8 @@ export function inventoryDraft(base, additions, { label = '', date = new Date() 
       break;
   }
   if (text === null) return { ...out, group: null, newGroup: false, reason: 'format' };
+  // The additions are built with \n: a list written with \r\n (a Windows editor) keeps its own.
+  if (/\r\n/.test(head)) text = text.replace(/\r?\n/g, '\r\n');
   if (!addsExactly(head, text, list)) return { ...out, group: null, newGroup: false, reason: 'check' };
   return { ...out, text };
 }

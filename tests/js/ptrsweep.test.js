@@ -863,6 +863,16 @@ describe('rows, summary, exports and hand-offs', async () => {
     assert.equal(P.inventoryDraft('web01 192.0.2.10', []).text, 'web01 192.0.2.10\n');
   });
 
+  test('inventoryDraft: a list with Windows line endings gets its additions with CRLF too', () => {
+    for (const base of ['web01 192.0.2.10\r\nweb02 192.0.2.11\r\n', '[web]\r\nweb01 ansible_host=192.0.2.10\r\n',
+      '[\r\n  {"name": "web01", "ip": "192.0.2.10"}\r\n]\r\n']) {
+      const out = drafted(base);
+      if (!base.startsWith('[\r')) assert.ok(out.text.startsWith(base.replace(/\s+$/, '')), 'the list itself unchanged');
+      assert.equal(/(^|[^\r])\n/.test(out.text), false, `no bare LF: ${JSON.stringify(out.text)}`);
+    }
+    assert.equal(/\r/.test(drafted('web01 192.0.2.10\n').text), false, 'an LF list stays LF');
+  });
+
   test('inventoryDraft: Ansible INI gets its own [reverse_dns] group, never the last group of the file', () => {
     const base = '[web]\nweb01 ansible_host=192.0.2.10\n\n[db]\ndb01 ansible_host=192.0.2.11\n';
     const out = drafted(base, { format: 'ini', group: 'reverse_dns' });

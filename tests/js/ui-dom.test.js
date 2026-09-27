@@ -1022,6 +1022,10 @@ describe('routing', () => {
       { name: '192.0.2.50-60', ips: ['192.0.2.15'] },
       { name: 'ansible_host: web', ips: ['192.0.2.16'] }
     ]), expected);
+    // Addresses written with a port keep it: tests/python/test_inventory_targets.py reads this file back with the CLI.
+    const { parseInventory } = await import('../../assets/js/lib/inventory.js');
+    const inventory = parseInventory(await readFile(path.join(ROOT, 'tests/fixtures/inventory-ports.txt'), 'utf8'));
+    assert.equal(targetsText(inventory.servers), await readFile(path.join(ROOT, 'tests/fixtures/inventory-ports-targets.txt'), 'utf8'));
   });
 });
 

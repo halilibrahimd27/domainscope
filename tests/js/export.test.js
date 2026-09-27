@@ -266,6 +266,24 @@ describe('CLI helpers', () => {
     assert.equal(targetsForCli(undefined), '');
   });
 
+  test('targetsForCli: an inventory address written with a port keeps it, as the CLI reads the inventory', () => {
+    const { servers } = parseInventory('web01 203.0.113.10:8443 203.0.113.11\nweb02 [2001:db8::2]:8443\nweb03 203.0.113.13 203.0.113.13:8443');
+    const text = targetsForCli([
+      { server: servers[0] }, // a scanner ServerGroup
+      ...servers,
+      { ip: '203.0.113.10', servers: [{ name: 'hint' }] }, // an origin hint on the same address: the server's line wins
+      { ip: '203.0.113.99', hosts: ['www.example.com'] }
+    ]);
+    assert.equal(text, [
+      'web01 203.0.113.10:8443',
+      'web01 203.0.113.11',
+      'web02 [2001:db8::2]:8443',
+      'web03 203.0.113.13 203.0.113.13:8443',
+      '203.0.113.99',
+      ''
+    ].join('\n'));
+  });
+
   test('cliServerName: one token the CLI reads as the whole name (never a comment, variable or IP)', () => {
     const cases = [
       ['web01', 'web01'],

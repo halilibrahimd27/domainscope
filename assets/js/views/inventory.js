@@ -14,7 +14,7 @@ import {
 } from '../ui/components.js';
 import { downloadText } from '../ui/download.js';
 import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
-import { parseInventory } from '../lib/inventory.js';
+import { parseInventory, addressTargets, serverTargets } from '../lib/inventory.js';
 import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
 
@@ -120,7 +120,7 @@ registerStrings('en', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
-  'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too.'
+  'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too. An address written with a port (203.0.113.10:8443, [2001:db8::1]:8443) keeps it: the CLI scans it on that port instead of -p.'
 });
 
 registerStrings('tr', {
@@ -181,7 +181,7 @@ registerStrings('tr', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
-  'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır.'
+  'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır. Portuyla yazılan bir adres (203.0.113.10:8443, [2001:db8::1]:8443) portunu korur: CLI onu -p yerine o porttan tarar.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -191,14 +191,18 @@ let teardown = null;
 /**
  * "name ip ip…" lines for the CLI's -t option, one per server. The name is made one CLI token
  * (lib/export.cliServerName), so "Web Server 1" or "#bastion" is neither split, merged with
- * another server nor read as a comment.
- * @param {Array<{ name: string, ips: string[] }>} servers
+ * another server nor read as a comment. An address written with a port keeps it
+ * (lib/inventory.serverTargets: "web01 203.0.113.10:8443"), so the CLI scans the same ip:port.
+ * @param {Array<{ name: string, ips: string[], ports?: object }>} servers
  * @returns {string}
  */
 export function targetsText(servers) {
-  const lines = servers.filter((s) => s.ips.length).map((s) => [cliServerName(s.name), ...s.ips].filter(Boolean).join(' '));
+  const lines = servers.filter((s) => s.ips.length).map((s) => [cliServerName(s.name), ...serverTargets(s)].filter(Boolean).join(' '));
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
+
+/** A server's addresses as the table shows them: `{ ip, target }`, the target with its own port if any. */
+const endpointsOf = (s) => s.ips.flatMap((ip) => addressTargets(s, ip).map((target) => ({ ip, target })));
 
 /**
  * Character offsets [start, end) of 1-based line `n` in `text`.
@@ -322,12 +326,12 @@ export function mount(container, ctx) {
         label: t('inv.col.ips'),
         sortable: true,
         sortValue: (s) => ipSortValue(s.ips[0]),
-        searchValue: (s) => s.ips.join(' '),
-        exportValue: (s) => s.ips.join(' '),
-        render: (s) => TruncatedList(s.ips, {
+        searchValue: (s) => serverTargets(s).join(' '),
+        exportValue: (s) => serverTargets(s).join(' '),
+        render: (s) => TruncatedList(endpointsOf(s), {
           max: 4,
-          render: (ip) => h('span', { class: 'inv-ip' }, ip,
-            isPrivateIP(ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
+          render: (e) => h('span', { class: 'inv-ip' }, e.target,
+            isPrivateIP(e.ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
         })
       },
       {

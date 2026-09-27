@@ -1,0 +1,13 @@
+# Addresses with their own port: lib/inventory.js and cli/ssl_origin_scan.py read them alike
+# (tests/js/inventory.test.js, tests/python/test_inventory_targets.py). Lines 10-13 are warnings.
+web01 203.0.113.10:8443
+web02 [2001:db8::2]:8443 203.0.113.12
+web03 203.0.113.13 203.0.113.13:8443
+web04 203.0.113.14:
+web05=203.0.113.15:9443
+[2001:db8::16]:443 web06
+203.0.113.17:8443
+web07 203.0.113.18:99999
+web08 [2001:db8::19]:https
+web09 203.0.113.20:0
+web10=203.0.113.21:70000

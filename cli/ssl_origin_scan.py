@@ -1821,13 +1821,27 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
         name = None  # type: Optional[str]
         values = []  # type: List[str]
         had_invalid = False
-        for token in re.split(r'[\s,;]+', line):
-            if not token:
-                continue
+        for index, token in enumerate(t for t in re.split(r'[\s,;]+', line) if t):
             if '=' in token:
                 key, _, value = token.partition('=')
                 if key.lower() in _IP_KEYS:
                     values.append(value)
+                elif index == 0 and key and not key.lower().startswith('ansible_'):
+                    # "web01=203.0.113.10" or "web01=203.0.113.10:8443": NAME=IP as -t takes it
+                    # (lib/inventory.js reads it too); a bad address or port is a warning.
+                    try:
+                        endpoint = split_endpoint(value)
+                    except ValueError as exc:
+                        builder.warn(number, 'INVALID_IP', '%s (%s)' % (value, exc))
+                        had_invalid = True
+                        continue
+                    if normalize_ip(value) or (endpoint is not None
+                                               and normalize_ip(endpoint[0])):
+                        name = key
+                        values.append(value)
+                    elif _looks_like_ip(value):
+                        builder.warn(number, 'INVALID_IP', value)
+                        had_invalid = True
                 continue  # other Ansible variables (ansible_user=...) are irrelevant
             if normalize_ip(token) or is_ip_block(token):
                 values.append(token)

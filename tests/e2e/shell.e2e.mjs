@@ -58,6 +58,15 @@ const SAMPLE_INVENTORY = [
   'cache01'
 ].join('\n');
 
+// Addresses with their own port (the CLI scans them there), a bad port and a host name with a port.
+const PORT_INVENTORY = [
+  '# e2e inventory with ports',
+  'web01 203.0.113.10:8443',
+  'web02 [2001:db8::2]:8443 203.0.113.12',
+  'web04 203.0.113.14:99999',
+  'web05 web05.example.net:8443',
+  'web03 10.0.0.13 10.0.0.13:8443'
+].join('\n');
 const FILE_INVENTORY = 'hostname,ip_address,role\napi01,10.0.3.21,api\napi02,10.0.3.22,api\nmail01,192.168.10.5,mail\n';
 
 /* ------------------------------------------------------------------------ */
@@ -317,6 +326,7 @@ async function main() {
   const csvFile = path.join(tmpDir, 'servers.csv');
   await writeFile(csvFile, FILE_INVENTORY);
   const expectedSample = parseInventory(SAMPLE_INVENTORY);
+  const expectedPorts = parseInventory(PORT_INVENTORY);
 
   try {
     /* ---------------- Desktop ---------------- */
@@ -676,6 +686,48 @@ async function main() {
       await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
       await page.click('[data-action="save"]');
       await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
+      await dismissToasts(page);
+    });
+
+    await step('Servers: an address written with a port is shown and exported with it; a bad port is a warning', async () => {
+      await page.type('[data-role="inventory-text"]', PORT_INVENTORY);
+      await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length === n,
+        { args: [expectedPorts.servers.length], message: 'parsed rows' });
+      const ui = await page.evaluate(() => ({
+        ips: [...document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row')]
+          .map((tr) => [...tr.querySelectorAll('.inv-ip')].map((s) => s.firstChild.textContent)),
+        warnings: [...document.querySelectorAll('.inv-warning')].map((w) => [Number(w.dataset.line), w.dataset.code])
+      }));
+      assertEqual(ui.ips, [['203.0.113.10:8443'], ['[2001:db8::2]:8443', '203.0.113.12'], ['10.0.0.13', '10.0.0.13:8443']],
+        'ip:port in the table');
+      assertEqual(ui.warnings, [[4, 'INVALID_IP'], [5, 'PARSE'], [5, 'NO_IP']], 'bad port and host:port warned');
+      const file = await page.evaluate(async () => {
+        // Capture the download: ui/download.js creates a Blob URL and clicks a temporary <a download>.
+        const create = URL.createObjectURL;
+        const click = HTMLAnchorElement.prototype.click;
+        const blobs = new Map();
+        let got = null;
+        URL.createObjectURL = (blob) => { const url = create.call(URL, blob); blobs.set(url, blob); return url; };
+        HTMLAnchorElement.prototype.click = function capture() {
+          if (this.download && blobs.has(this.href)) got = { name: this.download, blob: blobs.get(this.href) };
+          else click.call(this);
+        };
+        try {
+          document.querySelector('[data-action="targets"]').click();
+        } finally {
+          URL.createObjectURL = create;
+          HTMLAnchorElement.prototype.click = click;
+        }
+        return got && { name: got.name, text: await got.blob.text() };
+      });
+      assertEqual(file && file.name, 'targets.txt', 'targets.txt downloaded');
+      assertEqual(file.text, 'web01 203.0.113.10:8443\nweb02 [2001:db8::2]:8443 203.0.113.12\nweb03 10.0.0.13 10.0.0.13:8443\n',
+        'the CLI scans the same ip:port');
+      await shot(page, 'desktop-light-en-inventory-ports');
+      // Back to the saved sample (the editor was only edited, never saved).
+      await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
+      await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length === n,
+        { args: [expectedSample.servers.length] });
       await dismissToasts(page);
     });
 

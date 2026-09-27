@@ -11,6 +11,11 @@
  *     ansible-inventory --list, kubectl -o json) and JSON Lines
  *   - comments: '#', ';' and '//' (whole line), ' #' / ' //' (inline)
  * The same server name on several lines/rows merges its IPs.
+ *
+ * An address may carry its own port (`203.0.113.10:8443`, `[2001:db8::1]:8443`), as
+ * cli/ssl_origin_scan.py reads it: the CLI scans that address on that port instead of
+ * `-p`. The port is kept in `Server.ports` and written back by {@link serverTargets}; a
+ * port outside 1–65535 makes the token an INVALID_IP, never a silently dropped one.
  */
 
 import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
@@ -23,6 +28,9 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  * @property {string[]} groups  Groups/roles (Ansible groups incl. parents, CSV group columns).
  * @property {number} line      1-based line where the server first appears.
  * @property {string[]} aliases Extension: other names (hosts-file aliases, secondary name columns).
+ * @property {Object<string, Array<number|null>>} [ports] Extension, present only when an address
+ *   was written with a port: address → its ports, `null` standing for the CLI's `-p` ports (the
+ *   address was also given without one). An address missing here is scanned on `-p` only.
  */
 
 /**
@@ -61,33 +69,56 @@ function unwrap(token) {
 }
 
 /**
- * Parse one token as an IP: accepts brackets, `ip:port`, `[v6]:port`,
- * `ip/32`, `ip/128`, a trailing sentence dot; returns the canonical IP or null.
+ * `ip` with the port text after it: none for '', null (invalid) for anything but digits
+ * making 1–65535 (the CLI's `_endpoint_port`: `08443` is 8443, `0` and `https` are invalid).
  */
-function cleanIpToken(token) {
+function withPort(ip, text) {
+  if (!ip) return null;
+  if (!text) return { ip, port: null };
+  const port = /^\d+$/.test(text) ? Number(text) : 0;
+  return port >= 1 && port <= 65535 ? { ip, port } : null;
+}
+
+/**
+ * Parse one token as an IP with its optional port: accepts brackets, `ip:port`,
+ * `[v6]:port`, `ip/32`, `ip/128`, a trailing sentence dot. An empty port (`ip:`,
+ * as in "10.0.0.1: web01") means none; a port outside 1–65535 makes it invalid.
+ * @param {unknown} token
+ * @returns {{ ip: string, port: number|null }|null} canonical IP, or null
+ */
+function parseIpToken(token) {
   if (typeof token !== 'string') return null;
   let t = unwrap(token);
   if (!t || t.length > 64) return null;
   if (t.endsWith('.') && !t.includes(':')) t = t.slice(0, -1);
-  let m = /^\[([^\]]+)\](?::\d{1,5})?$/.exec(t);
-  if (m) return normalizeIP(m[1]);
-  m = /^(\d{1,3}(?:\.\d{1,3}){3}):\d{0,5}$/.exec(t);
-  if (m) return normalizeIP(m[1]);
+  let m = /^\[([^\]]+)\](?::(\d*))?$/.exec(t);
+  if (m) return withPort(normalizeIP(m[1]), m[2]);
+  m = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d*)$/.exec(t);
+  if (m) return withPort(normalizeIP(m[1]), m[2]);
   m = /^([^/]+)\/(\d{1,3})$/.exec(t);
   if (m) {
     const ip = normalizeIP(m[1]);
     if (!ip) return null;
-    return Number(m[2]) === (ip.includes(':') ? 128 : 32) ? ip : null;
+    return Number(m[2]) === (ip.includes(':') ? 128 : 32) ? { ip, port: null } : null;
   }
-  return normalizeIP(t);
+  return withPort(normalizeIP(t), '');
 }
 
-/** Token that is *meant* to be an IP but is not valid (10.0.0.256, 1::2::3, a CIDR…). */
+/** {@link parseIpToken} without the port: the canonical IP or null. */
+function cleanIpToken(token) {
+  const hit = parseIpToken(token);
+  return hit ? hit.ip : null;
+}
+
+/**
+ * Token that is *meant* to be an IP but is not valid (10.0.0.256, 1::2::3, a CIDR, a port
+ * outside 1–65535 or not a number: 10.0.0.1:99999, [2001:db8::1]:https…).
+ */
 function looksLikeIp(token) {
-  let t = unwrap(token).replace(/\/\d{1,3}$/, '');
-  t = t.replace(/^\[/, '').replace(/\](?::\d+)?$/, '');
+  let t = unwrap(token).replace(/\/\d{1,3}(?::[^/]*)?$/, '');
+  t = t.replace(/^\[/, '').replace(/\](?::.*)?$/, '');
   if (t.endsWith('.') && !t.includes(':')) t = t.slice(0, -1);
-  if (/^\d+\.\d+\.\d+\.\d+(?::\d+)?$/.test(t)) return true;
+  if (/^\d+\.\d+\.\d+\.\d+(?::.*)?$/.test(t)) return true;
   const colons = (t.match(/:/g) || []).length;
   return colons >= 2
     && /^[0-9a-f:.%]+$/i.test(t)
@@ -98,6 +129,12 @@ function looksLikeIp(token) {
 const NAME_TOKEN_RE = /^[\p{L}\p{N}_](?:[\p{L}\p{N}_.-]*[\p{L}\p{N}_])?$/u;
 const ANSIBLE_RANGE_RE = /^[\p{L}\p{N}_.-]*\[[^\]\s]+:[^\]\s]+\][\p{L}\p{N}_.-]*$/u;
 const PLAIN_WORD_RE = /^\p{L}+$/u;
+/**
+ * A host name with a port (`web01.example.net:8443`): the CLI resolves it and scans that port,
+ * but servers here are matched by address only, so it is a PARSE warning, never dropped
+ * silently. The host part has a letter, so a clock time (`10:30`) is none.
+ */
+const HOST_PORT_RE = /^(?=[^:]*\p{L})[\p{L}\p{N}_][\p{L}\p{N}_.-]*:\d{1,5}$/u;
 
 function isNameToken(t) {
   if (!t || t.length > 253) return false;
@@ -183,8 +220,9 @@ function createCollector(text, lines) {
       return groupDefs.get(name);
     },
     /**
-     * @param {{ name: string|null, ips: string[], groups?: string[], aliases?: string[], line: number,
-     *   quiet?: boolean }} e quiet: never emit NO_IP for this entry alone.
+     * @param {{ name: string|null, ips: string[], ports?: Object<string, Array<number|null>>,
+     *   groups?: string[], aliases?: string[], line: number, quiet?: boolean }} e
+     *   ports: {@link portsOf}; quiet: never emit NO_IP for this entry alone.
      */
     add(e) {
       const all = e.ips || [];
@@ -193,6 +231,7 @@ function createCollector(text, lines) {
       entries.push({
         name: e.name ? String(e.name).trim().replace(/\.$/, '') || null : null,
         ips,
+        ports: e.ports || {},
         groups: (e.groups || []).filter(Boolean),
         aliases: (e.aliases || []).filter(Boolean),
         line: e.line || 1,
@@ -237,6 +276,45 @@ function groupMembership(groupDefs) {
   return { expand, direct };
 }
 
+/**
+ * `{ ip: ports }` for the addresses of `eps` written with a port at least once, in the order
+ * seen; `null` in a list: the same address also appeared without a port (the CLI's `-p`).
+ * @param {Array<{ ip: string, port?: number|null }>} eps
+ * @returns {Object<string, Array<number|null>>}
+ */
+function portsOf(eps) {
+  const explicit = new Set(eps.filter((e) => Number.isInteger(e.port)).map((e) => e.ip));
+  const out = {};
+  for (const e of eps) {
+    if (!explicit.has(e.ip)) continue;
+    const spec = out[e.ip] || (out[e.ip] = []);
+    const port = Number.isInteger(e.port) ? e.port : null;
+    if (!spec.includes(port)) spec.push(port);
+  }
+  return out;
+}
+
+/**
+ * Add address `ip` on `port` (null: the `-p` ports) to a server draft, merging like the CLI's
+ * `Server.add_ip`: an address first given bare and later with a port gets both.
+ */
+function addAddress(d, ip, port) {
+  if (!d.ips.includes(ip)) {
+    d.ips.push(ip);
+    if (port !== null) d.ports[ip] = [port];
+    return;
+  }
+  const spec = d.ports[ip];
+  if (!spec) {
+    if (port !== null) d.ports[ip] = [null, port];
+  } else if (!spec.includes(port)) {
+    spec.push(port);
+  }
+}
+
+/** The port list of `ip` in an entry: its own ports, or `[null]` (the `-p` ports). */
+const entryPorts = (e, ip) => (e.ports && e.ports[ip] ? e.ports[ip] : [null]);
+
 function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx) {
   const byName = new Map(); // lower name → server draft
   const drafts = [];
@@ -244,7 +322,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   const draftFor = (key, name, line) => {
     let d = byName.get(key);
     if (!d) {
-      d = { name, ips: [], groups: [], aliases: [], line, loud: false, named: true };
+      d = { name, ips: [], ports: {}, groups: [], aliases: [], line, loud: false, named: true };
       byName.set(key, d);
       drafts.push(d);
     }
@@ -258,18 +336,25 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   for (const e of entries) {
     if (!e.name) continue;
     const d = draftFor(e.name.toLowerCase(), e.name, e.line);
-    push(d.ips, e.ips);
+    for (const ip of e.ips) for (const port of entryPorts(e, ip)) addAddress(d, ip, port);
     push(d.groups, e.groups);
     push(d.aliases, e.aliases.filter((a) => a.toLowerCase() !== d.name.toLowerCase()));
     if (!e.quiet) d.loud = true;
   }
 
-  // 2) Unnamed entries: drop IPs already owned by a named server, merge by first IP.
-  const namedIps = new Set();
-  for (const d of drafts) for (const ip of d.ips) namedIps.add(ip);
+  // 2) Unnamed entries: drop IPs already owned by a named server, merge by first IP. The
+  //    ports they were written with (bare = the -p ports) go to that server, so targets.txt
+  //    still scans every ip:port the CLI would scan reading this inventory itself.
+  const namedIps = new Map();
+  for (const d of drafts) for (const ip of d.ips) namedIps.set(ip, [...(namedIps.get(ip) || []), d]);
   const byIp = new Map();
   for (const e of entries) {
     if (e.name) continue;
+    for (const ip of e.ips) {
+      for (const owner of namedIps.get(ip) || []) {
+        for (const port of entryPorts(e, ip)) addAddress(owner, ip, port);
+      }
+    }
     const ips = e.ips.filter((ip) => !namedIps.has(ip));
     if (ips.length === 0) {
       if (e.ips.length === 0 && !e.quiet) ctx.warn(e.line, 'NO_IP');
@@ -277,11 +362,11 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     }
     let d = byIp.get(ips[0]);
     if (!d) {
-      d = { name: ips[0], ips: [], groups: [], aliases: [], line: e.line, loud: true, named: false };
+      d = { name: ips[0], ips: [], ports: {}, groups: [], aliases: [], line: e.line, loud: true, named: false };
       byIp.set(ips[0], d);
       drafts.push(d);
     }
-    push(d.ips, ips);
+    for (const ip of ips) for (const port of entryPorts(e, ip)) addAddress(d, ip, port);
     push(d.groups, e.groups);
   }
 
@@ -302,7 +387,9 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
       if (d.loud) ctx.warn(d.line, 'NO_IP', undefined, d.name);
       continue;
     }
-    servers.push({ id: d.name, name: d.name, ips: d.ips, groups: d.groups, line: d.line, aliases: d.aliases });
+    const server = { id: d.name, name: d.name, ips: d.ips, groups: d.groups, line: d.line, aliases: d.aliases };
+    if (Object.keys(d.ports).length) server.ports = d.ports;
+    servers.push(server);
   }
 
   // Hosts named in group definitions that never got a server (e.g. ansible_host is a DNS name).
@@ -451,8 +538,8 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
     const items = [];
     const parts = node.length <= 200 ? node.split(/[\s,;]+/) : [];
     for (const part of parts) {
-      const ip = cleanIpToken(part);
-      if (ip) items.push({ ip, raw: part });
+      const hit = parseIpToken(part);
+      if (hit) items.push({ ip: hit.ip, port: hit.port, raw: part });
     }
     return items.length ? [items] : [];
   }
@@ -560,7 +647,7 @@ function extractStructured(root, ctx, fixedLine = null) {
   for (const f of found) {
     const ips = [...new Set(f.items.map((i) => i.ip))];
     const line = fixedLine ?? ctx.lineOf(f.items[0]?.raw);
-    ctx.add({ name: f.name, ips, line });
+    ctx.add({ name: f.name, ips, ports: portsOf(f.items), line });
   }
 }
 
@@ -902,15 +989,18 @@ function parseCsv(text, csv, ctx) {
     if (cells.every((c) => !c)) continue;
     if (/^(#|\/\/|;)/.test(cells[0] || '')) continue;
     const ips = [];
+    const eps = [];
     let name = null;
     const aliases = [];
     const groups = [];
     let invalid = 0;
     const addIpValue = (value, strict) => {
       for (const part of splitCellValues(value)) {
-        const ip = cleanIpToken(part);
-        if (ip) ips.push(ip);
-        else if (strict && looksLikeIp(part)) {
+        const hit = parseIpToken(part);
+        if (hit) {
+          ips.push(hit.ip);
+          eps.push(hit);
+        } else if (strict && looksLikeIp(part)) {
           invalid += 1;
           ctx.warn(rec.line, 'INVALID_IP', undefined, part);
         }
@@ -925,9 +1015,10 @@ function parseCsv(text, csv, ctx) {
     for (const col of nameCols) {
       const value = cells[col.i] || '';
       if (!value) continue;
-      const ip = cleanIpToken(value);
-      if (ip) {
-        ips.push(ip);
+      const hit = parseIpToken(value);
+      if (hit) {
+        ips.push(hit.ip);
+        eps.push(hit);
         continue;
       }
       if (!name) name = value;
@@ -939,7 +1030,7 @@ function parseCsv(text, csv, ctx) {
         if (col.role === 'other' && cells[i]) addIpValue(cells[i], false);
       });
     }
-    ctx.add({ name, ips: [...new Set(ips)], groups, aliases, line: rec.line, quiet: ips.length === 0 && invalid > 0 });
+    ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: rec.line, quiet: ips.length === 0 && invalid > 0 });
   }
 }
 
@@ -1011,9 +1102,11 @@ function parseLines(lines, ctx) {
 function parseHostLine(line, lineNo, group, ctx) {
   const tokens = line.split(/[\s,;|]+/).filter(Boolean);
   const ips = [];
+  const eps = [];
   const invalid = [];
   const names = [];
   const others = [];
+  const hostPorts = [];
   let ipFirst = false;
 
   tokens.forEach((raw, i) => {
@@ -1023,23 +1116,34 @@ function parseHostLine(line, lineNo, group, ctx) {
     if (eq > 0) {
       const key = tok.slice(0, eq);
       const value = unwrap(tok.slice(eq + 1));
-      const ip = cleanIpToken(value);
+      const hit = parseIpToken(value);
+      const ip = hit ? hit.ip : null;
       const nk = normalizeKey(key);
-      if (ip && (isIpKey(nk) || /(^|_)host$/.test(nk))) ips.push(ip);
-      else if (ip && i === 0 && isNameToken(key) && !/^ansible_/.test(nk)) {
+      if (ip && (isIpKey(nk) || /(^|_)host$/.test(nk))) {
+        ips.push(ip);
+        eps.push(hit);
+      } else if (ip && i === 0 && isNameToken(key) && !/^ansible_/.test(nk)) {
         names.push(key); // "web01=10.0.0.1"
         ips.push(ip);
-      } else if (!ip && looksLikeIp(value) && isIpKey(nk)) invalid.push(value);
+        eps.push(hit);
+      } else if (!ip && looksLikeIp(value) && (isIpKey(nk) || (i === 0 && isNameToken(key) && !/^ansible_/.test(nk)))) {
+        invalid.push(value); // "web01=10.0.0.300", "web01=10.0.0.1:99999": a warning, never dropped silently
+      }
       return;
     }
-    const ip = cleanIpToken(tok);
-    if (ip) {
+    const hit = parseIpToken(tok);
+    if (hit) {
       if (i === 0) ipFirst = true;
-      ips.push(ip);
+      ips.push(hit.ip);
+      eps.push(hit);
       return;
     }
     if (looksLikeIp(tok)) {
       invalid.push(tok);
+      return;
+    }
+    if (HOST_PORT_RE.test(tok)) {
+      hostPorts.push(tok);
       return;
     }
     if (tok.endsWith(':')) {
@@ -1055,6 +1159,7 @@ function parseHostLine(line, lineNo, group, ctx) {
   });
 
   for (const bad of invalid) ctx.warn(lineNo, 'INVALID_IP', undefined, bad);
+  for (const hp of hostPorts) ctx.warn(lineNo, 'PARSE', undefined, hp);
   const groups = group && !IGNORED_GROUPS.has(group) ? [group] : [];
   const hostish = names.filter(isHostish);
   const plain = names.filter((n) => PLAIN_WORD_RE.test(n));
@@ -1085,11 +1190,11 @@ function parseHostLine(line, lineNo, group, ctx) {
 
   if (!name) {
     // Prose around IPs ("please update 10.0.0.1 and 10.0.0.2"): each IP stands alone.
-    for (const ip of new Set(ips)) ctx.add({ name: null, ips: [ip], groups, line: lineNo });
+    for (const ip of new Set(ips)) ctx.add({ name: null, ips: [ip], ports: portsOf(eps.filter((e) => e.ip === ip)), groups, line: lineNo });
     return;
   }
   const aliases = ipFirst ? names.filter((n) => n !== name) : [];
-  ctx.add({ name, ips: [...new Set(ips)], groups, aliases, line: lineNo });
+  ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: lineNo });
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1152,6 +1257,52 @@ export function parseInventory(text) {
     warnings.push({ line: 0, code: 'PARSE', text: String(err && err.message ? err.message : err).slice(0, 200) });
     return emptyResult(lineCount, warnings);
   }
+}
+
+/**
+ * An address as a CLI target: `203.0.113.10:8443`, `[2001:db8::1]:8443`, or the bare address
+ * when `port` is null / not an integer 1–65535. Null when `ip` is not an IP address.
+ * @param {string} ip
+ * @param {number|null} [port]
+ * @returns {string|null}
+ */
+export function formatEndpoint(ip, port = null) {
+  const addr = normalizeIP(String(ip ?? ''));
+  if (!addr) return null;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return addr;
+  return addr.includes(':') ? `[${addr}]:${port}` : `${addr}:${port}`;
+}
+
+/**
+ * The `-t` tokens of address `ip` of `server`, as the CLI reads them back: the bare address, or
+ * one `ip:port` per port it was written with (`Server.ports`; `null` there keeps the bare
+ * address as well). [] when `ip` is not an IP address.
+ * @param {{ ports?: Object<string, Array<number|null>> }|null} server
+ * @param {string} ip canonical, as in `Server.ips`
+ * @returns {string[]}
+ */
+export function addressTargets(server, ip) {
+  const ports = server && server.ports && typeof server.ports === 'object' ? server.ports : {};
+  const spec = Array.isArray(ports[ip]) && ports[ip].length ? ports[ip] : [null];
+  const out = [];
+  for (const port of spec) {
+    const token = formatEndpoint(ip, port);
+    if (token && !out.includes(token)) out.push(token);
+  }
+  return out;
+}
+
+/**
+ * The `-t` tokens of one server ({@link addressTargets} of each of its addresses, in order).
+ * @param {{ ips?: string[], ports?: Object<string, Array<number|null>> }} server
+ * @returns {string[]}
+ */
+export function serverTargets(server) {
+  const out = [];
+  for (const ip of Array.isArray(server?.ips) ? server.ips : []) {
+    for (const token of addressTargets(server, ip)) if (!out.includes(token)) out.push(token);
+  }
+  return out;
 }
 
 /**

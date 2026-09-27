@@ -5,6 +5,7 @@
  */
 
 import { sortHostnames } from './domain.js';
+import { addressTargets } from './inventory.js';
 import { normalizeIP } from './netinfo.js';
 
 /* ------------------------------------------------------------------------ */
@@ -342,20 +343,22 @@ function isIpRangeToken(token) {
  * Targets for `ssl_origin_scan.py -t targets.txt`: "name ip" lines.
  * Accepts inventory Servers, ServerGroups ({ server }), origin hints
  * ({ ip, servers }), unmatched IP entries ({ ip, hosts }), or plain IP
- * strings; IPs without a server name are written bare. De-duplicated by IP
- * (the first name wins), in input order, with a trailing newline.
+ * strings; IPs without a server name are written bare. An inventory address
+ * written with its own port (`Server.ports`) keeps it, as the CLI would scan it
+ * reading the inventory: "web01 203.0.113.10:8443" (inventory.addressTargets).
+ * De-duplicated by IP (the first name wins, with all its ports), in input
+ * order, with a trailing newline.
  * @param {Array<object|string>} servers
  * @returns {string}
  */
 export function targetsForCli(servers) {
   const seen = new Set();
   const lines = [];
-  const add = (name, rawIp) => {
+  const add = (name, rawIp, server = null) => {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip || seen.has(ip)) return;
     seen.add(ip);
-    const token = cliServerName(name);
-    lines.push(token ? `${token} ${ip}` : ip);
+    lines.push([cliServerName(name), ...(server ? addressTargets(server, ip) : [ip])].filter(Boolean).join(' '));
   };
   for (const item of Array.isArray(servers) ? servers : []) {
     if (!item) continue;
@@ -365,7 +368,7 @@ export function targetsForCli(servers) {
     }
     const server = item.server && typeof item.server === 'object' ? item.server : item;
     if (Array.isArray(server.ips) && server.ips.length) {
-      for (const ip of server.ips) add(server.name ?? server.id, ip);
+      for (const ip of server.ips) add(server.name ?? server.id, ip, server);
       continue;
     }
     if (item.ip) {

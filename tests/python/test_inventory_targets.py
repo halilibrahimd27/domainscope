@@ -4,6 +4,11 @@ tests/fixtures/inventory-targets.txt is exactly what views/inventory.js targetsT
 server names with spaces, '#', '//', ';', '=' and control characters (tests/js/ui-dom.test.js
 asserts that). The CLI must read one server per line, each with only its own addresses.
 
+tests/fixtures/inventory-ports.txt holds addresses written with their own port: the CLI must read
+the same servers, ip:port endpoints and warning lines as lib/inventory.js (tests/js/inventory.test.js),
+and inventory-ports-targets.txt, the targets.txt the web app writes from it, back to the same
+endpoints.
+
 Run from the repository root:
     python -m unittest discover -s tests/python -v
 """
@@ -16,6 +21,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = ROOT / 'cli' / 'ssl_origin_scan.py'
 TARGETS = ROOT / 'tests' / 'fixtures' / 'inventory-targets.txt'
+PORTS = ROOT / 'tests' / 'fixtures' / 'inventory-ports.txt'
+PORTS_TARGETS = ROOT / 'tests' / 'fixtures' / 'inventory-ports-targets.txt'
+
+# What both parsers read from inventory-ports.txt: server -> its -t endpoints (None = the -p ports).
+PORT_ENDPOINTS = [
+    ('web01', ['203.0.113.10:8443']),
+    ('web02', ['[2001:db8::2]:8443', '203.0.113.12']),
+    ('web03', ['203.0.113.13', '203.0.113.13:8443']),
+    ('web04', ['203.0.113.14']),
+    ('web05', ['203.0.113.15:9443']),
+    ('web06', ['[2001:db8::16]:443']),
+    ('203.0.113.17', ['203.0.113.17:8443']),
+]
 
 
 def _load_cli():
@@ -52,6 +70,34 @@ class InventoryTargetsRoundTrip(unittest.TestCase):
             ('192.0.2.15', ['192.0.2.15'], []),
             ('ansible_host_web', ['192.0.2.16'], []),
         ])
+
+
+
+def endpoints(server):
+    """The server's targets as lib/inventory.js serverTargets() writes them."""
+    return [sos.format_endpoint(ip, port) for ip in server.ips for port in server.port_spec(ip)]
+
+
+class InventoryPortsParity(unittest.TestCase):
+    def test_the_same_endpoints_and_warnings_as_the_web_app(self):
+        inventory = sos.parse_inventory(PORTS.read_text(encoding='utf-8'), str(PORTS))
+        self.assertEqual([(s.name, endpoints(s)) for s in inventory.servers], PORT_ENDPOINTS)
+        self.assertTrue(all(not s.hostnames for s in inventory.servers))
+        self.assertEqual([(w.line, w.code) for w in inventory.warnings],
+                         [(10, 'INVALID_IP'), (11, 'INVALID_IP'), (12, 'INVALID_IP'), (13, 'INVALID_IP')])
+
+    def test_the_web_apps_targets_txt_reads_back_to_the_same_endpoints(self):
+        inventory = sos.parse_inventory(PORTS_TARGETS.read_text(encoding='utf-8'), str(PORTS_TARGETS))
+        self.assertEqual(inventory.warnings, [])
+        self.assertEqual([(s.name, endpoints(s)) for s in inventory.servers], PORT_ENDPOINTS)
+
+    def test_name_equals_address_lines_as_the_web_app_reads_them(self):
+        inventory = sos.parse_inventory('web01=203.0.113.10\nweb02=[2001:db8::2]:8443\n'
+                                        'web03=203.0.113.300\nansible_user=root\ntimeout=30\n'
+                                        'web04 ansible_host=203.0.113.14 ansible_port=2222\n', 'x.txt')
+        self.assertEqual([(s.name, endpoints(s)) for s in inventory.servers], [
+            ('web01', ['203.0.113.10']), ('web02', ['[2001:db8::2]:8443']), ('web04', ['203.0.113.14'])])
+        self.assertEqual([(w.line, w.code) for w in inventory.warnings], [(3, 'INVALID_IP')])
 
 
 if __name__ == '__main__':

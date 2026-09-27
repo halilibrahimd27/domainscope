@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInventory, buildIpIndex, lookupServers } from '../../assets/js/lib/inventory.js';
+import { readFileSync } from 'node:fs';
+import {
+  parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets
+} from '../../assets/js/lib/inventory.js';
 
 /** Map server id -> sorted ips for order-independent comparison. */
 function ipsById(result) {
@@ -71,6 +74,7 @@ test('same name across lines merges IPs (case-insensitive)', () => {
 test('IPv6, bracket:port and ip:port forms', () => {
   const r = parseInventory('web05 [2001:db8::5]:443\nweb06 10.0.0.60:22\nweb07 2001:db8::7');
   assert.deepEqual(ipsById(r), { web05: ['2001:db8::5'], web06: ['10.0.0.60'], web07: ['2001:db8::7'] });
+  assert.deepEqual(r.servers.map((s) => s.ports ?? null), [{ '2001:db8::5': [443] }, { '10.0.0.60': [22] }, null]);
 });
 
 test('invalid IP and no-IP warnings', () => {
@@ -427,6 +431,90 @@ test('regression: a host name holding host / public / internal is no address key
   ].join('\n'));
   assert.deepEqual(ipsById(all), { web01: ['10.0.0.1'], 'backup-host': ['10.0.0.8'], 'mail-gw': ['10.0.0.25'] });
   assert.deepEqual(codes(all), []);
+});
+
+/* -------------------------------------------------------------------- */
+/* Addresses with their own port (the CLI's ip:port targets)            */
+/* -------------------------------------------------------------------- */
+
+const targetsById = (r) => Object.fromEntries(r.servers.map((s) => [s.id, serverTargets(s)]));
+
+test('tests/fixtures/inventory-ports.txt: the endpoints and warnings the CLI reads from it too', () => {
+  // tests/python/test_inventory_targets.py asserts the same servers, endpoints and warning lines for the CLI.
+  const r = parseInventory(readFileSync(new URL('../fixtures/inventory-ports.txt', import.meta.url), 'utf8'));
+  assert.deepEqual(targetsById(r), {
+    web01: ['203.0.113.10:8443'],
+    web02: ['[2001:db8::2]:8443', '203.0.113.12'],
+    web03: ['203.0.113.13', '203.0.113.13:8443'],
+    web04: ['203.0.113.14'],
+    web05: ['203.0.113.15:9443'],
+    web06: ['[2001:db8::16]:443'],
+    '203.0.113.17': ['203.0.113.17:8443']
+  });
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [
+    [10, 'INVALID_IP', '203.0.113.18:99999'],
+    [11, 'INVALID_IP', '[2001:db8::19]:https'],
+    [12, 'INVALID_IP', '203.0.113.20:0'],
+    [13, 'INVALID_IP', '203.0.113.21:70000']
+  ], 'a port that cannot be used is a warning, never a silently dropped address');
+  assert.deepEqual(r.servers.find((s) => s.id === 'web03').ports, { '203.0.113.13': [null, 8443] }, 'null: also on -p');
+  assert.equal(r.servers.find((s) => s.id === 'web04').ports, undefined, 'an empty port is none');
+});
+
+test('ports in CSV, INI, YAML and JSON; a CIDR with a port is invalid', () => {
+  const csv = parseInventory('name,ip\nweb01,203.0.113.10:8443\nweb02,"[2001:db8::2]:8443, 203.0.113.12"\nweb03,203.0.113.13:70000\n');
+  assert.deepEqual(targetsById(csv), { web01: ['203.0.113.10:8443'], web02: ['[2001:db8::2]:8443', '203.0.113.12'] });
+  assert.deepEqual(codes(csv), ['INVALID_IP']);
+  const ini = parseInventory('[web]\nweb01 ansible_host=203.0.113.10:8443\nweb02 ansible_host=203.0.113.12\n');
+  assert.deepEqual(targetsById(ini), { web01: ['203.0.113.10:8443'], web02: ['203.0.113.12'] });
+  const yaml = parseInventory('all:\n  hosts:\n    web01:\n      ansible_host: 203.0.113.10:8443\n');
+  assert.deepEqual(targetsById(yaml), { web01: ['203.0.113.10:8443'] });
+  const json = parseInventory(JSON.stringify([{ name: 'web01', ip: '203.0.113.10:8443' }, { name: 'web02', ips: ['[2001:db8::2]:8443', '203.0.113.12'] }]));
+  assert.deepEqual(targetsById(json), { web01: ['203.0.113.10:8443'], web02: ['[2001:db8::2]:8443', '203.0.113.12'] });
+  const cidr = parseInventory('net01 203.0.113.0/24:443\nweb01 203.0.113.10');
+  assert.deepEqual(codes(cidr), ['INVALID_IP']);
+  assert.deepEqual(targetsById(cidr), { web01: ['203.0.113.10'] });
+});
+
+test('ports merge like the CLI: a bare line of a named address adds the -p ports to its server', () => {
+  const r = parseInventory('web01 203.0.113.10:8443\nweb01 203.0.113.10:9443\n203.0.113.10\n203.0.113.11:8443\n203.0.113.11:8443');
+  assert.deepEqual(targetsById(r), {
+    web01: ['203.0.113.10:8443', '203.0.113.10:9443', '203.0.113.10'],
+    '203.0.113.11': ['203.0.113.11:8443']
+  });
+  assert.ok(!codes(r).includes('DUPLICATE_IP'));
+  // Prose: each address stands alone, with its port.
+  const prose = parseInventory('please update 203.0.113.10:8443 and [2001:db8::1]:8443 today');
+  assert.deepEqual(targetsById(prose), { '203.0.113.10': ['203.0.113.10:8443'], '2001:db8::1': ['[2001:db8::1]:8443'] });
+  // An address first given bare: its -p ports stay with the one written with a port.
+  const both = parseInventory('web01 203.0.113.10\nweb01 203.0.113.10:8443');
+  assert.deepEqual(both.servers[0].ports, { '203.0.113.10': [null, 8443] });
+});
+
+test('a host name with a port (the CLI resolves it) is a PARSE warning here, never dropped silently', () => {
+  const r = parseInventory('web01 203.0.113.10 web01.example.net:8443\nweb02 web02.example.net:8443\nmeeting at 10:30 with 203.0.113.5');
+  assert.deepEqual(targetsById(r), { web01: ['203.0.113.10'], '203.0.113.5': ['203.0.113.5'] });
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [
+    [1, 'PARSE', 'web01.example.net:8443'],
+    [2, 'PARSE', 'web02.example.net:8443'],
+    [2, 'NO_IP', 'web02']
+  ]);
+});
+
+test('formatEndpoint, addressTargets and serverTargets', () => {
+  assert.equal(formatEndpoint('203.0.113.10', 8443), '203.0.113.10:8443');
+  assert.equal(formatEndpoint('2001:DB8::1', 8443), '[2001:db8::1]:8443');
+  assert.equal(formatEndpoint('203.0.113.10'), '203.0.113.10');
+  for (const bad of [0, 65536, 1.5, '8443', NaN]) assert.equal(formatEndpoint('203.0.113.10', bad), '203.0.113.10');
+  assert.equal(formatEndpoint('web01', 443), null);
+  const server = { ips: ['203.0.113.10', '203.0.113.11'], ports: { '203.0.113.10': [null, 8443, 8443] } };
+  assert.deepEqual(addressTargets(server, '203.0.113.10'), ['203.0.113.10', '203.0.113.10:8443']);
+  assert.deepEqual(addressTargets(server, '203.0.113.11'), ['203.0.113.11']);
+  assert.deepEqual(addressTargets(null, '203.0.113.12'), ['203.0.113.12']);
+  assert.deepEqual(addressTargets(server, 'not-an-ip'), []);
+  assert.deepEqual(serverTargets(server), ['203.0.113.10', '203.0.113.10:8443', '203.0.113.11']);
+  assert.deepEqual(serverTargets({ ips: ['203.0.113.12'], ports: { '203.0.113.12': [] } }), ['203.0.113.12']);
+  assert.deepEqual(serverTargets(null), []);
 });
 
 /* -------------------------------------------------------------------- */

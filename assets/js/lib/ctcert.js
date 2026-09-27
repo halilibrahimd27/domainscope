@@ -32,7 +32,7 @@
 import { fetchJson, retry, defaultShouldRetry, errorKind, throwIfAborted, ParseError } from './util.js';
 import { normalizeHostname, certCovers, isPublicSuffix, sortHostnames } from './domain.js';
 import { parseCertificate } from './x509.js';
-import { sourceQuota } from './sources.js';
+import { sourceQuota } from './sourceinfo.js';
 
 /** Cert Spotter issuances endpoint (anonymous). */
 export const CERTSPOTTER_ISSUANCES = 'https://api.certspotter.com/v1/issuances';

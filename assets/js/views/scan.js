@@ -54,7 +54,7 @@ import {
   t, registerStrings, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, daysUntil
 } from '../i18n.js';
 import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
-import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
+import { SOURCES, sourceHealthSummary } from '../lib/sourceinfo.js';
 import { SCAN_STAGES } from '../lib/scanplan.js';
 import { FORM_STEPS, formProgress, optionChanges, barStuck } from '../lib/scanform.js';
 import {

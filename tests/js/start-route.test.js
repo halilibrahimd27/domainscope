@@ -18,6 +18,8 @@ import {
 } from '../../assets/js/app.js';
 import * as scanner from '../../assets/js/lib/scanner.js';
 import * as scanplan from '../../assets/js/lib/scanplan.js';
+import * as sources from '../../assets/js/lib/sources.js';
+import * as sourceinfo from '../../assets/js/lib/sourceinfo.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ASSETS = join(ROOT, 'assets');
@@ -26,12 +28,13 @@ const JS = join(ASSETS, 'js');
 /**
  * Gzip budget of the start route, in bytes (index.html, boot.js, style.css, app.js's module
  * graph, the default view's graph and stylesheet). Before the per-view stylesheets and the lazy
- * engine it was ≈ 368 KB (376,391 bytes). Raise it only for a reason you can name in the commit.
+ * engine it was ≈ 368 KB (376,391 bytes); with them, and the service worker's page side, ≈ 256 KB.
+ * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 285 * 1024;
+const START_ROUTE_BUDGET = 280 * 1024;
 
 /** Modules that must never be part of the start route. */
-const HEAVY = ['lib/scanner.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
+const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
   'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
@@ -89,6 +92,7 @@ describe('the start route', () => {
     const names = files.map(rel);
     assert.deepEqual(HEAVY.filter((m) => names.includes(`assets/js/${m}`)), []);
     assert.ok(names.includes('assets/js/lib/scanplan.js'), 'the plan line comes from lib/scanplan.js');
+    assert.ok(names.includes('assets/js/lib/sourceinfo.js'), 'the source list comes from lib/sourceinfo.js');
   });
 
   test('loads one stylesheet from index.html and the default view\'s own with the view', () => {
@@ -117,11 +121,17 @@ describe('the discovery engine loads on the first scan', () => {
     }
   });
 
-  test('lib/scanner.js re-exports the plan helpers of lib/scanplan.js unchanged', () => {
+  test('lib/scanner.js and lib/sources.js re-export the view-side helpers unchanged', () => {
     for (const name of ['SCAN_STAGES', 'HOST_SPECIFIC_HINT_KINDS', 'estimateQueries', 'learnedLabelsFromScan']) {
       assert.equal(scanner[name], scanplan[name], name);
     }
-    assert.ok(!staticGraph(join(JS, 'lib', 'scanplan.js')).map(rel).includes('assets/js/lib/doh.js'), 'scanplan is DoH-free');
+    for (const name of ['SOURCES', 'sourceQuota', 'SOURCE_HEALTH_STATES', 'sourceHealthSummary']) {
+      assert.equal(sources[name], sourceinfo[name], name);
+    }
+    for (const m of ['scanplan.js', 'sourceinfo.js']) {
+      const graph = staticGraph(join(JS, 'lib', m)).map(rel);
+      assert.deepEqual(HEAVY.filter((h) => graph.includes(`assets/js/${h}`)), [], `${m} stays light`);
+    }
   });
 });
 

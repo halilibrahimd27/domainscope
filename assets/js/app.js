@@ -88,7 +88,7 @@ export const VIEW_CSS_ORDER = Object.freeze([
  * waits for them. A unit test keeps the list equal to what lib/scanner.js adds to the
  * Subdomains view's own imports.
  */
-export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/permute.js']);
+export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/permute.js']);
 
 /**
  * Navigation table in spec §6 order. `group` is one of lib/shellnav.js NAV_GROUPS (the sidebar

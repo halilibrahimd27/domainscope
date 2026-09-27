@@ -6,7 +6,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildOriginSweepCommand, buildSweepCommand, quoteArg, validateTargets, validateNames, isInetAtonNumeric
+  buildOriginSweepCommand, buildSweepCommand, buildFittedSweepCommand, quoteArg, validateTargets, validateNames,
+  isInetAtonNumeric
 } from '../../assets/js/lib/cmdline.js';
 import { zoneSweep } from '../../assets/js/lib/zoneorigins.js';
 import { loadFixture } from '../fixtures/zones-analysis/gen-analysis-golden.mjs';
@@ -527,5 +528,27 @@ describe('buildSweepCommand: shell review fixes', () => {
     assert.ok(!('overLength' in buildSweepCommand({ targets: ['203.0.113.10'], names: ['a.example.com'] })));
     const manyNames = Array.from({ length: 300 }, (_, i) => `svc-${i}.example.com`);
     assert.ok(!('overLength' in buildSweepCommand({ targets: ['203.0.113.10'], names: manyNames })));
+  });
+
+  test('buildFittedSweepCommand moves an overflowing target list to a targets file, and only then', () => {
+    const targets = Array.from({ length: 1400 }, (_, i) => `2001:db8:${(i + 1).toString(16)}::1`);
+    const names = Array.from({ length: 50 }, (_, i) => `svc-${i}.example.com`);
+    for (const shell of ['posix', 'powershell']) {
+      const r = buildFittedSweepCommand({ targets, names, shell, script: 'cli/ssl_origin_scan.py' });
+      assert.equal(r.command, 'cli/ssl_origin_scan.py -t proxied-targets.txt -n proxied-names.txt', shell);
+      assert.deepEqual([r.targetsInline, r.targetsFile, r.targets.length, r.overLength], [false, 'proxied-targets.txt', 1400, undefined], shell);
+      assert.equal(buildFittedSweepCommand({ targets, names, shell }, 'verify-targets.txt').targetsFile, 'verify-targets.txt');
+    }
+    // A command that fits is exactly buildSweepCommand's, with no targets-file fields.
+    for (const opts of [
+      { targets: ['203.0.113.10'], names: ['a.example.com'] },
+      { targets: ['203.0.113.10'], names: Array.from({ length: 300 }, (_, i) => `svc-${i}.example.com`) },
+      { targets: ['203.0.113.0/24'], names: ['a.example.com'], exclude: ['203.0.113.9'] }
+    ]) assert.deepEqual(buildFittedSweepCommand(opts), buildSweepCommand(opts));
+    // Still over with the targets in a file (thousands of excludes): overLength stays for a warning.
+    const exclude = Array.from({ length: 1400 }, (_, i) => `2001:db8:${(i + 1).toString(16)}::9`);
+    const over = buildFittedSweepCommand({ targets: ['2001:db8::/32'], names, exclude });
+    assert.equal(over.targetsInline, false);
+    assert.equal(over.overLength, true);
   });
 });

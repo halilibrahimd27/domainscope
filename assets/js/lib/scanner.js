@@ -34,7 +34,7 @@ import { SOURCES, fetchAllSources, mergeCerts, sourceHealthSummary } from './sou
 import { followCnames, detectWildcardDeep } from './doh.js';
 import { mineDnsNames, SRV_SERVICES } from './dnsmine.js';
 import { permutations, DEFAULT_WORDS } from './permute.js';
-import { buildSweepCommand, validateTargets } from './cmdline.js';
+import { buildFittedSweepCommand, validateTargets } from './cmdline.js';
 import { isStorableLabel } from './learned.js';
 import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
 
@@ -2017,8 +2017,10 @@ export async function runScan(config = {}, hooks = {}) {
   // is validated (IP/CIDR or hostname) and shell-quoted — never string-glued —
   // and cliTargets / cliNames report exactly what went into the command. A large
   // proxied estate (> 200 names / 8,000 chars) reads its names from
-  // `proxied-names.txt` (= cliNames, one per line) instead of inline, so the
-  // command never overflows a shell's command-line limit.
+  // `proxied-names.txt` (= cliNames, one per line) instead of inline, and a target
+  // list still too long for that its targets from `proxied-targets.txt` (= the
+  // cliTargets, then the cliHostTargets), so the command never overflows a
+  // shell's command-line limit.
   // Zone import: the zone's exact origins join as exact addresses (private ones
   // kept — the CLI runs inside the network — and never widened to a /24), its host
   // origins as host targets, its proxied names (`*.x` kept) as names. Only then
@@ -2027,12 +2029,12 @@ export async function runScan(config = {}, hooks = {}) {
   const zoneIps = [...new Set(zoneProxied.flatMap((p) => p.ips))].sort(compareIp);
   const zoneHosts = sortHostnames([...new Set(zoneProxied.map((p) => p.host).filter(Boolean))]);
   const sweep = zoneIn
-    ? buildSweepCommand({
+    ? buildFittedSweepCommand({
       targets: [...cliTargets, ...zoneIps, ...zoneHosts],
       names: sortHostnames([...new Set([...proxiedNames, ...zoneProxied.map((p) => p.name)])]),
       script: 'cli/ssl_origin_scan.py', shell: 'posix', allowHostTargets: true, allowWildcardNames: true
     })
-    : buildSweepCommand({ targets: cliTargets, names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix' });
+    : buildFittedSweepCommand({ targets: cliTargets, names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix' });
   const cliSuggestion = sweep.command ? `python3 ${sweep.command}` : null;
   const cliNames = sweep.names;
   const isAddressToken = (tok) => !!(normalizeIP(tok) || parseCidr(tok));

@@ -30,6 +30,7 @@
  *    `targetsFile`, the targets from a targets file too, keeping it far below
  *    the Windows 32,767-character command-line limit. Without `targetsFile` a
  *    huge target list stays inline and the result is flagged `overLength`;
+ *    {@link buildFittedSweepCommand} then moves the targets to a file as well;
  *  - two opt-ins widen the token rules for the zone-file hand-off, both off by
  *    default so every earlier caller is byte-identical: `allowHostTargets` keeps
  *    a HOST NAME target (a zone's proxied CNAME origin, resolved by the CLI
@@ -229,6 +230,8 @@ export function quoteArg(value, shell = 'posix') {
 const DEFAULT_SCRIPT = 'ssl_origin_scan.py';
 /** Default names file a long sweep reads its `-n` names from. */
 export const DEFAULT_NAMES_FILE = 'proxied-names.txt';
+/** Default targets file of {@link buildFittedSweepCommand}: the `-t` targets, one per line. */
+export const DEFAULT_TARGETS_FILE = 'proxied-targets.txt';
 /** More names than this go to the names file instead of inline. */
 export const MAX_INLINE_NAMES = 200;
 /**
@@ -486,4 +489,23 @@ export function buildSweepCommand({
  */
 export function buildOriginSweepCommand(opts) {
   return buildSweepCommand(opts).command;
+}
+
+/**
+ * {@link buildSweepCommand}, built again with the targets read from
+ * `targetsFile` too when the names-file form is still `overLength` (a very long
+ * target list), so the command stays below the Windows command-line limit. A
+ * command that fits is byte-identical to buildSweepCommand's; one still over
+ * the cap (very many excludes) keeps `overLength` for the caller to warn about.
+ * @param {object} [opts] see {@link buildSweepCommand}; a `targetsFile` of its
+ *   own is kept as given
+ * @param {string} [targetsFile=DEFAULT_TARGETS_FILE] plain path token
+ * @returns {object} the buildSweepCommand() result; `targetsInline: false` and
+ *   `targetsFile` when the caller must offer the targets file (the validated
+ *   `targets`, one per line) next to the names file
+ */
+export function buildFittedSweepCommand(opts = {}, targetsFile = DEFAULT_TARGETS_FILE) {
+  const sweep = buildSweepCommand(opts);
+  if (!sweep.overLength || (opts && opts.targetsFile !== null && opts.targetsFile !== undefined)) return sweep;
+  return buildSweepCommand({ ...opts, targetsFile });
 }

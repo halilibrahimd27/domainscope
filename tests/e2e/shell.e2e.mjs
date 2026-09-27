@@ -24,7 +24,8 @@
  * Finally the installable app, on a bundle and origin of its own: the service worker installs and
  * precaches the version; with the server dropping every request the app reloads from the cache,
  * Certificate, Zone File and Servers work and DNS Lookup says it needs the network and sends
- * nothing; a second deploy brings "Update ready — Reload", which loads it.
+ * nothing; a second deploy brings "Update ready — Reload", which loads it — and a second tab of
+ * the old version, taken over by that click, offers the reload again.
  * No network access is needed: the shell views never call external APIs.
  */
 
@@ -1876,6 +1877,10 @@ async function main() {
     await pwa.emulateMedia({ 'prefers-color-scheme': 'light' });
     await pwa.send('Network.enable');
     const pwaSrc = () => pwa.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
+    const srcOf = (page) => page.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
+    const updateToast = (page) => page.waitFor((text) => document.querySelector('.toast[data-toast="pwa-update"]')?.textContent.includes(text),
+      { args: [translate('pwa.updateReady')], timeout: 30000, message: 'update toast' });
+    let other = null; // a second tab of the same version
     const network = async (online) => {
       app.setOffline(!online); // the worker's own fetches fail too, so an answer can only come from its cache
       await pwa.send('Network.emulateNetworkConditions', { offline: !online, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
@@ -1957,14 +1962,21 @@ async function main() {
       await step('back online, a new deploy: "Update ready — Reload" loads it and drops the old version\'s cache', async () => {
         await network(true);
         await dismissToasts(pwa);
+        other = await browser.newPage('about:blank', { width: 1440, height: 900 });
+        await other.goto(app.url);
+        await waitReady(other);
+        await other.waitFor(() => !!navigator.serviceWorker.controller, { message: 'second tab under the service worker' });
         await assembleSite({ out: appSite, version: 'app-two' });
         // The browser looks for a new sw.js on navigations; a hash-routed page asks when it becomes
         // visible or comes back online (at most hourly), so the test asks now.
         await pwa.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
         setNodeLang('en');
-        await pwa.waitFor((text) => document.querySelector('.toast[data-toast="pwa-update"]')?.textContent.includes(text),
-          { args: [translate('pwa.updateReady')], timeout: 30000, message: 'update toast' });
+        await updateToast(pwa);
         assertEqual(await pwaSrc(), 'v/app-one/assets/js/app.js', 'still the running version until the click');
+        // The second tab is offered the update too; dismissed there, it must come back once the
+        // click in this tab has the new version take that tab over as well (next step).
+        await updateToast(other);
+        await dismissToasts(other);
         await shot(pwa, 'desktop-light-en-update-ready');
         await pwa.click('.toast[data-toast="pwa-update"] .btn');
         await pwa.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
@@ -1978,7 +1990,17 @@ async function main() {
         assertEqual(await pwa.evaluate(() => !!document.querySelector('.toast[data-toast="pwa-update"]')), false, 'toast gone');
         await assertClean(pwa, 'after the update');
       });
+
+      await step('the other tab, whose version that update dropped from the cache, offers the reload again and takes it', async () => {
+        await updateToast(other);
+        assertEqual(await srcOf(other), 'v/app-one/assets/js/app.js', 'still its old version until the click');
+        await other.click('.toast[data-toast="pwa-update"] .btn');
+        await other.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
+          && document.documentElement.dataset.appReady === 'true', { timeout: 15000, message: 'the new version in the other tab' });
+        await assertClean(other, 'other tab after the update');
+      });
     } finally {
+      if (other) await other.close();
       await pwa.close();
       await app.close();
     }

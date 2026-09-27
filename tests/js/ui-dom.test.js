@@ -24,6 +24,7 @@ import {
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { HttpError } from '../../assets/js/lib/util.js';
 import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
+import { NAV_GROUPS } from '../../assets/js/lib/shellnav.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
@@ -413,7 +414,7 @@ describe('state', () => {
 
   test('defaults with empty storage', () => {
     const s = make(new MemoryStorage());
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12 });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12, startTasks: true });
     assert.equal(s.inventory.text, '');
     assert.deepEqual(s.inventory.servers, []);
     assert.equal(s.inventory.updatedAt, null);
@@ -446,7 +447,7 @@ describe('state', () => {
     });
     const s = make(storage);
     assert.equal(s.inventory.text, '');
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32 });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true });
   });
 
   test('sanitizeSettings validates each field', () => {
@@ -459,6 +460,9 @@ describe('state', () => {
     assert.deepEqual(sanitizeSettings({ chain: 'cloudflare' }).chain, [...DEFAULT_CHAIN]);
     assert.equal(sanitizeSettings({ theme: 'dark', lang: 'tr' }).theme, 'dark');
     assert.equal(sanitizeSettings({ lang: 'tr' }).lang, 'tr');
+    assert.equal(sanitizeSettings({}).startTasks, true, 'a record from before the task picker keeps it');
+    assert.equal(sanitizeSettings({ startTasks: false }).startTasks, false);
+    assert.equal(sanitizeSettings({ startTasks: 'no' }).startTasks, true, 'only an explicit false turns it off');
   });
 
   test('write failures (quota / disabled storage) keep state in memory and report it', () => {
@@ -996,7 +1000,7 @@ describe('routing', () => {
 
   test('VIEWS follow the spec order; REPO_URL is a placeholder https URL', () => {
     assert.deepEqual(VIEWS.map((v) => v.id), VIEW_IDS);
-    assert.ok(VIEWS.every((v) => typeof v.load === 'function' && ['discover', 'ssl', 'dns', 'data'].includes(v.group)));
+    assert.ok(VIEWS.every((v) => typeof v.load === 'function' && NAV_GROUPS.some((g) => g.id === v.group)), 'every view in a known nav group');
     assert.match(REPO_URL, /^https:\/\/github\.com\//);
   });
 

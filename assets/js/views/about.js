@@ -1,6 +1,7 @@
 /**
- * views/about.js — how the toolkit works, data sources & quotas, privacy, the companion
- * CLI (download + usage), self-hosting on GitHub Pages, credits and license.
+ * views/about.js — where to start (the start page's job cards, always listed here), how the
+ * toolkit works, data sources & quotas, privacy, the companion CLI (download + usage),
+ * self-hosting on GitHub Pages, credits and license.
  */
 
 import { h } from '../ui/dom.js';
@@ -10,6 +11,7 @@ import {
 import { registerStrings, formatDate, formatNumber, formatRegion } from '../i18n.js';
 import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver } from '../lib/resolvers.js';
 import { RANGES_UPDATED, PROVIDERS } from '../lib/netinfo.js';
+import { StartTaskList } from '../ui/start-tasks.js';
 
 /** Route id. */
 export const id = 'about';
@@ -374,7 +376,9 @@ export function mount(container, ctx) {
     h('img', { class: 'about-hero-logo', src: 'favicon.svg', alt: '', attrs: { width: 96, height: 96 } }));
 
   /* On this page (buttons, not #anchors — the hash is the router's) */
-  const tocItems = ['how', 'cloudflare', 'sources', 'privacy', 'cli', 'selfhost', 'license'];
+  const tocItems = ['start', 'how', 'cloudflare', 'sources', 'privacy', 'cli', 'selfhost', 'license'];
+  // "Where to start" shares its title with the start page's "Hidden" note (a shell string).
+  const tocLabel = (key) => (key === 'start' ? t('start.aboutTitle') : t(`about.toc.${key}`));
   const toc = h('nav', { class: 'about-toc', attrs: { 'aria-label': t('about.onThisPage') } },
     h('span', { class: 'about-toc-label' }, t('about.onThisPage')),
     tocItems.map((key) => h('button', {
@@ -392,7 +396,14 @@ export function mount(container, ctx) {
           }
         }
       }
-    }, t(`about.toc.${key}`))));
+    }, tocLabel(key))));
+
+  /* Where to start: the first-visit task picker, reachable after it was dismissed or outgrown */
+  const start = section('start', {
+    title: t('start.aboutTitle'),
+    description: t('start.aboutDesc'),
+    children: StartTaskList({ views: ctx.views || [], href: (view) => ctx.href(view), className: 'about-start-tasks' })
+  });
 
   /* How it works */
   const steps = [
@@ -549,7 +560,7 @@ export function mount(container, ctx) {
         ExternalLink(ctx.repoUrl, 'GitHub')))
   });
 
-  container.append(hero, toc, how, cloudflare, sources, privacy, cli, selfhost, license);
+  container.append(hero, toc, start, how, cloudflare, sources, privacy, cli, selfhost, license);
 }
 
 /** Nothing to clean up. */

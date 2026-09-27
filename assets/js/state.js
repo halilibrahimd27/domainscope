@@ -5,7 +5,7 @@
  *   - inventory (persisted): { text, servers, warnings, stats, updatedAt }
  *       Only `text` + `updatedAt` are stored; servers/warnings are re-derived with
  *       lib/inventory.parseInventory on load, so a parser upgrade never meets stale data.
- *   - settings (persisted):  { lang, theme, chain, concurrency }
+ *   - settings (persisted):  { lang, theme, chain, concurrency, startTasks }
  *   - session (memory only): free-form key/value for handing data between views,
  *       e.g. the cert view stores `pendingCert` and the scan view `takeSession('pendingCert')`s it.
  *
@@ -53,12 +53,16 @@ export const THEMES = Object.freeze(['auto', 'light', 'dark']);
 /** Allowed DoH concurrency range. */
 export const CONCURRENCY_RANGE = Object.freeze({ min: 1, max: 32 });
 
-/** Default settings (lang null = follow the browser). */
+/**
+ * Default settings (lang null = follow the browser). `startTasks`: the start page still offers
+ * its first-visit task picker (app.js turns it off once it is dismissed or the visitor ran something).
+ */
 export const DEFAULT_SETTINGS = Object.freeze({
   lang: null,
   theme: 'auto',
   chain: Object.freeze([...DEFAULT_CHAIN]),
-  concurrency: 12
+  concurrency: 12,
+  startTasks: true
 });
 
 const RESOLVER_IDS = new Set(RESOLVERS.map((r) => r.id));
@@ -66,7 +70,7 @@ const RESOLVER_IDS = new Set(RESOLVERS.map((r) => r.id));
 /**
  * Validate/normalize a settings object; unknown or invalid fields fall back to defaults.
  * @param {object} input
- * @returns {{ lang: 'tr'|'en'|null, theme: 'auto'|'light'|'dark', chain: string[], concurrency: number }}
+ * @returns {{ lang: 'tr'|'en'|null, theme: 'auto'|'light'|'dark', chain: string[], concurrency: number, startTasks: boolean }}
  */
 export function sanitizeSettings(input) {
   const src = input && typeof input === 'object' ? input : {};
@@ -77,7 +81,9 @@ export function sanitizeSettings(input) {
   let concurrency = Math.round(Number(src.concurrency));
   if (!Number.isFinite(concurrency)) concurrency = DEFAULT_SETTINGS.concurrency;
   concurrency = Math.min(CONCURRENCY_RANGE.max, Math.max(CONCURRENCY_RANGE.min, concurrency));
-  return { lang, theme, chain, concurrency };
+  // Only an explicit false turns the picker off: records written before it existed keep it.
+  const startTasks = src.startTasks !== false;
+  return { lang, theme, chain, concurrency, startTasks };
 }
 
 /**
@@ -304,8 +310,8 @@ export function createState({
 
     /**
      * Merge and persist settings (validated with {@link sanitizeSettings}).
-     * @param {Partial<{ lang: 'tr'|'en'|null, theme: string, chain: string[], concurrency: number }>} patch
-     * @returns {{ lang, theme, chain, concurrency }} the new settings
+     * @param {Partial<{ lang: 'tr'|'en'|null, theme: string, chain: string[], concurrency: number, startTasks: boolean }>} patch
+     * @returns {{ lang, theme, chain, concurrency, startTasks }} the new settings
      */
     updateSettings(patch) {
       const next = sanitizeSettings({ ...settings, ...(patch || {}) });

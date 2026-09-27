@@ -28,6 +28,11 @@
  *   C.ExternalLink('https://crt.sh/?id=123', 'crt.sh');    // http(s) only, rel=noopener noreferrer
  *   C.ButtonLink({ href: 'cli/ssl_origin_scan.py', download: true, label: 'Download', icon: 'download' });
  *
+ *   // Keyboard shortcuts: the shell (app.js) owns the keys; a view only marks its controls
+ *   C.Button({ label: t('common.run'), dataset: { shortcut: 'submit' }, onClick: run });   // Ctrl/Cmd+Enter in a field near it
+ *   C.Button({ label: t('common.stop'), dataset: { shortcut: 'cancel' }, onClick: stop }); // Esc while it is shown
+ *   C.textInput({ label: 'Domain', attrs: { 'data-shortcut': 'focus' } });                 // where '/' jumps
+ *
  *   // Layout
  *   C.Section({ title: 'Results', actions: [btn], children: [...] });
  *   C.Card({ title: 'Certificate', subtitle: 'leaf', children: [...] });

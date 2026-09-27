@@ -236,6 +236,12 @@ describe('i18n coverage', () => {
       { usable: true, matches: false }, { usable: true, matches: null }]) add(dp.recordStateKey(r));
     for (const svc of Object.keys(dn.DANE_PORTS)) add(`dane.svc.${svc}`);
     for (const k of ['d', 'h', 'min', 's']) add(`dane.dur.${k}`);
+    // Shell navigation (lib/shellnav.js): group headings, start-page jobs, shortcut descriptions.
+    const shellnav = await imp('assets/js/lib/shellnav.js');
+    for (const g of [...shellnav.NAV_GROUPS, shellnav.OTHER_GROUP]) add(g.labelKey);
+    for (const g of shellnav.groupViews(app.VIEWS)) add(g.labelKey);
+    for (const task of shellnav.START_TASKS) add(`start.task.${task.id}`);
+    for (const s of shellnav.SHORTCUTS) add(`keys.${s.id}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

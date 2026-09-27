@@ -106,7 +106,7 @@ describe('settings migration', () => {
   test('createState migrates a stored v1 record once and writes it back as v2', () => {
     const storage = v1({ lang: 'en', theme: 'dark', chain: [...OLD_DEFAULT], concurrency: 16 });
     const s = make(storage);
-    assert.deepEqual(s.settings, { lang: 'en', theme: 'dark', chain: [...DEFAULT_CHAIN], concurrency: 16 });
+    assert.deepEqual(s.settings, { lang: 'en', theme: 'dark', chain: [...DEFAULT_CHAIN], concurrency: 16, startTasks: true });
     const saved = stored(storage);
     assert.equal(saved.v, 2);
     assert.deepEqual(saved.chain, [...DEFAULT_CHAIN]);

@@ -679,6 +679,137 @@ button.nav-status:hover {
   color: var(--ok);
 }
 
+/* Tools button bar: replaces the groups below 720 px (see the phone media query) */
+.nav-menu-bar {
+  display: none;
+}
+
+.nav-menu-btn {
+  flex: none;
+}
+
+.nav-menu-current {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.nav-menu-current .icon {
+  color: var(--accent);
+}
+
+.nav-menu-current-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nav-menu-bar.is-busy .nav-menu-current::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* Tools menu (a Modal): the sidebar's groups as a grid of large targets */
+.navmenu {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.navmenu-label {
+  margin: 0 0 7px;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+
+.navmenu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.navmenu-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 550;
+  line-height: 1.25;
+  text-decoration: none;
+  transition: background var(--dur), border-color var(--dur);
+}
+
+.navmenu-link .icon {
+  color: var(--text-3);
+}
+
+.navmenu-link:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.navmenu-link[aria-current="page"] {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.navmenu-link[aria-current="page"] .icon {
+  color: var(--accent);
+}
+
+.navmenu-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 719.98px) {
+  /* A sheet hanging from the top edge, right under the Tools button. */
+  .navmenu-modal {
+    width: 100%;
+    max-width: calc(100vw - 16px);
+    margin: 8px auto auto;
+  }
+
+  .navmenu-modal .modal-box {
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .navmenu-modal .modal-body {
+    padding: 14px;
+  }
+}
+
+@media (max-width: 340px) {
+  .navmenu-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Main */
 .app-main {
   grid-area: main;
@@ -777,6 +908,234 @@ button.nav-status:hover {
 
 .app-footer .spacer {
   flex: 1;
+}
+
+.footer-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.footer-button kbd {
+  text-decoration: none;
+}
+
+/* Keyboard shortcuts dialog */
+.keys-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.keys-table th,
+.keys-table td {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.keys-table tr:first-child th,
+.keys-table tr:first-child td {
+  padding-top: 0;
+}
+
+.keys-table th {
+  width: 1%;
+  padding-right: 18px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.keys-table td {
+  color: var(--text-2);
+}
+
+.keys-combo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.keys-combo kbd {
+  min-width: 24px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.keys-plus {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* First-visit task picker (app.js, above the start page) and About › Where to start */
+.start-picker {
+  margin-bottom: 24px;
+  padding: 16px 18px 18px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface) 55%);
+}
+
+.start-picker-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.start-picker-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.start-picker-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.start-picker-lead {
+  margin: 3px 0 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+}
+
+.start-picker-hide {
+  margin: -6px -8px 0 0;
+}
+
+.start-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 176px), 1fr));
+  gap: 10px;
+}
+
+.start-task-item {
+  min-width: 0;
+}
+
+.start-task {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: background var(--dur), border-color var(--dur), box-shadow var(--dur);
+}
+
+.start-task:hover {
+  border-color: var(--accent-soft-border);
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+}
+
+.start-task-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.start-task-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.start-task-title {
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.start-task-tool {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.start-task-arrow {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  color: var(--text-3);
+  transition: transform var(--dur), color var(--dur);
+}
+
+.start-task:hover .start-task-arrow {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+@media (max-width: 600px) {
+  .start-picker {
+    margin-bottom: 20px;
+    padding: 12px 12px 12px 14px;
+  }
+
+  .start-picker-head {
+    margin-bottom: 10px;
+  }
+
+  .start-picker-title {
+    font-size: 15px;
+  }
+
+  .start-picker-lead {
+    font-size: 13px;
+  }
+
+  .start-tasks {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .start-task {
+    flex-direction: row;
+    align-items: center;
+    gap: 11px;
+    padding: 7px 10px;
+  }
+
+  .start-task-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+  }
+
+  .start-task-text {
+    gap: 1px;
+  }
+
+  .start-task-tool {
+    font-size: 12px;
+  }
+
+  .start-task-arrow {
+    position: static;
+    margin-left: auto;
+  }
 }
 
 .boot {
@@ -960,6 +1319,25 @@ button.nav-status:hover {
 
   .page-title {
     font-size: 20px;
+  }
+}
+
+/* Below 720 px: one Tools button (a menu of every tool) instead of a strip showing three of them */
+@media (max-width: 719.98px) {
+  .app-nav {
+    overflow: visible;
+  }
+
+  .app-nav .nav-group {
+    display: none;
+  }
+
+  .nav-menu-bar {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
 }
 
@@ -3060,7 +3438,8 @@ button.nav-status:hover {
     animation: none !important;
   }
 
-  .nav-link.is-busy::after {
+  .nav-link.is-busy::after,
+  .nav-menu-bar.is-busy .nav-menu-current::after {
     animation: none !important;
   }
 }
@@ -3070,7 +3449,8 @@ button.nav-status:hover {
   .badge,
   .btn,
   .seg-btn[aria-pressed="true"],
-  .nav-link[aria-current="page"] {
+  .nav-link[aria-current="page"],
+  .navmenu-link[aria-current="page"] {
     border: 1px solid CanvasText;
   }
 }
@@ -3078,6 +3458,7 @@ button.nav-status:hover {
 @media print {
   .app-header,
   .app-nav,
+  .start-picker,
   .toast-region,
   .skip-link,
   .dt-toolbar,

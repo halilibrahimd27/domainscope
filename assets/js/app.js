@@ -11,6 +11,14 @@
  * default-export object with the same shape. The shell renders the page <h1> and
  * description (`nav.<id>` / `nav.<id>.desc`); `mount` fills the page body. See the
  * `ViewContext` typedef below for everything a view receives.
+ *
+ * Navigation: the sidebar (a scrolling strip at ≤ 900 px) and, below 720 px, a Tools button
+ * opening the same groups in a dialog, both built from VIEWS (lib/shellnav.js groupViews). The
+ * start page shows a first-visit task picker until it is dismissed or the visitor runs something.
+ *
+ * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
+ * clicks the view's nearest `data-shortcut="submit"` control, Esc its visible `"cancel"` one,
+ * '/' focuses its `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
  */
 
 import {
@@ -23,6 +31,11 @@ import {
   select, Badge, confirmDialog, announce, describeError
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
+import {
+  groupViews, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
+  isTypingTarget
+} from './lib/shellnav.js';
+import { StartTaskList } from './ui/start-tasks.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -32,8 +45,10 @@ export const APP_VERSION = '1.0.0';
 export const DEFAULT_VIEW = 'subdomains';
 
 /**
- * Navigation table in spec §6 order. `load` is a lazy import so a view that fails to load
- * (or is still being written) cannot break the rest of the app.
+ * Navigation table in spec §6 order. `group` is one of lib/shellnav.js NAV_GROUPS (the sidebar
+ * and the phone Tools menu both list the views by it; an unknown group lands under "More tools").
+ * `load` is a lazy import so a view that fails to load (or is still being written) cannot break
+ * the rest of the app.
  */
 export const VIEWS = Object.freeze([
   { id: 'subdomains', group: 'discover', icon: 'layers', load: () => import('./views/subdomains.js') },
@@ -43,19 +58,12 @@ export const VIEWS = Object.freeze([
   { id: 'global', group: 'dns', icon: 'globe', load: () => import('./views/global.js') },
   { id: 'lookup', group: 'dns', icon: 'search', load: () => import('./views/lookup.js') },
   { id: 'bulk', group: 'dns', icon: 'list', load: () => import('./views/bulk.js') },
-  { id: 'ip', group: 'dns', icon: 'network', load: () => import('./views/ip.js') },
-  { id: 'ptr', group: 'dns', icon: 'swap', load: () => import('./views/ptr.js') },
-  { id: 'health', group: 'dns', icon: 'activity', load: () => import('./views/health.js') },
+  { id: 'ip', group: 'ip', icon: 'network', load: () => import('./views/ip.js') },
+  { id: 'ptr', group: 'ip', icon: 'swap', load: () => import('./views/ptr.js') },
+  { id: 'health', group: 'mail', icon: 'activity', load: () => import('./views/health.js') },
   { id: 'inventory', group: 'data', icon: 'server', load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', load: () => import('./views/about.js') }
 ].map((v) => Object.freeze(v)));
-
-const NAV_GROUPS = [
-  { id: 'discover', labelKey: 'nav.groupDiscover' },
-  { id: 'ssl', labelKey: 'nav.groupSsl' },
-  { id: 'dns', labelKey: 'nav.groupDns' },
-  { id: 'data', labelKey: 'nav.groupData' }
-];
 
 const VIEW_BY_ID = new Map(VIEWS.map((v) => [v.id, v]));
 
@@ -357,6 +365,7 @@ state.subscribe(({ key }) => {
  * @property {(...nodes: any[]) => void} setActions  put buttons into the page header (right side)
  * @property {(fn: () => void) => void} onCleanup  run fn when the view unmounts (e.g. state.subscribe's unsubscribe)
  * @property {() => Map<string, object[]>} getInventoryIndex  memoized IP → servers index
+ * @property {ReadonlyArray<{ id: string, group: string, icon: string }>} views  the navigation registry (VIEWS)
  * @property {string} repoUrl
  * @property {string} version
  */
@@ -408,6 +417,7 @@ function makeContext(id, params, searchParams, controller, restored) {
     restored: restored ?? null,
     repoUrl: REPO_URL,
     version: APP_VERSION,
+    views: VIEWS,
     navigate,
     href: buildRoute,
     getDns,
@@ -456,6 +466,9 @@ function setBusyState(busy) {
   dom.main.setAttribute('aria-busy', String(on));
   const link = dom.nav.querySelector(`[data-view="${current.id}"]`);
   if (link) link.classList.toggle('is-busy', on);
+  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', on);
+  // After the view's own start-up: the settings change re-renders what views show of the settings.
+  if (on) setTimeout(noteRun, 0);
   if (on && typeof busy === 'string') announce(busy);
   if (!on && pendingLangRemount) {
     pendingLangRemount = false;
@@ -496,6 +509,7 @@ async function unmountCurrent() {
   dom.header.classList.remove('is-busy');
   dom.main.removeAttribute('aria-busy');
   dom.nav.querySelectorAll('.nav-link.is-busy').forEach((l) => l.classList.remove('is-busy'));
+  if (dom.navMenuBar) dom.navMenuBar.classList.remove('is-busy');
   if (dom.pageActions) clear(dom.pageActions);
 }
 
@@ -554,6 +568,8 @@ function renderPageHeader(def, view = null) {
   dom.pageBody = h('div', { class: 'page-body', id: 'page-body', dataset: { view: def.id } });
   const desc = t(`nav.${def.id}.desc`);
   clear(dom.page);
+  // A first-time visitor on the start page gets the task picker above the tool.
+  if (def.id === DEFAULT_VIEW && state.settings.startTasks) dom.page.append(startPicker());
   dom.page.append(
     h('header', { class: 'page-header' },
       h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 20 })),
@@ -660,6 +676,8 @@ function finishRoute(def) {
 }
 
 function handleRoute() {
+  // The phone's Back button while the Tools menu is open (a link in it has closed it already).
+  if (navMenu && navMenu.el.open) navMenu.close(null);
   const hash = currentHash();
   if (hash && !hash.startsWith('#/')) {
     // In-page anchor: keep the current view (or show the default on first load).
@@ -787,11 +805,11 @@ function chainLabel(chain) {
 
 function renderNav() {
   const activeId = current ? current.id : null;
-  const groups = NAV_GROUPS.map((g) => {
+  const groups = groupViews(VIEWS).map((g) => {
     const labelId = uid('navgroup');
     return h('div', { class: 'nav-group', attrs: { role: 'group', 'aria-labelledby': labelId } },
       h('div', { class: 'nav-group-label', id: labelId }, t(g.labelKey)),
-      h('ul', { class: 'nav-list' }, VIEWS.filter((v) => v.group === g.id).map((v) => h('li', null,
+      h('ul', { class: 'nav-list' }, g.views.map((v) => h('li', null,
         h('a', {
           class: 'nav-link',
           href: buildRoute(v.id),
@@ -799,6 +817,20 @@ function renderNav() {
           attrs: { 'aria-current': v.id === activeId ? 'page' : null }
         }, Icon(v.icon, { size: 17 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)))))));
   });
+  // Below 720 px (CSS) the groups give way to this bar: the Tools button and the current tool.
+  dom.navMenuBtn = Button({
+    label: t('nav.label'),
+    icon: 'menu',
+    iconRight: 'chevron-down',
+    size: 'sm',
+    className: 'nav-menu-btn',
+    attrs: { 'aria-haspopup': 'dialog', 'aria-expanded': String(!!navMenu) },
+    dataset: { control: 'nav-menu' },
+    onClick: openNavMenu
+  });
+  // The page's <h1> names the tool for assistive technology; this is the reminder on screen.
+  dom.navMenuCurrent = h('span', { class: 'nav-menu-current', attrs: { 'aria-hidden': 'true' } });
+  dom.navMenuBar = h('div', { class: 'nav-menu-bar' }, dom.navMenuBtn, dom.navMenuCurrent);
   dom.navInventory = h('span');
   dom.navDoh = h('span');
   const foot = h('div', { class: 'nav-foot' },
@@ -813,7 +845,7 @@ function renderNav() {
     h('div', { class: 'nav-status nav-status-privacy' }, Icon('lock', { size: 14 }), h('span', null, t('shell.privacyShort'))));
   clear(dom.nav);
   dom.nav.setAttribute('aria-label', t('nav.label'));
-  dom.nav.append(...groups, foot);
+  dom.nav.append(dom.navMenuBar, ...groups, foot);
   updateNavStatus();
 }
 
@@ -829,8 +861,17 @@ function setNavActive(id) {
     if (a.dataset.view === id) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  // On phones the nav scrolls horizontally: bring the active item into view (no page scroll).
+  const def = VIEW_BY_ID.get(id);
+  if (dom.navMenuCurrent && def) {
+    clear(dom.navMenuCurrent);
+    dom.navMenuCurrent.append(Icon(def.icon, { size: 16 }), h('span', { class: 'nav-menu-current-label' }, t(`nav.${def.id}`)));
+  }
+  // The nav is rebuilt on a language change, possibly while the view works: keep its busy dot.
+  const busy = !!(current && current.id === id && current.busy);
+  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', busy);
   const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
+  if (link) link.classList.toggle('is-busy', busy);
+  // On phones the nav scrolls horizontally: bring the active item into view (no page scroll).
   if (link && dom.nav.scrollWidth > dom.nav.clientWidth + 1) {
     const left = link.offsetLeft - (dom.nav.clientWidth - link.offsetWidth) / 2;
     dom.nav.scrollLeft = Math.max(0, left);
@@ -843,8 +884,235 @@ function renderFooter() {
     h('span', null, `${t('app.name')} · ${t('shell.version', { version: APP_VERSION })}`),
     h('span', null, t('shell.footer')),
     h('a', { href: REPO_URL, attrs: { target: '_blank', rel: 'noopener noreferrer' } }, 'GitHub'),
+    h('button', {
+      type: 'button',
+      class: 'footer-button',
+      dataset: { control: 'shortcuts' },
+      on: { click: openShortcutHelp }
+    }, t('keys.title'), ' ', h('kbd', { attrs: { 'aria-hidden': 'true' } }, '?')),
     h('span', { class: 'spacer' }),
     h('span', null, t('shell.privacyLong')));
+}
+
+/* ------------------------------------------------------------------------ */
+/* Phone Tools menu                                                         */
+/* ------------------------------------------------------------------------ */
+
+let navMenu = null;
+
+/**
+ * The Tools menu of narrow screens: every view in its group (the sidebar's table), the current
+ * one marked, in a Modal (focus trap, Esc closes). The focus goes back to the Tools button,
+ * unless a link opened another tool: its page title takes the focus then.
+ */
+function openNavMenu() {
+  if (navMenu) return;
+  const openedOn = current ? current.id : null;
+  const content = h('div', { class: 'navmenu' }, groupViews(VIEWS).map((g) => {
+    const labelId = uid('navmenu-group');
+    return h('div', { class: 'navmenu-group' },
+      h('h3', { class: 'navmenu-label', id: labelId }, t(g.labelKey)),
+      h('ul', { class: 'navmenu-list', attrs: { 'aria-labelledby': labelId } }, g.views.map((v) => {
+        const here = v.id === openedOn;
+        return h('li', null, h('a', {
+          class: 'navmenu-link',
+          href: buildRoute(v.id),
+          dataset: { view: v.id, autofocus: here ? '1' : null },
+          attrs: { 'aria-current': here ? 'page' : null },
+          on: { click: () => menu.close({ view: v.id }) }
+        }, Icon(v.icon, { size: 18 }), h('span', { class: 'navmenu-name' }, t(`nav.${v.id}`)),
+        here ? Icon('check', { size: 16, className: 'navmenu-check' }) : null));
+      })));
+  }));
+  const menu = Modal({
+    title: t('nav.label'),
+    className: 'navmenu-modal',
+    content,
+    onClose: (value) => {
+      navMenu = null;
+      const btn = dom.navMenuBtn;
+      if (!btn) return;
+      btn.setAttribute('aria-expanded', 'false');
+      if (btn.isConnected && (!value || value.view === openedOn)) btn.focus({ preventScroll: true });
+    }
+  });
+  navMenu = menu;
+  if (dom.navMenuBtn) dom.navMenuBtn.setAttribute('aria-expanded', 'true');
+  menu.open();
+}
+
+/* ------------------------------------------------------------------------ */
+/* First-visit task picker                                                  */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The visitor ran something (a view went busy, a zone or a certificate was loaded, servers were
+ * saved): the start page stops offering the task picker. A picker on screen stays until the page
+ * is shown again, so nothing jumps under the pointer.
+ */
+function noteRun() {
+  if (state.settings.startTasks) state.updateSettings({ startTasks: false });
+}
+
+/** Keys of this origin's localStorage ([] where it is blocked). */
+function storedKeys() {
+  try {
+    const store = globalThis.localStorage;
+    if (!store) return [];
+    const keys = [];
+    for (let i = 0; i < store.length; i += 1) keys.push(store.key(i));
+    return keys;
+  } catch {
+    return [];
+  }
+}
+
+/** The dismissible strip of job cards above the start page: a first-time visitor's "where do I begin?". */
+function startPicker() {
+  const titleId = uid('start-title');
+  const hide = IconButton({
+    icon: 'x',
+    label: t('start.hide'),
+    className: 'start-picker-hide',
+    onClick: () => {
+      state.updateSettings({ startTasks: false });
+      strip.remove();
+      toast(t('start.hidden', { where: `${t('nav.about')} › ${t('start.aboutTitle')}` }), { type: 'info' });
+      // The button that had the focus is gone.
+      if (dom.pageTitle) dom.pageTitle.focus({ preventScroll: true });
+    }
+  });
+  hide.dataset.action = 'start-hide';
+  const strip = h('section', { class: 'start-picker card', dataset: { role: 'start-picker' }, attrs: { 'aria-labelledby': titleId } },
+    h('div', { class: 'start-picker-head' },
+      h('div', { class: 'start-picker-titles' },
+        h('h2', { class: 'start-picker-title', id: titleId }, t('start.title')),
+        h('p', { class: 'start-picker-lead' }, t('start.lead'))),
+      hide),
+    StartTaskList({
+      views: VIEWS,
+      href: (view) => buildRoute(view),
+      onPick: (task, event) => {
+        // The job of the page that is open: go to its input instead of opening it again.
+        if (!current || task.view !== current.id) return;
+        event.preventDefault();
+        focusMainInput();
+      }
+    }));
+  return strip;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Keyboard shortcuts                                                       */
+/* ------------------------------------------------------------------------ */
+
+/** Can a marked control act now? On the page, enabled and rendered (not hidden, not in a closed <details>). */
+function usableControl(el) {
+  return !!el && el.isConnected && !el.disabled && !el.closest('[inert]') && el.getClientRects().length > 0;
+}
+
+/** The ancestors of `from` inside `root`, nearest first, then `root` itself. */
+function scopesFrom(from, root) {
+  const scopes = [];
+  for (let el = from && root.contains(from) ? from : null; el && el !== root; el = el.parentElement) scopes.push(el);
+  scopes.push(root);
+  return scopes;
+}
+
+/**
+ * The current view's control for a shortcut (`data-shortcut="submit"` / `"cancel"`) nearest to
+ * the focused element (lib/shellnav.js pickShortcutTarget: a submit never falls through to
+ * another form's button).
+ * @param {'submit'|'cancel'} kind
+ * @param {Element|null} from
+ * @returns {HTMLElement|null}
+ */
+function shortcutControl(kind, from) {
+  const root = dom.pageBody;
+  if (!root || !current) return null;
+  return pickShortcutTarget({
+    candidates: [...root.querySelectorAll(`[data-shortcut="${kind}"]`)],
+    scopes: scopesFrom(from, root),
+    contains: (scope, el) => scope.contains(el),
+    usable: usableControl,
+    strict: kind === 'submit'
+  });
+}
+
+/** The view's main input: the one marked `data-shortcut="focus"`, else its first visible text field. */
+function mainInput() {
+  const root = dom.pageBody;
+  if (!root || !current) return null;
+  const marked = [...root.querySelectorAll('[data-shortcut="focus"]')].find(usableControl);
+  if (marked) return marked;
+  return [...root.querySelectorAll('input, textarea')].find((el) => isTypingTarget(el) && !el.readOnly && usableControl(el)) || null;
+}
+
+/** Focus the view's main input; false when it has none. */
+function focusMainInput() {
+  const el = mainInput();
+  if (!el) return false;
+  el.focus();
+  return true;
+}
+
+/** The app's one keydown listener for the shortcuts (see the module comment). */
+function onShortcutKey(event) {
+  if (event.defaultPrevented) return; // a field's own Enter handler, a Tabs arrow key, …
+  const command = shortcutFor(event);
+  if (!command) return;
+  // A dialog (settings, a confirmation, the Tools menu, the shortcut list) owns the keyboard; Esc closes it.
+  if (globalThis.document.querySelector('dialog[open]')) return;
+  const target = event.target && event.target.nodeType === 1 ? event.target : null;
+  if (command === 'help') {
+    event.preventDefault();
+    openShortcutHelp();
+    return;
+  }
+  if (command === 'focus') {
+    if (focusMainInput()) event.preventDefault();
+    return;
+  }
+  // Submit from a field of the view only; cancel from anywhere.
+  if (command === 'submit' && !(target && dom.pageBody && dom.pageBody.contains(target))) return;
+  const control = shortcutControl(command, target);
+  if (!control) return;
+  event.preventDefault();
+  control.click();
+}
+
+let shortcutHelp = null;
+
+/** The keyboard shortcuts dialog ('?' or the footer button); the focus returns where it was. */
+function openShortcutHelp() {
+  if (shortcutHelp) return;
+  const doc = globalThis.document;
+  const back = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+  const nav = globalThis.navigator || {};
+  const apple = isApplePlatform((nav.userAgentData && nav.userAgentData.platform) || nav.platform || '');
+  const combo = (keys) => h('span', { class: 'keys-combo' }, keyCaps(keys, { apple }).map((k, i) => [
+    i ? h('span', { class: 'keys-plus', attrs: { 'aria-hidden': 'true' } }, '+') : null,
+    h('kbd', null, k)
+  ]));
+  const content = h('div', { class: 'stack-sm' },
+    h('table', { class: 'keys-table' },
+      h('tbody', null, SHORTCUTS.map((s) => h('tr', { dataset: { key: s.id } },
+        h('th', { attrs: { scope: 'row' } }, combo(s.keys)),
+        h('td', null, t(`keys.${s.id}`)))))),
+    h('p', { class: 'muted text-sm' }, t('keys.note', { submit: keyCaps(['Mod', 'Enter'], { apple }).join('+') })));
+  const dialog = Modal({
+    title: t('keys.title'),
+    size: 'sm',
+    className: 'keys-modal',
+    content,
+    actions: [{ label: t('common.close'), variant: 'primary', value: null, autofocus: true }],
+    onClose: () => {
+      shortcutHelp = null;
+      if (back && back.isConnected) back.focus({ preventScroll: true });
+    }
+  });
+  shortcutHelp = dialog;
+  dialog.open();
 }
 
 function renderChrome() {
@@ -1077,6 +1345,8 @@ function boot() {
   const brand = document.getElementById('brand');
   if (brand) brand.setAttribute('href', buildRoute(DEFAULT_VIEW));
 
+  // A browser that used the app before the task picker existed is no first-time visitor.
+  if (state.settings.startTasks && hasUsedBefore(storedKeys())) noteRun();
   const settings = state.settings;
   applyTheme(settings.theme);
   setLang(detectLang({
@@ -1102,6 +1372,10 @@ function boot() {
     }
   });
 
+  state.subscribe((change) => {
+    // Once every listener has seen this change (noteRun emits a settings change of its own).
+    if (isRunSignal(change)) setTimeout(noteRun, 0);
+  });
   state.subscribe(({ key, value, origin }) => {
     if (key === 'inventory') updateNavStatus();
     if (key === 'settings') {
@@ -1116,6 +1390,7 @@ function boot() {
   });
 
   globalThis.addEventListener('hashchange', handleRoute);
+  document.addEventListener('keydown', onShortcutKey);
   globalThis.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
     if (reason && reason.name === 'AbortError') {

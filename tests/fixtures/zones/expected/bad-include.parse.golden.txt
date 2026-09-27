@@ -6,4 +6,4 @@ partial false
 default-ttl 300
 rr example.com. 300 NS ns1.example.com. ; @3
 rr www.example.com. 300 A 192.0.2.10 ; @5
-issue error INCLUDE_REJECTED @4 path=records.zone origin=null
+issue error INCLUDE_REJECTED @4 path=records.zone origin=null at=example.com

@@ -58,7 +58,7 @@ rr kase.example.com. 3600 TXT "käse" ; comment "decimal escapes of UTF-8 bytes 
 issue warn TARGET_MISSING_TRAILING_DOT @27 name=blog.example.com target=example-blog.github.io.example.com intended=example-blog.github.io
 issue info NON_IN_CLASS @52 class=CH
 issue info GENERATE_EXPANDED @57 count=3 range=1-3
-issue error INCLUDE_REJECTED @58 path=/etc/bind/other.zone origin=null
+issue error INCLUDE_REJECTED @58 path=/etc/bind/other.zone origin=null at=example.com
 issue warn BAD_TTL @60 ttl=4294967295 max=2147483647
 issue error BAD_RDATA @61 type=A reason=bad-address
 issue error BAD_RDATA @62 type=MX reason=missing-field

@@ -2466,8 +2466,12 @@ function parseBind(text, lines, zone, b, opts) {
         if (v === null || v > MAX_TTL) issues.add('BAD_TTL', e.line, { ttl: arg ? safeText(arg.t, 40) : '', max: MAX_TTL }, 'invalid $TTL ignored');
         else st.defaultTtl = v;
       } else if (d === '$INCLUDE') {
+        // `at`: the origin the included file is read under (RFC 1035 §5.1: its argument, else the current one)
+        const oTok = e.tokens[2];
+        const r = oTok ? parseName(oTok.t, ctxFor()) : null;
+        const at = oTok ? (r.ok ? r.name : null) : st.origin;
         issues.add('INCLUDE_REJECTED', e.line, {
-          path: safeText(arg ? arg.t : '', 200), origin: e.tokens[2] ? safeText(e.tokens[2].t, 200) : null
+          path: safeText(arg ? arg.t : '', 200), origin: oTok ? safeText(oTok.t, 200) : null, at: at === '.' ? null : at
         }, '$INCLUDE cannot be followed in the browser');
       } else if (d === '$GENERATE') {
         handleGenerate(e);
@@ -3882,7 +3886,8 @@ export function toBindText(zone, { header = true } = {}) {
  * Merge zones that share an origin (several files, a BIND file plus its `$INCLUDE` part).
  * Ids are renumbered; `source` indexes the merged `sources`. Zones with a fatal issue contribute
  * no records (their fatal issue is listed as a warning). Different origins → fatal ORIGIN_MISMATCH.
- * An INCLUDE_REJECTED whose path names another merged file becomes INCLUDE_MERGED.
+ * An INCLUDE_REJECTED whose path names another merged file (one without a fatal issue) becomes
+ * INCLUDE_MERGED.
  * @param {object[]} zones
  * @param {{ limits?: object }} [opts]
  * @returns {object} Zone
@@ -3912,7 +3917,7 @@ export function mergeZones(zones, { limits = ZONE_LIMITS } = {}) {
   merged.defaultTtl = lead.defaultTtl ?? null;
   const markers = new Set();
   const names = new Set();
-  for (const z of list) for (const s of z.sources || []) if (s && s.name) names.add(String(s.name).split(/[\\/]/).pop().toLowerCase());
+  for (const z of good) for (const s of z.sources || []) if (s && s.name) names.add(String(s.name).split(/[\\/]/).pop().toLowerCase());
   const records = [];
   const warnings = [];
   let offset = 0;

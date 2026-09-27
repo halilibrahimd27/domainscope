@@ -1034,6 +1034,10 @@ describe('panels and dumps', () => {
     assert.ok(find(edge, 'kase.example.com'), 'records after $INCLUDE are parsed');
     const inc = edge.warnings.find((w) => w.code === 'INCLUDE_REJECTED');
     assert.equal(inc.params.path, '/etc/bind/other.zone');
+    // `at`: the origin the included file is read under (its argument, else the origin in effect)
+    const at = (text) => P(text).warnings.filter((w) => w.code === 'INCLUDE_REJECTED').map((w) => [w.params.origin, w.params.at]);
+    assert.deepEqual(at('$ORIGIN example.com.\n@ 300 A 192.0.2.1\n$INCLUDE a\n$INCLUDE b lab\n$INCLUDE c lab.example.net.\n$ORIGIN sub.example.com.\n$INCLUDE d\n'),
+      [[null, 'example.com'], ['lab', 'lab.example.com'], ['lab.example.net.', 'lab.example.net'], [null, 'sub.example.com']]);
     const z = Z('$GENERATE 1-5000 h$ A 192.0.2.1\n$GENERATE 1-2 h${0,3,d} A 192.0.2.1\n$GENERATE 0-4/2 x$$y$ CNAME t$\n$FOO bar');
     assert.deepEqual(z.warnings.map((w) => w.code), ['GENERATE_TOO_LARGE', 'GENERATE_UNSUPPORTED', 'GENERATE_EXPANDED', 'UNKNOWN_DIRECTIVE']);
     // "$$" is a literal "$", presented escaped ("\$") exactly as dnswire prints a label
@@ -1336,6 +1340,13 @@ describe('helpers', () => {
     const withFatal = mergeZones([a, parseZone('')]);
     assert.equal(withFatal.records.length, 1);
     assert.equal(withFatal.warnings[0].code, 'EMPTY');
+  });
+
+  test('mergeZones: an $INCLUDE whose file could not be parsed stays INCLUDE_REJECTED', () => {
+    const main = parseZone('$ORIGIN example.com.\n$TTL 300\n@ NS ns1\n$INCLUDE part\n', { filename: 'main.zone' });
+    const part = parseZone('www A 192.0.2.10\n', { filename: 'part' });
+    assert.equal(part.fatal.code, 'ORIGIN_REQUIRED');
+    assert.deepEqual(mergeZones([main, part]).warnings.map((w) => w.code), ['INCLUDE_REJECTED', 'ORIGIN_REQUIRED']);
   });
 });
 

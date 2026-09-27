@@ -105,6 +105,34 @@ describe('zone view: samples and parsing', () => {
     assert.equal(D.planDrift(z).skipped.occluded, 0);
   });
 
+  test('an $INCLUDE part merges under the main origin whatever its file name or drop order', () => {
+    const main = (name) => ({ name: 'db.example.com', text: `$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE ${name}\n` });
+    const part = (name) => ({ name, text: 'mail IN A 192.0.2.80\n@ IN MX 10 mail\n' });
+    for (const name of ['mail.inc', 'example.com.include', 'db.example.com.inc', 'mail']) {
+      for (const files of [[main(name), part(name)], [part(name), main(name)]]) {
+        const z = V.parseFiles(files);
+        assert.equal(z.fatal, null, name);
+        assert.equal(z.origin, 'example.com', name);
+        assert.ok(z.records.some((r) => r.name === 'mail.example.com' && r.type === 'A' && r.ttl === 300), name);
+        assert.equal(z.records.find((r) => r.type === 'MX').name, 'example.com', name);
+        assert.ok(z.warnings.some((w) => w.code === 'INCLUDE_MERGED'), name);
+        assert.ok(!z.warnings.some((w) => w.code === 'INCLUDE_REJECTED' || w.code === 'OUT_OF_ZONE'), name);
+      }
+    }
+    // the $INCLUDE origin argument (absolute or relative) is where the part's names land
+    for (const [line, name] of [['$INCLUDE lab lab.example.com.', 'lab'], ['$INCLUDE lab.inc lab', 'lab.inc']]) {
+      const z = V.parseFiles([{ name: 'db.example.com', text: `$ORIGIN example.com.\n@ 300 IN SOA ns1 h 1 2 3 4 5\n${line}\n` },
+        { name, text: 'api 300 IN A 192.0.2.30\n@ 300 IN TXT "lab"\n' }]);
+      assert.equal(z.fatal, null, line);
+      assert.equal(z.origin, 'example.com', line);
+      assert.deepEqual(z.records.map((r) => r.name), ['example.com', 'api.lab.example.com', 'lab.example.com'], line);
+    }
+    // a part of absolute names below the zone merges too
+    const abs = V.parseFiles([main('part.zone'), { name: 'part.zone', text: 'a.lab.example.com. 300 IN A 192.0.2.1\nb.lab.example.com. 300 IN A 192.0.2.2\n' }]);
+    assert.equal(abs.fatal, null);
+    assert.equal(abs.origin, 'example.com');
+  });
+
   test('files of different zones → ORIGIN_MISMATCH; a certificate → NOT_A_ZONE pem', () => {
     const a = 'example.com. 300 IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\nexample.com. 300 IN A 192.0.2.10\nwww.example.com. 300 IN A 192.0.2.10\n';
     const b = 'example.org. 300 IN SOA ns1.example.org. h.example.org. 1 2 3 4 5\nexample.org. 300 IN A 192.0.2.10\nwww.example.org. 300 IN A 192.0.2.10\n';

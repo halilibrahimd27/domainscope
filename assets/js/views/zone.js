@@ -862,11 +862,17 @@ export function zoneCounts(zone, problems) {
   };
 }
 
+/** Lower-case base name of a path (how an `$INCLUDE` line names a dropped file). */
+const baseName = (p) => String(p || '').split(/[\\/]/).pop().toLowerCase();
+
 /**
  * Parse one or several loaded files into one zone (zone spec §6.1.1 multi-file rule): when
  * every file is Cloudflare API JSON (or every one Route 53 JSON) the texts are joined and parsed
  * once (pages merged, PARTIAL_EXPORT over all pages); otherwise each file is parsed alone and
- * the results are merged (same origin required).
+ * the results are merged (same origin required). The lead file (one that `$INCLUDE`s another
+ * dropped file, else one whose origin comes from an SOA / `$ORIGIN` / header) goes first
+ * whatever the drop order; a part that does not name its own zone is read under its
+ * `$INCLUDE` origin, else the lead's, with the lead's `$TTL`.
  * @param {Array<{ name: string, text: string }>} files
  * @param {{ origin?: string|null, format?: string }} [opts]
  * @returns {object} Zone
@@ -884,16 +890,32 @@ export function parseFiles(files, { origin = null, format = 'auto' } = {}) {
   if (formats.every((x) => x === 'cloudflare-api') || formats.every((x) => x === 'route53')) {
     return parseZone(list.map((f) => f.text).join('\n'), { origin: o, filename: list[0].name, format });
   }
-  // The file with an SOA goes first so $INCLUDE fragments inherit its origin (critic B4).
-  const first = parseZone(list[0].text, { origin: o, filename: list[0].name, format, source: 0 });
-  const zones = [first];
-  for (let i = 1; i < list.length; i += 1) {
-    const base = { filename: list[i].name, format, source: i, defaultTtl: first.defaultTtl ?? null };
-    let z = parseZone(list[i].text, { ...base, origin: o });
-    // A fragment without SOA / $ORIGIN inherits the main file's origin.
-    if (z.fatal && z.fatal.code === 'ORIGIN_REQUIRED' && first.origin) z = parseZone(list[i].text, { ...base, origin: first.origin });
+  // The lead goes first so $INCLUDE fragments inherit its origin (critic B4).
+  const alone = list.map((f, i) => parseZone(f.text, { origin: o, filename: f.name, format, source: i }));
+  const dropped = new Set(list.map((f) => baseName(f.name)));
+  const includesOther = (z) => !z.fatal && z.warnings.some((w) => w.code === 'INCLUDE_REJECTED' && dropped.has(baseName(w.params.path)));
+  let li = alone.findIndex(includesOther);
+  if (li < 0) li = alone.findIndex((z) => !z.fatal && z.origin && z.originConfidence === 'high');
+  if (li < 0) li = 0;
+  const lead = alone[li];
+  const includeAt = new Map();
+  for (const w of lead.warnings) if (w.code === 'INCLUDE_REJECTED' && w.params.at) includeAt.set(baseName(w.params.path), w.params.at);
+  // no zone name of its own: a missing origin, or one guessed from the file name / the records
+  const adoptable = (z) => (z.fatal ? z.fatal.code === 'ORIGIN_REQUIRED' : z.originConfidence !== 'high' || z.originSource === 'user');
+  const zones = [lead];
+  list.forEach((f, i) => {
+    if (i === li) return;
+    const base = { filename: f.name, format, source: i, defaultTtl: lead.defaultTtl ?? null };
+    let z = (lead.defaultTtl ?? null) === null ? alone[i] : parseZone(f.text, { ...base, origin: o });
+    const at = includeAt.get(baseName(f.name)) || null;
+    const want = at || lead.origin;
+    if (want && adoptable(z) && z.origin !== want) z = parseZone(f.text, { ...base, origin: want });
+    // included below the apex (`$INCLUDE lab lab.example.com.`): still a part of the lead's zone
+    if (at && z.origin === at && lead.origin && at.endsWith(`.${lead.origin}`)) {
+      z = { ...z, origin: lead.origin, originSource: lead.originSource, originConfidence: lead.originConfidence };
+    }
     zones.push(z);
-  }
+  });
   return mergeZones(zones);
 }
 

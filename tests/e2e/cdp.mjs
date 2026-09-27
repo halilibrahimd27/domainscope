@@ -666,6 +666,11 @@ export async function launchBrowser({
     '--force-color-profile=srgb',
     `--lang=${lang}`,
     '--window-size=1440,900',
+    // A mouse on every OS: headless Chrome on Linux sees no input device, so without this a
+    // desktop page is `(hover: none) and (pointer: none)` there but `hover` + `fine` on Windows
+    // and macOS. Phone pages still get `coarse` from setViewport's touch emulation (on Linux a
+    // page turned back from a phone reads `none` again until its next load).
+    headless ? '--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2' : null,
     ...args,
     'about:blank'
   ].filter(Boolean);

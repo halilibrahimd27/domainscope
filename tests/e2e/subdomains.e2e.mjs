@@ -452,6 +452,7 @@ async function main() {
         input: !!document.querySelector('.sub-hero [data-role="sub-domain"]'),
         placeholder: document.querySelector('[data-role="sub-domain"]').placeholder,
         label: document.querySelector('.sub-hero-title label')?.htmlFor === document.querySelector('[data-role="sub-domain"]').id,
+        mouse: matchMedia('(hover: hover) and (pointer: fine)').matches,
         focused: document.activeElement === document.querySelector('[data-role="sub-domain"]'),
         intro: !document.querySelector('.sub-intro').hidden,
         introItems: document.querySelectorAll('.sub-intro-item').length,
@@ -463,6 +464,8 @@ async function main() {
       assertEqual([info.view, info.firstNav, info.h1, info.firstGroup, info.brand], ['subdomains', 'subdomains', 'Subdomains', 'Discover', '#/subdomains'], 'default route');
       assertEqual(info.firstGroupShown, 'uppercase', 'group labels are upper-cased by CSS');
       assert(info.input && info.label && info.placeholder === 'example.com', `search box: ${JSON.stringify(info)}`);
+      // The box takes the focus only with a mouse (no on-screen keyboard popping up on a phone).
+      assert(info.mouse, 'the desktop page has a mouse (hover, fine pointer): cdp.mjs pins one for headless Chrome');
       assert(info.focused, 'search box focused on first load');
       assert(info.intro && info.introItems === 3 && info.aboutLink === '#/about', `intro: ${JSON.stringify(info)}`);
       assertEqual(info.examples, ['github.com', 'cloudflare.com', 'wikipedia.org'], 'example chips (global, public domains)');

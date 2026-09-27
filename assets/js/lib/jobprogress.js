@@ -189,17 +189,19 @@ export function svgDataUrl(svg) {
 
 /**
  * Can the page show a notification itself (`new Notification()`)? Chromium on Android (Chrome,
- * Samsung Internet, Edge, Opera: `navigator.userAgentData.mobile`) has the API and its permission
- * prompt but turns the constructor off ("Illegal constructor. Use
- * ServiceWorkerRegistration.showNotification() instead"). This app has no service worker, so there
- * "Notify me when done" would ask for a permission it can never use. A Chromium without
- * `userAgentData` (older, or a page that is not a secure context) is recognised by its user agent.
- * @param {{ api: unknown, userAgentData?: { mobile?: boolean }|null, userAgent?: string }} env
+ * Samsung Internet, Edge, Opera) has the API and its permission prompt but turns the constructor
+ * off for the whole platform, tablets included ("Illegal constructor. Use
+ * ServiceWorkerRegistration.showNotification() instead"). The page does not notify through its
+ * service worker, so there "Notify me when done" would ask for a permission it can never use.
+ * The OS decides (`navigator.userAgentData.platform`, a low-entropy hint every Chromium sends;
+ * `mobile` is the form factor, false on a tablet). A Chromium without `userAgentData` (older, or
+ * a page that is not a secure context) is recognised by its user agent, tablets too.
+ * @param {{ api: unknown, userAgentData?: { platform?: string, mobile?: boolean }|null, userAgent?: string }} env
  * @returns {boolean}
  */
 export function pageNotifications({ api, userAgentData = null, userAgent = '' }) {
   if (typeof api !== 'function') return false;
-  if (userAgentData && typeof userAgentData.mobile === 'boolean') return !userAgentData.mobile;
+  if (userAgentData && typeof userAgentData.platform === 'string' && userAgentData.platform) return userAgentData.platform !== 'Android';
   return !/\bAndroid\b.*\bChrome\/\d/.test(String(userAgent || ''));
 }
 

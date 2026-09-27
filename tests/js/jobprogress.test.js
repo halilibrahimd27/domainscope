@@ -195,10 +195,15 @@ describe('desktop notification', () => {
     const androidChrome = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36';
     const desktopChrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
     const androidFirefox = 'Mozilla/5.0 (Android 14; Mobile; rv:130.0) Gecko/130.0 Firefox/130.0';
-    assert.equal(pageNotifications({ api, userAgentData: { mobile: false }, userAgent: desktopChrome }), true);
-    assert.equal(pageNotifications({ api, userAgentData: { mobile: true }, userAgent: androidChrome }), false, 'Chrome, Samsung Internet, Edge on Android');
-    assert.equal(pageNotifications({ api, userAgentData: { mobile: true }, userAgent: desktopChrome }), false, 'userAgentData decides over the string');
+    const androidTablet = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: false, platform: 'Windows' }, userAgent: desktopChrome }), true);
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: true, platform: 'Android' }, userAgent: androidChrome }), false, 'Chrome, Samsung Internet, Edge on Android');
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: false, platform: 'Android' }, userAgent: androidTablet }), false, 'an Android tablet: mobile is false, the OS is Android');
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: false, platform: 'Android' }, userAgent: desktopChrome }), false, 'userAgentData decides over the string');
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: true, platform: 'macOS' }, userAgent: androidChrome }), true, 'the platform decides, not the form factor');
+    assert.equal(pageNotifications({ api, userAgentData: { mobile: false, platform: '' }, userAgent: androidTablet }), false, 'no platform: the user agent (a tablet too)');
     assert.equal(pageNotifications({ api, userAgent: androidChrome }), false, 'a Chromium without userAgentData');
+    assert.equal(pageNotifications({ api, userAgent: androidTablet }), false, 'an Android tablet without userAgentData');
     assert.equal(pageNotifications({ api, userAgent: desktopChrome }), true);
     assert.equal(pageNotifications({ api, userAgent: androidFirefox }), true, 'Firefox on Android has the constructor');
     assert.equal(pageNotifications({ api }), true);

@@ -15,7 +15,8 @@
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
  *     i18n keys that are missing in either language.
  * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
- * the app boots from it, About's links resolve, and after a second "deploy" a view opened in the
+ * the app boots from it, About's links resolve, a view that fails to load offline (or blocked)
+ * keeps the plain network error with Retry, and after a second "deploy" a view opened in the
  * old tab offers a page reload that brings the new version.
  * No network access is needed: the shell views never call external APIs.
  */
@@ -947,6 +948,54 @@ async function main() {
         }
         await gotoRoute(tab, 'subdomains');
         await assertClean(tab, 'bundle');
+      });
+
+      // Offline, or with the view's file unreachable while app.js still answers, the failed import
+      // looks exactly like a deploy's; the shell must keep the network error and its Retry, never
+      // claim an update or push a reload (offline it would lose everything held in memory).
+      const failedView = async (id) => {
+        await tab.evaluate((view) => { window.location.hash = `#/${view}`; }, id);
+        await tab.waitFor(() => !!document.querySelector('#page-body > .alert'), { message: `${id}: load failure shown` });
+        // the probe (if any) has answered: its HEAD request is done, then give its .then a frame
+        await tab.waitFor(() => !navigator.onLine || performance.getEntriesByType('resource')
+          .some((e) => e.initiatorType === 'fetch' && e.name.endsWith('/assets/js/app.js')), { message: `${id}: probe` });
+        await tab.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        setNodeLang('en');
+        const banner = await tab.evaluate(() => ({
+          text: document.querySelector('#page-body > .alert').textContent,
+          reload: !!document.querySelector('[data-action="reload-page"]'),
+          toast: document.querySelector('.toast')?.textContent || '',
+          buttons: [...document.querySelectorAll('#page-body > .alert button')].map((b) => b.textContent.trim())
+        }));
+        assert(!banner.reload && !banner.text.includes(translate('shell.viewOutdated')), `${id}: claims an update: ${banner.text}`);
+        assert(!banner.toast.includes(translate('shell.viewOutdated')), `${id}: update toast: ${banner.toast}`);
+        assert(banner.text.includes(translate('error.kind.network')), `${id}: not the network error: ${banner.text}`);
+        assertEqual(banner.buttons.join('|'), translate('common.retry'), `${id}: actions`);
+        // the rest of the app keeps working
+        await tab.resetProblems(); // the failed import is logged on purpose
+        await gotoRoute(tab, 'about');
+        await assertClean(tab, `after ${id}`);
+      };
+
+      await step('offline, a view that fails to load shows the network error and Retry, not "updated"', async () => {
+        const conditions = (offline) => tab.send('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        await tab.send('Network.enable');
+        await conditions(true);
+        try {
+          await failedView('health');
+        } finally {
+          await conditions(false);
+        }
+      });
+
+      await step('online with only the view file unreachable (app.js still served), the same: no update claimed', async () => {
+        await tab.send('Network.setBlockedURLs', { urls: ['*/views/bulk.js'] });
+        try {
+          await failedView('bulk');
+        } finally {
+          await tab.send('Network.setBlockedURLs', { urls: [] });
+          await tab.send('Network.disable');
+        }
       });
 
       await step('a view first opened after a deploy offers a page reload, which loads the new version', async () => {

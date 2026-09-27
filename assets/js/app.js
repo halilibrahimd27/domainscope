@@ -153,13 +153,16 @@ const STALE_LINK_RE = /does(?: not|n['’]t) provide an export named|^import not
 /** A lazily imported module (or one of its imports) could not be fetched (Chrome, Firefox, Safari). */
 const STALE_FETCH_RE = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i;
 
+/** How long the "is this page's version still on the server?" probe may take. */
+const PROBE_TIMEOUT_MS = 8000;
+
 /**
- * Did a lazy import fail because this page belongs to an earlier deploy? Either a module fetched
- * now does not link against the ones already loaded (a missing export, SyntaxError), or it could
- * not be fetched at all (TypeError): the Pages bundle serves each deploy from its own
+ * Could a lazy import have failed because this page belongs to an earlier deploy? Either a module
+ * fetched now does not link against the ones already loaded (a missing export, SyntaxError), or
+ * it could not be fetched at all (TypeError): the Pages bundle serves each deploy from its own
  * v/<version>/ directory (tools/assemble-site.mjs), so the old one is gone. The fetch case is
- * also what an offline browser reports. Retrying in the same document cannot fix a link error —
- * the browser keeps the modules it already has — so the shell offers a page reload.
+ * also what an offline browser or a dropped connection reports, so only
+ * {@link confirmStaleModule} decides; this is the message check alone.
  * @param {unknown} err rejection of `import()`
  * @returns {boolean}
  */
@@ -171,16 +174,61 @@ export function isStaleModuleError(err) {
   return false;
 }
 
+/**
+ * Is this page's own version gone from the server? Only when the browser is online and this
+ * module's URL answers 404 (a newer deploy replaced v/<version>/). Offline, a failed or slow
+ * probe, or any other status is a network problem, not an update: a reload would then only
+ * throw away what the page holds in memory (an imported zone file, scan results).
+ * @param {{ online?: boolean, probe?: () => Promise<number> }} [env] tests inject both
+ * @returns {Promise<boolean>}
+ */
+export async function pageIsOutdated({ online = globalThis.navigator?.onLine, probe = probeOwnModule } = {}) {
+  if (online === false) return false;
+  try {
+    return (await probe()) === 404;
+  } catch {
+    return false;
+  }
+}
+
+/** HTTP status of this module's URL, past every cache (rejects on a network error or timeout). */
+async function probeOwnModule() {
+  const res = await fetch(import.meta.url, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+  return res.status;
+}
+
+/**
+ * Did a lazy import really fail because this page belongs to an earlier deploy? A link error
+ * says so by itself — retrying in the same document cannot fix it, the browser keeps the modules
+ * it already has. A fetch error counts only if {@link pageIsOutdated} confirms it.
+ * @param {unknown} err rejection of `import()`
+ * @param {{ online?: boolean, probe?: () => Promise<number> }} [env] passed to pageIsOutdated
+ * @returns {Promise<boolean>}
+ */
+export async function confirmStaleModule(err, env) {
+  if (!isStaleModuleError(err)) return false;
+  if (err.name === 'SyntaxError') return true;
+  return pageIsOutdated(env);
+}
+
 let outdatedNoticeShown = false;
 
-/** A shared lazy module (DoH, Globalping) failed to load after a deploy: say so once, with a reload button. */
-function noticeIfOutdated(err) {
-  if (outdatedNoticeShown || !isStaleModuleError(err)) return;
-  outdatedNoticeShown = true;
-  toast(t('shell.viewOutdated'), {
-    type: 'warn',
-    timeout: 0,
-    action: { label: t('shell.reload'), onClick: () => globalThis.location.reload() }
+/**
+ * Something this page loads on demand failed: a shared lazy module (DoH, Globalping) or a data
+ * file (a wordlist tier, a locale pack). If `isOutdated` confirms the page is from an earlier
+ * deploy, say so once, with a reload button; otherwise stay quiet so a later failure can check again.
+ * @param {() => Promise<boolean>} isOutdated confirmStaleModule for a module, pageIsOutdated for a data file
+ */
+function noticeIfOutdated(isOutdated) {
+  if (outdatedNoticeShown) return;
+  isOutdated().then((stale) => {
+    if (!stale || outdatedNoticeShown) return;
+    outdatedNoticeShown = true;
+    toast(t('shell.viewOutdated'), {
+      type: 'warn',
+      timeout: 0,
+      action: { label: t('shell.reload'), onClick: () => globalThis.location.reload() }
+    });
   });
 }
 
@@ -230,7 +278,7 @@ export function getDns() {
     // A failed import (offline, file missing) must not be cached forever.
     promise.catch((err) => {
       if (dnsPromise === promise) dnsPromise = null;
-      noticeIfOutdated(err);
+      noticeIfOutdated(() => confirmStaleModule(err));
     });
   }
   return dnsPromise;
@@ -266,7 +314,7 @@ export function getGlobalping(load = () => import('./lib/globalping.js')) {
     gpPromise = promise;
     promise.catch((err) => {
       if (gpPromise === promise) gpPromise = null;
-      noticeIfOutdated(err);
+      noticeIfOutdated(() => confirmStaleModule(err));
     });
   }
   return gpPromise;
@@ -459,25 +507,35 @@ function loadView(def) {
 }
 
 /**
- * The page body of a view whose module failed to load. After a deploy (see isStaleModuleError)
- * the first action reloads the page; Retry stays only where it can help (a fetch failure may be
- * a network blip, a link error never goes away in this document).
+ * The page body of a view whose module failed to load: the error with a Retry, replaced by a
+ * "reload page" alert once {@link confirmStaleModule} says the page belongs to an earlier deploy
+ * (Retry cannot help then). A network failure keeps the Retry and never claims an update.
  */
 function viewLoadFailure(def, params, sp, err) {
-  const retry = () => showRoute(def.id, params, { force: true, searchParams: sp });
-  if (!isStaleModuleError(err)) return ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: retry });
+  const maybeStale = isStaleModuleError(err);
+  if (maybeStale && err.name === 'SyntaxError') return outdatedAlert(err);
+  const banner = ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp }) });
+  if (maybeStale) {
+    confirmStaleModule(err).then((stale) => {
+      if (stale && banner.isConnected) banner.replaceWith(outdatedAlert(err));
+    });
+  }
+  return banner;
+}
+
+/** "This page is older than the site": the error's details and a Reload page button (no Retry). */
+function outdatedAlert(err) {
   const { detail } = describeError(err);
-  const reload = Button({
-    label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
-    dataset: { action: 'reload-page' },
-    onClick: () => globalThis.location.reload()
-  });
   return Alert({
     variant: 'warn',
     title: t('shell.viewLoadFailed'),
     message: t('shell.viewOutdated'),
     children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
-    actions: err.name === 'SyntaxError' ? [reload] : [reload, Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', onClick: retry })]
+    actions: [Button({
+      label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
+      dataset: { action: 'reload-page' },
+      onClick: () => globalThis.location.reload()
+    })]
   });
 }
 

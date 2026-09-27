@@ -5188,8 +5188,9 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   recovered), endpoints and names that are new or gone. Listed under "Changes since
   the baseline" and in the JSON ("baseline", "changes"). Give the same file to
   --baseline and --json to compare each run with the one before: it is read before
-  the scan and replaced after it, and while it does not exist (the first run) there
-  is nothing to compare. A file that is not a --json report of this tool is a usage
+  the scan and replaced after it (through a temporary file in the same directory,
+  which must be writable), and while it does not exist (the first run) there is
+  nothing to compare. A file that is not a --json report of this tool is a usage
   error.
   --warn-days N lists served certificates that expire within N days or have expired
   (only certificates that cover a probed name), in the summary and the JSON
@@ -5389,11 +5390,15 @@ def _write_output(path: str, text: str, encoding: str = 'utf-8') -> None:
         raise UsageError('cannot write %s: %s' % (path, exc.strerror or exc))
 
 
+def _temp_path(path: str) -> str:
+    return '%s.%d.tmp' % (path, os.getpid())
+
+
 def _replace_file(path: str, text: str, encoding: str = 'utf-8') -> None:
     """Write ``path`` whole or not at all: a temporary file next to it, renamed over it.
     An interrupted run (a full disk, Ctrl-C) leaves the previous file as it was - for a
     ``--json`` report that is also the next run's ``--baseline``."""
-    temp = '%s.%d.tmp' % (path, os.getpid())
+    temp = _temp_path(path)
     try:
         with open(temp, 'x', encoding=encoding, newline='') as handle:
             handle.write(text)
@@ -5418,10 +5423,15 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
-def _check_output_path(path: Optional[str], option: str) -> None:
+def _check_output_path(path: Optional[str], option: str, replace: bool = False) -> None:
     """Refuse a report file that cannot be written before the scan, not after it: a
     missing directory, a directory, a read-only file or one another program holds open
-    (a CSV still open in Excel on Windows). Nothing is truncated or left behind."""
+    (a CSV still open in Excel on Windows). Nothing is truncated or left behind.
+
+    With ``replace`` (a report written by :func:`_replace_file`) the directory must take
+    a new file too: a writable file in a directory the user cannot write to would pass,
+    and every run would then fail after the scan without advancing the baseline.
+    """
     if not path or path == '-':
         return
     directory = os.path.dirname(os.path.abspath(path))
@@ -5439,6 +5449,16 @@ def _check_output_path(path: Optional[str], option: str) -> None:
             os.remove(path)
     except OSError as exc:
         raise UsageError('%s: cannot write %s: %s' % (option, path, exc.strerror or exc))
+    if replace:
+        temp = _temp_path(path)
+        try:
+            with open(temp, 'xb'):
+                pass
+            os.remove(temp)
+        except OSError as exc:
+            raise UsageError('%s: cannot create a file in %s (the report replaces the '
+                             'baseline through a temporary file there): %s'
+                             % (option, directory, exc.strerror or exc))
 
 
 def _isatty(stream: TextIO) -> bool:
@@ -5601,7 +5621,8 @@ def _run(args: argparse.Namespace) -> int:
         raise UsageError('--json - and --csv - cannot both write to stdout')
     if sum(list(values).count('-') for values in (args.targets, args.names, args.exclude)) > 1:
         raise UsageError('stdin ("-") can be used only once')
-    _check_output_path(args.json, '--json')
+    json_is_baseline = _same_path(args.baseline, args.json)
+    _check_output_path(args.json, '--json', replace=json_is_baseline)
     _check_output_path(args.csv, '--csv')
     exclude_rules = load_excludes(args.exclude)  # strict: bad input stops before any lookup
 
@@ -5613,7 +5634,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.baseline == '-':
         raise UsageError('--baseline reads a file, not stdin ("-")')
     # Read now, before the scan: with --json FILE the same file is replaced after it.
-    baseline = load_baseline(args.baseline, allow_missing=_same_path(args.baseline, args.json)
+    baseline = load_baseline(args.baseline, allow_missing=json_is_baseline
                              ) if args.baseline else None
     notify_url, notify_format = _notify_settings(args, all_warnings)
 

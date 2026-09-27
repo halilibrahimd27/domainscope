@@ -3886,6 +3886,40 @@ class MonitorCliTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn('does not exist', err)
 
+    def test_baseline_report_needs_a_writable_directory(self):
+        """The report that replaces the baseline goes through a temporary file next to it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            Path(state).write_text(sos.render_json(fleet_before()), encoding='utf-8')
+            blocked = os.path.join(tmp, 'no-such-directory', 'state.json.tmp')
+            with mock.patch.object(sos, '_temp_path', return_value=blocked), \
+                    mock.patch.object(sos, 'run_scan', side_effect=AssertionError('must not scan')):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                        '--json', state)
+            self.assertEqual(code, 2)
+            self.assertIn('--json: cannot create a file in %s (the report replaces the baseline '
+                          'through a temporary file there)' % tmp, err)
+            # another --json file is written in place: it needs no temporary file
+            other = os.path.join(tmp, 'other.json')
+            with mock.patch.object(sos, '_temp_path', return_value=blocked), \
+                    mock.patch.object(sos, 'run_scan', return_value=fleet_after()):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                        '--json', other, '-q')
+            self.assertEqual(code, 0, err)
+            self.assertEqual(sorted(os.listdir(tmp)), ['other.json', 'state.json'])
+            if os.name == 'nt' or os.geteuid() == 0:
+                return  # a directory's write permission does not stop Windows or root
+            os.chmod(tmp, 0o500)  # the file stays writable, the directory does not
+            try:
+                with mock.patch.object(sos, 'run_scan',
+                                       side_effect=AssertionError('must not scan')):
+                    code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                            '--json', state)
+            finally:
+                os.chmod(tmp, 0o700)
+            self.assertEqual(code, 2)
+            self.assertIn('--json: cannot create a file in %s' % tmp, err)
+
     def test_usage_errors_stop_before_the_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad = os.path.join(tmp, 'bad.json')

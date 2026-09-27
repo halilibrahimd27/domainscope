@@ -66,25 +66,54 @@ export const APP_VERSION = '1.0.0';
 export const DEFAULT_VIEW = 'subdomains';
 
 /**
+ * Every per-view stylesheet (paths under assets/css/) in cascade order. index.html links only
+ * style.css; a view's sheets are injected when it is first opened and stay, and a sheet
+ * injected later goes before the ones that follow it here, so the cascade never depends on the
+ * order the views were opened in.
+ */
+export const VIEW_CSS_ORDER = Object.freeze([
+  'views/subdomains.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
+  'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/health.css',
+  'views/inventory.css', 'views/about.css'
+]);
+
+/**
+ * The discovery engine's modules (paths under assets/js/) that the Subdomains and SSL Targets
+ * views import only when a scan starts: modulepreloaded once the page is idle, so Start rarely
+ * waits for them. A unit test keeps the list equal to what lib/scanner.js adds to the
+ * Subdomains view's own imports.
+ */
+export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/permute.js']);
+
+/**
  * Navigation table in spec §6 order. `group` is one of lib/shellnav.js NAV_GROUPS (the sidebar
  * and the phone Tools menu both list the views by it; an unknown group lands under "More tools").
  * `load` is a lazy import so a view that fails to load (or is still being written) cannot break
- * the rest of the app.
+ * the rest of the app. `css`: its stylesheets (paths
+ * under assets/css/, loaded before it mounts); `preload`: modules it imports on first use
+ * (paths under assets/js/, modulepreloaded when the page is idle); `offline`: it needs no
+ * network (the service worker keeps it working offline; the other views say they need one).
  */
 export const VIEWS = Object.freeze([
-  { id: 'subdomains', group: 'discover', icon: 'layers', load: () => import('./views/subdomains.js') },
-  { id: 'zone', group: 'discover', icon: 'file-text', load: () => import('./views/zone.js') },
-  { id: 'scan', group: 'ssl', icon: 'target', load: () => import('./views/scan.js') },
-  { id: 'cert', group: 'ssl', icon: 'shield', load: () => import('./views/cert.js') },
-  { id: 'global', group: 'dns', icon: 'globe', load: () => import('./views/global.js') },
-  { id: 'lookup', group: 'dns', icon: 'search', load: () => import('./views/lookup.js') },
-  { id: 'bulk', group: 'dns', icon: 'list', load: () => import('./views/bulk.js') },
-  { id: 'ip', group: 'ip', icon: 'network', load: () => import('./views/ip.js') },
-  { id: 'ptr', group: 'ip', icon: 'swap', load: () => import('./views/ptr.js') },
-  { id: 'health', group: 'mail', icon: 'activity', load: () => import('./views/health.js') },
-  { id: 'inventory', group: 'data', icon: 'server', load: () => import('./views/inventory.js') },
-  { id: 'about', group: 'data', icon: 'info', load: () => import('./views/about.js') }
-].map((v) => Object.freeze(v)));
+  { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: ENGINE_MODULES, load: () => import('./views/subdomains.js') },
+  { id: 'zone', group: 'discover', icon: 'file-text', css: ['views/zone.css'], offline: true, load: () => import('./views/zone.js') },
+  {
+    id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
+    // the setup form reuses the Subdomains options and the Certificate loader; Verify and DANE are tabs
+    css: ['views/subdomains.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css']
+  },
+  { id: 'cert', group: 'ssl', icon: 'shield', css: ['views/dane.css', 'views/cert.css'], offline: true, load: () => import('./views/cert.js') },
+  { id: 'global', group: 'dns', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
+  { id: 'lookup', group: 'dns', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
+  { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
+  { id: 'ip', group: 'ip', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
+  { id: 'ptr', group: 'ip', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
+  { id: 'health', group: 'mail', icon: 'activity', css: ['views/health.css'], load: () => import('./views/health.js') },
+  { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css'], offline: true, load: () => import('./views/inventory.js') },
+  { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
+].map((v) => Object.freeze({
+  offline: false, ...v, css: Object.freeze([...(v.css || [])]), preload: Object.freeze([...(v.preload || [])])
+})));
 
 const VIEW_BY_ID = new Map(VIEWS.map((v) => [v.id, v]));
 
@@ -172,6 +201,21 @@ export function sameSearch(a, b) {
 export function hasRepeatedKeys(searchParams) {
   const keys = [...searchParams.keys()];
   return new Set(keys).size !== keys.length;
+}
+
+/**
+ * Where a view stylesheet goes among the ones already in the page: before the first that comes
+ * later in {@link VIEW_CSS_ORDER} (a sheet missing from it counts as last).
+ * @param {string} file the sheet to insert, e.g. 'views/scan.css'
+ * @param {string[]} present the sheets already in the page, in document order
+ * @returns {string|null} the sheet to insert it before, or null to add it after them all
+ */
+export function stylesheetBefore(file, present) {
+  const rank = (f) => {
+    const i = VIEW_CSS_ORDER.indexOf(f);
+    return i === -1 ? VIEW_CSS_ORDER.length : i;
+  };
+  return (present || []).find((p) => rank(p) > rank(file)) ?? null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -647,6 +691,65 @@ function loadView(def) {
   return moduleCache.get(def.id);
 }
 
+/** Injected view stylesheets: file → promise settled when the sheet has loaded (or failed). */
+const stylesheets = new Map();
+
+/**
+ * Load a view's stylesheets (VIEWS[].css) before it mounts. Each is one `<link rel="stylesheet">`
+ * resolved against this module, so it follows the v/<version>/ directory of the Pages bundle
+ * (the CSP's style-src 'self' allows it; nothing is inlined), inserted in VIEW_CSS_ORDER and kept
+ * for the rest of the page's life. Never rejects: a sheet that cannot load (offline without the
+ * service worker, a deploy) leaves the view unstyled rather than unusable, and is tried again the
+ * next time the view opens.
+ * @param {{ css: readonly string[] }} def
+ * @returns {Promise<void>}
+ */
+function loadViewCss(def) {
+  return Promise.all(def.css.map(loadStylesheet)).then(() => {});
+}
+
+function loadStylesheet(file) {
+  if (stylesheets.has(file)) return stylesheets.get(file);
+  const link = h('link', { attrs: { rel: 'stylesheet', href: new URL(`../css/${file}`, import.meta.url).href }, dataset: { viewCss: file } });
+  const settled = new Promise((resolve) => {
+    link.addEventListener('load', () => resolve(), { once: true });
+    link.addEventListener('error', () => {
+      stylesheets.delete(file);
+      link.remove();
+      resolve();
+    }, { once: true });
+  });
+  stylesheets.set(file, settled);
+  const present = [...document.querySelectorAll('link[data-view-css]')];
+  const before = stylesheetBefore(file, present.map((l) => l.dataset.viewCss));
+  if (before) present.find((l) => l.dataset.viewCss === before).before(link);
+  else (present[present.length - 1] || document.querySelector('link[rel="stylesheet"]') || document.head.lastChild).after(link);
+  return settled;
+}
+
+const preloaded = new Set();
+
+/**
+ * Once the browser is idle, modulepreload what a view imports on first use (VIEWS[].preload), so
+ * its first use does not wait for the download. Skipped offline and when the user asked to save
+ * data; a module is hinted once per page.
+ * @param {{ preload: readonly string[] }} def
+ */
+function preloadWhenIdle(def) {
+  if (!def.preload.length) return;
+  const idle = globalThis.requestIdleCallback || ((fn) => setTimeout(fn, 2000));
+  idle(() => {
+    const nav = globalThis.navigator;
+    if (nav && (nav.onLine === false || (nav.connection && nav.connection.saveData))) return;
+    for (const file of def.preload) {
+      const href = new URL(`./${file}`, import.meta.url).href;
+      if (preloaded.has(href)) continue;
+      preloaded.add(href);
+      document.head.append(h('link', { attrs: { rel: 'modulepreload', href } }));
+    }
+  }, { timeout: 8000 });
+}
+
 /**
  * The page body of a view whose module failed to load: the error with a Retry, replaced by a
  * "reload page" alert once {@link confirmStaleModule} says the page belongs to an earlier deploy
@@ -795,10 +898,12 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     }
   }, 150);
 
-  let mod;
-  try {
-    mod = await loadView(def);
-  } catch (err) {
+  // The module and the stylesheets load side by side; both settle before anything is shown, so
+  // a failed view never logs a late stylesheet error after its message is up.
+  const [loaded] = await Promise.allSettled([loadView(def), loadViewCss(def)]);
+  const mod = loaded.value;
+  if (loaded.status === 'rejected') {
+    const err = loaded.reason;
     clearTimeout(spinnerTimer);
     if (token !== routeToken) return;
     // Logged on purpose: E2E runs fail on console errors, so a broken view never goes unnoticed.
@@ -846,7 +951,10 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   if (mounted && isCurrent(ctx)) {
     setKeptNote(keptNote({ note, plan, kept, result: resultOf(view, ctx), mountedAt, restorable: typeof view.snapshot === 'function' }));
   }
-  finishRoute(def);
+  {
+    finishRoute(def);
+    preloadWhenIdle(def);
+  }
 }
 
 function finishRoute(def) {

@@ -2445,11 +2445,13 @@ describe('security & shell invariants', () => {
     assert.match(html, /<script type="module" src="assets\/js\/app\.js"><\/script>/);
   });
 
-  test('every view stylesheet exists and is linked', async () => {
+  test('every view stylesheet exists and comes with its view, not with index.html', async () => {
     const html = await readFile(path.join(ROOT, 'index.html'), 'utf8');
+    const linked = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
+    assert.deepEqual(linked, ['assets/css/style.css'], 'index.html links the global stylesheet only');
     for (const id of VIEW_IDS) {
       await readFile(path.join(ROOT, `assets/css/views/${id}.css`), 'utf8');
-      assert.ok(html.includes(`href="assets/css/views/${id}.css"`), `${id}.css linked`);
+      assert.ok(VIEWS.find((v) => v.id === id).css.includes(`views/${id}.css`), `${id}.css loads with #/${id}`);
     }
   });
 

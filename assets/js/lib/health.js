@@ -835,7 +835,7 @@ const ACME_HOSTS = Object.freeze({
  */
 export const CAA_PROBLEMS = Object.freeze(['invalid-issuer', 'invalid-parameter', 'empty-parameter',
   'accounturi-multiple', 'accounturi-invalid', 'accounturi-staging', 'accounturi-foreign',
-  'validationmethods-multiple', 'validationmethods-invalid', 'validationmethods-none', 'wildcard-method']);
+  'validationmethods-multiple', 'validationmethods-invalid', 'validationmethods-none', 'validationmethods-case', 'wildcard-method']);
 /** Renewal notes of {@link caaRestrictionNotes} (`health.caa.note.<code>`). */
 export const CAA_NOTES = Object.freeze(['methods', 'account', 'alternatives', 'unknown-methods', 'ca-params']);
 /** {@link checkCaaAllows} reason codes (`health.caa.reason.<code>`). */
@@ -877,7 +877,10 @@ function accountProblem(uri, issuer) {
  * - `validationmethods` (RFC 8657 §4): comma-separated method labels; only those methods may be
  *   used. A malformed list, a second `validationmethods` parameter (read conservatively) or a
  *   list without any method that validates a domain name make the value unsatisfiable.
- *   Unknown labels (neither in {@link ACME_VALIDATION_METHODS} nor `ca-…`) are ignored by CAs.
+ *   Labels are compared exactly, as a CA does (the registry labels are lowercase): `DNS-01` is
+ *   an unknown label, and a list that names a method only in the wrong case is
+ *   'validationmethods-case'. Unknown labels (neither in {@link ACME_VALIDATION_METHODS} nor
+ *   `ca-…`) are ignored by CAs.
  * - Every other parameter is CA-defined (`otherParams`, e.g. `cansignhttpexchanges=yes`).
  *
  * @param {string} value
@@ -887,7 +890,7 @@ function accountProblem(uri, issuer) {
  *   restricted: boolean }}
  *   `issuer` is '' for a "deny" value such as ";". `error` (malformed: 'invalid-issuer',
  *   'invalid-parameter', 'empty-parameter') and `problem` (unsatisfiable) come from
- *   {@link CAA_PROBLEMS}. `methods` lists every label (lowercase) of a single validationmethods
+ *   {@link CAA_PROBLEMS}. `methods` lists every label (as written) of a single validationmethods
  *   parameter, null without one. `restricted`: a well-formed, satisfiable value that carries
  *   accounturi and/or validationmethods.
  */
@@ -938,10 +941,13 @@ export function parseCaaIssueValue(value) {
   if (methodParams.length > 1) problems.push('validationmethods-multiple');
   else if (methodParams.length === 1) {
     const raw = methodParams[0].value;
-    out.methods = raw === '' ? [] : raw.split(',').map((l) => l.toLowerCase());
+    out.methods = raw === '' ? [] : raw.split(',');
     out.unknownMethods = out.methods.filter((l) => CAA_METHOD_LABEL_RE.test(l) && !ACME_VALIDATION_METHODS.includes(l) && !l.startsWith('ca-'));
+    const validates = (l) => DOMAIN_METHODS.has(l) || l.startsWith('ca-');
     if (!out.methods.every((l) => CAA_METHOD_LABEL_RE.test(l))) problems.push('validationmethods-invalid');
-    else if (!out.methods.some((l) => DOMAIN_METHODS.has(l) || l.startsWith('ca-'))) problems.push('validationmethods-none');
+    else if (!out.methods.some(validates)) {
+      problems.push(out.methods.some((l) => validates(l.toLowerCase())) ? 'validationmethods-case' : 'validationmethods-none');
+    }
   }
   out.problem = problems[0] || null;
   out.restricted = !out.problem && !!out.issuer && (out.accountUri !== null || out.methods !== null);
@@ -1088,9 +1094,10 @@ export function caaDomainsForIssuer(issuerDN) {
  * - usable relevant values name the CA → 'allowed' when one of them carries neither accounturi
  *   nor validationmethods, else 'restricted': every usable value is an alternative in
  *   `restrictions`, and a request must satisfy one of them (RFC 8659 authorizations are additive);
- * - the values naming the CA are all malformed ('malformed') or unsatisfiable ('unsatisfiable',
- *   including an issue value whose validationmethods cannot validate a wildcard) → denied, each
- *   listed in `unusable` with its {@link CAA_PROBLEMS} code;
+ * - the values naming the CA (`letsencrypt.org.` with its trailing dot too) are all malformed
+ *   ('malformed') or unsatisfiable ('unsatisfiable', including an issue value whose
+ *   validationmethods cannot validate a wildcard) → denied, each listed in `unusable` with its
+ *   {@link CAA_PROBLEMS} code;
  * - otherwise a known CA is not listed → denied ('not-listed'); an unknown CA → null.
  *
  * @param {Array<object|string>|object} caaRecords CAA RRs / data objects / strings, or a {@link parseCaa} result
@@ -1131,7 +1138,8 @@ export function checkCaaAllows(caaRecords, issuerDN, { wildcard = false, issuerD
   if (!relevant.length) return result(true, 'no-issue-property', { property: null });
   const problemOf = (r) => (r.valid ? entryProblem(r, wildcard) : r.error || 'invalid-issuer');
   const authorized = uniq(relevant.filter((r) => r.issuer && !problemOf(r)).map((r) => r.issuer));
-  const named = issuerDomains.length ? relevant.filter((r) => r.issuer && issuerDomains.includes(r.issuer)) : [];
+  // A malformed 'letsencrypt.org.' still names that CA: it is reported as its malformed value.
+  const named = issuerDomains.length ? relevant.filter((r) => r.issuer && issuerDomains.includes(r.issuer.replace(/\.$/, ''))) : [];
   const usable = named.filter((r) => !problemOf(r));
   if (usable.length) {
     const open = usable.find((r) => r.accountUri === null && r.methods === null);
@@ -2455,6 +2463,8 @@ const STRINGS = [
     'validationmethods virgülle ayrılmış yöntem etiketlerinden oluşmuyor (RFC 8657 §4)']],
   ['caa.problem.validationmethods-none', ['validationmethods names no method that can validate a domain name',
     'validationmethods alan adı doğrulayabilen hiçbir yöntem içermiyor']],
+  ['caa.problem.validationmethods-case', ['validationmethods labels are case-sensitive (dns-01, not DNS-01): as written, no method that can validate a domain name is allowed',
+    'validationmethods etiketleri büyük/küçük harfe duyarlıdır (DNS-01 değil, dns-01): yazıldığı hâliyle alan adı doğrulayabilen hiçbir yönteme izin verilmiyor']],
   ['caa.problem.wildcard-method', ['only dns-01 can validate a wildcard name, and validationmethods does not allow it',
     'joker (wildcard) adlar yalnızca dns-01 ile doğrulanabilir ve validationmethods buna izin vermiyor']],
   ['caa.note.methods', ['Only {methods} validation is allowed: a renewal that validates with another method ({blocked}) will fail.',
@@ -2462,7 +2472,8 @@ const STRINGS = [
   ['caa.note.account', ['Only these ACME accounts may order: {accounts}. A renewal from any other account (another server, a reinstalled client) will fail.',
     'Yalnızca şu ACME hesapları sertifika isteyebilir: {accounts}. Başka bir hesaptan (başka bir sunucu, yeniden kurulmuş bir istemci) yapılan yenileme başarısız olur.']],
   ['caa.note.alternatives', ['{count} allowed combinations: a renewal must match one of them.', '{count} izinli koşul kümesi var: yenileme bunlardan birine uymalıdır.']],
-  ['caa.note.unknown-methods', ['Unknown method labels are ignored by CAs: {labels}.', 'Bilinmeyen yöntem etiketleri otoriteler tarafından yok sayılır: {labels}.']],
+  ['caa.note.unknown-methods', ['CAs ignore method labels they do not know (labels are case-sensitive): {labels}.',
+    'Otoriteler tanımadıkları yöntem etiketlerini yok sayar (etiketler büyük/küçük harfe duyarlıdır): {labels}.']],
   ['caa.note.ca-params', ['CA-specific parameters, interpreted only by that CA: {params}.', 'Otoriteye özgü parametreler, yalnızca o otorite tarafından yorumlanır: {params}.']],
 
   ['dnssec.ok', ['DNSSEC signed and validated', 'DNSSEC imzalı ve doğrulanıyor'],

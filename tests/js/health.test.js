@@ -990,7 +990,8 @@ test('parseCaaIssueValue (RFC 8659 §4.2)', () => {
 test('parseCaaIssueValue: RFC 8657 accounturi / validationmethods', () => {
   let v = parseCaaIssueValue('letsencrypt.org; accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1234; validationmethods=dns-01,HTTP-01');
   assert.equal(v.accountUri, 'https://acme-v02.api.letsencrypt.org/acme/acct/1234');
-  assert.deepEqual(v.methods, ['dns-01', 'http-01'], 'labels lowercased, in order');
+  assert.deepEqual(v.methods, ['dns-01', 'HTTP-01'], 'labels as written, in order');
+  assert.deepEqual(v.unknownMethods, ['HTTP-01'], 'labels are case-sensitive: HTTP-01 is no registry label');
   assert.deepEqual([v.problem, v.restricted], [null, true]);
   assert.deepEqual(v.paramList.map((p) => p.tag), ['accounturi', 'validationmethods']);
 
@@ -1013,6 +1014,12 @@ test('parseCaaIssueValue: RFC 8657 accounturi / validationmethods', () => {
   assert.equal(problem('ca.example.net; validationmethods=email-reply-00,tls-sni-01'), 'validationmethods-none', 'no method validates a domain name');
   assert.equal(problem('ca.example.net; validationmethods=xyz-01'), 'validationmethods-none', 'an unknown label is ignored');
   assert.equal(problem('ca.example.net; validationmethods=ca-foo'), null, 'a CA-specific method may validate anything');
+  // labels are compared exactly (the CA does too): a method named only in the wrong case allows nothing
+  assert.equal(problem('letsencrypt.org; validationmethods=DNS-01'), 'validationmethods-case');
+  assert.equal(problem('letsencrypt.org; validationmethods=Http-01,TLS-ALPN-01'), 'validationmethods-case');
+  assert.equal(problem('ca.example.net; validationmethods=CA-foo'), 'validationmethods-case', 'the ca- prefix too');
+  assert.equal(problem('ca.example.net; validationmethods=XYZ-01'), 'validationmethods-none', 'no known method in any case');
+  assert.equal(parseCaaIssueValue('letsencrypt.org; validationmethods=DNS-01').restricted, false);
   v = parseCaaIssueValue('ca.example.net; validationmethods=dns-01,xyz-01');
   assert.deepEqual([v.problem, v.unknownMethods], [null, ['xyz-01']]);
   // a problem value is never "restricted"; a malformed one is not evaluated further
@@ -1255,6 +1262,23 @@ test('checkCaaAllows: restrictions, unsatisfiable values and wildcards', () => {
   // a trailing ';' is the classic mistake: the value is malformed for the CA it names
   r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01;"'], LE);
   assert.deepEqual([r.verdict, r.reason, r.unusable[0].problem], ['denied', 'malformed', 'empty-parameter']);
+  // so is a trailing dot on the CA name: it names Let's Encrypt, malformed (RFC 8659 §4.2), not "nobody"
+  r = checkCaaAllows(['0 issue "letsencrypt.org."'], LE);
+  assert.deepEqual([r.verdict, r.reason, r.unusable], ['denied', 'malformed', [{ issuer: 'letsencrypt.org.', raw: 'letsencrypt.org.', problem: 'invalid-issuer' }]]);
+  // a method in the wrong case is no method: the CA refuses every request, never "only dns-01"
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=DNS-01"'], LE);
+  assert.deepEqual([r.allowed, r.verdict, r.reason, r.restrictions, r.unusable.map((u) => u.problem)],
+    [false, 'denied', 'unsatisfiable', [], ['validationmethods-case']]);
+  r = checkCaaAllows(['0 issue "sectigo.com; validationmethods=DNS-01"'], 'CN=Sectigo RSA Domain Validation Secure Server CA,O=Sectigo Limited');
+  assert.deepEqual([r.verdict, r.reason], ['denied', 'unsatisfiable']);
+  // next to a correct label the wrong-case one is only ignored, and noted
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01,HTTP-01"'], LE);
+  assert.equal(r.verdict, 'restricted');
+  assert.deepEqual(caaRestrictionNotes(r.restrictions).map((n) => [n.code, Object.values(n.params).join(' | ')]), [
+    ['methods', 'dns-01 | http-01, tls-alpn-01'], ['unknown-methods', 'HTTP-01']
+  ]);
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=DNS-01"'], LE, { wildcard: true });
+  assert.deepEqual([r.verdict, r.unusable[0].problem], ['denied', 'validationmethods-case'], 'a wildcard: the case problem, not wildcard-method');
 
   // wildcards: only dns-01 validates them (CA/B Forum BR 3.2.2.4.18–20)
   const httpOnly = ['0 issue "letsencrypt.org; validationmethods=http-01"'];

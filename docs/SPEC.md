@@ -574,12 +574,13 @@ export function parseCaaIssueValue(value) -> { issuer, params, paramList, valid,
   accountUri, methods: string[]|null, unknownMethods, otherParams, problem /* unsatisfiable, CAA_PROBLEMS */, restricted }
   // RFC 8659 §4.2 grammar applied strictly (a stray ';' or a parameter that is not tag=value is malformed, and a malformed value forbids issuance);
   // RFC 8657: accounturi (one URI; two, a non-URI, a staging ACME account or another known CA's ACME host → unsatisfiable) and validationmethods
-  // (comma-separated labels; a malformed list, a second parameter, or no label that validates a domain name → unsatisfiable; unknown labels are ignored)
+  // (comma-separated labels, kept as written and compared exactly like a CA does: 'DNS-01' is an unknown label; a malformed list, a second parameter, or no label that
+  // validates a domain name → unsatisfiable, 'validationmethods-case' when such a method is named only in the wrong case; unknown labels are ignored)
 export function checkCaaAllows(caaRecords, issuerDN, { wildcard, issuerDomains }) -> { allowed: boolean|null, verdict: 'allowed'|'restricted'|'denied'|'unknown', reason /* CAA_REASONS */,
   reasonKey, property: 'issue'|'issuewild'|null, issuerDomains, authorized, matched, distrusted, restricted,
   restrictions: Array<{ issuer, accountUri, methods, unknownMethods, otherParams, raw }>, unusable: Array<{ issuer, raw, problem }> }
   // issuewild takes precedence over issue for a wildcard name when present (RFC 8659 §4.3); authorizations are additive: 'allowed' when one usable value naming
-  // the CA has no RFC 8657 parameter, else 'restricted' (allowed stays true) with every alternative; values naming the CA that are all malformed ('malformed') or
+  // the CA has no RFC 8657 parameter, else 'restricted' (allowed stays true) with every alternative; values naming the CA (a trailing-dot 'letsencrypt.org.' too) that are all malformed ('malformed') or
   // unsatisfiable ('unsatisfiable', incl. validationmethods without dns-01 / ca-… for a wildcard: the CA/B Baseline Requirements let only DNS validation cover one) deny; `issuerDomains` replaces the DN mapping
 export function caaRestrictionNotes(restrictions, { wildcard }) -> Array<{ code: 'methods'|'account'|'alternatives'|'unknown-methods'|'ca-params', key /* health.caa.note.<code> */, params }>
   // what the restrictions mean for the next renewal, e.g. methods: "only dns-01 … a renewal that validates with http-01, tls-alpn-01 will fail"

@@ -102,13 +102,20 @@ export function resolveSafe(root, rel) {
 /**
  * Start the server.
  * @param {{ root?: string, port?: number, host?: string, base?: string, quiet?: boolean, headers?: object }} [opts]
- * @returns {Promise<{ server: http.Server, url: string, origin: string, port: number, close(): Promise<void> }>}
+ * @returns {Promise<{ server: http.Server, url: string, origin: string, port: number, close(): Promise<void>,
+ *   setOffline(offline: boolean): void }>} setOffline(true): every request is dropped without an answer
+ *   (a dead network for the page and its service worker alike) until setOffline(false)
  */
 export async function startServer({ root = REPO_ROOT, port = 0, host = '127.0.0.1', base = '/', quiet = true, headers = {} } = {}) {
   const realRoot = await realpath(path.resolve(root));
   const prefix = normalizeBase(base);
+  let offline = false;
 
   const server = http.createServer(async (req, res) => {
+    if (offline) {
+      req.socket.destroy();
+      return;
+    }
     const started = Date.now();
     const done = (status) => {
       if (!quiet) process.stdout.write(`${new Date().toISOString().slice(11, 19)} ${status} ${req.method} ${req.url} ${Date.now() - started}ms\n`);
@@ -191,6 +198,10 @@ export async function startServer({ root = REPO_ROOT, port = 0, host = '127.0.0.
     port: actualPort,
     origin,
     url: `${origin}${prefix}`,
+    setOffline: (value) => {
+      offline = !!value;
+      if (offline) server.closeAllConnections?.();
+    },
     close: () => new Promise((resolve) => {
       server.closeAllConnections?.();
       server.close(() => resolve());

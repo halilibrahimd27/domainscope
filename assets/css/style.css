@@ -1049,6 +1049,19 @@ button.nav-status:hover {
   min-width: 0;
 }
 
+/* Offline, above a view that needs the network (app.js renderOfflineNote) */
+.page-offline {
+  margin-bottom: 20px;
+}
+
+.page-offline-tools {
+  margin: 6px 0 0;
+}
+
+.page-offline-tools a {
+  white-space: nowrap;
+}
+
 .page-loading {
   display: flex;
   justify-content: center;

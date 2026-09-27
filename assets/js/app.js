@@ -34,6 +34,10 @@
  * the next `runStarted()`, or with `ctx.resultChanged()` when the result is replaced or dropped
  * some other way. "Delete all local data" forgets all of it and opens the tool on screen again,
  * bare.
+ *
+ * Installable app: once the first view is up the shell registers the service worker
+ * (ui/pwa.js; Pages bundle only). Offline, a view that needs the network says so above its
+ * body, and ctx.requireOnline() stops its network work with a message instead of failing requests.
  */
 
 import {
@@ -57,6 +61,7 @@ import {
 import { TargetChip, KeptNote } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summary.js';
 import { resultPermalink } from './ui/summary-button.js';
+import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -301,7 +306,7 @@ function noticeIfOutdated(isOutdated) {
     toast(t('shell.viewOutdated'), {
       type: 'warn',
       timeout: 0,
-      action: { label: t('shell.reload'), onClick: () => globalThis.location.reload() }
+      action: { label: t('shell.reload'), onClick: () => reloadPage() }
     });
   });
 }
@@ -503,8 +508,11 @@ function keepResult(cur) {
  * @property {(params?: object) => string} shareUrl  absolute URL of this view with params
  * @property {() => Promise<object>} getDns   shared DohClient
  * @property {() => Promise<object>} getGlobalping  shared Globalping client (one quota view; sends nothing by itself)
- * @property {() => void} checkOutdated  a data file (wordlist tier, locale pack) failed to load: if this page
- *                                         belongs to an earlier deploy, the shell offers a reload (once)
+ * @property {() => void} checkOutdated  a data file (wordlist tier, locale pack) or a module loaded on first use
+ *                                         failed to load: if this page belongs to an earlier deploy, the shell
+ *                                         offers a reload (once)
+ * @property {() => boolean} requireOnline  network work is about to start: false, with a toast saying it needs
+ *                                         the network, while the browser is offline (then send nothing)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
  * @property {(subject: string|null) => void} runStarted  a run starts (or a certificate loads) for `subject` (a domain,
  *                                         host name or IP address): it becomes the current target, and the
@@ -573,6 +581,7 @@ function makeContext(id, params, searchParams, controller, restored) {
     getDns,
     getGlobalping: () => getGlobalping(),
     checkOutdated: () => noticeIfOutdated(pageIsOutdated),
+    requireOnline,
     toast,
     getInventoryIndex: () => state.getInventoryIndex(),
     setParams(next, { merge = false } = {}) {
@@ -727,6 +736,12 @@ function loadStylesheet(file) {
   return settled;
 }
 
+/** Run `fn` when the browser is idle (at the latest after a few seconds). */
+function whenIdle(fn) {
+  if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(() => fn(), { timeout: 8000 });
+  else setTimeout(fn, 2000);
+}
+
 const preloaded = new Set();
 
 /**
@@ -737,8 +752,7 @@ const preloaded = new Set();
  */
 function preloadWhenIdle(def) {
   if (!def.preload.length) return;
-  const idle = globalThis.requestIdleCallback || ((fn) => setTimeout(fn, 2000));
-  idle(() => {
+  whenIdle(() => {
     const nav = globalThis.navigator;
     if (nav && (nav.onLine === false || (nav.connection && nav.connection.saveData))) return;
     for (const file of def.preload) {
@@ -747,7 +761,7 @@ function preloadWhenIdle(def) {
       preloaded.add(href);
       document.head.append(h('link', { attrs: { rel: 'modulepreload', href } }));
     }
-  }, { timeout: 8000 });
+  });
 }
 
 /**
@@ -778,7 +792,7 @@ function outdatedAlert(err) {
     actions: [Button({
       label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
       dataset: { action: 'reload-page' },
-      onClick: () => globalThis.location.reload()
+      onClick: () => reloadPage()
     })]
   });
 }
@@ -793,6 +807,8 @@ function renderPageHeader(def, view = null) {
   dom.pageActions = h('div', { class: 'page-actions' });
   dom.pageBody = h('div', { class: 'page-body', id: 'page-body', dataset: { view: def.id } });
   dom.keptNote = h('div', { class: 'page-kept', hidden: true });
+  dom.offlineNote = h('div', { class: 'page-offline', id: 'page-offline', hidden: true });
+  dom.pageDef = def;
   const desc = t(`nav.${def.id}.desc`);
   clear(dom.page);
   // A first-time visitor on the start page gets the task picker above the tool.
@@ -802,8 +818,50 @@ function renderPageHeader(def, view = null) {
       h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 20 })),
       h('div', { class: 'page-titles' }, dom.pageTitle, desc ? h('p', { class: 'page-desc' }, desc) : null, dom.keptNote),
       dom.pageActions),
+    dom.offlineNote,
     dom.pageBody);
   document.title = `${t(titleKey)} · ${t('app.name')}`;
+  renderOfflineNote();
+}
+
+/** Is the browser offline? (`onLine` may claim a connection that does not work, never the reverse.) */
+function isOffline() {
+  return globalThis.navigator?.onLine === false;
+}
+
+/**
+ * Offline, a view that needs the network says so between its header and body — every view still
+ * opens, from the service worker — and names the tools that work without a connection.
+ */
+function renderOfflineNote() {
+  const note = dom.offlineNote;
+  const def = dom.pageDef;
+  if (!note || !def) return;
+  clear(note);
+  note.hidden = !isOffline() || def.offline;
+  if (note.hidden) return;
+  const tools = VIEWS.filter((v) => v.offline).flatMap((v, i) => [
+    i ? ' · ' : null,
+    h('a', { href: buildRoute(v.id), dataset: { view: v.id } }, t(`nav.${v.id}`))
+  ]);
+  note.append(Alert({
+    variant: 'warn',
+    icon: 'cloud-off',
+    title: t('shell.offlineTitle'),
+    message: t('shell.offlineView', { tool: t(`nav.${def.id}`) }),
+    children: h('p', { class: 'page-offline-tools' }, t('shell.offlineTools'), ' ', tools)
+  }));
+}
+
+/**
+ * ctx.requireOnline: true while the browser has a connection; offline it says the work needs
+ * the network (a toast) and returns false, so the view sends nothing.
+ * @returns {boolean}
+ */
+function requireOnline() {
+  if (!isOffline()) return true;
+  toast(t('shell.offlineAction'), { type: 'warn' });
+  return false;
 }
 
 /**
@@ -966,6 +1024,9 @@ function finishRoute(def) {
     // A kept result is said with the tool's name ("Domain Health · Result from 14:02").
     const kept = dom.keptNote && !dom.keptNote.hidden ? dom.keptNote.querySelector('.kept-note-text') : null;
     announce(kept ? `${t(`nav.${def.id}`)} · ${kept.textContent}` : t(`nav.${def.id}`));
+  } else {
+    // The offline copy is fetched after the first view, never in its way.
+    whenIdle(() => registerServiceWorker());
   }
   firstRouteDone = true;
   document.documentElement.dataset.appReady = 'true';
@@ -1556,12 +1617,14 @@ function openShortcutHelp() {
 
 function renderChrome() {
   document.documentElement.lang = getLang();
+  setManifestLang(getLang());
   dom.brandSub.textContent = t('app.subtitle');
   dom.skip.textContent = t('shell.skip');
   renderHeaderActions();
   renderTargetChip();
   renderNav();
   renderFooter();
+  renderOfflineNote();
   if (current) {
     setNavActive(current.id);
     const key = titleKeyOf(current.def, current.view);
@@ -1911,7 +1974,11 @@ function boot() {
   globalThis.addEventListener('error', (event) => {
     if (event.error) notifyUnexpected(event.error);
   });
-  globalThis.addEventListener('offline', () => toast(t('shell.offline'), { type: 'warn', timeout: 8000 }));
+  globalThis.addEventListener('offline', () => {
+    toast(t('shell.offline'), { type: 'warn', timeout: 8000 });
+    renderOfflineNote();
+  });
+  globalThis.addEventListener('online', renderOfflineNote);
   globalThis.addEventListener('beforeprint', beforePrint);
   globalThis.addEventListener('afterprint', afterPrint);
 

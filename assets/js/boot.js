@@ -2,7 +2,8 @@
  * boot.js — tiny classic (non-module) script loaded synchronously in <head>.
  *
  * 1. Applies the saved theme and language to <html> before the first paint, so a
- *    manually chosen dark theme never flashes white (the CSP forbids inline scripts).
+ *    manually chosen dark theme never flashes white (the CSP forbids inline scripts),
+ *    and links the web app manifest of that language.
  * 2. If the ES-module app has not signalled readiness (html[data-app-ready]) after a
  *    while — very old browser, blocked script, failed download — replaces the loading
  *    indicator with a readable message instead of spinning forever.
@@ -26,6 +27,9 @@
     ? settings.lang
     : (String(nav).toLowerCase().indexOf('tr') === 0 ? 'tr' : 'en');
   root.setAttribute('lang', lang);
+  // The installed app's name and shortcuts in the UI language (app.js keeps it in step later).
+  var manifest = document.querySelector('link[rel="manifest"]');
+  if (manifest && lang === 'tr') manifest.setAttribute('href', 'manifest.tr.webmanifest');
 
   var supportsModules = 'noModule' in document.createElement('script');
 

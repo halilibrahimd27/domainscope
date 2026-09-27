@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "DomainScope — SSL & DNS toolkit",
+  "short_name": "DomainScope",
+  "description": "Find the subdomains, IPs and servers a certificate belongs on — in your browser. Certificate, Zone File, Servers and About also work offline.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#f4f5f7",
+  "categories": ["developer", "utilities"],
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Subdomains", "url": "./#/subdomains" },
+    { "name": "Certificate", "url": "./#/cert" },
+    { "name": "Zone File", "url": "./#/zone" },
+    { "name": "Servers", "url": "./#/inventory" }
+  ]
+}

@@ -5,7 +5,8 @@
  * No dependencies (Node 22 stdlib only) and no build: nothing is compiled, bundled or minified.
  *
  *   <out>/index.html              index.html with its `assets/…` URLs pointing at v/<version>/assets/
- *   <out>/favicon.svg, .nojekyll
+ *   <out>/sw.js                   the service worker, with this deploy's manifest written into it
+ *   <out>/favicon.svg, manifest.webmanifest, manifest.tr.webmanifest, icons/, .nojekyll
  *   <out>/cli/                    the CLI, at the URL the README tells people to `curl -O`
  *   <out>/v/<version>/assets/     assets/ as it is
  *
@@ -18,26 +19,44 @@
  * `confirmStaleModule`) and offers a page reload. The repository itself stays build-free:
  * `npm run serve` serves it as is.
  *
+ * The service worker (the installable app and its offline tools) is the one file written rather
+ * than copied: sw.js gets the deploy's manifest (lib/pwa.js buildSwManifest — the app shell of
+ * v/<version>/ to precache, the wordlists keyed by the SHA-256 of wordlist-manifest.json) in
+ * place of its `const BUILD = null;` line, so every deploy changes sw.js and browsers pick up the
+ * new version. In the repository BUILD stays null and the worker does nothing.
+ *
  * Usage:
  *   node tools/assemble-site.mjs <out> [version]   # version: [A-Za-z0-9._-]{1,64};
  *                                                  # default: $GITHUB_SHA (12 chars), else 'dev'
  *   node tests/e2e/serve.mjs --root <out>          # preview the bundle
  *
  * <out> is deleted first; it must not be the repository or contain it, and an existing <out> must
- * hold only what a bundle does (index.html, favicon.svg, .nojekyll, cli/, v/).
+ * hold only what a bundle does (ROOT_FILES, ROOT_DIRS, v/).
  */
 
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { buildSwManifest, wordlistFiles } from '../assets/js/lib/pwa.js';
 
 /** Repository root (one level above tools/). */
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-/** Files copied to the site root as they are (index.html is rewritten). */
-export const ROOT_FILES = Object.freeze(['index.html', 'favicon.svg', '.nojekyll']);
+/** Files copied to the site root as they are (index.html and sw.js are rewritten). */
+export const ROOT_FILES = Object.freeze([
+  'index.html', 'sw.js', 'favicon.svg', 'manifest.webmanifest', 'manifest.tr.webmanifest', '.nojekyll'
+]);
 /** Directories copied to the site root as they are. */
-export const ROOT_DIRS = Object.freeze(['cli']);
+export const ROOT_DIRS = Object.freeze(['cli', 'icons']);
+/**
+ * Site-root files the service worker precaches with the app shell: what the page itself loads.
+ * The PNG icons and the CLI are not: the browser fetches icons for its own install UI, and the
+ * CLI is a download.
+ */
+export const SHELL_ROOT_FILES = Object.freeze(['index.html', 'favicon.svg', 'manifest.webmanifest', 'manifest.tr.webmanifest']);
+/** The line of sw.js that receives the deploy's manifest. */
+const SW_BUILD_RE = /^const BUILD = null;.*$/m;
 /** The directory that moves under v/<version>/. */
 export const VERSIONED_DIR = 'assets';
 /** Allowed version strings (a URL path segment). */
@@ -136,12 +155,66 @@ function isInside(child, parent) {
 }
 
 /**
+ * Every file under `dir` (local clutter left out), relative to it with '/' separators, sorted.
+ * @param {string} dir
+ * @returns {Promise<string[]>}
+ */
+export async function listFiles(dir) {
+  const out = [];
+  const walk = async (sub) => {
+    for (const entry of await readdir(path.join(dir, sub), { withFileTypes: true })) {
+      const rel = sub ? `${sub}/${entry.name}` : entry.name;
+      if (isLocalClutter(rel)) continue;
+      if (entry.isDirectory()) await walk(rel);
+      else out.push(rel);
+    }
+  };
+  await walk('');
+  return out.sort();
+}
+
+/**
+ * sw.js with a deploy's manifest in place of its `const BUILD = null;` line.
+ * @param {string} source sw.js of the repository
+ * @param {object} build lib/pwa.js buildSwManifest() result
+ * @returns {string}
+ * @throws unless the line is there exactly once
+ */
+export function injectSwBuild(source, build) {
+  const found = String(source).match(new RegExp(SW_BUILD_RE.source, 'gm')) || [];
+  if (found.length !== 1) throw new Error(`sw.js must have one "const BUILD = null;" line, found ${found.length}`);
+  return String(source).replace(SW_BUILD_RE, () => `const BUILD = ${JSON.stringify(build, null, 2)}; // written by tools/assemble-site.mjs`);
+}
+
+/**
+ * The service worker of this deploy: its manifest from the files of assets/ and the SHA-256 of
+ * wordlist-manifest.json, which must match the files (the worker reuses a cached tier as long
+ * as its hash is unchanged, so a stale hash would keep serving an old list).
+ * @param {string} src repository root
+ * @param {string} version
+ * @returns {Promise<{ source: string, build: object }>}
+ * @throws when wordlist-manifest.json does not match the wordlist files
+ */
+export async function serviceWorkerFor(src, version) {
+  const assets = path.join(src, VERSIONED_DIR);
+  const assetFiles = await listFiles(assets);
+  const wordlistManifest = JSON.parse(await readFile(path.join(assets, 'data', 'wordlist-manifest.json'), 'utf8'));
+  for (const { file, sha256 } of wordlistFiles(wordlistManifest)) {
+    const actual = createHash('sha256').update(await readFile(path.join(assets, 'data', ...file.split('/')))).digest('hex');
+    if (actual !== sha256) throw new Error(`wordlist-manifest.json has another SHA-256 for ${file}: run tools/build-wordlists.mjs`);
+  }
+  const build = buildSwManifest({ version, rootFiles: [...SHELL_ROOT_FILES], assetFiles, wordlistManifest });
+  return { source: injectSwBuild(await readFile(path.join(src, 'sw.js'), 'utf8'), build), build };
+}
+
+/**
  * Assemble the Pages bundle into `out` (deleted first).
  * @param {{ out: string, version: string, root?: string }} opts
- * @returns {Promise<{ out: string, version: string, assetsPath: string, rewritten: number }>}
+ * @returns {Promise<{ out: string, version: string, assetsPath: string, rewritten: number, precached: number }>}
  * @throws when `out` is the repository, contains it, lies inside a copied directory or holds
  *   anything an earlier bundle does not; when index.html references no assets/ URL, or one the
- *   rewrite does not cover (srcset); when a local URL of the new index.html is missing
+ *   rewrite does not cover (srcset); when a local URL of the new index.html is missing; when
+ *   wordlist-manifest.json does not match the wordlist files
  */
 export async function assembleSite({ out, version, root = REPO_ROOT }) {
   const assetsPath = versionedAssetsPath(version);
@@ -156,6 +229,7 @@ export async function assembleSite({ out, version, root = REPO_ROOT }) {
   if (!index.count) throw new Error('index.html references no assets/ URL; nothing to version');
   const unversioned = UNVERSIONED_RE.exec(index.html)?.[0].trim() ?? unversionedSrcset(index.html);
   if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned}`);
+  const sw = await serviceWorkerFor(src, version);
   // A typo such as `docs` must not wipe a directory that is not an earlier bundle.
   const existing = await stat(target).catch(() => null);
   if (existing) {
@@ -168,14 +242,16 @@ export async function assembleSite({ out, version, root = REPO_ROOT }) {
   const filter = (from) => !isLocalClutter(from);
   for (const file of ROOT_FILES) {
     if (file === 'index.html') await writeFile(path.join(target, file), index.html);
+    else if (file === 'sw.js') await writeFile(path.join(target, file), sw.source);
     else await cp(path.join(src, file), path.join(target, file));
   }
   for (const dir of ROOT_DIRS) await cp(path.join(src, dir), path.join(target, dir), { recursive: true, filter });
   await cp(path.join(src, VERSIONED_DIR), path.join(target, ...assetsPath.split('/').filter(Boolean)), { recursive: true, filter });
 
-  const missing = localUrls(index.html).filter((u) => !existsSync(path.join(target, ...u.split('/'))));
-  if (missing.length) throw new Error(`index.html references files that are not in the bundle: ${missing.join(', ')}`);
-  return { out: target, version, assetsPath, rewritten: index.count };
+  const missing = [...localUrls(index.html), ...sw.build.precache.map((p) => (p === './' ? 'index.html' : p))]
+    .filter((u) => !existsSync(path.join(target, ...u.split('/'))));
+  if (missing.length) throw new Error(`index.html or sw.js reference files that are not in the bundle: ${missing.join(', ')}`);
+  return { out: target, version, assetsPath, rewritten: index.count, precached: sw.build.precache.length };
 }
 
 /** Default version: the commit being deployed, else 'dev'. */
@@ -192,7 +268,7 @@ async function main(argv) {
     return;
   }
   const r = await assembleSite({ out, version });
-  process.stdout.write(`Assembled ${r.out}: assets under ${r.assetsPath} (${r.rewritten} URLs in index.html)\n`);
+  process.stdout.write(`Assembled ${r.out}: assets under ${r.assetsPath} (${r.rewritten} URLs in index.html, ${r.precached} files precached by sw.js)\n`);
 }
 
 // Only when run directly; importing the module (unit and E2E tests) must not assemble anything.

@@ -83,7 +83,8 @@ describe('assembleSite', () => {
     assert.ok(result.rewritten >= 10, `rewritten ${result.rewritten}`);
     assert.ok(urls.length >= result.rewritten);
     for (const u of urls) {
-      if (u !== 'favicon.svg') assert.ok(u.startsWith('v/abc123/assets/'), u);
+      // the favicon, the web app manifest and the touch icon stay at the site root
+      if (!['favicon.svg', 'manifest.webmanifest', 'icons/apple-touch-icon.png'].includes(u)) assert.ok(u.startsWith('v/abc123/assets/'), u);
       assert.ok(existsSync(join(out, ...u.split('/'))), `missing ${u}`);
     }
     assert.doesNotMatch(html, /(?:href|src)="assets\//);
@@ -108,9 +109,49 @@ describe('assembleSite', () => {
   test('a second deploy replaces the previous version directory', async () => {
     const other = join(tmp, 'again');
     await assembleSite({ out: other, version: 'one' });
+    const firstWorker = readFileSync(join(other, 'sw.js'), 'utf8');
     await assembleSite({ out: other, version: 'two' });
     assert.deepEqual(readdirSync(join(other, 'v')), ['two']);
     assert.match(readFileSync(join(other, 'index.html'), 'utf8'), /src="v\/two\/assets\/js\/app\.js"/);
+    // A new sw.js is what makes browsers install the new version (and offer "Update ready").
+    assert.notEqual(readFileSync(join(other, 'sw.js'), 'utf8'), firstWorker);
+  });
+
+  test('sw.js carries this deploy\'s manifest; the manifests, icons and every precached file are in the bundle', () => {
+    const source = readFileSync(join(out, 'sw.js'), 'utf8');
+    const m = /^const BUILD = (\{[\s\S]*?\n\}); \/\/ written by tools\/assemble-site\.mjs$/m.exec(source);
+    assert.ok(m, 'BUILD written');
+    const build = JSON.parse(m[1]);
+    assert.equal(build.version, 'abc123');
+    assert.equal(build.shellCache, 'domainscope-shell-abc123');
+    assert.equal(build.precache[0], './');
+    assert.ok(build.precache.includes('v/abc123/assets/js/app.js'));
+    assert.ok(Object.keys(build.wordlists).includes('v/abc123/assets/data/wordlist-huge.txt.gz'));
+    for (const p of build.precache) assert.ok(existsSync(join(out, ...(p === './' ? ['index.html'] : p.split('/')))), p);
+    assert.equal(result.precached, build.precache.length);
+    // the rest of sw.js is the repository's, as it is
+    assert.equal(source.replace(m[0], 'const BUILD = null; // tools/assemble-site.mjs writes the deploy\'s manifest here'),
+      readFileSync(join(REPO_ROOT, 'sw.js'), 'utf8'));
+    for (const f of ['manifest.webmanifest', 'manifest.tr.webmanifest', 'icons/icon-512.png', 'icons/maskable-512.png']) {
+      assert.deepEqual(readFileSync(join(out, ...f.split('/'))), readFileSync(join(REPO_ROOT, ...f.split('/'))), f);
+    }
+    assert.match(readFileSync(join(out, 'index.html'), 'utf8'), /<link rel="manifest" href="manifest\.webmanifest">/);
+  });
+
+  test('refuses a wordlist manifest whose SHA-256 no longer matches the file (the worker would keep an old list)', async () => {
+    const root = join(tmp, 'stale-words');
+    const write = (rel, text = '') => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    for (const f of ['favicon.svg', '.nojekyll', 'cli/ssl_origin_scan.py', 'assets/js/app.js', 'manifest.webmanifest',
+      'manifest.tr.webmanifest', 'icons/icon-192.png']) write(f);
+    write('sw.js', 'const BUILD = null;\n');
+    write('index.html', '<script type="module" src="assets/js/app.js"></script>');
+    write('assets/data/wordlist-base.txt', 'www\napi\n');
+    write('assets/data/wordlist-manifest.json', JSON.stringify({ tiers: { smart: { file: 'wordlist-base.txt', sha256: 'e'.repeat(64) } }, locales: {} }));
+    await assert.rejects(assembleSite({ out: join(tmp, 'stale-site'), version: 'x', root }), /another SHA-256 for wordlist-base\.txt/);
+    assert.ok(!existsSync(join(tmp, 'stale-site')), 'nothing assembled');
   });
 
   test('checks every attribute spelling for missing files, and refuses an assets/ URL it cannot rewrite', async () => {
@@ -119,7 +160,10 @@ describe('assembleSite', () => {
       mkdirSync(dirname(join(root, rel)), { recursive: true });
       writeFileSync(join(root, rel), text);
     };
-    for (const f of ['favicon.svg', '.nojekyll', 'cli/ssl_origin_scan.py', 'assets/js/app.js', 'assets/css/a.css']) write(f);
+    for (const f of ['favicon.svg', '.nojekyll', 'cli/ssl_origin_scan.py', 'assets/js/app.js', 'assets/css/a.css',
+      'manifest.webmanifest', 'manifest.tr.webmanifest', 'icons/icon-192.png']) write(f);
+    write('sw.js', 'const BUILD = null;\n');
+    write('assets/data/wordlist-manifest.json', '{"tiers":{},"locales":{}}');
     const site = join(tmp, 'edge');
     write('index.html', `<link rel=stylesheet href='assets/css/a.css'><script type=module SRC=assets/js/app.js></script>`);
     assert.equal((await assembleSite({ out: site, version: 'e1', root })).rewritten, 2);

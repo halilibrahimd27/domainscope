@@ -1297,7 +1297,8 @@ export function ctOutcomeMessage(r, { now = Date.now() } = {}) {
  *   runs); onStale: the sample file failed to load (ctx.checkOutdated); focusTarget: where the
  *   loaded certificate shows once `onLoad` has rendered it (its source note), for the keyboard
  *   focus that was in this block ({@link focusLoadedCert})
- * @returns {{ el: HTMLElement, input: HTMLInputElement }}
+ * @returns {{ el: HTMLElement, input: HTMLInputElement, search: (host: string) => void }} search: look a host
+ *   name up as if it were typed and Load pressed
  */
 export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null, focusTarget = null }) {
   const status = h('div', { class: 'cert-alt-status', attrs: { 'aria-live': 'polite' } });
@@ -1481,7 +1482,17 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
   }
 
   if (ctForm.last) showOutcome(ctForm.last);
-  return { el, input: field.input };
+  return {
+    el,
+    input: field.input,
+    // Look `host` up as if it were typed and Load pressed (the Certificate view's "Run again").
+    search(host) {
+      if (running) return;
+      field.value = host;
+      ctForm.text = host;
+      lookup();
+    }
+  };
 }
 
 /**
@@ -1800,12 +1811,15 @@ export function mount(container, ctx) {
     ctx.navigate('scan');
   }
 
+  /** The "No file?" block on screen (its `search` is "Run again" for a certificate from CT). */
+  let alternatives = null;
+
   function renderLoader() {
     clear(loaderHost);
     const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load });
     // '/' lands on the drop zone, which also takes a pasted certificate (Ctrl+V).
     loader.drop.el.dataset.shortcut = 'focus';
-    const alternatives = CertAlternatives({
+    alternatives = CertAlternatives({
       onLoad: (l) => setLoad(l),
       signal: ctx.signal,
       onBusy: ctx.setBusy,
@@ -2569,19 +2583,18 @@ export function mount(container, ctx) {
   };
   active = {
     result() {
-      return load && load.result.leaf ? { subject: certTarget(load), at: load.loadedAt } : null;
+      if (!load || !load.result.leaf) return null;
+      return { subject: certTarget(load), at: load.loadedAt, rerun: !!ctHostOf(load) };
     },
-    // Check CAA and CT of this certificate again: the cached answers go, the open tab asks anew.
+    // A certificate from Certificate Transparency: look its host name up again in the "No file?"
+    // block (opened, so its progress shows); the newest certificate loads over this one.
     rerun() {
-      if (!load || !load.result.leaf) return;
-      for (const cert of load.result.certificates) {
-        for (const cache of [caaCache, ctCache]) {
-          const entry = cache.get(certKey(cert));
-          if (entry && entry.status !== 'running') cache.delete(certKey(cert));
-        }
-      }
-      ctx.runStarted(certTarget(load));
-      render();
+      const host = ctHostOf(load);
+      if (!host || !alternatives) return;
+      ctx.runStarted(host);
+      const more = loaderHost.querySelector('details');
+      if (more) more.open = true;
+      alternatives.search(host);
     }
   };
 }
@@ -2595,14 +2608,14 @@ export function unmount() {
 
 /**
  * The loaded certificate (it stays in `state.session.currentCert`, so the shell keeps only the
- * fact, lib/session.js), or null.
- * @returns {{ subject: string|null, at: Date }|null}
+ * fact, lib/session.js), or null. `rerun` only for a certificate from Certificate Transparency.
+ * @returns {{ subject: string|null, at: Date, rerun: boolean }|null}
  */
 export function result() {
   return active ? active.result() : null;
 }
 
-/** "Run again" of the kept-result note: check the certificate's CAA and CT again. */
+/** "Run again" of the kept-result note: look the host name of a certificate from CT up again. */
 export function rerun() {
   if (active) active.rerun();
 }

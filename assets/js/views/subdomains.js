@@ -3805,7 +3805,7 @@ export function mount(container, ctx) {
     renderHeaderActions();
   }
 
-  /** Scan the last run's domains again (the header's Re-run and the kept-result note's "Run again"). */
+  /** Scan the last run's domains again (the header's Re-run). */
   function rerunLast() {
     const run = session.run;
     if (!run || isRunning()) return;
@@ -3893,7 +3893,6 @@ export function mount(container, ctx) {
       if (linkAction(params, list, session.run) === 'prompt') showLinkPrompt(list);
       else hideLinkPrompt();
     },
-    rerun: rerunLast,
     // A finished background scan grew the learned store: refresh the count + plan live.
     refreshLearned() {
       renderLearned();
@@ -3927,7 +3926,8 @@ export function unmount() {}
 
 /**
  * The page's last scan once it has ended (done, cancelled or failed), or null while none has or
- * one runs. It stays in this module, so the shell keeps only the fact (lib/session.js).
+ * one runs. It stays in this module, so the shell keeps only the fact (lib/session.js). No
+ * `rerun()`: the page header has the scan's own Re-run.
  * @returns {{ subject: string, at: Date }|null}
  */
 export function result() {
@@ -3936,12 +3936,7 @@ export function result() {
   return { subject: run.config.domains.join(', '), at: run.finishedAt };
 }
 
-/** "Run again" of the kept-result note: scan the last run's domains again. */
-export function rerun() {
-  if (active) active.rerun();
-}
-
-export default { id, titleKey, icon, mount, unmount, update, result, rerun };
+export default { id, titleKey, icon, mount, unmount, update, result };
 
 /* ------------------------------------------------------------------------ */
 /* Run UI: progress + results                                               */

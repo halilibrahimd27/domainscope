@@ -267,31 +267,40 @@ export function restorePlan(params, kept) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * A view's `result()` in the shape the shell uses: `{ subject, at }` with a valid Date, or null
- * (no finished result, or not a usable one).
+ * A view's `result()` in the shape the shell uses: `{ subject, at, rerun }` with a valid Date, or
+ * null (no finished result, or not a usable one). `rerun` is false when the view says its note
+ * offers no "Run again" (`rerun: false`: its own Re-run sits in the page header, or the result
+ * cannot be run again, like a certificate file).
  * @param {unknown} res
- * @returns {{ subject: string|null, at: Date }|null}
+ * @returns {{ subject: string|null, at: Date, rerun: boolean }|null}
  */
 export function normalizeResult(res) {
   if (!res || typeof res !== 'object') return null;
   const at = res.at instanceof Date ? res.at : new Date(res.at ?? NaN);
   if (!Number.isFinite(at.getTime())) return null;
-  return { subject: typeof res.subject === 'string' && res.subject ? res.subject : null, at };
+  return { subject: typeof res.subject === 'string' && res.subject ? res.subject : null, at, rerun: res.rerun !== false };
 }
 
 /**
- * What the page header's kept-result note says after a view mounted: a language re-mount keeps
- * the note it had (`note` given, null included); a result too large to keep says so; otherwise a
- * finished result older than this mount — kept, or finished while the user was on another tool —
- * gets the note, and a fresh mount none.
- * @param {{ note?: { at: Date, dropped: boolean }|null, plan?: 'restore'|'dropped'|null,
- *   kept?: { at: Date }|null, result?: { at: Date }|null, mountedAt: number }} info
- * @returns {{ at: Date, dropped: boolean }|null}
+ * What the page header's kept-result note says after a view mounted, or null for none. A
+ * language re-mount keeps the note it had (`note` given, null included); a result too large to
+ * keep says so. Otherwise only a finished result older than this mount gets the note: for a tool
+ * with `snapshot()` that is the result it got back; a tool that keeps its own state (`restorable`
+ * false) gets it only for the result the shell kept when the tool was left (the same `at`) —
+ * never for one that came from elsewhere (a certificate loaded in SSL Targets) or finished while
+ * the tool was not shown. `rerun`: the note offers "Run again".
+ * @param {{ note?: { at: Date, dropped: boolean, rerun: boolean }|null, plan?: 'restore'|'dropped'|null,
+ *   kept?: { at: Date }|null, result?: { at: Date, rerun?: boolean }|null, mountedAt: number,
+ *   restorable?: boolean }} info
+ * @returns {{ at: Date, dropped: boolean, rerun: boolean }|null}
  */
-export function keptNote({ note = undefined, plan = null, kept = null, result = null, mountedAt }) {
+export function keptNote({ note = undefined, plan = null, kept = null, result = null, mountedAt, restorable = true }) {
   if (note !== undefined) return note;
-  if (plan === 'dropped' && kept) return { at: kept.at, dropped: true };
-  return result && result.at.getTime() < mountedAt ? { at: result.at, dropped: false } : null;
+  if (plan === 'dropped' && kept) return { at: kept.at, dropped: true, rerun: true };
+  const at = result ? timeOf(result.at) : NaN;
+  if (!(at < mountedAt)) return null;
+  if (!restorable && !(kept && timeOf(kept.at) === at)) return null;
+  return { at: result.at, dropped: false, rerun: result.rerun !== false };
 }
 
 /* ------------------------------------------------------------------------ */

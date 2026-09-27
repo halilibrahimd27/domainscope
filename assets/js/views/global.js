@@ -1391,7 +1391,8 @@ export function mount(container, ctx) {
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.some((r) => !r.pending)) return null;
-      return { subject: current.name, at: current.finishedAt };
+      // The page header already has Re-run next to Copy link: the note offers no second one.
+      return { subject: current.name, at: current.finishedAt, rerun: false };
     },
     rerun() {
       if (current) {
@@ -1436,13 +1437,14 @@ export function snapshot() {
 
 /**
  * The finished (or stopped) check on screen (kept by the shell when the view is left), or null.
- * @returns {{ subject: string, at: Date }|null}
+ * `rerun: false`: its note offers no "Run again" (the page header has Re-run).
+ * @returns {{ subject: string, at: Date, rerun: boolean }|null}
  */
 export function result() {
   return active ? active.result() : null;
 }
 
-/** "Run again" of the kept-result note: the same name, type and locations again. */
+/** "Run again" of a note whose result was too large to keep: the same name, type and locations again. */
 export function rerun() {
   if (active) active.rerun();
 }

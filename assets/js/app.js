@@ -686,9 +686,9 @@ function renderPageHeader(def, view = null) {
 
 /**
  * Show (or hide with null) the page header's note about a kept result: "Result from <time>",
- * with "Run again" when the view exports `rerun()`. Its keyboard focus goes to the page title
- * when the note goes away under it.
- * @param {{ at: Date, dropped: boolean }|null} note
+ * with "Run again" when the view exports `rerun()` and the note offers it (`rerun`). Its keyboard
+ * focus goes to the page title when the note goes away under it.
+ * @param {{ at: Date, dropped: boolean, rerun?: boolean }|null} note
  */
 function setKeptNote(note) {
   if (!current || !dom.keptNote) return;
@@ -699,7 +699,7 @@ function setKeptNote(note) {
   clear(dom.keptNote);
   dom.keptNote.hidden = !note;
   if (note) {
-    const rerun = typeof cur.view.rerun === 'function' ? () => {
+    const rerun = note.rerun !== false && typeof cur.view.rerun === 'function' ? () => {
       try {
         cur.view.rerun(cur.ctx);
       } catch (err) {
@@ -820,7 +820,9 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     }
   }
   if (token !== routeToken) return;
-  if (mounted && isCurrent(ctx)) setKeptNote(keptNote({ note, plan, kept, result: resultOf(view, ctx), mountedAt }));
+  if (mounted && isCurrent(ctx)) {
+    setKeptNote(keptNote({ note, plan, kept, result: resultOf(view, ctx), mountedAt, restorable: typeof view.snapshot === 'function' }));
+  }
   finishRoute(def);
 }
 

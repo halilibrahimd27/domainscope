@@ -201,11 +201,11 @@ describe('routes', () => {
 });
 
 describe('results and the note', () => {
-  test('normalizeResult accepts { subject, at } with a valid date', () => {
+  test('normalizeResult accepts { subject, at, rerun? } with a valid date', () => {
     const at = new Date(Date.UTC(2026, 8, 27, 10, 0));
-    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at });
-    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at });
-    assert.deepEqual(normalizeResult({ at: at.toISOString() }), { subject: null, at });
+    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at, rerun: true });
+    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at, rerun: true });
+    assert.deepEqual(normalizeResult({ at: at.toISOString(), rerun: false }), { subject: null, at, rerun: false });
     assert.equal(normalizeResult({ subject: 'x', at: null }), null);
     assert.equal(normalizeResult({ subject: 'x', at: 'soon' }), null);
     assert.equal(normalizeResult(null), null);
@@ -214,15 +214,30 @@ describe('results and the note', () => {
 
   test('keptNote: a language re-mount keeps its note; an older result gets one; a fresh one none', () => {
     const mountedAt = Date.UTC(2026, 8, 27, 12, 0);
-    const older = { at: new Date(mountedAt - 60000) };
-    const fresh = { at: new Date(mountedAt + 5) };
-    const shown = { at: older.at, dropped: false };
+    const older = { at: new Date(mountedAt - 60000), rerun: true };
+    const fresh = { at: new Date(mountedAt + 5), rerun: true };
+    const shown = { at: older.at, dropped: false, rerun: true };
     assert.equal(keptNote({ note: shown, result: fresh, mountedAt }), shown, 'language re-mount: as it was');
     assert.equal(keptNote({ note: null, result: older, mountedAt }), null, 'language re-mount without a note');
-    assert.deepEqual(keptNote({ result: older, mountedAt }), { at: older.at, dropped: false });
+    assert.deepEqual(keptNote({ result: older, mountedAt }), { at: older.at, dropped: false, rerun: true });
+    assert.deepEqual(keptNote({ result: { ...older, rerun: false }, mountedAt }), { at: older.at, dropped: false, rerun: false }, 'no Run again');
     assert.equal(keptNote({ result: fresh, mountedAt }), null);
     assert.equal(keptNote({ result: null, mountedAt }), null);
-    assert.deepEqual(keptNote({ plan: 'dropped', kept: { at: older.at }, result: null, mountedAt }), { at: older.at, dropped: true });
+    assert.deepEqual(keptNote({ plan: 'dropped', kept: { at: older.at }, result: null, mountedAt }), { at: older.at, dropped: true, rerun: true });
+  });
+
+  test('keptNote: a tool with its own state gets the note only for the result the shell kept', () => {
+    const mountedAt = Date.UTC(2026, 8, 27, 12, 0);
+    const loaded = { at: new Date(mountedAt - 60000), rerun: false };
+    // A certificate loaded in SSL Targets, the Certificate view never visited: nothing kept.
+    assert.equal(keptNote({ kept: null, result: loaded, mountedAt, restorable: false }), null);
+    // Kept when the view was left: the note.
+    assert.deepEqual(keptNote({ kept: { at: new Date(loaded.at.getTime()) }, result: loaded, mountedAt, restorable: false }),
+      { at: loaded.at, dropped: false, rerun: false });
+    // Another certificate loaded elsewhere after that: not the kept one.
+    assert.equal(keptNote({ kept: { at: new Date(loaded.at.getTime() - 5000) }, result: loaded, mountedAt, restorable: false }), null);
+    // A scan that finished while another tool was shown (the kept one is older): no note.
+    assert.equal(keptNote({ kept: { at: new Date(mountedAt - 600000) }, result: { at: new Date(mountedAt - 1000) }, mountedAt, restorable: false }), null);
   });
 });
 

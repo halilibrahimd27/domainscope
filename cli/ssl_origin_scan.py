@@ -22,11 +22,14 @@ Pipeline:
   5. phase 2  -> TLS handshake per open ip:port x name (SNI) + one probe without SNI
   6. verdict  -> UPDATED / NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT / NOT_HOSTED /
                  TLS_ERROR / TIMEOUT / CLOSED
+  7. monitor  -> changes since a --baseline report, --warn-days expiry, --notify webhook
 
 The module is importable: parse_certificate(), load_certificates(),
 parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
 is_numeric_host(), build_probe_names(), run_scan(), report_to_dict(), render_csv(),
-render_summary() and main() are the public API.
+render_summary(), load_baseline(), compare_reports(), expiring_certificates(),
+build_monitor(), build_notification(), send_notification() and main() are the
+public API.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import bisect
 import codecs
 import csv
 import hashlib
+import http.client
 import io
 import ipaddress
 import json
@@ -53,6 +57,9 @@ import textwrap
 import threading
 import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -94,6 +101,8 @@ EXIT_OK = 0
 EXIT_NEEDS_UPDATE = 1
 EXIT_USAGE = 2
 EXIT_OUTPUT_ERROR = 3   # the scan ran, but a --json / --csv file could not be written
+EXIT_CHANGED = 4        # something changed since --baseline (only with --fail-on-change)
+EXIT_NOTIFY_ERROR = 5   # the --notify message was not delivered (--fail-on-notify-error)
 EXIT_INTERRUPTED = 130
 
 DEFAULT_PORTS = '443'
@@ -106,6 +115,10 @@ CIDR_LIMIT = 1 << 16        # addresses per CIDR/range without --allow-large (a 
 CIDR_HARD_LIMIT = 1 << 20   # absolute cap even with --allow-large (a /12)
 WILDCARD_PROBE_LABEL = 'ssl-origin-scan-wildcard-probe'
 MAX_PRINTED_WARNINGS = 25
+MAX_WARN_DAYS = 3650        # --warn-days ceiling (ten years)
+NOTIFY_ENV = 'DOMAINSCOPE_NOTIFY_URL'   # --notify URL, kept out of the shell history
+NOTIFY_TIMEOUT = 10.0       # seconds per webhook POST
+NOTIFY_RETRY_DELAY = 2.0    # seconds before the one retry
 
 
 class UsageError(Exception):
@@ -3465,8 +3478,14 @@ def _row_dict(row: ProbeResult, now: datetime) -> Dict[str, Any]:
     }
 
 
-def report_to_dict(report: ScanReport) -> Dict[str, Any]:
-    """The ``--json`` document (see the module docstring / README for field meanings)."""
+def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
+                   ) -> Dict[str, Any]:
+    """The ``--json`` document (see the module docstring / README for field meanings).
+
+    With ``monitor`` (:func:`build_monitor`) the document also carries ``baseline`` and
+    ``changes`` (with ``--baseline``), ``expiring`` and ``options.warnDays`` (with
+    ``--warn-days``); without it, it is exactly the plain scan report.
+    """
     now = report.finished_at
     new_fps = {cert.sha256 for cert in report.new_certs}
     summaries = report.server_summaries()
@@ -3507,7 +3526,7 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
         entry['kind'] = kind  # origin-ca | self-signed | private-ca | other
         entry['privateCa'] = ca.subject_dn if ca is not None else None
         certificates[sha] = entry
-    return {
+    doc = {
         'tool': 'ssl_origin_scan',
         'version': __version__,
         'startedAt': iso_utc(report.started_at),
@@ -3541,16 +3560,27 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
                      for e in report.excluded],
         'certificates': certificates,
         'warnings': list(report.warnings),
-    }
+    }  # type: Dict[str, Any]
+    if monitor is not None:
+        if monitor.warn_days is not None:
+            doc['options']['warnDays'] = monitor.warn_days
+        if monitor.changes is not None:
+            doc['baseline'] = monitor.baseline
+            doc['changes'] = monitor.changes
+        if monitor.expiring is not None:
+            doc['expiring'] = monitor.expiring
+    return doc
 
 
-def render_json(report: ScanReport, ensure_ascii: bool = False) -> str:
+def render_json(report: ScanReport, ensure_ascii: bool = False,
+                monitor: Optional[MonitorResult] = None) -> str:
     """Pretty-printed JSON text of :func:`report_to_dict` (UTF-8, 2-space indent).
 
     ``ensure_ascii=True`` escapes non-ASCII characters (``\\u00fc``) - used when stdout is
     not UTF-8, so every consumer decodes the JSON correctly whatever the code page.
     """
-    return json.dumps(report_to_dict(report), indent=2, ensure_ascii=ensure_ascii) + '\n'
+    return json.dumps(report_to_dict(report, monitor), indent=2,
+                      ensure_ascii=ensure_ascii) + '\n'
 
 
 CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covered_by',
@@ -3859,15 +3889,17 @@ def _excluded_line(report: ScanReport, style: Style, limit: int = 10) -> str:
 
 
 def render_summary(report: ScanReport, color: bool = False, show_all: bool = False,
-                   width: int = 100) -> str:
+                   width: int = 100, monitor: Optional[MonitorResult] = None) -> str:
     """Human-readable report, most actionable first.
 
-    Sections: servers that need the new certificate (with the certificate they serve now,
-    its expiry, days left and issuer), servers already serving it, servers serving a
-    Cloudflare Origin CA certificate and servers serving a self-signed or private-CA one
-    (each explained, not counted as needing the new certificate), handshake errors,
-    servers that host only names the new certificate does not cover, and - only with
-    ``show_all`` - servers not hosting any name and unreachable ones (otherwise counted).
+    Sections: with ``monitor``, the changes since the baseline and the certificates
+    expiring soon (:func:`render_monitor`); then servers that need the new certificate
+    (with the certificate they serve now, its expiry, days left and issuer), servers
+    already serving it, servers serving a Cloudflare Origin CA certificate and servers
+    serving a self-signed or private-CA one (each explained, not counted as needing the
+    new certificate), handshake errors, servers that host only names the new certificate
+    does not cover, and - only with ``show_all`` - servers not hosting any name and
+    unreachable ones (otherwise counted).
     """
     style = Style(color)
     now = report.finished_at
@@ -3898,6 +3930,8 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
         lines.append(style.paint('--strict-public: Cloudflare Origin CA, self-signed and '
                                  'private-CA certificates count as NEEDS_UPDATE.', 'dim'))
     lines.append('')
+    if monitor is not None:
+        lines.extend(render_monitor(report, monitor, style, show_all, width))
 
     def note(status: str, cert: CertInfo) -> str:
         # Why a group is ORIGIN_CERT / PRIVATE_CERT, or why --strict-public made it NEEDS_UPDATE.
@@ -4008,6 +4042,993 @@ class ProgressPrinter:
 
 
 # =====================================================================================
+# Monitoring: changes since a --baseline report, --warn-days expiry, --notify webhooks
+# =====================================================================================
+
+# "No certificate answer"; every other row status but NOT_HOSTED (see _covers_name).
+_FAILED_STATUSES = (TLS_ERROR, TIMEOUT, CLOSED)
+_NOT_COVERING = _FAILED_STATUSES + (NOT_HOSTED, OPEN, EXCLUDED)
+_ROW_PROBES = (PROBE_SNI, PROBE_WILDCARD, PROBE_DEFAULT)
+# A status as a report spells it: a later version may add some, compared as plain text.
+_STATUS_TOKEN_RE = re.compile(r'^[A-Z][A-Z0-9_]{0,31}$')
+_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+_ISO_UTC_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})')
+MAX_SUMMARY_CHANGES = 50    # change lines in the summary without --show-all
+MAX_SUMMARY_ENDPOINTS = 10  # endpoints per expiring certificate without --show-all
+
+
+@dataclass
+class MonitorResult:
+    """What ``--baseline`` and ``--warn-days`` add to a scan (see :func:`build_monitor`).
+
+    ``changes`` (:func:`compare_reports`) and ``baseline`` (:func:`baseline_info`) are
+    None without a baseline, ``expiring`` (:func:`expiring_certificates`) is None
+    without ``--warn-days``; the JSON keys follow the same rule.
+    """
+
+    baseline: Optional[Dict[str, Any]] = None
+    changes: Optional[List[Dict[str, Any]]] = None
+    warn_days: Optional[int] = None
+    expiring: Optional[List[Dict[str, Any]]] = None
+
+
+def _baseline_row_problem(row: Any) -> Optional[str]:
+    if not isinstance(row, dict):
+        return 'is not an object'
+    ip = row.get('ip')
+    if not isinstance(ip, str) or normalize_ip(ip) is None:
+        return 'has no valid "ip"'
+    port = row.get('port')
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        return 'has no valid "port"'
+    status = row.get('status')
+    if not isinstance(status, str) or not _STATUS_TOKEN_RE.match(status):
+        return 'has no valid "status"'
+    if not isinstance(row.get('probe'), str):
+        return 'has no "probe"'
+    for key in ('server', 'name', 'certSubjectCN', 'certIssuer', 'certNotAfter', 'error'):
+        if row.get(key) is not None and not isinstance(row.get(key), str):
+            return 'has a "%s" that is not text' % key
+    sha = row.get('certSha256')
+    if sha is not None and not (isinstance(sha, str) and _SHA256_RE.match(sha)):
+        return 'has no valid "certSha256"'
+    return None
+
+
+def baseline_problem(doc: Any) -> Optional[str]:
+    """Why ``doc`` cannot be a baseline, or None: it must be a ``--json`` report of this
+    tool, written by a version with the same major number, with well-formed rows."""
+    if not isinstance(doc, dict) or doc.get('tool') != 'ssl_origin_scan':
+        return 'it is not a --json report of %s (no "tool": "ssl_origin_scan")' % PROG
+    version = doc.get('version')
+    if not isinstance(version, str) or version.split('.')[0] != __version__.split('.')[0]:
+        return 'it was written by version %r, which this version (%s) cannot compare' % (
+            version, __version__)
+    results = doc.get('results')
+    if not isinstance(results, list):
+        return 'it has no "results" list'
+    for index, row in enumerate(results):
+        problem = _baseline_row_problem(row)
+        if problem:
+            return 'results[%d] %s' % (index, problem)
+    return None
+
+
+def load_baseline(path: str, allow_missing: bool = False) -> Optional[Dict[str, Any]]:
+    """Read ``--baseline FILE``, a previous ``--json`` report of this tool.
+
+    UTF-8 or UTF-16 with a BOM (PowerShell 5.1's ``>``). Returns None for a file that
+    does not exist when ``allow_missing`` is set: the first run of a job whose ``--json``
+    report is also its baseline. Raises :class:`UsageError` for a file that cannot be
+    read, is not JSON or is not a report it can compare (:func:`baseline_problem`).
+    """
+    try:
+        text = read_text_file(path)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        raise UsageError('--baseline: %s does not exist (give a report written with --json)'
+                         % path)
+    except OSError as exc:
+        raise UsageError('--baseline: cannot read %s: %s' % (path, exc.strerror or exc))
+    try:
+        doc = json.loads(text)
+    except (ValueError, RecursionError) as exc:
+        raise UsageError('--baseline: %s is not JSON (%s)' % (path, exc))
+    problem = baseline_problem(doc)
+    if problem:
+        raise UsageError('--baseline: cannot compare with %s: %s' % (path, problem))
+    return doc
+
+
+def _row_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The ``before`` / ``after`` side of a row change."""
+    return {key: row.get(key) for key in ('status', 'certSha256', 'certSubjectCN', 'certIssuer',
+                                           'certNotAfter', 'error')}
+
+
+def _index_report(doc: Dict[str, Any]
+                  ) -> Tuple[Dict[Tuple[str, int], Dict[str, Any]], List[str]]:
+    """``{(ip, port): endpoint}`` in report order, and the probed names, of a report dict.
+
+    An endpoint is ``{status: OPEN | CLOSED | TIMEOUT, error, servers, rows}``, where
+    ``rows`` maps a probe name (None for the no-SNI probe) to ``{probe, servers, view}``.
+    Servers sharing an address have the same handshakes, so their rows are one entry
+    listing every server. Rows of a probe kind this version does not know are skipped.
+    """
+    endpoints = {}  # type: Dict[Tuple[str, int], Dict[str, Any]]
+    for row in doc.get('results') or []:
+        if not isinstance(row, dict) or row.get('probe') not in _ROW_PROBES + (PROBE_CONNECT,):
+            continue
+        ip = str(row.get('ip'))
+        key = (normalize_ip(ip) or ip, row.get('port'))
+        endpoint = endpoints.setdefault(key, {'status': OPEN, 'error': None, 'servers': [],
+                                              'rows': {}})
+        server = row.get('server')
+        if server and server not in endpoint['servers']:
+            endpoint['servers'].append(server)
+        if row['probe'] == PROBE_CONNECT:
+            endpoint['status'], endpoint['error'] = row.get('status'), row.get('error')
+            continue
+        name = None if row['probe'] == PROBE_DEFAULT else row.get('name')
+        entry = endpoint['rows'].setdefault(name, {'probe': row['probe'], 'servers': [],
+                                                   'view': _row_view(row)})
+        if server and server not in entry['servers']:
+            entry['servers'].append(server)
+    names = []  # type: List[str]
+    for probe in doc.get('names') or []:
+        name = probe.get('name') if isinstance(probe, dict) else None
+        if isinstance(name, str) and name not in names:
+            names.append(name)
+    if not names:  # a report without "names": what its rows probed
+        for endpoint in endpoints.values():
+            names.extend(name for name in endpoint['rows'] if name and name not in names)
+    return endpoints, names
+
+
+def _status_counts(statuses: Iterable[str]) -> Dict[str, int]:
+    """``{status: rows}`` in :data:`STATUSES` order (statuses of later versions last)."""
+    counts = {}  # type: Dict[str, int]
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+    order = list(STATUSES) + sorted(status for status in counts if status not in STATUSES)
+    return {status: counts[status] for status in order if status in counts}
+
+
+def _endpoint_view(endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    named = [entry['view']['status'] for name, entry in endpoint['rows'].items() if name]
+    return {'status': endpoint['status'], 'error': endpoint['error'], 'names': len(named),
+            'statusCounts': _status_counts(named)}
+
+
+def _name_view(endpoints: Dict[Tuple[str, int], Dict[str, Any]], name: str) -> Dict[str, Any]:
+    statuses = [endpoint['rows'][name]['view']['status'] for endpoint in endpoints.values()
+                if name in endpoint['rows']]
+    return {'endpoints': len(statuses), 'statusCounts': _status_counts(statuses)}
+
+
+def _covers_name(status: Any) -> bool:
+    """True for a row status that means "serves a certificate covering the name":
+    UPDATED, NEEDS_UPDATE and any status this version does not know (a later one, such
+    as a kind of certificate), so a baseline from another version still compares.
+    NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED and the endpoint states are not."""
+    return isinstance(status, str) and status not in _NOT_COVERING
+
+
+def status_transition(before: str, after: str) -> str:
+    """How a status moved: ``failed`` (to TLS_ERROR / TIMEOUT / CLOSED), ``recovered``
+    (from one), ``regressed`` (UPDATED -> NEEDS_UPDATE or another covering status),
+    ``updated`` (to UPDATED from one), ``unhosted`` (a covering status -> NOT_HOSTED),
+    ``hosted`` (the reverse), or ``changed`` (e.g. between two covering statuses other
+    than UPDATED). Endpoint states count OPEN as a success (see :func:`_covers_name`)."""
+    if after in _FAILED_STATUSES and before not in _FAILED_STATUSES:
+        return 'failed'
+    if before in _FAILED_STATUSES and after not in _FAILED_STATUSES:
+        return 'recovered'
+    if before == UPDATED and _covers_name(after):
+        return 'regressed'
+    if after == UPDATED and _covers_name(before):
+        return 'updated'
+    if _covers_name(before) and after == NOT_HOSTED:
+        return 'unhosted'
+    if before == NOT_HOSTED and _covers_name(after):
+        return 'hosted'
+    return 'changed'
+
+
+def _change(kind: str, scope: str, servers: Sequence[str] = (), ip: Optional[str] = None,
+            port: Optional[int] = None, probe: Optional[str] = None,
+            name: Optional[str] = None, before: Optional[Dict[str, Any]] = None,
+            after: Optional[Dict[str, Any]] = None, transition: Optional[str] = None,
+            cert_changed: bool = False) -> Dict[str, Any]:
+    return {'kind': kind, 'scope': scope, 'transition': transition, 'servers': list(servers),
+            'ip': ip, 'port': port, 'probe': probe, 'name': name, 'before': before,
+            'after': after, 'certChanged': cert_changed}
+
+
+def _row_change(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], ip: str,
+                port: int, name: Optional[str]) -> Optional[Dict[str, Any]]:
+    entry = new or old
+    assert entry is not None
+    where = dict(servers=entry['servers'], ip=ip, port=port, probe=entry['probe'], name=name)
+    if old is None or new is None:
+        return _change('appeared' if old is None else 'disappeared', 'row',
+                       before=old['view'] if old else None, after=new['view'] if new else None,
+                       **where)
+    before, after = old['view'], new['view']
+    cert_changed = bool(before['certSha256'] and after['certSha256']
+                        and before['certSha256'] != after['certSha256'])
+    if before['status'] != after['status']:
+        return _change('status', 'row', before=before, after=after, cert_changed=cert_changed,
+                       transition=status_transition(before['status'], after['status']), **where)
+    # Another certificate for a name the server hosts, or another default certificate. A
+    # NOT_HOSTED row's certificate is whatever the server falls back to: not a change.
+    if cert_changed and (_covers_name(after['status']) or entry['probe'] == PROBE_DEFAULT):
+        return _change('cert', 'row', before=before, after=after, cert_changed=True, **where)
+    return None
+
+
+def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What changed from the report ``before`` (the baseline) to ``after``, both
+    :func:`report_to_dict` documents, per IP, port and name.
+
+    Each change is ``{kind, scope, transition, servers, ip, port, probe, name, before,
+    after, certChanged}``:
+
+    * scope ``name`` - a name probed in only one of the reports (``appeared`` /
+      ``disappeared``), with its ``statusCounts`` over the endpoints; its rows are not
+      listed one by one;
+    * scope ``endpoint`` - an ip:port scanned in only one report (``appeared`` /
+      ``disappeared``; ``after.status`` is ``EXCLUDED`` when ``--exclude`` removed it) or
+      whose port state moved (``status``: OPEN / CLOSED / TIMEOUT), with the name counts
+      on the open side; its rows are not listed one by one either;
+    * scope ``row`` - on an endpoint open in both: a status that moved (``status``, with
+      ``transition`` from :func:`status_transition` and ``certChanged``), another
+      certificate with the same status (``cert``: for rows whose certificate covers the
+      name - UPDATED, NEEDS_UPDATE or a status of a later version - and the no-SNI
+      probe, ``name`` None), or a row only one report has.
+
+    Order: names, then endpoints in the order of ``after`` followed by the ones only
+    ``before`` has, each with its rows in probe order.
+    """
+    old_endpoints, old_names = _index_report(before)
+    new_endpoints, new_names = _index_report(after)
+    added = [name for name in new_names if name not in old_names]
+    removed = [name for name in old_names if name not in new_names]
+    changes = [_change('appeared', 'name', name=name, after=_name_view(new_endpoints, name))
+               for name in added]
+    changes.extend(_change('disappeared', 'name', name=name,
+                           before=_name_view(old_endpoints, name)) for name in removed)
+    skip = set(added) | set(removed)
+    excluded = {}  # type: Dict[str, Any]
+    for entry in after.get('excluded') or []:
+        if isinstance(entry, dict) and isinstance(entry.get('ip'), str):
+            excluded.setdefault(normalize_ip(entry['ip']) or entry['ip'], entry.get('excludedBy'))
+    keys = list(new_endpoints) + [key for key in old_endpoints if key not in new_endpoints]
+    for key in keys:
+        old, new = old_endpoints.get(key), new_endpoints.get(key)
+        ip, port = key
+        if old is None or new is None or old['status'] != new['status']:
+            before_view = _endpoint_view(old) if old else None
+            after_view = _endpoint_view(new) if new else None
+            if new is None and ip in excluded:
+                after_view = {'status': EXCLUDED, 'excludedBy': excluded[ip]}
+            if old is None or new is None:
+                kind, transition = ('appeared' if old is None else 'disappeared'), None
+            else:
+                kind, transition = 'status', status_transition(old['status'], new['status'])
+            changes.append(_change(kind, 'endpoint', (new or old or {})['servers'], ip, port,
+                                   before=before_view, after=after_view,
+                                   transition=transition))
+            continue
+        if new['status'] != OPEN:
+            continue
+        names = [name for name in new['rows'] if name not in skip]
+        names.extend(name for name in old['rows'] if name not in skip and name not in new['rows'])
+        for name in names:
+            change = _row_change(old['rows'].get(name), new['rows'].get(name), ip, port, name)
+            if change is not None:
+                changes.append(change)
+    return changes
+
+
+def baseline_info(before: Dict[str, Any], after: Dict[str, Any],
+                  file: Optional[str] = None) -> Dict[str, Any]:
+    """The JSON ``baseline`` block: the baseline's file, version and times, and what the
+    two runs did differently - ``portsAdded`` / ``portsRemoved`` and
+    ``newCertificateChanged`` (another ``--cert``, so UPDATED and NEEDS_UPDATE moved
+    with it; no ``--cert`` counts as one set of certificates too)."""
+    def ports(doc: Dict[str, Any]) -> List[int]:
+        options = doc.get('options') if isinstance(doc.get('options'), dict) else {}
+        return [port for port in options.get('ports') or []
+                if isinstance(port, int) and not isinstance(port, bool)]
+
+    def new_fps(doc: Dict[str, Any]) -> List[str]:
+        return sorted({cert.get('sha256') for cert in doc.get('newCertificates') or []
+                       if isinstance(cert, dict) and isinstance(cert.get('sha256'), str)})
+
+    def text(key: str) -> Optional[str]:
+        value = before.get(key)
+        return value if isinstance(value, str) else None
+
+    old_ports, new_ports = ports(before), ports(after)
+    return {'file': file, 'missing': False, 'version': text('version'),
+            'startedAt': text('startedAt'), 'finishedAt': text('finishedAt'),
+            'portsAdded': [port for port in new_ports if port not in old_ports],
+            'portsRemoved': [port for port in old_ports if port not in new_ports],
+            'newCertificateChanged': new_fps(before) != new_fps(after)}
+
+
+def expiring_certificates(doc: Dict[str, Any], warn_days: int) -> List[Dict[str, Any]]:
+    """Served certificates of a report dict that expire within ``warn_days`` days (or
+    have expired), soonest first.
+
+    Only certificates that cover a probed name count - UPDATED / NEEDS_UPDATE rows (and
+    covering statuses of later versions, :func:`_covers_name`), also for the no-SNI
+    probe; the certificate a server falls back to for a name it does not host
+    (NOT_HOSTED) does not. Each entry is ``{sha256, subjectCN, issuer, serialHex,
+    notAfter, daysLeft, expired, isNewCert, endpoints: [{server, ip, port, names,
+    defaultCert}]}``.
+    """
+    certificates = doc.get('certificates') if isinstance(doc.get('certificates'), dict) else {}
+    found = {}  # type: Dict[str, Dict[str, Any]]
+    for row in doc.get('results') or []:
+        if (not isinstance(row, dict) or row.get('probe') not in _ROW_PROBES
+                or not _covers_name(row.get('status'))):
+            continue
+        sha, days = row.get('certSha256'), row.get('certDaysLeft')
+        if not sha or not isinstance(days, int) or days > warn_days:
+            continue
+        entry = found.get(sha)
+        if entry is None:
+            info = certificates.get(sha) if isinstance(certificates.get(sha), dict) else {}
+            entry = found[sha] = {
+                'sha256': sha, 'subjectCN': row.get('certSubjectCN'),
+                'issuer': row.get('certIssuer'), 'serialHex': row.get('certSerial'),
+                'notAfter': row.get('certNotAfter'), 'daysLeft': days, 'expired': days < 0,
+                'isNewCert': bool(info.get('isNewCert')), 'endpoints': []}
+        where = (row.get('server'), row.get('ip'), row.get('port'))
+        endpoint = next((e for e in entry['endpoints']
+                         if (e['server'], e['ip'], e['port']) == where), None)
+        if endpoint is None:
+            endpoint = {'server': where[0], 'ip': where[1], 'port': where[2], 'names': [],
+                        'defaultCert': False}
+            entry['endpoints'].append(endpoint)
+        if row['probe'] == PROBE_DEFAULT:
+            endpoint['defaultCert'] = True
+        elif row.get('name') and row['name'] not in endpoint['names']:
+            endpoint['names'].append(row['name'])
+    return sorted(found.values(), key=lambda entry: (entry['daysLeft'], entry['sha256']))
+
+
+def build_monitor(report: ScanReport, baseline: Optional[Dict[str, Any]] = None,
+                  baseline_file: Optional[str] = None,
+                  warn_days: Optional[int] = None) -> MonitorResult:
+    """Compare ``report`` with a loaded ``baseline`` report and / or list its
+    certificates expiring within ``warn_days``.
+
+    With ``baseline_file`` but no ``baseline`` (:func:`load_baseline` found no file on
+    a first run) the result says so (``baseline.missing``) and lists no changes.
+    """
+    monitor = MonitorResult(warn_days=warn_days)
+    doc = report_to_dict(report)
+    if baseline is not None:
+        monitor.changes = compare_reports(baseline, doc)
+        monitor.baseline = baseline_info(baseline, doc, baseline_file)
+    elif baseline_file is not None:
+        monitor.changes = []
+        monitor.baseline = {'file': baseline_file, 'missing': True}
+    if warn_days is not None:
+        monitor.expiring = expiring_certificates(doc, warn_days)
+    return monitor
+
+
+# --- change and expiry text (summary and --notify) --------------------------------------
+
+_CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT'}
+_TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTED': ('red',),
+               'GONE': ('red',), 'RECOVERED': ('green',), 'UPDATED': ('green', 'bold'),
+               'HOSTED': ('green',), 'NEW': ('cyan',), 'CERT': ('yellow',),
+               'CHANGED': ('yellow',)}
+_BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE')
+_TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
+
+
+def change_tag(change: Dict[str, Any]) -> str:
+    """A change's label: its transition in capitals (``FAILED``, ``RECOVERED`` ...),
+    ``NEW`` / ``GONE`` for what appeared / disappeared, ``CERT`` for a new certificate."""
+    if change.get('kind') == 'status':
+        return str(change.get('transition') or 'changed').upper()
+    return _CHANGE_TAGS.get(str(change.get('kind')), 'CHANGED')
+
+
+def _iso_day(value: Any) -> str:
+    match = _ISO_UTC_RE.match(value) if isinstance(value, str) else None
+    return match.group(1) if match else '?'
+
+
+def _iso_minute(value: Any) -> str:
+    match = _ISO_UTC_RE.match(value) if isinstance(value, str) else None
+    return '%s %s UTC' % match.groups() if match else 'an unknown time'
+
+
+def _counts_text(counts: Any) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return 'no rows'
+    return ', '.join('%s %s' % (status, count) for status, count in counts.items())
+
+
+def _cert_brief(view: Dict[str, Any]) -> str:
+    """``CN www.example.com, expires 2026-10-01, sha256 1f7337a3`` - a renewal keeps the
+    CN, so the date and the fingerprint tell the two apart."""
+    if not view.get('certSha256'):
+        return 'no certificate'
+    return 'CN %s, expires %s, sha256 %s' % (view.get('certSubjectCN') or '(none)',
+                                             _iso_day(view.get('certNotAfter')),
+                                             str(view['certSha256'])[:8])
+
+
+def _cert_change_text(before: Dict[str, Any], after: Dict[str, Any]) -> str:
+    """``certificate changed: <before> -> <after>``, the CN said once when both share it."""
+    cn = before.get('certSubjectCN')
+    if cn and cn == after.get('certSubjectCN') and before.get('certSha256') \
+            and after.get('certSha256'):
+        return 'certificate changed (CN %s): expires %s, sha256 %s -> expires %s, sha256 %s' % (
+            cn, _iso_day(before.get('certNotAfter')), str(before['certSha256'])[:8],
+            _iso_day(after.get('certNotAfter')), str(after['certSha256'])[:8])
+    return 'certificate changed: %s -> %s' % (_cert_brief(before), _cert_brief(after))
+
+
+def _row_state(view: Dict[str, Any]) -> str:
+    text = str(view.get('status'))
+    if _covers_name(view.get('status')) and view.get('certSha256'):
+        text += ' with ' + _cert_brief(view)
+    if view.get('error'):
+        text += ' (%s)' % view['error']
+    return text
+
+
+def _endpoint_state(view: Dict[str, Any]) -> str:
+    status = str(view.get('status'))
+    if status == EXCLUDED:
+        return 'excluded by --exclude %s' % view.get('excludedBy')
+    if status == OPEN:
+        names = view.get('names') or 0
+        if not names:
+            return OPEN
+        return '%s (%d name%s: %s)' % (OPEN, names, '' if names == 1 else 's',
+                                       _counts_text(view.get('statusCounts')))
+    return '%s (%s)' % (status, view['error']) if view.get('error') else status
+
+
+def _servers_label(servers: Sequence[str], ip: Any, limit: int = 3) -> str:
+    named = [server for server in servers if server != ip]
+    text = ', '.join(named[:limit])
+    return text + (' +%d' % (len(named) - limit) if len(named) > limit else '')
+
+
+def change_text(change: Dict[str, Any]) -> str:
+    """One line for a change - where (servers, ip:port, name) and what moved - for the
+    summary and the ``--notify`` message. Certificate, inventory and baseline text is
+    escaped with :func:`display_text`."""
+    kind, scope = change.get('kind'), change.get('scope')
+    before, after = change.get('before') or {}, change.get('after') or {}
+    if scope == 'name':
+        where = 'name %s' % change.get('name')
+        if kind == 'appeared':
+            what = 'now probed, on %d endpoint(s): %s' % (
+                after.get('endpoints') or 0, _counts_text(after.get('statusCounts')))
+        else:
+            what = 'no longer probed; was %s' % _counts_text(before.get('statusCounts'))
+        return display_text('%s: %s' % (where, what))
+    ip = change.get('ip')
+    where = _endpoint_label(str(ip), change.get('port') or 0)
+    servers = _servers_label(change.get('servers') or [], ip)
+    if servers:
+        where = '%s %s' % (servers, where)
+    if scope == 'endpoint':
+        if kind == 'appeared':
+            what = 'new endpoint, ' + _endpoint_state(after)
+        elif kind == 'disappeared' and after.get('status') == EXCLUDED:
+            what = '%s now; was %s' % (_endpoint_state(after), _endpoint_state(before))
+        elif kind == 'disappeared':
+            what = 'no longer scanned; was ' + _endpoint_state(before)
+        else:
+            what = '%s -> %s' % (_endpoint_state(before), _endpoint_state(after))
+        return display_text('%s: %s' % (where, what))
+    name = change.get('name')
+    where += ' ' + (name if name is not None else '(no SNI)')
+    if kind == 'appeared':
+        what = 'new row, ' + _row_state(after)
+    elif kind == 'disappeared':
+        what = 'no longer reported; was ' + _row_state(before)
+    elif kind == 'cert':
+        what = '%s, %s' % (after.get('status'), _cert_change_text(before, after))
+    else:
+        what = '%s -> %s' % (before.get('status'), after.get('status'))
+        if change.get('certChanged'):
+            what += ', ' + _cert_change_text(before, after)
+        elif _covers_name(after.get('status')) and after.get('certSha256'):
+            what += ', serving ' + _cert_brief(after)
+        if after.get('error'):
+            what += ' (%s)' % after['error']
+    return display_text('%s: %s' % (where, what))
+
+
+def baseline_notes(info: Dict[str, Any]) -> List[str]:
+    """What the two runs did differently, as sentences (see :func:`baseline_info`)."""
+    notes = []
+    added, removed = info.get('portsAdded') or [], info.get('portsRemoved') or []
+    if added or removed:
+        parts = (['added %s' % ', '.join(str(port) for port in added)] if added else []) + \
+            (['removed %s' % ', '.join(str(port) for port in removed)] if removed else [])
+        notes.append('Ports differ from the baseline: %s.' % '; '.join(parts))
+    if info.get('newCertificateChanged'):
+        notes.append("The new certificate (--cert) differs from the baseline's: UPDATED / "
+                     'NEEDS_UPDATE moves can come from that rather than from the servers.')
+    return notes
+
+
+def _days_left_text(days: Any) -> str:
+    if not isinstance(days, int):
+        return '? days left'
+    if days < 0:
+        return 'EXPIRED %d day%s ago' % (-days, '' if days == -1 else 's')
+    return '%d day%s left' % (days, '' if days == 1 else 's')
+
+
+def _expiring_endpoint_text(endpoint: Dict[str, Any]) -> str:
+    where = _endpoint_label(str(endpoint.get('ip')), endpoint.get('port') or 0)
+    servers = _servers_label([endpoint.get('server') or ''], endpoint.get('ip'))
+    names = list(endpoint.get('names') or [])
+    if endpoint.get('defaultCert'):
+        names.append('default certificate (no SNI)')
+    return display_text('%s%s: %s' % (servers + ' ' if servers else '', where, ', '.join(names)))
+
+
+def expiring_text(entry: Dict[str, Any], limit: int = 3) -> str:
+    """One line for an expiring certificate: CN, expiry, fingerprint and where it is served."""
+    endpoints = entry.get('endpoints') or []
+    where = []
+    for endpoint in endpoints[:limit]:
+        label = _endpoint_label(str(endpoint.get('ip')), endpoint.get('port') or 0)
+        servers = _servers_label([endpoint.get('server') or ''], endpoint.get('ip'))
+        where.append('%s %s' % (servers, label) if servers else label)
+    served = ', '.join(where) + (' +%d' % (len(endpoints) - limit) if len(endpoints) > limit
+                                 else '')
+    return display_text('CN %s, expires %s (%s), sha256 %s%s: served by %s' % (
+        entry.get('subjectCN') or '(none)', _iso_day(entry.get('notAfter')),
+        _days_left_text(entry.get('daysLeft')), str(entry.get('sha256'))[:8],
+        ' (the new certificate)' if entry.get('isNewCert') else '', served))
+
+
+def render_monitor(report: ScanReport, monitor: MonitorResult, style: Style,
+                   show_all: bool = False, width: int = 100) -> List[str]:
+    """Summary lines: "Changes since the baseline" (``--baseline``) and "Served
+    certificates expiring within N days" (``--warn-days``), each ending with a blank line.
+    Without ``show_all`` at most :data:`MAX_SUMMARY_CHANGES` changes and
+    :data:`MAX_SUMMARY_ENDPOINTS` endpoints per certificate are listed."""
+    lines = []  # type: List[str]
+    if monitor.changes is not None:
+        lines.extend(_render_changes(monitor, style, show_all, width))
+    if monitor.expiring is not None:
+        lines.extend(_render_expiring(report, monitor, style, show_all, width))
+    return lines
+
+
+def _render_changes(monitor: MonitorResult, style: Style, show_all: bool,
+                    width: int) -> List[str]:
+    info = monitor.baseline or {}
+    source = display_text(str(info.get('file') or 'baseline'))
+    if info.get('missing'):
+        return [style.paint('Baseline %s does not exist yet: nothing to compare (first run). '
+                            "This run's --json report is the next run's baseline." % source,
+                            'yellow'), '']
+    changes = monitor.changes or []
+    tags = [change_tag(change) for change in changes]
+    colors = (('green', 'bold') if not changes else
+              ('red', 'bold') if any(tag in _BAD_TAGS for tag in tags) else ('yellow', 'bold'))
+    lines = [style.paint('Changes since the baseline (%s, scan of %s): %s' % (
+        source, _iso_minute(info.get('finishedAt')), len(changes) or 'none'), *colors)]
+    shown = changes if show_all else changes[:MAX_SUMMARY_CHANGES]
+    for change, tag in zip(shown, tags):
+        prefix = '  %s  ' % style.paint(tag.ljust(_TAG_WIDTH), *_TAG_STYLES.get(tag, ()))
+        lines.extend(_wrap(prefix, _TAG_WIDTH + 4, change_text(change), width))
+    if len(shown) < len(changes):
+        lines.append(style.paint('  ... and %d more - use --show-all or the --json report to '
+                                 'list them.' % (len(changes) - len(shown)), 'dim'))
+    lines.extend(style.paint('  ' + note, 'dim') for note in baseline_notes(info))
+    lines.append('')
+    return lines
+
+
+def _render_expiring(report: ScanReport, monitor: MonitorResult, style: Style,
+                     show_all: bool, width: int) -> List[str]:
+    expiring = monitor.expiring or []
+    days = monitor.warn_days or 0
+    lines = [style.paint('Served certificates expiring within %d day%s: %s' % (
+        days, '' if days == 1 else 's', len(expiring) or 'none'),
+        *(('red', 'bold') if expiring else ('green', 'bold')))]
+    for entry in expiring:
+        cert = report.certificates.get(entry.get('sha256') or '')
+        if cert is not None:
+            head = '  %s | %s' % (cert_line(cert, report.finished_at, style),
+                                  style.paint(cert_ids(cert), 'dim'))
+        else:
+            head = '  ' + display_text('%s | expires %s (%s)' % (
+                entry.get('subjectCN') or '(none)', _iso_day(entry.get('notAfter')),
+                _days_left_text(entry.get('daysLeft'))))
+        if entry.get('isNewCert'):
+            head += '  (the new certificate)'
+        lines.append(head)
+        endpoints = entry.get('endpoints') or []
+        shown = endpoints if show_all else endpoints[:MAX_SUMMARY_ENDPOINTS]
+        for endpoint in shown:
+            lines.extend(_wrap('      ', 6, _expiring_endpoint_text(endpoint), width))
+        if len(shown) < len(endpoints):
+            lines.append(style.paint('      ... and %d more endpoint(s)'
+                                     % (len(endpoints) - len(shown)), 'dim'))
+    lines.append('')
+    return lines
+
+
+# --- --notify: webhook formats and delivery ---------------------------------------------
+
+NOTIFY_FORMATS = ('auto', 'slack', 'teams', 'discord', 'telegram', 'json')
+# Message text per format: Discord allows 2,000 characters, Telegram 4,096; Slack and
+# Teams take more, but a longer chat message is not read either.
+_NOTIFY_TEXT_LIMITS = {'slack': 3500, 'teams': 3500, 'discord': 1800, 'telegram': 3900,
+                       'json': 3500}
+NOTIFY_MAX_CHANGES = 20       # change lines in a message (the JSON format has them all)
+NOTIFY_MAX_EXPIRING = 10      # expiring certificates in a message
+NOTIFY_MAX_JSON_CHANGES = 500
+_NOTIFY_LINE_LIMIT = 400
+_DISCORD_HOSTS = ('discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com')
+_TEAMS_HOSTS = ('outlook.office.com', 'outlook.office365.com')
+# Teams incoming webhooks, Power Automate / Logic Apps workflow triggers
+_TEAMS_HOST_SUFFIXES = ('.webhook.office.com', '.logic.azure.com', '.api.powerplatform.com')
+_TELEGRAM_PATH_RE = re.compile(r'^/bot[^/]+/sendMessage$')
+_USER_AGENT = 'ssl_origin_scan/%s (+https://github.com/halilibrahimd27/domainscope)' % __version__
+
+
+def detect_notify_format(url: str) -> str:
+    """The payload a webhook URL expects: ``slack`` (hooks.slack.com, and Discord's
+    Slack-compatible ``.../slack`` endpoint), ``discord`` (``/api/webhooks/``),
+    ``telegram`` (api.telegram.org), ``teams`` (Teams incoming webhooks, Power Automate /
+    Logic Apps workflows) or ``json`` for anything else."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or '').rstrip('.')
+    if host in ('hooks.slack.com', 'hooks.slack-gov.com'):
+        return 'slack'
+    if host in _DISCORD_HOSTS and parts.path.startswith('/api/webhooks/'):
+        return 'slack' if parts.path.rstrip('/').endswith('/slack') else 'discord'
+    if host == 'api.telegram.org':
+        return 'telegram'
+    if host in _TEAMS_HOSTS or host.endswith(_TEAMS_HOST_SUFFIXES):
+        return 'teams'
+    return 'json'
+
+
+def _telegram_chat_id(query: str) -> Optional[Union[int, str]]:
+    for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+        if key == 'chat_id' and value:
+            return int(value) if re.match(r'^-?\d{1,20}$', value) else value
+    return None
+
+
+def check_notify_url(url: str, fmt: str = 'auto', source: str = '--notify') -> str:
+    """Validate a ``--notify`` URL before the scan -> its payload format (``fmt``, or
+    :func:`detect_notify_format` for ``auto``). The :class:`UsageError` never repeats
+    the URL: it holds the webhook's secret."""
+    if not url.isprintable() or any(char.isspace() for char in url):
+        raise UsageError('%s: the URL contains spaces or control characters' % source)
+    try:
+        parts = urllib.parse.urlsplit(url)
+        _ = parts.port  # ValueError for a port that is not a number
+    except ValueError:
+        raise UsageError('%s: not a valid URL' % source)
+    if parts.scheme.lower() not in ('http', 'https') or not parts.hostname:
+        raise UsageError('%s: needs an http:// or https:// URL' % source)
+    if fmt not in NOTIFY_FORMATS:
+        raise UsageError('--notify-format must be one of %s' % ', '.join(NOTIFY_FORMATS))
+    chosen = detect_notify_format(url) if fmt == 'auto' else fmt
+    if chosen == 'telegram' and not (_TELEGRAM_PATH_RE.match(parts.path)
+                                     and _telegram_chat_id(parts.query) is not None):
+        raise UsageError('%s: a Telegram URL looks like https://api.telegram.org/bot<token>/'
+                         'sendMessage?chat_id=<chat id>' % source)
+    return chosen
+
+
+def notify_host(url: str) -> str:
+    """The webhook's host (and port) - all of the URL that is ever printed."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or '?'
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    host = '[%s]' % host if ':' in host else host
+    return display_text('%s:%d' % (host, port) if port else host)
+
+
+def notify_is_plaintext(url: str) -> bool:
+    """True for an ``http://`` URL to another machine: the token would travel unencrypted."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() != 'http':
+        return False
+    host = (parts.hostname or '').rstrip('.')
+    if host == 'localhost':
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
+def redact_url(text: str, url: str) -> str:
+    """``text`` (an error message, a response body) without the secret parts of ``url``:
+    the URL itself, its path, query and user info, their path segments and query values.
+    Webhook URLs are credentials - whoever has one can post."""
+    parts = urllib.parse.urlsplit(url)
+    secrets = {url, parts.path, parts.query, parts.fragment,
+               urllib.parse.unquote(parts.path), urllib.parse.unquote(parts.query)}
+    if '@' in parts.netloc:
+        secrets.add(parts.netloc.rsplit('@', 1)[0])
+    for segment in parts.path.split('/'):
+        secrets.update((segment, urllib.parse.unquote(segment)))
+    for _key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        secrets.add(value)
+    secrets.update(pair.split('=', 1)[-1] for pair in parts.query.split('&'))
+    for secret in sorted((s for s in secrets if len(s) >= 4), key=len, reverse=True):
+        text = text.replace(secret, '***')
+    return text
+
+
+def should_notify(monitor: Optional[MonitorResult], always: bool = False) -> bool:
+    """Notify when something changed since the baseline or a certificate expires soon
+    (or ``always``, e.g. as a heartbeat)."""
+    if always:
+        return True
+    return monitor is not None and bool(monitor.changes or monitor.expiring)
+
+
+def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] = None
+                         ) -> Tuple[str, List[str], List[str]]:
+    """The notification text of a report dict: ``(title, items, footer)``.
+
+    ``items`` are the changes (at most :data:`NOTIFY_MAX_CHANGES`) and the expiring
+    certificates (at most :data:`NOTIFY_MAX_EXPIRING`), ``footer`` sums up the scan.
+    Plain text; untrusted text is escaped (:func:`change_text`).
+    """
+    parts, items = [], []  # type: List[str], List[str]
+    if monitor is not None and monitor.changes is not None:
+        info = monitor.baseline or {}
+        if info.get('missing'):
+            parts.append('first run, no baseline to compare yet')
+        else:
+            count, since = len(monitor.changes), _iso_minute(info.get('finishedAt'))
+            parts.append('%d change%s since %s' % (count, '' if count == 1 else 's', since)
+                         if count else 'no changes since %s' % since)
+            shown = monitor.changes[:NOTIFY_MAX_CHANGES]
+            items.extend('- %s %s' % (change_tag(change), change_text(change))
+                         for change in shown)
+            if len(monitor.changes) > len(shown):
+                items.append('- ... and %d more changes' % (len(monitor.changes) - len(shown)))
+            items.extend(baseline_notes(info) if monitor.changes else [])
+    if monitor is not None and monitor.expiring is not None:
+        count, days = len(monitor.expiring), monitor.warn_days or 0
+        expired = any(entry.get('expired') for entry in monitor.expiring)
+        parts.append('%d certificate%s %s within %d day%s' % (
+            count, '' if count == 1 else 's', 'expired or expiring' if expired else 'expiring',
+            days, '' if days == 1 else 's') if count else
+            'no certificate expiring within %d day%s' % (days, '' if days == 1 else 's'))
+        shown_expiring = monitor.expiring[:NOTIFY_MAX_EXPIRING]
+        items.extend('- EXPIRES %s' % expiring_text(entry) for entry in shown_expiring)
+        if count > len(shown_expiring):
+            items.append('- ... and %d more certificates' % (count - len(shown_expiring)))
+    title = 'SSL origin scan: ' + ('; '.join(parts) if parts else 'finished')
+    summary = doc.get('summary') if isinstance(doc.get('summary'), dict) else {}
+    names = [probe.get('name') for probe in doc.get('names') or [] if isinstance(probe, dict)]
+    ports = (doc.get('options') or {}).get('ports') or []
+    shown_names = ', '.join(str(name) for name in names[:3]) + (
+        ' +%d' % (len(names) - 3) if len(names) > 3 else '')
+    footer = [display_text('Scan of %s: %s server(s), %s endpoint(s) (%s open), ports %s, '
+                           'names %s.' % (_iso_minute(doc.get('finishedAt')),
+                                          summary.get('servers', '?'),
+                                          summary.get('endpoints', '?'),
+                                          summary.get('openEndpoints', '?'),
+                                          ','.join(str(port) for port in ports) or '?',
+                                          shown_names or 'none'))]
+    if doc.get('newCertificates'):
+        footer.append('Servers that need the new certificate: %s; serving it: %s.' % (
+            summary.get('serversNeedingUpdate', '?'), summary.get('serversUpdated', '?')))
+    return title, items, footer
+
+
+def _fit_lines(title: str, items: Sequence[str], footer: Sequence[str],
+               limit: int) -> List[str]:
+    """``items`` then ``footer``, as many items as fit in ``limit`` characters with
+    the title; the rest are counted in a last "... and N more" line."""
+    budget = limit - len(title) - sum(len(line) + 1 for line in footer) - 60
+    out = []  # type: List[str]
+    for index, line in enumerate(items):
+        if len(line) > _NOTIFY_LINE_LIMIT:
+            line = line[:_NOTIFY_LINE_LIMIT - 3] + '...'
+        if len(line) + 1 > budget:
+            out.append('- ... and %d more line(s) - see the --json report'
+                       % (len(items) - index))
+            break
+        out.append(line)
+        budget -= len(line) + 1
+    return out + list(footer)
+
+
+def _slack_escape(text: str) -> str:
+    # Slack reads <...> as links and mentions (<!channel>): a certificate CN must not ping.
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _no_backticks(text: str) -> str:
+    # The message body goes into a ``` code block (no markdown, no mentions inside);
+    # a backtick in a certificate CN must not close it.
+    return text.replace('`', 'ˋ')
+
+
+def _teams_card(title: str, lines: Sequence[str]) -> Dict[str, Any]:
+    """A plain Adaptive Card: TextRuns are never read as markdown, unlike TextBlocks."""
+    body = [{'type': 'RichTextBlock', 'inlines': [
+        {'type': 'TextRun', 'text': title, 'weight': 'Bolder', 'size': 'Medium'}]}]
+    body.extend({'type': 'RichTextBlock', 'spacing': 'None',
+                 'inlines': [{'type': 'TextRun', 'text': line}]} for line in lines if line)
+    return {'type': 'message', 'attachments': [{
+        'contentType': 'application/vnd.microsoft.card.adaptive', 'contentUrl': None,
+        'content': {'$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
+                    'type': 'AdaptiveCard', 'version': '1.2', 'msteams': {'width': 'Full'},
+                    'body': body}}]}
+
+
+def build_notification(fmt: str, url: str, doc: Dict[str, Any],
+                       monitor: Optional[MonitorResult] = None) -> Tuple[str, Dict[str, Any]]:
+    """``(URL to POST to, JSON payload)`` for a report dict in a webhook format.
+
+    * ``slack`` - ``{text}``: a bold title and the lines in a code block (``& < >``
+      escaped, so no text from a certificate becomes a mention or a link);
+    * ``teams`` - a message with one Adaptive Card of plain TextRuns;
+    * ``discord`` - ``{content, allowed_mentions: {parse: []}}`` (no @everyone);
+    * ``telegram`` - ``{chat_id, text}`` without link previews, ``chat_id`` moved from
+      the URL's query into the body;
+    * ``json`` - ``{tool, version, title, text, finishedAt, summary, baseline, changes,
+      changesTotal, warnDays, expiring}``, at most :data:`NOTIFY_MAX_JSON_CHANGES` changes.
+    """
+    title, items, footer = notification_message(doc, monitor)
+    lines = _fit_lines(title, items, footer, _NOTIFY_TEXT_LIMITS.get(fmt, 3500))
+    body = '\n'.join(lines)
+    if fmt == 'slack':
+        return url, {'text': '*%s*\n```\n%s\n```' % (_slack_escape(title),
+                                                     _slack_escape(_no_backticks(body)))}
+    if fmt == 'discord':
+        return url, {'content': '**%s**\n```\n%s\n```' % (title, _no_backticks(body)),
+                     'allowed_mentions': {'parse': []}}
+    if fmt == 'teams':
+        return url, _teams_card(title, lines)
+    if fmt == 'telegram':
+        parts = urllib.parse.urlsplit(url)
+        query = [(key, value) for key, value in
+                 urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if key != 'chat_id']
+        post_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                            urllib.parse.urlencode(query), ''))
+        return post_url, {'chat_id': _telegram_chat_id(parts.query),
+                          'text': '%s\n\n%s' % (title, body),
+                          'link_preview_options': {'is_disabled': True}}
+    changes = list(monitor.changes or []) if monitor is not None else []
+    return url, {
+        'tool': 'ssl_origin_scan', 'version': __version__, 'title': title,
+        'text': '%s\n%s' % (title, body), 'finishedAt': doc.get('finishedAt'),
+        'summary': doc.get('summary'),
+        'baseline': monitor.baseline if monitor is not None else None,
+        'changes': (changes[:NOTIFY_MAX_JSON_CHANGES]
+                    if monitor is not None and monitor.changes is not None else None),
+        'changesTotal': len(changes),
+        'warnDays': monitor.warn_days if monitor is not None else None,
+        'expiring': monitor.expiring if monitor is not None else None,
+    }
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirected POST would come back as a GET without the message: report it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _response_detail(raw: bytes) -> str:
+    """The reason in a webhook's error answer: Telegram's ``description``, Discord's
+    ``message``, Power Automate's ``error.message``, or the body itself (200 chars)."""
+    text = raw.decode('utf-8', 'replace')
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        data = None
+    if isinstance(data, dict):
+        error = data.get('error')
+        for value in (data.get('description'), data.get('message'),
+                      error.get('message') if isinstance(error, dict) else error):
+            if isinstance(value, str) and value.strip():
+                text = value
+                break
+    return ' '.join(text.split())[:200]
+
+
+def _network_error_text(reason: Any) -> str:
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        return 'timed out'
+    if isinstance(reason, ssl.SSLError):
+        return 'TLS: %s' % _clean_ssl_message(reason)
+    if isinstance(reason, OSError) and reason.strerror:
+        return reason.strerror
+    return str(reason) or type(reason).__name__
+
+
+def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
+               timeout: float) -> Tuple[Optional[str], bool, Optional[float]]:
+    """One POST -> ``(error or None, worth a retry, Retry-After seconds)``."""
+    request = urllib.request.Request(url, data=body, method='POST', headers={
+        'Content-Type': 'application/json; charset=utf-8', 'User-Agent': _USER_AGENT})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            response.read(65536)
+        return None, False, None
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(512) or b''
+        except (OSError, http.client.HTTPException, ValueError):
+            raw = b''
+        finally:
+            exc.close()
+        text = 'HTTP %d %s' % (exc.code, exc.reason or '')
+        if 300 <= exc.code < 400:
+            text += ' (a redirect; not followed)'
+        detail = _response_detail(raw)
+        if detail:
+            text += ': ' + detail
+        value = str(exc.headers.get('Retry-After') or '').strip() if exc.headers else ''
+        retry_after = float(value) if value.isdigit() else None
+        return text.strip(), exc.code >= 500 or exc.code == 429, retry_after
+    except urllib.error.URLError as exc:
+        return _network_error_text(exc.reason), True, None
+    except (socket.timeout, TimeoutError) as exc:
+        return _network_error_text(exc), True, None
+    except (http.client.HTTPException, OSError) as exc:
+        return _network_error_text(exc), True, None
+    except ValueError:
+        return 'not a valid URL', False, None
+
+
+def send_notification(url: str, payload: Dict[str, Any], timeout: float = NOTIFY_TIMEOUT,
+                      retries: int = 1, retry_delay: float = NOTIFY_RETRY_DELAY,
+                      sleep: Callable[[float], None] = time.sleep) -> Optional[str]:
+    """POST ``payload`` as JSON to ``url`` -> None when delivered, else what went wrong.
+
+    Certificate-verified HTTPS (the system proxy settings apply), no redirects,
+    ``timeout`` seconds per attempt, ``retries`` more attempts after ``retry_delay``
+    seconds (a 429's Retry-After, up to 10 s) for network errors, 5xx and 429 - a 4xx
+    is the webhook's answer. The message never contains the URL (:func:`redact_url`).
+    """
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
+    problem = None  # type: Optional[str]
+    for attempt in range(1 + max(0, retries)):
+        problem, retry, retry_after = _post_once(opener, url, body, timeout)
+        if problem is None:
+            return None
+        if not retry or attempt >= retries:
+            break
+        sleep(min(10.0, max(retry_delay, retry_after or 0.0)))
+    return display_text(redact_url(problem or 'failed', url))
+
+
+# =====================================================================================
 # Command line
 # =====================================================================================
 
@@ -4040,6 +5061,11 @@ examples:
 
   Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --private-ca internal-ca.pem
+  Cron - compare every run with the previous one, warn 21 days before a served
+  certificate expires, post to a chat webhook only when there is something to say:
+    export DOMAINSCOPE_NOTIFY_URL='https://hooks.slack.com/services/...'
+    python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json \\
+      --json last.json --warn-days 21 -q --no-color
 
 targets (-t, repeatable):
   an IP, hostname, CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.50 or 10.0.0.10-50),
@@ -4106,11 +5132,39 @@ statuses (per server, port and name):
   when both certificates carry one, the key identifier; list the CA that signs the server
   certificates (the intermediate, if there is one) - a bundle file is fine.
 
+monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
+  --baseline FILE compares the scan with a previous --json report, per IP, port and
+  name: another served certificate (SHA-256 fingerprint), a status that moved
+  (UPDATED -> NEEDS_UPDATE, hosted -> NOT_HOSTED, a new TLS_ERROR / TIMEOUT / CLOSED,
+  recovered), endpoints and names that are new or gone. Listed under "Changes since
+  the baseline" and in the JSON ("baseline", "changes"). Give the same file to
+  --baseline and --json to compare each run with the one before: it is read before
+  the scan and replaced after it, and while it does not exist (the first run) there
+  is nothing to compare. A file that is not a --json report of this tool is a usage
+  error.
+  --warn-days N lists served certificates that expire within N days or have expired
+  (only certificates that cover a probed name), in the summary and the JSON
+  ("expiring", options.warnDays).
+  --notify URL posts a short summary when something changed or expires (after every
+  run with --notify-always). The payload follows the URL: Slack incoming webhooks
+  (also Discord's .../slack endpoint), Microsoft Teams incoming webhooks and Power
+  Automate / Logic Apps workflows (an Adaptive Card), Discord webhooks, Telegram
+  (https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>), and JSON with
+  the changes for any other URL; --notify-format overrides the choice (e.g. slack
+  for a Slack-compatible Mattermost). Set the URL in DOMAINSCOPE_NOTIFY_URL rather
+  than on the command line, where it ends up in the shell history: whoever has it can
+  post. It is never printed - only its host. One retry, 10 s timeout, no redirects,
+  the system proxy settings apply. A notification that fails is reported on stderr
+  and changes the exit code only with --fail-on-notify-error.
+
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
             and PRIVATE_CERT only with --strict-public),
             2 usage error (report files that cannot be written are refused before
             the scan), 3 a report file could not be written after the scan (the
-            summary and the other report are still written), 130 interrupted (Ctrl-C)
+            summary and the other report are still written), 4 something changed
+            since --baseline (only with --fail-on-change), 5 the --notify message
+            was not delivered (only with --fail-on-notify-error), 130 interrupted
+            (Ctrl-C). When several apply: 3, then 5, then 4, then 1.
 
 output encoding: follows the reader - the console code page when piped on Windows
   (cmd, PowerShell), UTF-8 for files, Git Bash and other systems. PYTHONIOENCODING=utf-8
@@ -4132,6 +5186,13 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   --private-ca ile verdiğiniz iç CA'nın imzaladığı sertifikayı sunanlar PRIVATE_CERT
   olarak ayrı listelenir ve "yeni sertifika gerekiyor" sayılmaz; --strict-public
   bunları da NEEDS_UPDATE sayar.
+  Cron ile izleme: --baseline önceki --json raporuyla karşılaştırıp değişenleri
+  (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
+  süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
+  DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord veya
+  Telegram'a kısa bir özet gönderir. Örnek:
+  python3 ssl_origin_scan.py -t sunucular.txt --cert yeni.pem --baseline son.json \
+    --json son.json --warn-days 21
 """
 
 
@@ -4183,6 +5244,25 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument('--fail-on-needs-update', action='store_true',
                      help='exit with code 1 when any server needs the new certificate '
                           '(ORIGIN_CERT / PRIVATE_CERT servers only with --strict-public)')
+    mon = parser.add_argument_group('monitoring (cron)')
+    mon.add_argument('--baseline', metavar='FILE',
+                     help='a previous --json report: list what changed since (served '
+                          'certificate, status, new or gone rows)')
+    mon.add_argument('--fail-on-change', action='store_true',
+                     help='exit with code 4 when anything changed since --baseline')
+    mon.add_argument('--warn-days', type=int, metavar='N',
+                     help='list served certificates that expire within N days (off by '
+                          'default)')
+    mon.add_argument('--notify', metavar='URL',
+                     help='POST a short summary to a Slack, Teams / Power Automate, Discord '
+                          'or Telegram webhook (JSON for any other URL) when something '
+                          'changed or expires (default: $%s)' % NOTIFY_ENV)
+    mon.add_argument('--notify-format', choices=NOTIFY_FORMATS, default='auto',
+                     help='payload format (default: auto, from the URL)')
+    mon.add_argument('--notify-always', action='store_true',
+                     help='notify after every run, even with nothing to report')
+    mon.add_argument('--fail-on-notify-error', action='store_true',
+                     help='exit with code 5 when the notification was not delivered')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser
 
@@ -4258,6 +5338,35 @@ def _write_output(path: str, text: str, encoding: str = 'utf-8') -> None:
             handle.write(text)
     except OSError as exc:
         raise UsageError('cannot write %s: %s' % (path, exc.strerror or exc))
+
+
+def _replace_file(path: str, text: str, encoding: str = 'utf-8') -> None:
+    """Write ``path`` whole or not at all: a temporary file next to it, renamed over it.
+    An interrupted run (a full disk, Ctrl-C) leaves the previous file as it was - for a
+    ``--json`` report that is also the next run's ``--baseline``."""
+    temp = '%s.%d.tmp' % (path, os.getpid())
+    try:
+        with open(temp, 'x', encoding=encoding, newline='') as handle:
+            handle.write(text)
+        if os.path.isfile(path):
+            try:
+                shutil.copymode(path, temp)
+            except OSError:
+                pass  # keep the default mode rather than fail the report
+        os.replace(temp, path)
+    except OSError as exc:
+        _remove_quietly(temp)
+        raise UsageError('cannot write %s: %s' % (path, exc.strerror or exc))
+    except BaseException:
+        _remove_quietly(temp)
+        raise
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _check_output_path(path: Optional[str], option: str) -> None:
@@ -4448,6 +5557,17 @@ def _run(args: argparse.Namespace) -> int:
     exclude_rules = load_excludes(args.exclude)  # strict: bad input stops before any lookup
 
     all_warnings = []  # type: List[str]
+    if args.warn_days is not None and not 0 <= args.warn_days <= MAX_WARN_DAYS:
+        raise UsageError('--warn-days must be between 0 and %d' % MAX_WARN_DAYS)
+    if args.fail_on_change and not args.baseline:
+        raise UsageError('--fail-on-change needs --baseline FILE')
+    if args.baseline == '-':
+        raise UsageError('--baseline reads a file, not stdin ("-")')
+    # Read now, before the scan: with --json FILE the same file is replaced after it.
+    baseline = load_baseline(args.baseline, allow_missing=_same_path(args.baseline, args.json)
+                             ) if args.baseline else None
+    notify_url, notify_format = _notify_settings(args, all_warnings)
+
     new_certs = []  # type: List[CertInfo]
     for path in args.cert:
         leaf, messages = load_new_certificate(path)
@@ -4511,22 +5631,32 @@ def _run(args: argparse.Namespace) -> int:
                           private_cas=private_cas, strict_public=args.strict_public)
     finally:
         progress.finish()
+    monitor = None  # type: Optional[MonitorResult]
+    if args.baseline or args.warn_days is not None:
+        monitor = build_monitor(report, baseline, args.baseline, args.warn_days)
 
     failed = []  # type: List[str]
 
-    def write_report(path: str, text: str, encoding: str = 'utf-8') -> None:
+    def write_report(path: str, text: str, encoding: str = 'utf-8', atomic: bool = False
+                     ) -> None:
         # The scan is done: a report that cannot be written (disk full, a lock taken since
         # the check) is reported, and the other report and the summary still come out.
         try:
-            _write_output(path, text, encoding)
+            if atomic:
+                _replace_file(path, text, encoding)
+            else:
+                _write_output(path, text, encoding)
         except UsageError as exc:
             print('%s: error: %s' % (PROG, exc), file=err)
             failed.append(path)
 
     if args.json:
         # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
+        # A report that is also the baseline is replaced whole or not at all: a half-written
+        # one would stop every later run with a usage error.
         write_report(args.json, render_json(
-            report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout)))
+            report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout),
+            monitor=monitor), atomic=_same_path(args.baseline, args.json))
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
         if args.csv == '-':
@@ -4536,21 +5666,75 @@ def _run(args: argparse.Namespace) -> int:
     if args.json != '-' and args.csv != '-':
         width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
         sys.stdout.write(render_summary(report, color=use_color(args.no_color, sys.stdout),
-                                        show_all=args.show_all, width=width))
+                                        show_all=args.show_all, width=width, monitor=monitor))
         sys.stdout.flush()
     if not quiet:
         for path, label in ((args.json, 'JSON'), (args.csv, 'CSV')):
             if path and path != '-' and path not in failed:
                 print('%s report written to %s' % (label, path), file=err)
+
+    notify_failed = False
+    if notify_url and notify_format and should_notify(monitor, args.notify_always):
+        post_url, payload = build_notification(notify_format, notify_url,
+                                               report_to_dict(report, monitor), monitor)
+        host = notify_host(notify_url)
+        try:
+            problem = send_notification(post_url, payload, timeout=NOTIFY_TIMEOUT,
+                                        retry_delay=NOTIFY_RETRY_DELAY)
+        except KeyboardInterrupt:
+            print('\n%s: error: notification (%s, %s) interrupted' % (PROG, notify_format, host),
+                  file=err)
+            return EXIT_INTERRUPTED
+        if problem:
+            notify_failed = True
+            print('%s: error: notification failed (%s, %s): %s' % (
+                PROG, notify_format, host, redact_url(problem, notify_url)), file=err)
+        elif not quiet:
+            print('Notification sent (%s, %s)' % (notify_format, host), file=err)
+
     if failed:
         return EXIT_OUTPUT_ERROR
+    if notify_failed and args.fail_on_notify_error:
+        return EXIT_NOTIFY_ERROR
+    if args.fail_on_change and monitor is not None and monitor.changes:
+        return EXIT_CHANGED
     if args.fail_on_needs_update and report.needs_update():
         return EXIT_NEEDS_UPDATE
     return EXIT_OK
 
 
+def _same_path(first: Optional[str], second: Optional[str]) -> bool:
+    """True when two command-line paths name the same file (never for ``-``)."""
+    if not first or not second or '-' in (first, second):
+        return False
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _notify_settings(args: argparse.Namespace, warnings: List[str]
+                     ) -> Tuple[Optional[str], Optional[str]]:
+    """``(URL, format)`` from ``--notify`` or :data:`NOTIFY_ENV`, checked before the scan;
+    ``(None, None)`` without one. Problems that do not stop the scan go to ``warnings``."""
+    url, source = args.notify, '--notify'
+    if not url:
+        url, source = os.environ.get(NOTIFY_ENV, '').strip(), NOTIFY_ENV
+    if not url:
+        if args.notify_always or args.fail_on_notify_error or args.notify_format != 'auto':
+            raise UsageError('--notify-always, --notify-format and --fail-on-notify-error need '
+                             '--notify URL or %s' % NOTIFY_ENV)
+        return None, None
+    fmt = check_notify_url(url, args.notify_format, source)
+    if notify_is_plaintext(url):
+        warnings.append('%s uses http:// to another host: the webhook URL, which works as '
+                        'a password, travels unencrypted' % source)
+    if (source == '--notify' and not args.notify_always and not args.baseline
+            and args.warn_days is None):
+        warnings.append('--notify sends a message only with --baseline (changes), --warn-days '
+                        '(expiring certificates) or --notify-always')
+    return url, fmt
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5 or 130)."""
     _configure_streams()
     parser = build_parser()
     try:

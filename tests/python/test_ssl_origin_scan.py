@@ -15,6 +15,7 @@ import contextlib
 import csv
 import dataclasses
 import hashlib
+import http.server
 import importlib.util
 import io
 import ipaddress
@@ -2855,6 +2856,1028 @@ class StreamEncodingTests(unittest.TestCase):
         self.assertIn(TURKISH_HELP_LINE, data.decode('utf-8'))
 
 
+# ====================================================================== monitoring
+
+RENEWED = fixture_cert('cli_renewed_wild.pem')
+WILD = 'a.wild.example.net'
+WWW = 'www.example-test.com.tr'
+# rsa_multi_san.pem (www.example-test.com.tr) expires 2034-06-01: 12 days after this
+BEFORE_RSA_EXPIRY = datetime(2034, 5, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def scan_report(servers, tls, connect=None, names=(WILD, WWW), new_certs=(RENEWED,),
+                ports=(443,), exclude=(), now=None):
+    """A report over FakeNetwork; ``now`` fixes the scan's clock (days left)."""
+    network = FakeNetwork(connect or {}, tls)
+    with contextlib.ExitStack() as stack:
+        if now is not None:
+            stack.enter_context(mock.patch.object(sos, '_utcnow', return_value=now))
+        return sos.run_scan(servers, sos.build_probe_names(list(names)), list(ports),
+                            new_certs=list(new_certs), timeout=1, workers=4,
+                            connect_fn=network.connect_fn, tls_fn=network.tls_fn,
+                            exclude=list(exclude))
+
+
+def scan_doc(*args, **kwargs):
+    return sos.report_to_dict(scan_report(*args, **kwargs))
+
+
+def fleet_before(now=None):
+    return scan_report(
+        [sos.Server('web', ['10.0.0.1']), sos.Server('upd', ['10.0.0.2']),
+         sos.Server('db', ['10.0.0.3']), sos.Server('gone', ['10.0.0.4']),
+         sos.Server('down', ['10.0.0.5']), sos.Server('flaky', ['10.0.0.6']),
+         sos.Server('shared-a', ['10.0.0.7']), sos.Server('shared-b', ['10.0.0.7'])],
+        {'10.0.0.1': by_old_or_new(EC_DER), '10.0.0.2': by_old_or_new(RENEWED_DER),
+         '10.0.0.3': by_old_or_new(RENEWED_DER), '10.0.0.4': by_old_or_new(EC_DER),
+         '10.0.0.6': by_old_or_new(RENEWED_DER), '10.0.0.7': by_old_or_new(RENEWED_DER)},
+        connect={'10.0.0.5': ConnectionRefusedError()}, now=now)
+
+
+def fleet_after(now=None):
+    """fleet_before, a day later: 9 changes (see BaselineTests.test_every_kind_of_change)."""
+    renewed = by_old_or_new(RENEWED_DER)
+    return scan_report(
+        [sos.Server('web', ['10.0.0.1']), sos.Server('upd', ['10.0.0.2']),
+         sos.Server('db', ['10.0.0.3']), sos.Server('gone', ['10.0.0.4']),
+         sos.Server('down', ['10.0.0.5']), sos.Server('flaky', ['10.0.0.6']),
+         sos.Server('shared-a', ['10.0.0.7']), sos.Server('shared-b', ['10.0.0.7']),
+         sos.Server('new', ['10.0.0.8'])],
+        {'10.0.0.1': renewed,                                     # installed
+         '10.0.0.2': by_old_or_new(EC_DER),                       # rolled back
+         '10.0.0.5': renewed,                                     # port open again
+         '10.0.0.6': lambda sni: socket.timeout('timed out') if sni == WILD else renewed(sni),
+         '10.0.0.7': lambda sni: CN_ONLY_DER if sni == WILD else renewed(sni),  # vhost gone
+         '10.0.0.8': renewed},                                    # a new address
+        connect={'10.0.0.3': ConnectionRefusedError()},           # port closed now
+        names=(WILD, WWW, 'extra.example.com'), exclude=['10.0.0.4'], now=now)
+
+
+def change_keys(changes):
+    return [(c['scope'], c['kind'], c['transition'], c['ip'], c['name']) for c in changes]
+
+
+class BaselineTests(unittest.TestCase):
+
+    def write(self, tmp, name, data):
+        path = os.path.join(tmp, name)
+        Path(path).write_bytes(data if isinstance(data, bytes) else data.encode('utf-8'))
+        return path
+
+    def test_load_baseline_reads_utf8_and_utf16_reports(self):
+        text = sos.render_json(fleet_before())
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, data in (('plain.json', text.encode('utf-8')),
+                               ('bom.json', b'\xef\xbb\xbf' + text.encode('utf-8')),
+                               ('ps51.json', codecs.BOM_UTF16_LE + text.encode('utf-16-le'))):
+                with self.subTest(name=name):
+                    doc = sos.load_baseline(self.write(tmp, name, data))
+                    self.assertEqual(doc['tool'], 'ssl_origin_scan')
+            missing = os.path.join(tmp, 'missing.json')
+            self.assertIsNone(sos.load_baseline(missing, allow_missing=True))
+            with self.assertRaises(sos.UsageError) as ctx:
+                sos.load_baseline(missing)
+            self.assertIn('does not exist', str(ctx.exception))
+            with self.assertRaises(sos.UsageError) as ctx:
+                sos.load_baseline(tmp)  # a directory
+            self.assertIn('cannot read', str(ctx.exception))
+
+    def test_unusable_baselines_are_clear_usage_errors(self):
+        good = json.loads(sos.render_json(fleet_before()))
+
+        def with_row(**fields):
+            doc = json.loads(json.dumps(good))
+            doc['results'][0].update(fields)
+            return json.dumps(doc)
+
+        cases = {
+            '': 'is not JSON',
+            '{"tool": ': 'is not JSON',
+            '[1, 2]': 'not a --json report',
+            json.dumps({'tool': 'other', 'results': []}): 'not a --json report',
+            json.dumps(dict(good, version='2.0.0')): "version '2.0.0'",
+            json.dumps(dict(good, version='\x1b[2K9')): "version '\\x1b[2K9'",
+            json.dumps(dict(good, results={})): 'no "results" list',
+            with_row(port='443'): 'results[0] has no valid "port"',
+            with_row(port=True): 'results[0] has no valid "port"',
+            with_row(ip='web01'): 'results[0] has no valid "ip"',
+            with_row(status='updated'): 'results[0] has no valid "status"',
+            with_row(certSha256='abc'): 'results[0] has no valid "certSha256"',
+            with_row(name=5): 'results[0] has a "name" that is not text',
+            '[' * 100000: 'is not JSON',
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, (text, needle) in enumerate(cases.items()):
+                path = self.write(tmp, 'b%d.json' % index, text)
+                with self.subTest(needle=needle, text=text[:40]):
+                    with self.assertRaises(sos.UsageError) as ctx:
+                        sos.load_baseline(path)
+                    self.assertIn('--baseline', str(ctx.exception))
+                    self.assertIn(needle, str(ctx.exception))
+                    self.assertNotIn('\x1b', str(ctx.exception))
+        # the same major version, rows of a probe kind or a status a later version adds
+        doc = json.loads(json.dumps(good))
+        doc['version'] = sos.__version__.split('.')[0] + '.9.0'
+        doc['results'].append(dict(doc['results'][0], probe='future-kind'))
+        doc['results'][0]['status'] = 'ORIGIN_CA'
+        self.assertIsNone(sos.baseline_problem(doc))
+
+    def test_every_kind_of_change(self):
+        before, after = sos.report_to_dict(fleet_before()), sos.report_to_dict(fleet_after())
+        changes = sos.compare_reports(before, after)
+        self.assertEqual(change_keys(changes), [
+            ('name', 'appeared', None, None, 'extra.example.com'),
+            ('row', 'status', 'updated', '10.0.0.1', WILD),
+            ('row', 'status', 'regressed', '10.0.0.2', WILD),
+            ('endpoint', 'status', 'failed', '10.0.0.3', None),
+            ('endpoint', 'status', 'recovered', '10.0.0.5', None),
+            ('row', 'status', 'failed', '10.0.0.6', WILD),
+            ('row', 'status', 'unhosted', '10.0.0.7', WILD),
+            ('endpoint', 'appeared', None, '10.0.0.8', None),
+            ('endpoint', 'disappeared', None, '10.0.0.4', None),
+        ])
+        by_ip = {(c['ip'], c['scope']): c for c in changes}
+        extra = changes[0]
+        self.assertEqual(extra['after'], {'endpoints': 6, 'statusCounts': {'NOT_HOSTED': 6}})
+        installed = by_ip[('10.0.0.1', 'row')]
+        self.assertEqual((installed['servers'], installed['port'], installed['probe']),
+                         (['web'], 443, 'sni'))
+        self.assertTrue(installed['certChanged'])
+        self.assertEqual(installed['before']['certSha256'], EXPECTED['ec_wildcard.pem']['sha256'])
+        self.assertEqual(installed['after']['certSha256'], RENEWED_WILD_SHA256)
+        self.assertEqual(set(installed['before']), {'status', 'certSha256', 'certSubjectCN',
+                                                     'certIssuer', 'certNotAfter', 'error'})
+        closed = by_ip[('10.0.0.3', 'endpoint')]
+        self.assertEqual(closed['before'], {'status': 'OPEN', 'error': None, 'names': 2,
+                                            'statusCounts': {'UPDATED': 1, 'NEEDS_UPDATE': 1}})
+        self.assertEqual(closed['after']['status'], 'CLOSED')
+        self.assertEqual(by_ip[('10.0.0.5', 'endpoint')]['after']['names'], 3)
+        timeout = by_ip[('10.0.0.6', 'row')]
+        self.assertEqual((timeout['after']['status'], timeout['after']['error']),
+                         ('TIMEOUT', 'timed out'))
+        self.assertFalse(timeout['certChanged'])
+        shared = by_ip[('10.0.0.7', 'row')]
+        self.assertEqual(shared['servers'], ['shared-a', 'shared-b'])  # one change, both servers
+        self.assertTrue(shared['certChanged'])
+        self.assertEqual(by_ip[('10.0.0.4', 'endpoint')]['after'],
+                         {'status': 'EXCLUDED', 'excludedBy': '10.0.0.4'})
+        self.assertIsNone(by_ip[('10.0.0.8', 'endpoint')]['before'])
+        # the JSON round trip (a baseline read from disk) changes nothing
+        self.assertEqual(sos.compare_reports(json.loads(json.dumps(before)), after), changes)
+
+    def test_nothing_changed(self):
+        before = sos.report_to_dict(fleet_before())
+        self.assertEqual(sos.compare_reports(before, before), [])
+        again = sos.report_to_dict(fleet_before())  # another run, other times and timings
+        self.assertEqual(sos.compare_reports(before, again), [])
+        # an address written in another form is the same endpoint
+        v6_before = scan_doc([sos.Server('v6', ['2001:db8::5'])],
+                             {'2001:db8::5': by_old_or_new(EC_DER)})
+        for row in v6_before['results']:
+            row['ip'] = '2001:0DB8:0:0::5'
+        v6_after = scan_doc([sos.Server('v6', ['2001:db8::5'])],
+                            {'2001:db8::5': by_old_or_new(EC_DER)})
+        self.assertEqual(sos.compare_reports(v6_before, v6_after), [])
+
+    def test_certificate_changes_and_fallback_certificates(self):
+        names = (WILD, 'nothere.example.com')
+        before = scan_doc([sos.Server('web', ['10.0.0.1'])],
+                          {'10.0.0.1': lambda sni: EC_DER if sni == WILD else CN_ONLY_DER},
+                          names=names, new_certs=())
+        after = scan_doc([sos.Server('web', ['10.0.0.1'])],
+                         {'10.0.0.1': lambda sni: RENEWED_DER if sni == WILD else RSA_DER},
+                         names=names, new_certs=())
+        changes = sos.compare_reports(before, after)
+        # NEEDS_UPDATE both times (no --cert) with another certificate: a 'cert' change; the
+        # no-SNI certificate changed too; nothere.example.com is NOT_HOSTED with another
+        # fallback certificate - not a change
+        self.assertEqual([(c['kind'], c['probe'], c['name'], c['after']['status'])
+                          for c in changes],
+                         [('cert', 'default', None, 'NOT_HOSTED'),
+                          ('cert', 'sni', WILD, 'NEEDS_UPDATE')])
+        self.assertTrue(all(c['certChanged'] and c['transition'] is None for c in changes))
+        info = sos.baseline_info(before, after, 'last.json')
+        self.assertFalse(info['newCertificateChanged'])
+
+    def test_names_and_ports_that_differ(self):
+        tls = {'10.0.0.1': by_old_or_new(RENEWED_DER)}
+        before = scan_doc([sos.Server('web', ['10.0.0.1'])], tls, names=(WILD, WWW),
+                          ports=(443, 8443))
+        after = scan_doc([sos.Server('web', ['10.0.0.1'])], tls, names=(WILD,),
+                         ports=(443, 9443), new_certs=())
+        changes = sos.compare_reports(before, after)
+        # WWW's rows are summed up in the name change; without --cert the renewed
+        # certificate is NEEDS_UPDATE, which the baseline notes explain
+        self.assertEqual(change_keys(changes), [
+            ('name', 'disappeared', None, None, WWW),
+            ('row', 'status', 'regressed', '10.0.0.1', WILD),
+            ('endpoint', 'appeared', None, '10.0.0.1', None),
+            ('endpoint', 'disappeared', None, '10.0.0.1', None),
+        ])
+        self.assertEqual(changes[0]['before'],
+                         {'endpoints': 2, 'statusCounts': {'NEEDS_UPDATE': 2}})
+        self.assertEqual([(c['port'], c['kind']) for c in changes if c['scope'] == 'endpoint'],
+                         [(9443, 'appeared'), (8443, 'disappeared')])
+        info = sos.baseline_info(before, after, 'last.json')
+        self.assertEqual((info['portsAdded'], info['portsRemoved']), ([9443], [8443]))
+        self.assertTrue(info['newCertificateChanged'])
+        self.assertEqual(info['file'], 'last.json')
+        self.assertEqual(info['finishedAt'], before['finishedAt'])
+        notes = sos.baseline_notes(info)
+        self.assertEqual(notes[0], 'Ports differ from the baseline: added 9443; removed 8443.')
+        self.assertIn('--cert', notes[1])
+
+    def test_status_transitions(self):
+        table = [('UPDATED', 'NEEDS_UPDATE', 'regressed'), ('NEEDS_UPDATE', 'UPDATED', 'updated'),
+                 ('UPDATED', 'NOT_HOSTED', 'unhosted'), ('NEEDS_UPDATE', 'NOT_HOSTED', 'unhosted'),
+                 ('NOT_HOSTED', 'UPDATED', 'hosted'), ('UPDATED', 'TLS_ERROR', 'failed'),
+                 ('NOT_HOSTED', 'TIMEOUT', 'failed'), ('OPEN', 'CLOSED', 'failed'),
+                 ('TIMEOUT', 'NEEDS_UPDATE', 'recovered'), ('CLOSED', 'OPEN', 'recovered'),
+                 ('TLS_ERROR', 'TIMEOUT', 'changed'), ('CLOSED', 'TIMEOUT', 'changed'),
+                 # a status of a later version (a kind of certificate) covers the name
+                 ('ORIGIN_CERT', 'NEEDS_UPDATE', 'changed'), ('UPDATED', 'ORIGIN_CERT', 'regressed'),
+                 ('PRIVATE_CERT', 'UPDATED', 'updated'), ('ORIGIN_CERT', 'NOT_HOSTED', 'unhosted'),
+                 ('NOT_HOSTED', 'PRIVATE_CERT', 'hosted'), ('PRIVATE_CERT', 'TLS_ERROR', 'failed')]
+        for before, after, want in table:
+            self.assertEqual(sos.status_transition(before, after), want, (before, after))
+
+    def test_statuses_of_a_later_version(self):
+        """A baseline or a report with a status this version does not know compares like
+        UPDATED / NEEDS_UPDATE: its certificate covers the name."""
+        tls = {'10.0.0.1': by_old_or_new(EC_DER)}
+        before = scan_doc([sos.Server('web', ['10.0.0.1'])], tls, now=BEFORE_RSA_EXPIRY)
+        after = json.loads(json.dumps(before))
+        for doc, der in ((before, EC_DER), (after, RENEWED_DER)):
+            for row in doc['results']:
+                if row['name'] == WILD:
+                    row['status'] = 'ORIGIN_CERT'
+                    row['certSha256'] = hashlib.sha256(der).hexdigest()
+        self.assertIsNone(sos.baseline_problem(before))
+        changes = sos.compare_reports(before, after)
+        self.assertEqual([(c['kind'], c['name'], c['after']['status']) for c in changes],
+                         [('cert', WILD, 'ORIGIN_CERT')])
+        self.assertIn('ORIGIN_CERT, certificate changed', sos.change_text(changes[0]))
+        # ... and its certificate expiring soon is a warning, a NOT_HOSTED one is not
+        for row in after['results']:
+            if row['name'] == WWW:
+                row['status'] = 'PRIVATE_CERT'
+        self.assertEqual([e['subjectCN'] for e in sos.expiring_certificates(after, 30)], [WWW])
+        for row in after['results']:
+            if row['name'] == WWW:
+                row['status'] = 'NOT_HOSTED'
+        self.assertEqual(sos.expiring_certificates(after, 30), [])
+
+
+class ExpiryTests(unittest.TestCase):
+
+    def test_expiring_certificates(self):
+        servers = [sos.Server('web', ['10.0.0.1']), sos.Server('edge', ['10.0.0.2']),
+                   sos.Server('lb', ['10.0.0.3'])]
+        tls = {'10.0.0.1': by_old_or_new(EC_DER),
+               # serves the expiring certificate by default, for a probed name
+               '10.0.0.2': lambda sni: RSA_DER if sni in (None, WWW) else CN_ONLY_DER,
+               # falls back to it for a name it does not host: not a warning
+               '10.0.0.3': lambda sni: RSA_DER if sni == 'nothere.example.com' else RENEWED_DER}
+        # no --cert: with one, a no-SNI certificate counts only for the names it covers
+        # (the engine's rule), and edge's would be NOT_HOSTED
+        doc = scan_doc(servers, tls, names=(WILD, WWW, 'nothere.example.com'), new_certs=(),
+                       now=BEFORE_RSA_EXPIRY)
+        expiring = sos.expiring_certificates(doc, 30)
+        self.assertEqual(len(expiring), 1)
+        entry = expiring[0]
+        self.assertEqual(entry['sha256'], EXPECTED['rsa_multi_san.pem']['sha256'])
+        self.assertEqual((entry['daysLeft'], entry['expired'], entry['isNewCert']),
+                         (12, False, False))
+        self.assertEqual(entry['notAfter'], '2034-06-01T00:00:00.000Z')
+        self.assertEqual(entry['subjectCN'], WWW)
+        self.assertEqual(entry['endpoints'], [
+            {'server': 'web', 'ip': '10.0.0.1', 'port': 443, 'names': [WWW], 'defaultCert': False},
+            {'server': 'edge', 'ip': '10.0.0.2', 'port': 443, 'names': [WWW], 'defaultCert': True}])
+        lb = next(row for row in doc['results'] if row['server'] == 'lb'
+                  and row['name'] == 'nothere.example.com')
+        self.assertEqual((lb['status'], lb['certDaysLeft']), ('NOT_HOSTED', 12))
+        self.assertEqual(sos.expiring_certificates(doc, 11), [])
+        self.assertEqual(len(sos.expiring_certificates(doc, 12)), 1)
+
+    def test_expired_certificates_come_first(self):
+        now = datetime(2034, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
+        doc = scan_doc([sos.Server('web', ['10.0.0.1'])], {'10.0.0.1': by_old_or_new(EC_DER)},
+                       now=now)
+        expiring = sos.expiring_certificates(doc, 36500 // 2)  # EC expires 2051 too
+        self.assertEqual([e['subjectCN'] for e in expiring], [WWW, '*.wild.example.net'])
+        self.assertEqual((expiring[0]['daysLeft'], expiring[0]['expired']), (-3, True))
+        self.assertIn('EXPIRED 3 days ago', sos.expiring_text(expiring[0]))
+        self.assertEqual(sos.expiring_certificates(doc, 0)[0]['daysLeft'], -3)
+
+    def test_summary_json_and_nothing_to_warn(self):
+        report = scan_report([sos.Server('web', ['10.0.0.1'])],
+                             {'10.0.0.1': by_old_or_new(RENEWED_DER)}, now=BEFORE_RSA_EXPIRY)
+        monitor = sos.build_monitor(report, warn_days=30)
+        self.assertIsNone(monitor.changes)
+        text = sos.render_summary(report, monitor=monitor)
+        self.assertIn('Served certificates expiring within 30 days: 1', text)
+        self.assertIn('www.example-test.com.tr | expires 2034-06-01 (12 days left)', text)
+        self.assertIn('      web 10.0.0.1:443: www.example-test.com.tr', text)
+        doc = sos.report_to_dict(report, monitor)
+        self.assertEqual(doc['options']['warnDays'], 30)
+        self.assertEqual(len(doc['expiring']), 1)
+        self.assertNotIn('changes', doc)
+        self.assertNotIn('baseline', doc)
+        quiet = sos.build_monitor(report, warn_days=5)
+        self.assertIn('Served certificates expiring within 5 days: none',
+                      sos.render_summary(report, monitor=quiet))
+        self.assertEqual(sos.report_to_dict(report, quiet)['expiring'], [])
+        # no monitoring: the plain document, byte for byte
+        self.assertEqual(sos.render_json(report), sos.render_json(report, monitor=None))
+        self.assertNotIn('warnDays', sos.report_to_dict(report)['options'])
+
+
+class ChangeSummaryTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sos.report_to_dict(fleet_before())
+        cls.report = fleet_after()
+        cls.monitor = sos.build_monitor(cls.report, cls.before, 'last.json')
+
+    def test_summary_section(self):
+        text = sos.render_summary(self.report, width=1000, monitor=self.monitor)
+        lines = text.splitlines()
+        head = next(i for i, line in enumerate(lines) if line.startswith('Changes since'))
+        self.assertEqual(lines[head], 'Changes since the baseline (last.json, scan of %s): 9'
+                         % sos._iso_minute(self.before['finishedAt']))
+        self.assertLess(head, next(i for i, line in enumerate(lines)
+                                   if line.startswith('Servers that need')))
+        section = lines[head + 1:lines.index('', head)]
+        self.assertEqual(len(section), 9)
+        section = '\n'.join(section)
+        # on a 100-column terminal long changes wrap under their text
+        narrow = sos.render_summary(self.report, width=100, monitor=self.monitor).splitlines()
+        start = narrow.index(lines[head])
+        block = narrow[start + 1:narrow.index('', start)]
+        self.assertGreater(len(block), 9)
+        self.assertTrue(all(len(line) <= 100 for line in block), block)
+        self.assertTrue(all(line.startswith(' ' * 13) for line in block
+                            if not line.startswith('  ' + line.strip()[:1])), block)
+        for needle in (
+                '  NEW        name extra.example.com: now probed, on 6 endpoint(s): NOT_HOSTED 6',
+                '  UPDATED    web 10.0.0.1:443 a.wild.example.net: NEEDS_UPDATE -> UPDATED, '
+                'certificate changed (CN *.wild.example.net): expires 2051-01-01, sha256 1f7337a3 '
+                '-> expires 2052-01-01, sha256 773223c6',
+                '  REGRESSED  upd 10.0.0.2:443 a.wild.example.net: UPDATED -> NEEDS_UPDATE',
+                '  FAILED     db 10.0.0.3:443: OPEN (2 names: UPDATED 1, NEEDS_UPDATE 1) -> CLOSED',
+                '  RECOVERED  down 10.0.0.5:443: CLOSED',
+                '  FAILED     flaky 10.0.0.6:443 a.wild.example.net: UPDATED -> TIMEOUT '
+                '(timed out)',
+                '  UNHOSTED   shared-a, shared-b 10.0.0.7:443 a.wild.example.net: UPDATED -> '
+                'NOT_HOSTED, certificate changed: CN *.wild.example.net, expires 2052-01-01, '
+                'sha256 773223c6 -> CN legacy.example.org, expires 2035-01-01, sha256 18a96600',
+                '  NEW        new 10.0.0.8:443: new endpoint, OPEN (3 names: UPDATED 1, '
+                'NEEDS_UPDATE 1, NOT_HOSTED 1)',
+                '  GONE       gone 10.0.0.4:443: excluded by --exclude 10.0.0.4 now; was OPEN '
+                '(2 names: NEEDS_UPDATE 2)'):
+            self.assertIn(needle, section)
+        colored = sos.render_summary(self.report, color=True, monitor=self.monitor)
+        self.assertIn('\x1b[31;1mREGRESSED\x1b[0m', colored)
+        self.assertIn('\x1b[32mRECOVERED\x1b[0m', colored)
+
+    def test_long_lists_are_capped_without_show_all(self):
+        many = [dict(self.monitor.changes[1], name='n%d.example.com' % i) for i in range(60)]
+        monitor = sos.MonitorResult(baseline=self.monitor.baseline, changes=many)
+        text = sos.render_summary(self.report, width=200, monitor=monitor)
+        self.assertIn(' n49.example.com:', text)
+        self.assertNotIn(' n50.example.com:', text)
+        self.assertIn('... and 10 more - use --show-all or the --json report to list them.', text)
+        everything = sos.render_summary(self.report, width=200, show_all=True, monitor=monitor)
+        self.assertIn('n59.example.com', everything)
+        self.assertNotIn('... and 10 more', everything)
+
+    def test_no_changes_and_first_run(self):
+        report = fleet_before()
+        same = sos.build_monitor(report, sos.report_to_dict(report), 'last.json')
+        self.assertIn('Changes since the baseline (last.json, scan of ',
+                      sos.render_summary(report, monitor=same))
+        self.assertIn('): none', sos.render_summary(report, monitor=same))
+        first = sos.build_monitor(report, None, 'last.json')
+        self.assertEqual((first.changes, first.baseline), ([], {'file': 'last.json',
+                                                                'missing': True}))
+        self.assertIn('Baseline last.json does not exist yet: nothing to compare (first run).',
+                      sos.render_summary(report, monitor=first))
+        doc = sos.report_to_dict(report, first)
+        self.assertEqual((doc['baseline'], doc['changes']), (first.baseline, []))
+
+    def test_untrusted_text_is_escaped(self):
+        before = json.loads(json.dumps(self.before))
+        for row in before['results']:
+            if row['ip'] == '10.0.0.2' and row['name'] == WILD:
+                row['certSubjectCN'] = '\x1b]0;owned\x07<!channel>'
+                row['server'] = 'upd\x1b[2K'
+        monitor = sos.build_monitor(self.report, before, 'last\x1b[1A.json')
+        text = sos.render_summary(self.report, monitor=monitor)
+        plain = re.sub(r'\x1b\[[0-9;]*m', '', text)
+        self.assertNotIn('\x1b', plain)
+        self.assertNotIn('\x07', plain)
+        self.assertIn('last\\x1b[1A.json', plain)
+        title, items, _footer = sos.notification_message(sos.report_to_dict(self.report, monitor),
+                                                         monitor)
+        self.assertFalse(any('\x1b' in line or '\x07' in line for line in items))
+        self.assertTrue(any('\\x1b]0;owned\\x07<!channel>' in line for line in items))
+        _url, slack = sos.build_notification('slack', 'https://hooks.slack.com/services/T/B/x',
+                                             sos.report_to_dict(self.report, monitor), monitor)
+        self.assertNotIn('<!channel>', slack['text'])
+        self.assertIn('&lt;!channel&gt;', slack['text'])
+
+
+# --- --notify ---------------------------------------------------------------------------
+
+SLACK_URL = 'https://hooks.slack.com/services/' + 'T00000000/B00000000/' + 'X' * 24
+TELEGRAM_URL = ('https://api.telegram.org/bot123456:TEST-token_value/sendMessage'
+                '?chat_id=-1001234567890')
+
+
+class NotifyFormatTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = fleet_after(now=BEFORE_RSA_EXPIRY)
+        cls.monitor = sos.build_monitor(cls.report, sos.report_to_dict(fleet_before()),
+                                        'last.json', warn_days=30)
+        cls.doc = sos.report_to_dict(cls.report, cls.monitor)
+
+    def test_detect_notify_format(self):
+        table = {
+            SLACK_URL: 'slack',
+            'https://hooks.slack.com/triggers/T000/111/abc': 'slack',
+            'https://discord.com/api/webhooks/123/token-value': 'discord',
+            'https://discordapp.com/api/webhooks/123/token-value': 'discord',
+            'https://discord.com/api/webhooks/123/token-value/slack': 'slack',
+            'https://discord.com/channels/123': 'json',
+            TELEGRAM_URL: 'telegram',
+            'https://example.webhook.office.com/webhookb2/abc@def/IncomingWebhook/123/456': 'teams',
+            'https://outlook.office.com/webhook/abc/IncomingWebhook/def/ghi': 'teams',
+            'https://prod-00.westeurope.logic.azure.com:443/workflows/abc/triggers/manual/paths/'
+            'invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=abc': 'teams',
+            'https://default0000.00.environment.api.powerplatform.com:443/powerautomate/'
+            'automations/direct/workflows/abc/triggers/manual/paths/invoke?sig=abc': 'teams',
+            'https://HOOKS.SLACK.COM/services/a/b/c': 'slack',
+            'https://example.com/hooks/ssl': 'json',
+            'http://127.0.0.1:8080/hook': 'json',
+        }
+        for url, want in table.items():
+            self.assertEqual(sos.detect_notify_format(url), want, url)
+            self.assertEqual(sos.check_notify_url(url), want, url)
+
+    def test_bad_urls_are_refused_without_repeating_them(self):
+        secret = 'SECRET0token'
+        cases = {
+            'ftp://example.com/%s' % secret: 'http:// or https://',
+            'file:///etc/%s' % secret: 'http:// or https://',
+            'https:///%s' % secret: 'http:// or https://',
+            'https://example.com:port/%s' % secret: 'not a valid URL',
+            'https://example.com/%s x' % secret: 'spaces or control characters',
+            'https://example.com/%s\n' % secret: 'spaces or control characters',
+            'https://api.telegram.org/bot1:%s/sendMessage' % secret: 'Telegram URL looks like',
+            'https://api.telegram.org/bot1:%s/getMe?chat_id=1' % secret: 'Telegram URL looks like',
+        }
+        for url, needle in cases.items():
+            with self.subTest(url=url):
+                with self.assertRaises(sos.UsageError) as ctx:
+                    sos.check_notify_url(url, source=sos.NOTIFY_ENV)
+                self.assertIn(needle, str(ctx.exception))
+                self.assertIn(sos.NOTIFY_ENV, str(ctx.exception))
+                self.assertNotIn(secret, str(ctx.exception))
+        with self.assertRaises(sos.UsageError):
+            sos.check_notify_url('http://127.0.0.1/hook', 'telegram')  # no chat_id
+        self.assertEqual(sos.check_notify_url('http://127.0.0.1/bot1:x/sendMessage?chat_id=5',
+                                              'telegram'), 'telegram')
+
+    def test_redaction_and_hosts(self):
+        text = ('POST %s failed: T00000000/B00000000 no_service XXXXXXXXXXXXXXXXXXXXXXXX'
+                % SLACK_URL)
+        redacted = sos.redact_url(text, SLACK_URL)
+        self.assertNotIn('XXXXXXXXXXXXXXXXXXXXXXXX', redacted)
+        self.assertNotIn('T00000000', redacted)
+        self.assertIn('no_service', redacted)
+        url = 'https://user:pa55word@example.com/hook?sig=s1gnature%2Fvalue&api-version=1'
+        redacted = sos.redact_url('x user:pa55word s1gnature/value s1gnature%2Fvalue', url)
+        self.assertNotIn('pa55word', redacted)
+        self.assertNotIn('s1gnature', redacted)
+        self.assertEqual(sos.notify_host(SLACK_URL), 'hooks.slack.com')
+        self.assertEqual(sos.notify_host('http://[::1]:8080/x'), '[::1]:8080')
+        self.assertEqual(sos.notify_host(url), 'example.com')
+        self.assertTrue(sos.notify_is_plaintext('http://example.com/hook'))
+        for url in ('https://example.com/hook', 'http://127.0.0.1:9/x', 'http://localhost/x',
+                    'http://[::1]/x'):
+            self.assertFalse(sos.notify_is_plaintext(url), url)
+
+    def test_title_items_and_footer(self):
+        title, items, footer = sos.notification_message(self.doc, self.monitor)
+        self.assertEqual(title, 'SSL origin scan: 9 changes since %s; 1 certificate expiring '
+                         'within 30 days' % sos._iso_minute(self.monitor.baseline['finishedAt']))
+        self.assertEqual(len(items), 10)  # 9 changes + 1 certificate
+        self.assertTrue(items[1].startswith('- UPDATED web 10.0.0.1:443 a.wild.example.net: '))
+        self.assertTrue(items[-1].startswith('- EXPIRES CN www.example-test.com.tr, expires '
+                                             '2034-06-01'))
+        self.assertIn('served by web 10.0.0.1:443, upd 10.0.0.2:443, down 10.0.0.5:443 +4',
+                      items[-1])
+        # the excluded server is not scanned; flaky (TIMEOUT) and shared (NOT_HOSTED) not counted
+        self.assertEqual(footer[0], 'Scan of 2034-05-20 00:00 UTC: 8 server(s), 7 endpoint(s) '
+                         '(6 open), ports 443, names a.wild.example.net, '
+                         'www.example-test.com.tr, extra.example.com.')
+        self.assertEqual(footer[1], 'Servers that need the new certificate: 1; serving it: 3.')
+        report = fleet_before()
+        quiet = sos.build_monitor(report, sos.report_to_dict(report), 'last.json', warn_days=5)
+        title, items, _ = sos.notification_message(sos.report_to_dict(report, quiet), quiet)
+        self.assertEqual(items, [])
+        self.assertIn('no changes since', title)
+        self.assertIn('no certificate expiring within 5 days', title)
+        self.assertFalse(sos.should_notify(quiet))
+        self.assertTrue(sos.should_notify(quiet, always=True))
+        self.assertTrue(sos.should_notify(self.monitor))
+        self.assertFalse(sos.should_notify(None))
+        self.assertEqual(sos.notification_message(sos.report_to_dict(report))[0],
+                         'SSL origin scan: finished')
+
+    def test_payloads(self):
+        url, slack = sos.build_notification('slack', SLACK_URL, self.doc, self.monitor)
+        self.assertEqual((url, list(slack)), (SLACK_URL, ['text']))
+        self.assertTrue(slack['text'].startswith('*SSL origin scan: 9 changes since '))
+        self.assertIn('\n```\n- NEW name extra.example.com', slack['text'])
+        self.assertIn('NEEDS_UPDATE -&gt; UPDATED', slack['text'])
+        self.assertTrue(slack['text'].endswith('```'))
+
+        _, discord = sos.build_notification('discord', 'https://discord.com/api/webhooks/1/x',
+                                            self.doc, self.monitor)
+        self.assertEqual(discord['allowed_mentions'], {'parse': []})
+        self.assertTrue(discord['content'].startswith('**SSL origin scan: '))
+        self.assertLessEqual(len(discord['content']), 2000)
+
+        _, teams = sos.build_notification('teams', 'https://example.webhook.office.com/x',
+                                          self.doc, self.monitor)
+        self.assertEqual(teams['type'], 'message')
+        card = teams['attachments'][0]
+        self.assertEqual(card['contentType'], 'application/vnd.microsoft.card.adaptive')
+        self.assertEqual(card['content']['type'], 'AdaptiveCard')
+        blocks = card['content']['body']
+        self.assertTrue(all(block['type'] == 'RichTextBlock' for block in blocks))
+        self.assertEqual(blocks[0]['inlines'][0]['weight'], 'Bolder')
+        self.assertTrue(blocks[0]['inlines'][0]['text'].startswith('SSL origin scan: 9 changes'))
+        self.assertEqual(len(blocks), 1 + 10 + 2)  # title, items, footer
+
+        url, telegram = sos.build_notification('telegram', TELEGRAM_URL, self.doc, self.monitor)
+        self.assertEqual(url, 'https://api.telegram.org/bot123456:TEST-token_value/sendMessage')
+        self.assertEqual(telegram['chat_id'], -1001234567890)
+        self.assertTrue(telegram['text'].startswith('SSL origin scan: 9 changes since '))
+        self.assertEqual(telegram['link_preview_options'], {'is_disabled': True})
+        url, telegram = sos.build_notification(
+            'telegram', 'https://api.telegram.org/bot1:x/sendMessage?chat_id=%40channel'
+            '&message_thread_id=7', self.doc, self.monitor)
+        self.assertEqual(url, 'https://api.telegram.org/bot1:x/sendMessage?message_thread_id=7')
+        self.assertEqual(telegram['chat_id'], '@channel')
+
+        _, generic = sos.build_notification('json', 'https://example.com/hook', self.doc,
+                                            self.monitor)
+        self.assertEqual(set(generic), {'tool', 'version', 'title', 'text', 'finishedAt',
+                                        'summary', 'baseline', 'changes', 'changesTotal',
+                                        'warnDays', 'expiring'})
+        self.assertEqual(generic['changes'], self.monitor.changes)
+        self.assertEqual((generic['changesTotal'], generic['warnDays']), (9, 30))
+        self.assertEqual(generic['summary'], self.doc['summary'])
+        json.dumps(generic)  # serialisable
+
+    def test_long_messages_fit_every_format(self):
+        many = [dict(self.monitor.changes[1], name='host-%03d.example.com' % i)
+                for i in range(300)]
+        monitor = sos.MonitorResult(baseline=self.monitor.baseline, changes=many)
+        doc = sos.report_to_dict(self.report, monitor)
+        limits = {'slack': 4000, 'discord': 2000, 'telegram': 4096}
+        for fmt, limit in limits.items():
+            _, payload = sos.build_notification(fmt, TELEGRAM_URL, doc, monitor)
+            text = payload.get('text') or payload.get('content')
+            self.assertLessEqual(len(text), limit, fmt)
+            self.assertIn('more', text)
+            self.assertIn('Scan of ', text)  # the footer always makes it
+        _, generic = sos.build_notification('json', 'https://example.com/hook', doc, monitor)
+        self.assertEqual((len(generic['changes']), generic['changesTotal']), (300, 300))
+        many = many * 2
+        monitor = sos.MonitorResult(baseline=self.monitor.baseline, changes=many)
+        _, generic = sos.build_notification('json', 'https://example.com/hook', doc, monitor)
+        self.assertEqual((len(generic['changes']), generic['changesTotal']),
+                         (sos.NOTIFY_MAX_JSON_CHANGES, 600))
+
+
+class WebhookReceiver:
+    """A local webhook: records each request and answers from a script.
+
+    ``script`` items are a status, or ``(status, headers, body)``; 200 once it runs out.
+    ``delay`` seconds pass before each answer.
+    """
+
+    def __init__(self, script=(), delay=0.0) -> None:
+        self.requests = []  # type: List[Dict[str, object]]
+        self.script = list(script)
+        self.delay = delay
+        receiver = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _record(self, method: str) -> None:
+                length = int(self.headers.get('Content-Length') or 0)
+                receiver.requests.append({'method': method, 'path': self.path,
+                                          'headers': dict(self.headers),
+                                          'body': self.rfile.read(length)})
+                if receiver.delay:
+                    time.sleep(receiver.delay)
+                answer = receiver.script.pop(0) if receiver.script else 200
+                status, headers, body = (answer if isinstance(answer, tuple)
+                                         else (answer, {}, b'ok'))
+                self.send_response(status)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:  # noqa: N802
+                self._record('POST')
+
+            def do_GET(self) -> None:  # noqa: N802
+                self._record('GET')
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server.handle_error = lambda request, address: None  # a client that gave up
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True,
+                                       kwargs={'poll_interval': 0.02})
+        self.thread.start()
+
+    def url(self, path: str) -> str:
+        return 'http://127.0.0.1:%d%s' % (self.server.server_address[1], path)
+
+    def payloads(self):
+        return [json.loads(r['body'].decode('utf-8')) for r in self.requests
+                if r['method'] == 'POST']
+
+    def __enter__(self) -> 'WebhookReceiver':
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def no_proxy():
+    """urllib must not route the local webhook through a proxy of this machine."""
+    return mock.patch.dict(os.environ, {'NO_PROXY': '*', 'no_proxy': '*'})
+
+
+class NotifyDeliveryTests(unittest.TestCase):
+    """--notify end to end through a local http.server (no Internet)."""
+
+    TOKEN = 'SECRETTOKEN0123456789'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.before, cls.after = fleet_before(), fleet_after()
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.baseline = os.path.join(cls.tmp.name, 'last.json')
+        Path(cls.baseline).write_text(sos.render_json(cls.before), encoding='utf-8')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_cli(self, *args, report=None, script=(), delay=0.0, path=None, env=False):
+        """run_main with a scan that returns ``report`` (fleet_after) and a local webhook
+        whose URL replaces the argument ``URL`` (or goes into the environment)."""
+        with WebhookReceiver(script, delay) as hook, no_proxy(), contextlib.ExitStack() as stack:
+            url = hook.url(path or '/services/T0/B0/%s' % self.TOKEN)
+            stack.enter_context(mock.patch.object(sos, 'run_scan',
+                                                  return_value=report or self.after))
+            stack.enter_context(mock.patch.object(sos, 'NOTIFY_RETRY_DELAY', 0.01))
+            stack.enter_context(mock.patch.object(sos, 'NOTIFY_TIMEOUT', 5.0))
+            stack.enter_context(mock.patch.dict(os.environ, {sos.NOTIFY_ENV: url if env else ''}))
+            args = tuple(url if arg == 'URL' else arg for arg in args)
+            code, out, err = run_main('-t', '127.0.0.1', '-n', WILD, '--no-color', *args)
+        self.assertNotIn(self.TOKEN, out + err)
+        return code, out, err, hook
+
+    def test_each_format_through_a_local_webhook(self):
+        for fmt in ('slack', 'teams', 'discord', 'telegram', 'json'):
+            path = ('/bot123456:%s/sendMessage?chat_id=-1001234567890' % self.TOKEN
+                    if fmt == 'telegram' else None)
+            with self.subTest(fmt=fmt):
+                code, _out, err, hook = self.run_cli('--baseline', self.baseline, '--notify',
+                                                     'URL', '--notify-format', fmt, path=path)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(len(hook.requests), 1)
+                request = hook.requests[0]
+                self.assertEqual(request['method'], 'POST')
+                headers = {k.lower(): v for k, v in request['headers'].items()}
+                self.assertEqual(headers['content-type'], 'application/json; charset=utf-8')
+                self.assertTrue(headers['user-agent'].startswith('ssl_origin_scan/'))
+                payload = hook.payloads()[0]
+                self.assertIn('Notification sent (%s, 127.0.0.1:' % fmt, err)
+                if fmt == 'slack':
+                    self.assertTrue(payload['text'].startswith('*SSL origin scan: 9 changes'))
+                elif fmt == 'teams':
+                    self.assertEqual(payload['attachments'][0]['content']['type'],
+                                     'AdaptiveCard')
+                elif fmt == 'discord':
+                    self.assertEqual(payload['allowed_mentions'], {'parse': []})
+                elif fmt == 'telegram':
+                    self.assertEqual(request['path'], '/bot123456:%s/sendMessage' % self.TOKEN)
+                    self.assertEqual(payload['chat_id'], -1001234567890)
+                    self.assertIn('9 changes', payload['text'])
+                else:
+                    self.assertEqual(len(payload['changes']), 9)
+                    self.assertEqual(payload['baseline']['file'], self.baseline)
+
+    def test_environment_variable_and_when_to_send(self):
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, env=True)
+        self.assertEqual((code, len(hook.requests)), (0, 1), err)
+        self.assertEqual(hook.payloads()[0]['tool'], 'ssl_origin_scan')  # json: a local URL
+        # nothing changed, nothing expiring: no message, unless --notify-always
+        same = os.path.join(self.tmp.name, 'same.json')
+        Path(same).write_text(sos.render_json(self.after), encoding='utf-8')
+        code, _, err, hook = self.run_cli('--baseline', same, '--notify', 'URL', '--warn-days', '5')
+        self.assertEqual((code, hook.requests), (0, []), err)
+        self.assertNotIn('Notification sent', err)
+        code, _, err, hook = self.run_cli('--baseline', same, '--notify', 'URL', '--notify-always')
+        self.assertEqual((code, len(hook.requests)), (0, 1), err)
+        self.assertIn('no changes since', hook.payloads()[0]['title'])
+        # without --baseline / --warn-days / --notify-always there is nothing to send
+        code, _, err, hook = self.run_cli('--notify', 'URL')
+        self.assertEqual((code, hook.requests), (0, []))
+        self.assertIn('--notify sends a message only with --baseline', err)
+        # --warn-days alone
+        report = scan_report([sos.Server('web', ['10.0.0.1'])],
+                             {'10.0.0.1': by_old_or_new(RENEWED_DER)}, now=BEFORE_RSA_EXPIRY)
+        code, out, err, hook = self.run_cli('--warn-days', '30', '--notify', 'URL', report=report)
+        self.assertEqual((code, len(hook.requests)), (0, 1), err)
+        self.assertIn('1 certificate expiring within 30 days', hook.payloads()[0]['title'])
+        self.assertIn('Served certificates expiring within 30 days: 1', out)
+
+    def test_retry_once_on_server_errors_and_429(self):
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                          script=[500, 200])
+        self.assertEqual((code, len(hook.requests)), (0, 2), err)
+        self.assertIn('Notification sent', err)
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                          script=[(429, {'Retry-After': '0'}, b'slow down'), 204])
+        self.assertEqual((code, len(hook.requests)), (0, 2), err)
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                          script=[503, 503, 200])
+        self.assertEqual((code, len(hook.requests)), (0, 2))  # one retry, not more
+        self.assertIn('error: notification failed (json, 127.0.0.1:', err)
+        self.assertIn('HTTP 503', err)
+
+    def test_failures_are_reported_redacted_and_keep_the_exit_code(self):
+        body = ('no_service for /services/T0/B0/%s' % self.TOKEN).encode('ascii')
+        code, out, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                            script=[(404, {}, body)])
+        self.assertEqual((code, len(hook.requests)), (0, 1))  # a 4xx is not retried
+        self.assertIn('HTTP 404 Not Found: no_service for ***', err)
+        self.assertIn('Changes since the baseline', out)
+        code, _, err, _ = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                       '--fail-on-notify-error', script=[(404, {}, body)])
+        self.assertEqual(code, sos.EXIT_NOTIFY_ERROR)
+        self.assertEqual(sos.EXIT_NOTIFY_ERROR, 5)
+        # a redirect is not followed: the POST would turn into a GET without the message
+        code, _, err, hook = self.run_cli('--baseline', self.baseline, '--notify', 'URL',
+                                          script=[(302, {'Location': '/elsewhere'}, b'')])
+        self.assertEqual([r['method'] for r in hook.requests], ['POST'])
+        self.assertIn('HTTP 302 Found (a redirect; not followed)', err)
+        # -q hides the success line, never the failure
+        code, _, err, _ = self.run_cli('--baseline', self.baseline, '--notify', 'URL', '-q',
+                                       script=[(400, {}, b'bad payload')])
+        self.assertIn('error: notification failed', err)
+        code, _, err, _ = self.run_cli('--baseline', self.baseline, '--notify', 'URL', '-q')
+        self.assertEqual(err, '')
+
+    def test_timeouts_and_unreachable_webhooks(self):
+        with mock.patch.object(sos, 'NOTIFY_TIMEOUT', 0.3):
+            with WebhookReceiver(delay=1.5) as hook, no_proxy(), \
+                    mock.patch.object(sos, 'run_scan', return_value=self.after), \
+                    mock.patch.object(sos, 'NOTIFY_RETRY_DELAY', 0.01):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline',
+                                        self.baseline, '--notify', hook.url('/x/%s' % self.TOKEN),
+                                        '--fail-on-notify-error')
+                attempts = len(hook.requests)
+        self.assertEqual((code, attempts), (sos.EXIT_NOTIFY_ERROR, 2), err)
+        self.assertIn('timed out', err)
+        self.assertNotIn(self.TOKEN, err)
+
+        class HangUp(_Listener):
+            """Accepts and closes: a proxy or a webhook host that drops the request."""
+
+            def handle(self, conn: socket.socket) -> None:
+                conn.close()
+
+        hang_up = HangUp()
+        try:
+            with no_proxy(), mock.patch.object(sos, 'run_scan', return_value=self.after), \
+                    mock.patch.object(sos, 'NOTIFY_RETRY_DELAY', 0.01):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline',
+                                        self.baseline, '--notify', 'http://127.0.0.1:%d/x/%s'
+                                        % (hang_up.port, self.TOKEN))
+        finally:
+            hang_up.close()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(hang_up._conns), 2)  # retried once
+        self.assertIn('error: notification failed (json, 127.0.0.1:', err)
+        self.assertNotIn(self.TOKEN, err)
+
+    def test_error_answers_of_webhook_services(self):
+        answers = {
+            b'{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}':
+                'Bad Request: chat not found',                                  # Telegram
+            b'{"message": "Unknown Webhook", "code": 10015}': 'Unknown Webhook',  # Discord
+            b'{"error":{"code":"TriggerInputSchemaMismatch","message":"The input body '
+            b'for trigger manual of type Request did not match"}}':
+                'The input body for trigger manual of type Request did not match',
+            b'invalid_payload': 'invalid_payload',                             # Slack
+            b'  line one\n\n  line two ': 'line one line two',
+            b'{"error": 5}': '{"error": 5}',
+            b'': '',
+        }
+        for raw, want in answers.items():
+            self.assertEqual(sos._response_detail(raw), want, raw)
+        with WebhookReceiver([(400, {}, b'{"description": "Bad Request: chat not found"}')]) \
+                as hook, no_proxy():
+            problem = sos.send_notification(hook.url('/bot1:x/sendMessage'), {'text': 'x'})
+        self.assertEqual(problem, 'HTTP 400 Bad Request: Bad Request: chat not found')
+
+    def test_send_notification_directly(self):
+        with WebhookReceiver([500, 500]) as hook, no_proxy():
+            slept = []
+            problem = sos.send_notification(hook.url('/hook'), {'text': 'x'}, retries=1,
+                                            retry_delay=0.25, sleep=slept.append)
+        self.assertIn('HTTP 500', problem)
+        self.assertEqual((len(hook.requests), slept), (2, [0.25]))
+        with WebhookReceiver([500]) as hook, no_proxy():
+            problem = sos.send_notification(hook.url('/hook'), {'text': 'x'}, retries=0)
+        self.assertEqual(len(hook.requests), 1)
+        self.assertIsNotNone(problem)
+
+
+class MonitorCliTests(unittest.TestCase):
+
+    def test_baseline_changes_json_and_fail_on_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, out_json = os.path.join(tmp, 'base.json'), os.path.join(tmp, 'now.json')
+            Path(base).write_text(sos.render_json(fleet_before()), encoding='utf-8')
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_after()):
+                code, out, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', base,
+                                          '--json', out_json, '--no-color')
+                self.assertEqual(code, 0, err)
+                doc = read_json(out_json)
+                code, _, _ = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', base,
+                                      '--fail-on-change', '-q')
+                self.assertEqual(code, sos.EXIT_CHANGED)
+                self.assertEqual(sos.EXIT_CHANGED, 4)
+                # 4 wins over 1 (NEEDS_UPDATE), 3 (a report not written) over 4
+                code, _, _ = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', base,
+                                      '--fail-on-change', '--fail-on-needs-update', '-q')
+                self.assertEqual(code, sos.EXIT_CHANGED)
+                with mock.patch.object(sos, '_write_output',
+                                       side_effect=sos.UsageError('cannot write')):
+                    code, _, _ = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', base,
+                                          '--fail-on-change', '--json', out_json, '-q')
+                self.assertEqual(code, sos.EXIT_OUTPUT_ERROR)
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_before()):
+                code, out2, _ = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', base,
+                                         '--fail-on-change', '--fail-on-needs-update', '-q')
+            self.assertEqual(code, sos.EXIT_NEEDS_UPDATE)  # nothing changed
+            self.assertIn('Changes since the baseline (%s, scan of ' % base, out2)
+        self.assertIn('Changes since the baseline', out)
+        self.assertEqual(len(doc['changes']), 9)
+        self.assertEqual(doc['baseline']['file'], base)
+        self.assertFalse(doc['baseline']['missing'])
+        self.assertNotIn('expiring', doc)
+
+    def test_same_file_as_baseline_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            args = ('-t', '127.0.0.1', '-n', WILD, '--baseline', state, '--json', state,
+                    '--fail-on-change', '--no-color')
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_before()):
+                code, out, err = run_main(*args)
+            self.assertEqual(code, 0, err)
+            self.assertIn('does not exist yet', out)
+            self.assertTrue(read_json(state)['baseline']['missing'])
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_after()):
+                code, out, _ = run_main(*args)
+            self.assertEqual(code, sos.EXIT_CHANGED)
+            self.assertEqual(len(read_json(state)['changes']), 9)  # compared with run 1
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_after()):
+                code, out, _ = run_main(*args)
+            self.assertEqual(code, 0)  # compared with run 2: nothing new
+            self.assertEqual(read_json(state)['changes'], [])
+            # the report is replaced whole or not at all: a write that fails (a full disk)
+            # keeps the last baseline, and leaves no temporary file behind
+            kept = Path(state).read_bytes()
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_before()), \
+                    mock.patch.object(sos.os, 'replace',
+                                      side_effect=OSError(28, 'No space left on device')):
+                code, out, err = run_main(*args)
+            self.assertEqual(code, sos.EXIT_OUTPUT_ERROR)
+            self.assertIn('cannot write %s: No space left on device' % state, err)
+            self.assertIn('Changes since the baseline', out)
+            self.assertEqual(Path(state).read_bytes(), kept)
+            self.assertEqual(os.listdir(tmp), ['state.json'])
+            # another --json file is written in place, as without --baseline
+            other = os.path.join(tmp, 'other-report.json')
+            with mock.patch.object(sos, 'run_scan', return_value=fleet_before()), \
+                    mock.patch.object(sos.os, 'replace', side_effect=AssertionError('in place')):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                        '--json', other, '-q')
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(read_json(other)['changes']), 9)
+            os.remove(other)
+            # a missing baseline that is not also the --json report is an error
+            with mock.patch.object(sos, 'run_scan', side_effect=AssertionError('must not scan')):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline',
+                                        os.path.join(tmp, 'other.json'), '--json', state)
+            self.assertEqual(code, 2)
+            self.assertIn('does not exist', err)
+
+    def test_usage_errors_stop_before_the_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, 'bad.json')
+            Path(bad).write_text('{"tool": "something else"}', encoding='utf-8')
+            secret = 'SECRETTOKEN0123456789'
+            cases = [
+                (('--baseline', bad), 'not a --json report'),
+                (('--fail-on-change',), '--fail-on-change needs --baseline'),
+                (('--baseline', '-'), '--baseline reads a file, not stdin'),
+                (('--warn-days', '-1'), '--warn-days must be between 0 and 3650'),
+                (('--warn-days', '3651'), '--warn-days must be between 0 and 3650'),
+                (('--warn-days', 'soon'), 'invalid int value'),
+                (('--notify-always',), 'need --notify URL or DOMAINSCOPE_NOTIFY_URL'),
+                (('--fail-on-notify-error',), 'need --notify URL'),
+                (('--notify-format', 'slack'), 'need --notify URL'),
+                (('--notify-format', 'irc', '--notify', 'https://example.com/x'), 'invalid choice'),
+                (('--notify', 'ftp://example.com/%s' % secret), '--notify: needs an http://'),
+                (('--notify', 'https://api.telegram.org/bot1:%s/sendMessage' % secret),
+                 'Telegram URL looks like'),
+            ]
+            for args, needle in cases:
+                with self.subTest(args=args):
+                    with mock.patch.object(sos, 'run_scan',
+                                           side_effect=AssertionError('must not scan')), \
+                            mock.patch.dict(os.environ, {sos.NOTIFY_ENV: ''}):
+                        code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, *args)
+                    self.assertEqual(code, 2)
+                    self.assertIn(needle, err)
+                    self.assertNotIn(secret, err)
+                    self.assertNotIn('Traceback', err)
+            with mock.patch.object(sos, 'run_scan', side_effect=AssertionError('must not scan')), \
+                    mock.patch.dict(os.environ, {sos.NOTIFY_ENV: 'gopher://x/%s' % secret}):
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD)
+            self.assertEqual(code, 2)
+            self.assertIn('DOMAINSCOPE_NOTIFY_URL: needs an http://', err)
+            self.assertNotIn(secret, err)
+
+    def test_plain_http_to_another_host_is_a_warning(self):
+        with mock.patch.object(sos, 'run_scan', return_value=fleet_before()), \
+                mock.patch.object(sos, 'send_notification', return_value=None) as send:
+            code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--notify',
+                                    'http://example.com/hook', '--notify-always')
+        self.assertEqual(code, 0)
+        self.assertIn('--notify uses http:// to another host', err)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args[0][0], 'http://example.com/hook')
+
+    def test_documented_commands_parse(self):
+        """The About page's examples and the --help examples are valid command lines."""
+        about = (ROOT / 'assets' / 'js' / 'views' / 'about.js').read_text(encoding='utf-8')
+        commands = re.findall(r"cmd: '(python3 ssl_origin_scan\.py [^']+)'", about)
+        self.assertGreaterEqual(len(commands), 6)
+        self.assertTrue(any('--baseline last.json --json last.json' in c for c in commands))
+        epilog = sos.EPILOG.replace('\\\n', ' ')
+        helped = re.findall(r'^ +(python3 ssl_origin_scan\.py .+)$', epilog, re.M)
+        self.assertGreaterEqual(len(helped), 8)
+        parser = sos.build_parser()
+        for command in commands + helped:
+            with self.subTest(command=command):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    try:
+                        parser.parse_args(shlex.split(command)[2:])
+                    except SystemExit:
+                        self.fail('%s: %s' % (command, err.getvalue()))
+
+    def test_help_documents_monitoring(self):
+        code, out, _ = run_main('--help')
+        self.assertEqual(code, 0)
+        for needle in ('--baseline FILE', '--warn-days N', '--notify URL', 'DOMAINSCOPE_NOTIFY_URL',
+                       '--fail-on-change', '4 something changed', '5 the --notify message',
+                       'When several apply: 3, then 5, then 4, then 1', 'Telegram',
+                       'Logic Apps workflows', 'Cron ile izleme'):
+            self.assertIn(needle, out)
+
+
 # ===================================================================== integration
 
 def _server_context(fixture: str) -> ssl.SSLContext:
@@ -3238,6 +4261,53 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('[::1]:%d' % self.old.port, out)
 
 
+class MonitorIntegrationTests(unittest.TestCase):
+    """A cron job against real TLS servers: one state file, a local webhook."""
+
+    def test_renewal_between_two_runs(self):
+        old, new = TlsServer('cn_only', WILD_OLD), TlsServer('cn_only', WILD_NEW)
+        try:
+            with tempfile.TemporaryDirectory() as tmp, WebhookReceiver() as hook, no_proxy():
+                state = os.path.join(tmp, 'state.json')
+                args = ('-t', 'web=127.0.0.1', '-n', WILD, '--cert', str(FIXTURES /
+                        'cli_renewed_wild.pem'), '--timeout', '4', '--baseline', state,
+                        '--json', state, '--fail-on-change', '--warn-days', '30', '--notify',
+                        hook.url('/hook'), '--no-color')
+                code, out, err = run_main('-p', str(old.port), *args)
+                self.assertEqual(code, 0, err)  # the first run records the baseline
+                self.assertIn('Baseline %s does not exist yet' % state, out)
+                self.assertEqual(hook.requests, [])
+                # yesterday's report, as if the renewed server had answered on the same port
+                doc = read_json(state)
+                for row in doc['results'] + doc['endpoints']:
+                    row['port'] = new.port
+                doc['options']['ports'] = [new.port]
+                Path(state).write_text(json.dumps(doc), encoding='utf-8')
+
+                code, out, err = run_main('-p', str(new.port), *args)
+                self.assertEqual(code, sos.EXIT_CHANGED, err)
+                changes = read_json(state)['changes']
+                self.assertEqual(sorted((c['name'], c['transition'], c['certChanged'])
+                                        for c in changes),
+                                 [('*.wild.example.net', 'updated', True),
+                                  (WILD, 'updated', True),
+                                  ('wild.example.net', 'updated', True)])
+                self.assertIn('UPDATED    web 127.0.0.1:%d %s: NEEDS_UPDATE -> UPDATED'
+                              % (new.port, WILD), out)
+                self.assertEqual(len(hook.requests), 1)
+                payload = hook.payloads()[0]
+                self.assertEqual(payload['changesTotal'], 3)
+                self.assertIn('Notification sent (json, 127.0.0.1:', err)
+
+                code, out, err = run_main('-p', str(new.port), *args)
+                self.assertEqual(code, 0, err)  # nothing new since the second run
+                self.assertIn('): none', out)
+                self.assertEqual(len(hook.requests), 1)
+        finally:
+            old.close()
+            new.close()
+
+
 class CompatibilityTests(unittest.TestCase):
     """The CLI must stay runnable on Python 3.8."""
 
@@ -3277,7 +4347,8 @@ class CompatibilityTests(unittest.TestCase):
                   'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
-                  'encodings'}
+                  'encodings', 'http.client', 'urllib.error', 'urllib.parse',
+                  'urllib.request'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

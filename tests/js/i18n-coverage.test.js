@@ -203,6 +203,22 @@ describe('i18n coverage', () => {
     for (const k of ['datacenter', 'eyeball']) add(`vfy.det.kind.${k}`);
     for (const k of ['on', 'off']) add(`vfy.planOrigins.${k}`);
     for (const sh of views.subdomains.SHELLS) { add(`scan.cdn.shell.${sh}`); add(`scan.cdn.shellTitle.${sh}`); }
+    // DANE / TLSA panel (ui/dane-panel.js): every status (+ its explanation), note, record issue
+    // and headline lib/dane.js can produce, and the explanation keys whyKey() builds.
+    const dn = await imp('assets/js/lib/dane.js');
+    const dp = await imp('assets/js/ui/dane-panel.js');
+    for (const s of dn.DANE_STATUSES) {
+      add(`dane.st.${s}`);
+      for (const service of ['smtp', 'https']) add(dp.whyKey({ status: s, service, notes: [] }));
+    }
+    add(dp.whyKey({ status: 'insecure', service: 'smtp', notes: [{ code: 'mx-insecure' }] }));
+    for (const n of dn.DANE_NOTES) add(`dane.note.${n}`);
+    for (const i of dn.TLSA_ISSUES) add(`dane.issue.${i}`);
+    for (const hk of dn.DANE_HEADLINES) add(`dane.head.${hk}`);
+    for (const r of [{ usable: true, matches: true, matchedBy: 'leaf' }, { usable: true, matches: true, matchedBy: 'chain' },
+      { usable: true, matches: false }, { usable: true, matches: null }]) add(dp.recordStateKey(r));
+    for (const svc of Object.keys(dn.DANE_PORTS)) add(`dane.svc.${svc}`);
+    for (const k of ['d', 'h', 'min', 's']) add(`dane.dur.${k}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

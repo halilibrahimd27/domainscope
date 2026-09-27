@@ -1,0 +1,266 @@
+/*
+ * views/dane.css — the DANE / TLSA check (.dane-*, ui/dane-panel.js): a tab of the Certificate
+ * view and of SSL Targets. Plan and notes, the headline, the "publish before you install" card,
+ * the endpoints table and this certificate's TLSA values. Design tokens from style.css only, so
+ * light and dark mode follow automatically.
+ */
+
+.dane-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dane-intro,
+.dane-plan {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.dane-intro,
+.dane-plan,
+.dane-note {
+  max-width: 90ch;
+}
+
+.dane-info,
+.dane-status,
+.dane-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dane-status:empty,
+.dane-result:empty {
+  display: none;
+}
+
+.dane-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.dane-note .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* Run button and progress: a wrapping row. */
+.dane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.dane-actions .progress {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* "Publish before you install": numbered steps with the records to add. */
+.dane-publish {
+  border-color: var(--error-border);
+}
+
+.dane-publish .card-icon {
+  color: var(--error);
+}
+
+.dane-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: 14px;
+}
+
+.dane-steps p {
+  margin: 0 0 8px;
+}
+
+.dane-steps .codeblock {
+  min-width: 0;
+}
+
+/* Table cells */
+.dane-ep {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dane-ep-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dane-ep-name .badge {
+  flex: none;
+}
+
+.dane-qname {
+  white-space: nowrap;
+}
+
+.dane-ep-via {
+  white-space: normal;
+  max-width: 22rem;
+}
+
+.dane-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.dane-rec .icon {
+  flex: none;
+}
+
+.dane-rec-match .icon {
+  color: var(--ok);
+}
+
+.dane-rec-no .icon {
+  color: var(--error);
+}
+
+.dane-rec-unknown .icon {
+  color: var(--warn);
+}
+
+.dane-rec-unusable {
+  color: var(--text-3);
+}
+
+.dane-verdict {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 26rem;
+}
+
+/* The TLSA name inside the verdict cell: phones only (the name column is hidden there). */
+.dane-verdict-ep {
+  display: none;
+}
+
+.dane-table .dane-row-error td {
+  background: var(--error-bg);
+}
+
+.dane-table .dane-row-error td:first-child,
+.dane-table .dane-row-error td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--error-solid);
+}
+
+.dane-table .dane-row-warn td:first-child,
+.dane-table .dane-row-warn td.dt-expander + td {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.dane-table .dane-row-neutral td {
+  color: var(--text-2);
+}
+
+/* Expanded row (its explanation line is shown on phones only, see below) */
+.dane-det-why {
+  display: none;
+  margin: 0;
+}
+
+.dane-details .kv-value {
+  overflow-wrap: anywhere;
+}
+
+.dane-det-recs,
+.dane-det-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dane-det-recs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.dane-det-notes li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.dane-det-notes li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0.6em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.dane-meta {
+  margin: 0;
+}
+
+.dane-values .codeblock-pre {
+  font-size: 12px;
+}
+
+/* Phones: a full-width run button; the table scrolls inside .dt-scroll (never the page). */
+@media (max-width: 480px) {
+  .dane-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* The verdict cell carries the TLSA name, so the first screenful shows both: the name column
+     is hidden and the explanation moves into the row details. DNSSEC and the records scroll. */
+  .dane-table .dane-col-ep,
+  .dane-table .dane-why {
+    display: none;
+  }
+
+  .dane-verdict-ep {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .dane-verdict {
+    max-width: 15rem;
+  }
+
+  .dane-det-why {
+    display: block;
+  }
+
+  .dane-steps {
+    padding-left: 1.2em;
+  }
+}

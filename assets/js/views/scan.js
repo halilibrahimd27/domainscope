@@ -12,7 +12,9 @@
  *
  * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the
  * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Verify (only with a
- * certificate: ui/verify-panel.js checks it from the internet) / Sources / CT certificates,
+ * certificate: ui/verify-panel.js checks it from the internet) / DANE (only with a certificate:
+ * ui/dane-panel.js, on a click, compares the TLSA records of its mail servers, names and covered
+ * hosts with it) / Sources / CT certificates,
  * plus exports (hosts CSV, servers CSV, full JSON, names.txt, targets.txt) and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
  * confirms origins behind Cloudflare from inside the network.
  *
@@ -61,6 +63,8 @@ import {
 import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
+// The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
+import { DanePanel, daneTabBadge, daneExport } from '../ui/dane-panel.js';
 
 /** Route id. */
 export const id = 'scan';
@@ -341,6 +345,7 @@ registerStrings('en', {
   'scan.srv.intro': 'Servers from your inventory that the names resolve to (DNS) or that origin hints point at. Servers that need the certificate come first.',
   'scan.srv.verifyHint': 'Installed it? Check from the internet which certificate each server really serves.',
   'scan.sum.verify': 'After installing the certificate, open the Verify tab to check it from the internet.',
+  'scan.sum.dane': 'The domain has mail servers (MX). Before installing, check their TLSA records in the DANE tab: a record that pins the old certificate stops mail delivery.',
   'scan.srv.col.server': 'Server',
   'scan.srv.col.status': 'Action',
   'scan.srv.col.ips': 'Server IPs',
@@ -714,6 +719,7 @@ registerStrings('tr', {
   'scan.srv.intro': 'Envanterinizdeki, adların çözümlendiği (DNS) veya asıl sunucu ipuçlarının işaret ettiği sunucular. Sertifika kurulması gerekenler en üstte.',
   'scan.srv.verifyHint': 'Kurdunuz mu? Her sunucunun gerçekte hangi sertifikayı sunduğunu internetten kontrol edin.',
   'scan.sum.verify': 'Sertifikayı kurduktan sonra internetten kontrol etmek için Doğrula sekmesini açın.',
+  'scan.sum.dane': 'Alan adının e-posta sunucuları (MX) var. Kurmadan önce DANE sekmesinde TLSA kayıtlarını kontrol edin: eski sertifikayı sabitleyen bir kayıt e-posta teslimini durdurur.',
   'scan.srv.col.server': 'Sunucu',
   'scan.srv.col.status': 'Yapılacak',
   'scan.srv.col.ips': 'Sunucu IP’leri',
@@ -1904,6 +1910,8 @@ export function mount(container, ctx) {
       // The finished scan records its labels into the learned store only when that switch is on.
       learned: vocab.learnedOn,
       cert: v.cert,
+      // The other certificates of the file: DANE-TA records are compared with them (DANE tab).
+      certChain: certLoad && v.cert ? certLoad.result.certificates.filter((c) => c !== v.cert) : [],
       certName: certLoad ? certLoad.name : '',
       inventoryServers: state.inventory.servers.length
     });
@@ -2376,12 +2384,16 @@ function buildRunUI(run, ctx, { onFinish }) {
   // Verify (only with a certificate): checks from the internet which certificate each server serves.
   const verifyPanel = cert ? h('div', { class: 'stack scan-tab-verify' }) : null;
   let verifyUi = null;
+  // DANE (only with a certificate): TLSA records of its mail servers and names, on a click.
+  const danePanel = cert ? h('div', { class: 'stack scan-tab-dane' }) : null;
+  let daneUi = null;
 
   const tabs = Tabs([
     { id: 'hosts', label: t('scan.tab.hosts'), icon: 'list', content: hostsPanel },
     { id: 'servers', label: t('scan.tab.servers'), icon: 'server', content: serversPanel },
     { id: 'cdn', label: t('scan.tab.cdn'), icon: 'cloud', content: cdnPanel },
     cert ? { id: 'verify', label: t('vfy.tab'), icon: 'check-circle', content: verifyPanel } : null,
+    cert ? { id: 'dane', label: t('dane.tabShort'), icon: 'key', content: danePanel } : null,
     { id: 'sources', label: t('scan.tab.sources'), icon: 'database', content: sourcesPanel },
     { id: 'ct', label: t('scan.tab.ct'), icon: 'certificate', content: ctPanel }
   ].filter(Boolean), {
@@ -2522,7 +2534,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         hostnames: cert.hostnames
       } : null,
       scan: run.result,
-      verification: verifyExport(run, ctx.version)
+      verification: verifyExport(run, ctx.version),
+      dane: daneExport(run, ctx.version)
     };
   }
 
@@ -2577,6 +2590,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
     // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
     if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t('scan.sum.verify'), 'check-circle', 'verify');
+    // In-domain mail servers (mined from MX): a TLSA record there may pin the old certificate.
+    if (cert && r.hosts.some((x) => (x.origins || []).includes('dns-mine:MX'))) add('info', t('scan.sum.dane'), 'mail', 'dane');
     if (st.hiddenOrigin) add('info', t('scan.sum.hidden', { count: st.hiddenOrigin }), 'cloud', 'hidden');
     const nets = (r.originNetworks || []).map((n) => n.cidr);
     if (st.hiddenOrigin && nets.length) {
@@ -3128,6 +3143,34 @@ function buildRunUI(run, ctx, { onFinish }) {
     verifyPanel.append(verifyUi.el);
   }
 
+  /** The concrete hosts of the scan the certificate covers and that resolve (wildcard look-alikes left out). */
+  function daneHosts(r) {
+    return r.hosts.filter((x) => x.cert && x.cert.covered && !x.wildcardSuspect && x.resolution
+      && x.resolution.status === 'NOERROR' && ((x.resolution.ipv4 || []).length || (x.resolution.ipv6 || []).length))
+      .map((x) => x.name);
+  }
+
+  function renderDaneTab() {
+    if (!danePanel) return;
+    if (daneUi) daneUi.dispose();
+    daneUi = null;
+    clear(danePanel);
+    if (!run.result) {
+      danePanel.append(run.status === 'running' ? pendingState() : unavailableState());
+      return;
+    }
+    daneUi = DanePanel({
+      certs: { leaf: cert, chain: run.config.certChain || [] },
+      ctx,
+      holder: run,
+      extraNames: daneHosts(run.result),
+      compact: true,
+      subject,
+      onChange: renderBadgesSoon
+    });
+    danePanel.append(daneUi.el);
+  }
+
   let hideExpired = false;
   function renderCtTab() {
     clear(ctPanel);
@@ -3232,6 +3275,10 @@ function buildRunUI(run, ctx, { onFinish }) {
       const b = verifyTabBadge(run);
       tabs.setBadge('verify', b ? b.value : null, b ? b.variant : null);
     }
+    if (danePanel) {
+      const b = daneTabBadge(run);
+      tabs.setBadge('dane', b ? b.value : null, b ? b.variant : null);
+    }
     const failed = run.sourceResults.filter((x) => !x.ok).length;
     tabs.setBadge('sources', run.sourceResults.length || null, failed ? 'error' : null);
   }
@@ -3274,6 +3321,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderServersTab();
     renderCdnTab();
     renderVerifyTab();
+    renderDaneTab();
     renderCtTab();
     renderWildcards();
     renderTabBadges();
@@ -3359,6 +3407,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   applyFilters();
   if (run.status === 'running') {
     renderProgress();
+    renderDaneTab(); // "available when the scan has finished"
     ticker = setInterval(renderMeta, 1000);
     run.listeners.add(listener);
   } else {
@@ -3375,8 +3424,9 @@ function buildRunUI(run, ctx, { onFinish }) {
       } catch {
         // already aborted / unsupported
       }
-      // Detaches the panel only: a running verification keeps going on the run.
+      // Detaches the panels only: a running verification or DANE check keeps going on the run.
       if (verifyUi) verifyUi.dispose();
+      if (daneUi) daneUi.dispose();
     }
   };
 }

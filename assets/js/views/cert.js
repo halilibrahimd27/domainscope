@@ -4,9 +4,11 @@
  * Shows the names (SAN list with IDN decoding and a "does it cover this host?" check),
  * validity, key, fingerprints (incl. the public-key SHA-256 for matching a private key
  * without uploading it), usages, AIA/CRL/SCT data, the chain order (with a correctly
- * ordered fullchain.pem download), a CAA check per name (lib/health.js) and a Certificate
- * Transparency lookup of the serial number on crt.sh. "Find servers for this certificate"
- * hands the certificate to the SSL Targets view (state.session.pendingCert).
+ * ordered fullchain.pem download), a CAA check per name (lib/health.js), a Certificate
+ * Transparency lookup of the serial number on crt.sh and, on a click, the DANE / TLSA check of
+ * the leaf (ui/dane-panel.js over lib/dane.js: do TLSA records at its mail servers and names pin
+ * another certificate?). "Find servers for this certificate" hands the certificate to the SSL
+ * Targets view (state.session.pendingCert).
  *
  * The module also exports the certificate-loading helpers used by views/scan.js
  * (CertLoader, CertSummary, certWarningAlerts, …) so both views behave identically.
@@ -30,6 +32,8 @@ import {
 import { findCaa, checkCaaAllows, caaIssuerInfo, caaRestrictionNotes, caaRestrictionText, HEALTH_I18N } from '../lib/health.js';
 import { validateNames } from '../lib/cmdline.js';
 import { fetchJson, retry, errorKind } from '../lib/util.js';
+// The DANE / TLSA tab (shared with SSL Targets).
+import { DanePanel } from '../ui/dane-panel.js';
 
 /** Route id. */
 export const id = 'cert';
@@ -134,6 +138,7 @@ registerStrings('en', {
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT logs',
   'cert.tab.pem': 'PEM & OpenSSL',
+  'cert.dane.leaf': 'The DANE check uses the leaf certificate of the file ({name}) and its chain.',
 
   'cert.names.domains': 'Registrable domains',
   'cert.names.domainsHint': 'Scan one of them without the certificate:',
@@ -379,6 +384,7 @@ registerStrings('tr', {
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT kayıtları',
   'cert.tab.pem': 'PEM ve OpenSSL',
+  'cert.dane.leaf': 'DANE kontrolü dosyadaki uç sertifikayı ({name}) ve zincirini kullanır.',
 
   'cert.names.domains': 'Kayıtlı alan adları',
   'cert.names.domainsHint': 'Birini sertifikasız tarayın:',
@@ -1103,6 +1109,8 @@ export function CertSummary(load, { actions = null, maxNames = 8 } = {}) {
 /** Per-certificate async results that survive re-mounts (keyed by serial + issuer). */
 const caaCache = new Map();
 const ctCache = new Map();
+/** DANE / TLSA job holders per leaf certificate (ui/dane-panel.js keeps its job on `holder.dane`). */
+const daneHolders = new Map();
 /** View state that survives navigation and language re-mounts. */
 const viewState = { key: null, selected: 0, tab: 'names' };
 let teardown = null;
@@ -1253,6 +1261,7 @@ export function mount(container, ctx) {
         { id: 'details', label: t('cert.tab.details'), icon: 'list', content: () => detailsPanel(cert) },
         { id: 'chain', label: t('cert.tab.chain'), icon: 'git-branch', badge: result.certificates.length, content: () => chainPanel(analysis) },
         { id: 'caa', label: t('cert.tab.caa'), icon: 'shield', content: () => caaPanel(cert) },
+        { id: 'dane', label: t('dane.tab'), icon: 'key', content: () => danePanel(cert) },
         { id: 'ct', label: t('cert.tab.ct'), icon: 'eye', content: () => ctPanel(cert) },
         { id: 'pem', label: t('cert.tab.pem'), icon: 'terminal', content: () => pemPanel(cert, analysis) }
       ], {
@@ -1774,6 +1783,22 @@ export function mount(container, ctx) {
       // Automatic check: a few DoH queries, cached per certificate.
       if (!caaCache.has(key)) run();
       return panel;
+    }
+
+    /* --- DANE / TLSA (sends nothing until its button is clicked) ----------------- */
+    function danePanel(shown) {
+      const leaf = result.leaf;
+      const key = certKey(leaf);
+      if (!daneHolders.has(key)) daneHolders.set(key, {});
+      const panel = DanePanel({
+        certs: { leaf, chain: result.certificates },
+        ctx,
+        holder: daneHolders.get(key),
+        subject: certDisplayName(leaf)
+      });
+      if (shown === leaf) return panel.el;
+      return h('div', { class: 'stack' },
+        Alert({ variant: 'info', compact: true, message: t('cert.dane.leaf', { name: certDisplayName(leaf) }) }), panel.el);
     }
 
     /* --- Certificate Transparency ----------------------------------------- */

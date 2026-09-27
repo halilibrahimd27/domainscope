@@ -143,6 +143,18 @@ describe('ipSourceChips', () => {
     assert.deepEqual(priv.map((c) => c.state), ['idle', 'idle', 'idle'], 'private addresses are never looked up');
   });
 
+  test('a row a stopped run never asked is not pending: it counts for nothing', () => {
+    const stopped = ipSourceChips([ok('203.0.113.1'), { ip: '203.0.113.2', pending: false, info: null }]);
+    assert.deepEqual(stopped.map((c) => [c.id, c.state, c.rows]), [['ripestat', 'ok', 1], ['ipwhois', 'idle', 0], ['ptr', 'ok', 1]]);
+    const none = ipSourceChips([{ ip: '203.0.113.1', pending: false, info: null }, { ip: '203.0.113.2', info: null }]);
+    assert.deepEqual(none.map((c) => c.state), ['idle', 'idle', 'idle'], 'nothing asked: nothing is pending');
+    const failed = ipSourceChips([
+      { ip: '203.0.113.1', pending: false, info: info({ ip: '203.0.113.1', ptr: ['a.example.com'], sources: ['dns'] }, [{ source: 'ripestat' }, { source: 'ripestat-geo' }]) },
+      { ip: '203.0.113.2', pending: false, info: null }
+    ], { now: NOW });
+    assert.deepEqual(failed.map((c) => c.state), ['failed', 'idle', 'ok'], 'a failure is still said');
+  });
+
   test('failed: which rows, which sources a chip Retry asks, and the latest reason', () => {
     const rows = [
       ok('203.0.113.1'),

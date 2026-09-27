@@ -211,14 +211,16 @@ export function ipRetrySources(info) {
 
 /**
  * One status chip per service over a table of IP Intel rows (the Subdomains source-chip pattern):
- * how many rows each service answered and where its failure left a field empty.
+ * how many rows each service answered and where its failure left a field empty. Only a row still
+ * being looked up (`pending`) makes a chip pending: a row a stopped run never asked (no info, not
+ * pending) counts for nothing.
  * @param {Array<{ ip: string, info: object|null, pending?: boolean }>} rows
  * @param {{ now?: number }} [opts]
  * @returns {SourceChip[]} in {@link IP_SOURCE_GROUPS} order
  */
 export function ipSourceChips(rows, { now = Date.now() } = {}) {
   const list = Array.isArray(rows) ? rows : [];
-  const pending = list.some((r) => r && (r.pending || !r.info) && !(r.info && r.info.private));
+  const pending = list.some((r) => r && r.pending === true && !(r.info && r.info.private));
   return Object.entries(IP_SOURCE_GROUPS).map(([id, members]) => {
     let used = 0;
     const ips = [];

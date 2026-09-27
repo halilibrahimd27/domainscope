@@ -690,9 +690,12 @@ export function mount(container, ctx) {
     }
   }
 
-  /** One chip per service: where its failures left fields empty, with a Retry of those rows. */
+  /**
+   * One chip per service: where its failures left fields empty, with a Retry of those rows. No
+   * chips while nothing was asked (a run stopped before its first answer: the note says so).
+   */
   function renderSources(rows) {
-    const looked = rows.some((r) => !isPrivateIP(r.ip));
+    const looked = rows.some((r) => !isPrivateIP(r.ip) && (r.pending || r.info));
     // A chip's Retry that had the keyboard focus gets it back, or the group when that Retry is gone.
     const focused = sourcesEl.contains(globalThis.document.activeElement) ? globalThis.document.activeElement.dataset.chip || '' : null;
     sourcesEl.hidden = !looked;

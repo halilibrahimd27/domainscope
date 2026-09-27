@@ -254,6 +254,18 @@ function buildQuota(id, { limited = false, err = null, rate = null } = {}) {
   };
 }
 
+/**
+ * The {@link SourceQuota} of a source's rate limit, for callers that query a source themselves
+ * (lib/ctcert.js reads one host name's certificate from Cert Spotter / crt.sh): the same period
+ * and i18n hint as a scan's source status.
+ * @param {string} id source id ('certspotter', 'crtsh', …; unknown ids get the generic policy)
+ * @param {{ limited?: boolean, retryAfterMs?: number|null }} [opts]
+ * @returns {SourceQuota|null} null when not limited
+ */
+export function sourceQuota(id, { limited = false, retryAfterMs = null } = {}) {
+  return buildQuota(id, { limited, err: { retryAfterMs } });
+}
+
 /** Exponential backoff with ±25 % jitter: base·2^n, capped. */
 function backoffMs(base, n, cap) {
   const exp = Math.min(cap, base * 2 ** n);

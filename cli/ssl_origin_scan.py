@@ -4219,10 +4219,13 @@ def _covers_name(status: Any) -> bool:
 
 def status_transition(before: str, after: str) -> str:
     """How a status moved: ``failed`` (to TLS_ERROR / TIMEOUT / CLOSED), ``recovered``
-    (from one), ``regressed`` (UPDATED -> NEEDS_UPDATE or another covering status),
-    ``updated`` (to UPDATED from one), ``unhosted`` (a covering status -> NOT_HOSTED),
-    ``hosted`` (the reverse), or ``changed`` (e.g. between two covering statuses other
-    than UPDATED). Endpoint states count OPEN as a success (see :func:`_covers_name`)."""
+    (from one), ``failing`` (from one of them to another, see :func:`counts_as_change`),
+    ``regressed`` (UPDATED -> NEEDS_UPDATE or another covering status), ``updated`` (to
+    UPDATED from one), ``unhosted`` (a covering status -> NOT_HOSTED), ``hosted`` (the
+    reverse), or ``changed`` (e.g. between two covering statuses other than UPDATED).
+    Endpoint states count OPEN as a success (see :func:`_covers_name`)."""
+    if after in _FAILED_STATUSES and before in _FAILED_STATUSES:
+        return 'failing'
     if after in _FAILED_STATUSES and before not in _FAILED_STATUSES:
         return 'failed'
     if before in _FAILED_STATUSES and after not in _FAILED_STATUSES:
@@ -4236,6 +4239,20 @@ def status_transition(before: str, after: str) -> str:
     if before == NOT_HOSTED and _covers_name(after):
         return 'hosted'
     return 'changed'
+
+
+def counts_as_change(change: Dict[str, Any]) -> bool:
+    """False for a move from one failure state to another (``failing``: CLOSED ->
+    TIMEOUT, TLS_ERROR -> TIMEOUT): nothing was served either way, and on a sweep with a
+    short --timeout a refused connection and a timeout can take turns from run to run.
+    Such a move is listed (summary, JSON, message) but does not trigger --notify or
+    --fail-on-change, nor keep a baseline whose message was not delivered."""
+    return change.get('transition') != 'failing'
+
+
+def notable_changes(changes: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """The changes that count (:func:`counts_as_change`), in their order."""
+    return [change for change in changes or [] if counts_as_change(change)]
 
 
 def _change(kind: str, scope: str, servers: Sequence[str] = (), ip: Optional[str] = None,
@@ -4440,9 +4457,18 @@ _CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT'}
 _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTED': ('red',),
                'GONE': ('red',), 'RECOVERED': ('green',), 'UPDATED': ('green', 'bold'),
                'HOSTED': ('green',), 'NEW': ('cyan',), 'CERT': ('yellow',),
-               'CHANGED': ('yellow',)}
+               'CHANGED': ('yellow',), 'FAILING': ('dim',)}
 _BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
+
+
+def tag_style(tag: str, change: Dict[str, Any]) -> Tuple[str, ...]:
+    """The colours of a change's tag. HOSTED is green only when the name is served with
+    the new certificate: a server that starts serving it with another one (in a renewal)
+    needs the new one installed there, so it is yellow like CHANGED."""
+    if tag == 'HOSTED' and (change.get('after') or {}).get('status') != UPDATED:
+        return ('yellow',)
+    return _TAG_STYLES.get(tag, ())
 
 
 def change_tag(change: Dict[str, Any]) -> str:
@@ -4643,11 +4669,17 @@ def _render_changes(monitor: MonitorResult, style: Style, show_all: bool,
         source, _iso_minute(info.get('finishedAt')), len(changes) or 'none'), *colors)]
     shown = changes if show_all else changes[:MAX_SUMMARY_CHANGES]
     for change, tag in zip(shown, tags):
-        prefix = '  %s  ' % style.paint(tag.ljust(_TAG_WIDTH), *_TAG_STYLES.get(tag, ()))
+        prefix = '  %s  ' % style.paint(tag.ljust(_TAG_WIDTH), *tag_style(tag, change))
         lines.extend(_wrap(prefix, _TAG_WIDTH + 4, change_text(change), width))
     if len(shown) < len(changes):
         lines.append(style.paint('  ... and %d more - use --show-all or the --json report to '
                                  'list them.' % (len(changes) - len(shown)), 'dim'))
+    quiet = len(changes) - len(notable_changes(changes))
+    if quiet:
+        lines.append(style.paint(
+            '  FAILING: %d moved from one failure state to another (TLS_ERROR, TIMEOUT, '
+            'CLOSED) - nothing served either way, so not counted by --notify or '
+            '--fail-on-change.' % quiet, 'dim'))
     lines.extend(style.paint('  ' + note, 'dim') for note in baseline_notes(info))
     lines.append('')
     return lines
@@ -4835,11 +4867,11 @@ def redact_url(text: str, url: str) -> str:
 
 
 def should_notify(monitor: Optional[MonitorResult], always: bool = False) -> bool:
-    """Notify when something changed since the baseline or a certificate expires soon
-    (or ``always``, e.g. as a heartbeat)."""
+    """Notify when something changed since the baseline (:func:`notable_changes`) or a
+    certificate expires soon (or ``always``, e.g. as a heartbeat)."""
     if always:
         return True
-    return monitor is not None and bool(monitor.changes or monitor.expiring)
+    return monitor is not None and bool(notable_changes(monitor.changes) or monitor.expiring)
 
 
 def ports_text(ports: Sequence[Any], limit: int = _NOTIFY_MAX_PORT_GROUPS) -> str:
@@ -4863,8 +4895,9 @@ def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] =
                          ) -> Tuple[str, List[str], List[str]]:
     """The notification text of a report dict: ``(title, items, footer)``.
 
-    ``items`` are the changes (at most :data:`NOTIFY_MAX_CHANGES`) and the expiring
-    certificates (at most :data:`NOTIFY_MAX_EXPIRING`), ``footer`` sums up the scan.
+    ``items`` are the changes (at most :data:`NOTIFY_MAX_CHANGES`, FAILING moves last)
+    and the expiring certificates (at most :data:`NOTIFY_MAX_EXPIRING`), ``footer`` sums
+    up the scan.
     Plain text; untrusted text is escaped (:func:`change_text`).
     """
     parts, items = [], []  # type: List[str], List[str]
@@ -4876,7 +4909,10 @@ def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] =
             count, since = len(monitor.changes), _iso_minute(info.get('finishedAt'))
             parts.append('%d change%s since %s' % (count, '' if count == 1 else 's', since)
                          if count else 'no changes since %s' % since)
-            shown = monitor.changes[:NOTIFY_MAX_CHANGES]
+            # the changes that count first: FAILING moves are the ones cut
+            ordered = notable_changes(monitor.changes)
+            ordered.extend(change for change in monitor.changes if not counts_as_change(change))
+            shown = ordered[:NOTIFY_MAX_CHANGES]
             items.extend('- %s %s' % (change_tag(change), change_text(change))
                          for change in shown)
             if len(monitor.changes) > len(shown):
@@ -5224,7 +5260,9 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   certificate of a name a server does not host is left out), a status that moved
   (UPDATED -> NEEDS_UPDATE, hosted -> NOT_HOSTED, a new TLS_ERROR / TIMEOUT / CLOSED,
   recovered), endpoints and names that are new or gone. Listed under "Changes since
-  the baseline" and in the JSON ("baseline", "changes"). Give the same file to
+  the baseline" and in the JSON ("baseline", "changes"). A move from one failure
+  state to another (CLOSED -> TIMEOUT, TLS_ERROR -> TIMEOUT: FAILING) is listed but
+  not counted by --fail-on-change and --notify. Give the same file to
   --baseline and --json to compare each run with the one before: it is read before
   the scan and replaced after it (through a temporary file in the same directory,
   which must be writable), and while it does not exist (the first run) there is
@@ -5809,7 +5847,7 @@ def _run(args: argparse.Namespace) -> int:
         notify_failed = interrupted or bool(problem)
 
     if json_text is not None and json_is_baseline:
-        undelivered = len(monitor.changes or []) if notify_failed and monitor else 0
+        undelivered = len(notable_changes(monitor.changes)) if notify_failed and monitor else 0
         if undelivered:
             # This run's report would be the next baseline: the next run would compare
             # with it, find nothing and never send these changes. Keep the previous one.
@@ -5832,7 +5870,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_OUTPUT_ERROR
     if notify_failed and args.fail_on_notify_error:
         return EXIT_NOTIFY_ERROR
-    if args.fail_on_change and monitor is not None and monitor.changes:
+    if args.fail_on_change and monitor is not None and notable_changes(monitor.changes):
         return EXIT_CHANGED
     if args.fail_on_needs_update and report.needs_update():
         return EXIT_NEEDS_UPDATE

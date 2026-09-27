@@ -3111,7 +3111,9 @@ class BaselineTests(unittest.TestCase):
                  ('NOT_HOSTED', 'UPDATED', 'hosted'), ('UPDATED', 'TLS_ERROR', 'failed'),
                  ('NOT_HOSTED', 'TIMEOUT', 'failed'), ('OPEN', 'CLOSED', 'failed'),
                  ('TIMEOUT', 'NEEDS_UPDATE', 'recovered'), ('CLOSED', 'OPEN', 'recovered'),
-                 ('TLS_ERROR', 'TIMEOUT', 'changed'), ('CLOSED', 'TIMEOUT', 'changed'),
+                 # from one failure state to another: listed, not counted
+                 ('TLS_ERROR', 'TIMEOUT', 'failing'), ('CLOSED', 'TIMEOUT', 'failing'),
+                 ('TIMEOUT', 'TLS_ERROR', 'failing'), ('TIMEOUT', 'CLOSED', 'failing'),
                  # a status of a later version (a kind of certificate) covers the name
                  ('ORIGIN_CERT', 'NEEDS_UPDATE', 'changed'), ('UPDATED', 'ORIGIN_CERT', 'regressed'),
                  ('PRIVATE_CERT', 'UPDATED', 'updated'), ('ORIGIN_CERT', 'NOT_HOSTED', 'unhosted'),
@@ -4073,6 +4075,81 @@ class MonitorCliTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn('DOMAINSCOPE_NOTIFY_URL: needs an http://', err)
             self.assertNotIn(secret, err)
+
+    def test_moves_between_failure_states_are_listed_not_counted(self):
+        """CLOSED <-> TIMEOUT, TLS_ERROR <-> TIMEOUT: nothing served either way."""
+        def fleet(after, web=EC_DER):
+            wrong = ssl.SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number')
+            return scan_report(
+                [sos.Server('down', ['10.0.0.5']), sos.Server('odd', ['10.0.0.6']),
+                 sos.Server('web', ['10.0.0.1'])],
+                {'10.0.0.1': by_old_or_new(web),
+                 '10.0.0.6': lambda sni: socket.timeout('timed out') if after else wrong},
+                connect={'10.0.0.5': socket.timeout('timed out') if after
+                         else ConnectionRefusedError(111, 'Connection refused')})
+
+        before = sos.report_to_dict(fleet(False))
+        report = fleet(True)
+        monitor = sos.build_monitor(report, before, 'last.json')
+        self.assertEqual(sorted((c['scope'], c['transition'], c['ip'], c['name'] or '')
+                                for c in monitor.changes),
+                         [('endpoint', 'failing', '10.0.0.5', ''),
+                          ('row', 'failing', '10.0.0.6', ''),
+                          ('row', 'failing', '10.0.0.6', WILD),
+                          ('row', 'failing', '10.0.0.6', WWW)])
+        self.assertEqual(sos.notable_changes(monitor.changes), [])
+        self.assertFalse(sos.should_notify(monitor))
+        text = sos.render_summary(report, width=200, monitor=monitor)
+        self.assertIn('Changes since the baseline (last.json, scan of ', text)
+        self.assertRegex(text, r'  FAILING    down 10\.0\.0\.5:443: CLOSED \(.+\) -> TIMEOUT')
+        self.assertIn('  FAILING: 4 moved from one failure state to another (TLS_ERROR, '
+                      'TIMEOUT, CLOSED) - nothing served either way, so not counted by '
+                      '--notify or --fail-on-change.', text)
+        # next to a change that counts they are sent, after it
+        mixed = sos.build_monitor(fleet(True, web=RENEWED_DER), before, 'last.json')
+        self.assertEqual(len(sos.notable_changes(mixed.changes)), 1)
+        self.assertTrue(sos.should_notify(mixed))
+        title, items, _ = sos.notification_message(sos.report_to_dict(report, mixed), mixed)
+        self.assertIn('5 changes since', title)
+        self.assertEqual([item.split()[1] for item in items], ['UPDATED'] + ['FAILING'] * 4)
+        # the command line: exit 0 with --fail-on-change, no message, the baseline moves on
+        previous = sos.render_json(fleet(False))
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            Path(state).write_text(previous, encoding='utf-8')
+            with mock.patch.object(sos, 'run_scan', return_value=report), \
+                    mock.patch.object(sos, 'send_notification', return_value='HTTP 503') as send:
+                code, out, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                          '--json', state, '--fail-on-change', '--notify',
+                                          'https://hooks.example.com/hook/x', '--no-color')
+                self.assertEqual((code, send.call_count), (0, 0), err)
+                self.assertIn('FAILING: 4 moved', out)
+                self.assertEqual(len(read_json(state)['changes']), 4)
+                # a message sent anyway (--notify-always) that fails keeps no baseline back
+                Path(state).write_text(previous, encoding='utf-8')
+                code, _, err = run_main('-t', '127.0.0.1', '-n', WILD, '--baseline', state,
+                                        '--json', state, '--notify', 'https://hooks.example.com/'
+                                        'hook/x', '--notify-always', '-q')
+                self.assertEqual((code, send.call_count), (0, 1), err)
+                self.assertIn('error: notification failed', err)
+                self.assertNotIn('kept the previous baseline', err)
+                self.assertEqual(len(read_json(state)['changes']), 4)
+
+    def test_hosted_is_green_only_with_the_new_certificate(self):
+        base = {'kind': 'status', 'scope': 'row', 'transition': 'hosted', 'servers': ['web'],
+                'ip': '10.0.0.1', 'port': 443, 'probe': 'sni', 'name': WILD,
+                'before': {'status': 'NOT_HOSTED'}, 'certChanged': True}
+        updated = dict(base, after={'status': 'UPDATED'})
+        other = dict(base, after={'status': 'NEEDS_UPDATE'})
+        self.assertEqual(sos.tag_style('HOSTED', updated), ('green',))
+        self.assertEqual(sos.tag_style('HOSTED', other), ('yellow',))
+        self.assertEqual(sos.tag_style('REGRESSED', other), ('red', 'bold'))
+        report = fleet_before()
+        monitor = sos.MonitorResult(baseline={'file': 'last.json', 'missing': False},
+                                    changes=[updated, other])
+        text = sos.render_summary(report, color=True, width=200, monitor=monitor)
+        self.assertEqual(text.count('\x1b[32mHOSTED   \x1b[0m'), 1)
+        self.assertEqual(text.count('\x1b[33mHOSTED   \x1b[0m'), 1)
 
     def test_plain_http_to_another_host_is_a_warning(self):
         with mock.patch.object(sos, 'run_scan', return_value=fleet_before()), \

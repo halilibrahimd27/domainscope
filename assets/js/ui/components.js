@@ -805,12 +805,17 @@ export function TruncatedList(items, { max = 3, render = (x) => x, mono = true, 
 
 /**
  * Collapsible <details> block.
- * @param {{ summary: string|Node, children?: any, open?: boolean, className?: string }} opts
+ * @param {{ summary: string|Node, children?: any, open?: boolean, className?: string, heading?: number|null }} opts
+ *   `heading`: 1–6 holds the summary in an <hN class="disclosure-heading"> in place of the plain
+ *   <span>, for a block that is a section of its page (heading navigation finds it; a <summary>
+ *   may hold heading content, a <span> may not)
  * @returns {HTMLDetailsElement}
  */
-export function Disclosure({ summary, children = null, open = false, className = '' }) {
+export function Disclosure({ summary, children = null, open = false, className = '', heading = null }) {
+  const level = Number.isInteger(heading) && heading >= 1 && heading <= 6 ? heading : 0;
   return h('details', { class: ['disclosure', className], open },
-    h('summary', { class: 'disclosure-summary' }, Icon('chevron-right', { size: 14, className: 'disclosure-chevron' }), h('span', null, summary)),
+    h('summary', { class: 'disclosure-summary' }, Icon('chevron-right', { size: 14, className: 'disclosure-chevron' }),
+      level ? h(`h${level}`, { class: 'disclosure-heading' }, summary) : h('span', null, summary)),
     h('div', { class: 'disclosure-body' }, children));
 }
 

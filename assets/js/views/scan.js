@@ -48,7 +48,7 @@ import {
 import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
 import { runScan, SCAN_STAGES } from '../lib/scanner.js';
-import { formProgress, optionChanges, barStuck } from '../lib/scanform.js';
+import { FORM_STEPS, formProgress, optionChanges, barStuck } from '../lib/scanform.js';
 import {
   toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
 } from '../lib/export.js';
@@ -1421,7 +1421,8 @@ export function mount(container, ctx) {
       domains: t('scan.summary.domains', { count: parsed.domains.length }),
       inventory: t('scan.stepDone')
     };
-    for (const key of Object.keys(stepStatus)) {
+    // The Options step has no status: its defaults are always a complete choice.
+    for (const key of FORM_STEPS.filter((k) => stepStatus[k])) {
       const done = p.steps[key];
       const num = stepNums[key];
       clear(num.el);
@@ -1847,12 +1848,15 @@ export function mount(container, ctx) {
   // The collapsed step reads as one line: its title and what differs from the defaults.
   const defaultOptions = sanitizeOptions(null);
   const optSummary = h('span', { class: 'scan-opt-summary', dataset: { role: 'scan-opt-summary' } });
+  // An <h2> like the other steps' titles, so heading navigation finds it; the section is named by
+  // the title alone.
   const optionsBox = Disclosure({
     summary: h('span', { class: 'scan-opt-head' },
-      h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, '4'),
+      h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, String(FORM_STEPS.indexOf('options') + 1)),
       h('span', { class: 'scan-opt-text' },
         h('span', { class: 'scan-opt-title', id: 'scan-step-options' }, Icon('sliders', { size: 15 }), h('span', null, t('scan.step.options'))),
         optSummary)),
+    heading: 2,
     className: 'scan-options-box',
     open: session.optionsOpen,
     children: h('div', { class: 'scan-options' },
@@ -1978,7 +1982,9 @@ export function mount(container, ctx) {
   }
 
   /* --- layout ------------------------------------------------------------------ */
-  const step = (n, key, iconName, body, className = '') => {
+  // Numbered in lib/scanform.FORM_STEPS order.
+  const step = (key, iconName, body, className = '') => {
+    const n = FORM_STEPS.indexOf(key) + 1;
     stepNums[key] = { n, el: h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, String(n)) };
     stepDoneSr[key] = h('span', { class: 'sr-only', hidden: true }, ` ${t('scan.req.done')}`);
     return h('section', {
@@ -1996,9 +2002,9 @@ export function mount(container, ctx) {
   };
 
   const setup = h('div', { class: 'scan-setup' },
-    step(1, 'cert', 'certificate', certBody, 'scan-step-cert'),
-    step(2, 'domains', 'globe', h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
-    step(3, 'inventory', 'server', invBody, 'scan-step-inventory'),
+    step('cert', 'certificate', certBody, 'scan-step-cert'),
+    step('domains', 'globe', h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
+    step('inventory', 'server', invBody, 'scan-step-inventory'),
     h('section', { class: 'scan-step scan-step-options', dataset: { step: 'options' }, attrs: { 'aria-labelledby': 'scan-step-options' } }, optionsBox));
 
   // Start / Cancel with the query estimate: in the flow on wide screens; on narrow ones it sticks

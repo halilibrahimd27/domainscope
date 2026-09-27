@@ -1200,9 +1200,13 @@ async function main() {
             req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
             open: document.querySelector('.scan-options-box').open,
             opt: document.querySelector('[data-role="scan-opt-summary"]').textContent,
-            rootVar: document.documentElement.style.getPropertyValue('--scan-runbar-h')
+            rootVar: document.documentElement.style.getPropertyValue('--scan-runbar-h'),
+            // Every step title is an <h2> (heading navigation), the Options one inside its summary.
+            headings: [...document.querySelectorAll('.scan-setup h2')].map((x) => (x.id || x.querySelector('[id]')?.id || '').replace('scan-step-', '')),
+            optHeading: !!document.querySelector('.scan-options-box > summary > h2.disclosure-heading #scan-step-options')
           }));
           assertEqual([form.req, form.open], ['unmet', false], 'requirement unmet, Options collapsed');
+          assertEqual([form.headings, form.optHeading], [['cert', 'domains', 'inventory', 'options'], true], 'one heading per step');
           // The stored options differ from the defaults: the collapsed line says how.
           assertEqual(form.opt, 'no passive sources · small wordlist · no permutations', 'Options summary');
           assert(/^\d+px$/.test(form.rootVar), `the bar's height is published for scroll-padding: ${form.rootVar}`);

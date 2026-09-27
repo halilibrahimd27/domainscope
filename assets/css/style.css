@@ -2102,6 +2102,13 @@ button.nav-status:hover {
   transform: rotate(90deg);
 }
 
+/* A summary that is a heading (Disclosure({ heading })) reads like any other summary */
+.disclosure-heading {
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
 .disclosure-body {
   padding: 4px 14px 14px;
 }

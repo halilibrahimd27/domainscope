@@ -236,7 +236,7 @@
   border-bottom-right-radius: 0;
 }
 
-.scan-options-box > .disclosure-summary > span {
+.scan-options-box > .disclosure-summary > .disclosure-heading {
   flex: 1;
   min-width: 0;
 }

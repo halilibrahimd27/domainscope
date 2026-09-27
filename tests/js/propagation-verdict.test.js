@@ -604,6 +604,40 @@ describe('propagationVerdict', () => {
     assert.deepEqual([mixed.noRecords, codes(mixed)], [false, ['nodata']]);
   });
 
+  test('AAAA: every resolver empty through a CDN name, two locations with its dualstack name and IPv6 edges: by design', () => {
+    // www.reddit.com AAAA: x.map.fastly.net has no AAAA; Amsterdam and Dubai get dualstack.x.map.fastly.net.
+    const fastlyV6 = ['2a04:4e42:400::396', '2a04:4e42:600::396'];
+    const shape = (extra = []) => propagationVerdict([
+      item('resolver:cloudflare', ...cname('example.map.fastly.net')),
+      item('resolver:google', ...cname('example.map.fastly.net')),
+      item('geo:de-ham', ...cname('example.map.fastly.net')),
+      item('geo:nl-ams', fastlyV6[0], ...cname('dualstack.example.map.fastly.net')),
+      item('geo:ae-dxb', fastlyV6[1], ...cname('dualstack.example.map.fastly.net')),
+      ...extra
+    ], { type: 'AAAA' });
+    const v = shape();
+    assert.deepEqual([v.state, v.resolversAgree, v.noRecords], ['by-design', true, false]);
+    assert.deepEqual(v.findings, [], 'nobody is blamed for the empty answers');
+    assert.deepEqual(ids(v.operators), ['fastly']);
+    // Empty answers through another entry name than the addresses' — another provider, or
+    // another name of the same one: only GeoDNS.
+    const other = propagationVerdict([
+      item('resolver:cloudflare', ...cname('www.example.com.cdn.cloudflare.net')),
+      item('resolver:google', ...cname('www.example.com.cdn.cloudflare.net')),
+      item('geo:nl-ams', fastlyV6[0], ...cname('dualstack.example.map.fastly.net'))
+    ], { type: 'AAAA' });
+    assert.equal(other.state, 'geo');
+    const renamed = propagationVerdict([
+      item('resolver:cloudflare', ...cname('a.example.map.fastly.net')),
+      item('resolver:google', ...cname('a.example.map.fastly.net')),
+      item('geo:nl-ams', fastlyV6[0], ...cname('b.example.map.fastly.net'))
+    ], { type: 'AAAA' });
+    assert.equal(renamed.state, 'geo');
+    // When a resolver gets the addresses too, the empty answers are a difference between resolvers.
+    const split = shape([item('resolver:dnssb', fastlyV6[0], ...cname('dualstack.example.map.fastly.net'))]);
+    assert.deepEqual([split.state, codes(split)], ['differ', ['nodata']]);
+  });
+
   test('every source failing with an rcode is "unresolved", never "agree"', () => {
     const v = propagationVerdict([item('resolver:cloudflare', 'SERVFAIL'), item('resolver:google', 'SERVFAIL'), item('geo:jp-tyo', 'SERVFAIL')]);
     assert.equal(v.state, 'unresolved');

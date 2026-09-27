@@ -477,14 +477,16 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   different operators diverge only behind a name every answer shares (e.g. tp.example.com →
  *   a CloudFront edge in one region, and tp.example.com → *.edgekey.net → *.akamaiedge.net in
  *   another), never at the queried name itself; no NXDOMAIN / NODATA / rcode / private address
- *   anywhere. A name before the entry may differ when both names lead to the same entry names
+ *   anywhere, except empty answers whose chain enters the provider through the entry name the
+ *   addresses come through while the resolvers agree (only some locations get its dual-stack
+ *   variant with AAAA records: www.reddit.com AAAA). A name before the entry may differ when both names lead to the same entry names
  *   (weighted or load-balanced records in the name's own DNS: listed in `steering`). With no
  *   records of the type anywhere (`noRecords`: every answer NODATA, e.g. AAAA of a CDN name
  *   without IPv6), the CNAME chains alone are judged the same way, each entering by CNAME;
  * - 'geo': the resolvers agree and only the ECS locations differ, without anything above
  *   that looks wrong, and not every answer is a known edge (the classic GeoDNS case). A CNAME
  *   that differs only between locations (GeoDNS by CNAME, e.g. geolocation records) is GeoDNS
- *   too;
+ *   too, and so are empty answers through another entry name than the addresses';
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
@@ -647,14 +649,23 @@ function judgeGroups(groups, address) {
 
   const resolversAgree = groups.filter((g) => !g.geo).length <= 1;
   const chainFinding = (f) => f.code === 'cname' || f.code === 'operators';
+  const groupOf = new Map(groups.map((g) => [g.key, g]));
+  const answerEntries = new Set(answers.map((g) => entryOf(g)?.dest).filter(Boolean));
+  // Empty answers whose chains enter a provider (an IPv4-only edge name) next to addresses other
+  // locations get through a name of it (Reddit's dualstack.x.map.fastly.net): GeoDNS by CNAME.
+  const edgeNodata = (f) => f.code === 'nodata' && f.groups.every((k) => groupOf.get(k)?.operators.length);
+  const sameEdges = (f) => edgeNodata(f) && f.groups.every((k) => answerEntries.has(entryOf(groupOf.get(k))?.dest));
   // A chain that differs only between locations while the resolvers agree is GeoDNS by CNAME,
-  // as different addresses there are ('direct'): not serious, but never "by design" either.
-  const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !(resolversAgree && chainFinding(f)));
+  // as different addresses there are ('direct'): not serious, and "by design" only when the empty
+  // answers enter the provider through the entry name the addresses come through (its
+  // `dualstack.` variant included).
+  const locationOnly = (f) => resolversAgree && (chainFinding(f) || edgeNodata(f));
+  const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !locationOnly(f));
   const edges = address && judged.length > 0 && (noRecords ? judged.every((g) => entryOf(g)) : judged.every((g) => g.managed));
   let state = 'differ';
   if (!resolved.length) state = 'unresolved';
   else if (groups.length <= 1) state = 'agree';
-  else if (!serious.length && edges && !findings.some(chainFinding)) state = 'by-design';
+  else if (!serious.length && edges && !findings.some((f) => chainFinding(f) || (edgeNodata(f) && !sameEdges(f)))) state = 'by-design';
   else if (!serious.length && resolversAgree) state = 'geo';
   return { state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length, noRecords, steering };
 }

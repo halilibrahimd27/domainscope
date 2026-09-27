@@ -484,6 +484,9 @@ async function offlineGroup(browser, server) {
         assertEqual(running.chips.map((c) => c.state), ['pending', 'pending', 'pending'], 'asking while rows are looked up');
         await page.click('[data-action="stop"]');
         await page.waitFor(() => !document.querySelector('[data-action="run"]').hidden, { timeout: 5000, message: 'stopped' });
+        // The table redraws the settled rows in its next frame, the one that first paints "Look up":
+        // read the page as that frame shows it, not in between.
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
         const i = await info();
         assertEqual(i.chips.map((c) => [c.id, c.state, c.value]), [['ripestat', 'ok', '2 answered'], ['ipwhois', 'idle', 'not needed'], ['ptr', 'ok', '2 answered']],
           'rows a stopped run never asked count for nothing');

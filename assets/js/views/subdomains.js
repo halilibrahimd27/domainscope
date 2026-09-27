@@ -2481,13 +2481,14 @@ function createRun(config) {
  * A cheap partial HostRecord for a streamed probe hit (hooks.onFound): enough for the results
  * table and the stat cards to show it live, marked `_partial` until the resolve stage replaces it
  * with the full record. AAAA, servers, origin candidates and inventory come with the full record.
- * @param {{ name: string, origin: string, ipv4: string[], cnames: string[], classification: object }} p
+ * @param {{ name: string, origin: string, status?: string, ipv4: string[], cnames: string[], classification: object }} p
+ *   status: the probe's rcode (a dangling alias streams NXDOMAIN with its chain); NOERROR when absent
  * @returns {object} HostRecord-shaped
  */
 export function partialHostRecord(p) {
   return {
     name: p.name,
-    resolution: { ipv4: [...(p.ipv4 || [])], ipv6: [], cnames: [...(p.cnames || [])], status: 'NOERROR', resolver: null, ttl: null, error: null },
+    resolution: { ipv4: [...(p.ipv4 || [])], ipv6: [], cnames: [...(p.cnames || [])], status: p.status || 'NOERROR', resolver: null, ttl: null, error: null },
     classification: p.classification || { kind: 'direct', provider: null, dangling: false, hidesOrigin: false, reasonKey: 'class.direct' },
     origins: p.origin ? [p.origin] : [],
     servers: [],

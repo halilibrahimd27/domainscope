@@ -1204,6 +1204,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.deepEqual(p.resolution.ipv6, [], 'AAAA arrives with the full record');
     assert.deepEqual(p.origins, ['wordlist']);
     assert.ok(Array.isArray(p.servers) && Array.isArray(p.originCandidates), 'shaped like a HostRecord');
+    assert.equal(p.resolution.status, 'NOERROR', 'NOERROR when the partial carries no status');
+    const dangling = S.partialHostRecord({ name: 'blog.x.com', origin: 'wordlist', status: 'NXDOMAIN', ipv4: [], cnames: ['x.ghost.example.net'], classification: { kind: 'unresolved', provider: null, dangling: true, hidesOrigin: false, reasonKey: 'class.dangling.nxdomain' } });
+    assert.equal(dangling.resolution.status, 'NXDOMAIN', 'a dangling alias keeps its rcode');
     // liveHosts: partials show while running; a full record of the same name supersedes its partial.
     const run = { result: null, hosts: [], found: new Map([['api.x.com', p]]) };
     assert.deepEqual(S.liveHosts(run).map((x) => x.name), ['api.x.com']);

@@ -5,7 +5,7 @@
 
 import { h } from '../ui/dom.js';
 import {
-  Alert, Badge, ButtonLink, Button, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog, toast
+  Alert, Badge, ButtonLink, Button, CliText, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog, toast
 } from '../ui/components.js';
 import { registerStrings, formatDate, formatNumber, formatRegion } from '../i18n.js';
 import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver } from '../lib/resolvers.js';
@@ -272,8 +272,8 @@ registerStrings('tr', {
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
-  'about.st.ORIGIN_CERT': 'Yalnızca Cloudflare’in güvendiği bir Cloudflare Origin CA sertifikası sunuyor: adları proxy arkasında kaldıkça Cloudflare Full (strict) arkasındaki bir asıl sunucu için doğru. Ayrı listelenir, yeni sertifikaya ihtiyaç duyuyor sayılmaz (--strict-public sayar).',
-  'about.st.PRIVATE_CERT': 'Kendinden imzalı ya da --private-ca ile verdiğiniz bir CA’nın imzaladığı sertifika sunuyor: iç sunucularda olağan. Ayrı listelenir, yeni sertifikaya ihtiyaç duyuyor sayılmaz (--strict-public sayar).',
+  'about.st.ORIGIN_CERT': 'Yalnızca Cloudflare’in güvendiği bir Cloudflare Origin CA sertifikası sunuyor: adları proxy arkasında kaldıkça Cloudflare Full (strict) arkasındaki bir asıl sunucu için doğru. Ayrı listelenir, yeni sertifika gerektiren sunucular arasında sayılmaz (--strict-public ile sayılır).',
+  'about.st.PRIVATE_CERT': 'Kendinden imzalı ya da --private-ca ile verdiğiniz bir CA’nın imzaladığı sertifika sunuyor: iç sunucularda olağan. Ayrı listelenir, yeni sertifika gerektiren sunucular arasında sayılmaz (--strict-public ile sayılır).',
   'about.st.NOT_HOSTED': 'Yanıt veriyor ama bu ad için değil (yalnızca varsayılan sertifika).',
   'about.st.TLS_ERROR': 'TLS el sıkışması başarısız oldu.',
   'about.st.TIMEOUT': 'Zaman aşımı süresinde yanıt yok.',
@@ -517,7 +517,7 @@ export function mount(container, ctx) {
       h('h3', { class: 'about-subtitle' }, t('about.statusesTitle')),
       simpleTable([t('common.status'), t('common.details')], CLI_STATUSES.map((s) => [
         Badge(s.code, { variant: s.variant, icon: s.icon, mono: true }),
-        t(`about.st.${s.code}`)
+        CliText(t(`about.st.${s.code}`))
       ]), 'about-statuses'))
   });
 

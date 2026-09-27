@@ -34,6 +34,7 @@
  *   C.StatCard({ label: 'Hosts', value: 42, hint: '3 behind Cloudflare', variant: 'accent' });
  *   C.KeyValueList([['Issuer', cert.issuerDN], { key: 'SHA-256', value: fp, mono: true, copy: true }]);
  *   C.CodeBlock('python3 ssl_origin_scan.py -t targets.txt', { label: 'Command' });
+ *   C.CliText(t('about.st.ORIGIN_CERT'));                  // prose whose --options never wrap
  *   C.EmptyState({ icon: 'search', title: 'No results', message: '…', action: C.Button({...}) });
  *   C.Alert({ variant: 'warn', title: 'Heads up', message: '…' });  C.ErrorBanner(err, { onRetry });
  *   C.Spinner({ label: t('common.loading') });  C.TruncatedList(ips, { max: 3 });
@@ -739,6 +740,17 @@ export function KeyValueList(items, { columns = 1, className = '' } = {}) {
         h('dd', { class: ['kv-value', { mono }] }, h('span', { class: 'kv-value-text' }, shown),
           copy && !empty && copyValue !== null ? CopyButton(copyValue, { iconOnly: true, size: 'sm' }) : null));
     }));
+}
+
+/**
+ * Prose that names CLI options (`--strict-public`, `--private-ca`): each option becomes an
+ * unbreakable `<code class="nowrap">`, so a narrow screen never splits it at a hyphen.
+ * @param {string} text
+ * @returns {HTMLSpanElement}
+ */
+export function CliText(text) {
+  const parts = String(text ?? '').split(/(--[a-z][a-z0-9-]*)/);
+  return h('span', null, parts.map((part, i) => (i % 2 ? h('code', { class: 'nowrap' }, part) : part)).filter((p) => p !== ''));
 }
 
 /**

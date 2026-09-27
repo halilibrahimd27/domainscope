@@ -28,7 +28,7 @@
 
 import { h, clear, append, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
+  Alert, Badge, Button, ButtonLink, Card, CliText, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
   checkboxGroup, ipSortValue, radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
@@ -793,7 +793,7 @@ registerStrings('tr', {
   'scan.cli.onlyCovered': 'Yalnızca sertifikanın kapsadığı adlar',
   'scan.cli.targetsNote': 'targets.txt = kayıtlı tüm sunucular + asıl sunucu ipuçları + bilinmeyen doğrudan IP’ler.',
   'scan.cli.noInventoryNote': 'Envanter olmadan targets.txt yalnızca ipuçlarını ve doğrudan IP’leri içerir — eksiksiz kontrol için sunucularınızı ekleyin.',
-  'scan.cli.result': 'UPDATED: yeni sertifikayı zaten sunuyor · NEEDS_UPDATE: ad için bir sertifika sunuyor ama yenisini değil — buraya kurun · ORIGIN_CERT: Cloudflare Origin CA sertifikası sunuyor, Cloudflare Full (strict) arkasında doğru · PRIVATE_CERT: kendinden imzalı ya da --private-ca sertifikası sunuyor · NOT_HOSTED: ad orada sunulmuyor. --strict-public eklemezseniz ORIGIN_CERT ve PRIVATE_CERT yeni sertifikaya ihtiyaç duyuyor sayılmaz.',
+  'scan.cli.result': 'UPDATED: yeni sertifikayı zaten sunuyor · NEEDS_UPDATE: ad için bir sertifika sunuyor ama yenisini değil — buraya kurun · ORIGIN_CERT: Cloudflare Origin CA sertifikası sunuyor, Cloudflare Full (strict) arkasında doğru · PRIVATE_CERT: kendinden imzalı ya da --private-ca sertifikası sunuyor · NOT_HOSTED: ad orada sunulmuyor. --strict-public eklemezseniz ORIGIN_CERT ve PRIVATE_CERT yeni sertifika gerektiren sunucular arasında sayılmaz.',
   'scan.cli.download': 'ssl_origin_scan.py',
   'scan.cli.command': 'Komut',
 
@@ -3092,7 +3092,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           commandHost),
         h('li', null,
           h('div', { class: 'scan-cli-step-title' }, t('scan.cli.step4')),
-          h('p', { class: 'text-sm text-2' }, t('scan.cli.result'))))
+          h('p', { class: 'text-sm text-2' }, CliText(t('scan.cli.result')))))
     });
   }
 

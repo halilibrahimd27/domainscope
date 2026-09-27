@@ -26,9 +26,11 @@
  * Page session (lib/session.js, memory only): a view reports each run with
  * `ctx.runStarted(subject)`, which makes it the current target shown in the header chip; the
  * nav links carry that target into the other tools (`run=0`: filled in, never run). A view that
- * also exports `result()` → `{ subject, at } | null` (its finished result) keeps it when it is
- * left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it is opened
- * again; the page header then says "Result from <time>", with "Run again" calling `rerun(ctx)`.
+ * also exports `result()` → `{ subject, at, rerun? } | null` (its finished result) keeps it when
+ * it is left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it is
+ * opened again; the page header then says "Result from <time>", with "Run again" calling
+ * `rerun(ctx)` unless the result says `rerun: false`. "Delete all local data" forgets all of it
+ * and opens the tool on screen again, bare.
  */
 
 import {
@@ -362,14 +364,36 @@ state.subscribe(({ key }) => {
 export const pageSession = createSessionStore();
 
 state.subscribe(({ key }) => {
-  if (key === 'cleared') pageSession.clear();
+  if (key !== 'cleared') return;
+  pageSession.clear();
+  forgetShown();
 });
+
+/**
+ * "Delete all local data" ran: the tool on screen forgets what it shows too. Its note goes, its
+ * result is not kept on the way out, and once every listener has dropped its own state (the
+ * tools with module state listen too: Subdomains, SSL Targets, Bulk Resolve, the Certificate
+ * view, Zone File), it opens again on its bare route, so nothing runs.
+ */
+function forgetShown() {
+  const cur = current;
+  if (!cur) return;
+  setKeptNote(null);
+  if (!cur.view || typeof cur.view.result !== 'function') return;
+  cur.forget = true;
+  queueMicrotask(() => {
+    if (current !== cur) return;
+    const hash = buildRoute(cur.id);
+    if (hash !== currentHash()) globalThis.history.replaceState(null, '', hash);
+    showRoute(cur.id, {}, { force: true });
+  });
+}
 
 /**
  * A view's finished result as the shell uses it (`result()` export), or null.
  * @param {object} view the view module
  * @param {ViewContext} ctx
- * @returns {{ subject: string|null, at: Date }|null}
+ * @returns {{ subject: string|null, at: Date, rerun: boolean }|null}
  */
 function resultOf(view, ctx) {
   if (!view || typeof view.result !== 'function') return null;
@@ -385,10 +409,12 @@ function resultOf(view, ctx) {
  * Keep the finished result of a view that is being left. A view with `snapshot()` is kept with
  * it and its route params (they bring it back); any other view keeps its own state, so only
  * the fact is kept (its nav link then opens it bare). A run still going is not a result: the
- * result kept before stays.
- * @param {{ id: string, view: object, ctx: ViewContext }} cur
+ * result kept before stays. Nothing is kept on the way out after "Delete all local data"
+ * (`forget`).
+ * @param {{ id: string, view: object, ctx: ViewContext, forget?: boolean }} cur
  */
 function keepResult(cur) {
+  if (cur.forget) return;
   const res = resultOf(cur.view, cur.ctx);
   if (!res) return;
   const restorable = typeof cur.view.snapshot === 'function';
@@ -441,7 +467,7 @@ function keepResult(cur) {
  * @property {string} version
  */
 
-let current = null; // { id, def, view, params, ctx, controller, cleanups[], busy, note }
+let current = null; // { id, def, view, params, ctx, controller, cleanups[], busy, note, forget? }
 let routeToken = 0;
 let pendingLangRemount = false;
 let firstRouteDone = false;

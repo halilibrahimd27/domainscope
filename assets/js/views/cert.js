@@ -18,11 +18,13 @@
  * The loaded certificate is shared between the two views for the session through
  * `state.session.currentCert` (a {@link CertLoad}); it is never persisted or uploaded.
  *
- * Page session (lib/session.js): loading a certificate makes its name the current target
+ * Page session (lib/session.js): loading a certificate here makes its name the current target
  * ({@link certTarget}); `#/cert?host=example.com&run=0` (a host carried over from another tool)
- * fills the "No file?" field while it is empty, and loading still takes a click. Coming back
- * shows the loaded certificate with a "Result from <time>" note whose "Run again" checks its CAA
- * and CT again.
+ * fills the "No file?" field while it is empty or still holds the last lookup, and loading still
+ * takes a click. Coming back to a certificate that was shown here when the view was left says
+ * "Result from <time>"; for one from Certificate Transparency, "Run again" looks its host name up
+ * again (a file or the sample has nothing to run again). "Delete all local data" forgets the
+ * field, its last outcome and the CAA / CT / DANE results kept per certificate.
  */
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
@@ -43,7 +45,9 @@ import { validateNames } from '../lib/cmdline.js';
 import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
 import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
-import { DanePanel } from '../ui/dane-panel.js';
+import { DanePanel, cancelDane } from '../ui/dane-panel.js';
+import { fillReplaces } from '../lib/session.js';
+import { state as stateSingleton } from '../state.js';
 
 /** Route id. */
 export const id = 'cert';
@@ -1665,6 +1669,42 @@ const viewState = { key: null, selected: 0, tab: 'names' };
 let teardown = null;
 /** The mounted view's page-session hooks ({@link result}, {@link rerun}); null while another tool is shown. */
 let active = null;
+
+/**
+ * The host name a certificate from Certificate Transparency was looked up for, or null (a file,
+ * the sample, a hand-over).
+ * @param {CertLoad|null} load
+ * @returns {string|null}
+ */
+function ctHostOf(load) {
+  return load && load.source === 'ct' && load.ct && load.ct.host ? load.ct.host : null;
+}
+
+/** The host name of the "No file?" field's last lookup (its outcome, or the certificate it loaded), as a list. */
+const lastCtLookup = (load) => {
+  const host = ctForm.last ? ctForm.last.host : ctHostOf(load);
+  return host ? [host] : null;
+};
+/** The host name the field holds, as a lookup reads it (a list of at most one). */
+const ctFieldHosts = (text) => {
+  const host = normalizeCtHost(text);
+  return host ? [host] : [];
+};
+
+// "Delete all local data" (About, or Settings on any view) forgets the "No file?" field, its last
+// outcome and what was checked per certificate (the certificate itself goes with state.session),
+// stopping what runs; the shell opens the view again when it is on screen.
+stateSingleton.subscribe(({ key }) => {
+  if (key !== 'cleared') return;
+  stopCtLookup();
+  ctForm.text = '';
+  ctForm.last = null;
+  caaCache.clear();
+  ctCache.clear();
+  for (const holder of daneHolders.values()) cancelDane(holder);
+  daneHolders.clear();
+  Object.assign(viewState, { key: null, selected: 0, tab: 'names' });
+});
 
 /**
  * Start (or join) a cached async task. Every panel showing the running entry registers a

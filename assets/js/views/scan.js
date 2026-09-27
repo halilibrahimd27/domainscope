@@ -33,7 +33,10 @@
  *
  * Route params: `#/scan?domain=example.com` (repeatable or comma-separated) pre-fills the
  * domains; `&run=1` (a shared link) also shows a note to press "Start scan" — a link never
- * starts the scan on its own.
+ * starts the scan on its own. With `run=0` (a domain carried over from another tool,
+ * lib/session.js) only an empty step 2 or one that still holds the last scan's domains takes it.
+ * "Delete all local data" forgets step 2 and the last scan (a running one is stopped), whether
+ * or not the view is mounted.
  */
 
 import { h, clear, append, scrollBehavior } from '../ui/dom.js';
@@ -56,7 +59,8 @@ import {
 import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
 import { errorKind, splitList } from '../lib/util.js';
-import { isFillOnly } from '../lib/session.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { state as stateSingleton } from '../state.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
@@ -1182,6 +1186,24 @@ const zoneModes = new WeakMap();
 let runCounter = 0;
 /** The mounted view (null when another tool is shown). */
 let active = null;
+
+/** Step 2's domains of the page's last scan, or null (what a carried domain may replace, lib/session.js). */
+const lastRunDomains = () => (session.run && session.run.domainsInput) || null;
+/** The domains step 2 holds, as a scan reads them. */
+const stepDomains = (text) => parseDomainsInput(text).domains;
+
+// "Delete all local data" (About, or Settings on any view) forgets step 2 and the last scan with
+// its checks, stopping what runs; the shell opens the view again when it is on screen.
+stateSingleton.subscribe(({ key }) => {
+  if (key !== 'cleared') return;
+  const run = session.run;
+  if (run) {
+    if (run.status === 'running') run.controller.abort();
+    cancelVerify(run);
+    cancelDane(run);
+  }
+  Object.assign(session, { domainsText: '', domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
+});
 
 /**
  * @typedef {object} ScanRun

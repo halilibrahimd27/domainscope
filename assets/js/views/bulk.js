@@ -12,7 +12,10 @@
  * another tool is opened and its results are shown again on return. Rows stream into the
  * tables (DataTable batches the rendering), so thousands of names stay responsive.
  *
- * Route params: `#/bulk?names=a.example.com,b.example.com` pre-fills the list.
+ * Route params: `#/bulk?names=a.example.com,b.example.com` pre-fills the list; with `run=0` (a
+ * name carried over from another tool, lib/session.js) only an empty list or one that still holds
+ * the last job's names takes it. "Delete all local data" forgets the list and the last job (a
+ * running one is stopped), whether or not the view is mounted.
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -29,7 +32,8 @@ import { lookupServers } from '../lib/inventory.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
-import { commonTarget, isFillOnly } from '../lib/session.js';
+import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
+import { state as stateSingleton } from '../state.js';
 
 /** Route id. */
 export const id = 'bulk';
@@ -459,6 +463,21 @@ export function bulkStats(rows, ipRows) {
 const session = { text: null, job: null };
 let jobCounter = 0;
 let active = null;
+
+/** The names of the page's last job, or null (what a carried name may replace, lib/session.js). */
+const lastJobNames = () => (session.job ? session.job.names : null);
+/** The names a list holds, as a job would resolve them. */
+const listNames = (text) => parseBulkInput(text).names;
+
+// "Delete all local data" (About, or Settings on any view) forgets the pasted list and the last
+// job, stopping one that runs; the shell opens the view again when it is on screen.
+stateSingleton.subscribe(({ key }) => {
+  if (key !== 'cleared') return;
+  const job = session.job;
+  if (job && job.status === 'running') job.controller.abort();
+  session.job = null;
+  session.text = null;
+});
 
 function loadOptions() {
   try {

@@ -155,12 +155,31 @@ export function fillRoute(view, target) {
 
 /**
  * Does a route only fill the form (`run=0`)? A view then never runs on arrival and never
- * replaces text the user already has in the input.
+ * replaces a draft of the user's in its input ({@link fillReplaces}).
  * @param {Record<string, string>|null|undefined} params
  * @returns {boolean}
  */
 export function isFillOnly(params) {
   return !!params && params[FILL_PARAM] === FILL_VALUE;
+}
+
+/**
+ * May a carried target (`run=0`) replace the text in a tool's box? Only when the box is empty or
+ * still holds exactly what the tool last ran (the same entries, in any order) — never a draft of
+ * the user's. For the tools whose box outlives a visit (Subdomains, SSL Targets, Bulk Resolve,
+ * the Certificate view's "No file?" field).
+ * @param {string} text the box's text
+ * @param {string[]|null|undefined} lastRun the entries of the tool's last run (null: none)
+ * @param {(text: string) => string[]} entries how the tool reads its box
+ * @returns {boolean}
+ */
+export function fillReplaces(text, lastRun, entries) {
+  const s = String(text ?? '');
+  if (!s.trim()) return true;
+  if (!Array.isArray(lastRun) || !lastRun.length || typeof entries !== 'function') return false;
+  const a = [...new Set(entries(s))].sort();
+  const b = [...new Set(lastRun)].sort();
+  return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 /* ------------------------------------------------------------------------ */

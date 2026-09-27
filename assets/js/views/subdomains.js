@@ -36,7 +36,9 @@
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
  * reload or a restored tab pre-fills the box instead of silently scanning again. A domain carried
- * over from another tool (`run=0`, lib/session.js) fills the box only while it is empty.
+ * over from another tool (`run=0`, lib/session.js) fills the box only while it is empty or still
+ * holds the last scan's domains. "Delete all local data" forgets the box and the last scan (a
+ * running one is stopped), whether or not the view is mounted.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
@@ -59,7 +61,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
-import { isFillOnly } from '../lib/session.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
@@ -1616,10 +1618,11 @@ export function resetCustomWordlist() {
 }
 
 // "Delete all local data" (About, or Settings on any view) must also drop the copies this module
-// keeps in memory — the custom list when it was too long for sessionStorage, the learned store
-// of a browser without localStorage, and the names a Reverse DNS sweep handed over — whether or
-// not the Subdomains view is mounted: the module stays loaded (SSL Targets imports it) and would
-// otherwise keep probing the old names.
+// keeps in memory — the custom list when it was too long for sessionStorage, the learned store of
+// a browser without localStorage, the names a Reverse DNS sweep handed over, the search box and
+// the last scan (a running one is stopped) — whether or not the Subdomains view is mounted: the
+// module stays loaded (SSL Targets imports it) and would otherwise keep probing the old names.
+// The shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
   if (key !== 'cleared') return;
   resetCustomWordlist();
@@ -1631,6 +1634,7 @@ stateSingleton.subscribe(({ key }) => {
       memoryLearned = null;
     }
   }
+  forgetRuns();
 });
 
 /**
@@ -2695,6 +2699,20 @@ const zoneModes = new WeakMap();
 let runCounter = 0;
 /** The mounted view (null while another tool is shown). */
 let active = null;
+
+/** The domains of the page's last scan, or null (what a carried domain may replace, lib/session.js). */
+const lastRunDomains = () => (session.run ? session.run.config.domains : null);
+/** The domains the search box holds, as a scan reads them. */
+const boxDomains = (text) => parseTargets(text).domains;
+
+/** Forget the search box and the last scan, stopping one that runs ("Delete all local data"). */
+function forgetRuns() {
+  const run = session.run;
+  if (run && run.status === 'running') run.controller.abort();
+  session.run = null;
+  session.text = '';
+  session.extraText = '';
+}
 
 function createRun(config) {
   runCounter += 1;

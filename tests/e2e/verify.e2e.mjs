@@ -26,8 +26,8 @@
  *   - the pair list (7 rows: the private db01 pairs skipped, the origin-hint pair optional),
  *     the plan line, the not-checkable line;
  *   - consent per page session: the first Start shows the privacy text and the cost; Cancel
- *     sends nothing; later batches skip the dialog; "Delete all local data" asks again;
- *     consent is never stored;
+ *     sends nothing; later batches skip the dialog; "Delete all local data" forgets the scan
+ *     and, after a new one, asks again; consent is never stored;
  *   - request shape: one free /limits per click, POST bodies (IP target, port 443, limit 1,
  *     timeout 10, HTTPS HEAD, no ipVersion), JSON content type, no Authorization, GETs without
  *     custom headers, no-store, at least 450 ms apart per measurement id; never a private or
@@ -1049,7 +1049,7 @@ async function main() {
         ['UPDATED', 'UPDATED', 'TIMEOUT'], 'verdicts after Retry');
     });
 
-    await run.step('"Delete all local data" resets consent: the next click asks again (Cancel → nothing sent)', async () => {
+    await run.step('"Delete all local data" forgets the scan and resets consent: after a new scan Start asks again (Cancel → nothing sent)', async () => {
       await gotoRoute(page, 'about');
       await page.click('[data-action="clear-data"]');
       try {
@@ -1065,12 +1065,23 @@ async function main() {
       await dismissToasts(page);
       await seedOptions(page); // the wipe restored every passive source: keep the suite offline
       await gotoRoute(page, 'scan');
-      await page.waitFor(() => document.querySelector('.scan-tabs .tab[data-tab="verify"]'), { message: 'results restored' });
+      // The scan (its rows name inventory servers), its checks and the certificate went too.
+      const left = await page.evaluate(() => ({
+        run: !!document.querySelector('.scan-run-ui'),
+        cert: !!document.querySelector('.scan-step-cert .cert-summary'),
+        domains: document.querySelector('[data-role="scan-domains"]').value
+      }));
+      assertEqual(left, { run: false, cert: false, domains: '' }, 'nothing of the scan is left');
+      await page.setFileInput('.scan-step-cert .filedrop-input', [CERT_FILE]);
+      await page.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
+      await openScanOptions(page);
+      await page.type('textarea[data-role="scan-extra"]', Object.keys(ZONE).join('\n'));
+      await runScan(page);
       await openTab(page, 'verify');
-      await page.waitFor(() => document.querySelector('.scan-tab-verify [data-action="vfy-recheck"]'), { message: 'Verify tab restored' });
+      await page.waitFor(() => document.querySelector('.scan-tab-verify [data-action="vfy-start"]'), { message: 'Verify tab' });
       const mark = await panelState(page);
       const c0 = await gpCount(page);
-      await page.click('.scan-tab-verify [data-action="vfy-recheck"]');
+      await page.click('.scan-tab-verify [data-action="vfy-start"]');
       await page.waitFor((d) => document.querySelector(d), { args: [DIALOG], message: 'consent dialog again' });
       assert(await page.evaluate((d) => !!document.querySelector(`${d} [data-vfy="confirm-privacy"]`), DIALOG), 'privacy text again');
       await page.click(`${DIALOG} .modal-foot .btn:not(.btn-primary)`);

@@ -564,6 +564,9 @@ registerStrings('en', {
   'sub.zone.open': 'Open Zone File',
   'sub.zone.exact': 'Exact mode: only the names from your zone file; no passive sources, wordlist or permutations for this scan.',
   'sub.zone.discover': 'Zone file included: its names were added to this scan as starting names.',
+  'sub.zone.busy': 'A scan of {running} is still running. The scan of your zone file ({domain}) starts when it ends.',
+  'sub.zone.busy.cancel': 'Cancel it and scan the zone',
+  'sub.zone.busy.dismiss': 'Don’t start',
   'sub.org.zone': 'Exact origins from your zone file',
   'sub.org.zoneHint': 'Your zone file names the real server behind these proxied names. The command below probes these exact addresses and never widens them to a /24.',
 
@@ -965,6 +968,9 @@ registerStrings('tr', {
   'sub.zone.open': 'Zone Dosyası’nı aç',
   'sub.zone.exact': 'Kesin mod: yalnızca zone dosyanızdaki adlar; bu taramada pasif kaynak, kelime listesi ya da permütasyon yok.',
   'sub.zone.discover': 'Zone dosyası dahil: adları bu taramaya başlangıç adı olarak eklendi.',
+  'sub.zone.busy': '{running} taraması hâlâ sürüyor. Zone dosyanızın taraması ({domain}) o bitince başlar.',
+  'sub.zone.busy.cancel': 'Onu iptal et, zone’u tara',
+  'sub.zone.busy.dismiss': 'Başlatma',
   'sub.org.zone': 'Zone dosyanızdaki kesin originler',
   'sub.org.zoneHint': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
 
@@ -2396,6 +2402,21 @@ export function linkAction(params, targets, run) {
   return 'prompt';
 }
 
+/**
+ * What the Zone File view's "Scan now" does on arrival: start the zone scan, or — while another
+ * scan runs — wait for it ('wait': the page says so and offers to cancel it). Null when that very
+ * zone scan is the one running.
+ * @param {{ status: string, config: { domains: string[], zoneMode?: string|null } }|null} run the page's current run
+ * @param {string[]} domains the domains of the zone scan
+ * @param {string} mode its zone mode (one of {@link ZONE_MODES})
+ * @returns {'start'|'wait'|null}
+ */
+export function zoneStartAction(run, domains, mode) {
+  if (!run || run.status !== 'running') return 'start';
+  const same = sameTargets(run.config.domains, domains) && (run.config.zoneMode || 'off') === mode;
+  return same ? null : 'wait';
+}
+
 /** "Fastly, Vercel" — providers of the CDN / platform hosts (at most 3). */
 function providerHint(hosts) {
   const names = [];
@@ -2694,6 +2715,10 @@ export function mount(container, ctx) {
   // A shared link (`&run=1`) pre-fills the box and waits for one click: a link alone never
   // starts the scan's thousands of DNS queries and third-party source calls.
   const linkPrompt = h('div', { class: 'sub-link-prompt', hidden: true });
+  // A Zone File "Scan now" that arrived while another scan was running waits for it, with its
+  // prompt in the same place: `{ zone }` (the zone it scans), null when none waits. Hiding the
+  // prompt drops it.
+  let zoneStartAfter = null;
 
   function showLinkPrompt(domains) {
     clear(linkPrompt);
@@ -2707,7 +2732,26 @@ export function mount(container, ctx) {
     }));
   }
 
+  function showZoneBusyPrompt(zone) {
+    zoneStartAfter = { zone };
+    clear(linkPrompt);
+    linkPrompt.hidden = false;
+    const alert = Alert({
+      variant: 'info',
+      icon: 'file-text',
+      compact: true,
+      message: t('sub.zone.busy', { running: session.run.config.domains.join(', '), domain: parseTargets(domainField.value).domains.join(', ') }),
+      actions: [
+        Button({ label: t('sub.zone.busy.cancel'), icon: 'stop', variant: 'primary', size: 'sm', dataset: { action: 'sub-zone-cancel' }, onClick: () => cancel() }),
+        Button({ label: t('sub.zone.busy.dismiss'), variant: 'secondary', size: 'sm', dataset: { action: 'sub-zone-dismiss' }, onClick: () => hideLinkPrompt() })
+      ]
+    });
+    alert.dataset.prompt = 'zone-busy';
+    linkPrompt.append(alert);
+  }
+
   function hideLinkPrompt() {
+    zoneStartAfter = null;
     clear(linkPrompt);
     linkPrompt.hidden = true;
   }
@@ -3298,6 +3342,8 @@ export function mount(container, ctx) {
     if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') {
       renderZoneChip();
       renderPlan();
+      // A zone scan waiting for the running one goes with its zone.
+      if (zoneStartAfter && activeZone() !== zoneStartAfter.zone) hideLinkPrompt();
     }
     if (key === 'settings') {
       // A concurrency change moves the time estimates; the chain moves the DoH line.
@@ -3467,9 +3513,23 @@ export function mount(container, ctx) {
     if (ui) ui.dispose();
     clear(resultsHost);
     intro.hidden = true;
-    ui = buildRunUI(run, ctx, { onFinish: () => setRunning(false) });
+    ui = buildRunUI(run, ctx, {
+      onFinish: () => {
+        setRunning(false);
+        startWaitingZoneScan();
+      }
+    });
     resultsHost.append(ui.el);
     setRunning(run.status === 'running');
+  }
+
+  /** The scan a Zone File "Scan now" waited for has ended (done, cancelled or failed): start it now. */
+  function startWaitingZoneScan() {
+    const waiting = zoneStartAfter;
+    if (!waiting) return;
+    hideLinkPrompt();
+    // Only while that zone is still the box's (a Forget or another zone drops the request).
+    if (!ctx.signal.aborted && activeZone() === waiting.zone) start();
   }
 
   if (session.run) attach(session.run);
@@ -3486,10 +3546,14 @@ export function mount(container, ctx) {
   }
   // The Zone File view's "Scan now" click starts the scan once this view is built: that in-app
   // click is the consent (the one-shot intent lives in memory only and is never in the URL, so a
-  // route link alone still only prompts).
+  // route link alone still only prompts). A scan still running (started before, on this page)
+  // is never dropped silently: the zone scan waits for it, and the prompt offers to cancel it.
   const startFromZoneClick = () => {
     if (ctx.signal.aborted) return;
-    start();
+    const zone = activeZone();
+    const action = zoneStartAction(session.run, parseTargets(domainField.value).domains, zone ? (zoneModes.get(zone) || 'discover') : 'off');
+    if (action === 'wait') showZoneBusyPrompt(zone);
+    else if (action === 'start') start();
   };
   if (intentOk && zoneIntent.autostart === true) queueMicrotask(startFromZoneClick);
 

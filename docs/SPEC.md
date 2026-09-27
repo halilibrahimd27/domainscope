@@ -841,6 +841,7 @@ Hash routing `#/<view>?param=...` (shareable: e.g. `#/lookup?name=example.com&ty
      - per network, whether the command sweeps the whole /24 or only its addresses (and why), a **shared hosting / cloud** badge with a warning, and **Look up owner** (`describeNetwork`, one RIPEstat request on click);
      - an **Exclude addresses** box (→ `buildSweepCommand({ exclude })`);
      - a tip to scan sister domains together.
+   - **Zone File "Scan now" during a scan:** the zone scan waits for the running one (`zoneStartAction`). A prompt offers **Cancel it and scan the zone** or **Don't start**. Leaving the page drops the request; the box and the zone mode stay filled in.
 0b. **zone** "Zone File" (`#/zone[?tab=overview|records|origins|problems|live]`; only `tab=` ever goes in the URL):
    - **Import:** drop, choose or paste, with format / dialect auto-detection. The zone name override and a Confirm step apply when the name is only guessed; there are 3 built-in samples and "How do I export my zone?".
    - **Summary bar:** a format badge and counts ("39 records · 26 names · 10 proxied"), with Forget. Alerts are pinned for an incomplete export and a mostly-internal zone.

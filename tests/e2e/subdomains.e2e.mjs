@@ -33,6 +33,8 @@
  *     with every control inside the viewport
  *   - an emulated zone (example.net answered inside the page, no network): proxied + DNS-only
  *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has
+ *   - the Zone File hand-off (emulated DNS): exact mode, the "origin?" badges right after a scan with
+ *     slow DNS, and a "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
  *   - zero console errors, exceptions and CSP violations (third-party API failures such as a
  *     crt.sh 502 without CORS are reported, not counted); no missing i18n keys
  */
@@ -1326,6 +1328,101 @@ async function main() {
         await tab.evaluate(() => document.querySelector('.sub-table .sub-origin-hint').click());
         await tab.waitFor(() => document.activeElement?.classList.contains('sub-org-title'), { message: 'the badge jumps to the ORIGIN panel' });
         await assertClean(tab, 'slow zone scan', origin);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    await run.step('"Scan now" while another scan runs: a prompt instead of a silent drop; cancel it → the exact zone scan starts; "Don\'t start" or a Forget → nothing starts', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS) });
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: slowDnsScript });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        await tab.evaluate(() => localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true })));
+        const other = `api.${ZONE_HANDOFF_APEX}`;
+        const toAbout = async () => {
+          await tab.evaluate(() => { location.hash = '#/about'; });
+          await tab.waitFor(() => document.documentElement.dataset.view === 'about', { message: 'About' });
+        };
+        // A slow scan of another name (answered by the same stub), left running on another view.
+        const scanOther = async () => {
+          await tab.evaluate(() => { window.__dnsDelay = 300; });
+          await toAbout();
+          await tab.evaluate((d) => { location.hash = `#/subdomains?domain=${d}`; }, other);
+          await tab.waitFor((d) => document.querySelector('[data-role="sub-domain"]')?.value === d, { args: [other], timeout: 15000, message: 'pre-filled' });
+          await tab.click('[data-action="sub-run"]');
+          const runId = await tab.waitFor((d) => {
+            const ui = document.querySelector('.sub-run-ui');
+            return ui && ui.querySelector('.sub-run')?.dataset.status === 'running' && (ui.querySelector('.sub-run-title')?.textContent || '').includes(d) ? ui.dataset.run : false;
+          }, { args: [other], timeout: 15000, message: `the scan of ${other} runs` });
+          await toAbout();
+          await zoneScanNow(tab);
+          await tab.waitFor(() => document.querySelector('[data-prompt="zone-busy"]'), { timeout: 15000, message: 'the "a scan is running" prompt' });
+          return runId;
+        };
+        const snapshot = () => tab.evaluate(() => ({
+          run: document.querySelector('.sub-run-ui')?.dataset.run || null,
+          status: document.querySelector('.sub-run')?.dataset.status || null,
+          box: document.querySelector('[data-role="sub-domain"]').value,
+          pressed: document.querySelector('.sub-zone-mode .seg-btn[aria-pressed="true"]')?.dataset.value || null,
+          prompt: document.querySelector('.sub-link-prompt').hidden ? null : document.querySelector('.sub-link-prompt').textContent
+        }));
+
+        const first = await scanOther();
+        const busy = await snapshot();
+        assertEqual([busy.run, busy.status, busy.box, busy.pressed], [first, 'running', ZONE_HANDOFF_APEX, 'exact'],
+          'the running scan is left alone; the zone scan waits with the box and the exact mode pre-filled');
+        assert(busy.prompt.includes(other) && busy.prompt.replaceAll(other, '').includes(ZONE_HANDOFF_APEX), `the prompt names both scans: ${busy.prompt}`);
+        await tab.evaluate(() => { window.__dnsDelay = 0; });
+        await tab.click('[data-action="sub-zone-cancel"]');
+        const zoneId = await tab.waitFor((old) => {
+          const x = document.querySelector('.sub-run-ui')?.dataset.run;
+          return x && x !== old ? x : false;
+        }, { args: [first], timeout: 30000, message: 'the zone scan started once the other one was cancelled' });
+        assertEqual(await tab.waitFor(DONE(zoneId), { timeout: 60000, message: 'zone scan done' }), 'done', 'status');
+        const zoneRun = await tab.evaluate(() => ({
+          banner: document.querySelector('.sub-zone-banner')?.dataset.zoneMode || null,
+          title: document.querySelector('.sub-run-title')?.textContent || ''
+        }));
+        assertEqual([zoneRun.banner, (await snapshot()).prompt], ['exact', null], 'an exact zone scan; the prompt is gone');
+        assert(zoneRun.title.includes(ZONE_HANDOFF_APEX) && !zoneRun.title.includes(other), `the zone's domain was scanned: ${zoneRun.title}`);
+
+        // "Don't start": the running scan goes on, and nothing starts when it ends.
+        const second = await scanOther();
+        await shotEl(tab, opts, 'subdomains-zone-busy-desktop-light-en', '.sub-hero');
+        await tab.setViewport({ width: 390, height: 844, mobile: true });
+        for (const scheme of ['light', 'dark']) {
+          await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+          await sleep(150);
+          await assertNoHorizontalScroll(tab, `zone busy prompt ${scheme}`);
+          assertEqual(await overflowingIn(tab, '.sub-link-prompt'), [], `the prompt inside 390 px (${scheme})`);
+          await shotEl(tab, opts, `subdomains-zone-busy-mobile-${scheme}-en`, '.sub-hero');
+        }
+        await tab.setViewport({ width: 1440, height: 900 });
+        await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await tab.click('[data-action="sub-zone-dismiss"]');
+        const kept = await snapshot();
+        assertEqual([kept.run, kept.status, kept.prompt], [second, 'running', null], 'the prompt is gone and the scan keeps running');
+        await tab.evaluate(() => { window.__dnsDelay = 0; });
+        await tab.click('[data-action="sub-cancel"]');
+        assertEqual(await tab.waitFor(DONE(second), { timeout: 30000, message: 'cancelled' }), 'cancelled', 'status');
+        await sleep(800);
+        assertEqual((await snapshot()).run, second, 'no zone scan started');
+
+        // Forget in the Zone File view while the zone scan waits: the request goes with the zone.
+        const third = await scanOther();
+        await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('zone', undefined));
+        await tab.waitFor(() => document.querySelector('.sub-link-prompt').hidden, { message: 'the prompt goes with the zone' });
+        await tab.evaluate(() => { window.__dnsDelay = 0; });
+        await tab.click('[data-action="sub-cancel"]');
+        assertEqual(await tab.waitFor(DONE(third), { timeout: 30000, message: 'cancelled' }), 'cancelled', 'status');
+        await sleep(800);
+        assertEqual((await snapshot()).run, third, 'nothing started without the zone');
+        await assertClean(tab, 'zone scan while busy', origin);
       } finally {
         await tab.close();
       }

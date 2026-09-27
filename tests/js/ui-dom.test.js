@@ -1882,9 +1882,33 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(srcText, /if \(intentOk && zoneIntent\.autostart === true\) queueMicrotask\(startFromZoneClick\);/, 'gated by a valid autostart intent');
     assert.match(srcText, /const intentOk = validZoneIntent\(zoneIntent, 'subdomains', state\.getSession\('zone'\)\);/, 'the intent is validated for Subdomains');
     assert.match(srcText, /const zoneIntent = state\.takeSession\('zoneScanIntent'\);/, 'the intent is one-shot (taken)');
+    // A scan still running when the intent arrives: the zone scan waits for it (a prompt, never a
+    // silent drop) and starts from the run's onFinish; hiding the prompt drops the request.
+    const zoneStart = /const startFromZoneClick = \(\) => \{([\s\S]*?)\n {2}\};/.exec(srcText);
+    assert.ok(zoneStart, 'startFromZoneClick found');
+    assert.match(zoneStart[1], /zoneStartAction\(session\.run, [^\n]*\);\s*if \(action === 'wait'\) showZoneBusyPrompt\(zone\);\s*else if \(action === 'start'\) start\(\);/, 'asks zoneStartAction before start()');
+    assert.match(srcText, /onFinish: \(\) => \{\s*setRunning\(false\);\s*startWaitingZoneScan\(\);/, 'the waiting zone scan starts when the run ends');
+    assert.match(srcText, /function hideLinkPrompt\(\) \{\s*zoneStartAfter = null;/, 'hiding the prompt drops the waiting zone scan');
     const scanText = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     assert.doesNotMatch(scanText, /p\.run === '1'\) start\(\)|if \(!ctx\.signal\.aborted\) start\(\)/, 'SSL Targets neither');
     assert.doesNotMatch(scanText, /queueMicrotask\([^;]*start/i, 'SSL Targets never queues a start (the zone intent only pre-fills)');
+  });
+
+  test('Zone File "Scan now" while a scan runs: it waits (with a prompt) instead of being dropped', async () => {
+    const { S } = await load();
+    const run = (domains, status, zoneMode = null) => ({ status, config: { domains, zoneMode } });
+    assert.equal(S.zoneStartAction(null, ['example.com'], 'exact'), 'start');
+    assert.equal(S.zoneStartAction(run(['example.org'], 'done'), ['example.com'], 'exact'), 'start', 'a finished run is replaced');
+    assert.equal(S.zoneStartAction(run(['example.org'], 'cancelled'), ['example.com'], 'exact'), 'start');
+    assert.equal(S.zoneStartAction(run(['example.org'], 'running'), ['example.com'], 'exact'), 'wait', 'another domain is being scanned');
+    assert.equal(S.zoneStartAction(run(['example.com'], 'running'), ['example.com'], 'exact'), 'wait', 'the same domain without the zone');
+    assert.equal(S.zoneStartAction(run(['example.com'], 'running', 'discover'), ['example.com'], 'exact'), 'wait', 'the same domain in another zone mode');
+    assert.equal(S.zoneStartAction(run(['example.com'], 'running', 'exact'), ['example.com'], 'exact'), null, 'that very zone scan is running');
+    assert.equal(S.zoneStartAction(run(['example.com'], 'running'), ['example.com'], 'off'), null);
+    inLang('en', () => assert.equal(i18n.t('sub.zone.busy', { running: 'example.org', domain: 'example.com' }),
+      'A scan of example.org is still running. The scan of your zone file (example.com) starts when it ends.'));
+    inLang('tr', () => assert.equal(i18n.t('sub.zone.busy', { running: 'example.org', domain: 'example.com' }),
+      'example.org taraması hâlâ sürüyor. Zone dosyanızın taraması (example.com) o bitince başlar.'));
   });
 
   test('live runs: skipped stages are not announced; a partial row says "resolving…" only while the run lives', async () => {

@@ -47,7 +47,7 @@ import { state, CONCURRENCY_RANGE } from './state.js';
 import { h, clear, uid } from './ui/dom.js';
 import {
   Icon, SegmentedControl, IconButton, ButtonLink, Button, Alert, ErrorBanner, Spinner, Modal, toast,
-  select, Badge, confirmDialog, announce, describeError
+  select, Badge, confirmDialog, announce, describeError, setButtonBusy
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 import {
@@ -784,19 +784,26 @@ function viewLoadFailure(def, params, sp, err) {
   return banner;
 }
 
-/** "This page is older than the site": the error's details and a Reload page button (no Retry). */
+/**
+ * "This page is older than the site": the error's details and a Reload page button (no Retry),
+ * busy while the new version downloads (reloadPage may wait for it).
+ */
 function outdatedAlert(err) {
   const { detail } = describeError(err);
+  const reload = Button({
+    label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
+    dataset: { action: 'reload-page' },
+    onClick: () => {
+      setButtonBusy(reload, true);
+      reloadPage();
+    }
+  });
   return Alert({
     variant: 'warn',
     title: t('shell.viewLoadFailed'),
     message: t('shell.viewOutdated'),
     children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
-    actions: [Button({
-      label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
-      dataset: { action: 'reload-page' },
-      onClick: () => reloadPage()
-    })]
+    actions: [reload]
   });
 }
 

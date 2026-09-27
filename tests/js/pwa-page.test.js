@@ -36,7 +36,7 @@ function fakeWindow() {
 }
 
 /** navigator.serviceWorker with a registration whose state the test sets. */
-function fakeNavigator({ controller = null, waiting = null, fail = null } = {}) {
+function fakeNavigator({ controller = null, waiting = null, fail = null, saveData = false } = {}) {
   const reg = emitter({ waiting, installing: null, updates: 0, update() { this.updates += 1; return Promise.resolve(); } });
   const container = emitter({
     controller,
@@ -46,7 +46,7 @@ function fakeNavigator({ controller = null, waiting = null, fail = null } = {}) 
       return fail ? Promise.reject(fail) : Promise.resolve(reg);
     }
   });
-  return { nav: { serviceWorker: container }, container, reg };
+  return { nav: { serviceWorker: container, connection: { saveData } }, container, reg };
 }
 
 function setup(opts) {
@@ -77,6 +77,15 @@ describe('registerServiceWorker', () => {
     insecure.win.isSecureContext = false;
     assert.equal(await registerServiceWorker(insecure.env), null);
     assert.deepEqual(insecure.container.calls, []);
+  });
+
+  test('Save-Data: no offline copy unasked, but an installed version keeps its worker', async () => {
+    const fresh = setup({ saveData: true });
+    assert.equal(await registerServiceWorker(fresh.env), null);
+    assert.deepEqual(fresh.container.calls, []);
+    const installed = setup({ saveData: true, controller: {} });
+    assert.equal(await registerServiceWorker(installed.env), installed.reg);
+    assert.equal(installed.container.calls.length, 1);
   });
 
   test('a refused registration is not an app failure: null and a console warning', async () => {
@@ -114,6 +123,27 @@ describe('registerServiceWorker', () => {
     first.reg.fire('updatefound');
     w.fire('statechange');
     assert.deepEqual(first.notices, []);
+  });
+
+  test('another tab took the update: this page, whose version it dropped, offers the reload too', async () => {
+    const s = setup({ controller: {} });
+    await registerServiceWorker(s.env);
+    s.reg.active = { state: 'activated' };
+    s.container.fire('controllerchange'); // "Reload" clicked in another tab
+    assert.deepEqual(s.notices, ['update']);
+    assert.equal(s.win.reloads, 0, 'nothing reloads by itself');
+    // Its Reload goes straight to the version now in control: no update check, no waiting.
+    await reloadPage({ win: s.win });
+    assert.equal(s.reg.updates, 0);
+    assert.equal(s.win.reloads, 1);
+
+    // A first install claims a page nothing controlled: not an update.
+    const first = setup();
+    await registerServiceWorker(first.env);
+    first.container.fire('controllerchange');
+    assert.deepEqual(first.notices, []);
+    first.container.fire('controllerchange'); // later, another tab's update
+    assert.deepEqual(first.notices, ['update']);
   });
 
   test('an open page asks for a new version when it becomes visible or comes online, at most hourly', async () => {
@@ -177,6 +207,30 @@ describe('reloadPage', () => {
     assert.equal(s.win.reloads, 1);
   });
 
+  test('a second click while it waits for the new version joins the first: one update check, one takeover', async () => {
+    const messages = [];
+    const s = setup({ controller: {} });
+    await registerServiceWorker(s.env);
+    s.reg.active = { state: 'activated' };
+    const worker = emitter({ state: 'installing', postMessage: (m) => messages.push(m), removeEventListener() {} });
+    s.reg.update = () => {
+      s.reg.updates = (s.reg.updates || 0) + 1;
+      s.reg.installing = worker;
+      return Promise.resolve();
+    };
+    const one = reloadPage({ win: s.win });
+    const two = reloadPage({ win: s.win });
+    assert.equal(one, two);
+    await new Promise((r) => setImmediate(r));
+    worker.state = 'installed';
+    worker.fire('statechange');
+    await Promise.all([one, two]);
+    assert.equal(s.reg.updates, 1);
+    assert.deepEqual(messages, [{ type: 'skip-waiting' }]);
+    s.container.fire('controllerchange');
+    assert.equal(s.win.reloads, 1);
+  });
+
   test('with a waiting version it asks it to take over and reloads once it controls the page', async () => {
     const messages = [];
     const s = setup({ controller: {}, waiting: { state: 'installed', postMessage: (m) => messages.push(m) } });
@@ -211,7 +265,7 @@ describe('setManifestLang', () => {
 });
 
 test('the update notice is translated', () => {
-  for (const key of ['pwa.updateReady', 'pwa.reload']) {
+  for (const key of ['pwa.updateReady', 'pwa.reload', 'pwa.loading']) {
     assert.ok(hasString(key, 'en') && hasString(key, 'tr'), key);
   }
 });

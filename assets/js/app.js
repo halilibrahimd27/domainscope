@@ -22,6 +22,13 @@
  * a submit — a view's results area, a DataTable — nothing), Esc the view's `"cancel"` one (on
  * screen, else in a closed tab; in a search field with text Esc clears it), '/' focuses its
  * `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
+ *
+ * Page session (lib/session.js, memory only): a view reports each run with
+ * `ctx.runStarted(subject)`, which makes it the current target shown in the header chip; the
+ * nav links carry that target into the other tools (`run=0`: filled in, never run). A view that
+ * also exports `result()` → `{ subject, at } | null` (its finished result) keeps it when it is
+ * left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it is opened
+ * again; the page header then says "Result from <time>", with "Run again" calling `rerun(ctx)`.
  */
 
 import {
@@ -39,6 +46,10 @@ import {
   isTypingTarget, isSearchClear
 } from './lib/shellnav.js';
 import { StartTaskList } from './ui/start-tasks.js';
+import {
+  createSessionStore, carryRoute, restorePlan, normalizeResult, keptNote, FILL_PARAM, FILL_VALUE
+} from './lib/session.js';
+import { TargetChip, KeptNote } from './ui/session-ui.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -341,6 +352,59 @@ state.subscribe(({ key }) => {
 });
 
 /* ------------------------------------------------------------------------ */
+/* Page session: the current target and each tool's kept result             */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The page session (lib/session.js): the current target and the last finished result of each
+ * tool, in this tab's memory only. "Delete all local data" forgets both.
+ */
+export const pageSession = createSessionStore();
+
+state.subscribe(({ key }) => {
+  if (key === 'cleared') pageSession.clear();
+});
+
+/**
+ * A view's finished result as the shell uses it (`result()` export), or null.
+ * @param {object} view the view module
+ * @param {ViewContext} ctx
+ * @returns {{ subject: string|null, at: Date }|null}
+ */
+function resultOf(view, ctx) {
+  if (!view || typeof view.result !== 'function') return null;
+  try {
+    return normalizeResult(view.result(ctx));
+  } catch (err) {
+    reportError(err);
+    return null;
+  }
+}
+
+/**
+ * Keep the finished result of a view that is being left. A view with `snapshot()` is kept with
+ * it and its route params (they bring it back); any other view keeps its own state, so only
+ * the fact is kept (its nav link then opens it bare). A run still going is not a result: the
+ * result kept before stays.
+ * @param {{ id: string, view: object, ctx: ViewContext }} cur
+ */
+function keepResult(cur) {
+  const res = resultOf(cur.view, cur.ctx);
+  if (!res) return;
+  const restorable = typeof cur.view.snapshot === 'function';
+  let snapshot = null;
+  if (restorable) {
+    try {
+      snapshot = cur.view.snapshot(cur.ctx);
+    } catch (err) {
+      reportError(err);
+      return;
+    }
+  }
+  pageSession.keep(cur.id, { params: restorable ? cur.ctx.params : {}, subject: res.subject, at: res.at, snapshot });
+}
+
+/* ------------------------------------------------------------------------ */
 /* View context                                                             */
 /* ------------------------------------------------------------------------ */
 
@@ -354,7 +418,8 @@ state.subscribe(({ key }) => {
  * @property {URLSearchParams} searchParams   raw params (for repeated keys)
  * @property {AbortSignal} signal             aborted when the view unmounts — pass it to every network call
  * @property {any} restored                   value returned by the previous instance's `snapshot()` when the
- *                                            view is re-mounted after a language change, else null
+ *                                            view is re-mounted after a language change, or the one kept when
+ *                                            it was last left (lib/session.js), else null
  * @property {(view: string, params?: object, opts?: { replace?: boolean, force?: boolean }) => void} navigate
  * @property {(params: object, opts?: { merge?: boolean }) => void} setParams  update the URL without re-mounting
  * @property {(view: string, params?: object) => string} href  route hash for links ('#/lookup?name=x')
@@ -364,6 +429,9 @@ state.subscribe(({ key }) => {
  * @property {() => void} checkOutdated  a data file (wordlist tier, locale pack) failed to load: if this page
  *                                         belongs to an earlier deploy, the shell offers a reload (once)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
+ * @property {(subject: string|null) => void} runStarted  a run starts (or a certificate loads) for `subject` (a domain,
+ *                                         host name or IP address): it becomes the current target, and the
+ *                                         header's note about a kept result goes away
  * @property {typeof toast} toast
  * @property {(...nodes: any[]) => void} setActions  put buttons into the page header (right side)
  * @property {(fn: () => void) => void} onCleanup  run fn when the view unmounts (e.g. state.subscribe's unsubscribe)
@@ -373,7 +441,7 @@ state.subscribe(({ key }) => {
  * @property {string} version
  */
 
-let current = null; // { id, def, view, params, ctx, controller, cleanups[], busy }
+let current = null; // { id, def, view, params, ctx, controller, cleanups[], busy, note }
 let routeToken = 0;
 let pendingLangRemount = false;
 let firstRouteDone = false;
@@ -437,6 +505,7 @@ function makeContext(id, params, searchParams, controller, restored) {
       ctx.searchParams = parsed.searchParams;
       current.params = parsed.params;
       if (hash !== currentHash()) globalThis.history.replaceState(null, '', hash);
+      updateNavHrefs();
     },
     shareUrl(p = ctx.params) {
       const base = globalThis.location.href.split('#')[0];
@@ -444,6 +513,11 @@ function makeContext(id, params, searchParams, controller, restored) {
     },
     setBusy(busy) {
       if (isCurrent(ctx)) setBusyState(busy);
+    },
+    runStarted(subject) {
+      if (!isCurrent(ctx)) return;
+      setKeptNote(null);
+      if (subject) pageSession.setTarget(subject, { view: id });
     },
     setActions(...nodes) {
       if (!isCurrent(ctx) || !dom.pageActions) return;
@@ -488,6 +562,8 @@ function reportError(err) {
 async function unmountCurrent() {
   const cur = current;
   if (!cur) return;
+  // Before the abort below: the snapshot describes what is on screen.
+  keepResult(cur);
   current = null;
   pendingLangRemount = false; // the next view mounts in the current language anyway
   try {
@@ -568,6 +644,7 @@ function renderPageHeader(def, view = null) {
   dom.pageTitle = h('h1', { class: 'page-title', id: 'page-title', attrs: { tabindex: -1 } }, t(titleKey));
   dom.pageActions = h('div', { class: 'page-actions' });
   dom.pageBody = h('div', { class: 'page-body', id: 'page-body', dataset: { view: def.id } });
+  dom.keptNote = h('div', { class: 'page-kept', hidden: true });
   const desc = t(`nav.${def.id}.desc`);
   clear(dom.page);
   // A first-time visitor on the start page gets the task picker above the tool.
@@ -575,15 +652,50 @@ function renderPageHeader(def, view = null) {
   dom.page.append(
     h('header', { class: 'page-header' },
       h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 20 })),
-      h('div', { class: 'page-titles' }, dom.pageTitle, desc ? h('p', { class: 'page-desc' }, desc) : null),
+      h('div', { class: 'page-titles' }, dom.pageTitle, desc ? h('p', { class: 'page-desc' }, desc) : null, dom.keptNote),
       dom.pageActions),
     dom.pageBody);
   document.title = `${t(titleKey)} · ${t('app.name')}`;
 }
 
-async function showRoute(id, params, { force = false, restored = null, searchParams = null } = {}) {
+/**
+ * Show (or hide with null) the page header's note about a kept result: "Result from <time>",
+ * with "Run again" when the view exports `rerun()`. Its keyboard focus goes to the page title
+ * when the note goes away under it.
+ * @param {{ at: Date, dropped: boolean }|null} note
+ */
+function setKeptNote(note) {
+  if (!current || !dom.keptNote) return;
+  const cur = current;
+  cur.note = note;
+  const doc = globalThis.document;
+  const hadFocus = !!doc && dom.keptNote.contains(doc.activeElement);
+  clear(dom.keptNote);
+  dom.keptNote.hidden = !note;
+  if (note) {
+    const rerun = typeof cur.view.rerun === 'function' ? () => {
+      try {
+        cur.view.rerun(cur.ctx);
+      } catch (err) {
+        reportError(err);
+      }
+    } : null;
+    dom.keptNote.append(KeptNote({ at: note.at, dropped: note.dropped, onRerun: rerun }));
+  } else if (hadFocus && dom.pageTitle) {
+    dom.pageTitle.focus({ preventScroll: true });
+  }
+}
+
+/**
+ * @param {string} id
+ * @param {Record<string, string>} params
+ * @param {{ force?: boolean, restored?: any, searchParams?: URLSearchParams|null, note?: object|null }} [opts]
+ *   note: set by a language re-mount (the kept-result note it showed, or null); a mount without it
+ *   may bring the view's kept result back (lib/session.js restorePlan)
+ */
+async function showRoute(id, params, { force = false, restored = null, searchParams = null, note = undefined } = {}) {
   const def = VIEW_BY_ID.get(id) || VIEW_BY_ID.get(DEFAULT_VIEW);
-  const sp = searchParams || new URLSearchParams(params);
+  let sp = searchParams || new URLSearchParams(params);
   if (!force && current && current.id === def.id && sameSearch(current.ctx.searchParams, sp)) return;
 
   // Same view with new params: let the view take them without a re-mount if it can. A
@@ -598,6 +710,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
       const handled = cur.view.update({ ...params }, cur.ctx);
       if (handled === true) {
         cur.params = { ...params };
+        updateNavHrefs();
         return;
       }
     } catch (err) {
@@ -609,6 +722,18 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   const token = ++routeToken;
   await unmountCurrent();
   if (token !== routeToken) return;
+
+  // Coming back to a tool (a bare route or its result's own params) brings its kept result back;
+  // the URL then shows that result's params. A language re-mount has its own snapshot.
+  const kept = note === undefined ? pageSession.kept(def.id) : null;
+  const plan = restorePlan(params, kept);
+  if (plan) {
+    params = plan === 'restore' ? { ...kept.params } : { ...kept.params, [FILL_PARAM]: FILL_VALUE };
+    sp = new URLSearchParams(params);
+    if (plan === 'restore') restored = kept.snapshot;
+    const hash = buildRoute(def.id, params);
+    if (hash !== currentHash()) globalThis.history.replaceState(null, '', hash);
+  }
 
   setNavActive(def.id);
   renderPageHeader(def);
@@ -644,8 +769,10 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   }
   const controller = new AbortController();
   const { ctx, cleanups } = makeContext(def.id, params, sp, controller, restored);
-  current = { id: def.id, def, view, params: { ...params }, ctx, controller, cleanups, busy: false };
+  current = { id: def.id, def, view, params: { ...params }, ctx, controller, cleanups, busy: false, note: null };
   clear(dom.pageBody);
+  const mountedAt = Date.now();
+  let mounted = false;
   try {
     if (!view || typeof view.mount !== 'function') throw new TypeError(`View "${def.id}" does not export mount()`);
     const ret = await view.mount(dom.pageBody, ctx);
@@ -653,7 +780,10 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
       if (current && current.ctx === ctx) cleanups.push(ret);
       else ret();
     }
+    mounted = true;
   } catch (err) {
+    // A kept result the view cannot show is not offered again (Retry mounts it fresh).
+    if (plan) pageSession.drop(def.id);
     if (token === routeToken && !(err && err.name === 'AbortError')) {
       clear(dom.pageBody);
       dom.pageBody.append(ErrorBanner(err, {
@@ -663,15 +793,20 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
       console.error(`[view:${def.id}] mount failed`, err);
     }
   }
-  if (token === routeToken) finishRoute(def);
+  if (token !== routeToken) return;
+  if (mounted && isCurrent(ctx)) setKeptNote(keptNote({ note, plan, kept, result: resultOf(view, ctx), mountedAt }));
+  finishRoute(def);
 }
 
 function finishRoute(def) {
+  updateNavHrefs();
   if (firstRouteDone) {
     // Move focus to the new page title for keyboard and screen-reader users.
     globalThis.scrollTo(0, 0);
     if (dom.pageTitle) dom.pageTitle.focus({ preventScroll: true });
-    announce(t(`nav.${def.id}`));
+    // A kept result is said with the tool's name ("Domain Health · Result from 14:02").
+    const kept = dom.keptNote && !dom.keptNote.hidden ? dom.keptNote.querySelector('.kept-note-text') : null;
+    announce(kept ? `${t(`nav.${def.id}`)} · ${kept.textContent}` : t(`nav.${def.id}`));
   }
   firstRouteDone = true;
   document.documentElement.dataset.appReady = 'true';
@@ -703,7 +838,7 @@ function remountCurrent() {
   } catch (err) {
     reportError(err);
   }
-  showRoute(current.id, current.params, { force: true, restored: snapshot, searchParams: current.ctx.searchParams });
+  showRoute(current.id, current.params, { force: true, restored: snapshot, searchParams: current.ctx.searchParams, note: current.note || null });
 }
 
 /* ------------------------------------------------------------------------ */
@@ -814,7 +949,7 @@ function renderNav() {
       h('ul', { class: 'nav-list' }, g.views.map((v) => h('li', null,
         h('a', {
           class: 'nav-link',
-          href: buildRoute(v.id),
+          href: navHref(v.id),
           dataset: { view: v.id },
           attrs: { 'aria-current': v.id === activeId ? 'page' : null }
         }, Icon(v.icon, { size: 17 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)))))));
@@ -849,6 +984,50 @@ function renderNav() {
   dom.nav.setAttribute('aria-label', t('nav.label'));
   dom.nav.append(dom.navMenuBar, ...groups, foot);
   updateNavStatus();
+}
+
+/**
+ * Where a nav link to a tool leads: the page's own URL for the tool on screen, else back to the
+ * tool's kept result or to the tool with the current target filled in (lib/session.js carryRoute;
+ * nothing runs on arrival). Exported for other navigation surfaces (a tools menu).
+ * @param {string} id view id
+ * @returns {string} route hash
+ */
+export function navHref(id) {
+  if (current && current.id === id) return buildRoute(id, current.params);
+  return buildRoute(id, carryRoute(id, { kept: pageSession.kept(id), target: pageSession.target }));
+}
+
+/** Point every nav link (`a.nav-link[data-view]`, wherever it is) at {@link navHref}. */
+function updateNavHrefs() {
+  const doc = globalThis.document;
+  if (!doc) return;
+  doc.querySelectorAll('a.nav-link[data-view]').forEach((a) => {
+    const href = navHref(a.dataset.view);
+    if (a.getAttribute('href') !== href) a.setAttribute('href', href);
+  });
+}
+
+/** The header chip with the current target (hidden without one). */
+function renderTargetChip() {
+  if (!dom.targetHost) return;
+  const target = pageSession.target;
+  const doc = globalThis.document;
+  const hadFocus = !!doc && dom.targetHost.contains(doc.activeElement);
+  clear(dom.targetHost);
+  dom.targetHost.hidden = !target;
+  dom.header.classList.toggle('has-target', !!target);
+  if (target) {
+    dom.targetHost.append(TargetChip({
+      target,
+      onClear: () => {
+        if (pageSession.clearTarget()) announce(t('session.target.cleared'));
+      }
+    }));
+  } else if (hadFocus) {
+    // The chip went away under the keyboard focus (its clear button): continue on the page.
+    (dom.pageTitle || dom.main).focus({ preventScroll: true });
+  }
 }
 
 function updateNavStatus() {
@@ -1220,6 +1399,7 @@ function renderChrome() {
   dom.brandSub.textContent = t('app.subtitle');
   dom.skip.textContent = t('shell.skip');
   renderHeaderActions();
+  renderTargetChip();
   renderNav();
   renderFooter();
   if (current) {
@@ -1444,6 +1624,13 @@ function boot() {
   dom.skip = document.getElementById('skip-link');
   const brand = document.getElementById('brand');
   if (brand) brand.setAttribute('href', buildRoute(DEFAULT_VIEW));
+  // The current target sits between the brand and the header controls.
+  dom.targetHost = h('div', { class: 'header-target', hidden: true });
+  dom.header.insertBefore(dom.targetHost, dom.headerActions);
+  pageSession.subscribe(() => {
+    renderTargetChip();
+    updateNavHrefs();
+  });
 
   // A browser that used the app before the task picker existed is no first-time visitor.
   if (state.settings.startTasks && hasUsedBefore(storedKeys())) noteRun();

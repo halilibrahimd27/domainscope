@@ -496,6 +496,69 @@ hr {
   letter-spacing: 0.02em;
 }
 
+/* Current target (lib/session.js): a chip after the brand, cleared with its × */
+.header-target {
+  display: flex;
+  min-width: 0;
+  margin-left: 6px;
+}
+
+.target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 360px;
+  height: 30px;
+  padding: 0 3px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.target-chip-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.target-chip-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.target-chip-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.target-chip-clear {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur), color var(--dur);
+}
+
+.target-chip-clear:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
 /* Thin activity bar under the header while a view is busy */
 .busy-bar {
   position: absolute;
@@ -910,6 +973,40 @@ button.nav-status:hover {
   margin: 4px 0 0;
   max-width: 80ch;
   color: var(--text-2);
+}
+
+/* "Result from 14:02 · Run again": the tool shows the result kept from the last visit */
+.page-kept {
+  margin-top: 8px;
+}
+
+.kept-note {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.kept-note-icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.kept-note-sep {
+  color: var(--text-3);
+}
+
+.kept-note[data-kept="dropped"] {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 
 .page-actions {
@@ -1426,6 +1523,10 @@ button.nav-status:hover {
     margin: 0;
   }
 
+  .target-chip-label {
+    display: none;
+  }
+
   .app-main {
     padding: 20px 16px 32px;
   }
@@ -1486,6 +1587,35 @@ button.nav-status:hover {
 
   .header-actions .theme-cycle {
     display: inline-flex;
+  }
+
+  /* A current target takes the brand name's place; the logo stays the home link. */
+  .app-header.has-target .brand-text {
+    display: none;
+  }
+
+  .app-header.has-target {
+    gap: 8px;
+  }
+
+  .header-target {
+    flex: 1 1 auto;
+    margin-left: 0;
+  }
+
+  .target-chip {
+    gap: 4px;
+    max-width: 100%;
+    padding-left: 7px;
+  }
+
+  .target-chip-value {
+    font-size: 12px;
+  }
+
+  .target-chip-clear {
+    width: 22px;
+    height: 22px;
   }
 
   .brand-logo {

@@ -137,7 +137,8 @@ registerStrings('en', {
   'about.priv6': 'Only when you press “Check from the internet”: each public IP, host name and port pair goes to Globalping, whose results anyone with the measurement ID can read for about six months. Private addresses are never sent. The optional origin check (off by default) also sends an origin IP from your inventory together with the proxied name it serves, so the public measurement shows that this server answers for that name behind the CDN; turn it on only for origins whose address may be known. The certificate never leaves your browser; the comparison is local.',
   'about.priv7': 'Only when you press “Check the policy” on Domain Health’s MTA-STS card: the host name mta-sts.<domain> and the policy path go to Globalping (after a consent dialog, once per page session), one probe fetches the policy over HTTPS, and anyone with the measurement ID can read the result, the policy and the server’s response headers included, for about six months. The comparison with the MX hosts is local.',
   'about.clearData': 'Delete all local data',
-  'about.clearConfirm': 'Delete the saved server inventory, all settings, the learned names, the custom wordlist and a loaded zone file from this browser? This cannot be undone.',
+  'about.privSession': 'The current target (the domain, host name or IP address you last worked on) and each tool’s last result are kept only in this tab’s memory: never saved or uploaded, and a reload, closing the tab or “Delete all local data” forgets them. A tool you open next has the target filled in and sends nothing until you press its button; coming back to a tool shows its last result without asking again.',
+  'about.clearConfirm': 'Delete the saved server inventory, all settings, the learned names, the custom wordlist and a loaded zone file from this browser, and forget the current target and the kept results? This cannot be undone.',
   'about.cleared': 'Local data deleted',
 
   'about.cliTitle': 'Companion CLI: ssl_origin_scan.py',
@@ -261,7 +262,8 @@ registerStrings('tr', {
   'about.priv6': 'Yalnızca “İnternetten kontrol et”e bastığınızda: her genel IP, host adı ve port çifti Globalping’e gider; sonuçları ölçüm kimliğini bilen herkes yaklaşık altı ay okuyabilir. Özel adresler asla gönderilmez. İsteğe bağlı asıl sunucu kontrolü (varsayılan olarak kapalı) envanterinizdeki bir asıl sunucu IP’sini proxy’lenen adıyla birlikte de gönderir; böylece herkese açık ölçüm, CDN arkasında o ad için bu sunucunun yanıt verdiğini gösterir. Bunu yalnızca adresi bilinse de sorun olmayan asıl sunucular için açın. Sertifika tarayıcınızdan hiç çıkmaz; karşılaştırma yereldir.',
   'about.priv7': 'Yalnızca Alan Adı Sağlığı’ndaki MTA-STS kartında “Politikayı kontrol et”e bastığınızda: mta-sts.<alan adı> host adı ve politika yolu Globalping’e gider (her sayfa oturumunda bir kez onay istenir), tek bir ölçüm noktası politikayı HTTPS ile alır ve ölçüm kimliğini bilen herkes sonucu, politika ve sunucunun yanıt başlıkları dahil, yaklaşık altı ay okuyabilir. MX sunucularıyla karşılaştırma yereldir.',
   'about.clearData': 'Tüm yerel verileri sil',
-  'about.clearConfirm': 'Kayıtlı sunucu envanteri, tüm ayarlar, öğrenilen adlar, özel kelime listesi ve yüklü zone dosyası bu tarayıcıdan silinsin mi? Bu işlem geri alınamaz.',
+  'about.privSession': 'Geçerli hedef (en son üzerinde çalıştığınız alan adı, host adı ya da IP adresi) ve her aracın son sonucu yalnızca bu sekmenin belleğinde tutulur: hiçbir yere kaydedilmez ya da yüklenmez; sayfayı yenilemek, sekmeyi kapatmak ya da “Tüm yerel verileri sil” bunları unutturur. Sonra açtığınız araçta hedef doldurulmuş olur ve düğmesine basana kadar hiçbir şey göndermez; bir araca geri döndüğünüzde son sonucu, yeniden sorgulanmadan gösterilir.',
+  'about.clearConfirm': 'Kayıtlı sunucu envanteri, tüm ayarlar, öğrenilen adlar, özel kelime listesi ve yüklü zone dosyası bu tarayıcıdan silinsin; geçerli hedef ve tutulan sonuçlar da unutulsun mu? Bu işlem geri alınamaz.',
   'about.cleared': 'Yerel veriler silindi',
 
   'about.cliTitle': 'Yardımcı CLI aracı: ssl_origin_scan.py',
@@ -494,6 +496,7 @@ export function mount(container, ctx) {
     ['eye', 'about.priv4'],
     ['link', 'about.priv5'],
     ['file-text', 'about.privZone'],
+    ['target', 'about.privSession'],
     ['globe', 'about.priv6'],
     ['mail', 'about.priv7']
   ];

@@ -590,6 +590,24 @@ function keyKind(key, value) {
 const NO_HOSTS = new Set();
 
 /**
+ * May a host name with a port found under `key` stay a warning? Only where the CLI reads a
+ * target (its `_json_host_values` and name-map entries): `ansible_host` / `ansible_ssh_host`,
+ * or a name map's entry (`{ web01: "web01.example.net:8443" }`, a Terraform output) outside any
+ * record or vars map. Every record and vars map on the way up drops it otherwise, so
+ * `consul_addr`, `db_url`, a Terraform `endpoint` or a `health_url` never warn.
+ */
+function keepsHostPort(key, kind, record) {
+  if (key === 'ansible_host' || key === 'ansible_ssh_host') return true;
+  return !record && kind !== 'field';
+}
+
+/** `groups` without the host-name-with-a-port items, and without groups left empty. */
+function withoutHostPort(groups) {
+  if (!groups.some((g) => g.some((i) => i.bad === 'hostPort'))) return groups;
+  return groups.map((g) => g.filter((i) => i.bad !== 'hostPort')).filter((g) => g.length);
+}
+
+/**
  * Walk a JSON/YAML value. Named objects claim every IP below them; unnamed
  * objects pass their IPs up (one group per object); keys that look like
  * names (terraform outputs, `{ web01: {...} }` maps) name what is below.
@@ -613,6 +631,8 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
     }
     // A whole value that is a host name with a port ("web01": "web01.example.net:8443"), as a
     // line has it: the CLI resolves it, here it is a warning. Dotted only: "image": "redis:7" is none.
+    // Kept only where a target is read (keepsHostPort): a record's other attributes and vars
+    // (consul_addr, db_url, a Terraform endpoint) are not targets, in the CLI either.
     const words = parts.filter(Boolean);
     const value = words.length === 1 ? words[0] : '';
     if (!items.length && HOST_PORT_RE.test(value) && isDottedHost(value.slice(0, value.lastIndexOf(':')))) {
@@ -645,7 +665,8 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
   const record = strong || entries.some((e) => e.kind === 'field' && e.groups.length && isAddressKey(e.key));
   const own = [];
   const pass = [];
-  for (const { key, kind, host, groups, sub } of entries) {
+  for (const { key, kind, host, groups: all, sub } of entries) {
+    const groups = keepsHostPort(key, kind, record) ? all : withoutHostPort(all);
     // gateway, dns, ntp, iLO, version… A record known only by its address key
     // may still be a name map ({ ip-10-0-0-1: …, dns-1: … }): there a key shaped
     // like a host name stays.

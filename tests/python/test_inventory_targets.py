@@ -57,6 +57,23 @@ JSON_CASES = [
     ('[{"name":"cache01","image":"redis:7","ip":"203.0.113.12"}]', []),
 ]
 
+# Host names with a port in vars and record attributes are no targets: silent in both parsers
+# (tests/js/inventory.test.js reads the same documents), with each server's own address.
+QUIET_HOST_PORTS = [
+    ('x.json', '{"_meta":{"hostvars":{'
+               '"web01":{"ansible_host":"203.0.113.10","consul_addr":"consul.example.com:8500",'
+               '"db_url":"db.example.com:5432"},'
+               '"web02":{"ansible_host":"203.0.113.11","consul_addr":"consul.example.com:8500",'
+               '"db_url":"db.example.com:5432"}}},'
+               '"all":{"children":["ungrouped","web"]},"web":{"hosts":["web01","web02"]}}',
+     [('web01', ['203.0.113.10']), ('web02', ['203.0.113.11'])]),
+    ('x.yaml', 'all:\n  vars:\n    consul_addr: consul.example.com:8500\n  hosts:\n    web01:\n'
+               '      ansible_host: 203.0.113.10\n      db_url: db.example.com:5432\n',
+     [('web01', ['203.0.113.10'])]),
+    ('x.json', '[{"name":"web01","ip":"203.0.113.10","health_url":"web01.example.com:8080"}]',
+     [('web01', ['203.0.113.10'])]),
+]
+
 
 def _load_cli():
     if 'ssl_origin_scan' in sys.modules:
@@ -142,6 +159,14 @@ class InventoryPortsParity(unittest.TestCase):
         self.assertEqual([(s.name, s.hostnames, s.ports) for s in inventory.servers],
                          [('web01', ['web01.example.net'], {'web01.example.net': [8443]})])
         self.assertEqual(inventory.warnings, [])
+
+    def test_host_names_with_a_port_in_vars_and_attributes_are_no_targets(self):
+        for source, text, servers in QUIET_HOST_PORTS:
+            with self.subTest(text=text):
+                inventory = sos.parse_inventory(text, source)
+                self.assertEqual(inventory.warnings, [])
+                self.assertEqual([(s.name, list(s.ips)) for s in inventory.servers], servers)
+                self.assertTrue(all(not s.hostnames for s in inventory.servers))
 
     def test_ansible_host_pattern_port_is_the_ssh_port(self):
         inventory = sos.parse_inventory('\n'.join([

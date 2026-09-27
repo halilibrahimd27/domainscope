@@ -595,6 +595,40 @@ test('JSON: an address with a bad port or a host name with a port is a warning, 
   assert.deepEqual(lines.warnings.map((w) => [w.line, w.code, w.reason]), [[2, 'INVALID_IP', 'port']]);
 });
 
+test('a host name with a port warns only where a target is read, never in vars or record attributes', () => {
+  // tests/python/test_inventory_targets.py reads the same documents with the CLI (QUIET_HOST_PORTS).
+  const list = JSON.stringify({
+    _meta: { hostvars: {
+      web01: { ansible_host: '203.0.113.10', consul_addr: 'consul.example.com:8500', db_url: 'db.example.com:5432' },
+      web02: { ansible_host: '203.0.113.11', consul_addr: 'consul.example.com:8500', db_url: 'db.example.com:5432' }
+    } },
+    all: { children: ['ungrouped', 'web'] },
+    web: { hosts: ['web01', 'web02'] }
+  }, null, 2);
+  const quiet = [
+    [list, { web01: ['203.0.113.10'], web02: ['203.0.113.11'] }],
+    ['all:\n  vars:\n    consul_addr: consul.example.com:8500\n  hosts:\n    web01:\n      ansible_host: 203.0.113.10\n      db_url: db.example.com:5432\n',
+      { web01: ['203.0.113.10'] }],
+    ['[{"name":"web01","ip":"203.0.113.10","health_url":"web01.example.com:8080"}]', { web01: ['203.0.113.10'] }],
+    ['{"resources":[{"type":"aws_db_instance","name":"db","instances":[{"attributes":{"id":"db","endpoint":"db.example.com:5432"}}]}]}', {}],
+    ['[{"endpoint":"db.example.com:5432"}]', {}]
+  ];
+  for (const [text, targets] of quiet) {
+    const r = parseInventory(text);
+    assert.deepEqual(r.warnings, [], text);
+    assert.deepEqual(targetsById(r), targets, text);
+  }
+  // A name map's entry, a Terraform output and ansible_host still say why nothing was taken.
+  const warned = [
+    ['{"web01":"web01.example.net:8443"}', [['PARSE', 'web01.example.net:8443'], ['NO_IP', 'web01']]],
+    ['{"outputs":{"web":{"value":"web01.example.net:8443","type":"string"}}}', [['PARSE', 'web01.example.net:8443'], ['NO_IP', 'web']]],
+    ['{"_meta":{"hostvars":{"web01":{"ansible_host":"web01.example.net:2222"}}}}', [['PARSE', 'web01.example.net:2222'], ['NO_IP', 'web01']]]
+  ];
+  for (const [text, expected] of warned) {
+    assert.deepEqual(parseInventory(text).warnings.map((w) => [w.code, w.detail ?? w.name]), expected, text);
+  }
+});
+
 test('a bracketed address that cannot be read is INVALID_IP, with a zone id named', () => {
   const r = parseInventory('web01 [fe80::1%eth0]:8443\nweb02 [2001:db8::1]8443\nweb03=[fe80::1%eth0]:8443\nweb04 [2001:db8::4]:8443');
   assert.deepEqual(targetsById(r), { web04: ['[2001:db8::4]:8443'] });

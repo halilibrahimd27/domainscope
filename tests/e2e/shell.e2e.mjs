@@ -1898,6 +1898,9 @@ async function main() {
           return { href: link.getAttribute('href'), name: m.short_name, start: new URL(m.start_url, link.href).href };
         });
         assertEqual(manifest, { href: 'manifest.webmanifest', name: 'DomainScope', start: app.url }, 'web app manifest');
+        // The installed app's identity is the project path, not the origin root (an id of "./" would be).
+        const { appId } = await pwa.send('Page.getAppId');
+        assertEqual(appId, app.url, 'app id');
         await assertClean(pwa, 'service worker install');
       });
 

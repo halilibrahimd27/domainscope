@@ -1,5 +1,4 @@
 {
-  "id": "./",
   "name": "DomainScope — SSL & DNS toolkit",
   "short_name": "DomainScope",
   "description": "Find the subdomains, IPs and servers a certificate belongs on — in your browser. Certificate, Zone File, Servers and About also work offline.",

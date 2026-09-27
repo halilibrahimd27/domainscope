@@ -1,5 +1,4 @@
 {
-  "id": "./",
   "name": "DomainScope — SSL & DNS araç kutusu",
   "short_name": "DomainScope",
   "description": "Bir sertifikanın ait olduğu alt alan adlarını, IP’leri ve sunucuları tarayıcınızda bulun. Sertifika, Zone Dosyası, Sunucular ve Hakkında çevrimdışı da çalışır.",

@@ -170,9 +170,33 @@ describe('web app manifests', () => {
     return `${buf.readUInt32BE(16)}x${buf.readUInt32BE(20)}`;
   };
 
-  test('one app (same id, start_url and scope for the /<repo>/ subpath), installable icons in both languages', () => {
+  /**
+   * The app's identity as a browser computes it (W3C Web App Manifest, "processing the id member"):
+   * start_url resolves against the manifest's URL, but `id` against start_url's origin — so an id
+   * of './' would be the origin root, not the project path. Without `id` it is start_url.
+   */
+  const appId = (m, manifestUrl) => {
+    const start = new URL(m.start_url ?? '', manifestUrl);
+    const id = typeof m.id === 'string' ? new URL(m.id, start.origin) : start;
+    id.hash = '';
+    return id.href;
+  };
+
+  test('the app\'s identity is its /<repo>/ path, not the origin, and the same in both languages', () => {
+    for (const site of ['https://example.github.io/domainscope/', 'https://example.github.io/a-fork/', 'https://example.com/']) {
+      for (const m of [en, tr]) {
+        const url = new URL(MANIFEST_FILES.en, site).href;
+        assert.equal(appId(m, url), site, `${m.lang} at ${site}`);
+        assert.ok(appId(m, url).startsWith(new URL(m.scope, url).href), 'inside the scope');
+      }
+    }
+    // What `"id": "./"` did: every app of the origin would share the identity of its root.
+    assert.equal(appId({ ...en, id: './' }, 'https://example.github.io/domainscope/manifest.webmanifest'), 'https://example.github.io/');
+  });
+
+  test('one app (same start_url and scope for the /<repo>/ subpath), installable icons in both languages', () => {
     for (const m of [en, tr]) {
-      assert.equal(m.id, './');
+      assert.equal(m.id, undefined, 'no id: it defaults to start_url (see above)');
       assert.equal(m.start_url, './');
       assert.equal(m.scope, './');
       assert.equal(m.display, 'standalone');

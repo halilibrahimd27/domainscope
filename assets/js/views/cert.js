@@ -2587,11 +2587,12 @@ export function mount(container, ctx) {
       return { subject: certTarget(load), at: load.loadedAt, rerun: !!ctHostOf(load) };
     },
     // A certificate from Certificate Transparency: look its host name up again in the "No file?"
-    // block (opened, so its progress shows); the newest certificate loads over this one.
+    // block (opened, so its progress shows); the newest certificate loads over this one. The note
+    // goes only then (setLoad): a lookup that fails or finds nothing leaves the kept certificate,
+    // still dated.
     rerun() {
       const host = ctHostOf(load);
       if (!host || !alternatives) return;
-      ctx.runStarted(host);
       const more = loaderHost.querySelector('details');
       if (more) more.open = true;
       alternatives.search(host);

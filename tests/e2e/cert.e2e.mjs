@@ -18,7 +18,9 @@
  *     (same-origin file only), a host name refused before any request, nothing logged, a lookup
  *     still running when the sample loads (aborted at once: busy flag, language switch), a
  *     certificate loaded from CT (badge, caveat, leaf-only chain note, Check servers in SSL
- *     Targets), SSL Targets step 1 with the CT note and the sample (fills the domains, starts no
+ *     Targets; kept over a trip away with "Result from" and Run again, whose lookup leaves the
+ *     note while it finds nothing and ends it with the new certificate), SSL Targets step 1 with
+ *     the CT note and the sample (fills the domains, starts no
  *     scan), a Cert Spotter 429 → crt.sh download links, the cool-down that skips Cert Spotter
  *     after it, and crt.sh failing during the cool-down (the error says so, with the reset time)
  *   - LIVE (skipped with --offline): real_cloudflare.pem — CAA check over DoH and the
@@ -386,6 +388,30 @@ async function main() {
       const issues = await page.evaluate(() => [...document.querySelectorAll('[data-chain-issue]')].map((a) => a.dataset.chainIssue));
       assert(issues.includes('ct-leaf-only') && !issues.includes('leaf-only'), `chain issues ${issues}`);
       await page.click(tabSel('names'));
+    });
+
+    await run.step('kept over a trip away: "Result from" with Run again; a lookup that finds nothing leaves the note, a new certificate ends it', async () => {
+      const note = () => page.evaluate(() => ({
+        text: document.querySelector('.page-kept:not([hidden]) .kept-note-text')?.textContent || '',
+        rerun: !!document.querySelector('.page-kept:not([hidden]) [data-action="kept-rerun"]'),
+        badge: document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource
+      }));
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'cert');
+      let n = await note();
+      assert(/^Result from /.test(n.text) && n.rerun, `kept note with Run again: ${JSON.stringify(n)}`);
+      await page.evaluate(() => { window.__ctFake.mode = 'none'; window.__ctFake.calls = []; });
+      await page.click('[data-action="kept-rerun"]');
+      await page.waitFor(() => window.__ctFake.calls.length === 1, { message: 'the host looked up again' });
+      assertEqual(await ctResult(page, '.cert-reload', 'not-found'), 'not-found', 'outcome');
+      n = await note();
+      assert(/^Result from /.test(n.text) && n.rerun, `the kept certificate is still dated: ${JSON.stringify(n)}`);
+      assertEqual(n.badge, 'ct', 'the same certificate stays');
+      await page.evaluate(() => { window.__ctFake.mode = 'found'; window.__ctFake.calls = []; });
+      await page.click('[data-action="kept-rerun"]');
+      await page.waitFor(() => !document.querySelector('.page-kept:not([hidden])') && window.__ctFake.calls.length > 0, { message: 'the new certificate ends the note' });
+      assertEqual((await note()).badge, 'ct', 'loaded from CT again');
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((x) => x.remove()));
     });
 
     await run.step('Check servers in SSL Targets: step 1 has the certificate and the CT note; nothing is scanned', async () => {

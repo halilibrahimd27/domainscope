@@ -18,12 +18,14 @@ let V;
 let i18n;
 let O;
 let L;
+let D;
 
 before(async () => {
   i18n = await imp('assets/js/i18n.js');
   V = await imp('assets/js/views/zone.js');
   O = await imp('assets/js/lib/zoneorigins.js');
   L = await imp('assets/js/lib/zonelint.js');
+  D = await imp('assets/js/lib/zonedrift.js');
 });
 
 describe('zone view: strings', () => {
@@ -86,6 +88,21 @@ describe('zone view: samples and parsing', () => {
     assert.equal(z.format, 'cloudflare-api');
     const keys = z.records.map((r) => `${r.name}|${r.type}|${r.text}`);
     assert.equal(new Set(keys).size, keys.length, 'no duplicates');
+  });
+
+  test('a BIND secondary dump ($ORIGIN .) is analysed as its SOA zone, not the root', () => {
+    const text = '$ORIGIN .\n$TTL 3600\nexample.com IN SOA ns1.example.com. hostmaster.example.com. 1 7200 900 1209600 300\n' +
+      '\t\t\tNS ns1.example.com.\n\t\t\tNS ns2.example.net.\n\t\t\tA 192.0.2.10\n$ORIGIN example.com.\n' +
+      'dev\t\t\tA 10.0.0.5\nns1\t\t\tA 192.0.2.53\nwww\t\t\tCNAME missing\n';
+    const z = V.parseFiles([{ name: 'example.com.bak', text }]);
+    assert.deepEqual([z.origin, z.originConfidence], ['example.com', 'high']);
+    assert.deepEqual(L.lintZone(z).findings.map((f) => `${f.code}:${f.name}`).sort(),
+      ['DANGLING_IN_ZONE_TARGET:www.example.com', 'PRIVATE_IP:dev.example.com']);
+    const scan = O.zoneScanInput(z);
+    assert.equal(scan.origin, 'example.com');
+    assert.deepEqual(scan.delegations, []);
+    assert.ok(scan.names.includes('example.com') && scan.names.includes('www.example.com'), scan.names.join());
+    assert.equal(D.planDrift(z).skipped.occluded, 0);
   });
 
   test('files of different zones → ORIGIN_MISMATCH; a certificate → NOT_A_ZONE pem', () => {

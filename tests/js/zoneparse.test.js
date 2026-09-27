@@ -434,6 +434,7 @@ describe('names', () => {
     assert.deepEqual(z.warnings.map((w) => [w.code, w.line]), [['RELATIVE_WITHOUT_ORIGIN', 1]]);
     assert.equal(z.origin, 'example.com');
     assert.equal(z.originSource, '$ORIGIN');
+    assert.equal(z.originConfidence, 'low');
   });
 
   test('ORIGIN_REQUIRED when every name is relative and nothing names the zone', () => {
@@ -1084,6 +1085,60 @@ describe('origin inference (critic A1)', () => {
     assert.deepEqual([z.origin, z.originSource], ['example.com', 'soa']);
     assert.equal(z.records[0].name, 'example.com');
     assert.equal(find(z, 'www.example.com').data, '192.0.2.10');
+  });
+
+  test('a $ORIGIN after the first record is a sub-block, not the zone apex', () => {
+    const text = '$TTL 3600\n@ IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\n  IN NS ns1.example.com.\n  IN MX 10 mail\nwww A 192.0.2.10\nmail A 192.0.2.25\n$ORIGIN lab.example.com.\napi A 192.0.2.30\n';
+    const z = P(text, { filename: 'db.example.com' });
+    assert.deepEqual([z.origin, z.originSource], ['example.com', 'filename']);
+    assert.deepEqual(z.records.map((r) => `${r.name} ${r.type}`), ['example.com SOA', 'example.com NS', 'example.com MX',
+      'www.example.com A', 'mail.example.com A', 'api.lab.example.com A']);
+    assert.equal(find(z, 'example.com', 'MX').data.exchange, 'mail.example.com');
+    assert.ok(!codes(z).some((c) => c === 'RELATIVE_WITHOUT_ORIGIN' || c === 'NO_OWNER' || c === 'OUT_OF_ZONE'));
+    // an absolute SOA owner names the zone; a relative MX before the sub-block resolves under it
+    const abs = P('example.com. 300 IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\nexample.com. 300 IN MX 10 mail\nwww.example.com. 300 A 192.0.2.10\n$ORIGIN lab.example.com.\napi 300 A 192.0.2.30\n');
+    assert.deepEqual([abs.origin, abs.originSource, abs.originConfidence], ['example.com', 'soa', 'high']);
+    assert.equal(find(abs, 'example.com', 'MX').data.exchange, 'mail.example.com');
+    assert.ok(!codes(abs).some((c) => c === 'OUT_OF_ZONE' || c === 'BAD_RDATA'));
+    // a header names the zone; an SRV block's $ORIGIN does not
+    const hdr = P(';; Domain: example.com.\n@ 300 IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\n@ 300 IN NS ns1.example.com.\n$ORIGIN _tcp.example.com.\n_sip 300 SRV 0 5 5060 sip.example.com.\n');
+    assert.deepEqual([hdr.origin, hdr.originSource], ['example.com', 'header']);
+    assert.ok(find(hdr, '_sip._tcp.example.com', 'SRV'));
+    assert.ok(!codes(hdr).includes('OUT_OF_ZONE'));
+    // the zone name typed by the user agrees with the file: no ORIGIN_OVERRIDDEN for the sub-block
+    const typed = P(text, { origin: 'example.com' });
+    assert.equal(typed.records.length, 6);
+    assert.ok(!codes(typed).includes('ORIGIN_OVERRIDDEN'));
+  });
+
+  test('a $ORIGIN before the first record names the zone (directives may precede it)', () => {
+    const lead = P('$TTL 300\n$ORIGIN example.com.\nwww A 192.0.2.10\n$ORIGIN lab.example.com.\napi A 192.0.2.20\n');
+    assert.deepEqual([lead.origin, lead.originSource, lead.originConfidence], ['example.com', '$ORIGIN', 'high']);
+    assert.deepEqual(lead.records.map((r) => r.name), ['www.example.com', 'api.lab.example.com']);
+  });
+
+  test('$ORIGIN . (BIND secondary / named-compilezone / pdnsutil dumps) never makes the root the zone', () => {
+    // pdnsutil list-zone: `$ORIGIN .` then absolute owners
+    const pdns = P('$ORIGIN .\n$TTL 300\nexample.com. 300 IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\nexample.com. 300 IN NS ns1.example.com.\nwww.example.com. 300 IN CNAME missing.example.com.\ndev.example.com. 300 IN A 10.0.0.5\n');
+    assert.deepEqual([pdns.origin, pdns.originSource, pdns.originConfidence], ['example.com', 'soa', 'high']);
+    assert.ok(!codes(pdns).includes('OUT_OF_ZONE'));
+    // BIND text secondary / `named-compilezone -s relative`: undotted owners under the root
+    const dump = '$ORIGIN .\n$TTL 3600\nexample.com IN SOA ns1.example.com. hostmaster.example.com. (\n\t\t\t2024010101 ; serial\n\t\t\t7200 900 1209600 300 )\n\t\t\tNS ns1.example.com.\n\t\t\tA 192.0.2.10\n$ORIGIN _tcp.example.com.\n_sip\t\t\tSRV 0 5 5060 sip.example.com.\n$ORIGIN example.com.\ndev\t\t\tA 10.0.0.5\nns1\t\t\tA 192.0.2.53\nwww\t\t\tCNAME missing\n';
+    const z = P(dump);
+    assert.deepEqual([z.origin, z.originSource, z.originConfidence], ['example.com', 'soa', 'high']);
+    assert.deepEqual(z.records.map((r) => `${r.name} ${r.type}`), ['example.com SOA', 'example.com NS', 'example.com A',
+      '_sip._tcp.example.com SRV', 'dev.example.com A', 'ns1.example.com A', 'www.example.com CNAME']);
+    assert.deepEqual(codes(z).filter((c) => c !== 'ORIGIN_INFERRED'), []);
+    // the typed zone name agrees with the file
+    const typed = P(dump, { origin: 'example.com' });
+    assert.equal(typed.records.length, 7);
+    assert.deepEqual(codes(typed), []);
+    // no SOA: the absolute owners name the zone
+    const noSoa = P('$ORIGIN .\nexample.com NS ns1.example.com.\nwww.example.com A 192.0.2.10\napi.example.com A 192.0.2.20\n');
+    assert.equal(noSoa.origin, 'example.com');
+    // the root zone itself stays the root
+    const root = P('$ORIGIN .\n$TTL 86400\n@ IN SOA ns.example.net. hostmaster.example.net. 1 2 3 4 5\n@ IN NS ns.example.net.\nexample NS ns.example.net.\n');
+    assert.equal(root.origin, '.');
   });
 
   test('user origin sets the initial origin; $ORIGIN still applies (ORIGIN_OVERRIDDEN)', () => {

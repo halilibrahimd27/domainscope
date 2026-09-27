@@ -1599,7 +1599,7 @@ function parseRdata(type, toks, ctx) {
     if (!r.ok) throw new RdataError(r.reason === 'no-origin' ? 'relative-without-origin' : 'bad-name');
     if (r.at) out.at = true;
     if (r.idn) out.idn = true;
-    if (r.relative && !r.at && !r.apex && r.relLabels >= 2) out.rel.push({ index: out.targets.length, rel: r.rel, relLabels: r.relLabels });
+    if (r.relative && !r.at && !r.apex && r.relLabels >= 2 && r.name !== r.rel) out.rel.push({ index: out.targets.length, rel: r.rel, relLabels: r.relLabels });
     out.targets.push(rootToEmpty(r.name));
     return r.name;
   };
@@ -2163,8 +2163,17 @@ function parseBind(text, lines, zone, b, opts) {
   });
 
   // ---- pre-scan: owners, SOA, $ORIGIN (origin inference and the TTL fallback) ----
-  let firstOrigin = null;
-  let firstOriginLine = 0;
+  // Only a `$ORIGIN` before the first record names the zone (`leadOrigin`); a later one opens a
+  // sub-block (`$ORIGIN lab.example.com.`, an SRV block) and names it only as a last resort
+  // (`lateOrigin`). `$ORIGIN .` (BIND secondary / named-compilezone / pdnsutil dumps) is never the
+  // apex: undotted owners under it are absolute, so the SOA owner names the zone.
+  const header = headerOrigin(text);
+  let scanOrigin = header;
+  let sawRecord = false;
+  let leadOrigin = null;
+  let leadOriginLine = 0;
+  let lateOrigin = null;
+  let lateOriginLine = 0;
   let soaAbs = null;
   let soaRaw = null;
   let soaMinimum = null;
@@ -2172,23 +2181,35 @@ function parseBind(text, lines, zone, b, opts) {
   const nsOwners = [];
   for (const e of entries) {
     if (isDirective(e)) {
-      if (firstOrigin === null && e.tokens[0].t.toUpperCase() === '$ORIGIN' && e.tokens[1]) {
-        const r = parseName(e.tokens[1].t);
-        if (r.ok && !r.relative) {
-          firstOrigin = r.name;
-          firstOriginLine = e.line;
+      const d = e.tokens[0].t.toUpperCase();
+      if (d === '$ORIGIN' && e.tokens[1]) {
+        const r = parseName(e.tokens[1].t, { origin: scanOrigin });
+        if (r.ok) scanOrigin = r.name;
+        if (r.ok && !r.relative && r.name !== '.') {
+          if (!sawRecord && leadOrigin === null) {
+            leadOrigin = r.name;
+            leadOriginLine = e.line;
+          }
+          if (lateOrigin === null) {
+            lateOrigin = r.name;
+            lateOriginLine = e.line;
+          }
         }
-      }
+      } else if (d === '$GENERATE') sawRecord = true;
       continue;
     }
     const s = splitStructure(e.tokens, e.blank);
     if (!s.type) continue;
+    sawRecord = true;
     let absOwner = null;
     if (s.owner && !s.owner.q) {
       const t = s.owner.t;
       if (t.endsWith('.') && !isEscapedAt(t, t.length - 1)) {
         const r = parseName(t);
         if (r.ok) absOwner = r.name;
+      } else if (scanOrigin === '.') {
+        const r = parseName(t, { origin: '.' });
+        if (r.ok && !r.at) absOwner = r.name;
       }
     }
     if (absOwner && s.cls !== 'CH' && s.cls !== 'HS' && s.cls !== 'CS') {
@@ -2205,7 +2226,6 @@ function parseBind(text, lines, zone, b, opts) {
   }
 
   // ---- origin ----
-  const header = headerOrigin(text);
   const user = opts.userOrigin;
   let initial = null;
   let soaApex = null; // an undotted SOA owner read as the apex
@@ -2219,12 +2239,15 @@ function parseBind(text, lines, zone, b, opts) {
     zone.originSource = 'user';
     zone.originConfidence = 'high';
     initial = user;
-    const fileSays = firstOrigin || soaAbs || header;
+    // a late $ORIGIN at or below the typed zone is a sub-block, not a disagreement
+    const lateSays = lateOrigin && !isSubdomainOf(lateOrigin, user) ? lateOrigin : null;
+    const fileSays = leadOrigin || soaAbs || header || lateSays;
     if (fileSays && fileSays !== user) {
-      issues.add('ORIGIN_OVERRIDDEN', firstOrigin ? firstOriginLine : 0, { user, file: fileSays }, 'the file names another origin');
+      const line = fileSays === leadOrigin ? leadOriginLine : fileSays === lateSays ? lateOriginLine : 0;
+      issues.add('ORIGIN_OVERRIDDEN', line, { user, file: fileSays }, 'the file names another origin');
     }
-  } else if (firstOrigin) {
-    zone.origin = firstOrigin;
+  } else if (leadOrigin) {
+    zone.origin = leadOrigin;
     zone.originSource = '$ORIGIN';
     zone.originConfidence = 'high';
     initial = header;
@@ -2259,6 +2282,13 @@ function parseBind(text, lines, zone, b, opts) {
       zone.originConfidence = cand.strong ? 'high' : 'low';
     }
     initial = zone.origin;
+    if (!zone.origin && lateOrigin) {
+      // records before it stay RELATIVE_WITHOUT_ORIGIN; the UI asks the user to confirm
+      zone.origin = lateOrigin;
+      zone.originSource = '$ORIGIN';
+      zone.originConfidence = 'low';
+      initial = null;
+    }
   }
   if (zone.origin && zone.originSource !== 'user' && zone.originSource !== '$ORIGIN') {
     issues.add('ORIGIN_INFERRED', 0, { origin: zone.origin, source: zone.originSource }, `origin ${zone.origin} from ${zone.originSource}`);
@@ -2320,7 +2350,7 @@ function parseBind(text, lines, zone, b, opts) {
         owner = { name: r.name };
         if (r.at) issues.add('AT_INSIDE_NAME', e.line, { name: r.name, raw: safeText(raw, 80) }, '"x.@" read as a name below the origin', { name: r.name, type });
         if (r.idn) issues.add('NON_ASCII_LABEL', e.line, { name: r.name }, 'non-ASCII label converted to punycode', { name: r.name, type });
-        if (r.relative && !r.apex && !r.at) {
+        if (r.relative && !r.apex && !r.at && r.name !== r.rel) {
           const bases = [st.origin, zone.origin].filter((o) => o && o !== '.');
           if (bases.some((o) => r.rel === o || r.rel.endsWith(`.${o}`))) {
             owner.intendedName = r.rel;

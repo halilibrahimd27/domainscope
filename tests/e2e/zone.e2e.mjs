@@ -429,6 +429,17 @@ async function main() {
       assert(await page.evaluate(() => !!document.querySelector('.zone-problem[data-code="OWNER_MISSING_TRAILING_DOT"]')), 'OWNER_MISSING_TRAILING_DOT');
     });
 
+    await run.step('an internal zone: the Live card and the pinned alert give the same address counts', async () => {
+      await page.setFileInput('.zone-drop .filedrop-input', [path.join(ZONES, 'internal.zone.txt')]);
+      await page.waitFor(() => /internal\.zone\.txt/.test(document.querySelector('.zone-files')?.textContent || ''), { message: 'internal zone' });
+      await clickTab(page, 'live');
+      const counts = await page.evaluate(() => {
+        const of = (el) => (/\((\d+) of (\d+) addresses are private\)/.exec(el?.textContent || '') || []).slice(1).join('/');
+        return { pinned: of([...document.querySelectorAll('.zone-page > .alert')].find((a) => /internal zone/.test(a.textContent))), live: of(document.querySelector('.zone-live-card .alert')) };
+      });
+      assertEqual(counts, { pinned: '6/8', live: '6/8' }, 'internal-zone counts');
+    });
+
     await run.step('a certificate by mistake → NOT_A_ZONE with a Certificate link; two API pages → one zone', async () => {
       await page.setFileInput('.zone-drop .filedrop-input', [path.join(ZONES, 'bad', 'cert.pem.txt')]);
       await page.waitFor(() => document.querySelector('.zone-fatal')?.dataset.code === 'NOT_A_ZONE', { message: 'fatal' });

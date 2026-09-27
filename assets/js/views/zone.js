@@ -1453,11 +1453,16 @@ export function mount(container, ctx) {
     if (partial) {
       out.push(h('div', { class: 'zone-partial' }, Alert({ variant: 'error', title: t('zone.partial.title'), message: t(issueKey(partial.code, partial.params), partial.params) })));
     }
-    const priv = S.addresses.filter((a) => a.private).length;
-    if (S.addresses.length && priv / S.addresses.length >= 0.5) {
-      out.push(Alert({ variant: 'warn', message: t('zone.internalZone', { private: formatNumber(priv), total: formatNumber(S.addresses.length) }) }));
-    }
+    const internal = internalAlert();
+    if (internal) out.push(internal);
     return out;
+  }
+
+  /** "This looks like an internal zone" when at least half of the addresses are private, else null. */
+  function internalAlert({ compact = false } = {}) {
+    const priv = S.addresses.filter((a) => a.private).length;
+    if (!S.addresses.length || priv / S.addresses.length < 0.5) return null;
+    return Alert({ variant: 'warn', compact, message: t('zone.internalZone', { private: formatNumber(priv), total: formatNumber(S.addresses.length) }) });
   }
 
   /* --- overview ---------------------------------------------------------- */
@@ -1967,7 +1972,7 @@ export function mount(container, ctx) {
           h('p', { class: 'zone-live-lead', dataset: { role: 'zone-live-lead', queries: plan.queries } },
             t('zone.live.lead', { rrsets: formatNumber(plan.rrsets), queries: formatNumber(plan.queries), resolvers: chain.join(', ') })),
           h('p', { class: 'text-sm muted' }, t('zone.live.sent')),
-          plan.internalShare >= 0.5 ? Alert({ variant: 'warn', compact: true, message: t('zone.internalZone', { private: formatNumber(Math.round(plan.internalShare * 100)), total: '100' }) }) : null,
+          internalAlert({ compact: true }),
           plan.overBudget ? Alert({ variant: 'info', compact: true, message: t('zone.live.budget', { max: formatNumber(plan.maxQueries) }) }) : null,
           h('div', { class: 'cluster' }, skipBox.el, wildBox.el),
           h('div', { class: 'cluster' }, runBtn,

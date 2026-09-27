@@ -29,8 +29,10 @@
  * also exports `result()` → `{ subject, at, rerun?, label? } | null` (its finished result) keeps it
  * when it is left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it
  * is opened again; the page header then says "Result from <time>" (or the result's own `label`),
- * with "Run again" calling `rerun(ctx)` unless the result says `rerun: false`. "Delete all local
- * data" forgets all of it and opens the tool on screen again, bare.
+ * with "Run again" calling `rerun(ctx)` unless the result says `rerun: false`. The note goes with
+ * the next `runStarted()`, or with `ctx.resultChanged()` when the result is replaced or dropped
+ * some other way. "Delete all local data" forgets all of it and opens the tool on screen again,
+ * bare.
  */
 
 import {
@@ -458,6 +460,8 @@ function keepResult(cur) {
  * @property {(subject: string|null) => void} runStarted  a run starts (or a certificate loads) for `subject` (a domain,
  *                                         host name or IP address): it becomes the current target, and the
  *                                         header's note about a kept result goes away
+ * @property {() => void} resultChanged  the result on screen was replaced or dropped without a run (a new
+ *                                         import, Forget): the header's note about a kept result goes away
  * @property {typeof toast} toast
  * @property {(...nodes: any[]) => void} setActions  put buttons into the page header (right side)
  * @property {(fn: () => void) => void} onCleanup  run fn when the view unmounts (e.g. state.subscribe's unsubscribe)
@@ -547,6 +551,9 @@ function makeContext(id, params, searchParams, controller, restored) {
       if (!isCurrent(ctx)) return;
       setKeptNote(null);
       if (subject) pageSession.setTarget(subject, { view: id });
+    },
+    resultChanged() {
+      if (isCurrent(ctx)) setKeptNote(null);
     },
     setActions(...nodes) {
       if (!isCurrent(ctx) || !dom.pageActions) return;

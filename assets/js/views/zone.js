@@ -12,7 +12,8 @@
  *   types only;
  * - the page session (lib/session.js) keeps only the fact that a live check finished
  *   (`result()`: no subject, so nothing about the zone becomes the current target or reaches a
- *   URL); the zone itself stays in this module;
+ *   URL); the zone itself stays in this module. The note ("Live check from <time>") goes as soon
+ *   as that check is replaced or dropped: a new check, a new import or analysis, Forget;
  * - `state.session.zone` (in memory; cleared by "Delete all local data") is the scan input the
  *   Subdomains / SSL Targets views read; it is published only for a confirmed origin.
  *
@@ -1238,6 +1239,8 @@ export function mount(container, ctx) {
 
   function analyse(zone) {
     abortDrift();
+    // A new import or analysis drops the live check: so does its kept-result note.
+    ctx.resultChanged();
     S.zone = zone;
     S.live = { ...freshSession().live, skipPrivate: S.live.skipPrivate, wildcards: S.live.wildcards };
     if (zone.fatal) {
@@ -1291,6 +1294,7 @@ export function mount(container, ctx) {
 
   function forget() {
     resetSession();
+    ctx.resultChanged();
     state.setSession('zone', undefined);
     ctx.setParams({ tab: null });
     toast(t('zone.forgotten'), { type: 'info' });
@@ -1912,10 +1916,14 @@ export function mount(container, ctx) {
   }
 
   /* --- live check -------------------------------------------------------- */
-  /** Run the live check of `z` with the options of the Live tab (its button, or "Run again"). */
+  /**
+   * Run the live check of `z` with the options of the Live tab (its button, or "Run again"). No
+   * subject for the page session: the note about the check kept before goes, the target stays.
+   */
   const runDrift = async (z) => {
     const plan = planDrift(z, { skipPrivate: S.live.skipPrivate, wildcardProbes: S.live.wildcards });
     abortDrift();
+    ctx.runStarted(null);
     const ac = new AbortController();
     controller = ac;
     S.live = { ...S.live, status: 'running', rows: [], result: null, done: 0, total: plan.rrsets, error: null, filter: 'all', finishedAt: null };
@@ -2134,7 +2142,6 @@ export function mount(container, ctx) {
     rerun() {
       const z = S.zone;
       if (!z || z.fatal || !originConfirmed(z, S.confirmed) || S.live.status === 'running') return;
-      ctx.runStarted(null);
       goTab('live');
       runDrift(z);
     }

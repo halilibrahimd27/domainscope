@@ -13,8 +13,9 @@
  * command (no /24, host target, wildcard name, PowerShell), the zone-targets.txt download, the
  * Problems → Records jump, the live check (nothing sent before the click, planned query count,
  * hidden targets / internal names never queried, statuses, redacted export, cancel, kept for the
- * page session with "Live check from" and Run again), the exact-mode hand-off contract, Route 53
- * (incomplete export) and cPanel imports, a certificate
+ * page session with "Live check from" and Run again; the note gone with the Live tab's own Run,
+ * a new import and Forget), the exact-mode hand-off contract, Route 53 (incomplete export) and
+ * cPanel imports, a certificate
  * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
  * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
  * CSP violations / missing i18n keys.
@@ -412,6 +413,19 @@ async function main() {
       assertEqual(external, [], 'no external request');
     });
 
+    await run.step('the Live tab\'s own Run replaces the kept check: the note goes at once and stays gone', async () => {
+      await leaveAndReturn(page);
+      assert(/^Live check from /.test((await keptNote(page)).text), 'kept again');
+      await clickTab(page, 'live');
+      await page.evaluate(() => { window.__fakeDnsDelay = 150; });
+      await page.click('[data-action="zone-live-run"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="zone-live-cancel"]'), { message: 'running' });
+      assertEqual((await keptNote(page)).text, '', 'no note over a check that runs');
+      await page.evaluate(() => { window.__fakeDnsDelay = 0; });
+      await page.waitFor(() => document.querySelector('.zone-drift')?.dataset.status === 'done', { timeout: 30000, message: 'check done' });
+      assertEqual((await keptNote(page)).text, '', 'no note over the fresh result');
+    });
+
     await run.step('Turkish: the note names the live check too, and a language switch keeps it', async () => {
       await setLangUi(page, 'tr');
       await leaveAndReturn(page);
@@ -459,13 +473,15 @@ async function main() {
       external.length = extBefore;
     });
 
-    await run.step('Route 53 JSON pasted: incomplete export alert; cPanel: missing-dot error', async () => {
+    await run.step('Route 53 JSON pasted: incomplete export alert (the old zone\'s kept check loses its note); cPanel: missing-dot error', async () => {
+      assert(/^Live check from /.test((await keptNote(page)).text), 'the check kept over the trips to Subdomains and SSL Targets');
       const r53 = await readFile(path.join(ZONES, 'route53.json'), 'utf8');
       await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
       await page.type('[data-role="zone-paste"]', r53);
       await page.click('[data-action="zone-paste-import"]');
       await page.waitFor(() => /AWS Route 53/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'route53' });
       assert(/incomplete/i.test(await text(page, '.zone-partial')), 'incomplete export alert');
+      assertEqual((await keptNote(page)).text, '', 'a new import: no note about the old zone\'s check');
       await page.setFileInput('.zone-drop .filedrop-input', [path.join(ZONES, 'cpanel-example.com.db.txt')]);
       await page.waitFor(() => /cPanel/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'cpanel' });
       await clickTab(page, 'problems');
@@ -518,10 +534,17 @@ async function main() {
       }
     });
 
-    await run.step('Forget → empty state, toast, session cleared; nothing persisted; hash only tab=', async () => {
+    await run.step('Forget → empty state, toast, session cleared, no note; nothing persisted; hash only tab=', async () => {
+      // A finished live check of this zone, kept over a trip away: Forget drops it with its note.
+      await clickTab(page, 'live');
+      await page.click('[data-action="zone-live-run"]');
+      await page.waitFor(() => document.querySelector('.zone-drift')?.dataset.status === 'done', { timeout: 30000, message: 'check done' });
+      await leaveAndReturn(page);
+      assert((await keptNote(page)).rerun, 'kept, with Run again');
       await page.click('[data-action="zone-forget"]');
       await page.waitFor(() => !document.querySelector('.zone-summary') && document.querySelectorAll('[data-sample]').length === 3, { message: 'empty' });
       assert(await page.evaluate(() => [...document.querySelectorAll('.toast')].some((t) => /Zone forgotten/.test(t.textContent))), 'toast');
+      assertEqual(await keptNote(page), { text: '', rerun: false, hash: await page.evaluate(() => location.hash) }, 'no note, no dead Run again over the empty view');
       assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.getSession('zone')), undefined, 'session cleared');
       assertEqual(await noZoneStorage(page), [], 'no zone key in storage');
       assert(/^#\/zone(\?tab=\w+)?$/.test(await page.evaluate(() => location.hash)), 'hash');

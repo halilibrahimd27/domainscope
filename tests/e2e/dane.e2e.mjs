@@ -43,7 +43,7 @@ import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, csvHeader, gotoRoute, installDownloadCapture, setLangUi, sleep, takeDownloads, waitReady
+  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, setLangUi, sleep, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 /* ------------------------------------------------------------------------ */
@@ -446,6 +446,8 @@ async function main() {
       await gotoRoute(page, 'scan');
       await page.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'shared certificate' });
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), 'example.net', 'domain from the certificate');
+      // Extra hostnames sit in the collapsed Options step.
+      await openScanOptions(page);
       await page.type('textarea[data-role="scan-extra"]', 'www.wild.example.net\napi.wild.example.net');
       const ext0 = await page.evaluate(() => window.__externalFetches.length);
       await page.click('[data-action="scan-run"]');

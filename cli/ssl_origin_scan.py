@@ -1152,15 +1152,28 @@ class Inventory:
     stats: Dict[str, int]
 
 
-_NAME_HEADERS = {
-    'name', 'hostname', 'host', 'server', 'servername', 'server_name', 'host_name', 'fqdn',
-    'instance', 'instance_name', 'vm', 'vm_name', 'vmname', 'node', 'node_name', 'machine',
-    'computer', 'computername', 'computer_name', 'dns_name', 'dnsname', 'label',
-    'inventory_hostname',
-}
-_GROUP_HEADERS = {'group', 'groups', 'env', 'environment', 'role', 'cluster', 'site'}
+# Name columns in order of preference (lib/inventory.js NAME_HEADERS, Turkish included,
+# then a few CLI extras): 'Display Name,Hostname' takes the host name.
+_NAME_HEADERS = (
+    'hostname', 'host_name', 'name', 'host', 'server', 'server_name', 'servername', 'sunucu',
+    'sunucu_adi', 'sunucu_ismi', 'makine', 'makine_adi', 'host_adi', 'hostadi', 'node',
+    'node_name', 'fqdn', 'instance_name', 'instance', 'vm', 'vm_name', 'computer_name',
+    'computername', 'device', 'device_name', 'cihaz', 'cihaz_adi', 'ad', 'adi', 'isim', 'label',
+    'display_name', 'tag_name', 'inventory_hostname', 'dns_name',
+    'vmname', 'machine', 'computer', 'dnsname',
+)
+_NAME_RANK = {header: rank for rank, header in enumerate(_NAME_HEADERS)}
+_GROUP_HEADERS = {'group', 'groups', 'grup', 'gruplar', 'role', 'roles', 'rol', 'env',
+                  'environment', 'ortam', 'tag', 'tags', 'etiket', 'etiketler', 'cluster',
+                  'project', 'proje', 'site'}
 _IP_HEADER_RE = re.compile(
-    r'(?:^|_)(?:ip|ips|ipv4|ipv6|ipaddr|ipaddress|ipaddresses|addr|address|addresses)(?:_|$)')
+    r'(?:^|_)(?:ip|ips|ip\d+|ipv4|ipv6|ipaddr|ipaddress|ipaddresses|addr|address|addresses'
+    r'|adres|adresi|adresleri|ansible_host|ansible_ssh_host)(?:_|$)')
+# Address columns that are not the server's own (lib/inventory.js IP_KEY_EXCLUDE_RE):
+# gateway, DNS / NTP servers, iLO / iDRAC / IPMI / BMC, MAC, e-mail, URLs.
+_IP_HEADER_EXCLUDE_RE = re.compile(
+    r'(?:^|_)(?:mac|e?mail|eposta|url|uri|link|web|website|site|gateway|gw|netmask|mask'
+    r'|subnet|dns|ilo|idrac|ipmi|bmc|ntp)(?:_|$)')
 _IP_KEYS = {'ansible_host', 'ansible_ssh_host', 'host', 'ip', 'ip_address', 'address', 'ipv4',
             'ipv6'}
 _JSON_NAME_KEYS = ('name', 'hostname', 'host', 'Name', 'Hostname', 'HostName', 'server',
@@ -1174,13 +1187,29 @@ _TARGET_FILE_EXT_RE = re.compile(
 
 
 def _normalize_header(value: str) -> str:
-    """Snake-case a header/key: ``'Public IP'``, ``'PublicIp'`` -> ``'public_ip'``."""
+    """Snake-case a header/key like lib/inventory.js ``normalizeKey``: ``'Public IP'``,
+    ``'PublicIp'`` -> ``'public_ip'``; accents and dotless i folded (``'Sunucu Adı'`` ->
+    ``'sunucu_adi'``, ``'İP'`` -> ``'ip'``)."""
     value = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', value.strip())
+    value = ''.join(char for char in unicodedata.normalize('NFD', value)
+                    if not unicodedata.combining(char)).replace('ı', 'i')
     return re.sub(r'[^a-z0-9]+', '_', value.lower()).strip('_')
 
 
 def _is_ip_header(header: str) -> bool:
-    return header == 'ansible_host' or bool(_IP_HEADER_RE.search(header))
+    """A (normalized) column header that holds the server's own IPs (``ip``, ``public_ip``,
+    ``ip_adresi``), not a gateway / DNS / BMC / MAC / e-mail column."""
+    return (bool(header) and not _IP_HEADER_EXCLUDE_RE.search(header)
+            and bool(_IP_HEADER_RE.search(header)))
+
+
+def _is_header_like(tokens: Sequence[str]) -> bool:
+    """A plain line that is a column heading (``hostname   ip``), as lib/inventory.js skips."""
+    keys = [_normalize_header(token) for token in tokens]
+    if len(keys) == 1:
+        return _is_ip_header(keys[0]) or keys[0] in _NAME_RANK
+    return (any(_is_ip_header(key) for key in keys)
+            and any(key in _NAME_RANK or key in _GROUP_HEADERS for key in keys))
 
 
 def _looks_like_ip(token: str) -> bool:
@@ -1345,6 +1374,10 @@ class _InventoryBuilder:
             if is_numeric_host(value):
                 self.warn(line, 'INVALID_IP', numeric_host_note(value))
                 continue
+            if '@' in value and '://' not in value:
+                # an e-mail address: its domain is the mail provider, not this server
+                self.warn(line, 'PARSE', value)
+                continue
             host = normalize_hostname(value)
             if host:
                 hosts.append(host)
@@ -1375,7 +1408,9 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False) -> I
     * ``name ip [ip...]``, ``ip name``, bare ``ip`` lines (separators: space, tab, ``,`` ``;``)
     * ``/etc/hosts`` (``ip canonical-name alias...``)
     * CSV/TSV/semicolon files with a header row (name/hostname/host/server... and
-      ip/ip_address/public_ip/private_ip/ipv4/ipv6/address... columns)
+      ip/ip_address/public_ip/private_ip/ipv4/ipv6/address... columns, Turkish headers
+      such as ``Sunucu Adı`` / ``IP Adresi`` / ``Ortam`` too; gateway, DNS, NTP, BMC,
+      MAC and e-mail columns are skipped, as in the web app)
     * Ansible INI (``web01 ansible_host=1.2.3.4``, ``[group]`` headers become groups,
       ``[x:vars]`` / ``[x:children]`` sections are skipped)
     * simple Ansible YAML (``web01:`` / ``  ansible_host: 1.2.3.4``) and JSON (arrays,
@@ -1417,7 +1452,7 @@ def _detect_csv_delimiter(line: str) -> Optional[str]:
         if any(normalize_ip(cell) for cell in cells):
             return None  # a data line, not a header
         headers = [_normalize_header(cell) for cell in cells]
-        if any(h in _NAME_HEADERS or _is_ip_header(h) for h in headers):
+        if any(h in _NAME_RANK or _is_ip_header(h) for h in headers):
             return delimiter
     return None
 
@@ -1429,7 +1464,8 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
         return
     header = [_normalize_header(cell) for cell in
               next(csv.reader([content[0][1]], delimiter=delimiter))]
-    name_idx = next((i for i, h in enumerate(header) if h in _NAME_HEADERS), None)
+    name_idx = min((i for i, h in enumerate(header) if h in _NAME_RANK),
+                   key=lambda i: _NAME_RANK[header[i]], default=None)
     ip_idx = [i for i, h in enumerate(header) if _is_ip_header(h) and i != name_idx]
     group_idx = [i for i, h in enumerate(header) if h in _GROUP_HEADERS]
     rows = csv.reader([line for _, line in content[1:]], delimiter=delimiter)
@@ -1532,6 +1568,8 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
             builder.add_token_values(name, values, number, groups)
         elif had_invalid:
             continue  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
+        elif _is_header_like([t for t in re.split(r'[\s,;]+', line) if t]):
+            continue  # "hostname   ip": a column heading, not a server called "hostname"
         elif name is not None:
             # A zone file's "2026092401 ; serial" line must never be resolved (glibc -> IP).
             builder.add_hostname(name, number, groups, line)
@@ -1584,7 +1622,8 @@ def _json_host_values(obj: Dict[str, Any]) -> List[str]:
 
 def _is_ip_key(key: str) -> bool:
     key = _normalize_header(key)
-    return (key in _IP_KEYS or _is_ip_header(key)) and not _JSON_SKIP_KEY_RE.search(key)
+    return ((key in _IP_KEYS or bool(_IP_HEADER_RE.search(key)))
+            and not _JSON_SKIP_KEY_RE.search(key))
 
 
 def _json_has_ip_field(obj: Dict[str, Any]) -> bool:
@@ -3273,7 +3312,9 @@ targets (-t, repeatable):
   an IP, hostname, CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.50 or 10.0.0.10-50),
   NAME=IP, "-" for stdin, or a file (format auto-detected):
     "name ip [ip...]" / "ip name" lines, /etc/hosts, CSV/TSV with a header row
-    (name/hostname/server + ip/public_ip/private_ip/ipv4/ipv6/address columns),
+    (name/hostname/server + ip/public_ip/private_ip/ipv4/ipv6/address columns, Turkish
+    headers too; gateway, DNS, NTP, iLO/iDRAC/IPMI/BMC, MAC and e-mail columns are not
+    server addresses),
     Ansible INI (web01 ansible_host=10.0.0.5, [groups]), simple Ansible YAML, JSON.
   Entries without an IP are resolved with the system resolver (IPv4 and IPv6).
   CIDRs/ranges larger than a /16 need --allow-large.

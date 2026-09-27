@@ -623,6 +623,21 @@ def servers_by_name(inventory) -> Dict[str, object]:
     return {server.name: server for server in inventory.servers}
 
 
+# Inventories whose parse must match the web app's parseInventory (lib/inventory.js).
+INVENTORY_PARITY_CASES = {
+    'management columns': (
+        'name,ip_address,gateway_ip,ilo_ip,dns_ip,mac_address,ntp_server_address\n'
+        'web01,10.0.0.5,10.0.0.1,10.10.0.5,10.0.0.2,00:11:22:33:44:55,10.0.0.123\n'
+        'web02,10.0.0.6,10.0.0.1,10.10.0.6,10.0.0.2,00:11:22:33:44:56,10.0.0.123\n'),
+    'e-mail column': ('name,ip_address,admin_email_address\ndb01,10.0.0.9,\n'
+                      'db02,,dba@mail.example.com\n'),
+    'Turkish headers': 'Sunucu Adı;IP Adresi;Ortam\nweb01;10.0.0.5;prod\n',
+    'Turkish device': 'Cihaz Adı,İP,Grup\nfw01,10.0.0.7,edge\n',
+    'name columns': 'Display Name,Hostname,IP\nWeb One,web01,10.0.0.5\n',
+    'header line': 'hostname   ip\nweb01 10.0.0.5\n',
+}
+
+
 class InventoryTests(unittest.TestCase):
 
     def test_plain_lines_and_merging(self):
@@ -681,6 +696,73 @@ class InventoryTests(unittest.TestCase):
                          ['10.0.0.1', '10.0.0.2', '10.0.0.3'])
         hostish = sos.parse_inventory('name,ansible_host\nweb01,web01.internal\n')
         self.assertEqual(servers_by_name(hostish)['web01'].hostnames, ['web01.internal'])
+
+    def test_csv_management_columns_are_not_server_addresses(self):
+        inv = sos.parse_inventory(INVENTORY_PARITY_CASES['management columns'])
+        servers = servers_by_name(inv)
+        self.assertEqual(servers['web01'].ips, ['10.0.0.5'])   # not the gateway, iLO, DNS, NTP
+        self.assertEqual(servers['web02'].ips, ['10.0.0.6'])
+        self.assertEqual(inv.warnings, [])                     # no DUPLICATE_IP noise
+        for header in ('gateway_ip', 'ilo_ip', 'idrac_address', 'bmc_ip', 'ipmi_ip', 'dns_ip',
+                       'ntp_server_address', 'mac_address', 'admin_email_address', 'netmask',
+                       'web_url', 'subnet_ip', ''):
+            self.assertFalse(sos._is_ip_header(header), header)
+        for header in ('ip', 'ip_address', 'public_ip', 'ip2', 'ipv6', 'ip_adresi', 'adres',
+                       'ansible_host', 'private_ip_addresses'):
+            self.assertTrue(sos._is_ip_header(header), header)
+
+    def test_email_addresses_are_never_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'inv.csv')
+            Path(path).write_text(INVENTORY_PARITY_CASES['e-mail column'] + 'db03,ops@mail.example.com,\n',
+                                  encoding='utf-8')
+            resolver = RecordingResolver({'db02': ['10.0.0.10']})
+            servers, warnings = sos.load_targets([path], resolver=resolver)
+        # db02 (no IP) is resolved by its own name, as any name-only row; never the mailbox's host
+        self.assertEqual(resolver.calls, ['db02'])
+        self.assertEqual({s.name: s.ips for s in servers}, {'db01': ['10.0.0.9'],
+                                                             'db02': ['10.0.0.10']})
+        self.assertIn('PARSE ops@mail.example.com', [str(w).split(': ', 1)[1] for w in warnings])
+
+    def test_csv_turkish_headers(self):
+        servers = servers_by_name(sos.parse_inventory(INVENTORY_PARITY_CASES['Turkish headers']))
+        self.assertEqual((servers['web01'].ips, servers['web01'].groups), (['10.0.0.5'], ['prod']))
+        servers = servers_by_name(sos.parse_inventory(INVENTORY_PARITY_CASES['Turkish device']))
+        self.assertEqual((servers['fw01'].ips, servers['fw01'].groups), (['10.0.0.7'], ['edge']))
+        self.assertEqual(sos._normalize_header('Sunucu Adı'), 'sunucu_adi')
+        self.assertEqual(sos._normalize_header('İP Adresi'), 'ip_adresi')
+        self.assertEqual(sos._normalize_header('PrivateIpAddress'), 'private_ip_address')
+
+    def test_best_name_column_wins(self):
+        servers = servers_by_name(sos.parse_inventory(INVENTORY_PARITY_CASES['name columns']))
+        self.assertEqual(list(servers), ['web01'])  # hostname outranks a display name
+
+    def test_plain_header_line_is_skipped(self):
+        resolver = RecordingResolver()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'servers.txt')
+            Path(path).write_text(INVENTORY_PARITY_CASES['header line'], encoding='utf-8')
+            servers, warnings = sos.load_targets([path], resolver=resolver)
+        self.assertEqual([(s.name, s.ips) for s in servers], [('web01', ['10.0.0.5'])])
+        self.assertEqual((resolver.calls, warnings), ([], []))
+
+    @unittest.skipUnless(_node_major() >= 22, 'needs Node 22+ to run assets/js/lib/inventory.js')
+    def test_inventory_cases_match_the_web_app(self):
+        script = ('import { parseInventory } from %s;\n'
+                  'const cases = JSON.parse(process.argv[1]);\n'
+                  'console.log(JSON.stringify(cases.map((c) => parseInventory(c).servers'
+                  '.map((s) => [s.name, s.ips, s.groups]))));\n'
+                  % json.dumps((ROOT / 'assets' / 'js' / 'lib' / 'inventory.js').as_uri()))
+        texts = list(INVENTORY_PARITY_CASES.values())
+        proc = subprocess.run([shutil.which('node'), '--input-type=module', '-e', script,
+                               json.dumps(texts)], capture_output=True, text=True,
+                              encoding='utf-8', timeout=60, cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for label, text, web in zip(INVENTORY_PARITY_CASES, texts, json.loads(proc.stdout)):
+            with self.subTest(case=label):
+                cli = [[s.name, s.ips, s.groups] for s in sos.parse_inventory(text).servers
+                       if s.ips]  # the CLI also keeps name-only rows, to resolve them
+                self.assertEqual(cli, web)
 
     def test_csv_detection_does_not_hijack_data_lines(self):
         inv = sos.parse_inventory('web01,10.0.0.1\nweb02,10.0.0.2\n')

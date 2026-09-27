@@ -426,7 +426,8 @@ export const ZONE_HANDOFF_INPUT = {
  * A page script (installed before the app loads) that answers every DoH query under `apex` from
  * `zone` and BLOCKS any other request that leaves the page origin (recorded in
  * window.__zoneBlocked), so a hand-off step proves that nothing but DNS for the zone's own names
- * is sent. Queried names are recorded in window.__zoneDnsNames.
+ * is sent. Queried names are recorded in window.__zoneDnsNames. A node's `RCODE: { MX: 'SERVFAIL' }`
+ * answers that type with that rcode (a failed lookup).
  * @param {string} apex
  * @param {object} zone
  * @returns {string}
@@ -441,6 +442,7 @@ export const zoneHandoffScript = (apex, zone) => `(() => {
       const exists = Object.keys(ZONE).some((k) => k.endsWith('.' + name));
       return { rcode: exists ? 'NOERROR' : 'NXDOMAIN', answers: [], authorities: [{ name: APEX, type: 'SOA', ttl: 300, data: SOA }] };
     }
+    if (node.RCODE && node.RCODE[type]) return { rcode: node.RCODE[type], answers: [], authorities: [] };
     const answers = (node[type] || []).map((data) => ({ name, type, ttl: 300, data }));
     return { rcode: 'NOERROR', answers, authorities: answers.length ? [] : [{ name: APEX, type: 'SOA', ttl: 300, data: SOA }] };
   };

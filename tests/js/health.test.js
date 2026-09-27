@@ -8,6 +8,8 @@ import {
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
 import { clearRdapCache, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
+import { validateMtaSts } from '../../assets/js/lib/mtasts.js';
+import { mtaStsContext } from '../../assets/js/views/health.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
 
@@ -1700,6 +1702,34 @@ test('mail extras: a failed _mta-sts / _smtp._tls lookup is "not known", never "
   lacks(r, 'mta-sts.present');
   const nx = await run('nothing.example.com', fakeDns(zone));
   assert.deepEqual(nx.failedLookups, [], 'NXDOMAIN reports carry the field too');
+});
+
+test('a failed MX lookup is "not known": the MTA-STS policy check never reads it as "no MX"', async () => {
+  const zone = goodZone();
+  const r = await run('example.com', fakeDns(zone, { fail: { 'example.com|MX': 'timeout' } }));
+  assertRenderable(r);
+  has(r, 'mx.error', 'warn');
+  has(r, 'mta-sts.present', 'ok');
+  assert.deepEqual([r.records.mx, r.failedLookups], [[], ['mx']]);
+  const ctx = mtaStsContext(r);
+  assert.deepEqual([ctx.mxHosts, ctx.txt, ctx.tlsRpt], [undefined, 'v=STSv1; id=20260101', r.records.tlsRpt]);
+  const fetch = {
+    finished: true, failure: null, httpStatus: 200, contentType: 'text/plain', location: null, truncated: false, tls: null,
+    body: 'version: STSv1\nmode: enforce\nmx: mx1.example.com\nmx: mx2.example.com\nmax_age: 1209600\n'
+  };
+  let v = validateMtaSts({ domain: 'example.com', fetch, ...ctx, now: NOW });
+  assert.deepEqual([v.headline, v.findings.map((f) => f.id)], ['mx-unknown', ['mode.enforce', 'max-age.ok', 'mx.unknown']]);
+  // answered: the hosts are known and compared; a SERVFAIL is a failed lookup too
+  const ok = await run('example.com', fakeDns(zone));
+  assert.deepEqual([mtaStsContext(ok).mxHosts, ok.failedLookups], [['mx1.example.com', 'mx2.example.com'], []]);
+  v = validateMtaSts({ domain: 'example.com', fetch, ...mtaStsContext(ok), now: NOW });
+  assert.equal(v.headline, 'ok');
+  const servfail = await run('example.com', fakeDns(zone, { rcodes: { 'example.com|MX': 'SERVFAIL' } }));
+  assert.deepEqual(servfail.failedLookups, ['mx']);
+  // a domain that answers "no MX" is known to have none
+  delete zone['example.com'].MX;
+  const none = await run('example.com', fakeDns(zone));
+  assert.deepEqual([mtaStsContext(none).mxHosts, none.failedLookups], [[], []]);
 });
 
 /* ==================================================================== */

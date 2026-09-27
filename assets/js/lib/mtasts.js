@@ -44,15 +44,18 @@ export const MTA_STS_FINDINGS = Object.freeze([
   'policy.max-age', 'policy.max-age-too-large', 'policy.mx-missing', 'policy.mx-invalid',
   'mode.enforce', 'mode.testing', 'mode.testing-no-report', 'mode.none',
   'max-age.short', 'max-age.days', 'max-age.ok',
-  'mx.ok', 'mx.unmatched', 'mx.unused', 'mx.none',
+  'mx.ok', 'mx.unmatched', 'mx.unused', 'mx.none', 'mx.null', 'mx.unknown',
   'txt.missing'
 ]);
 /**
  * The one-line verdicts (`mtasts.head.<key>`), worst first: 'not-published' (a usable policy no
- * `_mta-sts` TXT record announces), 'off' (mode none) and 'no-mx' (nothing to compare the mx
- * patterns with) keep a usable policy from reading 'ok', which claims every MX host matched.
+ * `_mta-sts` TXT record announces), 'wrong-type' (served as something other than text/plain,
+ * which strict senders ignore), 'off' (mode none), 'no-mx' (the domain has no MX host to compare
+ * the mx patterns with) and 'mx-unknown' (the MX lookup failed) keep a usable policy from reading
+ * 'ok', which claims every MX host matched.
  */
-export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'not-published', 'problems', 'warnings', 'off', 'no-mx', 'ok']);
+export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'not-published', 'wrong-type', 'problems', 'warnings',
+  'off', 'no-mx', 'mx-unknown', 'ok']);
 
 const FIELDS = ['version', 'mode', 'max_age', 'mx'];
 const FIELD_RE = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,31}):[ \t]*(.*?)[ \t]*$/;
@@ -262,22 +265,29 @@ export function interpretPolicyFetch(measurement, { host = null } = {}) {
  * Order of the findings: transport (fetch, TLS, HTTP), the policy grammar, mode, max_age, the MX
  * cross-check (every MX host must match an mx pattern: an unmatched one is an error in enforce
  * mode, where senders refuse to deliver to it, and a warning in testing mode), then the TXT record.
- * A policy senders cannot fetch (no answer, an invalid certificate, a status other than 200, a
- * redirect) or cannot parse stops after the transport / grammar findings: senders then deliver as
- * if the domain had no MTA-STS (RFC 8461 §3.3; a policy cached earlier still applies until it expires).
- * A usable policy reads 'off' in mode none, 'not-published' without the `_mta-sts` TXT record
- * (`txt === null`), then 'problems' / 'warnings' by the worst finding, and 'ok' only when the MX
- * hosts were compared ('no-mx' without any).
+ * A policy senders cannot fetch (no answer, a certificate that is not valid for the policy host or
+ * has expired by this clock, a status other than 200, a redirect) or cannot parse stops after the
+ * transport / grammar findings: senders then deliver as if the domain had no MTA-STS (RFC 8461
+ * §3.3; a policy cached earlier still applies until it expires). A media type other than
+ * text/plain is an error but no stop: senders that do not check it still use the policy, strict
+ * ones (RFC 8461 §3.2, SHOULD) ignore it.
+ * A usable policy reads 'wrong-type' when strict senders ignore it (unless `txt === null`, or
+ * another error puts delivery at risk: 'problems'), else 'off' in mode none, 'not-published'
+ * without the `_mta-sts` TXT record (`txt === null`), then 'problems' / 'warnings' by the worst
+ * finding, and 'ok' only when the MX hosts were compared ('no-mx' without any, 'mx-unknown' when
+ * they are not known).
  *
  * @param {{ domain: string, fetch: ReturnType<typeof interpretPolicyFetch>, mxHosts?: string[],
  *   txt?: string|null, tlsRpt?: string|null, now?: Date|number }} input
- *   `mxHosts`: the domain's MX exchanges (a null MX "." is ignored); `txt` / `tlsRpt`: the
- *   `_mta-sts` / `_smtp._tls` TXT records (undefined = not known, no finding)
+ *   `mxHosts`: the domain's MX exchanges (a null MX "." is no host; not an array = not known, e.g.
+ *   the MX lookup failed: mx.unknown); `txt` / `tlsRpt`: the `_mta-sts` / `_smtp._tls` TXT records
+ *   (undefined = not known, no finding)
  * @returns {{ headline: string, severity: 'ok'|'info'|'warn'|'error', mode: string|null, policy: object|null,
  *   usable: boolean, host: string|null, findings: Array<{ id: string, severity: string, params: object }>,
  *   mx: Array<{ host: string, matchedBy: string|null }>, unusedPatterns: string[] }}
+ *   `usable`: fetched and valid, so senders that do not check the media type use it.
  */
-export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, tlsRpt = undefined, now = Date.now() } = {}) {
+export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undefined, tlsRpt = undefined, now = Date.now() } = {}) {
   const host = mtaStsPolicyHost(domain) || `mta-sts.${canon(domain)}`;
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   const f = fetch && typeof fetch === 'object' ? fetch : { finished: false, failure: { kind: 'unknown', text: '' } };
@@ -308,11 +318,13 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
     const expires = isoDay(tls.notAfter);
     const days = tls.notAfter ? Math.floor((tls.notAfter.getTime() - nowMs) / DAY_MS) : null;
     const nameOk = tls.covers !== false && tls.error !== 'ERR_TLS_CERT_ALTNAME_INVALID';
-    if (!tls.authorized || !nameOk) {
+    // Past its notAfter by this clock, even when the probe still accepted it a moment ago.
+    const expired = days !== null && days < 0;
+    if (!tls.authorized || !nameOk || expired) {
       blocked = true;
       const before = findings.length;
       const error = tls.error || '—';
-      if (tls.error === 'CERT_HAS_EXPIRED' || (days !== null && days < 0)) add('tls.expired', 'error', { error, date: expires });
+      if (tls.error === 'CERT_HAS_EXPIRED' || expired) add('tls.expired', 'error', { error, date: expires });
       if (!nameOk) add('tls.name', 'error', { error, names: join(tls.hostnames) || '—' });
       if (CHAIN_ERRORS.has(tls.error)) add('tls.chain', 'error', { error });
       else if (tls.error && tls.error !== 'CERT_HAS_EXPIRED' && tls.error !== 'ERR_TLS_CERT_ALTNAME_INVALID') {
@@ -321,7 +333,7 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
       // Rejected without a reason the probe could name: still say so.
       if (findings.length === before) add('tls.rejected', 'error', { error });
     } else if (days !== null && days < MTA_STS_CERT_WARN_DAYS) {
-      add('tls.expiring', 'warn', { days, date: expires, count: Math.max(0, days) });
+      add('tls.expiring', 'warn', { days, date: expires, count: days });
     } else {
       add('tls.ok', 'ok', { issuer: tls.issuer || '—', date: expires || '—' });
     }
@@ -337,8 +349,11 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
     if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
     return finish('unreachable');
   }
+  // RFC 8461 §3.2: senders SHOULD accept text/plain only, and strict ones do. An error, but the
+  // policy is still read: senders that do not check the type use it.
   const type = (f.contentType || '').split(';')[0].trim().toLowerCase();
-  if (type !== 'text/plain') add('http.content-type', 'warn', { type: type || '—' });
+  const wrongType = type !== 'text/plain';
+  if (wrongType) add('http.content-type', 'error', { type: type || '—' });
   if (f.truncated) add('http.truncated', 'warn', {});
 
   // --- the policy -----------------------------------------------------------------------------
@@ -367,11 +382,14 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
   else add('max-age.ok', 'ok', { value: policy.maxAge, days });
 
   const patterns = policy.mx.filter(validMxPattern).map((p) => p.toLowerCase());
+  const known = Array.isArray(mxHosts);
   const hosts = [...new Set(arr(mxHosts).map(canon).filter((x) => x && x !== '.'))];
+  const nullMx = arr(mxHosts).some((x) => String(x ?? '').trim() === '.');
   out.mx = hosts.map((h) => ({ host: h, matchedBy: patterns.find((p) => mxPatternMatches(p, h)) || null }));
-  out.unusedPatterns = patterns.filter((p) => !hosts.some((h) => mxPatternMatches(p, h)));
+  out.unusedPatterns = known ? patterns.filter((p) => !hosts.some((h) => mxPatternMatches(p, h))) : [];
   if (policy.mode !== 'none') {
-    if (!hosts.length) add('mx.none', 'info', {});
+    if (!known) add('mx.unknown', 'info', {});
+    else if (!hosts.length) add(nullMx ? 'mx.null' : 'mx.none', 'info', {});
     else {
       const unmatched = out.mx.filter((x) => !x.matchedBy).map((x) => x.host);
       if (unmatched.length) {
@@ -381,11 +399,15 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
     }
   }
   if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
-  // What senders do with a usable policy comes first: nothing at all in mode none, and nothing
-  // without the TXT record that tells them to fetch it (RFC 8461 §3.1). 'ok' needs MX hosts.
+  // What senders do with a usable policy comes first: strict ones ignore it when it is not
+  // text/plain, nobody applies MTA-STS rules in mode none, and nobody fetches it without the TXT
+  // record that tells them to (RFC 8461 §3.1). 'ok' needs MX hosts that were compared.
+  const announced = txt !== null;
+  const atRisk = findings.some((x) => x.severity === 'error' && x.id !== 'http.content-type');
+  if (wrongType && announced && !atRisk) return finish('wrong-type');
   if (policy.mode === 'none') return finish('off');
-  if (txt === null) return finish('not-published');
-  return finish(null, hosts.length ? 'ok' : 'no-mx');
+  if (!announced) return finish('not-published');
+  return finish(null, !known ? 'mx-unknown' : hosts.length ? 'ok' : 'no-mx');
 }
 
 /**
@@ -451,7 +473,11 @@ const STRINGS = [
   ['head.warnings', ['The policy works; some settings need attention.', 'Politika çalışıyor; bazı ayarların gözden geçirilmesi gerekiyor.']],
   ['head.off', ['The policy is valid and switches MTA-STS off (mode none): senders apply no MTA-STS rules to this domain.',
     'Politika geçerli ve MTA-STS’yi kapatıyor (mode none): gönderenler bu alan adına hiçbir MTA-STS kuralı uygulamaz.']],
+  ['head.wrong-type', ['Strict senders ignore this policy: it is not served as text/plain (a policy they cached earlier still applies until it expires).',
+    'Katı gönderenler bu politikayı yok sayar: text/plain olarak sunulmuyor (daha önce önbelleğe aldıkları bir politika süresi dolana kadar geçerli kalır).']],
   ['head.no-mx', ['The policy is valid; the domain has no MX hosts to compare it with.', 'Politika geçerli; alan adının onunla karşılaştırılacak MX sunucusu yok.']],
+  ['head.mx-unknown', ['The policy is valid; the MX lookup failed, so it was not compared with the domain\'s MX hosts.',
+    'Politika geçerli; MX sorgusu başarısız olduğu için alan adının MX sunucularıyla karşılaştırılamadı.']],
   ['head.ok', ['The policy is valid and every MX host matches it.', 'Politika geçerli ve her MX sunucusu onunla eşleşiyor.']],
 
   ['fetch.dns', ['The policy host does not resolve', 'Politika sunucusu çözümlenmiyor'],
@@ -502,8 +528,8 @@ const STRINGS = [
   ['http.status', ['The policy URL does not answer 200', 'Politika adresi 200 döndürmüyor'],
     ['HTTP {status}. Senders accept a policy only with status 200 (RFC 8461 §3.3).', 'HTTP {status}. Gönderenler politikayı yalnızca 200 durum koduyla kabul eder (RFC 8461 §3.3).']],
   ['http.content-type', ['Not served as text/plain', 'text/plain olarak sunulmuyor'],
-    ['The policy is served as "{type}". Senders should accept it only as text/plain (RFC 8461 §3.2): set Content-Type: text/plain.',
-      'Politika "{type}" olarak sunuluyor. Gönderenlerin yalnızca text/plain kabul etmesi beklenir (RFC 8461 §3.2): Content-Type: text/plain ayarlayın.']],
+    ['The policy is served as "{type}". Senders should accept it only as text/plain (RFC 8461 §3.2), and strict ones do: they ignore this policy. Senders that do not check the type still use it. Set Content-Type: text/plain.',
+      'Politika "{type}" olarak sunuluyor. Gönderenlerin onu yalnızca text/plain olarak kabul etmesi beklenir (RFC 8461 §3.2) ve katı olanlar öyle yapar: bu politikayı yok sayarlar. Türü denetlemeyen gönderenler onu yine de kullanır. Content-Type: text/plain ayarlayın.']],
   ['http.truncated', ['Only the start of the policy was checked', 'Politikanın yalnızca başı kontrol edildi'],
     ['Globalping returns at most 10 KB of a response. A policy is normally a few lines long; check what the file holds.',
       'Globalping bir yanıtın en fazla 10 KB’ını döndürür. Bir politika normalde birkaç satırdır; dosyanın içeriğine bakın.']],
@@ -569,8 +595,14 @@ const STRINGS = [
     ['No current MX host matches {patterns}. That is fine for a planned or backup MX; otherwise remove the line.',
       'Hiçbir güncel MX sunucusu {patterns} ile eşleşmiyor. Planlanan ya da yedek bir MX için sorun değil; aksi hâlde satırı kaldırın.']],
   ['mx.none', ['No MX hosts to compare', 'Karşılaştırılacak MX sunucusu yok'],
-    ['The domain publishes no MX record, so the mx patterns could not be checked against it.',
-      'Alan adı MX kaydı yayınlamıyor; bu yüzden mx kalıpları karşılaştırılamadı.']],
+    ['The domain publishes no MX record, so there is no MX host to compare the mx patterns with.',
+      'Alan adı MX kaydı yayınlamıyor; bu yüzden mx kalıplarının karşılaştırılacağı bir MX sunucusu yok.']],
+  ['mx.null', ['The domain accepts no mail (null MX)', 'Alan adı e-posta kabul etmiyor (null MX)'],
+    ['Its MX record is a null MX (".", RFC 7505): there is no MX host to compare the mx patterns with, and nothing for the policy to protect. If the domain should receive mail, publish its MX hosts and list them in the policy.',
+      'MX kaydı bir null MX (".", RFC 7505): mx kalıplarının karşılaştırılacağı bir MX sunucusu ve politikanın koruyacağı bir şey yok. Alan adı e-posta alacaksa MX sunucularını yayınlayın ve politikada listeleyin.']],
+  ['mx.unknown', ['MX hosts not known', 'MX sunucuları bilinmiyor'],
+    ['The domain\'s MX lookup failed, so the mx patterns could not be compared with its MX hosts. Run the health check again to compare them.',
+      'Alan adının MX sorgusu başarısız oldu; bu yüzden mx kalıpları MX sunucularıyla karşılaştırılamadı. Karşılaştırmak için sağlık kontrolünü yeniden çalıştırın.']],
 
   ['txt.missing', ['No _mta-sts TXT record', '_mta-sts TXT kaydı yok'],
     ['Senders look for the policy only when _mta-sts.{domain} has a "v=STSv1; id=…" TXT record. Publish one (and change its id whenever the policy changes).',

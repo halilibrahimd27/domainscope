@@ -200,14 +200,29 @@ test('validateMtaSts: an MX host missing from the policy is an error in enforce 
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch('version: STSv1\nmode: none\nmax_age: 86400\n'), mxHosts: ['backup.example.org'], now: NOW });
   assert.deepEqual([ids(v), v.headline, v.severity, v.usable], [['tls.ok', 'mode.none', 'max-age.ok'], 'off', 'info', true]);
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch('version: STSv1\nmode: none\nmax_age: 86400\n', { headers: {} }), mxHosts: MX, txt: null, now: NOW });
-  assert.deepEqual([v.headline, v.severity], ['off', 'warn'], 'off before not-published and warnings');
+  assert.deepEqual([v.headline, v.severity], ['off', 'error'], 'off before not-published and the media type (nobody fetches it)');
   // no MX at all: noted, and the headline makes no MX claim
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce')), mxHosts: [], now: NOW });
-  assert.deepEqual([v.headline, sev(v, 'mx.none')], ['no-mx', 'info']);
+  assert.deepEqual([v.headline, sev(v, 'mx.none'), v.unusedPatterns], ['no-mx', 'info', ['mx.example.com']]);
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce')), mxHosts: ['.'], now: NOW });
-  assert.equal(v.headline, 'no-mx', 'a null MX is no MX host');
-  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce'), { headers: {} }), mxHosts: [], now: NOW });
+  assert.deepEqual([v.headline, sev(v, 'mx.null'), ids(v).includes('mx.none')], ['no-mx', 'info', false], 'a null MX is no MX host, and is named as such');
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce'), { truncated: true }), mxHosts: [], now: NOW });
   assert.equal(v.headline, 'warnings', 'a warning still reads as one');
+});
+
+test('validateMtaSts: MX hosts that are not known (a failed MX lookup) are never "no MX"', () => {
+  const policy = 'version: STSv1\nmode: enforce\nmx: mx.example.com\nmax_age: 1209600\n';
+  for (const mxHosts of [undefined, null, 'mx.example.com']) {
+    const v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy), mxHosts, txt: 'v=STSv1; id=1', now: NOW });
+    assert.deepEqual([v.headline, v.severity, ids(v)], ['mx-unknown', 'info', ['tls.ok', 'mode.enforce', 'max-age.ok', 'mx.unknown']], String(mxHosts));
+    assert.deepEqual([v.mx, v.unusedPatterns], [[], []], 'no pattern is called unused either');
+  }
+  // what the view passes for the unit-test DNS of health.test.js with a failed MX query
+  const v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy), now: NOW });
+  assert.ok(!ids(v).includes('mx.none') && v.headline !== 'no-mx');
+  // a warning or an error still reads as one; mode none compares nothing anyway
+  assert.equal(validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy, { truncated: true }), now: NOW }).headline, 'warnings');
+  assert.equal(validateMtaSts({ domain: 'example.com', fetch: policyFetch('version: STSv1\nmode: none\nmax_age: 86400\n'), now: NOW }).headline, 'off');
 });
 
 test('validateMtaSts: max_age thresholds and a missing TXT record', () => {
@@ -269,6 +284,11 @@ test('validateMtaSts: the certificate (expired, wrong name, chain, self-signed, 
   assert.deepEqual([ids(v), v.headline, v.severity, v.findings[0].params.error], [['tls.rejected'], 'unreachable', 'error', '—']);
   v = tlsCase({ expiresAt: new Date(NOW + 5 * 86400000).toISOString() });
   assert.deepEqual([v.headline, sev(v, 'tls.expiring'), v.findings[0].params.days, v.findings[0].params.count], ['warnings', 'warn', 5, 5]);
+  v = tlsCase({ expiresAt: new Date(NOW + 3600000).toISOString() });
+  assert.deepEqual([ids(v), v.findings[0].params.count], [['tls.expiring', 'mode.enforce', 'max-age.ok', 'mx.ok', 'mx.unused'], 0], 'within a day');
+  // accepted by the probe, yet past its notAfter by this clock: expired, never "expires within a day"
+  v = tlsCase({ authorized: true, error: null, expiresAt: new Date(NOW - 3600000).toISOString() });
+  assert.deepEqual([ids(v), v.headline, v.findings[0].params.error], [['tls.expired'], 'unreachable', '—']);
 });
 
 test('validateMtaSts: HTTP status, redirect, content type and truncation', () => {
@@ -278,14 +298,36 @@ test('validateMtaSts: HTTP status, redirect, content type and truncation', () =>
   assert.deepEqual(v.findings[1].params, { host: HOST, status: 302, location: 'https://example.com/mta-sts.txt' });
   v = run({ statusCode: 404 });
   assert.deepEqual(ids(v), ['tls.ok', 'http.status']);
-  v = run({ headers: { 'content-type': 'text/html; charset=utf-8' } });
-  assert.deepEqual([sev(v, 'http.content-type'), v.findings.find((f) => f.id === 'http.content-type').params.type, v.usable], ['warn', 'text/html', true]);
-  v = run({ headers: { 'content-type': 'Text/Plain; charset=us-ascii' } });
-  assert.ok(!ids(v).includes('http.content-type'), 'parameters and case do not matter');
-  v = run({ headers: {} });
-  assert.equal(v.findings.find((f) => f.id === 'http.content-type').params.type, '—');
   v = run({ truncated: true });
   assert.equal(sev(v, 'http.truncated'), 'warn');
+});
+
+test('validateMtaSts: a policy not served as text/plain is ignored by strict senders (RFC 8461 §3.2)', () => {
+  const run = (headers, { body = RFC_POLICY, mxHosts = ['mail.example.com'], txt = 'v=STSv1; id=1' } = {}) => validateMtaSts({
+    domain: 'example.com', fetch: policyFetch(body, { headers }), mxHosts, txt, now: NOW
+  });
+  const type = (v) => v.findings.find((f) => f.id === 'http.content-type')?.params.type;
+  // an HTML error page type, an S3 / CDN upload default, no header at all
+  for (const [headers, shown] of [[{ 'content-type': 'text/html; charset=utf-8' }, 'text/html'],
+    [{ 'Content-Type': 'application/octet-stream' }, 'application/octet-stream'], [{}, '—']]) {
+    const v = run(headers);
+    assert.deepEqual([v.headline, v.severity, sev(v, 'http.content-type'), type(v), v.usable], ['wrong-type', 'error', 'error', shown, true], shown);
+    assert.notEqual(v.headline, 'warnings', 'never "the policy works"');
+    // still read: senders that do not check the type use it, so its MX cross-check still shows
+    assert.deepEqual(v.mx, [{ host: 'mail.example.com', matchedBy: 'mail.example.com' }]);
+  }
+  assert.equal(type(run({ 'content-type': 'Text/Plain; charset=us-ascii' })), undefined, 'parameters and case do not matter');
+  // another error puts delivery at risk for the senders that do use it: that headline comes first
+  let v = run({ 'content-type': 'text/html' }, { mxHosts: ['mail.example.com', 'other.example.org'] });
+  assert.deepEqual([v.headline, sev(v, 'mx.unmatched')], ['problems', 'error']);
+  // no _mta-sts record: nobody fetches it at all
+  v = run({ 'content-type': 'text/html' }, { txt: null });
+  assert.equal(v.headline, 'not-published');
+  // mode none served with the wrong type: strict senders never see the switch-off
+  v = run({ 'content-type': 'text/html' }, { body: 'version: STSv1\nmode: none\nmax_age: 86400\n' });
+  assert.deepEqual([v.headline, v.mode], ['wrong-type', 'none']);
+  // not known whether it is announced: the type problem is still the headline
+  assert.equal(run({}, { txt: undefined }).headline, 'wrong-type');
 });
 
 test('validateMtaSts: an invalid policy stops before the MX cross-check', () => {
@@ -389,7 +431,8 @@ test('every placeholder a finding text uses is filled by its params', () => {
   ];
   const seen = new Set();
   for (const fetch of fetches) {
-    for (const [mx, tlsRpt] of [[['mail.example.com', 'other.example.org'], null], [[], 'v=TLSRPTv1'], [['mail.example.com'], undefined]]) {
+    for (const [mx, tlsRpt] of [[['mail.example.com', 'other.example.org'], null], [[], 'v=TLSRPTv1'], [['mail.example.com'], undefined],
+      [['.'], null], [undefined, 'v=TLSRPTv1']]) {
       const v = validateMtaSts({ domain: 'example.com', fetch, mxHosts: mx, txt: null, tlsRpt, now: NOW });
       assert.ok(MTA_STS_HEADLINES.includes(v.headline), v.headline);
       for (const f of v.findings) {

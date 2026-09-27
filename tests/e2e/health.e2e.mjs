@@ -22,8 +22,10 @@
  * the result, every outcome announced; "Check again" without a dialog and an MX host the policy
  * misses (error); the policy in "Report (JSON)"; a language switch that keeps the result
  * without a new probe; a quota at 0 (nothing asked or sent); a policy host that does not
- * resolve; mode none ("off", never "every MX host matches"); 1440 px and a 375 px phone, light
- * and dark, without horizontal scroll.
+ * resolve; mode none ("off", never "every MX host matches"); a policy served as
+ * application/octet-stream (strict senders ignore it: an error headline, never "works"); a failed
+ * MX lookup (mxfail.example.com: "lookup failed" in the DNS card, the policy check "not
+ * compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -199,7 +201,10 @@ const MAIL_ZONE = {
   'alt1.mx.example.com': { A: ['198.51.100.25'] },
   '_mta-sts.example.com': { TXT: [['v=STSv1; id=20260927T1200']] },
   '_smtp._tls.example.com': { TXT: [['v=TLSRPTv1; rua=mailto:tls-reports@example.com']] },
-  '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] }
+  '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] },
+  // A name whose MX query fails (SERVFAIL) while its _mta-sts record answers.
+  'mxfail.example.com': { A: ['192.0.2.81'], MX: [{ preference: 10, exchange: 'mx.example.com' }], RCODE: { MX: 'SERVFAIL' } },
+  '_mta-sts.mxfail.example.com': { TXT: [['v=STSv1; id=20260927T1300']] }
 };
 const MTASTS_CARD = '[data-mtasts="card"]';
 const GP_DIALOG = 'dialog.gp-confirm[open]';
@@ -327,6 +332,10 @@ async function mtaStsGroup(browser, server) {
     ok: live.result,
     unmatched: { ...live.result, rawBody: 'version: STSv1\r\nmode: enforce\r\nmx: mx.example.com\r\nmax_age: 1209600\r\n' },
     off: { ...live.result, rawBody: 'version: STSv1\r\nmode: none\r\nmax_age: 86400\r\n' },
+    // what an S3 / CDN upload often gets: a type strict senders refuse
+    wrongtype: { ...live.result, headers: { ...live.result.headers, 'content-type': 'application/octet-stream' } },
+    // the live policy on mta-sts.mxfail.example.com, with a certificate for that name
+    mxfail: { ...live.result, tls: { ...live.result.tls, subject: { CN: 'mta-sts.mxfail.example.com', alt: 'DNS:mta-sts.mxfail.example.com' } } },
     nohost: m27.final.body.results[0].result
   };
 
@@ -422,6 +431,7 @@ async function mtaStsGroup(browser, server) {
       assertEqual(c.mx, ['mx.example.com:true', 'alt1.mx.example.com:true'], 'both MX hosts matched');
       for (const id of ['tls.ok', 'mode.enforce', 'max-age.days', 'mx.ok', 'mx.unused']) assert(c.findings.some((f) => f.id === id), `finding ${id}: ${JSON.stringify(c.findings)}`);
       assertEqual(c.findings[0].severity, 'info', 'worst first (no error or warning here)');
+      assert(/86,400 seconds is less than a week/.test(c.text), 'max_age grouped in the finding, like the max_age row');
       assertEqual([c.link, c.file, c.button], ['https://api.globalping.io/v1/measurements/fakeMtaSts000001', true, 'Check again (1 probe)'], 'link, policy file, button');
       assert(/Tokyo/.test(c.text) && /STARTTLS/.test(c.text), 'probe place and the SMTP note');
       await assertNoHorizontalScroll(page, 'mta-sts done');
@@ -462,6 +472,7 @@ async function mtaStsGroup(browser, server) {
       const c = await card();
       assertEqual([c.headline, c.button], ['problems', 'Yeniden kontrol et (1 ölçüm)'], 'restored in Turkish');
       assert(/MTA-STS politikası|Politika/.test(c.text) && /mx kalıbı yok/.test(c.text), `Turkish card: ${c.text.slice(0, 200)}`);
+      assert(/en fazla 1\.209\.600 saniye/.test(c.text), 'max_age grouped the Turkish way in the finding');
       await page.evaluate(() => new Promise((r) => { setTimeout(r, 400); }));
       assertEqual((await gpCalls()).length, before, 'no Globalping call');
       await assertNoHorizontalScroll(page, 'mta-sts dark tr');
@@ -509,6 +520,19 @@ async function mtaStsGroup(browser, server) {
       assertEqual(await page.evaluate((sel) => document.querySelector(`${sel} [data-mtasts-headline]`).classList.contains('alert-info'), MTASTS_CARD), true, 'an info alert, not a green one');
       assert(/switches MTA-STS off/.test(c.text) && !/every MX host matches/.test(c.text), 'headline text');
       await announced(page, /switches MTA-STS off/, 'announced');
+    });
+
+    await step('served as application/octet-stream: strict senders ignore it, an error headline (never "works"); the MX table still shows', async () => {
+      await page.evaluate(() => { window.__gp.next.push('wrongtype'); });
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((sel) => document.querySelector(`${sel} [data-mtasts-headline="wrong-type"]`), { args: [MTASTS_CARD], timeout: 20000, message: 'wrong-type verdict' });
+      const c = await card();
+      assertEqual(c.findings[0], { id: 'http.content-type', severity: 'error' }, 'the media type first, as an error');
+      assertEqual(c.mx, ['mx.example.com:true', 'alt1.mx.example.com:true'], 'senders that do not check the type use it: still compared');
+      assertEqual(await page.evaluate((sel) => document.querySelector(`${sel} [data-mtasts-headline]`).classList.contains('alert-error'), MTASTS_CARD), true, 'a red alert');
+      assert(/Strict senders ignore this policy/.test(c.text) && /application\/octet-stream/.test(c.text) && !/The policy works/.test(c.text), 'headline and finding text');
+      await announced(page, /Strict senders ignore this policy/, 'announced');
+      await shotCard(page, 'health-mtasts-desktop-light-en-wrong-type');
     });
 
     await step('a result that cannot be read: the paid measurement is read again, never a new probe', async () => {
@@ -561,12 +585,32 @@ async function mtaStsGroup(browser, server) {
       });
     }
 
+    await step('a failed MX lookup: the DNS card says so, and the policy check says it compared nothing, never "no MX"', async () => {
+      const domain = `mxfail.${MAIL_APEX}`;
+      await gotoHash(page, `#/health?domain=${domain}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [domain], timeout: 30000, message: 'mxfail report' });
+      let c = await card();
+      assertEqual([c.state, c.button], ['idle', 'Check the policy (1 Globalping probe)'], 'the card shows for the _mta-sts record');
+      const dnsText = await page.evaluate(() => document.querySelector('.hlt-dns').textContent.replace(/\s+/g, ' '));
+      assert(/Mail servers \(MX\)\s*lookup failed/.test(dnsText), `DNS card MX row: ${dnsText.slice(0, 300)}`);
+      await page.evaluate(() => { window.__gp.next.push('mxfail'); });
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'done', { args: [MTASTS_CARD], timeout: 20000, message: 'policy checked' });
+      c = await card();
+      assertEqual(c.headline, 'mx-unknown', 'headline');
+      assert(c.findings.some((f) => f.id === 'mx.unknown') && !c.findings.some((f) => f.id === 'mx.none'), `findings: ${JSON.stringify(c.findings)}`);
+      assertEqual(c.mx, [], 'no MX table');
+      assert(/MX lookup failed/.test(c.text) && !/no MX hosts to compare|publishes no MX/.test(c.text), 'no "no MX" claim');
+      await shotCard(page, 'health-mtasts-desktop-light-en-mx-unknown');
+    });
+
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {
       const blocked = await page.evaluate(() => window.__zoneBlocked.slice());
       assertEqual(netHits, [], 'https requests that reached the network');
       assert(!blocked.some((u) => u.includes('globalping')), `Globalping never reached the zone guard: ${blocked}`);
       const calls = await gpCalls();
-      assertEqual(posts(calls).length, 8, 'eight fake probes in total');
+      assertEqual(posts(calls).length, 10, 'ten fake probes in total');
       await checkI18n(page);
       await assertClean(page, 'mta-sts offline');
     });

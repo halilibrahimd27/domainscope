@@ -1953,8 +1953,9 @@ function analyzeRdap(r, now) {
  *   For a name below its zone apex (`zone` !== `domain`) `dnssec` is the enclosing zone's state: signed
  *   from its DS, validated from the AD bit (the zone's own DNSKEY answer when the name is a CNAME);
  *   `zone` is the name's own zone, also when it is a CNAME.
- *   `failedLookups` names the mail-extra records (`records.mtaSts` / `tlsRpt` / `bimi`) whose TXT
- *   lookup failed: their null means "not known", not "not published" (and no `*.missing` check).
+ *   `failedLookups` names the records whose lookup failed: 'mx' (`records.mx` is then empty
+ *   without meaning "no MX"; the check is mx.error) and the mail-extra records (`records.mtaSts` /
+ *   `tlsRpt` / `bimi`), whose null then means "not known", not "not published" (no `*.missing` check).
  * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
  *     aaaa: string[], txt: string[], spf: string|null, dmarc: string|null,
@@ -1962,7 +1963,7 @@ function analyzeRdap(r, now) {
  *       testing: boolean, cname: string|null }>,
  *     caa: Array<{ flags: number, tag: string, value: string }>, mtaSts: string|null, tlsRpt: string|null,
  *     bimi: string|null, ds: object[], dnskey: object[], https: object[] },
- *   failedLookups: Array<'mtaSts'|'tlsRpt'|'bimi'>,
+ *   failedLookups: Array<'mx'|'mtaSts'|'tlsRpt'|'bimi'>,
  *   dnssec: { signed: boolean|null, validated: boolean|null, broken: boolean, dsCount: number, dnskeyCount: number,
  *     algorithms: string[], ede: string[] },
  *   rdap: object|null, wildcard: { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[], error: string|null }|null,
@@ -2123,7 +2124,7 @@ export async function domainHealth(domain, {
     caaCert: caa.certCheck || null,
     nsAddresses: ns.addresses,
     mxHosts: mx.hosts,
-    failedLookups: extras.failedLookups,
+    failedLookups: [...(failed(mxR) ? ['mx'] : []), ...extras.failedLookups],
     checks
   });
 }

@@ -493,7 +493,7 @@ export function parseSelectors(text) {
   return out;
 }
 
-/** Did the report's lookup of a mail-extra record ('mtaSts', 'tlsRpt', 'bimi') fail? Its null is then "not known". */
+/** Did the report's lookup of 'mx' or a mail-extra record ('mtaSts', 'tlsRpt', 'bimi') fail? Its empty value is then "not known". */
 function lookupFailed(report, key) {
   return Array.isArray(report.failedLookups) && report.failedLookups.includes(key);
 }
@@ -501,6 +501,21 @@ function lookupFailed(report, key) {
 /** A mail-extra record for lib/mtasts: the record, null when not published, undefined when not known. */
 function knownRecord(report, key) {
   return lookupFailed(report, key) ? undefined : report.records[key] ?? null;
+}
+
+/**
+ * What lib/mtasts.validateMtaSts needs from a health report besides the fetch: the MX exchanges
+ * (undefined when the MX lookup failed: not known, never "no MX") and the `_mta-sts` /
+ * `_smtp._tls` records (null = not published, undefined = not known).
+ * @param {object} report a lib/health.domainHealth report
+ * @returns {{ mxHosts: string[]|undefined, txt: string|null|undefined, tlsRpt: string|null|undefined }}
+ */
+export function mtaStsContext(report) {
+  return {
+    mxHosts: lookupFailed(report, 'mx') ? undefined : (report.records.mx || []).map((m) => m.exchange),
+    txt: knownRecord(report, 'mtaSts'),
+    tlsRpt: knownRecord(report, 'tlsRpt')
+  };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -871,11 +886,15 @@ export function mount(container, ctx) {
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.x.severity) - SEVERITY_ORDER.indexOf(b.x.severity) || a.i - b.i).map(({ x }) => x);
 
   function renderFinding(f) {
+    // Numbers of seconds read like the max_age row above ('1.209.600'); a max_age as written
+    // in the policy is a string and stays as it is.
+    const params = { ...f.params };
+    for (const k of ['value', 'max']) if (typeof params[k] === 'number') params[k] = formatNumber(params[k]);
     return h('li', { class: ['hlt-finding', `hlt-sev-${f.severity}`], dataset: { id: f.id, severity: f.severity } },
       h('span', { class: 'hlt-check-icon' }, SeverityIcon(f.severity, { size: 16 })),
       h('div', { class: 'hlt-check-body' },
-        h('div', { class: 'hlt-finding-title' }, t(`mtasts.${f.id}.title`, f.params)),
-        h('div', { class: 'hlt-check-detail' }, t(`mtasts.${f.id}.detail`, f.params))));
+        h('div', { class: 'hlt-finding-title' }, t(`mtasts.${f.id}.title`, params)),
+        h('div', { class: 'hlt-check-detail' }, t(`mtasts.${f.id}.detail`, params))));
   }
 
   /** A finished check: headline, what came back, the MX cross-check, the findings and the file. */
@@ -1026,9 +1045,7 @@ export function mount(container, ctx) {
       const measurement = await client.poll(job.pendingId, job.deadlineAt ? { signal, deadlineAt: job.deadlineAt } : { signal });
       if (!live()) return;
       const fetch = interpretPolicyFetch(measurement, { host });
-      const validation = validateMtaSts({
-        domain, fetch, mxHosts: (report.records.mx || []).map((m) => m.exchange), txt: knownRecord(report, 'mtaSts'), tlsRpt: knownRecord(report, 'tlsRpt')
-      });
+      const validation = validateMtaSts({ domain, fetch, ...mtaStsContext(report) });
       Object.assign(job, { status: 'done', pendingId: null, fetch, validation, checkedAt: new Date() });
       announce(t(`mtasts.head.${validation.headline}`));
     } catch (err) {
@@ -1146,7 +1163,8 @@ export function mount(container, ctx) {
     const nullMx = rec.mx.length === 1 && rec.mx[0].exchange === '.';
     const mxValue = nullMx ? Badge(t('hlt.dns.nullMx'), { variant: 'info' }) : rec.mx.length ? h('div', { class: 'stack-sm' }, rec.mx.map((m) => h('div', { class: 'hlt-ns' },
       h('span', { class: 'num muted' }, String(m.preference)), ' ', hostLink(m.exchange),
-      ipList(mxHosts[m.exchange] ? [...mxHosts[m.exchange].ipv4, ...mxHosts[m.exchange].ipv6] : [])))) : null;
+      ipList(mxHosts[m.exchange] ? [...mxHosts[m.exchange].ipv4, ...mxHosts[m.exchange].ipv6] : []))))
+      : lookupFailed(report, 'mx') ? h('span', { class: 'muted text-sm' }, t('hlt.lookupFailed')) : null;
     const w = report.wildcard;
     const https = rec.https || [];
     const alpn = [...new Set(https.flatMap((x) => (x.params && x.params.alpn) || []))];

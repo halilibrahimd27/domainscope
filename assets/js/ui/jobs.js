@@ -20,7 +20,7 @@
  */
 
 import { h, svg } from './dom.js';
-import { Button, announce, setButtonBusy, toast } from './components.js';
+import { Button, announce, toast } from './components.js';
 import { t, registerStrings, formatPercent } from '../i18n.js';
 import { state } from '../state.js';
 import {
@@ -293,7 +293,26 @@ export function NotifyButton(source) {
     return live;
   };
 
+  // While the browser's prompt is open the button says it is busy without being disabled: a
+  // disabled button would drop the keyboard focus to the page (clicks are ignored meanwhile).
+  let asking = false;
+  const markAsking = (on) => {
+    asking = on;
+    btn.classList.toggle('is-busy', on);
+    if (on) {
+      btn.setAttribute('aria-busy', 'true');
+      btn.setAttribute('aria-disabled', 'true');
+      if (!btn.querySelector('.spinner')) btn.prepend(h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }));
+    } else {
+      btn.removeAttribute('aria-busy');
+      btn.removeAttribute('aria-disabled');
+      btn.querySelectorAll('.spinner').forEach((s) => s.remove());
+    }
+  };
+
   btn.addEventListener('click', async () => {
+    if (asking) return;
+    const hadFocus = !!globalThis.document && globalThis.document.activeElement === btn;
     if (notifyOptIn && permission() === 'granted') {
       notifyOptIn = false;
       announce(t('jobs.notifyOff'));
@@ -304,22 +323,25 @@ export function NotifyButton(source) {
     if (!N) return;
     let perm = permission();
     if (perm === 'default') {
-      setButtonBusy(btn, true);
+      markAsking(true);
       try {
         perm = await N.requestPermission();
       } catch {
         perm = permission();
       } finally {
-        setButtonBusy(btn, false);
+        markAsking(false);
       }
     }
     notifyOptIn = perm === 'granted';
     // A prompt closed without an answer ('default') blocks nothing: only a refusal is called that.
     announce(t(notifyOptIn ? 'jobs.notifyReady' : perm === 'denied' ? 'jobs.notifyBlocked' : 'jobs.notifyOff'));
-    const hadFocus = globalThis.document && globalThis.document.activeElement === btn;
     emit();
-    // A refusal hides the button: keep the keyboard where it was, on the sentence that replaced it.
-    if (hadFocus && btn.hidden && !blocked.hidden && !el.hidden) blocked.focus();
+    // The keyboard stays where it was: on the button, or — a refusal hides it — on the sentence
+    // that replaced it (the prompt itself may have taken the focus away from the page meanwhile).
+    const doc = globalThis.document;
+    if (!hadFocus || !doc || el.hidden) return;
+    if (btn.hidden && !blocked.hidden) blocked.focus();
+    else if (!btn.hidden && doc.activeElement !== btn) btn.focus();
   });
 
   // Appear at the 30 s mark and follow opt-in changes made in another panel; stop with the job.

@@ -236,6 +236,8 @@ const JOB_PAGE_SCRIPT = `(() => {
     close() {}
     static async requestPermission() {
       window.__permAsked += 1;
+      // A real prompt answers later, not in the same tick.
+      await new Promise((resolve) => setTimeout(resolve, 300));
       window.Notification.permission = window.__permAnswer;
       return window.__permAnswer;
     }
@@ -315,10 +317,14 @@ async function jobsGroup(browser, server) {
       await jobs.evaluate(() => { window.__permAnswer = 'default'; });
       await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
       await jobs.press('Enter');
+      // While the prompt is open the button is busy but keeps the focus (a disabled one would drop it).
+      await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]').getAttribute('aria-busy') === 'true', { message: 'busy while asking' });
+      assertEqual(await jobs.evaluate(() => document.activeElement?.dataset.action), 'job-notify', 'focus kept while the prompt is open');
       await jobs.waitFor(`${live}.includes('No desktop notification.')`, { timeout: 3000, message: 'dismissed prompt announced' });
       const dismissed = await jobs.evaluate(`({ text: ${live}, pressed: document.querySelector('[data-action="job-notify"]').getAttribute('aria-pressed'),
-        blocked: !document.querySelector('.job-notify-blocked')?.hidden })`);
-      assertEqual([dismissed.text.includes('blocked'), dismissed.pressed, dismissed.blocked], [false, 'false', false], 'a dismissed prompt is not "blocked"');
+        blocked: !document.querySelector('.job-notify-blocked')?.hidden, focus: document.activeElement?.dataset.action })`);
+      assertEqual([dismissed.text.includes('blocked'), dismissed.pressed, dismissed.blocked, dismissed.focus], [false, 'false', false, 'job-notify'],
+        'a dismissed prompt is not "blocked"; the focus stays on the button');
       // A refusal: the button goes, and the keyboard lands on the sentence that replaced it.
       await jobs.evaluate(() => { window.__permAnswer = 'denied'; });
       await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
@@ -336,10 +342,10 @@ async function jobsGroup(browser, server) {
       await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]')?.getAttribute('aria-pressed') === 'true', { message: 'opted in' });
       const state = await jobs.evaluate(() => {
         const btn = document.querySelector('[data-action="job-notify"]');
-        return { asked: window.__permAsked, label: btn.textContent.trim(), on: btn.classList.contains('is-on') };
+        return { asked: window.__permAsked, label: btn.textContent.trim(), on: btn.classList.contains('is-on'), focus: document.activeElement === btn };
       });
       // A toggle: the label stays (a screen reader hears "pressed" once, not a new label as well).
-      assertEqual(state, { asked: 3, label: 'Notify me when done', on: true }, 'opted in for this page session');
+      assertEqual(state, { asked: 3, label: 'Notify me when done', on: true, focus: true }, 'opted in for this page session, the focus on the button');
       await shot(jobs, 'desktop-light-en-job-notify');
     });
 
@@ -432,13 +438,14 @@ async function jobsGroup(browser, server) {
     await jobs.close();
   }
 
-  // Chromium on Android has the API and its prompt but no `new Notification()` (service worker only).
+  // Chromium on Android has the API and its prompt but no `new Notification()` (service worker
+  // only), on a tablet too: `mobile` is false there, the platform is what counts.
   const phone = await browser.newPage('about:blank', { width: 375, height: 812, mobile: true });
   await phone.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript('example.com', JOB_ZONE) });
   await phone.send('Page.addScriptToEvaluateOnNewDocument', { source: JOB_PAGE_SCRIPT });
   await phone.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `Object.defineProperty(Navigator.prototype, 'userAgentData', { configurable: true,
-      get: () => ({ mobile: true, platform: 'Android', brands: [] }) });`
+      get: () => ({ mobile: false, platform: 'Android', brands: [] }) });`
   });
   try {
     await step('Chromium on Android: "Notify me when done" is never offered and no permission is asked', async () => {

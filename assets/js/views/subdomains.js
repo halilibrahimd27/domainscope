@@ -1606,12 +1606,14 @@ export function resetCustomWordlist() {
 }
 
 // "Delete all local data" (About, or Settings on any view) must also drop the copies this module
-// keeps in memory — the custom list when it was too long for sessionStorage, and the learned
-// store of a browser without localStorage — whether or not the Subdomains view is mounted: the
-// module stays loaded (SSL Targets imports it) and would otherwise keep probing the old names.
+// keeps in memory — the custom list when it was too long for sessionStorage, the learned store
+// of a browser without localStorage, and the names a Reverse DNS sweep handed over — whether or
+// not the Subdomains view is mounted: the module stays loaded (SSL Targets imports it) and would
+// otherwise keep probing the old names.
 stateSingleton.subscribe(({ key }) => {
   if (key !== 'cleared') return;
   resetCustomWordlist();
+  session.handoff = null;
   if (memoryLearned) {
     try {
       memoryLearned.clear();

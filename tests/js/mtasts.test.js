@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   MTA_STS_PATH, MTA_STS_MAX_AGE_LIMIT, MTA_STS_MODES, MTA_STS_FINDINGS, MTA_STS_HEADLINES, MTA_STS_I18N,
   mtaStsPolicyHost, mtaStsPolicyUrl, mtaStsPolicyRequest, mxPatternMatches, parseMtaStsPolicy,
-  interpretPolicyFetch, validateMtaSts
+  interpretPolicyFetch, validateMtaSts, mtaStsExport
 } from '../../assets/js/lib/mtasts.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'globalping');
@@ -271,6 +271,36 @@ test('validateMtaSts: an invalid policy stops before the MX cross-check', () => 
   assert.deepEqual(v.mx, []);
   const warnOnly = validateMtaSts({ domain: 'example.com', fetch: policyFetch(`${RFC_POLICY}max_age: 1\n`), mxHosts: ['mail.example.com'], now: NOW });
   assert.deepEqual([warnOnly.headline, sev(warnOnly, 'policy.duplicate')], ['warnings', 'warn']);
+});
+
+/* ---- export -------------------------------------------------------------------------- */
+
+test('mtaStsExport: the live check as plain JSON (ISO dates, no coordinates), and a failed fetch', () => {
+  const fetch = interpretPolicyFetch(M26.final.body, { host: HOST });
+  const validation = validateMtaSts({ domain: 'example.com', fetch, mxHosts: MX, txt: 'v=STSv1; id=1', now: NOW });
+  const x = mtaStsExport({ domain: 'example.com', fetch, validation, checkedAt: new Date(NOW) });
+  assert.deepEqual(JSON.parse(JSON.stringify(x)), x, 'JSON-safe');
+  assert.equal(x.url, 'https://mta-sts.example.com/.well-known/mta-sts.txt');
+  assert.deepEqual([x.checkedAt, x.measurementId, x.headline, x.severity, x.usable, x.mode, x.maxAge],
+    ['2026-09-27T11:50:18.990Z', M26.post.body.id, 'ok', 'info', true, 'enforce', 86400]);
+  assert.deepEqual(x.http, { status: 200, contentType: 'text/plain', location: null, truncated: false });
+  assert.deepEqual(x.tls, {
+    authorized: true, error: null, issuer: 'Google Trust Services', notAfter: '2026-12-03T19:23:18.000Z',
+    names: ['example.com', '*.example.com'], covers: true
+  });
+  assert.deepEqual(x.mx, validation.mx);
+  assert.deepEqual(x.unusedPatterns, ['smtp.example.com']);
+  assert.match(x.policy, /^version: STSv1\r\nmode: enforce\r\n/);
+  assert.deepEqual(x.findings.map((f) => f.id), ids(validation));
+  assert.equal('latitude' in x.probe, false);
+  x.findings[0].params.host = 'changed';
+  assert.equal(validation.findings[0].params.host, HOST, 'params are copied');
+
+  const nxFetch = interpretPolicyFetch(M27.final.body, { host: HOST });
+  const nx = mtaStsExport({ domain: 'example.com', fetch: nxFetch, validation: validateMtaSts({ domain: 'example.com', fetch: nxFetch }) });
+  assert.deepEqual([nx.checkedAt, nx.headline, nx.usable, nx.http, nx.tls, nx.policy, nx.maxAge, nx.failure.kind],
+    [null, 'unreachable', false, null, null, null, null, 'dns']);
+  assert.doesNotThrow(() => mtaStsExport());
 });
 
 /* ---- i18n ---------------------------------------------------------------------------- */

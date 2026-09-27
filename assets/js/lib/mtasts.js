@@ -366,6 +366,51 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
   return finish(null);
 }
 
+/**
+ * One policy check as plain, language-neutral JSON (Domain Health's "Report (JSON)"): the URL,
+ * the probe, what came back, the verdict and the findings. Dates are ISO strings; the probe
+ * summary never carries coordinates (lib/globalping.probeSummary).
+ * @param {{ domain: string, fetch: ReturnType<typeof interpretPolicyFetch>,
+ *   validation: ReturnType<typeof validateMtaSts>, checkedAt?: Date|number|null }} check
+ * @returns {{ url: string|null, checkedAt: string|null, measurementId: string|null, probe: object|null,
+ *   headline: string, severity: string, usable: boolean, mode: string|null, maxAge: number|null,
+ *   mx: Array<{ host: string, matchedBy: string|null }>, unusedPatterns: string[],
+ *   http: { status: number, contentType: string|null, location: string|null, truncated: boolean }|null,
+ *   failure: { kind: string, text: string }|null,
+ *   tls: { authorized: boolean, error: string|null, issuer: string|null, notAfter: string|null, names: string[], covers: boolean|null }|null,
+ *   policy: string|null, findings: Array<{ id: string, severity: string, params: object }> }}
+ */
+export function mtaStsExport({ domain, fetch, validation, checkedAt = null } = {}) {
+  const f = fetch && typeof fetch === 'object' ? fetch : {};
+  const v = validation && typeof validation === 'object' ? validation : {};
+  const iso = (d) => {
+    const x = d instanceof Date ? d : (d === null || d === undefined ? null : new Date(d));
+    return x && !Number.isNaN(x.getTime()) ? x.toISOString() : null;
+  };
+  const tls = f.tls || null;
+  return {
+    url: mtaStsPolicyUrl(domain),
+    checkedAt: iso(checkedAt),
+    measurementId: f.measurementId ?? null,
+    probe: f.probe ?? null,
+    headline: v.headline ?? 'inconclusive',
+    severity: v.severity ?? 'warn',
+    usable: v.usable === true,
+    mode: v.mode ?? null,
+    maxAge: v.policy && Number.isInteger(v.policy.maxAge) ? v.policy.maxAge : null,
+    mx: arr(v.mx).map((x) => ({ host: x.host, matchedBy: x.matchedBy })),
+    unusedPatterns: arr(v.unusedPatterns).slice(),
+    http: f.finished ? { status: f.httpStatus, contentType: f.contentType, location: f.location, truncated: f.truncated === true } : null,
+    failure: f.failure ?? null,
+    tls: tls ? {
+      authorized: tls.authorized === true, error: tls.error ?? null, issuer: tls.issuer ?? null,
+      notAfter: iso(tls.notAfter), names: arr(tls.hostnames).slice(), covers: tls.covers ?? null
+    } : null,
+    policy: typeof f.body === 'string' ? f.body : null,
+    findings: arr(v.findings).map((x) => ({ id: x.id, severity: x.severity, params: { ...x.params } }))
+  };
+}
+
 /* ------------------------------------------------------------------------ */
 /* i18n                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -472,15 +517,15 @@ const STRINGS = [
     ['{value} seconds (under a day). A short lifetime leaves senders without a cached policy at refresh time; RFC 8461 expects weeks or more.',
       '{value} saniye (bir günden az). Kısa bir süre, yenileme anında gönderenleri önbellekte politika olmadan bırakır; RFC 8461 haftalar ya da daha uzun bir süre bekler.']],
   ['max-age.days', ['max_age is under a week', 'max_age bir haftadan kısa'],
-    ['{value} seconds ({days} days). RFC 8461 expects weeks or more (for example 604800, one week, or longer).',
-      '{value} saniye ({days} gün). RFC 8461 haftalar ya da daha uzun bir süre bekler (örneğin 604800, bir hafta, ya da daha uzun).']],
+    ['{value} seconds is less than a week; RFC 8461 expects weeks or more (for example 604800, one week, or longer).',
+      '{value} saniye bir haftadan kısa; RFC 8461 haftalar ya da daha uzun bir süre bekler (örneğin 604800, bir hafta, ya da daha uzun).']],
   ['max-age.ok', ['max_age is fine', 'max_age uygun'],
-    ['Senders cache the policy for up to {days} days ({value} seconds).', 'Gönderenler politikayı en fazla {days} gün ({value} saniye) önbellekte tutar.']],
+    ['Senders keep the policy for up to {value} seconds before they fetch it again.', 'Gönderenler politikayı yeniden almadan önce en fazla {value} saniye önbellekte tutar.']],
 
   ['mx.ok', ['Every MX host matches the policy', 'Her MX sunucusu politikayla eşleşiyor'],
     ['All {count} MX hosts of the domain match an mx pattern.', 'Alan adının {count} MX sunucusunun tamamı bir mx kalıbıyla eşleşiyor.']],
   ['mx.unmatched', ['MX hosts missing from the policy', 'Politikada olmayan MX sunucuları'],
-    ['{hosts} match no mx pattern ({patterns}). Senders that support MTA-STS do not deliver to an MX host the policy does not list (in testing mode they deliver and report a failure). Add an "mx:" line for each.',
+    ['No mx pattern ({patterns}) matches {hosts}. Senders that support MTA-STS do not deliver to an MX host the policy does not list (in testing mode they deliver and report a failure). Add an "mx:" line for each.',
       '{hosts} hiçbir mx kalıbıyla eşleşmiyor ({patterns}). MTA-STS destekleyen gönderenler politikada listelenmeyen bir MX sunucusuna teslim etmez (test modunda teslim eder ve bir hata bildirir). Her biri için bir "mx:" satırı ekleyin.']],
   ['mx.unused', ['mx patterns without an MX host', 'MX sunucusu olmayan mx kalıpları'],
     ['No current MX host matches {patterns}. That is fine for a planned or backup MX; otherwise remove the line.',

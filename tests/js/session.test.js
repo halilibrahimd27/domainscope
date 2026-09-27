@@ -12,7 +12,7 @@ import {
   normalizeResult, keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
 } from '../../assets/js/lib/session.js';
 import { VIEWS, buildRoute, parseRoute, navHref, pageSession } from '../../assets/js/app.js';
-import { keptTimeText } from '../../assets/js/ui/session-ui.js';
+import { keptTimeText, chipParts } from '../../assets/js/ui/session-ui.js';
 import { setLang } from '../../assets/js/i18n.js';
 
 /** A clock that moves one second per call. */
@@ -478,6 +478,16 @@ describe('the shell: nav links carry the target (app.js)', () => {
       pageSession.clear();
     }
     assert.equal(navHref('health'), '#/health', '"Delete all local data" forgets both');
+  });
+});
+
+describe('the chip (ui/session-ui.js)', () => {
+  test('a host name is cut in the middle: its lower labels, then the registrable domain', () => {
+    assert.deepEqual(chipParts(parseTarget('a-rather-long-host-name.shop.example.com')), ['a-rather-long-host-name.shop.', 'example.com']);
+    assert.deepEqual(chipParts(parseTarget('www.example.co.uk')), ['www.', 'example.co.uk']);
+    assert.deepEqual(chipParts(parseTarget('example.com')), ['', 'example.com'], 'a domain is all tail');
+    assert.deepEqual(chipParts(parseTarget('2001:db8::1')), ['', '2001:db8::1'], 'an address too');
+    for (const v of ['a.b.c.example.org', 'example.net', '192.0.2.10']) assert.equal(chipParts(parseTarget(v)).join(''), v);
   });
 });
 

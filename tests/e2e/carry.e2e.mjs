@@ -31,8 +31,9 @@
  *     on screen: the tool opens again, bare);
  *   - a carried link opened in a new tab only fills the form.
  * Then at 375 px (light / dark, English / Turkish): the chip in place of the brand name, the note
- * under the title, no horizontal scroll. Fails on console errors, exceptions, CSP violations
- * and missing i18n keys.
+ * under the title, no horizontal scroll; a long host name in the chip is cut in the middle, its
+ * registrable domain in full. Fails on console errors, exceptions, CSP violations and missing
+ * i18n keys.
  */
 
 import path from 'node:path';
@@ -531,6 +532,38 @@ async function phone(browser, server) {
         });
       }
     }
+    await run.step('a long host name in the chip is cut in the middle: its registrable domain stays whole', async () => {
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(page, 'en');
+      const long = `a-rather-long-host-name.shop.${APEX}`;
+      await gotoRoute(page, `#/lookup?name=${long}&type=A`);
+      await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup of the long name' });
+      const chip = await page.evaluate(() => {
+        // Clipped: narrower than the same text laid out unconstrained next to it (scrollWidth and
+        // clientWidth round away the fraction of a pixel that already brings the ellipsis).
+        const box = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const free = el.cloneNode(true);
+          free.style.position = 'absolute';
+          free.style.visibility = 'hidden';
+          free.style.maxWidth = 'none';
+          free.style.flex = 'none';
+          el.parentNode.append(free);
+          const natural = free.getBoundingClientRect().width;
+          free.remove();
+          const width = el.getBoundingClientRect().width;
+          return { text: el.textContent, clipped: width + 0.01 < natural, width: Math.round(width * 10) / 10, natural: Math.round(natural * 10) / 10 };
+        };
+        return { value: document.querySelector('.target-chip-value').textContent, head: box('.target-chip-head'), tail: box('.target-chip-tail') };
+      });
+      assertEqual(chip.value, long, 'the full value in the text');
+      assertEqual([chip.tail.text, chip.tail.clipped], [APEX, false], `the registrable domain in full: ${JSON.stringify(chip)}`);
+      assert(chip.head.clipped, `the lower labels give way: ${JSON.stringify(chip)}`);
+      await assertNoHorizontalScroll(page, 'phone long chip');
+      await shot(page, opts, 'carry-phone-light-en-long-chip');
+    });
+
     await run.step('phone: no console errors, CSP violations or missing keys', async () => {
       await assertClean(page, 'carry phone', server.url);
       await assertNoMissingKeys(page);

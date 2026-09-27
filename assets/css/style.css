@@ -536,12 +536,30 @@ hr {
 }
 
 .target-chip-value {
+  display: inline-flex;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
   color: var(--text);
+}
+
+/* A long host name is cut in the middle: its lower labels give way, the registrable domain never
+   shrinks (a shrink of a fraction of a pixel would already ellipsise it) and is cut only when it
+   alone is wider than the chip. */
+.target-chip-head,
+.target-chip-tail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.target-chip-head {
+  flex: 0 1 auto;
+}
+
+.target-chip-tail {
+  flex: none;
+  max-width: 100%;
 }
 
 .target-chip-clear {

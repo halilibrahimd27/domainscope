@@ -9,6 +9,7 @@
 import { h } from './dom.js';
 import { Icon } from './components.js';
 import { t, registerStrings, formatDateTime, localeTag } from '../i18n.js';
+import { registrableDomain } from '../lib/domain.js';
 
 registerStrings('en', {
   'session.target.group': 'Current target',
@@ -52,11 +53,29 @@ export function keptTimeText(at, now = Date.now()) {
 }
 
 /**
- * The header chip: the current target and a button that clears it.
+ * The chip's value in two parts, so that a long host name is cut in the middle: the labels below
+ * the registrable domain (they give way first) and the registrable domain, which tells targets
+ * apart. A domain or an IP address is all tail.
+ * @param {{ value: string, kind: string }} target
+ * @returns {[string, string]} [head, tail]; head + tail is the value
+ */
+export function chipParts(target) {
+  const value = String(target.value);
+  if (target.kind === 'host') {
+    const reg = registrableDomain(value);
+    if (reg && value.length > reg.length && value.endsWith(`.${reg}`)) return [value.slice(0, -reg.length), reg];
+  }
+  return ['', value];
+}
+
+/**
+ * The header chip: the current target and a button that clears it. The full value is in its
+ * text and title; a narrow chip cuts a host name in the middle ({@link chipParts}).
  * @param {{ target: { value: string, kind: string }, onClear: () => void }} opts
  * @returns {HTMLElement}
  */
 export function TargetChip({ target, onClear }) {
+  const [head, tail] = chipParts(target);
   return h('div', {
     class: 'target-chip',
     title: t('session.target.title', { value: target.value }),
@@ -65,7 +84,9 @@ export function TargetChip({ target, onClear }) {
   },
   Icon('target', { size: 14, className: 'target-chip-icon' }),
   h('span', { class: 'target-chip-label' }, t('session.target.label')),
-  h('span', { class: 'target-chip-value mono' }, target.value),
+  h('span', { class: 'target-chip-value mono' },
+    head ? h('span', { class: 'target-chip-head' }, head) : null,
+    h('span', { class: 'target-chip-tail' }, tail)),
   h('button', {
     type: 'button',
     class: 'target-chip-clear',

@@ -1090,6 +1090,7 @@ async function main() {
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       try {
         await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(FAKE_APEX, FAKE_ZONE) });
+        await installDownloadCapture(tab);
         await tab.goto(`${server.url}#/about`);
         await waitReady(tab);
         await setLangUi(tab, 'en');
@@ -1129,6 +1130,20 @@ async function main() {
         const clip = await tab.evaluate(() => navigator.clipboard.readText().catch(() => null));
         if (clip !== null) assertEqual(clip, ps, 'copied command');
         await shotEl(tab, opts, 'subdomains-origin-emulated-desktop-light-en', '.sub-org');
+        // Exclude addresses: the JSON export carries the same command (POSIX form), not the bare one.
+        const withExclude = '-t 203.0.113.0/24 --exclude 203.0.113.12 -n shop.example.net www.example.net';
+        await tab.type('[data-role="sub-org-exclude"]', '203.0.113.12');
+        const shown = await tab.waitFor(() => {
+          const c = document.querySelector('.sub-org-command code')?.textContent || '';
+          return c.includes('--exclude') ? c : false;
+        }, { message: '--exclude in the command' });
+        assertEqual(shown, `python ssl_origin_scan.py ${withExclude}`, 'PowerShell command with --exclude');
+        await takeDownloads(tab);
+        await tab.click('[data-export="json"]');
+        await tab.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON export' });
+        const exported = JSON.parse((await takeDownloads(tab))[0].text).origin;
+        assertEqual([exported.cliSuggestion, exported.exclude && exported.exclude.requested], [`python3 ssl_origin_scan.py ${withExclude}`, ['203.0.113.12']],
+          'the exported command honours the exclusions');
         // Phone: the panel (networks, command, toggle) fits in both languages and themes.
         await tab.setViewport({ width: 390, height: 844, mobile: true });
         for (const lang of ['en', 'tr']) {
@@ -1143,6 +1158,11 @@ async function main() {
           }
         }
         assert(/python ssl_origin_scan\.py/.test(await tab.evaluate(() => document.querySelector('.sub-org-command code').textContent)), 'the chosen shell survives a language re-mount');
+        const kept = await tab.evaluate(() => ({
+          box: document.querySelector('[data-role="sub-org-exclude"]').value,
+          command: document.querySelector('.sub-org-command code').textContent
+        }));
+        assertEqual(kept, { box: '203.0.113.12', command: `python ssl_origin_scan.py ${withExclude}` }, 'the exclusions survive a language re-mount');
         await assertClean(tab, 'emulated zone', origin);
       } finally {
         await tab.close();

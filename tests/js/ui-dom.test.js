@@ -1265,6 +1265,39 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(rep.command, /^python3 ssl_origin_scan\.py -t 203\.0\.113\.0\/24 -n www\.x\.com$/, 'no --exclude when nothing overlaps');
   });
 
+  test('the JSON export carries the ORIGIN panel command with its exclusions (originSweepFor / originExport)', async () => {
+    const { S } = await load();
+    const result = {
+      hosts: [host('www.x.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: ['203.0.113.0/24'] })],
+      originNetworks: [{ cidr: '203.0.113.0/24', ips: ['203.0.113.5'], hosts: ['api.x.com'], provider: null, shared: false, sweep: 'cidr' }],
+      originHints: [],
+      cliTargets: ['203.0.113.0/24', '198.51.100.25'],
+      cliNames: ['www.x.com']
+    };
+    // Without exclusions the panel's command is originOverview's, byte for byte, in both shells.
+    const o = S.originOverview(result);
+    assert.equal(S.originSweepFor(result).command, o.command);
+    assert.equal(S.originSweepFor(result, { shell: 'powershell' }).command, o.commands.powershell);
+    // A fully-covered target drops out of -t; an address inside the /24 becomes --exclude.
+    const gone = S.originSweepFor(result, { exclude: ['198.51.100.25'] });
+    assert.equal(gone.command, 'python3 ssl_origin_scan.py -t 203.0.113.0/24 -n www.x.com');
+    assert.deepEqual(gone.excluded, ['198.51.100.25']);
+    assert.match(S.originSweepFor(result, { exclude: ['203.0.113.9'] }).command, / --exclude 203\.0\.113\.9 -n /);
+    // The export: the same networks and command, and what the exclusions did.
+    const plain = S.originExport(result);
+    assert.deepEqual(plain, { networks: o.networks, hints: [], cliSuggestion: o.command, exclude: null });
+    const ex = S.originExport(result, ['198.51.100.25', 'not-an-ip']);
+    assert.equal(ex.cliSuggestion, gone.command, 'whoever runs the exported command never probes the excluded address');
+    assert.deepEqual(ex.exclude, { requested: ['198.51.100.25', 'not-an-ip'], emitted: [], excluded: ['198.51.100.25'], unused: [], invalid: ['not-an-ip'] });
+    // Wiring: the panel and the export read the same helper and the run's exclusions, which are kept
+    // per run at module level (a re-mount — another view and back, a language switch — keeps them).
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens\) : null/, 'the export reads the panel exclusions');
+    assert.match(src, /const currentSweep = \(shell\) => originSweepFor\(r, \{/, 'the panel reads the same helper');
+    assert.match(src, /let originExclude = originExcludes\.get\(run\);/, 'the exclusions outlive the mounted panel');
+    assert.doesNotMatch(src, /const originExclude = \{ tokens: \[\] \};/);
+  });
+
   test('originOverview: sibling-domain candidates (engine v3) and the shared-space flag', async () => {
     const { S } = await load();
     const proxied = host('ticket.a.com', ['wordlist'], { kind: 'cloudflare', ips: ['104.21.1.1'], networks: ['203.0.113.0/24'] });

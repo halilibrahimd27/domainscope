@@ -1918,6 +1918,9 @@ export function originSweep(result, { names = null, networks = [], dropped = new
   };
 }
 
+/** A host the ORIGIN panel lists: its origin is hidden (a proxy / CDN), and it is no wildcard suspect. */
+const isProxiedOriginHost = (x) => !!(x && !x.wildcardSuspect && x.classification && x.classification.hidesOrigin);
+
 /**
  * Everything the ORIGIN panel shows, derived from a ScanResult: per proxied host its
  * resolver-leak and history candidates (from the structured reason fields, never parsed text)
@@ -1937,7 +1940,7 @@ export function originOverview(result) {
   const hints = Array.isArray(r.originHints) ? r.originHints : [];
   const { networks, dropped } = realOriginNetworks(r.originNetworks, hosts);
   const cidrs = new Set(networks.map((n) => n.cidr));
-  const proxied = hosts.filter((x) => x && !x.wildcardSuspect && x.classification && x.classification.hidesOrigin).map((host) => {
+  const proxied = hosts.filter(isProxiedOriginHost).map((host) => {
     const zone = [];
     const leaks = [];
     const history = [];
@@ -2007,6 +2010,44 @@ export function originOverview(result) {
     commands,
     namesFiles,
     droppedCount
+  };
+}
+
+/**
+ * The sweep the ORIGIN panel shows: {@link originOverview}'s proxied names and origin networks,
+ * for one shell, with the exclusions typed into the panel (null: none — the command is then
+ * originOverview's, byte for byte). The JSON export reads the same, so the two never drift apart.
+ * @param {object|null} result ScanResult
+ * @param {{ shell?: 'posix'|'powershell', exclude?: string[]|null }} [opts]
+ * @returns {ReturnType<typeof originSweep>}
+ */
+export function originSweepFor(result, { shell = 'posix', exclude = null } = {}) {
+  const r = result || {};
+  const hosts = Array.isArray(r.hosts) ? r.hosts : [];
+  const { networks, dropped } = realOriginNetworks(r.originNetworks, hosts);
+  return originSweep(r, { names: hosts.filter(isProxiedOriginHost).map((x) => x.name), networks, dropped, shell, exclude });
+}
+
+/**
+ * The `origin` block of the JSON export: the networks and the POSIX command the ORIGIN panel shows
+ * (no wildcard suspects, no IPv6 /48), with the panel's exclusions applied — whoever runs the
+ * exported command never probes an address the user excluded — and what they did (`exclude`).
+ * @param {object|null} result ScanResult
+ * @param {string[]} [exclude] the tokens typed into the panel's Exclude box
+ * @returns {{ networks: object[], hints: object[], cliSuggestion: string|null,
+ *   exclude: { requested: string[], emitted: string[], excluded: string[], unused: string[], invalid: string[] }|null }}
+ */
+export function originExport(result, exclude = []) {
+  const r = result || {};
+  const tokens = Array.isArray(exclude) && exclude.length ? exclude.map(String) : null;
+  const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens });
+  return {
+    networks: realOriginNetworks(r.originNetworks, r.hosts).networks,
+    hints: r.originHints || [],
+    cliSuggestion: sweep.command,
+    exclude: tokens
+      ? { requested: tokens, emitted: sweep.emitted, excluded: sweep.excluded, unused: sweep.excludeUnused, invalid: sweep.excludeDropped }
+      : null
   };
 }
 
@@ -2473,6 +2514,13 @@ const session = {
   originShell: 'posix',
   run: null
 };
+
+/**
+ * The ORIGIN panel's exclusions of each run (`{ raw, tokens }`), kept for the page session so a
+ * re-mount (another view and back, a language switch) keeps them; keyed by the run object, so a
+ * new scan starts without any and an old run goes with its own.
+ */
+const originExcludes = new WeakMap();
 
 /**
  * How the next scan uses each imported zone ('exact' | 'discover' | 'off'), keyed by the zone
@@ -4013,12 +4061,8 @@ function buildRunUI(run, ctx, { onFinish }) {
       complete: run.status === 'done',
       discovery: run.result ? techniqueCounts(run.result.hosts) : null,
       sourceHealth: sourceHealthSummary(run.sourceResults).map(({ domains: _d, ...x }) => x),
-      // The same networks and command the ORIGIN panel shows (no wildcard suspects, no IPv6 /48).
-      origin: run.result ? {
-        networks: originOverview(run.result).networks,
-        hints: run.result.originHints || [],
-        cliSuggestion: originOverview(run.result).command
-      } : null,
+      // The networks and the POSIX command the ORIGIN panel shows, with its exclusions applied.
+      origin: run.result ? originExport(run.result, originExclude.tokens) : null,
       subdomains: exportRows()
     })}\n`, 'application/json;charset=utf-8'))
   });
@@ -4110,9 +4154,14 @@ function buildRunUI(run, ctx, { onFinish }) {
     if (heading) heading.focus({ preventScroll: true });
   }
   /** Render the sweep command for the chosen shell into `host` (a CodeBlock, or the "none" hint). */
-  // Origin-panel state that survives its own re-renders: the exclude tokens the user pasted and
-  // a per-network owner-lookup cache (one RIPEstat request per /24 · /48, on demand).
-  const originExclude = { tokens: [] };
+  // Origin-panel state that survives its own re-renders: the exclude tokens the user pasted (kept
+  // per run, so a re-mount keeps them too) and a per-network owner-lookup cache (one RIPEstat
+  // request per /24 · /48, on demand).
+  let originExclude = originExcludes.get(run);
+  if (!originExclude) {
+    originExclude = { raw: '', tokens: [] };
+    originExcludes.set(run, originExclude);
+  }
   const ownerCache = new Map();
   const ownerCtl = new AbortController();
 
@@ -4128,8 +4177,6 @@ function buildRunUI(run, ctx, { onFinish }) {
     originCandidates = new Set(o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).map((p) => p.name));
     const titleId = uid('sub-org');
     const ipLinkOrg = (ip) => h('a', { class: 'sub-ip mono', href: ctx.href('ip', { ip }), title: t('sub.ip.intel', { ip }) }, ip);
-    const { networks: origNetworks, dropped } = realOriginNetworks(r.originNetworks, r.hosts);
-    const proxiedNames = o.proxied.map((p) => p.name);
     const blocks = [];
     // A zone file's origin may be a private address: plain text, never an IP Intel link (that
     // view asks third-party services about the address as soon as it opens).
@@ -4146,11 +4193,8 @@ function buildRunUI(run, ctx, { onFinish }) {
           zoneIpEl(z.ip)))))));
     }
 
-    /** The sweep for a shell with the current exclusions applied. */
-    const currentSweep = (shell) => originSweep(r, {
-      names: proxiedNames, networks: origNetworks, dropped, shell,
-      exclude: originExclude.tokens.length ? originExclude.tokens : null
-    });
+    /** The sweep for a shell with the current exclusions applied (the JSON export reads the same). */
+    const currentSweep = (shell) => originSweepFor(r, { shell, exclude: originExclude.tokens.length ? originExclude.tokens : null });
 
     // 1. Origin networks (/24 · /48 clusters of the DNS-only records). Each card says whether the
     //    command sweeps the whole /24 or only its known addresses (and why), flags shared cloud /

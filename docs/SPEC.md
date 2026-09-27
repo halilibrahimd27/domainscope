@@ -839,7 +839,7 @@ Hash routing `#/<view>?param=...` (shareable: e.g. `#/lookup?name=example.com&ty
    - **Origin panel:**
      - per proxied host, its `originCandidates` in order: zone file, resolver leak, sibling domain ("same name as <sibling>"), history, then only the related networks;
      - per network, whether the command sweeps the whole /24 or only its addresses (and why), a **shared hosting / cloud** badge with a warning, and **Look up owner** (`describeNetwork`, one RIPEstat request on click);
-     - an **Exclude addresses** box (→ `buildSweepCommand({ exclude })`);
+     - an **Exclude addresses** box (→ `buildSweepCommand({ exclude })`). It is kept per run for the page session, so it survives a re-mount. The JSON export's `origin.cliSuggestion` is the panel's POSIX command with these exclusions (`originExport`), and `origin.exclude` reports what they did;
      - a tip to scan sister domains together.
    - **Zone File "Scan now" during a scan:** the zone scan waits for the running one (`zoneStartAction`). A prompt offers **Cancel it and scan the zone** or **Don't start**. Leaving the page drops the request; the box and the zone mode stay filled in.
 0b. **zone** "Zone File" (`#/zone[?tab=overview|records|origins|problems|live]`; only `tab=` ever goes in the URL):

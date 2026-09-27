@@ -615,6 +615,30 @@ describe('discovery engine v2: permutation wildcard safety + compact denial', ()
     assert.ok(!scan.originNetworks.some((n) => n.cidr === '198.51.100.0/24'));
   });
 
+  test('a level-insertion level is wildcard-checked only when a candidate under it answers', async () => {
+    const A = 'example.org';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`api.${A}`]: { A: ['203.0.113.2'] },
+      [`api.dev.${A}`]: { A: ['203.0.113.3'] } // a real host under an empty non-terminal
+    };
+    const { fetchImpl, dns, log } = mkWorld({ zone });
+    const found = [];
+    const scan = await runScan({
+      domains: [A], extraNames: [`api.${A}`], sources: [], bruteforce: 'off', mine: false,
+      permutationBudget: 1500, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    }, { onFound: (hit) => found.push(hit.name) });
+    assert.ok(byName(scan).has(`api.dev.${A}`), 'the real insertion hit is kept');
+    assert.ok(found.includes(`api.dev.${A}`), 'and streamed once its level is checked');
+    assert.equal(scan.wildcards[`dev.${A}`].wildcard, false);
+    // no hit under staging. / qa. …: those levels cost no wildcard probe
+    assert.equal(scan.wildcards[`staging.${A}`], undefined);
+    assert.equal(scan.wildcards[`qa.${A}`], undefined);
+    const randomUnder = (level) => log.doh.filter((q) => new RegExp(`^[a-z0-9]{12}\\.${level}\\.example\\.org$`).test(q.name));
+    assert.deepEqual(randomUnder('(staging|qa)'), []);
+    assert.ok(randomUnder('dev').length > 0, 'dev. was checked with random labels');
+  });
+
   test('DNSSEC compact denial (Cloudflare) is not a wildcard and does not flag typed NXDOMAIN-equivalent names', async () => {
     const A = 'cf.example';
     const zone = { [A]: { A: ['203.0.113.1'] } };

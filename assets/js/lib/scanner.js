@@ -1294,8 +1294,45 @@ export async function runScan(config = {}, hooks = {}) {
       wildcards[p] = { ...merged, variable: true, flooded: true };
     }, signal);
   };
-  const probeNames = async (candidates, origin, stageName, baseDone, grandTotal) => {
+  // The in-scope levels above a name (below its scope root) with no wildcard check yet.
+  const uncheckedLevels = (name) => {
+    const levels = [];
+    for (let p = parentOf(name); p && p.includes('.') && !scopeRoots.includes(p); p = parentOf(p)) {
+      if (!inScope(p)) break;
+      if (!(p in wildcards)) levels.push(p);
+    }
+    return levels;
+  };
+  // `checkLevels`: a hit under a level nobody has wildcard-checked (api.dev.x,
+  // dev.api.x) is held back until that level is checked, once the sweep is over.
+  // Only levels with a hit cost a check, so an environment word that answers
+  // nothing under it sends no extra query.
+  const probeNames = async (candidates, origin, stageName, baseDone, grandTotal, { checkLevels = false } = {}) => {
     const out = { tried: candidates.length, found: 0, wildcardDropped: 0, errors: 0 };
+    const held = [];
+    const accept = (name, status, cnames, ipv4) => {
+      if (isWildcardSuspect({ status, cnames, ipv4, ipv6: [] }, nearestWildcard(name))) {
+        out.wildcardDropped += 1;
+        return;
+      }
+      addName(name, origin);
+      out.found += 1;
+      loadOf(parentOf(name)).found += 1;
+      // Stream the hit the moment it resolves (task 5) so the UI can show rows
+      // live through the long wordlist / permutation stages instead of an empty
+      // table until the resolve stage. This is a cheap PARTIAL — the A answer
+      // only (AAAA is fetched in the resolve stage), classified from that A
+      // record — never the final HostRecord; onHost still fires per host during
+      // resolve with the full record, so a consumer must dedupe by name.
+      safeCall(h.onFound, {
+        name,
+        origin,
+        status,
+        ipv4: [...ipv4],
+        cnames: [...cnames],
+        classification: classifyResolution({ status, ipv4, ipv6: [], cnames })
+      });
+    };
     for (const name of candidates) probed.add(name);
     if (!candidates.length || dnsUnreachable) return out;
     let done = 0;
@@ -1324,8 +1361,7 @@ export async function runScan(config = {}, hooks = {}) {
         return;
       }
       streak = 0;
-      const load = loadOf(parentOf(name));
-      load.tried += 1;
+      loadOf(parentOf(name)).tried += 1;
       if (res.rcode !== 'NOERROR' && res.rcode !== 'NXDOMAIN') return;
       const { cnames, ipv4 } = aAnswer(res, name);
       // A dangling alias (a CNAME to a target that no longer exists) answers
@@ -1333,28 +1369,19 @@ export async function runScan(config = {}, hooks = {}) {
       // NXDOMAIN is no such name.
       if (res.rcode === 'NXDOMAIN' && !cnames.length) return;
       if (!ipv4.length && !cnames.length) return; // NODATA / no address — not a real hit
-      if (isWildcardSuspect({ status: res.rcode, cnames, ipv4, ipv6: [] }, nearestWildcard(name))) {
-        out.wildcardDropped += 1;
+      if (checkLevels && uncheckedLevels(name).length) {
+        held.push([name, res.rcode, cnames, ipv4]);
         return;
       }
-      addName(name, origin);
-      out.found += 1;
-      load.found += 1;
-      // Stream the hit the moment it resolves (task 5) so the UI can show rows
-      // live through the long wordlist / permutation stages instead of an empty
-      // table until the resolve stage. This is a cheap PARTIAL — the A answer
-      // only (AAAA is fetched in the resolve stage), classified from that A
-      // record — never the final HostRecord; onHost still fires per host during
-      // resolve with the full record, so a consumer must dedupe by name.
-      safeCall(h.onFound, {
-        name,
-        origin,
-        status: res.rcode,
-        ipv4: [...ipv4],
-        cnames: [...cnames],
-        classification: classifyResolution({ status: res.rcode, ipv4, ipv6: [], cnames })
-      });
+      accept(name, res.rcode, cnames, ipv4);
     }, signal);
+    if (held.length) {
+      // Shallowest first, so the cap keeps the environment levels (dev.x before api.dev.x).
+      const levels = [...new Set(held.flatMap(([name]) => uncheckedLevels(name)))];
+      await ensureWildcards(levels.sort((a, b) => a.split('.').length - b.split('.').length));
+      checkAbort(signal);
+      for (const hit of held) accept(...hit);
+    }
     await resampleFlooded();
     return out;
   };
@@ -1527,20 +1554,11 @@ export async function runScan(config = {}, hooks = {}) {
       // Level-insertion permutations go one level deeper, both ways: under a
       // found parent (dev.api.x, us.api.x) and under a level nobody has seen
       // (api.dev.x, shop.staging.x — an empty non-terminal under a wildcard).
-      // Wildcard-check EVERY in-scope ancestor of a candidate below the scope
-      // root that was not seen yet, shallowest first (so the cap keeps the env
-      // levels), so neither a per-host wildcard (*.api.x) nor an environment
-      // wildcard (*.dev.x) turns every insertion into a false 'permutation' hit.
-      const permParents = new Set();
-      for (const cand of permCandidates) {
-        for (let p = parentOf(cand); p && p.includes('.') && !scopeRoots.includes(p); p = parentOf(p)) {
-          if (!inScope(p)) break;
-          permParents.add(p);
-        }
-      }
-      await ensureWildcards([...permParents].sort((a, b) => a.split('.').length - b.split('.').length));
-      checkAbort(signal);
-      Object.assign(perm, await probeNames(permCandidates, 'permutation', 'permutations', 0, permCandidates.length));
+      // Every in-scope level above a hit that was not checked yet is wildcard-
+      // checked before the hit counts (checkLevels), so neither a per-host
+      // wildcard (*.api.x) nor an environment wildcard (*.dev.x) turns every
+      // insertion into a false 'permutation' hit.
+      Object.assign(perm, await probeNames(permCandidates, 'permutation', 'permutations', 0, permCandidates.length, { checkLevels: true }));
     }
     checkAbort(signal);
 

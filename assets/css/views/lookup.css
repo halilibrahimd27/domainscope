@@ -416,3 +416,11 @@
 .lkp-view .dt-scroll {
   position: relative;
 }
+
+/* Print (style.css hides the shell and every control): leave out the form and the empty state. */
+@media print {
+  .lkp-form-card,
+  .lkp-empty {
+    display: none;
+  }
+}

@@ -622,3 +622,13 @@
     min-width: 12rem;
   }
 }
+
+/* Print (style.css hides the shell and every control): leave out the loader and the overview's
+   action bar. */
+@media print {
+  .cert-loader-card,
+  .cert-reload,
+  .cert-overview-foot {
+    display: none;
+  }
+}

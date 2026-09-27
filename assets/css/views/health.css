@@ -758,3 +758,18 @@
 .hlt-view .dt-scroll {
   position: relative;
 }
+
+/* Print (style.css hides the shell and every control): leave out the form, the empty state and the links to other tools. */
+@media print {
+  .hlt-form-card,
+  .hlt-empty,
+  .hlt-links {
+    display: none;
+  }
+
+  /* The traffic light is drawn with backgrounds, which paper leaves out by default. */
+  .hlt-light {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

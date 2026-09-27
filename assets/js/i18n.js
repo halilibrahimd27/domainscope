@@ -477,6 +477,7 @@ registerStrings('en', {
   'shell.offline': 'You appear to be offline — live lookups will fail until the connection is back.',
   'shell.storageUnavailable': 'Browser storage is unavailable (private mode or blocked). Your data lasts until this tab is closed.',
   'shell.storageFull': 'Browser storage is full — the change is kept for this session only.',
+  'shell.printed': 'Printed {time}',
 
   'start.title': 'New here? Pick a job to start with',
   'start.lead': 'Each card opens the tool that does it.',
@@ -772,6 +773,7 @@ registerStrings('tr', {
   'shell.offline': 'Çevrimdışı görünüyorsunuz — bağlantı gelene kadar canlı sorgular başarısız olur.',
   'shell.storageUnavailable': 'Tarayıcı depolaması kullanılamıyor (gizli mod veya engelli). Verileriniz bu sekme kapanana kadar tutulur.',
   'shell.storageFull': 'Tarayıcı depolaması dolu — değişiklik yalnızca bu oturum için tutuluyor.',
+  'shell.printed': 'Yazdırma: {time}',
 
   'start.title': 'İlk kez mi geliyorsunuz? Başlamak için bir iş seçin',
   'start.lead': 'Her kart o işi yapan aracı açar.',

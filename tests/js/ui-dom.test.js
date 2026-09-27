@@ -2468,8 +2468,11 @@ describe('security & shell invariants', () => {
 
   test('stylesheets define both themes and the design tokens views rely on', async () => {
     const css = await readFile(path.join(ROOT, 'assets/css/style.css'), 'utf8');
-    assert.match(css, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\)/);
-    assert.match(css, /:root\[data-theme="dark"\] \{/);
+    // The dark palette is screen-only: printing from dark mode gets the light tokens (dark text on paper).
+    assert.match(css, /@media screen and \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\)/);
+    assert.match(css, /@media screen \{\s*:root\[data-theme="dark"\] \{/);
+    assert.equal((css.match(/color-scheme: dark;/g) || []).length, 2, 'dark only in the two screen-only token blocks');
+    assert.match(css, /@media print \{/);
     assert.match(css, /body \{[^}]*background: var\(--bg\)/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
     for (const token of ['--surface', '--border', '--text', '--accent', '--ok', '--warn', '--error', '--k-cloudflare', '--k-dangling', '--font-mono']) {

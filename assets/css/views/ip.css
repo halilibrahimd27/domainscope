@@ -163,3 +163,12 @@
 .ipi-view .dt-scroll {
   position: relative;
 }
+
+/* Print (style.css hides the shell and every control): leave out the form, the empty state and the Copy summary bar. */
+@media print {
+  .ipi-form-card,
+  .ipi-empty,
+  .ipi-results-bar {
+    display: none;
+  }
+}

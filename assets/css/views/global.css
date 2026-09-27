@@ -521,3 +521,12 @@
 .glb-view .dt-scroll {
   position: relative;
 }
+
+/* Print (style.css hides the shell and every control): leave out the form, the empty state and the links to other tools. */
+@media print {
+  .glb-form-card,
+  .glb-empty,
+  .glb-links {
+    display: none;
+  }
+}

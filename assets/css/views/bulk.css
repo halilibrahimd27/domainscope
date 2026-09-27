@@ -197,3 +197,10 @@
     min-width: 0;
   }
 }
+
+/* Print (style.css hides the shell and every control): leave out the input card. */
+@media print {
+  .bulk-input {
+    display: none;
+  }
+}

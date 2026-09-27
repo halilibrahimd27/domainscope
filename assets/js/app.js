@@ -55,6 +55,7 @@ import {
   createSessionStore, carryRoute, restorePlan, normalizeResult, keptNote, FILL_PARAM, FILL_VALUE
 } from './lib/session.js';
 import { TargetChip, KeptNote } from './ui/session-ui.js';
+import { permalinkParams, utcStamp } from './lib/summary.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -1644,6 +1645,52 @@ function openSettings() {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Printing                                                                 */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The permalink of the current view as printed: its own shareable params only
+ * (lib/summary.permalinkParams: never inventory data or a file's contents).
+ * @returns {string}
+ */
+function printPermalink() {
+  const base = globalThis.location.href.split('#')[0];
+  if (!current) return base;
+  const params = permalinkParams(current.id, current.params, { exclude: state.getInventoryIndex().keys() });
+  return `${base}${buildRoute(current.id, params)}`;
+}
+
+/** What `beforeprint` changed, undone by `afterprint`. */
+let printState = null;
+
+/**
+ * Before printing: open every closed <details> of the page (a Disclosure's content belongs on
+ * paper) and put a header on top — the app, the page title, the time (UTC) and the permalink
+ * (the print stylesheet hides the page header, the nav and every control).
+ */
+function beforePrint() {
+  if (printState || !dom.page) return;
+  const opened = [...dom.main.querySelectorAll('details:not([open])')];
+  for (const d of opened) d.open = true;
+  const url = printPermalink();
+  const title = current ? t(titleKeyOf(current.def, current.view)) : '';
+  const head = h('div', { class: 'print-head', attrs: { 'aria-hidden': 'true' } },
+    h('div', { class: 'print-head-title' }, h('strong', null, t('app.name')), title ? ` · ${title}` : null),
+    h('div', { class: 'print-head-meta' }, t('shell.printed', { time: utcStamp(new Date()) }), ' · ',
+      h('a', { class: 'print-permalink', href: url }, url)));
+  dom.page.prepend(head);
+  printState = { opened, head };
+}
+
+/** After printing: close what {@link beforePrint} opened and drop its header. */
+function afterPrint() {
+  if (!printState) return;
+  for (const d of printState.opened) if (d.isConnected) d.open = false;
+  printState.head.remove();
+  printState = null;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Global error handling                                                    */
 /* ------------------------------------------------------------------------ */
 
@@ -1752,6 +1799,8 @@ function boot() {
     if (event.error) notifyUnexpected(event.error);
   });
   globalThis.addEventListener('offline', () => toast(t('shell.offline'), { type: 'warn', timeout: 8000 }));
+  globalThis.addEventListener('beforeprint', beforePrint);
+  globalThis.addEventListener('afterprint', afterPrint);
 
   if (!state.persistence) toast(t('shell.storageUnavailable'), { type: 'warn', timeout: 9000 });
 

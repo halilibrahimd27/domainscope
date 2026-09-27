@@ -1907,3 +1907,18 @@
     flex: 1 1 auto;
   }
 }
+
+/* Print (style.css hides the shell and every control): leave out the search box, the intro and the
+   hand-over card; a host name, the row's identity, never breaks inside. */
+@media print {
+  .sub-hero,
+  .sub-intro,
+  .sub-link-prompt,
+  .sub-cta {
+    display: none;
+  }
+
+  .sub-host-name {
+    white-space: nowrap;
+  }
+}

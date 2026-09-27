@@ -12,6 +12,8 @@
  *     the settings dialog, the Servers view (typing, file import, warnings, save → reload, clear)
  *   - builds a component gallery (badges, kinds, stats, alerts, progress, tabs, fields, DataTable)
  *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation
+ *   - prints from dark mode (print media): the light palette, no shell or controls, Disclosures
+ *     opened and the print header (title, UTC time, permalink) on beforeprint, undone afterwards
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
  *     i18n keys that are missing in either language.
  * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
@@ -434,6 +436,55 @@ async function main() {
       await page.waitFor(() => !document.documentElement.dataset.theme);
       assertEqual(await theme(), 'auto', 'back to auto');
       await dismissToasts(page);
+    });
+
+    await step('print from dark mode: light palette, no shell or controls, details opened and a header on beforeprint, restored after', async () => {
+      await gotoRoute(page, 'about');
+      await page.click('[data-control="theme"] [data-value="dark"]');
+      await page.waitFor(() => document.documentElement.dataset.theme === 'dark');
+      const lum = (rgb) => {
+        const m = rgb.match(/\d+/g).map(Number);
+        return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255;
+      };
+      const closedBefore = await page.evaluate(() => document.querySelectorAll('#main details:not([open])').length);
+      assert(closedBefore > 0, 'About has a closed Disclosure');
+      try {
+        await page.send('Emulation.setEmulatedMedia', { media: 'print', features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+        await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+        const printed = await page.evaluate(() => {
+          const shown = (sel) => {
+            const el = document.querySelector(sel);
+            return !!el && getComputedStyle(el).display !== 'none';
+          };
+          const head = document.querySelector('.print-head');
+          return {
+            text: getComputedStyle(document.body).color,
+            paper: getComputedStyle(document.body).backgroundColor,
+            nav: shown('.app-nav'), header: shown('.app-header'), pageHeader: shown('.page-header'), button: shown('#page-body .btn'),
+            closed: document.querySelectorAll('#main details:not([open])').length,
+            head: head ? { shown: getComputedStyle(head).display !== 'none', text: head.textContent, href: head.querySelector('a').getAttribute('href') } : null
+          };
+        });
+        assert(lum(printed.text) < 0.25 && lum(printed.paper) > 0.9, `dark text on white paper: ${printed.text} on ${printed.paper}`);
+        assertEqual([printed.nav, printed.header, printed.pageHeader, printed.button], [false, false, false, false], 'nav, header, page header and buttons hidden');
+        assertEqual(printed.closed, 0, 'every Disclosure opened for the print');
+        assert(printed.head && printed.head.shown, 'print header shown');
+        assert(/^DomainScope · About/.test(printed.head.text) && /Printed \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(printed.head.text), `print header: ${printed.head.text}`);
+        assert(printed.head.href.endsWith('/domainscope/#/about'), `permalink: ${printed.head.href}`);
+        if (SHOTS_ON) await page.screenshot(path.join(SHOTS, 'desktop-print-dark-about.png'));
+        await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+        const after = await page.evaluate(() => ({ closed: document.querySelectorAll('#main details:not([open])').length, head: !!document.querySelector('.print-head') }));
+        assertEqual(after, { closed: closedBefore, head: false }, 'afterprint closes them again and drops the header');
+        // A real print (Page.printToPDF) fires the same events and yields a PDF.
+        const pdf = await page.send('Page.printToPDF', { preferCSSPageSize: true });
+        assertEqual(Buffer.from(pdf.data, 'base64').subarray(0, 5).toString('latin1'), '%PDF-', 'a PDF');
+        assertEqual(await page.evaluate(() => ({ closed: document.querySelectorAll('#main details:not([open])').length, head: !!document.querySelector('.print-head') })),
+          { closed: closedBefore, head: false }, 'nothing left behind by a print');
+      } finally {
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await page.click('[data-control="theme"] [data-value="auto"]');
+        await page.waitFor(() => !document.documentElement.dataset.theme);
+      }
     });
 
     await step('language toggle switches shell + view to Turkish and back', async () => {

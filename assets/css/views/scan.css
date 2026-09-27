@@ -1318,3 +1318,15 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* Print (style.css hides the shell and every control): leave out the setup steps and the run bar
+   (the results name the domains); a host name, the row's identity, never breaks inside. */
+@media print {
+  .scan-form {
+    display: none;
+  }
+
+  .scan-host-name {
+    white-space: nowrap;
+  }
+}

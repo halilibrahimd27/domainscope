@@ -2,7 +2,8 @@
  * DomainScope — design system
  *
  * 1. Tokens (light) + dark overrides (system preference unless data-theme="light",
- *    and forced with data-theme="dark")
+ *    and forced with data-theme="dark"); the dark palette is screen-only, so paper always
+ *    gets the light one (dark text, see 5. print)
  * 2. Base / reset
  * 3. App shell: header, sidebar nav (horizontal on phones), main, page header, footer
  * 4. Components (match assets/js/ui/components.js): buttons, fields, checks, segmented,
@@ -120,7 +121,7 @@
   --dur: 140ms;
 }
 
-@media (prefers-color-scheme: dark) {
+@media screen and (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #0d1015;
@@ -201,83 +202,85 @@
   }
 }
 
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0d1015;
-  --bg-sidebar: #10141a;
-  --surface: #151a21;
-  --surface-2: #1a2028;
-  --surface-3: #242b35;
-  --surface-hover: #1d242d;
-  --border: #28303b;
-  --border-strong: #3a4351;
-  --text: #e6e9ef;
-  --text-2: #b3bbc8;
-  --text-3: #8c95a4;
-  --on-accent: #ffffff;
-  --accent: #5b93ff;
-  --accent-hover: #7aa7ff;
-  --accent-solid: #2f6bdc;
-  --accent-soft: rgba(91, 147, 255, 0.13);
-  --accent-soft-border: rgba(91, 147, 255, 0.34);
-  --accent-text: #90b6ff;
-  --focus: #7aa7ff;
-  --focus-ring: 0 0 0 3px rgba(122, 167, 255, 0.32);
-  --selection: rgba(91, 147, 255, 0.3);
-  --ok: #62d394;
-  --ok-solid: #2fb468;
-  --ok-bg: rgba(47, 180, 104, 0.13);
-  --ok-border: rgba(47, 180, 104, 0.34);
-  --info: #90b6ff;
-  --info-solid: #5b93ff;
-  --info-bg: rgba(91, 147, 255, 0.13);
-  --info-border: rgba(91, 147, 255, 0.34);
-  --warn: #f2bb5b;
-  --warn-solid: #e6a23c;
-  --warn-bg: rgba(230, 162, 60, 0.13);
-  --warn-border: rgba(230, 162, 60, 0.34);
-  --error: #ff8a8a;
-  --error-solid: #ef4d4d;
-  --error-bg: rgba(239, 77, 77, 0.13);
-  --error-border: rgba(239, 77, 77, 0.36);
-  --k-cloudflare: #ffa35c;
-  --k-cloudflare-solid: #f38020;
-  --k-cloudflare-bg: rgba(243, 128, 32, 0.15);
-  --k-cloudflare-border: rgba(243, 128, 32, 0.4);
-  --k-cdn: #bca5ff;
-  --k-cdn-solid: #9b7bff;
-  --k-cdn-bg: rgba(139, 92, 246, 0.16);
-  --k-cdn-border: rgba(139, 92, 246, 0.4);
-  --k-platform: #5ad6c3;
-  --k-platform-solid: #19b4a0;
-  --k-platform-bg: rgba(20, 184, 166, 0.14);
-  --k-platform-border: rgba(20, 184, 166, 0.36);
-  --k-direct: #6ccbef;
-  --k-direct-solid: #22a8d4;
-  --k-direct-bg: rgba(14, 165, 233, 0.14);
-  --k-direct-border: rgba(14, 165, 233, 0.36);
-  --k-private: #b3bccb;
-  --k-private-solid: #8a96a8;
-  --k-private-bg: rgba(148, 163, 184, 0.12);
-  --k-private-border: rgba(148, 163, 184, 0.32);
-  --k-unresolved: #95a0b0;
-  --k-unresolved-solid: #6b7686;
-  --k-unresolved-bg: rgba(148, 163, 184, 0.06);
-  --k-unresolved-border: rgba(148, 163, 184, 0.38);
-  --k-nxdomain: #f890ab;
-  --k-nxdomain-solid: #e5486d;
-  --k-nxdomain-bg: rgba(225, 29, 72, 0.14);
-  --k-nxdomain-border: rgba(225, 29, 72, 0.36);
-  --k-dangling: #ff9b80;
-  --k-dangling-solid: #f46a3d;
-  --k-dangling-bg: rgba(244, 106, 61, 0.15);
-  --k-dangling-border: rgba(244, 106, 61, 0.4);
-  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
-  --backdrop: rgba(0, 0, 0, 0.6);
-  --header-bg: rgba(21, 26, 33, 0.86);
+@media screen {
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d1015;
+    --bg-sidebar: #10141a;
+    --surface: #151a21;
+    --surface-2: #1a2028;
+    --surface-3: #242b35;
+    --surface-hover: #1d242d;
+    --border: #28303b;
+    --border-strong: #3a4351;
+    --text: #e6e9ef;
+    --text-2: #b3bbc8;
+    --text-3: #8c95a4;
+    --on-accent: #ffffff;
+    --accent: #5b93ff;
+    --accent-hover: #7aa7ff;
+    --accent-solid: #2f6bdc;
+    --accent-soft: rgba(91, 147, 255, 0.13);
+    --accent-soft-border: rgba(91, 147, 255, 0.34);
+    --accent-text: #90b6ff;
+    --focus: #7aa7ff;
+    --focus-ring: 0 0 0 3px rgba(122, 167, 255, 0.32);
+    --selection: rgba(91, 147, 255, 0.3);
+    --ok: #62d394;
+    --ok-solid: #2fb468;
+    --ok-bg: rgba(47, 180, 104, 0.13);
+    --ok-border: rgba(47, 180, 104, 0.34);
+    --info: #90b6ff;
+    --info-solid: #5b93ff;
+    --info-bg: rgba(91, 147, 255, 0.13);
+    --info-border: rgba(91, 147, 255, 0.34);
+    --warn: #f2bb5b;
+    --warn-solid: #e6a23c;
+    --warn-bg: rgba(230, 162, 60, 0.13);
+    --warn-border: rgba(230, 162, 60, 0.34);
+    --error: #ff8a8a;
+    --error-solid: #ef4d4d;
+    --error-bg: rgba(239, 77, 77, 0.13);
+    --error-border: rgba(239, 77, 77, 0.36);
+    --k-cloudflare: #ffa35c;
+    --k-cloudflare-solid: #f38020;
+    --k-cloudflare-bg: rgba(243, 128, 32, 0.15);
+    --k-cloudflare-border: rgba(243, 128, 32, 0.4);
+    --k-cdn: #bca5ff;
+    --k-cdn-solid: #9b7bff;
+    --k-cdn-bg: rgba(139, 92, 246, 0.16);
+    --k-cdn-border: rgba(139, 92, 246, 0.4);
+    --k-platform: #5ad6c3;
+    --k-platform-solid: #19b4a0;
+    --k-platform-bg: rgba(20, 184, 166, 0.14);
+    --k-platform-border: rgba(20, 184, 166, 0.36);
+    --k-direct: #6ccbef;
+    --k-direct-solid: #22a8d4;
+    --k-direct-bg: rgba(14, 165, 233, 0.14);
+    --k-direct-border: rgba(14, 165, 233, 0.36);
+    --k-private: #b3bccb;
+    --k-private-solid: #8a96a8;
+    --k-private-bg: rgba(148, 163, 184, 0.12);
+    --k-private-border: rgba(148, 163, 184, 0.32);
+    --k-unresolved: #95a0b0;
+    --k-unresolved-solid: #6b7686;
+    --k-unresolved-bg: rgba(148, 163, 184, 0.06);
+    --k-unresolved-border: rgba(148, 163, 184, 0.38);
+    --k-nxdomain: #f890ab;
+    --k-nxdomain-solid: #e5486d;
+    --k-nxdomain-bg: rgba(225, 29, 72, 0.14);
+    --k-nxdomain-border: rgba(225, 29, 72, 0.36);
+    --k-dangling: #ff9b80;
+    --k-dangling-solid: #f46a3d;
+    --k-dangling-bg: rgba(244, 106, 61, 0.15);
+    --k-dangling-border: rgba(244, 106, 61, 0.4);
+    --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+    --backdrop: rgba(0, 0, 0, 0.6);
+    --header-bg: rgba(21, 26, 33, 0.86);
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3770,23 +3773,190 @@ button.nav-status:hover {
   }
 }
 
+/* The header app.js puts on top of the page while it prints (beforeprint → afterprint). */
+.print-head {
+  display: none;
+}
+
+/*
+ * Print: the light palette whatever the theme (the dark tokens are screen-only, section 1), no
+ * shell, forms or controls, every row of a table on one page where it fits, code and long values
+ * wrapped instead of scrolled. app.js opens every <details> for the print and adds .print-head
+ * (app, page title, UTC time, permalink); views hide their own forms in their stylesheets.
+ */
 @media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+
+  :root {
+    --bg: #fff;
+    --surface: #fff;
+    --shadow-xs: none;
+    --shadow-sm: none;
+    --shadow: none;
+    --shadow-lg: none;
+  }
+
+  html,
+  body {
+    background: #fff;
+  }
+
+  body {
+    min-height: 0;
+    overflow: visible;
+    font-size: 12.5px;
+  }
+
   .app-header,
   .app-nav,
   .start-picker,
+  .app-footer,
+  .page-header,
   .toast-region,
   .skip-link,
+  .busy-bar,
+  dialog,
+  .progress,
+  .btn,
+  .sum-actions,
+  .segmented,
+  .field,
+  .check,
+  .fieldset,
+  .filedrop,
   .dt-toolbar,
-  .dt-more {
+  .dt-more,
+  .dt-expander-col,
+  .dt-expander,
+  .disclosure-chevron,
+  .dt-sort-icon,
+  .tab:not(.is-selected),
+  .no-print {
     display: none !important;
   }
 
   .app {
     display: block;
+    min-height: 0;
   }
 
-  .dt-scroll {
-    max-height: none;
+  .app-main {
+    display: block;
+    padding: 0;
+  }
+
+  .page {
+    max-width: none;
+  }
+
+  .print-head {
+    display: block;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-strong);
+  }
+
+  .print-head-title {
+    font-size: 17px;
+    color: var(--text);
+  }
+
+  .print-head-meta {
+    margin-top: 2px;
+    color: var(--text-2);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  .print-permalink {
+    color: var(--text-2);
+    text-decoration: none;
+  }
+
+  /* The selected tab names the panel below it; the other tabs are not printed. */
+  .tablist-scroll {
     overflow: visible;
+  }
+
+  .tab.is-selected {
+    padding: 0 0 6px;
+    color: var(--text);
+    font-size: 14px;
+  }
+
+  .tab.is-selected::after {
+    display: none;
+  }
+
+  /* Scrollers print whole; long cells and code wrap inside the page width. */
+  .dt-scroll,
+  .codeblock,
+  .codeblock-pre {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .codeblock-pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* A code block's head without a label held only its (hidden) copy button. */
+  .codeblock-head:not(:has(.codeblock-label)) {
+    display: none;
+  }
+
+  /* Tighter tables: most host names and addresses fit whole; a longer one still wraps. */
+  .dt-table {
+    font-size: 11px;
+  }
+
+  .dt-table th,
+  .dt-table td {
+    padding: 5px 7px;
+  }
+
+  .dt-table th {
+    position: static;
+    white-space: normal;
+    font-size: 10.5px;
+  }
+
+  .dt-table td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  :focus,
+  :focus-visible {
+    outline: none !important;
+  }
+
+  .dt-table thead {
+    display: table-header-group;
+  }
+
+  tr,
+  li,
+  .alert,
+  .stat,
+  .kv-row,
+  .codeblock,
+  .card-head {
+    break-inside: avoid;
+  }
+
+  h1,
+  h2,
+  h3,
+  .card-head,
+  .section-title {
+    break-after: avoid;
+  }
+
+  a {
+    color: inherit;
   }
 }

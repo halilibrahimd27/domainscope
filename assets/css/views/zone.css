@@ -346,3 +346,13 @@
     transition: none;
   }
 }
+
+/* Print (style.css hides the shell and every control): leave out the importer and the next-step
+   cards (actions only). */
+@media print {
+  .zone-import,
+  .zone-h3:has(+ .zone-next),
+  .zone-next {
+    display: none;
+  }
+}

@@ -48,7 +48,7 @@ import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
 import { errorKind, splitList } from '../lib/util.js';
 import {
-  CertLoader, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
+  CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
 } from './cert.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
@@ -122,6 +122,8 @@ registerStrings('en', {
   'scan.cert.none': 'Optional: without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
   'scan.cert.isCA': 'This is a CA certificate, not a server certificate. Load the certificate issued for your domain.',
   'scan.cert.taken': 'Certificate taken over from the Certificate view.',
+  'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves.',
+  'scan.cert.sampleNext': 'Loading it starts nothing: a scan runs only when you press Start scan.',
 
   'scan.domains.label': 'Target domains',
   'scan.domains.placeholder': 'example.com\nexample.org',
@@ -496,6 +498,8 @@ registerStrings('tr', {
   'scan.cert.none': 'İsteğe bağlı: sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
   'scan.cert.isCA': 'Bu bir CA sertifikası, sunucu sertifikası değil. Alan adınız için verilen sertifikayı yükleyin.',
   'scan.cert.taken': 'Sertifika, Sertifika görünümünden aktarıldı.',
+  'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder.',
+  'scan.cert.sampleNext': 'Yüklemek hiçbir şey başlatmaz: tarama yalnızca Taramayı başlat’a bastığınızda çalışır.',
 
   'scan.domains.label': 'Hedef alan adları',
   'scan.domains.placeholder': 'example.com.tr\nexample.com',
@@ -1347,6 +1351,22 @@ export function mount(container, ctx) {
     return certLoad && certLoad.result.leaf ? certLoad.result.leaf : null;
   }
 
+  // "No file?": a host name's certificate from CT, or the sample. Neither starts a scan: loading
+  // one only fills step 2, like a dropped file. A running scan keeps the busy flag its own.
+  const certAlternatives = () => CertAlternatives({
+    onLoad: onCertLoad,
+    signal: ctx.signal,
+    onBusy: (busy) => {
+      if (!(session.run && session.run.status === 'running')) ctx.setBusy(busy);
+    },
+    onStale: ctx.checkOutdated
+  }).el;
+
+  /** Step 1's note for a certificate that is not the user's file (CT: what Verify adds; the sample: it starts nothing). */
+  const certSourceNote = () => CertSourceNote(certLoad, {
+    extra: certLoad && certLoad.source === 'ct' ? t('scan.cert.ctVerify') : t('scan.cert.sampleNext')
+  });
+
   function renderCertStep() {
     clear(certBody);
     clear(certStatus);
@@ -1356,7 +1376,8 @@ export function mount(container, ctx) {
       : Badge(t('scan.optional'), { variant: 'neutral' }));
     if (!certLoad) {
       certBody.append(CertLoader({ onLoad: onCertLoad }).el,
-        h('p', { class: 'muted text-sm' }, t('scan.cert.none')));
+        h('p', { class: 'muted text-sm' }, t('scan.cert.none')),
+        certAlternatives());
       return;
     }
     if (takenOver) certBody.append(Alert({ variant: 'info', compact: true, icon: 'arrow-right', message: t('scan.cert.taken'), dismissible: true, onDismiss: () => { takenOver = false; } }));
@@ -1370,13 +1391,15 @@ export function mount(container, ctx) {
           Button({ label: t('scan.cert.remove'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove' }, onClick: () => onCertLoad(null) })
         ]
       }));
+      const note = certSourceNote();
+      if (note) certBody.append(note);
       certBody.append(Disclosure({
         summary: t('scan.cert.another'),
         className: 'scan-cert-another',
-        children: CertLoader({ onLoad: onCertLoad, compact: true }).el
+        children: h('div', { class: 'stack-sm' }, CertLoader({ onLoad: onCertLoad, compact: true }).el, certAlternatives())
       }));
     } else {
-      certBody.append(CertLoader({ onLoad: onCertLoad, compact: true }).el);
+      certBody.append(CertLoader({ onLoad: onCertLoad, compact: true }).el, certAlternatives());
     }
   }
 

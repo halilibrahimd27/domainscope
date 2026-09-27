@@ -1514,6 +1514,22 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
   return out;
 }
 
+/**
+ * Why a name answers NXDOMAIN: an alias whose target is gone (RFC 6604 keeps
+ * the CNAME in the answer), a name missing from a live zone, or a domain that
+ * is not delegated at all. `zone` = the enclosing zone found by analyzeSoa.
+ */
+function analyzeNxdomain(name, zone, aR, soaR) {
+  const viaA = cnameChain(aR.answers, name);
+  const chain = viaA.length ? viaA : cnameChain(soaR.answers, name);
+  if (chain.length) {
+    return makeCheck('domain.dangling-cname', 'error', { domain: name, target: chain[chain.length - 1], chain: [name, ...chain].join(' → ') });
+  }
+  const reg = registryDomain(name);
+  if (reg && reg !== name && zone && isSubdomainOf(zone, reg)) return makeCheck('domain.name-missing', 'error', { domain: name, zone });
+  return makeCheck('domain.nxdomain', 'error', { domain: name });
+}
+
 function analyzeApex(name, aR, aaaaR) {
   const checks = [];
   const a = uniq(records(aR, 'A').map((rr) => rr.data));
@@ -1701,7 +1717,7 @@ export async function domainHealth(domain, {
     for (const s of ['ns', 'mx', 'spf', 'dmarc', 'dkim', 'caa', 'dnssec', 'wildcard']) progress(s);
     const rdapResult = await rdapPromise;
     throwIfAborted(signal);
-    const checks = [makeCheck('domain.nxdomain', 'error', { domain: name }), ...analyzeRdap(rdapResult, clock).checks];
+    const checks = [analyzeNxdomain(name, soa.zone, aR, soaR), ...analyzeRdap(rdapResult, clock).checks];
     return finishReport({
       domain: name, checkedAt: clock, zone: soa.zone, records: records0,
       dnssec: { signed: null, validated: null, broken: false, dsCount: 0, dnskeyCount: 0, algorithms: [], ede: [] },
@@ -1835,6 +1851,12 @@ const STRINGS = [
   ['domain.nxdomain', ['Domain does not exist', 'Alan adı mevcut değil'],
     ['DNS answers NXDOMAIN for {domain}. The name is not delegated (unregistered, expired or suspended), so no other DNS check can run.',
       'DNS, {domain} için NXDOMAIN döndürüyor. Alan adı yetkilendirilmemiş (kayıtsız, süresi dolmuş ya da askıya alınmış); bu yüzden diğer DNS kontrolleri yapılamıyor.']],
+  ['domain.dangling-cname', ['Dangling CNAME', 'Sahipsiz CNAME'],
+    ['{domain} is an alias (CNAME) of {target}, which does not exist (chain: {chain}). A dangling CNAME can be a subdomain-takeover risk: remove the record or recreate the target.',
+      '{domain}, var olmayan {target} adının takma adı (CNAME) (zincir: {chain}). Sahipsiz bir CNAME alt alan adı ele geçirme riski taşıyabilir: kaydı kaldırın ya da hedefi yeniden oluşturun.']],
+  ['domain.name-missing', ['Name does not exist', 'Ad mevcut değil'],
+    ['{domain} does not exist in the {zone} zone (no such record), so no other DNS check can run.',
+      '{domain}, {zone} bölgesinde mevcut değil (böyle bir kayıt yok); bu yüzden diğer DNS kontrolleri yapılamıyor.']],
 
   ['soa.ok', ['SOA record found', 'SOA kaydı bulundu'],
     ['Primary name server {mname}, contact {email}, serial {serial}.',

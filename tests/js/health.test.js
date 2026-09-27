@@ -374,6 +374,32 @@ test('domainHealth: NXDOMAIN short-circuits to domain.nxdomain (+ RDAP)', async 
   assert.deepEqual(r.records.ns, []);
 });
 
+test('domainHealth: NXDOMAIN below a live zone is a dangling CNAME or a missing name, not an unregistered domain', async () => {
+  const zone = goodZone();
+  zone['example.net'] = { SOA: SOA('example.net'), NS: ['ns1.dns-a.net'] };
+  zone['shop.example.com'] = { CNAME: 'gone.example.net' };
+
+  // RFC 6604: NXDOMAIN with the CNAME in the answer
+  let r = await domainHealth('shop.example.com', { dns: fakeDns(zone), fetchImpl: rdapFetch(), now: NOW });
+  assertRenderable(r);
+  lacks(r, 'domain.nxdomain');
+  const c = has(r, 'domain.dangling-cname', 'error');
+  assert.equal(c.params.target, 'gone.example.net');
+  assert.equal(c.params.chain, 'shop.example.com → gone.example.net');
+  assert.equal(r.zone, 'example.com'); // not the target's zone
+  has(r, 'rdap.expiry-ok'); // the registrable domain itself is fine
+
+  r = await run('nosuch.example.com', fakeDns(zone));
+  assertRenderable(r);
+  assert.deepEqual(ids(r), ['domain.name-missing']);
+  assert.equal(find(r, 'domain.name-missing').params.zone, 'example.com');
+  assert.equal(r.zone, 'example.com');
+
+  // below a registrable domain that does not exist either: the domain is not delegated
+  r = await run('www.example.net', fakeDns({ 'example.com': zone['example.com'] }));
+  assert.deepEqual(ids(r), ['domain.nxdomain']);
+});
+
 test('domainHealth: works with a minimal client (query only) and tolerates throwing queries', async () => {
   const zone = goodZone();
   const dns = fakeDns(zone, { resolveHost: false, detectWildcard: false, signed: ['example.com'] });

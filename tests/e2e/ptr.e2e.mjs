@@ -573,6 +573,39 @@ async function main() {
       await page.setViewport({ width: 1440, height: 900 });
     });
 
+    await run.step('the names hand-off belongs to its domains; About › Delete all local data drops it while Subdomains is not mounted', async () => {
+      await gotoRoute(page, 'subdomains');
+      const chip = () => page.evaluate(() => ({
+        chip: document.querySelector('[data-role="names-chip"]')?.dataset.applies ?? 'none',
+        scope: document.querySelector('.sub-handoff-scope')?.dataset.scope || '',
+        plan: document.querySelector('.sub-wl-plan')?.dataset.handoffExact
+      }));
+      assertEqual(await chip(), { chip: '1', scope: '', plan: '1' }, 'kept for example.com');
+      // another domain: neither the names nor exact mode apply to it
+      await page.type('[data-role="sub-domain"]', 'example.org');
+      await page.waitFor(() => document.querySelector('[data-role="names-chip"]')?.dataset.applies === '0'
+        && document.querySelector('.sub-wl-plan')?.dataset.handoffExact === '0', { message: 'not for example.org' });
+      assertEqual(await chip(), { chip: '0', scope: 'elsewhere', plan: '0' }, 'example.org');
+      assert(/these names are under example\.com/.test(await text(page, '.sub-handoff-scope')), 'says whose names they are');
+      await shot(page, opts, 'ptr-subdomains-chip-elsewhere-desktop-light-en');
+      await page.type('[data-role="sub-domain"]', 'example.com');
+      await page.waitFor(() => document.querySelector('.sub-wl-plan')?.dataset.handoffExact === '1', { message: 'back to example.com' });
+      assertEqual(await chip(), { chip: '1', scope: '', plan: '1' }, 'example.com again');
+      // wipe from About: the Subdomains view (and its own 'cleared' listener) is not mounted
+      await gotoRoute(page, 'about');
+      await page.click('[data-action="clear-data"]');
+      try {
+        await page.waitFor(() => !!document.querySelector('dialog.modal[open] .btn-danger'), { message: 'confirmation' });
+        await page.click('dialog.modal[open] .btn-danger');
+        await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialog closed' });
+      } finally {
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+      await gotoRoute(page, 'subdomains');
+      assertEqual(await chip(), { chip: 'none', scope: '', plan: '0' }, 'no names after Delete all local data');
+      if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
+    });
+
     run.group('Phone 375×667, Turkish / English, light / dark');
     await run.step('the form, the picker and the results at 375 px: no horizontal scroll', async () => {
       await gotoRoute(page, 'ptr?target=192.0.2.0/28&focus=example.com');

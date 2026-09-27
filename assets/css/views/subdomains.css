@@ -1741,6 +1741,21 @@
   --btn-h: 26px;
 }
 
+/* The typed domains use none or only some of the handed-over names. */
+.sub-handoff-scope {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.sub-handoff-scope .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
 .sub-zone-mode.segmented {
   flex-wrap: wrap;
   height: auto;

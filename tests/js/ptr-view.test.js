@@ -11,7 +11,7 @@ import { parseSweepTarget, FCRDNS_STATUSES, TARGET_ISSUES } from '../../assets/j
 import { shareParams, issueKey, buildNamesIntent, confirmedHint, LINK_MAX_CHARS } from '../../assets/js/views/ptr.js';
 import '../../assets/js/views/health.js'; // registers the hlt.fcrdns.* strings
 import {
-  namesFromIntent, handoffScanOverrides, NAMES_INTENT_MAX_AGE, NAMES_HANDOFF_MAX, ZONE_MODES
+  namesFromIntent, handoffScanOverrides, handoffForDomains, NAMES_INTENT_MAX_AGE, NAMES_HANDOFF_MAX, ZONE_MODES
 } from '../../assets/js/views/subdomains.js';
 
 describe('Reverse DNS view helpers', () => {
@@ -128,5 +128,17 @@ describe('Subdomains: names handed over by the Reverse DNS view', () => {
     assert.deepEqual(handoffScanOverrides({ mode: 'off', names: ['a.example.com'] }), {});
     assert.deepEqual(handoffScanOverrides(null), {});
     assert.deepEqual(ZONE_MODES, ['exact', 'discover', 'off']);
+  });
+
+  test('handoffForDomains: a scan uses only the names under its domains; another domain gets none (nor exact mode)', () => {
+    const ho = namesFromIntent(intent({ names: ['mail.example.com', 'www.example.com', 'ns1.example.org'], domains: ['example.com', 'example.org'] }), now);
+    assert.deepEqual(handoffForDomains(ho, ['example.com']), { ...ho, names: ['mail.example.com', 'www.example.com'], total: 3 });
+    assert.deepEqual(handoffForDomains(ho, ['example.com', 'example.org']).names, ['mail.example.com', 'www.example.com', 'ns1.example.org']);
+    assert.deepEqual(handoffForDomains(ho, ['mail.example.com']).names, ['mail.example.com'], 'a narrower domain');
+    assert.equal(handoffForDomains(ho, ['example.net']), null);
+    assert.equal(handoffForDomains(ho, []), null);
+    assert.equal(handoffForDomains(null, ['example.com']), null);
+    // the mode is the hand-off's own (the chip changes it)
+    assert.equal(handoffForDomains({ ...ho, mode: 'off' }, ['example.org']).mode, 'off');
   });
 });

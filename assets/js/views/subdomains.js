@@ -584,6 +584,8 @@ registerStrings('en', {
   'sub.handoff.note.off': 'This scan ignores these names.',
   'sub.handoff.open': 'Back to Reverse DNS',
   'sub.handoff.remove': 'Remove these names',
+  'sub.handoff.elsewhere': 'Not used for the domains in the box: these names are under {domains}. Type one of those to scan them.',
+  'sub.handoff.partial': { one: '{count} of {total} names is under the domains in the box: this scan uses only that one.', other: '{count} of {total} names are under the domains in the box: this scan uses only those.' },
   'sub.handoff.exact': 'Exact mode: only the names from the reverse DNS sweep; no passive sources, wordlist or permutations for this scan.',
   'sub.handoff.discover': 'Names from the reverse DNS sweep were added to this scan as starting names.',
   'sub.plan.handoffExact': { one: 'Exact mode: only the {count} name from the reverse DNS sweep (and the domains in the box) is resolved; the wordlist, variations and passive sources are not used for this scan.', other: 'Exact mode: only the {count} names from the reverse DNS sweep (and the domains in the box) are resolved; the wordlist, variations and passive sources are not used for this scan.' },
@@ -1007,6 +1009,8 @@ registerStrings('tr', {
   'sub.handoff.note.off': 'Bu tarama bu adları kullanmaz.',
   'sub.handoff.open': 'Ters DNS’e dön',
   'sub.handoff.remove': 'Bu adları kaldır',
+  'sub.handoff.elsewhere': 'Kutudaki alan adları için kullanılmaz: bu adlar {domains} altında. Taramak için bunlardan birini yazın.',
+  'sub.handoff.partial': '{total} addan {count} tanesi kutudaki alan adlarının altında: bu tarama yalnızca onları kullanır.',
   'sub.handoff.exact': 'Kesin mod: yalnızca ters DNS taramasından gelen adlar; bu taramada pasif kaynak, kelime listesi ya da permütasyon yok.',
   'sub.handoff.discover': 'Ters DNS taramasından gelen adlar bu taramaya başlangıç adı olarak eklendi.',
 
@@ -2263,13 +2267,32 @@ export function handoffScanOverrides(handoff) {
 }
 
 /**
+ * The part of a names hand-off that belongs to the typed domains: its names equal to or under
+ * one of them. A scan of another domain never gets these names, nor their exact mode (like the
+ * Zone File chip, {@link zoneForDomains}). Null when no name belongs to the typed domains.
+ * @param {{ names: string[], mode: string }|null} handoff `session.handoff` ({@link namesFromIntent})
+ * @param {string[]} domains the typed domains (parseTargets().domains)
+ * @returns {{ names: string[], mode: string, total: number }|null} `names`: the ones this scan uses,
+ *   `total`: all the hand-off holds (the rest wait for their own domains)
+ */
+export function handoffForDomains(handoff, domains) {
+  if (!handoff || !Array.isArray(handoff.names)) return null;
+  const typed = (Array.isArray(domains) ? domains : []).filter((d) => typeof d === 'string' && d);
+  const names = handoff.names.filter((n) => typed.some((d) => isSubdomainOf(n, d)));
+  return names.length ? { ...handoff, names, total: handoff.names.length } : null;
+}
+
+/**
  * The "names from the reverse DNS sweep" chip: the count, how this scan uses them (exactly these
  * names / include in discovery / leave out, ZONE_MODES), a way back to the Reverse DNS view and a
- * remove button. The note follows the chosen mode in place.
- * @param {{ handoff: { names: string[], label: string, mode: string }, onMode: (mode: string) => void, onRemove: () => void, href: string }} opts
+ * remove button. The note follows the chosen mode in place. `applied` ({@link handoffForDomains}
+ * for the typed domains): null says the names wait for their own domains (this scan does not use
+ * them), fewer names than the chip holds say how many this scan uses.
+ * @param {{ handoff: { names: string[], domains?: string[], label: string, mode: string }, applied?: { names: string[] }|null,
+ *   onMode: (mode: string) => void, onRemove: () => void, href: string }} opts
  * @returns {HTMLElement}
  */
-export function NamesChip({ handoff, onMode, onRemove, href }) {
+export function NamesChip({ handoff, applied = null, onMode, onRemove, href }) {
   const note = h('p', { class: 'sub-zone-note text-sm', attrs: { 'aria-live': 'polite' } });
   const setNote = (m) => {
     note.textContent = t(`sub.handoff.note.${m}`);
@@ -2288,12 +2311,24 @@ export function NamesChip({ handoff, onMode, onRemove, href }) {
     }
   });
   setNote(current);
-  return h('div', { class: 'sub-zone sub-handoff', dataset: { role: 'names-chip', count: String(handoff.names.length) } },
+  const domains = Array.isArray(handoff.domains) && handoff.domains.length
+    ? handoff.domains
+    : [...new Set(handoff.names.map((n) => registrableDomain(n) || n))].slice(0, 5);
+  let scope = null;
+  if (!applied) {
+    scope = h('p', { class: 'sub-handoff-scope text-sm', dataset: { scope: 'elsewhere' } }, Icon('info', { size: 13 }),
+      h('span', null, t('sub.handoff.elsewhere', { domains: domains.join(', ') })));
+  } else if (applied.names.length < handoff.names.length) {
+    scope = h('p', { class: 'sub-handoff-scope text-sm', dataset: { scope: 'partial' } }, Icon('info', { size: 13 }),
+      h('span', null, t('sub.handoff.partial', { count: applied.names.length, total: formatNumber(handoff.names.length) })));
+  }
+  return h('div', { class: 'sub-zone sub-handoff', dataset: { role: 'names-chip', count: String(handoff.names.length), applies: applied ? '1' : '0' } },
     h('div', { class: 'sub-zone-head' },
       Icon('swap', { size: 15 }),
       h('span', { class: 'sub-zone-title', title: handoff.names.slice(0, 20).join(', ') }, t('sub.handoff.chip', { count: handoff.names.length, label: handoff.label || '—' })),
       h('a', { class: 'sub-zone-open', href, dataset: { action: 'names-open' } }, t('sub.handoff.open')),
       Button({ label: t('sub.handoff.remove'), icon: 'x', size: 'sm', variant: 'ghost', className: 'sub-handoff-remove', dataset: { action: 'names-remove' }, onClick: () => onRemove && onRemove() })),
+    scope,
     seg.el,
     note);
 }
@@ -2976,15 +3011,24 @@ export function mount(container, ctx) {
     }));
   }
 
-  // "Names from the reverse DNS sweep" chip: shown while a hand-off is kept.
+  // "Names from the reverse DNS sweep" chip: shown while a hand-off is kept; it says when the
+  // typed domains use none or only some of its names (a scan uses only the names under them).
   const handoffHost = h('div', { class: 'sub-zone-host', hidden: true });
-  function renderHandoff() {
-    clear(handoffHost);
+  const activeHandoff = () => handoffForDomains(session.handoff, parseTargets(domainField.value).domains);
+  let handoffShown = null;
+  function renderHandoff({ force = true } = {}) {
     const ho = session.handoff;
+    const applied = activeHandoff();
+    // Unchanged while the user types: keep the chip (and the focus on its buttons).
+    const key = ho ? `${applied ? applied.names.length : -1}` : null;
+    if (!force && handoffShown && handoffShown.ho === ho && handoffShown.key === key) return;
+    handoffShown = { ho, key };
+    clear(handoffHost);
     handoffHost.hidden = !ho;
     if (!ho) return;
     handoffHost.append(NamesChip({
       handoff: ho,
+      applied,
       href: ctx.href('ptr'),
       onMode: (m) => {
         ho.mode = ZONE_MODES.includes(m) ? m : 'exact';
@@ -3001,6 +3045,7 @@ export function mount(container, ctx) {
 
   function renderScope() {
     renderZoneChip();
+    renderHandoff({ force: false });
     clear(scopeNote);
     const { domains } = parseTargets(domainField.value);
     const scoped = domains.filter((d) => registrableDomain(d) && registrableDomain(d) !== d);
@@ -3410,8 +3455,9 @@ export function mount(container, ctx) {
       planLine.append(Icon('file-text', { size: 13 }), h('span', null, t('sub.plan.zoneExact', { count: zoneChipCounts(zone).names })));
       return;
     }
-    // Exact mode of a names hand-off (Reverse DNS): the plan is those names, not the wordlist.
-    const ho = session.handoff;
+    // Exact mode of a names hand-off (Reverse DNS) whose names belong to the typed domains: the
+    // plan is those names, not the wordlist.
+    const ho = activeHandoff();
     planLine.dataset.handoffExact = ho && ho.mode === 'exact' ? '1' : '0';
     if (planLine.dataset.handoffExact === '1') {
       planLine.append(Icon('swap', { size: 13 }), h('span', null, t('sub.plan.handoffExact', { count: ho.names.length })));
@@ -3657,9 +3703,10 @@ export function mount(container, ctx) {
     const zone = activeZone();
     const zoneMode = zone ? (zoneModes.get(zone) || 'discover') : 'off';
     const zoneCfg = zoneScanOverrides(zone, zoneMode);
-    // Names handed over by the Reverse DNS view (one run's config, never stored): extra names,
-    // and in exact mode nothing else is guessed or asked.
-    const handoff = session.handoff && session.handoff.mode !== 'off' ? session.handoff : null;
+    // Names handed over by the Reverse DNS view (one run's config, never stored): the ones under
+    // the scanned domains as extra names, and in exact mode nothing else is guessed or asked.
+    const applied = handoffForDomains(session.handoff, v.domains);
+    const handoff = applied && applied.mode !== 'off' ? applied : null;
     const handoffCfg = handoffScanOverrides(handoff);
     const extraNames = handoff ? [...new Set([...v.extraNames, ...handoff.names])] : v.extraNames;
     const exact = zoneCfg.exact === true || handoffCfg.exact === true;

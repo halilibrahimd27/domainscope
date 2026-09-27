@@ -2669,6 +2669,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       {
         key: 'ips',
         label: t('scan.col.ips'),
+        className: 'scan-col-ips', // addresses print whole (scan.css)
         sortable: true,
         sortValue: (x) => ipSortValue(x.resolution.ipv4[0] || x.resolution.ipv6[0]),
         searchValue: (x) => [...x.resolution.ipv4, ...x.resolution.ipv6].join(' '),
@@ -3045,7 +3046,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             }
           },
           {
-            key: 'ips', label: t('scan.srv.col.ips'), sortable: true, mono: true,
+            key: 'ips', label: t('scan.srv.col.ips'), sortable: true, mono: true, className: 'scan-col-ips',
             sortValue: (g) => ipSortValue(g.server.ips[0]),
             searchValue: (g) => g.server.ips.join(' '),
             render: (g) => TruncatedList(g.server.ips, { max: 2 })
@@ -3080,7 +3081,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         className: 'scan-unmatched-table',
         export: { filename: 'unmatched-ips', subject },
         columns: [
-          { key: 'ip', label: t('scan.srv.col.ip'), sortable: true, mono: true, sortValue: (u) => ipSortValue(u.ip) },
+          { key: 'ip', label: t('scan.srv.col.ip'), sortable: true, mono: true, className: 'scan-col-ips', sortValue: (u) => ipSortValue(u.ip) },
           {
             key: 'owner', label: t('scan.srv.col.owner'), sortable: true,
             sortValue: (u) => (u.private ? 0 : 1),
@@ -3106,7 +3107,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       rowKey: (x) => `${x.name}|${x.ip}|${x.via}`,
       columns: [
         { key: 'name', label: t('scan.srv.col.host'), mono: true },
-        { key: 'ip', label: t('scan.srv.col.ip'), mono: true },
+        { key: 'ip', label: t('scan.srv.col.ip'), mono: true, className: 'scan-col-ips' },
         { key: 'via', label: t('scan.srv.col.via'), render: (x) => Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }) },
         cert ? {
           key: 'covered', label: t('scan.srv.col.covered'),
@@ -3272,7 +3273,7 @@ function buildRunUI(run, ctx, { onFinish }) {
               render: (n) => TruncatedList(n.hosts, { max: 3 })
             },
             {
-              key: 'ips', label: t('scan.cdn.col.netIps'), mono: true,
+              key: 'ips', label: t('scan.cdn.col.netIps'), mono: true, className: 'scan-col-ips',
               searchValue: (n) => n.ips.join(' '), exportValue: (n) => n.ips.join(' '),
               render: (n) => TruncatedList(n.ips, { max: 3 })
             },
@@ -3383,7 +3384,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         className: 'scan-hints-table',
         export: { filename: 'origin-hints', subject },
         columns: [
-          { key: 'ip', label: t('scan.cdn.col.ip'), mono: true, sortable: true, sortValue: (o) => ipSortValue(o.ip) },
+          { key: 'ip', label: t('scan.cdn.col.ip'), mono: true, sortable: true, className: 'scan-col-ips', sortValue: (o) => ipSortValue(o.ip) },
           {
             key: 'reasons', label: t('scan.cdn.col.reasons'), wrap: true,
             searchValue: (o) => o.reasons.map((x) => `${x.kind} ${reasonText(x)}`).join(' '),

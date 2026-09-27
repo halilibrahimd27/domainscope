@@ -1918,7 +1918,8 @@
     display: none;
   }
 
-  .sub-host-name {
+  .sub-host-name,
+  .sub-ip {
     white-space: nowrap;
   }
 }

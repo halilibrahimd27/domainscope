@@ -767,6 +767,12 @@
     display: none;
   }
 
+  /* Addresses and host names stay whole on paper. */
+  .hlt-ip,
+  .hlt-host {
+    white-space: nowrap;
+  }
+
   /* The traffic light is drawn with backgrounds, which paper leaves out by default. */
   .hlt-light {
     -webkit-print-color-adjust: exact;

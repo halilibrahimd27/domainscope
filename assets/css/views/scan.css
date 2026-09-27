@@ -1326,7 +1326,9 @@
     display: none;
   }
 
-  .scan-host-name {
+  /* Host names and addresses stay whole on paper (the address columns: scan.js scan-col-ips). */
+  .scan-host-name,
+  td.scan-col-ips {
     white-space: nowrap;
   }
 }

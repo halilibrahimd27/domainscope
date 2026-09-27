@@ -3924,9 +3924,27 @@ button.nav-status:hover {
     font-size: 10.5px;
   }
 
+  /*
+   * break-word, not anywhere: a cell breaks inside a word only when the word cannot fit on a line
+   * of its own, so a column never shrinks below its longest word ("Certificate", a resolver's
+   * name). Addresses and host names stay whole (nowrap in the views' print blocks).
+   */
   .dt-table td {
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+  }
+
+  /* The same inside a cell's list (host names, CNAMEs); addresses are nowrap per view. */
+  .tlist-item {
+    overflow-wrap: break-word;
+  }
+
+  /*
+   * A sortable header's label sits in a button, which Chrome leaves out of the header row it
+   * repeats on the next page: without the button box the label is plain header text.
+   */
+  .dt-sort {
+    display: contents;
   }
 
   :focus,

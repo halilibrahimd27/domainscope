@@ -171,4 +171,14 @@
   .ipi-results-bar {
     display: none;
   }
+
+  /* Addresses stay whole on paper; the operator and network cells give up their screen widths so the table fits the page. */
+  .ipi-ip {
+    white-space: nowrap;
+  }
+
+  .ipi-op,
+  .ipi-holder {
+    min-width: 0;
+  }
 }

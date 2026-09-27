@@ -230,11 +230,25 @@ const PRIVATE_V6 = ['::/128', '::1/128', 'fc00::/7', 'fe80::/10'].map(parseCidr)
  * @returns {boolean}
  */
 export function isPrivateIP(ip) {
+  return privateRangeOf(ip) !== null;
+}
+
+/**
+ * The private range ({@link isPrivateIP}) holding `ip`, e.g. '10.0.0.0/8' for 10.1.2.3 (the
+ * IPv4 range for an IPv4-mapped IPv6 address); null for a public or invalid address. No two
+ * IPv4 ranges touch, so a block of IPv4 addresses is all private exactly when one range
+ * holds both its ends.
+ * @param {string} ip
+ * @returns {string|null}
+ */
+export function privateRangeOf(ip) {
   const addr = parseIP(ip);
-  if (!addr) return false;
+  if (!addr) return null;
   const v4 = addr.version === 4 ? addr.value : mappedV4(addr);
-  if (v4 !== null) return PRIVATE_V4.some((c) => cidrContains(c, { version: 4, value: v4 }));
-  return PRIVATE_V6.some((c) => cidrContains(c, addr));
+  const hit = v4 !== null
+    ? PRIVATE_V4.find((c) => cidrContains(c, { version: 4, value: v4 }))
+    : PRIVATE_V6.find((c) => cidrContains(c, addr));
+  return hit ? `${formatIP(hit.network, hit.version)}/${hit.prefix}` : null;
 }
 
 // Beyond PRIVATE_V4: documentation (TEST-NET-1/2/3), the deprecated 6to4 relay anycast,

@@ -24,22 +24,28 @@ describe('Reverse DNS view helpers', () => {
     assert.equal(shareParams(long), null);
   });
 
-  test('issueKey: a range too large has no network to suggest', () => {
-    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '198.18.0.0/22' } }), 'ptr.issue.too-large');
+  test('issueKey: a network too large gets its first /22, or why it is not swept at all; a range has no network to suggest', () => {
+    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '192.0.0.0/22', kind: 'cidr', skipped: '' } }), 'ptr.issue.too-large');
     assert.equal(issueKey({ code: 'too-large', params: { suggestion: '' } }), 'ptr.issue.too-large.range');
+    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '', kind: 'range', skipped: '' } }), 'ptr.issue.too-large.range');
+    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '', kind: 'cidr', skipped: '' } }), 'ptr.issue.too-large.split');
+    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '', kind: 'cidr', skipped: 'private' } }), 'ptr.issue.too-large.private');
+    assert.equal(issueKey({ code: 'too-large', params: { suggestion: '', kind: 'cidr', skipped: 'reserved' } }), 'ptr.issue.too-large.reserved');
     assert.equal(issueKey({ code: 'private', params: {} }), 'ptr.issue.private');
   });
 
   test('every issue parseSweepTarget can raise renders in both languages with its params filled', () => {
-    const inputs = ['nonsense', '2001:db8::/64', '198.51.100.20-10 192.0.2.1', '198.18.0.0/16', '198.18.0.0-198.18.7.255',
-      '192.0.2.0/24 198.51.100.0/24 203.0.113.0/24 192.0.2.0/24 198.51.100.0/24', 'AS64496 AS64497', 'AS64496 192.0.2.1',
+    const inputs = ['nonsense', '2001:db8::/64', '198.51.100.20-10 192.0.2.1', '192.0.0.0/20', '198.18.0.0/16', '198.18.0.0-198.18.7.255', '198.51.100.0-203.0.113.255',
+      '224.0.0.0/4', '0.0.0.0/1', '192.0.2.0/24 198.18.0.0/23 198.19.0.0/23', 'AS64496 AS64497', 'AS64496 192.0.2.1',
       '10.0.0.0/30 224.0.0.1 192.0.2.1', '192.0.2.77/30'];
     const seen = new Set();
+    const keys = new Set();
     for (const lang of ['en', 'tr']) {
       setLang(lang);
       for (const text of inputs) {
         for (const issue of parseSweepTarget(text).issues) {
           seen.add(issue.code);
+          keys.add(issueKey(issue));
           const out = t(issueKey(issue), issue.params);
           assert.ok(!/\{\w+\}/.test(out), `${lang} ${issue.code}: ${out}`);
           assert.notEqual(out, issueKey(issue));
@@ -47,6 +53,7 @@ describe('Reverse DNS view helpers', () => {
       }
     }
     assert.deepEqual([...seen].sort(), [...TARGET_ISSUES].sort());
+    for (const k of ['too-large', 'too-large.range', 'too-large.split', 'too-large.private', 'too-large.reserved']) assert.ok(keys.has(`ptr.issue.${k}`), k);
   });
 
   test('English plurals and Turkish singular nouns after a number', () => {

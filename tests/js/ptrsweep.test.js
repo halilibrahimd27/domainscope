@@ -140,21 +140,58 @@ describe('parseSweepTarget', () => {
   });
 
   test('a network over the cap is an error with its first /22 as the suggestion', () => {
-    const t = P.parseSweepTarget('198.18.0.0/16');
+    const t = P.parseSweepTarget('192.0.0.0/20');
     assert.equal(t.ok, false);
     assert.deepEqual(t.addresses, []);
-    assert.deepEqual(t.issues, [{ code: 'too-large', severity: 'error', params: { input: '198.18.0.0/16', count: 65536, max: 1024, suggestion: '198.18.0.0/22' } }]);
-    assert.equal(P.parseSweepTarget('198.18.0.0/22').ok, false, 'all private (benchmark space)');
-    const big = P.parseSweepTarget('198.18.0.0-198.18.7.255');
+    assert.deepEqual(t.issues, [{
+      code: 'too-large', severity: 'error', params: { input: '192.0.0.0/20', count: 4096, max: 1024, suggestion: '192.0.0.0/22', kind: 'cidr', skipped: '' }
+    }]);
+    assert.equal(P.parseSweepTarget('192.0.2.0/24', { max: 64 }).issues[0].params.suggestion, '192.0.2.0/26');
+    const big = P.parseSweepTarget('192.0.2.0-192.0.2.255', { max: 100 });
     assert.equal(big.issues[0].code, 'too-large');
-    assert.equal(big.issues[0].params.suggestion, '', 'a range gets no network suggestion');
+    assert.deepEqual([big.issues[0].params.suggestion, big.issues[0].params.kind], ['', 'range'], 'a range gets no network suggestion');
   });
 
-  test('the cap applies to the sum too (over-cap), and a smaller max can be passed', () => {
-    const t = P.parseSweepTarget('192.0.2.0/24 198.51.100.0/24 203.0.113.0/24 192.0.2.0/24 198.51.100.0/24');
+  test('a network over the cap that is wholly private or reserved says so, and nothing is suggested', () => {
+    const params = (text) => P.parseSweepTarget(text).issues[0].params;
+    for (const [text, skipped] of [['10.0.0.0/8', 'private'], ['198.18.0.0/16', 'private'], ['172.16.0.0/12', 'private'],
+      ['198.18.0.0-198.18.7.255', 'private'], ['224.0.0.0/4', 'reserved'], ['224.0.0.0/3', 'reserved']]) {
+      assert.deepEqual([params(text).skipped, params(text).suggestion], [skipped, ''], text);
+    }
+    // part private, part public: said as too large, but its first /22 (all in 0.0.0.0/8) is no suggestion
+    assert.deepEqual([params('0.0.0.0/1').skipped, params('0.0.0.0/1').suggestion, params('0.0.0.0/1').kind], ['', '', 'cidr']);
+    // a block whose ends are private but in two ranges, with public space between, is not private
+    assert.deepEqual([params('10.0.0.0-127.0.0.1').skipped, params('10.0.0.0-127.0.0.1').kind], ['', 'range']);
+  });
+
+  test('the cap applies to the distinct addresses of everything together (over-cap); overlaps count once', () => {
+    const t = P.parseSweepTarget('192.0.2.0/24 198.18.0.0/23 198.19.0.0/23');
     assert.deepEqual(t.issues.map((i) => i.code), ['over-cap']);
     assert.equal(t.issues[0].params.count, 1280);
     assert.equal(P.parseSweepTarget('192.0.2.0/28', { max: 8 }).issues[0].params.suggestion, '192.0.2.0/29');
+    // a network and one inside it, the same network twice, a range across both: 1,024 and 256 distinct addresses
+    const nested = P.parseSweepTarget('192.0.2.0/22 192.0.2.0/24');
+    assert.deepEqual([nested.total, nested.ok, nested.issues.map((i) => i.code)], [1024, true, ['host-bits', 'private']]);
+    assert.equal(nested.addresses.length, 768, 'the private 192.0.0.0/24 left out, nothing twice');
+    const twice = P.parseSweepTarget('192.0.2.0/24 192.0.2.0/24 192.0.2.10-192.0.2.20 192.0.2.7');
+    assert.deepEqual([twice.total, twice.addresses.length, twice.ok], [256, 256, true]);
+    assert.equal(P.parseSweepTarget('192.0.2.0/24 198.51.100.0/24 203.0.113.0/24 192.0.2.0/24 198.51.100.0/24').total, 768);
+  });
+
+  test('"AS 64496" / "ASN 64496" and ranges typed with spaces or an en dash are one token', () => {
+    for (const text of ['AS 64496', 'ASN 64496', 'asn  64496 ', '# peer\nAS\t64496']) {
+      const t = P.parseSweepTarget(text);
+      assert.deepEqual([t.kind, t.asn, t.issues], ['asn', 64496, []], JSON.stringify(text));
+    }
+    for (const text of ['192.0.2.10 - 192.0.2.20', '192.0.2.10 -192.0.2.20', '192.0.2.10 – 192.0.2.20', '192.0.2.10–20', '192.0.2.10 - 20']) {
+      const t = P.parseSweepTarget(text);
+      assert.deepEqual([t.blocks.map((b) => b.label), t.issues], [['192.0.2.10-192.0.2.20'], []], text);
+    }
+    const v6 = P.parseSweepTarget('2001:db8::1 - 2001:db8::9');
+    assert.deepEqual(v6.issues.map((i) => i.code), ['v6-range', 'nothing']);
+    // a list stays a list: no dash, or a dash at a line start (a bullet)
+    assert.equal(P.parseSweepTarget('192.0.2.10 192.0.2.20').addresses.length, 2);
+    assert.deepEqual(P.parseSweepTarget('- 192.0.2.10\n- 192.0.2.20').addresses, ['192.0.2.10', '192.0.2.20']);
   });
 
   test('private and reserved addresses are left out and counted', () => {
@@ -290,6 +327,14 @@ describe('announced prefixes', () => {
     const s = P.prefixSelection(r.prefixes, ['192.0.2.0/24', '198.18.0.0/15', '2001:db8::/32', '198.51.100.0/24']);
     assert.deepEqual(s, { cidrs: ['192.0.2.0/24', '198.51.100.0/24'], count: 2, addresses: 512, over: false, max: 1024 });
     assert.equal(P.prefixSelection(r.prefixes, ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24'], { max: 512 }).over, true);
+  });
+
+  test('prefixSelection: a prefix and a more specific one inside it count their addresses once', () => {
+    const r = P.parseAnnouncedPrefixes(ripe(['198.18.0.0/22', '198.18.1.0/24', '198.18.2.0/23', '192.0.2.0/24'].map((prefix) => ({ prefix, timelines: tl() }))));
+    const all = P.prefixSelection(r.prefixes, r.prefixes.map((p) => p.prefix));
+    assert.deepEqual([all.count, all.addresses, all.over], [4, 1024 + 256, true]);
+    const nested = P.prefixSelection(r.prefixes, ['198.18.0.0/22', '198.18.1.0/24', '198.18.2.0/23']);
+    assert.deepEqual([nested.count, nested.addresses, nested.over], [3, 1024, false]);
   });
 });
 

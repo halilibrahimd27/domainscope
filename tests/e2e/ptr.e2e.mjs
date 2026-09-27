@@ -209,16 +209,27 @@ async function main() {
       await shot(page, opts, 'ptr-empty-desktop-light-en');
     });
 
-    await run.step('input issues: an IPv6 network is explained, a /16 is over the cap with a /22 to use, private space is left out', async () => {
+    await run.step('input issues: an IPv6 network is explained, a /20 is over the cap with a /22 to use, private space is left out', async () => {
       await typeTarget(page, '2001:db8::/64');
       await page.waitFor(() => !!document.querySelector('.ptr-issues [data-issue="v6-range"]'), { message: 'v6 issue' });
       assert(/18 quintillion/.test(await text(page, '.ptr-issues [data-issue="v6-range"]')), 'why no IPv6 sweep');
-      await typeTarget(page, '198.18.0.0/16');
+      await typeTarget(page, '192.0.0.0/20');
       await page.waitFor(() => !!document.querySelector('.ptr-issues [data-issue="too-large"]'), { message: 'too large' });
-      assert(/65,536 addresses.*1,024/.test(await text(page, '.ptr-issues [data-issue="too-large"]')), 'counts');
+      assert(/4,096 addresses.*1,024/.test(await text(page, '.ptr-issues [data-issue="too-large"]')), 'counts');
       await page.click('[data-action="ptr-use-suggestion"]');
-      await page.waitFor(() => document.querySelector('[data-role="ptr-target"]').value === '198.18.0.0/22', { message: 'suggestion used' });
-      assertEqual(await issues(page), ['private', 'nothing'], 'benchmark space is private');
+      await page.waitFor(() => document.querySelector('[data-role="ptr-target"]').value === '192.0.0.0/22', { message: 'suggestion used' });
+      assertEqual(await issues(page), ['private'], 'its 192.0.0.0/24 is private, the rest is swept');
+      assert(/768 addresses/.test(await text(page, '.ptr-parsed')), 'the public part');
+      // a wholly private network over the cap says so, and offers no part of it to sweep
+      await typeTarget(page, '10.0.0.0/8');
+      await page.waitFor(() => /private address space/.test(document.querySelector('.ptr-issues [data-issue="too-large"]')?.textContent || ''), { message: 'private /8' });
+      assert(!await page.evaluate(() => !!document.querySelector('[data-action="ptr-use-suggestion"]')), 'no suggestion');
+      // a range typed with spaces and "ASN 64496" are read as one token each
+      await typeTarget(page, '192.0.2.10 - 192.0.2.20');
+      await page.waitFor(() => /11 addresses/.test(document.querySelector('.ptr-parsed')?.textContent || ''), { message: 'spaced range' });
+      assertEqual(await issues(page), [], 'no ignored "-"');
+      await typeTarget(page, 'ASN 64496');
+      await page.waitFor(() => /List prefixes/.test(document.querySelector('[data-action="ptr-run"]').textContent), { message: 'ASN with a space' });
       await typeTarget(page, '10.0.0.0/24');
       await sleep(250);
       await page.click('[data-action="ptr-run"]');

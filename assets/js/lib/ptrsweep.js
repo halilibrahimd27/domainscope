@@ -30,7 +30,7 @@
 
 import { fetchJson, retry, errorKind, throwIfAborted, uniq, splitList } from './util.js';
 import {
-  parseIP, parseCidr, formatIP, normalizeIP, ipVersion, ipInCidr, isPrivateIP, reversePtrName,
+  parseIP, parseCidr, formatIP, normalizeIP, ipVersion, ipInCidr, isPrivateIP, privateRangeOf, reversePtrName,
   matchProviderByCname, classifyResolution
 } from './netinfo.js';
 import { normalizeHostname, isSubdomainOf, registrableDomain, sortHostnames } from './domain.js';
@@ -97,6 +97,8 @@ export const SWEEP_FILTERS = Object.freeze(['all', 'ptr', 'focus', 'confirmed', 
 
 const MAX_ASN = 4294967295;
 const RESERVED_V4 = ['224.0.0.0/4', '240.0.0.0/4'].map(parseCidr);
+/** 224/4 and 240/4 together: the top eighth of IPv4, one contiguous block. */
+const RESERVED_V4_FIRST = parseCidr('224.0.0.0/3').network;
 const MULTICAST_V6 = parseCidr('ff00::/8');
 
 /* ------------------------------------------------------------------------ */
@@ -140,6 +142,37 @@ export function skipReason(ip) {
 /** The IPv4 prefix length of a network holding at most `max` addresses (1024 → 22). */
 function prefixFor(max) {
   return 32 - Math.floor(Math.log2(Math.max(1, max)));
+}
+
+/**
+ * Why EVERY address from `first` to `last` (bigint, IPv4) is left out: 'private' when one
+ * private range holds both ends (netinfo.privateRangeOf: no two of them touch), 'reserved'
+ * when both are in 224/3; null when at least one address would be swept.
+ */
+function wholeBlockSkipped(first, last) {
+  const range = parseCidr(privateRangeOf(formatIP(first, 4)) || '');
+  if (range && range.version === 4 && last < range.network + 2n ** BigInt(32 - range.prefix)) return 'private';
+  return first >= RESERVED_V4_FIRST ? 'reserved' : null;
+}
+
+/**
+ * Distinct addresses in a set of blocks: overlapping ones (a network and a smaller one inside
+ * it, the same network twice) count once.
+ * @param {Array<{ version: 4|6, first: bigint, count: number }>} blocks
+ * @returns {number}
+ */
+function uniqueAddressCount(blocks) {
+  const spans = blocks.map((b) => ({ start: (BigInt(b.version) << 130n) + b.first, count: BigInt(b.count) }))
+    .sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  let total = 0n;
+  let end = -1n; // one past the last address counted
+  for (const { start, count } of spans) {
+    const stop = start + count;
+    if (stop <= end) continue;
+    total += stop - (start > end ? start : end);
+    end = stop;
+  }
+  return Number(total);
 }
 
 /**
@@ -222,7 +255,7 @@ function parseRange(token) {
  * @property {number|null} asn the AS number (kind 'asn')
  * @property {SweepBlock[]} blocks
  * @property {string[]} addresses what a sweep looks up, input order, de-duplicated (none while an error stands)
- * @property {number} total addresses in the blocks before the private / reserved ones are left out
+ * @property {number} total distinct addresses in the blocks before the private / reserved ones are left out
  * @property {{ private: number, reserved: number }} skipped
  * @property {SweepIssue[]} issues
  * @property {boolean} ok nothing blocks a sweep (or an AS lookup)
@@ -233,15 +266,31 @@ const issue = (code, params = {}) => ({ code, severity: TARGET_ISSUE_SEVERITY[co
 const listText = (items, max = 6) => (items.length > max ? `${items.slice(0, max).join(', ')} (+${items.length - max})` : items.join(', '));
 
 /**
+ * One token per address, range, network or AS number: `AS 64496` / `ASN 64496` and a range
+ * typed with spaces or an en dash (`192.0.2.10 - 192.0.2.20`, `192.0.2.10–20`) are joined
+ * before the text is split.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function targetTokens(text) {
+  const joined = String(text ?? '')
+    .replace(/(^|[\s,;])(ASN?)[ \t]+(\d{1,10})(?=$|[\s,;#])/gim, '$1$2$3')
+    .replace(/([0-9A-Fa-f.:])[ \t]*[-\u2013][ \t]*(?=\d|[0-9A-Fa-f]{1,4}:|::)/g, '$1-');
+  return splitList(joined);
+}
+
+/**
  * Read what the user typed. Tokens are split on whitespace, commas and semicolons (`#` starts
  * a comment). Every IPv4 network or range must fit the cap on its own, and so must all of
- * them together; an error issue then stands and `addresses` stays empty.
+ * them together, overlaps counted once; an error issue then stands and `addresses` stays
+ * empty. A network too large and wholly private or reserved says so instead of suggesting a
+ * part of it (`params.skipped`); the suggested first /22 is never one with nothing to sweep.
  * @param {string} text
  * @param {{ max?: number }} [opts]
  * @returns {SweepTarget}
  */
 export function parseSweepTarget(text, { max = SWEEP_MAX_ADDRESSES } = {}) {
-  const tokens = splitList(text);
+  const tokens = targetTokens(text);
   const out = {
     kind: 'empty', asn: null, blocks: [], addresses: [], total: 0,
     skipped: { private: 0, reserved: 0 }, issues: [], ok: false, label: ''
@@ -318,12 +367,14 @@ export function parseSweepTarget(text, { max = SWEEP_MAX_ADDRESSES } = {}) {
   }
   out.kind = 'addresses';
   out.label = out.blocks.length === 1 ? out.blocks[0].label : listText(out.blocks.map((b) => b.label), 3);
-  out.total = out.blocks.reduce((n, b) => n + b.count, 0);
+  out.total = uniqueAddressCount(out.blocks);
   for (const b of out.blocks) {
     if (b.count > max) {
-      out.issues.push(issue('too-large', {
-        input: b.label, count: b.count, max, suggestion: b.kind === 'cidr' ? firstSubnet(b.label, prefixFor(max)) : ''
-      }));
+      const skipped = b.version === 4 ? wholeBlockSkipped(b.first, b.first + BigInt(b.count) - 1n) : null;
+      let suggestion = !skipped && b.kind === 'cidr' ? firstSubnet(b.label, prefixFor(max)) : '';
+      const part = suggestion ? parseCidr(suggestion) : null;
+      if (part && wholeBlockSkipped(part.network, part.network + 2n ** BigInt(32 - part.prefix) - 1n)) suggestion = '';
+      out.issues.push(issue('too-large', { input: b.label, count: b.count, max, suggestion, kind: b.kind, skipped: skipped || '' }));
     }
   }
   if (!out.issues.some((i) => i.code === 'too-large') && out.total > max) out.issues.push(issue('over-cap', { count: out.total, max }));
@@ -447,7 +498,7 @@ export async function announcedPrefixes(asn, { fetchImpl = globalThis.fetch, sig
 }
 
 /**
- * What a set of picked prefixes adds up to.
+ * What a set of picked prefixes adds up to (`addresses`: distinct ones, overlaps counted once).
  * @param {AnnouncedPrefix[]} prefixes
  * @param {Iterable<string>} selected picked prefixes
  * @param {{ max?: number }} [opts]
@@ -456,7 +507,9 @@ export async function announcedPrefixes(asn, { fetchImpl = globalThis.fetch, sig
 export function prefixSelection(prefixes, selected, { max = SWEEP_MAX_ADDRESSES } = {}) {
   const want = new Set(selected || []);
   const cidrs = (Array.isArray(prefixes) ? prefixes : []).filter((p) => p.sweepable && want.has(p.prefix)).map((p) => p.prefix);
-  const addresses = cidrs.reduce((n, c) => n + (prefixSize(c) || 0), 0);
+  // An AS often announces a prefix and a more specific one inside it: their addresses count once.
+  const addresses = uniqueAddressCount(cidrs.map(parseCidr).filter(Boolean)
+    .map((c) => ({ version: c.version, first: c.network, count: 2 ** ((c.version === 4 ? 32 : 128) - c.prefix) })));
   return { cidrs, count: cidrs.length, addresses, over: addresses > max, max };
 }
 

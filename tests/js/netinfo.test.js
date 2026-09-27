@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP, isGloballyRoutable,
+  ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP, privateRangeOf, isGloballyRoutable,
   reversePtrName, formatIP, RANGES_UPDATED, PROVIDERS, getProvider,
   matchProviderByIP, matchProviderByCname, classifyResolution, isSharedProvider, SHARED_PROVIDER_CATEGORIES
 } from '../../assets/js/lib/netinfo.js';
@@ -108,6 +108,16 @@ test('isPrivateIP: v6 ranges + mapped', () => {
   assert.equal(isPrivateIP('::ffff:10.0.0.1'), true);
   assert.equal(isPrivateIP('::ffff:8.8.8.8'), false);
   assert.equal(isPrivateIP('garbage'), false);
+});
+
+test('privateRangeOf: the private range holding an address', () => {
+  assert.equal(privateRangeOf('10.20.30.40'), '10.0.0.0/8');
+  assert.equal(privateRangeOf('198.19.255.255'), '198.18.0.0/15');
+  assert.equal(privateRangeOf('192.0.0.9'), '192.0.0.0/24');
+  assert.equal(privateRangeOf('::ffff:172.16.5.4'), '172.16.0.0/12');
+  assert.equal(privateRangeOf('fd12::1'), 'fc00::/7');
+  assert.equal(privateRangeOf('::'), '::/128');
+  for (const ip of ['192.0.2.1', '2001:db8::1', 'garbage', '']) assert.equal(privateRangeOf(ip), null, ip);
 });
 
 /* -------------------------------------------------------------------- */

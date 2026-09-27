@@ -87,6 +87,9 @@ registerStrings('en', {
   'ptr.issue.reversed': 'Ignored (the range ends before it starts): {items}',
   'ptr.issue.too-large': '{input} has {count} addresses; one sweep looks up at most {max} (a /22). Split it: start with {suggestion}, for example.',
   'ptr.issue.too-large.range': '{input} has {count} addresses; one sweep looks up at most {max} (a /22). Shorten the range.',
+  'ptr.issue.too-large.split': '{input} has {count} addresses; one sweep looks up at most {max} (a /22). Split it into smaller networks.',
+  'ptr.issue.too-large.private': '{input} is private address space: public resolvers cannot see its reverse zone, so it is not swept (ask your own DNS server).',
+  'ptr.issue.too-large.reserved': '{input} is multicast or reserved space: it holds no host addresses to sweep.',
   'ptr.issue.over-cap': 'Together that is {count} addresses; one sweep looks up at most {max}. Remove some.',
   'ptr.issue.asn-many': 'One AS number at a time: {items}.',
   'ptr.issue.asn-mixed': 'Enter {asn} on its own: its prefixes are listed to pick from.',
@@ -260,6 +263,9 @@ registerStrings('tr', {
   'ptr.issue.reversed': 'Yok sayıldı (aralık başladığı yerden önce bitiyor): {items}',
   'ptr.issue.too-large': '{input} ağında {count} adres var; bir tarama en çok {max} adrese (bir /22) bakar. Bölün: örneğin {suggestion} ile başlayın.',
   'ptr.issue.too-large.range': '{input} aralığında {count} adres var; bir tarama en çok {max} adrese (bir /22) bakar. Aralığı kısaltın.',
+  'ptr.issue.too-large.split': '{input} ağında {count} adres var; bir tarama en çok {max} adrese (bir /22) bakar. Daha küçük ağlara bölün.',
+  'ptr.issue.too-large.private': '{input} özel (private) adres alanı: genel çözümleyiciler ters bölgesini göremez, bu yüzden taranmaz (kendi DNS sunucunuza sorun).',
+  'ptr.issue.too-large.reserved': '{input} multicast ya da ayrılmış adres alanı: taranacak host adresi içermez.',
   'ptr.issue.over-cap': 'Toplam {count} adres ediyor; bir tarama en çok {max} adrese bakar. Bir kısmını çıkarın.',
   'ptr.issue.asn-many': 'Aynı anda tek bir AS numarası: {items}.',
   'ptr.issue.asn-mixed': '{asn} değerini tek başına girin: önekleri seçmeniz için listelenir.',
@@ -413,12 +419,18 @@ registerStrings('tr', {
 /* ------------------------------------------------------------------------ */
 
 /**
- * The i18n key of a target issue: a range too large for the cap has no network to suggest.
+ * The i18n key of a target issue. A network too large for the cap: its first /22 to start
+ * with, or (wholly private or reserved) why it is not swept at all, or (its first /22 has
+ * nothing to sweep) a plain "split it"; a range too large has no network to suggest.
  * @param {{ code: string, params?: object }} issue lib/ptrsweep SweepIssue
  * @returns {string}
  */
 export function issueKey(issue) {
-  return issue.code === 'too-large' && !(issue.params && issue.params.suggestion) ? 'ptr.issue.too-large.range' : `ptr.issue.${issue.code}`;
+  if (issue.code !== 'too-large') return `ptr.issue.${issue.code}`;
+  const p = issue.params || {};
+  if (p.skipped === 'private' || p.skipped === 'reserved') return `ptr.issue.too-large.${p.skipped}`;
+  if (p.suggestion) return 'ptr.issue.too-large';
+  return p.kind === 'cidr' ? 'ptr.issue.too-large.split' : 'ptr.issue.too-large.range';
 }
 
 /**

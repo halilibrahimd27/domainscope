@@ -952,7 +952,8 @@ export function sweepRowMatches(row, filter) {
  * @param {SweepResult[]} results
  * @param {{ focus?: string|null, minPattern?: number }} [opts]
  * @returns {{ done: number, byStatus: Record<string, number>, withPtr: number, noReverse: number, failed: number,
- *   templated: number, patterns: number, focus: number, names: number, v6: number }}
+ *   forwardFailed: number, templated: number, patterns: number, focus: number, names: number, v6: number }}
+ *   `forwardFailed`: addresses with a PTR name whose forward lookups all failed (an 'error' at the forward stage)
  */
 export function sweepSummary(results, { focus = null, minPattern = 2 } = {}) {
   const list = (Array.isArray(results) ? results : []).filter(Boolean);
@@ -965,6 +966,7 @@ export function sweepSummary(results, { focus = null, minPattern = 2 } = {}) {
     withPtr: list.filter(hasPtr).length,
     noReverse: byStatus['no-ptr'] + byStatus.nxdomain,
     failed: byStatus.servfail + byStatus.error,
+    forwardFailed: list.filter((r) => r.status === 'error' && r.stage === 'forward').length,
     templated: list.filter((r) => r.template).length,
     patterns: patternRows.length,
     focus: list.filter((r) => r.names.some((n) => isFocusName(n, focus))).length,

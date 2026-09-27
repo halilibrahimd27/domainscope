@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { setLang, t } from '../../assets/js/i18n.js';
 import { parseSweepTarget, FCRDNS_STATUSES, TARGET_ISSUES } from '../../assets/js/lib/ptrsweep.js';
-import { shareParams, issueKey, buildNamesIntent, LINK_MAX_CHARS } from '../../assets/js/views/ptr.js';
+import { shareParams, issueKey, buildNamesIntent, confirmedHint, LINK_MAX_CHARS } from '../../assets/js/views/ptr.js';
 import '../../assets/js/views/health.js'; // registers the hlt.fcrdns.* strings
 import {
   namesFromIntent, handoffScanOverrides, NAMES_INTENT_MAX_AGE, NAMES_HANDOFF_MAX, ZONE_MODES
@@ -62,6 +62,23 @@ describe('Reverse DNS view helpers', () => {
     for (const s of FCRDNS_STATUSES) {
       for (const key of [`ptr.st.${s}`, `ptr.st.${s}.title`, `hlt.fcrdns.st.${s}`]) assert.notEqual(t(key), key, key);
     }
+  });
+
+  test('confirmedHint: "every name resolves back" only when there are names and each does', () => {
+    setLang('en');
+    const s = (over) => ({ done: 16, withPtr: 12, forwardFailed: 0, ...over, byStatus: { confirmed: 12, mismatch: 0, ...(over.byStatus || {}) } });
+    assert.equal(confirmedHint(s({})), 'every name resolves back');
+    assert.equal(confirmedHint(s({ byStatus: { confirmed: 11, mismatch: 1 } })), '1 does not resolve back');
+    assert.equal(confirmedHint(s({ byStatus: { confirmed: 9, mismatch: 2 }, forwardFailed: 1 })), '2 do not resolve back · 1 could not be checked');
+    // no PTR name at all (an unused block), or every forward lookup failed: never "every name resolves back"
+    assert.equal(confirmedHint(s({ withPtr: 0, byStatus: { confirmed: 0 } })), 'no PTR name to check');
+    assert.equal(confirmedHint(s({ withPtr: 3, forwardFailed: 3, byStatus: { confirmed: 0 } })), '3 could not be checked');
+    assert.equal(confirmedHint(s({ done: 0, withPtr: 0, byStatus: { confirmed: 0 } })), null, 'nothing before the first result');
+    setLang('tr');
+    assert.equal(confirmedHint(s({ withPtr: 0, byStatus: { confirmed: 0 } })), 'kontrol edilecek PTR adı yok');
+    assert.equal(confirmedHint(s({})), 'her ad adresine geri çözülüyor');
+    assert.equal(confirmedHint(s({ byStatus: { confirmed: 10, mismatch: 2 } })), '2 tanesi adresine geri çözülmüyor');
+    setLang('en');
   });
 
   after(() => setLang('en'));

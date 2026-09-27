@@ -20,6 +20,7 @@ import * as scanner from '../../assets/js/lib/scanner.js';
 import * as scanplan from '../../assets/js/lib/scanplan.js';
 import * as sources from '../../assets/js/lib/sources.js';
 import * as sourceinfo from '../../assets/js/lib/sourceinfo.js';
+import { loadOnFirstUse } from '../../assets/js/views/subdomains.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ASSETS = join(ROOT, 'assets');
@@ -132,6 +133,30 @@ describe('the discovery engine loads on the first scan', () => {
       const graph = staticGraph(join(JS, 'lib', m)).map(rel);
       assert.deepEqual(HEAVY.filter((h) => graph.includes(`assets/js/${h}`)), [], `${m} stays light`);
     }
+  });
+});
+
+describe('modules loaded on first use', () => {
+  test('a failed load calls onLoadFailed (the shell\'s "older than the site" check) before it rejects', async () => {
+    const calls = [];
+    const err = new TypeError('Failed to fetch dynamically imported module');
+    await assert.rejects(loadOnFirstUse(() => Promise.reject(err), () => calls.push('check')), (e) => e === err);
+    assert.deepEqual(calls, ['check']);
+    assert.equal(await loadOnFirstUse(() => Promise.resolve('module'), () => calls.push('check')), 'module');
+    assert.deepEqual(calls, ['check'], 'not on success');
+    await assert.rejects(loadOnFirstUse(() => Promise.reject(err)), (e) => e === err);
+  });
+
+  test('every owner lookup (lib/ipintel.js on first use) passes ctx.checkOutdated', () => {
+    let calls = 0;
+    for (const v of VIEWS) {
+      for (const line of code(join(JS, 'views', `${v.id}.js`)).split('\n')) {
+        if (!/\bnetworkOwner\(/.test(line) || /function networkOwner\(/.test(line)) continue;
+        calls += 1;
+        assert.match(line, /networkOwner\([^;]*, ctx\.checkOutdated\)/, `${v.id}: ${line.trim()}`);
+      }
+    }
+    assert.equal(calls, 2, 'Subdomains and SSL Targets');
   });
 });
 

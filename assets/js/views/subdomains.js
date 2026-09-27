@@ -2919,31 +2919,45 @@ export const loadScanner = onceAsync(() => import('../lib/scanner.js'));
 const loadIpIntel = onceAsync(() => import('../lib/ipintel.js'));
 
 /**
- * lib/scanner.runScan once the engine has loaded. A failed import rejects like a failed scan
- * (the run shows the error) after calling `onLoadFailed` (ctx.checkOutdated: in a tab left open
- * across a deploy the old version's module is gone). Shared with SSL Targets.
- * @param {object} config runScan config
- * @param {object} hooks runScan hooks
+ * A module loaded on first use: `load()`'s promise, calling `onLoadFailed` (ctx.checkOutdated: in
+ * a tab left open across a deploy the old version's module is gone, and the shell offers a
+ * reload) before it rejects.
+ * @template T
+ * @param {() => Promise<T>} load
  * @param {() => void} [onLoadFailed]
- * @returns {Promise<object>} the ScanResult
+ * @returns {Promise<T>}
  */
-export function runScanner(config, hooks, onLoadFailed) {
-  return loadScanner().then(({ runScan }) => runScan(config, hooks), (err) => {
+export function loadOnFirstUse(load, onLoadFailed) {
+  return load().catch((err) => {
     if (onLoadFailed) onLoadFailed();
     throw err;
   });
 }
 
 /**
+ * lib/scanner.runScan once the engine has loaded. A failed import rejects like a failed scan
+ * (the run shows the error) after calling `onLoadFailed` ({@link loadOnFirstUse}). Shared with
+ * SSL Targets.
+ * @param {object} config runScan config
+ * @param {object} hooks runScan hooks
+ * @param {() => void} [onLoadFailed]
+ * @returns {Promise<object>} the ScanResult
+ */
+export function runScanner(config, hooks, onLoadFailed) {
+  return loadOnFirstUse(loadScanner, onLoadFailed).then(({ runScan }) => runScan(config, hooks));
+}
+
+/**
  * The AS owner of a network (lib/ipintel.describeNetwork: one RIPEstat request), the module
- * loaded on the first lookup. Shared with SSL Targets.
+ * loaded on the first lookup; a failed import rejects like a failed lookup after calling
+ * `onLoadFailed` ({@link loadOnFirstUse}). Shared with SSL Targets.
  * @param {string} cidr
  * @param {{ signal?: AbortSignal }} [opts]
+ * @param {() => void} [onLoadFailed]
  * @returns {Promise<object>}
  */
-export async function networkOwner(cidr, opts) {
-  const { describeNetwork } = await loadIpIntel();
-  return describeNetwork(cidr, opts);
+export function networkOwner(cidr, opts, onLoadFailed) {
+  return loadOnFirstUse(loadIpIntel, onLoadFailed).then(({ describeNetwork }) => describeNetwork(cidr, opts));
 }
 
 /**
@@ -4951,7 +4965,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         clear(el);
         el.append(h('span', { class: 'sub-org-owner-looking' }, t('sub.org.owner.looking')));
         try {
-          const d = await networkOwner(net.cidr, { signal: ownerCtl.signal });
+          const d = await networkOwner(net.cidr, { signal: ownerCtl.signal }, ctx.checkOutdated);
           ownerCache.set(net.cidr, d);
           fillOwner(el, d);
         } catch (err) {

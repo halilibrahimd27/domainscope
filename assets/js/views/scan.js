@@ -3154,7 +3154,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           clear(el);
           el.append(h('span', { class: 'muted' }, t('sub.org.owner.looking')));
           try {
-            const d = await networkOwner(net.cidr, { signal: cdnOwnerCtl.signal });
+            const d = await networkOwner(net.cidr, { signal: cdnOwnerCtl.signal }, ctx.checkOutdated);
             cdnOwnerCache.set(net.cidr, d);
             fill(d);
           } catch (err) {

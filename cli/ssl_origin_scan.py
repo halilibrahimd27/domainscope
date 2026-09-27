@@ -776,7 +776,7 @@ def load_certificates(data: Union[bytes, str]) -> Tuple[List[CertInfo], List[Cer
     """
     certs = []  # type: List[CertInfo]
     warnings = []  # type: List[CertWarning]
-    raw = (data.lstrip('﻿').encode('latin-1', 'replace') if isinstance(data, str)
+    raw = (data.lstrip('\ufeff').encode('latin-1', 'replace') if isinstance(data, str)
            else _text_bytes(bytes(data)))
     text = raw.decode('latin-1')
     if '-----BEGIN ' in text:
@@ -3612,7 +3612,7 @@ _TRANSLIT_ERRORS = 'ssl_origin_scan.translit'
 _ASCII_LOOKALIKES = {
     'ı': 'i', '‘': "'", '’': "'", '‚': "'", '“': '"', '”': '"',
     '„': '"', '–': '-', '—': '-', '…': '...', '→': '->',
-    '←': '<-', '✓': 'v', '✗': 'x', '×': 'x', ' ': ' ', '•': '*',
+    '←': '<-', '✓': 'v', '✗': 'x', '×': 'x', '\xa0': ' ', '•': '*',
 }
 
 

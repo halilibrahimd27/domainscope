@@ -290,6 +290,8 @@ class DerParserTests(unittest.TestCase):
             'UTF-8 with BOM': b'\xef\xbb\xbf' + text.encode('ascii'),
             'bare base64, UTF-16LE with BOM': b'\xff\xfe' + bare.encode('utf-16-le'),
             'bare base64, UTF-8 with BOM': b'\xef\xbb\xbf' + bare.encode('ascii'),
+            'str with BOM': '\ufeff' + text,  # text decoded without utf-8-sig
+            'bare base64, str with BOM': '\ufeff' + bare,
         }
         for label, data in variants.items():
             with self.subTest(encoding=label):

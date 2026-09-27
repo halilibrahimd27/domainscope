@@ -1724,6 +1724,46 @@ describe('discovery review fixes: wildcards whose answer varies', () => {
   });
 });
 
+describe('discovery review fixes: closest encloser', () => {
+  const A = 'encloser.example';
+  const zone = {
+    [A]: { A: ['203.0.113.1'] },
+    [`*.${A}`]: { A: ['203.0.113.10'] }, // the apex catch-all
+    [`api.${A}`]: { A: ['203.0.113.2'] }, // exists, so *.A synthesizes nothing below it
+    [`dev.api.${A}`]: { A: ['203.0.113.3'] },
+    [`www.api.${A}`]: { A: ['203.0.113.10'] } // a real record on the catch-all's shared IP
+  };
+  const scanWith = (world) => runScan({
+    domains: [A], extraNames: [`api.${A}`, `dev.api.${A}`], sources: [], bruteforce: 'off', mine: false,
+    permutationBudget: 0, recursive: true, originHints: false, balance: false, dns: world.dns, fetchImpl: world.fetchImpl
+  });
+
+  test('a checked, non-wildcard parent shields its children from a farther wildcard', async () => {
+    const scan = await scanWith(mkWorld({ zone }));
+    assert.equal(scan.wildcards[A].wildcard, true);
+    assert.equal(scan.wildcards[`api.${A}`].wildcard, false);
+    assert.equal(scan.wildcards[`api.${A}`].conclusive, true);
+    const www = byName(scan).get(`www.api.${A}`);
+    assert.ok(www, 'www.api is a real record, not the apex wildcard');
+    assert.deepEqual(www.origins, ['recursive']);
+    assert.equal(www.wildcardSuspect, false);
+    assert.equal(scan.stats.recursiveWildcardDropped, 0);
+  });
+
+  test('an inconclusive check of that parent (SERVFAIL) keeps the farther wildcard as the fallback', async () => {
+    // the random labels of the wildcard check under api fail; real names still answer
+    const answer = (name) => {
+      const [label, ...rest] = name.split('.');
+      return rest.join('.') === `api.${A}` && label.length === 12 && !WORDLIST_SMALL.includes(label)
+        ? { rcode: 'SERVFAIL', answers: [] } : undefined;
+    };
+    const scan = await scanWith(mkWorld({ zone, answer }));
+    assert.equal(scan.wildcards[`api.${A}`].conclusive, false);
+    assert.ok(!byName(scan).has(`www.api.${A}`), 'the look-alike of the apex wildcard is dropped');
+    assert.ok(scan.stats.recursiveWildcardDropped >= 1);
+  });
+});
+
 describe('discovery review fixes: probes keep dangling aliases', () => {
   test('a wordlist probe answering NXDOMAIN with a CNAME chain (target gone) is a dangling host, streamed as such', async () => {
     const A = 'dangle.example';

@@ -423,9 +423,25 @@ describe('detectWildcardDeep', () => {
   test('invalid parent / missing client → no wildcard', async () => {
     const { fetchImpl } = zoneFetch();
     const dns = new DohClient({ fetchImpl, ...fast() });
-    const none = { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false };
+    const none = { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false, conclusive: false };
     assert.deepEqual(await detectWildcardDeep(dns, 'not a domain'), none);
     assert.deepEqual(await detectWildcardDeep(null, 'example.org'), none);
+  });
+
+  test('conclusive: every probe NXDOMAIN proves "no wildcard"; failed or disagreeing probes prove nothing', async () => {
+    const { fetchImpl } = zoneFetch();
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    const w = await detectWildcardDeep(dns, 'example.com');
+    assert.equal(w.wildcard, false);
+    assert.equal(w.conclusive, true);
+    assert.equal((await detectWildcardDeep(dns, 'wild.example.org')).conclusive, true);
+
+    const { fetchImpl: down } = mockFetch(({ name, type }) => (name.endsWith('.broken.example.org')
+      ? new Response('busy', { status: 503 }) : zoneAnswer(ZONE, name, type)));
+    const dns2 = new DohClient({ fetchImpl: down, ...fast({ retries: 0 }) });
+    const w2 = await detectWildcardDeep(dns2, 'broken.example.org');
+    assert.equal(w2.wildcard, false);
+    assert.equal(w2.conclusive, false);
   });
 
   test('a wildcard whose answer varies per label (multivalue pool) is an A wildcard with the union', async () => {

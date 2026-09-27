@@ -398,16 +398,22 @@ async function dnssecProvesNonexistent(dns, probeName, signal) {
  * flag every NXDOMAIN-equivalent name (including ones the user typed) as a
  * wildcard suspect.
  *
+ * `conclusive` is false when the check proved nothing (too few answers, mixed
+ * kinds); a "no wildcard" from probes that all got NXDOMAIN (or a DNSSEC-proven
+ * non-existence) is conclusive, and so is every wildcard.
+ *
  * @param {{ resolveHost: Function, query?: Function }} dns injected DoH client
  * @param {string} parent the zone to test (apex or any level)
  * @param {{ signal?: AbortSignal, resolvers?: string[], probes?: number }} [opts]
  *   resolvers: extra probes, one sent to each of these resolver ids (the pool bulk
  *   queries rotate across); probes: random labels on the chain (2–16, default 2)
  * @returns {Promise<{ wildcard: boolean, kind: 'A'|'CNAME'|'NODATA'|null, ipv4: string[], ipv6: string[],
- *   cnames: string[], targets: string[], variable: boolean }>}
+ *   cnames: string[], targets: string[], variable: boolean, conclusive: boolean }>}
  */
 export async function detectWildcardDeep(dns, parent, { signal, resolvers = [], probes = 2 } = {}) {
-  const none = () => ({ wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false });
+  const none = (conclusive = false) => ({
+    wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false, conclusive
+  });
   const base = normalizeHostname(String(parent ?? ''), { allowSingleLabel: true });
   if (!base || !dns || typeof dns.resolveHost !== 'function') return none();
 
@@ -426,24 +432,24 @@ export async function detectWildcardDeep(dns, parent, { signal, resolvers = [], 
   if (answers.length < 2) return none();
   const kind = answers[0].kind;
   if (answers.some((p) => p.kind !== kind)) return none();
-  if (kind === 'NXDOMAIN') return none();
+  if (kind === 'NXDOMAIN') return none(true);
 
   if (kind === 'CNAME') {
     const targets = [...new Set(answers.map((p) => p.cname))];
     return {
       wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...answers[0].cnames],
-      targets, variable: targets.length > 1
+      targets, variable: targets.length > 1, conclusive: true
     };
   }
   if (kind === 'A') {
     const union = (key) => [...new Set(answers.flatMap((p) => p[key]))];
     const variable = answers.some((p) => !setsEqual(p.ipv4, answers[0].ipv4) || !setsEqual(p.ipv6, answers[0].ipv6));
-    return { wildcard: true, kind: 'A', ipv4: union('ipv4'), ipv6: union('ipv6'), cnames: [], targets: [], variable };
+    return { wildcard: true, kind: 'A', ipv4: union('ipv4'), ipv6: union('ipv6'), cnames: [], targets: [], variable, conclusive: true };
   }
   // Every answer NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not
   // prove the probe name's non-existence (compact denial of existence / NXNAME).
-  if (await dnssecProvesNonexistent(dns, answers[0].name, signal)) return none();
-  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [], targets: [], variable: false };
+  if (await dnssecProvesNonexistent(dns, answers[0].name, signal)) return none(true);
+  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [], targets: [], variable: false, conclusive: true };
 }
 
 /* ------------------------------------------------------------------------ */

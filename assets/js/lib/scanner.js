@@ -1196,14 +1196,21 @@ export async function runScan(config = {}, hooks = {}) {
     progress('wildcard', wildcardDone, parents.length);
   }, signal);
   checkAbort(signal);
+  /**
+   * The wildcard that can synthesize `name`, walking its ancestors nearest first.
+   * The first checked one decides (RFC 4592 closest encloser): its wildcard
+   * applies; a conclusive "no wildcard" means that level exists, so no farther
+   * `*` can synthesize anything below it. An inconclusive check (failed probes)
+   * is skipped, so a farther wildcard still applies as the safe fallback.
+   */
   const nearestWildcard = (name) => {
-    let best = null;
-    for (const p of Object.keys(wildcards)) {
-      const w = wildcards[p];
-      if (!w || !w.wildcard || name === p || !isSubdomainOf(name, p)) continue;
-      if (!best || p.length > best.parent.length) best = { parent: p, w };
+    for (let p = parentOf(name); p; p = parentOf(p)) {
+      const w = Object.prototype.hasOwnProperty.call(wildcards, p) ? wildcards[p] : null;
+      if (!w) continue;
+      if (w.wildcard) return w;
+      if (w.conclusive) return null;
     }
-    return best ? best.w : null;
+    return null;
   };
 
   /* ---- shared A-only probe (wordlist / permutation / recursive) --------- */

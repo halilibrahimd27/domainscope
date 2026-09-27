@@ -503,6 +503,15 @@
   gap: 4px;
 }
 
+/* "More about this name" links, then Copy summary at the end of the row */
+.glb-results-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
 .glb-progress[hidden] {
   display: none;
 }

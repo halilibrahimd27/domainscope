@@ -7,6 +7,8 @@
  * dig-style presentation text with a copy button. Host names and IP addresses in the
  * results link to this view / IP Intel.
  *
+ * "Copy summary" in the summary card: the answer in one line for Jira / Slack (lib/summary.js).
+ *
  * Shareable: `#/lookup?name=example.com&type=MX` (type may repeat or be comma-separated;
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
  * With `run=0` (a name carried over from another tool, lib/session.js) the form is only filled
@@ -28,6 +30,8 @@ import { lookupServers } from '../lib/inventory.js';
 import { CAA_ISSUERS } from '../lib/health.js';
 import { mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/lookup`). */
 export const id = 'lookup';
@@ -1241,6 +1245,12 @@ export function mount(container, ctx) {
           q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null)),
       h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
+        SummaryButton({
+          kind: 'lookup',
+          disabled: done !== q.types.length,
+          facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec }),
+          url: () => ctx.shareUrl(permalinkParams('lookup', ctx.params))
+        }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
         !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null)));

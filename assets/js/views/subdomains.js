@@ -36,6 +36,9 @@
  * opening a subdomain in DNS Lookup and coming back keeps the results (a toast says when a
  * scan finished in the background).
  *
+ * "Copy summary" in the results head (ui/summary-button.js): the stat cards, the proxied hosts with
+ * their origin candidates and the dangling CNAMEs as Markdown for Jira / Slack, or plain text.
+ *
  * Route params: `#/subdomains?domain=example.com` (comma-separated or repeated) pre-fills the
  * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
@@ -76,6 +79,8 @@ import { toCsv, toJson, scanHostRows } from '../lib/export.js';
 import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, subTabParams, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id. */
 export const id = 'subdomains';
@@ -4477,9 +4482,33 @@ function buildRunUI(run, ctx, { onFinish }) {
       subdomains: exportRows()
     })}\n`, 'application/json;charset=utf-8'))
   });
+  // "Copy summary": what the stat cards, the summary alerts and the ORIGIN panel show (lib/summary.js).
+  const summaryFacts = () => {
+    if (run.status !== 'done' && run.status !== 'cancelled') return null;
+    const hosts = listHosts();
+    const o = run.result ? originOverview(run.result) : null;
+    return {
+      domains: run.config.domains,
+      status: run.status,
+      counts: countHosts(hosts),
+      proxied: o ? o.proxied.length : 0,
+      withCandidates: o ? o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).length : 0,
+      networks: o ? o.networks.length : 0,
+      dangling: hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.dangling).map((x) => x.name),
+      failedSources: sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
+      at: run.finishedAt
+    };
+  };
+  const summary = SummaryButton({
+    kind: 'subdomains',
+    facts: summaryFacts,
+    disabled: true,
+    url: () => ctx.shareUrl(permalinkParams('subdomains', { domain: run.config.domains.join(','), run: '1' }))
+  });
   const actions = h('div', { class: 'sub-actions', attrs: { role: 'group', 'aria-label': t('sub.act.label') } },
     h('div', { class: 'sub-actions-main' }, copyBtn, resolvingBox.el),
-    h('div', { class: 'sub-actions-files' }, namesBtn, csvBtn, jsonBtn));
+    h('div', { class: 'sub-actions-files' }, namesBtn, csvBtn, jsonBtn),
+    summary.el);
 
   function syncActions() {
     const n = exportList().length;
@@ -5130,6 +5159,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderStatsNow();
     renderTechniques();
     renderSummary();
+    summary.setDisabled(!summaryFacts());
     stopTicker();
     onFinish();
   }

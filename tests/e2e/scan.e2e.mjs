@@ -141,6 +141,40 @@ export async function installDownloadCapture(page) {
   });
 }
 
+/**
+ * Replace the page's clipboard with a recorder: what the "Copy" buttons write lands in
+ * window.__clip (read back with {@link takeClipboard}), without clipboard permissions. With
+ * `fail`, every copy fails (the async API rejects and execCommand('copy') returns false), for the
+ * fallbacks. Takes effect at once: the app reads navigator.clipboard at click time.
+ * @param {import('./cdp.mjs').Page} page
+ * @param {{ fail?: boolean }} [opts]
+ */
+export async function stubClipboard(page, { fail = false } = {}) {
+  await page.evaluate((f) => {
+    window.__clip = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          if (f) throw new DOMException('Write permission denied.', 'NotAllowedError');
+          window.__clip.push(String(text));
+        }
+      }
+    });
+    if (f) document.execCommand = () => false;
+    else delete document.execCommand;
+  }, fail);
+}
+
+/** Texts written to the stubbed clipboard since the last call ({@link stubClipboard}). */
+export async function takeClipboard(page) {
+  return page.evaluate(() => {
+    const list = window.__clip || [];
+    window.__clip = [];
+    return list;
+  });
+}
+
 /** Downloads captured since the last call: [{ name, text, bom, type }] (Blob.text() drops a BOM, `bom` reports it). */
 export async function takeDownloads(page) {
   return page.evaluate(async () => {

@@ -430,10 +430,14 @@ export async function copyText(text) {
  * Copy button with "Copied" feedback (icon swap + screen-reader announcement).
  * @param {string|(() => string)} value text or a function producing it at click time
  * @param {{ label?: string, iconOnly?: boolean, size?: 'sm'|'md', variant?: string, title?: string,
- *   toastOnCopy?: boolean, className?: string }} [opts]
+ *   toastOnCopy?: boolean|string, onFail?: (text: string) => void, className?: string }} [opts]
+ *   `toastOnCopy`: true toasts "Copied", a string toasts that text; `onFail` replaces the
+ *   "could not copy" toast (e.g. with the text in a dialog to copy by hand)
  * @returns {HTMLButtonElement}
  */
-export function CopyButton(value, { label = null, iconOnly = false, size = 'sm', variant = 'ghost', title = null, toastOnCopy = false, className = '' } = {}) {
+export function CopyButton(value, {
+  label = null, iconOnly = false, size = 'sm', variant = 'ghost', title = null, toastOnCopy = false, onFail = null, className = ''
+} = {}) {
   const text = label ?? t('common.copy');
   const btn = Button({
     label: iconOnly ? '' : text,
@@ -455,8 +459,9 @@ export function CopyButton(value, { label = null, iconOnly = false, size = 'sm',
     const labelEl = btn.querySelector('.btn-label');
     if (labelEl) labelEl.textContent = ok ? t('common.copied') : text;
     if (ok) announce(t('common.copied'));
-    if (!ok) toast(t('common.copyFailed'), { type: 'error' });
-    else if (toastOnCopy) toast(t('common.copied'), { type: 'success', timeout: 2000 });
+    if (!ok && typeof onFail === 'function') onFail(String(str ?? ''));
+    else if (!ok) toast(t('common.copyFailed'), { type: 'error' });
+    else if (toastOnCopy) toast(typeof toastOnCopy === 'string' ? toastOnCopy : t('common.copied'), { type: 'success', timeout: 2000 });
     clearTimeout(timer);
     timer = setTimeout(() => {
       const cur = btn.querySelector('.icon');

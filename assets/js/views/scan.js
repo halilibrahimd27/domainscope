@@ -31,6 +31,9 @@
  * it finished). Everything stays in memory; nothing is uploaded except the DNS / CT
  * queries themselves.
  *
+ * "Copy summary" next to the exports (ui/summary-button.js): the certificate, hosts, the inventory
+ * servers that need it (by name, as the Servers tab shows them), CDN hosts and the Verify headline.
+ *
  * Route params: `#/scan?domain=example.com` (repeatable or comma-separated) pre-fills the
  * domains; `&run=1` (a shared link) also shows a note to press "Start scan" — a link never
  * starts the scan on its own. With `run=0` (a domain carried over from another tool,
@@ -64,7 +67,7 @@ import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
-  PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
+  certDisplayName, issuerDisplayName, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
 } from './cert.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
 import {
@@ -78,6 +81,9 @@ import {
 import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
+import { summarizeVerify, verifyHeadline } from '../lib/verify.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 
@@ -2512,6 +2518,39 @@ function buildRunUI(run, ctx, { onFinish }) {
   const statsGrid = h('div', { class: 'stat-grid scan-stats' });
   const summaryHost = h('div', { class: 'stack-sm scan-summary' });
   const exportBar = h('div', { class: 'scan-exports', attrs: { role: 'group', 'aria-label': t('scan.export.label') } });
+
+  // "Copy summary": the stat cards, the servers that need the certificate (by name, as the Servers
+  // tab lists them — the tooltip says so) and the Verify headline (lib/summary.js).
+  const VERIFY_MAIN = new Set(['vfy.head.all', 'vfy.head.some', 'vfy.head.none', 'vfy.head.partial', 'vfy.head.noAnswer']);
+  const summaryFacts = () => {
+    const r = run.result;
+    if (!r) return null;
+    const job = run.verify && run.verify.runs > 0 ? run.verify : null;
+    const head = job ? verifyHeadline(summarizeVerify(job.rows)).find((x) => VERIFY_MAIN.has(x.key)) : null;
+    const c = { ...countHosts(r.hosts), ...pickStats(r.stats) };
+    return {
+      domains: run.config.domains,
+      status: run.status,
+      cert: cert ? { name: certDisplayName(cert), issuer: issuerDisplayName(cert), notBefore: cert.notBefore, notAfter: cert.notAfter } : null,
+      hosts: c.total,
+      covered: c.covered,
+      inventory: run.config.inventoryServers,
+      needsCert: r.servers.filter((g) => g.needsCert).map((g) => g.server.name),
+      matched: r.stats.matchedServers,
+      hiddenOrigin: r.stats.hiddenOrigin,
+      networks: (r.originNetworks || []).length,
+      verify: head ? { key: head.key, params: head.params } : null,
+      dangling: r.hosts.filter((x) => x.classification && x.classification.dangling && !x.wildcardSuspect).map((x) => x.name),
+      at: run.finishedAt
+    };
+  };
+  const summary = SummaryButton({
+    kind: 'scan',
+    facts: summaryFacts,
+    disabled: true,
+    inventory: true,
+    url: () => ctx.shareUrl(permalinkParams('scan', { domain: run.config.domains.join(','), run: '1' }))
+  });
   const filters = { kind: 'all', covered: false, resolving: false, hideWildcard: false, matched: false };
 
   const stat = {
@@ -2802,7 +2841,8 @@ function buildRunUI(run, ctx, { onFinish }) {
   const results = h('section', { class: 'scan-results stack', attrs: { 'aria-labelledby': `scan-results-${run.id}` } },
     h('div', { class: 'scan-results-head' },
       h('h2', { class: 'scan-results-title', id: `scan-results-${run.id}` }, t('scan.results')),
-      exportBar),
+      exportBar,
+      summary.el),
     statsGrid,
     summaryHost,
     tabs);
@@ -2888,6 +2928,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     exportButtons.servers.disabled = !done;
     exportButtons.json.disabled = !done;
     exportButtons.targets.disabled = !done;
+    summary.setDisabled(!done);
   }
 
   /* --- finish: servers / CDN / CT tabs ---------------------------------------------- */

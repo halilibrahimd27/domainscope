@@ -26,6 +26,9 @@
  * application/octet-stream (strict senders ignore it: an error headline, never "works"); a failed
  * MX lookup (mxfail.example.com: "lookup failed" in the DNS card, the policy check "not
  * compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
+ * It also clicks Copy summary (a clipboard recorder, scan.e2e.mjs stubClipboard): the Markdown and
+ * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
+ * refused clipboard gets.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -33,7 +36,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
-import { installDownloadCapture, takeDownloads, zoneHandoffScript } from './scan.e2e.mjs';
+import { installDownloadCapture, stubClipboard, takeClipboard, takeDownloads, zoneHandoffScript } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { healthScore, trafficLight, groupChecks, parseSelectors, HEALTH_GROUPS } from '../../assets/js/views/health.js';
 import { HEALTH_I18N, HEALTH_CHECK_IDS } from '../../assets/js/lib/health.js';
@@ -56,6 +59,7 @@ const GP_FIXTURES = path.join(HERE, '..', 'fixtures', 'globalping');
 // public DoH resolver can time out or, like Quad9 over HTTP/3, omit CORS headers.
 const FLAKY_HOSTS = [...RESOLVERS.map((r) => new URL(r.url).hostname)];
 const DONE = "!!document.querySelector('.hlt-hero') && !document.querySelector('[data-action=\"run\"]').hidden";
+const NL = '\n';
 
 /* ------------------------------------------------------------------------ */
 /* Tiny runner                                                              */
@@ -466,6 +470,46 @@ async function mtaStsGroup(browser, server) {
       assertEqual([json.domain, json.mtaStsPolicy?.headline, json.mtaStsPolicy?.measurementId, json.mtaStsPolicy?.url],
         [MAIL_APEX, 'problems', 'fakeMtaSts000002', 'https://mta-sts.example.com/.well-known/mta-sts.txt'], 'mtaStsPolicy block');
       assert(json.mtaStsPolicy.findings.some((f) => f.id === 'mx.unmatched'), 'findings exported');
+    });
+
+    await step('Copy summary: Markdown and plain text of what the hero and the checks show, the permalink, TR; a blocked clipboard gets a dialog', async () => {
+      await stubClipboard(page);
+      const shown = await page.evaluate(() => ({
+        score: document.querySelector('.hlt-hero').dataset.score,
+        verdict: document.querySelector('.hlt-hero-verdict').textContent,
+        problems: [...document.querySelectorAll('.hlt-check')].filter((c) => c.dataset.severity === 'error' || c.dataset.severity === 'warn')
+          .map((c) => c.querySelector('.hlt-check-title').textContent),
+        tip: document.querySelector('[data-action="copy-summary"]').title
+      }));
+      assert(/nothing from your server list/.test(shown.tip), `the tooltip says what is in it: ${shown.tip}`);
+      await page.click('[data-action="copy-summary"]');
+      await page.click('[data-action="copy-summary-text"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+      const [md, text] = await takeClipboard(page);
+      const lines = md.trim().split(NL);
+      assertEqual(lines[0], `**Domain Health · ${MAIL_APEX}**`, 'title');
+      assertEqual(lines[1], `- ${shown.verdict} · score ${shown.score}/100`, 'verdict and score as on the hero');
+      assert(lines.length >= 5 && lines.length <= 12, `5–12 lines: ${lines.length}`);
+      for (const title of shown.problems.slice(0, 5)) assert(md.includes(title), `problem "${title}" in: ${md}`);
+      assert(/^DomainScope · checked \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · http:\/\/127\.0\.0\.1:\d+\/domainscope\/#\/health\?domain=example\.com$/.test(lines[lines.length - 1]),
+        `footer with the permalink: ${lines[lines.length - 1]}`);
+      assert(!text.includes('**') && text.startsWith(`Domain Health · ${MAIL_APEX}${NL}`), `plain text: ${text}`);
+      assertEqual(text.trim().split(NL).length, lines.length, 'the same lines in plain text');
+      // Turkish, then a clipboard the browser refuses: the text in a dialog, selected.
+      await setLangUi(page, 'tr');
+      await stubClipboard(page, { fail: true });
+      await page.click('[data-action="copy-summary"]');
+      const dlg = await page.waitFor(() => {
+        const area = document.querySelector('dialog.sum-fallback[open] textarea');
+        return area ? { value: area.value, selected: area.selectionStart === 0 && area.selectionEnd === area.value.length, focused: document.activeElement === area } : false;
+      }, { message: 'fallback dialog' });
+      const trLines = dlg.value.split(NL);
+      assert(trLines[0] === `**Alan Adı Sağlığı · ${MAIL_APEX}**` && / · puan \d+\/100$/.test(trLines[1]), `Turkish summary in the dialog: ${dlg.value}`);
+      assertEqual([dlg.selected, dlg.focused], [true, true], 'the text is focused and selected, ready for Ctrl+C');
+      await page.press('Escape');
+      await page.waitFor(() => !document.querySelector('dialog.sum-fallback'), { message: 'dialog closed' });
+      await stubClipboard(page);
+      await setLangUi(page, 'en');
     });
 
     await step('[dark, TR] a language switch keeps the result and sends nothing', async () => {

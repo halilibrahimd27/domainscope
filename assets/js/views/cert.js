@@ -10,6 +10,9 @@
  * another certificate?). "Find servers for this certificate" hands the certificate to the SSL
  * Targets view (state.session.pendingCert).
  *
+ * "Copy summary" in the overview's actions (ui/summary-button.js, certSummaryFacts): names, validity,
+ * issuer and warnings for Jira / Slack; the file is never in its link.
+ *
  * The module also exports the certificate-loading helpers used by views/scan.js
  * (CertLoader, CertAlternatives, CertSummary, certWarningAlerts, …) so both views behave
  * identically. Without a file, CertAlternatives loads the public certificate of a host name
@@ -48,6 +51,8 @@ import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/uti
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 import { fillReplaces } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id. */
 export const id = 'cert';
@@ -1122,6 +1127,32 @@ export function issuerDisplayName(cert) {
   return o || cn || cert.issuerDN || '—';
 }
 
+/** An RSA key under 2048 bits, or a SHA-1 / MD5 signature (the Details tab marks both as weak). */
+function isWeakCert(cert) {
+  return (cert.keyAlgorithm === 'RSA' && cert.keyBits && cert.keyBits < 2048) || /sha1|md5/i.test(cert.signatureAlgorithm || '');
+}
+
+/**
+ * What "Copy summary" says about a certificate (lib/summary certSummary facts): its names,
+ * validity, issuer and the warnings the overview shows.
+ * @param {CertLoad} load
+ * @returns {object}
+ */
+export function certSummaryFacts(load) {
+  const leaf = load.result.leaf;
+  const warnings = [
+    leaf.selfSigned ? 'SELF_SIGNED' : null,
+    leaf.isCA ? 'CA' : null,
+    !leaf.isCA && !leaf.dnsNames.length && !leaf.ipAddresses.length ? 'NO_SAN' : null,
+    leaf.isPrecertificate ? 'PRECERT' : null,
+    isWeakCert(leaf) ? 'WEAK' : null
+  ].filter(Boolean);
+  return {
+    name: certDisplayName(leaf), issuer: issuerDisplayName(leaf), dnsNames: leaf.dnsNames,
+    notBefore: leaf.notBefore, notAfter: leaf.notAfter, warnings, source: load.source || 'file'
+  };
+}
+
 function pemFileName(cert, suffix = '') {
   const base = certDisplayName(cert).replace(/^\*\./, 'wildcard.');
   return sanitizeFilename(`${base}${suffix}.pem`, 'certificate.pem');
@@ -1967,6 +1998,7 @@ export function mount(container, ctx) {
           onClick: () => downloadText(pemFileName(leaf, '-fullchain'), pemBundle(full), 'application/x-pem-file')
         }) : null,
         CopyButton(() => pemEncode(leaf.der), { label: t('cert.copyPem'), variant: 'ghost', size: 'md' }),
+        SummaryButton({ kind: 'cert', size: 'md', facts: () => certSummaryFacts(load), url: () => ctx.shareUrl(permalinkParams('cert', ctx.params)) }),
         Button({
           label: t('cert.remove'), icon: 'trash', variant: 'ghost', dataset: { action: 'cert-remove' },
           onClick: () => {
@@ -2115,7 +2147,7 @@ export function mount(container, ctx) {
         spki.textContent = '—';
         pin.textContent = '—';
       }
-      const weak = (cert.keyAlgorithm === 'RSA' && cert.keyBits && cert.keyBits < 2048) || /sha1|md5/i.test(cert.signatureAlgorithm);
+      const weak = isWeakCert(cert);
       const ku = translatedList(cert.keyUsage, 'cert.ku');
       const eku = translatedList(cert.extKeyUsage, 'cert.eku');
       const noServerAuth = !cert.isCA && cert.extKeyUsage.length > 0

@@ -18,6 +18,10 @@
  *   result belongs to the report on screen: a language switch keeps it (a fetch in flight goes
  *   on polling its paid measurement), a new check drops it, and "Report (JSON)" carries it.
  *
+ * "Copy summary" in the hero (ui/summary-button.js): the verdict, score, counts and the worst
+ * problems as Markdown for Jira / Slack, or plain text; the score and the traffic light come from
+ * lib/summary.js, which the summary shares.
+ *
  * Shareable: `#/health?domain=example.com` (also `name=`) runs on open; with `run=0` (a domain
  * carried over from another tool, lib/session.js) it is only filled in. The finished report is
  * kept for the page session (`result()` / `snapshot()`): coming back shows it without a new check.
@@ -44,6 +48,8 @@ import { normalizeHostname } from '../lib/domain.js';
 import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
+import { SummaryButton } from '../ui/summary-button.js';
+import { healthScore, trafficLight, permalinkParams } from '../lib/summary.js';
 import { errorKind, mergeSignals, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 
@@ -478,28 +484,9 @@ registerStrings('tr', {
 /* Pure helpers (exported for tests)                                        */
 /* ------------------------------------------------------------------------ */
 
-/**
- * Health score: 100 − 20 per error − 6 per warning, clamped to 0…100.
- * @param {{ ok?: number, info?: number, warn?: number, error?: number }} summary
- * @returns {number}
- */
-export function healthScore(summary) {
-  const s = summary || {};
-  const score = 100 - 20 * (Number(s.error) || 0) - 6 * (Number(s.warn) || 0);
-  return Math.max(0, Math.min(100, score));
-}
-
-/**
- * Traffic-light state for a summary: any error → 'error', any warning → 'warn', else 'ok'.
- * @param {{ warn?: number, error?: number }} summary
- * @returns {'error'|'warn'|'ok'}
- */
-export function trafficLight(summary) {
-  const s = summary || {};
-  if (Number(s.error) > 0) return 'error';
-  if (Number(s.warn) > 0) return 'warn';
-  return 'ok';
-}
+// The score (100 − 20 per error − 6 per warning) and the traffic light live in lib/summary.js,
+// which "Copy summary" shares; re-exported here for the tests that read them from the view.
+export { healthScore, trafficLight };
 
 /**
  * Checks of one group, worst severity first (stable within a severity).
@@ -707,6 +694,11 @@ export function mount(container, ctx) {
           h('span', { class: 'hlt-score-label' }, t('hlt.score'))),
         h('div', { class: 'hlt-hero-actions' },
           zoneLink,
+          SummaryButton({
+            kind: 'health',
+            facts: () => ({ report }),
+            url: () => ctx.shareUrl(permalinkParams('health', ctx.params))
+          }),
           Button({
             label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
             onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')

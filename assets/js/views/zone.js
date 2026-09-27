@@ -24,6 +24,9 @@
  *   mode: 'exact'|'discover', autostart: boolean, at: Date.now() }`; exact mode = only the zone
  *   names as seeds (no passive sources, no wordlist, no permutations: quota-free).
  *
+ * "Copy summary" in the summary bar (ui/summary-button.js): counts and the worst problems for
+ * Jira / Slack; its link is a bare #/zone.
+ *
  * Pure helpers are exported for the unit tests (tests/js/zone-view.test.js); the module is
  * DOM-free at import time.
  */
@@ -49,6 +52,8 @@ import { planDrift, driftZone, DRIFT_STATUSES, DRIFT_REASONS, DRIFT_SEVERITY } f
 import { buildSweepCommand, quoteArg } from '../lib/cmdline.js';
 import { getResolver } from '../lib/resolvers.js';
 import { normalizeIP } from '../lib/netinfo.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -1493,6 +1498,12 @@ export function mount(container, ctx) {
             render();
           }
         }) : null,
+        // "Copy summary": counts and problems only; the link is a bare #/zone (the file never goes into a URL).
+        SummaryButton({
+          kind: 'zone',
+          facts: () => ({ origin: z.origin, format: fmtLabel(z), counts: S.counts, problems: S.problems.map((p) => ({ severity: p.severity, title: problemTitle(p) })) }),
+          url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
+        }),
         Button({ label: t('zone.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'zone-forget' }, onClick: forget })),
       lowOrigin ? h('p', { class: 'zone-guessed text-sm' }, Icon('alert', { size: 14 }), ' ', t('zone.origin.guessed')) : null);
   }

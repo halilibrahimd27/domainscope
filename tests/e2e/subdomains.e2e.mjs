@@ -35,7 +35,8 @@
  *   - focused screenshots of the Advanced panel and the ORIGIN panel at 390 px (TR/EN × light/dark),
  *     with every control inside the viewport
  *   - an emulated zone (example.net answered inside the page, no network): proxied + DNS-only
- *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has
+ *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has,
+ *     and Copy summary gives its stat cards and ORIGIN panel as Markdown / plain text with the permalink
  *   - the Zone File hand-off (emulated DNS): exact mode, a zone origin whose name has a 48-character
  *     label inside its 375 px card, the "origin?" badges right after a scan with slow DNS, and a
  *     "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
@@ -60,7 +61,7 @@ import { launchBrowser } from './cdp.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, takeDownloads, waitReady,
+  csvHeader, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady,
   ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS, ZONE_HANDOFF_INPUT, zoneHandoffScript
 } from './scan.e2e.mjs';
 
@@ -1237,6 +1238,24 @@ async function main() {
         const clip = await tab.evaluate(() => navigator.clipboard.readText().catch(() => null));
         if (clip !== null) assertEqual(clip, ps, 'copied command');
         await shotEl(tab, opts, 'subdomains-origin-emulated-desktop-light-en', '.sub-org');
+        // Copy summary: the stat cards and the ORIGIN panel in Markdown, the permalink to re-run it, plain text.
+        await stubClipboard(tab);
+        await tab.click('[data-action="copy-summary"]');
+        await tab.click('[data-action="copy-summary-text"]');
+        await tab.waitFor(() => window.__clip.length === 2, { message: 'summary copied twice' });
+        const [md, plain] = await takeClipboard(tab);
+        const summaryLines = md.trim().split('\n');
+        assertEqual(summaryLines.slice(0, 5), [
+          `**Subdomains · ${FAKE_APEX}**`,
+          '- 5 subdomains found · 5 resolve',
+          '- 2 Cloudflare · 3 direct IP',
+          '- 2 hosts hide their origin behind a proxy · 1 origin network to sweep',
+          '- No dangling CNAMEs'
+        ], 'summary lines');
+        assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin.replace(/\./g, '\\.')}/domainscope/#/subdomains\\?domain=${FAKE_APEX.replace('.', '\\.')}&run=1$`)
+          .test(summaryLines[5]), `footer: ${summaryLines[5]}`);
+        assertEqual(summaryLines.length, 6, 'no other line');
+        assertEqual(plain, md.replace(/\*\*/g, ''), 'the plain text is the same summary without Markdown');
         // Exclude addresses: the JSON export carries the same command (POSIX form), not the bare one.
         const withExclude = '-t 203.0.113.0/24 --exclude 203.0.113.12 -n shop.example.net www.example.net';
         await tab.type('[data-role="sub-org-exclude"]', '203.0.113.12');

@@ -1824,6 +1824,19 @@ button.nav-status:hover {
   text-decoration: underline;
 }
 
+/* Copy summary + Plain text (ui/summary-button.js): one group that wraps as a unit */
+.sum-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.sum-fallback-text {
+  width: 100%;
+  resize: vertical;
+}
+
 /* Fields */
 .field {
   display: flex;

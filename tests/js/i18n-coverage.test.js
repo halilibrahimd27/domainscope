@@ -242,6 +242,10 @@ describe('i18n coverage', () => {
     for (const g of shellnav.groupViews(app.VIEWS)) add(g.labelKey);
     for (const task of shellnav.START_TASKS) add(`start.task.${task.id}`);
     for (const s of shellnav.SHORTCUTS) add(`keys.${s.id}`);
+    // Copy summary (lib/summary.js): every sum.* text, registered with the views by ui/summary-button.js.
+    const summary = await imp('assets/js/lib/summary.js');
+    for (const k of Object.keys(summary.SUMMARY_I18N.en)) add(k);
+    for (const kind of summary.SUMMARY_KINDS) add(`nav.${kind}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

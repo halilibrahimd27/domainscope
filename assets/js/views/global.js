@@ -17,6 +17,8 @@
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
+ * - "Copy summary" next to the links row (ui/summary-button.js): the verdict, the answers and who
+ *   operates them, and the findings, as Markdown for Jira / Slack or plain text.
  * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`) runs on open; with
  *   `run=0` (a name carried over from another tool, lib/session.js) it is only filled in. The
  *   finished check is kept for the page session (`result()` / `snapshot()`).
@@ -36,6 +38,8 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/global`). */
 export const id = 'global';
@@ -911,8 +915,31 @@ export function mount(container, ctx) {
     message: t('glb.emptyBody', { count: formatNumber(GEO_VANTAGES.length) })
   });
   // No part of the form: Ctrl/Cmd+Enter in a table's filter here starts no new check.
+  // "Copy summary": the verdict, the answer groups and their operators, the findings (lib/summary.js).
+  const summaryFacts = () => {
+    if (!current || (!current.done && !current.cancelled)) return null;
+    const finished = current.rows.filter((r) => !r.pending);
+    const unavailable = finished.filter(isBrowserBlocked).length;
+    const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable;
+    return {
+      name: current.name,
+      type: current.type,
+      verdict,
+      total: current.rows.length,
+      answered: finished.length - failed - unavailable,
+      failed,
+      cancelled: !current.done,
+      addresses: current.ips.size
+    };
+  };
+  const summary = SummaryButton({
+    kind: 'global',
+    facts: summaryFacts,
+    disabled: true,
+    url: () => (current ? ctx.shareUrl(permalinkParams('global', { name: current.name, type: current.type, geo: current.geo ? null : '0' })) : null)
+  });
   const results = h('div', { class: 'stack-lg glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    h('div', { class: 'stack' }, progress, summaryEl, statsGrid, linksEl),
+    h('div', { class: 'stack' }, progress, summaryEl, statsGrid, h('div', { class: 'glb-results-bar' }, linksEl, summary.el)),
     legendCard, ipSection, resSection, geoSection);
 
   container.append(h('div', { class: 'stack-lg glb-view' }, formCard, h('div', { class: 'glb-empty card' }, emptyEl), results));
@@ -1156,6 +1183,7 @@ export function mount(container, ctx) {
     }
     alert.dataset.state = state;
     summaryEl.append(alert);
+    summary.setDisabled(!summaryFacts());
   }
 
   /** "a, b, c +2 more" — the first `max` entries of a list. */
@@ -1341,6 +1369,7 @@ export function mount(container, ctx) {
     results.hidden = false;
     renderLinks(name, type);
     setHeaderActions();
+    summary.setDisabled(true);
   }
 
   async function runCheck(name, type, geo) {

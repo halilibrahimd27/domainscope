@@ -8,6 +8,9 @@
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
  * leave the browser. Results stream into the table; CSV/JSON export.
  *
+ * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js); its link leaves
+ * out private and inventory addresses.
+ *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
  * The finished rows are kept for the page session (`result()` / `snapshot()`); coming back
@@ -27,6 +30,8 @@ import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
 import { mergeSignals, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
+import { permalinkParams } from '../lib/summary.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/ip`). */
 export const id = 'ip';
@@ -487,8 +492,17 @@ export function mount(container, ctx) {
   const statsGrid = h('div', { class: 'stat-grid ipi-stats' }, stats.ips, stats.cdn, stats.mine, stats.priv, stats.nets, stats.countries);
   const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
   // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
+  // "Copy summary": one line (lib/summary.js); the link leaves out private and inventory addresses.
+  const summary = SummaryButton({
+    kind: 'ip',
+    disabled: true,
+    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows } : null),
+    url: () => ctx.shareUrl(permalinkParams('ip', ctx.params, {
+      exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
+    }))
+  });
   const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    progress, notesEl, statsGrid, quotaNote, table);
+    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, quotaNote, table);
   container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results));
 
   /* --- cell renderers ----------------------------------------------------------------- */
@@ -612,6 +626,7 @@ export function mount(container, ctx) {
     runBtn.hidden = on;
     stopBtn.hidden = !on;
     input.input.readOnly = on;
+    summary.setDisabled(on || !(current && current.rows.length));
     ctx.setBusy(on ? t('ipi.looking') : false);
   }
 
@@ -707,6 +722,7 @@ export function mount(container, ctx) {
       renderStats(state.rows);
       state.controller = null;
       state.finishedAt = at ? new Date(at) : new Date();
+      summary.setDisabled(!preset.length);
       return;
     }
 

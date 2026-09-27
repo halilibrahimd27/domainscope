@@ -544,7 +544,9 @@ export function lookupSummary(facts, opts) {
  * IP Intel (one line): for one address its network, country, reverse name and operator; for
  * several, how many sit behind a CDN, are private, are in the server list, and how many networks
  * and countries. No inventory server name is included: only whether (or how many) are in the list.
- * A stopped lookup says how many addresses it never looked up (the rows without data).
+ * A lookup that failed (lib/ipintel `info.error`: every source failed or was rate-limited) is
+ * counted as failed, and a stopped lookup says how many addresses it never looked up (the rows
+ * without data); "no network data" is said only of an address that was looked up and answered.
  * @param {{ rows: Array<{ ip: string, info?: object|null, classification?: object, servers?: object[] }>, at?: Date,
  *   stopped?: boolean }} facts `at`: when the lookup ended; `stopped`: the user stopped it
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
@@ -560,8 +562,13 @@ export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
     if (c.provider && c.provider.name) return c.provider.name;
     return c.kind ? t(`kind.${c.kind}`) : null;
   };
-  // A stopped lookup leaves the rows it never reached without data (views/ip: info null).
+  // views/ip leaves `info` null on a row it never reached: a stopped lookup's, else one whose
+  // lookup ended without a result (counted as failed, like a row whose every source failed).
+  const failedRow = (r) => (r.info ? !!r.info.error : !stopped);
+  const failed = list.filter(failedRow).length;
   const notLooked = stopped ? list.filter((r) => !r.info).length : 0;
+  // Only an address that was looked up and answered can have "no network data".
+  const answered = list.length - failed - notLooked;
   let subject;
   if (list.length === 1) {
     const r = list[0];
@@ -575,7 +582,8 @@ export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
     const op = operator(r);
     if (op) bits.push([op]);
     if (r.servers && r.servers.length) bits.push([t('sum.ip.mineOne')]);
-    if (!bits.length) bits.push([t('sum.ip.noData')]);
+    if (!bits.length && answered) bits.push([t('sum.ip.noData')]);
+    if (failed) bits.push([t('sum.ip.failedOne')]);
     if (notLooked) bits.push([t('sum.ip.stoppedOne')]);
     bits.forEach((b, i) => parts.push(...(i ? [' · '] : []), ...b));
   } else {
@@ -592,7 +600,8 @@ export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
     if (asns) bits.push(t('sum.ip.networks', { count: asns }));
     const countries = new Set(list.map((r) => r.info && r.info.country).filter(Boolean)).size;
     if (countries) bits.push(t('sum.ip.countries', { count: countries }));
-    if (!bits.length) bits.push(t('sum.ip.noData'));
+    if (!bits.length && (answered || !list.length)) bits.push(t('sum.ip.noData'));
+    if (failed) bits.push(t('sum.ip.failed', { count: failed }));
     if (notLooked) bits.push(t('sum.ip.stopped', { count: notLooked }));
     parts.push(bits.join(' · '));
   }
@@ -821,6 +830,8 @@ const STRINGS = [
   ['sum.ip.networks', [{ one: '{count} network', other: '{count} networks' }, '{count} ağ']],
   ['sum.ip.countries', [{ one: '{count} country', other: '{count} countries' }, '{count} ülke']],
   ['sum.ip.noData', ['no network data', 'ağ bilgisi yok']],
+  ['sum.ip.failed', [{ one: '{count} lookup failed', other: '{count} lookups failed' }, '{count} adreste sorgu başarısız']],
+  ['sum.ip.failedOne', ['lookup failed', 'sorgu başarısız']],
   ['sum.ip.stopped', [{ one: 'stopped: {count} address not looked up', other: 'stopped: {count} addresses not looked up' }, 'durduruldu: {count} adres sorgulanmadı']],
   ['sum.ip.stoppedOne', ['stopped before it was looked up', 'sorgulanmadan durduruldu']]
 ];

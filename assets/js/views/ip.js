@@ -10,8 +10,8 @@
  *
  * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
  * lookup ended; it says how many addresses are in the server list (never a server's name, the
- * tooltip says so), how many a stopped lookup never reached, and its link leaves out private and
- * inventory addresses.
+ * tooltip says so), how many lookups failed (the rows showing "Lookup failed") and how many
+ * addresses a stopped lookup never reached, and its link leaves out private and inventory addresses.
  *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.

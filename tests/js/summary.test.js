@@ -552,16 +552,58 @@ describe('ip (one line)', () => {
     assert.equal(lines(md(doc))[0], '**IP Intel · 3 addresses**: 1 network · 1 country · stopped: 2 addresses not looked up');
     assert.equal(lines(md(S.ipSummary({ rows, stopped: true }, opts('tr'))))[0], '**IP Bilgisi · 3 adres**: 1 ağ · 1 ülke · durduruldu: 2 adres sorgulanmadı');
     assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1, 2), stopped: true }, opts())))[0], '**IP Intel · `198.51.100.9`**: Direct · stopped before it was looked up');
-    assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1), stopped: true }, opts())))[0], '**IP Intel · 2 addresses**: no network data · stopped: 2 addresses not looked up');
+    // Nothing looked up: no "no network data" in front of it (nothing was asked).
+    assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1), stopped: true }, opts())))[0], '**IP Intel · 2 addresses**: stopped: 2 addresses not looked up');
+    assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1), stopped: true }, opts('tr'))))[0], '**IP Bilgisi · 2 adres**: durduruldu: 2 adres sorgulanmadı');
+    const bare = { ip: '198.51.100.9', info: null, servers: [] };
+    assert.equal(lines(md(S.ipSummary({ rows: [bare], stopped: true }, opts())))[0], '**IP Intel · `198.51.100.9`**: stopped before it was looked up', 'no operator either');
     assert.doesNotMatch(md(S.ipSummary({ rows: rows.slice(0, 1), stopped: true }, opts())), /stopped/, 'every address looked up: nothing to say');
     assert.doesNotMatch(md(S.ipSummary({ rows }, opts())), /stopped/, 'not stopped');
+  });
+
+  test('a failed lookup (every source failed or rate-limited) says so, never a clean result or "no network data"; Turkish', () => {
+    const fail = { asn: null, country: null, ptr: [], error: 'ripestat: Network error; ipwhois: Network error', errorKind: 'network' };
+    const one = S.ipSummary({ rows: [row('203.0.113.7', { info: fail })] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));
+    assertShape(one, { inline: true });
+    assert.equal(lines(md(one))[0], '**IP Intel · `203.0.113.7`**: Direct · lookup failed');
+    assert.equal(lines(txt(one))[0], 'IP Intel · 203.0.113.7: Direct · lookup failed');
+    assert.equal(lines(md(S.ipSummary({ rows: [row('203.0.113.7', { info: fail })] }, opts('tr'))))[0], '**IP Bilgisi · `203.0.113.7`**: Doğrudan · sorgu başarısız');
+    assert.equal(lines(md(S.ipSummary({ rows: [{ ip: '203.0.113.7', info: fail, servers: [] }] }, opts())))[0], '**IP Intel · `203.0.113.7`**: lookup failed');
+
+    // Every address failed: how many, never "no network data".
+    const all = [row('203.0.113.7', { info: fail }), row('198.51.100.9', { info: fail }), row('198.51.100.10', { info: fail })];
+    const allDoc = S.ipSummary({ rows: all }, opts());
+    assertShape(allDoc, { inline: true });
+    assert.equal(lines(md(allDoc))[0], '**IP Intel · 3 addresses**: 3 lookups failed');
+    assert.equal(lines(md(S.ipSummary({ rows: all }, opts('tr'))))[0], '**IP Bilgisi · 3 adres**: 3 adreste sorgu başarısız');
+    assert.doesNotMatch(md(allDoc) + md(S.ipSummary({ rows: all }, opts('tr'))), /no network data|ağ bilgisi yok/);
+
+    // A mix: the failed row is counted, not dropped; with a stopped lookup both are said.
+    const mix = [row('203.0.113.7', { info: { asn: 64500, country: 'NL', ptr: [], error: null } }), row('198.51.100.9', { info: fail })];
+    assert.equal(lines(md(S.ipSummary({ rows: mix }, opts())))[0], '**IP Intel · 2 addresses**: 1 network · 1 country · 1 lookup failed');
+    assert.equal(lines(md(S.ipSummary({ rows: mix }, opts('tr'))))[0], '**IP Bilgisi · 2 adres**: 1 ağ · 1 ülke · 1 adreste sorgu başarısız');
+    assert.equal(lines(md(S.ipSummary({ rows: [...mix, row('198.51.100.10')], stopped: true }, opts())))[0],
+      '**IP Intel · 3 addresses**: 1 network · 1 country · 1 lookup failed · stopped: 1 address not looked up');
+    // An answered address without network data still says so next to a failed one.
+    const empty = row('198.51.100.20', { info: { asn: null, country: null, ptr: [], error: null } });
+    assert.equal(lines(md(S.ipSummary({ rows: [empty, row('198.51.100.9', { info: fail })] }, opts())))[0], '**IP Intel · 2 addresses**: no network data · 1 lookup failed');
+  });
+
+  test('what is not a failed lookup: a partial failure with data, a private address; a row a finished lookup never filled is one', () => {
+    const partial = row('203.0.113.7', { info: { asn: 64500, country: null, ptr: [], error: null, errors: [{ source: 'ripestat-geo', error: 'HTTP 429', errorKind: 'rate-limit' }] } });
+    assert.equal(lines(md(S.ipSummary({ rows: [partial] }, opts())))[0], '**IP Intel · `203.0.113.7`**: AS64500 · Direct');
+    const priv = row('10.0.0.5', { info: { private: true, asn: null, country: null, ptr: [], error: null }, classification: { kind: 'private', provider: null, hidesOrigin: false } });
+    assert.doesNotMatch(md(S.ipSummary({ rows: [priv] }, opts())), /failed/);
+    assert.equal(lines(md(S.ipSummary({ rows: [partial, priv] }, opts())))[0], '**IP Intel · 2 addresses**: 1 private · 1 network');
+    // views/ip fills every row of a lookup that ran to the end; one it did not fill had no result.
+    assert.equal(lines(md(S.ipSummary({ rows: [partial, row('198.51.100.9')] }, opts())))[0], '**IP Intel · 2 addresses**: 1 network · 1 lookup failed');
   });
 
   test('several addresses: CDN / private / inventory counts, networks, countries; Turkish', () => {
     const rows = [
       row('203.0.113.7', { info: { asn: 64500, country: 'NL' }, classification: { kind: 'cloudflare', provider: { name: 'Cloudflare' }, hidesOrigin: true } }),
       row('198.51.100.9', { info: { asn: 64501, country: 'DE' }, servers: [{ name: 'web01' }] }),
-      row('10.0.0.5')
+      row('10.0.0.5', { info: { private: true, ptr: [], error: null } })
     ];
     const doc = S.ipSummary({ rows }, opts());
     assertShape(doc, { inline: true });
@@ -591,7 +633,7 @@ describe('rendering and dispatch', () => {
 
   test('the Markdown footer is its own paragraph, never a lazy continuation of the last item or the one-line summary', () => {
     const zone = S.zoneSummary({ origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts('en', `${URL_BASE}#/zone`));
-    const ip = S.ipSummary({ rows: [{ ip: '203.0.113.7', info: null, classification: { kind: 'direct' }, servers: [] }] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));
+    const ip = S.ipSummary({ rows: [{ ip: '203.0.113.7', info: { ptr: [], error: null }, classification: { kind: 'direct' }, servers: [] }] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));
     for (const doc of [zone, ip]) {
       // CommonMark (Jira's Markdown paste, GitHub, GitLab): a line right after a "- " item or a
       // paragraph continues it; only an empty line ends the block.

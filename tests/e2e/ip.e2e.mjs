@@ -12,8 +12,9 @@
  * PTR / ASN / owner / location / operator columns (incl. the well-known-network hint for
  * 1.1.1.1 and the flag / country-code fallback); inventory matching; private IPs never
  * looked up; one reverse-IP lookup (uses 1 HackerTarget quota unit — "limited" is accepted);
- * row details; input validation notes; language re-mount keeping rows; phone light/dark;
- * no console errors, exceptions or CSP violations; complete i18n.
+ * row details; input validation notes; language re-mount keeping rows; Copy summary with every
+ * intel source blocked (the failed lookups are said, EN + TR); phone light/dark; no console
+ * errors, exceptions or CSP violations; complete i18n.
  *
  * Tolerated: request failures of FLAKY_HOSTS (ipwho.is and HackerTarget answer 429 once their
  * small free quotas are used up — the app reports that in the table).
@@ -24,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { stubClipboard, takeClipboard } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { parseIpInput, classifyIp, MAX_IPS } from '../../assets/js/views/ip.js';
 
@@ -371,6 +373,41 @@ async function main() {
         await page.send('Fetch.disable');
         if (NO_QUOTA_APIS) await blockQuotaApis(page);
         await setLangUi(page, 'en');
+      }
+    });
+
+    await step('Copy summary when every intel source fails (RIPEstat and ipwho.is blocked): "lookup failed", never a clean result; TR', async () => {
+      // A tab of its own: its blocked requests stay out of the desktop page's problem log.
+      const off = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      try {
+        await off.send('Network.enable');
+        await off.send('Network.setBlockedURLs', { urls: ['*://stat.ripe.net/*', '*://ipwho.is/*', '*://api.hackertarget.com/*'] });
+        await off.goto(`${server.url}#/about`);
+        await waitReady(off);
+        await setLangUi(off, 'en');
+        const copy = async () => {
+          await stubClipboard(off);
+          await off.click('[data-summary="ip"] [data-action="copy-summary"]');
+          await off.click('[data-summary="ip"] [data-action="copy-summary-text"]');
+          await off.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+          return (await takeClipboard(off)).map((x) => x.split('\n')[0]);
+        };
+        await gotoHash(off, '#/ip?ips=203.0.113.7,198.51.100.9', 'ip');
+        await off.waitFor(ROWS_DONE, { timeout: 60000, message: 'rows looked up' });
+        const rows = await off.evaluate(rowsInfo);
+        assert(Object.values(rows).length === 2 && Object.values(rows).every((r) => /Lookup failed/.test(r.text)), `every row shows the failure: ${JSON.stringify(rows)}`);
+        assertEqual(await copy(), ['**IP Intel · 2 addresses**: 2 lookups failed', 'IP Intel · 2 addresses: 2 lookups failed'], 'several addresses: how many failed, not "no network data"');
+        await gotoHash(off, '#/about', 'about');
+        await gotoHash(off, '#/ip?ips=203.0.113.7', 'ip');
+        await off.waitFor(ROWS_DONE, { timeout: 60000, message: 'row looked up' });
+        assertEqual((await copy())[0], '**IP Intel · `203.0.113.7`**: Direct · lookup failed', 'one address: the failure, not a clean "Direct"');
+        await setLangUi(off, 'tr');
+        await off.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula');
+        assertEqual((await copy())[0], '**IP Bilgisi · `203.0.113.7`**: Doğrudan · sorgu başarısız', 'Turkish, after the re-mount');
+        const p = await off.problems();
+        assertEqual([p.exceptions.length, p.csp.length], [0, 0], `no exception or CSP violation: ${JSON.stringify([p.exceptions, p.csp]).slice(0, 300)}`);
+      } finally {
+        await off.close();
       }
     });
 

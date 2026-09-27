@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  REPO_ROOT, assembleSite, localUrls, versionIndexHtml, versionedAssetsPath
+  REPO_ROOT, assembleSite, isLocalClutter, localUrls, versionIndexHtml, versionedAssetsPath
 } from '../../tools/assemble-site.mjs';
 
 const ASSETS = join(REPO_ROOT, 'assets');
@@ -98,7 +98,9 @@ describe('assembleSite', () => {
     assert.deepEqual(readdirSync(join(out, 'v')), ['abc123']);
     const files = walk(out).map((f) => relative(out, f).split(sep).join('/'));
     assert.deepEqual(files.filter((f) => /__pycache__|\.pyc$/.test(f)), []);
-    const assetFiles = walk(ASSETS).map((f) => relative(ASSETS, f).split(sep).join('/')).sort();
+    // a checkout may hold gitignored clutter (.DS_Store, __pycache__) the bundle leaves out
+    const assetFiles = walk(ASSETS).map((f) => relative(ASSETS, f).split(sep))
+      .filter((parts) => !parts.some(isLocalClutter)).map((parts) => parts.join('/')).sort();
     assert.deepEqual(files.filter((f) => f.startsWith('v/abc123/assets/')).map((f) => f.slice('v/abc123/assets/'.length)).sort(), assetFiles);
     assert.deepEqual(readFileSync(join(out, 'v', 'abc123', 'assets', 'js', 'app.js')), readFileSync(join(ASSETS, 'js', 'app.js')), 'copied as is');
   });
@@ -127,6 +129,10 @@ describe('assembleSite', () => {
     await assert.rejects(assembleSite({ out: site, version: 'e1', root }), /not in the bundle: v\/e1\/assets\/css\/gone\.css/);
     write('index.html', `<img srcset="assets/css/a.css 1x"><script type=module src="assets/js/app.js"></script>`);
     await assert.rejects(assembleSite({ out: site, version: 'e1', root }), /does not rewrite: srcset="assets\//);
+    write('index.html', `<img srcset="favicon.svg 1x, ./assets/css/a.css 2x"><script type=module src="assets/js/app.js"></script>`);
+    await assert.rejects(assembleSite({ out: site, version: 'e1', root }), /does not rewrite: srcset="favicon\.svg 1x, \.\/assets\//);
+    write('index.html', `<img srcset="favicon.svg 1x, https://example.com/assets/x.png 2x"><script type=module src="assets/js/app.js"></script>`);
+    assert.equal((await assembleSite({ out: site, version: 'e1', root })).rewritten, 1);
   });
 
   test('refuses to delete the repository or to copy a directory into itself', async () => {
@@ -135,6 +141,24 @@ describe('assembleSite', () => {
     await assert.rejects(assembleSite({ out: join(ASSETS, 'site'), version: 'x' }), /inside assets\//);
     await assert.rejects(assembleSite({ out: join(REPO_ROOT, 'cli', 'site'), version: 'x' }), /inside cli\//);
     await assert.rejects(assembleSite({ out: join(tmp, 'bad'), version: '../x' }), /Invalid version/);
+  });
+
+  test('refuses to delete an existing directory that is not an earlier bundle (a docs/ typo)', async () => {
+    const docs = join(tmp, 'docs');
+    mkdirSync(docs);
+    writeFileSync(join(docs, 'SPEC.md'), 'keep');
+    await assert.rejects(assembleSite({ out: docs, version: 'x' }), /not an earlier bundle \(SPEC\.md\)/);
+    assert.equal(readFileSync(join(docs, 'SPEC.md'), 'utf8'), 'keep');
+    writeFileSync(join(tmp, 'file'), 'keep');
+    await assert.rejects(assembleSite({ out: join(tmp, 'file'), version: 'x' }), /not an earlier bundle/);
+    const empty = join(tmp, 'empty');
+    mkdirSync(empty);
+    assert.equal((await assembleSite({ out: empty, version: 'x' })).version, 'x', 'an empty directory is fine');
+  });
+
+  test('isLocalClutter names what the bundle leaves out', () => {
+    for (const f of ['.DS_Store', 'data/Thumbs.db', 'cli/__pycache__', 'x.pyc']) assert.equal(isLocalClutter(f), true, f);
+    for (const f of ['js/app.js', 'data/wordlist.txt.gz', 'cli/ssl_origin_scan.py']) assert.equal(isLocalClutter(f), false, f);
   });
 });
 

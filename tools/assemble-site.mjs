@@ -23,10 +23,11 @@
  *                                                  # default: $GITHUB_SHA (12 chars), else 'dev'
  *   node tests/e2e/serve.mjs --root <out>          # preview the bundle
  *
- * <out> is deleted first; it must not be the repository or contain it.
+ * <out> is deleted first; it must not be the repository or contain it, and an existing <out> must
+ * hold only what a bundle does (index.html, favicon.svg, .nojekyll, cli/, v/).
  */
 
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -44,6 +45,17 @@ export const VERSION_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** Local clutter never published. */
 const SKIP_NAMES = new Set(['__pycache__', '.DS_Store', 'Thumbs.db']);
+/** What an earlier bundle holds at its root; an existing <out> with anything else is not deleted. */
+const BUNDLE_ENTRIES = new Set([...ROOT_FILES, ...ROOT_DIRS, 'v']);
+
+/**
+ * Is this path local clutter the bundle leaves out (__pycache__, .DS_Store, Thumbs.db, *.pyc)?
+ * @param {string} file
+ * @returns {boolean}
+ */
+export function isLocalClutter(file) {
+  return SKIP_NAMES.has(path.basename(file)) || file.endsWith('.pyc');
+}
 
 /**
  * An href / src attribute in any HTML spelling: any case, spaces around '=', and a double-quoted,
@@ -51,7 +63,22 @@ const SKIP_NAMES = new Set(['__pycache__', '.DS_Store', 'Thumbs.db']);
  */
 const URL_ATTR_RE = /(\s(?:href|src)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
 /** A page-relative assets/ URL the rewrite does not cover (srcset, imagesrcset) — refused. */
-const UNVERSIONED_RE = /\s(?:href|src|srcset|imagesrcset)\s*=\s*["']?(?:\.\/)?assets\//i;
+const UNVERSIONED_RE = /\s(?:href|src)\s*=\s*["']?(?:\.\/)?assets\//i;
+/** A srcset / imagesrcset attribute (groups: lead, "value", 'value', value); refused with any assets/ candidate. */
+const SRCSET_ATTR_RE = /(\s(?:srcset|imagesrcset)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+
+/**
+ * The first srcset / imagesrcset attribute with an assets/ URL in any of its candidates, or null.
+ * @param {string} html
+ * @returns {string|null}
+ */
+function unversionedSrcset(html) {
+  for (const m of String(html).matchAll(SRCSET_ATTR_RE)) {
+    const value = m[2] ?? m[3] ?? m[4];
+    if (value.split(',').some((c) => /^(?:\.\/)?assets\//i.test(c.trim()))) return m[0].trim();
+  }
+  return null;
+}
 
 /**
  * Site-relative prefix of the versioned assets.
@@ -112,9 +139,9 @@ function isInside(child, parent) {
  * Assemble the Pages bundle into `out` (deleted first).
  * @param {{ out: string, version: string, root?: string }} opts
  * @returns {Promise<{ out: string, version: string, assetsPath: string, rewritten: number }>}
- * @throws when `out` is the repository, contains it or lies inside a copied directory; when
- *   index.html references no assets/ URL, or one the rewrite does not cover (srcset); when a
- *   local URL of the new index.html is missing
+ * @throws when `out` is the repository, contains it, lies inside a copied directory or holds
+ *   anything an earlier bundle does not; when index.html references no assets/ URL, or one the
+ *   rewrite does not cover (srcset); when a local URL of the new index.html is missing
  */
 export async function assembleSite({ out, version, root = REPO_ROOT }) {
   const assetsPath = versionedAssetsPath(version);
@@ -127,12 +154,18 @@ export async function assembleSite({ out, version, root = REPO_ROOT }) {
 
   const index = versionIndexHtml(await readFile(path.join(src, 'index.html'), 'utf8'), version);
   if (!index.count) throw new Error('index.html references no assets/ URL; nothing to version');
-  const unversioned = UNVERSIONED_RE.exec(index.html);
-  if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned[0].trim()}`);
+  const unversioned = UNVERSIONED_RE.exec(index.html)?.[0].trim() ?? unversionedSrcset(index.html);
+  if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned}`);
+  // A typo such as `docs` must not wipe a directory that is not an earlier bundle.
+  const existing = await stat(target).catch(() => null);
+  if (existing) {
+    const foreign = existing.isDirectory() ? (await readdir(target)).filter((n) => !BUNDLE_ENTRIES.has(n)) : [path.basename(target)];
+    if (foreign.length) throw new Error(`Refusing to delete ${target}: it is not an earlier bundle (${foreign.slice(0, 3).join(', ')})`);
+  }
 
   await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await mkdir(target, { recursive: true });
-  const filter = (from) => !SKIP_NAMES.has(path.basename(from)) && !from.endsWith('.pyc');
+  const filter = (from) => !isLocalClutter(from);
   for (const file of ROOT_FILES) {
     if (file === 'index.html') await writeFile(path.join(target, file), index.html);
     else await cp(path.join(src, file), path.join(target, file));

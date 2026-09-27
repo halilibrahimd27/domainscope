@@ -289,6 +289,19 @@ describe('zone view: sweep command', () => {
     assert.deepEqual(V.redactValues(['192.0.2.10', '104.16.1.1', 'origin-lb.example.net.'], secrets, false), [V.REDACTED, '104.16.1.1', V.REDACTED]);
     assert.deepEqual(V.redactValues(['192.0.2.10'], secrets, true), ['192.0.2.10']);
   });
+
+  test('exports redact an origin inside a value too (SPF ip4: / ip6: / a:, MX and SRV targets)', () => {
+    const secrets = new Set(['192.0.2.10', '2001:db8::1', 'origin-lb.example.net']);
+    const R = V.REDACTED;
+    assert.deepEqual(V.redactValues([
+      '"v=spf1 ip4:192.0.2.10 ip6:2001:DB8:0::1 -all"', '"v=spf1 +ip4:192.0.2.10/32 a:Origin-LB.example.net include:_spf.example.com ~all"',
+      '10 origin-lb.example.net.', '0 5 443 origin-lb.example.net.', '"v=spf1 ip4:192.0.2.100 a:origin-lb.example.net.evil.example -all"'
+    ], secrets, false), [
+      `"v=spf1 ip4:${R} ip6:${R} -all"`, `"v=spf1 +ip4:${R}/32 a:${R} include:_spf.example.com ~all"`,
+      `10 ${R}`, `0 5 443 ${R}`, '"v=spf1 ip4:192.0.2.100 a:origin-lb.example.net.evil.example -all"'
+    ]);
+    assert.deepEqual(V.redactValues(['10 origin-lb.example.net.'], secrets, true), ['10 origin-lb.example.net.']);
+  });
 });
 
 describe('zone view: live check progress', () => {

@@ -42,6 +42,7 @@ import {
 import { planDrift, driftZone, DRIFT_STATUSES, DRIFT_REASONS, DRIFT_SEVERITY } from '../lib/zonedrift.js';
 import { buildSweepCommand, quoteArg } from '../lib/cmdline.js';
 import { getResolver } from '../lib/resolvers.js';
+import { normalizeIP } from '../lib/netinfo.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -1032,8 +1033,28 @@ export function sweepProbeNames(sweep, targetCount) {
   return targetCount > 0 && sweep && Number.isFinite(sweep.probes) ? Math.round(sweep.probes / targetCount) : names;
 }
 
+/** Is `s` (any case, trailing dot, any IPv6 spelling) one of the secrets? */
+function isSecret(s, secrets) {
+  const v = s.toLowerCase().replace(/\.$/, '');
+  if (secrets.has(v)) return true;
+  const ip = normalizeIP(v);
+  return !!ip && secrets.has(ip);
+}
+
+/** One whitespace / quote / comma separated token: a bare value, `ip4:` / `a:` / `redirect=` …, a `/len` suffix. */
+function redactToken(tok, secrets) {
+  if (!tok) return tok;
+  const len = /\/\d{1,3}$/.exec(tok);
+  const body = len ? tok.slice(0, len.index) : tok;
+  const tail = len ? len[0] : '';
+  if (isSecret(body, secrets)) return REDACTED + tail;
+  const pre = /^[+?~-]?[a-z][a-z0-9-]*[:=]/i.exec(body);
+  return pre && isSecret(body.slice(pre[0].length), secrets) ? pre[0] + REDACTED + tail : tok;
+}
+
 /**
- * Replace origin addresses / hosts in exported values unless the user opted in (spec D13).
+ * Replace origin addresses / hosts in exported values unless the user opted in (spec D13): a
+ * whole value, or a token inside one (an SPF `ip4:` / `ip6:` / `a:` term, an MX or SRV target).
  * @param {string[]} values
  * @param {Set<string>} secrets origin IPs and hosts
  * @param {boolean} include
@@ -1041,7 +1062,11 @@ export function sweepProbeNames(sweep, targetCount) {
  */
 export function redactValues(values, secrets, include) {
   if (include || !secrets || !secrets.size) return [...(values || [])];
-  return (values || []).map((v) => (secrets.has(String(v).toLowerCase().replace(/\.$/, '')) ? REDACTED : v));
+  return (values || []).map((v) => {
+    const s = String(v);
+    if (isSecret(s, secrets)) return REDACTED;
+    return s.split(/([\s"',;]+)/).map((part, i) => (i % 2 ? part : redactToken(part, secrets))).join('');
+  });
 }
 
 /**

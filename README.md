@@ -203,7 +203,7 @@ docs/                    SPEC (module contracts), ROADMAP, RESEARCH
 ```bash
 npm test                 # JavaScript unit tests (node --test "tests/js/*.test.js"; `node --test tests/js/` is equivalent)
 npm run test:py          # CLI tests
-npm run test:e2e:offline # the offline E2E suites (shell, zone, verify, dane, global's offline steps; needs Chrome or Edge), as CI runs them
+npm run test:e2e:offline # the offline E2E suites (shell, zone, verify, dane; subdomains' and global's offline steps; needs Chrome or Edge), as CI runs them
 node tests/e2e/run-all.mjs   # every E2E suite, most against live APIs; verify and dane are offline (verify: 0 Globalping probes)
 node tools/assemble-site.mjs _site && node tests/e2e/serve.mjs --root _site   # preview the Pages bundle
 ```

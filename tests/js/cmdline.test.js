@@ -510,4 +510,22 @@ describe('buildSweepCommand: shell review fixes', () => {
       assert.deepEqual([f.targets, f.excludeUnused.length], [['10.0.0.5'], 1], wide);
     }
   });
+
+  test('a target list that overflows the cap even with the names file is flagged overLength; targetsFile fixes it', () => {
+    const targets = Array.from({ length: 1400 }, (_, i) => `2001:db8:${(i + 1).toString(16)}::1`);
+    const names = Array.from({ length: 50 }, (_, i) => `svc-${i}.example.com`);
+    for (const shell of ['posix', 'powershell']) {
+      const r = buildSweepCommand({ targets, names, shell });
+      assert.equal(r.namesInline, false, shell);
+      assert.ok(r.length > 8000, shell);
+      assert.equal(r.overLength, true, shell);
+      const filed = buildSweepCommand({ targets, names, shell, targetsFile: 'proxied-targets.txt' });
+      assert.equal(filed.command, 'ssl_origin_scan.py -t proxied-targets.txt -n proxied-names.txt', shell);
+      assert.ok(!('overLength' in filed), shell);
+    }
+    // within the cap the field is absent, so the earlier result shapes stay byte-identical
+    assert.ok(!('overLength' in buildSweepCommand({ targets: ['203.0.113.10'], names: ['a.example.com'] })));
+    const manyNames = Array.from({ length: 300 }, (_, i) => `svc-${i}.example.com`);
+    assert.ok(!('overLength' in buildSweepCommand({ targets: ['203.0.113.10'], names: manyNames })));
+  });
 });

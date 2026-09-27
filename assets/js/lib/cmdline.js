@@ -26,8 +26,10 @@
  *    future caller passing free text can never smuggle a Unicode quote that
  *    PowerShell would read as closing the literal, nor a NUL / CR / LF;
  *  - many names do not go inline: above a threshold the command reads them from
- *    a names file (`-n proxied-names.txt`), keeping it far below the Windows
- *    32,767-character command-line limit;
+ *    a names file (`-n proxied-names.txt`) and, when the caller gives a
+ *    `targetsFile`, the targets from a targets file too, keeping it far below
+ *    the Windows 32,767-character command-line limit. Without `targetsFile` a
+ *    huge target list stays inline and the result is flagged `overLength`;
  *  - two opt-ins widen the token rules for the zone-file hand-off, both off by
  *    default so every earlier caller is byte-identical: `allowHostTargets` keeps
  *    a HOST NAME target (a zone's proxied CNAME origin, resolved by the CLI
@@ -352,9 +354,11 @@ function applyExcludes(targets, excludes) {
  * Names go inline (`-n a.example.com b.example.com …`) up to `maxInlineNames`
  * names and `maxLength` characters; beyond either, the command reads them from
  * `namesFile` instead (`-n proxied-names.txt`: the CLI loads a `-n` value that
- * is a file, one name per line), so a large proxied estate never overflows the
- * Windows command-line limit. The caller then offers that file (`names` holds
- * the full validated list for it); `namesInline` says which form was built.
+ * is a file, one name per line), so many names never overflow the Windows
+ * command-line limit. The caller then offers that file (`names` holds the full
+ * validated list for it); `namesInline` says which form was built. The targets
+ * stay inline unless `targetsFile` is given: when the file form is still longer
+ * than `maxLength`, the result carries `overLength: true` (absent otherwise).
  *
  * @param {object} opts
  * @param {unknown[]} [opts.targets] IP addresses / CIDR blocks for `-t`
@@ -404,7 +408,7 @@ function applyExcludes(targets, excludes) {
  * @returns {{ command: string|null, targets: string[], names: string[],
  *   dropped: { targets: string[], names: string[], options: string[], exclude?: string[] }, length: number,
  *   namesInline: boolean, namesFile: string|null, exclude?: string[], excluded?: string[],
- *   excludeUnused?: string[], targetsInline?: boolean, targetsFile?: string|null }}
+ *   excludeUnused?: string[], targetsInline?: boolean, targetsFile?: string|null, overLength?: true }}
  *   `command` is null when no valid target or no valid name survives; `length`
  *   is its length (0 when null); `namesFile` is the file the command reads the
  *   names from (null when they are inline). The options follow the names (or
@@ -461,15 +465,18 @@ export function buildSweepCommand({
     return { command: inline, targets: targetList, names: n.valid, dropped, length: inline.length, namesInline: true, namesFile: null, ...tf, ...extra };
   }
   const file = pathTok(namesFile, DEFAULT_NAMES_FILE);
+  // Still over the cap in a file form (inline targets without `targetsFile`, or
+  // very many excludes): flagged so the caller can warn, never silently built.
+  const over = (command) => (command.length > lenCap ? { overLength: true } : {});
   if (tFile) {
     // Both lists to files: the caller offers the two downloads (targets = the
     // validated `targets`, names = the validated `names`, one per line).
     const command = `${q(pathTok(script, DEFAULT_SCRIPT))} -t ${q(tFile)}${exTokens} -n ${q(file)}${tail}`;
-    return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, targetsInline: false, targetsFile: tFile, ...extra };
+    return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, targetsInline: false, targetsFile: tFile, ...extra, ...over(command) };
   }
   const command = `${head}${q(file)}${tail}`;
   const tf = withTargetsFile ? { targetsInline: true, targetsFile: null } : {};
-  return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, ...tf, ...extra };
+  return { command, targets: targetList, names: n.valid, dropped, length: command.length, namesInline: false, namesFile: file, ...tf, ...extra, ...over(command) };
 }
 
 /**

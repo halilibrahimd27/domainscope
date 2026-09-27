@@ -26,11 +26,11 @@
  * Page session (lib/session.js, memory only): a view reports each run with
  * `ctx.runStarted(subject)`, which makes it the current target shown in the header chip; the
  * nav links carry that target into the other tools (`run=0`: filled in, never run). A view that
- * also exports `result()` → `{ subject, at, rerun? } | null` (its finished result) keeps it when
- * it is left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it is
- * opened again; the page header then says "Result from <time>", with "Run again" calling
- * `rerun(ctx)` unless the result says `rerun: false`. "Delete all local data" forgets all of it
- * and opens the tool on screen again, bare.
+ * also exports `result()` → `{ subject, at, rerun?, label? } | null` (its finished result) keeps it
+ * when it is left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it
+ * is opened again; the page header then says "Result from <time>" (or the result's own `label`),
+ * with "Run again" calling `rerun(ctx)` unless the result says `rerun: false`. "Delete all local
+ * data" forgets all of it and opens the tool on screen again, bare.
  */
 
 import {
@@ -393,7 +393,7 @@ function forgetShown() {
  * A view's finished result as the shell uses it (`result()` export), or null.
  * @param {object} view the view module
  * @param {ViewContext} ctx
- * @returns {{ subject: string|null, at: Date, rerun: boolean }|null}
+ * @returns {{ subject: string|null, at: Date, rerun: boolean, label: string|null }|null}
  */
 function resultOf(view, ctx) {
   if (!view || typeof view.result !== 'function') return null;
@@ -688,10 +688,10 @@ function renderPageHeader(def, view = null) {
 }
 
 /**
- * Show (or hide with null) the page header's note about a kept result: "Result from <time>",
- * with "Run again" when the view exports `rerun()` and the note offers it (`rerun`). Its keyboard
- * focus goes to the page title when the note goes away under it.
- * @param {{ at: Date, dropped: boolean, rerun?: boolean }|null} note
+ * Show (or hide with null) the page header's note about a kept result: "Result from <time>" (or
+ * the result's own `label`), with "Run again" when the view exports `rerun()` and the note offers
+ * it (`rerun`). Its keyboard focus goes to the page title when the note goes away under it.
+ * @param {{ at: Date, dropped: boolean, rerun?: boolean, label?: string|null }|null} note
  */
 function setKeptNote(note) {
   if (!current || !dom.keptNote) return;
@@ -709,7 +709,7 @@ function setKeptNote(note) {
         reportError(err);
       }
     } : null;
-    dom.keptNote.append(KeptNote({ at: note.at, dropped: note.dropped, onRerun: rerun }));
+    dom.keptNote.append(KeptNote({ at: note.at, dropped: note.dropped, label: note.label, onRerun: rerun }));
   } else if (hadFocus && dom.pageTitle) {
     dom.pageTitle.focus({ preventScroll: true });
   }

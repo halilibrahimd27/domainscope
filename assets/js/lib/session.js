@@ -267,18 +267,25 @@ export function restorePlan(params, kept) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * A view's `result()` in the shape the shell uses: `{ subject, at, rerun }` with a valid Date, or
- * null (no finished result, or not a usable one). `rerun` is false when the view says its note
- * offers no "Run again" (`rerun: false`: its own Re-run sits in the page header, or the result
- * cannot be run again, like a certificate file).
+ * A view's `result()` in the shape the shell uses: `{ subject, at, rerun, label }` with a valid
+ * Date, or null (no finished result, or not a usable one). `rerun` is false when the view says its
+ * note offers no "Run again" (`rerun: false`: its own Re-run sits in the page header, or the result
+ * cannot be run again, like a certificate file). `label`: the translation key of the note's text
+ * (with `{time}`) when "Result from <time>" would not say which result it is, like the Zone File's
+ * live check under its other tabs; null for the shell's own wording.
  * @param {unknown} res
- * @returns {{ subject: string|null, at: Date, rerun: boolean }|null}
+ * @returns {{ subject: string|null, at: Date, rerun: boolean, label: string|null }|null}
  */
 export function normalizeResult(res) {
   if (!res || typeof res !== 'object') return null;
   const at = res.at instanceof Date ? res.at : new Date(res.at ?? NaN);
   if (!Number.isFinite(at.getTime())) return null;
-  return { subject: typeof res.subject === 'string' && res.subject ? res.subject : null, at, rerun: res.rerun !== false };
+  return {
+    subject: typeof res.subject === 'string' && res.subject ? res.subject : null,
+    at,
+    rerun: res.rerun !== false,
+    label: typeof res.label === 'string' && res.label ? res.label : null
+  };
 }
 
 /**
@@ -288,19 +295,20 @@ export function normalizeResult(res) {
  * with `snapshot()` that is the result it got back; a tool that keeps its own state (`restorable`
  * false) gets it only for the result the shell kept when the tool was left (the same `at`) —
  * never for one that came from elsewhere (a certificate loaded in SSL Targets) or finished while
- * the tool was not shown. `rerun`: the note offers "Run again".
- * @param {{ note?: { at: Date, dropped: boolean, rerun: boolean }|null, plan?: 'restore'|'dropped'|null,
- *   kept?: { at: Date }|null, result?: { at: Date, rerun?: boolean }|null, mountedAt: number,
- *   restorable?: boolean }} info
- * @returns {{ at: Date, dropped: boolean, rerun: boolean }|null}
+ * the tool was not shown. `rerun`: the note offers "Run again"; `label`: the result's own wording
+ * ({@link normalizeResult}).
+ * @param {{ note?: { at: Date, dropped: boolean, rerun: boolean, label?: string|null }|null,
+ *   plan?: 'restore'|'dropped'|null, kept?: { at: Date }|null,
+ *   result?: { at: Date, rerun?: boolean, label?: string|null }|null, mountedAt: number, restorable?: boolean }} info
+ * @returns {{ at: Date, dropped: boolean, rerun: boolean, label: string|null }|null}
  */
 export function keptNote({ note = undefined, plan = null, kept = null, result = null, mountedAt, restorable = true }) {
   if (note !== undefined) return note;
-  if (plan === 'dropped' && kept) return { at: kept.at, dropped: true, rerun: true };
+  if (plan === 'dropped' && kept) return { at: kept.at, dropped: true, rerun: true, label: null };
   const at = result ? timeOf(result.at) : NaN;
   if (!(at < mountedAt)) return null;
   if (!restorable && !(kept && timeOf(kept.at) === at)) return null;
-  return { at: result.at, dropped: false, rerun: result.rerun !== false };
+  return { at: result.at, dropped: false, rerun: result.rerun !== false, label: result.label || null };
 }
 
 /* ------------------------------------------------------------------------ */

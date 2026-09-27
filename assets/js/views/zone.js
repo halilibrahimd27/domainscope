@@ -334,6 +334,7 @@ const EN = {
   'zone.live.stopped': 'Stopped: {done} of {total} record sets checked',
   'zone.live.failed': 'The live check failed: {message}',
   'zone.live.finished': 'Live check finished: {count} differences',
+  'zone.live.kept': 'Live check from {time}',
   'zone.live.soaNewer': 'Live serial {live} is newer than the file’s {file}: this export predates the latest change.',
   'zone.live.nsDisjoint': 'The name servers in this file are not the live ones: the export may come from a provider that is not authoritative any more.',
   'zone.live.noOrigin': 'The zone {origin} does not exist in public DNS (NXDOMAIN).',
@@ -594,6 +595,7 @@ const TR = {
   'zone.live.stopped': 'Durduruldu: {total} kayıt kümesinin {done} tanesi kontrol edildi',
   'zone.live.failed': 'Canlı kontrol başarısız oldu: {message}',
   'zone.live.finished': 'Canlı kontrol bitti: {count} fark',
+  'zone.live.kept': 'Önceki canlı kontrol: {time}',
   'zone.live.soaNewer': 'Canlı seri numarası {live}, dosyadaki {file} değerinden yeni: bu dışa aktarım son değişiklikten önce alınmış.',
   'zone.live.nsDisjoint': 'Bu dosyadaki ad sunucuları canlıdakiler değil: dışa aktarım artık yetkili olmayan bir sağlayıcıdan alınmış olabilir.',
   'zone.live.noOrigin': '{origin} zone’u genel DNS’te yok (NXDOMAIN).',
@@ -2156,13 +2158,14 @@ export function unmount() {
 /**
  * The finished (or stopped) live check of the loaded zone, or null. It stays in this module, so
  * the shell keeps only the fact (lib/session.js); no subject: nothing about the zone becomes the
- * current target or goes into a URL.
- * @returns {{ subject: null, at: Date }|null}
+ * current target or goes into a URL. Its note says "Live check from <time>": the other tabs show
+ * the file, not that check.
+ * @returns {{ subject: null, at: Date, label: string }|null}
  */
 export function result() {
   const L = S.live;
   const finished = L.status === 'done' || (L.status === 'cancelled' && L.rows.length > 0);
-  return S.zone && finished && L.finishedAt ? { subject: null, at: L.finishedAt } : null;
+  return S.zone && finished && L.finishedAt ? { subject: null, at: L.finishedAt, label: 'zone.live.kept' } : null;
 }
 
 /** "Run again" of the kept-result note: the live check again, on its tab. */

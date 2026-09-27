@@ -78,17 +78,18 @@ export function TargetChip({ target, onClear }) {
 
 /**
  * The note over a tool's kept result: when it finished and, when the tool offers it, "Run again".
- * `dropped`: the result was too large to keep and only its query came back. It is one run of
- * text (icon, words, link) that wraps like a sentence on a narrow screen.
- * @param {{ at: Date, dropped?: boolean, onRerun?: (() => void)|null, now?: number }} opts
+ * `dropped`: the result was too large to keep and only its query came back. `label`: the tool's
+ * own translation key for the text (with `{time}`), in place of "Result from {time}". It is one
+ * run of text (icon, words, link) that wraps like a sentence on a narrow screen.
+ * @param {{ at: Date, dropped?: boolean, label?: string|null, onRerun?: (() => void)|null, now?: number }} opts
  * @returns {HTMLElement}
  */
-export function KeptNote({ at, dropped = false, onRerun = null, now = Date.now() }) {
+export function KeptNote({ at, dropped = false, label = null, onRerun = null, now = Date.now() }) {
   const time = keptTimeText(at, now);
   return h('p', { class: 'kept-note', dataset: { kept: dropped ? 'dropped' : 'result' } },
     Icon('clock', { size: 14, className: 'kept-note-icon' }),
     h('span', { class: 'kept-note-text', title: t(dropped ? 'session.kept.droppedTitle' : 'session.kept.title') },
-      t(dropped ? 'session.kept.dropped' : 'session.kept.from', { time })),
+      t(dropped ? 'session.kept.dropped' : label || 'session.kept.from', { time })),
     onRerun ? ' ' : null,
     onRerun ? h('button', {
       type: 'button',

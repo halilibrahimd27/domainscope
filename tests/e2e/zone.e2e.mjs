@@ -13,7 +13,7 @@
  * command (no /24, host target, wildcard name, PowerShell), the zone-targets.txt download, the
  * Problems → Records jump, the live check (nothing sent before the click, planned query count,
  * hidden targets / internal names never queried, statuses, redacted export, cancel, kept for the
- * page session with "Result from" and Run again), the exact-mode hand-off contract, Route 53
+ * page session with "Live check from" and Run again), the exact-mode hand-off contract, Route 53
  * (incomplete export) and cPanel imports, a certificate
  * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
  * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
@@ -65,6 +65,19 @@ async function fakeTable() {
   const soa = table['example.com'].SOA[0];
   table['example.com'].SOA = [{ ...soa, serial: Number(soa.serial) + 1 }];
   return table;
+}
+
+/** The page header's kept-result note: its text ('' when none shows) and whether it offers Run again. */
+const keptNote = (page) => page.evaluate(() => ({
+  text: document.querySelector('.page-kept:not([hidden]) .kept-note-text')?.textContent || '',
+  rerun: !!document.querySelector('.page-kept:not([hidden]) [data-action="kept-rerun"]'),
+  hash: location.hash
+}));
+
+/** Leave the Zone File for About and come back (the shell keeps the finished live check). */
+async function leaveAndReturn(page) {
+  await gotoRoute(page, 'about');
+  await gotoRoute(page, 'zone');
 }
 
 /** In-page DoH stub: answers EVERY DoH query from the table (NXDOMAIN outside it), logs it. */
@@ -381,18 +394,13 @@ async function main() {
       }
     });
 
-    await run.step('the finished live check is kept like a result: "Result from", Run again on the Live tab, nothing in the URL or the target', async () => {
+    await run.step('the finished live check is kept like a result: "Live check from" on any tab, Run again on the Live tab, nothing in the URL or the target', async () => {
       await clickTab(page, 'overview');
       const chip = () => page.evaluate(() => document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent || null);
       const chipBefore = await chip();
-      await gotoRoute(page, 'about');
-      await gotoRoute(page, 'zone');
-      const note = await page.evaluate(() => ({
-        text: document.querySelector('.page-kept:not([hidden]) .kept-note-text')?.textContent || '',
-        rerun: !!document.querySelector('.page-kept:not([hidden]) [data-action="kept-rerun"]'),
-        hash: location.hash
-      }));
-      assert(/^Result from /.test(note.text), `note: ${note.text}`);
+      await leaveAndReturn(page);
+      const note = await keptNote(page);
+      assert(/^Live check from \d{1,2}:\d{2}(\s[AP]M)?$/.test(note.text), `the note names the live check on the Overview tab: ${note.text}`);
       assertEqual([note.rerun, note.hash], [true, '#/zone'], 'Run again; nothing in the URL');
       const sent = await page.evaluate(() => window.__fakeDnsLog.length);
       await page.click('[data-action="kept-rerun"]');
@@ -402,6 +410,15 @@ async function main() {
       assertEqual(await chip(), chipBefore, 'the zone never becomes the current target');
       assertEqual(await page.evaluate(() => location.hash), '#/zone?tab=live', 'only the tab in the URL');
       assertEqual(external, [], 'no external request');
+    });
+
+    await run.step('Turkish: the note names the live check too, and a language switch keeps it', async () => {
+      await setLangUi(page, 'tr');
+      await leaveAndReturn(page);
+      const note = await keptNote(page);
+      assert(/^Önceki canlı kontrol: \d{1,2}:\d{2}$/.test(note.text), `TR note: ${note.text}`);
+      await setLangUi(page, 'en');
+      assert(/^Live check from /.test((await keptNote(page)).text), 'kept through the language switch');
     });
 
     await run.step('Scan these names (exact): publishes the zone + one-shot intent and opens Subdomains', async () => {

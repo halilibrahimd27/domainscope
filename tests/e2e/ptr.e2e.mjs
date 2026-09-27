@@ -25,7 +25,7 @@
  * domain fills the form, also over a draft), "Under your domain" off without a focus domain,
  * keyboard focus
  * Sweep ⇄ Stop and a stopped sweep, Domain Health's mail identity (FCrDNS) rows and table
- * (at 375 px too), TR / EN × light / dark at 375 px, zero console errors / CSP violations /
+ * (at 320 and 375 px too), TR / EN × light / dark at 375 px, zero console errors / CSP violations /
  * missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, 192.0.2.0/24, 198.51.100.0/24,
@@ -563,20 +563,22 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.hlt-fcrdns a.hlt-fcrdns-sweep').getAttribute('href')), '#/ptr?target=192.0.2.1&focus=example.com', 'sweep link');
       await page.evaluate(() => document.querySelector('.hlt-fcrdns').scrollIntoView());
       await shot(page, opts, 'ptr-health-fcrdns-desktop-light-en');
-      // on a phone the verdict sits under the address and the table fits its card
-      await page.setViewport({ width: 375, height: 667, mobile: true });
-      await sleep(150);
-      const phone = await page.evaluate(() => {
-        const box = document.querySelector('.hlt-fcrdns-table');
-        const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
-        return {
-          fits: box.scrollWidth <= box.clientWidth + 1,
-          inline: [...box.querySelectorAll('.hlt-fcrdns-st-inline')].every(visible),
-          column: [...box.querySelectorAll('td:nth-child(4)')].some(visible)
-        };
-      });
-      assertEqual(phone, { fits: true, inline: true, column: false }, 'phone table');
-      await assertNoHorizontalScroll(page, 'health fcrdns');
+      // on a phone (the narrowest too) the verdict sits under the address and the table fits its card
+      for (const width of [320, 375]) {
+        await page.setViewport({ width, height: 667, mobile: true });
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const phone = await page.evaluate(() => {
+          const box = document.querySelector('.hlt-fcrdns-table');
+          const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
+          return {
+            fits: box.scrollWidth <= box.clientWidth + 1,
+            inline: [...box.querySelectorAll('.hlt-fcrdns-st-inline')].every(visible),
+            column: [...box.querySelectorAll('td:nth-child(4)')].some(visible)
+          };
+        });
+        assertEqual(phone, { fits: true, inline: true, column: false }, `phone table at ${width} px`);
+        await assertNoHorizontalScroll(page, `health fcrdns at ${width} px`);
+      }
       await page.evaluate(() => document.querySelector('.hlt-fcrdns').scrollIntoView());
       await shot(page, opts, 'ptr-health-fcrdns-mobile-light-en');
       await page.setViewport({ width: 1440, height: 900 });

@@ -978,7 +978,9 @@ export function mount(container, ctx) {
     const status = (a, className) => Badge(t(`hlt.fcrdns.st.${a.status}`), {
       variant: variant[a.status] || 'neutral', icon: a.status === 'confirmed' ? 'check' : null, title: a.error || null, className
     });
-    // On a phone the verdict sits under the address (hlt-fcrdns-st-inline) and its own column is hidden.
+    // On a phone the verdict sits under the address (hlt-fcrdns-st-inline) and its own column is
+    // hidden; each row is a card whose lines carry the column headers as labels (data-label).
+    const headers = [t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')];
     const rows = mi.addresses.map((a) => [
       h('span', { class: 'hlt-fcrdns-host' }, hostLink(a.host),
         a.own ? null : Badge(t('hlt.fcrdns.provider'), { title: t('hlt.fcrdns.providerTitle') })),
@@ -992,9 +994,12 @@ export function mount(container, ctx) {
     const block = h('div', { class: 'stack-sm hlt-mail-block hlt-fcrdns', dataset: { block: 'fcrdns' } },
       h('div', { class: 'hlt-subtitle' }, t('hlt.fcrdns')),
       h('p', { class: 'muted text-xs hlt-fcrdns-hint' }, t('hlt.fcrdns.hint')),
-      miniTable([t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')], rows, 'hlt-fcrdns-table'),
+      miniTable(headers, rows, 'hlt-fcrdns-table'),
       mi.total > mi.checked ? h('p', { class: 'muted text-xs' }, t('hlt.fcrdns.capped', { checked: formatNumber(mi.checked), total: formatNumber(mi.total) })) : null);
-    [...block.querySelectorAll('tbody tr')].forEach((tr, i) => { tr.dataset.status = mi.addresses[i].status; });
+    [...block.querySelectorAll('tbody tr')].forEach((tr, i) => {
+      tr.dataset.status = mi.addresses[i].status;
+      [...tr.cells].forEach((td, j) => { td.dataset.label = headers[j]; });
+    });
     return block;
   }
 

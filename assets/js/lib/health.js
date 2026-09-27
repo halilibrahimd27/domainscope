@@ -1438,7 +1438,7 @@ const LOOKUP_FAILURE_IDS = new Set([
   'soa.error', 'ns.error', 'mx.error', 'spf.error', 'dmarc.error', 'dkim.error', 'caa.error', 'wildcard.error', 'dnssec.error'
 ]);
 
-async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
+async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex, zone }) {
   const checks = [];
   const ds = records(dsR, 'DS', name).map((rr) => rr.data).filter(Boolean);
   const dnskey = records(dnskeyR, 'DNSKEY', name).map((rr) => rr.data).filter(Boolean);
@@ -1486,9 +1486,19 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
   const algNums = uniq([...ds.map((x) => x.algorithm), ...dnskey.map((x) => x.algorithm)].filter(Number.isInteger));
   info.algorithms = algNums.map((n) => DNSSEC_ALGORITHMS[n] || `ALG${n}`);
   if (isApex === false && !ds.length && !dnskey.length) {
-    // Below the zone apex there is no DS / DNSKEY of its own: the name is signed when its zone is, which the
-    // AD bit on the (NODATA) DNSKEY answer shows. AD=0 from a validating resolver means insecure.
-    info.signed = info.validated;
+    // Below the zone apex there is no DS / DNSKEY of its own: report the enclosing zone's state. AD=1 on the
+    // (NODATA) DNSKEY answer proves it signed and validated. Otherwise ask the zone itself (a DS at its cut
+    // means signed), and through a CNAME, where AD=0 may only describe the target's zone, its DNSKEY's AD too.
+    const alias = cnameChain(dnskeyR.answers, name).length > 0;
+    info.signed = info.validated === true ? true : alias ? null : info.validated;
+    if (info.validated !== true && zone) {
+      const [zoneDs, zoneKey] = await Promise.all([
+        d.query(zone, 'DS', { dnssec: true }),
+        alias ? d.query(zone, 'DNSKEY', { dnssec: true }) : null
+      ]);
+      if (!failed(zoneDs)) info.signed = records(zoneDs, 'DS', zone).length > 0;
+      if (zoneKey) info.validated = zoneKey.ok && zoneKey.rcode === 'NOERROR' ? !!zoneKey.flags.ad : null;
+    } else if (info.validated !== true && alias) info.validated = null;
   }
 
   if (failed(dsR) || failed(dnskeyR)) {
@@ -1656,8 +1666,9 @@ function analyzeRdap(r, now) {
  *   rdap?: boolean, issuerDN?: string|object|null, wildcardCert?: boolean, now?: Date }} opts
  *   Extensions: rdap (false skips the RDAP lookup), issuerDN + wildcardCert (adds a CAA check for
  *   that certificate's CA), now (clock for expiry maths, tests).
- *   For a name below its zone apex (`zone` !== `domain`) `dnssec.signed` is the enclosing zone's
- *   state, read from the AD bit; `zone` is the name's own zone, also when it is a CNAME.
+ *   For a name below its zone apex (`zone` !== `domain`) `dnssec` is the enclosing zone's state: signed
+ *   from its DS, validated from the AD bit (the zone's own DNSKEY answer when the name is a CNAME);
+ *   `zone` is the name's own zone, also when it is a CNAME.
  * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
  *     aaaa: string[], txt: string[], spf: string|null, dmarc: string|null,
@@ -1749,7 +1760,7 @@ export async function domainHealth(domain, {
   const [ns, mx, dnssec, wildcard, dkim, caa] = await Promise.all([
     tracked('ns', analyzeNs(name, nsR, d, soa.apex)),
     tracked('mx', analyzeMx(name, mxR, d)),
-    tracked('dnssec', analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex: soa.apex })),
+    tracked('dnssec', analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex: soa.apex, zone: soa.zone })),
     tracked('wildcard', d.detectWildcard(name)),
     tracked('dkim', analyzeDkim(name, dkimSelectors, d)),
     tracked('caa', analyzeCaa(name, d, { issuerDN, wildcardCert }))

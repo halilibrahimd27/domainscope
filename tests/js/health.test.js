@@ -1211,7 +1211,7 @@ test('DNSSEC: unsigned, no DS, DS without DNSKEY, mismatch, not validated, depre
   has(r, 'dnssec.error', 'warn');
 });
 
-test('DNSSEC: a name below the zone apex takes the signed state of its zone (AD bit), never "unsigned but validated"', async () => {
+test('DNSSEC: a name below the zone apex takes the state of its zone, never "unsigned but validated"', async () => {
   const zone = goodZone();
   zone['www.example.com'] = { A: ['192.0.2.41'] };
   let r = await run('www.example.com', fakeDns(zone, { signed: ['example.com'] }));
@@ -1222,10 +1222,40 @@ test('DNSSEC: a name below the zone apex takes the signed state of its zone (AD 
   assert.equal(r.dnssec.validated, true);
   assert.equal(r.dnssec.signed, true);
 
-  // the DNSKEY lookup failed: unknown, not "not signed"
+  // the DNSKEY lookup failed: the zone's DS still says signed, validation is unknown
   r = await run('www.example.com', fakeDns(zone, { signed: ['example.com'], fail: { 'www.example.com|DNSKEY': 'timeout' } }));
-  assert.equal(r.dnssec.signed, null);
+  assert.equal(r.dnssec.signed, true);
+  assert.equal(r.dnssec.validated, null);
   has(r, 'dnssec.error', 'warn');
+  // … and with the zone's DS lookup failing too: unknown, not "not signed"
+  r = await run('www.example.com', fakeDns(zone, {
+    signed: ['example.com'], fail: { 'www.example.com|DNSKEY': 'timeout', 'example.com|DS': 'timeout' }
+  }));
+  assert.equal(r.dnssec.signed, null);
+
+  // a CNAME into an unsigned zone: AD=0 describes the target, the signed zone of the alias is what counts
+  const aliased = goodZone();
+  aliased['example.net'] = { SOA: SOA('example.net'), NS: ['ns1.example.net'], A: ['192.0.2.80'] };
+  aliased['www.example.com'] = { CNAME: 'cdn.example.net' };
+  aliased['cdn.example.net'] = { A: ['192.0.2.81'] };
+  r = await run('www.example.com', fakeDns(aliased, { signed: ['example.com'] }));
+  assertRenderable(r);
+  assert.equal(r.zone, 'example.com');
+  assert.equal(r.dnssec.signed, true);
+  assert.equal(r.dnssec.validated, true);
+  lacks(r, 'dnssec.unsigned');
+  // the zone's own answers failing: unknown rather than the target's "not signed"
+  r = await run('www.example.com', fakeDns(aliased, {
+    signed: ['example.com'], fail: { 'example.com|DS': 'timeout', 'example.com|DNSKEY': 'timeout' }
+  }));
+  assert.equal(r.dnssec.signed, null);
+  assert.equal(r.dnssec.validated, null);
+  // the zone of the alias really unsigned
+  delete aliased['example.com'].DS;
+  delete aliased['example.com'].DNSKEY;
+  r = await run('www.example.com', fakeDns(aliased));
+  assert.equal(r.dnssec.signed, false);
+  assert.equal(r.dnssec.validated, false);
 
   // an unsigned enclosing zone stays "not signed"
   delete zone['example.com'].DS;

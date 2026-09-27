@@ -19,6 +19,7 @@ let i18n;
 let O;
 let L;
 let D;
+let Zp;
 
 before(async () => {
   i18n = await imp('assets/js/i18n.js');
@@ -26,6 +27,7 @@ before(async () => {
   O = await imp('assets/js/lib/zoneorigins.js');
   L = await imp('assets/js/lib/zonelint.js');
   D = await imp('assets/js/lib/zonedrift.js');
+  Zp = await imp('assets/js/lib/zoneparse.js');
 });
 
 describe('zone view: strings', () => {
@@ -169,11 +171,39 @@ describe('zone view: helpers', () => {
         for (const f of inputs) {
           const z = V.parseFiles([f]);
           for (const p of V.problemList(z, L.lintZone(z))) {
-            const text = i18n.t(p.source === 'lint' ? `zone.lint.${p.code}` : `zone.issue.${p.code}`, p.params);
+            const text = i18n.t(p.source === 'lint' ? `zone.lint.${p.code}` : V.issueKey(p.code, p.params), p.params);
             assert.doesNotMatch(text, /\{[A-Za-z]+\}/, `${lang} ${f.name} ${p.code}`);
           }
         }
       }
+    } finally {
+      i18n.setLang(was);
+    }
+  });
+
+  test('issue texts say what the parser did (served name, ignored $TTL / ")", translated unit)', () => {
+    const was = i18n.getLang();
+    const say = (lang, text, code, opts = {}) => {
+      i18n.setLang(lang);
+      const w = Zp.parseZone(text, { filename: 'db.example.com', ...opts }).warnings.find((x) => x.code === code);
+      return i18n.t(V.issueKey(w.code, w.params), w.params);
+    };
+    try {
+      const dot = '$ORIGIN example.com.\n$TTL 300\nexample.com IN TXT "x"\n';
+      assert.match(say('en', dot, 'OWNER_MISSING_TRAILING_DOT'), /^“example\.com” has no trailing dot .* serves it as example\.com\.example\.com,/);
+      assert.match(say('tr', dot, 'OWNER_MISSING_TRAILING_DOT'), /^“example\.com” dosyada/);
+      const ttl = '$ORIGIN example.com.\n$TTL 300\n$TTL 1x\nwww A 192.0.2.10\nbig 4294967295 A 192.0.2.11\n';
+      i18n.setLang('en');
+      const [dir, rec] = V.parseFiles([{ name: 'db.example.com', text: ttl }]).warnings.filter((w) => w.code === 'BAD_TTL');
+      assert.equal(i18n.t(V.issueKey(dir.code, dir.params), dir.params), 'Invalid $TTL 1x; the line was ignored.');
+      assert.equal(i18n.t(V.issueKey(rec.code, rec.params), rec.params), 'Invalid TTL 4294967295; read as 0.');
+      assert.match(say('en', '$ORIGIN example.com.\nns1 300 IN A 192.0.2.53 )\n', 'UNBALANCED_PAREN'), /no matching “\(”; it was ignored/);
+      assert.match(say('en', '$ORIGIN example.com.\nns1 300 IN A ( 192.0.2.53\nwww 300 IN A 192.0.2.10\n', 'UNBALANCED_PAREN'), /never closed; this entry was skipped/);
+      const many = `$ORIGIN example.com.\n${Array.from({ length: 5 }, (_, i) => `h${i} 300 IN A 192.0.2.${i + 1}`).join('\n')}\n`;
+      assert.equal(say('tr', many, 'RECORDS_TRUNCATED', { limits: { maxEntries: 3 } }), 'Yalnızca ilk 3 girdi okundu.');
+      assert.equal(V.issueKey('RECORDS_TRUNCATED', { unit: 'records' }), 'zone.issue.RECORDS_TRUNCATED');
+      assert.equal(V.issueKey('RECORDS_TRUNCATED', { unit: 'documents' }), 'zone.issue.RECORDS_TRUNCATED.documents');
+      assert.equal(V.issueKey('BAD_NAME'), 'zone.issue.BAD_NAME');
     } finally {
       i18n.setLang(was);
     }

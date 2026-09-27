@@ -664,6 +664,7 @@ const ISSUE_TEXT = {
   RELATIVE_WITHOUT_ORIGIN: ['“{name}” is relative, but no origin is known yet; skipped.', '“{name}” göreli, ama henüz bir origin bilinmiyor; atlandı.'],
   UNTERMINATED_QUOTE: ['A quote is never closed; this entry was skipped.', 'Bir tırnak hiç kapanmıyor; bu kayıt atlandı.'],
   UNBALANCED_PAREN: ['A parenthesis is never closed; this entry was skipped.', 'Bir parantez hiç kapanmıyor; bu kayıt atlandı.'],
+  'UNBALANCED_PAREN.close': ['A “)” has no matching “(”; it was ignored.', 'Bir “)” için eşleşen “(” yok; yok sayıldı.'],
   LINE_TOO_LONG: ['The line is too long and was skipped.', 'Satır çok uzun; atlandı.'],
   NO_OWNER: ['A record starts with a blank owner before any name.', 'Bir kayıt, henüz hiçbir ad yokken boş sahiple başlıyor.'],
   BAD_NAME: ['Invalid name “{name}”.', 'Geçersiz ad “{name}”.'],
@@ -671,11 +672,14 @@ const ISSUE_TEXT = {
   BAD_RECORD: ['A record could not be read.', 'Bir kayıt okunamadı.'],
   UNPARSED_LINE: ['This line could not be understood: {snippet}', 'Bu satır anlaşılamadı: {snippet}'],
   PARTIAL_EXPORT: ['Only {have} records are in this export: it is incomplete. Cloudflare: add ?per_page=5000000 or drop every page together. Route 53: run the AWS CLI without --max-items.', 'Bu dışa aktarımda yalnızca {have} kayıt var: eksik. Cloudflare: ?per_page=5000000 ekleyin ya da tüm sayfaları birlikte bırakın. Route 53: AWS CLI’ı --max-items olmadan çalıştırın.'],
-  OWNER_MISSING_TRAILING_DOT: ['“{name}” has no trailing dot in the file, so DNS serves it as {name}, almost certainly not the intended {intended}.', '“{name}” dosyada sonda nokta olmadan yazılmış; DNS onu {name} olarak sunar, kastedilen büyük olasılıkla {intended}.'],
-  RECORDS_TRUNCATED: ['Only the first {max} {unit} were read.', 'Yalnızca ilk {max} {unit} okundu.'],
+  OWNER_MISSING_TRAILING_DOT: ['“{intended}” has no trailing dot in the file, so DNS serves it as {name}, almost certainly not what was meant.', '“{intended}” dosyada sonda nokta olmadan yazılmış; DNS onu {name} olarak sunar, kastedilen büyük olasılıkla bu değil.'],
+  RECORDS_TRUNCATED: ['Only the first {max} records were read.', 'Yalnızca ilk {max} kayıt okundu.'],
+  'RECORDS_TRUNCATED.entries': ['Only the first {max} entries were read.', 'Yalnızca ilk {max} girdi okundu.'],
+  'RECORDS_TRUNCATED.documents': ['Only the first {max} pasted documents were read.', 'Yapıştırılan belgelerin yalnızca ilk {max} tanesi okundu.'],
   GENERATE_TOO_LARGE: ['$GENERATE makes {count} records; the limit is {max}.', '$GENERATE {count} kayıt üretiyor; sınır {max}.'],
   GENERATE_UNSUPPORTED: ['This $GENERATE form ({range}) is not supported.', 'Bu $GENERATE biçimi ({range}) desteklenmiyor.'],
   BAD_TTL: ['Invalid TTL {ttl}; read as 0.', 'Geçersiz TTL {ttl}; 0 olarak okundu.'],
+  'BAD_TTL.directive': ['Invalid $TTL {ttl}; the line was ignored.', 'Geçersiz $TTL {ttl}; satır yok sayıldı.'],
   TARGET_MISSING_TRAILING_DOT: ['The target of {name} has no trailing dot, so it points to {target}, probably not the intended {intended}.', '{name} hedefinin sonunda nokta yok; bu yüzden {target} adresine işaret ediyor, kastedilen büyük olasılıkla {intended}.'],
   AT_INSIDE_NAME: ['“{raw}” uses @ inside a name. Read as {name}, but a standard name server would create a literal “@” label.', '“{raw}” adın içinde @ kullanıyor. {name} olarak okundu, ama standart bir ad sunucusu harfiyen “@” etiketi oluşturur.'],
   DUPLICATE_KEY: ['A key appears twice; the last one was used.', 'Bir anahtar iki kez geçiyor; sonuncusu kullanıldı.'],
@@ -778,6 +782,7 @@ registerStrings('tr', DICTS.tr);
 export function generatedKeys() {
   const keys = [];
   for (const [code, def] of Object.entries(ISSUE_CODES)) keys.push(def.fatal ? `zone.fatal.${code}` : `zone.issue.${code}`);
+  for (const variant of Object.keys(ISSUE_TEXT)) if (variant.includes('.')) keys.push(`zone.issue.${variant}`);
   for (const code of Object.keys(LINT_RULES)) keys.push(`zone.lint.${code}`, `zone.lint.${code}.why`);
   for (const s of DRIFT_STATUSES) keys.push(`zone.drift.${s}`);
   for (const r of DRIFT_REASONS) keys.push(`zone.reason.${r}`);
@@ -787,6 +792,27 @@ export function generatedKeys() {
   for (const hnt of NOT_A_ZONE_HINTS) keys.push(`zone.fatal.hint.${hnt}`);
   for (const tab of ZONE_TABS) keys.push(`zone.tab.${tab}`);
   return keys;
+}
+
+/** Parse issues whose text depends on a param → the `<CODE>.<variant>` key (texts in ISSUE_TEXT). */
+const ISSUE_VARIANTS = Object.freeze({
+  UNBALANCED_PAREN: (p) => (p.kind === 'close' ? 'close' : null),
+  BAD_TTL: (p) => (p.directive ? 'directive' : null),
+  RECORDS_TRUNCATED: (p) => (p.unit === 'entries' || p.unit === 'documents' ? p.unit : null)
+});
+
+/**
+ * The i18n key of a parse issue: `zone.issue.<CODE>`, or a variant where one sentence cannot fit
+ * every case (a stray ")" is ignored but an open "(" drops the entry; an invalid `$TTL` is
+ * ignored but a record TTL above 2^31-1 reads as 0; the unit of RECORDS_TRUNCATED).
+ * @param {string} code
+ * @param {object} [params]
+ * @returns {string}
+ */
+export function issueKey(code, params) {
+  const pick = Object.prototype.hasOwnProperty.call(ISSUE_VARIANTS, code) ? ISSUE_VARIANTS[code] : null;
+  const variant = pick ? pick(params || {}) : null;
+  return variant ? `zone.issue.${code}.${variant}` : `zone.issue.${code}`;
 }
 
 /**
@@ -1372,7 +1398,7 @@ export function mount(container, ctx) {
     const out = [];
     const partial = z.warnings.find((w) => w.code === 'PARTIAL_EXPORT' || w.code === 'RECORDS_TRUNCATED');
     if (partial) {
-      out.push(h('div', { class: 'zone-partial' }, Alert({ variant: 'error', title: t('zone.partial.title'), message: t(`zone.issue.${partial.code}`, partial.params) })));
+      out.push(h('div', { class: 'zone-partial' }, Alert({ variant: 'error', title: t('zone.partial.title'), message: t(issueKey(partial.code, partial.params), partial.params) })));
     }
     const priv = S.addresses.filter((a) => a.private).length;
     if (S.addresses.length && priv / S.addresses.length >= 0.5) {
@@ -1723,7 +1749,7 @@ export function mount(container, ctx) {
 
   /* --- problems ---------------------------------------------------------- */
   function problemTitle(p) {
-    return p.source === 'lint' ? t(`zone.lint.${p.code}`, p.params) : t(`zone.issue.${p.code}`, p.params);
+    return p.source === 'lint' ? t(`zone.lint.${p.code}`, p.params) : t(issueKey(p.code, p.params), p.params);
   }
 
   function problemItem(p) {

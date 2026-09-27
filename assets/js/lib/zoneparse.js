@@ -2465,7 +2465,7 @@ function parseBind(text, lines, zone, b, opts) {
         else issues.add('BAD_NAME', e.line, { name: safeText(arg ? arg.t : '', 80), reason: r.reason }, 'invalid $ORIGIN');
       } else if (d === '$TTL') {
         const v = arg ? parseTtlValue(arg.t) : null;
-        if (v === null || v > MAX_TTL) issues.add('BAD_TTL', e.line, { ttl: arg ? safeText(arg.t, 40) : '', max: MAX_TTL }, 'invalid $TTL ignored');
+        if (v === null || v > MAX_TTL) issues.add('BAD_TTL', e.line, { ttl: arg ? safeText(arg.t, 40) : '', max: MAX_TTL, directive: true }, 'invalid $TTL ignored');
         else st.defaultTtl = v;
       } else if (d === '$INCLUDE') {
         // `at`: the origin the included file is read under (RFC 1035 §5.1: its argument, else the current one)

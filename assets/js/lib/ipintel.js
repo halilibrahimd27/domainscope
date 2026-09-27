@@ -26,6 +26,7 @@ import {
   normalizeIP, ipVersion, isPrivateIP, matchProviderByIP, parseCidr, formatIP, isSharedProvider
 } from './netinfo.js';
 import { normalizeHostname, sortHostnames } from './domain.js';
+import { ipRetrySources } from './sourcestatus.js';
 
 /** RIPEstat Data API base URL. */
 export const RIPESTAT_BASE = 'https://stat.ripe.net/data';
@@ -54,7 +55,10 @@ const REVERSE_TTL_MS = 30 * 60 * 1000;
  * @property {string|null} prefix announced (covering) prefix, e.g. '8.8.8.0/24'
  * @property {string|null} country ISO 3166-1 alpha-2 (uppercase)
  * @property {string|null} city
- * @property {string[]} sources contributing sources: 'ripestat' | 'ipwhois' | 'dns'
+ * @property {string[]} sources contributing sources: 'ripestat' | 'ipwhois' | 'dns' ('ipwhois' only while
+ *   something on the result still comes from it)
+ * @property {{ network: string|null, location: string|null }} filledBy extension: the service the AS
+ *   ('ripestat' | 'ipwhois') and the country ('ripestat' | 'ipwhois') came from, null when not known
  * @property {string|null} error set only when nothing could be learned
  * @property {string|null} errorKind extension: util.errorKind() of `error` ('invalid' for bad input)
  * @property {Array<{ source: string, error: string, errorKind: string, status: number|null, retryAfterMs: number|null,
@@ -427,6 +431,7 @@ function emptyInfo(ip, version) {
     country: null,
     city: null,
     sources: [],
+    filledBy: { network: null, location: null },
     error: null,
     errorKind: null,
     errors: [],
@@ -445,8 +450,9 @@ function emptyInfo(ip, version) {
  * - Order: RIPEstat prefix-overview + maxmind-geo-lite (in parallel), then
  *   ipwho.is only to fill what RIPEstat could not answer. PTR comes from
  *   `dns.ptr()` (DohClient) or, without a DNS client, RIPEstat reverse-dns-ip.
- * - Results are cached per IP (1 h; complete failures are not cached; a cached result with
- *   failed sources asks those sources again) and concurrent calls for the same IP share one lookup.
+ * - Results are cached per IP (1 h; complete failures are not cached; a cached result whose failed
+ *   sources left a field empty asks those sources again, lib/sourcestatus.js ipRetrySources, like the
+ *   view's Retry) and concurrent calls for the same IP share one lookup.
  * - `concurrency` bounds simultaneous HTTP requests to the intel APIs
  *   (RIPEstat asks for ≤ 8 concurrent requests per client).
  *
@@ -519,6 +525,7 @@ export function createIpIntel({
   /** Merge one source's answer into `out` (RIPEstat is primary; ipwho.is only fills what is missing). */
   function applySource(out, source, value) {
     const addSource = (s) => { if (!out.sources.includes(s)) out.sources.push(s); };
+    const filledBy = out.filledBy || (out.filledBy = { network: null, location: null });
     if (source === 'ptr') {
       out.ptr = value.names;
       addSource(value.source);
@@ -527,12 +534,14 @@ export function createIpIntel({
       // An answer without an origin AS keeps what the fallback found (a retry after ipwho.is).
       if (value.asn !== null || !out.asns.length) {
         Object.assign(out, { asn: value.asn, asName: value.asName, holder: value.holder, asns: value.asns });
+        filledBy.network = value.asn !== null ? 'ripestat' : null;
       }
       addSource('ripestat');
     } else if (source === 'ripestat-geo') {
       if (value.country || out.country === null) {
         out.country = value.country;
         out.city = value.city;
+        filledBy.location = value.country ? 'ripestat' : null;
       }
       addSource('ripestat');
     } else if (source === 'ipwhois') {
@@ -541,14 +550,20 @@ export function createIpIntel({
         out.asn = value.asn;
         out.holder = out.holder || value.holder;
         out.asns = [{ asn: value.asn, holder: value.holder }];
+        filledBy.network = 'ipwhois';
         used = true;
       }
       if (out.country === null && value.country) {
         out.country = value.country;
         out.city = out.city || value.city;
+        filledBy.location = 'ipwhois';
         used = true;
       }
       if (used) addSource('ipwhois');
+    }
+    // A retried RIPEstat answer that replaced all ipwho.is gave: nothing on the result comes from it.
+    if ((source === 'ripestat' || source === 'ripestat-geo') && filledBy.network !== 'ipwhois' && filledBy.location !== 'ipwhois') {
+      out.sources = out.sources.filter((s) => s !== 'ipwhois');
     }
   }
 
@@ -649,10 +664,12 @@ export function createIpIntel({
     }
     if (!noCache) {
       const hit = infoCache.get(canonical);
-      if (hit && !hit.errors.length) return cloneInfo(hit);
-      // A cached partial result asks its failed sources again ("try again in 5 min" has to work);
-      // what they answered before is not asked twice.
-      if (hit) return cloneInfo(await shared(infoInflight, canonical, signal, (sig) => retrySources(hit, { signal: sig })));
+      // A cached partial result asks again the failed sources that left a field empty ("try again in
+      // 5 min" has to work), the ones the view's Retry asks; what answered is not asked twice, and a
+      // failure another source made up for (ipwho.is filled the country) leaves the result complete.
+      const pending = hit ? ipRetrySources(hit) : [];
+      if (hit && !pending.length) return cloneInfo(hit);
+      if (hit) return cloneInfo(await shared(infoInflight, canonical, signal, (sig) => retrySources(hit, { sources: pending, signal: sig })));
     }
     const result = await shared(infoInflight, canonical, signal, async (sig) => {
       const res = await lookupInfo(canonical, version, sig);
@@ -935,6 +952,7 @@ function cloneInfo(info) {
     ...info,
     ptr: [...info.ptr],
     sources: [...info.sources],
+    filledBy: { ...info.filledBy },
     errors: info.errors.map((e) => ({ ...e })),
     asns: info.asns.map((a) => ({ ...a }))
   };

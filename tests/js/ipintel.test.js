@@ -496,6 +496,7 @@ test('retry: asks only the failed sources again, merges them and updates the cac
   const intel = createIpIntel({ fetchImpl: f, dns: { ptr: async () => ['lb.example.com'] }, retries: 0 });
   const first = await intel.info('140.82.121.4');
   assert.deepEqual(first.errors.map((e) => e.source), ['ripestat']);
+  assert.deepEqual([first.sources, first.filledBy], [['dns', 'ripestat', 'ipwhois'], { network: 'ipwhois', location: 'ripestat' }]);
   limited = false;
   const n = log.length;
   const again = await intel.retry(first);
@@ -505,6 +506,8 @@ test('retry: asks only the failed sources again, merges them and updates the cac
   assert.equal(again.asName, 'GITHUB', 'RIPEstat is the primary source of the AS');
   assert.equal(again.country, 'DE');
   assert.deepEqual(again.ptr, ['lb.example.com'], 'untouched fields are kept');
+  // RIPEstat replaced the AS, the only thing ipwho.is gave: it is no longer a source of the row.
+  assert.deepEqual([again.sources, again.filledBy], [['dns', 'ripestat'], { network: 'ripestat', location: 'ripestat' }]);
   assert.equal(first.prefix, null, 'the earlier result is not mutated');
   const m = log.length;
   const cached = await intel.info('140.82.121.4');
@@ -556,6 +559,41 @@ test('info: a cached result with failed sources asks them again, not the ones th
   assert.equal(log.slice(n).length, 1, 'one prefix-overview request for both');
   assert.equal(x.prefix, y.prefix);
   assert.notEqual(x, y, 'each caller gets its own copy');
+});
+
+test('info: a failure another source made up for is not asked again on every lookup', async () => {
+  const log = [];
+  const f = mockFetch({
+    'prefix-overview': PO_GITHUB,
+    'maxmind-geo-lite': () => new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '300' } }),
+    'ipwho.is': IPWHO_GITHUB
+  }, { log });
+  const intel = createIpIntel({ fetchImpl: f, dns: { ptr: async () => ['lb.example.com'] }, retries: 0 });
+  const first = await intel.info('140.82.121.4');
+  assert.deepEqual(first.errors.map((e) => e.source), ['ripestat-geo']);
+  assert.deepEqual([first.country, first.filledBy.location], ['DE', 'ipwhois'], 'ipwho.is filled the country');
+  // Every field has a value: the row shows no n/a and no Retry, and a later lookup is served from the cache.
+  const n = log.length;
+  const cached = await intel.info('140.82.121.4');
+  assert.equal(log.length, n, 'no maxmind-geo-lite request while RIPEstat is limiting');
+  assert.deepEqual(cached.errors.map((e) => e.source), ['ripestat-geo'], 'the failure stays on record');
+  assert.equal(cached.country, 'DE');
+  // A failure that does leave a field empty is still asked (the prefix, which only RIPEstat knows).
+  let limited = true;
+  const g = mockFetch({
+    'prefix-overview': () => (limited ? new Response('Too Many Requests', { status: 429 }) : PO_GITHUB),
+    'maxmind-geo-lite': () => new Response('Too Many Requests', { status: 429 }),
+    'ipwho.is': IPWHO_GITHUB
+  });
+  const other = createIpIntel({ fetchImpl: g, dns: { ptr: async () => [] }, retries: 0 });
+  await other.info('140.82.121.4');
+  limited = false;
+  const m = g.stats.calls.length;
+  const next = await other.info('140.82.121.4');
+  assert.deepEqual(g.stats.calls.slice(m).map((u) => u.split('/')[4]), ['prefix-overview'], 'only the source that left a field empty');
+  assert.deepEqual(next.errors.map((e) => e.source), ['ripestat-geo']);
+  // The AS is RIPEstat's now, the country still ipwho.is's: it stays a source.
+  assert.deepEqual([next.sources, next.filledBy], [['dns', 'ipwhois', 'ripestat'], { network: 'ripestat', location: 'ipwhois' }]);
 });
 
 test('retry: explicit sources, a fallback nobody needs any more, a failure that stays', async () => {

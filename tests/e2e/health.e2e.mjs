@@ -723,6 +723,8 @@ async function mtaStsGroup(browser, server) {
       assert(/IPv6 \(AAAA\)\s*lookup failed/.test(dnsText) && /IPv4 \(A\)\s*192\.0\.2\.81/.test(dnsText), `DNS card address rows: ${dnsText.slice(0, 400)}`);
       const ids = (await page.evaluate(reportInfo)).checks.map((x) => x.id);
       assert(ids.includes('apex.ok') && !ids.includes('ipv6.missing'), `address checks: ${ids.filter((x) => /apex|ipv6/.test(x))}`);
+      const apex = await page.evaluate(() => document.querySelector('.hlt-check[data-id="apex.ok"] .hlt-check-detail')?.textContent);
+      assertEqual(apex, 'IPv4: 192.0.2.81; IPv6: lookup failed.', '"Domain resolves" names the failed family, no dash');
       await page.evaluate(() => { window.__gp.next.push('mxfail'); });
       await page.click('[data-action="mtasts-check"]');
       await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'done', { args: [MTASTS_CARD], timeout: 20000, message: 'policy checked' });

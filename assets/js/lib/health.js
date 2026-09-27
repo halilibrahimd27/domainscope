@@ -38,6 +38,12 @@ export const DEFAULT_DKIM_SELECTORS = Object.freeze([
 
 /** Max DNS-querying terms per SPF evaluation (RFC 7208 §4.6.4). */
 export const SPF_LOOKUP_LIMIT = 10;
+
+/**
+ * A check parameter whose lookup failed (apex.ok's `{ipv4}` / `{ipv6}`), never a dash that reads
+ * as "none". English, like the 'yes' / 'no' of boolean parameters: the view says it in its language.
+ */
+export const LOOKUP_FAILED_PARAM = 'lookup failed';
 /** Max void lookups (RFC 7208 §4.6.4). */
 export const SPF_VOID_LIMIT = 2;
 
@@ -1924,7 +1930,9 @@ function analyzeApex(name, aR, aaaaR) {
   if (!all.length) {
     if (!failed(aR)) checks.push(makeCheck('apex.no-address', 'info', { domain: name }));
   } else {
-    checks.push(makeCheck('apex.ok', 'ok', { ipv4: a.length ? a : ['—'], ipv6: aaaa.length ? aaaa : ['—'] }));
+    // One family answered, the other's lookup failed: that one is not known, not "—".
+    const family = (list, res) => (list.length ? list : failed(res) ? LOOKUP_FAILED_PARAM : ['—']);
+    checks.push(makeCheck('apex.ok', 'ok', { ipv4: family(a, aR), ipv6: family(aaaa, aaaaR) }));
     const priv = all.filter(isPrivateIP);
     if (priv.length) checks.push(makeCheck('apex.private-ip', 'warn', { ips: priv }));
     if (aaaa.length) checks.push(makeCheck('ipv6.present', 'ok', { ipv6: aaaa }));

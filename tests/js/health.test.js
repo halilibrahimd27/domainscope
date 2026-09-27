@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   domainHealth, applyRdap, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
   spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa, caaRestrictionNotes, caaRestrictionText,
-  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX,
+  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX, LOOKUP_FAILED_PARAM,
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
 import { clearRdapCache, rdapDomain, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
@@ -1864,6 +1864,14 @@ test('failed A / AAAA / NS / SOA / TXT / HTTPS lookups are named in failedLookup
   has(v6, 'apex.ok', 'ok');
   lacks(v6, 'ipv6.missing');
   lacks(v6, 'ipv6.present');
+  // …and the check does not say "IPv6: —" either (a dash reads as none).
+  const [v4addr, v6addr] = [zone['example.com'].A[0], zone['example.com'].AAAA[0]];
+  assert.deepEqual(find(v6, 'apex.ok').params, { ipv4: v4addr, ipv6: LOOKUP_FAILED_PARAM });
+  const v4 = await run('example.com', fakeDns(zone, { fail: { 'example.com|A': 'HTTP 429' } }));
+  assert.deepEqual(find(v4, 'apex.ok').params, { ipv4: LOOKUP_FAILED_PARAM, ipv6: v6addr });
+  delete zone['example.com'].AAAA;
+  const none = await run('example.com', fakeDns(zone));
+  assert.equal(find(none, 'apex.ok').params.ipv6, '—', 'answered without an address: none');
   const ok = await run('example.com', fakeDns(zone));
   assert.deepEqual(ok.failedLookups, [], 'answered lookups are not listed');
 });

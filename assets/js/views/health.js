@@ -39,7 +39,8 @@ import {
   registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, formatRegion, daysUntil, getLang
 } from '../i18n.js';
 import {
-  domainHealth, applyRdap, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
+  domainHealth, applyRdap, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS,
+  LOOKUP_FAILED_PARAM
 } from '../lib/health.js';
 import { rdapDomain } from '../lib/rdap.js';
 import { rdapStatus } from '../lib/sourcestatus.js';
@@ -591,8 +592,11 @@ export function mount(container, ctx) {
   const ipLink = (ip) => h('a', { class: 'hlt-ip mono', href: ctx.href('ip', { ips: ip }) }, ip);
   /** Translate a check key; fall back to readable text when a key is missing. */
   const tr = (key, params, fallback) => (hasString(key, getLang()) || hasString(key, 'en') ? t(key, params) : fallback);
-  // lib/health passes booleans as the English words 'yes' / 'no': show them in the UI language.
-  const localParams = (params) => Object.fromEntries(Object.entries(params || {}).map(([k, v]) => [k, v === 'yes' ? t('common.yes') : v === 'no' ? t('common.no') : v]));
+  // lib/health passes booleans as the English words 'yes' / 'no', and a failed lookup as 'lookup failed':
+  // show them in the UI language.
+  const localWords = { yes: 'common.yes', no: 'common.no', [LOOKUP_FAILED_PARAM]: 'hlt.lookupFailed' };
+  const localParams = (params) => Object.fromEntries(Object.entries(params || {})
+    .map(([k, v]) => [k, Object.hasOwn(localWords, v) ? t(localWords[v]) : v]));
   const checkTitle = (c) => tr(c.titleKey, localParams(c.params), c.id);
   const checkDetail = (c) => tr(c.detailKey, localParams(c.params), Object.entries(c.params || {}).map(([k, v]) => `${k}: ${v}`).join(' · '));
   const caNameFor = (issuer) => {

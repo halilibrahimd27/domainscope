@@ -630,6 +630,20 @@ describe('rows, summary, exports and hand-offs', async () => {
     assert.deepEqual(j.results[15].operator, { id: 'cloudfront', name: 'Amazon CloudFront', via: 'ptr' });
     assert.deepEqual(j.results[9].template, { template: '{ip}.dyn.isp.example.net', kind: 'embedded' });
     assert.equal(JSON.parse(JSON.stringify(j)).summary.byStatus.confirmed, 11);
+    assert.deepEqual([j.filter, j.exported], [null, 16]);
+  });
+
+  test('sweepExportJson of a filtered table: the summary still counts the whole sweep, the filter is recorded', () => {
+    const shown = results.filter((r) => r.names.length); // the view's default filter, 'ptr'
+    const j = P.sweepExportJson(results, { exported: shown, filter: { show: 'ptr', search: '' }, target: '192.0.2.0/28', planned: 16 });
+    assert.deepEqual([j.planned, j.aborted, j.exported, j.results.length], [16, false, 12, 12]);
+    assert.deepEqual(j.filter, { show: 'ptr', search: '' });
+    assert.deepEqual([j.summary.done, j.summary.byStatus.nxdomain, j.summary.noReverse, j.summary.failed], [16, 2, 3, 1], 'not the 12 exported');
+    assert.ok(j.results.every((r) => r.names.length));
+    const searched = P.sweepExportJson(results, { exported: results.slice(0, 1), filter: { show: 'all', search: ' mail ' } });
+    assert.deepEqual([searched.filter, searched.exported, searched.summary.done], [{ show: 'all', search: 'mail' }, 1, 16]);
+    assert.equal(P.sweepExportJson(results, { filter: { show: 'all', search: '' } }).filter, null, 'nothing filtered out');
+    assert.equal(P.sweepExportJson(results, { filter: { show: 'bogus' } }).filter, null);
   });
 
   test('sweepNames: templates left out unless asked for; focus only; confirmed only (sortHostnames order)', () => {

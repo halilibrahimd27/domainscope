@@ -267,6 +267,18 @@ async function main() {
       await shot(page, opts, 'ptr-details-desktop-light-en');
     });
 
+    await run.step('a filtered JSON export: the rows shown, the filter recorded, the summary of the whole sweep', async () => {
+      await setSelect(page, '[data-role="ptr-filter"]', 'ptr');
+      await sleep(100);
+      await takeDownloads(page);
+      await page.click('.ptr-table [data-export="json"]');
+      await sleep(150);
+      const j = JSON.parse((await takeDownloads(page)).find((f) => f.name.endsWith('.json')).text);
+      assertEqual([j.planned, j.aborted, j.exported, j.results.length], [16, false, 12, 12], 'counts');
+      assertEqual(j.filter, { show: 'ptr', search: '' }, 'filter');
+      assertEqual([j.summary.done, j.summary.byStatus.nxdomain, j.summary.noReverse], [16, 2, 3], 'the whole sweep');
+    });
+
     await run.step('exports: CSV one line per address, JSON, names.txt without generated names', async () => {
       await setSelect(page, '[data-role="ptr-filter"]', 'all');
       await sleep(100);
@@ -282,7 +294,7 @@ async function main() {
       assertEqual(lines.length, 17, 'header + 16 addresses');
       assert(csv.bom, 'BOM');
       const j = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
-      assertEqual([j.schema, j.results.length, j.focus, j.summary.byStatus.confirmed], ['domainscope.ptr-sweep/1', 16, 'example.com', 11], 'JSON');
+      assertEqual([j.schema, j.results.length, j.focus, j.summary.byStatus.confirmed, j.filter], ['domainscope.ptr-sweep/1', 16, 'example.com', 11, null], 'JSON');
       assertEqual(files.find((f) => f.name === 'names.txt').text, 'mail.example.com\nwww.example.com\nhost.example.net\n', 'names.txt');
     });
 

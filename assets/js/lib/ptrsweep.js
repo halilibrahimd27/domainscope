@@ -999,17 +999,27 @@ export function sweepExportRows(results, { focus = null, index = null } = {}) {
 }
 
 /**
- * The JSON export (`schema: 'domainscope.ptr-sweep/1'`).
- * @param {SweepResult[]} results
- * @param {{ target?: string, focus?: string|null, startedAt?: Date|null, finishedAt?: Date|null, planned?: number,
- *   aborted?: boolean, index?: Map<string, object[]>|null, app?: string, version?: string }} [meta]
+ * The JSON export (`schema: 'domainscope.ptr-sweep/1'`). `summary` always counts the whole
+ * sweep (`results`); `results` in the file are the `exported` ones (the rows the table shows),
+ * and `filter` says what left the others out, so a reader can tell an address filtered out
+ * from one never looked up (`planned` − `summary.done`, with `aborted`).
+ * @param {SweepResult[]} results every result of the sweep
+ * @param {{ exported?: SweepResult[]|null, filter?: { show?: string, search?: string }|null, target?: string,
+ *   focus?: string|null, startedAt?: Date|null, finishedAt?: Date|null, planned?: number, aborted?: boolean,
+ *   index?: Map<string, object[]>|null, app?: string, version?: string }} [meta] `exported`: the subset written
+ *   (default: every result); `filter`: the table's filter ({@link SWEEP_FILTERS}) and search text, recorded as
+ *   `{ show, search }` (null when nothing was filtered out)
  * @returns {object}
  */
 export function sweepExportJson(results, {
-  target = '', focus = null, startedAt = null, finishedAt = null, planned = null, aborted = false, index = null, app = 'DomainScope', version = ''
+  exported = null, filter = null, target = '', focus = null, startedAt = null, finishedAt = null, planned = null, aborted = false,
+  index = null, app = 'DomainScope', version = ''
 } = {}) {
-  const list = (Array.isArray(results) ? results : []).filter(Boolean);
-  const summary = sweepSummary(list, { focus });
+  const all = (Array.isArray(results) ? results : []).filter(Boolean);
+  const list = Array.isArray(exported) ? exported.filter(Boolean) : all;
+  const summary = sweepSummary(all, { focus });
+  const show = filter && SWEEP_FILTERS.includes(filter.show) ? filter.show : 'all';
+  const search = filter && typeof filter.search === 'string' ? filter.search.trim() : '';
   return {
     schema: 'domainscope.ptr-sweep/1',
     app,
@@ -1018,8 +1028,10 @@ export function sweepExportJson(results, {
     focus: focus || null,
     startedAt: startedAt instanceof Date ? startedAt.toISOString() : null,
     finishedAt: finishedAt instanceof Date ? finishedAt.toISOString() : null,
-    planned: Number.isFinite(planned) ? planned : list.length,
+    planned: Number.isFinite(planned) ? planned : all.length,
     aborted: !!aborted,
+    filter: show !== 'all' || search ? { show, search } : null,
+    exported: list.length,
     summary: { ...summary, byStatus: { ...summary.byStatus } },
     results: list.map((r) => ({
       ip: r.ip,

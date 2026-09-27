@@ -1318,9 +1318,11 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     if (format === 'csv') {
       file = downloadText(name, toCsv(sweepExportRows(results, { focus: f, index: ctx.getInventoryIndex() }), SWEEP_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8');
     } else {
-      file = downloadText(name, `${toJson(sweepExportJson(results, {
-        target: job.target, focus: f, startedAt: job.startedAt, finishedAt: job.finishedAt, planned: job.planned,
-        aborted: job.status === 'cancelled', index: ctx.getInventoryIndex(), version: ctx.version
+      // The summary counts the whole sweep; the filter and search that hid the other rows are recorded.
+      file = downloadText(name, `${toJson(sweepExportJson(job.results, {
+        exported: results, filter: { show: session.filter, search: table.getSearch() }, target: job.target, focus: f,
+        startedAt: job.startedAt, finishedAt: job.finishedAt, planned: job.planned, aborted: job.status === 'cancelled',
+        index: ctx.getInventoryIndex(), version: ctx.version
       }))}\n`, 'application/json;charset=utf-8');
     }
     toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });

@@ -2265,6 +2265,10 @@ export function DataTable(opts) {
       view = null;
       render();
     },
+    /** The search text the rows are filtered by ('' for none). */
+    getSearch() {
+      return query;
+    },
     /** Sort by a column key ('asc'|'desc'); null clears sorting (insertion order). */
     sortBy(key, dir = 'asc') {
       sortState = key ? { key, dir: dir === 'desc' ? 'desc' : 'asc' } : null;

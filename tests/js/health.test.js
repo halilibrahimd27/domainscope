@@ -819,6 +819,13 @@ test('DMARC: external report authorization and organizational-domain inheritance
   assert.equal(find(r, 'dmarc.inherited').params.org, 'example.com');
   has(r, 'dmarc.policy-quarantine'); // the subdomain policy applies
   lacks(r, 'dmarc.sp-none');
+
+  // the organizational-domain lookup failing is a lookup error, not "no DMARC record"
+  r = await run('mail.example.com', fakeDns(zone, { fail: { '_dmarc.example.com|TXT': 'timeout' } }));
+  assertRenderable(r);
+  lacks(r, 'dmarc.missing');
+  assert.equal(has(r, 'dmarc.error', 'warn').params.error, '_dmarc.example.com: timeout');
+  assert.equal(r.dmarc.inherited, false);
 });
 
 /* ==================================================================== */

@@ -1243,14 +1243,17 @@ async function analyzeDmarc(name, dmarcR, d) {
   if (!recs.length && org && org !== name) {
     // RFC 7489 §6.6.3: fall back to the organizational domain's policy.
     const orgRes = await d.query(`_dmarc.${org}`, 'TXT');
-    if (!failed(orgRes)) {
-      const orgRecs = txtStrings(orgRes).filter(isDmarcRecord);
-      if (orgRecs.length) {
-        recs = orgRecs;
-        res = orgRes;
-        at = org;
-        out.inherited = true;
-      }
+    if (failed(orgRes)) {
+      // Unknown whether a policy is inherited: not the same as "no DMARC record".
+      checks.push(makeCheck('dmarc.error', 'warn', { error: `_dmarc.${org}: ${errText(orgRes)}` }));
+      return out;
+    }
+    const orgRecs = txtStrings(orgRes).filter(isDmarcRecord);
+    if (orgRecs.length) {
+      recs = orgRecs;
+      res = orgRes;
+      at = org;
+      out.inherited = true;
     }
   }
   if (!recs.length) {

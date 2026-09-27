@@ -521,14 +521,18 @@ async function main() {
 
     /* ---------------- 5. DNS Lookup ---------------- */
     run.group('5. DNS Lookup');
-    const LOOKUP_DONE = "document.querySelectorAll('.lkp-card').length > 0 && document.querySelectorAll('.lkp-card[data-state=\"pending\"]').length === 0";
+    // Every type answered: a NODATA type has no card (it is listed in the summary's "No records" line).
+    const LOOKUP_DONE = "!!document.querySelector('.lkp-sum') && !document.querySelector('.lkp-card[data-state=\"pending\"]') && document.querySelector('[data-action=\"run\"]')?.getAttribute('aria-busy') !== 'true'";
     await run.step('cloudflare.com, type=ALL, DNSSEC on: every common type answered and validated', async () => {
       await gotoRoute(page, '#/lookup?name=cloudflare.com&type=ALL&dnssec=1');
       await waitDone(page, LOOKUP_DONE, 'lookup done', 45000);
       const cards = await page.evaluate(() => [...document.querySelectorAll('.lkp-card')].map((c) => ({
         type: c.dataset.type, state: c.dataset.state, text: c.textContent
       })));
-      assertEqual(cards.map((c) => c.type), ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS'], 'types');
+      const noRecords = await page.evaluate(() => (document.querySelector('.lkp-nodata')?.dataset.types || '').split(' ').filter(Boolean));
+      const common = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'HTTPS'];
+      assertEqual(common.filter((type) => cards.some((c) => c.type === type) || noRecords.includes(type)), common, 'every type: a card or the "No records" line');
+      assert(noRecords.includes('CNAME'), `an apex has no CNAME: folded into "No records" (${noRecords})`);
       assert(cards.every((c) => c.state === 'noerror'), `states: ${cards.map((c) => `${c.type}=${c.state}`)}`);
       assert(/RRSIG/.test(cards[0].text), 'RRSIG shown with DO');
       const dnssecOn = await page.evaluate(() => document.querySelector('[data-role="lookup-dnssec"]').checked);

@@ -768,7 +768,7 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  * @param {object} [hooks] { onStage(stage, info), onSource(result), onHost(record),
  *   onProgress({ stage, done, total }), onFound(partial) }. `onFound` streams a
  *   probe hit the instant it resolves during the wordlist / permutation / recursive
- *   stages — `{ name, origin, ipv4, cnames, classification }`, a cheap A-only
+ *   stages — `{ name, origin, status, ipv4, cnames, classification }`, a cheap A-only
  *   partial, not the final HostRecord — so the table can fill live; the same host
  *   arrives again as a full record through `onHost` at the resolve stage, so a
  *   consumer dedupes by name. Hook errors never break the scan.
@@ -1165,7 +1165,8 @@ export async function runScan(config = {}, hooks = {}) {
   /* ---- shared A-only probe (wordlist / permutation / recursive) --------- */
   /**
    * Probe candidate names with a single A query each (balance mode), keep the
-   * ones that answer and are not wildcard look-alikes. Courteous concurrency
+   * ones that answer (addresses, or a CNAME chain — a dangling alias answers
+   * NXDOMAIN with its chain) and are not wildcard look-alikes. Courteous concurrency
    * with an adaptive back-off when the resolver pool starts erroring.
    */
   // Set once every probe has failed for a long run: the DoH pool is unreachable.
@@ -1211,15 +1212,19 @@ export async function runScan(config = {}, hooks = {}) {
         return;
       }
       streak = 0;
-      if (res.rcode !== 'NOERROR') return;
+      if (res.rcode !== 'NOERROR' && res.rcode !== 'NXDOMAIN') return;
       const { cnames } = followCnames(res.answers, name);
+      // A dangling alias (a CNAME to a target that no longer exists) answers
+      // NXDOMAIN with the chain (RFC 6604): a real, takeover-prone name. A plain
+      // NXDOMAIN is no such name.
+      if (res.rcode === 'NXDOMAIN' && !cnames.length) return;
       const owners = new Set([name, ...cnames]);
       const ipv4 = [...new Set(res.answers
         .filter((rr) => rr.type === 'A' && owners.has(rr.name))
         .map((rr) => normalizeIP(rr.data))
         .filter(Boolean))];
       if (!ipv4.length && !cnames.length) return; // NODATA / no address — not a real hit
-      if (isWildcardSuspect({ cnames, ipv4, ipv6: [] }, nearestWildcard(name))) {
+      if (isWildcardSuspect({ status: res.rcode, cnames, ipv4, ipv6: [] }, nearestWildcard(name))) {
         out.wildcardDropped += 1;
         return;
       }
@@ -1234,9 +1239,10 @@ export async function runScan(config = {}, hooks = {}) {
       safeCall(h.onFound, {
         name,
         origin,
+        status: res.rcode,
         ipv4: [...ipv4],
         cnames: [...cnames],
-        classification: classifyResolution({ status: 'NOERROR', ipv4, ipv6: [], cnames })
+        classification: classifyResolution({ status: res.rcode, ipv4, ipv6: [], cnames })
       });
     }, signal);
     return out;

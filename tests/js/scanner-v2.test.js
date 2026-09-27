@@ -1616,3 +1616,68 @@ describe('engine v3 review fixes: related-parent networks', () => {
     assert.deepEqual(host.candidateNetworks, ['198.51.100.0/24', '192.0.2.0/24']);
   });
 });
+
+describe('discovery review fixes: probes keep dangling aliases', () => {
+  test('a wordlist probe answering NXDOMAIN with a CNAME chain (target gone) is a dangling host, streamed as such', async () => {
+    const A = 'dangle.example';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`blog.${A}`]: { CNAME: 'dangle-example.ghost.io' }, // the target no longer exists
+      [`www.${A}`]: { A: ['203.0.113.2'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const found = [];
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['www', 'blog', 'nope'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    }, { onFound: (p) => found.push(p) });
+    const blog = byName(scan).get(`blog.${A}`);
+    assert.ok(blog, 'the dangling alias is found');
+    assert.deepEqual(blog.origins, ['wordlist']);
+    assert.equal(blog.resolution.status, 'NXDOMAIN');
+    assert.deepEqual(blog.resolution.cnames, ['dangle-example.ghost.io']);
+    assert.equal(blog.classification.dangling, true);
+    assert.equal(blog.classification.reasonKey, 'class.dangling.nxdomain');
+    assert.equal(scan.stats.dangling, 1);
+    assert.equal(scan.stats.bruteforceFound, 2);
+    const streamed = found.find((p) => p.name === `blog.${A}`);
+    assert.equal(streamed.status, 'NXDOMAIN');
+    assert.equal(streamed.classification.dangling, true);
+    assert.ok(!byName(scan).has(`nope.${A}`), 'a plain NXDOMAIN is still no hit');
+  });
+
+  test('a wildcard CNAME to a gone target: look-alikes are still dropped', async () => {
+    const A = 'dangle-wc.example';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`*.${A}`]: { CNAME: 'gone.azurewebsites.net' }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['www', 'blog', 'shop'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    });
+    assert.equal(scan.wildcards[A].kind, 'CNAME');
+    assert.ok(scan.hosts.every((x) => !x.origins.includes('wordlist')));
+    assert.equal(scan.stats.bruteforceWildcardDropped, 3);
+    assert.equal(scan.stats.dangling, 0);
+  });
+
+  test('the permutation stage finds a dangling alias too', async () => {
+    const A = 'dangle-perm.example';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`blog.${A}`]: { A: ['203.0.113.3'] },
+      [`blog2.${A}`]: { CNAME: 'blog2-example.ghost.io' }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], extraNames: [`blog.${A}`], sources: [], bruteforce: 'off',
+      mine: false, permutationBudget: 200, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    });
+    const h = byName(scan).get(`blog2.${A}`);
+    assert.ok(h);
+    assert.deepEqual(h.origins, ['permutation']);
+    assert.equal(h.classification.dangling, true);
+  });
+});

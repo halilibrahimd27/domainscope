@@ -75,6 +75,16 @@ describe('parseCustomWordlist', () => {
     assert.ok(rejected.includes('-bad-'));
   });
 
+  test('IDN labels are converted to punycode (and dedupe with their ASCII form)', () => {
+    const { labels, rejected } = parseCustomWordlist('şube\nBücher\nxn--ube-rza\ndev.şube\n_dmarc\ndev_api');
+    assert.deepEqual(labels, ['xn--ube-rza', 'xn--bcher-kva', 'dev.xn--ube-rza', '_dmarc', 'dev_api']);
+    assert.deepEqual(rejected, []);
+    // still rejected: too long once converted, or not a label at all
+    const bad = parseCustomWordlist(`${'ş'.repeat(60)}\nşu/be\nş@x`);
+    assert.deepEqual(bad.labels, []);
+    assert.deepEqual(bad.rejected, [`${'ş'.repeat(60)}`, 'şu/be', 'ş@x']);
+  });
+
   test('caps at 200k labels', () => {
     const many = Array.from({ length: 200050 }, (_, i) => `l${i}`).join('\n');
     const { labels } = parseCustomWordlist(many);

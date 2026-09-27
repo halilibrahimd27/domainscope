@@ -315,6 +315,22 @@ function isValidFragment(s) {
 }
 
 /**
+ * An IDN fragment (`şube`, `dev.bücher`) → its punycode form through the WHATWG
+ * URL parser (as domain.js normalises IDN host names); null for an ASCII token
+ * or one the parser cannot take as a host name.
+ */
+function idnToAscii(tok) {
+  if (/^[\x00-\x7f]*$/.test(tok) || /[\s/?#@:[\]\\%*]/.test(tok)) return null;
+  let host;
+  try {
+    host = new URL(`http://${tok}.invalid`).hostname;
+  } catch {
+    return null;
+  }
+  return host.endsWith('.invalid') ? host.slice(0, -'.invalid'.length) : null;
+}
+
+/**
  * Parse a plain-text wordlist file into validated single labels.
  * Blank lines and `#` comments are skipped; everything is lowercased and deduped.
  * @param {string} text
@@ -336,8 +352,9 @@ function parseHostLabels(text) {
 /**
  * Parse a user-supplied custom wordlist. Accepts one entry per line, or
  * comma / whitespace separated. Entries may be bare labels (`api`) or
- * multi-label prefixes (`dev.api`); a trailing dot is stripped. Invalid tokens
- * are collected in `rejected`. Capped at 200 000 accepted labels.
+ * multi-label prefixes (`dev.api`); a trailing dot is stripped and IDN labels
+ * (`şube`) are converted to punycode (`xn--ube-rza`). Invalid tokens are
+ * collected in `rejected`. Capped at 200 000 accepted labels.
  * @param {string} text
  * @returns {{ labels: string[], rejected: string[] }}
  */
@@ -351,8 +368,9 @@ export function parseCustomWordlist(text) {
     if (!line || line.startsWith('#')) continue; // whole-line comment
     for (const rawTok of line.split(/[\s,]+/)) {
       if (labels.length >= CAP) break outer;
-      const tok = rawTok.trim().toLowerCase().replace(/\.+$/, '');
+      let tok = rawTok.trim().toLowerCase().replace(/\.+$/, '');
       if (!tok) continue;
+      tok = idnToAscii(tok) ?? tok;
       if (!isValidFragment(tok)) { rejected.push(rawTok.trim()); continue; }
       if (seen.has(tok)) continue;
       seen.add(tok);

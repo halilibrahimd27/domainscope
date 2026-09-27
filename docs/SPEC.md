@@ -261,7 +261,7 @@ export async function loadWordlist(level = 'small', { domain, locales, extra, fe
   // a missing locale pack is skipped: onInfo({ type: 'locale-missing', locale }). AbortError always propagates.
   // preferFetch is test-only (forces the browser path under Node).
 export function wordlistInfo() -> { levels: { small, smart, large, huge }, locales: { [cc]: … } }   // each { id, approxCount, bytes, sources, licence }; build-time constants, no download
-export function parseCustomWordlist(text) -> { labels: string[], rejected: string[] }   // one entry per line / comma / whitespace, '#' comment lines skipped, lowercased, deduped, capped at 200,000
+export function parseCustomWordlist(text) -> { labels: string[], rejected: string[] }   // one entry per line / comma / whitespace, '#' comment lines skipped, lowercased, IDN labels converted to punycode ('şube' → 'xn--ube-rza'), deduped, capped at 200,000
 export function localesForDomain(domain) -> string[]   // from the last label (the ccTLD), e.g. 'example.com.tr' → ['tr'], 'example.ch' → ['de','fr','it'], 'example.com' / 'example.co.uk' → []
 export function clearWordlistCache()
 ```

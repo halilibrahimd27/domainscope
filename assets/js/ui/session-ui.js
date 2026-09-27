@@ -104,7 +104,9 @@ export function TargetChip({ target, onClear }) {
  * `dropped`: the result was too large to keep and only its query came back — or nothing did, when
  * there is no "Run again" (lib/session.js keptNote). `label`: the tool's
  * own translation key for the text (with `{time}`), in place of "Result from {time}". It is one
- * run of text (icon, words, link) that wraps like a sentence on a narrow screen.
+ * run of text (icon, words, link) that wraps like a sentence on a narrow screen. What the note
+ * means (kept, not updated; too large to keep) is its title for a mouse and hidden text after the
+ * words for a screen reader, which never gets a title of a plain span.
  * @param {{ at: Date, dropped?: boolean, label?: string|null, onRerun?: (() => void)|null, now?: number }} opts
  * @returns {HTMLElement}
  */
@@ -116,6 +118,7 @@ export function KeptNote({ at, dropped = false, label = null, onRerun = null, no
     Icon('clock', { size: 14, className: 'kept-note-icon' }),
     h('span', { class: 'kept-note-text', title: t(title) },
       t(dropped ? 'session.kept.dropped' : label || 'session.kept.from', { time })),
+    h('span', { class: 'sr-only' }, `. ${t(title)}`),
     onRerun ? ' ' : null,
     onRerun ? h('button', {
       type: 'button',

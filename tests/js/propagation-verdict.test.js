@@ -19,7 +19,7 @@ const STEER = cname('tp.frontier.example.com');
 
 describe('propagationVerdict', () => {
   test('exports its states and finding codes', () => {
-    assert.deepEqual(VERDICT_STATES, ['none', 'agree', 'by-design', 'geo', 'differ']);
+    assert.deepEqual(VERDICT_STATES, ['none', 'unresolved', 'agree', 'by-design', 'geo', 'differ']);
     assert.deepEqual(VERDICT_FINDINGS, ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']);
     assert.deepEqual(splitChain(['192.0.2.1', 'CNAME a.example.net', 'CNAME b.example.net']), { plain: ['192.0.2.1'], chain: ['a.example.net', 'b.example.net'] });
   });
@@ -434,9 +434,186 @@ describe('propagationVerdict', () => {
     // The same answers, but the Akamai side no longer shares the steering name: a move.
     const unshared = propagationVerdict([
       item('resolver:cloudflare', CF_A[0], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
-      item('geo:tr-ist-tt', '2.17.225.198', ...cname('www.example.com.edgekey.net', 'e15316.dsca.akamaiedge.net'))
+      item('resolver:google', '2.17.225.198', ...cname('www.example.com.edgekey.net', 'e15316.dsca.akamaiedge.net'))
     ]);
     assert.deepEqual(unshared.findings.map((f) => [f.code, f.owner, ids(f.operators)]), [['cname', null, ['cloudfront', 'akamai']]]);
+    // Only a location gets the other provider while the resolvers agree: GeoDNS by CNAME.
+    const located = propagationVerdict([
+      item('resolver:cloudflare', CF_A[0], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
+      item('resolver:google', CF_A[0], ...cname(tp, 'cf.47cf2c8c9-frontier.example.com')),
+      item('geo:tr-ist-tt', '2.17.225.198', ...cname('www.example.com.edgekey.net', 'e15316.dsca.akamaiedge.net'))
+    ]);
+    assert.deepEqual([located.state, located.findings], ['geo', []]);
+  });
+
+  test('weighted records before one CDN entry name are steering in the name’s own DNS, not a change', () => {
+    // www.etsy.com: zone1 / zone2 (Google alternates query by query) → the same Fastly name.
+    const zones = propagationVerdict([
+      item('resolver:cloudflare', '151.101.1.52', ...cname('zone1.www.example.com', 'h3.example.map.fastly.net')),
+      item('resolver:google', '151.101.65.52', ...cname('zone2.www.example.com', 'h3.example.map.fastly.net')),
+      item('resolver:dnssb', '151.101.1.52', ...cname('zone2.www.example.com', 'h3.example.map.fastly.net'))
+    ]);
+    assert.equal(zones.state, 'by-design');
+    assert.deepEqual(zones.findings, []);
+    assert.deepEqual(ids(zones.operators), ['fastly']);
+    assert.deepEqual(zones.steering, [{ owner: null, targets: ['zone1.www.example.com', 'zone2.www.example.com'] }]);
+    // Straight to the entry name on one side, through a zone name on the other.
+    const hop = propagationVerdict([
+      item('resolver:cloudflare', '151.101.1.52', ...cname('h3.example.map.fastly.net')),
+      item('resolver:google', '151.101.65.52', ...cname('zone2.www.example.com', 'h3.example.map.fastly.net'))
+    ]);
+    assert.equal(hop.state, 'by-design');
+    // www.pinterest.com: gslb / gslb2 each steer to Akamai or Fastly — the same entry names.
+    const gslb = (n, ...rest) => cname('www.gslb.example.com', `www.${n}.example.net`, ...rest);
+    const pin = propagationVerdict([
+      item('resolver:cloudflare', '2.16.1.10', ...gslb('gslb2', 'www.example.com.edgekey.net', 'e1.a.akamaiedge.net')),
+      item('resolver:google', '2.16.1.11', ...gslb('gslb', 'www.example.com.edgekey.net', 'e1.a.akamaiedge.net')),
+      item('resolver:dnssb', '151.101.1.10', ...gslb('gslb2', 'prod.example.map.fastly.net')),
+      item('resolver:iij', '151.101.65.10', ...gslb('gslb', 'prod.example.map.fastly.net'))
+    ]);
+    assert.equal(pin.state, 'by-design');
+    assert.deepEqual(ids(pin.operators).sort(), ['akamai', 'fastly']);
+    assert.deepEqual(pin.steering, [{ owner: 'www.gslb.example.com', targets: ['www.gslb2.example.net', 'www.gslb.example.net'] }]);
+    // One branch reaching only part of the other's entry names is still steering (a sample).
+    const part = propagationVerdict([
+      item('resolver:cloudflare', '2.16.1.10', ...gslb('gslb2', 'www.example.com.edgekey.net', 'e1.a.akamaiedge.net')),
+      item('resolver:dnssb', '151.101.1.10', ...gslb('gslb2', 'prod.example.map.fastly.net')),
+      item('resolver:iij', '151.101.65.10', ...gslb('gslb', 'prod.example.map.fastly.net'))
+    ]);
+    assert.equal(part.state, 'by-design');
+
+    // Different entry names behind the two names: another property, so a change.
+    const split = propagationVerdict([
+      item('resolver:cloudflare', '151.101.1.52', ...cname('zone1.www.example.com', 'a.example.map.fastly.net')),
+      item('resolver:google', '151.101.65.52', ...cname('zone2.www.example.com', 'b.example.map.fastly.net'))
+    ]);
+    assert.deepEqual(split.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, ['zone1.www.example.com', 'zone2.www.example.com']]]);
+    assert.deepEqual(split.steering, []);
+    // gslb → Akamai only, gslb2 → Fastly only: a move between providers, not steering.
+    const moved = propagationVerdict([
+      item('resolver:cloudflare', '2.16.1.10', ...gslb('gslb', 'www.example.com.edgekey.net', 'e1.a.akamaiedge.net')),
+      item('resolver:google', '151.101.1.10', ...gslb('gslb2', 'prod.example.map.fastly.net'))
+    ]);
+    assert.deepEqual(moved.findings.map((f) => [f.code, f.owner, ids(f.operators)]), [['cname', 'www.gslb.example.com', ['akamai', 'fastly']]]);
+    // Names that lead to direct addresses are never taken for steering.
+    const direct = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.1', ...cname('zone1.www.example.com')),
+      item('resolver:google', '198.51.100.1', ...cname('zone2.www.example.com'))
+    ]);
+    assert.deepEqual(codes(direct), ['cname']);
+  });
+
+  test('GeoDNS by CNAME: resolvers agree, only locations get another name', () => {
+    const v = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.1', ...cname('eu.example.net')),
+      item('resolver:google', '192.0.2.1', ...cname('eu.example.net')),
+      { key: 'geo:us-east', kind: 'geo', values: ['198.51.100.1', ...cname('us.example.net')] },
+      item('geo:jp-tyo', '203.0.113.1', ...cname('ap.example.net'))
+    ]);
+    assert.equal(v.state, 'geo', 'as the same answers without the CNAME are');
+    assert.equal(v.resolversAgree, true);
+    assert.deepEqual(v.findings, []);
+    // Resolvers that disagree on it keep the finding.
+    const resolvers = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.1', ...cname('eu.example.net')),
+      item('resolver:google', '198.51.100.1', ...cname('us.example.net'))
+    ]);
+    assert.deepEqual([resolvers.state, codes(resolvers)], ['differ', ['cname']]);
+  });
+
+  test('entry names: a dualstack variant is the same service, a Traffic Manager profile is not regional', () => {
+    const reddit = propagationVerdict([
+      item('resolver:cloudflare', '151.101.1.140', ...cname('example.map.fastly.net')),
+      item('resolver:google', '151.101.129.140', ...cname('dualstack.example.map.fastly.net'))
+    ]);
+    assert.equal(reddit.state, 'by-design');
+    const elb = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.10', ...cname('web-1.eu-west-1.elb.amazonaws.com')),
+      item('resolver:google', '198.51.100.10', ...cname('dualstack.web-1.eu-west-1.elb.amazonaws.com'))
+    ]);
+    assert.equal(elb.state, 'by-design');
+    // Another Traffic Manager profile at the queried name is a profile change.
+    const tm = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.1', ...cname('old.trafficmanager.net', 'eu.example.net')),
+      item('resolver:google', '198.51.100.1', ...cname('new.trafficmanager.net', 'us.example.net'))
+    ]);
+    assert.equal(tm.state, 'differ');
+    assert.deepEqual(tm.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, ['old.trafficmanager.net', 'new.trafficmanager.net']]]);
+    // A name that only looks like the dualstack variant of a customer name stays another name.
+    const own = propagationVerdict([
+      item('resolver:cloudflare', '192.0.2.1', ...cname('lb.example.net')),
+      item('resolver:google', '198.51.100.1', ...cname('dualstack.lb.example.net'))
+    ]);
+    assert.deepEqual(codes(own), ['cname']);
+  });
+
+  test('AAAA without records anywhere: only the CNAME chains are judged', () => {
+    // www.paypal.com AAAA: a shared name steers to Fastly or Cloudflare, neither has AAAA.
+    const glb = cname('www.glb.example.com');
+    const v = propagationVerdict([
+      item('resolver:cloudflare', ...glb, ...cname('example-dynamic.map.fastly.net')),
+      item('resolver:google', ...glb, ...cname('example-dynamic.map.fastly.net')),
+      item('resolver:dnssb', ...glb, ...cname('www.example.com.cdn.cloudflare.net'))
+    ], { type: 'AAAA' });
+    assert.equal(v.state, 'by-design');
+    assert.equal(v.noRecords, true);
+    assert.deepEqual(v.findings, []);
+    assert.deepEqual(ids(v.operators), ['fastly', 'cloudflare']);
+    assert.deepEqual(v.operators.map((op) => [op.kind, op.via, op.reasonKey]), [['cdn', 'cname', 'class.cdn.cname'], ['cloudflare', 'cname', 'class.cloudflare.cname']]);
+    assert.deepEqual(v.groups.map((g) => [g.status, ids(g.operators), g.addresses]), [['nodata', ['fastly'], []], ['nodata', ['cloudflare'], []]]);
+    assert.equal(v.multiOperator, true);
+    // www.etsy.com AAAA: zone1 / zone2 → the same Fastly name, no AAAA.
+    const zones = propagationVerdict([
+      item('resolver:cloudflare', ...cname('zone1.www.example.com', 'h3.example.map.fastly.net')),
+      item('resolver:google', ...cname('zone2.www.example.com', 'h3.example.map.fastly.net'))
+    ], { type: 'AAAA' });
+    assert.deepEqual([zones.state, zones.noRecords, zones.steering.length], ['by-design', true, 1]);
+    // The chains conflict: another distribution, or a CNAME on one side only.
+    const dist = propagationVerdict([
+      item('resolver:cloudflare', ...cname('d111111abcdef8.cloudfront.net')),
+      item('resolver:google', ...cname('d222222abcdef8.cloudfront.net'))
+    ], { type: 'AAAA' });
+    assert.deepEqual([dist.state, dist.noRecords], ['differ', true]);
+    assert.deepEqual(dist.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, ['d111111abcdef8.cloudfront.net', 'd222222abcdef8.cloudfront.net']]]);
+    const oneSide = propagationVerdict([
+      item('resolver:cloudflare', 'NODATA'),
+      item('resolver:google', 'NODATA'),
+      item('resolver:dnssb', ...cname('example.map.fastly.net'))
+    ], { type: 'AAAA' });
+    assert.deepEqual(oneSide.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', null, [null, 'example.map.fastly.net']]]);
+    const behind = propagationVerdict([
+      item('resolver:cloudflare', ...cname('lb.example.com')),
+      item('resolver:google', ...cname('lb.example.com', 'example.map.fastly.net'))
+    ], { type: 'AAAA' });
+    assert.deepEqual(behind.findings.map((f) => [f.code, f.owner, f.targets]), [['cname', 'lb.example.com', [null, 'example.map.fastly.net']]]);
+    // Only locations differ: GeoDNS by CNAME.
+    const geo = propagationVerdict([
+      item('resolver:cloudflare', ...cname('eu.example.net')),
+      item('resolver:google', ...cname('eu.example.net')),
+      item('geo:us-east', ...cname('us.example.net'))
+    ], { type: 'AAAA' });
+    assert.deepEqual([geo.state, geo.findings], ['geo', []]);
+    // Next to a failure the empty answer is not the difference: only the SERVFAIL is named.
+    const failing = propagationVerdict([
+      item('resolver:cloudflare', ...cname('example.map.fastly.net')),
+      item('resolver:google', 'SERVFAIL')
+    ], { type: 'AAAA' });
+    assert.deepEqual([failing.state, codes(failing)], ['differ', ['rcode']]);
+    // Next to real AAAA answers it is.
+    const mixed = propagationVerdict([item('resolver:cloudflare', CF_AAAA[0]), item('resolver:google', ...cname('example.map.fastly.net'))], { type: 'AAAA' });
+    assert.deepEqual([mixed.noRecords, codes(mixed)], [false, ['nodata']]);
+  });
+
+  test('every source failing with an rcode is "unresolved", never "agree"', () => {
+    const v = propagationVerdict([item('resolver:cloudflare', 'SERVFAIL'), item('resolver:google', 'SERVFAIL'), item('geo:jp-tyo', 'SERVFAIL')]);
+    assert.equal(v.state, 'unresolved');
+    assert.deepEqual(v.findings.map((f) => [f.code, f.rcode, f.members.length]), [['rcode', 'SERVFAIL', 3]]);
+    const two = propagationVerdict([item('resolver:cloudflare', 'SERVFAIL'), item('resolver:tiar', 'REFUSED')]);
+    assert.deepEqual([two.state, two.findings.map((f) => f.rcode)], ['unresolved', ['SERVFAIL', 'REFUSED']]);
+    // NXDOMAIN everywhere is an answer everybody agrees on; NXDOMAIN next to SERVFAIL names the failure only.
+    assert.equal(propagationVerdict([item('resolver:cloudflare', 'NXDOMAIN'), item('resolver:google', 'NXDOMAIN')]).state, 'agree');
+    const nx = propagationVerdict([item('resolver:cloudflare', 'NXDOMAIN'), item('resolver:google', 'NXDOMAIN'), item('resolver:dnssb', 'SERVFAIL')]);
+    assert.deepEqual([nx.state, codes(nx)], ['differ', ['rcode']]);
   });
 
   test('failures, blocked and pending answers are ignored; none and agree', () => {

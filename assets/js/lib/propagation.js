@@ -167,7 +167,7 @@ function summarizeAddresses(items) {
 /* ------------------------------------------------------------------------ */
 
 /** States of propagationVerdict (see there). */
-export const VERDICT_STATES = Object.freeze(['none', 'agree', 'by-design', 'geo', 'differ']);
+export const VERDICT_STATES = Object.freeze(['none', 'unresolved', 'agree', 'by-design', 'geo', 'differ']);
 
 /**
  * Finding codes of propagationVerdict, most serious first: `rcode` (SERVFAIL, REFUSED …
@@ -197,13 +197,28 @@ const SAFE_SEARCH = new Set(SAFE_SEARCH_TARGETS);
 const ADDRESS_TYPES = new Set(['A', 'AAAA']);
 /** Classification kinds whose addresses the operator picks (edges): they differ by design. */
 const EDGE_KINDS = new Set(['cloudflare', 'cdn', 'platform']);
-/**
- * netinfo provider categories whose entry name may differ by design: regional load balancers
- * behind latency routing (web-eu.….elb.amazonaws.com vs web-us.…). Every other operator (CDN,
- * WAF, platform) has one entry name per site, so another one is another site.
- */
-const REGIONAL_ENTRY_CATEGORIES = new Set(['loadbalancer']);
 const RCODE_VALUE_RE = /^[A-Z][A-Z0-9]*$/;
+const DUALSTACK_RE = /^dualstack\./;
+
+/**
+ * May two answers enter `provider` through different entry names by design? Only regional load
+ * balancers behind latency routing (web-eu.….elb.amazonaws.com vs web-us.…). Every other operator
+ * has one entry name per site: a CDN / WAF / platform property, or a DNS steering profile (Azure
+ * Traffic Manager's <profile>.trafficmanager.net, the regional endpoints sit behind it), so
+ * another one is another site.
+ */
+const regionalEntry = (provider) => provider.category === 'loadbalancer' && !provider.dnsOnly;
+
+/**
+ * Are two chain positions (a name, null = the address records, undefined = past the chain) the
+ * same? A provider name also equals its 'dualstack.' variant: the IPv4 + IPv6 name of the same
+ * service (reddit.map.fastly.net / dualstack.reddit.map.fastly.net, ELB's dualstack.…).
+ */
+function sameName(x, y) {
+  if (x === y) return true;
+  if (typeof x !== 'string' || typeof y !== 'string') return false;
+  return x.replace(DUALSTACK_RE, '') === y.replace(DUALSTACK_RE, '') && !!matchProviderByCname(x);
+}
 
 /** The SafeSearch name an answer's CNAME chain (or, for a CNAME query, its record) reaches, or null. */
 function safeSearchTarget(values, qtype) {
@@ -279,6 +294,22 @@ function addressOperator(ip, chain, info) {
 }
 
 /**
+ * Operator of an answer without addresses (NODATA) whose CNAME chain enters a provider's name
+ * space (www.example.com → example.map.fastly.net, which has no AAAA records): that provider,
+ * with the kind and reason netinfo gives an edge reached through the name (netinfo classifies
+ * a chain without addresses as dangling). Null when the chain enters none.
+ */
+function chainOperator(chain) {
+  const name = chain.find((c) => matchProviderByCname(c));
+  if (!name) return null;
+  const p = matchProviderByCname(name);
+  if (p.dnsOnly) return operatorFrom({ kind: 'direct', provider: p, reasonKey: 'class.direct' }, 'cname');
+  const cloudflare = p.id === 'cloudflare';
+  const kind = cloudflare ? 'cloudflare' : p.category === 'cdn' || p.category === 'waf' ? 'cdn' : 'platform';
+  return operatorFrom({ kind, provider: p, reasonKey: `class.${cloudflare ? 'cloudflare' : p.category}.cname` }, 'cname');
+}
+
+/**
  * Where an answer enters an operator's name space, as a position in [...chain, <addresses>]:
  * the first CNAME target under a provider domain, else its address records when those are
  * edges (a CDN found by IP range), else Infinity (a direct answer never enters one).
@@ -290,19 +321,23 @@ function entryDepth(group) {
 }
 
 /**
- * Who an answer enters at entryDepth: `{ id, category }` of the provider of its entry CNAME,
- * else of the managed operators of its addresses (ids joined; category only for a single one).
- * Null for an answer that never enters one.
+ * Who an answer enters at entryDepth: `{ depth, id, regional, dest }` — the provider of its entry
+ * CNAME, else the managed operators of its addresses (ids joined; `regional` only for a single
+ * one). `dest`: where it arrives — the entry name (without 'dualstack.'), or for an entry by
+ * address the name that holds the edge addresses and the operator. Null for an answer that never
+ * enters one.
  */
 function entryOf(group) {
   const depth = entryDepth(group);
   if (depth === Infinity) return null;
   if (depth < group.chain.length) {
-    const p = matchProviderByCname(group.chain[depth]);
-    return { depth, id: p.id, category: p.category };
+    const name = group.chain[depth];
+    const p = matchProviderByCname(name);
+    return { depth, id: p.id, regional: regionalEntry(p), dest: name.replace(DUALSTACK_RE, '') };
   }
   const ops = [...new Map(group.perIp.filter(({ op }) => op.managed).map(({ op }) => [op.id, op])).values()];
-  return { depth, id: ops.map((op) => op.id).sort().join(' '), category: ops.length === 1 ? ops[0].provider.category : null };
+  const id = ops.map((op) => op.id).sort().join(' ');
+  return { depth, id, regional: ops.length === 1 && regionalEntry(ops[0].provider), dest: `${group.chain[depth - 1] || ''}@${id}` };
 }
 
 /**
@@ -311,17 +346,18 @@ function entryOf(group) {
  * - both enter the same operator at the same depth: through that entry name. A CDN / WAF /
  *   platform has one entry name per site (d111….cloudfront.net, www.example.com.edgekey.net,
  *   site.netlify.app) and steers only behind it, so another one is another site; regional load
- *   balancers behind latency routing may differ at the entry by design;
+ *   balancers behind latency routing may differ at the entry by design (regionalEntry);
  * - otherwise: up to where either enters one, and at least the queried name's own record.
  *   Different operators are steering by design only behind a name both share (Amazon's
  *   tp.…frontier.amazon.com); one that differs at the queried name is a move between them.
  * One direct and one managed answer compare only the names before the entry: the direct
- * addresses are a finding of their own ('mixed').
+ * addresses are a finding of their own ('mixed'). Without records anywhere (`noRecords`, chains
+ * only) there is no such finding, so the other chain must reach that entry name too.
  */
-function agreeLimit(ga, gb, ea = entryOf(ga), eb = entryOf(gb)) {
+function agreeLimit(ga, gb, ea = entryOf(ga), eb = entryOf(gb), noRecords = false) {
   if (!ea && !eb) return Math.max(ga.chain.length, gb.chain.length) + 1;
-  if (!ea || !eb) return (ea || eb).depth;
-  if (ea.depth === eb.depth && ea.id === eb.id) return REGIONAL_ENTRY_CATEGORIES.has(ea.category) ? ea.depth : ea.depth + 1;
+  if (!ea || !eb) return (ea || eb).depth + (noRecords ? 1 : 0);
+  if (ea.depth === eb.depth && ea.id === eb.id) return ea.regional ? ea.depth : ea.depth + 1;
   return Math.max(Math.min(ea.depth, eb.depth), 1);
 }
 
@@ -331,10 +367,21 @@ function agreeLimit(ga, gb, ea = entryOf(ga), eb = entryOf(gb)) {
  * the queried name) — or, when the queried name's own address records agree in shape but name
  * different operators (Netlify's address at the apex on one side, Vercel's on the other), code
  * 'operators'. `move`: the answers involved enter different operators. Shallowest first.
+ *
+ * A difference is steering in the name's own DNS instead (weighted or load-balanced records:
+ * zone1.www.example.com / zone2.… → the same *.map.fastly.net name, or gslb / gslb2 → Akamai or
+ * Fastly) when both sides are names and every answer through one of them arrives where answers
+ * through the other one arrive too — the same entry names (entryOf `dest`), so it does not
+ * matter which name a source got. Those are listed in `steered` (`{ owner, targets }`), not as
+ * conflicts. Another entry name (d111… vs d222….cloudfront.net) is never steering.
+ *
+ * @returns {{ conflicts: object[], steered: Array<{ owner: string|null, targets: string[] }> }}
  */
-function chainConflicts(answers) {
+function chainConflicts(answers, noRecords = false) {
   const entries = new Map(answers.map((g) => [g, entryOf(g)]));
+  const seqs = new Map(answers.map((g) => [g, [...g.chain, null]]));
   const byOwner = new Map();
+  const steered = new Map();
   const conflict = (code, depth, owner) => {
     const id = `${code}\n${depth}\n${owner}`;
     let c = byOwner.get(id);
@@ -351,31 +398,61 @@ function chainConflicts(answers) {
       if (entries.get(g)) c.operators.add(entries.get(g).id);
     }
   };
+  /** Entry names of the answers whose chain starts with `prefix`, then `name`; null if one never enters any. */
+  const destinations = (prefix, name) => {
+    const out = new Set();
+    for (const g of answers) {
+      const seq = seqs.get(g);
+      if (!sameName(seq[prefix.length], name) || !prefix.every((n, k) => sameName(seq[k], n))) continue;
+      const e = entries.get(g);
+      if (!e) return null;
+      out.add(e.dest);
+    }
+    return out;
+  };
+  const within = (a, b) => [...a].every((d) => b.has(d));
+  const isSteering = (prefix, x, y) => {
+    if (typeof x !== 'string' || typeof y !== 'string') return false;
+    const dx = destinations(prefix, x);
+    const dy = destinations(prefix, y);
+    return !!dx && !!dy && (within(dx, dy) || within(dy, dx));
+  };
   for (let a = 0; a < answers.length; a += 1) {
     for (let b = a + 1; b < answers.length; b += 1) {
       const ga = answers[a];
       const gb = answers[b];
-      const seqA = [...ga.chain, null];
-      const seqB = [...gb.chain, null];
+      const seqA = seqs.get(ga);
+      const seqB = seqs.get(gb);
       const ea = entries.get(ga);
       const eb = entries.get(gb);
-      const limit = agreeLimit(ga, gb, ea, eb);
+      const limit = agreeLimit(ga, gb, ea, eb, noRecords);
       let differs = false;
       for (let i = 0; i < limit && !differs; i += 1) {
         const x = i < seqA.length ? seqA[i] : undefined;
         const y = i < seqB.length ? seqB[i] : undefined;
-        if (x === y) continue;
+        if (sameName(x, y)) continue;
         differs = true;
-        addTo(conflict('cname', i, i === 0 ? null : seqA[i - 1]), [[ga, x], [gb, y]]);
+        const owner = i === 0 ? null : seqA[i - 1];
+        if (!isSteering(seqA.slice(0, i), x, y)) {
+          addTo(conflict('cname', i, owner), [[ga, x], [gb, y]]);
+          continue;
+        }
+        const key = `${i}\n${owner}`;
+        const s = steered.get(key) || { depth: i, owner, targets: [] };
+        s.targets = uniqueList([...s.targets, x, y]);
+        steered.set(key, s);
       }
       if (!differs && limit >= 1 && !ga.chain.length && !gb.chain.length && ea && eb && ea.id !== eb.id) {
         addTo(conflict('operators', 0, null), [[ga], [gb]]);
       }
     }
   }
-  return [...byOwner.values()]
-    .sort((a, b) => a.depth - b.depth)
-    .map(({ operators, ...c }) => ({ ...c, move: operators.size > 1 }));
+  return {
+    conflicts: [...byOwner.values()]
+      .sort((a, b) => a.depth - b.depth)
+      .map(({ operators, ...c }) => ({ ...c, move: operators.size > 1 })),
+    steered: [...steered.values()].sort((a, b) => a.depth - b.depth).map(({ owner, targets }) => ({ owner, targets }))
+  };
 }
 
 const uniqueList = (list) => [...new Set(list)];
@@ -390,7 +467,8 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * caller already fetched (`ipInfo`). Operators are judged for A / AAAA only.
  *
  * States:
- * - 'none': no usable answer; 'agree': one distinct answer;
+ * - 'none': no usable answer; 'unresolved': every usable answer is an error rcode (SERVFAIL,
+ *   REFUSED …), so nobody resolves the name — never "agree"; 'agree': one distinct answer;
  * - 'by-design': A/AAAA answers that differ, every one an edge of a known operator
  *   (CDN / WAF / platform, or DNS-level steering), the CNAME chains agree until each enters
  *   the operator's name space — through the entry name when both enter the same operator
@@ -399,9 +477,14 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   different operators diverge only behind a name every answer shares (e.g. tp.example.com →
  *   a CloudFront edge in one region, and tp.example.com → *.edgekey.net → *.akamaiedge.net in
  *   another), never at the queried name itself; no NXDOMAIN / NODATA / rcode / private address
- *   anywhere;
+ *   anywhere. A name before the entry may differ when both names lead to the same entry names
+ *   (weighted or load-balanced records in the name's own DNS: listed in `steering`). With no
+ *   records of the type anywhere (`noRecords`: every answer NODATA, e.g. AAAA of a CDN name
+ *   without IPv6), the CNAME chains alone are judged the same way, each entering by CNAME;
  * - 'geo': the resolvers agree and only the ECS locations differ, without anything above
- *   that looks wrong, and not every answer is a known edge (the classic GeoDNS case);
+ *   that looks wrong, and not every answer is a known edge (the classic GeoDNS case). A CNAME
+ *   that differs only between locations (GeoDNS by CNAME, e.g. geolocation records) is GeoDNS
+ *   too;
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
@@ -413,25 +496,29 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * ordinary name — stays in: it is what a stale cache looks like; `filtering` on an rcode /
  * nxdomain / nodata finding only says that filtering resolvers alone give it.
  *
- * Findings (VERDICT_FINDINGS order): `{ code, groups: string[] (group keys), members: string[] }`
- * plus `rcode` ('rcode'), `filtering` ('rcode', 'nxdomain', 'nodata'), `ips` ('private',
- * 'mixed': the offending addresses), `owner` (null = the queried name) / `targets` (string, or
- * null = address records) ('cname') and `operators` ('cname', 'operators': the managed
- * operators of the answers involved when they enter different ones — a move between
- * providers — else []).
+ * Findings (VERDICT_FINDINGS order; in 'differ' and 'unresolved'): `{ code, groups: string[]
+ * (group keys), members: string[] }` plus `rcode` ('rcode'), `filtering` ('rcode', 'nxdomain',
+ * 'nodata'), `ips` ('private', 'mixed': the offending addresses), `owner` (null = the queried
+ * name) / `targets` (string, or null = address records — with `noRecords`, no records and no
+ * CNAME) ('cname') and `operators` ('cname', 'operators': the managed operators of the answers
+ * involved when they enter different ones — a move between providers — else []). NXDOMAIN and
+ * NODATA are findings only next to another kind of answer, not next to failures alone.
  *
  * @param {Array<{ key?: string, kind?: 'resolver'|'geo', values?: string[], filtered?: boolean,
  *   pending?: boolean, resolver?: { filtering?: string|null }|null }>} items resolver / geo results
  *   (checkPropagation items or streamed rows; 'geo:' keys or kind 'geo' mark locations)
  * @param {{ type?: string|number, ipInfo?: Map<string, object>|Record<string, object>|null }} [opts]
  *   `ipInfo`: already fetched ipintel IpInfo (or `{ ptr, asn, asns }`) per canonical address
- * @returns {{ state: 'none'|'agree'|'by-design'|'geo'|'differ', type: string,
+ * @returns {{ state: 'none'|'unresolved'|'agree'|'by-design'|'geo'|'differ', type: string,
  *   groups: Array<{ key: string, values: string[], members: string[], status: 'answer'|'nxdomain'|'nodata'|'rcode',
  *     chain: string[], addresses: string[], operators: object[], managed: boolean, rewritten: boolean }>,
  *   operators: object[], findings: object[], resolversAgree: boolean, designPart: boolean, multiOperator: boolean,
+ *   noRecords: boolean, steering: Array<{ owner: string|null, targets: string[] }>,
  *   rewritten: string[], rewriteTargets: string[] }}
  *   Operators: `{ id, name, kind (netinfo kind), provider, via: 'ip'|'cname'|'ptr'|'asn'|null, reasonKey,
- *   managed, steering }`; the top-level list holds the managed ones with their `members`, most sources first.
+ *   managed, steering }` — of a group's addresses, or for a NODATA group of the provider its CNAME
+ *   chain enters; the top-level list holds the managed ones of the judged groups (the answers, or
+ *   with `noRecords` the chains) with their `members`, most sources first.
  */
 export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
   const qtype = typeToName(type ?? 'A');
@@ -467,23 +554,26 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
       const addresses = address && status === 'answer' ? uniqueList(plain.map(normalizeIP).filter(Boolean)) : [];
       if (address && status === 'answer' && !addresses.length) status = 'nodata'; // a chain without addresses
       const perIp = addresses.map((ip) => ({ ip, op: addressOperator(ip, chain, infoOf(ip)) }));
-      const operators = [...new Map(perIp.map(({ op }) => [op.id, op])).values()];
+      const entered = status === 'nodata' ? chainOperator(chain) : null;
+      const operators = entered ? [entered] : [...new Map(perIp.map(({ op }) => [op.id, op])).values()];
       const rewrite = g.filteringOnly && status === 'answer' ? safeSearchTarget(g.values, qtype) : null;
       return { ...g, status, chain, addresses, operators, managed: perIp.length > 0 && perIp.every(({ op }) => op.managed), perIp, rewrite };
     });
 
   // A SafeSearch rewrite only filtering resolvers give is their policy: judged without it.
   const policy = groups.filter((g) => g.rewrite);
-  const { state, operators, findings, resolversAgree, managed } = judgeGroups(groups.filter((g) => !g.rewrite), address);
+  const { state, operators, findings, resolversAgree, managed, noRecords, steering } = judgeGroups(groups.filter((g) => !g.rewrite), address);
   return {
     state: usable.length ? state : 'none',
     type: qtype,
     groups: groups.map(({ perIp, geo, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
     operators,
-    findings: state === 'differ' ? findings : [],
+    findings: state === 'differ' || state === 'unresolved' ? findings : [],
     resolversAgree,
     designPart: state === 'differ' && managed > 1 && !findings.some((f) => f.code === 'cname' || f.code === 'operators'),
     multiOperator: operators.length > 1,
+    noRecords,
+    steering,
     rewritten: membersOf(policy),
     rewriteTargets: uniqueList(policy.map((g) => g.rewrite))
   };
@@ -496,9 +586,13 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
  */
 function judgeGroups(groups, address) {
   const answers = groups.filter((g) => g.status === 'answer');
+  const resolved = groups.filter((g) => g.status !== 'rcode');
+  // Nobody has records of the type (AAAA of an IPv4-only CDN name): only the chains can differ.
+  const noRecords = address && resolved.length > 0 && resolved.every((g) => g.status === 'nodata');
+  const judged = noRecords ? resolved : answers;
   const opMembers = new Map();
-  for (const g of answers) {
-    for (const { op } of g.perIp) {
+  for (const g of judged) {
+    for (const op of g.operators) {
       if (!op.managed) continue;
       const entry = opMembers.get(op.id) || { ...op, members: [] };
       entry.members = uniqueList([...entry.members, ...g.members]);
@@ -507,19 +601,24 @@ function judgeGroups(groups, address) {
   }
   const operators = [...opMembers.values()].sort((a, b) => b.members.length - a.members.length);
   /** Managed operators of some groups, most sources first (as in `operators`). */
-  const operatorsOf = (list) => operators.filter((op) => list.some((g) => g.perIp.some((x) => x.op.id === op.id)));
+  const operatorsOf = (list) => operators.filter((op) => list.some((g) => g.operators.some((x) => x.id === op.id)));
 
   const findings = [];
   const add = (code, list, extra = {}) => {
     if (list.length) findings.push({ code, groups: list.map((g) => g.key), members: membersOf(list), ...extra });
   };
   const filtering = (list) => list.every((g) => g.filteringOnly);
-  if (groups.length > 1) {
-    for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0], filtering: filtering([g]) });
+  for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0], filtering: filtering([g]) });
+  // NXDOMAIN / NODATA differ only from another kind of answer — not from failures alone, and
+  // an empty answer everywhere leaves only its CNAME chains to compare (below).
+  if (new Set(resolved.map((g) => g.status)).size > 1) {
     for (const status of ['nxdomain', 'nodata']) {
       const list = groups.filter((g) => g.status === status);
       add(status, list, { filtering: filtering(list) });
     }
+  }
+  let steering = [];
+  if (groups.length > 1) {
     const ipsOf = (g, pred) => g.perIp.filter(({ op }) => pred(op)).map(({ ip }) => ip);
     const privateGroups = answers.filter((g) => ipsOf(g, (op) => op.kind === 'private').length);
     add('private', privateGroups, { ips: uniqueList(privateGroups.flatMap((g) => ipsOf(g, (op) => op.kind === 'private'))) });
@@ -529,7 +628,8 @@ function judgeGroups(groups, address) {
       add('mixed', mixedGroups, { ips: uniqueList(mixedGroups.flatMap((g) => ipsOf(g, direct))) });
     }
     if (address) {
-      const conflicts = chainConflicts(answers);
+      const { conflicts, steered } = chainConflicts(judged, noRecords);
+      steering = steered;
       for (const code of ['cname', 'operators']) {
         for (const c of conflicts.filter((x) => x.code === code)) {
           const extra = { operators: c.move ? operatorsOf(c.groups) : [] };
@@ -546,12 +646,17 @@ function judgeGroups(groups, address) {
   }
 
   const resolversAgree = groups.filter((g) => !g.geo).length <= 1;
-  const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records');
+  const chainFinding = (f) => f.code === 'cname' || f.code === 'operators';
+  // A chain that differs only between locations while the resolvers agree is GeoDNS by CNAME,
+  // as different addresses there are ('direct'): not serious, but never "by design" either.
+  const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !(resolversAgree && chainFinding(f)));
+  const edges = address && judged.length > 0 && (noRecords ? judged.every((g) => entryOf(g)) : judged.every((g) => g.managed));
   let state = 'differ';
-  if (groups.length <= 1) state = 'agree';
-  else if (!serious.length && address && answers.length && answers.every((g) => g.managed)) state = 'by-design';
+  if (!resolved.length) state = 'unresolved';
+  else if (groups.length <= 1) state = 'agree';
+  else if (!serious.length && edges && !findings.some(chainFinding)) state = 'by-design';
   else if (!serious.length && resolversAgree) state = 'geo';
-  return { state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length };
+  return { state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length, noRecords, steering };
 }
 
 /**

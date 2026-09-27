@@ -134,7 +134,9 @@ describe('i18n coverage', () => {
     for (const s of sources.SOURCES) add(s.noteKey);
     for (const id of health.HEALTH_CHECK_IDS) { add(`health.${id}.title`); add(`health.${id}.detail`); }
     for (const g of ['dns', 'email', 'security', 'registration']) add(`health.group.${g}`);
-    for (const r of ['none', 'critical-unknown', 'no-issue-property', 'unknown-issuer', 'allowed', 'deny-all', 'not-listed']) add(`health.caa.reason.${r}`);
+    for (const r of health.CAA_REASONS) add(`health.caa.reason.${r}`);
+    for (const p of health.CAA_PROBLEMS) add(`health.caa.problem.${p}`);
+    for (const n of health.CAA_NOTES) add(`health.caa.note.${n}`);
     for (const s of ['records', 'ns', 'mx', 'spf', 'dmarc', 'dkim', 'caa', 'dnssec', 'wildcard', 'rdap']) add(`hlt.step.${s}`);
     for (const s of scanner.SCAN_STAGES) { add(`scan.stage.${s}`); add(`scan.progress.${s}`); }
     // Every warning code runScan can emit (read from its source, so a new code cannot slip

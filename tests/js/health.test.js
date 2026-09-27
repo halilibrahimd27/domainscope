@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   domainHealth, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
-  spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa,
-  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT
+  spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa, caaRestrictionNotes, caaRestrictionText,
+  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT,
+  ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
 import { clearRdapCache, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
@@ -960,18 +961,66 @@ test('DKIM: a wildcard *._domainkey record is detected and not reported per sele
 /* ==================================================================== */
 
 test('parseCaaIssueValue (RFC 8659 §4.2)', () => {
-  assert.deepEqual(parseCaaIssueValue('letsencrypt.org; validationmethods=dns-01'),
+  const pick = (v) => {
+    const { issuer, params, valid, error } = parseCaaIssueValue(v);
+    return { issuer, params, valid, error };
+  };
+  assert.deepEqual(pick('letsencrypt.org; validationmethods=dns-01'),
     { issuer: 'letsencrypt.org', params: { validationmethods: 'dns-01' }, valid: true, error: null });
-  assert.deepEqual(parseCaaIssueValue(' LetsEncrypt.org ;accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1 ; validationmethods=http-01 '),
+  assert.deepEqual(pick(' LetsEncrypt.org ;accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1 ; validationmethods=http-01 '),
     { issuer: 'letsencrypt.org', params: { accounturi: 'https://acme-v02.api.letsencrypt.org/acme/acct/1', validationmethods: 'http-01' }, valid: true, error: null });
-  assert.deepEqual(parseCaaIssueValue(';'), { issuer: '', params: {}, valid: true, error: null });
-  assert.deepEqual(parseCaaIssueValue(''), { issuer: '', params: {}, valid: true, error: null });
+  assert.deepEqual(pick(';'), { issuer: '', params: {}, valid: true, error: null });
+  assert.deepEqual(pick(''), { issuer: '', params: {}, valid: true, error: null });
+  assert.deepEqual(pick('letsencrypt.org;'), { issuer: 'letsencrypt.org', params: {}, valid: true, error: null }, '";" with no parameters');
+  assert.deepEqual(pick('letsencrypt.org; \t'), { issuer: 'letsencrypt.org', params: {}, valid: true, error: null });
   assert.equal(parseCaaIssueValue('lets encrypt').valid, false);
   assert.equal(parseCaaIssueValue('-bad.org').error, 'invalid-issuer');
+  assert.equal(parseCaaIssueValue('%%%%%').error, 'invalid-issuer', 'the RFC 8659 §4.2 malformed example');
   assert.equal(parseCaaIssueValue('ok.org; novalue').error, 'invalid-parameter');
   assert.equal(parseCaaIssueValue('ok.org; k=v;v').valid, false);
+  assert.equal(parseCaaIssueValue('ok.org; k=a b').error, 'invalid-parameter', 'a value never holds a space');
+  // The grammar has no empty parameter: a trailing ';' after a parameter, or two in a row, is malformed.
+  assert.equal(parseCaaIssueValue('letsencrypt.org; validationmethods=dns-01;').error, 'empty-parameter');
+  assert.equal(parseCaaIssueValue('letsencrypt.org;; validationmethods=dns-01').error, 'empty-parameter');
+  assert.equal(parseCaaIssueValue('letsencrypt.org; a=1; ; b=2').error, 'empty-parameter');
+  // '=' may appear inside a value (a URI query)
+  assert.equal(parseCaaIssueValue('ca.example.net; accounturi=https://ca.example.net/acct?id=7').accountUri, 'https://ca.example.net/acct?id=7');
 });
 
+test('parseCaaIssueValue: RFC 8657 accounturi / validationmethods', () => {
+  let v = parseCaaIssueValue('letsencrypt.org; accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1234; validationmethods=dns-01,HTTP-01');
+  assert.equal(v.accountUri, 'https://acme-v02.api.letsencrypt.org/acme/acct/1234');
+  assert.deepEqual(v.methods, ['dns-01', 'http-01'], 'labels lowercased, in order');
+  assert.deepEqual([v.problem, v.restricted], [null, true]);
+  assert.deepEqual(v.paramList.map((p) => p.tag), ['accounturi', 'validationmethods']);
+
+  v = parseCaaIssueValue('pki.goog; cansignhttpexchanges=yes');
+  assert.deepEqual([v.accountUri, v.methods, v.restricted], [null, null, false], 'a CA-defined parameter is no RFC 8657 restriction');
+  assert.deepEqual(v.otherParams, [{ tag: 'cansignhttpexchanges', value: 'yes' }]);
+
+  // unsatisfiable (RFC 8657 §3 / §4), each with its own code
+  const problem = (s) => parseCaaIssueValue(s).problem;
+  assert.equal(problem('ca.example.net; accounturi=https://ca.example.net/a/1; accounturi=https://ca.example.net/a/2'), 'accounturi-multiple');
+  assert.equal(problem('ca.example.net; accounturi=account-1234'), 'accounturi-invalid');
+  assert.equal(problem('letsencrypt.org; accounturi=https://acme-staging-v02.api.letsencrypt.org/acme/acct/9'), 'accounturi-staging');
+  assert.equal(problem('letsencrypt.org; accounturi=https://acme.zerossl.com/v2/DV90/account/abc'), 'accounturi-foreign');
+  assert.equal(problem('sectigo.com; accounturi=https://acme.zerossl.com/v2/DV90/account/abc'), null, 'ZeroSSL issues under sectigo.com');
+  assert.equal(problem('ca.example.net; accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1'), null, 'an unknown CA: cannot tell');
+  assert.equal(problem('ca.example.net; validationmethods=dns-01; validationmethods=http-01'), 'validationmethods-multiple');
+  assert.equal(problem('ca.example.net; validationmethods=dns-01,'), 'validationmethods-invalid', 'an empty label');
+  assert.equal(problem('ca.example.net; validationmethods=dns_01'), 'validationmethods-invalid');
+  assert.equal(problem('ca.example.net; validationmethods='), 'validationmethods-none', 'zero labels');
+  assert.equal(problem('ca.example.net; validationmethods=email-reply-00,tls-sni-01'), 'validationmethods-none', 'no method validates a domain name');
+  assert.equal(problem('ca.example.net; validationmethods=xyz-01'), 'validationmethods-none', 'an unknown label is ignored');
+  assert.equal(problem('ca.example.net; validationmethods=ca-foo'), null, 'a CA-specific method may validate anything');
+  v = parseCaaIssueValue('ca.example.net; validationmethods=dns-01,xyz-01');
+  assert.deepEqual([v.problem, v.unknownMethods], [null, ['xyz-01']]);
+  // a problem value is never "restricted"; a malformed one is not evaluated further
+  assert.equal(parseCaaIssueValue('ca.example.net; accounturi=a; accounturi=b').restricted, false);
+  v = parseCaaIssueValue('ca.example.net; accounturi=x y');
+  assert.deepEqual([v.valid, v.error, v.problem, v.accountUri], [false, 'invalid-parameter', null, null]);
+  assert.ok(ACME_VALIDATION_METHODS.includes('dns-01') && ACME_VALIDATION_METHODS.includes('tls-alpn-01'));
+});
 test('parseCaa: RRs, data objects, strings, critical flag, unknown tags', () => {
   const p = parseCaa([
     { type: 'CAA', data: { flags: 0, tag: 'issue', value: 'letsencrypt.org' } },
@@ -1041,15 +1090,17 @@ test('checkCaaAllows: RFC 8659 decision table', () => {
   const recs = (...list) => list.map((s) => s);
   let r = checkCaaAllows([], LE);
   assert.equal(r.allowed, true);
+  assert.equal(r.verdict, 'allowed');
   assert.equal(r.reason, 'none');
   assert.equal(r.reasonKey, 'health.caa.reason.none');
+  r = checkCaaAllows(recs('0 issue "letsencrypt.org"'), LE);
+  assert.deepEqual([r.allowed, r.verdict, r.reason, r.property, r.restricted], [true, 'allowed', 'allowed', 'issue', false]);
   r = checkCaaAllows(recs('0 issue "letsencrypt.org; validationmethods=dns-01"'), LE);
-  assert.equal(r.allowed, true);
-  assert.equal(r.reason, 'allowed');
-  assert.equal(r.property, 'issue');
+  assert.deepEqual([r.allowed, r.verdict, r.reason, r.property, r.restricted], [true, 'restricted', 'restricted', 'issue', true]);
   assert.deepEqual(r.matched.params, { validationmethods: 'dns-01' });
   r = checkCaaAllows(recs('0 issue "digicert.com"'), LE);
   assert.equal(r.allowed, false);
+  assert.equal(r.verdict, 'denied');
   assert.equal(r.reason, 'not-listed');
   assert.deepEqual(r.authorized, ['digicert.com']);
   // wildcard: issuewild takes precedence over issue
@@ -1076,15 +1127,167 @@ test('checkCaaAllows: RFC 8659 decision table', () => {
   // unknown CA
   r = checkCaaAllows(recs('0 issue "letsencrypt.org"'), 'CN=Corp Private CA');
   assert.equal(r.allowed, null);
+  assert.equal(r.verdict, 'unknown');
   assert.equal(r.reason, 'unknown-issuer');
-  // malformed value never matches
-  assert.equal(checkCaaAllows(recs('0 issue "letsencrypt.org; bad"'), LE).allowed, false);
+  // a malformed value naming the CA authorizes nothing, and says so
+  r = checkCaaAllows(recs('0 issue "letsencrypt.org; bad"'), LE);
+  assert.deepEqual([r.allowed, r.reason], [false, 'malformed']);
+  assert.deepEqual(r.unusable, [{ issuer: 'letsencrypt.org', raw: 'letsencrypt.org; bad', problem: 'invalid-parameter' }]);
   // parsed input, distrusted CA flag
   r = checkCaaAllows(parseCaa(recs('0 issue "e-tugra.com.tr"')), 'CN=E-Tugra SSL CA R2');
   assert.equal(r.allowed, true);
   assert.equal(r.distrusted, true);
 });
 
+test('checkCaaAllows: the RFC 8659 §4.2 / §4.3 examples', () => {
+  const ca1 = { issuerDomains: ['ca1.example.net'] };
+  const ca2 = { issuerDomains: ['CA2.Example.org.'] }; // case and a trailing dot do not matter
+  const v = (records, opts, wildcard = false) => checkCaaAllows(records, null, { ...opts, wildcard }).verdict;
+  // certs.example.com: only ca1 or ca2
+  const certs = ['0 issue "ca1.example.net"', '0 issue "ca2.example.org"'];
+  assert.deepEqual([v(certs, ca1), v(certs, ca2), v(certs, { issuerDomains: ['ca3.example.com'] })], ['allowed', 'allowed', 'denied']);
+  // nocerts.example.com and malformed.example.com: nobody
+  assert.equal(checkCaaAllows(['0 issue ";"'], null, ca1).reason, 'deny-all');
+  assert.equal(checkCaaAllows(['0 issue "%%%%%"'], null, ca1).reason, 'deny-all');
+  // authorizations are additive: an empty value next to ca1 is just ca1
+  assert.equal(v(['0 issue ";"', '0 issue "ca1.example.net"'], ca1), 'allowed');
+  // wild.example.com: ca1 for the names, ca2 for the wildcards
+  const wild = ['0 issue "ca1.example.net"', '0 issuewild "ca2.example.org"'];
+  assert.deepEqual([v(wild, ca1), v(wild, ca2), v(wild, ca1, true), v(wild, ca2, true)], ['allowed', 'denied', 'denied', 'allowed']);
+  // wild2.example.com: ca1 for both
+  assert.deepEqual([v(['0 issue "ca1.example.net"'], ca1), v(['0 issue "ca1.example.net"'], ca1, true)], ['allowed', 'allowed']);
+  // wild3.example.com (1): wildcards from ca2 only, no plain names at all
+  const wild3 = ['0 issuewild "ca2.example.org"', '0 issue ";"'];
+  assert.deepEqual([v(wild3, ca2, true), v(wild3, ca2), v(wild3, ca1)], ['allowed', 'denied', 'denied']);
+  // wild3.example.com (2): wildcards from ca2 only, plain names from anyone
+  const wild3b = ['0 issuewild "ca2.example.org"'];
+  assert.deepEqual([v(wild3b, ca2, true), v(wild3b, ca1, true), v(wild3b, ca1)], ['allowed', 'denied', 'allowed']);
+  assert.equal(checkCaaAllows(wild3b, null, ca1).reason, 'no-issue-property');
+});
+
+test('checkCaaAllows: the RFC 8657 Appendix A examples (accounturi, validationmethods)', () => {
+  const opts = { issuerDomains: ['example.net'] };
+  const codes = (r, wildcard = false) => caaRestrictionNotes(r.restrictions, { wildcard }).map((n) => n.code);
+
+  // two authorized accounts at example.net
+  let r = checkCaaAllows([
+    '0 issue "example.net; accounturi=https://example.net/account/1234"',
+    '0 issue "example.net; accounturi=https://example.net/account/2345"'
+  ], null, opts);
+  assert.deepEqual([r.verdict, r.reason, r.allowed], ['restricted', 'restricted', true]);
+  assert.deepEqual(r.restrictions.map((x) => x.accountUri), ['https://example.net/account/1234', 'https://example.net/account/2345']);
+  let notes = caaRestrictionNotes(r.restrictions);
+  assert.deepEqual(notes.map((n) => n.code), ['account', 'alternatives']);
+  assert.equal(notes[0].params.accounts, 'https://example.net/account/1234, https://example.net/account/2345');
+  assert.equal(notes[0].key, 'health.caa.note.account');
+
+  // only dns-01 and xyz-01 (a label no CA knows: ignored)
+  r = checkCaaAllows(['0 issue "example.net; validationmethods=dns-01,xyz-01"'], null, opts);
+  assert.equal(r.verdict, 'restricted');
+  notes = caaRestrictionNotes(r.restrictions);
+  assert.deepEqual(notes.map((n) => n.code), ['methods', 'unknown-methods']);
+  assert.deepEqual(notes[0].params, { methods: 'dns-01', blocked: 'http-01, tls-alpn-01' });
+  assert.equal(notes[1].params.labels, 'xyz-01');
+  // the "equivalent" two-record form restricts a real CA to dns-01 just the same
+  const split = checkCaaAllows(['0 issue "example.net; validationmethods=dns-01"', '0 issue "example.net; validationmethods=xyz-01"'], null, opts);
+  assert.equal(split.verdict, 'restricted');
+  assert.deepEqual(caaRestrictionNotes(split.restrictions)[0].params, { methods: 'dns-01', blocked: 'http-01, tls-alpn-01' });
+
+  // one account per method
+  r = checkCaaAllows([
+    '0 issue "example.net; accounturi=https://example.net/account/1234; validationmethods=dns-01"',
+    '0 issue "example.net; accounturi=https://example.net/account/2345; validationmethods=http-01"'
+  ], null, opts);
+  assert.equal(r.restrictions.length, 2);
+  assert.deepEqual(r.restrictions.map((x) => [x.accountUri, x.methods]), [
+    ['https://example.net/account/1234', ['dns-01']], ['https://example.net/account/2345', ['http-01']]
+  ]);
+  assert.deepEqual(codes(r), ['methods', 'account', 'alternatives']);
+  assert.equal(caaRestrictionNotes(r.restrictions)[0].params.blocked, 'tls-alpn-01');
+  assert.deepEqual(r.restrictions.map(caaRestrictionText), [
+    'example.net: validationmethods=dns-01; accounturi=https://example.net/account/1234',
+    'example.net: validationmethods=http-01; accounturi=https://example.net/account/2345'
+  ]);
+
+  // dns-01 or a CA-specific method
+  r = checkCaaAllows(['0 issue "example.net; validationmethods=dns-01,ca-foo"'], null, opts);
+  assert.equal(r.verdict, 'restricted');
+  assert.deepEqual(caaRestrictionNotes(r.restrictions)[0].params, { methods: 'dns-01, ca-foo', blocked: 'http-01, tls-alpn-01' });
+});
+
+test('checkCaaAllows: restrictions, unsatisfiable values and wildcards', () => {
+  const LE = "CN=R11,O=Let's Encrypt,C=US";
+  const ACCT = 'https://acme-v02.api.letsencrypt.org/acme/acct/1234';
+  // an unrestricted value next to a restricted one wins (additive)
+  let r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01"', '0 issue "letsencrypt.org"'], LE);
+  assert.deepEqual([r.verdict, r.matched.raw], ['allowed', 'letsencrypt.org']);
+  // the example in the task: only dns-01 → an HTTP-01 renewal fails
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01"'], LE);
+  const [note] = caaRestrictionNotes(r.restrictions);
+  assert.deepEqual([note.code, note.params.methods, note.params.blocked], ['methods', 'dns-01', 'http-01, tls-alpn-01']);
+  // account and methods together
+  r = checkCaaAllows([`0 issue "letsencrypt.org; accounturi=${ACCT}; validationmethods=http-01"`], LE);
+  assert.deepEqual(caaRestrictionNotes(r.restrictions).map((n) => [n.code, Object.values(n.params).join(' | ')]), [
+    ['methods', 'http-01 | dns-01, tls-alpn-01'], ['account', ACCT]
+  ]);
+  // a CA-defined parameter on a restricted value is reported, not interpreted
+  r = checkCaaAllows([`0 issue "letsencrypt.org; accounturi=${ACCT}; policy=ev"`], LE);
+  assert.deepEqual(caaRestrictionNotes(r.restrictions).map((n) => n.code), ['account', 'ca-params']);
+
+  // unsatisfiable values that name the CA deny it, each with its reason
+  r = checkCaaAllows([
+    '0 issue "letsencrypt.org; accounturi=https://acme-staging-v02.api.letsencrypt.org/acme/acct/9"',
+    `0 issue "letsencrypt.org; accounturi=${ACCT}; accounturi=${ACCT}"`,
+    '0 issue "digicert.com"'
+  ], LE);
+  assert.deepEqual([r.allowed, r.verdict, r.reason], [false, 'denied', 'unsatisfiable']);
+  assert.deepEqual(r.unusable.map((u) => u.problem), ['accounturi-staging', 'accounturi-multiple']);
+  assert.deepEqual(r.authorized, ['digicert.com'], 'unsatisfiable values authorize nobody');
+  // a staging account next to a live one: the live one is the only way
+  r = checkCaaAllows([
+    '0 issue "letsencrypt.org; accounturi=https://acme-staging-v02.api.letsencrypt.org/acme/acct/9"',
+    `0 issue "letsencrypt.org; accounturi=${ACCT}"`
+  ], LE);
+  assert.deepEqual([r.verdict, r.restrictions.map((x) => x.accountUri)], ['restricted', [ACCT]]);
+  // malformed and unsatisfiable only → nobody at all
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01;"', '0 issue "pki.goog; validationmethods="'], 'CN=Corp CA');
+  assert.equal(r.reason, 'deny-all');
+  // a trailing ';' is the classic mistake: the value is malformed for the CA it names
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01;"'], LE);
+  assert.deepEqual([r.verdict, r.reason, r.unusable[0].problem], ['denied', 'malformed', 'empty-parameter']);
+
+  // wildcards: only dns-01 validates them (CA/B Forum BR 3.2.2.4.18–20)
+  const httpOnly = ['0 issue "letsencrypt.org; validationmethods=http-01"'];
+  assert.equal(checkCaaAllows(httpOnly, LE).verdict, 'restricted');
+  r = checkCaaAllows(httpOnly, LE, { wildcard: true });
+  assert.deepEqual([r.verdict, r.reason, r.property, r.unusable[0].problem], ['denied', 'unsatisfiable', 'issue', 'wildcard-method']);
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01"'], LE, { wildcard: true });
+  assert.equal(r.verdict, 'restricted');
+  assert.deepEqual(caaRestrictionNotes(r.restrictions, { wildcard: true }), [], 'dns-01 is the only wildcard method anyway');
+  r = checkCaaAllows(['0 issue "letsencrypt.org; validationmethods=dns-01,http-01"'], LE, { wildcard: true });
+  assert.equal(r.verdict, 'restricted');
+  // an issuewild value that cannot validate a wildcard is unsatisfiable when parsed
+  const p = parseCaa(['0 issue "letsencrypt.org"', '0 issuewild "letsencrypt.org; validationmethods=tls-alpn-01"']);
+  assert.deepEqual([p.issuewild[0].problem, p.issuewild[0].restricted, p.wildIssuers, p.issuers], ['wildcard-method', false, [], ['letsencrypt.org']]);
+  r = checkCaaAllows(p, LE, { wildcard: true });
+  assert.deepEqual([r.verdict, r.property, r.reason], ['denied', 'issuewild', 'unsatisfiable']);
+  assert.equal(checkCaaAllows(p, LE).verdict, 'allowed', 'plain names still use issue');
+});
+
+test('caaRestrictionNotes: empty and partial input', () => {
+  assert.deepEqual(caaRestrictionNotes([]), []);
+  assert.deepEqual(caaRestrictionNotes(null), []);
+  // only one alternative lists methods: no methods note (the other allows any method)
+  const notes = caaRestrictionNotes([{ methods: ['dns-01'], accountUri: null }, { methods: null, accountUri: 'https://ca.example.net/a/1' }]);
+  assert.deepEqual(notes.map((n) => n.code), ['alternatives']);
+  assert.equal(caaRestrictionText({ issuer: 'ca.example.net', methods: ['dns-01'], accountUri: null }), 'ca.example.net: validationmethods=dns-01');
+  for (const code of CAA_NOTES) {
+    for (const lang of ['en', 'tr']) assert.ok(HEALTH_I18N[lang][`health.caa.note.${code}`], `${lang} note ${code}`);
+  }
+  for (const code of CAA_PROBLEMS) {
+    for (const lang of ['en', 'tr']) assert.ok(HEALTH_I18N[lang][`health.caa.problem.${code}`], `${lang} problem ${code}`);
+  }
+});
 test('findCaa: tree climbing stops at the registrable domain; CNAMEs; errors', async () => {
   const zone = {
     'example.com.tr': { SOA: SOA('example.com.tr'), CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }] },
@@ -1141,8 +1344,12 @@ test('CAA checks in domainHealth: missing, deny-all, invalid, critical, distrust
   assert.equal(find(r, 'caa.distrusted').params.issuers, 'e-tugra.com.tr');
 
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: "CN=R11,O=Let's Encrypt,C=US" });
-  has(r, 'caa.cert-allowed', 'ok');
-  assert.equal(r.caaCert.allowed, true);
+  // goodZone: issue "letsencrypt.org; validationmethods=dns-01" → allowed, with a restriction
+  const restricted = has(r, 'caa.cert-restricted', 'info');
+  assert.equal(restricted.params.restrictions, 'letsencrypt.org: validationmethods=dns-01');
+  assert.equal(has(r, 'caa.restricted', 'info').params.restrictions, 'letsencrypt.org: validationmethods=dns-01');
+  lacks(r, 'caa.cert-allowed');
+  assert.deepEqual([r.caaCert.allowed, r.caaCert.verdict], [true, 'restricted']);
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: "CN=R11,O=Let's Encrypt,C=US", wildcardCert: true });
   const denied = has(r, 'caa.cert-blocked', 'error'); // issuewild ";" lets no CA issue wildcards
   assert.equal(denied.params.property, 'issuewild');
@@ -1184,6 +1391,32 @@ test('CAA: only malformed issue values forbid every CA; a blocked CA is not "mis
   // a CA missing from a real list is still "not in the list"
   r = await run('example.com', fakeDns(goodZone()), { issuerDN: 'CN=GTS CA 1C3,O=Google Trust Services LLC,C=US' });
   assert.equal(has(r, 'caa.cert-denied', 'error').params.authorized, 'letsencrypt.org');
+
+  // RFC 8657: values that name the CA but can never be satisfied block it, and are listed
+  zone['example.com'].CAA = [
+    { flags: 0, tag: 'issue', value: 'letsencrypt.org; accounturi=https://acme-staging-v02.api.letsencrypt.org/acme/acct/9' },
+    { flags: 0, tag: 'issue', value: 'pki.goog' }
+  ];
+  r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  assertRenderable(r);
+  assert.equal(has(r, 'caa.unsatisfiable', 'warn').params.values, 'letsencrypt.org; accounturi=https://acme-staging-v02.api.letsencrypt.org/acme/acct/9');
+  const unusable = has(r, 'caa.cert-unusable', 'error');
+  assert.deepEqual([unusable.params.reason, unusable.params.issuer], ['unsatisfiable', "Let's Encrypt"]);
+  assert.equal(has(r, 'caa.present', 'ok').params.issuers, 'pki.goog', 'the unsatisfiable value is not an allowed CA');
+  lacks(r, 'caa.cert-denied');
+  // …and so does a malformed one (a trailing ';')
+  zone['example.com'].CAA = [{ flags: 0, tag: 'issue', value: 'letsencrypt.org; validationmethods=dns-01;' }];
+  r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  has(r, 'caa.invalid', 'warn');
+  has(r, 'caa.deny-all', 'warn');
+  assert.deepEqual(Object.values((({ reason, values }) => ({ reason, values }))(has(r, 'caa.cert-unusable', 'error').params)),
+    ['malformed', 'letsencrypt.org; validationmethods=dns-01;'], 'the value names the CA: "malformed", not "nobody at all"');
+  // an unrestricted value: plain allowed, no restriction check
+  zone['example.com'].CAA = [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }];
+  r = await run('example.com', fakeDns(zone), { issuerDN: LE });
+  has(r, 'caa.cert-allowed', 'ok');
+  lacks(r, 'caa.restricted');
+  lacks(r, 'caa.unsatisfiable');
 });
 
 /* ==================================================================== */
@@ -1474,7 +1707,7 @@ test('HEALTH_I18N: every check id has English and Turkish title + detail; groups
     assert.ok(HEALTH_I18N.en[`health.group.${g}`]);
     assert.ok(HEALTH_I18N.tr[`health.group.${g}`]);
   }
-  for (const reason of ['none', 'critical-unknown', 'no-issue-property', 'unknown-issuer', 'allowed', 'deny-all', 'not-listed']) {
+  for (const reason of CAA_REASONS) {
     const key = checkCaaAllows([], 'x').reasonKey.replace('none', reason);
     assert.equal(key, `health.caa.reason.${reason}`);
     assert.ok(HEALTH_I18N.en[key]);

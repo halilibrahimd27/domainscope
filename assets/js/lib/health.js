@@ -782,41 +782,184 @@ function looksLikeDkim(s) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* CAA (RFC 8659)                                                           */
+/* CAA (RFC 8659, with the RFC 8657 accounturi / validationmethods params)  */
 /* ------------------------------------------------------------------------ */
 
 const CAA_LABEL = '[a-z0-9](?:-*[a-z0-9])*';
 const CAA_ISSUER_RE = new RegExp(`^${CAA_LABEL}(?:\\.${CAA_LABEL})*$`, 'i');
 const CAA_PARAM_RE = /^([a-z0-9](?:-*[a-z0-9])*)\s*=\s*([\x21-\x3a\x3c-\x7e]*)$/i;
+/** RFC 8657 §4: `label = 1*(ALPHA / DIGIT / "-")`. */
+const CAA_METHOD_LABEL_RE = /^[a-z0-9-]+$/i;
+/** An RFC 3986 URI: a scheme, ':' and something after it (the CAA value grammar already bars spaces and ';'). */
+const CAA_URI_RE = /^[a-z][a-z0-9+.-]*:\S+$/i;
 
 /**
- * Parse an issue / issuewild property value: `issuer-domain [; key=value]*`.
+ * The labels of the IANA "ACME Validation Methods" registry (read 2026-09-27), which an RFC 8657
+ * `validationmethods` list may name besides CA-specific `ca-…` labels.
+ * @type {ReadonlyArray<string>}
+ */
+export const ACME_VALIDATION_METHODS = Object.freeze(['http-01', 'dns-01', 'tls-alpn-01', 'onion-csr-01',
+  'email-reply-00', 'tkauth-01', 'bp-nodeid-00', 'device-attest-01', 'tls-sni-01', 'tls-sni-02']);
+/**
+ * Methods that validate a domain name today (the other registry entries are for e-mail
+ * addresses, telephone or device identifiers, or retired: tls-sni-01 / tls-sni-02).
+ */
+const DOMAIN_METHODS = new Set(['http-01', 'dns-01', 'tls-alpn-01', 'onion-csr-01']);
+/**
+ * The CA/Browser Forum Baseline Requirements (§3.2.2.4.18–20) do not let HTTP or TLS-ALPN
+ * validation cover a wildcard name: an ACME CA validates a wildcard with dns-01 only.
+ */
+const WILDCARD_METHODS = new Set(['dns-01']);
+/** The ACME methods a renewal commonly uses, named in the "a renewal that uses … will fail" note. */
+const COMMON_METHODS = Object.freeze(['http-01', 'dns-01', 'tls-alpn-01']);
+
+/**
+ * ACME endpoints of CAs whose account URIs are recognisable (`https://<host>/…`), by
+ * {@link CAA_ISSUERS} id. An `accounturi` on another CA's host, or on a staging (test)
+ * endpoint, can never authorize a publicly trusted certificate (RFC 8657 §3).
+ */
+const ACME_HOSTS = Object.freeze({
+  letsencrypt: { live: ['acme-v02.api.letsencrypt.org'], staging: ['acme-staging-v02.api.letsencrypt.org'] },
+  google: { live: ['dv.acme-v02.api.pki.goog'], staging: ['dv.acme-v02.test-api.pki.goog'] },
+  sectigo: { live: ['acme.zerossl.com', 'acme.sectigo.com'], staging: [] },
+  buypass: { live: ['api.buypass.com'], staging: ['api.test4.buypass.no'] },
+  sslcom: { live: ['acme.ssl.com'], staging: [] },
+  digicert: { live: ['acme.digicert.com'], staging: [] }
+});
+
+/**
+ * Why an issue / issuewild value authorizes nothing: the malformed-value codes of
+ * {@link parseCaaIssueValue} (RFC 8659 §4.2: a value that does not match the grammar forbids
+ * issuance) and the RFC 8657 "unsatisfiable" problems (`health.caa.problem.<code>`).
+ * @type {ReadonlyArray<string>}
+ */
+export const CAA_PROBLEMS = Object.freeze(['invalid-issuer', 'invalid-parameter', 'empty-parameter',
+  'accounturi-multiple', 'accounturi-invalid', 'accounturi-staging', 'accounturi-foreign',
+  'validationmethods-multiple', 'validationmethods-invalid', 'validationmethods-none', 'wildcard-method']);
+/** Renewal notes of {@link caaRestrictionNotes} (`health.caa.note.<code>`). */
+export const CAA_NOTES = Object.freeze(['methods', 'account', 'alternatives', 'unknown-methods', 'ca-params']);
+/** {@link checkCaaAllows} reason codes (`health.caa.reason.<code>`). */
+export const CAA_REASONS = Object.freeze(['none', 'critical-unknown', 'no-issue-property', 'unknown-issuer', 'allowed',
+  'restricted', 'deny-all', 'not-listed', 'unsatisfiable', 'malformed']);
+
+const hostOfUri = (uri) => {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(uri);
+  return m ? m[1].toLowerCase().replace(/\.$/, '') : null;
+};
+
+/** The CAA_ISSUERS id that owns an issuer-domain-name (null when the domain is not a known CA's). */
+function caIdOfDomain(domain) {
+  const ca = CAA_ISSUERS.find((x) => x.domains.includes(domain));
+  return ca ? ca.id : null;
+}
+
+/** RFC 8657 §3: why an accounturi can never match (null = it may). */
+function accountProblem(uri, issuer) {
+  if (!CAA_URI_RE.test(uri)) return 'accounturi-invalid';
+  const host = hostOfUri(uri);
+  if (!host) return null;
+  if (Object.values(ACME_HOSTS).some((x) => x.staging.includes(host))) return 'accounturi-staging';
+  const own = caIdOfDomain(issuer);
+  const owner = Object.keys(ACME_HOSTS).find((id) => ACME_HOSTS[id].live.includes(host));
+  return own && owner && owner !== own ? 'accounturi-foreign' : null;
+}
+
+/**
+ * Parse an issue / issuewild property value: `issuer-domain [; tag=value]*` (RFC 8659 §4.2),
+ * and read the RFC 8657 parameters that restrict it.
+ *
+ * - The grammar is applied strictly: a stray `;` (a trailing one after a parameter, or two in
+ *   a row) or a parameter that is not `tag=value` makes the value malformed, and a malformed
+ *   value forbids issuance like an empty one (RFC 8659 §4.2).
+ * - `accounturi` (RFC 8657 §3): the value then authorizes only that CA account. Two of them,
+ *   one that is not a URI, a staging (test) account or another known CA's ACME account make
+ *   the value unsatisfiable (`problem`).
+ * - `validationmethods` (RFC 8657 §4): comma-separated method labels; only those methods may be
+ *   used. A malformed list, a second `validationmethods` parameter (read conservatively) or a
+ *   list without any method that validates a domain name make the value unsatisfiable.
+ *   Unknown labels (neither in {@link ACME_VALIDATION_METHODS} nor `ca-…`) are ignored by CAs.
+ * - Every other parameter is CA-defined (`otherParams`, e.g. `cansignhttpexchanges=yes`).
+ *
  * @param {string} value
- * @returns {{ issuer: string, params: Object<string, string>, valid: boolean, error: string|null }}
- *   `issuer` is '' for a "deny" value such as ";".
+ * @returns {{ issuer: string, params: Object<string, string>, valid: boolean, error: string|null,
+ *   paramList: Array<{ tag: string, value: string }>, accountUri: string|null, methods: string[]|null,
+ *   unknownMethods: string[], otherParams: Array<{ tag: string, value: string }>, problem: string|null,
+ *   restricted: boolean }}
+ *   `issuer` is '' for a "deny" value such as ";". `error` (malformed: 'invalid-issuer',
+ *   'invalid-parameter', 'empty-parameter') and `problem` (unsatisfiable) come from
+ *   {@link CAA_PROBLEMS}. `methods` lists every label (lowercase) of a single validationmethods
+ *   parameter, null without one. `restricted`: a well-formed, satisfiable value that carries
+ *   accounturi and/or validationmethods.
  */
 export function parseCaaIssueValue(value) {
   const s = String(value ?? '');
   const semi = s.indexOf(';');
   const issuerPart = (semi === -1 ? s : s.slice(0, semi)).trim().toLowerCase();
   const paramPart = semi === -1 ? '' : s.slice(semi + 1);
-  const out = { issuer: issuerPart, params: {}, valid: true, error: null };
-  if (issuerPart && !CAA_ISSUER_RE.test(issuerPart)) {
+  const out = {
+    issuer: issuerPart, params: {}, valid: true, error: null, paramList: [],
+    accountUri: null, methods: null, unknownMethods: [], otherParams: [], problem: null, restricted: false
+  };
+  const fail = (code) => {
     out.valid = false;
-    out.error = 'invalid-issuer';
-  }
-  for (const raw of paramPart.split(';')) {
-    const p = raw.trim();
-    if (!p) continue;
-    const m = CAA_PARAM_RE.exec(p);
-    if (!m) {
-      out.valid = false;
-      out.error = out.error || 'invalid-parameter';
-      continue;
+    out.error = out.error || code;
+  };
+  if (issuerPart && !CAA_ISSUER_RE.test(issuerPart)) fail('invalid-issuer');
+  // `";" *WSP [parameters *WSP]`: nothing, or parameters separated by single semicolons.
+  if (paramPart.trim()) {
+    for (const raw of paramPart.split(';')) {
+      const p = raw.trim();
+      if (!p) {
+        fail('empty-parameter');
+        continue;
+      }
+      const m = CAA_PARAM_RE.exec(p);
+      if (!m) {
+        fail('invalid-parameter');
+        continue;
+      }
+      const tag = m[1].toLowerCase();
+      out.params[tag] = m[2];
+      out.paramList.push({ tag, value: m[2] });
     }
-    out.params[m[1].toLowerCase()] = m[2];
   }
+  if (!out.valid) return out;
+
+  const accounts = out.paramList.filter((p) => p.tag === 'accounturi');
+  const methodParams = out.paramList.filter((p) => p.tag === 'validationmethods');
+  out.otherParams = out.paramList.filter((p) => p.tag !== 'accounturi' && p.tag !== 'validationmethods');
+  const problems = [];
+  if (accounts.length > 1) problems.push('accounturi-multiple');
+  else if (accounts.length === 1) {
+    out.accountUri = accounts[0].value;
+    const problem = accountProblem(out.accountUri, issuerPart);
+    if (problem) problems.push(problem);
+  }
+  if (methodParams.length > 1) problems.push('validationmethods-multiple');
+  else if (methodParams.length === 1) {
+    const raw = methodParams[0].value;
+    out.methods = raw === '' ? [] : raw.split(',').map((l) => l.toLowerCase());
+    out.unknownMethods = out.methods.filter((l) => CAA_METHOD_LABEL_RE.test(l) && !ACME_VALIDATION_METHODS.includes(l) && !l.startsWith('ca-'));
+    if (!out.methods.every((l) => CAA_METHOD_LABEL_RE.test(l))) problems.push('validationmethods-invalid');
+    else if (!out.methods.some((l) => DOMAIN_METHODS.has(l) || l.startsWith('ca-'))) problems.push('validationmethods-none');
+  }
+  out.problem = problems[0] || null;
+  out.restricted = !out.problem && !!out.issuer && (out.accountUri !== null || out.methods !== null);
   return out;
+}
+
+/**
+ * Why a well-formed issue / issuewild value cannot authorize the certificate at hand: its own
+ * RFC 8657 problem, or — for a wildcard name — a validationmethods list without a method that
+ * can validate a wildcard (only dns-01 or a CA-specific `ca-…` method).
+ * @param {object} entry a {@link parseCaaIssueValue} result
+ * @param {boolean} wildcard
+ * @returns {string|null} a {@link CAA_PROBLEMS} code
+ */
+function entryProblem(entry, wildcard) {
+  if (entry.problem) return entry.problem;
+  if (wildcard && entry.methods && !entry.methods.some((l) => WILDCARD_METHODS.has(l) || l.startsWith('ca-'))) return 'wildcard-method';
+  return null;
 }
 
 function caaItem(r) {
@@ -836,8 +979,11 @@ function caaItem(r) {
  *   critical: boolean, raw: string }>, issuewild: Array<object>, iodef: Array<{ url: string, valid: boolean, critical: boolean }>,
  *   other: Array<{ tag: string, value: string, critical: boolean }>, unknown: Array<{ tag: string, value: string, critical: boolean }>,
  *   unknownCritical: boolean, issuers: string[], wildIssuers: string[], count: number }}
- *   `other` holds known non-issuance tags (issuemail, issuevmc, contactemail, contactphone);
- *   `issuers` / `wildIssuers` list the valid, non-empty issuer domains (a malformed value authorizes no CA).
+ *   `issue` / `issuewild` entries are {@link parseCaaIssueValue} results plus `critical` and `raw`
+ *   (an issuewild entry whose validationmethods cannot validate a wildcard carries the problem
+ *   'wildcard-method'); `other` holds known non-issuance tags (issuemail, issuevmc, contactemail,
+ *   contactphone); `issuers` / `wildIssuers` list the issuer domains of well-formed, satisfiable
+ *   values (a malformed or unsatisfiable value authorizes no CA).
  */
 export function parseCaa(rrs) {
   const out = { issue: [], issuewild: [], iodef: [], other: [], unknown: [], unknownCritical: false, issuers: [], wildIssuers: [], count: 0 };
@@ -848,7 +994,12 @@ export function parseCaa(rrs) {
     const tag = item.tag.toLowerCase();
     const critical = (item.flags & 128) !== 0;
     if (tag === 'issue' || tag === 'issuewild') {
-      out[tag].push({ ...parseCaaIssueValue(item.value), critical, raw: item.value });
+      const entry = { ...parseCaaIssueValue(item.value), critical, raw: item.value };
+      if (tag === 'issuewild' && entry.valid && !entry.problem) {
+        entry.problem = entryProblem(entry, true);
+        if (entry.problem) entry.restricted = false;
+      }
+      out[tag].push(entry);
     } else if (tag === 'iodef') {
       out.iodef.push({ url: item.value, valid: /^(mailto:\S+@\S+|https?:\/\/\S+)$/i.test(item.value), critical });
     } else if (['issuemail', 'issuevmc', 'contactemail', 'contactphone'].includes(tag)) {
@@ -858,8 +1009,9 @@ export function parseCaa(rrs) {
       if (critical) out.unknownCritical = true;
     }
   }
-  out.issuers = uniq(out.issue.filter((x) => x.valid && x.issuer).map((x) => x.issuer));
-  out.wildIssuers = uniq(out.issuewild.filter((x) => x.valid && x.issuer).map((x) => x.issuer));
+  const usable = (x) => x.valid && x.issuer && !x.problem;
+  out.issuers = uniq(out.issue.filter(usable).map((x) => x.issuer));
+  out.wildIssuers = uniq(out.issuewild.filter(usable).map((x) => x.issuer));
   return out;
 }
 
@@ -925,42 +1077,129 @@ export function caaDomainsForIssuer(issuerDN) {
 }
 
 /**
- * Would the CAA RRset allow the certificate's CA to issue? (RFC 8659 §4)
+ * Would the CAA RRset allow the certificate's CA to issue, and how? (RFC 8659 §4, RFC 8657)
  *
  * - no CAA records → allowed (any CA);
  * - an unknown tag with the critical flag → denied;
- * - for a wildcard name `issuewild` takes precedence over `issue` when present;
- * - no relevant issue property → allowed; all relevant values empty (";") → denied;
- * - otherwise allowed iff one relevant, well-formed value names the CA.
+ * - for a wildcard name `issuewild` takes precedence over `issue` when present (RFC 8659 §4.3);
+ *   any other name ignores issuewild;
+ * - no relevant issue property → allowed; no relevant value authorizes anybody (";", malformed
+ *   or unsatisfiable values only) → denied ('deny-all');
+ * - usable relevant values name the CA → 'allowed' when one of them carries neither accounturi
+ *   nor validationmethods, else 'restricted': every usable value is an alternative in
+ *   `restrictions`, and a request must satisfy one of them (RFC 8659 authorizations are additive);
+ * - the values naming the CA are all malformed ('malformed') or unsatisfiable ('unsatisfiable',
+ *   including an issue value whose validationmethods cannot validate a wildcard) → denied, each
+ *   listed in `unusable` with its {@link CAA_PROBLEMS} code;
+ * - otherwise a known CA is not listed → denied ('not-listed'); an unknown CA → null.
  *
  * @param {Array<object|string>|object} caaRecords CAA RRs / data objects / strings, or a {@link parseCaa} result
  * @param {string|object} issuerDN
- * @param {{ wildcard?: boolean }} [opts]
- * @returns {{ allowed: boolean|null, reason: string, reasonKey: string, property: 'issue'|'issuewild'|null,
- *   issuerDomains: string[], authorized: string[], matched: object|null, distrusted: boolean }}
- *   reason codes: none, critical-unknown, no-issue-property, unknown-issuer, allowed, deny-all, not-listed
- *   (reasonKey = `health.caa.reason.<code>`). `allowed` is null when the CA is unknown.
+ * @param {{ wildcard?: boolean, issuerDomains?: string[]|null }} [opts] `issuerDomains` replaces the
+ *   CAA identifiers read from the issuer DN (a private CA whose identifier is known, the RFC examples)
+ * @returns {{ allowed: boolean|null, verdict: 'allowed'|'restricted'|'denied'|'unknown', reason: string,
+ *   reasonKey: string, property: 'issue'|'issuewild'|null, issuerDomains: string[], authorized: string[],
+ *   matched: object|null, distrusted: boolean, restricted: boolean,
+ *   restrictions: Array<{ issuer: string, accountUri: string|null, methods: string[]|null, unknownMethods: string[],
+ *     otherParams: Array<{ tag: string, value: string }>, raw: string }>,
+ *   unusable: Array<{ issuer: string, raw: string, problem: string }> }}
+ *   reason codes: {@link CAA_REASONS} (reasonKey = `health.caa.reason.<code>`). `allowed` stays true
+ *   for 'restricted' (the CA may issue, under conditions) and is null when the CA is unknown;
+ *   `authorized` lists the issuer domains of the usable relevant values.
  */
-export function checkCaaAllows(caaRecords, issuerDN, { wildcard = false } = {}) {
+export function checkCaaAllows(caaRecords, issuerDN, { wildcard = false, issuerDomains: domains = null } = {}) {
   const parsed = caaRecords && !Array.isArray(caaRecords) && Array.isArray(caaRecords.issue) ? caaRecords : parseCaa(caaRecords);
   const infos = caaIssuerInfo(issuerDN);
-  const issuerDomains = uniq(infos.flatMap((ca) => ca.domains));
+  const issuerDomains = Array.isArray(domains) ? uniq(domains.map(canonName).filter(Boolean)) : uniq(infos.flatMap((ca) => ca.domains));
   const base = {
-    property: null, issuerDomains, authorized: [], matched: null, distrusted: infos.some((ca) => ca.distrusted)
+    property: null, issuerDomains, authorized: [], matched: null, distrusted: infos.some((ca) => ca.distrusted),
+    restricted: false, restrictions: [], unusable: []
   };
-  const result = (allowed, reason, extra = {}) => ({ allowed, reason, reasonKey: `health.caa.reason.${reason}`, ...base, ...extra });
+  const verdictOf = (allowed, reason) => {
+    if (allowed === null) return 'unknown';
+    if (!allowed) return 'denied';
+    return reason === 'restricted' ? 'restricted' : 'allowed';
+  };
+  const result = (allowed, reason, extra = {}) => ({
+    allowed, verdict: verdictOf(allowed, reason), reason, reasonKey: `health.caa.reason.${reason}`, ...base, ...extra
+  });
   const total = parsed.issue.length + parsed.issuewild.length + parsed.iodef.length + parsed.other.length + parsed.unknown.length;
   if (total === 0) return result(true, 'none');
   if (parsed.unknownCritical) return result(false, 'critical-unknown');
   const property = wildcard && parsed.issuewild.length ? 'issuewild' : 'issue';
   const relevant = parsed[property];
   if (!relevant.length) return result(true, 'no-issue-property', { property: null });
-  const authorized = uniq(relevant.filter((r) => r.valid && r.issuer).map((r) => r.issuer));
-  if (!authorized.length) return result(false, 'deny-all', { property, authorized });
+  const problemOf = (r) => (r.valid ? entryProblem(r, wildcard) : r.error || 'invalid-issuer');
+  const authorized = uniq(relevant.filter((r) => r.issuer && !problemOf(r)).map((r) => r.issuer));
+  const named = issuerDomains.length ? relevant.filter((r) => r.issuer && issuerDomains.includes(r.issuer)) : [];
+  const usable = named.filter((r) => !problemOf(r));
+  if (usable.length) {
+    const open = usable.find((r) => r.accountUri === null && r.methods === null);
+    if (open) return result(true, 'allowed', { property, authorized, matched: open });
+    return result(true, 'restricted', {
+      property, authorized, matched: usable[0], restricted: true,
+      restrictions: usable.map((r) => ({
+        issuer: r.issuer, accountUri: r.accountUri, methods: r.methods, unknownMethods: r.unknownMethods,
+        otherParams: r.otherParams, raw: r.raw ?? ''
+      }))
+    });
+  }
+  if (!authorized.length && !named.length) return result(false, 'deny-all', { property, authorized });
   if (!issuerDomains.length) return result(null, 'unknown-issuer', { property, authorized });
-  const matched = relevant.find((r) => r.valid && r.issuer && issuerDomains.includes(r.issuer)) || null;
-  if (matched) return result(true, 'allowed', { property, authorized, matched });
+  if (named.length) {
+    const unusable = named.map((r) => ({ issuer: r.issuer, raw: r.raw ?? '', problem: problemOf(r) }));
+    return result(false, named.some((r) => r.valid) ? 'unsatisfiable' : 'malformed', { property, authorized, unusable });
+  }
   return result(false, 'not-listed', { property, authorized });
+}
+
+/**
+ * What restricted CAA values mean for the next renewal, as i18n notes (`health.caa.note.<code>`,
+ * params pre-joined with ', '):
+ * - 'methods' when every alternative lists validation methods: only `{methods}` may be used, so a
+ *   renewal through one of `{blocked}` (http-01, dns-01, tls-alpn-01 minus the allowed ones; for a
+ *   wildcard only dns-01 counts, the one method that can validate it) fails;
+ * - 'account' when every alternative names an ACME account: only `{accounts}` may order;
+ * - 'alternatives' when there are several: a request must satisfy one of them (`{count}`);
+ * - 'unknown-methods': labels no CA knows, ignored (`{labels}`);
+ * - 'ca-params': CA-defined parameters only that CA interprets (`{params}`).
+ * @param {Array<{ accountUri?: string|null, methods?: string[]|null, unknownMethods?: string[],
+ *   otherParams?: Array<{ tag: string, value: string }> }>} restrictions {@link checkCaaAllows} `restrictions`,
+ *   or restricted {@link parseCaaIssueValue} entries
+ * @param {{ wildcard?: boolean }} [opts]
+ * @returns {Array<{ code: string, key: string, params: Object<string, string|number> }>}
+ */
+export function caaRestrictionNotes(restrictions, { wildcard = false } = {}) {
+  const list = arr(restrictions).filter((r) => r && typeof r === 'object');
+  const notes = [];
+  const note = (code, params = {}) => notes.push({ code, key: `health.caa.note.${code}`, params });
+  if (!list.length) return notes;
+  if (list.every((r) => Array.isArray(r.methods))) {
+    const methods = uniq(list.flatMap((r) => r.methods.filter((l) => ACME_VALIDATION_METHODS.includes(l) || l.startsWith('ca-'))));
+    const candidates = wildcard ? COMMON_METHODS.filter((m) => WILDCARD_METHODS.has(m)) : COMMON_METHODS;
+    const blocked = candidates.filter((m) => !methods.includes(m));
+    if (methods.length && blocked.length) note('methods', { methods: methods.join(', '), blocked: blocked.join(', ') });
+  }
+  if (list.every((r) => r.accountUri)) note('account', { accounts: uniq(list.map((r) => r.accountUri)).join(', ') });
+  if (list.length > 1) note('alternatives', { count: list.length });
+  const unknown = uniq(list.flatMap((r) => arr(r.unknownMethods)));
+  if (unknown.length) note('unknown-methods', { labels: unknown.join(', ') });
+  const other = uniq(list.flatMap((r) => arr(r.otherParams).map((p) => `${p.tag}=${p.value}`)));
+  if (other.length) note('ca-params', { params: other.join(', ') });
+  return notes;
+}
+
+/**
+ * One restricted value in parameter syntax, language-neutral (check params, exports):
+ * `letsencrypt.org: validationmethods=dns-01; accounturi=https://…`.
+ * @param {{ issuer: string, accountUri?: string|null, methods?: string[]|null }} r
+ * @returns {string}
+ */
+export function caaRestrictionText(r) {
+  const parts = [];
+  if (r && Array.isArray(r.methods)) parts.push(`validationmethods=${r.methods.join(',')}`);
+  if (r && r.accountUri) parts.push(`accounturi=${r.accountUri}`);
+  return `${r && r.issuer ? r.issuer : ''}: ${parts.join('; ')}`;
 }
 
 /**
@@ -1403,8 +1642,14 @@ async function analyzeCaa(name, d, { issuerDN, wildcardCert }) {
     if (p.unknownCritical) {
       checks.push(makeCheck('caa.critical-unknown', 'error', { tags: p.unknown.filter((u) => u.critical).map((u) => u.tag) }));
     }
-    const invalid = [...p.issue, ...p.issuewild].filter((x) => !x.valid).map((x) => x.raw);
+    const values = [...p.issue, ...p.issuewild];
+    const invalid = values.filter((x) => !x.valid).map((x) => x.raw);
     if (invalid.length) checks.push(makeCheck('caa.invalid', 'warn', { values: invalid }));
+    // RFC 8657: a value that names a CA but can never be satisfied authorizes nobody.
+    const unsatisfiable = values.filter((x) => x.valid && x.issuer && x.problem).map((x) => x.raw);
+    if (unsatisfiable.length) checks.push(makeCheck('caa.unsatisfiable', 'warn', { values: unsatisfiable }));
+    const restricted = values.filter((x) => x.restricted).map(caaRestrictionText);
+    if (restricted.length) checks.push(makeCheck('caa.restricted', 'info', { restrictions: restricted }));
     if (p.issue.length && !p.issuers.length && !p.wildIssuers.length) {
       checks.push(makeCheck('caa.deny-all', 'warn', { foundAt: caa.foundAt }));
     } else {
@@ -1428,8 +1673,12 @@ async function analyzeCaa(name, d, { issuerDN, wildcardCert }) {
       issuer: ca ? ca.name : issuerText(issuerDN), property: certCheck.property || 'issue',
       authorized: certCheck.authorized, reason: certCheck.reason
     };
-    if (certCheck.allowed === true) checks.push(makeCheck('caa.cert-allowed', 'ok', params));
-    else if (certCheck.reason === 'not-listed') checks.push(makeCheck('caa.cert-denied', 'error', params));
+    if (certCheck.verdict === 'restricted') {
+      checks.push(makeCheck('caa.cert-restricted', 'info', { ...params, restrictions: certCheck.restrictions.map(caaRestrictionText) }));
+    } else if (certCheck.allowed === true) checks.push(makeCheck('caa.cert-allowed', 'ok', params));
+    else if (certCheck.reason === 'unsatisfiable' || certCheck.reason === 'malformed') {
+      checks.push(makeCheck('caa.cert-unusable', 'error', { ...params, values: certCheck.unusable.map((u) => u.raw) }));
+    } else if (certCheck.reason === 'not-listed') checks.push(makeCheck('caa.cert-denied', 'error', params));
     else if (certCheck.allowed === false) checks.push(makeCheck('caa.cert-blocked', 'error', params)); // deny-all, critical-unknown
     else checks.push(makeCheck('caa.cert-unknown', 'info', params));
   }
@@ -1879,14 +2128,14 @@ function buildStrings(lang) {
       out[`health.${id}.title`] = title[lang];
       out[`health.${id}.detail`] = detail[lang];
     } else {
-      out[`health.${id}`] = title[lang]; // plain label (groups, CAA reasons)
+      out[`health.${id}`] = title[lang]; // plain label (groups, CAA reasons, problems and notes)
     }
   }
   return out;
 }
 
 // [id, [en, tr] title, [en, tr] detail]; entries without a detail are plain
-// labels stored under `health.<id>` (groups, CAA reasons).
+// labels stored under `health.<id>` (groups, CAA reasons, problems and notes).
 const STRINGS = [
   ['group.dns', ['DNS', 'DNS']],
   ['group.email', ['Email security', 'E-posta güvenliği']],
@@ -2151,8 +2400,8 @@ const STRINGS = [
   ['caa.error', ['CAA lookup failed', 'CAA sorgusu başarısız'],
     ['CAs must refuse to issue when the CAA lookup fails ({error}).', 'CAA sorgusu başarısız olduğunda sertifika otoriteleri sertifika vermeyi reddetmelidir ({error}).']],
   ['caa.deny-all', ['CAA forbids all certificates', 'CAA tüm sertifikaları yasaklıyor'],
-    ['The CAA set at {foundAt} names no valid CA (its issue values are empty ";" or malformed): no CA may issue certificates.',
-      '{foundAt} üzerindeki CAA kayıtları geçerli bir otorite içermiyor (issue değerleri boş ";" ya da hatalı): hiçbir otorite sertifika veremez.']],
+    ['The CAA set at {foundAt} names no usable CA (its issue values are empty ";", malformed or unsatisfiable): no CA may issue certificates.',
+      '{foundAt} üzerindeki CAA kayıtları kullanılabilir bir otorite içermiyor (issue değerleri boş ";", hatalı ya da karşılanamaz): hiçbir otorite sertifika veremez.']],
   ['caa.invalid', ['Malformed CAA values', 'Hatalı CAA değerleri'],
     ['These values do not follow RFC 8659 and match no CA: {values}.', 'Bu değerler RFC 8659’a uymuyor ve hiçbir otoriteyle eşleşmiyor: {values}.']],
   ['caa.critical-unknown', ['Unknown critical CAA tag', 'Bilinmeyen kritik CAA etiketi'],
@@ -2170,13 +2419,51 @@ const STRINGS = [
       'Bu CAA kümesi hiçbir otoritenin bu tür bir sertifika vermesine izin vermiyor, {issuer} de dahil (diğer CAA bulgularına bakın); bu otoriteden yenileme başarısız olur.']],
   ['caa.cert-unknown', ['CA not recognised for CAA', 'Otorite CAA için tanınmadı'],
     ['Could not map "{issuer}" to a CAA identifier; check the CA\'s documentation.', '"{issuer}" bir CAA tanımlayıcısıyla eşleştirilemedi; otoritenin belgelerine bakın.']],
+  ['caa.restricted', ['CAA limits validation methods or accounts', 'CAA doğrulama yöntemlerini veya hesapları sınırlıyor'],
+    ['RFC 8657 parameters restrict how these CAs may issue: {restrictions}. A renewal that uses another validation method or ACME account will fail.',
+      'RFC 8657 parametreleri bu otoritelerin nasıl sertifika verebileceğini kısıtlıyor: {restrictions}. Başka bir doğrulama yöntemi ya da ACME hesabı kullanan bir yenileme başarısız olur.']],
+  ['caa.unsatisfiable', ['CAA values that can never be satisfied', 'Hiçbir zaman karşılanamayan CAA değerleri'],
+    ['These values name a CA but authorize nothing (a repeated or invalid accounturi or validationmethods, no usable validation method, or a staging or another CA\'s ACME account; RFC 8657): {values}.',
+      'Bu değerler bir otorite adı taşıyor ama hiçbir şeye izin vermiyor (tekrarlanan ya da geçersiz accounturi veya validationmethods, kullanılabilir doğrulama yöntemi yok ya da test (staging) veya başka bir otoritenin ACME hesabı; RFC 8657): {values}.']],
+  ['caa.cert-restricted', ['CAA allows this certificate\'s CA, with restrictions', 'CAA bu sertifikanın otoritesine kısıtlamalarla izin veriyor'],
+    ['{issuer} may issue ({property}) only under these RFC 8657 conditions: {restrictions}. The next renewal must meet them.',
+      '{issuer} yalnızca şu RFC 8657 koşullarıyla sertifika verebilir ({property}): {restrictions}. Bir sonraki yenileme bu koşulları karşılamalıdır.']],
+  ['caa.cert-unusable', ['CAA names this certificate\'s CA, but unusably', 'CAA bu sertifikanın otoritesini kullanılamaz biçimde adlandırıyor'],
+    ['Every {property} value naming {issuer} is malformed or can never be satisfied ({values}), so it authorizes nothing; renewals from this CA will fail.',
+      '{issuer} adını taşıyan her {property} değeri hatalı ya da hiçbir zaman karşılanamıyor ({values}); bu yüzden hiçbir şeye izin vermiyor. Bu otoriteden yenileme başarısız olur.']],
   ['caa.reason.none', ['No CAA records: any CA may issue', 'CAA kaydı yok: her otorite sertifika verebilir']],
   ['caa.reason.critical-unknown', ['An unknown critical CAA tag blocks all issuance', 'Bilinmeyen kritik CAA etiketi tüm sertifikaları engelliyor']],
   ['caa.reason.no-issue-property', ['No issue property applies: any CA may issue', 'Uygulanan issue özelliği yok: her otorite sertifika verebilir']],
   ['caa.reason.unknown-issuer', ['The CA could not be identified', 'Sertifika otoritesi belirlenemedi']],
   ['caa.reason.allowed', ['The CA is authorized', 'Otorite yetkili']],
+  ['caa.reason.restricted', ['The CA is authorized, with restrictions', 'Otorite kısıtlamalarla yetkili']],
   ['caa.reason.deny-all', ['CAA forbids every CA', 'CAA tüm otoriteleri yasaklıyor']],
   ['caa.reason.not-listed', ['The CA is not in the CAA list', 'Otorite CAA listesinde yok']],
+  ['caa.reason.unsatisfiable', ['The values naming the CA can never be satisfied', 'Otoriteyi adlandıran değerler hiçbir zaman karşılanamaz']],
+  ['caa.reason.malformed', ['The value naming the CA is malformed and authorizes nothing', 'Otoriteyi adlandıran değer hatalı ve hiçbir şeye izin vermiyor']],
+  ['caa.problem.invalid-issuer', ['malformed CA name (RFC 8659)', 'hatalı otorite adı (RFC 8659)']],
+  ['caa.problem.invalid-parameter', ['a parameter is not tag=value (RFC 8659)', 'bir parametre etiket=değer biçiminde değil (RFC 8659)']],
+  ['caa.problem.empty-parameter', ['a stray ";" (for example after the last parameter) makes the value malformed',
+    'fazladan bir ";" (örneğin son parametreden sonra) değeri hatalı kılıyor']],
+  ['caa.problem.accounturi-multiple', ['more than one accounturi: never satisfiable (RFC 8657 §3)', 'birden fazla accounturi: hiçbir zaman karşılanamaz (RFC 8657 §3)']],
+  ['caa.problem.accounturi-invalid', ['the accounturi is not a URI', 'accounturi bir URI değil']],
+  ['caa.problem.accounturi-staging', ['the accounturi is a staging (test) ACME account, which cannot order publicly trusted certificates',
+    'accounturi bir test (staging) ACME hesabı; bu hesapla güvenilir sertifika alınamaz']],
+  ['caa.problem.accounturi-foreign', ['the accounturi belongs to another CA\'s ACME server', 'accounturi başka bir otoritenin ACME sunucusuna ait']],
+  ['caa.problem.validationmethods-multiple', ['more than one validationmethods parameter (read as unusable)', 'birden fazla validationmethods parametresi (kullanılamaz sayılır)']],
+  ['caa.problem.validationmethods-invalid', ['validationmethods is not a comma-separated list of method labels (RFC 8657 §4)',
+    'validationmethods virgülle ayrılmış yöntem etiketlerinden oluşmuyor (RFC 8657 §4)']],
+  ['caa.problem.validationmethods-none', ['validationmethods names no method that can validate a domain name',
+    'validationmethods alan adı doğrulayabilen hiçbir yöntem içermiyor']],
+  ['caa.problem.wildcard-method', ['only dns-01 can validate a wildcard name, and validationmethods does not allow it',
+    'joker (wildcard) adlar yalnızca dns-01 ile doğrulanabilir ve validationmethods buna izin vermiyor']],
+  ['caa.note.methods', ['Only {methods} validation is allowed: a renewal that validates with another method ({blocked}) will fail.',
+    'Yalnızca {methods} doğrulamasına izin var: başka bir yöntemle ({blocked}) doğrulayan bir yenileme başarısız olur.']],
+  ['caa.note.account', ['Only these ACME accounts may order: {accounts}. A renewal from any other account (another server, a reinstalled client) will fail.',
+    'Yalnızca şu ACME hesapları sertifika isteyebilir: {accounts}. Başka bir hesaptan (başka bir sunucu, yeniden kurulmuş bir istemci) yapılan yenileme başarısız olur.']],
+  ['caa.note.alternatives', ['{count} allowed combinations: a renewal must match one of them.', '{count} izinli koşul kümesi var: yenileme bunlardan birine uymalıdır.']],
+  ['caa.note.unknown-methods', ['Unknown method labels are ignored by CAs: {labels}.', 'Bilinmeyen yöntem etiketleri otoriteler tarafından yok sayılır: {labels}.']],
+  ['caa.note.ca-params', ['CA-specific parameters, interpreted only by that CA: {params}.', 'Otoriteye özgü parametreler, yalnızca o otorite tarafından yorumlanır: {params}.']],
 
   ['dnssec.ok', ['DNSSEC signed and validated', 'DNSSEC imzalı ve doğrulanıyor'],
     ['DS at the parent matches the zone keys and validating resolvers set the AD flag. Algorithms: {algorithms}.',
@@ -2236,7 +2523,8 @@ const STRINGS = [
 
 /**
  * English and Turkish texts for every check id (`health.<id>.title` /
- * `health.<id>.detail`), CAA reasons (`health.caa.reason.<code>`) and groups
+ * `health.<id>.detail`), CAA reasons (`health.caa.reason.<code>`), problems
+ * (`health.caa.problem.<code>`), renewal notes (`health.caa.note.<code>`) and groups
  * (`health.group.<group>`). Placeholders: `{param}`. Register with
  * `registerStrings('en', HEALTH_I18N.en)` / `registerStrings('tr', HEALTH_I18N.tr)`.
  * @type {{ en: Object<string, string>, tr: Object<string, string> }}
@@ -2248,6 +2536,6 @@ export const HEALTH_I18N = Object.freeze({ en: Object.freeze(buildStrings(0)), t
  * @type {ReadonlyArray<string>}
  */
 export const HEALTH_CHECK_IDS = Object.freeze(STRINGS
+  .filter(([, , detail]) => !!detail) // plain labels (groups, CAA reasons / problems / notes) have none
   .map(([id]) => id)
-  .filter((id) => !id.startsWith('group.') && !id.startsWith('caa.reason.'))
   .sort());

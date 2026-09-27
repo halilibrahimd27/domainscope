@@ -474,18 +474,20 @@ export class Page {
   }
 
   /**
-   * Press a key (Enter, Tab, Escape, Arrow*, Home, End, Backspace, Space or a single character).
+   * Press a key (Enter, Tab, Escape, Arrow*, Home, End, Backspace, Space or a single character),
+   * optionally with modifiers (e.g. `{ ctrl: true }` for Ctrl+Enter).
    * @param {string} key
-   * @param {{ shift?: boolean }} [opts]
+   * @param {{ shift?: boolean, ctrl?: boolean, alt?: boolean, meta?: boolean }} [opts]
    */
-  async press(key, { shift = false } = {}) {
+  async press(key, { shift = false, ctrl = false, alt = false, meta = false } = {}) {
     const def = KEYS[key] || { key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, keyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0, text: key.length === 1 ? key : undefined };
     const params = {
       key: def.key || key,
       code: def.code,
       windowsVirtualKeyCode: def.keyCode,
       nativeVirtualKeyCode: def.keyCode,
-      modifiers: shift ? 8 : 0
+      // CDP modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8.
+      modifiers: (alt ? 1 : 0) | (ctrl ? 2 : 0) | (meta ? 4 : 0) | (shift ? 8 : 0)
     };
     await this.send('Input.dispatchKeyEvent', { type: def.text ? 'keyDown' : 'rawKeyDown', ...params, text: def.text });
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });

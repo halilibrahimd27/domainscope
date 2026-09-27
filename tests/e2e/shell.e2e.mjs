@@ -971,21 +971,24 @@ async function main() {
       await phone.waitFor(() => !document.documentElement.dataset.theme);
     });
 
-    await step('phone nav is a sticky horizontal scroller with the active item in view', async () => {
+    await step('phone nav is a sticky bar: the Tools button and the current tool, no strip of three', async () => {
       await gotoRoute(phone, 'about');
       const info = await phone.evaluate(async () => {
         window.scrollTo(0, 900);
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         const nav = document.getElementById('app-nav');
-        const link = nav.querySelector('.nav-link[aria-current="page"]').getBoundingClientRect();
+        const btn = nav.querySelector('[data-control="nav-menu"]').getBoundingClientRect();
         return {
           top: Math.round(nav.getBoundingClientRect().top),
-          scrollable: nav.scrollWidth > nav.clientWidth,
-          activeVisible: link.left >= 0 && link.right <= window.innerWidth
+          button: btn.width > 0 && btn.left >= 0 && btn.right <= window.innerWidth,
+          links: [...nav.querySelectorAll('.nav-link')].filter((a) => a.getClientRects().length).length,
+          current: nav.querySelector('.nav-menu-current').textContent
         };
       });
       assertEqual(info.top, 0, 'nav sticks to the top');
-      assert(info.scrollable && info.activeVisible, `nav scroller: ${JSON.stringify(info)}`);
+      assert(info.button, `Tools button in view: ${JSON.stringify(info)}`);
+      assertEqual(info.links, 0, 'no strip of links');
+      assertEqual(info.current, title('about', 'tr'), 'current tool');
       await phone.evaluate(() => window.scrollTo(0, 0));
     });
 
@@ -1009,6 +1012,263 @@ async function main() {
       await assertClean(phone, 'phone');
     });
     await phone.close();
+
+    /* ---------------- First visit, the Tools menu and keyboard shortcuts ---------------- */
+    group('Start page, Tools menu (375 px) and keyboard shortcuts');
+    const sm = await browser.newPage('about:blank', { width: 375, height: 740, mobile: true });
+    await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
+    const JOBS = ['subdomains', 'certificate', 'health', 'propagation', 'zone'];
+    const pickerShown = (p) => p.evaluate(() => !!document.querySelector('[data-role="start-picker"]'));
+    /** A first-time visitor: nothing stored but the language. */
+    const firstVisit = async (p, lang = 'en') => {
+      await p.evaluate((l) => {
+        localStorage.clear();
+        localStorage.setItem('ssds.settings', JSON.stringify({ v: 2, lang: l }));
+        window.location.hash = '#/subdomains';
+      }, lang);
+      await p.reload();
+      await waitReady(p);
+    };
+
+    await step('a first visit shows the task picker above Subdomains; each job links to its tool', async () => {
+      await sm.goto(server.url);
+      await waitReady(sm);
+      await firstVisit(sm);
+      const info = await sm.evaluate(() => {
+        const picker = document.querySelector('[data-role="start-picker"]');
+        if (!picker) return null;
+        return {
+          above: !!(picker.compareDocumentPosition(document.querySelector('.page-header')) & Node.DOCUMENT_POSITION_FOLLOWING),
+          label: document.getElementById(picker.getAttribute('aria-labelledby'))?.textContent,
+          jobs: [...picker.querySelectorAll('.start-task')].map((a) => [a.dataset.task, a.getAttribute('href')]),
+          hide: picker.querySelector('[data-action="start-hide"]')?.getAttribute('aria-label')
+        };
+      });
+      assert(info, 'picker shown');
+      assert(info.above, 'above the Subdomains page header');
+      assertEqual(info.label, 'New here? Pick a job to start with', 'region label');
+      assertEqual(info.jobs, [['subdomains', '#/subdomains'], ['certificate', '#/scan'], ['health', '#/health'], ['propagation', '#/global'], ['zone', '#/zone']], 'jobs');
+      assertEqual(info.hide, 'Hide these suggestions', 'dismiss button label');
+      await assertNoHorizontalScroll(sm, 'start picker');
+      await shot(sm, 'mobile-light-en-start-picker');
+      await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await shot(sm, 'mobile-dark-en-start-picker');
+      await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    await step('the start page\'s own job focuses its input; another job opens its tool', async () => {
+      await sm.click('.start-task[data-task="subdomains"]');
+      await sm.waitFor(() => document.activeElement?.dataset.role === 'sub-domain', { message: 'domain field focused' });
+      assertEqual(await sm.evaluate(() => document.documentElement.dataset.view), 'subdomains', 'still on Subdomains');
+      await sm.click('.start-task[data-task="zone"]');
+      await sm.waitFor(() => document.documentElement.dataset.view === 'zone', { message: 'Zone File opened' });
+      await gotoRoute(sm, 'subdomains');
+      assert(await pickerShown(sm), 'still offered: nothing was run');
+    });
+
+    await step('dismissing hides it for good (persisted); About › Where to start still lists the jobs', async () => {
+      await sm.click('[data-action="start-hide"]');
+      await sm.waitFor(() => !document.querySelector('[data-role="start-picker"]'));
+      assertEqual(await sm.evaluate(() => document.activeElement?.id), 'page-title', 'focus moves to the page title');
+      assertEqual(await sm.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings')).startTasks), false, 'stored');
+      assert(await sm.evaluate(() => [...document.querySelectorAll('.toast')].some((x) => x.textContent.includes('About › Where to start'))),
+        'the toast says where to find the jobs again');
+      await dismissToasts(sm);
+      await sm.reload();
+      await waitReady(sm);
+      assert(!await pickerShown(sm), 'still hidden after a reload');
+      await gotoRoute(sm, 'about');
+      const about = await sm.evaluate(() => ({
+        title: document.querySelector('#about-start .section-title')?.textContent,
+        jobs: [...document.querySelectorAll('#about-start .start-task')].map((a) => a.dataset.task)
+      }));
+      assertEqual(about.title, 'Where to start', 'About section');
+      assertEqual(about.jobs, JOBS, 'About lists every job');
+      await sm.click('#about-start .start-task[data-task="certificate"]');
+      await sm.waitFor(() => document.documentElement.dataset.view === 'scan', { message: 'SSL Targets opened from About' });
+    });
+
+    await step('running something ends the first visit; so does data from an earlier visit', async () => {
+      await firstVisit(sm);
+      assert(await pickerShown(sm), 'offered again after the data was deleted');
+      await gotoRoute(sm, 'inventory');
+      await sm.type('[data-role="inventory-text"]', 'web01 192.0.2.10');
+      await sm.press('Enter', { ctrl: true }); // the shared shortcut: Ctrl+Enter clicks Save
+      await sm.waitFor(() => (JSON.parse(localStorage.getItem('ssds.inventory') || 'null') || {}).text === 'web01 192.0.2.10',
+        { message: 'saved with Ctrl+Enter, no new line typed' });
+      await gotoRoute(sm, 'subdomains');
+      assert(!await pickerShown(sm), 'saved servers count as a run');
+      await sm.evaluate(() => {
+        localStorage.clear();
+        localStorage.setItem('ssds.subdomains.options', '{}');
+      });
+      await sm.reload();
+      await waitReady(sm);
+      assert(!await pickerShown(sm), 'a browser that used the app before');
+      await firstVisit(sm, 'tr');
+      assert(await pickerShown(sm), 'offered in Turkish too');
+      assertEqual(await sm.evaluate(() => document.querySelector('.start-picker-title').textContent), 'Yeni misiniz? Başlamak için bir iş seçin', 'TR title');
+      await assertNoHorizontalScroll(sm, 'start picker (TR)');
+      await shot(sm, 'mobile-light-tr-start-picker');
+    });
+
+    await step('375 px: the Tools menu lists every tool by group, marks the current one; Esc closes it, focus returns', async () => {
+      await setLangUi(sm, 'en');
+      await gotoRoute(sm, 'lookup');
+      const bar = await sm.evaluate(() => {
+        const btn = document.querySelector('[data-control="nav-menu"]');
+        return { expanded: btn.getAttribute('aria-expanded'), popup: btn.getAttribute('aria-haspopup'), name: btn.textContent.trim() };
+      });
+      assertEqual(bar, { expanded: 'false', popup: 'dialog', name: 'Tools' }, 'Tools button');
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'menu open' });
+      const menu = await sm.evaluate(() => {
+        const d = document.querySelector('dialog.navmenu-modal');
+        return {
+          modal: d.matches(':modal'),
+          title: document.getElementById(d.getAttribute('aria-labelledby'))?.textContent,
+          groups: [...d.querySelectorAll('.navmenu-group')].map((g) => [g.querySelector('.navmenu-label').textContent,
+            [...g.querySelectorAll('.navmenu-link')].map((a) => a.dataset.view)]),
+          current: [...d.querySelectorAll('.navmenu-link[aria-current="page"]')].map((a) => a.dataset.view),
+          focused: document.activeElement?.dataset.view,
+          expanded: document.querySelector('[data-control="nav-menu"]').getAttribute('aria-expanded'),
+          fits: d.getBoundingClientRect().right <= window.innerWidth && d.getBoundingClientRect().left >= 0
+        };
+      });
+      assert(menu.modal, 'a modal dialog (focus trap, the page inert)');
+      assertEqual(menu.title, 'Tools', 'dialog title');
+      assertEqual(menu.groups, [
+        ['Discover', ['subdomains', 'zone']], ['Certificates', ['scan', 'cert']], ['DNS tools', ['global', 'lookup', 'bulk']],
+        ['IP addresses', ['ip']], ['Mail & domain', ['health']], ['Workspace', ['inventory', 'about']]
+      ], 'groups');
+      assertEqual(menu.current, ['lookup'], 'current tool marked');
+      assertEqual(menu.focused, 'lookup', 'focus starts on the current tool');
+      assertEqual(menu.expanded, 'true', 'aria-expanded while open');
+      assert(menu.fits, 'menu fits 375 px');
+      await assertNoHorizontalScroll(sm, 'Tools menu');
+      await shot(sm, 'mobile-light-en-tools-menu');
+      await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await shot(sm, 'mobile-dark-en-tools-menu');
+      await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
+      for (let i = 0; i < 4; i += 1) await sm.press('Tab');
+      assert(await sm.evaluate(() => !!document.activeElement?.closest('dialog.navmenu-modal')), 'Tab stays in the menu');
+      await sm.press('Escape');
+      await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'menu closed' });
+      await sm.waitFor(() => document.activeElement?.dataset.control === 'nav-menu', { message: 'focus back on the Tools button' });
+      assertEqual(await sm.evaluate(() => document.querySelector('[data-control="nav-menu"]').getAttribute('aria-expanded')), 'false', 'collapsed');
+      assertEqual(await sm.evaluate(() => document.documentElement.dataset.view), 'lookup', 'no navigation');
+    });
+
+    await step('375 px: a tool picked in the menu opens and its title takes the focus', async () => {
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
+      await sm.click('.navmenu-link[data-view="health"]');
+      await sm.waitFor(() => document.documentElement.dataset.view === 'health' && !document.querySelector('dialog.navmenu-modal'),
+        { message: 'Domain Health opened, menu closed' });
+      await sm.waitFor(() => document.activeElement?.id === 'page-title', { message: 'focus on the new page title' });
+      assertEqual(await sm.evaluate(() => document.querySelector('.nav-menu-current').textContent), 'Domain Health', 'current tool in the bar');
+      // The current tool's own link just closes the menu.
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
+      await sm.click('.navmenu-link[data-view="health"]');
+      await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal') && document.activeElement?.dataset.control === 'nav-menu',
+        { message: 'closed, focus back on the button' });
+    });
+
+    await step('start page and menu: no console errors, exceptions, failed requests or CSP violations', async () => {
+      await assertClean(sm, 'start page / menu');
+    });
+    await sm.close();
+
+    const kb = await browser.newPage('about:blank', { width: 1280, height: 800 });
+    await kb.emulateMedia({ 'prefers-color-scheme': 'light' });
+    const active = () => kb.evaluate(() => {
+      const a = document.activeElement;
+      return a ? (a.dataset.role || a.dataset.control || a.id || a.tagName.toLowerCase()) : null;
+    });
+
+    await step("'?' opens the shortcut list (also from the footer); Esc closes it and the focus returns", async () => {
+      await kb.goto(`${server.url}#/lookup`);
+      await waitReady(kb);
+      await kb.evaluate(() => document.getElementById('page-title').focus());
+      await kb.press('?', { shift: true });
+      await kb.waitFor(() => document.querySelector('dialog.keys-modal[open]'), { message: 'shortcut list open' });
+      const rows = await kb.evaluate(() => [...document.querySelectorAll('.keys-table tr')].map((tr) => [tr.dataset.key,
+        [...tr.querySelectorAll('kbd')].map((k) => k.textContent).join('+')]));
+      assertEqual(rows, [['submit', 'Ctrl+Enter'], ['cancel', 'Esc'], ['focus', '/'], ['help', '?']], 'shortcuts listed');
+      await shot(kb, 'desktop-light-en-shortcuts');
+      await kb.press('Escape');
+      await kb.waitFor(() => !document.querySelector('dialog.keys-modal'), { message: 'closed' });
+      assertEqual(await active(), 'page-title', 'focus back where it was');
+      await kb.click('[data-control="shortcuts"]');
+      await kb.waitFor(() => document.querySelector('dialog.keys-modal[open]'), { message: 'opened from the footer' });
+      await kb.press('Escape');
+      await kb.waitFor(() => !document.querySelector('dialog.keys-modal'));
+      assertEqual(await active(), 'shortcuts', 'focus back on the footer button');
+    });
+
+    await step("'/' jumps to the view's main input; inside a field '/' and '?' are typed as usual", async () => {
+      await kb.evaluate(() => document.getElementById('page-title').focus());
+      await kb.press('/');
+      assertEqual(await active(), 'lookup-name', 'DNS Lookup: the name field');
+      await kb.press('/');
+      await kb.press('?', { shift: true });
+      assertEqual(await kb.evaluate(() => document.querySelector('[data-role="lookup-name"]').value), '/?', 'typed into the field');
+      assert(!await kb.evaluate(() => !!document.querySelector('dialog[open]')), 'no dialog while typing');
+      await kb.type('[data-role="lookup-name"]', '');
+      for (const [view, want] of [['inventory', 'inventory-text'], ['bulk', 'bulk-input'], ['ip', 'ip-input'], ['subdomains', 'sub-domain']]) {
+        await gotoRoute(kb, view);
+        await kb.evaluate(() => document.getElementById('page-title').focus());
+        await kb.press('/');
+        assertEqual(await active(), want, `${view}: main input`);
+      }
+      await gotoRoute(kb, 'zone');
+      await kb.evaluate(() => document.getElementById('page-title').focus());
+      await kb.press('/');
+      assert(await kb.evaluate(() => document.activeElement?.classList.contains('filedrop')), 'Zone File: the drop zone');
+      await gotoRoute(kb, 'about');
+      await kb.evaluate(() => document.getElementById('page-title').focus());
+      await kb.press('/');
+      assertEqual(await active(), 'page-title', 'About has no input: the focus stays');
+    });
+
+    await step('Ctrl+Enter runs the tool from its field; Esc cancels the running job (Bulk Resolve, answers held back)', async () => {
+      await gotoRoute(kb, 'bulk');
+      // DNS answers never arrive (offline suite): the run stays in progress until it is cancelled.
+      await kb.evaluate(() => {
+        window.__heldFetches = 0;
+        window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
+          window.__heldFetches += 1;
+          const signal = init.signal || (input && input.signal);
+          if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      });
+      const text = 'www.example.com\napi.example.com';
+      await kb.type('[data-role="bulk-input"]', text);
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => {
+        const cancel = document.querySelector('[data-action="bulk-cancel"]');
+        return cancel && !cancel.hidden && window.__heldFetches > 0;
+      }, { message: 'the run started from the textarea' });
+      assertEqual(await kb.evaluate(() => document.querySelector('[data-role="bulk-input"]').value), text, 'no new line typed');
+      assert(await kb.evaluate(() => document.getElementById('app-header').classList.contains('is-busy')), 'busy');
+      await kb.press('Enter', { ctrl: true }); // while it runs: nothing (Run is hidden, no other button stands in)
+      await kb.press('Escape');
+      await kb.waitFor(() => {
+        const run = document.querySelector('[data-action="bulk-run"]');
+        return run && !run.hidden && document.querySelector('[data-action="bulk-cancel"]').hidden
+          && !document.getElementById('app-header').classList.contains('is-busy');
+      }, { message: 'cancelled with Esc' });
+      assert(await kb.evaluate(() => document.getElementById('page-body').textContent.includes('Cancelled')), 'the run says it was cancelled');
+      // Esc with nothing running does nothing (and never navigates).
+      await kb.press('Escape');
+      assertEqual(await kb.evaluate(() => document.documentElement.dataset.view), 'bulk', 'still on Bulk Resolve');
+    });
+
+    await step('shortcuts: no console errors, exceptions, failed requests or CSP violations', async () => {
+      await assertClean(kb, 'shortcuts');
+    });
+    await kb.close();
 
     /* ---------------- The Pages bundle, and a deploy while a tab is open ---------------- */
     group('Pages bundle (tools/assemble-site.mjs)');

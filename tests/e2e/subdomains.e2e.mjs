@@ -1111,6 +1111,15 @@ async function main() {
       // table redraws on its next frame).
       await page.waitFor(() => ![...document.querySelectorAll('.sub-table .sub-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
         { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
+      // Copy summary says what the cancelled scan found and never claims an absence it did not check.
+      await stubClipboard(page);
+      // (a script click: a scan cancelled before it found anything keeps its results head hidden)
+      await page.evaluate(() => document.querySelector('.sub-run-ui [data-action="copy-summary"]').click());
+      await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
+      const [md] = await takeClipboard(page);
+      assert(/^- (\d[\d,]* subdomains? found before the scan was cancelled|The scan was cancelled before any subdomain was found)/m.test(md), `cancelled summary: ${md}`);
+      assert(!/No host hides its origin|No dangling CNAMEs/.test(md), `no claim of absence: ${md}`);
+      if (/\d Cloudflare/.test(md)) assert(/hides? (its|their) origin behind a proxy/.test(md), `Cloudflare hosts counted as proxied: ${md}`);
       await shot(page, opts, 'subdomains-desktop-light-en-cancelled');
     });
 
@@ -1248,14 +1257,15 @@ async function main() {
         assertEqual(summaryLines.slice(0, 5), [
           `**Subdomains · \`${FAKE_APEX}\`**`,
           '- 5 subdomains found · 5 resolve',
-          '- 2 Cloudflare · 3 direct IP',
+          '- 2 Cloudflare · 3 direct IPs',
           '- 2 hosts hide their origin behind a proxy · 1 origin network to sweep',
           '- No dangling CNAMEs'
         ], 'summary lines');
+        assertEqual(summaryLines[5], '', 'an empty line: the footer is its own paragraph');
         assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin.replace(/\./g, '\\.')}/domainscope/#/subdomains\\?domain=${FAKE_APEX.replace('.', '\\.')}&run=1$`)
-          .test(summaryLines[5]), `footer: ${summaryLines[5]}`);
-        assertEqual(summaryLines.length, 6, 'no other line');
-        assertEqual(plain, md.replace(/\*\*|`/g, ''), 'the plain text is the same summary without Markdown');
+          .test(summaryLines[6]), `footer: ${summaryLines[6]}`);
+        assertEqual(summaryLines.length, 7, 'no other line');
+        assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the plain text is the same summary without Markdown');
         // Exclude addresses: the JSON export carries the same command (POSIX form), not the bare one.
         const withExclude = '-t 203.0.113.0/24 --exclude 203.0.113.12 -n shop.example.net www.example.net';
         await tab.type('[data-role="sub-org-exclude"]', '203.0.113.12');

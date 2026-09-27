@@ -8,10 +8,10 @@
  *   returns a {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP
  *   Intel) and a footer with the view's permalink and a UTC timestamp.
  * - {@link renderMarkdown} / {@link renderPlainText} turn a doc into text. Untrusted values
- *   (host names, record data, certificate subjects, inventory server names, the names and lines
- *   of a zone file a problem quotes) are code spans in Markdown (no link, mention or formatting
- *   survives inside one) and every other text is Markdown-escaped; control and bidi characters
- *   never reach the output.
+ *   (host names, record data, certificate subjects and issuers, inventory server names, a network's
+ *   AS name and place, the names and lines of a zone file a problem quotes) are code spans in
+ *   Markdown (no link, mention or formatting survives inside one) and every other text is
+ *   Markdown-escaped; control and bidi characters never reach the output.
  * - {@link permalinkParams} keeps only a view's own shareable route params (never inventory data
  *   or zone contents; IP Intel drops private and inventory addresses), for `ctx.shareUrl()`.
  * - A summary holds only what the result on screen shows. Inventory data in it: SSL Targets names
@@ -216,7 +216,9 @@ function kit({ t, lang = 'en' }) {
   /** Plural count texts joined with ' · ', zeros left out. */
   const counts = (pairs) => pairs.filter(([, n]) => Number(n) > 0).map(([key, n]) => t(key, { count: Number(n) })).join(' · ');
   const title = (view, subject) => [`${t(`nav.${view}`)} · `, ...(Array.isArray(subject) ? subject : [String(subject ?? '')])];
-  return { t, num, values, domains, counts, title };
+  /** A line's parts with its first letter capitalised (a text that also sits mid-line lower-case). */
+  const cap = (parts) => parts.map((p, i) => (i === 0 && typeof p === 'string' ? p.charAt(0).toLocaleUpperCase(lang === 'tr' ? 'tr-TR' : 'en-US') + p.slice(1) : p));
+  return { t, num, values, domains, counts, title, cap };
 }
 
 function doc(kind, title, lines, { inline = false, when, url = null }) {
@@ -301,7 +303,8 @@ export function healthSummary({ report }, opts) {
 
 /**
  * Global DNS: why the answers agree or differ (lib/propagation.propagationVerdict), how many
- * answers from how many sources, who operates them, the findings and the addresses seen.
+ * answers from how many sources (with none, only how many failed), who operates them, the
+ * findings and the addresses seen.
  * @param {{ name: string, type: string, verdict: object|null, total: number, answered: number,
  *   failed?: number, cancelled?: boolean, addresses?: number, at?: Date }} facts `at`: when the check ended
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
@@ -321,8 +324,9 @@ export function globalSummary(facts, opts) {
   else state = t('sum.global.differ');
   if (facts.cancelled && answered) state = `${state} ${t('sum.global.partial')}`;
   const groups = (v.groups || []).filter((g) => !g.rewritten).length;
-  const sources = [t('sum.global.answers', { count: groups, answered: k.num(answered), total: k.num(facts.total) })];
-  if (facts.failed > 0) sources.push(` · ${t('sum.global.errors', { count: facts.failed })}`);
+  // No answer: the state says so; only how many sources failed is left to tell.
+  const sources = answered ? [t('sum.global.answers', { count: groups, answered: k.num(answered), total: k.num(facts.total) })] : [];
+  if (facts.failed > 0) sources.push(`${sources.length ? ' · ' : ''}${t('sum.global.errors', { count: facts.failed })}`);
   const findings = (v.state === 'differ' || v.state === 'unresolved') ? (v.findings || []) : [];
   const findingLines = findings.slice(0, 3).map((f) => [t(`sum.global.find.${f.code}`, {
     count: (f.members || []).length, rcode: f.rcode || '', type: facts.type
@@ -339,7 +343,8 @@ export function globalSummary(facts, opts) {
 
 /**
  * Subdomains: found / resolving, the classes of the stat cards, proxied hosts with their origin
- * candidates, dangling CNAMEs by name, wildcard matches left out, failed sources.
+ * candidates, dangling CNAMEs by name, wildcard matches left out, failed sources. A cancelled
+ * scan never says "no proxied host" or "no dangling CNAME".
  * @param {{ domains: string[], status: string, counts: { found: number, resolving: number, cloudflare: number,
  *   cdn: number, direct: number, private?: number, unresolved: number, dangling: number, wildcard?: number },
  *   proxied?: number, withCandidates?: number, networks?: number, dangling?: string[], failedSources?: number,
@@ -352,6 +357,8 @@ export function subdomainsSummary(facts, opts) {
   const { t } = k;
   const c = facts.counts || {};
   const found = Number(c.found) || 0;
+  // A cancelled scan says what it found, never that something is absent: the rest was not looked at.
+  const complete = facts.status !== 'cancelled';
   const lines = [];
   if (!found) {
     lines.push([t(facts.status === 'cancelled' ? 'sum.sub.noneCancelled' : 'sum.sub.none')]);
@@ -366,11 +373,12 @@ export function subdomainsSummary(facts, opts) {
       if (facts.withCandidates > 0) bits.push(t('sum.sub.candidates', { count: facts.withCandidates }));
       if (facts.networks > 0) bits.push(t('sum.sub.networks', { count: facts.networks }));
       lines.push([bits.join(' · ')]);
-    } else {
+    } else if (complete) {
       lines.push([t('sum.sub.proxiedNone')]);
     }
     const dangling = facts.dangling || [];
-    lines.push(dangling.length ? [t('sum.sub.dangling', { count: dangling.length }), ': ', ...k.values(dangling)] : [t('sum.sub.danglingNone')]);
+    if (dangling.length) lines.push([t('sum.sub.dangling', { count: dangling.length }), ': ', ...k.values(dangling)]);
+    else if (complete) lines.push([t('sum.sub.danglingNone')]);
     if (c.wildcard > 0) lines.push([t('sum.sub.wildcard', { count: c.wildcard })]);
   }
   if (facts.failedSources > 0) lines.push([t('sum.sub.sourcesFailed', { count: facts.failedSources })]);
@@ -396,7 +404,7 @@ export function scanSummary(facts, opts) {
   const subject = cert ? [code(cert.name)] : k.domains(facts.domains);
   const lines = [];
   lines.push(cert
-    ? [t('sum.scan.cert'), ' ', code(cert.name), ` · ${t('sum.cert.issuedBy', { issuer: cleanText(cert.issuer) })} · `, validityText(k, cert, now)]
+    ? [t('sum.scan.cert'), ' ', code(cert.name), ' · ', ...issuedBy(t, cert.issuer), ' · ', validityText(k, cert, now)]
     : [t('sum.scan.noCert')]);
   const hosts = [t('sum.scan.hosts', { count: Number(facts.hosts) || 0 })];
   if (cert) hosts.push(' · ', t('sum.scan.covered', { count: Number(facts.covered) || 0 }));
@@ -440,6 +448,15 @@ export function zoneSummary(facts, opts) {
   ], { when: whenText(t, 'sum.at.asOf', null, opts.now || new Date()), url: opts.url });
 }
 
+/**
+ * "issued by `Example CA`": the issuer is whatever the certificate says (a self-signed one says
+ * anything), so it is a code span like the subject. Lower-case mid-line (SSL Targets); a line of
+ * its own capitalises it ({@link certSummary}).
+ */
+function issuedBy(t, issuer) {
+  return textParts(t, 'sum.cert.issuedBy', { issuer: String(issuer ?? '') });
+}
+
 /** "valid until 2026-12-01 (65 days left)" / "expired on …" / "not valid before …". */
 function validityText(k, cert, now) {
   const at = now instanceof Date ? now.getTime() : Number(now);
@@ -468,9 +485,9 @@ export function certSummary(facts, opts) {
   const names = facts.dnsNames || [];
   const warnings = (facts.warnings || []).filter((w) => CERT_SUMMARY_WARNINGS.includes(w));
   return doc('cert', k.title('cert', [code(facts.name)]), [
-    [t('sum.cert.issuedBy', { issuer: cleanText(facts.issuer) })],
+    k.cap(issuedBy(t, facts.issuer)),
     names.length ? [t('sum.cert.names', { count: names.length }), ': ', ...k.values(names, 4)] : [t('sum.cert.noNames')],
-    [validityText(k, facts, now)],
+    k.cap([validityText(k, facts, now)]),
     ...warnings.map((w) => [strong(`${t('severity.warn')}:`), ' ', t(`sum.cert.warn.${w}`)]),
     facts.source === 'ct' ? [t('sum.cert.fromCt')] : facts.source === 'sample' ? [t('sum.cert.sample')] : null,
     [t('sum.cert.private')]
@@ -527,12 +544,13 @@ export function lookupSummary(facts, opts) {
  * IP Intel (one line): for one address its network, country, reverse name and operator; for
  * several, how many sit behind a CDN, are private, are in the server list, and how many networks
  * and countries. No inventory server name is included: only whether (or how many) are in the list.
- * @param {{ rows: Array<{ ip: string, info?: object|null, classification?: object, servers?: object[] }>, at?: Date }} facts
- *   `at`: when the lookup ended
+ * A stopped lookup says how many addresses it never looked up (the rows without data).
+ * @param {{ rows: Array<{ ip: string, info?: object|null, classification?: object, servers?: object[] }>, at?: Date,
+ *   stopped?: boolean }} facts `at`: when the lookup ended; `stopped`: the user stopped it
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
-export function ipSummary({ rows = [], at = null }, opts) {
+export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
   const k = kit(opts);
   const { t } = k;
   const list = rows.filter((r) => r && r.ip);
@@ -542,19 +560,23 @@ export function ipSummary({ rows = [], at = null }, opts) {
     if (c.provider && c.provider.name) return c.provider.name;
     return c.kind ? t(`kind.${c.kind}`) : null;
   };
+  // A stopped lookup leaves the rows it never reached without data (views/ip: info null).
+  const notLooked = stopped ? list.filter((r) => !r.info).length : 0;
   let subject;
   if (list.length === 1) {
     const r = list[0];
     const info = r.info || {};
     subject = [code(r.ip)];
     const bits = [];
-    if (info.asn) bits.push([`AS${info.asn}`, info.asName || info.holder ? ` ${cleanText(info.asName || info.holder)}` : '']);
-    if (info.country) bits.push([cleanText(info.city ? `${info.city}, ${info.country}` : info.country)]);
+    // The AS name and the place come from registry / geolocation data anyone can word: code spans.
+    if (info.asn) bits.push([`AS${cleanText(info.asn)}`, ...(info.asName || info.holder ? [' ', code(info.asName || info.holder)] : [])]);
+    if (info.country) bits.push([code(info.city ? `${info.city}, ${info.country}` : info.country)]);
     if (info.ptr && info.ptr.length) bits.push(k.values(info.ptr, 1));
     const op = operator(r);
     if (op) bits.push([op]);
     if (r.servers && r.servers.length) bits.push([t('sum.ip.mineOne')]);
     if (!bits.length) bits.push([t('sum.ip.noData')]);
+    if (notLooked) bits.push([t('sum.ip.stoppedOne')]);
     bits.forEach((b, i) => parts.push(...(i ? [' · '] : []), ...b));
   } else {
     subject = t('sum.ip.addresses', { count: list.length });
@@ -570,7 +592,9 @@ export function ipSummary({ rows = [], at = null }, opts) {
     if (asns) bits.push(t('sum.ip.networks', { count: asns }));
     const countries = new Set(list.map((r) => r.info && r.info.country).filter(Boolean)).size;
     if (countries) bits.push(t('sum.ip.countries', { count: countries }));
-    parts.push(bits.join(' · ') || t('sum.ip.noData'));
+    if (!bits.length) bits.push(t('sum.ip.noData'));
+    if (notLooked) bits.push(t('sum.ip.stopped', { count: notLooked }));
+    parts.push(bits.join(' · '));
   }
   return doc('ip', k.title('ip', subject), [parts], { inline: true, when: whenText(t, 'sum.at.checked', at, opts.now || new Date()), url: opts.url });
 }
@@ -636,7 +660,9 @@ function footerLine(footer, esc) {
 }
 
 /**
- * The summary as Markdown: a bold title, one "- " line per fact, the footer.
+ * The summary as Markdown: a bold title, one "- " line per fact, an empty line, the footer. The
+ * empty line makes the footer its own paragraph: right after a list item (or the one-line
+ * paragraph of DNS Lookup and IP Intel) CommonMark would continue that item with it.
  * @param {SummaryDoc} summary
  * @returns {string} with a trailing newline
  */
@@ -644,7 +670,7 @@ export function renderMarkdown(summary) {
   const title = `**${joinParts(summary.title, (p) => (typeof p === 'object' && p && 'code' in p ? mdCode(p.code) : partMarkdown(p)))}**`;
   const lines = summary.lines.map((l) => joinParts(l, partMarkdown));
   const body = summary.inline ? [`${title}: ${lines.join(' · ')}`] : [title, ...lines.map((l) => `- ${l}`)];
-  return `${[...body, footerLine(summary.footer, mdEscape)].join('\n')}\n`;
+  return `${[...body, '', footerLine(summary.footer, mdEscape)].join('\n')}\n`;
 }
 
 /**
@@ -726,7 +752,7 @@ const STRINGS = [
   ['sum.sub.resolving', [{ one: '{count} resolves', other: '{count} resolve' }, '{count} tanesi çözümleniyor']],
   ['sum.class.cloudflare', ['{count} Cloudflare', '{count} Cloudflare']],
   ['sum.class.cdn', ['{count} other CDN / platform', '{count} diğer CDN / platform']],
-  ['sum.class.direct', ['{count} direct IP', '{count} doğrudan IP']],
+  ['sum.class.direct', [{ one: '{count} direct IP', other: '{count} direct IPs' }, '{count} doğrudan IP']],
   ['sum.class.private', ['({count} of them private)', '({count} tanesi özel IP)']],
   ['sum.class.unresolved', ['{count} not resolving', '{count} çözümlenmiyor']],
   ['sum.sub.proxied', [{ one: '{count} host hides its origin behind a proxy', other: '{count} hosts hide their origin behind a proxy' },
@@ -794,7 +820,9 @@ const STRINGS = [
   ['sum.ip.mineOne', ['in your server list', 'sunucu listenizde']],
   ['sum.ip.networks', [{ one: '{count} network', other: '{count} networks' }, '{count} ağ']],
   ['sum.ip.countries', [{ one: '{count} country', other: '{count} countries' }, '{count} ülke']],
-  ['sum.ip.noData', ['no network data', 'ağ bilgisi yok']]
+  ['sum.ip.noData', ['no network data', 'ağ bilgisi yok']],
+  ['sum.ip.stopped', [{ one: 'stopped: {count} address not looked up', other: 'stopped: {count} addresses not looked up' }, 'durduruldu: {count} adres sorgulanmadı']],
+  ['sum.ip.stoppedOne', ['stopped before it was looked up', 'sorgulanmadan durduruldu']]
 ];
 
 function buildStrings(lang) {

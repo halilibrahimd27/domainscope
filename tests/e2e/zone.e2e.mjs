@@ -350,10 +350,12 @@ async function main() {
       assertEqual(lines.slice(0, 2), ['**Zone File · `example.com`**', '- Cloudflare export (BIND): 39 records · 26 names · 10 proxied'], 'title and counts');
       assert(/^- Problems: \d+ errors? · \d+ warnings?/.test(lines[2]), `problems line: ${lines[2]}`);
       assertEqual(plain.trim().split('\n').slice(3, 6), shown.problems.slice(0, 3), 'the worst three, worded as on the Problems tab');
-      assertEqual(lines[lines.length - 2], '- The zone file stays in this browser: the link opens Zone File without it', 'privacy line');
+      // The footer is its own paragraph (an empty line before it), not a continuation of the last item.
+      assertEqual(lines.slice(-3, -1), ['- The zone file stays in this browser: the link opens Zone File without it', ''], 'privacy line, then an empty line');
       assert(new RegExp(`^DomainScope · as of \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/zone$`).test(lines[lines.length - 1]),
         `a bare #/zone link (no tab, nothing of the file): ${lines[lines.length - 1]}`);
-      assert(lines.length >= 5 && lines.length <= 12, `5–12 lines: ${lines.length}`);
+      assert(lines.length - 1 >= 5 && lines.length - 1 <= 12, `5–12 lines: ${lines.length - 1}`);
+      assertEqual(plain.trim().split('\n').length, lines.length - 1, 'plain text: the same lines, no empty one');
       assertEqual(await page.evaluate(() => window.__fakeDnsLog.length), 0, 'no DNS query');
     });
 

@@ -10,7 +10,8 @@
  *
  * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
  * lookup ended; it says how many addresses are in the server list (never a server's name, the
- * tooltip says so) and its link leaves out private and inventory addresses.
+ * tooltip says so), how many a stopped lookup never reached, and its link leaves out private and
+ * inventory addresses.
  *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
@@ -498,7 +499,7 @@ export function mount(container, ctx) {
     kind: 'ip',
     disabled: true,
     inventory: 'count',
-    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.at } : null),
+    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.at, stopped: current.stopped } : null),
     url: () => ctx.shareUrl(permalinkParams('ip', ctx.params, {
       exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
     }))
@@ -706,7 +707,7 @@ export function mount(container, ctx) {
    * network, the servers matched again). `text`: the input the run was made from; `at`: when a
    * preset run finished.
    */
-  async function run(parsed, preset = null, { text = '', at = null } = {}, presetAt = null) {
+  async function run(parsed, preset = null, { text = '', at = null } = {}, presetAt = null, presetStopped = false) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
     // `at`: when the lookup ended (the summary's time).
@@ -726,6 +727,9 @@ export function mount(container, ctx) {
       state.controller = null;
       state.finishedAt = at ? new Date(at) : new Date();
       state.at = presetAt ? new Date(presetAt) : null;
+      // A lookup stopped before a re-mount still says so (its summary does too).
+      state.stopped = !!presetStopped;
+      if (state.stopped) note('info', t('ipi.stopped'));
       summary.setDisabled(!preset.length);
       return;
     }
@@ -842,7 +846,7 @@ export function mount(container, ctx) {
   /* --- initial state ---------------------------------------------------------------- */
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
-    run(parseIpInput(text), restored.rows, { text, at: restored.at }, restored.at);
+    run(parseIpInput(text), restored.rows, { text, at: restored.at }, restored.at, restored.stopped);
     setShareAction(lookupParams(text));
     // The kept rows under an address carried over from another tool: the box takes the address.
     if (isFillOnly(ctx.params) && paramText) takeCarried(splitList(paramText).join('\n'));
@@ -862,7 +866,7 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
         : null;
-      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, at: rows ? current.at : null };
+      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, at: rows ? current.at : null, stopped: !!(rows && current.stopped) };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;

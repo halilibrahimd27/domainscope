@@ -482,7 +482,7 @@ async function mtaStsGroup(browser, server) {
           .map((c) => c.querySelector('.hlt-check-title').textContent),
         tip: document.querySelector('[data-action="copy-summary"]').title
       }));
-      assert(/nothing from your server list/.test(shown.tip), `the tooltip says what is in it: ${shown.tip}`);
+      assert(/nothing from your server list/.test(shown.tip) && !/file/.test(shown.tip), `the tooltip says what is in it (no file here): ${shown.tip}`);
       await page.click('[data-action="copy-summary"]');
       await page.click('[data-action="copy-summary-text"]');
       await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
@@ -490,12 +490,14 @@ async function mtaStsGroup(browser, server) {
       const lines = md.trim().split(NL);
       assertEqual(lines[0], `**Domain Health · \`${MAIL_APEX}\`**`, 'title (the domain as a code span)');
       assertEqual(lines[1], `- ${shown.verdict} · score ${shown.score}/100`, 'verdict and score as on the hero');
-      assert(lines.length >= 5 && lines.length <= 12, `5–12 lines: ${lines.length}`);
+      // Lines with text (the Markdown footer is its own paragraph, after an empty line).
+      assert(lines.length - 1 >= 5 && lines.length - 1 <= 12, `5–12 lines: ${lines.length - 1}`);
       for (const title of shown.problems.slice(0, 5)) assert(md.includes(title), `problem "${title}" in: ${md}`);
+      assertEqual(lines[lines.length - 2], '', 'an empty line before the footer');
       assert(/^DomainScope · checked \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · http:\/\/127\.0\.0\.1:\d+\/domainscope\/#\/health\?domain=example\.com$/.test(lines[lines.length - 1]),
         `footer with the permalink: ${lines[lines.length - 1]}`);
       assert(!text.includes('**') && text.startsWith(`Domain Health · ${MAIL_APEX}${NL}`), `plain text: ${text}`);
-      assertEqual(text.trim().split(NL).length, lines.length, 'the same lines in plain text');
+      assertEqual(text.trim().split(NL).length, lines.length - 1, 'the same lines in plain text, no empty one');
       // Turkish, then a clipboard the browser refuses: the text in a dialog, selected.
       await setLangUi(page, 'tr');
       await stubClipboard(page, { fail: true });

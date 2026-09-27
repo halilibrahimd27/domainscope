@@ -1522,14 +1522,16 @@ async function main() {
           const [md, plain] = await takeClipboard(tab);
           const lines = md.trim().split('\n');
           assertEqual(lines[0], '**SSL Targets · `*.wild.example.net`**', 'title: the certificate');
-          assert(/^- Certificate `\*\.wild\.example\.net` · issued by .+ · valid until 2051-01-01 \(\d[\d,]* days left\)$/.test(lines[1]), `certificate line: ${lines[1]}`);
+          // A self-signed wildcard names itself as the issuer: a code span (no backslash for Slack to show).
+          assert(/^- Certificate `\*\.wild\.example\.net` · issued by `[^`\\]+` · valid until 2051-01-01 \(\d[\d,]* days left\)$/.test(lines[1]), `certificate line: ${lines[1]}`);
           assert(/^- \d+ hosts found · \d+ covered by the certificate$/.test(lines[2]), `hosts line: ${lines[2]}`);
           assertEqual(lines[3], '- 2 servers in your list need the certificate: `db01`, `web01`', 'the servers that need it, by name, as the Servers tab lists them');
           assert(lines.includes('- Verify: not checked from the internet yet'), `Verify line: ${md}`);
           const foot = lines[lines.length - 1];
+          assertEqual(lines[lines.length - 2], '', 'an empty line: the footer is its own paragraph');
           assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/scan\\?domain=example\\.net&run=1$`).test(foot), `footer: ${foot}`);
           assert(!/web01|db01|203\.0\.113\.20|10\.0\.0\.5/.test(foot), 'no inventory data in the link');
-          assertEqual(plain, md.replace(/\*\*|`/g, '').replace(/\\/g, ''), 'the same lines in plain text');
+          assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the same lines in plain text');
         });
 
         await run.step('Behind CDN and Verify share one shell: step 3, the sweep and both toggles follow a change in either card', async () => {

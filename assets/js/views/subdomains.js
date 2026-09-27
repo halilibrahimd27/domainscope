@@ -36,8 +36,9 @@
  * opening a subdomain in DNS Lookup and coming back keeps the results (a toast says when a
  * scan finished in the background).
  *
- * "Copy summary" in the results head (ui/summary-button.js): the stat cards, the proxied hosts with
- * their origin candidates and the dangling CNAMEs as Markdown for Jira / Slack, or plain text.
+ * "Copy summary" in the results head (ui/summary-button.js, subdomainsSummaryFacts): the stat cards,
+ * the proxied hosts with their origin candidates and the dangling CNAMEs as Markdown for Jira /
+ * Slack, or plain text; a cancelled scan's summary says what it found, without origin candidates.
  *
  * Route params: `#/subdomains?domain=example.com` (comma-separated or repeated) pre-fills the
  * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
@@ -2844,6 +2845,32 @@ export function liveHosts(run) {
   return extra.length ? [...run.hosts, ...extra] : run.hosts;
 }
 
+/**
+ * The facts of "Copy summary" (lib/summary subdomainsSummary) for a finished or cancelled run,
+ * null while it runs or after an error: the stat cards of the hosts listed, the dangling names,
+ * the failed sources and the ORIGIN panel's numbers. A cancelled run has no ORIGIN panel (only a
+ * finished result is analysed): its proxied hosts are counted from the hosts found so far, with no
+ * candidate or network part, which were never looked for.
+ * @param {object} run
+ * @returns {object|null}
+ */
+export function subdomainsSummaryFacts(run) {
+  if (!run || (run.status !== 'done' && run.status !== 'cancelled')) return null;
+  const hosts = liveHosts(run);
+  const o = run.result ? originOverview(run.result) : null;
+  return {
+    domains: run.config.domains,
+    status: run.status,
+    counts: countHosts(hosts),
+    proxied: o ? o.proxied.length : hosts.filter(isProxiedOriginHost).length,
+    withCandidates: o ? o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).length : 0,
+    networks: o ? o.networks.length : 0,
+    dangling: hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.dangling).map((x) => x.name),
+    failedSources: sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
+    at: run.finishedAt
+  };
+}
+
 function emit(run, type, payload) {
   for (const fn of [...run.listeners]) {
     try {
@@ -4483,22 +4510,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     })}\n`, 'application/json;charset=utf-8'))
   });
   // "Copy summary": what the stat cards, the summary alerts and the ORIGIN panel show (lib/summary.js).
-  const summaryFacts = () => {
-    if (run.status !== 'done' && run.status !== 'cancelled') return null;
-    const hosts = listHosts();
-    const o = run.result ? originOverview(run.result) : null;
-    return {
-      domains: run.config.domains,
-      status: run.status,
-      counts: countHosts(hosts),
-      proxied: o ? o.proxied.length : 0,
-      withCandidates: o ? o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).length : 0,
-      networks: o ? o.networks.length : 0,
-      dangling: hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.dangling).map((x) => x.name),
-      failedSources: sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
-      at: run.finishedAt
-    };
-  };
+  const summaryFacts = () => subdomainsSummaryFacts(run);
   const summary = SummaryButton({
     kind: 'subdomains',
     facts: summaryFacts,

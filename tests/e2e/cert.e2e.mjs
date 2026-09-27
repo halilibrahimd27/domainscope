@@ -587,12 +587,12 @@ async function main() {
       const [md, plain] = await takeClipboard(page);
       const lines = md.trim().split('\n');
       assertEqual(lines[0], '**Certificate · `www.example-test.com.tr`**', 'title');
-      assertEqual(lines[1], `- ${issuer.replace(/^Issued by/, 'issued by')}`, 'the issuer the overview shows');
+      assertEqual(lines[1], `- ${issuer.replace(/^Issued by (.+)$/, 'Issued by `$1`')}`, 'the issuer the overview shows, as a code span');
       assert(/^- 5 DNS names: `[^`]+`, `[^`]+`, `[^`]+`, `[^`]+` \+1 more$/.test(lines[2]), `names, as the badge counts them: ${lines[2]}`);
-      assert(/^- valid until \d{4}-\d{2}-\d{2} \(\d[\d,]* days? left\)$/.test(lines[3]), `validity: ${lines[3]}`);
-      assertEqual(lines[lines.length - 2], '- The certificate file stays in this browser: the link opens the Certificate tool without it', 'file-stays line');
+      assert(/^- Valid until \d{4}-\d{2}-\d{2} \(\d[\d,]* days? left\)$/.test(lines[3]), `validity: ${lines[3]}`);
+      assertEqual(lines.slice(-3, -1), ['- The certificate file stays in this browser: the link opens the Certificate tool without it', ''], 'file-stays line, then an empty line');
       assert(new RegExp(`^DomainScope · as of \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}/domainscope/#/cert$`).test(lines[lines.length - 1]), `footer: ${lines[lines.length - 1]}`);
-      assertEqual(plain, md.replace(/\*\*|`/g, ''), 'the same lines in plain text');
+      assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the same lines in plain text');
     });
 
     await run.step('Names tab: 8 SANs, IDN in Unicode, registrable domain links to a scan', async () => {

@@ -46,10 +46,16 @@ const md = (doc) => S.renderMarkdown(doc);
 const txt = (doc) => S.renderPlainText(doc);
 const lines = (text) => text.replace(/\n$/, '').split('\n');
 
-/** Every summary: budget, footer, no untranslated key, no unsafe character. */
+/**
+ * Every summary: budget (lines with text), footer (in Markdown its own paragraph, after an empty
+ * line; plain text has none), no untranslated key, no unsafe character.
+ */
 function assertShape(doc, { min = 5, max = 12, inline = false } = {}) {
-  for (const out of [md(doc), txt(doc)]) {
-    const ls = lines(out);
+  for (const [format, out] of [['markdown', md(doc)], ['text', txt(doc)]]) {
+    const all = lines(out);
+    const ls = all.filter(Boolean);
+    if (format === 'markdown') assert.equal(all[all.length - 2], '', `an empty line before the footer:\n${out}`);
+    assert.equal(all.length - ls.length, format === 'markdown' ? 1 : 0, `no other empty line:\n${out}`);
     if (inline) assert.equal(ls.length, 2, `one line + footer:\n${out}`);
     else assert.ok(ls.length >= min && ls.length <= max, `${ls.length} lines (${min}–${max}):\n${out}`);
     assert.ok(out.endsWith('\n'), 'trailing newline');
@@ -125,7 +131,7 @@ describe('health', () => {
     assert.equal(ls[2], '- 1 error · 1 warning · 1 note · 1 passed');
     assert.match(ls[3], /^- \*\*Error:\*\* /, 'error first');
     assert.match(ls[4], /^- \*\*Warning:\*\* /);
-    assert.equal(ls[5], `DomainScope · checked 2026-09-27 09:00 UTC · ${URL_BASE}#/health?domain=example.com`);
+    assert.deepEqual(ls.slice(5), ['', `DomainScope · checked 2026-09-27 09:00 UTC · ${URL_BASE}#/health?domain=example.com`], 'the footer after an empty line');
     assert.equal(lines(txt(doc))[3].startsWith('- Error: '), true, 'plain text has no **');
     assert.equal(lines(txt(doc))[0], 'Domain Health · example.com', 'plain text has no code spans');
   });
@@ -211,7 +217,12 @@ describe('global', () => {
   test('nothing answered, stopped early, Turkish', () => {
     const none = S.globalSummary({ ...base, answered: 0, failed: 43, addresses: 0, verdict: null }, opts());
     assertShape(none);
-    assert.ok(md(none).includes('- No answers') && md(none).includes('- No addresses'));
+    assert.deepEqual(lines(md(none)).slice(1, 4), ['- No answers', '- 43 sources failed', '- No addresses'], 'no "0 answers from 0 sources" line');
+    assert.deepEqual(lines(md(S.globalSummary({ ...base, answered: 0, failed: 43, addresses: 0, verdict: null }, opts('tr')))).slice(1, 4),
+      ['- Yanıt alınamadı', '- 43 kaynak başarısız', '- Adres yok']);
+    const stoppedNone = S.globalSummary({ ...base, answered: 0, failed: 0, cancelled: true, addresses: 0, verdict: null }, opts());
+    assertShape(stoppedNone, { min: 4 });
+    assert.deepEqual(lines(md(stoppedNone)).slice(1, 3), ['- Stopped before any source answered', '- No addresses']);
     const stopped = S.globalSummary({ ...base, cancelled: true, verdict: { state: 'agree', groups: [{ key: 'a' }], operators: [], findings: [] } }, opts());
     assert.ok(md(stopped).includes('- All answers agree (stopped early: not every source answered)'));
     const tr = S.globalSummary({ ...base, verdict: { state: 'geo', groups: [{ key: 'a' }, { key: 'b' }], operators: [], findings: [] } }, opts('tr'));
@@ -244,13 +255,13 @@ describe('subdomains', () => {
     assert.deepEqual(ls.slice(0, 7), [
       '**Subdomains · `example.com`**',
       '- 42 subdomains found · 38 resolve',
-      '- 12 Cloudflare · 5 other CDN / platform · 18 direct IP (2 of them private) · 7 not resolving',
+      '- 12 Cloudflare · 5 other CDN / platform · 18 direct IPs (2 of them private) · 7 not resolving',
       '- 14 hosts hide their origin behind a proxy · origin candidates for 4 of them · 2 origin networks to sweep',
       '- 2 dangling CNAMEs (possible takeover): `old.example.com`, `shop.example.com`',
       '- 3 wildcard matches left out',
       '- 1 passive source failed: the list may be incomplete'
     ]);
-    assert.equal(ls[7], `DomainScope · scanned 2026-09-27 12:00 UTC · ${URL_BASE}#/subdomains?domain=example.com&run=1`);
+    assert.equal(ls[8], `DomainScope · scanned 2026-09-27 12:00 UTC · ${URL_BASE}#/subdomains?domain=example.com&run=1`);
   });
 
   test('nothing proxied, nothing dangling, several domains; nothing found; cancelled', () => {
@@ -267,6 +278,51 @@ describe('subdomains', () => {
     assert.ok(md(none).includes('- No subdomains found'));
     const cancelled = S.subdomainsSummary({ ...facts, status: 'cancelled' }, opts());
     assert.ok(md(cancelled).includes('- 42 subdomains found before the scan was cancelled · 38 resolve'));
+  });
+
+  test('a cancelled scan never says something is absent: no "no proxied host", no "no dangling CNAME"; Turkish', () => {
+    const quiet = { ...facts, status: 'cancelled', proxied: 0, withCandidates: 0, networks: 0, dangling: [], failedSources: 0, counts: { ...counts, wildcard: 0 } };
+    for (const lang of ['en', 'tr']) {
+      const doc = S.subdomainsSummary(quiet, opts(lang));
+      assertShape(doc, { min: 4 });
+      assert.doesNotMatch(md(doc), /No host hides|No dangling|gizleyen host yok|Sahipsiz CNAME yok/, md(doc));
+    }
+    assert.deepEqual(lines(md(S.subdomainsSummary(quiet, opts('tr')))).slice(1, 3), [
+      '- Tarama iptal edilmeden önce 42 subdomain bulundu · 38 tanesi çözümleniyor',
+      '- 12 Cloudflare · 5 diğer CDN / platform · 18 doğrudan IP (2 tanesi özel IP) · 7 çözümlenmiyor'
+    ]);
+    // What it did find it still says.
+    const found = md(S.subdomainsSummary({ ...quiet, proxied: 3, dangling: ['old.example.com'] }, opts()));
+    assert.ok(lines(found).includes('- 3 hosts hide their origin behind a proxy') && found.includes('- 1 dangling CNAME (possible takeover): `old.example.com`'), found);
+  });
+
+  test('a cancelled scan (views/subdomains facts): the proxied hosts found so far, never "no host hides its origin", no candidates', async () => {
+    const { subdomainsSummaryFacts } = await imp('assets/js/views/subdomains.js');
+    const cf = { kind: 'cloudflare', provider: { name: 'Cloudflare' }, hidesOrigin: true, dangling: false };
+    const direct = { kind: 'direct', provider: null, hidesOrigin: false, dangling: false };
+    const host = (name, ip, classification) => ({ name, wildcardSuspect: false, resolution: { status: 'NOERROR', ipv4: [ip], ipv6: [], cnames: [] }, classification, servers: [] });
+    const apex = host('example.net', '203.0.113.10', direct);
+    const www = { ...host('www.example.net', '104.16.5.5', cf), _partial: true };
+    // Cancelled while resolving: no result (no ORIGIN analysis), one full record and one streamed partial.
+    const run = {
+      status: 'cancelled', config: { domains: ['example.net'] }, result: null, hosts: [apex], found: new Map([[www.name, www]]),
+      sourceResults: [], finishedAt: new Date('2026-09-27T12:00:00Z')
+    };
+    const facts = subdomainsSummaryFacts(run);
+    assert.deepEqual([facts.counts.found, facts.counts.cloudflare, facts.proxied, facts.withCandidates, facts.networks], [2, 1, 1, 0, 0]);
+    const out = md(S.subdomainsSummary(facts, opts()));
+    assert.deepEqual(lines(out).slice(1, 5), [
+      '- 2 subdomains found before the scan was cancelled · 2 resolve',
+      '- 1 Cloudflare · 1 direct IP',
+      '- 1 host hides its origin behind a proxy',
+      ''
+    ], out);
+    assert.doesNotMatch(out, /No host hides|No dangling|candidate|to sweep/);
+    // A finished scan counts them from its ORIGIN analysis; a running one has nothing to copy.
+    const done = { ...run, status: 'done', result: { hosts: [apex, { ...www, _partial: false }], originHints: [], originNetworks: [] } };
+    assert.deepEqual([subdomainsSummaryFacts(done).proxied, subdomainsSummaryFacts(done).networks], [1, 0]);
+    assert.equal(subdomainsSummaryFacts({ ...run, status: 'running' }), null);
+    assert.equal(subdomainsSummaryFacts({ ...run, status: 'error' }), null);
   });
 
   test('a hostile name stays one inert code span (no mention, link, bidi or new line)', () => {
@@ -304,13 +360,13 @@ describe('scan (SSL Targets)', () => {
     assertShape(doc);
     assert.deepEqual(ls.slice(0, 6), [
       '**SSL Targets · `*.example.com`**',
-      '- Certificate `*.example.com` · issued by Example CA (R1) · valid until 2026-12-01 (64 days left)',
+      '- Certificate `*.example.com` · issued by `Example CA (R1)` · valid until 2026-12-01 (64 days left)',
       '- 42 hosts found · 30 covered by the certificate',
       '- 6 servers in your list need the certificate: `web01`, `web02`, `web03`, `lb-1`, `lb-2` +1 more',
       '- 12 hosts behind a CDN (origin hidden) · 2 origin networks to sweep',
       '- Verify: New certificate live on 3 of 6 servers · still old: 3.'
     ]);
-    assert.ok(ls[6].includes('scanned 2026-09-27 13:00 UTC'));
+    assert.ok(ls[7].includes('scanned 2026-09-27 13:00 UTC'));
     assert.equal(lines(txt(doc))[3], '- 6 servers in your list need the certificate: web01, web02, web03, lb-1, lb-2 +1 more');
   });
 
@@ -362,6 +418,7 @@ describe('zone', () => {
       '- **Warning:** TTL below 60 s',
       '- **Warning:** Two SPF records',
       '- The zone file stays in this browser: the link opens Zone File without it',
+      '',
       `DomainScope · as of 2026-09-27 14:03 UTC · ${url}`
     ]);
   });
@@ -407,9 +464,9 @@ describe('cert', () => {
     assertShape(doc);
     assert.deepEqual(ls.slice(0, 5), [
       '**Certificate · `*.example.com`**',
-      '- issued by Example CA (R1)',
+      '- Issued by `Example CA (R1)`',
       '- 5 DNS names: `*.example.com`, `example.com`, `www.example.net`, `api.example.net` +1 more',
-      '- valid until 2026-10-01 (3 days left)',
+      '- Valid until 2026-10-01 (3 days left)',
       '- The certificate file stays in this browser: the link opens the Certificate tool without it'
     ]);
   });
@@ -418,17 +475,24 @@ describe('cert', () => {
     const doc = S.certSummary({ ...facts, dnsNames: [], warnings: ['SELF_SIGNED', 'NO_SAN', 'UNKNOWN'], source: 'ct', notBefore: new Date('2026-10-01T00:00:00Z') }, opts());
     const out = md(doc);
     assertShape(doc);
-    for (const s of ['- No DNS names', '- not valid before 2026-10-01', '- **Warning:** self-signed: browsers do not trust it', '- **Warning:** no DNS names: browsers reject it for a host name',
+    for (const s of ['- No DNS names', '- Not valid before 2026-10-01', '- **Warning:** self-signed: browsers do not trust it', '- **Warning:** no DNS names: browsers reject it for a host name',
       '- Loaded from Certificate Transparency: a server may serve a different one']) assert.ok(out.includes(s), `${s}\n${out}`);
     assert.doesNotMatch(out, /UNKNOWN/);
     assert.ok(md(S.certSummary({ ...facts, source: 'sample' }, opts())).includes('- This is the built-in sample certificate'));
     const tr = md(S.certSummary(facts, opts('tr')));
-    assert.ok(tr.includes('**Sertifika · `*.example.com`**') && tr.includes('2026-10-01 tarihine kadar geçerli (3 gün kaldı)') && tr.includes('- 5 DNS adı: '), tr);
+    assert.ok(tr.includes('**Sertifika · `*.example.com`**') && tr.includes('- Veren: `Example CA (R1)`') && tr.includes('- 2026-10-01 tarihine kadar geçerli (3 gün kaldı)') && tr.includes('- 5 DNS adı: '), tr);
   });
 
-  test('a hostile issuer is escaped text', () => {
-    const doc = S.certSummary({ ...facts, issuer: `*Evil* <https://example.org|click>${RLO}` }, opts());
-    assert.ok(md(doc).includes('- issued by \\*Evil\\* \\<https://example.org\\|click\\>'), md(doc));
+  test('a hostile issuer is one inert code span, as the subject is (no mention, link or formatting)', () => {
+    const issuer = `*Evil* @here <https://example.org|click> https://example.org/x <!channel>${RLO}`;
+    const doc = S.certSummary({ ...facts, issuer }, opts());
+    assert.equal(lines(md(doc))[1], '- Issued by `*Evil* @here <https://example.org|click> https://example.org/x <!channel>`');
+    assert.equal(lines(txt(doc))[1], '- Issued by *Evil* @here <https://example.org|click> https://example.org/x <!channel>');
+    const scan = S.scanSummary({ domains: ['example.com'], cert: { name: 'example.com', issuer: '@channel', notAfter: new Date('2026-12-01T00:00:00Z') }, hosts: 1, inventory: 0 }, opts());
+    assert.match(lines(md(scan))[1], /^- Certificate `example\.com` · issued by `@channel` · valid until /);
+    // A self-signed wildcard names itself as the issuer: a code span, no backslash for Slack to show.
+    const wild = S.certSummary({ ...facts, issuer: '*.wild.example.net' }, opts('tr'));
+    assert.equal(lines(md(wild))[1], '- Veren: `*.wild.example.net`');
   });
 });
 
@@ -455,8 +519,8 @@ describe('lookup (one line)', () => {
 
   test('the time the last answer arrived, not the time of the copy', () => {
     const facts = { name: 'example.com', types: ['A'], responses: [resp('A', ['192.0.2.1'])] };
-    assert.equal(lines(md(S.lookupSummary({ ...facts, at: new Date('2026-09-27T10:00:00Z') }, opts('en', null))))[1], 'DomainScope · checked 2026-09-27 10:00 UTC');
-    assert.equal(lines(md(S.lookupSummary(facts, opts('tr', null))))[1], 'DomainScope · kontrol edildi: 2026-09-27 14:03 UTC');
+    assert.equal(lines(md(S.lookupSummary({ ...facts, at: new Date('2026-09-27T10:00:00Z') }, opts('en', null))))[2], 'DomainScope · checked 2026-09-27 10:00 UTC');
+    assert.equal(lines(txt(S.lookupSummary(facts, opts('tr', null))))[1], 'DomainScope · kontrol edildi: 2026-09-27 14:03 UTC');
   });
 });
 
@@ -471,8 +535,26 @@ describe('ip (one line)', () => {
     });
     const doc = S.ipSummary({ rows: [r] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));
     assertShape(doc, { inline: true });
-    assert.equal(lines(md(doc))[0], '**IP Intel · `203.0.113.7`**: AS64500 EXAMPLE-NET · Amsterdam, NL · `edge.example.net` · Fastly · in your server list');
+    assert.equal(lines(md(doc))[0], '**IP Intel · `203.0.113.7`**: AS64500 `EXAMPLE-NET` · `Amsterdam, NL` · `edge.example.net` · Fastly · in your server list');
+    assert.equal(lines(txt(doc))[0], 'IP Intel · 203.0.113.7: AS64500 EXAMPLE-NET · Amsterdam, NL · edge.example.net · Fastly · in your server list');
     assert.doesNotMatch(md(doc), /secret-db-01/);
+  });
+
+  test('a hostile AS name or place is an inert code span', () => {
+    const r = row('203.0.113.7', { info: { asn: 64500, holder: '@here https://example.org *x*', country: 'NL', city: '<!channel>' } });
+    assert.equal(lines(md(S.ipSummary({ rows: [r] }, opts())))[0], '**IP Intel · `203.0.113.7`**: AS64500 `@here https://example.org *x*` · `<!channel>, NL` · Direct');
+  });
+
+  test('a stopped lookup says how many addresses it never looked up; Turkish', () => {
+    const rows = [row('203.0.113.7', { info: { asn: 64500, country: 'NL' } }), row('198.51.100.9'), row('198.51.100.10')];
+    const doc = S.ipSummary({ rows, stopped: true }, opts());
+    assertShape(doc, { inline: true });
+    assert.equal(lines(md(doc))[0], '**IP Intel · 3 addresses**: 1 network · 1 country · stopped: 2 addresses not looked up');
+    assert.equal(lines(md(S.ipSummary({ rows, stopped: true }, opts('tr'))))[0], '**IP Bilgisi · 3 adres**: 1 ağ · 1 ülke · durduruldu: 2 adres sorgulanmadı');
+    assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1, 2), stopped: true }, opts())))[0], '**IP Intel · `198.51.100.9`**: Direct · stopped before it was looked up');
+    assert.equal(lines(md(S.ipSummary({ rows: rows.slice(1), stopped: true }, opts())))[0], '**IP Intel · 2 addresses**: no network data · stopped: 2 addresses not looked up');
+    assert.doesNotMatch(md(S.ipSummary({ rows: rows.slice(0, 1), stopped: true }, opts())), /stopped/, 'every address looked up: nothing to say');
+    assert.doesNotMatch(md(S.ipSummary({ rows }, opts())), /stopped/, 'not stopped');
   });
 
   test('several addresses: CDN / private / inventory counts, networks, countries; Turkish', () => {
@@ -486,7 +568,7 @@ describe('ip (one line)', () => {
     assert.equal(lines(md(doc))[0], '**IP Intel · 3 addresses**: 1 behind a CDN (Cloudflare) · 1 private · 1 in your server list · 2 networks · 2 countries');
     const tr = md(S.ipSummary({ rows }, opts('tr')));
     assert.ok(tr.startsWith('**IP Bilgisi · 3 adres**: 1 tanesi CDN arkasında (Cloudflare) · 1 tanesi özel (private)'), tr);
-    assert.equal(lines(md(S.ipSummary({ rows, at: new Date('2026-09-27T08:30:00Z') }, opts('en', null))))[1], 'DomainScope · checked 2026-09-27 08:30 UTC', 'the time the lookup ended');
+    assert.equal(lines(md(S.ipSummary({ rows, at: new Date('2026-09-27T08:30:00Z') }, opts('en', null))))[2], 'DomainScope · checked 2026-09-27 08:30 UTC', 'the time the lookup ended');
   });
 });
 
@@ -505,6 +587,25 @@ describe('rendering and dispatch', () => {
     assert.equal(S.renderSummary(doc), md(doc));
     assert.equal(lines(md(doc)).pop(), 'DomainScope · as of 2026-09-27 14:03 UTC');
     assert.deepEqual(S.SUMMARY_FORMATS, ['markdown', 'text']);
+  });
+
+  test('the Markdown footer is its own paragraph, never a lazy continuation of the last item or the one-line summary', () => {
+    const zone = S.zoneSummary({ origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts('en', `${URL_BASE}#/zone`));
+    const ip = S.ipSummary({ rows: [{ ip: '203.0.113.7', info: null, classification: { kind: 'direct' }, servers: [] }] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));
+    for (const doc of [zone, ip]) {
+      // CommonMark (Jira's Markdown paste, GitHub, GitLab): a line right after a "- " item or a
+      // paragraph continues it; only an empty line ends the block.
+      const out = md(doc);
+      const blocks = out.trimEnd().split('\n\n');
+      assert.equal(blocks.length, 2, `the summary, then the footer:\n${out}`);
+      assert.match(blocks[1], /^DomainScope · [^\n]+$/, 'the footer alone');
+      assert.doesNotMatch(blocks[0], /DomainScope/);
+    }
+    assert.match(md(zone), /zone file stays in this browser: the link opens Zone File without it\n\nDomainScope · as of /);
+    assert.match(md(ip), /^\*\*IP Intel · `203\.0\.113\.7`\*\*: Direct\n\nDomainScope · checked /);
+    // Plain text keeps its lines together.
+    assert.doesNotMatch(txt(zone), /\n\n/);
+    assert.doesNotMatch(txt(ip), /\n\n/);
   });
 });
 

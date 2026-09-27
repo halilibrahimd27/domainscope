@@ -584,6 +584,27 @@ async function main() {
       // Learned names are opt-in (Subdomains › Advanced): off unless this browser switched them on.
       assert(/^Languages \/ markets: Auto: Turkish \(\.com\.tr\) · (learned names off|no learned names yet|[\d,]+ learned names? first)$/.test(info.vocab), `vocabulary: ${info.vocab}`);
       assertEqual(info.link, '#/subdomains', 'the vocabulary is changed in Subdomains › Advanced');
+      // The query estimate follows the variation budget and the origin hints at once.
+      const queries = () => page.evaluate(() => {
+        const d = document.querySelector('[data-role="scan-wl-plan"]').dataset;
+        return { min: Number(d.queriesMin), max: Number(d.queriesMax) };
+      });
+      const setBudget = (v) => page.evaluate((x) => {
+        const sel = document.querySelector('.scan-perm-budget select');
+        sel.value = x;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }, v);
+      const q1500 = await queries();
+      await setBudget('5000');
+      const q5000 = await queries();
+      assert(q5000.max > q1500.max, `budget 5,000 raises the estimate at once: ${JSON.stringify([q1500, q5000])}`);
+      await setBudget('1500');
+      assertEqual(await queries(), q1500, 'back to 1,500');
+      await page.click('[data-role="scan-origin-hints"]');
+      const noHints = await queries();
+      assert(noHints.max < q1500.max, `no origin hints lowers it at once: ${JSON.stringify([q1500, noHints])}`);
+      await page.click('[data-role="scan-origin-hints"]');
+      assertEqual(await queries(), q1500, 'origin hints back on');
       // Off: no plan to count, no vocabulary line.
       await page.click('input[name="scan-bruteforce"][value="off"]');
       assert(await page.evaluate(() => document.querySelector('[data-role="scan-vocab"]').hidden && /No names are guessed/.test(document.querySelector('[data-role="scan-wl-plan"]').textContent)), 'off hides the vocabulary');

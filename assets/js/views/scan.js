@@ -1626,6 +1626,7 @@ export function mount(container, ctx) {
     onChange: (v) => {
       options = { ...options, permutationBudget: Number(v) };
       saveOptions(options);
+      renderVocab(); // the plan line's query estimate counts the variations
     }
   });
   budgetSelect.input.disabled = !options.permutations;
@@ -1645,8 +1646,10 @@ export function mount(container, ctx) {
     onChange: (on) => {
       options = { ...options, originHints: on };
       saveOptions(options);
+      renderVocab(); // the plan line's query estimate counts the origin-hint lookups
     }
   });
+  hintsBox.input.dataset.role = 'scan-origin-hints';
   const extraField = textarea({
     label: t('scan.opt.extra'),
     optional: true,

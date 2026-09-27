@@ -2098,6 +2098,16 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const html = await readFile(path.join(ROOT, 'index.html'), 'utf8');
     assert.doesNotMatch(html, /every subdomain/i);
   });
+
+  test('SSL Targets plan line follows the variation budget and origin hints at once', async () => {
+    const { S } = await load();
+    const base = { level: 'smart', domains: ['example.com'], permutations: true, permutationBudget: 1500, originHints: true };
+    assert.ok(S.planQueryRange({ ...base, permutationBudget: 5000 }).max > S.planQueryRange(base).max, 'the budget moves the estimate');
+    assert.ok(S.planQueryRange({ ...base, originHints: false }).max < S.planQueryRange(base).max, 'so do the origin hints');
+    const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    assert.match(src, /options = \{ \.\.\.options, permutationBudget: Number\(v\) \};\s*saveOptions\(options\);\s*renderVocab\(\);/, 'budget select');
+    assert.match(src, /options = \{ \.\.\.options, originHints: on \};\s*saveOptions\(options\);\s*renderVocab\(\);/, 'origin hints box');
+  });
 });
 
 /* ------------------------------------------------------------------------ */

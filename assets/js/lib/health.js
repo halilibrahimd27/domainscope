@@ -255,8 +255,10 @@ function validDomainSpec(spec) {
  * Expand an SPF domain-spec. Only macros that need no sender context
  * (%{d}, %{o}, and the escapes %% %_ %-) can be expanded; anything else
  * (%{i}, %{s}, %{l} …) yields `{ name: null, macro: true }`.
+ * %{d} is the current domain (it changes inside include / redirect), %{o}
+ * the sender domain (RFC 7208 §7.3), taken to be the checked domain.
  */
-function expandDomainSpec(spec, domain) {
+function expandDomainSpec(spec, domain, senderDomain = domain) {
   const s = String(spec);
   if (!s.includes('%')) return { name: normalizeHostname(s.replace(/\.$/, '')), macro: false };
   let unresolved = false;
@@ -270,7 +272,7 @@ function expandDomainSpec(spec, domain) {
       return m;
     }
     const splitter = delims ? new RegExp(`[${delims.replace(/[-\\\]^]/g, '\\$&')}]`) : /\./;
-    let parts = domain.split(splitter);
+    let parts = (l === 'o' ? senderDomain : domain).split(splitter);
     if (rev) parts = parts.reverse();
     if (digits) {
       const n = Number(digits);
@@ -493,7 +495,7 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
   const recursive = term.mechanism === 'include' || term.mechanism === 'redirect';
   if (!recursive && !SPF_LOOKUP_MECHANISMS.has(term.mechanism)) return t;
   t.lookup = true;
-  const expanded = expandDomainSpec(term.value ?? node.domain, node.domain);
+  const expanded = expandDomainSpec(term.value ?? node.domain, node.domain, ctx.sender);
   t.macro = expanded.macro;
   if (!expanded.name) return t; // needs sender context (e.g. %{i}); counted, not evaluated
   t.target = expanded.name;
@@ -565,7 +567,7 @@ export async function spfLookupCount(domain, { dns, signal, maxDepth = 10, recor
   const name = normalizeHostname(String(domain ?? ''));
   if (!name) throw new TypeError(`Invalid domain: ${String(domain)}`);
   throwIfAborted(signal);
-  const ctx = { d: adaptDns(dns, signal), queries: 0, errors: [], maxDepth, truncated: false };
+  const ctx = { d: adaptDns(dns, signal), sender: name, queries: 0, errors: [], maxDepth, truncated: false };
   const tree = await evalSpfNode(name, ctx, 0, [name], record);
   throwIfAborted(signal);
   return {

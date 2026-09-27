@@ -636,6 +636,23 @@ test('spfLookupCount: recursion, macros, void lookups, loops, MX limit', async (
   assert.equal(r.tree.all, '~');
 });
 
+test('spfLookupCount: %{o} is the sender (checked) domain, %{d} the current one, also inside includes', async () => {
+  const zone = {
+    'example.com': { TXT: ['v=spf1 include:_spf.example.net -all'] },
+    '_spf.example.net': { TXT: ['v=spf1 exists:%{o}._allow.example.net exists:%{d}._d.example.net -all'] },
+    'example.com._allow.example.net': { A: ['127.0.0.2'] },
+    '_spf.example.net._d.example.net': { A: ['127.0.0.2'] }
+  };
+  const dns = fakeDns(zone);
+  const r = await spfLookupCount('example.com', { dns });
+  const inc = r.tree.terms[0].child;
+  assert.equal(inc.terms[0].target, 'example.com._allow.example.net');
+  assert.equal(inc.terms[1].target, '_spf.example.net._d.example.net');
+  assert.equal(r.voidCount, 0);
+  assert.equal(r.count, 3);
+  assert.ok(!dns.calls.some((c) => c.name === '_spf.example.net._allow.example.net'));
+});
+
 test('spfLookupCount: include errors, redirect, depth, too many MX, DNS errors, record option', async () => {
   const mx = Array.from({ length: 11 }, (_, i) => ({ preference: i, exchange: `mx${i}.big.test` }));
   const zone = {

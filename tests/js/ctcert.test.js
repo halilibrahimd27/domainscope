@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CERTSPOTTER_ISSUANCES, CT_COOLDOWN_MS, CT_LOOKUP_STATUSES, CT_MAX_PAGES, CT_PAGE_SIZE, CT_SPOTTER_STATES,
+  CERTSPOTTER_ISSUANCES, CT_COOLDOWN_MS, CT_LOOKUP_STATUSES, CT_MAX_PAGES, CT_SPOTTER_STATES,
   certspotterUrl, coversCtHost, createCtCooldown, crtshSearchUrls, lookupCtCertificate, normalizeCtHost,
   selectCrtshEntry, selectIssuance
 } from '../../assets/js/lib/ctcert.js';
@@ -185,7 +185,6 @@ describe('names and URLs', () => {
   });
 
   test('constants and vocabularies', () => {
-    assert.equal(CT_PAGE_SIZE, 100);
     assert.equal(CT_MAX_PAGES, 5);
     assert.equal(CT_COOLDOWN_MS, 3600000);
     assert.deepEqual(CT_LOOKUP_STATUSES, ['found', 'manual', 'not-found', 'error']);
@@ -339,6 +338,16 @@ describe('lookupCtCertificate', () => {
     assert.equal(init.referrerPolicy, 'no-referrer');
     assert.equal(init.method, undefined, 'GET');
     assert.deepEqual(Object.keys(init.headers), ['accept'], 'only a CORS-safelisted header: no preflight');
+  });
+
+  test('a short page does not end the list (the page size is no contract): the empty page does', async () => {
+    const page = [issuance({ names: ['www.example.com'] }), issuance({ names: ['example.com'] })];
+    const f = mockFetch({ spotter: pagesOf(page) });
+    const r = await lookup('www.example.com', f);
+    assert.equal(r.status, 'found');
+    assert.equal(r.skipped.notCovering, 1);
+    assert.equal(r.requests, 2, 'one page of rows, then [] — two requests of the hourly 100');
+    assert.equal(new URL(f.calls[1].url).searchParams.get('after'), page[1].id);
   });
 
   test('nothing current on Cert Spotter: not-found, and crt.sh (the same logs) is not asked', async () => {

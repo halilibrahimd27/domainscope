@@ -13,6 +13,9 @@
  *     full-domain one a scan's source uses (`include_subdomains=true`). `domain=*.example.com`
  *     lists the certificates holding that wildcard name. The rate-limit headers are not
  *     CORS-exposed, so a browser only ever sees a 429.
+ *     The empty page is the documented end of the list; the page size is not part of the
+ *     contract, so a short page does not end it and a lookup reads on to the empty page. Most
+ *     names therefore cost two requests (their one page, then `[]`): about 50 lookups an hour.
  *   - crt.sh `?q=<name>&output=json&exclude=expired` answers with ACAO `*`, but its download
  *     `?d=<id>` sends no ACAO header: a page cannot read the certificate from crt.sh. Its
  *     identity search matches names literally (`q=www.example.com` does not list a
@@ -35,8 +38,6 @@ import { sourceQuota } from './sources.js';
 export const CERTSPOTTER_ISSUANCES = 'https://api.certspotter.com/v1/issuances';
 /** crt.sh base URL (JSON search, and the certificate pages / downloads a user opens). */
 export const CRTSH_BASE = 'https://crt.sh/';
-/** Cert Spotter pages at most this many issuances (observed 2026-09-27). */
-export const CT_PAGE_SIZE = 100;
 /** At most this many Cert Spotter pages per lookup (500 current certificates for one name). */
 export const CT_MAX_PAGES = 5;
 /** Per-request timeout for Cert Spotter. */
@@ -375,6 +376,7 @@ function errorText(err) {
 /**
  * Every Cert Spotter page of the name, until an empty page (the end), the page cap or an error.
  * An error on the first page is thrown; on a later page the rows read so far are returned with it.
+ * A short page is not taken for the end (see the module header): the empty page costs one request.
  */
 async function certspotterPages(host, { fetchImpl, signal, timeoutMs, maxPages, count }) {
   const items = [];
@@ -473,7 +475,7 @@ export async function lookupCtCertificate(input, {
     const quota = {
       ...sourceQuota('certspotter', { limited: true, retryAfterMs: waitMs }),
       resetAt: new Date(at + waitMs),
-      resetHint: 'Cert Spotter’s hourly single-host quota for your IP (about 100 lookups) is used up; try again in about an hour.'
+      resetHint: 'Cert Spotter’s hourly single-host quota for your IP (100 requests, about 50 lookups) is used up; try again in about an hour.'
     };
     cooldown.set(quota, at + waitMs);
     out.certspotter.quota = quota;

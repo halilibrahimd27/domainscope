@@ -128,6 +128,12 @@ class DerError(ValueError):
     """Raised when DER/ASN.1 input is malformed or not a supported structure."""
 
 
+# What callers of parse_certificate() catch for certificates from a server or a file:
+# DerError (a ValueError), plus a last line of defence against parser bugs on hostile
+# input, so one bad certificate becomes a row or a warning, never a lost scan.
+_CERT_PARSE_ERRORS = (ValueError, OverflowError, IndexError)
+
+
 # A decoded TLV: (tag byte, header start, content start, content end) - offsets into
 # the buffer so exact sub-structures (e.g. a whole certificate) can be sliced out.
 Tlv = Tuple[int, int, int, int]
@@ -193,6 +199,11 @@ def _content(buf: bytes, tlv: Tlv) -> bytes:
     return buf[tlv[2]:tlv[3]]
 
 
+# Octets per OID arc: 20 x 7 bits holds a 2.25 UUID arc (128 bits); a longer arc would only
+# make str() hit Python's int-to-str digit limit (ValueError, not DerError).
+_MAX_OID_ARC_OCTETS = 20
+
+
 def _decode_oid(data: bytes) -> str:
     if not data:
         raise DerError('empty OBJECT IDENTIFIER')
@@ -200,11 +211,16 @@ def _decode_oid(data: bytes) -> str:
         raise DerError('truncated OBJECT IDENTIFIER')
     arcs = []
     value = 0
+    octets = 0
     for octet in data:
+        octets += 1
+        if octets > _MAX_OID_ARC_OCTETS:
+            raise DerError('OBJECT IDENTIFIER arc too large')
         value = (value << 7) | (octet & 0x7F)
         if not octet & 0x80:
             arcs.append(value)
             value = 0
+            octets = 0
     first = arcs[0]
     if first < 40:
         head = [0, first]
@@ -384,8 +400,14 @@ def _parse_time(tag: int, data: bytes) -> datetime:
     except ValueError:
         raise DerError('invalid time %r' % text)
     if zone and zone != 'Z':
-        offset = timedelta(hours=int(zone[1:3]), minutes=int(zone[3:5]))
-        value = value - offset if zone[0] == '+' else value + offset
+        hours, minutes = int(zone[1:3]), int(zone[3:5])
+        if hours > 23 or minutes > 59:
+            raise DerError('invalid time zone offset %r' % text)
+        offset = timedelta(hours=hours, minutes=minutes)
+        try:
+            value = value - offset if zone[0] == '+' else value + offset
+        except OverflowError:  # 9999-12-31T23:00-0100, 0001-01-01T00:00+0100
+            raise DerError('time out of range %r' % text)
     return value
 
 
@@ -552,7 +574,10 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     if len(top) < 3:
         raise DerError('a Certificate has 3 elements, found %d' % len(top))
     tbs = _expect(top[0], 0x30, 'TBSCertificate')
-    sig_oid = _oid(buf, _children(buf, *_expect(top[1], 0x30, 'signatureAlgorithm')[2:4])[0])
+    sig_parts = _children(buf, *_expect(top[1], 0x30, 'signatureAlgorithm')[2:4])
+    if not sig_parts:
+        raise DerError('empty signatureAlgorithm')
+    sig_oid = _oid(buf, sig_parts[0])
     fields = _children(buf, tbs[2], tbs[3])
 
     index = 0
@@ -712,7 +737,7 @@ def _load_der(buf: bytes, certs: List[CertInfo], warnings: List[CertWarning]) ->
         for der in pkcs7:
             try:
                 certs.append(parse_certificate(der))
-            except DerError as exc:
+            except _CERT_PARSE_ERRORS as exc:
                 warnings.append(('PARSE_ERROR', str(exc)))
         return
     if _looks_like_pkcs12(buf):
@@ -720,7 +745,7 @@ def _load_der(buf: bytes, certs: List[CertInfo], warnings: List[CertWarning]) ->
         return
     try:
         certs.append(parse_certificate(buf))
-    except DerError as exc:
+    except _CERT_PARSE_ERRORS as exc:
         warnings.append(('PARSE_ERROR', str(exc)))
 
 
@@ -2550,7 +2575,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                 cert = parse_certificate(der)
                 certificates.setdefault(cert.sha256, cert)
                 parsed[der] = cert
-            except DerError as exc:
+            except _CERT_PARSE_ERRORS as exc:
                 parsed[der] = 'unparseable certificate: %s' % exc
         return parsed[der]
 

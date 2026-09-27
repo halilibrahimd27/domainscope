@@ -77,6 +77,45 @@ def run_main(*args: str) -> Tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def der_tlv(tag: int, content: bytes) -> bytes:
+    """One DER TLV (short or long-form length) for hand-built test structures."""
+    if len(content) < 0x80:
+        return bytes([tag, len(content)]) + content
+    size = len(content).to_bytes((len(content).bit_length() + 7) // 8, 'big')
+    return bytes([tag, 0x80 | len(size)]) + size + content
+
+
+def mini_cert(not_before: bytes = b'20250101000000Z', not_after: bytes = b'20350101000000Z',
+              attr_oid: bytes = b'\x55\x04\x03', sig_alg: Optional[bytes] = None) -> bytes:
+    """A minimal unsigned certificate (GeneralizedTime validity, one subject attribute)."""
+    alg = der_tlv(0x30, der_tlv(0x06, bytes.fromhex('2a8648ce3d040302')))  # ecdsa-with-SHA256
+    name = der_tlv(0x30, der_tlv(0x31, der_tlv(0x30, der_tlv(0x06, attr_oid)
+                                              + der_tlv(0x0C, b'x.example.com'))))
+    spki = der_tlv(0x30, der_tlv(0x30, der_tlv(0x06, bytes.fromhex('2a8648ce3d0201')))
+                   + der_tlv(0x03, b'\x00\x04'))
+    validity = der_tlv(0x30, der_tlv(0x18, not_before) + der_tlv(0x18, not_after))
+    tbs = der_tlv(0x30, der_tlv(0x02, b'\x01') + alg + name + validity + name + spki)
+    return der_tlv(0x30, tbs + (alg if sig_alg is None else sig_alg) + der_tlv(0x03, b'\x00'))
+
+
+def pem_of(der: bytes) -> bytes:
+    b64 = base64.b64encode(der).decode('ascii')
+    body = '\n'.join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return ('-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' % body).encode('ascii')
+
+
+# Certificates OpenSSL accepts in a handshake that once crashed the parser with something
+# other than DerError: an offset pushing a GeneralizedTime out of range (OverflowError), an
+# OID arc beyond Python's int-to-str digit limit (ValueError), and - from a file only - an
+# empty signatureAlgorithm SEQUENCE (IndexError).
+HOSTILE_DERS = {
+    'notAfter 9999123123-0100': mini_cert(not_after=b'9999123123-0100'),
+    'notBefore 00010101000000+0100': mini_cert(not_before=b'00010101000000+0100'),
+    'huge OID arc': mini_cert(attr_oid=b'\x55' + b'\x81' * 2100 + b'\x01'),
+    'empty signatureAlgorithm': mini_cert(sig_alg=der_tlv(0x30, b'')),
+}
+
+
 # ======================================================================= DER parser
 
 class DerParserTests(unittest.TestCase):
@@ -240,6 +279,13 @@ class DerParserTests(unittest.TestCase):
             sos._decode_oid(b'')
         with self.assertRaises(sos.DerError):
             sos._decode_oid(b'\x2a\x86')
+        # a 2.25 UUID arc (128 bits) is fine; an arc past Python's int-to-str limit is not
+        uuid_arc = 2 ** 128 - 1
+        encoded = bytes([0x80 | (uuid_arc >> (7 * i) & 0x7F) for i in range(18, 0, -1)])
+        self.assertEqual(sos._decode_oid(b'\x69' + encoded + bytes([uuid_arc & 0x7F])),
+                         '2.25.%d' % uuid_arc)
+        with self.assertRaisesRegex(sos.DerError, 'arc too large'):
+            sos._decode_oid(b'\x2b' + b'\xff' * 2100 + b'\x7f')
 
     def test_time_parsing(self):
         utc, gen = 0x17, 0x18
@@ -259,10 +305,31 @@ class DerParserTests(unittest.TestCase):
                 self.assertEqual(sos._parse_time(tag, raw), expected)
         for tag, raw in ((utc, b'251301000000Z'), (gen, b'2025'), (utc, b'abc'),
                          (gen, b'20250230000000Z'), (0x04, b'20250101000000Z'),
-                         (utc, b'\xff\xfe')):
+                         (utc, b'\xff\xfe'), (gen, b'9999123123-0100'),
+                         (gen, b'00010101000000+0100'), (gen, b'20250101000000+2599'),
+                         (gen, b'20250101000000+0160')):
             with self.subTest(raw=raw):
                 with self.assertRaises(sos.DerError):
                     sos._parse_time(tag, raw)
+
+    def test_hostile_certificates_raise_der_error_only(self):
+        self.assertEqual(sos.parse_certificate(mini_cert()).subject_cn, 'x.example.com')
+        for label, der in HOSTILE_DERS.items():
+            with self.subTest(cert=label):
+                with self.assertRaises(sos.DerError):
+                    sos.parse_certificate(der)
+                for data in (der, pem_of(der)):
+                    certs, warnings = sos.load_certificates(data)  # never raises
+                    self.assertEqual(certs, [])
+                    self.assertEqual([code for code, _ in warnings], ['PARSE_ERROR'])
+        with self.assertRaisesRegex(sos.DerError, 'empty signatureAlgorithm'):
+            sos.parse_certificate(b'\x30\x08\x30\x00\x30\x00\x03\x02\x00\x00')
+
+    def test_unexpected_parser_errors_become_warnings(self):
+        der = fixture_cert('ec_wildcard.pem').der
+        with mock.patch.object(sos, 'parse_certificate', side_effect=IndexError('bug')):
+            certs, warnings = sos.load_certificates(der)
+        self.assertEqual((certs, warnings), ([], [('PARSE_ERROR', 'bug')]))
 
     def test_ip_san_formatting(self):
         self.assertEqual(sos._format_ip_bytes(bytes([10, 0, 0, 5])), '10.0.0.5')
@@ -1321,12 +1388,23 @@ class EngineTests(unittest.TestCase):
                                                              error='server sent no certificate')})
         servers = [sos.Server('a', ['10.0.0.1']), sos.Server('b', ['10.0.0.2']),
                    sos.Server('c', ['10.0.0.3'])]
+        # a hostile server's certificate costs one row, never the whole scan
+        for number, der in enumerate(HOSTILE_DERS.values(), 11):
+            network.tls['10.0.0.%d' % number] = der
+            servers.append(sos.Server('hostile%d' % number, ['10.0.0.%d' % number]))
         report = self.scan(servers, ['x.example.com'], network)
         rows = self.rows(report, probe=sos.PROBE_SNI)
         self.assertEqual(rows[('a', 443, 'x.example.com')].status, sos.TLS_ERROR)
         self.assertIn('unparseable certificate', rows[('a', 443, 'x.example.com')].error)
         self.assertEqual(rows[('b', 443, 'x.example.com')].error, 'RuntimeError: boom')
         self.assertEqual(rows[('c', 443, 'x.example.com')].error, 'server sent no certificate')
+        for number in range(11, 11 + len(HOSTILE_DERS)):
+            row = rows[('hostile%d' % number, 443, 'x.example.com')]
+            self.assertEqual(row.status, sos.TLS_ERROR)
+            self.assertTrue(row.error.startswith('unparseable certificate: '), row.error)
+        with mock.patch.object(sos, 'parse_certificate', side_effect=OverflowError('bug')):
+            report = self.scan([sos.Server('a', ['10.0.0.1'])], ['x.example.com'], network)
+        self.assertEqual({r.error for r in report.results}, {'unparseable certificate: bug'})
 
     def test_connect_timeouts(self):
         network = FakeNetwork({'10.0.0.1': socket.timeout('timed out'),
@@ -1731,6 +1809,17 @@ class CliArgumentTests(unittest.TestCase):
             code, _, err = run_main('-t', '127.0.0.1', '--cert', csr)
         self.assertEqual(code, 2)
         self.assertIn('signing request', err)
+
+    def test_hostile_cert_file_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, der in HOSTILE_DERS.items():
+                path = os.path.join(tmp, 'hostile.pem')
+                Path(path).write_bytes(pem_of(der))
+                with self.subTest(cert=label):
+                    code, _, err = run_main('-t', '127.0.0.1', '--cert', path)
+                    self.assertEqual(code, 2)
+                    self.assertIn('no certificate found in', err)
+                    self.assertNotIn('Traceback', err)
 
     def test_no_scannable_targets(self):
         with tempfile.TemporaryDirectory() as tmp:

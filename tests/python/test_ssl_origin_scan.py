@@ -1695,6 +1695,27 @@ class EngineTests(unittest.TestCase):
         self.assertEqual({r.status for r in report.results
                           if r.ip not in silent and r.probe == sos.PROBE_SNI}, {sos.NEEDS_UPDATE})
 
+    def test_an_endpoint_hanging_on_most_names_is_not_held_to_the_cap(self):
+        # An SNI router with a dead backend: the default certificate and a few names answer
+        # at once, the rest hang until the timeout. The first answers must not keep the cap.
+        answering = {None, 'h00.wild.example.net', 'h01.wild.example.net'}
+
+        def tls(ip, port, sni, timeout):
+            if sni in answering:
+                return sos.TlsResult(der=EC_DER, version='TLSv1.3')
+            time.sleep(timeout)
+            raise socket.timeout('timed out')
+
+        names = ['h%02d.wild.example.net' % i for i in range(60)]
+        timeout = 0.2
+        began = time.monotonic()
+        report = sos.run_scan([sos.Server('s1', ['10.0.0.1'])], sos.build_probe_names(names), [443],
+                              timeout=timeout, workers=64, connect_fn=lambda *a: None, tls_fn=tls)
+        elapsed = time.monotonic() - began
+        capped = -(-(len(names) - 2) // sos.MAX_PER_ENDPOINT) * timeout  # 15 rounds: 3 s
+        self.assertLess(elapsed, capped / 2)
+        self.assertEqual(sum(1 for r in report.results if r.status == sos.TIMEOUT), 58)
+
     def test_without_new_cert_every_hit_is_needs_update(self):
         network = FakeNetwork({}, {'10.0.0.1': by_old_or_new(EC_DER)})
         report = self.scan([sos.Server('s', ['10.0.0.1'])], ['www.example-test.com.tr'],

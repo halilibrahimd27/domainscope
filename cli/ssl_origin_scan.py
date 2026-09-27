@@ -2680,7 +2680,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     :attr:`ScanReport.excluded`. Phase 1 TCP-connects each unique ip:port
     (``connect_fn``); phase 2 runs one TLS handshake per open endpoint and unique SNI
     plus one without SNI (``tls_fn``), at most :data:`MAX_PER_ENDPOINT` at a time per
-    endpoint unless its first ones all timed out, and retries a closed / reset / refused
+    endpoint unless its last ones all timed out, and retries a closed / reset / refused
     handshake (:func:`is_transient`) once where others completed. Both functions are
     injectable for tests. ``progress(phase, done, total, info)`` is called from this
     thread with phase ``connect``, ``tls`` or ``retry``. KeyboardInterrupt propagates.
@@ -2736,17 +2736,17 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     tls_total = len(open_keys) * len(snis)
     handed = dict.fromkeys(open_keys, 0)    # SNIs handed out, in the order of snis
     running = dict.fromkeys(open_keys, 0)
-    answered = dict.fromkeys(open_keys, 0)
-    timeouts = dict.fromkeys(open_keys, 0)
+    timeout_run = dict.fromkeys(open_keys, 0)  # handshakes in a row that ended in TIMEOUT
     handshakes = {}  # type: Dict[Tuple[str, int, Optional[str]], TlsResult]
     tls_done = [0]
 
     def capped(key: Tuple[str, int]) -> bool:
-        # A silent endpoint - its first MAX_PER_ENDPOINT handshakes all timed out: a
-        # tarpit, a balancer without a backend, not TLS - is not capped: there is no
-        # limiter to spare, and one timeout per MAX_PER_ENDPOINT names would stall the
-        # scan. The cap is back as soon as a handshake there ends otherwise.
-        silent = answered[key] >= MAX_PER_ENDPOINT and timeouts[key] == answered[key]
+        # A silent endpoint - its last MAX_PER_ENDPOINT handshakes all timed out: a
+        # tarpit, a balancer without a backend, an SNI router whose backend for the rest
+        # of the names hangs - is not capped: there is no limiter to spare, and one
+        # timeout per MAX_PER_ENDPOINT names would stall the scan. The cap is back as
+        # soon as a handshake there ends otherwise.
+        silent = timeout_run[key] >= MAX_PER_ENDPOINT
         return running[key] >= MAX_PER_ENDPOINT and not silent
 
     def tls_jobs() -> Iterable[Any]:
@@ -2776,9 +2776,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
         key = (job[0].ip, job[0].port)
         handshakes[(key[0], key[1], job[1])] = result
         running[key] -= 1
-        answered[key] += 1
-        if result.status == TIMEOUT:
-            timeouts[key] += 1
+        timeout_run[key] = timeout_run[key] + 1 if result.status == TIMEOUT else 0
         tls_done[0] += 1
         if progress:
             progress('tls', tls_done[0], tls_total, {})

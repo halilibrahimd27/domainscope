@@ -138,6 +138,32 @@ const canonName = (v) => {
   return s === '.' ? '' : s.replace(/\.$/, '');
 };
 
+/**
+ * The answer a record is served in. Routing variants (a Route 53 / cli53 SetIdentifier, an
+ * octoDNS geo code, each octoDNS dynamic value) are alternatives, never served together;
+ * multivalue answers and plain records are one answer ('').
+ */
+function variantKey(r) {
+  const rt = r.routing;
+  if (!rt || rt.policy === 'multivalue') return '';
+  if (rt.policy === 'dynamic') return `dynamic#${r.id}`;
+  return `${rt.policy}|${rt.id ?? ''}`;
+}
+
+/** The records of `list` that are served together and clash, or null. */
+function clashingGroup(list) {
+  if (list.length < 2) return null;
+  const groups = new Map();
+  for (const r of list) {
+    const k = variantKey(r);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  if (groups.has('') && groups.size > 1) return list; // a plain record next to routed ones
+  for (const g of groups.values()) if (g.length > 1) return g;
+  return null;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Lint                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -190,10 +216,11 @@ export function lintZone(zone) {
         push('CNAME_AT_APEX', cnames[0], { name, target },
           idx.cloudflare ? 'apex CNAME (Cloudflare flattens it)' : 'a CNAME cannot sit at the zone apex next to SOA / NS');
       }
-      if (cnames.length > 1) push('MULTIPLE_CNAME', cnames[1], { name, count: cnames.length }, `${cnames.length} CNAMEs at one name`, cnames);
+      const clash = clashingGroup(cnames);
+      if (clash) push('MULTIPLE_CNAME', clash[1], { name, count: clash.length }, `${clash.length} CNAMEs at one name`, clash);
     }
-    const spf = recs.filter((r) => r.type === 'TXT' && isSpfRecord(r));
-    if (spf.length > 1) push('MULTIPLE_SPF', spf[1], { name, count: spf.length }, `${spf.length} SPF records: RFC 7208 permerror`, spf);
+    const spf = clashingGroup(recs.filter((r) => r.type === 'TXT' && isSpfRecord(r)));
+    if (spf) push('MULTIPLE_SPF', spf[1], { name, count: spf.length }, `${spf.length} SPF records: RFC 7208 permerror`, spf);
     const spfType = recs.find((r) => r.type === 'SPF');
     if (spfType) push('SPF_RR_TYPE', spfType, { name }, 'RR type SPF (99) is obsolete; publish TXT only');
     const addrs = recs.filter((r) => ADDRESS_TYPES.has(r.type) && live(r));

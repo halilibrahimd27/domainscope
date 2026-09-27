@@ -750,7 +750,7 @@ export const LINT_RULES   // 38 codes, each { severity, scopes, severityCf?, sev
 export const SEVERITY_ORDER = ['error', 'warn', 'info'], CAA_KNOWN_TAGS, CF_PROXY_PORTS, LONG_CHAIN_HOPS = 8, TTL_LOW = 30, TTL_HIGH = 172800, TTL_OUTLIER_FACTOR = 20, SOA_NEGATIVE_TTL_MAX = 86400
 ```
 The rules:
-- CNAME conflicts: CNAME with other data or at the apex, multiple CNAMEs, loops, chains of more than 8 hops.
+- CNAME conflicts: CNAME with other data or at the apex, multiple CNAMEs, loops, chains of more than 8 hops. Multiple CNAMEs and multiple SPF records are counted per routing variant (a Route 53 / cli53 SetIdentifier, an octoDNS pool value or geo code), since variants are never served together.
 - Targets: MX / NS / SRV pointing to a CNAME, a target that is an IP address, dangling in-zone targets.
 - Duplicates and hidden data: DUPLICATE_RR, data occluded by a delegation or a DNAME.
 - Addresses: private, localhost and non-global IPv6.

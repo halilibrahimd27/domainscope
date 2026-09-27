@@ -64,6 +64,23 @@ describe('CNAME rules', () => {
     assert.deepEqual(find(zone([['a', 'CNAME', 'b'], ['a', 'CNAME', 'b', { duplicateOf: 0 }], ['b', 'A', '192.0.2.1']]), 'MULTIPLE_CNAME'), []);
   });
 
+  test('MULTIPLE_CNAME counts per routing variant: weighted, failover, geo and octoDNS pools are alternatives', () => {
+    const rt = (policy, id) => ({ routing: { policy, id } });
+    const none = (rows) => assert.deepEqual(find(zone(rows, { format: 'route53', dialect: null }), 'MULTIPLE_CNAME'), []);
+    none([['app', 'CNAME', 'blue.example.net.', rt('weighted', 'blue')], ['app', 'CNAME', 'green.example.net.', rt('weighted', 'green')]]);
+    none([['api', 'CNAME', 'a.example.net.', rt('failover', 'primary')], ['api', 'CNAME', 'b.example.net.', rt('failover', 'secondary')]]);
+    none([['geo', 'CNAME', 'eu.example.net.', rt('geolocation', 'eu')], ['geo', 'CNAME', 'us.example.net.', rt('geolocation', 'us')]]);
+    none([['same', 'CNAME', 'x.example.net.', rt('weighted', 'a')], ['same', 'CNAME', 'x.example.net.', rt('weighted', 'b')]]);
+    none([['dyn', 'CNAME', 'default.example.net.', rt('dynamic', null)], ['dyn', 'CNAME', 'eu.example.net.', rt('dynamic', 'eu')],
+      ['dyn', 'CNAME', 'us.example.net.', rt('dynamic', 'us')]]);
+    // two CNAMEs inside one variant, or a plain CNAME next to a routed one, still clash
+    const one = zone([['app', 'CNAME', 'a.example.net.', rt('weighted', 'blue')], ['app', 'CNAME', 'b.example.net.', rt('weighted', 'blue')],
+      ['app', 'CNAME', 'c.example.net.', rt('weighted', 'green')]], { format: 'route53', dialect: null });
+    assert.deepEqual(find(one, 'MULTIPLE_CNAME').map((f) => [f.params, f.recordIds]), [[{ name: 'app.example.com', count: 2 }, [0, 1]]]);
+    const mixed = zone([['app', 'CNAME', 'a.example.net.'], ['app', 'CNAME', 'b.example.net.', rt('weighted', 'blue')]], { format: 'route53', dialect: null });
+    assert.deepEqual(find(mixed, 'MULTIPLE_CNAME')[0].params, { name: 'app.example.com', count: 2 });
+  });
+
   test('CNAME_LOOP is reported once per cycle, at the first member in the file', () => {
     const z = zone([['c', 'CNAME', 'a'], ['a', 'CNAME', 'b'], ['b', 'CNAME', 'a']]);
     const loops = find(z, 'CNAME_LOOP');
@@ -248,6 +265,10 @@ describe('mail, CAA, TTL, SOA and NS rules', () => {
     assert.equal(find(z, 'SPF_INVALID')[0].params.error, 'unknown-mechanism');
     assert.deepEqual(find(z, 'SPF_RR_TYPE')[0].params, { name: 'old.example.com' });
     assert.deepEqual(find(zone([['@', 'TXT', 'v=spf10 not spf'], ['@', 'TXT', 'v=spf1 -all']]), 'MULTIPLE_SPF'), []);
+    // weighted variants each serve one SPF; two inside one variant clash
+    const w = (id) => ({ routing: { policy: 'weighted', id } });
+    assert.deepEqual(find(zone([['mail', 'TXT', 'v=spf1 mx -all', w('a')], ['mail', 'TXT', 'v=spf1 a -all', w('b')]]), 'MULTIPLE_SPF'), []);
+    assert.equal(find(zone([['mail', 'TXT', 'v=spf1 mx -all', w('a')], ['mail', 'TXT', 'v=spf1 a -all', w('a')]]), 'MULTIPLE_SPF').length, 1);
   });
 
   test('DMARC_INVALID for a v=DMARC1 record that fails the health parser only', () => {

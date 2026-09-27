@@ -20,7 +20,8 @@ Pipeline:
   3. names    -> -n names/files and the SAN names of --cert (wildcards expanded)
   4. phase 1  -> TCP connect to every ip:port (thread pool), closed ports skipped
   5. phase 2  -> TLS handshake per open ip:port x name (SNI) + one probe without SNI
-  6. verdict  -> UPDATED / NEEDS_UPDATE / NOT_HOSTED / TLS_ERROR / TIMEOUT / CLOSED
+  6. verdict  -> UPDATED / NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT / NOT_HOSTED /
+                 TLS_ERROR / TIMEOUT / CLOSED
 
 The module is importable: parse_certificate(), load_certificates(),
 parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
@@ -65,11 +66,18 @@ PROG = 'ssl_origin_scan.py'
 # --- statuses (per server, port and name) ------------------------------------------
 UPDATED = 'UPDATED'            # serves the new certificate (--cert) for the name
 NEEDS_UPDATE = 'NEEDS_UPDATE'  # serves a cert covering the name, but not the new one
+ORIGIN_CERT = 'ORIGIN_CERT'    # ... a Cloudflare Origin CA cert (trusted by Cloudflare only)
+PRIVATE_CERT = 'PRIVATE_CERT'  # ... a self-signed cert or one issued by a --private-ca
 NOT_HOSTED = 'NOT_HOSTED'      # served cert does not cover the name (default cert)
 TLS_ERROR = 'TLS_ERROR'        # handshake failed (or refused after the port check)
 TIMEOUT = 'TIMEOUT'            # no answer within --timeout
 CLOSED = 'CLOSED'              # port closed / host unreachable (phase-1 port check)
-STATUSES = (UPDATED, NEEDS_UPDATE, NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED)
+STATUSES = (UPDATED, NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED, TLS_ERROR, TIMEOUT,
+            CLOSED)
+# The server hosts the name with a certificate that is not the new one. ORIGIN_CERT and
+# PRIVATE_CERT come from another kind of CA than the new certificate: not counted as
+# needing it, unless --strict-public (then they are NEEDS_UPDATE).
+HOSTED_STATUSES = (NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT)
 
 OPEN = 'OPEN'  # endpoint state after a successful TCP connect (phase 1)
 # Not a scan status: a target address removed by --exclude (CSV rows only, never probed).
@@ -300,6 +308,8 @@ _OID_ED25519 = '1.3.101.112'
 _OID_ED448 = '1.3.101.113'
 _OID_SAN = '2.5.29.17'
 _OID_BASIC_CONSTRAINTS = '2.5.29.19'
+_OID_SKI = '2.5.29.14'
+_OID_AKI = '2.5.29.35'
 _OID_PKCS7_DATA = '1.2.840.113549.1.7.1'
 _OID_PKCS7_SIGNED = '1.2.840.113549.1.7.2'
 
@@ -496,6 +506,8 @@ class CertInfo:
     self_signed: bool
     sha256: str
     sha1: str
+    subject_key_id: Optional[str] = None     # lowercase hex (SubjectKeyIdentifier)
+    authority_key_id: Optional[str] = None   # lowercase hex (AKI keyIdentifier only)
 
     @property
     def issuer_o(self) -> Optional[str]:
@@ -557,6 +569,8 @@ class CertInfo:
             'signatureAlgorithm': self.signature_algorithm,
             'isCA': self.is_ca,
             'selfSigned': self.self_signed,
+            'subjectKeyId': self.subject_key_id,
+            'authorityKeyId': self.authority_key_id,
             'sha256': self.sha256,
             'sha1': self.sha1,
         }
@@ -625,6 +639,8 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     emails = []  # type: List[str]
     uris = []  # type: List[str]
     is_ca = False
+    subject_key_id = None  # type: Optional[str]
+    authority_key_id = None  # type: Optional[str]
     for extra in fields[index + 6:]:
         if extra[0] != 0xA3:
             continue  # issuerUniqueID [1] / subjectUniqueID [2]
@@ -655,6 +671,14 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
                 items = _children(buf, constraints[2], constraints[3])
                 if items and items[0][0] == 0x01:
                     is_ca = any(_content(buf, items[0]))
+            elif ext_oid == _OID_SKI:
+                key_id = _expect(_read_tlv(buf, value[2], value[3]), 0x04, 'SubjectKeyIdentifier')
+                subject_key_id = _content(buf, key_id).hex()
+            elif ext_oid == _OID_AKI:
+                aki = _expect(_read_tlv(buf, value[2], value[3]), 0x30, 'AuthorityKeyIdentifier')
+                for item in _children(buf, aki[2], aki[3]):
+                    if item[0] == 0x80:  # [0] keyIdentifier
+                        authority_key_id = _content(buf, item).hex()
 
     return CertInfo(
         der=cert_der,
@@ -677,10 +701,15 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
         key_bits=key_bits,
         curve=curve,
         is_ca=is_ca,
-        # Self-issued: identical encoded subject and issuer Names.
-        self_signed=buf[issuer_tlv[1]:issuer_tlv[3]] == buf[subject_tlv[1]:subject_tlv[3]],
+        # Self-issued: identical encoded subject and issuer Names, and - as lib/x509.js -
+        # the same key identifier on both sides when the certificate carries both.
+        self_signed=(buf[issuer_tlv[1]:issuer_tlv[3]] == buf[subject_tlv[1]:subject_tlv[3]]
+                     and (not subject_key_id or not authority_key_id
+                          or subject_key_id == authority_key_id)),
         sha256=hashlib.sha256(cert_der).hexdigest(),
         sha1=hashlib.sha1(cert_der).hexdigest(),
+        subject_key_id=subject_key_id,
+        authority_key_id=authority_key_id,
     )
 
 
@@ -1163,11 +1192,50 @@ class Server:
     line: int = 0
     source: str = ''
     hostnames: List[str] = field(default_factory=list)  # to resolve when no IP was given
+    # Ports written with an address or host name (203.0.113.10:8443, [2001:db8::1]:8443,
+    # web01.example.net:8443): that target is scanned on these ports instead of -p. None
+    # stands for the -p ports (the target was also given without a port). A target that is
+    # not a key here is scanned on the -p ports only.
+    ports: Dict[str, List[Optional[int]]] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
         """Stable identifier: the name, else the first IP."""
         return self.name or (self.ips[0] if self.ips else '')
+
+    def add_ip(self, ip: str, port: Optional[int] = None) -> None:
+        """Add address ``ip``: on ``port``, or on the -p ports when ``port`` is None."""
+        self._add_target(self.ips, ip, port)
+
+    def add_hostname(self, host: str, port: Optional[int] = None) -> None:
+        """Add a host name to resolve: its addresses get ``port`` (None: the -p ports)."""
+        self._add_target(self.hostnames, host, port)
+
+    def _add_target(self, items: List[str], key: str, port: Optional[int]) -> None:
+        if key not in items:
+            items.append(key)
+            if port is not None:
+                self.ports[key] = [port]
+            return
+        spec = self.ports.get(key)
+        if spec is None:  # so far on the -p ports only
+            if port is not None:
+                self.ports[key] = [None, port]
+        elif port not in spec:
+            spec.append(port)
+
+    def port_spec(self, key: str) -> List[Optional[int]]:
+        """The ports of address or host name ``key`` (None = the -p ports)."""
+        return list(self.ports.get(key, [None]))
+
+    def ports_for(self, ip: str, default: Sequence[int]) -> List[int]:
+        """The ports address ``ip`` is scanned on, with ``default`` as the -p ports."""
+        out = []  # type: List[int]
+        for port in self.ports.get(ip, [None]):
+            for value in (default if port is None else [port]):
+                if value not in out:
+                    out.append(value)
+        return out
 
 
 @dataclass
@@ -1380,6 +1448,82 @@ def _check_block_size(token: str, count: int, allow_large: bool) -> None:
                          % (token, count))
 
 
+# A target with its own port, as lib/inventory.js reads one: an IPv4 address or a host name
+# followed by ":port", or a bracketed IPv6 (or IPv4) address with an optional ":port". An
+# empty port ("203.0.113.10:", "ip: name" lines) means none. An IPv6 address needs the
+# brackets: 2001:db8::1:8443 is itself a valid address.
+_ENDPOINT_BRACKET_RE = re.compile(r'^\[([^\[\]\s:]*:[^\[\]\s]*|\d{1,3}(?:\.\d{1,3}){3})\]'
+                                  r'(?::(.*))?$')
+_ENDPOINT_V4_RE = re.compile(r'^(\d{1,3}(?:\.\d{1,3}){3}):(.*)$')
+_ENDPOINT_HOST_RE = re.compile(r'^([^\s:\[\]@=]+):(\d+)$')
+
+
+def _endpoint_port(text: Optional[str]) -> Optional[int]:
+    if not text:
+        return None
+    if not text.isascii() or not text.isdigit():
+        raise ValueError('%r is not a port number' % text)
+    port = int(text)
+    if not 1 <= port <= 65535:
+        raise ValueError('port %s is outside 1-65535' % text)
+    return port
+
+
+def split_endpoint(token: str) -> Optional[Tuple[str, Optional[int]]]:
+    """``203.0.113.10:8443`` -> ``('203.0.113.10', 8443)``; ``None`` when ``token`` is no
+    ``target:port`` form at all.
+
+    Also ``[2001:db8::1]:8443`` (the address canonical) and ``web01.example.net:8443`` (the
+    host text as written, validated by the caller). An empty port gives ``(target, None)``.
+    Raises ``ValueError`` for such a form that cannot be used: a port outside 1-65535 or not
+    a number, a bracketed text or dotted quad that is no IP address, or a CIDR / range with
+    a port - the caller warns about it instead of dropping it silently.
+    """
+    token = token.strip()
+    match = _ENDPOINT_BRACKET_RE.match(token) or _ENDPOINT_V4_RE.match(token)
+    if match:
+        ip = normalize_ip(match.group(1))
+        if ip is None:
+            raise ValueError('%s is not a valid IP address' % match.group(1))
+        return ip, _endpoint_port(match.group(2))
+    match = _ENDPOINT_HOST_RE.match(token)
+    if match is None:
+        return None
+    target = match.group(1)
+    if '/' in target or is_ip_block(target) or _malformed_ip_block(target):
+        raise ValueError('a CIDR or IP range takes no port; scan it with -p')
+    return target, _endpoint_port(match.group(2))
+
+
+def format_endpoint(ip: str, port: Optional[int]) -> str:
+    """``203.0.113.10:8443`` / ``[2001:db8::1]:8443``, or the bare address without a port."""
+    if port is None:
+        return ip
+    return '[%s]:%d' % (ip, port) if ':' in ip else '%s:%d' % (ip, port)
+
+
+def _address_token(text: str) -> Optional[str]:
+    """An IP address (``ip``) or address with a port (``ip:port``), canonical; else None."""
+    ip = normalize_ip(text)
+    if ip is not None:
+        return ip
+    try:
+        endpoint = split_endpoint(text)
+    except ValueError:
+        return None
+    if endpoint is None or normalize_ip(endpoint[0]) is None:
+        return None
+    return format_endpoint(endpoint[0], endpoint[1])
+
+
+TargetItem = Union[str, Tuple[str, Optional[int]]]
+
+
+def _target_item(item: TargetItem) -> Tuple[str, Optional[int]]:
+    """An address / host name of a server, with its own port (None: the -p ports)."""
+    return (item, None) if isinstance(item, str) else item
+
+
 class _InventoryBuilder:
     """Collects servers, merging entries that share a name (case-insensitive)."""
 
@@ -1393,36 +1537,39 @@ class _InventoryBuilder:
         """Record an :class:`InventoryWarning` for ``line``."""
         self.warnings.append(InventoryWarning(line, code, text, self.source))
 
-    def add(self, name: Optional[str], ips: Sequence[str], line: int,
-            groups: Sequence[str] = (), hostnames: Sequence[str] = ()) -> None:
-        """Add (or merge into) server ``name``; unscannable IPs become warnings."""
-        usable = []
-        for ip in ips:
+    def add(self, name: Optional[str], ips: Sequence[TargetItem], line: int,
+            groups: Sequence[str] = (), hostnames: Sequence[TargetItem] = ()) -> None:
+        """Add (or merge into) server ``name``; unscannable IPs become warnings.
+
+        An address or host name may come with its own port as an ``(target, port)`` pair.
+        """
+        usable = []  # type: List[Tuple[str, Optional[int]]]
+        for item in ips:
+            ip, port = _target_item(item)
             reason = _unscannable_reason(ip)
             if reason is None:
-                usable.append(ip)
+                usable.append((ip, port))
             else:
                 self.warn(line, 'INVALID_IP', '%s is not scannable (%s)' % (ip, reason))
-        if not usable and not hostnames:
+        hosts = [_target_item(item) for item in hostnames]
+        if not usable and not hosts:
             if ips:
                 return
             self.warn(line, 'NO_IP', name or '')
             return
-        name = (name or '').strip() or (usable[0] if usable else hostnames[0])
+        name = (name or '').strip() or (usable[0][0] if usable else hosts[0][0])
         key = name.lower()
         server = self.servers.get(key)
         if server is None:
             server = Server(name=name, line=line, source=self.source)
             self.servers[key] = server
-        for ip in usable:
-            if ip not in server.ips:
-                server.ips.append(ip)
+        for ip, port in usable:
+            server.add_ip(ip, port)
         for group in groups:
             if group and group not in server.groups:
                 server.groups.append(group)
-        for host in hostnames:
-            if host not in server.hostnames:
-                server.hostnames.append(host)
+        for host, port in hosts:
+            server.add_hostname(host, port)
 
     def add_hostname(self, name: str, line: int, groups: Sequence[str] = (),
                      fallback: Optional[str] = None) -> None:
@@ -1430,7 +1577,16 @@ class _InventoryBuilder:
 
         A numeric name (``2026092401``, ``127.1``) is an INVALID_IP, never resolved;
         anything else that is not a hostname is NO_IP (text: ``fallback`` or the name).
+        ``web01.example.net:8443`` or ``203.0.113.10:8443`` keeps its port.
         """
+        try:
+            endpoint = split_endpoint(name)
+        except ValueError as exc:
+            self.warn(line, 'INVALID_IP', '%s (%s)' % (name, exc))
+            return
+        if endpoint is not None:
+            self.add_token_values(None, [name], line, groups)
+            return
         if _malformed_ip_block(name):  # 10.0.0.5-300: a typo'd range, not a host to resolve
             self.warn(line, 'INVALID_IP', name)
             return
@@ -1444,8 +1600,13 @@ class _InventoryBuilder:
 
     def add_token_values(self, name: Optional[str], values: Sequence[str], line: int,
                          groups: Sequence[str] = ()) -> None:
-        """Add ``name`` with IPs / hostnames / CIDRs taken from free-form ``values``."""
-        ips, hosts = [], []  # type: List[str], List[str]
+        """Add ``name`` with IPs / hostnames / CIDRs taken from free-form ``values``.
+
+        An address or host name written with a port (``203.0.113.10:8443``,
+        ``[2001:db8::1]:8443``, ``web01.example.net:8443``) keeps it; one whose port or
+        address cannot be read is an INVALID_IP warning, never dropped silently.
+        """
+        ips, hosts = [], []  # type: List[TargetItem], List[TargetItem]
         for value in values:
             value = value.strip().strip('\'"')
             if not value:
@@ -1458,6 +1619,24 @@ class _InventoryBuilder:
             if block is not None:
                 for block_ip in block:
                     self.add(block_ip, [block_ip], line, list(groups) + ([name] if name else []))
+                continue
+            try:
+                endpoint = split_endpoint(value)
+            except ValueError as exc:
+                self.warn(line, 'INVALID_IP', '%s (%s)' % (value, exc))
+                continue
+            if endpoint is not None:
+                target, port = endpoint
+                ip = normalize_ip(target)
+                host = None if ip or is_numeric_host(target) else normalize_hostname(target)
+                if ip:
+                    ips.append((ip, port))
+                elif host:
+                    hosts.append((host, port))
+                elif is_numeric_host(target):
+                    self.warn(line, 'INVALID_IP', numeric_host_note(target))
+                else:
+                    self.warn(line, 'PARSE', value)
                 continue
             if _looks_like_ip(value) or _malformed_ip_block(value):
                 self.warn(line, 'INVALID_IP', value)
@@ -1568,11 +1747,13 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
         for i in columns:
             if i < len(cells) and cells[i]:
                 values.extend(v for v in re.split(r'[\s,;|]+', cells[i]) if v)
-        values = [v for v in values if ip_idx or normalize_ip(v) or is_ip_block(v)]
+        values = [v for v in values if ip_idx or _address_token(v) or is_ip_block(v)]
         groups = [cells[i] for i in group_idx if i < len(cells) and cells[i]]
-        name_ip = normalize_ip(name) if name else None
+        name_ip = _address_token(name) if name else None
         if name_ip:
             values.insert(0, name_ip)
+            if name_ip != normalize_ip(name):  # an address with a port names the address
+                name = (split_endpoint(name) or (name_ip, None))[0]
         if not values:
             if name:
                 builder.add_hostname(name, number, groups, ','.join(cells))
@@ -1650,12 +1831,26 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                 continue  # other Ansible variables (ansible_user=...) are irrelevant
             if normalize_ip(token) or is_ip_block(token):
                 values.append(token)
+                continue
+            try:
+                endpoint = split_endpoint(token)
+            except ValueError as exc:  # 203.0.113.10:99999, [2001:db8::1]:https
+                builder.warn(number, 'INVALID_IP', '%s (%s)' % (token, exc))
+                had_invalid = True
+                continue
+            if endpoint is not None and (normalize_ip(endpoint[0]) or name is not None):
+                values.append(token)  # an address with its port, or host:port after the name
             elif _looks_like_ip(token) or _malformed_ip_block(token):
                 builder.warn(number, 'INVALID_IP', token)
                 had_invalid = True
             elif name is None:
                 name = token  # first word = name; later words (hosts-file aliases) ignored
         if values:
+            named = split_endpoint(name) if name is not None else None
+            if named is not None:  # "web01.example.net:8443 203.0.113.10"
+                builder.warn(number, 'PARSE', '%s: a server name takes no port - write it after '
+                             'the address (ADDRESS:PORT); ignored' % name)
+                name = named[0]
             builder.add_token_values(name, values, number, groups)
         elif had_invalid:
             continue  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
@@ -1669,7 +1864,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
 def _json_name(obj: Dict[str, Any]) -> Optional[str]:
     for key in _JSON_NAME_KEYS:
         value = obj.get(key)
-        if isinstance(value, str) and value.strip() and normalize_ip(value) is None:
+        if isinstance(value, str) and value.strip() and _address_token(value) is None:
             return value.strip()
     tags = obj.get('tags', obj.get('Tags'))
     if isinstance(tags, dict):
@@ -1690,7 +1885,7 @@ def _json_ips(node: Any, out: List[str], key: str = '') -> None:
     if key and _JSON_SKIP_KEY_RE.search(key):
         return
     if isinstance(node, str):
-        ip = normalize_ip(node)
+        ip = _address_token(node)  # 203.0.113.10, or 203.0.113.10:8443 with its port
         if ip and ip not in out:
             out.append(ip)
     elif isinstance(node, list):
@@ -1706,7 +1901,7 @@ def _json_host_values(obj: Dict[str, Any]) -> List[str]:
     out = []
     for key in ('ansible_host', 'ansible_ssh_host'):
         value = obj.get(key)
-        if isinstance(value, str) and normalize_ip(value) is None:
+        if isinstance(value, str) and _address_token(value) is None:
             out.append(value)
     return out
 
@@ -1723,16 +1918,17 @@ def _json_has_ip_field(obj: Dict[str, Any]) -> bool:
         if not _is_ip_key(str(key)):
             continue
         items = value if isinstance(value, list) else [value]
-        if any(isinstance(item, str) and normalize_ip(item) for item in items):
+        if any(isinstance(item, str) and _address_token(item) for item in items):
             return True
     return False
 
 
 def _json_target_tokens(text: str) -> List[str]:
-    """Tokens of a JSON string that can be targets: IPs, CIDRs/ranges, dotted hostnames."""
+    """Tokens of a JSON string that can be targets: IPs (with a port too), CIDRs/ranges,
+    dotted hostnames."""
     out = []
     for token in (t for t in re.split(r'[\s,;]+', text) if t):
-        if normalize_ip(token) or is_ip_block(token):
+        if _address_token(token) or is_ip_block(token):
             out.append(token)
         elif '.' in token and normalize_hostname(token) and not _looks_like_ip(token):
             out.append(token)
@@ -1748,8 +1944,8 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
             return
         if key_hint is not None or len(tokens) == 1:
             builder.add_token_values(key_hint, targets, 0)       # {"web01": "10.0.0.5"}
-        elif any(normalize_ip(t) for t in tokens):
-            first_ip = normalize_ip(tokens[0])                    # "ip name" / "name ip"
+        elif any(_address_token(t) for t in tokens):
+            first_ip = _address_token(tokens[0])                  # "ip name" / "name ip"
             name = tokens[1] if first_ip else tokens[0]
             builder.add_token_values(name, [t for t in targets if t != name], 0)
         return
@@ -1797,9 +1993,12 @@ def _looks_like_path(value: str) -> bool:
 def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
     """Parse a ``-t`` argument that is not a file: IPs, CIDRs, ranges, ``name=ip``, hostnames.
 
-    Unlike inventory lines, every token is its own server. Raises :class:`UsageError`
-    for tokens that are none of these, including numeric "hostnames" the system
-    resolver would read as an IPv4 address (``2026092401``, ``127.1``, ``0x7f.0x1``).
+    Unlike inventory lines, every token is its own server. An address or host name may
+    carry its own port (``203.0.113.10:8443``, ``[2001:db8::1]:8443``,
+    ``web01.example.net:8443``, ``web01=203.0.113.10:8443``): it is scanned on that port
+    instead of ``-p``. Raises :class:`UsageError` for tokens that are none of these, a bad
+    port, and numeric "hostnames" the system resolver would read as an IPv4 address
+    (``2026092401``, ``127.1``, ``0x7f.0x1``).
     """
     builder = _InventoryBuilder('argument', allow_large)
     for token in (t for t in re.split(r'[\s,]+', value) if t):
@@ -1807,6 +2006,10 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
             name, _, target = token.partition('=')
             if not name or not target:
                 raise UsageError('invalid target %r (expected NAME=IP)' % token)
+            try:
+                split_endpoint(target)
+            except ValueError as exc:
+                raise UsageError('invalid target %r: %s' % (token, exc))
             if is_numeric_host(target):
                 raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
                                  % (token, numeric_host_note(target)))
@@ -1822,6 +2025,8 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
         if block is not None:
             for block_ip in block:
                 builder.add(block_ip, [block_ip], 0, [token])
+            continue
+        if _add_endpoint_token(builder, token):
             continue
         # 010.0.0.1, and the address part of 010.0.0.0/24 or 010.0.0.1-5
         if _has_ambiguous_ipv4_part(token) and _looks_like_ip(re.split(r'[/-]', token)[0]):
@@ -1842,6 +2047,31 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
                              % token)
         builder.add(token, [], 0, (), [host])
     return builder.result(0)
+
+
+def _add_endpoint_token(builder: _InventoryBuilder, token: str) -> bool:
+    """A ``-t`` token with its own port (``203.0.113.10:8443``, ``[2001:db8::1]:8443``,
+    ``web01.example.net:8443``) -> one server; False when ``token`` has no port."""
+    try:
+        endpoint = split_endpoint(token)
+    except ValueError as exc:
+        raise UsageError('invalid target %r: %s' % (token, exc))
+    if endpoint is None:
+        return False
+    target, port = endpoint
+    ip = normalize_ip(target)
+    if ip:
+        builder.add(ip, [(ip, port)], 0)
+        return True
+    if is_numeric_host(target):
+        raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
+                         % (token, numeric_host_note(target)))
+    host = normalize_hostname(target)
+    if host is None:
+        raise UsageError('invalid target %r (expected an IP address or hostname before the '
+                         'port)' % token)
+    builder.add(target, [], 0, (), [(host, port)])
+    return True
 
 
 def resolve_host(host: str) -> List[str]:
@@ -1895,8 +2125,8 @@ def resolve_servers(servers: List[Server], resolver: Callable[[str], List[str]] 
             for host in server.hostnames:
                 ips, error = answers.get(host, ([], 'not resolved'))
                 for ip in ips:
-                    if ip not in server.ips:
-                        server.ips.append(ip)
+                    for port in server.port_spec(host):  # web01.example.net:8443
+                        server.add_ip(ip, port)
                 if error:
                     warnings.append(InventoryWarning(server.line, 'RESOLVE',
                                                      'cannot resolve %s: %s' % (host, error),
@@ -1937,14 +2167,14 @@ def load_targets(values: Sequence[str], allow_large: bool = False,
                 merged[server.name.lower()] = server
                 continue
             for ip in server.ips:
-                if ip not in existing.ips:
-                    existing.ips.append(ip)
+                for port in server.port_spec(ip):
+                    existing.add_ip(ip, port)
             for group in server.groups:
                 if group not in existing.groups:
                     existing.groups.append(group)
             for host in server.hostnames:
-                if host not in existing.hostnames:
-                    existing.hostnames.append(host)
+                for port in server.port_spec(host):
+                    existing.add_hostname(host, port)
     servers, resolve_warnings = resolve_servers(list(merged.values()), resolver, workers, cancel)
     return servers, warnings + resolve_warnings
 
@@ -2203,7 +2433,9 @@ def apply_excludes(servers: Sequence[Server], rules: Iterable[Union[str, Exclude
             kept.append(server)
         elif ips:
             kept.append(replace(server, ips=ips, groups=list(server.groups),
-                                hostnames=list(server.hostnames)))
+                                hostnames=list(server.hostnames),
+                                ports={key: list(spec) for key, spec in server.ports.items()
+                                       if key in ips or key in server.hostnames}))
     return kept, excluded
 
 
@@ -2341,6 +2573,145 @@ def build_probe_names(names: Iterable[str], wildcard_probe: bool = True) -> List
 
 
 # =====================================================================================
+# Certificate kinds: Cloudflare Origin CA, self-signed, private CAs (--private-ca)
+# =====================================================================================
+
+# The Cloudflare Origin CA roots (developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem
+# and origin_ca_ecc_root.pem, checked 2026-09-27) have no CN: their subject is
+# "ST=California, L=San Francisco, OU=CloudFlare Origin SSL [ECC ]Certificate Authority,
+# O=CloudFlare, Inc., C=US", and they sign the origin certificates directly (subject
+# "O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate"). Only
+# Cloudflare's edge trusts them. Matched case-insensitively on O plus OU (or CN).
+ORIGIN_CA_ORGANIZATION = 'CloudFlare, Inc.'
+ORIGIN_CA_NAMES = ('CloudFlare Origin SSL Certificate Authority',
+                   'CloudFlare Origin SSL ECC Certificate Authority')
+
+# Kinds of certificate (the JSON's certificates[].kind).
+KIND_ORIGIN_CA = 'origin-ca'      # issued by the Cloudflare Origin CA
+KIND_SELF_SIGNED = 'self-signed'  # issuer = subject (and the same key identifier)
+KIND_PRIVATE_CA = 'private-ca'    # issued by a CA given with --private-ca
+KIND_OTHER = 'other'              # anything else: a public CA, or a private CA not listed
+_KIND_STATUS = {KIND_ORIGIN_CA: ORIGIN_CERT, KIND_SELF_SIGNED: PRIVATE_CERT,
+                KIND_PRIVATE_CA: PRIVATE_CERT}
+
+
+def _dn_key(dn: str) -> str:
+    """A DN for comparison: case-folded, runs of whitespace collapsed (RFC 5280 7.1 lite)."""
+    return re.sub(r'\s+', ' ', dn.strip()).casefold()
+
+
+def is_origin_ca_certificate(cert: CertInfo) -> bool:
+    """True when ``cert`` was issued by the Cloudflare Origin CA (RSA or ECC root)."""
+    org = (cert.issuer.get('O') or '').strip().casefold()
+    names = {(cert.issuer.get(attr) or '').strip().casefold() for attr in ('OU', 'CN')}
+    return (org == ORIGIN_CA_ORGANIZATION.casefold()
+            and any(name.casefold() in names for name in ORIGIN_CA_NAMES))
+
+
+def issued_by(cert: CertInfo, ca: CertInfo) -> bool:
+    """``cert`` names ``ca`` as its issuer: the issuer DN is the CA's subject DN, and the
+    authority key identifier is the CA's subject key identifier when both are present
+    (lib/x509.js ``issuedBy``). Signatures are not verified: this sorts certificates for
+    a report, it never decides trust."""
+    if _dn_key(cert.issuer_dn) != _dn_key(ca.subject_dn):
+        return False
+    return (not cert.authority_key_id or not ca.subject_key_id
+            or cert.authority_key_id == ca.subject_key_id)
+
+
+def certificate_kind(cert: CertInfo, private_cas: Sequence[CertInfo] = ()
+                     ) -> Tuple[str, Optional[CertInfo]]:
+    """``(kind, the --private-ca certificate that issued it or None)`` of a certificate.
+
+    Origin CA first (a leaf, or the root itself), then self-signed, then the first
+    ``--private-ca`` certificate that issued it; anything else is :data:`KIND_OTHER`.
+    """
+    if is_origin_ca_certificate(cert):
+        return KIND_ORIGIN_CA, None
+    if cert.self_signed:
+        return KIND_SELF_SIGNED, None
+    for ca in private_cas:
+        if issued_by(cert, ca):
+            return KIND_PRIVATE_CA, ca
+    return KIND_OTHER, None
+
+
+def _kind_family(kind: str) -> str:
+    """Self-signed and private-CA certificates are one family: both are private."""
+    return 'private' if kind in (KIND_SELF_SIGNED, KIND_PRIVATE_CA) else kind
+
+
+class HostedClassifier:
+    """The status of a certificate that covers a name but is not the new one.
+
+    NEEDS_UPDATE, unless the certificate comes from another kind of CA than every new
+    certificate: a Cloudflare Origin CA certificate is ORIGIN_CERT, a self-signed or
+    ``--private-ca``-issued one PRIVATE_CERT. So a public certificate rollout does not
+    list origins behind Cloudflare Full (strict) or internal hosts as still old, while
+    rolling out an Origin CA (or a self-signed / private-CA) certificate still lists the
+    older ones of that kind as NEEDS_UPDATE. A certificate with the same issuer DN as a
+    new one is always NEEDS_UPDATE, and ``strict_public`` makes every one NEEDS_UPDATE.
+    Without a new certificate every Origin CA / private certificate keeps its own status.
+    """
+
+    def __init__(self, new_certs: Sequence[CertInfo] = (), private_cas: Sequence[CertInfo] = (),
+                 strict_public: bool = False) -> None:
+        self.private_cas = list(private_cas)
+        self.strict_public = strict_public
+        self._cache = {}  # type: Dict[str, Tuple[str, Optional[CertInfo]]]
+        self.new_families = {_kind_family(self.kind(cert)[0]) for cert in new_certs}
+        self.new_issuers = {_dn_key(cert.issuer_dn) for cert in new_certs}
+
+    def kind(self, cert: CertInfo) -> Tuple[str, Optional[CertInfo]]:
+        """:func:`certificate_kind` with this scan's ``--private-ca`` list (memoised)."""
+        if cert.sha256 not in self._cache:
+            self._cache[cert.sha256] = certificate_kind(cert, self.private_cas)
+        return self._cache[cert.sha256]
+
+    def status(self, cert: CertInfo) -> str:
+        """NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT for a covering, non-new certificate."""
+        kind = self.kind(cert)[0]
+        status = _KIND_STATUS.get(kind)
+        if (status is None or self.strict_public or _kind_family(kind) in self.new_families
+                or _dn_key(cert.issuer_dn) in self.new_issuers):
+            return NEEDS_UPDATE
+        return status
+
+
+def load_private_cas(paths: Sequence[str]) -> Tuple[List[CertInfo], List[str]]:
+    """``--private-ca FILE`` values -> ``(CA certificates, warning messages)``.
+
+    Every certificate in each file counts (PEM with several blocks, DER, P7B), so a
+    bundle with the root and its intermediates works. Raises :class:`UsageError` for an
+    unreadable file or one without a certificate. A certificate that is not a CA
+    (basicConstraints CA:FALSE) is kept with a warning: only what it issued would match.
+    """
+    cas = []  # type: List[CertInfo]
+    messages = []  # type: List[str]
+    for path in paths:
+        try:
+            with open(path, 'rb') as handle:
+                data = handle.read()
+        except OSError as exc:
+            raise UsageError('cannot read --private-ca %s: %s' % (path, exc.strerror or exc))
+        certs, cert_warnings = load_certificates(data)
+        if not certs:
+            details = '; '.join(detail for code, detail in cert_warnings if code == 'PARSE_ERROR')
+            raise UsageError('--private-ca: no certificate found in %s%s'
+                             % (path, ' (%s)' % details if details else ''))
+        if any(code == 'PRIVATE_KEY_PRESENT' for code, _ in cert_warnings):
+            messages.append('%s also contains a PRIVATE KEY - ignored (never needed; keep it '
+                            'secret)' % path)
+        for cert in certs:
+            if not cert.is_ca:
+                messages.append('--private-ca %s: %s is not a CA certificate; only certificates '
+                                'it issued match' % (path, cert.short_label()))
+            if all(cert.sha256 != known.sha256 for known in cas):
+                cas.append(cert)
+    return cas, messages
+
+
+# =====================================================================================
 # Scan engine
 # =====================================================================================
 
@@ -2419,6 +2790,12 @@ class ScanReport:
     warnings: List[str] = field(default_factory=list)
     exclude: List[str] = field(default_factory=list)       # --exclude rules (labels)
     excluded: List[ExcludedAddress] = field(default_factory=list)  # removed, never probed
+    private_cas: List[CertInfo] = field(default_factory=list)      # --private-ca certificates
+    strict_public: bool = False                                    # --strict-public
+
+    def cert_kind(self, cert: CertInfo) -> Tuple[str, Optional[CertInfo]]:
+        """:func:`certificate_kind` of ``cert`` with this scan's ``--private-ca`` list."""
+        return certificate_kind(cert, self.private_cas)
 
     def excluded_count(self) -> int:
         """Distinct target addresses removed by --exclude."""
@@ -2447,7 +2824,8 @@ class ScanReport:
         return counts
 
     def needs_update(self) -> bool:
-        """True when at least one server has status NEEDS_UPDATE."""
+        """True when at least one server has status NEEDS_UPDATE (so ORIGIN_CERT and
+        PRIVATE_CERT servers do not count, unless --strict-public made them NEEDS_UPDATE)."""
         return any(s.status == NEEDS_UPDATE for s in self.server_summaries())
 
 
@@ -2460,22 +2838,21 @@ def server_status(rows: Sequence[ProbeResult]) -> str:
     """Overall status of a server from its rows.
 
     NEEDS_UPDATE (any name the new cert covers, or its no-SNI default cert) > UPDATED >
-    TLS_ERROR > TIMEOUT (handshake) > NOT_HOSTED (some port open) > TIMEOUT (connect) >
-    CLOSED. A NEEDS_UPDATE row for a name the new certificate does not cover counts as
-    NOT_HOSTED here: the server hosts that name with another certificate, and installing
-    the new one would not change that.
+    ORIGIN_CERT > PRIVATE_CERT > TLS_ERROR > TIMEOUT (handshake) > NOT_HOSTED (some port
+    open) > TIMEOUT (connect) > CLOSED. A NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT row for
+    a name the new certificate does not cover counts as NOT_HOSTED here: the server hosts
+    that name with another certificate, and installing the new one would not change that.
     """
     named = set()  # type: Set[str]
     for row in rows:
         if row.probe in (PROBE_SNI, PROBE_WILDCARD):
-            relevant = row.status != NEEDS_UPDATE or is_relevant(row)
+            relevant = row.status not in HOSTED_STATUSES or is_relevant(row)
             named.add(row.status if relevant else NOT_HOSTED)
     default = {row.status for row in rows if row.probe == PROBE_DEFAULT}
     connect = {row.status for row in rows if row.probe == PROBE_CONNECT}
-    if NEEDS_UPDATE in named or NEEDS_UPDATE in default:
-        return NEEDS_UPDATE
-    if UPDATED in named or UPDATED in default:
-        return UPDATED
+    for status in (NEEDS_UPDATE, UPDATED, ORIGIN_CERT, PRIVATE_CERT):
+        if status in named or status in default:
+            return status
     for status in (TLS_ERROR, TIMEOUT):
         if status in named:
             return status
@@ -2686,9 +3063,14 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
              progress: Optional[ProgressCallback] = None,
              cancel: Optional[threading.Event] = None,
              default_probe: bool = True, warnings: Optional[List[str]] = None,
-             exclude: Iterable[Union[str, ExcludeRule]] = ()) -> ScanReport:
+             exclude: Iterable[Union[str, ExcludeRule]] = (),
+             private_cas: Sequence[CertInfo] = (), strict_public: bool = False) -> ScanReport:
     """Probe every ``server IP x port`` for every name and classify the results.
 
+    ``ports`` apply to every address except those with ports of their own
+    (:attr:`Server.ports`). A certificate that covers a name but is not the new one is
+    NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT (:class:`HostedClassifier` with
+    ``private_cas`` and ``strict_public``).
     Addresses matching ``exclude`` (:class:`ExcludeRule` objects or IP / CIDR / range
     strings) are removed first - never connected to - and listed in
     :attr:`ScanReport.excluded`. Phase 1 TCP-connects each unique ip:port
@@ -2710,7 +3092,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     endpoints = {}  # type: Dict[Tuple[str, int], Endpoint]
     for server in servers:
         for ip in server.ips:
-            for port in ports:
+            for port in server.ports_for(ip, ports):
                 endpoints.setdefault((ip, port), Endpoint(ip, port))
 
     # Phase 1 - which ports are open at all.
@@ -2826,6 +3208,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
 
     # Verdicts.
     new_fps = {cert.sha256 for cert in new_certs}
+    hosted = HostedClassifier(new_certs, private_cas, strict_public).status
     parsed = {}  # type: Dict[bytes, Union[CertInfo, str]]
     certificates = {}  # type: Dict[str, CertInfo]
 
@@ -2850,7 +3233,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     results = []  # type: List[ProbeResult]
     for server in servers:
         for ip in server.ips:
-            for port in ports:
+            for port in server.ports_for(ip, ports):
                 endpoint = endpoints[(ip, port)]
                 if endpoint.state != OPEN:
                     results.append(ProbeResult(server.name, ip, port, PROBE_CONNECT, None, None,
@@ -2861,28 +3244,32 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                 if default_probe:
                     results.append(_verdict(server.name, endpoint, None, None,
                                             handshakes.get((ip, port, None)), cert_of, new_fps,
-                                            relevant_probes, None, works=works))
+                                            relevant_probes, None, works=works, hosted=hosted))
                 for probe in probes:
                     results.append(_verdict(server.name, endpoint, probe.name, probe.sni,
                                             handshakes.get((ip, port, probe.sni)), cert_of,
                                             new_fps, probes, new_covers(probe.sni),
                                             PROBE_WILDCARD if probe.wildcard else PROBE_SNI,
-                                            works=works))
+                                            works=works, hosted=hosted))
     return ScanReport(servers=list(servers), probes=list(probes), ports=ports,
                       new_certs=list(new_certs), endpoints=list(endpoints.values()),
                       results=results, certificates=certificates, started_at=started,
                       finished_at=_utcnow(), timeout=timeout, workers=workers,
                       warnings=list(warnings or []),
-                      exclude=[rule.label for rule in exclude_rules], excluded=excluded)
+                      exclude=[rule.label for rule in exclude_rules], excluded=excluded,
+                      private_cas=list(private_cas), strict_public=strict_public)
 
 
 def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional[str],
              result: Optional[TlsResult], cert_of: Callable[[TlsResult], Union[CertInfo, str]],
              new_fps: Set[str], probes: Sequence[ProbeName], new_cert_covers: Optional[bool],
-             kind: str = PROBE_DEFAULT, works: bool = False) -> ProbeResult:
+             kind: str = PROBE_DEFAULT, works: bool = False,
+             hosted: Callable[[CertInfo], str] = lambda cert: NEEDS_UPDATE) -> ProbeResult:
     """Classify one handshake result into a :class:`ProbeResult` row.
 
-    ``works`` tells whether any other handshake on the same ip:port completed.
+    ``works`` tells whether any other handshake on the same ip:port completed; ``hosted``
+    gives the status of a covering certificate that is not the new one
+    (:meth:`HostedClassifier.status`).
     """
     row = ProbeResult(server, endpoint.ip, endpoint.port, kind, name, sni, TLS_ERROR,
                       new_cert_covers=new_cert_covers)
@@ -2911,7 +3298,7 @@ def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional
         for probe in probes:
             covered, by = cert.covers(probe.sni)
             if covered:
-                row.status, row.covered_by = NEEDS_UPDATE, by
+                row.status, row.covered_by = hosted(cert), by
                 return row
         row.status = NOT_HOSTED
         return row
@@ -2922,7 +3309,7 @@ def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional
     elif cert.sha256 in new_fps:
         row.status = UPDATED
     else:
-        row.status = NEEDS_UPDATE
+        row.status = hosted(cert)
     return row
 
 
@@ -2964,7 +3351,7 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
         by_status = {}  # type: Dict[str, List[str]]
         for row in summary.rows:
             if row.probe in (PROBE_SNI, PROBE_WILDCARD) and row.name:
-                key = 'OTHER' if row.status == NEEDS_UPDATE and not is_relevant(row) \
+                key = 'OTHER' if row.status in HOSTED_STATUSES and not is_relevant(row) \
                     else row.status
                 names = by_status.setdefault(key, [])
                 if row.name not in names:
@@ -2973,10 +3360,16 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
         servers.append({
             'name': summary.server.name,
             'ips': list(summary.server.ips),
+            # addresses scanned on ports of their own (203.0.113.10:8443); null = the -p ports
+            'ports': {ip: summary.server.port_spec(ip) for ip in summary.server.ips
+                      if ip in summary.server.ports},
             'groups': list(summary.server.groups),
             'status': summary.status,
             'needsUpdate': by_status.get(NEEDS_UPDATE, []),
             'updated': by_status.get(UPDATED, []),
+            # hosted with a Cloudflare Origin CA / a self-signed or --private-ca certificate
+            'originCert': by_status.get(ORIGIN_CERT, []),
+            'privateCert': by_status.get(PRIVATE_CERT, []),
             'errors': by_status.get(TLS_ERROR, []) + by_status.get(TIMEOUT, []),
             # hosted with another certificate that the new one does not cover
             'hostedNotInNewCert': by_status.get('OTHER', []),
@@ -2986,6 +3379,9 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
     for sha, cert in report.certificates.items():
         entry = cert.to_dict(now)
         entry['isNewCert'] = sha in new_fps
+        kind, ca = report.cert_kind(cert)
+        entry['kind'] = kind  # origin-ca | self-signed | private-ca | other
+        entry['privateCa'] = ca.subject_dn if ca is not None else None
         certificates[sha] = entry
     return {
         'tool': 'ssl_origin_scan',
@@ -2994,7 +3390,11 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
         'finishedAt': iso_utc(report.finished_at),
         'elapsedSeconds': round((report.finished_at - report.started_at).total_seconds(), 3),
         'options': {'ports': list(report.ports), 'timeoutSeconds': report.timeout,
-                    'workers': report.workers, 'exclude': list(report.exclude)},
+                    'workers': report.workers, 'exclude': list(report.exclude),
+                    'strictPublic': report.strict_public,
+                    'privateCa': [{'subjectDN': ca.subject_dn, 'sha256': ca.sha256,
+                                   'subjectKeyId': ca.subject_key_id}
+                                  for ca in report.private_cas]},
         'newCertificates': [cert.to_dict(now) for cert in report.new_certs],
         'names': [{'name': p.name, 'sni': p.sni, 'wildcard': p.wildcard} for p in report.probes],
         'summary': {
@@ -3003,6 +3403,8 @@ def report_to_dict(report: ScanReport) -> Dict[str, Any]:
             'openEndpoints': sum(1 for e in report.endpoints if e.state == OPEN),
             'serversNeedingUpdate': sum(1 for s in summaries if s.status == NEEDS_UPDATE),
             'serversUpdated': sum(1 for s in summaries if s.status == UPDATED),
+            'serversWithOriginCert': sum(1 for s in summaries if s.status == ORIGIN_CERT),
+            'serversWithPrivateCert': sum(1 for s in summaries if s.status == PRIVATE_CERT),
             'statusCounts': report.status_counts(),
             'excludedAddresses': report.excluded_count(),
         },
@@ -3094,8 +3496,9 @@ class Style:
 
     _CODES = {'bold': '1', 'dim': '2', 'red': '31', 'green': '32', 'yellow': '33',
               'blue': '34', 'magenta': '35', 'cyan': '36', 'gray': '90'}
-    _STATUS = {NEEDS_UPDATE: ('red', 'bold'), UPDATED: ('green', 'bold'), NOT_HOSTED: ('gray',),
-               TLS_ERROR: ('magenta',), TIMEOUT: ('yellow',), CLOSED: ('gray',)}
+    _STATUS = {NEEDS_UPDATE: ('red', 'bold'), UPDATED: ('green', 'bold'), ORIGIN_CERT: ('cyan',),
+               PRIVATE_CERT: ('blue',), NOT_HOSTED: ('gray',), TLS_ERROR: ('magenta',),
+               TIMEOUT: ('yellow',), CLOSED: ('gray',)}
 
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -3204,16 +3607,41 @@ def _wrap(prefix: str, plain_prefix_len: int, text: str, width: int) -> List[str
 
 def _group_rank(status: str, relevant: bool) -> int:
     # Relevant NEEDS_UPDATE first; hits the new cert does not cover come after UPDATED.
-    order = [(NEEDS_UPDATE, True), (UPDATED, True), (UPDATED, False), (NEEDS_UPDATE, False),
-             (TLS_ERROR, True), (TLS_ERROR, False), (TIMEOUT, True), (TIMEOUT, False),
-             (NOT_HOSTED, True), (NOT_HOSTED, False)]
+    order = [(NEEDS_UPDATE, True), (UPDATED, True), (ORIGIN_CERT, True), (PRIVATE_CERT, True),
+             (UPDATED, False), (NEEDS_UPDATE, False), (ORIGIN_CERT, False),
+             (PRIVATE_CERT, False), (TLS_ERROR, True), (TLS_ERROR, False), (TIMEOUT, True),
+             (TIMEOUT, False), (NOT_HOSTED, True), (NOT_HOSTED, False)]
     key = (status, relevant)
     return order.index(key) if key in order else len(order)
 
 
+def kind_label(kind: str, ca: Optional[CertInfo] = None) -> str:
+    """What a certificate kind means in the summary ('' for :data:`KIND_OTHER`)."""
+    if kind == KIND_ORIGIN_CA:
+        return 'Cloudflare Origin CA'
+    if kind == KIND_SELF_SIGNED:
+        return 'self-signed'
+    if kind == KIND_PRIVATE_CA and ca is not None:
+        return 'private CA: %s' % ca.short_label()
+    return ''
+
+
+# Explanations under the ORIGIN_CERT / PRIVATE_CERT sections of the summary.
+_ORIGIN_NOTE = ('Only Cloudflare trusts a Cloudflare Origin CA certificate: right for an origin '
+                'behind Cloudflare Full (strict) while its names stay proxied (orange cloud).')
+_PRIVATE_NOTE = ('Self-signed, or issued by a CA given with --private-ca: usual on internal '
+                 'hosts. Public clients do not trust it.')
+_NOT_COUNTED_NOTE = ('Not counted as needing the new certificate (--fail-on-needs-update '
+                     'ignores them); --strict-public counts them as NEEDS_UPDATE.')
+
+
 def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: int,
-                   now: datetime, has_new_cert: bool) -> List[str]:
-    """Lines for one server: per endpoint, names grouped by (status, served certificate)."""
+                   now: datetime, has_new_cert: bool,
+                   note: Optional[Callable[[str, CertInfo], str]] = None) -> List[str]:
+    """Lines for one server: per endpoint, names grouped by (status, served certificate).
+
+    ``note(status, cert)`` may add why a group has its status (``self-signed``).
+    """
     server = summary.server
     head = '  ' + style.paint(display_text(server.name), 'bold')
     extra_ips = [ip for ip in server.ips if ip != server.name]
@@ -3240,7 +3668,7 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
         all_named = [r for r in rows if r.probe in (PROBE_SNI, PROBE_WILDCARD)]
         named = [r for r in all_named if show_all or r.status != NOT_HOSTED]
         show_default = default is not None and (
-            show_all or default.status in (NEEDS_UPDATE, UPDATED))
+            show_all or default.status in HOSTED_STATUSES or default.status == UPDATED)
         if not named and not show_default:
             continue
         out.append('    ' + style.paint(label, 'bold'))
@@ -3257,11 +3685,15 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
                 text = 'all %d names' % len(group)
             else:
                 text = ', '.join(row.name or '' for row in group)
-            if has_new_cert and not relevant and status in (NEEDS_UPDATE, UPDATED):
+            cert = group[0].cert
+            why = note(status, cert) if note is not None and cert is not None else ''
+            if why:
+                text += '  (%s)' % display_text(why)
+            if has_new_cert and not relevant and (status in HOSTED_STATUSES
+                                                  or status == UPDATED):
                 text += '  (not covered by the new certificate)'
             out.extend(_wrap(prefix, indent, text, width))
-            cert = group[0].cert
-            if status in (NEEDS_UPDATE, NOT_HOSTED) and cert is not None:
+            if (status in HOSTED_STATUSES or status == NOT_HOSTED) and cert is not None:
                 out.append(' ' * indent + 'current: ' + cert_line(cert, now, style))
                 out.append(' ' * (indent + 9) + style.paint(cert_ids(cert), 'dim'))
             elif error:  # handshake failures, names the server refused
@@ -3278,10 +3710,13 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
 
 def _section(lines: List[str], title: str, summaries: Sequence[ServerSummary], style: Style,
              colors: Sequence[str], show_all: bool, width: int, now: datetime,
-             has_new: bool) -> None:
+             has_new: bool, note: Optional[Callable[[str, CertInfo], str]] = None,
+             explain: Sequence[str] = ()) -> None:
     lines.append(style.paint('%s: %d' % (title, len(summaries)), *colors))
+    for text in explain:
+        lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, text, width))
     for summary in summaries:
-        lines.extend(_render_server(summary, style, show_all, width, now, has_new))
+        lines.extend(_render_server(summary, style, show_all, width, now, has_new, note))
     lines.append('')
 
 
@@ -3304,7 +3739,9 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     """Human-readable report, most actionable first.
 
     Sections: servers that need the new certificate (with the certificate they serve now,
-    its expiry, days left and issuer), servers already serving it, handshake errors,
+    its expiry, days left and issuer), servers already serving it, servers serving a
+    Cloudflare Origin CA certificate and servers serving a self-signed or private-CA one
+    (each explained, not counted as needing the new certificate), handshake errors,
     servers that host only names the new certificate does not cover, and - only with
     ``show_all`` - servers not hosting any name and unreachable ones (otherwise counted).
     """
@@ -3314,18 +3751,36 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     has_new = bool(report.new_certs)
     elapsed = (report.finished_at - report.started_at).total_seconds()
     open_count = sum(1 for e in report.endpoints if e.state == OPEN)
+    # -p plus the ports written with addresses (203.0.113.10:8443)
+    ports = list(dict.fromkeys(e.port for e in report.endpoints)) or list(report.ports)
     header = 'SSL origin scan: %d server(s), %d endpoint(s) (%d open), %d name(s), ' \
         'ports %s, %.1fs' % (len(report.servers), len(report.endpoints), open_count,
-                             len(report.probes), ','.join(str(p) for p in report.ports), elapsed)
+                             len(report.probes), ','.join(str(p) for p in ports), elapsed)
     lines = [style.paint(header, 'bold')]
     if report.exclude:
         lines.append(_excluded_line(report, style))
     for cert in report.new_certs:
         lines.append('New certificate: %s | %s' % (cert_line(cert, now, style), cert_ids(cert)))
+    if report.private_cas:
+        labels = [ca.short_label() for ca in report.private_cas]
+        lines.append(display_text('Private CAs (--private-ca): %s%s' % (
+            ', '.join(labels[:5]), ' ...' if len(labels) > 5 else '')))
     if not has_new:
         lines.append(style.paint('No --cert given: every server whose certificate covers a name '
-                                 'is listed (status NEEDS_UPDATE).', 'dim'))
+                                 'is listed (status NEEDS_UPDATE; ORIGIN_CERT / PRIVATE_CERT for '
+                                 'Cloudflare Origin CA, self-signed and private-CA '
+                                 'certificates).', 'dim'))
+    if report.strict_public:
+        lines.append(style.paint('--strict-public: Cloudflare Origin CA, self-signed and '
+                                 'private-CA certificates count as NEEDS_UPDATE.', 'dim'))
     lines.append('')
+
+    def note(status: str, cert: CertInfo) -> str:
+        # Why a group is ORIGIN_CERT / PRIVATE_CERT, or why --strict-public made it NEEDS_UPDATE.
+        if status in (ORIGIN_CERT, PRIVATE_CERT) or (status == NEEDS_UPDATE
+                                                     and report.strict_public):
+            return kind_label(*report.cert_kind(cert))
+        return ''
 
     buckets = {}  # type: Dict[str, List[ServerSummary]]
     for summary in summaries:
@@ -3333,10 +3788,19 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     needs = buckets.get(NEEDS_UPDATE, [])
     _section(lines, 'Servers that need the new certificate' if has_new
              else 'Servers hosting the names', needs, style,
-             ('red', 'bold') if needs else ('green', 'bold'), show_all, width, now, has_new)
+             ('red', 'bold') if needs else ('green', 'bold'), show_all, width, now, has_new,
+             note)
     if has_new:
         _section(lines, 'Already serving the new certificate', buckets.get(UPDATED, []), style,
-                 ('green', 'bold'), show_all, width, now, has_new)
+                 ('green', 'bold'), show_all, width, now, has_new, note)
+    if buckets.get(ORIGIN_CERT):
+        _section(lines, 'Serving a Cloudflare Origin CA certificate', buckets[ORIGIN_CERT],
+                 style, ('cyan', 'bold'), show_all, width, now, has_new, note,
+                 (_ORIGIN_NOTE, _NOT_COUNTED_NOTE) if has_new else (_ORIGIN_NOTE,))
+    if buckets.get(PRIVATE_CERT):
+        _section(lines, 'Serving a self-signed or private-CA certificate', buckets[PRIVATE_CERT],
+                 style, ('blue', 'bold'), show_all, width, now, has_new, note,
+                 (_PRIVATE_NOTE, _NOT_COUNTED_NOTE) if has_new else (_PRIVATE_NOTE,))
 
     errors = [s for s in buckets.get(TLS_ERROR, []) + buckets.get(TIMEOUT, [])
               if any(r.probe != PROBE_CONNECT for r in s.rows)]
@@ -3345,12 +3809,12 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
                  now, has_new)
 
     not_hosted = buckets.get(NOT_HOSTED, [])
-    other_cert = [s for s in not_hosted if any(r.status == NEEDS_UPDATE and not is_relevant(r)
+    other_cert = [s for s in not_hosted if any(r.status in HOSTED_STATUSES and not is_relevant(r)
                                                for r in s.rows)]
     not_hosted = [s for s in not_hosted if s not in other_cert]
     if other_cert:
         _section(lines, 'Hosting only names the new certificate does not cover', other_cert,
-                 style, ('bold',), show_all, width, now, has_new)
+                 style, ('bold',), show_all, width, now, has_new, note)
     unreachable = [s for s in summaries if s.status in (CLOSED, TIMEOUT)
                    and all(r.probe == PROBE_CONNECT for r in s.rows)]
     if show_all:
@@ -3372,9 +3836,12 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
             lines.append('')
 
     counts = report.status_counts()
+    # ORIGIN_CERT / PRIVATE_CERT only when there are any: the line stays short otherwise.
+    shown = [status for status in (NEEDS_UPDATE, UPDATED, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED,
+                                   TLS_ERROR, TIMEOUT, CLOSED)
+             if counts.get(status) or status not in (ORIGIN_CERT, PRIVATE_CERT)]
     totals = ', '.join('%s %d' % (style.status(status), counts.get(status, 0))
-                       for status in (NEEDS_UPDATE, UPDATED, NOT_HOSTED, TLS_ERROR, TIMEOUT,
-                                      CLOSED))
+                       for status in shown)
     lines.append('Results (server/port/name): ' + totals)
     return '\n'.join(lines) + '\n'
 
@@ -3447,6 +3914,9 @@ examples:
   CI / cron - exit code 1 while any server still needs the new certificate:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color
 
+  Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE:
+    python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --private-ca internal-ca.pem
+
 targets (-t, repeatable):
   an IP, hostname, CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.50 or 10.0.0.10-50),
   NAME=IP, "-" for stdin, or a file (format auto-detected):
@@ -3456,6 +3926,12 @@ targets (-t, repeatable):
     server addresses),
     Ansible INI (web01 ansible_host=10.0.0.5, [groups]), simple Ansible YAML, JSON.
   Entries without an IP are resolved with the system resolver (IPv4 and IPv6).
+  An address or hostname written with a port - 10.0.0.5:8443, [2001:db8::5]:8443,
+  web01.example.com:8443, "web01 10.0.0.5:8443" in a file - is scanned on that port
+  instead of -p; -p applies to every target written without one (list a target twice,
+  with and without the port, to get both). IPv6 needs the brackets. A port that is not
+  1-65535 is an error on the command line and a warning in a file; a CIDR or range
+  takes no port.
   CIDRs/ranges larger than a /16 need --allow-large.
   Numeric "hostnames" such as 2026092401, 127.1 or 0x7f.0x1 are refused (usage error
   on the command line, skipped in files): the system resolver would read them as an
@@ -3480,6 +3956,10 @@ names (-n, repeatable): hostnames or files with names (one per line, # comments)
 statuses (per server, port and name):
   UPDATED       serves the new certificate (--cert) for the name
   NEEDS_UPDATE  serves a certificate covering the name, but not the new one
+  ORIGIN_CERT   ... a Cloudflare Origin CA certificate: trusted only by Cloudflare, right
+                for an origin behind Cloudflare Full (strict) while the name is proxied
+  PRIVATE_CERT  ... a self-signed certificate, or one issued by a --private-ca: usual on
+                internal hosts
   NOT_HOSTED    the certificate served does not cover the name (default cert), or
                 the server refused this name while other names work on that port
                 (a closed or reset connection is retried once first)
@@ -3490,8 +3970,15 @@ statuses (per server, port and name):
   A server "needs the new certificate" when it serves a name the new certificate
   covers (or, without SNI, a default certificate covering such a name) with another
   certificate. Names outside the new certificate are shown but do not count.
+  ORIGIN_CERT and PRIVATE_CERT servers are listed apart and do not count either, unless
+  --strict-public makes them NEEDS_UPDATE. When the new certificate is itself an Origin
+  CA, self-signed or --private-ca certificate, older ones of that kind (and any from the
+  new certificate's issuer) stay NEEDS_UPDATE. --private-ca matches the issuer DN and,
+  when both certificates carry one, the key identifier; list the CA that signs the server
+  certificates (the intermediate, if there is one) - a bundle file is fine.
 
-exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update),
+exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
+            and PRIVATE_CERT only with --strict-public),
             2 usage error (report files that cannot be written are refused before
             the scan), 3 a report file could not be written after the scan (the
             summary and the other report are still written), 130 interrupted (Ctrl-C)
@@ -3508,6 +3995,12 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   python3 ssl_origin_scan.py -t 10.0.0.0/24 --exclude 10.0.0.5 10.0.0.64/28 -n www.example.com
   2026092401 ya da 0x7f.0x1 gibi sayısal "alan adları" reddedilir: sistem çözümleyicisi
   bunları IPv4 adresi olarak okur.
+  Portu yazılmış bir hedef (10.0.0.5:8443, [2001:db8::5]:8443) yalnızca o porttan
+  taranır; -p portu olmayan hedefler içindir.
+  Cloudflare Origin CA sertifikası sunan sunucular ORIGIN_CERT, kendinden imzalı ya da
+  --private-ca ile verdiğiniz iç CA'nın imzaladığı sertifikayı sunanlar PRIVATE_CERT
+  olarak ayrı listelenir ve "yeni sertifika gerekiyor" sayılmaz; --strict-public
+  bunları da NEEDS_UPDATE sayar.
 """
 
 
@@ -3528,9 +4021,16 @@ def build_parser() -> argparse.ArgumentParser:
     what.add_argument('--cert', metavar='FILE', action='append', default=[],
                       help='the new certificate (PEM/DER/P7B, chain OK): adds its names and '
                            'enables UPDATED detection (repeatable, e.g. RSA + ECDSA)')
+    what.add_argument('--private-ca', metavar='FILE', action='append', default=[],
+                      help='CA certificate(s) of your internal PKI (PEM/DER/P7B): what they '
+                           'issued is PRIVATE_CERT, not NEEDS_UPDATE (repeatable)')
+    what.add_argument('--strict-public', action='store_true',
+                      help='count Cloudflare Origin CA, self-signed and private-CA '
+                           'certificates as NEEDS_UPDATE too')
     scan = parser.add_argument_group('scan options')
     scan.add_argument('-p', '--ports', default=DEFAULT_PORTS, metavar='LIST',
-                      help='TLS ports, comma separated, ranges allowed (default: 443)')
+                      help='TLS ports, comma separated, ranges allowed (default: 443); a '
+                           'target written with its own port (10.0.0.5:8443) keeps that one')
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                       help='parallel connections (default: %%(default)s; at most %d at a '
                            'time to one ip:port)' % MAX_PER_ENDPOINT)
@@ -3550,7 +4050,8 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument('-q', '--quiet', action='store_true',
                      help='no progress line, no warnings on stderr')
     out.add_argument('--fail-on-needs-update', action='store_true',
-                     help='exit with code 1 when any server needs the new certificate')
+                     help='exit with code 1 when any server needs the new certificate '
+                          '(ORIGIN_CERT / PRIVATE_CERT servers only with --strict-public)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser
 
@@ -3823,6 +4324,9 @@ def _run(args: argparse.Namespace) -> int:
             new_certs.append(leaf)
         all_warnings.extend(messages)
 
+    private_cas, ca_messages = load_private_cas(args.private_ca)
+    all_warnings.extend(ca_messages)
+
     names, name_warnings = load_names(args.names)
     all_warnings.extend(name_warnings)
     cert_names = [host for cert in new_certs for host in cert.hostnames]
@@ -3859,15 +4363,21 @@ def _run(args: argparse.Namespace) -> int:
     if not quiet:
         skipped = (' (%d excluded address(es) left out)' % excluded_address_count(excluded)
                    if excluded else '')
-        print('Scanning %d server(s) / %d IP(s) x %d port(s) for %d name(s) with %d workers, '
-              'timeout %gs%s ...' % (len(kept), ip_count, len(ports), len(probes),
-                                     args.workers, args.timeout, skipped), file=err)
+        if any(server.ports for server in kept):  # 203.0.113.10:8443 in the targets
+            endpoint_count = len({(ip, port) for server in kept for ip in server.ips
+                                  for port in server.ports_for(ip, ports)})
+            where = '%d IP(s), %d ip:port endpoint(s)' % (ip_count, endpoint_count)
+        else:
+            where = '%d IP(s) x %d port(s)' % (ip_count, len(ports))
+        print('Scanning %d server(s) / %s for %d name(s) with %d workers, timeout %gs%s ...'
+              % (len(kept), where, len(probes), args.workers, args.timeout, skipped), file=err)
     progress = ProgressPrinter(err, enabled=not quiet and _isatty(err))
     try:
         # run_scan applies the same exclusion itself, so it is enforced where connections start.
         report = run_scan(servers, probes, ports, new_certs=new_certs, timeout=args.timeout,
                           workers=args.workers, progress=progress.update,
-                          warnings=all_warnings, exclude=exclude_rules)
+                          warnings=all_warnings, exclude=exclude_rules,
+                          private_cas=private_cas, strict_public=args.strict_public)
     finally:
         progress.finish()
 

@@ -1693,9 +1693,10 @@ class EngineTests(unittest.TestCase):
         names = ['h%02d.wild.example.net' % i for i in range(80)]
         timeout = 0.2
         began = time.monotonic()
+        # strict_public: EC_DER is self-signed, and the verdict does not matter here
         report = sos.run_scan([sos.Server('s%d' % i, ['10.0.0.%d' % i]) for i in range(1, 9)],
                               sos.build_probe_names(names), [443], timeout=timeout, workers=32,
-                              connect_fn=lambda *a: None, tls_fn=tls)
+                              connect_fn=lambda *a: None, tls_fn=tls, strict_public=True)
         elapsed = time.monotonic() - began
         capped = -(-(len(names) + 1) // sos.MAX_PER_ENDPOINT) * timeout  # 21 rounds: 4.2 s
         self.assertLess(elapsed, capped / 2)
@@ -1962,7 +1963,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(doc['version'], sos.__version__)
         self.assertTrue(doc['finishedAt'].endswith('Z'))
         self.assertEqual(doc['options'], {'ports': [443], 'timeoutSeconds': 1, 'workers': 4,
-                                          'exclude': []})
+                                          'exclude': [], 'strictPublic': False, 'privateCa': []})
         self.assertEqual(doc['excluded'], [])
         self.assertEqual(doc['summary']['excludedAddresses'], 0)
         self.assertEqual(doc['newCertificates'][0]['sha256'], RENEWED_WILD_SHA256)
@@ -2116,8 +2117,20 @@ class OutputTests(unittest.TestCase):
                               workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
         text = sos.render_summary(report)
         self.assertIn('No --cert given', text)
-        self.assertIn('Servers hosting the names: 1', text)
+        # EC_DER is self-signed: it hosts the name, as PRIVATE_CERT (--strict-public: NEEDS_UPDATE)
+        self.assertIn('Servers hosting the names: 0', text)
+        self.assertIn('Serving a self-signed or private-CA certificate: 1', text)
+        self.assertIn('PRIVATE_CERT  a.wild.example.net  (self-signed)', text)
+        self.assertNotIn('--strict-public counts them', text)  # nothing to count without --cert
         self.assertNotIn('Already serving', text)
+        strict = sos.run_scan([sos.Server('s', ['10.0.0.1'])],
+                              sos.build_probe_names(['a.wild.example.net']), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn,
+                              strict_public=True)
+        text = sos.render_summary(strict)
+        self.assertIn('Servers hosting the names: 1', text)
+        self.assertIn('NEEDS_UPDATE  a.wild.example.net  (self-signed)', text)
+        self.assertIn('--strict-public: Cloudflare Origin CA, self-signed and private-CA', text)
 
     def test_days_text(self):
         style = sos.Style(False)
@@ -3126,8 +3139,10 @@ class IntegrationTests(unittest.TestCase):
         server = LimitedTlsServer('cn_only', WILD_OLD, limit=2)
         names = ['h%02d.wild.example.net' % i for i in range(30)]
         try:
+            # --strict-public: the served certificate is self-signed (else PRIVATE_CERT)
             code, out, err = run_main('-t', 'web=127.0.0.1', '-p', str(server.port),
-                                      '-n', *names, '--timeout', '5', '--json', '-', '-q')
+                                      '-n', *names, '--timeout', '5', '--json', '-', '-q',
+                                      '--strict-public')
         finally:
             server.close()
         self.assertEqual(code, 0, err)

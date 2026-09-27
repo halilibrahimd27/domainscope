@@ -1050,7 +1050,33 @@ function daysUntil(date, now) {
 
 /* ---- individual analyses: each returns { checks, ...data } ---- */
 
-function analyzeSoa(name, soaR) {
+/**
+ * Owner of the deepest SOA (answer or authority section) at `name` or one of
+ * its ancestors. An SOA owned by anything else is a CNAME target's zone.
+ */
+function enclosingSoaOwner(res, name) {
+  const owners = [...arr(res && res.answers), ...arr(res && res.authorities)]
+    .filter((rr) => rr && rr.type === 'SOA' && isSubdomainOf(name, canonName(rr.name)))
+    .map((rr) => canonName(rr.name));
+  return owners.sort((a, b) => b.length - a.length)[0] || null;
+}
+
+/** Zone of `name` from the SOA answers of its parents (up to the registrable domain), or null. */
+async function parentZone(name, d) {
+  const stop = registryDomain(name);
+  if (!stop || stop === name || !isSubdomainOf(name, stop)) return null;
+  let cur = name;
+  while (cur !== stop) {
+    cur = cur.slice(cur.indexOf('.') + 1);
+    const res = await d.query(cur, 'SOA');
+    if (failed(res)) return null;
+    const zone = enclosingSoaOwner(res, cur);
+    if (zone) return zone;
+  }
+  return null;
+}
+
+async function analyzeSoa(name, soaR, d) {
   const checks = [];
   let soa = null;
   let zone = null;
@@ -1070,16 +1096,16 @@ function analyzeSoa(name, soaR) {
     if (Number.isFinite(soa.minimum) && soa.minimum > 86400) checks.push(makeCheck('soa.minimum', 'info', { minimum: soa.minimum }));
     return { checks, soa, zone, apex: true };
   }
-  const auth = arr(soaR.authorities).find((rr) => rr && rr.type === 'SOA');
-  const other = records(soaR, 'SOA')[0];
-  zone = auth ? canonName(auth.name) : other ? canonName(other.name) : null;
+  // For an alias (CNAME) the resolver answers with the target's SOA: ask the parents instead.
+  zone = enclosingSoaOwner(soaR, name) || await parentZone(name, d);
   if (soaR.rcode === 'NOERROR') checks.push(makeCheck('soa.not-apex', 'warn', { domain: name, zone: zone || '?' }));
   return { checks, soa, zone, apex: false };
 }
 
 async function analyzeNs(name, nsR, d, isApex) {
   const checks = [];
-  const hosts = uniq(records(nsR, 'NS').map((rr) => canonName(rr.data)).filter(Boolean));
+  // Owner-filtered: through a CNAME the resolver returns the target zone's name servers.
+  const hosts = uniq(records(nsR, 'NS', name).map((rr) => canonName(rr.data)).filter(Boolean));
   const out = { checks, hosts, addresses: {} };
   if (failed(nsR)) {
     checks.push(makeCheck('ns.error', 'error', { error: errText(nsR) }));
@@ -1662,7 +1688,8 @@ export async function domainHealth(domain, {
   throwIfAborted(signal);
   progress('records');
 
-  const soa = analyzeSoa(name, soaR);
+  const soa = await analyzeSoa(name, soaR, d);
+  throwIfAborted(signal);
   const nxdomain = [soaR, nsR, aR].every((r) => r.ok && r.rcode === 'NXDOMAIN');
 
   const records0 = {

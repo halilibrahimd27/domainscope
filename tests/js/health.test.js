@@ -419,6 +419,25 @@ test('not a zone apex; CNAME alias', async () => {
   lacks(plain, 'ns.none');
   lacks(plain, 'dnssec.unsigned');
   lacks(plain, 'apex.cname');
+  assert.equal(plain.zone, 'example.com');
+});
+
+test('CNAME to another zone: SOA / NS of the target are not attributed to the alias', async () => {
+  const zone = goodZone();
+  zone['example.net'] = { SOA: SOA('example.net'), NS: ['ns1.example.net'], A: ['192.0.2.80'] };
+  zone['ns1.example.net'] = { A: ['198.51.100.80'] };
+  zone['app.example.net'] = { A: ['192.0.2.81'] };
+  zone['www.example.com'] = { CNAME: 'example.net' };
+  zone['shop.example.com'] = { CNAME: 'app.example.net' };
+  for (const host of ['www.example.com', 'shop.example.com']) {
+    const r = await run(host, fakeDns(zone));
+    assertRenderable(r);
+    assert.equal(r.zone, 'example.com', host); // the alias lives in example.com, not in the target's zone
+    assert.equal(has(r, 'soa.not-apex', 'warn').params.zone, 'example.com');
+    has(r, 'apex.cname', 'info');
+    for (const id of ['ns.single', 'ns.no-ipv6', 'ns.ok', 'ns.none']) lacks(r, id);
+    assert.deepEqual(r.records.ns, []);
+  }
 });
 
 test('NS: single, unresolvable, private, same subnet, single provider, no IPv6', async () => {

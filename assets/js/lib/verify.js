@@ -115,7 +115,7 @@ const DAY_MS = 86400000;
  *   reason: string|null, warnings: string[], exposure: string|null, served: ServedCert|null, httpStatus: number|null,
  *   tests: TrimmedTest[], measurementId: string|null, measurementDone: boolean, measurementAt: number|null,
  *   reuseAttempts: number, cost: number, retries: number, checkedAt: Date|null, stale: boolean,
- *   error: { code: string, message: string, raw: string|null }|null }} VerifyRow
+ *   error: { code: string, message: string, raw: string|null }|null, overCap: boolean }} VerifyRow
  */
 
 /* ------------------------------------------------------------------------ */
@@ -648,14 +648,15 @@ export function recheckRows(rows) {
 
 /**
  * Put rows back in the queue for a re-check: state 'pending', keeping their
- * last verdict (marked `stale`) until a new measurement replaces it.
+ * last verdict (marked `stale`) until a new measurement replaces it. Skipped
+ * rows and rows past the cap stay as they are.
  * @param {VerifyRow[]} rows
  * @returns {VerifyRow[]} the same rows
  */
 export function requeueRows(rows) {
   const list = Array.isArray(rows) ? rows : [];
   for (const r of list) {
-    if (r.state === 'skipped') continue;
+    if (r.state === 'skipped' || r.overCap) continue;
     r.state = 'pending';
     r.notRun = null;
     r.error = null;
@@ -678,7 +679,9 @@ export const isOriginPair = (p) => !!p && (p.via === 'hint' || p.via === 'zone')
 /**
  * The origin opt-in: origin pairs ({@link isOriginPair}) run only when the
  * user asks. Switches never-checked origin rows between 'pending' (on) and
- * 'not-run: optional' (off).
+ * 'not-run: optional' (off); one past the cap (`overCap`) between 'skipped:
+ * over-cap' (on) and 'not-run: optional' (off), so it speaks for its server
+ * only while the opt-in is on.
  * @param {VerifyRow[]} rows
  * @param {boolean} enabled
  * @returns {VerifyRow[]} the rows that changed
@@ -686,13 +689,15 @@ export const isOriginPair = (p) => !!p && (p.via === 'hint' || p.via === 'zone')
 export function applyOriginOptIn(rows, enabled) {
   const changed = [];
   for (const r of Array.isArray(rows) ? rows : []) {
-    if (!isOriginPair(r) || r.skip || r.verdict) continue;
+    if (!isOriginPair(r) || (r.skip && r.skip !== 'over-cap') || r.verdict) continue;
     if (enabled && r.state === 'not-run' && r.notRun === 'optional') {
-      r.state = 'pending';
+      r.state = r.overCap ? 'skipped' : 'pending';
+      r.skip = r.overCap ? 'over-cap' : null;
       r.notRun = null;
       changed.push(r);
-    } else if (!enabled && r.state === 'pending') {
+    } else if (!enabled && (r.state === 'pending' || r.skip === 'over-cap')) {
       r.state = 'not-run';
+      r.skip = null;
       r.notRun = 'optional';
       changed.push(r);
     }
@@ -712,7 +717,7 @@ function reusable(row, time) {
  * check = `probes`), `reuse` poll an already-paid one for free, `servers` is
  * how many servers they cover, `origins` how many of them are origin pairs
  * ({@link isOriginPair}). `optional` counts the origin pairs still waiting
- * for the opt-in.
+ * for the opt-in (within the cap: the opt-in never sends the others).
  * @param {VerifyRow[]} rows
  * @param {{ probesPerCheck?: number, now?: number|Date }} [opts]
  * @returns {{ checks: number, reuse: number, probes: number, servers: number, origins: number, optional: number }}
@@ -725,7 +730,7 @@ export function verifyCost(rows, { probesPerCheck = 1, now = Date.now() } = {}) 
   let optional = 0;
   const servers = new Set();
   for (const r of Array.isArray(rows) ? rows : []) {
-    if (r.state === 'not-run' && r.notRun === 'optional') optional += 1;
+    if (r.state === 'not-run' && r.notRun === 'optional' && !r.overCap) optional += 1;
     if (r.state !== 'pending') continue;
     if (reusable(r, time)) reuse += 1;
     else checks += 1;
@@ -857,12 +862,15 @@ export function scopePairs(pairs, scope) {
 }
 
 /**
- * The pairs past a cap of `maxRows` checks. Skipped pairs cost nothing; the
- * others take the places in this order, each tier in execution order: the
- * first DNS pair of every server address, the other DNS pairs, the first
- * origin pair of every server address, the other origin pairs. So a server
- * with many names never pushes another server out, and an origin pair (it may
- * wait for the opt-in) never pushes out a DNS pair.
+ * The pairs past a cap of `maxRows` checks, whatever the opt-in (so turning it
+ * on or off never moves another row past the cap). Skipped pairs cost
+ * nothing; the others take the places in this order, each tier in execution
+ * order: the first DNS or zone pair of every server address, the other DNS
+ * and zone pairs, the first origin-hint pair of every address, the other hint
+ * pairs. So a server with many names never pushes another server (or another
+ * address of its own) out, whether DNS or the zone file ties it to the
+ * certificate, and a hint candidate never pushes out a pair the verdicts
+ * treat as authoritative.
  * @param {VerifyPair[]} pairs
  * @param {number} maxRows
  * @returns {Set<VerifyPair>}
@@ -873,9 +881,9 @@ function pairsOverCap(pairs, maxRows) {
   if (checkable.length <= cap) return new Set();
   const seen = new Set();
   const ranked = checkable.map((p, i) => {
-    const origin = isOriginPair(p);
-    const k = `${origin ? 'origin' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}`;
-    const tier = (origin ? 2 : 0) + (seen.has(k) ? 1 : 0);
+    const hint = !isDnsLike(p.via);
+    const k = `${hint ? 'hint' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}`;
+    const tier = (hint ? 2 : 0) + (seen.has(k) ? 1 : 0);
     seen.add(k);
     return { p, i, tier };
   });
@@ -885,10 +893,12 @@ function pairsOverCap(pairs, maxRows) {
 
 /**
  * Fresh rows for the pairs (apply {@link scopePairs} first): skipped pairs →
- * 'skipped'; pairs past the cap of `maxRows` checks (see pairsOverCap) →
- * 'skipped' as 'over-cap', listed for the CLI; origin pairs (hint or zone,
- * {@link isOriginPair}) → 'not-run: optional' unless `origins` is on; the
- * rest → 'pending'.
+ * 'skipped'; origin pairs (hint or zone, {@link isOriginPair}) →
+ * 'not-run: optional' unless `origins` is on; the rest → 'pending'. Pairs
+ * past the cap of `maxRows` checks (see pairsOverCap) are marked `overCap`
+ * and become 'skipped' as 'over-cap', listed for the CLI; an origin pair
+ * among them stays 'not-run: optional' while the opt-in is off (see
+ * {@link applyOriginOptIn}).
  * @param {VerifyPair[]} pairs
  * @param {{ origins?: boolean, maxRows?: number }} [opts]
  * @returns {VerifyRow[]}
@@ -897,11 +907,13 @@ export function createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_
   const list = Array.isArray(pairs) ? pairs : [];
   const over = pairsOverCap(list, maxRows);
   return list.map((p) => {
-    const skip = p.skip || (over.has(p) ? 'over-cap' : null);
-    const optional = !skip && isOriginPair(p) && !origins;
+    const overCap = !p.skip && over.has(p);
+    const optional = !p.skip && isOriginPair(p) && !origins;
+    const skip = p.skip || (overCap && !optional ? 'over-cap' : null);
     return {
       ...p,
       skip,
+      overCap,
       alsoServers: Array.isArray(p.alsoServers) ? p.alsoServers.map((s) => ({ ...s })) : [],
       state: skip ? 'skipped' : optional ? 'not-run' : 'pending',
       notRun: optional ? 'optional' : null,
@@ -910,6 +922,20 @@ export function createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_
       cost: 0, retries: 0, checkedAt: null, stale: false, error: null
     };
   });
+}
+
+/**
+ * How many checks the rows of these pairs offer (the 'pending' rows
+ * {@link createVerifyRows} would make: not skipped, within the cap, and not
+ * an origin pair while the opt-in is off), without building the rows.
+ * @param {VerifyPair[]} pairs
+ * @param {{ origins?: boolean, maxRows?: number }} [opts]
+ * @returns {number}
+ */
+export function checkCount(pairs, { origins = false, maxRows = VERIFY_MAX_ROWS } = {}) {
+  const list = Array.isArray(pairs) ? pairs : [];
+  const over = pairsOverCap(list, maxRows);
+  return list.filter((p) => !p.skip && !over.has(p) && (origins || !isOriginPair(p))).length;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1181,10 +1207,10 @@ const countBy = (items, keyFn) => {
 
 /**
  * Rows that speak for their server: not skipped, and not an origin pair the user left out. A
- * DNS pair past the cap speaks (never checked, it keeps its server from being called live); an
- * origin pair past it is left out like an optional one.
+ * row past the cap speaks (never checked, it keeps its server from being called live); an
+ * origin pair past it only while the opt-in is on (off, it is 'not-run: optional').
  */
-const considered = (r) => (r.state !== 'skipped' || (r.skip === 'over-cap' && !isOriginPair(r)))
+const considered = (r) => (r.state !== 'skipped' || r.skip === 'over-cap')
   && !(r.state === 'not-run' && r.notRun === 'optional' && !r.verdict);
 
 /**
@@ -1201,9 +1227,9 @@ const considered = (r) => (r.state !== 'skipped' || (r.skip === 'over-cap' && !i
  * `notHostingOrigins` (complete, every answering row behaves as expected
  * behind a CDN and at least one origin-hint candidate answers "not this
  * name"), `unchecked` (no verdict at all), `incomplete` (≥ 1 considered row
- * that never produced a verdict: pending, running, not-run, error; a DNS pair
- * past the cap also keeps its server from being live, but is not counted
- * here: "Check again" cannot finish it, the not-checkable line names it), `chain`
+ * that never produced a verdict: pending, running, not-run, error; a row past
+ * the cap also keeps its server from being live, but is not counted here:
+ * "Check again" cannot finish it, the not-checkable line names it), `chain`
  * (≥ 1 UPDATED row with chain-incomplete), `wrongCert` (rolled up NOT_HOSTED
  * because a DNS-matched name gets another certificate or a refusal there:
  * visitors of that name get an error), `served` (a server in the base with

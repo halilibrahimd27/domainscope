@@ -496,6 +496,35 @@ describe('launch: only the confirmed batch is sent', () => {
     assert.match(notHereSentence(job.rows, job.stats), /1 check over the 500 limit/);
   });
 
+  test('a server known only as a zone-file origin keeps its check past 500 names, and the badge never goes green', () => {
+    const names = Array.from({ length: 500 }, (_, i) => `n${i}.example.com`);
+    const zone = ['shop', 'blog', 'docs'].map((l) => `${l}.example.com`);
+    const run = scanRun({
+      servers: [
+        { server: { id: 's1', name: 'web01' }, needsCert: true, hosts: names.map((name) => ({ name, ip: '1.2.3.4', via: 'dns', covered: true })) },
+        { server: { id: 's2', name: 'web02' }, needsCert: true, hosts: zone.map((name) => ({ name, ip: '1.2.3.5', via: 'zone', covered: true })) }
+      ],
+      hosts: zone.map((name) => ({ name, cert: { covered: true }, classification: { hidesOrigin: true, provider: { name: 'Cloudflare' } } }))
+    });
+    const job = verifyJob(run);
+    const web02 = () => job.rows.filter((r) => r.server.id === 's2').map((r) => `${r.name} ${r.state} ${r.skip ?? r.notRun}`);
+    // Off: web02 waits for the opt-in, and its pairs past the cap count nowhere (not over the cap, not an origin check to offer).
+    assert.deepEqual(web02(), ['blog.example.com not-run optional', 'docs.example.com not-run optional', 'shop.example.com not-run optional']);
+    assert.deepEqual(planCounts(job.rows), { checks: 499, servers: 1, origins: 1, originsOn: false });
+    assert.match(notHereSentence(job.rows, job.stats), /: 1 check over the 500 limit/);
+    // On: web02's first name takes a place before web01's other names; the rest of web02 is over the cap.
+    assert.equal(setOriginOptIn(run, true), true);
+    assert.deepEqual(web02(), ['blog.example.com pending null', 'docs.example.com skipped over-cap', 'shop.example.com skipped over-cap']);
+    assert.deepEqual(planCounts(job.rows), { checks: 500, servers: 2, origins: 1, originsOn: true });
+    assert.match(notHereSentence(job.rows, job.stats), /: 3 checks over the 500 limit/);
+    for (const r of job.rows.filter((x) => x.state === 'pending')) {
+      const d = doneRow({ ip: r.ip, name: r.name, server: r.server });
+      Object.assign(r, { state: 'done', status: d.status, reason: d.reason, verdict: d.verdict, served: d.served });
+    }
+    job.runs = 1;
+    assert.deepEqual(verifyTabBadge(run), { value: '0/2', variant: null }, 'neither server had every name checked');
+  });
+
   test('runOrder: batch rows first (needs-cert DNS, other DNS, origin checks, each in table order), then the rest', () => {
     const r = (name, extra) => ({ name, via: 'dns', needsCert: true, ...extra });
     const rows = [r('a', { via: 'hint' }), r('b', { needsCert: false }), r('c'), r('d'), r('e')];

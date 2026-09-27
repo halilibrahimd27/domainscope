@@ -711,16 +711,23 @@ describe('buildVerifyPairs', () => {
   });
 
   test('every pair is returned: the cap on checks is applied to the rows of a scope', () => {
-    const { pairs } = V.buildVerifyPairs(scanResult(), { maxRows: 3 });
+    const { pairs } = V.buildVerifyPairs(scanResult(), { maxRows: 2 });
     assert.equal(pairs.length, 11);
     assert.ok(!pairs.some((p) => p.skip === 'over-cap'));
-    const rows = V.createVerifyRows(pairs, { maxRows: 3 });
-    assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map((r) => `${r.name} ${r.ip}`),
-      ['zone.example.com 1.2.3.4', 'shop.example.com 1.2.3.4', 'shop.example.com 2a01:4f8::1'],
-      'skipped pairs cost nothing, and the DNS pairs come before the origin pairs');
-    assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map((r) => r.state), ['skipped', 'skipped', 'skipped']);
-    assert.equal(V.createVerifyRows(pairs).filter((r) => r.skip === 'over-cap').length, 0, 'VERIFY_MAX_ROWS by default');
-    assert.equal(rows.find((r) => r.name === 'vpn.example.com').skip, 'private', 'a pair skip is kept');
+    const over = (rows) => rows.filter((r) => r.overCap).map((r) => `${r.name} ${r.ip} ${r.state} ${r.skip ?? r.notRun}`);
+    // Skipped pairs cost nothing; the first DNS pair of every address (www, api, legacy) comes first, the hints last.
+    assert.deepEqual(over(V.createVerifyRows(pairs, { maxRows: 2, origins: true })), [
+      'zone.example.com 1.2.3.4 skipped over-cap', 'shop.example.com 1.2.3.4 skipped over-cap',
+      'shop.example.com 2a01:4f8::1 skipped over-cap', 'legacy.example.com 54.1.2.3 skipped over-cap'
+    ]);
+    const rows = V.createVerifyRows(pairs, { maxRows: 2 });
+    assert.deepEqual(over(rows), [
+      'zone.example.com 1.2.3.4 not-run optional', 'shop.example.com 1.2.3.4 not-run optional',
+      'shop.example.com 2a01:4f8::1 not-run optional', 'legacy.example.com 54.1.2.3 skipped over-cap'
+    ], 'an origin pair past the cap waits for the opt-in like the others');
+    assert.equal(V.createVerifyRows(pairs).filter((r) => r.overCap).length, 0, 'VERIFY_MAX_ROWS by default');
+    const vpn = rows.find((r) => r.name === 'vpn.example.com');
+    assert.deepEqual([vpn.skip, vpn.overCap], ['private', false], 'a pair skip is kept and costs nothing');
   });
 
   test('empty / odd input never throws', () => {
@@ -757,22 +764,27 @@ describe('scopePairs / createVerifyRows', () => {
 });
 
 describe('the cap on checks', () => {
-  /** web01 serves many covered names on one address (and origin hints for proxied names); web02 serves one. */
-  function busy(names, { hints = 0 } = {}) {
+  /**
+   * web01 serves many covered names on one address (and origin hints for proxied names); web02
+   * serves api, or only proxied names whose origin the zone file gives (`zones`).
+   */
+  function busy(names, { hints = 0, zones = 0 } = {}) {
     const dnsNames = Array.from({ length: names }, (_, i) => `n${i}.example.com`);
     const hintNames = Array.from({ length: hints }, (_, i) => `p${i}.example.com`);
+    const zoneNames = Array.from({ length: zones }, (_, i) => `z${i}.example.com`);
     const cf = { kind: 'cloudflare', provider: 'Cloudflare', hidesOrigin: true, certManaged: true };
     return {
       hosts: [...dnsNames.map((n) => host(n, { ips: ['1.2.3.4'] })), ...hintNames.map((n) => host(n, { ips: ['104.16.5.6'], ...cf })),
-        host('api.example.com', { ips: ['1.2.3.5'] })],
+        ...zoneNames.map((n) => host(n, { ips: ['104.16.5.7'], ...cf })), host('api.example.com', { ips: ['1.2.3.5'] })],
       servers: [
         { server: srv('web01'), needsCert: true, hosts: [...dnsNames.map((n) => e(n, '1.2.3.4')), ...hintNames.map((n) => e(n, '1.2.3.4', 'hint'))] },
-        { server: srv('web02'), needsCert: true, hosts: [e('api.example.com', '1.2.3.5')] }
+        { server: srv('web02'), needsCert: true, hosts: zones ? zoneNames.map((n) => e(n, '1.2.3.5', 'zone')) : [e('api.example.com', '1.2.3.5')] }
       ],
       unmatchedIps: []
     };
   }
   const short = (r) => r.name.replace('.example.com', '');
+  const states = (rows) => rows.map((r) => `${short(r)} ${r.state}${r.skip ? ` ${r.skip}` : r.notRun ? ` ${r.notRun}` : ''}`);
   const upd = (rows) => settle(rows.map((r) => (r.state === 'pending' ? done(r, [V_UPDATED()]) : r)));
 
   test('it is applied after the scope, and every server address gets a check before any gets a second', () => {
@@ -784,19 +796,83 @@ describe('the cap on checks', () => {
     assert.deepEqual(perIp.map((r) => `${short(r)} ${r.state}`), ['n0 pending', 'api pending'], 'one name per IP reaches web02');
   });
 
-  test('origin pairs never push a DNS pair out, whatever the opt-in', () => {
-    const { pairs } = V.buildVerifyPairs(busy(1, { hints: 6 }));
-    for (const origins of [false, true]) {
-      const rows = V.createVerifyRows(pairs, { maxRows: 4, origins });
-      assert.deepEqual(rows.filter((r) => r.skip !== 'over-cap').map(short), ['n0', 'p0', 'p1', 'api']);
-      assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map(short), ['p2', 'p3', 'p4', 'p5']);
+  test('checkCount: the checks a scope offers, as createVerifyRows makes them, without building rows', () => {
+    const cases = [[busy(8), 5], [busy(1, { hints: 6 }), 4], [busy(8, { zones: 3 }), 5], [busy(3, { hints: 2, zones: 2 }), 100]];
+    for (const [result, maxRows] of cases) {
+      const { pairs } = V.buildVerifyPairs(result);
+      for (const scope of ['all', 'perIp']) {
+        for (const origins of [false, true]) {
+          const scoped = V.scopePairs(pairs, scope);
+          assert.equal(V.checkCount(scoped, { maxRows, origins }),
+            V.createVerifyRows(scoped, { maxRows, origins }).filter((r) => r.state === 'pending').length, `${scope} ${origins}`);
+        }
+      }
     }
-    // Opted out, the origin checks past the cap count no more than the optional ones: both servers are live.
+    const { pairs } = V.buildVerifyPairs(busy(600));
+    assert.deepEqual([V.checkCount(pairs), V.checkCount(V.scopePairs(pairs, 'perIp'))], [V.VERIFY_MAX_ROWS, 2]);
+    assert.equal(V.checkCount(null), 0);
+  });
+
+  test('hint pairs come after every DNS and zone pair; past the cap they wait like optional ones while the opt-in is off', () => {
+    const { pairs } = V.buildVerifyPairs(busy(1, { hints: 6 }));
+    const on = V.createVerifyRows(pairs, { maxRows: 4, origins: true });
+    assert.deepEqual(states(on), ['n0 pending', 'p0 pending', 'p1 pending', 'p2 skipped over-cap', 'p3 skipped over-cap',
+      'p4 skipped over-cap', 'p5 skipped over-cap', 'api pending']);
+    const off = V.createVerifyRows(pairs, { maxRows: 4 });
+    assert.deepEqual(states(off), ['n0 pending', 'p0 not-run optional', 'p1 not-run optional', 'p2 not-run optional',
+      'p3 not-run optional', 'p4 not-run optional', 'p5 not-run optional', 'api pending']);
+    assert.equal(V.verifyCost(off, { now: NOW }).optional, 2, 'the opt-in would send p0 and p1, never the others');
+    assert.deepEqual(V.cliPlan(off), { targets: [], names: [], rows: 0 }, 'not handed to the CLI either');
+    assert.deepEqual(V.notHereParts(V.summarizeVerify(off)), []);
+    // The opt-in moves them both ways: within the cap to pending, past it to over-cap; nothing else moves.
     const rows = V.createVerifyRows(pairs, { maxRows: 4 });
-    upd(rows);
-    const sum = V.summarizeVerify(rows);
+    assert.deepEqual(V.applyOriginOptIn(rows, true).map(short), ['p0', 'p1', 'p2', 'p3', 'p4', 'p5']);
+    assert.deepEqual(states(rows), states(on));
+    V.applyOriginOptIn(rows, false);
+    assert.deepEqual(states(rows), states(off));
+    assert.deepEqual(V.requeueRows(rows.slice(3, 4)).map((r) => r.state), ['not-run'], 'a row past the cap is never queued');
+    // Opted out, the origin checks past the cap count no more than the optional ones: both servers are live.
+    upd(off);
+    const sum = V.summarizeVerify(off);
     assert.deepEqual([sum.servers.live, sum.servers.base], [2, 2]);
     assert.equal(V.verifyHeadline(sum)[0].key, 'vfy.head.all');
+    // Opted in, they speak for web01: it is not live while they were never checked.
+    upd(on);
+    const sumOn = V.summarizeVerify(on);
+    assert.deepEqual([sumOn.servers.live, sumOn.servers.base], [1, 2]);
+    assert.ok(!V.verifyHeadline(sumOn).some((x) => x.key === 'vfy.head.all'));
+  });
+
+  test('a server known only by the zone file gets its check like any other and never goes green with names past the cap', () => {
+    // 500 names on web01 and web02 only as the zone origin of z0: the opt-in on, web02 is checked, web01 is not all checked.
+    const big = V.createVerifyRows(V.buildVerifyPairs(busy(500, { zones: 1 })).pairs, { origins: true });
+    assert.deepEqual(states(big.filter((r) => r.server.id === 'web02' || r.overCap)), ['n499 skipped over-cap', 'z0 pending']);
+    upd(big);
+    const bigSum = V.summarizeVerify(big);
+    assert.deepEqual([bigSum.servers.total, bigSum.servers.live, bigSum.servers.base], [2, 1, 2]);
+    assert.ok(!V.verifyHeadline(bigSum).some((x) => x.key === 'vfy.head.all'));
+
+    const { pairs, stats } = V.buildVerifyPairs(busy(8, { zones: 3 }));
+    const on = V.createVerifyRows(pairs, { maxRows: 5, origins: true });
+    assert.deepEqual(on.filter((r) => r.state === 'pending').map(short), ['n0', 'n1', 'n2', 'n3', 'z0']);
+    assert.deepEqual(on.filter((r) => r.skip === 'over-cap').map(short), ['n4', 'n5', 'n6', 'n7', 'z1', 'z2']);
+    upd(on);
+    const sum = V.summarizeVerify(on);
+    assert.deepEqual([sum.servers.total, sum.servers.base, sum.servers.live, sum.servers.updated], [2, 2, 0, 2]);
+    assert.equal(sum.servers.list.find((s) => s.key === 'web02').incomplete, true, 'z1 and z2 were never checked');
+    const head = V.verifyHeadline(sum, stats);
+    assert.deepEqual(head[0], { key: 'vfy.head.partial', variant: 'info', params: { live: 0, total: 2 } });
+    assert.deepEqual(head.at(-1).parts, [{ key: 'vfy.notHere.over-cap', params: { count: 6 } }]);
+    assert.deepEqual(V.cliPlan(on).targets, ['1.2.3.4', '1.2.3.5']);
+
+    // The opt-in off, web02 is left out on purpose: not counted, not over the cap, not in the CLI card.
+    const off = V.createVerifyRows(pairs, { maxRows: 5 });
+    assert.deepEqual(states(off.filter((r) => r.server.id === 'web02')), ['z0 not-run optional', 'z1 not-run optional', 'z2 not-run optional']);
+    upd(off);
+    const sumOff = V.summarizeVerify(off);
+    assert.deepEqual([sumOff.servers.total, sumOff.servers.live], [1, 0]);
+    assert.deepEqual(V.notHereParts(sumOff), [{ key: 'vfy.notHere.over-cap', params: { count: 4 } }]);
+    assert.deepEqual(V.cliPlan(off).targets, ['1.2.3.4']);
   });
 
   test('a server with names past the cap is never called live; its names go to the CLI card', () => {

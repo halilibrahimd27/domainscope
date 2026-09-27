@@ -41,8 +41,8 @@ import { GP_LIMITS } from '../lib/globalping.js';
 import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
   VERIFY_SOFT_CONFIRM_PROBES, VERIFY_MAX_RETRIES, VERIFY_TIMEOUT_S, VERIFY_CSV_COLUMNS, VERIFY_REUSE_WINDOW_MS,
-  buildVerifyPairs, scopePairs, createVerifyRows, expectationFor, runVerify, recheckRows, requeueRows, applyOriginOptIn,
-  isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan
+  buildVerifyPairs, scopePairs, createVerifyRows, checkCount, expectationFor, runVerify, recheckRows, requeueRows,
+  applyOriginOptIn, isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan
 } from '../lib/verify.js';
 
 /* ------------------------------------------------------------------------ */
@@ -577,7 +577,8 @@ export function targetRows(rows, { ran, origins, recheck = recheckRows }) {
 }
 
 /**
- * Plan line numbers for the idle state.
+ * Plan line numbers for the idle state. `origins` counts the origin checks the opt-in sends (or
+ * would): not skipped and not past the cap.
  * @param {object[]} rows
  * @returns {{ checks: number, servers: number, origins: number, originsOn: boolean }}
  */
@@ -588,7 +589,7 @@ export function planCounts(rows) {
     servers.add(r.server ? `s:${r.server.id}` : `ip:${r.ip}`);
     for (const s of r.alsoServers || []) servers.add(`s:${s.id}`);
   }
-  const origins = (rows || []).filter((r) => isOriginPair(r) && r.state !== 'skipped');
+  const origins = (rows || []).filter((r) => isOriginPair(r) && r.state !== 'skipped' && !r.overCap);
   return { checks: pending.length, servers: servers.size, origins: origins.length, originsOn: origins.some((r) => r.state === 'pending') };
 }
 
@@ -1617,7 +1618,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
 
   function scopeControl() {
-    const count = (scope) => scopePairs(job.pairs, scope).filter((p) => !p.skip && (job.origins || !isOriginPair(p))).length;
+    const count = (scope) => checkCount(scopePairs(job.pairs, scope), { origins: job.origins });
     const all = count('all');
     const perIp = count('perIp');
     if (!(perIp < all)) return null;
@@ -1639,7 +1640,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
 
   function originsControl() {
-    const count = job.rows.filter((r) => isOriginPair(r) && r.state !== 'skipped').length;
+    const count = planCounts(job.rows).origins;
     if (!count) return null;
     const box = checkbox({
       label: t('vfy.origins', { count }),

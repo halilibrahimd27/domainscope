@@ -676,10 +676,12 @@ export function buildVerifyPairs(result, { port }) -> { pairs, stats }   // cove
                                                                         // and unmatched public IPs, all of them; skips: private, reserved, cdn-edge, bad-name, bad-port
 export function scopePairs(pairs, 'all'|'perIp'), createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_ROWS })
   // origin pairs (hint and zone) start as not-run · optional unless `origins`; perIp keeps one DNS and one origin pair per IP;
-  // verdicts still treat zone like DNS. The cap applies to the scope's pairs: skipped pairs cost nothing, then the first DNS
-  // pair of every server address, the other DNS pairs, the first origin pair of every address, the other origin pairs; the
-  // rest are skipped rows ('over-cap'). A DNS pair past the cap keeps its server out of `live` (not of `incomplete`: "Check
-  // again" cannot finish it); an origin pair past it counts like an optional one.
+  // verdicts still treat zone like DNS. The cap applies to the scope's pairs, whatever the opt-in: skipped pairs cost nothing,
+  // then the first DNS or zone pair of every server address, the other DNS and zone pairs, the first hint pair of every
+  // address, the other hint pairs. The rest are marked `overCap` and become skipped rows ('over-cap'), except an origin pair
+  // while the opt-in is off, which stays not-run · optional (applyOriginOptIn moves it). A row past the cap keeps its server
+  // out of `live` (not of `incomplete`: "Check again" cannot finish it).
+export function checkCount(pairs, { origins, maxRows }) -> number   // the checks createVerifyRows would make pending (the scope switch)
 export async function runVerify(rows, { client, expect, signal, concurrency, timeoutS, probesPerCheck, locationsFor, maxProbes, maxRetries, onRow, onQuota, now })
   -> { spent, retries, stoppedBy: null|'quota'|'budget'|'abort'|'unreachable' }
 // Summary, headline and exports

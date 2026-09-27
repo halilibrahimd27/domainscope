@@ -1052,6 +1052,35 @@ async function main() {
     await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
     const JOBS = ['subdomains', 'certificate', 'health', 'propagation', 'zone'];
     const pickerShown = (p) => p.evaluate(() => !!document.querySelector('[data-role="start-picker"]'));
+    // DNS answers never arrive (offline suite): a run stays in progress until it is cancelled.
+    const holdFetches = (p) => p.evaluate(() => {
+      window.__realFetch = window.__realFetch || window.fetch;
+      window.__heldFetches = 0;
+      window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
+        window.__heldFetches += 1;
+        const signal = init.signal || (input && input.signal);
+        if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    });
+    const releaseFetches = (p) => p.evaluate(() => {
+      if (window.__realFetch) window.fetch = window.__realFetch;
+    });
+    /**
+     * A Ctrl+click on `sel` (a synthetic one: no new tab opens). Returns whether the app took it
+     * (called preventDefault); a window listener then cancels what the browser would do.
+     */
+    const ctrlClick = (p, sel) => p.evaluate((q) => {
+      let taken = null;
+      const after = (event) => {
+        taken = event.defaultPrevented;
+        event.preventDefault();
+      };
+      window.addEventListener('click', after, { once: true });
+      document.querySelector(q).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true, button: 0 }));
+      window.removeEventListener('click', after);
+      return taken;
+    }, sel);
+    const pause = (p, ms = 300) => p.evaluate((t) => new Promise((r) => setTimeout(r, t)), ms);
     /** A first-time visitor: nothing stored but the language. */
     const firstVisit = async (p, lang = 'en') => {
       await p.evaluate((l) => {
@@ -1102,9 +1131,32 @@ async function main() {
       await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await shot(sm, 'mobile-dark-en-start-picker');
       await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
+      // The smallest phones (320 × 568): still two columns, the chips without icons, so the page's own title stays in view.
+      await sm.setViewport({ width: 320, height: 568, mobile: true });
+      try {
+        const small = await sm.evaluate(() => {
+          const cards = [...document.querySelectorAll('.start-picker .start-task')];
+          return {
+            columns: new Set(cards.map((a) => Math.round(a.getBoundingClientRect().left))).size,
+            icons: cards.some((a) => a.querySelector('.start-task-icon').getClientRects().length > 0),
+            titleBottom: Math.round(document.getElementById('page-title').getBoundingClientRect().bottom),
+            screen: window.innerHeight
+          };
+        });
+        assert(small.columns === 2 && !small.icons, `320 px chips: ${JSON.stringify(small)}`);
+        assert(small.titleBottom < small.screen, `the page title is on the first screen at 320 × 568: ${small.titleBottom} px`);
+        await assertNoHorizontalScroll(sm, 'start picker at 320 px');
+        await shot(sm, 'mobile-light-en-start-picker-320');
+      } finally {
+        await sm.setViewport({ width: 375, height: 740, mobile: true });
+      }
     });
 
     await step('the start page\'s own job focuses its input; another job opens its tool', async () => {
+      // A Ctrl+click (a new tab) is the browser's: the page keeps its focus.
+      await sm.evaluate(() => document.getElementById('page-title').focus());
+      assertEqual(await ctrlClick(sm, '.start-task[data-task="subdomains"]'), false, 'the app leaves a Ctrl+click alone');
+      assertEqual(await sm.evaluate(() => document.activeElement?.id), 'page-title', 'no jump to the input on a Ctrl+click');
       await sm.click('.start-task[data-task="subdomains"]');
       await sm.waitFor(() => document.activeElement?.dataset.role === 'sub-domain', { message: 'domain field focused' });
       assertEqual(await sm.evaluate(() => document.documentElement.dataset.view), 'subdomains', 'still on Subdomains');
@@ -1228,6 +1280,42 @@ async function main() {
       assertEqual(await sm.evaluate(() => window.location.hash), '#/health?keep=1', 'route kept');
     });
 
+    await step('375 px: the running tool pulses in the Tools menu; a Ctrl+click is the browser\'s; turned past 720 px the menu closes', async () => {
+      await gotoRoute(sm, 'bulk');
+      await holdFetches(sm);
+      await sm.type('[data-role="bulk-input"]', 'www.example.com');
+      await sm.click('[data-action="bulk-run"]');
+      await sm.waitFor(() => document.getElementById('app-header').classList.contains('is-busy') && window.__heldFetches > 0, { message: 'running' });
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'menu open' });
+      const dots = await sm.evaluate(() => [...document.querySelectorAll('.navmenu-link')].filter((a) => a.classList.contains('is-busy')
+        && getComputedStyle(a, '::after').content !== 'none' && getComputedStyle(a, '::after').width === '7px').map((a) => a.dataset.view));
+      assertEqual(dots, ['bulk'], 'the busy dot on the running tool only');
+      await shot(sm, 'mobile-light-en-tools-menu-busy');
+      assertEqual(await ctrlClick(sm, '.navmenu-link[data-view="lookup"]'), false, 'the app leaves a Ctrl+click alone');
+      assert(await sm.evaluate(() => !!document.querySelector('dialog.navmenu-modal[open]') && document.documentElement.dataset.view === 'bulk'),
+        'the menu stays open, no navigation');
+      await sm.setViewport({ width: 800, height: 740, mobile: true });
+      try {
+        await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'the menu closes past 720 px' });
+        const after = await sm.evaluate(() => ({
+          focus: document.activeElement?.id,
+          expanded: document.querySelector('[data-control="nav-menu"]').getAttribute('aria-expanded')
+        }));
+        assertEqual(after, { focus: 'page-title', expanded: 'false' }, 'the focus goes to the page title');
+      } finally {
+        await sm.setViewport({ width: 375, height: 740, mobile: true });
+      }
+      await sm.press('Escape');
+      await sm.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy'), { message: 'cancelled with Esc' });
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
+      assertEqual(await sm.evaluate(() => document.querySelectorAll('.navmenu-link.is-busy').length), 0, 'no dot once it stopped');
+      await sm.press('Escape');
+      await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'));
+      await releaseFetches(sm);
+    });
+
     await step('start page and menu: no console errors, exceptions, failed requests or CSP violations', async () => {
       await assertClean(sm, 'start page / menu');
     });
@@ -1253,6 +1341,8 @@ async function main() {
       await kb.press('Escape');
       await kb.waitFor(() => !document.querySelector('dialog.keys-modal'), { message: 'closed' });
       assertEqual(await active(), 'page-title', 'focus back where it was');
+      assertEqual(await kb.evaluate(() => document.querySelector('[data-control="shortcuts"]').getAttribute('aria-haspopup')), 'dialog',
+        'the footer button says it opens a dialog');
       await kb.click('[data-control="shortcuts"]');
       await kb.waitFor(() => document.querySelector('dialog.keys-modal[open]'), { message: 'opened from the footer' });
       await kb.press('Escape');
@@ -1285,26 +1375,12 @@ async function main() {
       assertEqual(await active(), 'page-title', 'About has no input: the focus stays');
     });
 
-    // DNS answers never arrive (offline suite): a run stays in progress until it is cancelled.
-    const holdFetches = () => kb.evaluate(() => {
-      window.__realFetch = window.__realFetch || window.fetch;
-      window.__heldFetches = 0;
-      window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
-        window.__heldFetches += 1;
-        const signal = init.signal || (input && input.signal);
-        if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
-      });
-    });
-    const releaseFetches = () => kb.evaluate(() => {
-      if (window.__realFetch) window.fetch = window.__realFetch;
-    });
-
     await step('SSL Targets: Ctrl+Enter in the domains starts the scan (not the paste box\'s Read); in the paste box it reads', async () => {
       await gotoRoute(kb, 'scan');
       await kb.click('.scan-step-cert [data-action="cert-sample"]');
       await kb.waitFor(() => document.querySelector('[data-role="scan-domains"]')?.value === 'example.com\nexample.net',
         { message: 'the sample certificate filled the domains' });
-      await holdFetches();
+      await holdFetches(kb);
       // The paste box of "Load another certificate" is a form of its own: Ctrl+Enter there reads it, and starts no scan.
       await kb.evaluate(() => {
         const another = document.querySelector('.scan-cert-another');
@@ -1328,12 +1404,37 @@ async function main() {
       await kb.press('Escape');
       await kb.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled'
         && !document.getElementById('app-header').classList.contains('is-busy'), { message: 'cancelled with Esc' });
-      await releaseFetches();
+      // A field of the results (a table's filter, an option) is no part of the form: Ctrl+Enter there starts no new scan.
+      const held = await kb.evaluate(() => window.__heldFetches);
+      const fields = await kb.evaluate(() => [...document.querySelectorAll('.scan-results-host input, .scan-results-host select')]
+        .filter((el) => el.checkVisibility({ visibilityProperty: true }) && !el.disabled).map((el, i) => {
+          el.dataset.testField = String(i);
+          return i;
+        }));
+      assert(fields.length > 0, 'the cancelled run shows fields of its own');
+      for (const i of fields) {
+        // A field gone from the page: a new scan replaced the results (the check below says so).
+        const there = await kb.evaluate((n) => {
+          const el = document.querySelector(`[data-test-field="${n}"]`);
+          if (el) el.focus();
+          return !!el;
+        }, i);
+        if (!there) break;
+        await kb.press('Enter', { ctrl: true });
+      }
+      await pause(kb);
+      const after = await kb.evaluate(() => ({
+        status: document.querySelector('.scan-run')?.dataset.status,
+        busy: document.getElementById('app-header').classList.contains('is-busy'),
+        fetches: window.__heldFetches
+      }));
+      assertEqual(after, { status: 'cancelled', busy: false, fetches: held }, `no new scan from ${fields.length} result fields`);
+      await releaseFetches(kb);
     });
 
     await step('Ctrl+Enter runs the tool from its field; Esc cancels the running job (Bulk Resolve, answers held back)', async () => {
       await gotoRoute(kb, 'bulk');
-      await holdFetches();
+      await holdFetches(kb);
       const text = 'www.example.com\napi.example.com';
       await kb.type('[data-role="bulk-input"]', text);
       await kb.press('Enter', { ctrl: true });
@@ -1364,9 +1465,66 @@ async function main() {
           && !document.getElementById('app-header').classList.contains('is-busy');
       }, { message: 'cancelled with Esc' });
       assert(await kb.evaluate(() => document.getElementById('page-body').textContent.includes('Cancelled')), 'the run says it was cancelled');
+      // The results filter is no part of the form: Ctrl+Enter there starts no new run (it once did, as the view's Run).
+      const held = await kb.evaluate(() => {
+        const el = [...document.querySelectorAll('.bulk-results-host input[type="search"]')].find((x) => x.checkVisibility());
+        el.dataset.testFilter = '2';
+        return window.__heldFetches;
+      });
+      await kb.type('[data-test-filter="2"]', 'api');
+      await kb.press('Enter', { ctrl: true });
+      await pause(kb);
+      const after = await kb.evaluate(() => ({
+        running: !document.querySelector('[data-action="bulk-cancel"]').hidden,
+        busy: document.getElementById('app-header').classList.contains('is-busy'),
+        fetches: window.__heldFetches
+      }));
+      assertEqual(after, { running: false, busy: false, fetches: held }, 'Ctrl+Enter in the results filter starts nothing');
+      // The form's own field still runs it.
+      await kb.evaluate(() => document.querySelector('[data-role="bulk-input"]').focus());
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => !document.querySelector('[data-action="bulk-cancel"]').hidden, { message: 'a new run from the textarea' });
+      await kb.evaluate(() => document.querySelector('[data-action="bulk-cancel"]').click());
+      await kb.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy'), { message: 'stopped again' });
       // Esc with nothing running does nothing (and never navigates).
       await kb.press('Escape');
       assertEqual(await kb.evaluate(() => document.documentElement.dataset.view), 'bulk', 'still on Bulk Resolve');
+    });
+
+    await step('Zone File: Ctrl+Enter imports from the importer\'s fields, runs the live check from its options, nothing from a table', async () => {
+      await releaseFetches(kb);
+      await gotoRoute(kb, 'zone');
+      await kb.evaluate(() => { document.querySelector('.zone-paste').open = true; });
+      await kb.type('[data-role="zone-paste"]', [
+        '$ORIGIN example.com.',
+        '@ 3600 IN SOA ns1.example.com. hostmaster.example.com. 1 7200 3600 1209600 3600',
+        '@ 3600 IN NS ns1.example.com.',
+        'www 300 IN A 192.0.2.10',
+        'api 300 IN A 192.0.2.11'
+      ].join('\n'));
+      // The format is an option of the import: Ctrl+Enter there imports the pasted zone.
+      await kb.evaluate(() => document.querySelector('.zone-format-field select').focus());
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => !!document.querySelector('.zone-summary') && document.querySelector('.zone-tabs'), { message: 'imported from the format field' });
+      // A table's filter in the analysis submits nothing (the zone stays, nothing is sent).
+      await kb.click('.zone-tabs .tab[data-tab="records"]');
+      await kb.waitForSelector('.zone-records .dt-search-input');
+      await holdFetches(kb);
+      await kb.type('.zone-records .dt-search-input', 'www');
+      await kb.press('Enter', { ctrl: true });
+      await pause(kb);
+      assertEqual(await kb.evaluate(() => window.__heldFetches), 0, 'nothing sent from the records filter');
+      // An option of the live check starts it; Esc stops it.
+      await kb.click('.zone-tabs .tab[data-tab="live"]');
+      await kb.waitFor(() => !!document.querySelector('[data-role="zone-live-skip"]'), { message: 'live check shown' });
+      await kb.evaluate(() => document.querySelector('[data-role="zone-live-skip"]').focus());
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => !!document.querySelector('[data-action="zone-live-cancel"]') && window.__heldFetches > 0,
+        { message: 'the live check started from its option' });
+      await kb.press('Escape');
+      await kb.waitFor(() => !document.querySelector('[data-action="zone-live-cancel"]')
+        && /Stopped/.test(document.querySelector('.zone-live')?.textContent || ''), { message: 'stopped with Esc' });
+      await releaseFetches(kb);
     });
 
     await step('shortcuts: no console errors, exceptions, failed requests or CSP violations', async () => {

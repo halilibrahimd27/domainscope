@@ -2498,6 +2498,16 @@ button.nav-status:hover {
   background: var(--surface-2);
 }
 
+/* Globalping consent + cost dialog of a one-click send (ui/globalping-gate.js) */
+.gp-confirm p {
+  margin: 0;
+}
+
+.gp-confirm [data-gp="confirm-privacy"] {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
 /* File drop */
 .filedrop {
   position: relative;

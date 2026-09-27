@@ -11,8 +11,8 @@
  *   new scan cancels it ({@link cancelVerify}).
  * - Nothing is sent when the tab opens, not even the free /limits read. The first send of a page
  *   session shows the consent + cost dialog; consent is never stored and "Delete all local data"
- *   resets it. Origin checks (a proxied name on an inventory origin IP, from an origin hint or the
- *   zone file) are opt-in.
+ *   resets it (ui/globalping-gate.js keeps it, with the quota every view shares). Origin checks
+ *   (a proxied name on an inventory origin IP, from an origin hint or the zone file) are opt-in.
  * - Private, reserved and CDN-edge addresses and names Globalping refuses are listed but never
  *   sent. Private and reserved addresses, refused names and every address the internet could not
  *   answer go into a ready-made CLI command; CDN edges do not (the CDN serves its own certificate).
@@ -38,6 +38,7 @@ import { buildFittedSweepCommand } from '../lib/cmdline.js';
 import { pemEncode, formatFingerprint } from '../lib/x509.js';
 import { errorKind } from '../lib/util.js';
 import { GP_LIMITS } from '../lib/globalping.js';
+import { hasConsent, grantConsent, sharedQuota, noteQuota, liveQuota, whenText, measurementUrl } from './globalping-gate.js';
 import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
   VERIFY_SOFT_CONFIRM_PROBES, VERIFY_MAX_RETRIES, VERIFY_TIMEOUT_S, VERIFY_CSV_COLUMNS, VERIFY_REUSE_WINDOW_MS,
@@ -463,12 +464,8 @@ registerStrings('tr', {
 /* Constants and module state                                               */
 /* ------------------------------------------------------------------------ */
 
-/** The only verified public link to a measurement: its raw JSON on the API. */
-const GP_MEASUREMENT_URL = 'https://api.globalping.io/v1/measurements/';
 /** Globalping's page about buying more measurements (verified 200 by the critic, 2026-09-24). */
 export const GP_CREDITS_URL = 'https://globalping.io/credits';
-/** Measurement ids are short alphanumerics; anything else never shapes a link. */
-const MEASUREMENT_ID_RE = /^[A-Za-z0-9]{8,64}$/;
 const VIA_KINDS = ['dns', 'hint', 'zone'];
 const NOTICE_WARNINGS = ['chain-incomplete', 'http-421', 'mixed'];
 const DEFAULT_SHELLS = Object.freeze(['posix', 'powershell']);
@@ -524,15 +521,13 @@ const HEAD_ICONS = Object.freeze({
 /** The warning chip a kind status already says (the status badge carries its explanation). */
 const STATUS_WARNING = Object.freeze({ ORIGIN_CERT: 'origin-ca', PRIVATE_CERT: 'self-signed' });
 
-/** Consent for this page session: never stored; reset by "Delete all local data". */
-let consented = false;
+/** Consent purpose of this tab in ui/globalping-gate.js (page session only; "Delete all local data" resets it). */
+const CONSENT = 'verify';
 /**
  * Whether a confirmed dialog of this page session already carried the origin-check sentence
  * (vfy.origins.confirm). Until then a batch with an origin row always asks (critic C.3.1).
  */
 let originsConsented = false;
-/** The latest merged Globalping quota (the client is shared, so is the quota). */
-let lastQuota = null;
 /** Shell choice when the host view does not share its own (tests, Phase D). */
 let fallbackShell = 'posix';
 /** Jobs with a batch in flight ("Delete all local data" stops them). */
@@ -542,9 +537,7 @@ const launchingJobs = new Set();
 
 state.subscribe(({ key }) => {
   if (key !== 'cleared') return;
-  consented = false;
-  originsConsented = false;
-  lastQuota = null;
+  originsConsented = false; // the gate resets the consent and the shared quota itself
   for (const job of [...liveJobs, ...launchingJobs]) {
     if (job.controller) job.controller.abort();
     if (job.launch) job.launch.abort();
@@ -749,18 +742,8 @@ export function emptyKey(pairs, rows) {
   return cliPlan(rows || []).rows > 0 ? 'vfy.empty' : 'vfy.empty.noCli';
 }
 
-/**
- * The last quota reading while its window is open; null once `resetAt` has passed (a stale
- * "0 left · resets 1 hour ago" must not show in a later scan).
- * @param {object|null} q GpQuota
- * @param {number} [now]
- * @returns {object|null}
- */
-export function liveQuota(q, now = Date.now()) {
-  if (!q) return null;
-  const reset = q.resetAt ? new Date(q.resetAt).getTime() : NaN;
-  return Number.isFinite(reset) && reset <= now ? null : q;
-}
+/** The last quota reading while its window is open (ui/globalping-gate.js; kept here for the panel's callers). */
+export { liveQuota };
 
 /**
  * Whether a "quota used up" note still applies: until its reset, or an hour after it was
@@ -876,15 +859,6 @@ export function headlineParams(entry, summary, list = '') {
   if ((id === 'some' || id === 'partial') && params.live === undefined) params.live = Number(s.live) || 0;
   if (id === 'some' && params.old === undefined) params.old = Number(s.old) || 0;
   return params;
-}
-
-/**
- * "in 42 minutes" for a quota reset; an unopened window resets an hour after the first probe.
- * A reset already past reads "now", never "… ago".
- */
-function whenText(resetAt, now = Date.now()) {
-  const d = resetAt instanceof Date ? resetAt : (resetAt ? new Date(resetAt) : null);
-  return d && Number.isFinite(d.getTime()) ? formatRelative(Math.max(d.getTime(), now), now) : formatRelative(now + 3600000, now);
 }
 
 function errCode(row) {
@@ -1106,9 +1080,8 @@ export function verifyDetails(row) {
   if (fail) items.push({ key: t('vfy.det.error'), value: fail, mono: true });
   const probes = probesOf(row).map(probeText).filter(Boolean);
   if (probes.length) items.push({ key: t('vfy.det.probe'), value: probes });
-  if (row.measurementId && MEASUREMENT_ID_RE.test(row.measurementId)) {
-    items.push({ key: t('vfy.det.measurement'), value: ExternalLink(GP_MEASUREMENT_URL + encodeURIComponent(row.measurementId), row.measurementId, { className: 'mono' }) });
-  }
+  const link = measurementUrl(row.measurementId);
+  if (link) items.push({ key: t('vfy.det.measurement'), value: ExternalLink(link, row.measurementId, { className: 'mono' }) });
   if (row.checkedAt) items.push({ key: t('vfy.det.checkedAt'), value: formatDateTime(row.checkedAt, { utc: true }) });
   if (serverLabel(row)) items.push({ key: t('vfy.det.server'), value: serverLabel(row) });
   items.push({ key: t('vfy.det.via'), value: t(`vfy.via.${VIA_KINDS.includes(row.via) ? row.via : 'dns'}`) });
@@ -1238,7 +1211,7 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
       now,
       onRow: (row) => emitJob(job, 'row', row),
       onQuota: (q) => {
-        if (q) lastQuota = q;
+        noteQuota(q);
         emitJob(job, 'quota', q);
       }
     });
@@ -1249,7 +1222,7 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
     job.status = r.stoppedBy === 'abort' ? 'cancelled' : (r.stoppedBy ? 'stopped' : 'done');
     if (r.stoppedBy === 'quota') {
       job.quotaOut = {
-        resetAt: lastQuota ? lastQuota.resetAt : null,
+        resetAt: sharedQuota() ? sharedQuota().resetAt : null,
         at: Date.now(),
         count: job.rows.filter((x) => x.state === 'not-run' && x.notRun === 'quota').length
       };
@@ -1355,7 +1328,7 @@ async function confirmAndRun(job, clickTargets, ctx, { signal, confirm, now }) {
     q = liveQuota(client.quota);
   }
   if (signal.aborted || job.status === 'running') return false;
-  if (q) lastQuota = q;
+  noteQuota(q);
   const limit = q && Number.isFinite(q.limit) ? q.limit : GP_LIMITS.anonymousPerHour;
   const remaining = q && Number.isFinite(q.remaining) ? Math.max(0, q.remaining) : limit;
   let confirmed = null;
@@ -1374,17 +1347,17 @@ async function confirmAndRun(job, clickTargets, ctx, { signal, confirm, now }) {
     }
     const covered = !!confirmed && sameRows(targets, confirmed.targets) && checks <= confirmed.checks;
     const origins = targets.filter(isOriginPair).length;
-    const ask = !covered && (!!confirmed || !consented || fit < checks || checks > VERIFY_SOFT_CONFIRM_PROBES
+    const ask = !covered && (!!confirmed || !hasConsent(CONSENT) || fit < checks || checks > VERIFY_SOFT_CONFIRM_PROBES
       || (origins > 0 && !originsConsented) || !sameRows(targets, clickTargets));
     if (ask) {
       const ok = await confirm({
-        first: !consented, checks, fit, remaining, limit, resetAt: q ? q.resetAt : null, unknown, origins, signal
+        first: !hasConsent(CONSENT), checks, fit, remaining, limit, resetAt: q ? q.resetAt : null, unknown, origins, signal
       });
       if (!ok || signal.aborted || job.status === 'running') return false;
       confirmed = { targets, checks };
       continue;
     }
-    consented = true;
+    grantConsent(CONSENT);
     // Reached only after a dialog that named the origin checks, or once one already had.
     if (origins > 0) originsConsented = true;
     // A full batch keeps room for the probe-fault retries; a partial one spends exactly what fits.
@@ -1626,7 +1599,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   function planLine() {
     const c = planCounts(job.rows);
     return h('p', { class: 'vfy-plan', dataset: { vfy: 'plan', checks: String(c.checks), servers: String(c.servers) } },
-      planText(job.rows, { quota: lastQuota }));
+      planText(job.rows, { quota: sharedQuota() }));
   }
 
   function notHereLine() {
@@ -1836,7 +1809,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
 
   function renderQuota() {
-    const q = liveQuota(lastQuota);
+    const q = liveQuota(sharedQuota());
     quotaEl.hidden = !q;
     if (!q) return;
     quotaEl.dataset.remaining = String(q.remaining);

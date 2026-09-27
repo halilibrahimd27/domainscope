@@ -376,6 +376,9 @@ async function setOptions(page, { sources, bruteforce }) {
     }
   }, sources);
   await page.click(`input[name="scan-bruteforce"][value="${bruteforce}"]`);
+  // A missed click would start a much longer scan than asked for: fail here, not a minute later.
+  const checked = await page.evaluate(() => document.querySelector('input[name="scan-bruteforce"]:checked')?.value);
+  assertEqual(checked, bruteforce, 'wordlist level after the click');
 }
 
 /* ------------------------------------------------------------------------ */

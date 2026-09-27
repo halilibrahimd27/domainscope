@@ -416,12 +416,33 @@ export class Page {
    * @param {string} selector
    */
   async click(selector) {
-    const box = await this.evaluate((sel) => {
+    const box = await this.evaluate(async (sel) => {
       const el = document.querySelector(sel);
       if (!el) return null;
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      const r = el.getBoundingClientRect();
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+      // A smooth scroll still in flight (the app's own, e.g. to the results after "Start scan")
+      // keeps moving the page after the jump: measure once two frames agree, or the click misses.
+      const frame = () => new Promise((r) => {
+        requestAnimationFrame(r);
+        setTimeout(r, 100); // a background tab may not paint
+      });
+      const centre = () => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+      };
+      let box = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        let last = '';
+        for (let i = 0; i < 60; i += 1) {
+          await frame();
+          box = centre();
+          const now = `${Math.round(box.x)},${Math.round(box.y)}`;
+          if (now === last) break;
+          last = now;
+        }
+        if (box.x >= 0 && box.y >= 0 && box.x <= innerWidth && box.y <= innerHeight) break;
+      }
+      return box;
     }, selector);
     if (!box) throw new Error(`click: no element matches ${selector}`);
     if (!box.w || !box.h) throw new Error(`click: element ${selector} is not visible`);

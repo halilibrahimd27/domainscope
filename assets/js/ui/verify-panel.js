@@ -1788,7 +1788,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
       bar.el.dataset.vfy = 'progress';
       renderProgress();
       actionsHost.append(h('div', { class: 'vfy-progress' }, bar.el,
-        Button({ label: t('vfy.stop'), icon: 'stop', dataset: { action: 'vfy-stop' }, onClick: () => cancelVerify(run) })));
+        Button({ label: t('vfy.stop'), icon: 'stop', dataset: { action: 'vfy-stop', shortcut: 'cancel' }, onClick: () => cancelVerify(run) })));
       return;
     }
     const targets = targetRows(job.rows, { ran: ran(), origins: job.origins });

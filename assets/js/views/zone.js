@@ -1344,13 +1344,15 @@ export function mount(container, ctx) {
       },
       onFiles: (files) => importFiles(files)
     });
+    // '/' lands on the drop zone, which also takes a pasted export (Ctrl+V).
+    drop.el.dataset.shortcut = 'focus';
     const pasteArea = textarea({ label: t('zone.paste.label'), rows: 8, attrs: { 'data-role': 'zone-paste' } });
     const pasteBtn = Button({
       label: t('zone.import'),
       icon: 'arrow-down',
       variant: 'primary',
       size: 'sm',
-      dataset: { action: 'zone-paste-import' },
+      dataset: { action: 'zone-paste-import', shortcut: 'submit' },
       onClick: () => {
         const text = pasteArea.value;
         if (text.trim()) importFiles([{ name: t('file.pasted'), size: text.length, text }]);
@@ -2003,7 +2005,7 @@ export function mount(container, ctx) {
           plan.overBudget ? Alert({ variant: 'info', compact: true, message: t('zone.live.budget', { max: formatNumber(plan.maxQueries) }) }) : null,
           h('div', { class: 'cluster' }, skipBox.el, wildBox.el),
           h('div', { class: 'cluster' }, runBtn,
-            running ? Button({ label: t('zone.live.cancel'), icon: 'x', variant: 'secondary', dataset: { action: 'zone-live-cancel' }, onClick: () => { if (controller) controller.abort(); } }) : null))
+            running ? Button({ label: t('zone.live.cancel'), icon: 'x', variant: 'secondary', dataset: { action: 'zone-live-cancel', shortcut: 'cancel' }, onClick: () => { if (controller) controller.abort(); } }) : null))
       }));
       if (running) {
         progressEl = ProgressBar({ label: t('zone.live.progress', { done: formatNumber(cur.done), total: formatNumber(cur.total) }), value: cur.done, max: Math.max(1, cur.total) });

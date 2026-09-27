@@ -748,7 +748,7 @@ export function mount(container, ctx) {
     rows: 12,
     value: session.text,
     placeholder: t('bulk.placeholder'),
-    attrs: { 'data-role': 'bulk-input' },
+    attrs: { 'data-role': 'bulk-input', 'data-shortcut': 'focus' },
     className: 'bulk-input-field',
     onInput: (v) => {
       session.text = v;
@@ -845,8 +845,8 @@ export function mount(container, ctx) {
     saveOptions(options);
   }
 
-  const runBtn = Button({ label: t('bulk.run'), icon: 'play', variant: 'primary', dataset: { action: 'bulk-run' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('bulk.cancel'), icon: 'stop', dataset: { action: 'bulk-cancel' }, onClick: () => cancel() });
+  const runBtn = Button({ label: t('bulk.run'), icon: 'play', variant: 'primary', dataset: { action: 'bulk-run', shortcut: 'submit' }, onClick: () => start() });
+  const cancelBtn = Button({ label: t('bulk.cancel'), icon: 'stop', dataset: { action: 'bulk-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
   cancelBtn.hidden = true;
 
   const inputCard = Card({

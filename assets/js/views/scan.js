@@ -1547,7 +1547,7 @@ export function mount(container, ctx) {
     placeholder: t('scan.domains.placeholder'),
     hint: t('scan.domains.hint'),
     value: session.domainsText,
-    attrs: { 'data-role': 'scan-domains' },
+    attrs: { 'data-role': 'scan-domains', 'data-shortcut': 'focus' },
     onInput: (value) => {
       session.domainsText = value;
       session.domainsFromCert = false;
@@ -1910,8 +1910,8 @@ export function mount(container, ctx) {
   }
 
   /* --- run bar ----------------------------------------------------------------- */
-  const runBtn = Button({ label: t('scan.run'), icon: 'play', variant: 'primary', size: 'lg', dataset: { action: 'scan-run' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('scan.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', dataset: { action: 'scan-cancel' }, onClick: () => cancel() });
+  const runBtn = Button({ label: t('scan.run'), icon: 'play', variant: 'primary', size: 'lg', dataset: { action: 'scan-run', shortcut: 'submit' }, onClick: () => start() });
+  const cancelBtn = Button({ label: t('scan.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', dataset: { action: 'scan-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
   const runSummary = h('div', { class: 'scan-runbar-summary text-sm' });
   const runError = h('div', { class: 'scan-runbar-error', attrs: { 'aria-live': 'polite' } });
   const linkPrompt = h('div', { class: 'scan-link-prompt', hidden: true });

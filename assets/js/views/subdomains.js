@@ -2924,7 +2924,7 @@ export function mount(container, ctx) {
     hint: t('sub.input.hint'),
     mono: true,
     className: 'sub-search-field',
-    attrs: { 'data-role': 'sub-domain', inputmode: 'url', enterkeyhint: 'search' },
+    attrs: { 'data-role': 'sub-domain', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'search' },
     onInput: (value) => {
       session.text = value;
       domainField.setError(null);
@@ -2943,8 +2943,8 @@ export function mount(container, ctx) {
     if (options.locales === null) renderLangs();
     renderAdvSummary();
   }, 120);
-  const runBtn = Button({ label: t('sub.run'), icon: 'search', variant: 'primary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-run' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('sub.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-cancel' }, onClick: () => cancel() });
+  const runBtn = Button({ label: t('sub.run'), icon: 'search', variant: 'primary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-run', shortcut: 'submit' }, onClick: () => start() });
+  const cancelBtn = Button({ label: t('sub.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
   cancelBtn.hidden = true;
   const scopeNote = h('div', { class: 'sub-scope text-sm', hidden: true });
   const formError = h('div', { class: 'sub-form-error' });

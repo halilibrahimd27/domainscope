@@ -493,7 +493,7 @@ export function mount(container, ctx) {
     placeholder: t('glb.namePlaceholder'),
     mono: true,
     className: 'glb-name',
-    attrs: { 'data-role': 'global-name', inputmode: 'url', enterkeyhint: 'go' },
+    attrs: { 'data-role': 'global-name', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'go' },
     onEnter: () => start()
   });
   const typeField = select({
@@ -505,8 +505,8 @@ export function mount(container, ctx) {
   typeField.input.dataset.role = 'global-type';
   const geoField = checkbox({ label: t('glb.geo', { count: formatNumber(GEO_VANTAGES.length) }), checked: initialGeo });
   geoField.input.dataset.role = 'global-geo';
-  const runBtn = Button({ label: t('glb.run'), icon: 'play', variant: 'primary', className: 'glb-run', dataset: { action: 'run' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', className: 'glb-stop', dataset: { action: 'stop' }, onClick: () => stop() });
+  const runBtn = Button({ label: t('glb.run'), icon: 'play', variant: 'primary', className: 'glb-run', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
+  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', className: 'glb-stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => stop() });
   stopBtn.hidden = true;
 
   const examples = h('div', { class: 'glb-examples cluster text-sm' },

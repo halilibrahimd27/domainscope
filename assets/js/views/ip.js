@@ -303,17 +303,12 @@ export function mount(container, ctx) {
     placeholder: t('ipi.placeholder'),
     hint: t('ipi.inputHint'),
     className: 'ipi-input',
-    attrs: { 'data-role': 'ip-input' }
-  });
-  input.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      start();
-    }
+    // Ctrl/Cmd+Enter in it clicks Run: the shell's shortcut finds the buttons by data-shortcut.
+    attrs: { 'data-role': 'ip-input', 'data-shortcut': 'focus' }
   });
   const parsedEl = h('div', { class: 'ipi-parsed muted text-sm', attrs: { 'aria-live': 'polite' } });
-  const runBtn = Button({ label: t('ipi.run'), icon: 'search', variant: 'primary', dataset: { action: 'run' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('ipi.stop'), icon: 'stop', dataset: { action: 'stop' }, onClick: () => stop() });
+  const runBtn = Button({ label: t('ipi.run'), icon: 'search', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
+  const stopBtn = Button({ label: t('ipi.stop'), icon: 'stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => stop() });
   stopBtn.hidden = true;
   const exampleBtn = Button({
     label: t('ipi.example'), icon: 'file-text', variant: 'ghost', size: 'sm', dataset: { action: 'example' },

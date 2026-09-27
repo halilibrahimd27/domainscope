@@ -247,12 +247,12 @@ export function mount(container, ctx) {
     rows: 16,
     placeholder: t('inv.placeholder'),
     className: 'inv-editor-field',
-    attrs: { 'data-role': 'inventory-text' }
+    attrs: { 'data-role': 'inventory-text', 'data-shortcut': 'focus' }
   });
   editor.el.querySelector('.field-label').classList.add('sr-only');
 
   const statusEl = h('div', { class: 'inv-status', attrs: { 'aria-live': 'polite' } });
-  const saveBtn = Button({ label: t('inv.save'), icon: 'check', variant: 'primary', onClick: save, dataset: { action: 'save' } });
+  const saveBtn = Button({ label: t('inv.save'), icon: 'check', variant: 'primary', onClick: save, dataset: { action: 'save', shortcut: 'submit' } });
   const clearBtn = Button({ label: t('inv.clear'), icon: 'trash', variant: 'ghost', onClick: clearAll, dataset: { action: 'clear' } });
 
   const drop = FileDrop({

@@ -1151,7 +1151,7 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
     summary: t('cert.pasteToggle'),
     className: 'cert-paste',
     children: h('div', { class: 'stack-sm' }, area.el,
-      h('div', { class: 'cluster' }, Button({ label: t('cert.pasteApply'), icon: 'check', size: 'sm', onClick: read, dataset: { action: 'cert-paste-read' } })))
+      h('div', { class: 'cluster' }, Button({ label: t('cert.pasteApply'), icon: 'check', size: 'sm', onClick: read, dataset: { action: 'cert-paste-read', shortcut: 'submit' } })))
   });
   const el = h('div', { class: 'cert-loader stack-sm' }, drop, paste);
   return { el, drop, input: drop.input, paste: area };
@@ -1292,7 +1292,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
   const loadBtn = Button({
     label: t('cert.alt.load'),
     icon: 'search',
-    dataset: { action: 'ct-load' },
+    dataset: { action: 'ct-load', shortcut: 'submit' },
     onClick: () => (running ? running.abort() : lookup())
   });
   const sampleBtn = Button({ label: t('cert.alt.sample'), icon: 'file-text', size: 'sm', variant: 'ghost', dataset: { action: 'cert-sample' }, onClick: () => sample() });
@@ -1338,6 +1338,8 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     if (icon) icon.replaceWith(Icon(host ? 'x' : 'search', { size: 16 }));
     loadBtn.querySelector('.btn-label').textContent = host ? t('common.cancel') : t('cert.alt.load');
     loadBtn.dataset.state = host ? 'running' : 'idle';
+    // Esc stops a running lookup (the shell's shortcut); Enter in the field starts one.
+    loadBtn.dataset.shortcut = host ? 'cancel' : 'submit';
     clear(status);
     // The spinner's label is the one announcement (status is a live region), so onBusy gets no text.
     if (host) status.append(Spinner({ label: t('cert.alt.searching', { host }), showLabel: true }));
@@ -1724,6 +1726,8 @@ export function mount(container, ctx) {
   function renderLoader() {
     clear(loaderHost);
     const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load });
+    // '/' lands on the drop zone, which also takes a pasted certificate (Ctrl+V).
+    loader.drop.el.dataset.shortcut = 'focus';
     const alternatives = CertAlternatives({
       onLoad: (l) => setLoad(l),
       signal: ctx.signal,

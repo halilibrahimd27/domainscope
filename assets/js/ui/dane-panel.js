@@ -690,7 +690,7 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
   });
   // Shown in the run button's place while a check runs (the queries may wait for slow resolvers).
   const stopBtn = Button({
-    label: t('common.stop'), icon: 'stop', variant: 'secondary', size: 'sm', dataset: { action: 'dane-stop' },
+    label: t('common.stop'), icon: 'stop', variant: 'secondary', size: 'sm', dataset: { action: 'dane-stop', shortcut: 'cancel' },
     onClick: () => cancelDane(holder)
   });
   stopBtn.hidden = true;

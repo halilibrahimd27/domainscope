@@ -583,7 +583,7 @@ export function mount(container, ctx) {
     placeholder: t('lkp.namePlaceholder'),
     mono: true,
     className: 'lkp-name',
-    attrs: { 'data-role': 'lookup-name', inputmode: 'url', enterkeyhint: 'search' },
+    attrs: { 'data-role': 'lookup-name', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'search' },
     onEnter: () => start()
   });
   const chainNames = ctx.state.settings.chain.map(resolverName).join(' → ');
@@ -597,7 +597,7 @@ export function mount(container, ctx) {
     value: getResolver(params.resolver) ? params.resolver : ''
   });
   resolverField.input.dataset.role = 'lookup-resolver';
-  const runBtn = Button({ label: t('lkp.run'), icon: 'search', variant: 'primary', dataset: { action: 'run' }, onClick: () => start() });
+  const runBtn = Button({ label: t('lkp.run'), icon: 'search', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
 
   const known = new Set(LOOKUP_TYPES);
   const typeGroup = checkboxGroup({

@@ -612,7 +612,7 @@ export function mount(container, ctx) {
     placeholder: t('hlt.placeholder'),
     mono: true,
     className: 'hlt-domain',
-    attrs: { 'data-role': 'health-domain', inputmode: 'url', enterkeyhint: 'go' },
+    attrs: { 'data-role': 'health-domain', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'go' },
     onEnter: () => start()
   });
   const selectorsField = textInput({
@@ -624,8 +624,8 @@ export function mount(container, ctx) {
     onEnter: () => start()
   });
   selectorsField.setHint(t('hlt.dkimExtraHint', { count: DEFAULT_DKIM_SELECTORS.length }));
-  const runBtn = Button({ label: t('hlt.run'), icon: 'activity', variant: 'primary', dataset: { action: 'run' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'stop' }, onClick: () => { if (current && current.controller) current.controller.abort(); } });
+  const runBtn = Button({ label: t('hlt.run'), icon: 'activity', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
+  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => { if (current && current.controller) current.controller.abort(); } });
   stopBtn.hidden = true;
   const examples = ['github.com', 'cloudflare.com', 'wikipedia.org', 'example.com'];
   const examplesEl = h('div', { class: 'cluster text-sm hlt-examples' },

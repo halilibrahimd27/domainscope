@@ -1168,7 +1168,11 @@ export function mount(container, ctx) {
     };
   }
 
-  function start() {
+  /**
+   * Run the form's query. `auto`: a shared link's run on arrival — offline it only fills the form
+   * (the page's offline note says why), with no "needs the network" toast for a click nobody made.
+   */
+  function start({ auto = false } = {}) {
     const q = readForm();
     if (!q) return;
     carried = null;
@@ -1178,7 +1182,7 @@ export function mount(container, ctx) {
       typeGroup.values = ['PTR'];
       otherField.value = '';
     }
-    if (!ctx.requireOnline()) return;
+    if (!ctx.requireOnline({ quiet: auto })) return;
     ctx.setParams(queryParams(q));
     setShareAction();
     ctx.runStarted(q.input);
@@ -1333,7 +1337,7 @@ export function mount(container, ctx) {
   } else if (!restored && params.name && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
     // from another tool (`run=0`) only fills the form.
-    Promise.resolve().then(() => start());
+    Promise.resolve().then(() => start({ auto: true }));
   }
 
   /** Fill the form from route-style params (`name`, `type`, `resolver`, `dnssec`, `cd`). */

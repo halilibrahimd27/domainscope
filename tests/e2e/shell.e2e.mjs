@@ -976,6 +976,13 @@ async function main() {
       await shot(page, 'desktop-light-en-modal-toasts');
       await page.click('dialog.modal[open] .btn-primary');
       assertEqual(await modalResult, 'yes', 'modal result');
+      // Past the limit the oldest timed toast goes; the sticky ones (an update offer) stay.
+      const kept = await page.evaluate(async () => {
+        const C = await import('./assets/js/ui/components.js');
+        for (let i = 1; i <= 5; i += 1) C.toast(`Timed ${i}`);
+        return [...document.querySelectorAll('.toast .toast-message')].map((el) => el.textContent);
+      });
+      assertEqual(kept, ['Saved 12 servers', 'HackerTarget quota exceeded', 'Timed 4', 'Timed 5'], 'toasts past the limit');
       await dismissToasts(page);
       await page.evaluate(() => window.__tabs.select('servers'));
       assertEqual(await page.evaluate(() => window.__tabs.getSelected()), 'servers', 'tabs.select');
@@ -1946,7 +1953,7 @@ async function main() {
         await shot(pwa, 'desktop-light-en-offline-zone');
       });
 
-      await step('offline: a network tool says it needs the network, names the offline tools and sends nothing', async () => {
+      await step('offline: a network tool says it needs the network, names the offline tools and sends nothing; a shared link only fills the form', async () => {
         await gotoRoute(pwa, 'lookup');
         setNodeLang('en');
         const note = await pwa.evaluate(() => ({
@@ -1959,9 +1966,27 @@ async function main() {
         await pwa.click('[data-action="run"]');
         await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),
           { args: [translate('shell.offlineAction')], message: 'offline toast' });
+        // Clicked again, it is said again, not stacked (copies would push other toasts out).
+        await pwa.click('[data-action="run"]');
+        await pwa.click('[data-action="run"]');
+        const offlineToasts = () => pwa.evaluate((text) => [...document.querySelectorAll('.toast')]
+          .filter((el) => el.textContent.includes(text)).length, translate('shell.offlineAction'));
+        assertEqual(await offlineToasts(), 1, 'offline toasts after three clicks');
+        await shot(pwa, 'desktop-light-en-offline-lookup');
+        // A shared link opened offline fills the form and runs nothing; the page's note says why,
+        // and no toast (nobody clicked Run).
+        await dismissToasts(pwa);
+        await pwa.evaluate(() => { window.location.hash = '#/health?domain=example.com'; });
+        await pwa.waitFor(() => document.querySelector('#page-body')?.dataset.view === 'health'
+          && !!document.querySelector('[data-role="health-domain"]'), { message: 'Domain Health from a shared link' });
+        await pwa.evaluate(() => new Promise((r) => setTimeout(r, 250)));
+        const shared = await pwa.evaluate(() => {
+          const field = document.querySelector('[data-role="health-domain"]');
+          return { domain: (field.matches('input') ? field : field.querySelector('input')).value, note: !document.querySelector('#page-offline').hidden };
+        });
+        assertEqual({ ...shared, toasts: await offlineToasts() }, { domain: 'example.com', note: true, toasts: 0 }, 'shared link offline');
         const sent = await pwa.evaluate(() => performance.getEntriesByType('resource').filter((e) => /dns-query|\/resolve\?/.test(e.name)).length);
         assertEqual(sent, 0, 'no DoH request');
-        await shot(pwa, 'desktop-light-en-offline-lookup');
         await assertClean(pwa, 'offline', { offline: true });
         await pwa.resetProblems(); // the browser's own offline failures must not count once it is back online
       });

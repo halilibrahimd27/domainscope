@@ -1315,8 +1315,8 @@ export function mount(container, ctx) {
     }
   }
 
-  /** Validate the form and run a new check. */
-  async function start() {
+  /** Validate the form and run a new check. `auto`: a shared link's run on arrival (offline: no toast, see lookup.js). */
+  async function start({ auto = false } = {}) {
     const raw = nameField.value.trim();
     nameField.setError(null);
     if (normalizeIP(raw)) {
@@ -1334,7 +1334,7 @@ export function mount(container, ctx) {
     carried = null;
     const type = GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A';
     const geo = geoField.checked;
-    if (!ctx.requireOnline()) return;
+    if (!ctx.requireOnline({ quiet: auto })) return;
     ctx.setParams({ name, type, geo: geo ? null : '0' });
     ctx.runStarted(name);
     await runCheck(name, type, geo);
@@ -1452,7 +1452,7 @@ export function mount(container, ctx) {
   } else if (!restored && initialName && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
     // from another tool (`run=0`) only fills the form.
-    Promise.resolve().then(() => start());
+    Promise.resolve().then(() => start({ auto: true }));
   }
 
   active = {

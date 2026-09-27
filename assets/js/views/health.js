@@ -1337,7 +1337,8 @@ export function mount(container, ctx) {
     }
   }
 
-  function start() {
+  /** Run the checks. `auto`: a shared link's run on arrival (offline: no toast, see lookup.js). */
+  function start({ auto = false } = {}) {
     domainField.setError(null);
     const raw = domainField.value.trim();
     const domain = normalizeHostname(raw.replace(/^\*\./, ''));
@@ -1349,7 +1350,7 @@ export function mount(container, ctx) {
     domainField.value = domain;
     carried = null;
     const extra = parseSelectors(selectorsField.value);
-    if (!ctx.requireOnline()) return;
+    if (!ctx.requireOnline({ quiet: auto })) return;
     ctx.setParams({ domain, selectors: extra.length ? extra.join(',') : null });
     setShareAction();
     ctx.runStarted(domain);
@@ -1420,7 +1421,7 @@ export function mount(container, ctx) {
   } else if (!restored && initialDomain && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a domain carried over
     // from another tool (`run=0`) only fills the form.
-    Promise.resolve().then(() => start());
+    Promise.resolve().then(() => start({ auto: true }));
   }
   if (restored && restored.report) setShareAction();
 

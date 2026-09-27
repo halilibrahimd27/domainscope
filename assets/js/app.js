@@ -513,7 +513,8 @@ function keepResult(cur) {
  *                                         offers a reload (once)
  * @property {(opts?: { quiet?: boolean }) => boolean} requireOnline  network work is about to start: false, with
  *                                         a toast saying it needs the network, while the browser is offline (then
- *                                         send nothing); `quiet` for work the view starts by itself (no toast)
+ *                                         send nothing); `quiet` for work the view starts by itself, such as
+ *                                         a shared link's run (no toast: the page's offline note says it)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
  * @property {(subject: string|null) => void} runStarted  a run starts (or a certificate loads) for `subject` (a domain,
  *                                         host name or IP address): it becomes the current target, and the
@@ -533,6 +534,7 @@ let current = null; // { id, def, view, params, ctx, controller, cleanups[], bus
 let routeToken = 0;
 let pendingLangRemount = false;
 let firstRouteDone = false;
+let offlineNotice = null; // requireOnline's "needs the network" toast (one at a time)
 const dom = {};
 
 function currentHash() {
@@ -867,14 +869,18 @@ function renderOfflineNote() {
 /**
  * ctx.requireOnline: true while the browser has a connection; offline it says the work needs
  * the network (a toast) and returns false, so the view sends nothing. `quiet`: work the view
- * starts by itself (a check when a tab opens) — the user clicked nothing, so no toast; the view
- * says it in place.
+ * starts by itself (a check when a tab opens, a shared link's run) — the user clicked nothing, so
+ * no toast; the view says it in place. Another click while the toast is up replaces it (one on
+ * screen, its time starting again) rather than stacking copies.
  * @param {{ quiet?: boolean }} [opts]
  * @returns {boolean}
  */
 function requireOnline({ quiet = false } = {}) {
   if (!isOffline()) return true;
-  if (!quiet) toast(t('shell.offlineAction'), { type: 'warn' });
+  if (!quiet) {
+    if (offlineNotice && offlineNotice.el) offlineNotice.el.remove();
+    offlineNotice = toast(t('shell.offlineAction'), { type: 'warn' });
+  }
   return false;
 }
 

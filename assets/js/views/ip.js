@@ -640,7 +640,8 @@ export function mount(container, ctx) {
     }
   }
 
-  function start() {
+  /** Look the addresses up. `auto`: a shared link's run on arrival (offline: no toast, see lookup.js). */
+  function start({ auto = false } = {}) {
     const parsed = parseIpInput(input.value);
     input.setError(null);
     if (!parsed.ips.length && !parsed.hosts.length) {
@@ -649,7 +650,7 @@ export function mount(container, ctx) {
       return;
     }
     carried = null;
-    if (!ctx.requireOnline()) return;
+    if (!ctx.requireOnline({ quiet: auto })) return;
     const tokens = [...parsed.ips, ...parsed.hosts];
     const params = lookupParams(input.value);
     ctx.setParams(params);
@@ -852,7 +853,7 @@ export function mount(container, ctx) {
   } else if (paramText && !isFillOnly(ctx.params)) {
     // Shared link: run immediately; an address carried over from another tool (`run=0`) only
     // fills the box.
-    Promise.resolve().then(() => start());
+    Promise.resolve().then(() => start({ auto: true })); // a shared link: run on arrival
   }
 
   active = {

@@ -995,9 +995,12 @@ export function SegmentedControl({ options, value = null, onChange = null, label
 let toastRegion = null;
 const TOAST_ICONS = { info: 'info', success: 'check-circle', ok: 'check-circle', warn: 'alert', error: 'x-circle' };
 const MAX_TOASTS = 4;
+/** Toasts shown with timeout 0: they wait for the user (an update offer), so the limit never drops them. */
+const stickyToasts = new WeakSet();
 
 /**
- * Show a transient notification (bottom-right; bottom on phones).
+ * Show a transient notification (bottom-right; bottom on phones). Past MAX_TOASTS the oldest
+ * timed toast goes; a sticky one stays until it is dealt with.
  * @param {string} message
  * @param {{ type?: 'info'|'success'|'warn'|'error', title?: string, timeout?: number,
  *   action?: { label: string, onClick: Function } }} [opts] timeout 0 = sticky; default 4.5 s (errors 8 s)
@@ -1031,9 +1034,11 @@ export function toast(message, { type = 'info', title = null, timeout = null, ac
       }
     }) : null,
     IconButton({ icon: 'x', label: t('toast.dismiss'), size: 'sm', onClick: close }));
-  toastRegion.append(el);
-  while (toastRegion.children.length > MAX_TOASTS) toastRegion.firstElementChild.remove();
   const ms = timeout ?? (kind === 'error' ? 8000 : 4500);
+  if (!(ms > 0)) stickyToasts.add(el);
+  toastRegion.append(el);
+  const timed = [...toastRegion.children].filter((n) => n !== el && !stickyToasts.has(n));
+  while (toastRegion.children.length > MAX_TOASTS && timed.length) timed.shift().remove();
   const arm = () => {
     if (ms > 0) timer = setTimeout(close, ms);
   };

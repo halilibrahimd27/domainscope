@@ -1330,7 +1330,8 @@ async function confirmAndRun(job, clickTargets, ctx, { signal, confirm, now }) {
   } catch (err) {
     if (signal.aborted || errorKind(err) === 'abort') return false;
     unknown = true;
-    q = client.quota || null;
+    // The client's last reading, unless its window has ended (then the hour starts over).
+    q = liveQuota(client.quota);
   }
   if (signal.aborted || job.status === 'running') return false;
   if (q) lastQuota = q;

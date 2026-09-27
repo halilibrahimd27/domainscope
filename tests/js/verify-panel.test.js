@@ -388,6 +388,40 @@ describe('launch: only the confirmed batch is sent', () => {
     assert.deepEqual(events.at(-1), ['change', false]);
   });
 
+  test('when /limits fails, a quota reading whose window has ended is not used: the hour starts over (unknown)', async () => {
+    state.clearAll();
+    const reading = (remaining, resetInMs) => ({ limit: 250, remaining, consumed: 250 - remaining, resetAt: new Date(Date.now() + resetInMs),
+      type: 'ip', source: 'create', at: new Date(Date.now() - 3600e3) });
+    const failing = (quota) => ({ ...fakeGp(), quota, async limits() { throw new TypeError('Failed to fetch'); } });
+    const runOf = (count) => {
+      const run = scanRun({ unmatchedIps: [{ ip: '5.6.7.8', hosts: Array.from({ length: count }, (_, i) => `q${i}.example.com`) }] });
+      verifyJob(run);
+      return run;
+    };
+    // Used up an hour ago: the click is not silently dropped, the batch is offered with the default limit.
+    const asked = [];
+    const confirm = (answer) => async (o) => { asked.push([o.checks, o.fit, o.remaining, o.unknown]); return answer; };
+    const spent = runOf(1);
+    const gp = failing(reading(0, -30 * 60e3));
+    const ended = whenEnded(spent.verify);
+    assert.equal(await launchVerify(spent, ctxFor(gp), { confirm: confirm(true) }), true);
+    await ended;
+    assert.deepEqual(asked, [[1, 1, 250, true]]);
+    assert.equal(spent.verify.quotaOut, null);
+    assert.deepEqual(gp.posts, ['5.6.7.8 q0.example.com']);
+    // 3 probes left in the old window: not a partial batch of 3.
+    const big = runOf(60);
+    assert.equal(await launchVerify(big, ctxFor(failing(reading(3, -30 * 60e3))), { confirm: confirm(false) }), false);
+    assert.deepEqual(asked.at(-1), [60, 60, 250, true]);
+    // A reading whose window is still open is kept: nothing fits, nothing is sent, the reset is shown.
+    const out = runOf(1);
+    const gpOut = failing(reading(0, 30 * 60e3));
+    assert.equal(await launchVerify(out, ctxFor(gpOut), { confirm: confirm(true) }), false);
+    assert.equal(asked.length, 2);
+    assert.deepEqual([gpOut.posts.length, quotaOutActive(out.verify.quotaOut)], [0, true]);
+    state.clearAll();
+  });
+
   test('the origin opt-in and the scope are frozen while starting; an origin row opted out meanwhile is never sent (GP-1)', async () => {
     const run = scanRun({
       servers: [{ server: { id: 's1', name: 'web01' }, needsCert: true, hosts: [

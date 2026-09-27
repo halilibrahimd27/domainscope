@@ -48,7 +48,8 @@ registerStrings('en', {
   'ipi.fromInventory': 'My servers’ IPs',
   'ipi.fromInventoryTitle': 'Load every IP address from the saved server inventory',
   'ipi.clear': 'Clear',
-  'ipi.parsed': '{ips} addresses · {hosts} host names',
+  'ipi.parsedIps': { one: '{count} address', other: '{count} addresses' },
+  'ipi.parsedHosts': { one: '{count} host name', other: '{count} host names' },
   'ipi.invalid': 'Ignored (not an IP address or host name): {items}',
   'ipi.cidr': 'Ranges such as {range} are not expanded — enter single addresses.',
   'ipi.nothing': 'Enter at least one IP address or host name.',
@@ -127,7 +128,8 @@ registerStrings('tr', {
   'ipi.fromInventory': 'Sunucularımın IP’leri',
   'ipi.fromInventoryTitle': 'Kayıtlı sunucu envanterindeki tüm IP adreslerini yükle',
   'ipi.clear': 'Temizle',
-  'ipi.parsed': '{ips} adres · {hosts} host adı',
+  'ipi.parsedIps': '{count} adres',
+  'ipi.parsedHosts': '{count} host adı',
   'ipi.invalid': 'Yok sayıldı (IP adresi ya da host adı değil): {items}',
   'ipi.cidr': '{range} gibi aralıklar açılmaz — tek tek adres girin.',
   'ipi.nothing': 'En az bir IP adresi ya da host adı girin.',
@@ -340,7 +342,8 @@ export function mount(container, ctx) {
 
   function updateParsed() {
     const p = parseIpInput(input.value);
-    parsedEl.textContent = p.ips.length || p.hosts.length ? t('ipi.parsed', { ips: formatNumber(p.ips.length), hosts: formatNumber(p.hosts.length) }) : '';
+    parsedEl.textContent = p.ips.length || p.hosts.length
+      ? `${t('ipi.parsedIps', { count: p.ips.length })} · ${t('ipi.parsedHosts', { count: p.hosts.length })}` : '';
   }
   input.input.addEventListener('input', updateParsed);
   updateParsed();

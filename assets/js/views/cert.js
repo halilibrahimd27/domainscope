@@ -1660,26 +1660,23 @@ export function mount(container, ctx) {
           export: { filename: 'caa', subject: certDisplayName(cert) },
           columns: [
             {
-              key: 'name', label: t('cert.caa.col.name'), mono: true, sortable: true,
+              key: 'name', label: t('cert.caa.col.name'), mono: true, sortable: true, className: 'cert-caa-name',
               sortValue: (r) => r.name.split('.').reverse().join('.'),
               searchValue: (r) => `${r.wildcard ? '*.' : ''}${r.name}`,
-              render: (r) => `${r.wildcard ? '*.' : ''}${r.name}`
+              // On a phone the name may break before a dot, and the record set column moves under it.
+              render: (r) => [
+                h('span', null, `${r.wildcard ? '*.' : ''}${r.name}`.split('.').flatMap((part, i) => (i ? [h('wbr'), `.${part}`] : [part]))),
+                h('div', { class: 'cert-caa-at-inline' }, `${t('cert.caa.col.at')}: `, caaAt(r))
+              ]
             },
             {
-              key: 'at', label: t('cert.caa.col.at'), mono: true, sortable: true,
+              key: 'at', label: t('cert.caa.col.at'), mono: true, sortable: true, className: 'cert-caa-at',
               sortValue: (r) => r.foundAt || '',
               exportValue: (r) => r.foundAt || '',
-              render: (r) => (r.error ? Badge(t('cert.caa.error'), { variant: 'error', title: r.error })
-                : r.foundAt || h('span', { class: 'muted' }, t('cert.caa.none')))
+              render: caaAt
             },
             {
-              // RFC 8657 values (an accounturi) make records long: they wrap, so Result stays in view.
-              key: 'records', label: t('cert.caa.col.records'), mono: true, wrap: true, className: 'cert-caa-records',
-              searchValue: (r) => r.records.join(' '),
-              exportValue: (r) => r.records.join(' | '),
-              render: (r) => (r.records.length ? TruncatedList(r.records, { max: 4 }) : null)
-            },
-            {
+              // The verdict before the records it comes from: on a phone it is the column in view.
               key: 'result', label: t('cert.caa.col.result'), sortable: true, wrap: true, className: 'cert-caa-result',
               sortValue: (r) => (r.verdict ? { denied: 0, unknown: 1, restricted: 2, allowed: 3 }[r.verdict.verdict] : -1),
               exportValue: (r) => {
@@ -1689,9 +1686,22 @@ export function mount(container, ctx) {
               },
               render: (r) => (r.verdict ? caaVerdictCell(r.verdict, r.wildcard)
                 : Badge(t('cert.caa.error'), { variant: 'error', icon: 'x-circle', title: r.error || '' }))
+            },
+            {
+              // RFC 8657 values (an accounturi) make records long: they wrap.
+              key: 'records', label: t('cert.caa.col.records'), mono: true, wrap: true, className: 'cert-caa-records',
+              searchValue: (r) => r.records.join(' '),
+              exportValue: (r) => r.records.join(' | '),
+              render: (r) => (r.records.length ? TruncatedList(r.records, { max: 4 }) : null)
             }
           ]
         }).el);
+      }
+
+      /** Where the name's CAA record set was found: its owner, "none", or the lookup error. */
+      function caaAt(r) {
+        return r.error ? Badge(t('cert.caa.error'), { variant: 'error', title: r.error })
+          : r.foundAt || h('span', { class: 'muted' }, t('cert.caa.none'));
       }
 
       /**

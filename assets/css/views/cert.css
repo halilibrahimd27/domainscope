@@ -453,6 +453,20 @@
   min-width: 16rem;
 }
 
+/* A CAA name breaks before a dot only on narrow screens (Blink breaks at <wbr> even under nowrap) */
+.cert-caa-name wbr {
+  display: none;
+}
+
+/* The record set under the name: only where its own column is hidden (narrow screens) */
+.cert-caa-at-inline {
+  display: none;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
 .dt-table td.cert-caa-result {
   min-width: 17rem;
 }
@@ -528,5 +542,31 @@
 
   .cert-chain-head .btn {
     margin-left: 0;
+  }
+
+  /* CAA on a phone: the name (breaking before a dot) with its record set under it, then the
+     verdict, both in view; only Records needs the table's horizontal scroll */
+  .dt-table .cert-caa-at {
+    display: none;
+  }
+
+  .cert-caa-at-inline {
+    display: block;
+  }
+
+  .dt-table td.cert-caa-name {
+    white-space: normal;
+  }
+
+  .cert-caa-name wbr {
+    display: inline;
+  }
+
+  .dt-table td.cert-caa-result {
+    min-width: 12.5rem;
+  }
+
+  .dt-table td.cert-caa-records {
+    min-width: 12rem;
   }
 }

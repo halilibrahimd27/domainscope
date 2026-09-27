@@ -387,12 +387,16 @@ async function main() {
         const info = await page.evaluate(() => ({
           summary: document.querySelector('.cert-caa [data-caa-summary]')?.dataset.caaSummary,
           rows: [...document.querySelectorAll('.cert-caa tbody tr.dt-row')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim())),
+          results: [...document.querySelectorAll('.cert-caa tbody tr.dt-row td.cert-caa-result')].map((td) => td.textContent.trim()),
+          heads: [...document.querySelectorAll('.cert-caa thead th')].map((th) => th.textContent.trim()),
           issuer: document.querySelector('.cert-caa').textContent
         }));
         assert(/pki\.goog/.test(info.issuer), 'issuer mapped to pki.goog');
         assertEqual(info.rows.length, 5, 'one row per name / wildcard');
         assertEqual(info.summary, 'ok', `CAA summary (rows: ${JSON.stringify(info.rows)})`);
-        assert(info.rows.every((r) => r[3].startsWith('Allowed')), 'every name allowed');
+        assertEqual(info.results.length, 5, 'a Result cell per row');
+        assert(info.results.every((r) => r.startsWith('Allowed')), 'every name allowed');
+        assert(info.heads.findIndex((x) => /Result/.test(x)) < info.heads.findIndex((x) => /Records/.test(x)), `the verdict before the records: ${info.heads}`);
         await shot(page, opts, 'cert-desktop-light-en-caa');
       });
 

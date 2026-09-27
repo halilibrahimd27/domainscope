@@ -1404,7 +1404,7 @@ export function mount(container, ctx) {
   // aria-live: its content is replaced only when the requirement flips, so the change is announced.
   const reqLine = h('p', { class: 'scan-req', dataset: { role: 'scan-requirement' }, attrs: { 'aria-live': 'polite' } });
 
-  function renderProgress() {
+  function renderFormProgress() {
     const parsed = parseDomainsInput(domainsField.value);
     const leaf = certLeaf();
     const p = formProgress({
@@ -1472,7 +1472,7 @@ export function mount(container, ctx) {
 
   function renderCertStep() {
     clear(certBody);
-    renderProgress();
+    renderFormProgress();
     const leaf = certLeaf();
     if (!certLoad) {
       certBody.append(CertLoader({ onLoad: onCertLoad }).el,
@@ -1576,7 +1576,7 @@ export function mount(container, ctx) {
 
   function renderDomainsHint() {
     renderZoneChip();
-    renderProgress();
+    renderFormProgress();
     clear(domainsHint);
     const parsed = parseDomainsInput(domainsField.value);
     const list = certDomains();
@@ -1607,7 +1607,7 @@ export function mount(container, ctx) {
 
   function renderInventoryStep() {
     clear(invBody);
-    renderProgress();
+    renderFormProgress();
     const inv = state.inventory;
     const servers = inv.servers.length;
     if (!servers) {
@@ -1828,7 +1828,7 @@ export function mount(container, ctx) {
       // A wildcard extra name (`*.api.example.com`) is one more base the wordlist runs under; extra
       // names alone also give Start something to scan.
       renderVocab();
-      renderProgress();
+      renderFormProgress();
     }
   });
   const dohLine = h('div', { class: 'scan-doh text-sm' });

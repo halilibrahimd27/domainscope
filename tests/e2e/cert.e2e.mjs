@@ -14,6 +14,11 @@
  *   - chain_reversed.pem (wrong order), real_google_chain.pem (ends at a cross-signed root),
  *     with_key.pem (private key ignored and never displayed), test.pfx (PKCS#12 instructions),
  *     test.csr (CSR), a pasted PEM (ec_wildcard.pem)
+ *   - "No file?" (offline: Cert Spotter and crt.sh are answered inside the page): Try a sample
+ *     (same-origin file only), a host name refused before any request, nothing logged, a
+ *     certificate loaded from CT (badge, caveat, leaf-only chain note, Verify in SSL Targets),
+ *     SSL Targets step 1 with the CT note and the sample (fills the domains, starts no scan), a
+ *     Cert Spotter 429 → crt.sh download links, and the cool-down that skips Cert Spotter after it
  *   - LIVE (skipped with --offline): real_cloudflare.pem — CAA check over DoH and the
  *     Certificate Transparency lookup of its serial on crt.sh
  *   - "Find servers for this certificate" hands the certificate to SSL Targets; removing it
@@ -135,6 +140,49 @@ async function delayRequests(page, patterns, ms) {
   };
 }
 
+/**
+ * Cert Spotter and crt.sh identity searches answered inside the page (installed before the app
+ * loads), so the "No file?" steps are offline. `window.__ctFake.mode`: 'found' (one issuance
+ * with the DER, then the empty page that ends the list), 'none' (nothing current), '429' (Cert
+ * Spotter rate limited; crt.sh lists the certificate as precertificate + certificate rows).
+ * Every intercepted request is recorded with its credentials mode; any other fetch goes out.
+ */
+const ctFakeScript = (row, crtshRows) => `(() => {
+  const ROW = ${JSON.stringify(row)};
+  const CRTSH = ${JSON.stringify(crtshRows)};
+  window.__ctFake = { mode: 'found', calls: [] };
+  const realFetch = window.fetch.bind(window);
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const mode = window.__ctFake.mode;
+    if (url.startsWith('https://api.certspotter.com/v1/issuances')) {
+      window.__ctFake.calls.push({ url, credentials: init && init.credentials });
+      if (mode === '429') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
+      return json(mode === 'none' || /[?&]after=/.test(url) ? [] : [ROW]);
+    }
+    if (url.startsWith('https://crt.sh/?q=')) {
+      window.__ctFake.calls.push({ url, credentials: init && init.credentials });
+      return json(mode === '429' ? CRTSH : []);
+    }
+    return realFetch(input, init);
+  };
+})();`;
+
+/** The Cert Spotter row of a fixture certificate, as the API returns it with expand=dns_names,cert_der. */
+function certspotterRow(cert, id) {
+  const iso = (d) => d.toISOString().replace('.000Z', 'Z');
+  return {
+    id, tbs_sha256: '00'.repeat(32), cert_sha256: createHash('sha256').update(cert.der).digest('hex'), dns_names: cert.hostnames,
+    pubkey_sha256: '00'.repeat(32), not_before: iso(cert.notBefore), not_after: iso(cert.notAfter), revoked: false,
+    cert_der: Buffer.from(cert.der).toString('base64')
+  };
+}
+
+/** Wait until the "No file?" block inside `scope` shows the outcome `status` ([data-ct-result]); returns it. */
+const ctResult = (page, scope, status) => page.waitFor((sel, want) => document.querySelector(`${sel} [data-ct-result]`)?.dataset.ctResult === want && want,
+  { args: [scope, status], message: `CT lookup outcome ${status} in ${scope}` });
+
 async function main() {
   const opts = cliOptions();
   const OFFLINE = opts.has('--offline');
@@ -147,6 +195,14 @@ async function main() {
   const spkiHex = createHash('sha256').update(leafNode.spkiDer).digest('hex');
   const keyPem = await readFile(fixture('with_key.pem'), 'utf8');
   const keyChunk = keyPem.split('-----BEGIN PRIVATE KEY-----')[1].split('\n').filter(Boolean)[2];
+  // "No file?": the leaf of the bundled sample (example.com, *.example.com, example.net, www.example.net;
+  // issued by an intermediate, as a CT log holds it) is what Cert Spotter "logged" for www.example.net.
+  const ctLeaf = x509.parseCertificates(await readFile(path.join(FIXTURES, '..', '..', 'assets', 'data', 'sample-cert.pem'))).leaf;
+  const crtshRows = [20000000002, 20000000001].map((id) => ({
+    id, issuer_ca_id: 7, issuer_name: 'C=XX, O=Example Trust, CN=Example CA R1', common_name: 'example.com',
+    name_value: 'example.com\n*.example.com\nexample.net\nwww.example.net', not_before: '2026-07-01T00:00:00', not_after: '2036-07-01T00:00:00',
+    serial_number: '0a1b2c3d4e5f'
+  }));
 
   const server = await startServer({ base: BASE });
   const origin = new URL(server.url).origin;
@@ -155,6 +211,7 @@ async function main() {
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     await installDownloadCapture(page);
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ctFakeScript(certspotterRow(ctLeaf, '17000000001'), crtshRows) });
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
@@ -173,6 +230,185 @@ async function main() {
       assert(info.accept.includes('.pem') && info.accept.includes('.p7b') && info.accept.includes('.pfx'), `accept: ${info.accept}`);
       await assertNoHorizontalScroll(page, 'empty');
       await shot(page, opts, 'cert-desktop-light-en-empty');
+    });
+
+    run.group('No file? A host name\'s certificate from CT, or the sample (offline)');
+    await run.step('the block sits in the loader card: host field, Load, Try a sample', async () => {
+      const info = await page.evaluate(() => {
+        const alt = document.querySelector('.cert-loader-card [data-role="cert-alt"]');
+        const input = alt?.querySelector('[data-role="ct-host"]');
+        return {
+          label: alt?.querySelector('.field-label')?.textContent,
+          labelled: !!input && alt.querySelector('.field-label').getAttribute('for') === input.id,
+          load: !!alt?.querySelector('[data-action="ct-load"]'),
+          sample: alt?.querySelector('[data-action="cert-sample"]')?.textContent
+        };
+      });
+      assertEqual(info.label, 'No file? Load the public certificate of a host name', 'label');
+      assert(info.labelled && info.load, 'labelled field and Load button');
+      assertEqual(info.sample, 'Try a sample', 'sample button');
+    });
+
+    await run.step('Try a sample: the bundled example.com / example.net certificate, from this site only', async () => {
+      const external = () => performance.getEntriesByType('resource').filter((e) => !e.name.startsWith(location.origin)).length;
+      const before = await page.evaluate(external);
+      await page.click('[data-action="cert-sample"]');
+      await page.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'example.com', { message: 'sample loaded' });
+      const info = await page.evaluate(() => ({
+        badge: document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource,
+        note: document.querySelector('.cert-content .cert-source-note')?.textContent || '',
+        names: [...document.querySelectorAll('.cert-tabs .dt-table tbody tr.dt-row')].map((tr) => tr.querySelectorAll('td')[1].textContent.trim()),
+        verify: !!document.querySelector('[data-action="ct-verify"]'),
+        sample: performance.getEntriesByType('resource').filter((e) => /\/assets\/data\/sample-cert\.pem$/.test(e.name)).length
+      }));
+      assertEqual(info.badge, 'sample', 'Sample badge');
+      assert(/made-up .DomainScope Sample. CA\. No server uses it/.test(info.note), `sample note: ${info.note}`);
+      assert(['example.com', '*.example.com', 'example.net', 'www.example.net'].every((n) => info.names.some((c) => c.startsWith(n))), `names ${info.names}`);
+      assert(!info.verify, 'no Verify link for the sample');
+      assertEqual(info.sample, 1, 'fetched from assets/data');
+      assertEqual(await page.evaluate(external), before, 'nothing sent to a third party');
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'no CT request');
+      await shot(page, opts, 'cert-desktop-light-en-sample');
+    });
+
+    await run.step('a value that is not a host name is refused before any request', async () => {
+      await page.evaluate(() => { document.querySelector('.cert-reload').open = true; });
+      await page.type('.cert-reload [data-role="ct-host"]', '192.0.2.10');
+      await page.click('.cert-reload [data-action="ct-load"]');
+      const err = await page.waitFor(() => document.querySelector('.cert-reload [data-role="cert-alt"] .field-error')?.textContent, { message: 'field error' });
+      assert(/host name such as www\.example\.com/.test(err), `error: ${err}`);
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'no request');
+    });
+
+    await run.step('nothing current in the logs: an honest note, and crt.sh (the same logs) is not asked', async () => {
+      await page.evaluate(() => { window.__ctFake.mode = 'none'; });
+      await page.type('.cert-reload [data-role="ct-host"]', 'WWW.Example.NET');
+      await page.press('Enter');
+      assertEqual(await ctResult(page, '.cert-reload', 'not-found'), 'not-found', 'outcome');
+      const info = await page.evaluate(() => ({
+        text: document.querySelector('.cert-reload [data-ct-result]').textContent,
+        calls: window.__ctFake.calls,
+        cn: document.querySelector('.cert-overview-cn').textContent
+      }));
+      assert(/No currently valid certificate for www\.example\.net is logged/.test(info.text), `note: ${info.text}`);
+      assertEqual(info.calls.length, 1, 'one Cert Spotter request');
+      const u = new URL(info.calls[0].url);
+      assertEqual(u.searchParams.get('domain'), 'www.example.net', 'normalized name');
+      assertEqual(u.searchParams.get('match_wildcards'), 'true', 'wildcard certificates match');
+      assertEqual(u.searchParams.getAll('expand'), ['dns_names', 'cert_der'], 'names and DER expanded');
+      assertEqual(info.calls[0].credentials, 'omit', 'no credentials');
+      assertEqual(info.cn, 'example.com', 'the loaded certificate stays');
+    });
+
+    await run.step('found: loaded with the CT badge, the caveat, Verify in SSL Targets; the chain note blames no file', async () => {
+      await page.evaluate(() => { window.__ctFake.mode = 'found'; window.__ctFake.calls = []; });
+      await page.click('.cert-reload [data-action="ct-load"]');
+      await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'ct', { message: 'CT certificate loaded' });
+      const info = await page.evaluate(() => ({
+        badge: document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource,
+        title: document.querySelector('.cert-content .cert-source-note[data-cert-source="ct"] .alert-title')?.textContent,
+        note: document.querySelector('.cert-content .cert-source-note')?.textContent || '',
+        verify: document.querySelector('.cert-source-note [data-action="ct-verify"]')?.textContent,
+        crtsh: document.querySelector('.cert-source-note a[href^="https://crt.sh/?q="]')?.getAttribute('href'),
+        pages: window.__ctFake.calls.map((c) => new URL(c.url).searchParams.get('after'))
+      }));
+      assertEqual(info.badge, 'ct', 'CT badge');
+      assertEqual(info.title, 'Loaded from Certificate Transparency — the server may serve a different one.', 'caveat');
+      assert(/newest valid certificate logged for www\.example\.net/.test(info.note), `note: ${info.note}`);
+      assertEqual(info.verify, 'Verify in SSL Targets', 'Verify link');
+      assert(/^https:\/\/crt\.sh\/\?q=[0-9a-f]{64}$/.test(info.crtsh || ''), `crt.sh link ${info.crtsh}`);
+      assertEqual(info.pages, [null, '17000000001'], 'paged until the empty page');
+      await shot(page, opts, 'cert-desktop-light-en-ct');
+      await page.click(tabSel('chain'));
+      const issues = await page.evaluate(() => [...document.querySelectorAll('[data-chain-issue]')].map((a) => a.dataset.chainIssue));
+      assert(issues.includes('ct-leaf-only') && !issues.includes('leaf-only'), `chain issues ${issues}`);
+      await page.click(tabSel('names'));
+    });
+
+    await run.step('Verify in SSL Targets: step 1 has the certificate and the CT note; nothing is scanned', async () => {
+      await page.click('[data-action="ct-verify"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'scan' && !!document.querySelector('.scan-step-cert .cert-summary'));
+      const info = await page.evaluate(() => ({
+        cn: document.querySelector('.scan-step-cert .cert-summary-cn').textContent,
+        badge: document.querySelector('.scan-step-cert .cert-summary [data-cert-source]')?.dataset.certSource,
+        file: document.querySelector('.scan-step-cert .cert-summary-file')?.textContent,
+        note: document.querySelector('.scan-step-cert .cert-source-note[data-cert-source="ct"]')?.textContent || '',
+        domains: document.querySelector('[data-role="scan-domains"]').value,
+        results: document.querySelector('.scan-results-host').childElementCount
+      }));
+      assertEqual(info.cn, 'example.com', 'same certificate');
+      assertEqual(info.badge, 'ct', 'CT badge in step 1');
+      assertEqual(info.file, 'www.example.net · 1 certificate', 'named after the host, the leaf alone');
+      assert(/After the scan, the Verify tab checks which certificate each server really serves/.test(info.note), `note: ${info.note}`);
+      assertEqual(info.domains, 'example.com\nexample.net', 'domains from the certificate');
+      assertEqual(info.results, 0, 'no scan');
+      await assertNoHorizontalScroll(page, 'scan with a CT certificate');
+    });
+
+    await run.step('SSL Targets › Try a sample fills example.com and example.net and starts no scan', async () => {
+      await page.click('.scan-step-cert [data-action="cert-remove"]');
+      await page.waitFor(() => !document.querySelector('.scan-step-cert .cert-summary'));
+      const dohBefore = await page.evaluate(() => performance.getEntriesByType('resource').filter((e) => e.name.includes('dns-query')).length);
+      await page.click('.scan-step-cert [data-action="cert-sample"]');
+      await page.waitFor(() => !!document.querySelector('.scan-step-cert .cert-source-note[data-cert-source="sample"]'), { message: 'sample in step 1' });
+      await sleep(600);
+      const info = await page.evaluate(() => ({
+        domains: document.querySelector('[data-role="scan-domains"]').value,
+        note: document.querySelector('.scan-step-cert .cert-source-note').textContent,
+        results: document.querySelector('.scan-results-host').childElementCount,
+        doh: performance.getEntriesByType('resource').filter((e) => e.name.includes('dns-query')).length
+      }));
+      assertEqual(info.domains, 'example.com\nexample.net', 'domains filled in');
+      assert(/a scan runs only when you press Start scan/.test(info.note), `note: ${info.note}`);
+      assertEqual(info.results, 0, 'no scan');
+      assertEqual(info.doh, dohBefore, 'no DNS query');
+      await shot(page, opts, 'scan-desktop-light-en-sample');
+    });
+
+    await run.step('Cert Spotter rate limited: crt.sh finds it, with download links; the next lookup skips Cert Spotter', async () => {
+      await page.evaluate(() => {
+        window.__ctFake.mode = '429';
+        window.__ctFake.calls = [];
+        document.querySelector('.scan-cert-another').open = true;
+      });
+      const scope = '.scan-cert-another';
+      await page.type(`${scope} [data-role="ct-host"]`, 'www.example.net');
+      await page.click(`${scope} [data-action="ct-load"]`);
+      assertEqual(await ctResult(page, scope, 'manual'), 'manual', 'outcome');
+      const read = () => page.evaluate((sel) => {
+        const box = document.querySelector(`${sel} [data-ct-result]`);
+        return {
+          text: box.textContent,
+          links: [...box.querySelectorAll('a.btn')].map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel') })),
+          spotter: window.__ctFake.calls.filter((c) => c.url.includes('certspotter')).length,
+          crtsh: window.__ctFake.calls.filter((c) => c.url.startsWith('https://crt.sh/')).map((c) => new URL(c.url).searchParams.get('q'))
+        };
+      }, scope);
+      let info = await read();
+      assert(/Cert Spotter’s hourly limit for your IP address is used up/.test(info.text), `why: ${info.text}`);
+      assert(/issued by Example Trust \(Example CA R1\)/.test(info.text), `issuer: ${info.text}`);
+      assertEqual(info.links.map((l) => l.href), ['https://crt.sh/?d=20000000001', 'https://crt.sh/?d=20000000002'], 'both crt.sh ids');
+      assert(info.links.every((l) => l.target === '_blank' && l.rel === 'noopener noreferrer'), 'new tab, no opener');
+      assertEqual(info.spotter, 1, 'one Cert Spotter request');
+      assertEqual(info.crtsh.sort(), ['*.example.net', 'www.example.net'], 'the name and its parent wildcard');
+      assertEqual(await page.evaluate(() => document.querySelector('.scan-step-cert .cert-summary [data-cert-source]').dataset.certSource), 'sample', 'the sample stays');
+      await assertNoHorizontalScroll(page, 'crt.sh links');
+      await shot(page, opts, 'scan-desktop-light-en-ct-manual');
+      await page.click(`${scope} [data-action="ct-load"]`);
+      await page.waitFor(() => window.__ctFake.calls.filter((c) => c.url.startsWith('https://crt.sh/')).length === 4, { message: 'second lookup' });
+      assertEqual(await ctResult(page, scope, 'manual'), 'manual', 'second outcome');
+      info = await read();
+      assertEqual(info.spotter, 1, 'Cert Spotter cooling down: not asked again');
+    });
+
+    await run.step('back in the Certificate view: the sample is shared, the crt.sh links are kept until a certificate loads', async () => {
+      await gotoRoute(page, 'cert');
+      await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'sample');
+      const kept = await page.evaluate(() => document.querySelector('.cert-reload [data-ct-result]')?.dataset.ctResult);
+      assertEqual(kept, 'manual', 'crt.sh links kept across views');
+      await uploadAndWait(page, 'ec_wildcard.pem');
+      await page.evaluate(() => { document.querySelector('.cert-reload').open = true; });
+      assert(!await page.evaluate(() => document.querySelector('.cert-reload [data-ct-result]')), 'a dropped file settles it');
     });
 
     await run.step('chain.pem: overview, validity, badges', async () => {
@@ -490,6 +726,35 @@ async function main() {
           await shot(page, opts, `cert-mobile-${scheme}-tr-${tab}`);
         }
       }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(page, 'en');
+      await page.setViewport({ width: 1440, height: 900 });
+    });
+
+    await run.step('phone: the "No file?" block with crt.sh links fits 375 px (Turkish, dark; Cert Spotter still cooling down)', async () => {
+      await page.setViewport({ width: 375, height: 812, mobile: true });
+      await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await setLangUi(page, 'tr');
+      await page.evaluate(() => {
+        window.__ctFake.mode = '429';
+        window.__ctFake.calls = [];
+        document.querySelector('.cert-reload').open = true;
+      });
+      await page.type('.cert-reload [data-role="ct-host"]', 'www.example.net');
+      await page.click('.cert-reload [data-action="ct-load"]');
+      await ctResult(page, '.cert-reload', 'manual');
+      const info = await page.evaluate(() => ({
+        label: document.querySelector('.cert-reload [data-role="cert-alt"] .field-label')?.textContent,
+        text: document.querySelector('.cert-reload [data-ct-result]').textContent,
+        sample: document.querySelector('.cert-reload [data-action="cert-sample"]')?.textContent,
+        spotter: window.__ctFake.calls.filter((c) => c.url.includes('certspotter')).length
+      }));
+      assertEqual(info.label, 'Dosyanız yok mu? Bir host adının herkese açık sertifikasını yükleyin', 'Turkish label');
+      assert(/saatlik Cert Spotter sınırı doldu/.test(info.text) && /#20000000001 indir/.test(info.text), `Turkish outcome: ${info.text}`);
+      assertEqual(info.sample, 'Örnek deneyin', 'Turkish sample button');
+      assertEqual(info.spotter, 0, 'still cooling down');
+      await assertNoHorizontalScroll(page, 'phone no-file block');
+      await shot(page, opts, 'cert-mobile-dark-tr-nofile');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
       await page.setViewport({ width: 1440, height: 900 });

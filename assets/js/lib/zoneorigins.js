@@ -926,8 +926,8 @@ function looksInternal(name) {
  * Names that look internal: skipped by default before anything is sent to a public
  * resolver (drift) or used as a scan seed. A name is in the set when any of its
  * A/AAAA is private, a label is in {@link INTERNAL_LABELS}, it sits under one of
- * {@link INTERNAL_SUFFIXES}, or a DNS-only CNAME points to a name in the set.
- * Owners and in-zone RDATA targets are both considered.
+ * {@link INTERNAL_SUFFIXES}, or a DNS-only CNAME or a Route 53 alias points to a name
+ * in the set. Owners and in-zone RDATA / alias targets are all considered.
  * @param {object} zone
  * @returns {Set<string>}
  */
@@ -935,19 +935,22 @@ export function privateLookingNames(zone) {
   const idx = zoneIndex(zone);
   const out = new Set();
   const candidates = new Set();
+  const aliasTarget = (r) => (r.alias && typeof r.alias.target === 'string' ? canonName(r.alias.target) : '');
   for (const r of idx.unique) {
     candidates.add(r.name);
     if (r.intendedName) candidates.add(canonName(r.intendedName));
     const ip = addressOf(r);
     if (ip && isPrivateAddress(ip)) out.add(r.name);
     for (const t of effectiveTargets(r)) if (t && idx.inZone(t)) candidates.add(t);
+    const at = aliasTarget(r);
+    if (at && idx.inZone(at)) candidates.add(at);
   }
   for (const n of candidates) if (looksInternal(n)) out.add(n);
-  const cnames = idx.unique.filter((r) => r.type === 'CNAME' && r.proxied !== true);
+  const links = idx.unique.filter((r) => aliasTarget(r) || (r.type === 'CNAME' && r.proxied !== true));
   for (let changed = true; changed;) {
     changed = false;
-    for (const r of cnames) {
-      if (!out.has(r.name) && out.has(firstTarget(r))) {
+    for (const r of links) {
+      if (!out.has(r.name) && out.has(aliasTarget(r) || firstTarget(r))) {
         out.add(r.name);
         changed = true;
       }

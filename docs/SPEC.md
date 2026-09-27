@@ -778,7 +778,7 @@ ProxiedOrigin = { name, kind: 'ip'|'host'|'tunnel'|'provider'|'placeholder'|'clo
   // Cloudflare rules: one proxied A/AAAA makes the whole name proxied; a DNS-only CNAME to a proxied name is proxied through the chain;
   // 192.0.2.0 / 100:: are originless placeholders; an address in Cloudflare's own ranges is not an origin (error 1000)
 export function addressMap(zone, { inventoryIndex }) -> Array<{ ip, names: [{ name, proxied, via?, exposed?, occluded? }], servers, private, provider, placeholder, exposed }>
-export function privateLookingNames(zone) -> Set<string>   // private A/AAAA, INTERNAL_LABELS, INTERNAL_SUFFIXES, or a DNS-only CNAME into the set
+export function privateLookingNames(zone) -> Set<string>   // private A/AAAA, INTERNAL_LABELS, INTERNAL_SUFFIXES, or a DNS-only CNAME / Route 53 alias into the set
 export function handoffNames(zone) -> string[]             // TLS-bearing names for scope 'all'
 export function cliHandoff(zone, { origins }) -> { targets, hostTargets, names, skipped, dropped }   // scope 'proxied'; kinds ip / host only
 export function zoneSweep(zone, { scope = 'proxied'|'all', shell, script, origins, buildCommand }) -> { scope, targets, hostTargets, names, skipped, dropped, command, tokens, chars,
@@ -800,9 +800,9 @@ What is sent:
 - never through `balance` rotation, never to Globalping or a passive source.
 
 What is never sent:
-- private-looking names (skipped by default);
+- private-looking names (skipped by default), also as a flattened or alias target;
 - the target of a proxied CNAME;
-- flattened / alias targets, unless `resolveTargets`;
+- flattened / alias targets outside the zone, unless `resolveTargets` (a skipped target stays hidden even then);
 - types the file does not contain, and HTTPS / SVCB at a proxied name (`cf-synthesized`).
 
 Every (name, type) is queried once.

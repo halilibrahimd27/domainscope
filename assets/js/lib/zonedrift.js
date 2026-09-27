@@ -12,7 +12,8 @@
  * What is sent, and what never is (zone spec §10, critic D1/D2/G1):
  *  - names and types only, to the user's resolver chain with failover (or one chosen
  *    resolver); never `balance` rotation, never Globalping or a passive source;
- *  - private-looking names are skipped by default (`skipPrivate`);
+ *  - private-looking names are skipped by default (`skipPrivate`), as owners and as
+ *    flattened / alias targets (a skipped target is never sent, even with `resolveTargets`);
  *  - a proxied CNAME's target (the hidden origin host) is never queried, and neither
  *    are the external targets of flattened CNAMEs and Route 53 aliases unless
  *    `resolveTargets` is set (they are hidden from public DNS just like an origin);
@@ -306,14 +307,14 @@ function buildPlan(zone, opts) {
       item.queries = [at('A'), at('CNAME')];
       const t = servedTargets(item.valid[0])[0] || '';
       item.target = t;
-      if (t && (inZoneTarget(t) || resolveTargets)) item.queries.push({ name: t, type: 'A', role: 'target' });
+      if (t && !skipSet.has(t) && (inZoneTarget(t) || resolveTargets)) item.queries.push({ name: t, type: 'A', role: 'target' });
       else if (t) { item.targetHidden = true; hidden += 1; }
     } else if (alias) {
       item.mode = 'alias';
       item.queries = [at(g.type)];
       const t = canon(alias.alias.target);
       item.target = t;
-      if (t && (alias.alias.provider === 'same-zone' || inZoneTarget(t) || resolveTargets)) item.queries.push({ name: t, type: g.type, role: 'target' });
+      if (t && !skipSet.has(t) && (alias.alias.provider === 'same-zone' || inZoneTarget(t) || resolveTargets)) item.queries.push({ name: t, type: g.type, role: 'target' });
       else if (t) { item.targetHidden = true; hidden += 1; }
     } else if (item.valid.some((r) => r.routing)) {
       item.mode = 'routing';

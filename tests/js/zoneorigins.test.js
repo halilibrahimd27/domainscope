@@ -317,6 +317,17 @@ describe('privacy helpers', () => {
       'printer.lan.example.com', 'wiki.example.com', 'x.home.arpa'].sort());
   });
 
+  test('privateLookingNames: a Route 53 alias into the set joins it (also alias → alias and a dangling x.corp target)', () => {
+    const same = (target) => ({ alias: { target, zoneId: null, evaluateTargetHealth: false, provider: 'same-zone' } });
+    const z = zone([['vpn', 'A', '10.1.2.3'], ['portal', 'A', null, same('vpn.example.com')], ['door', 'A', null, same('portal.example.com')],
+      ['tickets', 'A', null, same('jira.corp.example.com')], ['www', 'A', '198.51.100.4'], ['web', 'A', null, same('www.example.com')]],
+    { format: 'route53', dialect: null });
+    assert.deepEqual([...privateLookingNames(z)].sort(), ['door.example.com', 'jira.corp.example.com', 'portal.example.com',
+      'tickets.example.com', 'vpn.example.com']);
+    assert.deepEqual(zoneScanInput(z).names, ['web.example.com', 'www.example.com']);
+    assert.ok(zoneScanInput(z, { skipPrivate: false }).names.includes('portal.example.com'));
+  });
+
   test('zoneScanInput: private-looking names skipped by default; only ip / host origins become hints', () => {
     const s = zoneScanInput(CF);
     assert.equal(s.v, 1);

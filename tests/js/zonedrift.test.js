@@ -315,6 +315,27 @@ describe('what is never sent', () => {
     assert.equal(explicit.asked('example.com', 'A'), false);
   });
 
+  test('an alias or flattened target that is private-looking or skipped is never sent', async () => {
+    const same = (target) => ({ alias: { target, zoneId: null, evaluateTargetHealth: false, provider: 'same-zone' } });
+    const z = zone([SOA, ['vpn', 'A', '10.1.2.3'], ['jira.corp', 'A', '198.51.100.7'], ['portal', 'A', null, same('vpn.example.com')],
+      ['tickets', 'A', null, same('jira.corp.example.com')], ['www', 'A', '192.0.2.10']], { format: 'route53', dialect: null });
+    const r = await drift(z, { 'www.example.com|A': [A('192.0.2.10')] });
+    for (const n of ['vpn.example.com', 'jira.corp.example.com', 'portal.example.com', 'tickets.example.com']) assert.equal(r.asked(n), false, n);
+    assert.equal(status(r.row('portal.example.com|A')), 'skipped private');
+    assert.equal(status(r.row('tickets.example.com|A')), 'skipped private');
+    assert.equal(r.dns.log.length, planDrift(z).queries);
+    assert.equal(planDrift(z).skipped.private, 4);
+    // an explicit skip of the target wins, even with resolveTargets
+    const pub = zone([SOA, ['vpn', 'A', '198.51.100.3'], ['portal', 'A', null, same('vpn.example.com')]], { format: 'route53', dialect: null });
+    const s = await drift(pub, { 'portal.example.com|A': [A('198.51.100.3')] }, { skip: ['vpn.example.com'], resolveTargets: true });
+    assert.equal(s.asked('vpn.example.com'), false);
+    assert.equal(status(s.row('portal.example.com|A')), 'alias-ok target-hidden');
+    const cf = cfZone([SOA, ['lb', 'A', '198.51.100.4', D], ['status', 'CNAME', 'lb', { ...D, flattenCname: true }]]);
+    const f = await drift(cf, { 'status.example.com|A': [A('198.51.100.4')] }, { skip: ['lb.example.com'] });
+    assert.equal(f.asked('lb.example.com'), false);
+    assert.equal(status(f.row('status.example.com|CNAME')), 'flattened-ok target-hidden');
+  });
+
   test('every query is noCache, never balanced; the chosen resolver is passed through', async () => {
     const z = zone([SOA, ['@', 'A', '192.0.2.10']]);
     let r = await drift(z, { 'example.com|A': [A('192.0.2.10')] });

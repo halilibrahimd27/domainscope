@@ -718,12 +718,17 @@ export function mount(container, ctx) {
 
   /**
    * Ask again, for each row, only the sources that failed there (and are in `sources`, when a
-   * chip's Retry names them); the rows re-render as their answers arrive.
+   * chip's Retry names them); the rows re-render as their answers arrive. A Retry belongs to its
+   * run: a new lookup, Stop or leaving the view cancels it (`state.life`), and once its run is
+   * replaced it never touches the table again (the new run's row for the same address is not its
+   * to draw).
    */
   async function retryRows(list, sources = null) {
     const state = current;
     const rows = list.filter((r) => r.info && !r.retrying);
     if (!state || !rows.length) return;
+    const signal = mergeSignals(ctx.signal, state.life.signal);
+    const live = () => current === state && !ctx.signal.aborted;
     for (const r of rows) {
       r.retrying = true;
       table.updateRow(r);
@@ -733,23 +738,25 @@ export function mount(container, ctx) {
     try {
       intel = getIntel(await ctx.getDns());
     } catch (err) {
-      ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      if (live()) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
     }
     await Promise.all(rows.map(async (r) => {
       try {
-        if (!intel) return;
+        if (!intel || !live()) return;
         const want = ipRetrySources(r.info).filter((s) => !sources || sources.includes(s));
-        r.info = await intel.retry(r.info, { sources: want, signal: ctx.signal });
+        const next = await intel.retry(r.info, { sources: want, signal });
+        if (live()) r.info = next;
       } catch (err) {
-        if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+        if (!(err && err.name === 'AbortError') && live()) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
       } finally {
         r.retrying = false;
-        if (!ctx.signal.aborted) table.updateRow(r);
+        if (live()) table.updateRow(r);
       }
     }));
-    if (ctx.signal.aborted || current !== state) return;
+    if (!live()) return;
     renderStats(state.rows);
-    announce(t('ipi.retried', { count: rows.length }));
+    // A Retry that Stop cancelled asked nothing again.
+    if (!signal.aborted) announce(t('ipi.retried', { count: rows.length }));
   }
 
   function note(variant, message) {
@@ -768,6 +775,9 @@ export function mount(container, ctx) {
     if (current && current.controller) {
       current.stopped = true;
       current.controller.abort();
+      // Retries in flight stop too; a later Retry of this run gets a new controller.
+      current.life.abort();
+      current.life = new AbortController();
     }
   }
 
@@ -842,8 +852,10 @@ export function mount(container, ctx) {
    */
   async function run(parsed, preset = null, { text = '', at = null, stopped = false } = {}) {
     if (current && current.controller) current.controller.abort();
+    if (current) current.life.abort();
     const controller = new AbortController();
-    const state = { controller, rows: [], stopped: false, text, finishedAt: null };
+    // `life` cancels this run's Retries (a new run, Stop, the view going away).
+    const state = { controller, life: new AbortController(), rows: [], stopped: false, text, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -992,6 +1004,7 @@ export function mount(container, ctx) {
   active = {
     teardown() {
       if (current && current.controller) current.controller.abort();
+      if (current) current.life.abort();
     },
     snapshot() {
       // A reverse lookup still running belongs to this view and is cancelled with it: the

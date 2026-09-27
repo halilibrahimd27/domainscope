@@ -9,8 +9,10 @@
  * answered in the page (nothing leaves it). A source that answers 429 or fails marks only the
  * cells it leaves empty "⚠ n/a" (tooltip: which source, what error), a chip per service sums the
  * failures up, and Retry — per row, or per chip for every row it failed on — asks exactly those
- * sources again; stat cards with a zero count fold into one sentence; 1440 and 375 px, light and
- * dark, English and Turkish.
+ * sources again; a reverse lookup answered SERVFAIL says so; Stop leaves no chip "asking…"; a
+ * Retry still in flight when a new lookup starts never draws over the new run's row; the CSV
+ * says "n/a" in every language; stat cards with a zero count fold into one sentence; 1440 and
+ * 375 px, light and dark, English and Turkish.
  *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
@@ -233,18 +235,28 @@ async function main() {
 const PTR_ZONE = {
   '7.113.0.203.in-addr.arpa': { PTR: ['web.example.com'] },
   '8.113.0.203.in-addr.arpa': { PTR: ['app.example.com'] },
+  '60.113.0.203.in-addr.arpa': { PTR: ['retry.example.com'] },
+  // A broken reverse delegation: every resolver answers SERVFAIL.
+  '70.113.0.203.in-addr.arpa': { RCODE: { PTR: 'SERVFAIL' } },
   '20.100.51.198.in-addr.arpa': { PTR: ['mail.example.net'] }
 };
 
 /**
  * RIPEstat and ipwho.is answered in the page (installed after the zone script, which blocks
- * every other request): addresses in `window.__ipFake.limited` get HTTP 429 from RIPEstat, and
- * ipwho.is always says its quota is used up. `calls` lists "<dataset> <ip>" per request.
+ * every other request): addresses in `window.__ipFake.limited` get HTTP 429 from RIPEstat, an
+ * address in `window.__ipFake.slow` (ip → ms) is answered that much later (an abort still ends
+ * the wait), and ipwho.is always says its quota is used up. `calls` lists "<dataset> <ip>" per
+ * request.
  */
 const IP_FAKE_SCRIPT = `(() => {
   const inner = window.fetch;
-  const fake = window.__ipFake = { limited: [], calls: [] };
+  const fake = window.__ipFake = { limited: [], calls: [], slow: {} };
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const wait = (ms, signal) => new Promise((resolve, reject) => {
+    if (signal && signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const timer = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const u = new URL(url, location.href);
@@ -252,6 +264,7 @@ const IP_FAKE_SCRIPT = `(() => {
       const ip = u.searchParams.get('resource');
       const call = u.pathname.split('/')[2];
       fake.calls.push(call + ' ' + ip);
+      if (fake.slow[ip]) await wait(fake.slow[ip], (init && init.signal) || (typeof input === 'object' && input && input.signal) || null);
       if (fake.limited.includes(ip)) return new Response('Too Many Requests', { status: 429 });
       if (call === 'prefix-overview') {
         return json({ status: 'ok', data: { announced: true, asns: [{ asn: 64500, holder: 'EXAMPLE-NET - Example Networks B.V.' }],
@@ -415,6 +428,83 @@ async function offlineGroup(browser, server) {
       assertEqual(after, ['maxmind-geo-lite 203.0.113.8', 'maxmind-geo-lite 203.0.113.9', 'prefix-overview 203.0.113.8', 'prefix-overview 203.0.113.9'], 'requests of the chip Retry');
       i = await info();
       assertEqual(i.chips[0].state, 'ok', 'RIPEstat chip ok');
+    });
+
+    await step('a reverse lookup answered SERVFAIL says so ("answered SERVFAIL", not a bare "failed")', async () => {
+      await page.evaluate(() => { window.__ipFake.limited = []; });
+      await gotoHash(page, '#/ip?ips=203.0.113.70,198.51.100.20', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      const i = await info();
+      const row = i.rows['203.0.113.70'];
+      assertEqual([Object.keys(row.na), row.retry], [['ptr'], 'ptr'], 'only the PTR cell is n/a; Retry asks reverse DNS');
+      assertEqual(row.na.ptr.title, 'Reverse DNS: answered SERVFAIL', 'tooltip');
+      const ptr = i.chips.find((c) => c.id === 'ptr');
+      assertEqual([ptr.state, ptr.value], ['failed', '1 failed · answered SERVFAIL'], 'reverse DNS chip');
+    });
+
+    await step('Stop before every address is looked up: no chip keeps saying "asking…"', async () => {
+      // Twelve fresh addresses: two answer at once, RIPEstat keeps the rest waiting 4 s.
+      const ips = Array.from({ length: 12 }, (_, n) => `203.0.113.${40 + n}`);
+      await page.evaluate((list) => {
+        window.__ipFake.limited = [];
+        window.__ipFake.slow = Object.fromEntries(list.slice(2).map((ip) => [ip, 4000]));
+      }, ips);
+      try {
+        await gotoHash(page, `#/ip?ips=${ips.join(',')}`, 'ip');
+        await page.waitFor(() => document.querySelectorAll('.ipi-row').length === 12
+          && document.querySelectorAll('.ipi-row:not(.is-pending)').length === 2, { timeout: 10000, message: 'two rows answered' });
+        const running = await info();
+        assertEqual(running.chips.map((c) => c.state), ['pending', 'pending', 'pending'], 'asking while rows are looked up');
+        await page.click('[data-action="stop"]');
+        await page.waitFor(() => !document.querySelector('[data-action="run"]').hidden, { timeout: 5000, message: 'stopped' });
+        const i = await info();
+        assertEqual(i.chips.map((c) => [c.id, c.state, c.value]), [['ripestat', 'ok', '2 answered'], ['ipwhois', 'idle', 'not needed'], ['ptr', 'ok', '2 answered']],
+          'rows a stopped run never asked count for nothing');
+        const left = await page.evaluate(() => ({
+          spinners: document.querySelectorAll('.ipi-sources .spinner, .ipi-row .spinner').length,
+          note: document.querySelector('.ipi-notes')?.textContent || ''
+        }));
+        assertEqual(left.spinners, 0, 'no spinner left');
+        assert(left.note.includes('Stopped — rows without data were not looked up.'), `note: ${left.note}`);
+        assertEqual(Object.values(i.rows).filter((r) => Object.keys(r.na).length || r.retry).length, 0, 'an unasked row is not n/a');
+      } finally {
+        await page.evaluate(() => { window.__ipFake.slow = {}; });
+      }
+    });
+
+    await step('a Retry still in flight when a new lookup starts is cancelled: the new run’s row settles, no busy Retry', async () => {
+      // 203.0.113.60 has a PTR record, so its partial answer (RIPEstat 429) is cached for the next run.
+      const ip = '203.0.113.60';
+      await page.evaluate((x) => { window.__ipFake.limited = [x]; }, ip);
+      await gotoHash(page, `#/ip?ips=${ip},198.51.100.20`, 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      assertEqual(Object.keys((await info()).rows[ip].na), ['network', 'prefix', 'location'], 'n/a before the Retry');
+      // The Retry waits 2.5 s at RIPEstat; "Look up" is pressed 300 ms after it.
+      await page.evaluate((x) => { window.__ipFake.limited = []; window.__ipFake.slow = { [x]: 2500 }; }, ip);
+      try {
+        await page.click(`.ipi-retry[data-ip="${ip}"]`);
+        await page.waitFor((x) => document.querySelector(`.ipi-retry[data-ip="${x}"]`)?.getAttribute('aria-busy') === 'true', { args: [ip], message: 'Retry busy' });
+        await new Promise((resolve) => { setTimeout(resolve, 300); });
+        await page.click('[data-action="run"]');
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'new run done' });
+        // Past the moment the cancelled Retry would have answered.
+        await new Promise((resolve) => { setTimeout(resolve, 3200); });
+        const i = await info();
+        const row = i.rows[ip];
+        assertEqual([Object.keys(row.na), row.retry, row.busy], [['network', 'prefix', 'location'], 'ripestat ipwhois ripestat-geo', false],
+          'the new run’s row: its own (cached) answer and a Retry ready to use');
+        assertEqual(i.chips[0].state, 'failed', 'the chip agrees with the row');
+        // That Retry works: the row fills in.
+        await page.evaluate(() => { window.__ipFake.slow = {}; });
+        await page.click(`.ipi-retry[data-ip="${ip}"]`);
+        await page.waitFor((x) => {
+          const tr = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === x);
+          return tr && !tr.querySelector('.na-mark') && !tr.querySelector('.ipi-retry');
+        }, { args: [ip], timeout: 15000, message: 'row filled in' });
+        assertEqual((await info()).chips[0].state, 'ok', 'RIPEstat chip ok');
+      } finally {
+        await page.evaluate(() => { window.__ipFake.slow = {}; });
+      }
     });
 
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {

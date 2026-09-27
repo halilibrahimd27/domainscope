@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  NAV_GROUPS, OTHER_GROUP, groupViews, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
+  NAV_GROUPS, OTHER_GROUP, groupViews, isPlainClick, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
   SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, escClearsField, shortcutFor,
   pickShortcutTarget
 } from '../../assets/js/lib/shellnav.js';
@@ -91,6 +91,16 @@ describe('groupViews — the tool groups', () => {
     const custom = [{ id: 'b', labelKey: 'k.b' }, { id: 'a', labelKey: 'k.a' }];
     assert.deepEqual(groupViews([{ id: '1', group: 'a' }, { id: '2', group: 'b' }], custom).map((g) => [g.id, g.labelKey]),
       [['b', 'k.b'], ['a', 'k.a']]);
+  });
+
+  test('isPlainClick: only a plain main-button click is the app\'s; a new tab or window is the browser\'s', () => {
+    assert.equal(isPlainClick({ button: 0 }), true);
+    assert.equal(isPlainClick({}), true, 'a synthetic click (element.click()) has no button set');
+    for (const mod of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+      assert.equal(isPlainClick({ button: 0, [mod]: true }), false, mod);
+    }
+    assert.equal(isPlainClick({ button: 1 }), false, 'middle button');
+    assert.equal(isPlainClick(null), false);
   });
 });
 

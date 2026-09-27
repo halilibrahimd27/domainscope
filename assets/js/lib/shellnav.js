@@ -44,6 +44,18 @@ export function groupViews(views, groups = NAV_GROUPS) {
   return [...out, other].filter((g) => g.views.length);
 }
 
+/**
+ * Is this a plain primary click (no Ctrl, ⌘, Shift or Alt, the main button)? Only such a click on
+ * a link of the Tools menu or the task picker is the app's to handle; the others open a new tab
+ * or window (or download) — the browser's.
+ * @param {{ button?: number, ctrlKey?: boolean, metaKey?: boolean, shiftKey?: boolean, altKey?: boolean }|null} event
+ * @returns {boolean}
+ */
+export function isPlainClick(event) {
+  if (!event) return false;
+  return (event.button || 0) === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+}
+
 /* ------------------------------------------------------------------------ */
 /* First-visit task picker                                                  */
 /* ------------------------------------------------------------------------ */

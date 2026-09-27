@@ -786,6 +786,17 @@ button.nav-status:hover {
   overflow-wrap: anywhere;
 }
 
+/* The open tool at work: the sidebar's pulsing dot, after the check */
+.navmenu-link.is-busy::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
 @media (max-width: 719.98px) {
   /* A sheet hanging from the top edge, right under the Tools button. */
   .navmenu-modal {
@@ -3516,7 +3527,8 @@ button.nav-status:hover {
   }
 
   .nav-link.is-busy::after,
-  .nav-menu-bar.is-busy .nav-menu-current::after {
+  .nav-menu-bar.is-busy .nav-menu-current::after,
+  .navmenu-link.is-busy::after {
     animation: none !important;
   }
 }

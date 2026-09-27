@@ -35,7 +35,7 @@ import {
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 import {
-  groupViews, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
+  groupViews, isPlainClick, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
   isTypingTarget
 } from './lib/shellnav.js';
 import { StartTaskList } from './ui/start-tasks.js';
@@ -467,9 +467,7 @@ function setBusyState(busy) {
   current.busy = on;
   dom.header.classList.toggle('is-busy', on);
   dom.main.setAttribute('aria-busy', String(on));
-  const link = dom.nav.querySelector(`[data-view="${current.id}"]`);
-  if (link) link.classList.toggle('is-busy', on);
-  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', on);
+  markBusy(current.id, on);
   // After the view's own start-up: the settings change re-renders what views show of the settings.
   if (on) setTimeout(noteRun, 0);
   if (on && typeof busy === 'string') announce(busy);
@@ -513,6 +511,7 @@ async function unmountCurrent() {
   dom.main.removeAttribute('aria-busy');
   dom.nav.querySelectorAll('.nav-link.is-busy').forEach((l) => l.classList.remove('is-busy'));
   if (dom.navMenuBar) dom.navMenuBar.classList.remove('is-busy');
+  if (navMenu) navMenu.el.querySelectorAll('.navmenu-link.is-busy').forEach((l) => l.classList.remove('is-busy'));
   if (dom.pageActions) clear(dom.pageActions);
 }
 
@@ -870,11 +869,17 @@ function setNavActive(id) {
     dom.navMenuCurrent.append(Icon(def.icon, { size: 16 }), h('span', { class: 'nav-menu-current-label' }, t(`nav.${def.id}`)));
   }
   // The nav is rebuilt on a language change, possibly while the view works: keep its busy dot.
-  const busy = !!(current && current.id === id && current.busy);
-  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', busy);
-  const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
-  if (link) link.classList.toggle('is-busy', busy);
+  markBusy(id, !!(current && current.id === id && current.busy));
   scrollNavToActive(id);
+}
+
+/** The busy dot of tool `id`: its sidebar link, the Tools bar and, while the Tools menu is open, its entry there. */
+function markBusy(id, on) {
+  const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
+  if (link) link.classList.toggle('is-busy', on);
+  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', on);
+  const entry = navMenu ? navMenu.el.querySelector(`.navmenu-link[data-view="${id}"]`) : null;
+  if (entry) entry.classList.toggle('is-busy', on);
 }
 
 /** 720–900 px: the nav is a strip that scrolls sideways; bring the active link into view (no page scroll). */
@@ -911,12 +916,14 @@ let navMenu = null;
 
 /**
  * The Tools menu of narrow screens: every view in its group (the sidebar's table), the current
- * one marked, in a Modal (focus trap, Esc closes). The focus goes back to the Tools button,
- * unless a link opened another tool: its page title takes the focus then.
+ * one marked (with the busy dot while it works), in a Modal (focus trap, Esc closes). The focus
+ * goes back to the Tools button, unless a link opened another tool: its page title takes the
+ * focus then. A Ctrl/⌘/Shift/Alt click is the browser's (a new tab): the menu stays open.
  */
 function openNavMenu() {
   if (navMenu) return;
   const openedOn = current ? current.id : null;
+  const busy = !!(current && current.busy);
   const content = h('div', { class: 'navmenu' }, groupViews(VIEWS).map((g) => {
     const labelId = uid('navmenu-group');
     return h('div', { class: 'navmenu-group' },
@@ -924,12 +931,13 @@ function openNavMenu() {
       h('ul', { class: 'navmenu-list', attrs: { 'aria-labelledby': labelId } }, g.views.map((v) => {
         const here = v.id === openedOn;
         return h('li', null, h('a', {
-          class: 'navmenu-link',
+          class: ['navmenu-link', { 'is-busy': here && busy }],
           href: buildRoute(v.id),
           dataset: { view: v.id, autofocus: here ? '1' : null },
           attrs: { 'aria-current': here ? 'page' : null },
           on: {
             click: (event) => {
+              if (!isPlainClick(event)) return;
               // The open tool's entry only closes the menu: following it would drop the page's params.
               if (here) event.preventDefault();
               menu.close({ view: v.id });
@@ -946,9 +954,13 @@ function openNavMenu() {
     onClose: (value) => {
       navMenu = null;
       const btn = dom.navMenuBtn;
-      if (!btn) return;
-      btn.setAttribute('aria-expanded', 'false');
-      if (btn.isConnected && (!value || value.view === openedOn)) btn.focus({ preventScroll: true });
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      // Widened past 720 px: the button is hidden, so the page title takes the focus.
+      if (value && value.wide) {
+        if (dom.pageTitle && dom.pageTitle.isConnected) dom.pageTitle.focus({ preventScroll: true });
+        return;
+      }
+      if (btn && btn.isConnected && (!value || value.view === openedOn)) btn.focus({ preventScroll: true });
     }
   });
   navMenu = menu;
@@ -1009,8 +1021,8 @@ function startPicker() {
       views: VIEWS,
       href: (view) => buildRoute(view),
       onPick: (task, event) => {
-        // The job of the page that is open: go to its input instead of opening it again.
-        if (!current || task.view !== current.id) return;
+        // The job of the page that is open: go to its input instead of opening it again (a new tab is the browser's).
+        if (!current || task.view !== current.id || !isPlainClick(event)) return;
         event.preventDefault();
         focusMainInput();
       }
@@ -1435,11 +1447,13 @@ function boot() {
 
   globalThis.addEventListener('hashchange', handleRoute);
   document.addEventListener('keydown', onShortcutKey);
-  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip: its active link comes into view.
+  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip: its active link comes into
+  // view, and an open Tools menu closes (its button is gone: the focus goes to the page title).
   const toolsBar = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia('(max-width: 719.98px)') : null;
   if (toolsBar && typeof toolsBar.addEventListener === 'function') {
-    toolsBar.addEventListener('change', () => {
+    toolsBar.addEventListener('change', (event) => {
       if (current) scrollNavToActive(current.id);
+      if (!event.matches && navMenu) navMenu.close({ wide: true });
     });
   }
   globalThis.addEventListener('unhandledrejection', (event) => {

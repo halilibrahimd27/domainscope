@@ -29,7 +29,7 @@ const JS = join(ASSETS, 'js');
 /**
  * Gzip budget of the start route, in bytes (index.html, boot.js, style.css, app.js's module
  * graph, the default view's graph and stylesheet). Before the per-view stylesheets and the lazy
- * engine it was ≈ 368 KB (376,391 bytes); with them, and the service worker's page side, ≈ 256 KB.
+ * engine it was ≈ 368 KB (376,391 bytes); with them, and the service worker's page side, ≈ 258 KB (264,028 bytes).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 280 * 1024;

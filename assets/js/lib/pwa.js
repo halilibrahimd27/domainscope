@@ -1,8 +1,8 @@
 /**
  * pwa.js — the pure parts of the installable app (web app manifest + service worker, sw.js at the
  * site root): where a page of the Pages bundle finds its site root and service worker, what the
- * worker of one deploy precaches, how it keys the wordlist cache, and which manifest suits the UI
- * language.
+ * worker of one deploy precaches, how it names its caches and keys the wordlist cache, and which
+ * manifest suits the UI language.
  *
  * tools/assemble-site.mjs calls buildSwManifest() at deploy time and writes the result into
  * sw.js, so the worker itself decides nothing: it precaches `precache`, answers `wordlists` from
@@ -12,10 +12,8 @@
  * DOM-free, no I/O.
  */
 
-/** Prefix of every Cache Storage name the service worker owns (it never touches other caches). */
+/** Start of every Cache Storage name the service worker owns ({@link cacheNames}). */
 export const CACHE_PREFIX = 'domainscope-';
-/** The wordlist cache, shared by every deploy: entries are keyed by content hash, not by URL. */
-export const WORDLIST_CACHE = `${CACHE_PREFIX}wordlists`;
 /** The service worker script, relative to the site root (its scope is the whole site). */
 export const SERVICE_WORKER_FILE = 'sw.js';
 /** Web app manifests by UI language (the English one is linked from index.html). */
@@ -33,15 +31,52 @@ const VERSION_RE = /^[A-Za-z0-9._-]{1,64}$/;
 /** A module of the Pages bundle: <root>v/<version>/assets/js/… */
 const BUNDLE_PATH_RE = /^(.*\/)v\/([A-Za-z0-9._-]{1,64})\/assets\/js\//;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+/** Hex digits of the content digest in a shell cache name. */
+const DIGEST_IN_NAME = 12;
 
 /**
- * The app shell cache of one deploy.
- * @param {string} version
- * @returns {string} e.g. 'domainscope-shell-0123456789ab'
+ * A short tag for a service worker scope: FNV-1a (32 bits) over its path, 8 hex digits. GitHub
+ * Pages project sites share one origin (<user>.github.io), so two copies of the app there
+ * (/domainscope/ and /domainscope-staging/) share one Cache Storage; the tag in every cache name
+ * keeps each copy to its own caches. sw.js has the same function (tests/js/sw.test.js compares).
+ * @param {string} scopePath e.g. '/domainscope/'
+ * @returns {string} e.g. '5f0e2a91'
  */
-export function shellCacheName(version) {
-  if (!isVersion(version)) throw new Error(`Invalid version ${JSON.stringify(version)}`);
-  return `${CACHE_PREFIX}shell-${version}`;
+export function scopeTag(scopePath) {
+  const s = String(scopePath);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * The Cache Storage names of the service worker at one scope; sw.js computes the same ones.
+ * - `prefix`: every name it owns starts with it, and it deletes no cache without it;
+ * - `wordlists`: shared by every deploy at the scope (entries keyed by content hash, not URL);
+ * - `shell`: one deploy's app shell, named by its version and its content digest — a bundle
+ *   assembled again under the same version with other files gets a new cache (and a new sw.js),
+ *   never an update in place of the one the running version answers from. null without `build`.
+ * @param {string} scopePath the scope's path, e.g. '/domainscope/'
+ * @param {{ version: string, digest: string }|null} [build] a deploy (buildSwManifest)
+ * @returns {{ prefix: string, wordlists: string, shell: string|null }}
+ *   e.g. shell 'domainscope-5f0e2a91-shell-0123456789ab-9d72c0e14b3a'
+ */
+export function cacheNames(scopePath, build = null) {
+  const prefix = `${CACHE_PREFIX}${scopeTag(scopePath)}-`;
+  let shell = null;
+  if (build) {
+    if (!isVersion(build.version)) throw new Error(`Invalid version ${JSON.stringify(build.version)}`);
+    if (!isDigest(build.digest)) throw new Error(`Invalid content digest ${JSON.stringify(build.digest)}`);
+    shell = `${prefix}shell-${build.version}-${build.digest.slice(0, DIGEST_IN_NAME)}`;
+  }
+  return { prefix, wordlists: `${prefix}wordlists`, shell };
+}
+
+function isDigest(digest) {
+  return typeof digest === 'string' && SHA256_RE.test(digest);
 }
 
 function isVersion(version) {
@@ -115,16 +150,21 @@ export function wordlistFiles(manifest) {
  *   the network then say so).
  * - `wordlists`: each tier and locale pack's versioned path → its hash-keyed cache key; they are
  *   cached on first use only (a Huge tier is 575 KB).
- * @param {{ version: string, rootFiles: string[], assetFiles: string[], wordlistManifest: object }} input
+ * - `version` and `digest` (the SHA-256 of the deploy's files, tools/assemble-site.mjs
+ *   contentDigest): they name the shell cache ({@link cacheNames}), and the digest makes sw.js
+ *   differ whenever the files do, even under a version used before — a byte-identical sw.js is
+ *   never installed again, so the old files would be served for good.
+ * The cache names themselves depend on the scope, which only the worker knows: it derives them.
+ * @param {{ version: string, digest: string, rootFiles: string[], assetFiles: string[], wordlistManifest: object }} input
  *   rootFiles: site-root files, relative ('index.html', 'favicon.svg', 'icons/icon-192.png', …);
  *   assetFiles: every file under assets/, relative to it ('js/app.js', 'data/wordlist-base.txt', …)
- * @returns {{ version: string, cachePrefix: string, shellCache: string, wordlistCache: string,
- *   precache: string[], wordlists: Record<string, string> }}
- * @throws when a wordlist file of the manifest has no valid SHA-256 or is not in assets/data/,
- *   or when assets/data/ holds a wordlist file the manifest does not list (it would be precached)
+ * @returns {{ version: string, digest: string, precache: string[], wordlists: Record<string, string> }}
+ * @throws on an invalid version or digest; when a wordlist file of the manifest has no valid
+ *   SHA-256 or is not in assets/data/, or when assets/data/ holds a wordlist file the manifest
+ *   does not list (it would be precached)
  */
-export function buildSwManifest({ version, rootFiles = [], assetFiles = [], wordlistManifest }) {
-  const shellCache = shellCacheName(version);
+export function buildSwManifest({ version, digest, rootFiles = [], assetFiles = [], wordlistManifest }) {
+  cacheNames('/', { version, digest }); // validates both
   const assets = `v/${version}/assets/`;
   const lists = wordlistFiles(wordlistManifest);
   const listed = new Set(lists.map((w) => `data/${w.file}`));
@@ -140,14 +180,7 @@ export function buildSwManifest({ version, rootFiles = [], assetFiles = [], word
   const root = [...new Set(rootFiles.map((f) => (f === 'index.html' ? './' : f)))];
   root.sort((a, b) => (a === './' ? -1 : b === './' ? 1 : a < b ? -1 : a > b ? 1 : 0));
   const shell = assetFiles.filter((f) => !listed.has(f) && !PRECACHE_SKIP.includes(f)).sort().map((f) => `${assets}${f}`);
-  return {
-    version,
-    cachePrefix: CACHE_PREFIX,
-    shellCache,
-    wordlistCache: WORDLIST_CACHE,
-    precache: [...root, ...shell],
-    wordlists
-  };
+  return { version, digest, precache: [...root, ...shell], wordlists };
 }
 
 /**

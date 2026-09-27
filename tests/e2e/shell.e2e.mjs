@@ -25,11 +25,12 @@
  * precaches the version; with the server dropping every request the app reloads from the cache,
  * Certificate, Zone File and Servers work and DNS Lookup says it needs the network and sends
  * nothing; a second deploy brings "Update ready — Reload", which loads it — and a second tab of
- * the old version, taken over by that click, offers the reload again.
+ * the old version, taken over by that click, offers the reload again; a bundle assembled again
+ * under the same version with one file changed is an update too (sw.js carries its digest).
  * No network access is needed: the shell views never call external APIs.
  */
 
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +40,8 @@ import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { t as translate, setLang as setNodeLang } from '../../assets/js/i18n.js';
 import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 import { REPO_URL, VIEW_CSS_ORDER } from '../../assets/js/app.js';
-import { assembleSite } from '../../tools/assemble-site.mjs';
+import { REPO_ROOT, ROOT_DIRS, ROOT_FILES, VERSIONED_DIR, assembleSite } from '../../tools/assemble-site.mjs';
+import { cacheNames } from '../../assets/js/lib/pwa.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
@@ -1871,7 +1873,12 @@ async function main() {
     // Its own bundle and server (a new origin: no service worker from the steps above).
     const appSite = path.join(tmpDir, 'site-app');
     await assembleSite({ out: appSite, version: 'app-one' });
-    const workerBuild = JSON.parse(/^const BUILD = (\{[\s\S]*?\n\}); /m.exec(await readFile(path.join(appSite, 'sw.js'), 'utf8'))[1]);
+    // The deploy's manifest in sw.js, and the cache names its worker derives for the scope.
+    const deployed = async () => {
+      const build = JSON.parse(/^const BUILD = (\{[\s\S]*?\n\}); /m.exec(await readFile(path.join(appSite, 'sw.js'), 'utf8'))[1]);
+      return { build, names: cacheNames(BASE, build) };
+    };
+    const { build: workerBuild, names: workerCaches } = await deployed();
     const app = await startServer({ root: appSite, base: BASE });
     const pwa = await browser.newPage('about:blank', { width: 1440, height: 900 });
     await pwa.emulateMedia({ 'prefers-color-scheme': 'light' });
@@ -1895,8 +1902,8 @@ async function main() {
           if (!reg || !reg.active || !navigator.serviceWorker.controller) return false;
           const n = (await caches.has(name)) ? (await (await caches.open(name)).keys()).length : 0;
           return n === count && { scope: reg.scope, script: reg.active.scriptURL, caches: (await caches.keys()).sort() };
-        }, { args: [workerBuild.shellCache, workerBuild.precache.length], timeout: 30000, message: 'service worker in control, app shell precached' });
-        assertEqual(sw, { scope: app.url, script: `${app.url}sw.js`, caches: [workerBuild.shellCache, workerBuild.wordlistCache] }, 'registration');
+        }, { args: [workerCaches.shell, workerBuild.precache.length], timeout: 30000, message: 'service worker in control, app shell precached' });
+        assertEqual(sw, { scope: app.url, script: `${app.url}sw.js`, caches: [workerCaches.shell, workerCaches.wordlists].sort() }, 'registration');
         const manifest = await pwa.evaluate(async () => {
           const link = document.querySelector('link[rel="manifest"]');
           const m = await (await fetch(link.href)).json();
@@ -1986,7 +1993,8 @@ async function main() {
           const keys = (await caches.keys()).sort();
           return reg && !reg.waiting && keys.length === 2 && keys;
         }, { timeout: 15000, message: 'old cache dropped' });
-        assertEqual(after, ['domainscope-shell-app-two', 'domainscope-wordlists'], 'caches');
+        const two = (await deployed()).names;
+        assertEqual(after, [two.shell, two.wordlists].sort(), 'caches');
         assertEqual(await pwa.evaluate(() => !!document.querySelector('.toast[data-toast="pwa-update"]')), false, 'toast gone');
         await assertClean(pwa, 'after the update');
       });
@@ -2007,6 +2015,42 @@ async function main() {
         await other.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
           && document.documentElement.dataset.appReady === 'true', { timeout: 15000, message: 'the new version in the other tab' });
         await assertClean(other, 'other tab after the update');
+      });
+
+      await step('the same version assembled again with one file changed is an update too: new worker, new cache, the new file', async () => {
+        await other.close();
+        other = null;
+        await setLangUi(pwa, 'en'); // the other tab's switch to Turkish reached this one through the shared settings
+        await dismissToasts(pwa);
+        const before = (await deployed()).names.shell;
+        // A copy of the repository with one module changed, assembled under the version running now
+        // (a local preview reassembled after an edit, a manual deploy that reuses its version).
+        const copy = path.join(tmpDir, 'repo-edited');
+        for (const name of [...ROOT_FILES, ...ROOT_DIRS, VERSIONED_DIR]) {
+          await cp(path.join(REPO_ROOT, name), path.join(copy, name), { recursive: true });
+        }
+        const about = path.join(copy, VERSIONED_DIR, 'js', 'views', 'about.js');
+        await writeFile(about, `${await readFile(about, 'utf8')}// rebuilt under the same version\n`);
+        await assembleSite({ out: appSite, version: 'app-two', root: copy });
+        const rebuilt = (await deployed()).names.shell;
+        assert(rebuilt !== before, `the same shell cache ${rebuilt}`);
+        const aboutText = () => pwa.evaluate(async () => (await fetch('v/app-two/assets/js/views/about.js')).text());
+        assert(!(await aboutText()).endsWith('// rebuilt under the same version\n'), 'the running version answers from its cache');
+        await pwa.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+        setNodeLang('en');
+        await updateToast(pwa);
+        await pwa.evaluate(() => { window.__beforeUpdate = true; });
+        await pwa.click('.toast[data-toast="pwa-update"] .btn');
+        await pwa.waitFor(() => !window.__beforeUpdate && document.documentElement.dataset.appReady === 'true',
+          { timeout: 30000, message: 'reloaded into the rebuilt version' });
+        assertEqual(await pwaSrc(), 'v/app-two/assets/js/app.js', 'the same version');
+        assert((await aboutText()).endsWith('// rebuilt under the same version\n'), 'the changed file');
+        const keys = await pwa.waitFor(async (name) => {
+          const k = (await caches.keys()).sort();
+          return k.length === 2 && k.includes(name) && k;
+        }, { args: [rebuilt], timeout: 15000, message: 'the earlier build\'s cache dropped' });
+        assertEqual(keys, [rebuilt, (await deployed()).names.wordlists].sort(), 'caches');
+        await assertClean(pwa, 'after the rebuilt update');
       });
     } finally {
       if (other) await other.close();

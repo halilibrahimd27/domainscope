@@ -10,8 +10,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  REPO_ROOT, assembleSite, isLocalClutter, localUrls, versionIndexHtml, versionedAssetsPath
+  REPO_ROOT, assembleSite, contentDigest, isLocalClutter, localUrls, versionIndexHtml, versionedAssetsPath
 } from '../../tools/assemble-site.mjs';
+import { cacheNames } from '../../assets/js/lib/pwa.js';
 
 const ASSETS = join(REPO_ROOT, 'assets');
 const walk = (d) => readdirSync(d).flatMap((f) => {
@@ -24,6 +25,8 @@ const inside = (child, parent) => {
   const rel = relative(parent, child);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 };
+/** The manifest tools/assemble-site.mjs wrote into a bundle's sw.js. */
+const workerBuild = (site) => JSON.parse(/^const BUILD = (\{[\s\S]*?\n\}); /m.exec(readFileSync(join(site, 'sw.js'), 'utf8'))[1]);
 
 describe('versionIndexHtml / versionedAssetsPath', () => {
   test('rewrites every href / src under assets/ and nothing else', () => {
@@ -123,7 +126,8 @@ describe('assembleSite', () => {
     assert.ok(m, 'BUILD written');
     const build = JSON.parse(m[1]);
     assert.equal(build.version, 'abc123');
-    assert.equal(build.shellCache, 'domainscope-shell-abc123');
+    assert.equal(build.digest, result.digest);
+    assert.match(cacheNames('/domainscope/', build).shell, /^domainscope-[0-9a-f]{8}-shell-abc123-[0-9a-f]{12}$/);
     assert.equal(build.precache[0], './');
     assert.ok(build.precache.includes('v/abc123/assets/js/app.js'));
     assert.ok(Object.keys(build.wordlists).includes('v/abc123/assets/data/wordlist-huge.txt.gz'));
@@ -136,6 +140,58 @@ describe('assembleSite', () => {
       assert.deepEqual(readFileSync(join(out, ...f.split('/'))), readFileSync(join(REPO_ROOT, ...f.split('/'))), f);
     }
     assert.match(readFileSync(join(out, 'index.html'), 'utf8'), /<link rel="manifest" href="manifest\.webmanifest">/);
+  });
+
+  test('a bundle is named by its content: any change to a file the worker serves changes sw.js, even under the same version', async () => {
+    const root = join(tmp, 'content');
+    const write = (rel, text = '') => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    for (const f of ['favicon.svg', '.nojekyll', 'cli/ssl_origin_scan.py', 'manifest.webmanifest', 'manifest.tr.webmanifest',
+      'icons/icon-192.png']) write(f, f);
+    write('sw.js', readFileSync(join(REPO_ROOT, 'sw.js'), 'utf8'));
+    write('index.html', '<script type="module" src="assets/js/app.js"></script>');
+    write('assets/js/app.js', 'export const about = 1;\n');
+    write('assets/data/wordlist-manifest.json', '{"tiers":{},"locales":{}}');
+    const site = join(tmp, 'content-site');
+    const assemble = async (version) => {
+      const r = await assembleSite({ out: site, version, root });
+      return { ...r, sw: readFileSync(join(site, 'sw.js'), 'utf8'), build: workerBuild(site) };
+    };
+
+    const first = await assemble('same');
+    assert.equal((await assemble('same')).sw, first.sw, 'the same files: the same sw.js (nothing to update)');
+    // A local preview or a manual deploy reuses its version, and the browser installs a new worker
+    // only when sw.js changes: a changed file must change it, and name a new cache.
+    write('assets/js/app.js', 'export const about = 2;\n');
+    const changed = await assemble('same');
+    assert.notEqual(changed.sw, first.sw);
+    assert.notEqual(changed.build.digest, first.build.digest);
+    assert.notEqual(cacheNames('/', changed.build).shell, cacheNames('/', first.build).shell);
+    assert.equal(changed.digest, await contentDigest(root));
+    for (const [rel, text] of [['favicon.svg', 'new icon'], ['assets/css/new.css', 'a{}'], ['sw.js', `${first.sw}// x\n`]]) {
+      const before = await contentDigest(root);
+      write(rel, text);
+      assert.notEqual(await contentDigest(root), before, rel);
+    }
+    // what the worker does not serve is not part of it
+    const before = await contentDigest(root);
+    write('cli/ssl_origin_scan.py', 'changed');
+    write('icons/icon-192.png', 'changed');
+    assert.equal(await contentDigest(root), before);
+    write('sw.js', readFileSync(join(REPO_ROOT, 'sw.js'), 'utf8'));
+
+    // Without a version (no commit to name it) the content names it: other files, other URLs.
+    const dev = await assemble(undefined);
+    assert.equal(dev.version, `dev-${dev.digest.slice(0, 12)}`);
+    assert.deepEqual(readdirSync(join(site, 'v')), [dev.version]);
+    assert.ok(readFileSync(join(site, 'index.html'), 'utf8').includes(`src="v/${dev.version}/assets/js/app.js"`));
+    assert.equal((await assemble(undefined)).version, dev.version, 'the same files: the same version');
+    write('assets/js/app.js', 'export const about = 3;\n');
+    const next = await assemble(undefined);
+    assert.notEqual(next.version, dev.version);
+    assert.notEqual(next.sw, dev.sw);
   });
 
   test('refuses a wordlist manifest whose SHA-256 no longer matches the file (the worker would keep an old list)', async () => {

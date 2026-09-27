@@ -21,13 +21,22 @@
  *
  * The service worker (the installable app and its offline tools) is the one file written rather
  * than copied: sw.js gets the deploy's manifest (lib/pwa.js buildSwManifest — the app shell of
- * v/<version>/ to precache, the wordlists keyed by the SHA-256 of wordlist-manifest.json) in
- * place of its `const BUILD = null;` line, so every deploy changes sw.js and browsers pick up the
- * new version. In the repository BUILD stays null and the worker does nothing.
+ * v/<version>/ to precache, the wordlists keyed by the SHA-256 of wordlist-manifest.json, the
+ * version and the content digest) in place of its `const BUILD = null;` line. In the repository
+ * BUILD stays null and the worker does nothing.
+ *
+ * A browser installs a new worker only when sw.js changes byte for byte, and until then the
+ * installed one answers from its cache. So the bundle's identity is its content: the digest
+ * (contentDigest: every file the worker precaches, and sw.js) is in BUILD and in the shell cache's
+ * name, and a bundle assembled without a version (no commit to name it: a local preview, a manual
+ * deploy) is `dev-<12 hex digits of the digest>` — any change gives new v/<version>/ URLs, a new
+ * sw.js and "Update ready". A version given by hand should name one set of files: reused for other
+ * files the worker still updates (the digest), but the browser's HTTP cache may hold the old files
+ * at those URLs for a while.
  *
  * Usage:
  *   node tools/assemble-site.mjs <out> [version]   # version: [A-Za-z0-9._-]{1,64};
- *                                                  # default: $GITHUB_SHA (12 chars), else 'dev'
+ *                                                  # default: $GITHUB_SHA (12 chars), else dev-<digest>
  *   node tests/e2e/serve.mjs --root <out>          # preview the bundle
  *
  * <out> is deleted first; it must not be the repository or contain it, and an existing <out> must
@@ -187,15 +196,46 @@ export function injectSwBuild(source, build) {
 }
 
 /**
+ * The content digest of a bundle: SHA-256 over the path and SHA-256 of each file the service
+ * worker precaches (SHELL_ROOT_FILES as in the repository, everything under assets/) and of sw.js
+ * itself, in path order. The same files give the same digest wherever and whenever they are
+ * assembled; any changed, added, removed or renamed file gives another. (The CLI and the PNG
+ * icons are not in it: the worker does not serve them.)
+ * @param {string} [src] repository root
+ * @returns {Promise<string>} 64 hex digits
+ */
+export async function contentDigest(src = REPO_ROOT) {
+  const assets = (await listFiles(path.join(src, VERSIONED_DIR))).map((f) => `${VERSIONED_DIR}/${f}`);
+  const files = [...SHELL_ROOT_FILES, 'sw.js', ...assets].sort();
+  const all = createHash('sha256');
+  for (const file of files) {
+    const bytes = await readFile(path.join(src, ...file.split('/')));
+    all.update(`${file}\0${createHash('sha256').update(bytes).digest('hex')}\n`);
+  }
+  return all.digest('hex');
+}
+
+/**
+ * The version of a bundle assembled without one: `dev-` and the first 12 hex digits of its
+ * content digest.
+ * @param {string} digest {@link contentDigest}
+ * @returns {string}
+ */
+export function contentVersion(digest) {
+  return `dev-${String(digest).slice(0, 12)}`;
+}
+
+/**
  * The service worker of this deploy: its manifest from the files of assets/ and the SHA-256 of
  * wordlist-manifest.json, which must match the files (the worker reuses a cached tier as long
  * as its hash is unchanged, so a stale hash would keep serving an old list).
  * @param {string} src repository root
  * @param {string} version
+ * @param {string} digest {@link contentDigest} of `src`
  * @returns {Promise<{ source: string, build: object }>}
  * @throws when wordlist-manifest.json does not match the wordlist files
  */
-export async function serviceWorkerFor(src, version) {
+export async function serviceWorkerFor(src, version, digest) {
   const assets = path.join(src, VERSIONED_DIR);
   const assetFiles = await listFiles(assets);
   const wordlistManifest = JSON.parse(await readFile(path.join(assets, 'data', 'wordlist-manifest.json'), 'utf8'));
@@ -203,33 +243,37 @@ export async function serviceWorkerFor(src, version) {
     const actual = createHash('sha256').update(await readFile(path.join(assets, 'data', ...file.split('/')))).digest('hex');
     if (actual !== sha256) throw new Error(`wordlist-manifest.json has another SHA-256 for ${file}: run tools/build-wordlists.mjs`);
   }
-  const build = buildSwManifest({ version, rootFiles: [...SHELL_ROOT_FILES], assetFiles, wordlistManifest });
+  const build = buildSwManifest({ version, digest, rootFiles: [...SHELL_ROOT_FILES], assetFiles, wordlistManifest });
   return { source: injectSwBuild(await readFile(path.join(src, 'sw.js'), 'utf8'), build), build };
 }
 
 /**
  * Assemble the Pages bundle into `out` (deleted first).
- * @param {{ out: string, version: string, root?: string }} opts
- * @returns {Promise<{ out: string, version: string, assetsPath: string, rewritten: number, precached: number }>}
+ * @param {{ out: string, version?: string, root?: string }} opts version: default
+ *   {@link contentVersion} (`dev-<digest>`)
+ * @returns {Promise<{ out: string, version: string, digest: string, assetsPath: string, rewritten: number, precached: number }>}
  * @throws when `out` is the repository, contains it, lies inside a copied directory or holds
  *   anything an earlier bundle does not; when index.html references no assets/ URL, or one the
  *   rewrite does not cover (srcset); when a local URL of the new index.html is missing; when
  *   wordlist-manifest.json does not match the wordlist files
  */
-export async function assembleSite({ out, version, root = REPO_ROOT }) {
-  const assetsPath = versionedAssetsPath(version);
+export async function assembleSite({ out, version: given, root = REPO_ROOT }) {
+  if (given !== undefined) versionedAssetsPath(given); // a bad version is refused before anything is read
   const target = path.resolve(out);
   const src = path.resolve(root);
   if (isInside(src, target)) throw new Error(`Refusing to assemble into ${target}: it contains the repository`);
   for (const dir of [VERSIONED_DIR, ...ROOT_DIRS]) {
     if (isInside(target, path.join(src, dir))) throw new Error(`Refusing to assemble into ${target}: it is inside ${dir}/`);
   }
+  const digest = await contentDigest(src);
+  const version = given === undefined ? contentVersion(digest) : given;
+  const assetsPath = versionedAssetsPath(version);
 
   const index = versionIndexHtml(await readFile(path.join(src, 'index.html'), 'utf8'), version);
   if (!index.count) throw new Error('index.html references no assets/ URL; nothing to version');
   const unversioned = UNVERSIONED_RE.exec(index.html)?.[0].trim() ?? unversionedSrcset(index.html);
   if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned}`);
-  const sw = await serviceWorkerFor(src, version);
+  const sw = await serviceWorkerFor(src, version, digest);
   // A typo such as `docs` must not wipe a directory that is not an earlier bundle.
   const existing = await stat(target).catch(() => null);
   if (existing) {
@@ -251,13 +295,13 @@ export async function assembleSite({ out, version, root = REPO_ROOT }) {
   const missing = [...localUrls(index.html), ...sw.build.precache.map((p) => (p === './' ? 'index.html' : p))]
     .filter((u) => !existsSync(path.join(target, ...u.split('/'))));
   if (missing.length) throw new Error(`index.html or sw.js reference files that are not in the bundle: ${missing.join(', ')}`);
-  return { out: target, version, assetsPath, rewritten: index.count, precached: sw.build.precache.length };
+  return { out: target, version, digest, assetsPath, rewritten: index.count, precached: sw.build.precache.length };
 }
 
-/** Default version: the commit being deployed, else 'dev'. */
+/** Default version: the commit being deployed, else none (assembleSite names it by its content). */
 function defaultVersion() {
   const sha = String(process.env.GITHUB_SHA || '').trim();
-  return /^[0-9a-f]{12,}$/i.test(sha) ? sha.slice(0, 12).toLowerCase() : 'dev';
+  return /^[0-9a-f]{12,}$/i.test(sha) ? sha.slice(0, 12).toLowerCase() : undefined;
 }
 
 async function main(argv) {

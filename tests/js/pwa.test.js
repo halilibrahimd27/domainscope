@@ -10,8 +10,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CACHE_PREFIX, WORDLIST_CACHE, MANIFEST_FILES, PRECACHE_SKIP, UPDATE_CHECK_MS,
-  bundleInfo, buildSwManifest, manifestFor, shellCacheName, updateCheckDue, wordlistCacheKey, wordlistFiles
+  CACHE_PREFIX, MANIFEST_FILES, PRECACHE_SKIP, UPDATE_CHECK_MS,
+  bundleInfo, buildSwManifest, cacheNames, manifestFor, scopeTag, updateCheckDue, wordlistCacheKey, wordlistFiles
 } from '../../assets/js/lib/pwa.js';
 import { listFiles, SHELL_ROOT_FILES } from '../../tools/assemble-site.mjs';
 import { VIEWS } from '../../assets/js/app.js';
@@ -20,6 +20,7 @@ import { t, setLang, getLang } from '../../assets/js/i18n.js';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
+const DIGEST = '0123456789abcdef'.repeat(4);
 const MANIFEST = {
   tiers: {
     small: { id: 'small', file: null },
@@ -59,10 +60,37 @@ describe('bundleInfo', () => {
 });
 
 describe('cache names and keys', () => {
-  test('one shell cache per version, every name under the prefix', () => {
-    assert.equal(shellCacheName('0123456789ab'), 'domainscope-shell-0123456789ab');
-    assert.ok(WORDLIST_CACHE.startsWith(CACHE_PREFIX) && shellCacheName('x').startsWith(CACHE_PREFIX));
-    for (const bad of ['', '..', 'a/b', 'a b', null]) assert.throws(() => shellCacheName(bad), /Invalid version/);
+  test('one shell cache per version and content, every name under the scope\'s own prefix', () => {
+    const tag = scopeTag('/domainscope/');
+    assert.match(tag, /^[0-9a-f]{8}$/);
+    assert.deepEqual(cacheNames('/domainscope/', { version: '0123456789ab', digest: DIGEST }), {
+      prefix: `${CACHE_PREFIX}${tag}-`,
+      wordlists: `${CACHE_PREFIX}${tag}-wordlists`,
+      shell: `${CACHE_PREFIX}${tag}-shell-0123456789ab-0123456789ab`
+    });
+    assert.equal(cacheNames('/domainscope/').shell, null);
+    // the same version with other files is another cache (never refilled under the running version)
+    const other = cacheNames('/domainscope/', { version: '0123456789ab', digest: 'f'.repeat(64) }).shell;
+    assert.notEqual(other, cacheNames('/domainscope/', { version: '0123456789ab', digest: DIGEST }).shell);
+    for (const bad of ['', '..', 'a/b', 'a b', null]) {
+      assert.throws(() => cacheNames('/', { version: bad, digest: DIGEST }), /Invalid version/, String(bad));
+    }
+    for (const bad of [undefined, '', 'F'.repeat(64), 'a'.repeat(63)]) {
+      assert.throws(() => cacheNames('/', { version: 'v1', digest: bad }), /Invalid content digest/, String(bad));
+    }
+  });
+
+  test('two copies of the app on one origin (GitHub Pages project sites) never share a cache name or prefix', () => {
+    // FNV-1a 32: the reference values of the empty string and 'a'
+    assert.equal(scopeTag(''), '811c9dc5');
+    assert.equal(scopeTag('a'), 'e40c292c');
+    const scopes = ['/', '/domainscope/', '/domainscope-staging/', '/domainscope/staging/', '/Domainscope/', '/tools/domainscope/'];
+    const prefixes = scopes.map((s) => cacheNames(s).prefix);
+    assert.equal(new Set(prefixes).size, scopes.length);
+    for (const a of prefixes) {
+      assert.match(a, /^domainscope-[0-9a-f]{8}-$/);
+      for (const b of prefixes) if (a !== b) assert.ok(!b.startsWith(a), `${b} starts with ${a}`);
+    }
   });
 
   test('a wordlist is keyed by its content hash and file name, the same in every deploy', () => {
@@ -86,7 +114,7 @@ describe('cache names and keys', () => {
 
 describe('buildSwManifest', () => {
   const build = buildSwManifest({
-    version: 'v1', rootFiles: ['favicon.svg', 'index.html', 'manifest.webmanifest'], assetFiles: ASSET_FILES, wordlistManifest: MANIFEST
+    version: 'v1', digest: DIGEST, rootFiles: ['favicon.svg', 'index.html', 'manifest.webmanifest'], assetFiles: ASSET_FILES, wordlistManifest: MANIFEST
   });
 
   test('precaches index.html as ./ first, the root files, then the app shell of this version', () => {
@@ -94,9 +122,10 @@ describe('buildSwManifest', () => {
       './', 'favicon.svg', 'manifest.webmanifest',
       'v/v1/assets/css/style.css', 'v/v1/assets/data/sample-cert.pem', 'v/v1/assets/js/app.js', 'v/v1/assets/js/views/cert.js'
     ]);
-    assert.equal(build.shellCache, 'domainscope-shell-v1');
-    assert.equal(build.wordlistCache, WORDLIST_CACHE);
-    assert.equal(build.cachePrefix, CACHE_PREFIX);
+    assert.equal(build.version, 'v1');
+    assert.equal(build.digest, DIGEST, 'the content digest names the shell cache and changes sw.js');
+    // the cache names depend on the scope, which only the worker knows
+    assert.deepEqual(Object.keys(build).sort(), ['digest', 'precache', 'version', 'wordlists']);
   });
 
   test('keeps the wordlists out of the precache and keys them by hash', () => {
@@ -110,12 +139,14 @@ describe('buildSwManifest', () => {
 
   test('refuses a wordlist without a hash, a listed file that is missing and an unlisted wordlist file', () => {
     const noHash = { tiers: { smart: { file: 'wordlist-base.txt' } }, locales: {} };
-    assert.throws(() => buildSwManifest({ version: 'v1', assetFiles: ['data/wordlist-base.txt'], wordlistManifest: noHash }), /Invalid SHA-256/);
-    assert.throws(() => buildSwManifest({ version: 'v1', assetFiles: ['js/app.js'], wordlistManifest: MANIFEST }), /not in assets\/data/);
+    const digest = DIGEST;
+    assert.throws(() => buildSwManifest({ version: 'v1', digest, assetFiles: ['data/wordlist-base.txt'], wordlistManifest: noHash }), /Invalid SHA-256/);
+    assert.throws(() => buildSwManifest({ version: 'v1', digest, assetFiles: ['js/app.js'], wordlistManifest: MANIFEST }), /not in assets\/data/);
     assert.throws(() => buildSwManifest({
-      version: 'v1', assetFiles: [...ASSET_FILES, 'data/locale/xx.txt'], wordlistManifest: MANIFEST
+      version: 'v1', digest, assetFiles: [...ASSET_FILES, 'data/locale/xx.txt'], wordlistManifest: MANIFEST
     }), /missing from wordlist-manifest\.json: data\/locale\/xx\.txt/);
-    assert.throws(() => buildSwManifest({ version: '../x', assetFiles: [], wordlistManifest: {} }), /Invalid version/);
+    assert.throws(() => buildSwManifest({ version: '../x', digest, assetFiles: [], wordlistManifest: {} }), /Invalid version/);
+    assert.throws(() => buildSwManifest({ version: 'v1', assetFiles: [], wordlistManifest: {} }), /Invalid content digest/);
   });
 });
 
@@ -123,7 +154,7 @@ const assetFiles = await listFiles(join(ROOT, 'assets'));
 
 describe('the repository\'s service worker manifest', () => {
   const wordlistManifest = JSON.parse(readFileSync(join(ROOT, 'assets', 'data', 'wordlist-manifest.json'), 'utf8'));
-  const build = buildSwManifest({ version: 'x', rootFiles: [...SHELL_ROOT_FILES], assetFiles, wordlistManifest });
+  const build = buildSwManifest({ version: 'x', digest: DIGEST, rootFiles: [...SHELL_ROOT_FILES], assetFiles, wordlistManifest });
   const shell = new Set(build.precache);
 
   test('precaches every module and stylesheet (every view opens offline), the sample and the licences', () => {

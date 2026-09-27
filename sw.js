@@ -1,19 +1,25 @@
 /*
  * sw.js — DomainScope's service worker: a classic script at the site root, so its scope is the
  * whole app. It decides nothing itself: tools/assemble-site.mjs writes the deploy's manifest into
- * BUILD below (assets/js/lib/pwa.js buildSwManifest — the version, the app shell to precache and
- * the wordlist files with their hash keys). In the repository BUILD stays null: the worker answers
- * no request, so everything goes to the network as if it were not there (the app registers it
- * only from the Pages bundle anyway). The one thing it does there: when a checkout is served where
- * a bundle was (`serve.mjs --root _site`, then `npm run serve` on the same port), the browser's
- * update check installs this file over the bundle's worker, and it takes over at once and deletes
- * the bundle's caches, so the next load is the checkout rather than a cached deploy.
+ * BUILD below (assets/js/lib/pwa.js buildSwManifest — the version and content digest, the app
+ * shell to precache and the wordlist files with their hash keys). In the repository BUILD stays
+ * null: the worker answers no request, so everything goes to the network as if it were not there
+ * (the app registers it only from the Pages bundle anyway). The one thing it does there: when a
+ * checkout is served where a bundle was (`serve.mjs --root _site`, then `npm run serve` on the
+ * same port), the browser's update check installs this file over the bundle's worker, and it
+ * takes over at once and deletes the bundle's caches, so the next load is the checkout rather
+ * than a cached deploy.
  *
- * - install: precache this version's app shell into domainscope-shell-<version>: the site-root
- *   files past the HTTP cache, the versioned ones (immutable at their URL) from it when the page
- *   has just loaded them. The index.html fetched must be this version's: a CDN still serving the
- *   previous one fails the install, and the browser tries again at its next update check.
- * - activate: delete the shell caches of other versions and the wordlists this version does not
+ * Caches: domainscope-<scope tag>-shell-<version>-<digest> and domainscope-<scope tag>-wordlists
+ * (cacheNames, the same as lib/pwa.js's). The tag is a hash of the scope's path: project sites
+ * on GitHub Pages share an origin, and two copies of the app there must not delete each other's
+ * caches. The worker never touches a cache without its own scope's prefix.
+ *
+ * - install: precache this version's app shell into its shell cache: the site-root files past
+ *   the HTTP cache, the versioned ones (immutable at their URL) from it when the page has just
+ *   loaded them. The index.html fetched must be this version's: a CDN still serving the previous
+ *   one fails the install, and the browser tries again at its next update check.
+ * - activate: delete this scope's other shell caches and the wordlists this version does not
  *   list, then take control of the open pages (the tab that installed it keeps working offline).
  * - fetch, same-origin GETs inside the scope only:
  *     a navigation to the app (the site root or index.html)  → the cached index.html;
@@ -34,6 +40,27 @@ const BUILD = null; // tools/assemble-site.mjs writes the deploy's manifest here
 /** The scope's path, e.g. '/domainscope/'. */
 function scopePath() {
   return new URL(self.registration.scope).pathname;
+}
+
+/** 8 hex digits for a scope path: FNV-1a, 32 bits (lib/pwa.js scopeTag). */
+function scopeTag(path) {
+  const s = String(path);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * The Cache Storage names of the worker at a scope (lib/pwa.js cacheNames): the prefix every one
+ * of them starts with, the wordlist cache and, with a deploy, its shell cache.
+ */
+function cacheNames(path, build) {
+  const prefix = `domainscope-${scopeTag(path)}-`;
+  const shell = build ? `${prefix}shell-${build.version}-${build.digest.slice(0, 12)}` : null;
+  return { prefix, wordlists: `${prefix}wordlists`, shell };
 }
 
 /** The path of a same-origin URL inside the scope, relative to it; null outside it. */
@@ -64,7 +91,7 @@ function cacheMode(build, path) {
 }
 
 async function precache(build) {
-  const cache = await caches.open(build.shellCache);
+  const cache = await caches.open(cacheNames(scopePath(), build).shell);
   const marker = `v/${build.version}/assets/`;
   await Promise.all(build.precache.map(async (path) => {
     const res = await fetch(new Request(keyUrl(path), { cache: cacheMode(build, path), credentials: 'same-origin' }));
@@ -77,12 +104,13 @@ async function precache(build) {
 }
 
 async function cleanUp(build) {
-  const keep = [build.shellCache, build.wordlistCache];
+  const names = cacheNames(scopePath(), build);
+  const keep = [names.shell, names.wordlists];
   for (const name of await caches.keys()) {
-    if (name.startsWith(build.cachePrefix) && !keep.includes(name)) await caches.delete(name);
+    if (name.startsWith(names.prefix) && !keep.includes(name)) await caches.delete(name);
   }
   const wanted = new Set(Object.values(build.wordlists).map(keyUrl));
-  const words = await caches.open(build.wordlistCache);
+  const words = await caches.open(names.wordlists);
   for (const req of await words.keys()) {
     if (!wanted.has(req.url)) await words.delete(req);
   }
@@ -97,7 +125,7 @@ async function cacheFirst(cacheName, key, request) {
 
 /** A wordlist: the copy under its content hash, else the network, stored once it arrived whole. */
 async function wordlist(build, key, event) {
-  const cache = await caches.open(build.wordlistCache);
+  const cache = await caches.open(cacheNames(scopePath(), build).wordlists);
   const hit = await cache.match(key);
   if (hit) return hit;
   const res = await fetch(event.request);
@@ -116,15 +144,16 @@ function route(build, event) {
   const path = scopeRelative(url);
   if (path === null) return null;
   // The app never reads its query string: a navigation with one still gets the app.
+  const shell = cacheNames(scopePath(), build).shell;
   if (request.mode === 'navigate' && (path === '' || path === 'index.html')) {
-    return () => cacheFirst(build.shellCache, keyUrl('./'), request);
+    return () => cacheFirst(shell, keyUrl('./'), request);
   }
   if (url.search) return null;
   if (Object.prototype.hasOwnProperty.call(build.wordlists, path)) {
     const key = keyUrl(build.wordlists[path]);
     return () => wordlist(build, key, event);
   }
-  if (build.precache.includes(path)) return () => cacheFirst(build.shellCache, keyUrl(path), request);
+  if (build.precache.includes(path)) return () => cacheFirst(shell, keyUrl(path), request);
   return null;
 }
 
@@ -143,11 +172,13 @@ if (BUILD) {
     if (event.data && event.data.type === 'skip-waiting') self.skipWaiting();
   });
 } else {
-  // The repository's copy replacing a deployed worker: no fetch handler, the deploy's caches gone.
+  // The repository's copy replacing a deployed worker: no fetch handler, the deploy's caches gone
+  // (this scope's only: another copy of the app on the origin keeps its own).
   self.addEventListener('install', () => self.skipWaiting());
   self.addEventListener('activate', (event) => {
+    const { prefix } = cacheNames(scopePath(), null);
     event.waitUntil(caches.keys().then((names) => Promise.all(names
-      .filter((name) => name.startsWith('domainscope-'))
+      .filter((name) => name.startsWith(prefix))
       .map((name) => caches.delete(name)))));
   });
 }

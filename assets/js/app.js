@@ -873,7 +873,12 @@ function setNavActive(id) {
   if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', busy);
   const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
   if (link) link.classList.toggle('is-busy', busy);
-  // On phones the nav scrolls horizontally: bring the active item into view (no page scroll).
+  scrollNavToActive(id);
+}
+
+/** 720–900 px: the nav is a strip that scrolls sideways; bring the active link into view (no page scroll). */
+function scrollNavToActive(id) {
+  const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
   if (link && dom.nav.scrollWidth > dom.nav.clientWidth + 1) {
     const left = link.offsetLeft - (dom.nav.clientWidth - link.offsetWidth) / 2;
     dom.nav.scrollLeft = Math.max(0, left);
@@ -1428,6 +1433,13 @@ function boot() {
 
   globalThis.addEventListener('hashchange', handleRoute);
   document.addEventListener('keydown', onShortcutKey);
+  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip: its active link comes into view.
+  const toolsBar = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia('(max-width: 719.98px)') : null;
+  if (toolsBar && typeof toolsBar.addEventListener === 'function') {
+    toolsBar.addEventListener('change', () => {
+      if (current) scrollNavToActive(current.id);
+    });
+  }
   globalThis.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
     if (reason && reason.name === 'AbortError') {

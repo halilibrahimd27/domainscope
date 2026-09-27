@@ -1241,8 +1241,31 @@ async function main() {
     });
 
     await step('running something ends the first visit; so does data from an earlier visit', async () => {
+      const stored = () => sm.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings') || '{}').startTasks);
       await firstVisit(sm);
       assert(await pickerShown(sm), 'offered again after the data was deleted');
+      // The main signal: a tool at work (Bulk Resolve started with Ctrl+Enter, its answers held back).
+      await gotoRoute(sm, 'bulk');
+      assertEqual(await stored(), undefined, 'nothing run yet');
+      await holdFetches(sm);
+      await sm.type('[data-role="bulk-input"]', 'www.example.com');
+      await sm.press('Enter', { ctrl: true });
+      await sm.waitFor(() => document.getElementById('app-header').classList.contains('is-busy') && window.__heldFetches > 0,
+        { message: 'Bulk Resolve at work' });
+      await sm.waitFor(() => JSON.parse(localStorage.getItem('ssds.settings')).startTasks === false, { message: 'a run ends the first visit (stored)' });
+      await sm.evaluate(() => document.querySelector('[data-action="bulk-cancel"]').click());
+      await sm.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy'), { message: 'run stopped' });
+      await releaseFetches(sm);
+      await gotoRoute(sm, 'subdomains');
+      assert(!await pickerShown(sm), 'no picker after a run');
+      // An imported zone file (a sample: nothing is sent, the view never goes busy).
+      await firstVisit(sm);
+      await gotoRoute(sm, 'zone');
+      await sm.click('[data-sample="cloudflare"]');
+      await sm.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample imported' });
+      await sm.waitFor(() => JSON.parse(localStorage.getItem('ssds.settings')).startTasks === false, { message: 'an imported zone ends the first visit' });
+      // Saved servers.
+      await firstVisit(sm);
       await gotoRoute(sm, 'inventory');
       await sm.type('[data-role="inventory-text"]', 'web01 192.0.2.10');
       await sm.press('Enter', { ctrl: true }); // the shared shortcut: Ctrl+Enter clicks Save

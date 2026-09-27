@@ -27,7 +27,7 @@
  *   - offline at 375×667: the sticky run bar keeps Start on screen without scrolling once a
  *     domain is entered, never covers the focused field, rests at the form's end, keeps focus
  *     Start ⇄ Cancel, floats with a shadow in both themes (TR too), no transition with reduced
- *     motion, and stays in the flow on a wide screen
+ *     motion, stays compact on a tablet and in the flow on a wide screen
  *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
  *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
  *     names.txt with coverage), reduced motion (no smooth scroll), and one shell choice shared
@@ -1261,7 +1261,7 @@ async function main() {
           await tab.evaluate(() => { window.__dnsDelay = 0; });
         });
 
-        await run.step('375 px in Turkish and dark: the bar floats with its shadow, no horizontal scroll; wide screens keep it in the flow', async () => {
+        await run.step('375 px in Turkish and dark: the bar floats with its shadow, no horizontal scroll; a tablet keeps it compact, wide screens in the flow', async () => {
           await setLangUi(tab, 'tr');
           for (const scheme of ['dark', 'light']) {
             await tab.emulateMedia({ 'prefers-color-scheme': scheme });
@@ -1279,6 +1279,16 @@ async function main() {
           const dur = await tab.evaluate(() => parseFloat(getComputedStyle(document.querySelector('[data-role="scan-runbar"]')).transitionDuration) || 0);
           assert(dur < 0.001, `no transition with reduced motion: ${dur}s`);
           await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+          // A tablet keeps the sticky bar compact: Start beside the estimate, not full width.
+          await tab.setViewport({ width: 768, height: 1024, mobile: true });
+          await tab.evaluate(() => window.dispatchEvent(new Event('resize')));
+          await frames();
+          const tablet = await tab.evaluate(() => ({
+            position: getComputedStyle(document.querySelector('[data-role="scan-runbar"]')).position,
+            bar: document.querySelector('[data-role="scan-runbar"]').getBoundingClientRect().width,
+            btn: document.querySelector('[data-action="scan-run"]').getBoundingClientRect().width
+          }));
+          assert(tablet.position === 'sticky' && tablet.btn < tablet.bar / 2, `tablet: ${JSON.stringify(tablet)}`);
           await tab.setViewport({ width: 1440, height: 900 });
           await tab.evaluate(() => window.dispatchEvent(new Event('resize')));
           await frames();

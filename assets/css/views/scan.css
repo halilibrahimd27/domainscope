@@ -472,7 +472,7 @@
   }
 }
 
-/* Phones: an edge-to-edge bar (the page gutter is 16px here), the primary action full width */
+/* Tablets and phones: an edge-to-edge bar (the page gutter is 16px here) */
 @media (max-width: 900px) {
   .scan-runbar {
     gap: 8px 14px;
@@ -484,6 +484,16 @@
     border-radius: 0;
   }
 
+  .scan-runbar-info {
+    min-width: 0;
+  }
+}
+
+/*
+ * Phones: the primary action full width above the plan line, which is enough next to Start
+ * (the summary's parts are on the steps).
+ */
+@media (max-width: 600px) {
   .scan-runbar-buttons {
     flex: 1 1 100%;
   }
@@ -492,13 +502,6 @@
     flex: 1;
   }
 
-  .scan-runbar-info {
-    min-width: 0;
-  }
-}
-
-/* The plan line is enough next to Start on a phone; the summary's parts are on the steps. */
-@media (max-width: 600px) {
   .scan-runbar-summary {
     display: none;
   }

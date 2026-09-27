@@ -14,6 +14,12 @@
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
  * With `run=0` (a name carried over from another tool, lib/session.js) the form is only filled
  * in. The finished answers are kept for the page session (`result()` / `snapshot()`).
+ *
+ * Density (lib/density.js lookupLayout): plain NODATA types get no card but a place in one "No
+ * records: AAAA, CAA, …" line of the summary; the resolver that answered, its PoP and the header
+ * flags are said once in the summary, and a card repeats only what differs; on wide screens the
+ * cards flow in CSS columns. A query that got no answer keeps its card, says which resolver
+ * failed and why (lib/sourcestatus.js), and its Retry asks that type again.
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -33,6 +39,9 @@ import { mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { lookupLayout, LOOKUP_FLAGS } from '../lib/density.js';
+import { dohStatus } from '../lib/sourcestatus.js';
+import { RetryButton, statusText } from '../ui/source-status.js';
 
 /** Route id (`#/lookup`). */
 export const id = 'lookup';
@@ -96,6 +105,9 @@ registerStrings('en', {
   'lkp.sum.types': { one: '{count} type', other: '{count} types' },
   'lkp.sum.records': { zero: 'no records', one: '{count} record', other: '{count} records' },
   'lkp.sum.time': 'in {time}',
+  'lkp.sum.answeredBy': 'answered by {resolver}',
+  'lkp.noRecords': 'No records: {types}',
+  'lkp.noRecordsBody': 'The name exists but has no records of these types (NODATA).',
   'lkp.copyAll': 'Copy all (dig format)',
   'lkp.links': 'More about this name:',
 
@@ -106,6 +118,7 @@ registerStrings('en', {
   'lkp.card.raw': 'Raw answer (dig format)',
   'lkp.card.failed': 'The query failed',
   'lkp.card.attempts': 'Resolvers tried',
+  'lkp.card.allResolvers': 'Every resolver tried',
   'lkp.card.cached': 'from cache',
 
   'lkp.flag.aa': 'Authoritative answer',
@@ -245,6 +258,9 @@ registerStrings('tr', {
   'lkp.sum.types': '{count} tür',
   'lkp.sum.records': { zero: 'kayıt yok', other: '{count} kayıt' },
   'lkp.sum.time': '{time} içinde',
+  'lkp.sum.answeredBy': '{resolver} yanıtladı',
+  'lkp.noRecords': 'Kayıt yok: {types}',
+  'lkp.noRecordsBody': 'Ad mevcut ama bu türlerde kaydı yok (NODATA).',
   'lkp.copyAll': 'Tümünü kopyala (dig biçimi)',
   'lkp.links': 'Bu ad hakkında daha fazlası:',
 
@@ -255,6 +271,7 @@ registerStrings('tr', {
   'lkp.card.raw': 'Ham yanıt (dig biçimi)',
   'lkp.card.failed': 'Sorgu başarısız oldu',
   'lkp.card.attempts': 'Denenen çözümleyiciler',
+  'lkp.card.allResolvers': 'Denenen tüm çözümleyiciler',
   'lkp.card.cached': 'önbellekten',
 
   'lkp.flag.aa': 'Yetkili yanıt (authoritative)',
@@ -986,10 +1003,11 @@ export function mount(container, ctx) {
 
   /* --- per-type cards ---------------------------------------------------------------- */
 
-  function flagsRow(response) {
-    const f = response.flags || {};
+  /** The header flags (AA TC RD RA AD CD), set ones highlighted. */
+  function flagsRow(flags) {
+    const f = flags || {};
     return h('div', { class: 'lkp-flags', attrs: { role: 'list', 'aria-label': t('lkp.flags') } },
-      ['aa', 'tc', 'rd', 'ra', 'ad', 'cd'].map((k) => h('span', {
+      LOOKUP_FLAGS.map((k) => h('span', {
         class: ['lkp-flag', `lkp-flag-${k}`, { 'is-set': !!f[k] }],
         title: `${t(`lkp.flag.${k}`)}: ${f[k] ? t('common.yes') : t('common.no')}`,
         attrs: { role: 'listitem' },
@@ -1020,38 +1038,60 @@ export function mount(container, ctx) {
     return t('lkp.negTtl', { time: duration(ttl), zone: soa.name === '.' ? '.' : soa.name });
   }
 
-  function cardMeta(response) {
+  /**
+   * What a card says about its own answer: the resolver, PoP and flags only where they differ
+   * from what the summary says for every answer (`own`), plus a failover and a cache hit.
+   * Null when there is nothing of its own to say.
+   */
+  function cardStatus(response, own) {
+    const o = own || { resolver: true, nsid: true, flags: true };
     const bits = [];
-    if (response.resolver) {
+    if (o.resolver && response.resolver) {
       bits.push(h('span', null, t('lkp.sum.via', { resolver: resolverName(response.resolver) })));
     }
-    if (response.nsid) bits.push(h('span', { class: 'mono lkp-pop', title: response.nsid }, t('lkp.card.pop', { id: response.nsid })));
-    if (Number.isFinite(response.elapsedMs) && response.ok) bits.push(h('span', { class: 'num' }, formatDuration(response.elapsedMs)));
+    if (o.nsid && response.nsid) bits.push(h('span', { class: 'mono lkp-pop', title: response.nsid }, t('lkp.card.pop', { id: response.nsid })));
     if (response.cached) bits.push(h('span', { class: 'muted' }, t('lkp.card.cached')));
     const failed = (response.attempts || []).filter((a) => !a.ok || (a.rcode && a.rcode !== response.rcode));
-    if (response.ok && failed.length) {
+    if (failed.length) {
       bits.push(h('span', { class: 'lkp-failover', title: failed.map((a) => `${resolverName(a.resolver)}: ${a.error || a.rcode}`).join('\n') },
         Icon('refresh', { size: 12 }), ' ', t('lkp.card.failover', { tried: failed.map((a) => resolverName(a.resolver)).join(', ') })));
     }
-    return h('div', { class: 'lkp-meta' }, bits);
+    if (!o.flags && !bits.length) return null;
+    return h('div', { class: 'lkp-card-status' }, o.flags ? flagsRow(response.flags) : null, bits.length ? h('div', { class: 'lkp-meta' }, bits) : null);
   }
 
-  /** Card content for one finished query. */
-  function renderResult(type, response) {
+  /**
+   * Card content for one finished query. A query that got no DNS answer says which resolver
+   * failed and why, with a Retry of this type (`onRetry`).
+   */
+  function renderResult(type, response, { own = null, onRetry = null } = {}) {
     const body = [];
     if (!response.ok) {
+      const st = dohStatus(response);
+      // Which resolver failed: the one asked, or every one of the failover chain.
+      // The same answer from the same resolver (a retry) is listed once, with how often.
+      const attempts = [];
+      for (const a of response.attempts || []) {
+        const text = a.error || a.rcode || '';
+        const same = attempts.find((x) => x.resolver === a.resolver && x.text === text);
+        if (same) same.times += 1;
+        else attempts.push({ resolver: a.resolver, text, times: 1 });
+      }
+      const who = new Set(attempts.map((a) => a.resolver)).size > 1 ? t('lkp.card.allResolvers') : response.resolver ? resolverName(response.resolver) : null;
       body.push(Alert({
         variant: 'error',
         title: t('lkp.card.failed'),
-        message: response.errorKind && response.errorKind !== 'unknown' && hasString(`error.kind.${response.errorKind}`, 'en') ? t(`error.kind.${response.errorKind}`) : response.error,
-        children: (response.attempts || []).length ? h('div', { class: 'stack-sm lkp-attempts' },
+        message: st ? statusText(st, { name: who })
+          : response.errorKind && response.errorKind !== 'unknown' && hasString(`error.kind.${response.errorKind}`, 'en') ? t(`error.kind.${response.errorKind}`) : response.error,
+        children: attempts.length ? h('div', { class: 'stack-sm lkp-attempts' },
           h('div', { class: 'text-sm' }, t('lkp.card.attempts')),
-          h('ul', { class: 'lkp-attempt-list text-sm' }, response.attempts.map((a) => h('li', null,
-            h('strong', null, resolverName(a.resolver)), ': ', h('span', { class: 'mono' }, a.error || a.rcode || ''))))) : null
+          h('ul', { class: 'lkp-attempt-list text-sm' }, attempts.map((a) => h('li', null,
+            h('strong', null, resolverName(a.resolver)), ': ', h('span', { class: 'mono' }, a.text), a.times > 1 ? ` (×${a.times})` : null)))) : null,
+        actions: onRetry ? [RetryButton({ sources: ['doh'], onClick: onRetry, variant: 'secondary', dataset: { type } })] : null
       }));
       return body;
     }
-    body.push(h('div', { class: 'lkp-card-status' }, flagsRow(response), cardMeta(response)));
+    body.push(cardStatus(response, own));
     for (const e of response.ede || []) {
       body.push(Alert({ variant: 'warn', compact: true, title: t('lkp.ede', { code: e.code, name: e.name }), message: e.text || null }));
     }
@@ -1097,11 +1137,12 @@ export function mount(container, ctx) {
     return body;
   }
 
-  function makeCard(type) {
+  function makeCard(type, { onRetry = null } = {}) {
     const countEl = h('span', { class: 'lkp-count' });
     const statusEl = h('span', { class: 'lkp-rcode' });
     const copyWrap = h('span', { class: 'lkp-card-copy' });
-    const body = h('div', { class: 'stack lkp-card-body' }, h('div', { class: 'lkp-querying' }, Spinner({ size: 'sm' }), h('span', { class: 'muted text-sm' }, t('lkp.card.querying'))));
+    const querying = () => h('div', { class: 'lkp-querying' }, Spinner({ size: 'sm' }), h('span', { class: 'muted text-sm' }, t('lkp.card.querying')));
+    const body = h('div', { class: 'stack lkp-card-body' }, querying());
     const card = Card({
       title: h('span', { class: 'lkp-card-title' }, Badge(type, { variant: 'accent', mono: true, className: 'lkp-type-badge' }), countEl),
       actions: [statusEl, copyWrap],
@@ -1110,9 +1151,14 @@ export function mount(container, ctx) {
     });
     card.dataset.type = type;
     card.dataset.state = 'pending';
+    let shown = null;
+    let shownOwn = null;
     return {
       el: card,
-      set(response) {
+      /** Show an answer; `own` says which of its resolver / PoP / flags differ from the summary's. */
+      set(response, own = null) {
+        shown = response;
+        shownOwn = own ? { ...own } : null;
         const main = (response.answers || []).filter((rr) => rr.type === type);
         card.dataset.state = response.ok ? response.rcode.toLowerCase() : 'error';
         card.dataset.count = String(main.length);
@@ -1122,9 +1168,42 @@ export function mount(container, ctx) {
         clear(copyWrap);
         copyWrap.append(CopyButton(() => responseText(response), { iconOnly: true, title: t('lkp.card.raw') }));
         clear(body);
-        body.append(...renderResult(type, response).filter(Boolean));
+        body.append(...renderResult(type, response, { own, onRetry }).filter(Boolean));
+      },
+      /** A later answer changed what every answer shares: redraw only this card's own status line. */
+      setOwn(own) {
+        if (!shown || !shown.ok || JSON.stringify(own || null) === JSON.stringify(shownOwn)) return;
+        shownOwn = own ? { ...own } : null;
+        const next = cardStatus(shown, own);
+        const cur = body.querySelector(':scope > .lkp-card-status');
+        if (cur && next) cur.replaceWith(next);
+        else if (cur) cur.remove();
+        else if (next) body.prepend(next);
+      },
+      /** A Retry is on its way. */
+      setQuerying() {
+        card.dataset.state = 'pending';
+        clear(body);
+        body.append(querying());
       }
     };
+  }
+
+  /**
+   * The "No records: AAAA, CAA, …" line of the summary: the NODATA types in one place (their
+   * negative-caching time and raw answers one click away), instead of a card each.
+   */
+  function noRecordsLine(q, responses, types) {
+    const list = types.map((type) => responses[q.types.indexOf(type)]).filter(Boolean);
+    const neg = list.length ? negativeTtl(list[0]) : null;
+    return h('div', { class: 'lkp-nodata', dataset: { types: types.join(' ') } },
+      Disclosure({
+        summary: h('span', { class: 'lkp-nodata-summary' }, Icon('minus-circle', { size: 14 }), ' ', t('lkp.noRecords', { types: types.join(', ') })),
+        className: 'lkp-nodata-box',
+        children: h('div', { class: 'stack-sm' },
+          h('p', { class: 'text-sm lkp-nodata-body' }, [t('lkp.noRecordsBody'), neg].filter(Boolean).join(' ')),
+          Disclosure({ summary: t('lkp.card.raw'), className: 'lkp-raw', children: CodeBlock(list.map(responseText).join('\n\n'), { wrap: true }) }))
+      }));
   }
 
   /* --- run --------------------------------------------------------------------------- */
@@ -1235,7 +1314,7 @@ export function mount(container, ctx) {
    * @param {number|null} elapsed
    * @param {Date|null} at when the last answer arrived
    */
-  function renderSummary(q, responses, elapsed, at) {
+  function renderSummary(q, responses, elapsed, at, layout = lookupLayout(q.types, responses)) {
     clear(summaryEl);
     clear(noteEl);
     if (q.ptrFor) noteEl.append(Alert({ variant: 'info', compact: true, icon: 'info', message: t('lkp.ptrNote', { name: q.name }) }));
@@ -1244,6 +1323,8 @@ export function mount(container, ctx) {
     const done = responses.filter(Boolean).length;
     const resolverLabel = q.resolver ? resolverName(q.resolver) : t('lkp.resolverAuto', { chain: chainNames });
     const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
+    // Said once for every answer (lib/density.js): who answered, its PoP and the header flags.
+    const shared = layout.shared;
     summaryEl.append(h('div', { class: 'lkp-sum card' },
       h('div', { class: 'lkp-sum-main' },
         h('div', { class: 'lkp-sum-name mono' }, q.input),
@@ -1251,10 +1332,14 @@ export function mount(container, ctx) {
           h('span', null, t('lkp.sum.types', { count: q.types.length })),
           h('span', null, t('lkp.sum.records', { count: total })),
           failed ? h('span', { class: 'lkp-sum-failed' }, SeverityIcon('error'), ' ', `${formatNumber(failed)} × ${t('lkp.card.failed')}`) : null,
-          h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
+          shared.resolver
+            ? h('span', { class: 'lkp-sum-resolver', dataset: { resolver: shared.resolver } }, t('lkp.sum.answeredBy', { resolver: resolverName(shared.resolver) }))
+            : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
+          shared.nsid ? h('span', { class: 'mono lkp-pop', title: shared.nsid }, t('lkp.card.pop', { id: shared.nsid })) : null,
           Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
           q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
-          q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null)),
+          q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
+        shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null),
       h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
         SummaryButton({
@@ -1265,7 +1350,15 @@ export function mount(container, ctx) {
         }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
-        !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null)));
+        !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null),
+      layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords) : null));
+  }
+
+  /** Ask one type of the current lookup (a run, or the Retry of a query that got no answer). */
+  async function queryType(state, type, signal) {
+    const dns = await ctx.getDns();
+    const q = state.q;
+    return dns.query(q.name, type, { resolver: q.resolver || undefined, dnssec: q.dnssec, cd: q.cd, signal, noCache: true });
   }
 
   /**
@@ -1274,26 +1367,55 @@ export function mount(container, ctx) {
    */
   async function run(q, preset = null, { at = null, elapsed = null } = {}) {
     if (current && current.controller) current.controller.abort();
+    if (current) current.life.abort();
     const controller = new AbortController();
-    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null };
+    // `life` ends with this lookup (a new one, or the view going away): it cancels Retries too.
+    const life = new AbortController();
+    const state = { q, controller, life, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
     clear(cardsEl);
-    const cards = q.types.map((type) => makeCard(type));
+    const cards = q.types.map((type, i) => makeCard(type, { onRetry: () => retry(i) }));
     cardsEl.append(...cards.map((c) => c.el));
     renderSummary(q, state.responses, null, null);
 
     const finish = (i, response) => {
       if (current !== state) return;
       state.responses[i] = response;
-      cards[i].set(response);
-      if (state.responses.every(Boolean)) {
+      const layout = lookupLayout(q.types, state.responses);
+      cards[i].set(response, layout.own[q.types[i]] || null);
+      // Plain NODATA folds into the summary's "No records" line; the other cards follow what is shared.
+      q.types.forEach((type, j) => {
+        if (layout.noRecords.includes(type)) cards[j].el.remove();
+        else if (j !== i) cards[j].setOwn(layout.own[type] || null);
+      });
+      if (state.responses.every(Boolean) && state.elapsed === null) {
         state.elapsed = preset ? elapsed : performance.now() - state.startedAt;
         state.finishedAt = preset && at ? new Date(at) : new Date();
       }
-      renderSummary(q, state.responses, state.elapsed, state.finishedAt);
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt, layout);
     };
+
+    /** Retry of a query that got no answer: that type alone, the old answer kept until the new one. */
+    async function retry(i) {
+      if (current !== state || state.controller) return;
+      cards[i].setQuerying();
+      let response;
+      try {
+        response = await queryType(state, q.types[i], mergeSignals(ctx.signal, life.signal));
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        response = state.responses[i];
+      }
+      finish(i, response);
+      const btn = cards[i].el.querySelector('[data-action="retry-source"]');
+      if (btn) btn.focus();
+      else if (cards[i].el.isConnected) {
+        cards[i].el.setAttribute('tabindex', '-1');
+        cards[i].el.focus({ preventScroll: true });
+      } else summaryEl.querySelector('.lkp-nodata summary')?.focus();
+    }
 
     if (preset) {
       preset.forEach((resp, i) => { if (resp) finish(i, resp); });
@@ -1303,13 +1425,9 @@ export function mount(container, ctx) {
 
     setButtonState(true);
     try {
-      const dns = await ctx.getDns();
-      const signal = mergeSignals(ctx.signal, controller.signal);
+      const signal = mergeSignals(ctx.signal, controller.signal, life.signal);
       await Promise.all(q.types.map(async (type, i) => {
-        const response = await dns.query(q.name, type, {
-          resolver: q.resolver || undefined, dnssec: q.dnssec, cd: q.cd, signal, noCache: true
-        });
-        finish(i, response);
+        finish(i, await queryType(state, type, signal));
       }));
     } catch (err) {
       if (!(err && err.name === 'AbortError') && current === state) {
@@ -1356,6 +1474,7 @@ export function mount(container, ctx) {
   active = {
     teardown() {
       if (current && current.controller) current.controller.abort();
+      if (current) current.life.abort();
     },
     snapshot() {
       const form = {

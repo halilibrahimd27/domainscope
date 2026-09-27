@@ -93,13 +93,64 @@
   color: var(--error);
 }
 
+/* The header flags every answer shares, once (lib/density.js lookupLayout). */
+.lkp-sum-flags {
+  margin-top: 8px;
+}
+
+/* "No records: AAAA, CAA, …": the NODATA types, one line instead of a card each. */
+.lkp-nodata {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.lkp-nodata-box > .disclosure-summary {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.lkp-nodata-summary {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.lkp-nodata-summary .icon {
+  margin-right: 4px;
+  color: var(--text-3);
+}
+
+.lkp-nodata-box > .disclosure-body {
+  padding: 0 10px 10px;
+}
+
+.lkp-nodata-body {
+  margin: 0;
+  color: var(--text-2);
+}
+
 /* ---- cards -------------------------------------------------------------------- */
 
+/* Cards of different heights flow in columns on wide screens (no row gaps under short cards). */
 .lkp-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 540px), 1fr));
-  gap: 16px;
-  align-items: start;
+  column-width: 480px;
+  column-gap: 16px;
+}
+
+.lkp-cards > .lkp-card {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+
+.lkp-cards > .lkp-card:focus {
+  outline: none;
+}
+
+.lkp-cards > .lkp-card:focus-visible {
+  box-shadow: var(--focus-ring);
 }
 
 .lkp-card .card-head {

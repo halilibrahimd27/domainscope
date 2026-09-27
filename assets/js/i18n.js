@@ -773,7 +773,7 @@ registerStrings('tr', {
   'shell.offline': 'Çevrimdışı görünüyorsunuz — bağlantı gelene kadar canlı sorgular başarısız olur.',
   'shell.storageUnavailable': 'Tarayıcı depolaması kullanılamıyor (gizli mod veya engelli). Verileriniz bu sekme kapanana kadar tutulur.',
   'shell.storageFull': 'Tarayıcı depolaması dolu — değişiklik yalnızca bu oturum için tutuluyor.',
-  'shell.printed': 'Yazdırma: {time}',
+  'shell.printed': 'Yazdırıldı: {time}',
 
   'start.title': 'İlk kez mi geliyorsunuz? Başlamak için bir iş seçin',
   'start.lead': 'Her kart o işi yapan aracı açar.',

@@ -487,7 +487,7 @@ async function mtaStsGroup(browser, server) {
       await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
       const [md, text] = await takeClipboard(page);
       const lines = md.trim().split(NL);
-      assertEqual(lines[0], `**Domain Health · ${MAIL_APEX}**`, 'title');
+      assertEqual(lines[0], `**Domain Health · \`${MAIL_APEX}\`**`, 'title (the domain as a code span)');
       assertEqual(lines[1], `- ${shown.verdict} · score ${shown.score}/100`, 'verdict and score as on the hero');
       assert(lines.length >= 5 && lines.length <= 12, `5–12 lines: ${lines.length}`);
       for (const title of shown.problems.slice(0, 5)) assert(md.includes(title), `problem "${title}" in: ${md}`);
@@ -504,7 +504,7 @@ async function mtaStsGroup(browser, server) {
         return area ? { value: area.value, selected: area.selectionStart === 0 && area.selectionEnd === area.value.length, focused: document.activeElement === area } : false;
       }, { message: 'fallback dialog' });
       const trLines = dlg.value.split(NL);
-      assert(trLines[0] === `**Alan Adı Sağlığı · ${MAIL_APEX}**` && / · puan \d+\/100$/.test(trLines[1]), `Turkish summary in the dialog: ${dlg.value}`);
+      assert(trLines[0] === `**Alan Adı Sağlığı · \`${MAIL_APEX}\`**` && / · puan \d+\/100$/.test(trLines[1]), `Turkish summary in the dialog: ${dlg.value}`);
       assertEqual([dlg.selected, dlg.focused], [true, true], 'the text is focused and selected, ready for Ctrl+C');
       await page.press('Escape');
       await page.waitFor(() => !document.querySelector('dialog.sum-fallback'), { message: 'dialog closed' });

@@ -1246,7 +1246,7 @@ async function main() {
         const [md, plain] = await takeClipboard(tab);
         const summaryLines = md.trim().split('\n');
         assertEqual(summaryLines.slice(0, 5), [
-          `**Subdomains · ${FAKE_APEX}**`,
+          `**Subdomains · \`${FAKE_APEX}\`**`,
           '- 5 subdomains found · 5 resolve',
           '- 2 Cloudflare · 3 direct IP',
           '- 2 hosts hide their origin behind a proxy · 1 origin network to sweep',
@@ -1255,7 +1255,7 @@ async function main() {
         assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin.replace(/\./g, '\\.')}/domainscope/#/subdomains\\?domain=${FAKE_APEX.replace('.', '\\.')}&run=1$`)
           .test(summaryLines[5]), `footer: ${summaryLines[5]}`);
         assertEqual(summaryLines.length, 6, 'no other line');
-        assertEqual(plain, md.replace(/\*\*/g, ''), 'the plain text is the same summary without Markdown');
+        assertEqual(plain, md.replace(/\*\*|`/g, ''), 'the plain text is the same summary without Markdown');
         // Exclude addresses: the JSON export carries the same command (POSIX form), not the bare one.
         const withExclude = '-t 203.0.113.0/24 --exclude 203.0.113.12 -n shop.example.net www.example.net';
         await tab.type('[data-role="sub-org-exclude"]', '203.0.113.12');

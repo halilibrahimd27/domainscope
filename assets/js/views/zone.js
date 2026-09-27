@@ -1501,7 +1501,7 @@ export function mount(container, ctx) {
         // "Copy summary": counts and problems only; the link is a bare #/zone (the file never goes into a URL).
         SummaryButton({
           kind: 'zone',
-          facts: () => ({ origin: z.origin, format: fmtLabel(z), counts: S.counts, problems: S.problems.map((p) => ({ severity: p.severity, title: problemTitle(p) })) }),
+          facts: () => ({ origin: z.origin, format: fmtLabel(z), counts: S.counts, problems: S.problems.map((p) => ({ severity: p.severity, ...problemText(p) })) }),
           url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
         }),
         Button({ label: t('zone.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'zone-forget' }, onClick: forget })),
@@ -1867,8 +1867,14 @@ export function mount(container, ctx) {
   }
 
   /* --- problems ---------------------------------------------------------- */
+  /** A problem's title as its text key and params (Copy summary quotes the names in it as code). */
+  function problemText(p) {
+    return { key: p.source === 'lint' ? `zone.lint.${p.code}` : issueKey(p.code, p.params), params: p.params };
+  }
+
   function problemTitle(p) {
-    return p.source === 'lint' ? t(`zone.lint.${p.code}`, p.params) : t(issueKey(p.code, p.params), p.params);
+    const { key, params } = problemText(p);
+    return t(key, params);
   }
 
   function problemItem(p) {

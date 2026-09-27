@@ -850,6 +850,15 @@ describe('extensions', () => {
       assert.equal(certCovers(hostnames, 'victim.example').covered, false, name);
       assert.deepEqual(fallback(name), [], `CN ${name}`);
     }
+    // …and only into A-labels: the IDNA mapping would turn a soft hyphen, full-width letters or '。' into
+    // another ASCII name, which no TLS client matches against this one.
+    const softHyphen = withExt(san(dns('Vic­tim.example'))).hostnames;
+    assert.deepEqual(softHyphen, ['vic­tim.example']);
+    assert.equal(certCovers(softHyphen, 'victim.example').covered, false);
+    for (const name of ['vic­tim.example', 'ｖｉｃｔｉｍ.example', 'victim。example']) {
+      assert.deepEqual(fallback(name), [], `CN ${name}`);
+    }
+    assert.deepEqual(withExt(san(dns('*.MÜNCHEN.example.'))).hostnames, ['*.xn--mnchen-3ya.example']);
     // SAN with only IP addresses → CN fallback still applies (no dnsNames)
     const ipOnly = parseCertificate(makeCert({ subject: cn('ip-only.example.com'), extensions: [san(ctx(7, false, Buffer.from([1, 2, 3, 4])))] }));
     assert.deepEqual(ipOnly.hostnames, ['ip-only.example.com']);

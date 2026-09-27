@@ -166,22 +166,28 @@ const serverKeyOf = (row) => (row.server ? `s:${row.server.id}` : `ip:${row.ip}`
 const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
 
 /**
- * Lowercase, strip trailing dots, IDN → punycode (x509's private normalizeCertHostname): only a
- * name whose ASCII part is label characters, so the URL parser never drops a user name, port or
- * path ('ä@victim.example' stays as it is, never 'victim.example').
+ * Lowercase, strip trailing dots, IDN → punycode label by label (x509's private
+ * normalizeCertHostname): only a name whose ASCII part is label characters, so the URL parser
+ * never drops a user name, port or path ('ä@victim.example' stays as it is, never
+ * 'victim.example'), and only into A-labels, so the IDNA mapping never makes another ASCII name
+ * of it ('ｖｉｃｔｉｍ.example' stays as it is too).
  */
 function normalizeCertHostname(name) {
-  let h = String(name).trim().toLowerCase().replace(/\.+$/, '');
-  if (/[^\x00-\x7f]/.test(h) && IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) {
-    const wildcard = h.startsWith('*.');
+  const h = String(name).trim().toLowerCase().replace(/\.+$/, '');
+  if (!/[^\x00-\x7f]/.test(h) || !IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) return h;
+  const labels = h.split('.');
+  for (let i = 0; i < labels.length; i += 1) {
+    if (!/[^\x00-\x7f]/.test(labels[i])) continue;
+    let label = null;
     try {
-      const host = new URL(`http://${wildcard ? h.slice(2) : h}/`).hostname;
-      h = (wildcard ? '*.' : '') + host;
+      label = new URL(`http://${labels[i]}/`).hostname;
     } catch {
-      /* keep the lowercase form */
+      /* not a label: keep the lowercase form */
     }
+    if (!label || !/^xn--[a-z0-9-]+$/.test(label)) return h;
+    labels[i] = label;
   }
-  return h;
+  return labels.join('.');
 }
 
 const CERT_LABEL_RE = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;

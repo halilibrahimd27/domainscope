@@ -196,6 +196,18 @@ describe('servedCert', () => {
     const v = V.classifyTest(test, { name: 'victim.example', expect: OTHER, now: NOW });
     assert.deepEqual([v.status, v.reason], ['NOT_HOSTED', 'not-covered']);
   });
+
+  test('a non-ASCII name the IDNA mapping would make another ASCII name of stays as it is (x509 parity)', () => {
+    const alt = 'DNS:"vic\\u00adtim.example"';
+    assert.deepEqual(V.servedCert(synthTls({ subject: { CN: 'www.example.com', alt } })).hostnames, ['vic­tim.example']);
+    for (const CN of ['ｖｉｃｔｉｍ.example', 'victim。example']) {
+      assert.deepEqual(V.servedCert(synthTls({ subject: { CN, alt: undefined } })).hostnames, [], CN);
+    }
+    const v = V.classifyTest(withTls(synthTls({ subject: { CN: 'www.example.com', alt } })), { name: 'victim.example', expect: OTHER, now: NOW });
+    assert.deepEqual([v.status, v.reason], ['NOT_HOSTED', 'not-covered']);
+    assert.deepEqual(V.servedCert(synthTls({ subject: { CN: 'x', alt: 'DNS:"*.m\\u00fcnchen.example"' } })).hostnames,
+      ['*.xn--mnchen-3ya.example']);
+  });
 });
 
 describe('trimTest', () => {

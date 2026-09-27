@@ -818,23 +818,30 @@ function parseGeneralNames(node) {
 const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
 
 /**
- * Lowercase, strip trailing dot(s), IDN → punycode (via WHATWG URL, available everywhere). Only
- * a name whose ASCII part is label characters is converted: the URL parser would read '@', ':',
- * '/', '\', '?' or '#' as a user name, port or path and keep only part of the name
- * ('ä@victim.example' → 'victim.example'); such a name stays as it is and never covers anything.
+ * Lowercase, strip trailing dot(s), IDN → punycode (via WHATWG URL, available everywhere), label
+ * by label. Only a name whose ASCII part is label characters is converted: the URL parser would
+ * read '@', ':', '/', '\', '?' or '#' as a user name, port or path and keep only part of the name
+ * ('ä@victim.example' → 'victim.example'). A non-ASCII label must become one A-label ('xn--…'):
+ * the IDNA mapping turns a soft hyphen, full-width letters or '。' into a plain ASCII name no TLS
+ * client would match ('ｖｉｃｔｉｍ.example' → 'victim.example'). Such names stay as they are and
+ * never cover anything.
  */
 function normalizeCertHostname(name) {
-  let h = String(name).trim().toLowerCase().replace(/\.+$/, '');
-  if (/[^\x00-\x7f]/.test(h) && IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) {
-    const wildcard = h.startsWith('*.');
+  const h = String(name).trim().toLowerCase().replace(/\.+$/, '');
+  if (!/[^\x00-\x7f]/.test(h) || !IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) return h;
+  const labels = h.split('.');
+  for (let i = 0; i < labels.length; i += 1) {
+    if (!/[^\x00-\x7f]/.test(labels[i])) continue;
+    let label = null;
     try {
-      const host = new URL(`http://${wildcard ? h.slice(2) : h}/`).hostname;
-      h = (wildcard ? '*.' : '') + host;
+      label = new URL(`http://${labels[i]}/`).hostname;
     } catch {
-      /* keep the lowercase form */
+      /* not a label: keep the lowercase form */
     }
+    if (!label || !/^xn--[a-z0-9-]+$/.test(label)) return h;
+    labels[i] = label;
   }
-  return h;
+  return labels.join('.');
 }
 
 const LABEL_RE = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;

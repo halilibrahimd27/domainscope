@@ -3055,10 +3055,10 @@ class BaselineTests(unittest.TestCase):
 
         before, after = doc(EC_DER, CN_ONLY_DER), doc(RENEWED_DER, RSA_DER)
         changes = sos.compare_reports(before, after)
-        # NEEDS_UPDATE both times (no --cert) with another certificate: a 'cert' change;
-        # nothere.example.com and the no-SNI probe are NOT_HOSTED with another fallback
-        # certificate - not a change
-        self.assertEqual(keys(changes), [('cert', None, 'sni', WILD, 'NEEDS_UPDATE')])
+        # PRIVATE_CERT both times (no --cert, self-signed fixtures) with another
+        # certificate: a covering status, so a 'cert' change; nothere.example.com and the
+        # no-SNI probe are NOT_HOSTED with another fallback certificate - not a change
+        self.assertEqual(keys(changes), [('cert', None, 'sni', WILD, 'PRIVATE_CERT')])
         self.assertTrue(changes[0]['certChanged'])
         info = sos.baseline_info(before, after, 'last.json')
         self.assertFalse(info['newCertificateChanged'])
@@ -3071,9 +3071,9 @@ class BaselineTests(unittest.TestCase):
         # a change, and so is the default probe's move from NOT_HOSTED to covering a name
         covering = doc(EC_DER, EC_DER)
         self.assertEqual(keys(sos.compare_reports(covering, doc(EC_DER, RENEWED_DER))),
-                         [('cert', None, 'default', None, 'NEEDS_UPDATE')])
+                         [('cert', None, 'default', None, 'PRIVATE_CERT')])
         self.assertEqual(keys(sos.compare_reports(before, covering)),
-                         [('status', 'hosted', 'default', None, 'NEEDS_UPDATE')])
+                         [('status', 'hosted', 'default', None, 'PRIVATE_CERT')])
         self.assertEqual(keys(sos.compare_reports(covering, doc(EC_DER, RSA_DER))),
                          [('status', 'unhosted', 'default', None, 'NOT_HOSTED')])
 

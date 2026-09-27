@@ -4211,8 +4211,9 @@ def _name_view(endpoints: Dict[Tuple[str, int], Dict[str, Any]], name: str) -> D
 
 def _covers_name(status: Any) -> bool:
     """True for a row status that means "serves a certificate covering the name":
-    UPDATED, NEEDS_UPDATE and any status this version does not know (a later one, such
-    as a kind of certificate), so a baseline from another version still compares.
+    UPDATED, NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT and any status this version does
+    not know (a later one, such as another kind of certificate), so a baseline from
+    another version still compares.
     NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED and the endpoint states are not."""
     return isinstance(status, str) and status not in _NOT_COVERING
 

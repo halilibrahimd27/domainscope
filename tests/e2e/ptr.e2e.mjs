@@ -8,7 +8,7 @@
  *
  *   node tests/e2e/ptr.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (DNS group, after IP Intel), the empty state, input issues (an IPv6
+ * Covers: the nav entry (IP addresses group, after IP Intel), the empty state, input issues (an IPv6
  * network, a network over the /22 cap with its suggestion, a wholly private one without,
  * private space, a range typed with spaces, "ASN 64496"), a /28 sweep with a focus domain
  * (focus rows first, a collapsed pattern, the forward-check statuses, the operator from a PTR
@@ -206,7 +206,7 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/ptr: nav entry after IP Intel in the DNS group, empty state, nothing sent', async () => {
+    await run.step('boots on #/ptr: nav entry after IP Intel in the IP addresses group, empty state, nothing sent', async () => {
       await page.goto(`${server.url}#/ptr`);
       await waitReady(page);
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.1'));
@@ -216,7 +216,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/ip"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [];
       });
-      assertEqual(nav, ['global', 'lookup', 'bulk', 'ip', 'ptr', 'health'], 'DNS group');
+      assertEqual(nav, ['ip', 'ptr'], 'IP addresses group');
       assertEqual(await text(page, 'h1'), 'Reverse DNS', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.ptr-empty .empty')), 'empty state');
       assertEqual(await dnsCount(page), 0, 'no DNS query');

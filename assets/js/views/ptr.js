@@ -609,18 +609,13 @@ export function mount(container, ctx) {
     placeholder: t('ptr.target.placeholder'),
     hint: t('ptr.target.hint', { max: formatNumber(SWEEP_MAX_ADDRESSES) }),
     className: 'ptr-target',
-    attrs: { 'data-role': 'ptr-target' },
+    // Ctrl/Cmd+Enter in it clicks Sweep (or List prefixes): the shell's shortcut finds the buttons by data-shortcut.
+    attrs: { 'data-role': 'ptr-target', 'data-shortcut': 'focus' },
     onInput: (v) => {
       session.text = v;
       targetField.setError(null);
       hidePrompt();
       renderParsedSoon();
-    }
-  });
-  targetField.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      start();
     }
   });
   const focusField = textInput({
@@ -643,8 +638,8 @@ export function mount(container, ctx) {
   const parsedEl = h('div', { class: 'ptr-parsed text-sm', attrs: { 'aria-live': 'polite' } });
   const issuesEl = h('div', { class: 'stack-sm ptr-issues' });
   const promptEl = h('div', { class: 'ptr-prompt', hidden: true });
-  const runBtn = Button({ label: t('ptr.run'), icon: 'play', variant: 'primary', dataset: { action: 'ptr-run' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('ptr.stop'), icon: 'stop', dataset: { action: 'ptr-stop' }, onClick: () => stop() });
+  const runBtn = Button({ label: t('ptr.run'), icon: 'play', variant: 'primary', dataset: { action: 'ptr-run', shortcut: 'submit' }, onClick: () => start() });
+  const stopBtn = Button({ label: t('ptr.stop'), icon: 'stop', dataset: { action: 'ptr-stop', shortcut: 'cancel' }, onClick: () => stop() });
   stopBtn.hidden = true;
   const concurrencyNote = h('span', { class: 'muted text-xs ptr-concurrency' });
   const renderConcurrency = () => {
@@ -679,8 +674,10 @@ export function mount(container, ctx) {
       h('p', { class: 'muted text-xs ptr-privacy' }, Icon('lock', { size: 12 }), h('span', null, t('ptr.privacy'))))
   });
 
-  const asnHost = h('div', { class: 'ptr-asn-host' });
-  const resultsHost = h('div', { class: 'ptr-results-host' });
+  // The prefix picker is a sub-form (its Sweep selected answers Ctrl/Cmd+Enter there); the results
+  // hold no submit, so a filter or search box in them starts no new sweep.
+  const asnHost = h('div', { class: 'ptr-asn-host', dataset: { shortcutScope: 'ptr-asn' } });
+  const resultsHost = h('div', { class: 'ptr-results-host', dataset: { shortcutScope: 'results' } });
   const emptyEl = Card({
     padded: false,
     className: 'ptr-empty',
@@ -993,7 +990,7 @@ export function mount(container, ctx) {
     const selectedEl = h('div', { class: 'text-sm ptr-asn-selected', attrs: { 'aria-live': 'polite' } });
     // Why "Sweep selected" did not start (the picked prefixes hold nothing to sweep).
     const pickIssues = h('div', { class: 'stack-sm ptr-asn-issues' });
-    const sweepBtn = Button({ label: t('ptr.asn.sweep'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'ptr-asn-sweep' }, onClick: () => sweepSelected() });
+    const sweepBtn = Button({ label: t('ptr.asn.sweep'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'ptr-asn-sweep', shortcut: 'submit' }, onClick: () => sweepSelected() });
     const clearBtn = Button({
       label: t('ptr.asn.clear'), variant: 'ghost', size: 'sm', dataset: { action: 'ptr-asn-clear' },
       onClick: () => {

@@ -418,6 +418,29 @@ describe('the shell: nav links carry the target (app.js)', () => {
     }
   });
 
+  test('navHref: the same target run again is newer than a job kept about several names', async () => {
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    pageSession.clear();
+    try {
+      // A lookup of example.com, then a Bulk Resolve job about two names (no one target: it stays).
+      const first = pageSession.setTarget('example.com', { view: 'lookup' });
+      await tick();
+      pageSession.keep('bulk', { subject: 'www.example.com', at: new Date() });
+      assert.equal(navHref('bulk'), '#/bulk', 'the job is newer than the target: back to it');
+      await tick();
+      // Domain Health runs example.com again: the same value, a newer time.
+      const seen = [];
+      const off = pageSession.subscribe((c) => seen.push(c.type));
+      const again = pageSession.setTarget('example.com', { view: 'health' });
+      off();
+      assert.ok(again.at > first.at);
+      assert.equal(navHref('bulk'), '#/bulk?names=example.com&run=0', 'the target is newer now: it is filled in');
+      assert.deepEqual(seen, [], 'the store tells nobody (the same value): ctx.runStarted refreshes the nav links itself');
+    } finally {
+      pageSession.clear();
+    }
+  });
+
   test('navHref: the target filled in with run=0, a kept result, else bare', () => {
     pageSession.clear();
     try {

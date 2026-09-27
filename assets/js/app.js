@@ -550,7 +550,11 @@ function makeContext(id, params, searchParams, controller, restored) {
     runStarted(subject) {
       if (!isCurrent(ctx)) return;
       setKeptNote(null);
-      if (subject) pageSession.setTarget(subject, { view: id });
+      if (!subject) return;
+      pageSession.setTarget(subject, { view: id });
+      // The store tells only a new value; the same one again is newer than the other tools' kept
+      // results now, which decides where their links lead (lib/session.js targetSupersedes).
+      updateNavHrefs();
     },
     resultChanged() {
       if (isCurrent(ctx)) setKeptNote(null);

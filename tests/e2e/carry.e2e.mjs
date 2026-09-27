@@ -22,6 +22,8 @@
  *     in Turkish);
  *   - the second round: after Domain Health for shop.example.com, DNS Lookup and Bulk Resolve get
  *     it filled in over their kept results; Bulk's "Run again" resolves the kept job's names;
+ *     the same target run again (after a Bulk job about several names) is newer than that job,
+ *     and the Bulk Resolve link says so at once;
  *   - the chip's × clears the target (focus stays on the page); "Delete all local data" forgets
  *     the target and the kept results, Bulk Resolve's list and job too (also with Bulk Resolve
  *     on screen: the tool opens again, bare);
@@ -400,6 +402,34 @@ async function desktop(browser, server) {
       assertEqual([s.note, s.hash, s.chip], [null, '#/bulk', null], 'no note, bare route, no chip');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="bulk-input"]').value), '', 'no list');
       await assertQuiet(page, await dnsCount(page), 'after deleting on Bulk Resolve');
+    });
+
+    await run.step('the same target run again is newer than a job about several names: the Bulk Resolve link follows at once', async () => {
+      await gotoRoute(page, `#/lookup?name=${APEX}&type=A`);
+      await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup' });
+      await clickNav(page, 'bulk');
+      await page.type('[data-role="bulk-input"]', `www.${APEX}\nexample.net`);
+      await page.click('[data-action="bulk-run"]');
+      await waitJobDone(page, '');
+      const job = await page.evaluate(() => document.querySelector('.bulk-results').dataset.job);
+      assertEqual((await page.evaluate(shellInfo)).chip, APEX, 'two names without one domain: the target stays');
+      await clickNav(page, 'health');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="health-domain"]').value), APEX, 'Domain Health filled in');
+      assertEqual((await page.evaluate(shellInfo)).hrefs.bulk, '#/bulk', 'the job is newer than the target: back to it');
+      // Run on the tool on screen (no route change follows that would redraw the nav).
+      await page.click('[data-action="run"]');
+      await page.waitFor(HEALTH_DONE, { timeout: 30000, message: 'health report' });
+      const s = await page.evaluate(shellInfo);
+      assertEqual(s.chip, APEX, 'the same target');
+      assertEqual(s.hrefs.bulk, `#/bulk?names=${APEX}&run=0`, 'the target is newer now: the link carries it without a reload of the nav');
+      queries = await dnsCount(page);
+      await clickNav(page, 'bulk');
+      const bk = await page.evaluate(() => ({
+        text: document.querySelector('[data-role="bulk-input"]').value.trim(),
+        job: document.querySelector('.bulk-results')?.dataset.job || null
+      }));
+      assertEqual(bk, { text: APEX, job }, 'filled in over the last job\'s names; the job still shown');
+      await assertQuiet(page, queries, 'same target again');
     });
 
     await run.step('nothing left the page; no console errors, CSP violations or missing keys', async () => {

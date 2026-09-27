@@ -7,7 +7,8 @@
  * The summary holds only what the result on screen shows; the tooltip says so, and says what a
  * summary takes from the server list where it takes something: SSL Targets names the servers
  * that need the certificate, IP Intel says how many of the addresses are in the list. The
- * permalink in it never carries inventory data or a file's contents (lib/summary.permalinkParams).
+ * permalink in it never carries inventory data or a file's contents (lib/summary.permalinkParams);
+ * the tooltip of Zone File and Certificate, whose result is a file, says that too.
  * {@link resultPermalink} gives the print header (app.js) the same link: the result's, not the
  * route's, which a new run changes before its result replaces the one on screen.
  *
@@ -33,14 +34,15 @@ registerStrings('en', {
   'sum.btn.label': 'Summary',
   'sum.btn.copy': 'Copy summary',
   'sum.btn.plain': 'Plain text',
-  'sum.btn.tip': 'Copies a short Markdown summary of this result for Jira or Slack. It holds only what this page shows — nothing from your server list — and a link to this page without any file contents.',
+  'sum.btn.tip': 'Copies a short Markdown summary of this result for Jira or Slack. It holds only what this page shows — nothing from your server list — and a link to this page.',
+  'sum.btn.tipFile': 'Copies a short Markdown summary of this result for Jira or Slack. It holds only what this page shows — nothing from your server list — and a link to this page without any file contents.',
   'sum.btn.tipInventory': 'Copies a short Markdown summary of this result for Jira or Slack. It names the servers from your list that need the certificate, as the Servers tab shows them; nothing else from your server list, and the link carries only the domains.',
   'sum.btn.tipCount': 'Copies a short Markdown summary of this result for Jira or Slack. It says how many of the addresses are in your server list, as this page does, but never a server’s name; the link leaves out private addresses and those of your servers.',
   'sum.btn.plainTip': 'Copy the same summary without Markdown formatting',
   'sum.copied': 'Summary copied as Markdown — paste it into Jira or Slack.',
   'sum.copiedPlain': 'Summary copied as plain text.',
   'sum.fallback.title': 'Copy the summary',
-  'sum.fallback.hint': 'The browser did not allow copying. The text is selected: press Ctrl+C (⌘C on a Mac).',
+  'sum.fallback.hint': 'The browser did not allow copying. The text is selected: press Ctrl+C (⌘C on a Mac), or on a phone touch and hold it and choose Copy.',
   'sum.fallback.label': 'Summary text'
 });
 
@@ -48,14 +50,15 @@ registerStrings('tr', {
   'sum.btn.label': 'Özet',
   'sum.btn.copy': 'Özeti kopyala',
   'sum.btn.plain': 'Düz metin',
-  'sum.btn.tip': 'Bu sonucun Jira ya da Slack için kısa bir Markdown özetini kopyalar. Yalnızca bu sayfada görünenleri içerir — sunucu listenizden hiçbir şey içermez — ve bu sayfaya, dosya içeriği olmadan bir bağlantı ekler.',
+  'sum.btn.tip': 'Bu sonucun Jira ya da Slack için kısa bir Markdown özetini kopyalar. Yalnızca bu sayfada görünenleri içerir — sunucu listenizden hiçbir şey içermez — ve bu sayfaya bir bağlantı ekler.',
+  'sum.btn.tipFile': 'Bu sonucun Jira ya da Slack için kısa bir Markdown özetini kopyalar. Yalnızca bu sayfada görünenleri içerir — sunucu listenizden hiçbir şey içermez — ve bu sayfaya, dosya içeriği olmadan bir bağlantı ekler.',
   'sum.btn.tipInventory': 'Bu sonucun Jira ya da Slack için kısa bir Markdown özetini kopyalar. Listenizdeki sertifikaya ihtiyacı olan sunucuları, Sunucular sekmesinde göründüğü gibi adlarıyla içerir; sunucu listenizden başka bir şey içermez ve bağlantıda yalnızca alan adları bulunur.',
   'sum.btn.tipCount': 'Bu sonucun Jira ya da Slack için kısa bir Markdown özetini kopyalar. Adreslerden kaçının sunucu listenizde olduğunu bu sayfadaki gibi söyler, ama hiçbir sunucunun adını içermez; bağlantıda özel adresler ve sunucularınızın adresleri yer almaz.',
   'sum.btn.plainTip': 'Aynı özeti Markdown biçimlendirmesi olmadan kopyala',
   'sum.copied': 'Özet Markdown olarak kopyalandı — Jira ya da Slack’e yapıştırın.',
   'sum.copiedPlain': 'Özet düz metin olarak kopyalandı.',
   'sum.fallback.title': 'Özeti kopyalayın',
-  'sum.fallback.hint': 'Tarayıcı kopyalamaya izin vermedi. Metin seçili: Ctrl+C’ye (Mac’te ⌘C) basın.',
+  'sum.fallback.hint': 'Tarayıcı kopyalamaya izin vermedi. Metin seçili: Ctrl+C’ye (Mac’te ⌘C) basın ya da telefonda metne basılı tutup Kopyala’yı seçin.',
   'sum.fallback.label': 'Özet metni'
 });
 
@@ -64,6 +67,8 @@ const permalinks = new WeakMap();
 
 /** Tooltip key per `inventory` option of {@link SummaryButton}. */
 const TIPS = { names: 'sum.btn.tipInventory', count: 'sum.btn.tipCount' };
+/** Views whose result comes from a file the user loaded: their tooltip says the link leaves it out. */
+const FILE_KINDS = new Set(['zone', 'cert']);
 
 /**
  * The permalink of the result shown under `root`: the link the first shown SummaryButton (not
@@ -125,7 +130,7 @@ export function SummaryButton({ kind, facts, url = null, inventory = false, disa
   };
   const markdown = CopyButton(() => text('markdown'), {
     label: t('sum.btn.copy'),
-    title: t(TIPS[inventory] || 'sum.btn.tip'),
+    title: t(TIPS[inventory] || (FILE_KINDS.has(kind) ? 'sum.btn.tipFile' : 'sum.btn.tip')),
     size,
     variant: 'secondary',
     toastOnCopy: t('sum.copied'),

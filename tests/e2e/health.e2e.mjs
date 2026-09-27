@@ -16,8 +16,9 @@
  * built from the live captures tests/fixtures/globalping/m26 + m27 — 0 real probes, and a
  * network guard proves nothing left the page. It checks the CAA card's RFC 8657 restriction
  * (only dns-01, with its renewal note) and the MTA-STS policy check: nothing sent before the
- * click; one free /limits read and the consent + cost dialog (Cancel sends nothing); exactly the
- * lib/mtasts request; a valid policy covering both MX hosts; "Check again" without a dialog and
+ * click; one free /limits read and the consent + cost dialog (Escape / Cancel sends nothing);
+ * exactly the lib/mtasts request; a valid policy covering both MX hosts; keyboard focus back on
+ * the card's button after the dialog and after the result, every outcome announced; "Check again" without a dialog and
  * an MX host the policy misses (error); the policy in "Report (JSON)"; a language switch that
  * keeps the result without a new probe; a quota at 0 (nothing asked or sent); a policy host
  * that does not resolve; 1440 px and a 375 px phone, light and dark, without horizontal scroll.
@@ -283,6 +284,17 @@ async function networkGuard(page) {
   return hits;
 }
 
+/** Where keyboard focus is: the MTA-STS button, <body> or another element. */
+function focusInfo() {
+  const a = document.activeElement;
+  if (!a || a === document.body) return 'body';
+  return a.matches('[data-mtasts="card"] [data-action="mtasts-check"]') ? 'mtasts-check' : `${a.tagName.toLowerCase()}.${a.className}`;
+}
+
+/** Wait until the page's polite live region (ui/components.announce, on <body>, written after 60 ms) matches `re`. */
+const announced = (page, re, message) => page.waitFor((src) => [...document.querySelectorAll('body > .sr-only[aria-live="polite"]')]
+  .some((region) => new RegExp(src).test(region.textContent)), { args: [re.source], timeout: 5000, message });
+
 /** What the MTA-STS card shows. */
 function mtaStsInfo() {
   const card = document.querySelector('[data-mtasts="card"]');
@@ -348,8 +360,9 @@ async function mtaStsGroup(browser, server) {
       await assertNoHorizontalScroll(page, 'mta-sts idle');
     });
 
-    await step('first click: one free /limits read and the consent dialog (host, path, cost); Cancel sends nothing', async () => {
-      await page.click('[data-action="mtasts-check"]');
+    await step('first check (keyboard): one free /limits read and the consent dialog (host, path, cost); Escape sends nothing, focus comes back', async () => {
+      await page.evaluate(() => document.querySelector('[data-action="mtasts-check"]').focus());
+      await page.press('Enter');
       await page.waitFor((d) => document.querySelector(d), { args: [GP_DIALOG], message: 'consent dialog' });
       const dlg = await page.evaluate((d) => {
         const el = document.querySelector(d);
@@ -364,18 +377,34 @@ async function mtaStsGroup(browser, server) {
       assert(/250/.test(dlg.cost), `cost text: ${dlg.cost}`);
       assertEqual((await gpCalls()).map((c) => `${c.method} ${c.path}`), ['GET /limits'], 'only the free quota read before consent');
       if (SHOTS_ON) await page.screenshot(path.join(SHOTS, 'health-mtasts-desktop-light-en-confirm.png'));
+      await page.press('Escape');
+      await page.waitFor((d) => !document.querySelector(d), { args: [GP_DIALOG], message: 'dialog closed' });
+      await settled('card back to idle');
+      assertEqual((await card()).state, 'idle', 'Escape restores the card');
+      assertEqual(posts(await gpCalls()).length, 0, 'Escape sends nothing');
+      assertEqual(await page.evaluate(focusInfo), 'mtasts-check', 'keyboard focus back on the button, not <body>');
+    });
+
+    await step('Cancel sends nothing either, and focus comes back', async () => {
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((d) => document.querySelector(d), { args: [GP_DIALOG], message: 'consent dialog again (Escape granted nothing)' });
       await page.click(`${GP_DIALOG} .modal-foot .btn:not(.btn-primary)`);
       await page.waitFor((d) => !document.querySelector(d), { args: [GP_DIALOG], message: 'dialog closed' });
       await settled('card back to idle');
-      assertEqual((await card()).state, 'idle', 'cancel restores the card');
       assertEqual(posts(await gpCalls()).length, 0, 'Cancel sends nothing');
+      assertEqual(await page.evaluate(focusInfo), 'mtasts-check', 'focus on the button after Cancel');
     });
 
-    await step('Send: exactly the lib/mtasts request; the policy is valid and matches both MX hosts', async () => {
-      await page.click('[data-action="mtasts-check"]');
+    await step('Send (keyboard): exactly the lib/mtasts request; the policy is valid and matches both MX hosts; focus stays on the card', async () => {
+      await page.evaluate(() => document.querySelector('[data-action="mtasts-check"]').focus());
+      await page.press('Enter');
       await page.waitFor((d) => document.querySelector(d), { args: [GP_DIALOG], message: 'consent dialog again (cancel granted nothing)' });
-      await page.click(`${GP_DIALOG} .modal-foot .btn-primary`);
+      assertEqual(await page.evaluate((d) => document.activeElement === document.querySelector(`${d} .modal-foot .btn-primary`), GP_DIALOG), true,
+        'the dialog focuses "Send and check"');
+      await page.press('Enter');
       await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'done', { args: [MTASTS_CARD], timeout: 20000, message: 'policy checked' });
+      assertEqual(await page.evaluate(focusInfo), 'mtasts-check', 'keyboard focus on "Check again", not <body>');
+      await announced(page, /every MX host matches it/, 'the verdict is announced');
       const calls = await gpCalls();
       assertEqual(posts(calls).map((c) => c.body), [mtaStsPolicyRequest(MAIL_APEX)], 'one POST: the HTTPS GET of the policy');
       const c = await card();
@@ -435,14 +464,20 @@ async function mtaStsGroup(browser, server) {
 
     await step('quota used up: nothing asked, nothing sent, the reset time shown', async () => {
       await page.evaluate(() => { window.__gp.limitsRemaining = 0; });
-      const before = (await gpCalls()).length;
-      await page.click('[data-action="mtasts-check"]');
-      await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'quota', { args: [MTASTS_CARD], message: 'quota state' });
-      const calls = (await gpCalls()).slice(before);
-      assertEqual(calls.map((x) => `${x.method} ${x.path}`), ['GET /limits'], 'only the free quota read');
-      assert(!(await page.evaluate((d) => !!document.querySelector(d), GP_DIALOG)), 'no dialog');
-      assert(/quota is used up/.test((await card()).text), 'quota message');
-      await page.evaluate(() => window.__gpNewWindow(200));
+      try {
+        const before = (await gpCalls()).length;
+        await page.evaluate(() => document.querySelector('[data-action="mtasts-check"]').focus());
+        await page.press('Enter');
+        await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'quota', { args: [MTASTS_CARD], message: 'quota state' });
+        const calls = (await gpCalls()).slice(before);
+        assertEqual(calls.map((x) => `${x.method} ${x.path}`), ['GET /limits'], 'only the free quota read');
+        assert(!(await page.evaluate((d) => !!document.querySelector(d), GP_DIALOG)), 'no dialog');
+        assert(/quota is used up/.test((await card()).text), 'quota message');
+        await announced(page, /quota is used up/, 'the quota outcome is announced');
+        assertEqual(await page.evaluate(focusInfo), 'mtasts-check', 'focus on the button in the quota state');
+      } finally {
+        await page.evaluate(() => window.__gpNewWindow(200)); // the later steps need probes
+      }
     });
 
     await step('a policy host that does not resolve: senders cannot use the policy', async () => {
@@ -460,6 +495,7 @@ async function mtaStsGroup(browser, server) {
       const before = posts(await gpCalls()).length;
       await page.click('[data-action="mtasts-check"]');
       await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'error', { args: [MTASTS_CARD], timeout: 20000, message: 'error state' });
+      await announced(page, /^The policy could not be checked: ./, 'the error is announced');
       let c = await card();
       assertEqual(c.button, 'Read the result again (no new probe)', 'free re-read offered');
       assert(/costs nothing/.test(c.text), 'paid note');

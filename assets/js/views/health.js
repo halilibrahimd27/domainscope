@@ -24,7 +24,7 @@
 import { h, clear } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
-  ProgressBar, SegmentedControl, SeverityIcon, announce, setButtonBusy, textInput
+  ProgressBar, SegmentedControl, SeverityIcon, announce, describeError, setButtonBusy, textInput
 } from '../ui/components.js';
 import {
   registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, formatRegion, daysUntil, getLang
@@ -822,6 +822,24 @@ export function mount(container, ctx) {
   //   controller, pendingId (a paid measurement not read yet), fetch, validation, checkedAt, resetAt, error }
   /** Body of the MTA-STS card on screen (null when the report has no card). */
   let policyEl = null;
+  /**
+   * A check started from the card (keyboard or click) wants focus back on the card's button:
+   * every state change rebuilds the card, the busy button cannot hold focus, and the consent
+   * dialog closes onto a node that is gone.
+   */
+  let policyFocus = false;
+
+  /** Is keyboard focus inside the card? */
+  const focusInPolicy = () => {
+    const doc = globalThis.document;
+    return !!(policyEl && doc && doc.activeElement && policyEl.contains(doc.activeElement));
+  };
+  /** Did focus fall to the page (never pull it away from where the user or a dialog put it)? */
+  const focusDropped = () => {
+    const doc = globalThis.document;
+    const active = doc ? doc.activeElement : null;
+    return !active || active === doc.body || active === doc.documentElement || !active.isConnected;
+  };
 
   /** The card: shown when the domain receives mail or publishes an `_mta-sts` record. */
   function mtaStsCard(report) {
@@ -900,6 +918,7 @@ export function mount(container, ctx) {
     const url = mtaStsPolicyUrl(report.domain) || `https://mta-sts.${report.domain}${MTA_STS_PATH}`;
     const job = current.policy && current.policy.domain === report.domain ? current.policy : null;
     const status = job ? job.status : 'idle';
+    const hadFocus = focusInPolicy();
     clear(policyEl);
     policyEl.dataset.state = status;
     policyEl.append(KeyValueList([
@@ -933,6 +952,7 @@ export function mount(container, ctx) {
     }
     policyEl.append(h('div', { class: 'hlt-mtasts-actions' }, btn,
       status === 'running' && job.phase === 'fetch' ? h('span', { class: 'muted text-sm', attrs: { role: 'status' } }, t('hlt.mtasts.fetching')) : null));
+    if ((hadFocus || policyFocus) && !btn.disabled && btn.isConnected && focusDropped()) btn.focus({ preventScroll: true });
   }
 
   /**
@@ -950,6 +970,7 @@ export function mount(container, ctx) {
     const host = mtaStsPolicyHost(domain);
     const prev = s.policy && s.policy.domain === domain ? s.policy : null;
     if (!host || (prev && prev.status === 'running')) return;
+    policyFocus = !pending && focusInPolicy();
     const job = {
       domain, host, status: 'running', phase: 'gate', controller: new AbortController(),
       pendingId: pending ? pending.pendingId : (prev && prev.status === 'error' ? prev.pendingId : null),
@@ -972,6 +993,7 @@ export function mount(container, ctx) {
         }
         if (gate.status === 'quota') {
           Object.assign(job, { status: 'quota', resetAt: gate.resetAt });
+          announce(t('hlt.mtasts.quota', { when: whenText(job.resetAt) }));
           return;
         }
         if (gate.status === 'unreachable') throw gate.error;
@@ -1001,14 +1023,17 @@ export function mount(container, ctx) {
       if (err && (err.code === 'rate-limit' || err.code === 'insufficient-credits')) {
         noteQuota(err.quota);
         Object.assign(job, { status: 'quota', resetAt: err.resetAt || null, pendingId: null });
+        announce(t('hlt.mtasts.quota', { when: whenText(job.resetAt) }));
         return;
       }
       // A measurement Globalping no longer knows cannot be read again: the next try creates one.
       const pendingId = err && err.code === 'not-found' ? null : (err && err.measurementId) || job.pendingId;
       Object.assign(job, { status: 'error', error: err, pendingId });
+      announce(`${t('hlt.mtasts.failed')}: ${describeError(err).message}`);
     } finally {
       job.controller = null;
       if (current === s && (s.policy === job || s.policy === prev)) renderPolicy();
+      policyFocus = false;
     }
   }
 

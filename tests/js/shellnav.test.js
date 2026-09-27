@@ -401,13 +401,17 @@ describe('pickShortcutTarget — which marked control answers', () => {
 describe('the controls the views mark for the shortcuts', () => {
   const source = (rel) => readFileSync(path.join(ROOT, rel), 'utf8');
 
-  test('a view with a submit keeps its results out of the form: a results scope without a submit', () => {
-    // Ctrl/Cmd+Enter in a results filter once started the view's run again, dropping the results on screen.
-    const withSubmit = VIEWS.filter((v) => /shortcut: 'submit'/.test(source(`assets/js/views/${v.id}.js`)));
-    assert.ok(withSubmit.length >= 10, `views with a submit: ${ids(withSubmit)}`);
-    for (const v of withSubmit) {
-      assert.match(source(`assets/js/views/${v.id}.js`), /shortcutScope(?::|\s*=)\s*'results'/,
-        `${v.id}: mark the results container with data-shortcut-scope="results"`);
+  test('every view but About marks its run, its main input and its results (a new view cannot miss the shortcuts)', () => {
+    // Without the markers Ctrl/Cmd+Enter and '/' do nothing there, silently. The results sit in a
+    // scope without a submit: Ctrl/Cmd+Enter in a results filter once started the view's run again,
+    // dropping the results on screen.
+    const tools = VIEWS.filter((v) => v.id !== 'about');
+    assert.ok(tools.length >= 10, `views: ${ids(tools)}`);
+    for (const v of tools) {
+      const src = source(`assets/js/views/${v.id}.js`);
+      assert.match(src, /shortcut: 'submit'/, `${v.id}: mark the run button with data-shortcut="submit"`);
+      assert.match(src, /(?:'data-shortcut': |shortcut: |dataset\.shortcut = )'focus'/, `${v.id}: mark the main input with data-shortcut="focus"`);
+      assert.match(src, /shortcutScope(?::|\s*=)\s*'results'/, `${v.id}: mark the results container with data-shortcut-scope="results"`);
     }
   });
 

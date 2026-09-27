@@ -518,6 +518,66 @@
   overflow-wrap: anywhere;
 }
 
+/* MTA-STS policy (one Globalping probe after a click) */
+.hlt-mtasts-body > * {
+  min-width: 0;
+}
+
+.hlt-mtasts-intro,
+.hlt-mtasts-meta,
+.hlt-mtasts-note,
+.hlt-mtasts-paid {
+  margin: 0;
+}
+
+.hlt-mtasts-url {
+  overflow-wrap: anywhere;
+}
+
+.hlt-mtasts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.hlt-finding-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.hlt-finding {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hlt-finding:last-child {
+  border-bottom: 0;
+}
+
+.hlt-finding-title {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.hlt-mtasts-link {
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .hlt-mtasts-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 /* CAA */
 .hlt-ca-list {
   display: flex;
@@ -614,6 +674,7 @@
 .hlt-caa-deny {
   display: flex;
   align-items: center;
+  gap: 5px;
   margin: 0;
   color: var(--error);
   font-weight: 600;

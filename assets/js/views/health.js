@@ -7,29 +7,42 @@
  * - every check grouped (DNS · Email security · Certificates & DNSSEC · Registration),
  *   worst first, each with a severity icon and a translated title + explanation;
  * - detail panels: registration (RDAP, expiry countdown), DNSSEC, email security (SPF tree
- *   with lookup meter, DMARC tags, DKIM selectors), CAA ("which CAs may issue") and the
- *   DNS records that were read.
+ *   with lookup meter, DMARC tags, DKIM selectors), MTA-STS, CAA ("which CAs may issue", with
+ *   the RFC 8657 restrictions and what they mean for the next renewal) and the DNS records
+ *   that were read.
+ * - MTA-STS policy: the DNS check reads the `_mta-sts` TXT record only. "Check the policy" fetches
+ *   https://mta-sts.<domain>/.well-known/mta-sts.txt through ONE Globalping probe (a browser
+ *   cannot read it: no CORS) and validates it with lib/mtasts.js. Nothing is sent before that
+ *   click; the first send of a page session shows the consent + cost dialog of
+ *   ui/globalping-gate.js (its own consent, the quota shared with SSL Targets › Verify). The
+ *   result belongs to the report on screen: a language switch keeps it (a fetch in flight goes
+ *   on polling its paid measurement), a new check drops it, and "Report (JSON)" carries it.
  *
  * Shareable: `#/health?domain=example.com` (also `name=`) runs on open.
  */
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, ExternalLink, Icon, KeyValueList, KindBadge,
-  ProgressBar, SegmentedControl, SeverityIcon, textInput
+  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
+  ProgressBar, SegmentedControl, SeverityIcon, announce, setButtonBusy, textInput
 } from '../ui/components.js';
 import {
-  registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, daysUntil, getLang
+  registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, formatRegion, daysUntil, getLang
 } from '../i18n.js';
 import {
   domainHealth, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
 } from '../lib/health.js';
+import {
+  MTA_STS_I18N, MTA_STS_PATH, mtaStsPolicyHost, mtaStsPolicyUrl, mtaStsPolicyRequest, interpretPolicyFetch, validateMtaSts, mtaStsExport
+} from '../lib/mtasts.js';
+import { GP_LIMITS } from '../lib/globalping.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES } from '../lib/dnswire.js';
 import { classifyResolution, ipVersion, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
-import { mergeSignals, splitList } from '../lib/util.js';
+import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
+import { errorKind, mergeSignals, splitList } from '../lib/util.js';
 
 /** Route id (`#/health`). */
 export const id = 'health';
@@ -43,9 +56,12 @@ export const HEALTH_GROUPS = Object.freeze(['dns', 'email', 'security', 'registr
 /** Severity order, worst first. */
 export const SEVERITY_ORDER = Object.freeze(['error', 'warn', 'info', 'ok']);
 
-// Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js.
+// Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js, every
+// mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js.
 registerStrings('en', HEALTH_I18N.en);
 registerStrings('tr', HEALTH_I18N.tr);
+registerStrings('en', MTA_STS_I18N.en);
+registerStrings('tr', MTA_STS_I18N.tr);
 
 registerStrings('en', {
   'hlt.domain': 'Domain',
@@ -186,6 +202,33 @@ registerStrings('en', {
   'hlt.caa.unusable': 'never usable',
   'hlt.caa.malformed': 'malformed',
   'hlt.caa.rfc8657': 'accounturi and validationmethods (RFC 8657) limit a CA to one ACME account or to some validation methods. They bind only CAs that support RFC 8657; the others may ignore them.',
+
+  'hlt.mtasts.title': 'MTA-STS policy',
+  'hlt.mtasts.txt': 'TXT record',
+  'hlt.mtasts.url': 'Policy URL',
+  'hlt.mtasts.intro': 'Sending mail servers that support MTA-STS read the policy at this URL. This page cannot read another site’s file itself, so one Globalping probe can fetch it for you, only when you click. Its HTTP answer, certificate and content are then checked against the domain’s MX hosts.',
+  'hlt.mtasts.noHost': 'Globalping does not accept the host name {host}, so the policy cannot be fetched from here.',
+  'hlt.mtasts.check': 'Check the policy (1 Globalping probe)',
+  'hlt.mtasts.again': 'Check again (1 probe)',
+  'hlt.mtasts.fetching': 'Fetching the policy through Globalping…',
+  'hlt.mtasts.privacy': 'The policy is fetched through Globalping, a free probe network run by jsDelivr and volunteers. The host name {host} goes to Globalping, and one probe sends one HTTPS GET request for {path} to it (User-Agent “globalping probe”). Anyone who has the measurement ID can read the result, including the policy and the server’s response headers, for about six months. The MX hosts are compared in this browser; nothing else is sent.',
+  'hlt.mtasts.quota': 'This hour’s free Globalping quota is used up; it resets {when}. No probe was used.',
+  'hlt.mtasts.failed': 'The policy could not be checked',
+  'hlt.mtasts.paid': 'The probe was already used: reading the result again uses the same measurement and costs nothing.',
+  'hlt.mtasts.reread': 'Read the result again (no new probe)',
+  'hlt.mtasts.mode': 'Mode',
+  'hlt.mtasts.maxAge': 'max_age',
+  'hlt.mtasts.maxAgeValue': { zero: '{seconds} s (under a day)', one: '{seconds} s ({count} day)', other: '{seconds} s ({count} days)' },
+  'hlt.mtasts.http': 'HTTP answer',
+  'hlt.mtasts.cert': 'Certificate',
+  'hlt.mtasts.certValue': '{issuer} · valid until {date}',
+  'hlt.mtasts.col.host': 'MX host',
+  'hlt.mtasts.col.pattern': 'Matched by',
+  'hlt.mtasts.noMatch': 'no mx pattern',
+  'hlt.mtasts.policy': 'Policy file',
+  'hlt.mtasts.meta': 'Fetched by a probe in {place} ({when}).',
+  'hlt.mtasts.measurement': 'Measurement',
+  'hlt.mtasts.smtpNote': 'A probe cannot open SMTP connections, so the certificates the MX hosts present over STARTTLS are not checked here.',
 
   'hlt.dns.title': 'DNS records',
   'hlt.dns.ns': 'Name servers',
@@ -343,6 +386,33 @@ registerStrings('tr', {
   'hlt.caa.unusable': 'hiç kullanılamaz',
   'hlt.caa.malformed': 'hatalı',
   'hlt.caa.rfc8657': 'accounturi ve validationmethods (RFC 8657) bir otoriteyi tek bir ACME hesabıyla ya da belirli doğrulama yöntemleriyle sınırlar. Yalnızca RFC 8657’yi destekleyen otoriteleri bağlarlar; diğerleri bunları yok sayabilir.',
+
+  'hlt.mtasts.title': 'MTA-STS politikası',
+  'hlt.mtasts.txt': 'TXT kaydı',
+  'hlt.mtasts.url': 'Politika adresi',
+  'hlt.mtasts.intro': 'MTA-STS destekleyen gönderen e-posta sunucuları politikayı bu adresten okur. Bu sayfa başka bir sitenin dosyasını kendisi okuyamaz; bu yüzden yalnızca siz tıkladığınızda tek bir Globalping ölçüm noktası dosyayı sizin için alabilir. Ardından HTTP yanıtı, sertifikası ve içeriği alan adının MX sunucularıyla karşılaştırılarak kontrol edilir.',
+  'hlt.mtasts.noHost': 'Globalping {host} host adını kabul etmiyor; bu yüzden politika buradan alınamıyor.',
+  'hlt.mtasts.check': 'Politikayı kontrol et (1 Globalping ölçümü)',
+  'hlt.mtasts.again': 'Yeniden kontrol et (1 ölçüm)',
+  'hlt.mtasts.fetching': 'Politika Globalping üzerinden alınıyor…',
+  'hlt.mtasts.privacy': 'Politika, jsDelivr ve gönüllülerin işlettiği ücretsiz bir ölçüm ağı olan Globalping üzerinden alınır. {host} host adı Globalping’e gider; bir ölçüm noktası ona {path} için tek bir HTTPS GET isteği gönderir (User-Agent “globalping probe”). Ölçüm kimliğini bilen herkes sonucu, politika ve sunucunun yanıt başlıkları dahil, yaklaşık altı ay okuyabilir. MX sunucuları bu tarayıcıda karşılaştırılır; başka hiçbir şey gönderilmez.',
+  'hlt.mtasts.quota': 'Bu saatin ücretsiz Globalping kotası doldu; {when} sıfırlanır. Hiçbir ölçüm harcanmadı.',
+  'hlt.mtasts.failed': 'Politika kontrol edilemedi',
+  'hlt.mtasts.paid': 'Ölçüm zaten harcandı: sonucu yeniden okumak aynı ölçümü kullanır ve ek maliyeti yoktur.',
+  'hlt.mtasts.reread': 'Sonucu yeniden oku (yeni ölçüm yok)',
+  'hlt.mtasts.mode': 'Mod',
+  'hlt.mtasts.maxAge': 'max_age',
+  'hlt.mtasts.maxAgeValue': { zero: '{seconds} sn (bir günden kısa)', other: '{seconds} sn ({count} gün)' },
+  'hlt.mtasts.http': 'HTTP yanıtı',
+  'hlt.mtasts.cert': 'Sertifika',
+  'hlt.mtasts.certValue': '{issuer} · {date} tarihine kadar geçerli',
+  'hlt.mtasts.col.host': 'MX sunucusu',
+  'hlt.mtasts.col.pattern': 'Eşleşen kalıp',
+  'hlt.mtasts.noMatch': 'mx kalıbı yok',
+  'hlt.mtasts.policy': 'Politika dosyası',
+  'hlt.mtasts.meta': '{place} konumundaki bir ölçüm noktası tarafından alındı ({when}).',
+  'hlt.mtasts.measurement': 'Ölçüm',
+  'hlt.mtasts.smtpNote': 'Bir ölçüm noktası SMTP bağlantısı açamaz; bu yüzden MX sunucularının STARTTLS üzerinden sunduğu sertifikalar burada kontrol edilmez.',
 
   'hlt.dns.title': 'DNS kayıtları',
   'hlt.dns.ns': 'Ad sunucuları',
@@ -557,7 +627,7 @@ export function mount(container, ctx) {
           zoneLink,
           Button({
             label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
-            onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(report), 'application/json;charset=utf-8')
+            onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')
           })))));
     heroEl.append(h('div', { class: 'cluster text-sm hlt-links' },
       h('span', { class: 'muted' }, t('hlt.links')),
@@ -747,6 +817,206 @@ export function mount(container, ctx) {
     });
   }
 
+  /* --- MTA-STS policy (one Globalping probe, only after a click) --------------------------- */
+  // current.policy = { domain, host, status: 'running'|'done'|'quota'|'error', phase: 'gate'|'fetch',
+  //   controller, pendingId (a paid measurement not read yet), fetch, validation, checkedAt, resetAt, error }
+  /** Body of the MTA-STS card on screen (null when the report has no card). */
+  let policyEl = null;
+
+  /** The card: shown when the domain receives mail or publishes an `_mta-sts` record. */
+  function mtaStsCard(report) {
+    const hasMail = (report.records.mx || []).some((m) => m.exchange && m.exchange !== '.');
+    if (!hasMail && !report.records.mtaSts) {
+      policyEl = null;
+      return null;
+    }
+    policyEl = h('div', { class: 'stack hlt-mtasts-body', dataset: { mtasts: 'card' } });
+    renderPolicy();
+    return Card({ title: t('hlt.mtasts.title'), icon: 'lock', className: 'hlt-card hlt-mtasts', children: policyEl });
+  }
+
+  /** Severity of a finding, worst first (stable), like the checks. */
+  const bySeverity = (list) => list.map((x, i) => ({ x, i }))
+    .sort((a, b) => SEVERITY_ORDER.indexOf(a.x.severity) - SEVERITY_ORDER.indexOf(b.x.severity) || a.i - b.i).map(({ x }) => x);
+
+  function renderFinding(f) {
+    return h('li', { class: ['hlt-finding', `hlt-sev-${f.severity}`], dataset: { id: f.id, severity: f.severity } },
+      h('span', { class: 'hlt-check-icon' }, SeverityIcon(f.severity, { size: 16 })),
+      h('div', { class: 'hlt-check-body' },
+        h('div', { class: 'hlt-finding-title' }, t(`mtasts.${f.id}.title`, f.params)),
+        h('div', { class: 'hlt-check-detail' }, t(`mtasts.${f.id}.detail`, f.params))));
+  }
+
+  /** A finished check: headline, what came back, the MX cross-check, the findings and the file. */
+  function policyResult(job) {
+    const v = job.validation;
+    const f = job.fetch;
+    const p = v.policy;
+    const headline = Alert({ variant: { error: 'error', warn: 'warn' }[v.severity] || 'ok', compact: true, message: t(`mtasts.head.${v.headline}`) });
+    headline.dataset.mtastsHeadline = v.headline;
+    const items = [];
+    if (p && p.mode) {
+      items.push({ key: t('hlt.mtasts.mode'), value: Badge(p.mode, { variant: { enforce: 'ok', testing: 'info' }[p.mode] || 'neutral', mono: true }) });
+    }
+    if (p && Number.isInteger(p.maxAge)) {
+      items.push({ key: t('hlt.mtasts.maxAge'), value: t('hlt.mtasts.maxAgeValue', { count: Math.floor(p.maxAge / 86400), seconds: formatNumber(p.maxAge) }) });
+    }
+    if (f.finished) items.push({ key: t('hlt.mtasts.http'), value: [String(f.httpStatus), f.contentType].filter(Boolean).join(' · '), mono: true });
+    if (f.tls && f.tls.authorized && f.tls.notAfter) {
+      items.push({ key: t('hlt.mtasts.cert'), value: t('hlt.mtasts.certValue', { issuer: f.tls.issuer || '—', date: formatDate(f.tls.notAfter) }) });
+    }
+    const mxTable = v.usable && v.mode !== 'none' && v.mx.length
+      ? miniTable([t('hlt.mtasts.col.host'), t('hlt.mtasts.col.pattern')], v.mx.map((x) => [
+        h('span', { class: 'mono', dataset: { mx: x.host, matched: x.matchedBy ? 'true' : 'false' } }, x.host),
+        x.matchedBy ? h('span', { class: 'mono' }, x.matchedBy)
+          : Badge(t('hlt.mtasts.noMatch'), { variant: v.mode === 'enforce' ? 'error' : 'warn', icon: 'x-circle' })
+      ]), 'hlt-mtasts-mx') : null;
+    const probe = f.probe;
+    const where = probe ? [probe.city, probe.country ? formatRegion(probe.country) : null].filter(Boolean).join(', ') : '';
+    const place = [where, probe && probe.network ? `(${probe.network})` : null].filter(Boolean).join(' ');
+    const link = measurementUrl(f.measurementId);
+    return [
+      headline,
+      items.length ? KeyValueList(items, { className: 'hlt-kv' }) : null,
+      mxTable,
+      h('ul', { class: 'hlt-finding-list', dataset: { mtasts: 'findings' } }, bySeverity(v.findings).map(renderFinding)),
+      typeof f.body === 'string' && f.body
+        ? Disclosure({ summary: t('hlt.mtasts.policy'), className: 'hlt-mtasts-file', children: CodeBlock(f.body, { wrap: true, label: MTA_STS_PATH, maxHeight: '18rem' }) })
+        : null,
+      h('p', { class: 'muted text-xs hlt-mtasts-meta' },
+        t('hlt.mtasts.meta', { when: formatRelative(job.checkedAt), place: place || '—' }),
+        link ? [' ', ExternalLink(link, t('hlt.mtasts.measurement'), { className: 'hlt-mtasts-link' })] : null),
+      h('p', { class: 'muted text-xs hlt-mtasts-note' }, t('hlt.mtasts.smtpNote'))
+    ];
+  }
+
+  /** Re-render the card body for the report on screen. */
+  function renderPolicy() {
+    if (!policyEl || !current || !current.report) return;
+    const report = current.report;
+    const host = mtaStsPolicyHost(report.domain);
+    const url = mtaStsPolicyUrl(report.domain) || `https://mta-sts.${report.domain}${MTA_STS_PATH}`;
+    const job = current.policy && current.policy.domain === report.domain ? current.policy : null;
+    const status = job ? job.status : 'idle';
+    clear(policyEl);
+    policyEl.dataset.state = status;
+    policyEl.append(KeyValueList([
+      {
+        key: t('hlt.mtasts.txt'),
+        value: report.records.mtaSts ? h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts) : h('span', { class: 'muted text-sm' }, t('hlt.missing'))
+      },
+      { key: t('hlt.mtasts.url'), value: h('span', { class: 'mono text-sm hlt-mtasts-url' }, url), copy: url }
+    ], { className: 'hlt-kv' }));
+    if (!host) {
+      policyEl.append(Alert({ variant: 'info', compact: true, message: t('hlt.mtasts.noHost', { host: `mta-sts.${report.domain}` }) }));
+      return;
+    }
+    const done = status === 'done';
+    // A paid measurement that could not be read yet is read again for free (no dialog, no probe).
+    const reread = status === 'error' && !!job.pendingId;
+    const btn = Button({
+      label: t(done ? 'hlt.mtasts.again' : reread ? 'hlt.mtasts.reread' : 'hlt.mtasts.check'), icon: reread ? 'refresh' : 'globe', size: 'sm',
+      variant: done ? 'secondary' : 'primary', dataset: { action: 'mtasts-check', reread: reread ? 'true' : null }, onClick: () => checkPolicy()
+    });
+    if (status === 'running') setButtonBusy(btn, true);
+    if (status === 'idle' || status === 'running') policyEl.append(h('p', { class: 'muted text-sm hlt-mtasts-intro' }, t('hlt.mtasts.intro')));
+    if (status === 'quota') {
+      policyEl.append(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('hlt.mtasts.quota', { when: whenText(job.resetAt) }) }));
+    } else if (status === 'error') {
+      const banner = ErrorBanner(job.error, { title: t('hlt.mtasts.failed'), compact: true });
+      if (job.pendingId) banner.querySelector('.alert-body').append(h('p', { class: 'text-sm hlt-mtasts-paid' }, t('hlt.mtasts.paid')));
+      policyEl.append(banner);
+    } else if (done) {
+      policyEl.append(...policyResult(job).filter(Boolean));
+    }
+    policyEl.append(h('div', { class: 'hlt-mtasts-actions' }, btn,
+      status === 'running' && job.phase === 'fetch' ? h('span', { class: 'muted text-sm', attrs: { role: 'status' } }, t('hlt.mtasts.fetching')) : null));
+  }
+
+  /**
+   * "Check the policy": the shared Globalping gate (free /limits read, consent + cost dialog on
+   * this purpose's first send of the page session), one measurement, then lib/mtasts. A paid
+   * measurement that could not be read yet (`pending`, or the last failed job's) is polled again
+   * instead of creating a new one.
+   * @param {{ pendingId: string }|null} [pending] a fetch carried over a language re-mount
+   */
+  async function checkPolicy(pending = null) {
+    const s = current;
+    if (!s || !s.report || s.controller) return;
+    const report = s.report;
+    const domain = report.domain;
+    const host = mtaStsPolicyHost(domain);
+    const prev = s.policy && s.policy.domain === domain ? s.policy : null;
+    if (!host || (prev && prev.status === 'running')) return;
+    const job = {
+      domain, host, status: 'running', phase: 'gate', controller: new AbortController(),
+      pendingId: pending ? pending.pendingId : (prev && prev.status === 'error' ? prev.pendingId : null),
+      deadlineAt: null, fetch: null, validation: null, checkedAt: null, resetAt: null, error: null
+    };
+    s.policy = job;
+    renderPolicy();
+    const signal = mergeSignals(ctx.signal, job.controller.signal);
+    const live = () => current === s && s.policy === job;
+    try {
+      let client;
+      if (job.pendingId) {
+        client = await ctx.getGlobalping();
+      } else {
+        const gate = await gateProbes(ctx, { purpose: 'mta-sts', probes: 1, privacy: t('hlt.mtasts.privacy', { host, path: MTA_STS_PATH }), signal });
+        if (!live()) return;
+        if (gate.status === 'cancelled') {
+          s.policy = prev;
+          return;
+        }
+        if (gate.status === 'quota') {
+          Object.assign(job, { status: 'quota', resetAt: gate.resetAt });
+          return;
+        }
+        if (gate.status === 'unreachable') throw gate.error;
+        client = gate.client;
+        const body = mtaStsPolicyRequest(domain);
+        job.phase = 'fetch';
+        renderPolicy();
+        const created = await client.create(body, { signal });
+        noteQuota(created.quota);
+        job.pendingId = created.id;
+        job.deadlineAt = Date.now() + (body.timeout + GP_LIMITS.clientSlackS) * 1000;
+      }
+      if (!live()) return;
+      job.phase = 'fetch';
+      renderPolicy();
+      const measurement = await client.poll(job.pendingId, job.deadlineAt ? { signal, deadlineAt: job.deadlineAt } : { signal });
+      if (!live()) return;
+      const fetch = interpretPolicyFetch(measurement, { host });
+      const validation = validateMtaSts({
+        domain, fetch, mxHosts: (report.records.mx || []).map((m) => m.exchange), txt: report.records.mtaSts ?? null, tlsRpt: report.records.tlsRpt ?? null
+      });
+      Object.assign(job, { status: 'done', pendingId: null, fetch, validation, checkedAt: new Date() });
+      announce(t(`mtasts.head.${validation.headline}`));
+    } catch (err) {
+      // An abort means a new check or leaving the view: that state is someone else's now.
+      if (!live() || signal.aborted || errorKind(err) === 'abort') return;
+      if (err && (err.code === 'rate-limit' || err.code === 'insufficient-credits')) {
+        noteQuota(err.quota);
+        Object.assign(job, { status: 'quota', resetAt: err.resetAt || null, pendingId: null });
+        return;
+      }
+      // A measurement Globalping no longer knows cannot be read again: the next try creates one.
+      const pendingId = err && err.code === 'not-found' ? null : (err && err.measurementId) || job.pendingId;
+      Object.assign(job, { status: 'error', error: err, pendingId });
+    } finally {
+      job.controller = null;
+      if (current === s && (s.policy === job || s.policy === prev)) renderPolicy();
+    }
+  }
+
+  /** The report as downloaded: plus the MTA-STS policy check when one finished for it. */
+  function exportReport(report) {
+    const p = current && current.report === report && current.policy && current.policy.status === 'done' && current.policy.domain === report.domain
+      ? current.policy : null;
+    return p ? { ...report, mtaStsPolicy: mtaStsExport({ domain: p.domain, fetch: p.fetch, validation: p.validation, checkedAt: p.checkedAt }) } : report;
+  }
+
   function caaCard(report) {
     const caa = report.caa;
     const children = [];
@@ -857,7 +1127,7 @@ export function mount(container, ctx) {
 
   function renderDetails(report) {
     clear(detailsEl);
-    detailsEl.append(rdapCard(report), dnssecCard(report), mailCard(report), caaCard(report), dnsCard(report));
+    detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard].map((card) => card(report)).filter(Boolean));
   }
 
   function renderReport(report) {
@@ -900,8 +1170,9 @@ export function mount(container, ctx) {
 
   async function run(domain, extraSelectors) {
     if (current && current.controller) current.controller.abort();
+    if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     const controller = new AbortController();
-    const state = { domain, controller, report: null, selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length };
+    const state = { domain, controller, report: null, selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null };
     current = state;
     clear(errorEl);
     progress.el.hidden = false;
@@ -942,8 +1213,14 @@ export function mount(container, ctx) {
 
   /* --- initial state ----------------------------------------------------------------- */
   if (restored && restored.report) {
-    current = { domain: restored.report.domain, controller: null, report: restored.report, selectorCount: restored.selectorCount };
+    const policy = restored.policy && restored.policy.domain === restored.report.domain ? restored.policy : null;
+    current = {
+      domain: restored.report.domain, controller: null, report: restored.report, selectorCount: restored.selectorCount,
+      policy: policy && policy.status !== 'running' ? policy : null
+    };
     renderReport(restored.report);
+    // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
+    if (policy && policy.status === 'running') checkPolicy(policy);
   } else if (!restored && initialDomain) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
     Promise.resolve().then(() => start());
@@ -953,14 +1230,23 @@ export function mount(container, ctx) {
   active = {
     teardown() {
       if (current && current.controller) current.controller.abort();
+      if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     },
     snapshot() {
+      const report = current && !current.controller ? current.report : null;
+      const p = report && current.policy ? current.policy : null;
+      let policy = null;
+      // A finished (or failed) check stays; one in flight is carried only once its measurement
+      // is paid for (the dialog of a check still at the gate is simply closed).
+      if (p && p.status !== 'running') policy = { ...p, controller: null };
+      else if (p && p.pendingId) policy = { domain: p.domain, status: 'running', pendingId: p.pendingId };
       return {
         domain: domainField.value,
         selectors: selectorsField.value,
         filter,
-        report: current && !current.controller ? current.report : null,
-        selectorCount: current ? current.selectorCount : null
+        report,
+        selectorCount: current ? current.selectorCount : null,
+        policy
       };
     },
     update(params) {

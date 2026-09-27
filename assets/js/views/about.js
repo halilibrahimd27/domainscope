@@ -222,7 +222,7 @@ registerStrings('tr', {
   'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad. İstendiğinde bir host adının sertifikasının nereden indirileceği de (Sertifika, SSL Hedefleri).',
   'about.src.crtshLimit': 'Ücretsiz. Yoğunlukta yavaş ya da kısa süre erişilemez olabilir: giderek uzayan aralarla yeniden denenir, sonra daha hafif bir aramaya geçilir — zaman aşımları sürerse yaklaşık 3 dakikaya kadar; bu sırada Cert Spotter devreye girer.',
   'about.src.certspotter': 'Adları ve parmak izleriyle Certificate Transparency kayıtları. İstendiğinde bir host adının geçerli sertifikası da (Sertifika, SSL Hedefleri).',
-  'about.src.certspotterLimit': 'Anonim kullanımda IP adresi başına küçük saatlik kotalar (dolunca HTTP 429): yaklaşık 10 tam alan adı araması (bir tarama her kayıtlı alan adı için en fazla 5 kullanır) ve bundan ayrı olarak tek host için 100 istek (bir host adının sertifikası; her biri iki istek, yaklaşık 50 sorgu).',
+  'about.src.certspotterLimit': 'Anonim kullanımda IP adresi başına küçük saatlik kotalar (dolunca HTTP 429): yaklaşık 10 tam alan adı araması (bir tarama her kayıtlı alan adı için en fazla 5 kullanır) ve bundan ayrı olarak tek host için 100 istek (bir host adının sertifikası; her sorgu iki istek, yani saatte yaklaşık 50 sorgu).',
   'about.src.hackertarget': 'Host araması (adlar + güncel IP’ler) ve ters IP sorgusu.',
   'about.src.hackertargetLimit': 'IP adresi başına günde yaklaşık 50 istek; iki uç nokta aynı kotayı paylaşır.',
   'about.src.anubis': 'Alt alan adı veritabanı.',

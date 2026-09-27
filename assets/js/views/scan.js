@@ -135,7 +135,7 @@ registerStrings('en', {
   'scan.cert.none': 'Without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
   'scan.cert.isCA': 'This is a CA certificate, not a server certificate. Load the certificate issued for your domain.',
   'scan.cert.taken': 'Certificate taken over from the Certificate view.',
-  'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves.',
+  'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves. It compares each server with this exact certificate, so a server with another valid certificate for the name (such as the RSA twin of an ECDSA certificate) shows as Old certificate.',
   'scan.cert.sampleNext': 'Loading it starts nothing: a scan runs only when you press Start scan.',
 
   'scan.domains.label': 'Target domains',
@@ -522,7 +522,7 @@ registerStrings('tr', {
   'scan.cert.none': 'Sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
   'scan.cert.isCA': 'Bu bir CA sertifikası, sunucu sertifikası değil. Alan adınız için verilen sertifikayı yükleyin.',
   'scan.cert.taken': 'Sertifika, Sertifika görünümünden aktarıldı.',
-  'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder.',
+  'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder. Her sunucuyu tam olarak bu sertifikayla karşılaştırır; bu yüzden ad için geçerli başka bir sertifika sunan bir sunucu (örneğin bir ECDSA sertifikasının RSA ikizi) Eski sertifika olarak görünür.',
   'scan.cert.sampleNext': 'Yüklemek hiçbir şey başlatmaz: tarama yalnızca Taramayı başlat’a bastığınızda çalışır.',
 
   'scan.domains.label': 'Hedef alan adları',

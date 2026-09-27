@@ -183,9 +183,21 @@ export function isFormField(target) {
 }
 
 /**
+ * Does Esc already mean something in this field? A search field with text in it: the browser
+ * clears the text with Esc (a table's filter, for one), so there it is not the "cancel the job"
+ * shortcut. In the emptied field the next Esc is.
+ * @param {{ tagName?: string, type?: string, value?: string }|null} target
+ * @returns {boolean}
+ */
+export function escClearsField(target) {
+  return tagOf(target) === 'input' && String(target.type || '').toLowerCase() === 'search' && String(target.value || '') !== '';
+}
+
+/**
  * The shortcut a key press means, or null:
  * - `submit`: Ctrl+Enter or ⌘+Enter (no Alt, no Shift) in a form field;
- * - `cancel`: Esc, anywhere (a field included);
+ * - `cancel`: Esc, anywhere (a field included), except in a search field with text
+ *   ({@link escClearsField});
  * - `focus`: '/' and `help`: '?', only while not typing (Shift is allowed, as layouts need it for
  *   '/' or '?'; AltGr — Ctrl+Alt together — too; Ctrl, Alt or ⌘ alone is another shortcut).
  * A held key (auto-repeat) and a key pressed while an input method composes text mean nothing.
@@ -202,7 +214,7 @@ export function shortcutFor(event) {
   if (key === 'Enter') {
     return (ctrl || meta) && !alt && !event.shiftKey && isFormField(target) ? 'submit' : null;
   }
-  if (key === 'Escape' || key === 'Esc') return ctrl || meta || alt || event.shiftKey ? null : 'cancel';
+  if (key === 'Escape' || key === 'Esc') return ctrl || meta || alt || event.shiftKey || escClearsField(target) ? null : 'cancel';
   if (key !== '/' && key !== '?') return null;
   if (meta || ctrl !== alt || isTypingTarget(target)) return null;
   return key === '/' ? 'focus' : 'help';

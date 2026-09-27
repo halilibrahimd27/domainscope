@@ -17,8 +17,10 @@
  * start page shows a first-visit task picker until it is dismissed or the visitor runs something.
  *
  * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
- * clicks the view's nearest `data-shortcut="submit"` control, Esc its visible `"cancel"` one,
- * '/' focuses its `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
+ * clicks the `data-shortcut="submit"` control of the field's form (the view's Run; inside a
+ * `data-shortcut-scope` sub-form such as a paste box, that sub-form's own button), Esc the
+ * view's visible `"cancel"` one (not in a search field with text: Esc clears it there), '/'
+ * focuses its `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
  */
 
 import {

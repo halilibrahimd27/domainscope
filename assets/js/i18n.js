@@ -495,7 +495,7 @@ registerStrings('en', {
   'keys.cancel': 'Cancel what is running; close a dialog or the Tools menu',
   'keys.focus': 'Jump to the tool’s main field',
   'keys.help': 'Show this list',
-  'keys.note': 'While you type in a field, only {submit} and Esc act there; / and ? are typed as usual.',
+  'keys.note': 'While you type in a field, only {submit} and Esc act there (in a search box with text, Esc first clears it); / and ? are typed as usual.',
 
   'settings.title': 'Settings',
   'settings.dohChain': 'DNS-over-HTTPS resolvers',
@@ -790,7 +790,7 @@ registerStrings('tr', {
   'keys.cancel': 'Çalışan işi iptal et; bir pencereyi ya da Araçlar menüsünü kapat',
   'keys.focus': 'Aracın ana alanına git',
   'keys.help': 'Bu listeyi göster',
-  'keys.note': 'Bir alana yazarken orada yalnızca {submit} ve Esc çalışır; / ve ? her zamanki gibi yazılır.',
+  'keys.note': 'Bir alana yazarken orada yalnızca {submit} ve Esc çalışır (içinde metin olan bir arama kutusunda Esc önce onu temizler); / ve ? her zamanki gibi yazılır.',
 
   'settings.title': 'Ayarlar',
   'settings.dohChain': 'DNS-over-HTTPS çözümleyicileri',

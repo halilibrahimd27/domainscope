@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import {
   NAV_GROUPS, OTHER_GROUP, groupViews, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
-  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, shortcutFor,
+  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, escClearsField, shortcutFor,
   pickShortcutTarget
 } from '../../assets/js/lib/shellnav.js';
 import { VIEWS, DEFAULT_VIEW } from '../../assets/js/app.js';
@@ -211,6 +211,20 @@ describe('keyboard shortcuts — which key means what', () => {
     assert.equal(shortcutFor(key('Escape', { target: el('textarea') })), 'cancel');
     assert.equal(shortcutFor(key('Escape', { shiftKey: true })), null);
     assert.equal(shortcutFor(key('Escape', { ctrlKey: true })), null);
+  });
+
+  test('Esc in a search field with text clears it (the browser\'s own key there); in the emptied field it cancels', () => {
+    const search = (value) => el('input', { type: 'search', value });
+    assert.equal(escClearsField(search('www')), true);
+    assert.equal(escClearsField(el('input', { type: 'SEARCH', value: ' ' })), true);
+    assert.equal(escClearsField(search('')), false);
+    assert.equal(escClearsField(search(undefined)), false);
+    assert.equal(escClearsField(el('input', { type: 'text', value: 'www' })), false, 'a plain text field has no Esc of its own');
+    assert.equal(escClearsField(el('textarea', { value: 'www' })), false);
+    assert.equal(escClearsField(null), false);
+    assert.equal(shortcutFor(key('Escape', { target: search('www') })), null, 'the filter clears, the job goes on');
+    assert.equal(shortcutFor(key('Escape', { target: search('') })), 'cancel', 'the next Esc cancels');
+    assert.equal(shortcutFor(key('Escape', { target: el('input', { type: 'text', value: 'example.com' }) })), 'cancel');
   });
 
   test('/ and ? act only while not typing; Shift and AltGr are fine, Ctrl / Alt / ⌘ alone are not', () => {

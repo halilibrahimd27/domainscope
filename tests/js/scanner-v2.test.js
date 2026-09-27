@@ -1833,6 +1833,41 @@ describe('discovery review fixes: wildcards whose answer varies', () => {
     assert.equal(scan.wildcards[A].flooded, true);
     assert.deepEqual(wordlistHosts(scan), []);
   });
+
+  test('flood guard: a stable wildcard the first check missed becomes the exact fingerprint, so real hosts stay', async () => {
+    const A = 'flood-late.example';
+    const real = WORDLIST_SMALL.slice(0, 30);
+    const zone = { [A]: { A: ['203.0.113.1'] }, [`*.${A}`]: { A: ['198.51.100.99'] } };
+    real.forEach((l, i) => { zone[`${l}.${A}`] = { A: [`203.0.113.${10 + i}`] }; });
+    // every random-label probe of the wildcard stage fails, so that check proves nothing
+    let wildcardStage = true;
+    const isRandom = (name) => {
+      const [label, ...rest] = name.split('.');
+      return rest.join('.') === A && /^[a-z0-9]{12}$/.test(label) && !WORDLIST_SMALL.includes(label);
+    };
+    const answer = (name) => (wildcardStage && isRandom(name) ? new Response('busy', { status: 503 }) : undefined);
+    const world = mkWorld({ zone, answer });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', mine: false, permutationBudget: 0, recursive: false,
+      originHints: false, balance: true, dns: world.dns, fetchImpl: world.fetchImpl
+    }, { onStage: (s) => { if (s === 'bruteforce') wildcardStage = false; } });
+    assert.equal(scan.wildcards[A].flooded, undefined);
+    assert.deepEqual(scan.wildcards[A].ipv4, ['198.51.100.99']);
+    assert.deepEqual(wordlistHosts(scan).sort(), real.map((l) => `${l}.${A}`).sort());
+    assert.ok(scan.stats.bruteforceWildcardDropped > 100, String(scan.stats.bruteforceWildcardDropped));
+  });
+
+  test('flood guard: a re-sample that adds nothing to a variable wildcard keeps a custom list of real hosts', async () => {
+    const A = 'flood-rich.example';
+    const labels = Array.from({ length: 60 }, (_, i) => `h${i}`);
+    const zone = { [A]: { A: ['203.0.113.1'] }, [`*.${A}`]: { A: ['192.0.2.77'] } };
+    labels.forEach((l, i) => { zone[`${l}.${A}`] = { A: [`198.51.100.${i + 1}`] }; });
+    const world = mkWorld({ zone, zonesByResolver: { google: { [`*.${A}`]: { A: ['192.0.2.88'] } } } });
+    const scan = await run(A, world, { wordlist: labels });
+    assert.equal(scan.wildcards[A].variable, true);
+    assert.equal(scan.wildcards[A].flooded, undefined);
+    assert.equal(wordlistHosts(scan).length, 60);
+  });
 });
 
 describe('discovery review fixes: closest encloser', () => {

@@ -1258,7 +1258,8 @@ export async function runScan(config = {}, hooks = {}) {
   // Flood guard: answered probes and hits per parent. A parent where most
   // guesses "resolve" holds a wildcard the check did not pin down (its answer
   // varies more than the sample showed, or the check failed). It is re-sampled
-  // once, wider; if random labels resolve, the wildcard is marked `flooded` and
+  // once, wider; if random labels resolve to values the first check had not seen
+  // (or vary with no first check to compare), the wildcard is marked `flooded` and
   // the resolve stage drops the probe-only look-alikes.
   const probeLoad = new Map(); // parent → { tried, found }
   const resampled = new Set();
@@ -1281,8 +1282,15 @@ export async function runScan(config = {}, hooks = {}) {
       const union = (key) => [...new Set([...((prev && prev[key]) || []), ...(next[key] || [])])];
       const merged = { ...next, ipv4: union('ipv4'), ipv6: union('ipv6'), targets: union('targets') };
       const size = (w) => (w.ipv4 || []).length + (w.ipv6 || []).length + (w.targets || []).length;
-      // The same stable answer as the first check: the hits differ from it, so they stand.
-      if (prev && !next.variable && size(merged) === size(prev)) return;
+      // Nothing the first check had not seen: the hits differ from it, so they stand (a
+      // custom or override list can hold mostly real names).
+      if (prev && size(merged) === size(prev)) return;
+      // No usable first check (it failed, or the level was never checked) and a stable
+      // answer now: that answer is the exact fingerprint, which still tells real hosts apart.
+      if (!prev && !next.variable) {
+        wildcards[p] = next;
+        return;
+      }
       wildcards[p] = { ...merged, variable: true, flooded: true };
     }, signal);
   };

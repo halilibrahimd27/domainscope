@@ -1198,9 +1198,26 @@ button.nav-status:hover {
   }
 }
 
+/* The smallest phones: still two columns, the chips without their icons (the text needs the width) */
 @media (max-width: 359.98px) {
-  .start-picker .start-tasks {
-    grid-template-columns: minmax(0, 1fr);
+  .start-picker {
+    padding: 10px 10px 10px 12px;
+  }
+
+  .start-picker-title {
+    font-size: 14px;
+  }
+
+  .start-picker .start-task-icon {
+    display: none;
+  }
+
+  .start-picker .start-task {
+    padding: 6px 8px;
+  }
+
+  .start-picker .start-task-title {
+    font-size: 12.5px;
   }
 }
 

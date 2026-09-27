@@ -978,18 +978,51 @@ async function main() {
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         const nav = document.getElementById('app-nav');
         const btn = nav.querySelector('[data-control="nav-menu"]').getBoundingClientRect();
+        const footerBtn = document.querySelector('.app-footer [data-control="shortcuts"]');
         return {
           top: Math.round(nav.getBoundingClientRect().top),
           button: btn.width > 0 && btn.left >= 0 && btn.right <= window.innerWidth,
+          buttonHeight: Math.round(btn.height),
           links: [...nav.querySelectorAll('.nav-link')].filter((a) => a.getClientRects().length).length,
-          current: nav.querySelector('.nav-menu-current').textContent
+          current: nav.querySelector('.nav-menu-current').textContent,
+          touchOnly: matchMedia('(hover: none) and (pointer: coarse)').matches,
+          footerShortcuts: !!footerBtn && footerBtn.getClientRects().length > 0
         };
       });
       assertEqual(info.top, 0, 'nav sticks to the top');
       assert(info.button, `Tools button in view: ${JSON.stringify(info)}`);
+      assert(info.buttonHeight >= 44, `the Tools button is a full touch target: ${info.buttonHeight} px`);
       assertEqual(info.links, 0, 'no strip of links');
       assertEqual(info.current, title('about', 'tr'), 'current tool');
+      // The footer's "Keyboard shortcuts" button: not on a touch-only device (no keyboard to use them with).
+      assertEqual(info.footerShortcuts, !info.touchOnly, `footer shortcuts button (touch only: ${info.touchOnly})`);
       await phone.evaluate(() => window.scrollTo(0, 0));
+    });
+
+    await step('turned to 800 px: the Tools bar gives way to the sticky strip of links, scrolled to the active one', async () => {
+      // Still on About, the strip's last link: in view only once the strip has scrolled.
+      await phone.setViewport({ width: 800, height: 900 });
+      try {
+        await gotoRoute(phone, 'about');
+        const info = await phone.evaluate(async () => {
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const nav = document.getElementById('app-nav');
+          const link = nav.querySelector('.nav-link[aria-current="page"]').getBoundingClientRect();
+          const box = nav.getBoundingClientRect();
+          return {
+            links: [...nav.querySelectorAll('.nav-link')].filter((a) => a.getClientRects().length).length,
+            scrollable: nav.scrollWidth > nav.clientWidth,
+            scrolled: nav.scrollLeft > 0,
+            activeVisible: link.left >= box.left && link.right <= box.right,
+            toolsBar: nav.querySelector('.nav-menu-bar').getClientRects().length > 0
+          };
+        });
+        assert(info.links > 3 && info.scrollable && info.scrolled && info.activeVisible, `nav strip: ${JSON.stringify(info)}`);
+        assert(!info.toolsBar, 'no Tools button above 720 px');
+        await assertNoHorizontalScroll(phone, 'nav strip at 800 px');
+      } finally {
+        await phone.setViewport({ width: 390, height: 844, mobile: true });
+      }
     });
 
     await step('phone gallery fits and looks right', async () => {
@@ -1049,6 +1082,21 @@ async function main() {
       assertEqual(info.label, 'New here? Pick a job to start with', 'region label');
       assertEqual(info.jobs, [['subdomains', '#/subdomains'], ['certificate', '#/scan'], ['health', '#/health'], ['propagation', '#/global'], ['zone', '#/zone']], 'jobs');
       assertEqual(info.hide, 'Hide these suggestions', 'dismiss button label');
+      // Short chips in two columns (the job alone; the tool's name read out, not shown), so the tool's own
+      // field still starts on the first screen.
+      const chips = await sm.evaluate(() => {
+        const cards = [...document.querySelectorAll('.start-picker .start-task')];
+        return {
+          columns: new Set(cards.map((a) => Math.round(a.getBoundingClientRect().left))).size,
+          toolShown: cards.some((a) => a.querySelector('.start-task-tool').getBoundingClientRect().width > 1),
+          toolNames: cards.map((a) => a.textContent).join(' | '),
+          fieldTop: Math.round(document.querySelector('[data-role="sub-domain"]').getBoundingClientRect().top),
+          screen: window.innerHeight
+        };
+      });
+      assertEqual(chips.columns, 2, 'two columns of chips');
+      assert(!chips.toolShown && chips.toolNames.includes('SSL Targets'), `each chip names its tool for screen readers only: ${chips.toolNames}`);
+      assert(chips.fieldTop < chips.screen, `the domain field starts on the first screen: ${chips.fieldTop} of ${chips.screen} px`);
       await assertNoHorizontalScroll(sm, 'start picker');
       await shot(sm, 'mobile-light-en-start-picker');
       await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
@@ -1098,16 +1146,19 @@ async function main() {
         { message: 'saved with Ctrl+Enter, no new line typed' });
       await gotoRoute(sm, 'subdomains');
       assert(!await pickerShown(sm), 'saved servers count as a run');
-      await sm.evaluate(() => {
-        localStorage.clear();
-        localStorage.setItem('ssds.subdomains.options', '{}');
-      });
+      // Remembered options alone (a switch flipped on the start page) are no run; learned names are.
+      await firstVisit(sm);
+      await sm.evaluate(() => localStorage.setItem('ssds.subdomains.options', '{}'));
       await sm.reload();
       await waitReady(sm);
-      assert(!await pickerShown(sm), 'a browser that used the app before');
+      assert(await pickerShown(sm), 'remembered view options are no run');
+      await sm.evaluate(() => localStorage.setItem('ssds.learned.labels', JSON.stringify({ v: 1, seq: 1, labels: { api: { hits: 1, last: 1 } } })));
+      await sm.reload();
+      await waitReady(sm);
+      assert(!await pickerShown(sm), 'a browser that ran a scan before (learned names)');
       await firstVisit(sm, 'tr');
       assert(await pickerShown(sm), 'offered in Turkish too');
-      assertEqual(await sm.evaluate(() => document.querySelector('.start-picker-title').textContent), 'Yeni misiniz? Başlamak için bir iş seçin', 'TR title');
+      assertEqual(await sm.evaluate(() => document.querySelector('.start-picker-title').textContent), 'İlk kez mi geliyorsunuz? Başlamak için bir iş seçin', 'TR title');
       await assertNoHorizontalScroll(sm, 'start picker (TR)');
       await shot(sm, 'mobile-light-tr-start-picker');
     });
@@ -1234,17 +1285,55 @@ async function main() {
       assertEqual(await active(), 'page-title', 'About has no input: the focus stays');
     });
 
+    // DNS answers never arrive (offline suite): a run stays in progress until it is cancelled.
+    const holdFetches = () => kb.evaluate(() => {
+      window.__realFetch = window.__realFetch || window.fetch;
+      window.__heldFetches = 0;
+      window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
+        window.__heldFetches += 1;
+        const signal = init.signal || (input && input.signal);
+        if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    });
+    const releaseFetches = () => kb.evaluate(() => {
+      if (window.__realFetch) window.fetch = window.__realFetch;
+    });
+
+    await step('SSL Targets: Ctrl+Enter in the domains starts the scan (not the paste box\'s Read); in the paste box it reads', async () => {
+      await gotoRoute(kb, 'scan');
+      await kb.click('.scan-step-cert [data-action="cert-sample"]');
+      await kb.waitFor(() => document.querySelector('[data-role="scan-domains"]')?.value === 'example.com\nexample.net',
+        { message: 'the sample certificate filled the domains' });
+      await holdFetches();
+      // The paste box of "Load another certificate" is a form of its own: Ctrl+Enter there reads it, and starts no scan.
+      await kb.evaluate(() => {
+        const another = document.querySelector('.scan-cert-another');
+        another.open = true;
+        another.querySelector('.cert-paste').open = true;
+      });
+      await kb.type('.scan-cert-another [data-role="cert-paste"]', '');
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => /Paste a PEM block first/.test(document.querySelector('.scan-cert-another .cert-paste')?.textContent || ''),
+        { message: 'Read answered the paste box' });
+      assert(await kb.evaluate(() => !document.querySelector('.scan-run-ui') && window.__heldFetches === 0), 'no scan from the paste box');
+      await kb.evaluate(() => { document.querySelector('.scan-cert-another').open = false; });
+      // Closed again (as it normally is), the paste box's Read is no candidate: the domains field runs the scan.
+      await kb.evaluate(() => document.querySelector('[data-role="scan-domains"]').focus());
+      await kb.press('Enter', { ctrl: true });
+      await kb.waitFor(() => {
+        const cancel = document.querySelector('[data-action="scan-cancel"]');
+        return document.querySelector('.scan-run')?.dataset.status === 'running' && cancel && !cancel.hidden && window.__heldFetches > 0;
+      }, { message: 'the scan started from the domains field' });
+      assertEqual(await kb.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), 'example.com\nexample.net', 'no new line typed');
+      await kb.press('Escape');
+      await kb.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled'
+        && !document.getElementById('app-header').classList.contains('is-busy'), { message: 'cancelled with Esc' });
+      await releaseFetches();
+    });
+
     await step('Ctrl+Enter runs the tool from its field; Esc cancels the running job (Bulk Resolve, answers held back)', async () => {
       await gotoRoute(kb, 'bulk');
-      // DNS answers never arrive (offline suite): the run stays in progress until it is cancelled.
-      await kb.evaluate(() => {
-        window.__heldFetches = 0;
-        window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
-          window.__heldFetches += 1;
-          const signal = init.signal || (input && input.signal);
-          if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
-        });
-      });
+      await holdFetches();
       const text = 'www.example.com\napi.example.com';
       await kb.type('[data-role="bulk-input"]', text);
       await kb.press('Enter', { ctrl: true });
@@ -1255,6 +1344,19 @@ async function main() {
       assertEqual(await kb.evaluate(() => document.querySelector('[data-role="bulk-input"]').value), text, 'no new line typed');
       assert(await kb.evaluate(() => document.getElementById('app-header').classList.contains('is-busy')), 'busy');
       await kb.press('Enter', { ctrl: true }); // while it runs: nothing (Run is hidden, no other button stands in)
+      // Esc in the results filter with text clears the filter (the browser's own Esc there) and leaves the run alone.
+      const filter = await kb.waitFor(() => {
+        const el = [...document.querySelectorAll('#page-body input[type="search"]')].find((x) => x.getClientRects().length);
+        if (!el) return false;
+        el.dataset.testFilter = '1';
+        return '[data-test-filter="1"]';
+      }, { message: 'the results filter is shown while the run goes on' });
+      await kb.type(filter, 'www');
+      await kb.press('Escape');
+      await kb.waitFor((sel) => document.querySelector(sel).value === '', { args: [filter], message: 'the filter cleared' });
+      assert(await kb.evaluate(() => !document.querySelector('[data-action="bulk-cancel"]').hidden
+        && document.getElementById('app-header').classList.contains('is-busy')), 'the run goes on');
+      // In the emptied filter, the next Esc cancels.
       await kb.press('Escape');
       await kb.waitFor(() => {
         const run = document.querySelector('[data-action="bulk-run"]');

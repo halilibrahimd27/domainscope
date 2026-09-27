@@ -486,7 +486,7 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
     // may still be a name map ({ ip-10-0-0-1: …, dns-1: … }): there a key shaped
     // like a host name stays.
     if (record && !host && RECORD_ATTR_EXCLUDE_RE.test(normalizeKey(key)) && (strong || !isHostLikeKey(key))) continue;
-    found.push(...sub);
+    for (const f of sub) found.push(f); // not a spread: one key may hold 100k+ records
     if (groups.length === 0) continue;
     if (name) {
       own.push(...groups.flat());

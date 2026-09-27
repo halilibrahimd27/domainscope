@@ -2083,6 +2083,10 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /const tab = parseSubTab\(params\.tab\);\s*if \(tab && ui\) ui\.showTab\(tab\);/);
     // A stat card filters the hosts and hands the focus to the Hosts tab (the card hides with its panel).
     assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
+    // A click on the tab already shown is a choice (the component fires onChange only for a change) …
+    assert.match(src, /tabs\.el\.querySelector\('\[role="tablist"\]'\)\.addEventListener\('click', \(event\) => \{[^}]*if \(tab && session\.tab === null\) remember\(tab\.dataset\.tab\);/);
+    // … and an automatic move held back under the focus happens once the focus has left the tabs.
+    assert.match(src, /tabs\.el\.addEventListener\('focusout', \(\) => \{\s*setTimeout\(\(\) => \{\s*if \(root\.isConnected\) followRun\(lastCounts \? lastCounts\.found : 0\);/);
   });
 
   test('on a phone a host name still breaks inside a label too long for its card (subdomains.css)', async () => {

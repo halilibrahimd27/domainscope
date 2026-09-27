@@ -40,11 +40,13 @@
  *     label inside its 375 px card, the "origin?" badges right after a scan with slow DNS, and a
  *     "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
  *   - the results tabs (emulated zone, no network): Sources while nothing is found, Hosts from the
- *     first host, live counts on the labels, a picked tab kept while hosts stream in, arrow keys /
- *     Home / End with a roving tabindex, `tab=` in the URL kept across a language switch and a
- *     visit to another view, stat cards and the "origin?" links opening their tab, and at 375 px
- *     (TR/EN × light/dark) all four tabs in view, host names wrapping only after a dot (a label
- *     wider than the card inside itself), IPs whole, no page scrolling sideways on Hosts or Origins
+ *     first host, live counts on the labels, a picked tab kept while hosts stream in, an automatic
+ *     move held back while the focus is in a panel and made once it leaves, a click on the tab
+ *     shown as a choice, arrow keys / Home / End with a roving tabindex, `tab=` in the URL kept
+ *     across a language switch and a visit to another view, stat cards and the "origin?" links
+ *     opening their tab, and at 375 px (TR/EN × light/dark) all four tabs in view, host names
+ *     wrapping only after a dot (a label wider than the card inside itself), IPs whole, no page
+ *     scrolling sideways on Hosts or Origins
  *   - zero console errors, exceptions and CSP violations (third-party API failures such as a
  *     crt.sh 502 without CORS are reported, not counted); no missing i18n keys
  */
@@ -1380,6 +1382,53 @@ async function main() {
         assert(end.hostsHidden, 'the Hosts panel is hidden while Sources is shown');
         assertEqual(await tabBadges(tt), { overview: null, hosts: '7', origins: '2', sources: null }, 'the final counts (no passive source asked)');
         await shot(tt, opts, 'subdomains-tabs-desktop-light-en-sources');
+      });
+
+      await run.step('the automatic tab waits while the focus is in a panel, moves once the focus leaves; a click on the tab shown is a choice', async () => {
+        const tf = await browser.newPage('about:blank', { width: 1440, height: 900 });
+        await tf.emulateMedia({ 'prefers-color-scheme': 'light' });
+        try {
+          await tf.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(FAKE_APEX, TABS_ZONE) });
+          await tf.send('Page.addScriptToEvaluateOnNewDocument', { source: slowDnsScript });
+          await tf.goto(`${server.url}#/about`);
+          await waitReady(tf);
+          await setLangUi(tf, 'en');
+          await tf.evaluate((words) => {
+            localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
+            sessionStorage.setItem('ssds.wordlist.custom', words);
+          }, TABS_WORDS);
+          await tf.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, FAKE_APEX);
+          await tf.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
+          // Slow enough that nothing is found before the Sources panel has the focus (under every DoH timeout).
+          await tf.evaluate(() => { window.__dnsDelay = 1200; });
+          await tf.click('[data-action="sub-link-start"]');
+          await tf.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'started' });
+          const id = await currentRunId(tf);
+          // A tap in the panel (tabindex=0) focuses it; that is reading, not a choice of the tab.
+          const focused = await tf.evaluate(() => {
+            const panel = document.querySelector('.sub-tabs [role="tabpanel"]:not([hidden])');
+            panel.focus();
+            return { tab: panel.dataset.tab, status: document.querySelector('.sub-run').dataset.status, inside: document.activeElement === panel };
+          });
+          assertEqual(focused, { tab: 'sources', status: 'running', inside: true }, 'the Sources panel has the focus while nothing is found');
+          await tf.evaluate(() => { window.__dnsDelay = 40; });
+          await tf.waitFor(() => Number(document.querySelector('.sub-tabs .tab[data-tab="hosts"] .tab-badge:not([hidden])')?.textContent) > 0,
+            { timeout: 60000, message: 'hosts listed' });
+          await tf.evaluate(() => { window.__dnsDelay = 0; });
+          assertEqual(await tf.waitFor(DONE(id), { timeout: 60000, message: 'focus scan done' }), 'done', 'status');
+          await sleep(300);
+          assertEqual([await selectedTab(tf), await routeTab(tf)], ['sources', null], 'hosts found, the run ended: the focus in the panel still holds Sources');
+          // The focus leaves the tabs: the move held back happens now (automatic, so not in the URL).
+          await tf.evaluate(() => document.activeElement.blur());
+          await tf.waitFor(() => document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab === 'hosts', { message: 'Hosts once the focus left' });
+          assertEqual(await routeTab(tf), null, 'the automatic move is not written into the URL');
+          // A click on Hosts, already shown, makes it the user's tab (in the URL, kept for this run).
+          await tf.click('.sub-tabs .tab[data-tab="hosts"]');
+          await tf.waitFor(() => new URLSearchParams(location.hash.split('?')[1] || '').get('tab') === 'hosts', { message: 'tab=hosts after the click' });
+          await assertClean(tf, 'automatic tab and focus', origin);
+        } finally {
+          await tf.close();
+        }
       });
 
       await run.step('keyboard: arrow keys, Home and End move a roving tabindex; the choice is in the URL and survives a language switch and another view', async () => {

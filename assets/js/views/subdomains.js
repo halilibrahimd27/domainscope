@@ -4999,6 +4999,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     tabs.select(tabId, { focus, silent: true });
     remember(tabId);
   }
+  // A click on the tab already shown is a choice too (the component reports only a change).
+  tabs.el.querySelector('[role="tablist"]').addEventListener('click', (event) => {
+    const tab = event.target && event.target.closest ? event.target.closest('[role="tab"]') : null;
+    if (tab && session.tab === null) remember(tab.dataset.tab);
+  });
   /**
    * An automatic choice follows the run: Sources → Hosts with the first host, Overview when the
    * run ends empty (lib/subtabs.nextAutoTab) — never a tab the user chose, never under the focus.
@@ -5028,6 +5033,15 @@ function buildRunUI(run, ctx, { onFinish }) {
     });
     for (const tabId of SUB_TABS) tabs.setBadge(tabId, b[tabId] ? b[tabId].value : null, b[tabId] ? b[tabId].variant : null);
   }
+  // followRun holds a move back while the focus is inside the tabs (a focused tab, a tapped
+  // panel); once the focus has left them, the move it held back happens after all. Checked after
+  // the focus has landed: a focus that only moves within the tabs, or a window that lost the focus
+  // (the element keeps it), still holds.
+  tabs.el.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (root.isConnected) followRun(lastCounts ? lastCounts.found : 0);
+    }, 0);
+  });
 
   const results = h('div', { class: 'sub-results' }, tabs.el);
   const root = h('div', { class: 'stack sub-run-ui', dataset: { run: run.id, status: run.status } }, panel, results);

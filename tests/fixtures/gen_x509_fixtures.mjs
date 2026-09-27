@@ -7,6 +7,10 @@
  *   node tests/fixtures/gen_x509_fixtures.mjs --force      # also regenerate crafted / derived fixtures (new keys!)
  *   node tests/fixtures/gen_x509_fixtures.mjs --fetch-real # also re-download real_*.pem via `openssl s_client`
  *
+ * It also crafts the app's "Try a sample" certificate, assets/data/sample-cert.pem (created when
+ * missing, replaced with --force): a leaf for example.com / example.net and its intermediate,
+ * issued by a made-up "DomainScope Sample" CA whose keys are never written anywhere.
+ *
  * Crafted certificates are built with an independent, minimal DER encoder
  * (below) and signed with node:crypto, so they exercise corner cases OpenSSL's
  * CLI cannot produce (string types, escaping, odd SAN entries, SCT lists, ...).
@@ -18,7 +22,7 @@
  * never modified.
  */
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync, sign as cryptoSign, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign as cryptoSign, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -376,6 +380,77 @@ for (const [file, make] of Object.entries(CRAFTED)) {
   if (!FORCE && existsSync(fx(file))) continue;
   writeFileSync(fx(file), pem(make()));
   console.log('crafted', file);
+}
+
+// ---------------------------------------------------------------------------
+// The app's sample certificate (views/cert.js "Try a sample")
+// ---------------------------------------------------------------------------
+const SAMPLE_CERT = join(DIR, '..', '..', 'assets', 'data', 'sample-cert.pem');
+
+/** RFC 5280 §4.2.1.2 key identifier: SHA-1 of the subjectPublicKey bits (a P-256 point is the last 65 bytes). */
+const keyIdOf = (key) => createHash('sha1').update(spkiOf(key).subarray(-65)).digest();
+
+/**
+ * Leaf (example.com, *.example.com, example.net, www.example.net; serverAuth, EC P-256, valid
+ * 2026–2036 so the sample never expires on screen) + its intermediate. The root is not in the
+ * file, as a server would send it; no key is kept.
+ * @returns {Buffer[]} [leaf, intermediate] DER
+ */
+function craftSampleChain() {
+  const root = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const inter = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const leaf = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const org = [[A.O, utf8('DomainScope Sample')]];
+  const rootName = name([[[A.C, printable('XX')]], org, [[A.CN, utf8('DomainScope Sample Root CA')]]]);
+  const interName = name([[[A.C, printable('XX')]], org, [[A.CN, utf8('DomainScope Sample Intermediate CA')]]]);
+  const serial = () => {
+    const b = randomBytes(16);
+    b[0] &= 0x7f;
+    return b.toString('hex');
+  };
+  const keyIds = (subjectKey, issuerKey) => [
+    ext('2.5.29.14', octet(keyIdOf(subjectKey.publicKey))),
+    ext('2.5.29.35', seq(ctx(0, false, keyIdOf(issuerKey.publicKey))))
+  ];
+  const intermediate = buildCert({
+    serial: serial(),
+    sigAlg: ALG.ecdsa256,
+    issuer: rootName,
+    notBefore: utc('250101000000Z'),
+    notAfter: utc('391231235959Z'),
+    subject: interName,
+    spki: spkiOf(inter.publicKey),
+    extensions: [
+      ext('2.5.29.19', seq(bool(true), int('00')), true),
+      ext('2.5.29.15', bits(Buffer.from([0x06]), 1), true), // keyCertSign, cRLSign
+      ...keyIds(inter, root)
+    ],
+    signer: signWith(root.privateKey, 'sha256')
+  });
+  const san = seq(...['example.com', '*.example.com', 'example.net', 'www.example.net'].map((n) => ctx(2, false, Buffer.from(n))));
+  const leafCert = buildCert({
+    serial: serial(),
+    sigAlg: ALG.ecdsa256,
+    issuer: interName,
+    notBefore: utc('260101000000Z'),
+    notAfter: utc('360101000000Z'),
+    subject: name([org, [[A.CN, utf8('example.com')]]]),
+    spki: spkiOf(leaf.publicKey),
+    extensions: [
+      ext('2.5.29.19', seq(), true),
+      ext('2.5.29.15', bits(Buffer.from([0x80]), 7), true), // digitalSignature
+      ext('2.5.29.37', seq(oid('1.3.6.1.5.5.7.3.1'))),
+      ext('2.5.29.17', san),
+      ...keyIds(leaf, inter)
+    ],
+    signer: signWith(inter.privateKey, 'sha256')
+  });
+  return [leafCert, intermediate];
+}
+
+if (FORCE || !existsSync(SAMPLE_CERT)) {
+  writeFileSync(SAMPLE_CERT, craftSampleChain().map(pem).join(''));
+  console.log('crafted assets/data/sample-cert.pem');
 }
 
 // ---------------------------------------------------------------------------

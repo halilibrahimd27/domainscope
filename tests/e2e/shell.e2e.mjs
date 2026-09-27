@@ -24,7 +24,7 @@
  * No network access is needed: the shell views never call external APIs.
  */
 
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,7 @@ import { launchBrowser } from './cdp.mjs';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { t as translate, setLang as setNodeLang } from '../../assets/js/i18n.js';
 import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
-import { REPO_URL } from '../../assets/js/app.js';
+import { REPO_URL, VIEW_CSS_ORDER } from '../../assets/js/app.js';
 import { assembleSite } from '../../tools/assemble-site.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -351,6 +351,15 @@ async function main() {
       assertEqual(await page.evaluate(() => document.documentElement.lang), 'en', 'html lang');
     });
 
+    await step('the start route loads the global stylesheet and its own; development registers no service worker', async () => {
+      const sheets = await page.evaluate(() => [...document.querySelectorAll('link[rel="stylesheet"]')].map((l) => new URL(l.href).pathname));
+      assertEqual(sheets, [`${BASE}assets/css/style.css`, `${BASE}assets/css/views/subdomains.css`], 'stylesheets');
+      // registration is attempted when the browser is idle: give it that chance first
+      await page.evaluate(() => new Promise((r) => requestIdleCallback(() => setTimeout(r, 200), { timeout: 3000 })));
+      assertEqual(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 0, 'registrations');
+      assertEqual(await page.evaluate(() => document.querySelector('link[rel="manifest"]').getAttribute('href')), 'manifest.webmanifest', 'manifest');
+    });
+
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ 'prefers-color-scheme': scheme });
       for (const id of ROUTES) {
@@ -365,6 +374,14 @@ async function main() {
       }
     }
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+
+    await step('each view brought its stylesheets, kept in cascade order whatever the visiting order', async () => {
+      const injected = await page.evaluate(() => [...document.querySelectorAll('link[data-view-css]')].map((l) => l.dataset.viewCss));
+      assertEqual(injected, [...VIEW_CSS_ORDER], 'view stylesheets');
+      const idle = await page.evaluate(() => [...document.querySelectorAll('link[rel="modulepreload"]')]
+        .map((l) => new URL(l.href).pathname).filter((p) => p.includes('/lib/scanner.js')).length);
+      assertEqual(idle, 1, 'the scan engine is modulepreloaded once, when idle');
+    });
 
     await step('router: unknown view → subdomains (URL rewritten), anchors keep the view', async () => {
       await gotoRoute(page, 'about');
@@ -1746,6 +1763,11 @@ async function main() {
     await assembleSite({ out: site, version: 'e2e-one' });
     const pages = await startServer({ root: site, base: BASE });
     const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    // These steps are about a page no service worker answers for — the first visit, a browser or
+    // private window without one — so this tab has none (the installable app has its own group).
+    await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: "Object.defineProperty(Navigator.prototype, 'serviceWorker', { get: () => undefined, configurable: true });"
+    });
     const moduleSrc = () => tab.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
     try {
       await step('boots from v/<version>/assets/; About links reach the licences, the CLI and its source on GitHub', async () => {
@@ -1836,6 +1858,112 @@ async function main() {
     } finally {
       await tab.close();
       await pages.close();
+    }
+
+    /* ---------------- The installable app: service worker, offline tools, update ---------------- */
+    group('Installable app (sw.js from the Pages bundle)');
+    // Its own bundle and server (a new origin: no service worker from the steps above).
+    const appSite = path.join(tmpDir, 'site-app');
+    await assembleSite({ out: appSite, version: 'app-one' });
+    const workerBuild = JSON.parse(/^const BUILD = (\{[\s\S]*?\n\}); /m.exec(await readFile(path.join(appSite, 'sw.js'), 'utf8'))[1]);
+    const app = await startServer({ root: appSite, base: BASE });
+    const pwa = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await pwa.emulateMedia({ 'prefers-color-scheme': 'light' });
+    await pwa.send('Network.enable');
+    const pwaSrc = () => pwa.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
+    const network = async (online) => {
+      app.setOffline(!online); // the worker's own fetches fail too, so an answer can only come from its cache
+      await pwa.send('Network.emulateNetworkConditions', { offline: !online, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+      await pwa.waitFor((on) => navigator.onLine === on, { args: [online], message: `navigator.onLine ${online}` });
+    };
+    try {
+      await step('installs the service worker (CSP worker-src falls back to script-src \'self\') and precaches this version', async () => {
+        await pwa.goto(app.url);
+        await waitReady(pwa);
+        const sw = await pwa.waitFor(async (name, count) => {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (!reg || !reg.active || !navigator.serviceWorker.controller) return false;
+          const n = (await caches.has(name)) ? (await (await caches.open(name)).keys()).length : 0;
+          return n === count && { scope: reg.scope, script: reg.active.scriptURL, caches: (await caches.keys()).sort() };
+        }, { args: [workerBuild.shellCache, workerBuild.precache.length], timeout: 30000, message: 'service worker in control, app shell precached' });
+        assertEqual(sw, { scope: app.url, script: `${app.url}sw.js`, caches: [workerBuild.shellCache, workerBuild.wordlistCache] }, 'registration');
+        const manifest = await pwa.evaluate(async () => {
+          const link = document.querySelector('link[rel="manifest"]');
+          const m = await (await fetch(link.href)).json();
+          return { href: link.getAttribute('href'), name: m.short_name, start: new URL(m.start_url, link.href).href };
+        });
+        assertEqual(manifest, { href: 'manifest.webmanifest', name: 'DomainScope', start: app.url }, 'web app manifest');
+        await assertClean(pwa, 'service worker install');
+      });
+
+      await step('offline: the app starts from the cache; Certificate, Zone File and Servers work', async () => {
+        await network(false);
+        // A normal reload (not a hard one, which would skip the service worker).
+        const loaded = pwa.conn.once('Page.loadEventFired', pwa.sessionId, () => true, 30000);
+        await pwa.send('Page.reload', { ignoreCache: false });
+        await loaded;
+        await waitReady(pwa);
+        assertEqual(await pwaSrc(), 'v/app-one/assets/js/app.js', 'the cached index.html');
+        await gotoRoute(pwa, 'cert');
+        await pwa.click('[data-action="cert-sample"]');
+        await pwa.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'example.com', { message: 'sample certificate parsed offline' });
+        await gotoRoute(pwa, 'zone');
+        await pwa.click('[data-sample="bind"]');
+        await pwa.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'zone file parsed offline' });
+        await gotoRoute(pwa, 'inventory');
+        await pwa.type('[data-role="inventory-text"]', 'web01 192.0.2.10');
+        await pwa.waitFor(() => document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length === 1, { message: 'servers parsed offline' });
+        const notes = await pwa.evaluate(() => document.querySelector('#page-offline').hidden);
+        assertEqual(notes, true, 'no offline note on a tool that works offline');
+        await shot(pwa, 'desktop-light-en-offline-zone');
+      });
+
+      await step('offline: a network tool says it needs the network, names the offline tools and sends nothing', async () => {
+        await gotoRoute(pwa, 'lookup');
+        setNodeLang('en');
+        const note = await pwa.evaluate(() => ({
+          hidden: document.querySelector('#page-offline').hidden,
+          title: document.querySelector('#page-offline .alert-title')?.textContent,
+          tools: [...document.querySelectorAll('#page-offline a[data-view]')].map((a) => a.dataset.view)
+        }));
+        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'inventory', 'about'] }, 'offline note');
+        await pwa.type('[data-role="lookup-name"]', 'example.com');
+        await pwa.click('[data-action="run"]');
+        await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),
+          { args: [translate('shell.offlineAction')], message: 'offline toast' });
+        const sent = await pwa.evaluate(() => performance.getEntriesByType('resource').filter((e) => /dns-query|\/resolve\?/.test(e.name)).length);
+        assertEqual(sent, 0, 'no DoH request');
+        await shot(pwa, 'desktop-light-en-offline-lookup');
+        await assertClean(pwa, 'offline', { offline: true });
+      });
+
+      await step('back online, a new deploy: "Update ready — Reload" loads it and drops the old version\'s cache', async () => {
+        await network(true);
+        await dismissToasts(pwa);
+        await assembleSite({ out: appSite, version: 'app-two' });
+        // The browser looks for a new sw.js on navigations; a hash-routed page asks when it becomes
+        // visible or comes back online (at most hourly), so the test asks now.
+        await pwa.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+        setNodeLang('en');
+        await pwa.waitFor((text) => document.querySelector('.toast[data-toast="pwa-update"]')?.textContent.includes(text),
+          { args: [translate('pwa.updateReady')], timeout: 30000, message: 'update toast' });
+        assertEqual(await pwaSrc(), 'v/app-one/assets/js/app.js', 'still the running version until the click');
+        await shot(pwa, 'desktop-light-en-update-ready');
+        await pwa.click('.toast[data-toast="pwa-update"] .btn');
+        await pwa.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
+          && document.documentElement.dataset.appReady === 'true', { timeout: 30000, message: 'the new version after the reload' });
+        const after = await pwa.waitFor(async () => {
+          const reg = await navigator.serviceWorker.getRegistration();
+          const keys = (await caches.keys()).sort();
+          return reg && !reg.waiting && keys.length === 2 && keys;
+        }, { timeout: 15000, message: 'old cache dropped' });
+        assertEqual(after, ['domainscope-shell-app-two', 'domainscope-wordlists'], 'caches');
+        assertEqual(await pwa.evaluate(() => !!document.querySelector('.toast[data-toast="pwa-update"]')), false, 'toast gone');
+        await assertClean(pwa, 'after the update');
+      });
+    } finally {
+      await pwa.close();
+      await app.close();
     }
   } finally {
     await browser.close();

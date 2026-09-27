@@ -21,8 +21,9 @@
  * the lookup, typing a network drops it; one RIPEstat request, the prefix picker, the cap, a
  * sweep of the picked prefixes), a shared link that pre-fills and waits (one opened while a
  * sweep runs waits for it to end; a range typed with spaces stays one range in the URL, after
- * a reload and in a link typed with an en dash), "Under your domain" off without a focus
- * domain, keyboard focus
+ * a reload and in a link typed with an en dash; a link naming the last sweep with another focus
+ * domain fills the form, also over a draft), "Under your domain" off without a focus domain,
+ * keyboard focus
  * Sweep ⇄ Stop and a stopped sweep, Domain Health's mail identity (FCrDNS) rows and table
  * (at 375 px too), TR / EN × light / dark at 375 px, zero console errors / CSP violations /
  * missing i18n keys, nothing sent outside the page.
@@ -673,6 +674,36 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-role="ptr-target"]').value === '192.0.2.20-22', { message: 'en-dash link' });
       assert(/192\.0\.2\.20-192\.0\.2\.22 \(3 addresses\)/.test(await text(page, '.ptr-prompt')), 'three addresses');
       assertEqual(await dnsCount(page), 0, 'a link never sweeps by itself');
+    });
+
+    await run.step('a link naming the last sweep with another focus domain fills the form and waits, also over a draft', async () => {
+      const form = () => page.evaluate(() => [document.querySelector('[data-role="ptr-target"]').value, document.querySelector('[data-role="ptr-focus"]').value]);
+      const linked = () => page.evaluate(() => !!document.querySelector('.ptr-prompt [data-prompt="link"]'));
+      await typeTarget(page, '192.0.2.1');
+      await page.type('[data-role="ptr-focus"]', '');
+      await sleep(200);
+      await page.click('[data-action="ptr-run"]');
+      await waitDone(page, 'a sweep without a focus');
+      // The same target with a focus domain (Domain Health's per-MX link, a second domain on a shared host).
+      let before = await dnsCount(page);
+      await page.evaluate(() => { location.hash = '#/ptr?target=192.0.2.1&focus=example.com'; });
+      await page.waitFor(() => document.querySelector('[data-role="ptr-focus"]').value === 'example.com', { message: 'the link\'s focus' });
+      assertEqual(await form(), ['192.0.2.1', 'example.com'], 'the link in the form');
+      assert(await linked(), 'the link prompt');
+      await sleep(200);
+      assertEqual(await dnsCount(page), before, 'the link sent nothing');
+      // A draft typed after a sweep, then a link naming that sweep's target with another focus.
+      await page.click('[data-action="ptr-run"]');
+      await waitDone(page, 'the sweep with the focus');
+      await typeTarget(page, '198.51.100.0/30');
+      await sleep(200);
+      before = await dnsCount(page);
+      await page.evaluate(() => { location.hash = '#/ptr?target=192.0.2.1&focus=example.net'; });
+      await page.waitFor(() => document.querySelector('[data-role="ptr-target"]').value === '192.0.2.1', { message: 'the link over the draft' });
+      assertEqual(await form(), ['192.0.2.1', 'example.net'], 'the link in the form');
+      assert(await linked(), 'and its prompt');
+      await sleep(200);
+      assertEqual(await dnsCount(page), before, 'the link sent nothing');
     });
 
     run.group('Phone 375×667, Turkish / English, light / dark');

@@ -496,14 +496,16 @@ export function shareParams(target, focus = '') {
 
 /**
  * The form, the current / last sweep and AS lookup, the table's filter, kept for the page session.
- * `routeTarget`: the target in the URL that is in the form or waits for it (a link applied or
- * waiting, or the last run's); `prompt`: a link pre-filled the form and waits for a click;
+ * `routeTarget` / `routeFocus`: the target and the focus domain ('' for none) in the URL that
+ * are in the form or wait for it (a link applied or waiting, or what the page last wrote);
+ * `prompt`: a link pre-filled the form and waits for a click;
  * `pending`: a link opened while a sweep runs ({ text, focus }), put into the form when that
  * sweep ends. Each sweep starts at the 'ptr' filter; `filterChosen`: the user picked one for
  * this sweep (else a sweep that ends without any PTR name shows all its addresses).
  */
 const session = {
-  text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false, routeTarget: null, pending: null
+  text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false,
+  routeTarget: null, routeFocus: '', pending: null
 };
 let jobCounter = 0;
 let active = null;
@@ -717,6 +719,8 @@ export function mount(container, ctx) {
         actions: suggestion ? [Button({
           label: t('ptr.issue.use', { suggestion }), size: 'sm', dataset: { action: 'ptr-use-suggestion' },
           onClick: () => {
+            // The target box is read-only while a sweep runs (like the Example button).
+            if (isRunning()) return;
             targetField.value = suggestion;
             session.text = suggestion;
             renderParsed();
@@ -895,6 +899,7 @@ export function mount(container, ctx) {
   function setRouteTarget(target) {
     const params = shareParams(target, focusField.value);
     session.routeTarget = params ? params.target : null;
+    session.routeFocus = params && params.focus ? params.focus : '';
     ctx.setParams(params ? { target: params.target, focus: params.focus } : {});
   }
 
@@ -915,6 +920,7 @@ export function mount(container, ctx) {
   const syncRouteFocus = debounce(() => {
     if (!session.routeTarget || session.pending || ctx.signal.aborted) return;
     if (focusField.value.trim() && !focusValue()) return;
+    session.routeFocus = focusValue() || '';
     ctx.setParams({ target: session.routeTarget, focus: focusValue() });
   }, 300);
 
@@ -1026,6 +1032,7 @@ export function mount(container, ctx) {
             type: 'button', class: 'link-btn text-sm', title: t('ptr.asn.partTitle'), dataset: { action: 'ptr-asn-part', part: p.part },
             on: {
               click: () => {
+                if (isRunning()) return;
                 targetField.value = p.part;
                 session.text = p.part;
                 renderParsed();
@@ -1128,7 +1135,12 @@ export function mount(container, ctx) {
 
   active = {
     applyParams(params) {
-      if (applyRoute(params)) {
+      // A hash change while mounted is a navigation (the page writes its own URL without one): a
+      // link naming what the page last wrote still fills the form when the form holds another
+      // target or focus by now (a draft typed after the sweep).
+      const drafted = !sweepRunning() && (targetTokens(targetField.value).join(',') !== session.routeTarget
+        || (focusValue() || '') !== session.routeFocus);
+      if (applyRoute(params, { force: drafted })) {
         if (session.pending) showPrompt();
         else fillFromSession();
       }
@@ -1156,16 +1168,25 @@ export function linkText(raw) {
 
 /**
  * Pre-fill the form from route params (`target`, `focus`); a link waits for a click. The target
- * this page put into the URL itself (the last run, `session.routeTarget`) is not a new link:
- * a reload or a re-mount keeps what the form holds. A link opened while a sweep runs waits in
+ * and focus this page put into the URL itself (`session.routeTarget` / `routeFocus`) are not a
+ * new link: a reload or a re-mount keeps what the form holds. A link with the same target and
+ * another focus domain is one (Domain Health's and the Subdomains origin panel's links name a
+ * shared network with each domain's focus). A link opened while a sweep runs waits in
  * `session.pending`: the form keeps the running sweep's target until that sweep ends.
- * @returns {boolean} whether the params carried a new target
+ * @param {Record<string, string>} params
+ * @param {{ force?: boolean }} [opts] `force`: apply even the page's own target and focus (the
+ *   form holds something else by now)
+ * @returns {boolean} whether the params were taken as a link
  */
-function applyRoute(params) {
+function applyRoute(params, { force = false } = {}) {
   const raw = params && typeof params.target === 'string' ? params.target : '';
   const text = linkText(raw);
-  if (!text || text.replace(/\n/g, ',') === session.routeTarget) return false;
-  session.routeTarget = text.replace(/\n/g, ',');
+  if (!text) return false;
+  const target = text.replace(/\n/g, ',');
+  const focus = normalizeHostname(String((params && params.focus) || '')) || '';
+  if (!force && target === session.routeTarget && focus === session.routeFocus) return false;
+  session.routeTarget = target;
+  session.routeFocus = focus;
   session.pending = { text, focus: params.focus ? String(params.focus) : '' };
   if (!sweepRunning()) takePending();
   return true;

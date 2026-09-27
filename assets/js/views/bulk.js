@@ -35,7 +35,7 @@ import { errorKind, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { bulkFraction } from '../lib/jobprogress.js';
-import { ipFieldStatus } from '../lib/sourcestatus.js';
+import { ipFieldStatus, sourceStatus } from '../lib/sourcestatus.js';
 import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 
@@ -528,6 +528,8 @@ function newIpRow(ip, index) {
     hosts: [],
     servers: lookupServers([ip], index).map(({ server }) => ({ serverId: server.id, name: server.name })),
     ptr: null,
+    // PTR only (no IP Intel): why the reverse lookup could not be made (lib/sourcestatus.js SourceFailure).
+    ptrFailure: null,
     info: null,
     enriching: false,
     enrichError: null,
@@ -622,13 +624,24 @@ export async function runJob(job, { dns, index, concurrency, fetchImpl }) {
         row.ptr = info.ptr || [];
         if (info.error) row.enrichError = info.error;
       } else if (opts.ptr && !row.private) {
-        row.ptr = await dns.ptr(row.ip, { signal, resolver });
+        // A lookup that could not be made is a failure (n/a in the tables), never "no PTR record".
+        row.ptr = await dns.ptr(row.ip, { signal, resolver, throwOnError: true });
       } else {
         row.ptr = [];
       }
     } catch (err) {
       if (errorKind(err) === 'abort') throw err;
       row.enrichError = String((err && err.message) || err);
+      if (!intel) {
+        row.ptrFailure = {
+          source: 'ptr',
+          error: row.enrichError,
+          errorKind: errorKind(err),
+          retryAfterMs: err && Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null,
+          rcode: err && typeof err.rcode === 'string' ? err.rcode : null,
+          at: Date.now()
+        };
+      }
       row.ptr = row.ptr || [];
     } finally {
       row.enriching = false;
@@ -1149,10 +1162,14 @@ function buildJobUI(job, ctx, { onFinish }) {
   const enrichSkipped = (row) => row.ips.some((ip) => ipOf(ip)?.skipped);
   const pendingCell = () => h('span', { class: 'muted text-sm' }, t('bulk.pending'));
   const skippedCell = () => h('span', { class: 'muted text-sm', title: t('bulk.skippedTitle') }, t('bulk.skipped'));
-  /** "⚠ n/a" when a failed intel source left this field empty (lib/sourcestatus.js), never a silent dash. */
+  /**
+   * "⚠ n/a" when a failed intel source left this field empty (lib/sourcestatus.js), never a silent
+   * dash; with PTR only, the reverse lookup's own failure.
+   */
   const naOf = (r, field) => {
     const st = r.info ? ipFieldStatus(r.info, field) : null;
-    return st ? NaMark(st.statuses) : null;
+    if (st) return NaMark(st.statuses);
+    return field === 'ptr' && r.ptrFailure ? NaMark([sourceStatus(r.ptrFailure)]) : null;
   };
   /** The same for a host row: the first of its addresses whose failed source left `field` empty. */
   const hostNa = (row, field) => {

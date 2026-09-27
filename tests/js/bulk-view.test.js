@@ -96,6 +96,28 @@ describe('bulk view: job runner', () => {
     assert.equal(job.ipDone, 1, 'aborted lookups are not counted as done');
   });
 
+  test('PTR only: a reverse lookup that could not be made is a failure, not an empty PTR', async () => {
+    const names = ['a.example.com', 'b.example.com', 'c.example.com'];
+    const dns = fakeDns(names, async (ip, opts) => {
+      assert.equal(opts.throwOnError, true, 'asks the DNS client to tell "could not ask" from "no record"');
+      if (ip === '192.0.2.1') return [];
+      if (ip === '192.0.2.2') throw Object.assign(new Error('PTR lookup answered SERVFAIL'), { kind: 'unknown', rcode: 'SERVFAIL' });
+      throw Object.assign(new Error('HTTP 429'), { kind: 'rate-limit', retryAfterMs: 60000 });
+    });
+    const job = createJob(names, { ptr: true, asn: false, noCache: false, resolver: '' });
+    const before = Date.now();
+    await runJob(job, { dns, index: null, concurrency: 2 });
+    const none = job.ips.get('192.0.2.1');
+    assert.deepEqual([none.ptr, none.ptrFailure, none.enrichError], [[], null, null], 'no PTR record: an answer');
+    const servfail = job.ips.get('192.0.2.2');
+    assert.deepEqual(servfail.ptr, []);
+    assert.deepEqual({ ...servfail.ptrFailure, at: 0 }, { source: 'ptr', error: 'PTR lookup answered SERVFAIL', errorKind: 'unknown', retryAfterMs: null, rcode: 'SERVFAIL', at: 0 });
+    assert.ok(servfail.ptrFailure.at >= before);
+    const limited = job.ips.get('192.0.2.3').ptrFailure;
+    assert.deepEqual([limited.errorKind, limited.retryAfterMs, limited.rcode], ['rate-limit', 60000, null]);
+    assert.equal(job.ipDone, 3, 'a failed lookup is still done');
+  });
+
   test('ASN mode sends the PTR queries to the resolver chosen for the run', async () => {
     const names = ['a.example.com'];
     const dns = fakeDns(names, async () => ['a.example.net']);

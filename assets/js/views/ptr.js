@@ -1227,18 +1227,39 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   // A pattern row's search text holds every member's (addresses, names, statuses, operators,
   // servers), so a member that matches on its own never sits in a row the search hides.
   const providerName = (c) => (c && c.provider ? c.provider.name : '');
+  /**
+   * The forward check of a row: the verdict, or a pattern's "7 of 8 confirm" (with "1 of 8
+   * match" when the filter or the search keeps only some of its addresses, as an export does).
+   */
+  const checkCell = (r) => {
+    if (r.type === 'pattern') {
+      const all = r.counts.confirmed === r.members.length;
+      const badge = Badge(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
+      const kept = narrowed() ? rowResults(r).length : r.members.length;
+      return kept < r.members.length
+        ? h('div', { class: 'ptr-check' }, badge, h('span', { class: 'ptr-matching text-xs muted', title: t('ptr.pattern.matchingTitle'), dataset: { kept: String(kept) } },
+          t('ptr.pattern.matching', { count: kept, total: formatNumber(r.members.length) })))
+        : badge;
+    }
+    const el = statusBadge(r.result.status);
+    el.dataset.status = r.result.status;
+    return el;
+  };
   const columns = [
     {
       key: 'ip', label: t('ptr.col.ip'), sortable: true, sortValue: (r) => r.sortKey,
       searchValue: (r) => (r.type === 'pattern' ? r.members.map((m) => m.ip).join(' ') : r.result.ip),
-      render: (r) => (r.type === 'pattern'
-        ? h('div', { class: 'ptr-ipcell' },
-          h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
-          h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
-        : h('span', { class: 'mono ptr-ip' }, r.result.ip))
+      // On a phone the forward check sits under the address (its own column is hidden).
+      render: (r) => h('div', { class: 'ptr-ipwrap' },
+        r.type === 'pattern'
+          ? h('div', { class: 'ptr-ipcell' },
+            h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
+            h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
+          : h('span', { class: 'mono ptr-ip' }, r.result.ip),
+        h('div', { class: 'ptr-st-inline' }, checkCell(r)))
     },
     {
-      key: 'ptr', label: t('ptr.col.ptr'), sortable: true,
+      key: 'ptr', label: t('ptr.col.ptr'), sortable: true, className: 'ptr-col-ptr',
       sortValue: (r) => (r.type === 'pattern' ? r.template : r.result.names[0] || null),
       searchValue: (r) => (r.type === 'pattern' ? `${r.template} ${r.members.flatMap((m) => m.names).join(' ')}` : r.result.names.join(' ')),
       render: (r) => {
@@ -1259,26 +1280,12 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
       }
     },
     {
-      key: 'check', label: t('ptr.col.check'), sortable: true,
+      key: 'check', label: t('ptr.col.check'), sortable: true, className: 'ptr-col-check',
       sortValue: (r) => (r.type === 'pattern' ? 'confirmed' : r.result.status),
       searchValue: (r) => (r.type === 'pattern'
         ? FCRDNS_STATUSES.filter((s) => r.counts[s]).map((s) => `${s} ${t(`ptr.st.${s}`)}`).join(' ')
         : `${r.result.status} ${t(`ptr.st.${r.result.status}`)}`),
-      render: (r) => {
-        if (r.type === 'pattern') {
-          const all = r.counts.confirmed === r.members.length;
-          const badge = Badge(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
-          // The filter or the search keeps only some of the pattern's addresses (and so does an export).
-          const kept = narrowed() ? rowResults(r).length : r.members.length;
-          return kept < r.members.length
-            ? h('div', { class: 'ptr-check' }, badge, h('span', { class: 'ptr-matching text-xs muted', title: t('ptr.pattern.matchingTitle'), dataset: { kept: String(kept) } },
-              t('ptr.pattern.matching', { count: kept, total: formatNumber(r.members.length) })))
-            : badge;
-        }
-        const el = statusBadge(r.result.status);
-        el.dataset.status = r.result.status;
-        return el;
-      }
+      render: (r) => checkCell(r)
     },
     {
       key: 'operator', label: t('ptr.col.operator'), sortable: true,

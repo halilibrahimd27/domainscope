@@ -224,6 +224,12 @@
   gap: 1px;
 }
 
+/* The forward check under the address, shown on a phone only (its column is hidden there). */
+.ptr-st-inline {
+  display: none;
+  margin-top: 4px;
+}
+
 .ptr-count {
   font-weight: 650;
 }
@@ -324,6 +330,22 @@
   .ptr-filter,
   .ptr-toolbar {
     width: 100%;
+  }
+
+  .ptr-table .dt-table th.ptr-col-check,
+  .ptr-table .dt-table td.ptr-col-check {
+    display: none;
+  }
+
+  .ptr-st-inline {
+    display: block;
+  }
+
+  /* A long PTR name breaks rather than push the other columns off the screen. */
+  .ptr-table .dt-table td.ptr-col-ptr {
+    min-width: 9rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .ptr-filter .select {

@@ -168,7 +168,7 @@ const dnsCount = (page) => page.evaluate(() => window.__fakeDnsLog.length);
 const rows = (page) => page.evaluate(() => [...document.querySelectorAll('.ptr-table tbody tr.dt-row')].map((tr) => {
   const cells = [...tr.cells].slice(1);
   return {
-    ip: cells[0].textContent.trim(),
+    ip: (cells[0].querySelector('.ptr-ipcell, .ptr-ip') || cells[0]).textContent.trim(),
     ptr: cells[1].textContent.trim(),
     status: cells[2].querySelector('[data-status]')?.dataset.status || cells[2].textContent.trim(),
     operator: cells[3].textContent.trim(),
@@ -579,6 +579,21 @@ async function main() {
       await page.click('[data-action="ptr-run"]');
       await waitDone(page, 'phone sweep');
       await page.setViewport({ width: 375, height: 667, mobile: true });
+      // the forward check sits under the address, in view without scrolling the table sideways
+      await setSelect(page, '[data-role="ptr-filter"]', 'all');
+      const phone = await page.evaluate(() => {
+        const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
+        const scroller = document.querySelector('.ptr-table .dt-scroll');
+        const inline = [...document.querySelectorAll('.ptr-table tbody tr.dt-row .ptr-st-inline')];
+        const box = scroller.getBoundingClientRect();
+        return {
+          column: [...document.querySelectorAll('.ptr-table td.ptr-col-check')].some(visible),
+          inline: inline.length > 0 && inline.every(visible),
+          inView: inline.every((el) => el.getBoundingClientRect().right <= box.right + 1),
+          first: inline[0]?.querySelector('[data-status]')?.dataset.status || ''
+        };
+      });
+      assertEqual(phone, { column: false, inline: true, inView: true, first: 'confirmed' }, 'phone verdicts');
       for (const lang of ['tr', 'en']) {
         await setLangUi(page, lang);
         await page.waitFor(() => document.querySelector('.ptr-progress')?.dataset.status === 'done', { message: 'results kept after the language switch' });

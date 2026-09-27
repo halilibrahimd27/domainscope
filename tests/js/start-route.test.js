@@ -30,9 +30,11 @@ const JS = join(ASSETS, 'js');
  * Gzip budget of the start route, in bytes (index.html, boot.js, style.css, app.js's module
  * graph, the default view's graph and stylesheet). Before the per-view stylesheets and the lazy
  * engine it was ≈ 368 KB (376,391 bytes); with them, and the service worker's page side, ≈ 258 KB (264,028 bytes).
+ * Wave 2 put the shell's Tools menu and shortcuts, the page session, Copy summary and print, the
+ * long-job progress, the Subdomains tabs and the Reverse DNS hand-off on it: ≈ 334 KB (342,043 bytes).
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 280 * 1024;
+const START_ROUTE_BUDGET = 340 * 1024;
 
 /** Modules that must never be part of the start route. */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',

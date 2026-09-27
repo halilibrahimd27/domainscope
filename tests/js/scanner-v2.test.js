@@ -53,8 +53,10 @@ function zoneAnswer(zone, name, type) {
  * @param {Object<string,object>} [opts.zonesByResolver] per-resolver name overrides (merged over base)
  * @param {Object<string,Function>} [opts.sources] mocked source handlers by URL prefix
  * @param {number} [opts.dohDelay] ms delay per DoH answer
+ * @param {Function} [opts.answer] (name, type, resolverId) → { rcode, answers } to answer a
+ *   query dynamically (a wildcard whose answer varies per label), or undefined for the zone
  */
-function mkWorld({ zone, zonesByResolver = {}, sources = {}, dohDelay = 0 } = {}) {
+function mkWorld({ zone, zonesByResolver = {}, sources = {}, dohDelay = 0, answer = null } = {}) {
   const log = { doh: [], http: [] };
   const fetchImpl = async (url, init = {}) => {
     const resolver = RESOLVERS.find((r) => url.startsWith(`${r.url}?`));
@@ -63,7 +65,7 @@ function mkWorld({ zone, zonesByResolver = {}, sources = {}, dohDelay = 0 } = {}
       log.doh.push({ name: q.name, type: q.type, resolver: resolver.id });
       if (dohDelay) await new Promise((r) => setTimeout(r, dohDelay));
       const z = zonesByResolver[resolver.id] ? { ...zone, ...zonesByResolver[resolver.id] } : zone;
-      const out = zoneAnswer(z, q.name, q.type);
+      const out = (answer && answer(q.name, q.type, resolver.id)) || zoneAnswer(z, q.name, q.type);
       return new Response(encodeMessage({
         id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
         questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities || [], edns: {}
@@ -1639,6 +1641,86 @@ describe('engine v3 review fixes: related-parent networks', () => {
       ['192.0.2.0/24', 'main-cluster']
     ]);
     assert.deepEqual(host.candidateNetworks, ['198.51.100.0/24', '192.0.2.0/24']);
+  });
+});
+
+describe('discovery review fixes: wildcards whose answer varies', () => {
+  /** Small deterministic string hash (FNV-1a) to pick a per-label answer. */
+  const hash = (s) => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+    return h;
+  };
+  const run = (A, world, extra = {}) => runScan({
+    domains: [A], sources: [], bruteforce: 'small', mine: false, permutationBudget: 0, recursive: false,
+    originHints: false, balance: true, dns: world.dns, fetchImpl: world.fetchImpl, ...extra
+  });
+  const wordlistHosts = (scan) => scan.hosts.filter((x) => x.origins.includes('wordlist')).map((x) => x.name);
+
+  test('a wildcard answering each resolver differently (GeoDNS / CDN alias) invents no host in balance mode', async () => {
+    const A = 'geo-wc.example';
+    const zone = {
+      [A]: { A: ['203.0.113.10'] },
+      [`*.${A}`]: { A: ['198.51.100.10', '198.51.100.11'] },
+      [`www.${A}`]: { A: ['203.0.113.20'] }
+    };
+    const world = mkWorld({ zone, zonesByResolver: { google: { [`*.${A}`]: { A: ['192.0.2.20', '192.0.2.21'] } } } });
+    const scan = await run(A, world);
+    assert.deepEqual(wordlistHosts(scan), [`www.${A}`]);
+    assert.equal(scan.stats.wordlistFound, 1);
+    assert.equal(scan.wildcards[A].kind, 'A');
+    assert.equal(scan.wildcards[A].variable, true);
+    assert.deepEqual([...scan.wildcards[A].ipv4].sort(), ['192.0.2.20', '192.0.2.21', '198.51.100.10', '198.51.100.11']);
+  });
+
+  test('a multivalue wildcard (another pair of a 12-address pool per label) invents no host; a real one outside it is kept', async () => {
+    const A = 'pool-wc.example';
+    const pool = Array.from({ length: 12 }, (_, i) => `198.51.100.${40 + i}`);
+    const zone = { [A]: { A: ['203.0.113.10'] }, [`www.${A}`]: { A: ['203.0.113.20'] } };
+    const answer = (name, type) => {
+      if (!name.endsWith(`.${A}`) || zone[name]) return undefined;
+      const h = hash(name);
+      const data = type === 'A' ? [...new Set([pool[h % 12], pool[(h >>> 8) % 12]])] : [];
+      return { rcode: 'NOERROR', answers: data.map((d) => ({ name, type: 'A', ttl: 60, data: d })) };
+    };
+    const scan = await run(A, mkWorld({ zone, answer }));
+    assert.equal(scan.wildcards[A].wildcard, true);
+    assert.equal(scan.wildcards[A].kind, 'A');
+    assert.deepEqual(wordlistHosts(scan), [`www.${A}`]);
+  });
+
+  test('a CNAME wildcard whose target varies per label (PaaS ingress) invents no host', async () => {
+    const A = 'paas-wc.example';
+    const targets = ['va01', 'va02', 'ie01', 'ie02'].map((p) => `${p}.ingress.paas.example.net`);
+    const zone = { [A]: { A: ['203.0.113.10'] }, [`www.${A}`]: { A: ['203.0.113.20'] } };
+    const answer = (name, type) => {
+      if (!name.endsWith(`.${A}`) || zone[name]) return undefined;
+      const t = targets[hash(name) % targets.length];
+      const answers = [{ name, type: 'CNAME', ttl: 60, data: t }];
+      if (type === 'A') answers.push({ name: t, type: 'A', ttl: 60, data: '192.0.2.9' });
+      return { rcode: 'NOERROR', answers };
+    };
+    const scan = await run(A, mkWorld({ zone, answer }));
+    assert.equal(scan.wildcards[A].kind, 'CNAME');
+    assert.deepEqual(wordlistHosts(scan), [`www.${A}`]);
+  });
+
+  test('flood guard: most guesses resolving under a parent re-samples it and drops the look-alikes', async () => {
+    const A = 'flood-wc.example';
+    const zone = { [A]: { A: ['203.0.113.10'] }, [`shop.${A}`]: { A: ['203.0.113.30'] } };
+    // every label gets its own address, each in another /24: no sample can list them
+    const answer = (name, type) => {
+      if (!name.endsWith(`.${A}`) || zone[name]) return undefined;
+      const h = hash(name);
+      const answers = type === 'A' ? [{ name, type: 'A', ttl: 60, data: `10.${h % 200}.${(h >>> 8) % 250}.7` }] : [];
+      return { rcode: 'NOERROR', answers };
+    };
+    const scan = await run(A, mkWorld({ zone, answer }), { extraNames: [`shop.${A}`] });
+    assert.equal(scan.wildcards[A].flooded, true);
+    assert.deepEqual(wordlistHosts(scan), []);
+    assert.equal(scan.stats.wordlistFound, 0);
+    assert.ok(scan.stats.bruteforceWildcardDropped > 100, String(scan.stats.bruteforceWildcardDropped));
+    assert.ok(byName(scan).has(`shop.${A}`), 'a typed name is never dropped');
   });
 });
 

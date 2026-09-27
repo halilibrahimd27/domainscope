@@ -423,7 +423,59 @@ describe('detectWildcardDeep', () => {
   test('invalid parent / missing client → no wildcard', async () => {
     const { fetchImpl } = zoneFetch();
     const dns = new DohClient({ fetchImpl, ...fast() });
-    assert.deepEqual(await detectWildcardDeep(dns, 'not a domain'), { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [] });
-    assert.deepEqual(await detectWildcardDeep(null, 'example.org'), { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [] });
+    const none = { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false };
+    assert.deepEqual(await detectWildcardDeep(dns, 'not a domain'), none);
+    assert.deepEqual(await detectWildcardDeep(null, 'example.org'), none);
+  });
+
+  test('a wildcard whose answer varies per label (multivalue pool) is an A wildcard with the union', async () => {
+    const pool = ['198.51.100.10', '198.51.100.11', '198.51.100.12', '198.51.100.13', '198.51.100.14', '198.51.100.15'];
+    let n = 0;
+    const byLabel = new Map();
+    const { fetchImpl } = mockFetch(({ name, type }) => {
+      if (!name.endsWith('.pool.example.org')) return zoneAnswer(ZONE, name, type);
+      if (!byLabel.has(name)) { byLabel.set(name, [pool[(2 * n) % 6], pool[(2 * n + 1) % 6]]); n += 1; }
+      return type === 'A' ? { answers: byLabel.get(name).map((data) => ({ name, type: 'A', ttl: 60, data })) } : { rcode: 'NOERROR', answers: [] };
+    });
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    const w = await detectWildcardDeep(dns, 'pool.example.org');
+    assert.equal(w.wildcard, true);
+    assert.equal(w.kind, 'A');
+    assert.equal(w.variable, true);
+    assert.deepEqual([...w.ipv4].sort(), pool.slice(0, 4));
+  });
+
+  test('per-resolver probes: an answer that differs on one resolver (GeoDNS / ECS) joins the union', async () => {
+    const { fetchImpl, calls } = mockFetch(({ resolver, name, type }) => {
+      if (name.endsWith('.geo.example.org') && type === 'A') {
+        const data = resolver === 'google' ? ['198.51.100.20', '198.51.100.21'] : ['198.51.100.10', '198.51.100.11'];
+        return { answers: data.map((d) => ({ name, type: 'A', ttl: 60, data: d })) };
+      }
+      return name.endsWith('.geo.example.org') ? { rcode: 'NOERROR', answers: [] } : zoneAnswer(ZONE, name, type);
+    });
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    assert.deepEqual(dns.balancePool, ['cloudflare', 'google', 'dnssb']);
+    const w = await detectWildcardDeep(dns, 'geo.example.org', { resolvers: dns.balancePool });
+    assert.equal(w.kind, 'A');
+    assert.equal(w.variable, true);
+    assert.deepEqual([...w.ipv4].sort(), ['198.51.100.10', '198.51.100.11', '198.51.100.20', '198.51.100.21']);
+    assert.ok(['cloudflare', 'google', 'dnssb'].every((id) => calls.some((c) => c.resolver === id && c.name.endsWith('.geo.example.org'))));
+  });
+
+  test('a CNAME wildcard whose target varies per label keeps every target', async () => {
+    const targets = ['va01.ingress.paas.example.net', 'ie02.ingress.paas.example.net'];
+    let n = 0;
+    const byLabel = new Map();
+    const { fetchImpl } = mockFetch(({ name, type }) => {
+      if (!name.endsWith('.paas.example.org')) return zoneAnswer(ZONE, name, type);
+      if (!byLabel.has(name)) { byLabel.set(name, targets[n % 2]); n += 1; }
+      return { answers: [{ name, type: 'CNAME', ttl: 60, data: byLabel.get(name) }] };
+    });
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    const w = await detectWildcardDeep(dns, 'paas.example.org', { probes: 4 });
+    assert.equal(w.kind, 'CNAME');
+    assert.equal(w.variable, true);
+    assert.deepEqual([...w.targets].sort(), [...targets].sort());
+    assert.equal(w.cnames.length, 1);
   });
 });

@@ -53,7 +53,7 @@ import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
  * @property {object} classification netinfo.classifyResolution() result
  * @property {{ covered: boolean, by: string|null }|null} cert coverage by the scanned certificate (null without cert)
  * @property {Array<{ serverId: string, name: string, ip: string }>} servers inventory servers owning a resolved IP
- * @property {boolean} wildcardSuspect answer identical to the parent's wildcard answer
+ * @property {boolean} wildcardSuspect answer indistinguishable from the nearest wildcard's (see isWildcardSuspect)
  * @property {object[]} ipHints IpHint[] from passive sources for this name
  * @property {string[]} candidateNetworks extension (v2): the origin-network CIDRs (/24 · /48) worth
  *   sweeping for THIS proxied host's real origin, ranked (host-related networks, then the main
@@ -136,6 +136,9 @@ const MAX_MX = 10;
 // CAA, HTTPS = 6) + _dmarc TXT (1) + one SRV per well-known service. A constant
 // for the query estimate (kept in step with dnsmine.js through SRV_SERVICES).
 const MINE_QUERIES_PER_DOMAIN = 7 + SRV_SERVICES.length;
+// DNS queries one wildcard check sends (for the query estimate): 2 random labels
+// on the chain + 1 per balance-pool resolver (3 by default), each A + AAAA.
+const WILDCARD_QUERIES_PER_PARENT = 2 * (2 + 3);
 // Per-apex brute-force ceilings, by wordlist level. `huge` (~130k labels) must
 // be fully reachable for a SINGLE apex — its cap sits just above the list size —
 // while smaller levels keep a tight cap so a typo in the level cannot balloon a
@@ -150,6 +153,12 @@ const LEGACY_MAX_BRUTEFORCE = 60000;
 const MAX_BRUTEFORCE_TOTAL = 200000;
 const MAX_PERMUTATIONS = 20000;
 const MAX_WILDCARD_PARENTS = 80;
+// Flood guard: a parent where more than FLOOD_SHARE of at least FLOOD_MIN_TRIED
+// answered guesses "resolve" is re-sampled with FLOOD_RESAMPLE_PROBES random
+// labels (plus one per pool resolver). No real zone holds most of a generic list.
+const FLOOD_MIN_TRIED = 50;
+const FLOOD_SHARE = 0.5;
+const FLOOD_RESAMPLE_PROBES = 8;
 const DEFAULT_PERMUTATION_BUDGET = 1500;
 const DEFAULT_RECURSIVE_PARENTS = 8;
 // Max target domains querying the quota-limited passive sources at once, so a
@@ -312,13 +321,27 @@ function isOriginIp(ip) {
   return !(provider && provider.hidesOrigin);
 }
 
+/** Provider id of an address (netinfo PROVIDERS), or null. */
+function providerIdOf(ip) {
+  const p = matchProviderByIP(ip);
+  return p ? p.id : null;
+}
+
 /**
  * Is a resolution indistinguishable from the parent's wildcard answer?
  * Handles the three wildcard kinds detectWildcardDeep reports:
- *  - 'CNAME': the first synthesized CNAME target matches the wildcard's;
+ *  - 'CNAME': the first synthesized CNAME target is one of the wildcard's;
  *  - 'A': every address is one of the wildcard's addresses;
  *  - 'NODATA': the name has no address and no CNAME (the zone answers any label
  *    with NOERROR-empty, so a "hit" with nothing in it is just the wildcard).
+ * A `variable` wildcard (its answer changed between the random labels or the
+ * resolvers: a multivalue pool, GeoDNS, a CDN alias) is matched more loosely,
+ * since its sample never holds every value: every address in the same /24 · /48
+ * as a wildcard address or at the wildcard's one provider, or a first CNAME
+ * target under the same parent as one of the wildcard's (va01 / ie02.ingress.x).
+ * A stable wildcard keeps the exact test, so a real host next to it is kept.
+ * A `flooded` wildcard (most guesses under it resolved, and so do random
+ * labels) matches any answer of its kind: no guess there tells a host apart.
  * A wildcard object without `kind` (legacy) falls back to the combined test.
  */
 function isWildcardSuspect(res, wc) {
@@ -326,11 +349,25 @@ function isWildcardSuspect(res, wc) {
   const hc = res.cnames || [];
   const wcc = wc.cnames || [];
   const ips = [...(res.ipv4 || []), ...(res.ipv6 || [])];
-  if (wc.kind === 'CNAME') return hc.length > 0 && wcc.length > 0 && hc[0] === wcc[0];
+  if (wc.flooded && wc.kind === 'CNAME') return hc.length > 0;
+  if (wc.flooded && wc.kind === 'A') return ips.length > 0 && hc.length === 0;
+  if (wc.kind === 'CNAME') {
+    if (!hc.length) return false;
+    const targets = Array.isArray(wc.targets) && wc.targets.length ? wc.targets : wcc.slice(0, 1);
+    if (targets.includes(hc[0])) return true;
+    const parent = parentOf(hc[0]);
+    return !!wc.variable && parent.includes('.') && targets.some((t) => parentOf(t) === parent);
+  }
   if (wc.kind === 'A') {
     if (!ips.length) return false;
-    const wips = new Set([...(wc.ipv4 || []), ...(wc.ipv6 || [])]);
-    return ips.every((ip) => wips.has(ip));
+    const wipList = [...(wc.ipv4 || []), ...(wc.ipv6 || [])];
+    const wips = new Set(wipList);
+    if (ips.every((ip) => wips.has(ip))) return true;
+    if (!wc.variable) return false;
+    const nets = new Set(wipList.map(networkCidr).filter(Boolean));
+    if (ips.every((ip) => nets.has(networkCidr(ip)))) return true;
+    const providers = new Set(wipList.map(providerIdOf));
+    return providers.size === 1 && !providers.has(null) && ips.every((ip) => providers.has(providerIdOf(ip)));
   }
   // NODATA look-alike: only a NOERROR-empty answer matches an empty-answer
   // wildcard. An NXDOMAIN / SERVFAIL / transport error is a real non-answer,
@@ -1099,6 +1136,12 @@ export async function runScan(config = {}, hooks = {}) {
   checkAbort(signal);
 
   const wildcards = {};
+  // The bulk probes and the resolve stage rotate across the balance pool, and a
+  // wildcard may answer each resolver differently (GeoDNS / ECS, a CDN alias):
+  // each wildcard check also probes every pool resolver, so the fingerprint
+  // holds what any of them answers.
+  const wildcardResolvers = useBalance && Array.isArray(dns.balancePool) ? dns.balancePool : [];
+  const wildcardOpts = { signal, resolvers: wildcardResolvers };
   /**
    * Deep-detect wildcards for a set of candidate parents not seen yet, in scope,
    * capped at MAX_WILDCARD_PARENTS. Reused for the catch-up passes (late source
@@ -1117,7 +1160,7 @@ export async function runScan(config = {}, hooks = {}) {
     }
     if (!todo.length) return;
     await mapPool(todo, 4, async (p) => {
-      wildcards[p] = await detectWildcardDeep(dns, p, { signal });
+      wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts);
     }, signal);
   };
 
@@ -1148,7 +1191,7 @@ export async function runScan(config = {}, hooks = {}) {
     ...(exactMode ? { skipped: true } : {})
   });
   await mapPool(parents, 4, async (p) => {
-    wildcards[p] = await detectWildcardDeep(dns, p, { signal });
+    wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts);
     wildcardDone += 1;
     progress('wildcard', wildcardDone, parents.length);
   }, signal);
@@ -1183,6 +1226,36 @@ export async function runScan(config = {}, hooks = {}) {
   // or a level insertion would only spend budget re-asking for an NXDOMAIN (the
   // client's LRU is long flushed by a big sweep), so the budget goes to new names.
   const probed = new Set();
+  // Flood guard: answered probes and hits per parent. A parent where most
+  // guesses "resolve" holds a wildcard the check did not pin down (its answer
+  // varies more than the sample showed, or the check failed). It is re-sampled
+  // once, wider; if random labels resolve, the wildcard is marked `flooded` and
+  // the resolve stage drops the probe-only look-alikes.
+  const probeLoad = new Map(); // parent → { tried, found }
+  const resampled = new Set();
+  const loadOf = (p) => {
+    let l = probeLoad.get(p);
+    if (!l) { l = { tried: 0, found: 0 }; probeLoad.set(p, l); }
+    return l;
+  };
+  const resampleFlooded = async () => {
+    const flooded = [...probeLoad]
+      .filter(([p, l]) => !resampled.has(p) && l.tried >= FLOOD_MIN_TRIED && l.found > l.tried * FLOOD_SHARE)
+      .map(([p]) => p);
+    if (!flooded.length) return;
+    await mapPool(flooded, 4, async (p) => {
+      resampled.add(p);
+      const next = await detectWildcardDeep(dns, p, { ...wildcardOpts, probes: FLOOD_RESAMPLE_PROBES });
+      if (!next.wildcard) return; // random labels still do not resolve: the hits stand
+      const prev = wildcards[p] && wildcards[p].wildcard && wildcards[p].kind === next.kind ? wildcards[p] : null;
+      const union = (key) => [...new Set([...((prev && prev[key]) || []), ...(next[key] || [])])];
+      const merged = { ...next, ipv4: union('ipv4'), ipv6: union('ipv6'), targets: union('targets') };
+      const size = (w) => (w.ipv4 || []).length + (w.ipv6 || []).length + (w.targets || []).length;
+      // The same stable answer as the first check: the hits differ from it, so they stand.
+      if (prev && !next.variable && size(merged) === size(prev)) return;
+      wildcards[p] = { ...merged, variable: true, flooded: true };
+    }, signal);
+  };
   const probeNames = async (candidates, origin, stageName, baseDone, grandTotal) => {
     const out = { tried: candidates.length, found: 0, wildcardDropped: 0, errors: 0 };
     for (const name of candidates) probed.add(name);
@@ -1213,6 +1286,8 @@ export async function runScan(config = {}, hooks = {}) {
         return;
       }
       streak = 0;
+      const load = loadOf(parentOf(name));
+      load.tried += 1;
       if (res.rcode !== 'NOERROR' && res.rcode !== 'NXDOMAIN') return;
       const { cnames } = followCnames(res.answers, name);
       // A dangling alias (a CNAME to a target that no longer exists) answers
@@ -1231,6 +1306,7 @@ export async function runScan(config = {}, hooks = {}) {
       }
       addName(name, origin);
       out.found += 1;
+      load.found += 1;
       // Stream the hit the moment it resolves (task 5) so the UI can show rows
       // live through the long wordlist / permutation stages instead of an empty
       // table until the resolve stage. This is a cheap PARTIAL — the A answer
@@ -1246,6 +1322,7 @@ export async function runScan(config = {}, hooks = {}) {
         classification: classifyResolution({ status: res.rcode, ipv4, ipv6: [], cnames })
       });
     }, signal);
+    await resampleFlooded();
     return out;
   };
 
@@ -2245,7 +2322,7 @@ export function estimateQueries({
   const regZones = [...new Set(domainBases.map((b) => registrableDomain(b) || b))];
   const zones = [...new Set([...regZones, ...domainBases])];
   const mining = mine ? regZones.length * MINE_QUERIES_PER_DOMAIN : 0;
-  const wildcard = baseSet.length * 4; // 2 random labels × (A + AAAA); grows with finds, capped elsewhere
+  const wildcard = baseSet.length * WILDCARD_QUERIES_PER_PARENT; // grows with finds, capped elsewhere
 
   const permBudget = Number.isFinite(permutationBudget) && permutationBudget > 0
     ? Math.min(Math.floor(permutationBudget), MAX_PERMUTATIONS) : 0;

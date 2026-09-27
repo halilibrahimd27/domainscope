@@ -377,9 +377,19 @@ async function dnssecProvesNonexistent(dns, probeName, signal) {
  *
  * Some zones answer *any* label with NODATA (NOERROR, no records) or with a
  * fixed CNAME rather than an address — the plain "did a random label get an A?"
- * test misses those and lets wildcard hits pollute results. This resolves two
- * random labels below `parent` and only reports a wildcard when both probes
- * agree on the same kind and value.
+ * test misses those and lets wildcard hits pollute results. This resolves
+ * random labels below `parent` (`probes` on the failover chain, 2 by default,
+ * plus one on each resolver of `resolvers`) and only reports a wildcard when
+ * every probe that got an answer shows the same kind.
+ *
+ * A wildcard's answer need not be one fixed value: GeoDNS / ECS steering or a
+ * CDN alias answers each resolver differently, and a multivalue / weighted
+ * wildcard answers each label with another subset of a pool. So an 'A'
+ * wildcard carries the UNION of the probes' addresses, and a 'CNAME' one every
+ * first target in `targets` (`cnames` is the first probe's chain); `variable`
+ * is set when the probes disagreed on the value. A probe that failed (transport
+ * error, SERVFAIL) says nothing and is skipped; mixed kinds, or an NXDOMAIN next
+ * to an answer, are no wildcard.
  *
  * A NODATA (NOERROR-empty) result is only reported as a wildcard when a DNSSEC
  * query does NOT prove the name's non-existence: many DNSSEC zones (all
@@ -390,34 +400,50 @@ async function dnssecProvesNonexistent(dns, probeName, signal) {
  *
  * @param {{ resolveHost: Function, query?: Function }} dns injected DoH client
  * @param {string} parent the zone to test (apex or any level)
- * @param {{ signal?: AbortSignal }} [opts]
- * @returns {Promise<{ wildcard: boolean, kind: 'A'|'CNAME'|'NODATA'|null, ipv4: string[], ipv6: string[], cnames: string[] }>}
+ * @param {{ signal?: AbortSignal, resolvers?: string[], probes?: number }} [opts]
+ *   resolvers: extra probes, one sent to each of these resolver ids (the pool bulk
+ *   queries rotate across); probes: random labels on the chain (2–16, default 2)
+ * @returns {Promise<{ wildcard: boolean, kind: 'A'|'CNAME'|'NODATA'|null, ipv4: string[], ipv6: string[],
+ *   cnames: string[], targets: string[], variable: boolean }>}
  */
-export async function detectWildcardDeep(dns, parent, { signal } = {}) {
-  const none = { wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [] };
+export async function detectWildcardDeep(dns, parent, { signal, resolvers = [], probes = 2 } = {}) {
+  const none = () => ({ wildcard: false, kind: null, ipv4: [], ipv6: [], cnames: [], targets: [], variable: false });
   const base = normalizeHostname(String(parent ?? ''), { allowSingleLabel: true });
-  if (!base || !dns || typeof dns.resolveHost !== 'function') return none;
+  if (!base || !dns || typeof dns.resolveHost !== 'function') return none();
 
-  const labels = [`${randomLabel(12)}.${base}`, `${randomLabel(12)}.${base}`];
-  const [r1, r2] = await Promise.all(labels.map((n) => dns.resolveHost(n, { signal })));
-  const p1 = classifyProbe(r1);
-  const p2 = classifyProbe(r2);
-  if (!p1.kind || p1.kind !== p2.kind) return none;
+  const count = Math.max(2, Math.min(16, Math.floor(Number(probes)) || 2));
+  const plan = Array.from({ length: count }, () => ({ name: `${randomLabel(12)}.${base}`, resolver: null }));
+  for (const id of new Set(Array.isArray(resolvers) ? resolvers : [])) {
+    if (typeof id === 'string' && id) plan.push({ name: `${randomLabel(12)}.${base}`, resolver: id });
+  }
+  const results = await Promise.all(plan.map(({ name, resolver }) => dns.resolveHost(name, resolver ? { signal, resolver } : { signal })));
+  const answers = [];
+  results.forEach((r, i) => {
+    const p = classifyProbe(r);
+    if (p.kind) answers.push({ ...p, name: plan[i].name });
+    else if (r && r.status === 'NXDOMAIN') answers.push({ kind: 'NXDOMAIN' });
+  });
+  if (answers.length < 2) return none();
+  const kind = answers[0].kind;
+  if (answers.some((p) => p.kind !== kind)) return none();
+  if (kind === 'NXDOMAIN') return none();
 
-  if (p1.kind === 'CNAME') {
-    return p1.cname && p1.cname === p2.cname
-      ? { wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...p1.cnames] }
-      : none;
+  if (kind === 'CNAME') {
+    const targets = [...new Set(answers.map((p) => p.cname))];
+    return {
+      wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...answers[0].cnames],
+      targets, variable: targets.length > 1
+    };
   }
-  if (p1.kind === 'A') {
-    return setsEqual(p1.ipv4, p2.ipv4) && setsEqual(p1.ipv6, p2.ipv6) && (p1.ipv4.length || p1.ipv6.length)
-      ? { wildcard: true, kind: 'A', ipv4: [...p1.ipv4], ipv6: [...p1.ipv6], cnames: [] }
-      : none;
+  if (kind === 'A') {
+    const union = (key) => [...new Set(answers.flatMap((p) => p[key]))];
+    const variable = answers.some((p) => !setsEqual(p.ipv4, answers[0].ipv4) || !setsEqual(p.ipv6, answers[0].ipv6));
+    return { wildcard: true, kind: 'A', ipv4: union('ipv4'), ipv6: union('ipv6'), cnames: [], targets: [], variable };
   }
-  // Both NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not prove
-  // the probe name's non-existence (compact denial of existence / NXNAME).
-  if (await dnssecProvesNonexistent(dns, labels[0], signal)) return none;
-  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [] };
+  // Every answer NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not
+  // prove the probe name's non-existence (compact denial of existence / NXNAME).
+  if (await dnssecProvesNonexistent(dns, answers[0].name, signal)) return none();
+  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [], targets: [], variable: false };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -608,6 +634,15 @@ export class DohClient {
   /** Resolver ids of the failover chain, in configured order (extension). */
   get chain() {
     return this.#chain.map((r) => r.id);
+  }
+
+  /**
+   * Resolver ids bulk `balance` queries rotate across (extension): the pool as
+   * {@link #balancedChain} uses it, without the browser-unreliable members that
+   * only ever serve as failover. A wildcard check probes each of them.
+   */
+  get balancePool() {
+    return this.#rotatingPool().filter((r) => r.browserReliable !== false).map((r) => r.id);
   }
 
   /**
@@ -879,6 +914,14 @@ export class DohClient {
     return [...up, ...down];
   }
 
+  /** The pool bulk queries rotate across: the default one intersected with the chain. */
+  #rotatingPool() {
+    if (this.#balancePoolExplicit) return this.#balancePool;
+    const chainIds = new Set(this.#chain.map((r) => r.id));
+    const inChain = this.#balancePool.filter((r) => chainIds.has(r.id));
+    return inChain.length ? inChain : this.#chain;
+  }
+
   /**
    * Balance-mode failover list: the pool rotated by a per-client cursor so each
    * bulk query starts on a different resolver, with browser-unreliable
@@ -893,12 +936,7 @@ export class DohClient {
    * bulk queries fail over to a working resolver instead of returning ERROR.
    */
   #balancedChain() {
-    const chainIds = new Set(this.#chain.map((r) => r.id));
-    let rotatingPool = this.#balancePool;
-    if (!this.#balancePoolExplicit) {
-      const inChain = this.#balancePool.filter((r) => chainIds.has(r.id));
-      rotatingPool = inChain.length ? inChain : this.#chain;
-    }
+    const rotatingPool = this.#rotatingPool();
     const reliable = [];
     const unreliable = [];
     const down = [];

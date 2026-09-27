@@ -272,6 +272,16 @@ describe('zone view: sweep command', () => {
     assert.equal(V.sweepCommand(O.zoneSweep(z, { scope: 'proxied' })).command, null);
   });
 
+  test('serverColumns matches the proxied origins and addresses against any inventory index', async () => {
+    const inv = await imp('assets/js/lib/inventory.js');
+    const z = V.parseFiles([{ name: 'example.com.txt', text: fixture('cloudflare-export.txt') }]);
+    const none = V.serverColumns(z, null);
+    assert.deepEqual(none.origins.find((o) => o.name === 'www.example.com').servers, []);
+    const cols = V.serverColumns(z, inv.buildIpIndex(inv.parseInventory('web01 192.0.2.10').servers));
+    assert.equal(cols.origins.find((o) => o.name === 'www.example.com').servers[0].name, 'web01');
+    assert.equal(cols.addresses.find((a) => a.ip === '192.0.2.10').servers[0].name, 'web01');
+  });
+
   test('exports redact origin addresses and hosts unless opted in', () => {
     const z = V.parseFiles([{ name: 'example.com.txt', text: fixture('cloudflare-export.txt') }]);
     const secrets = V.originSecrets(O.proxiedOriginMap(z));

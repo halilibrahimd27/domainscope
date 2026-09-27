@@ -1058,6 +1058,17 @@ export function originSecrets(origins) {
   return out;
 }
 
+/**
+ * The server columns of the Origins and Records tabs: the proxied-origin map and the address
+ * map, matched against an inventory index (`state.getInventoryIndex()`).
+ * @param {object} zone
+ * @param {Map<string, object[]>|null} inventoryIndex
+ * @returns {{ origins: object[], addresses: object[] }}
+ */
+export function serverColumns(zone, inventoryIndex) {
+  return { origins: proxiedOriginMap(zone, { inventoryIndex }), addresses: addressMap(zone, { inventoryIndex }) };
+}
+
 /* ------------------------------------------------------------------------ */
 /* Module session (memory only, never serialised)                           */
 /* ------------------------------------------------------------------------ */
@@ -1069,6 +1080,7 @@ function freshSession() {
     lint: null,
     origins: [],
     addresses: [],
+    invIndex: null,
     problems: [],
     counts: null,
     originInput: '',
@@ -1103,6 +1115,20 @@ function resetSession() {
   S = freshSession();
 }
 
+/**
+ * Match the loaded zone against the current servers (edited after the import, here or in
+ * another tab). The memoized index is replaced on every inventory change, so its identity
+ * tells whether the server columns are stale.
+ * @param {Map<string, object[]>} index state.getInventoryIndex()
+ * @returns {boolean} true when the columns were rebuilt
+ */
+function reindexServers(index) {
+  if (!S.zone || S.zone.fatal || S.invIndex === index) return false;
+  ({ origins: S.origins, addresses: S.addresses } = serverColumns(S.zone, index));
+  S.invIndex = index;
+  return true;
+}
+
 /* ------------------------------------------------------------------------ */
 /* View                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -1120,6 +1146,8 @@ export function mount(container, ctx) {
       if (key === 'cleared') {
         resetSession();
         if (rerender) rerender();
+      } else if (key === 'inventory' && reindexServers(state.getInventoryIndex()) && rerender) {
+        rerender();
       }
     });
   }
@@ -1159,8 +1187,8 @@ export function mount(container, ctx) {
     }
     const inv = ctx.getInventoryIndex();
     S.lint = lintZone(zone);
-    S.origins = proxiedOriginMap(zone, { inventoryIndex: inv });
-    S.addresses = addressMap(zone, { inventoryIndex: inv });
+    ({ origins: S.origins, addresses: S.addresses } = serverColumns(zone, inv));
+    S.invIndex = inv;
     S.problems = problemList(zone, S.lint);
     S.counts = zoneCounts(zone, S.problems);
     publish();
@@ -2009,6 +2037,7 @@ export function mount(container, ctx) {
     return out;
   }
 
+  reindexServers(ctx.getInventoryIndex());
   render();
 
   teardown = () => {

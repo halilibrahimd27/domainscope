@@ -8,7 +8,8 @@
  *   node tests/e2e/zone.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
  * Covers: the nav entry, the empty state, the import of the Cloudflare export (format, origin,
- * counts), the Records filters, the proxied-origin map with the inventory, the exact sweep
+ * counts), the Records filters, the proxied-origin map with the inventory (also servers added
+ * or renamed after the import), the exact sweep
  * command (no /24, host target, wildcard name, PowerShell), the zone-targets.txt download, the
  * Problems → Records jump, the live check (nothing sent before the click, planned query count,
  * hidden targets / internal names never queried, statuses, redacted export, cancel), the
@@ -270,6 +271,36 @@ async function main() {
       assert(got.includes('web01 192.0.2.10'), 'inventory name in the targets file');
       assertEqual(external, [], 'no external request');
       await shot(page, opts, 'zone-origins-desktop-light-en');
+    });
+
+    await run.step('servers added or renamed after the import update the Origins and Records server columns', async () => {
+      const setInv = (inv) => page.evaluate(async (s) => { (await import('./assets/js/state.js')).state.setInventory(s); }, inv);
+      const originRows = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.zone-origins-table tbody tr.dt-row')]
+        .map((tr) => [tr.querySelector('td:not(.dt-expander) strong')?.textContent, tr.textContent])));
+      await setInv('');
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
+      await page.setFileInput('.zone-drop .filedrop-input', [CF_FILE]);
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'summary' });
+      await clickTab(page, 'origins');
+      assert(await count(page, '.zone-origins-table a[href$="#/inventory"]') > 0, '"Add your servers" links');
+      await gotoRoute(page, 'inventory');
+      await setInv('web01 192.0.2.10');
+      await gotoRoute(page, 'zone');
+      await clickTab(page, 'origins');
+      let rows = await originRows();
+      for (const n of ['@', 'www', 'docs']) assert(/web01/.test(rows[n] || ''), `${n} → web01 after adding the server: ${rows[n]}`);
+      await clickTab(page, 'records');
+      const cells = await page.evaluate(() => [...document.querySelectorAll('.zone-records tbody tr.dt-row')]
+        .filter((tr) => [...tr.cells].some((td) => td.textContent.trim() === '192.0.2.10')).map((tr) => tr.textContent));
+      assert(cells.length > 0 && cells.every((c) => /web01/.test(c)), `Records server cell: ${cells}`);
+      // renamed while the view is shown (another tab, or a script): the columns follow without navigating
+      await clickTab(page, 'origins');
+      await setInv('web-a 192.0.2.10');
+      await page.waitFor(() => /web-a/.test(document.querySelector('.zone-origins-table')?.textContent || ''), { message: 'renamed server' });
+      rows = await originRows();
+      assert(!/web01/.test(rows.www || '') && /web-a/.test(rows.www || ''), `www → web-a: ${rows.www}`);
+      await setInv('web01 192.0.2.10');
     });
 
     await run.step('Problems: rollup, Errors filter, ftp → Records filtered with the line highlighted', async () => {

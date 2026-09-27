@@ -117,6 +117,33 @@ export function sameParams(a, b) {
   return ka.length === kb.length && ka.every((k) => String(a[k]) === String((b || {})[k]));
 }
 
+/**
+ * Do two route queries carry the same params? Unlike {@link sameParams} a repeated key
+ * counts (`domain=a&domain=b` ≠ `domain=b`); the order of different keys does not.
+ * @param {URLSearchParams} a
+ * @param {URLSearchParams} b
+ * @returns {boolean}
+ */
+export function sameSearch(a, b) {
+  const norm = (sp) => {
+    const sorted = new URLSearchParams(sp || '');
+    sorted.sort(); // stable: the values of one key keep their order
+    return sorted.toString();
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * Does a route query repeat a key (`domain=a&domain=b`)? The flat `params` a view's
+ * update() receives keep only the last value, so such a route re-mounts the view instead.
+ * @param {URLSearchParams} searchParams
+ * @returns {boolean}
+ */
+export function hasRepeatedKeys(searchParams) {
+  const keys = [...searchParams.keys()];
+  return new Set(keys).size !== keys.length;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Shared DNS client                                                        */
 /* ------------------------------------------------------------------------ */
@@ -261,7 +288,10 @@ export function navigate(view, params = {}, { replace = false, force = false } =
   const target = VIEW_BY_ID.has(view) ? view : DEFAULT_VIEW;
   const hash = buildRoute(target, params);
   if (hash === currentHash()) {
-    if (force) showRoute(target, parseRoute(hash).params, { force: true });
+    if (force) {
+      const route = parseRoute(hash);
+      showRoute(target, route.params, { force: true, searchParams: route.searchParams });
+    }
     return;
   }
   if (replace) {
@@ -408,21 +438,27 @@ function renderPageHeader(def, view = null) {
 
 async function showRoute(id, params, { force = false, restored = null, searchParams = null } = {}) {
   const def = VIEW_BY_ID.get(id) || VIEW_BY_ID.get(DEFAULT_VIEW);
-  if (!force && current && current.id === def.id && sameParams(current.params, params)) return;
+  const sp = searchParams || new URLSearchParams(params);
+  if (!force && current && current.id === def.id && sameSearch(current.ctx.searchParams, sp)) return;
 
-  // Same view with new params: let the view take them without a re-mount if it can.
-  if (!force && current && current.id === def.id && current.view && typeof current.view.update === 'function') {
+  // Same view with new params: let the view take them without a re-mount if it can. A
+  // query repeating a key is re-mounted: mount reads every value from ctx.searchParams.
+  if (!force && current && current.id === def.id && current.view && typeof current.view.update === 'function'
+    && !hasRepeatedKeys(sp)) {
+    const cur = current;
+    const prev = { params: cur.ctx.params, searchParams: cur.ctx.searchParams };
+    cur.ctx.params = { ...params };
+    cur.ctx.searchParams = sp;
     try {
-      const handled = current.view.update({ ...params }, current.ctx);
+      const handled = cur.view.update({ ...params }, cur.ctx);
       if (handled === true) {
-        current.params = { ...params };
-        current.ctx.params = { ...params };
-        current.ctx.searchParams = searchParams || new URLSearchParams(params);
+        cur.params = { ...params };
         return;
       }
     } catch (err) {
       reportError(err);
     }
+    Object.assign(cur.ctx, prev);
   }
 
   const token = ++routeToken;
@@ -451,7 +487,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     clear(dom.pageBody);
     dom.pageBody.append(ErrorBanner(err, {
       title: t('shell.viewLoadFailed'),
-      onRetry: () => showRoute(def.id, params, { force: true })
+      onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp })
     }));
     finishRoute(def);
     return;
@@ -465,7 +501,6 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     document.title = `${t(titleKeyOf(def, view))} · ${t('app.name')}`;
   }
   const controller = new AbortController();
-  const sp = searchParams || new URLSearchParams(params);
   const { ctx, cleanups } = makeContext(def.id, params, sp, controller, restored);
   current = { id: def.id, def, view, params: { ...params }, ctx, controller, cleanups, busy: false };
   clear(dom.pageBody);
@@ -481,7 +516,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
       clear(dom.pageBody);
       dom.pageBody.append(ErrorBanner(err, {
         title: t('shell.viewCrashed'),
-        onRetry: () => showRoute(def.id, params, { force: true })
+        onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp })
       }));
       console.error(`[view:${def.id}] mount failed`, err);
     }

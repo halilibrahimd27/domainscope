@@ -18,7 +18,9 @@ import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS
 } from '../../assets/js/ui/components.js';
-import { parseRoute, buildRoute, sameParams, VIEWS, REPO_URL, DEFAULT_VIEW } from '../../assets/js/app.js';
+import {
+  parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
+} from '../../assets/js/app.js';
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { HttpError } from '../../assets/js/lib/util.js';
 import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
@@ -929,6 +931,22 @@ describe('routing', () => {
     assert.equal(sameParams({}, {}), true);
     assert.equal(sameParams({ a: '1' }, { a: '1', b: '2' }), false);
     assert.equal(sameParams(null, {}), true);
+  });
+
+  test('sameSearch compares whole queries: repeated keys count, the order of different keys does not', () => {
+    const q = (s) => parseRoute(`#/scan?${s}`).searchParams;
+    assert.equal(sameSearch(q('domain=a.example.com&domain=b.example.com'), q('domain=b.example.com')), false,
+      'flattened params (last wins) would call these equal');
+    assert.equal(sameSearch(q('domain=x.example.com&domain=b.example.com'), q('domain=a.example.com&domain=b.example.com')), false);
+    assert.equal(sameSearch(q('name=example.com&type=MX'), q('type=MX&name=example.com')), true);
+    assert.equal(sameSearch(q('type=A&type=MX'), q('type=MX&type=A')), false, 'the values of one key keep their order');
+    assert.equal(sameSearch(new URLSearchParams(), q('')), true);
+  });
+
+  test('hasRepeatedKeys spots a query that view.update() params would flatten', () => {
+    assert.equal(hasRepeatedKeys(parseRoute('#/scan?domain=a.example.com&domain=b.example.com').searchParams), true);
+    assert.equal(hasRepeatedKeys(parseRoute('#/lookup?name=example.com&type=MX').searchParams), false);
+    assert.equal(hasRepeatedKeys(new URLSearchParams()), false);
   });
 
   test('VIEWS follow the spec order; REPO_URL is a placeholder https URL', () => {

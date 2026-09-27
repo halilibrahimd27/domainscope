@@ -355,6 +355,18 @@ async function main() {
       await page.waitFor(() => document.documentElement.dataset.view === 'lookup');
     });
 
+    await step('router: a same-view link that repeats a key keeps every value (#/scan?domain=a&domain=b)', async () => {
+      const field = () => page.evaluate(() => document.querySelector('[data-role="scan-domains"]')?.value);
+      const go = (hash, want, message) => page.evaluate((x) => { window.location.hash = x; }, hash)
+        .then(() => page.waitFor((w) => document.querySelector('[data-role="scan-domains"]')?.value === w, { args: [want], message }));
+      await gotoRoute(page, 'scan');
+      await go('#/scan?domain=c.example.com', 'c.example.com', 'one domain (view update)');
+      await go('#/scan?domain=a.example.com&domain=b.example.com', 'a.example.com\nb.example.com', 'both repeated values');
+      await go('#/scan?domain=x.example.com&domain=b.example.com', 'x.example.com\nb.example.com', 'only a non-last value changed');
+      assertEqual(await field(), 'x.example.com\nb.example.com', 'scan domains');
+      await page.type('[data-role="scan-domains"]', '');
+    });
+
     await step('skip link moves focus to the page title', async () => {
       await page.evaluate(() => document.getElementById('skip-link').focus());
       await page.press('Enter');

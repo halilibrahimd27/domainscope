@@ -279,7 +279,7 @@ async function jobsGroup(browser, server) {
       await setLangUi(jobs, 'en');
       await jobs.evaluate(async () => {
         (await import('./assets/js/state.js')).state.updateSettings({ concurrency: 2 });
-        window.__dnsDelay = 120;
+        window.__dnsDelay = 200; // about 12 s for 60 names at 2 queries in flight
       });
       const idle = await signals();
       assertEqual([idle.title, idle.ring, idle.icon], ['About · DomainScope', null, 'favicon.svg'], 'no job: nothing extra');
@@ -330,7 +330,7 @@ async function jobsGroup(browser, server) {
     await step('reduced motion: the favicon moves in 10 % steps, the ring does not animate; a Turkish title reads "(%n)"', async () => {
       await jobs.emulateMedia({ 'prefers-color-scheme': 'dark', 'prefers-reduced-motion': 'reduce' });
       await setLangUi(jobs, 'tr');
-      await jobs.evaluate(() => { window.__dnsDelay = 120; window.__notes = []; });
+      await jobs.evaluate(() => { window.__dnsDelay = 200; window.__notes = []; });
       await startBulk('b');
       await gotoRoute(jobs, 'about');
       await jobs.waitFor(() => /^\(%\d{1,2}\) /.test(document.title), { timeout: 5000, message: 'TR title prefix' });

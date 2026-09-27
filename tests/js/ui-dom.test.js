@@ -2043,6 +2043,48 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     }
   });
 
+  test('hostNameNodes: a host name wraps only after a dot, and reads (and copies) unchanged', async () => {
+    const { S } = await load();
+    withFakeDocument(() => {
+      const box = dom.h('a', null, S.hostNameNodes('old-shop.eu-west-1.example.net'));
+      assert.equal(box.textContent, 'old-shop.eu-west-1.example.net');
+      assert.deepEqual(box.childNodes.map((c) => [c.tagName ?? null, c.textContent]), [
+        ['SPAN', 'old-shop.'], ['WBR', ''], ['SPAN', 'eu-west-1.'], ['WBR', ''], ['SPAN', 'example.'], ['WBR', ''], ['SPAN', 'net']
+      ]);
+      assert.ok(box.childNodes.filter((c) => c.tagName === 'SPAN').every((c) => c.getAttribute('class') === 'sub-seg'), 'each label is one unbreakable run');
+      // A freak label longer than a phone's line stays breakable (plain text, no nowrap run).
+      const long = `${'x'.repeat(40)}.example.com`;
+      const freak = dom.h('a', null, S.hostNameNodes(long));
+      assert.equal(freak.textContent, long);
+      assert.deepEqual([freak.childNodes[0].nodeType, freak.childNodes[2].tagName], [3, 'SPAN']);
+      assert.equal(dom.h('a', null, S.hostNameNodes('<b>x</b>.example.com')).textContent, '<b>x</b>.example.com', 'text, never HTML');
+      assert.deepEqual(S.hostNameNodes(''), []);
+    });
+  });
+
+  test('Subdomains results are tabs: the route and the page session keep a chosen tab, a new run starts on the automatic one', async () => {
+    // Wiring guards (the view cannot be mounted on the fake DOM; the Subdomains E2E drives the tabs).
+    await load();
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    for (const [lang, labels] of [['en', ['Overview', 'Hosts', 'Origins', 'Sources']], ['tr', ['Genel bakış', 'Host’lar', 'Origin’ler', 'Kaynaklar']]]) {
+      inLang(lang, () => assert.deepEqual(['overview', 'hosts', 'origins', 'sources'].map((id) => i18n.t(`sub.tab.${id}`)), labels, lang));
+    }
+    assert.match(src, /const tabs = Tabs\(SUB_TABS\.map\(\(tabId\) => \(\{ id: tabId, label: t\(`sub\.tab\.\$\{tabId\}`\) \}\)\), \{/, 'one tab per SUB_TABS id');
+    // Every panel is built up front, so a live run updates the hidden ones too.
+    assert.match(src, /for \(const tabId of SUB_TABS\) tabs\.panel\(tabId\)\.append\(panels\[tabId\]\);/);
+    assert.match(src, /const opening = initialSubTab\(\{\s*route: ctx\.params\.tab,\s*chosen: session\.tab,/, 'route first, then the page session');
+    // A choice goes into the URL (merged, so `domain` stays); an automatic move never does.
+    assert.match(src, /function remember\(tabId\) \{\s*session\.tab = tabId;\s*ctx\.setParams\(\{ tab: tabId \}, \{ merge: true \}\);/);
+    assert.match(src, /if \(next\) tabs\.select\(next, \{ silent: true \}\);/);
+    // start(): a new run is automatic again, and its setParams drops `tab=`.
+    const start = src.slice(src.indexOf('async function start()'), src.indexOf('function cancel()'));
+    assert.ok(start.indexOf('session.tab = null;') !== -1 && start.indexOf('session.tab = null;') < start.indexOf("ctx.setParams({ domain: v.domains.join(',') });"));
+    // update(): an edited `tab=` opens that tab without a re-mount.
+    assert.match(src, /const tab = parseSubTab\(params\.tab\);\s*if \(tab && ui\) ui\.showTab\(tab\);/);
+    // A stat card filters the hosts and hands the focus to the Hosts tab (the card hides with its panel).
+    assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
+  });
+
   test('a finished Subdomains run redraws its streamed rows, so the "origin?" badge follows the ORIGIN panel', async () => {
     // Wiring guard (the view cannot be mounted on the fake DOM; the Zone File hand-off E2E counts the badges).
     const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');

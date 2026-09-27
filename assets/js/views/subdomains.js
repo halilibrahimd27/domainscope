@@ -18,14 +18,19 @@
  *   chips with clear status texts (quota used up, temporarily down + CT fallback …) and a
  *   progress bar while it runs; hosts stream into the table as they resolve. Cancel aborts
  *   through an AbortController.
- * - Results: stat cards (click to filter), "found through DNS / from sources" technique
- *   chips, a filter bar (All / Resolving / Cloudflare / Direct / Not resolving + search), a
- *   table (subdomain → DNS lookup, IPs → IP Intel, classification with the translated reason,
- *   CNAME chain, how each name was found, matching inventory server), wildcard suspects hidden
- *   by default, the ORIGIN panel for proxied (orange-cloud) hosts — origin networks (/24),
- *   resolver-leak and history candidates (structured reason fields) and a ready-to-copy CLI
- *   sweep command for POSIX shells or PowerShell (lib/cmdline quotes every token) — copy /
- *   names.txt / CSV / JSON exports and a hand-over to "SSL Targets".
+ * - Results in tabs under the run's header (title, time, progress bar), with live counts on the
+ *   tab labels (lib/subtabs): Overview — stat cards (click to filter the hosts), the summary
+ *   alerts, "found through DNS / from sources" technique chips and a hand-over to "SSL Targets";
+ *   Hosts — copy / names.txt / CSV / JSON exports, a filter bar (All / Resolving / Cloudflare /
+ *   Direct / Not resolving + search) and the table (subdomain → DNS lookup, IPs → IP Intel,
+ *   classification with the translated reason, CNAME chain, how each name was found, matching
+ *   inventory server; wildcard suspects hidden by default; on a phone each row is a card whose
+ *   names wrap only after a dot and whose IPs never break); Origins — the ORIGIN panel for
+ *   proxied (orange-cloud) hosts: origin networks (/24), resolver-leak and history candidates
+ *   (structured reason fields) and a ready-to-copy CLI sweep command for POSIX shells or
+ *   PowerShell (lib/cmdline quotes every token); Sources — the stage pills, per-source chips,
+ *   status lines and free limits. Hosts is the automatic tab once a host is listed (Sources
+ *   before that while the run is live, Overview when it ended empty); a tab the user picks stays.
  *
  * Like the SSL Targets scan, a running scan belongs to this module, not to the mounted view:
  * opening a subdomain in DNS Lookup and coming back keeps the results (a toast says when a
@@ -35,16 +40,18 @@
  * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
- * reload or a restored tab pre-fills the box instead of silently scanning again. A domain carried
- * over from another tool (`run=0`, lib/session.js) fills the box only while it is empty or still
- * holds the last scan's domains or the domain carried before. "Delete all local data" forgets the
- * box and the last scan (a running one is stopped), whether or not the view is mounted.
+ * reload or a restored tab pre-fills the box instead of silently scanning again. Picking a results
+ * tab adds `tab=overview|hosts|origins|sources` (replaceState); a re-mount (a language switch,
+ * Back from another view) opens that tab again. A domain carried over from another tool (`run=0`,
+ * lib/session.js) fills the box only while it is empty or still holds the last scan's domains or
+ * the domain carried before. "Delete all local data" forgets the box and the last scan (a running
+ * one is stopped), whether or not the view is mounted.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, CodeBlock, CopyButton, DataTable, Disclosure, ErrorBanner, Icon, KindBadge,
-  ProgressBar, SegmentedControl, StatCard, TruncatedList, announce, checkbox, checkboxGroup, decodeText, ipSortValue,
+  Alert, Badge, Button, ButtonLink, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Icon, KindBadge,
+  ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox, checkboxGroup, decodeText, ipSortValue,
   radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -65,6 +72,7 @@ import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
+import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
 
@@ -379,6 +387,16 @@ registerStrings('en', {
   'sub.showResults': 'Show results',
 
   'sub.results': 'Subdomain list',
+  'sub.tab.overview': 'Overview',
+  'sub.tab.hosts': 'Hosts',
+  'sub.tab.origins': 'Origins',
+  'sub.tab.sources': 'Sources',
+  'sub.stages.title': 'Stages',
+  'sub.sources.none': 'This scan asked no passive source.',
+  'sub.sources.quotas': 'Free limits',
+  'sub.org.pending': { zero: 'Origin candidates for proxied hosts are looked for at the end of the scan and listed here.', one: '{count} proxied host so far. Its origin candidates are looked for at the end of the scan and listed here.', other: '{count} proxied hosts so far. Their origin candidates are looked for at the end of the scan and listed here.' },
+  'sub.org.none': 'No host is behind a proxy that hides its origin (such as Cloudflare’s orange cloud), so there is no origin server to look for.',
+  'sub.org.unfinished': 'The scan did not finish, so no origin candidates were looked for. Run it again to see them.',
   'sub.stat.found': 'Found',
   'sub.stat.foundDomains': { one: 'under {count} domain', other: 'under {count} domains' },
   'sub.stat.wildcardHidden': { one: '+{count} wildcard suspect hidden', other: '+{count} wildcard suspects hidden' },
@@ -432,7 +450,7 @@ registerStrings('en', {
   'sub.host.resolvingTitle': 'Found by a probe; the full classification arrives at the resolve stage.',
   'sub.host.lookup': 'Look up the DNS records of {name}',
   'sub.host.originHint': 'origin?',
-  'sub.host.originHintTitle': 'Origin candidates found — see “Origin servers behind the proxy” below',
+  'sub.host.originHintTitle': 'Origin candidates found — open them in the Origins tab',
   'sub.ip.intel': 'IP Intel for {ip}',
 
   'sub.tech.label': 'How the names were found',
@@ -531,7 +549,8 @@ registerStrings('en', {
   'sub.act.names': 'names.txt',
 
   'sub.sum.noneFound': 'No subdomains found. Check the spelling — or try a larger wordlist.',
-  'sub.sum.sourcesFailed': { one: '{count} passive source did not answer (see “Source status” above). The DNS discovery does not depend on it, but a few names may be missing.', other: '{count} passive sources did not answer (see “Source status” above). The DNS discovery does not depend on them, but a few names may be missing.' },
+  'sub.sum.sourcesFailed': { one: '{count} passive source did not answer (see the Sources tab). The DNS discovery does not depend on it, but a few names may be missing.', other: '{count} passive sources did not answer (see the Sources tab). The DNS discovery does not depend on them, but a few names may be missing.' },
+  'sub.sum.sourcesLink': 'Show the source status',
   'sub.sum.wildcard': 'Wildcard DNS on {list}: every name there resolves, so look-alike names are hidden as “wildcard?”.',
   'sub.sum.cloudflare': { one: '{count} subdomain is behind Cloudflare: the IPs shown belong to Cloudflare and the origin server is hidden.', other: '{count} subdomains are behind Cloudflare: the IPs shown belong to Cloudflare and the origin servers are hidden.' },
   'sub.sum.originLink': 'See the origin candidates',
@@ -806,6 +825,16 @@ registerStrings('tr', {
   'sub.showResults': 'Sonuçları göster',
 
   'sub.results': 'Subdomain listesi',
+  'sub.tab.overview': 'Genel bakış',
+  'sub.tab.hosts': 'Host’lar',
+  'sub.tab.origins': 'Origin’ler',
+  'sub.tab.sources': 'Kaynaklar',
+  'sub.stages.title': 'Aşamalar',
+  'sub.sources.none': 'Bu tarama hiçbir pasif kaynağa sormadı.',
+  'sub.sources.quotas': 'Ücretsiz kullanım sınırları',
+  'sub.org.pending': { zero: 'Proxy’lenen host’ların asıl sunucu adayları taramanın sonunda aranır ve burada listelenir.', other: 'Şu ana kadar {count} proxy’lenen host var. Asıl sunucu adayları taramanın sonunda aranır ve burada listelenir.' },
+  'sub.org.none': 'Asıl sunucusunu gizleyen bir proxy’nin (Cloudflare’in turuncu bulutu gibi) arkasında hiçbir host yok; bu yüzden aranacak bir asıl sunucu yok.',
+  'sub.org.unfinished': 'Tarama bitmediği için asıl sunucu adayları aranmadı. Görmek için taramayı yeniden çalıştırın.',
   'sub.stat.found': 'Bulunan',
   'sub.stat.foundDomains': '{count} alan adı altında',
   'sub.stat.wildcardHidden': '+{count} wildcard şüphelisi gizli',
@@ -859,7 +888,7 @@ registerStrings('tr', {
   'sub.host.resolvingTitle': 'Bir sonda ile bulundu; tam sınıflandırma çözümleme aşamasında gelir.',
   'sub.host.lookup': '{name} için DNS kayıtlarını sorgula',
   'sub.host.originHint': 'asıl sunucu?',
-  'sub.host.originHintTitle': 'Asıl sunucu adayları bulundu — aşağıdaki “Proxy arkasındaki asıl sunucular” bölümüne bakın',
+  'sub.host.originHintTitle': 'Asıl sunucu adayları bulundu — Origin’ler sekmesinde görün',
   'sub.ip.intel': '{ip} için IP Bilgisi',
 
   'sub.tech.label': 'Adlar nasıl bulundu',
@@ -958,7 +987,8 @@ registerStrings('tr', {
   'sub.act.names': 'names.txt',
 
   'sub.sum.noneFound': 'Hiç subdomain bulunamadı. Yazımı kontrol edin — ya da daha büyük bir kelime listesi deneyin.',
-  'sub.sum.sourcesFailed': '{count} pasif kaynak yanıt vermedi (yukarıdaki “Kaynak durumu”na bakın). DNS keşfi onlara bağlı değildir ama birkaç ad eksik olabilir.',
+  'sub.sum.sourcesFailed': '{count} pasif kaynak yanıt vermedi (Kaynaklar sekmesine bakın). DNS keşfi onlara bağlı değildir ama birkaç ad eksik olabilir.',
+  'sub.sum.sourcesLink': 'Kaynak durumunu göster',
   'sub.sum.wildcard': '{list} üzerinde wildcard DNS var: oradaki her ad çözümlenir; bu yüzden benzer adlar “wildcard?” olarak gizlendi.',
   'sub.sum.cloudflare': '{count} subdomain Cloudflare arkasında: gösterilen IP’ler Cloudflare’e ait, asıl sunucu gizli.',
   'sub.sum.originLink': 'Asıl sunucu adaylarını göster',
@@ -2583,6 +2613,22 @@ function hostSortKey(name) {
   return String(name || '').split('.').reverse().join('.');
 }
 
+/**
+ * A host name as text runs that wrap only after a dot (lib/subtabs.hostSegments): each label is
+ * one unbreakable run (`.sub-seg`) with a <wbr> before the next, so a narrow cell never splits
+ * `old-shop` at its hyphen. The text (and a copy of it) is the name, unchanged.
+ * @param {string} name
+ * @returns {Array<Node|string>}
+ */
+export function hostNameNodes(name) {
+  const out = [];
+  for (const seg of hostSegments(name)) {
+    if (out.length) out.push(h('wbr'));
+    out.push(seg.keep ? h('span', { class: 'sub-seg' }, seg.text) : seg.text);
+  }
+  return out;
+}
+
 function sourceNote(source) {
   const key = `sub.src.${source.id}`;
   return hasString(key, 'en') ? t(key) : source.quota || '';
@@ -2684,6 +2730,8 @@ const session = {
   showWildcard: false,
   resolvingOnly: false,
   originShell: 'posix',
+  // The results tab the user chose for the current run (null: automatic, lib/subtabs.autoSubTab).
+  tab: null,
   run: null,
   /** Names handed over by the Reverse DNS view ({@link namesFromIntent}), kept until removed. */
   handoff: null
@@ -3767,6 +3815,8 @@ export function mount(container, ctx) {
     run.zone = zoneCfg.zone || null; // the imported zone it scans (zoneStartAction)
     session.run = run;
     session.filter = 'all';
+    // A new run opens on the automatic tab (lib/subtabs.autoSubTab); setParams below drops `tab=`.
+    session.tab = null;
     hideLinkPrompt();
     // Only `domain`: a reload or a restored tab pre-fills the box instead of scanning again
     // (the header's "Copy link" adds `run=1` for a shared link).
@@ -3887,6 +3937,9 @@ export function mount(container, ctx) {
 
   active = {
     applyParams(params) {
+      // A new `tab=` (an edited or pasted URL) opens that results tab.
+      const tab = parseSubTab(params.tab);
+      if (tab && ui) ui.showTab(tab);
       const list = routeTargets(new URLSearchParams(params), params);
       if (!list.length) return;
       if (isFillOnly(params) && !fillReplaces(domainField.value, lastRunDomains(), boxDomains, session.carried)) return;
@@ -3920,7 +3973,7 @@ export function mount(container, ctx) {
 }
 
 /**
- * Take new route params without re-mounting (e.g. a pasted share link).
+ * Take new route params without re-mounting (e.g. a pasted share link, or another `tab=`).
  * @param {Record<string, string>} params
  * @returns {boolean}
  */
@@ -3987,11 +4040,31 @@ function buildRunUI(run, ctx, { onFinish }) {
   const sourceWaitNote = h('div', { class: 'sub-src-wait', attrs: { 'aria-live': 'polite' }, hidden: true });
   const sourceNotes = h('div', { class: 'sub-src-notes', attrs: { 'aria-live': 'polite' } });
   const notice = h('div', { class: 'sub-run-notice' });
+  // How this run used an imported zone file (exact: its names only; discover: added as seeds).
+  const zoneBanner = run.config.zoneMode === 'exact' || run.config.zoneMode === 'discover'
+    ? Alert({ variant: 'info', compact: true, icon: 'file-text', message: t(`sub.zone.${run.config.zoneMode}`) })
+    : null;
+  if (zoneBanner) {
+    zoneBanner.classList.add('sub-zone-banner');
+    zoneBanner.dataset.zoneMode = run.config.zoneMode;
+  }
+  // How this run used names handed over by the Reverse DNS view.
+  const handoffMode = run.config.handoff ? run.config.handoff.mode : null;
+  const handoffBanner = handoffMode === 'exact' || handoffMode === 'discover'
+    ? Alert({ variant: 'info', compact: true, icon: 'swap', message: t(`sub.handoff.${handoffMode}`) })
+    : null;
+  if (handoffBanner) {
+    handoffBanner.classList.add('sub-zone-banner');
+    handoffBanner.dataset.handoffMode = handoffMode;
+  }
+  // The run's header stays above the tabs: its title, time and progress bar (whose label names
+  // the current stage) are in view whichever tab is open; the stage pills and the per-source
+  // chips are in the Sources tab.
   const panel = h('section', { class: 'sub-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
     h('div', { class: 'sub-run-head' },
       h('span', { class: 'sub-run-icon', attrs: { 'aria-hidden': 'true' } }, Icon('layers', { size: 18 })),
       h('div', { class: 'sub-run-titles' }, title, meta)),
-    stageList, progress, sourceWaitNote, chips, sourceNotes, notice);
+    progress, zoneBanner, handoffBanner, notice);
 
   /** Grace-window default (lib/scanner DEFAULT_SOURCE_GRACE_MS); only the wording seconds. */
   const SOURCE_GRACE_SECONDS = 12;
@@ -4012,6 +4085,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   function renderTitle() {
     title.textContent = run.status === 'running' ? t('sub.run.title', { domains: domainsLabel }) : t('sub.run.titleDone', { domains: domainsLabel });
     panel.dataset.status = run.status;
+    root.dataset.status = run.status;
   }
 
   function renderMeta() {
@@ -4087,11 +4161,16 @@ function buildRunUI(run, ctx, { onFinish }) {
     return el;
   }
 
+  /** The passive sources this run asks (the scanner's plan once it started, else the config). */
+  const sourceIds = () => (run.sourcePlan.sources.length ? run.sourcePlan.sources : run.config.sources);
+
   function renderChips() {
     const plan = run.sourcePlan;
-    const ids = plan.sources.length ? plan.sources : run.config.sources;
+    const ids = sourceIds();
     const expected = Math.max(1, plan.domains.length || run.config.domains.length);
     chips.hidden = ids.length === 0;
+    sourcesNone.hidden = ids.length > 0;
+    renderQuotas(ids);
     const health = new Map(sourceHealthSummary(run.sourceResults).map((x) => [x.source, x]));
     for (const sid of ids) {
       const s = sourceChipState(run.sourceResults, sid, expected);
@@ -4122,6 +4201,20 @@ function buildRunUI(run, ctx, { onFinish }) {
       el.title = tip;
     }
     renderSourceNotes(ids, expected, health);
+    renderBadges();
+  }
+
+  /** The free limits of the sources this run asks (the same notes as Advanced options). */
+  function renderQuotas(ids) {
+    clear(quotaList);
+    quotaBox.hidden = ids.length === 0;
+    for (const sid of ids) {
+      const def = SOURCES.find((x) => x.id === sid);
+      const note = def ? sourceNote(def) : '';
+      if (!note) continue;
+      quotaList.append(h('li', { class: 'sub-src-quota', dataset: { source: sid } },
+        h('span', { class: 'sub-src-quota-name' }, SOURCE_NAMES[sid] || sid), h('span', { class: 'sub-src-quota-note' }, note)));
+    }
   }
 
   /**
@@ -4152,14 +4245,16 @@ function buildRunUI(run, ctx, { onFinish }) {
   }
 
   /* --- stats -------------------------------------------------------------------- */
+  // A stat card (Overview) filters the host table and opens it; the keyboard focus goes to the
+  // Hosts tab, since the card itself is hidden with its panel.
   const stat = {
-    found: StatCard({ label: t('sub.stat.found'), icon: 'layers', variant: 'accent', onClick: () => setFilter('all'), pressed: false }),
-    resolving: StatCard({ label: t('sub.stat.resolving'), icon: 'check-circle', variant: 'ok', onClick: () => setFilter('resolving'), pressed: false }),
-    cloudflare: StatCard({ label: t('sub.stat.cloudflare'), icon: 'cloud', variant: 'cloudflare', onClick: () => setFilter('cloudflare'), pressed: false }),
-    cdn: StatCard({ label: t('sub.stat.cdn'), icon: 'zap', variant: 'cdn', onClick: () => setFilter('cdn'), pressed: false }),
-    direct: StatCard({ label: t('sub.stat.direct'), icon: 'server', variant: 'direct', onClick: () => setFilter('direct'), pressed: false }),
-    unresolved: StatCard({ label: t('sub.stat.unresolved'), icon: 'x-circle', variant: 'nxdomain', onClick: () => setFilter('unresolved'), pressed: false }),
-    dangling: StatCard({ label: t('sub.stat.dangling'), icon: 'unlink', variant: 'dangling', onClick: () => setFilter('dangling'), pressed: false })
+    found: StatCard({ label: t('sub.stat.found'), icon: 'layers', variant: 'accent', onClick: () => pickFilter('all'), pressed: false }),
+    resolving: StatCard({ label: t('sub.stat.resolving'), icon: 'check-circle', variant: 'ok', onClick: () => pickFilter('resolving'), pressed: false }),
+    cloudflare: StatCard({ label: t('sub.stat.cloudflare'), icon: 'cloud', variant: 'cloudflare', onClick: () => pickFilter('cloudflare'), pressed: false }),
+    cdn: StatCard({ label: t('sub.stat.cdn'), icon: 'zap', variant: 'cdn', onClick: () => pickFilter('cdn'), pressed: false }),
+    direct: StatCard({ label: t('sub.stat.direct'), icon: 'server', variant: 'direct', onClick: () => pickFilter('direct'), pressed: false }),
+    unresolved: StatCard({ label: t('sub.stat.unresolved'), icon: 'x-circle', variant: 'nxdomain', onClick: () => pickFilter('unresolved'), pressed: false }),
+    dangling: StatCard({ label: t('sub.stat.dangling'), icon: 'unlink', variant: 'dangling', onClick: () => pickFilter('dangling'), pressed: false })
   };
   const statsGrid = h('div', { class: 'stat-grid sub-stats' });
   for (const [k, s] of Object.entries(stat)) {
@@ -4214,7 +4309,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         sortValue: (x) => hostSortKey(x.name),
         searchValue: (x) => [x.name, ...x.resolution.cnames, x.classification.provider ? x.classification.provider.name : ''].join(' '),
         render: (x) => h('div', { class: 'sub-host' },
-          h('a', { class: 'sub-host-name mono', href: ctx.href('lookup', { name: x.name }), title: t('sub.host.lookup', { name: x.name }) }, x.name),
+          h('a', { class: 'sub-host-name mono', href: ctx.href('lookup', { name: x.name }), title: t('sub.host.lookup', { name: x.name }) }, hostNameNodes(x.name)),
           x.wildcardSuspect ? Badge(t('sub.host.wildcard'), { variant: 'warn', title: t('sub.filter.wildcardHint'), className: 'sub-mini-badge' }) : null)
       },
       {
@@ -4307,6 +4402,10 @@ function buildRunUI(run, ctx, { onFinish }) {
   function setFilter(f) {
     session.filter = FILTERS.includes(f) ? f : 'all';
     applyFilter();
+  }
+  function pickFilter(f) {
+    setFilter(f);
+    showTab('hosts', { focus: true });
   }
 
   /* --- actions: copy / download ------------------------------------------------------ */
@@ -4443,6 +4542,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   function jumpToOrigin() {
     const target = originHost.querySelector('.sub-org');
     if (!target) return;
+    showTab('origins');
     target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
     const heading = target.querySelector('.sub-org-title');
     if (heading) heading.focus({ preventScroll: true });
@@ -4483,7 +4583,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         h('h4', { class: 'sub-org-sub' }, Icon('file-text', { size: 14 }), t('sub.org.zone')),
         h('p', { class: 'sub-org-hint' }, t('sub.org.zoneHint')),
         h('ul', { class: 'sub-org-list' }, zoned.flatMap((p) => p.zone.map((z) => h('li', { class: 'sub-org-leak', dataset: { host: p.name, ip: z.ip, kind: 'zone' } },
-          h('span', { class: 'mono sub-org-name' }, p.name), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+          h('span', { class: 'mono sub-org-name' }, hostNameNodes(p.name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
           zoneIpEl(z.ip)))))));
     }
 
@@ -4536,7 +4636,7 @@ function buildRunUI(run, ctx, { onFinish }) {
               max: 6,
               inline: true,
               render: (x) => h('span', { class: 'sub-org-member' },
-                h('a', { class: 'mono', href: ctx.href('lookup', { name: x.name }) }, x.name),
+                h('a', { class: 'mono', href: ctx.href('lookup', { name: x.name }) }, hostNameNodes(x.name)),
                 x.ip ? h('span', { class: 'sub-org-member-ip mono' }, x.ip) : null)
             })));
       });
@@ -4556,7 +4656,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         h('h4', { class: 'sub-org-sub' }, Icon('zap', { size: 14 }), t('sub.org.leaks')),
         h('p', { class: 'sub-org-hint' }, t('sub.org.leaksHint')),
         h('ul', { class: 'sub-org-list' }, leaks.flatMap((p) => p.leaks.map((l) => h('li', { class: 'sub-org-leak', dataset: { host: p.name, ip: l.ip } },
-          h('span', { class: 'mono sub-org-name' }, p.name), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+          h('span', { class: 'mono sub-org-name' }, hostNameNodes(p.name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
           ipLinkOrg(l.ip), h('span', { class: 'sub-org-via' }, t('sub.org.leakVia', { resolver: l.resolver }))))))));
     }
     const hist = o.proxied.filter((p) => p.history.length);
@@ -4569,7 +4669,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           const source = SOURCE_NAMES[x.source] || x.source || '';
           const via = source ? t(x.lastSeen ? 'sub.org.historyViaDate' : 'sub.org.historyVia', { source, date: dayText(x.lastSeen) }) : '';
           return h('li', { class: 'sub-org-leak', dataset: { host: p.name, ip: x.ip } },
-            h('span', { class: 'mono sub-org-name' }, p.name), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+            h('span', { class: 'mono sub-org-name' }, hostNameNodes(p.name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
             ipLinkOrg(x.ip), via ? h('span', { class: 'sub-org-via' }, via) : null);
         })))));
     }
@@ -4662,7 +4762,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       sort: { key: 'name', dir: 'asc' },
       className: 'sub-org-table',
       columns: [
-        { key: 'name', label: t('sub.org.col.host'), sortable: true, mono: true, sortValue: (p) => hostSortKey(p.name), searchValue: (p) => p.name, render: (p) => p.name },
+        { key: 'name', label: t('sub.org.col.host'), sortable: true, mono: true, sortValue: (p) => hostSortKey(p.name), searchValue: (p) => p.name, render: (p) => hostNameNodes(p.name) },
         {
           key: 'candidates', label: t('sub.org.col.candidates'), wrap: true, sortable: true,
           // Rank: exact host-specific evidence (leak / sibling / history) above candidate networks.
@@ -4772,34 +4872,53 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   /* --- summary + CTA ------------------------------------------------------------------ */
   const summaryHost = h('div', { class: 'stack-sm sub-summary' });
+  /** The Overview's alerts of the ended run (lib/subtabs.summaryAlerts); its tab badge counts them. */
+  let alerts = [];
   function renderSummary() {
     clear(summaryHost);
-    if (run.status === 'running') return;
-    const hosts = listHosts();
-    const c = countHosts(hosts);
-    const add = (variant, message, iconName, key, actions = null) => {
-      const a = Alert({ variant, compact: true, message, icon: iconName, actions });
-      a.dataset.summary = key;
-      summaryHost.append(a);
-    };
-    if (run.status === 'done' && c.found === 0) add('warn', t('sub.sum.noneFound'), 'search', 'none');
-    const failed = sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length;
-    if (failed) add('warn', t('sub.sum.sourcesFailed', { count: failed }), 'alert', 'sources-failed');
-    if (c.dangling) add('error', t('sub.sum.dangling', { count: c.dangling }), 'unlink', 'dangling');
-    if (c.cloudflare) {
-      const jump = originHost.querySelector('.sub-org')
-        ? [h('button', { type: 'button', class: 'link-btn', dataset: { action: 'sub-origin-link' }, on: { click: () => jumpToOrigin() } }, t('sub.sum.originLink'))]
-        : null;
-      add('info', t('sub.sum.cloudflare', { count: c.cloudflare }), 'cloud', 'cloudflare', jump);
-    }
     const r = run.result;
-    if (r) {
-      const wild = Object.entries(r.wildcards || {}).filter(([, w]) => w && w.wildcard).map(([d]) => `*.${d}`);
-      if (wild.length) add('info', t('sub.sum.wildcard', { list: wild.join(', ') }), 'layers', 'wildcard');
-      for (const w of r.warnings || []) {
-        add('warn', WARNING_CODES.includes(w.code) ? t(`sub.warn.${w.code}`, { detail: w.detail }) : `${w.code}: ${w.detail}`, 'alert', w.code);
+    alerts = summaryAlerts({
+      status: run.status,
+      counts: countHosts(listHosts()),
+      failedSources: sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
+      wildcards: r ? Object.entries(r.wildcards || {}).filter(([, w]) => w && w.wildcard).map(([d]) => `*.${d}`) : [],
+      warnings: r ? r.warnings || [] : []
+    });
+    const link = (action, label, onClick) => [h('button', { type: 'button', class: 'link-btn', dataset: { action }, on: { click: onClick } }, label)];
+    for (const a of alerts) {
+      let message;
+      let iconName = 'alert';
+      let actions = null;
+      switch (a.key) {
+        case 'none':
+          message = t('sub.sum.noneFound');
+          iconName = 'search';
+          break;
+        case 'sources-failed':
+          message = t('sub.sum.sourcesFailed', { count: a.count });
+          actions = link('sub-sources-link', t('sub.sum.sourcesLink'), () => showTab('sources', { focus: true }));
+          break;
+        case 'dangling':
+          message = t('sub.sum.dangling', { count: a.count });
+          iconName = 'unlink';
+          break;
+        case 'cloudflare':
+          message = t('sub.sum.cloudflare', { count: a.count });
+          iconName = 'cloud';
+          if (originHost.querySelector('.sub-org')) actions = link('sub-origin-link', t('sub.sum.originLink'), () => jumpToOrigin());
+          break;
+        case 'wildcard':
+          message = t('sub.sum.wildcard', { list: a.list.join(', ') });
+          iconName = 'layers';
+          break;
+        default:
+          message = WARNING_CODES.includes(a.key) ? t(`sub.warn.${a.key}`, { detail: a.detail }) : `${a.key}: ${a.detail}`;
       }
+      const alert = Alert({ variant: a.variant, compact: true, message, icon: iconName, actions });
+      alert.dataset.summary = a.key;
+      summaryHost.append(alert);
     }
+    renderBadges();
   }
 
   const cta = h('section', { class: 'sub-cta card', dataset: { cta: 'scan' } },
@@ -4812,36 +4931,105 @@ function buildRunUI(run, ctx, { onFinish }) {
       onClick: () => ctx.navigate('scan', { domain: run.config.domains.join(',') })
     }));
 
-  const resultsId = uid('sub-results');
-  // How this run used an imported zone file (exact: its names only; discover: added as seeds).
-  const zoneBanner = run.config.zoneMode === 'exact' || run.config.zoneMode === 'discover'
-    ? Alert({ variant: 'info', compact: true, icon: 'file-text', message: t(`sub.zone.${run.config.zoneMode}`) })
-    : null;
-  if (zoneBanner) {
-    zoneBanner.classList.add('sub-zone-banner');
-    zoneBanner.dataset.zoneMode = run.config.zoneMode;
+  /* --- Origins tab: the ORIGIN panel, or why there is none (yet) ---------------------------- */
+  const originEmpty = h('div', { class: 'sub-org-empty' });
+  let originEmptyText = null;
+  function renderOriginEmpty() {
+    let text = null;
+    if (!originHost.querySelector('.sub-org')) {
+      if (run.status === 'running') text = t('sub.org.pending', { count: listHosts().filter(isProxiedOriginHost).length });
+      else text = run.result ? t('sub.org.none') : t('sub.org.unfinished');
+    }
+    if (text === originEmptyText) return;
+    originEmptyText = text;
+    clear(originEmpty);
+    originEmpty.hidden = !text;
+    if (text) originEmpty.append(EmptyState({ icon: 'cloud', message: text, compact: true }));
   }
-  // How this run used names handed over by the Reverse DNS view.
-  const handoffMode = run.config.handoff ? run.config.handoff.mode : null;
-  const handoffBanner = handoffMode === 'exact' || handoffMode === 'discover'
-    ? Alert({ variant: 'info', compact: true, icon: 'swap', message: t(`sub.handoff.${handoffMode}`) })
-    : null;
-  if (handoffBanner) {
-    handoffBanner.classList.add('sub-zone-banner');
-    handoffBanner.dataset.handoffMode = handoffMode;
-  }
-  const results = h('section', { class: 'sub-results stack', attrs: { 'aria-labelledby': resultsId } },
-    h('div', { class: 'sub-results-head' }, h('h2', { class: 'sub-results-title', id: resultsId }, t('sub.results')), actions),
-    zoneBanner,
-    handoffBanner,
-    statsGrid,
-    techHost,
-    summaryHost,
-    originHost,
-    table.el,
-    cta);
 
-  const el = h('div', { class: 'stack-lg sub-run-ui', dataset: { run: run.id } }, panel, results);
+  /* --- Sources tab: the stage pills, the per-source chips and notes, the free limits --------- */
+  const stagesId = uid('sub-stages');
+  const sourcesId = uid('sub-sources');
+  const sourcesNone = h('p', { class: 'sub-src-none', hidden: true }, t('sub.sources.none'));
+  const quotaList = h('ul', { class: 'sub-src-list sub-src-quotas' });
+  const quotaBox = h('div', { class: 'sub-src-quota-box' }, h('div', { class: 'sub-src-notes-title' }, t('sub.sources.quotas')), quotaList);
+  const sourcesPanel = h('div', { class: 'stack sub-tab-sources' },
+    h('section', { class: 'sub-src-section card', dataset: { part: 'stages' }, attrs: { 'aria-labelledby': stagesId } },
+      h('h3', { class: 'sub-src-heading', id: stagesId }, t('sub.stages.title')),
+      stageList),
+    h('section', { class: 'sub-src-section card', dataset: { part: 'sources' }, attrs: { 'aria-labelledby': sourcesId } },
+      h('h3', { class: 'sub-src-heading', id: sourcesId }, t('sub.opt.sources')),
+      h('p', { class: 'sub-src-hint' }, t('sub.opt.sourcesHint')),
+      sourcesNone, sourceWaitNote, chips, sourceNotes, quotaBox));
+
+  /* --- tabs ----------------------------------------------------------------------------------- */
+  // Overview: counts and alerts; Hosts: the table (the automatic tab once there is a host);
+  // Origins: the ORIGIN panel with the sweep command; Sources: stages, sources and their limits.
+  // Every panel is built up front, so a live run updates them all whichever one is shown.
+  const opening = initialSubTab({
+    route: ctx.params.tab,
+    chosen: session.tab,
+    hosts: countHosts(listHosts(), { includeWildcard: session.showWildcard }).found,
+    running: run.status === 'running'
+  });
+  if (opening.chosen) session.tab = opening.tab;
+  const tabs = Tabs(SUB_TABS.map((tabId) => ({ id: tabId, label: t(`sub.tab.${tabId}`) })), {
+    selected: opening.tab,
+    label: t('sub.results'),
+    className: 'sub-tabs',
+    onChange: (tabId) => remember(tabId)
+  });
+  const panels = {
+    overview: h('div', { class: 'stack sub-tab-overview' }, statsGrid, summaryHost, techHost, cta),
+    hosts: h('div', { class: 'stack sub-tab-hosts' }, actions, table.el),
+    origins: h('div', { class: 'stack sub-tab-origins' }, originEmpty, originHost),
+    sources: sourcesPanel
+  };
+  for (const tabId of SUB_TABS) tabs.panel(tabId).append(panels[tabId]);
+
+  /** A tab the user picked (a click, the arrow keys, a stat card, a link): kept for this run and in the URL. */
+  function remember(tabId) {
+    session.tab = tabId;
+    ctx.setParams({ tab: tabId }, { merge: true });
+  }
+  /** Open a tab for the user (it counts as their choice). */
+  function showTab(tabId, { focus = false } = {}) {
+    if (!SUB_TABS.includes(tabId)) return;
+    tabs.select(tabId, { focus, silent: true });
+    remember(tabId);
+  }
+  /**
+   * An automatic choice follows the run: Sources → Hosts with the first host, Overview when the
+   * run ends empty (lib/subtabs.nextAutoTab) — never a tab the user chose, never under the focus.
+   */
+  function followRun(found) {
+    const doc = globalThis.document;
+    const next = nextAutoTab(tabs.getSelected(), {
+      chosen: session.tab !== null,
+      focusInside: !!(doc && doc.activeElement && tabs.el.contains(doc.activeElement)),
+      hosts: found,
+      running: run.status === 'running'
+    });
+    if (next) tabs.select(next, { silent: true });
+  }
+  /** The live counts on the tab labels (lib/subtabs.subTabBadges). */
+  let lastCounts = null;
+  function renderBadges() {
+    const hosts = listHosts();
+    const c = lastCounts || countHosts(hosts, { includeWildcard: session.showWildcard });
+    const b = subTabBadges({
+      found: c.found,
+      running: run.status === 'running',
+      proxied: hosts.filter(isProxiedOriginHost).length,
+      sources: sourceIds().length,
+      health: sourceHealthSummary(run.sourceResults),
+      alerts
+    });
+    for (const tabId of SUB_TABS) tabs.setBadge(tabId, b[tabId] ? b[tabId].value : null, b[tabId] ? b[tabId].variant : null);
+  }
+
+  const results = h('div', { class: 'sub-results' }, tabs.el);
+  const root = h('div', { class: 'stack sub-run-ui', dataset: { run: run.id, status: run.status } }, panel, results);
 
   /* --- stats rendering ----------------------------------------------------------------- */
   function renderStatsNow() {
@@ -4865,6 +5053,10 @@ function buildRunUI(run, ctx, { onFinish }) {
     wildLabel.textContent = t('sub.filter.wildcard', { count: c.wildcard });
     wildBox.el.hidden = c.wildcard === 0;
     syncActions();
+    lastCounts = c;
+    renderBadges();
+    renderOriginEmpty();
+    followRun(c.found);
   }
   /** Streaming: at most every 150 ms (every host would otherwise walk the whole list). */
   const renderStats = timeThrottle(renderStatsNow, 150);
@@ -4986,7 +5178,9 @@ function buildRunUI(run, ctx, { onFinish }) {
   }
 
   return {
-    el,
+    el: root,
+    /** Open a results tab (the route's `tab=` changed). */
+    showTab,
     dispose() {
       run.listeners.delete(listener);
       stopTicker();

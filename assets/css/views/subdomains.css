@@ -609,8 +609,8 @@
   opacity: 0.65;
 }
 
-.sub-run[data-status="cancelled"] .sub-stage[data-state="pending"],
-.sub-run[data-status="error"] .sub-stage[data-state="pending"] {
+.sub-run-ui[data-status="cancelled"] .sub-stage[data-state="pending"],
+.sub-run-ui[data-status="error"] .sub-stage[data-state="pending"] {
   opacity: 0.55;
 }
 
@@ -627,7 +627,7 @@
 }
 
 /* A finished run never pulses, whatever state a pill was left in. */
-.sub-run:not([data-status="running"]) .sub-stage-dot {
+.sub-run-ui:not([data-status="running"]) .sub-stage-dot {
   animation: none;
 }
 
@@ -789,6 +789,68 @@
 
 .sub-run-notice:empty {
   display: none;
+}
+
+/* ---- results tabs --------------------------------------------------------------- */
+
+/* A host name wraps only after a dot: each label is one unbreakable run (hostNameNodes). */
+.sub-seg {
+  white-space: nowrap;
+}
+
+/* Sources tab: stages, then the passive sources with their status lines and free limits. */
+.sub-src-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.sub-src-heading {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.sub-src-hint,
+.sub-src-none {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.sub-src-none[hidden],
+.sub-src-quota-box[hidden],
+.sub-org-empty[hidden] {
+  display: none;
+}
+
+.sub-src-quota-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sub-src-quota {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.sub-src-quota-name {
+  flex: none;
+  font-weight: 650;
+  color: var(--text);
+}
+
+/* Origins tab while there is no ORIGIN panel (yet). */
+.sub-org-empty .empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
 }
 
 /* ---- results ------------------------------------------------------------------ */
@@ -1218,8 +1280,10 @@
 
 .sub-org-member {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 0 6px;
+  min-width: 0;
   font-size: 12.5px;
 }
 
@@ -1235,9 +1299,11 @@
   text-decoration: underline;
 }
 
+/* An address never breaks: on a narrow card it moves under its name instead. */
 .sub-org-member-ip {
   font-size: 11.5px;
   color: var(--text-2);
+  white-space: nowrap;
 }
 
 .sub-org-leak {
@@ -1634,6 +1700,9 @@
      its classification and its IPs — nothing scrolls sideways, and long IPv6 wraps. The CNAME,
      "Found by" and server columns drop out of the phone view (still in every export). */
   .sub-table .dt-scroll {
+    /* The cards are the page's own scroll: no inner scroller, and no height cap that would let
+       them spill over the table's footer and the page below it. */
+    max-height: none;
     overflow: visible;
     border: 0;
     background: transparent;
@@ -1659,11 +1728,18 @@
     background: var(--surface);
   }
 
+  /* Text wraps between words, but never inside an IP address; a host name wraps only after a
+     dot (hostNameNodes), so "old-" / "shop.example.com" never reads as two names. */
   .sub-table tbody tr.dt-row td {
     padding: 2px 0;
     border: 0;
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: normal;
+  }
+
+  .sub-host {
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   /* Keep name (1), IPs (2) and classification (3); drop CNAME / Found by / server on the phone. */
@@ -1687,11 +1763,51 @@
     overflow: hidden;
   }
 
-  /* Origin-panel tables: the candidates and "about" columns wrap rather than scroll off-screen. */
+  /* Origin-panel tables: the candidates and "about" columns wrap between their entries rather than
+     scroll off-screen, but never inside an IP, a network or a host name (a name wraps only after a
+     dot); a row still too wide scrolls sideways in its table, like every DataTable. */
   .sub-org-table td,
   .sub-org-hints td {
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: normal;
+  }
+
+  .sub-org-cand-nets,
+  .sub-org-name,
+  .sub-org-detail {
+    overflow-wrap: normal;
+  }
+
+  .sub-src-section {
+    padding: 12px;
+  }
+}
+
+/* Four tabs with their live counts on a phone: one equal column each, the count under the label
+   (an empty count keeps its place, so the labels line up) — every tab stays in view instead of
+   the last one scrolling off at 375 px, in Turkish too. */
+@media (max-width: 480px) {
+  .sub-tabs .tablist {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .sub-tabs .tab {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 3px;
+    min-width: 0;
+    padding: 7px 2px 9px;
+    font-size: 13px;
+    line-height: 1.25;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .sub-tabs .tab-badge[hidden] {
+    display: inline-grid;
+    visibility: hidden;
   }
 }
 

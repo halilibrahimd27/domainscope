@@ -273,6 +273,14 @@ async function main() {
       const queried = await page.evaluate(() => new Set(window.__fakeDnsLog.filter((q) => q.type === 'PTR').map((q) => q.name)).size);
       assertEqual(queried, 16, 'one reverse name per address');
       assert(/target=192\.0\.2\.0%2F28&focus=example\.com$/.test(await page.evaluate(() => location.hash)), 'the URL carries the run');
+      // a focus edited after the sweep goes into the URL (and so into Copy link); an invalid one does not
+      await page.type('[data-role="ptr-focus"]', 'example.org');
+      await page.waitFor(() => /target=192\.0\.2\.0%2F28&focus=example\.org$/.test(location.hash), { message: 'focus in the URL' });
+      await page.type('[data-role="ptr-focus"]', 'not a domain');
+      await sleep(400);
+      assert(/focus=example\.org$/.test(await page.evaluate(() => location.hash)), 'an invalid focus is not put into the URL');
+      await page.type('[data-role="ptr-focus"]', 'example.com');
+      await page.waitFor(() => /focus=example\.com$/.test(location.hash), { message: 'focus back' });
       await shot(page, opts, 'ptr-results-desktop-light-en');
     });
 

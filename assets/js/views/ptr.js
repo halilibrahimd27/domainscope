@@ -628,6 +628,7 @@ export function mount(container, ctx) {
       session.focus = v;
       focusField.setError(null);
       if (ui) ui.refocus();
+      syncRouteFocus();
     },
     onEnter: () => start()
   });
@@ -868,13 +869,23 @@ export function mount(container, ctx) {
 
   function renderHeaderActions() {
     const job = session.job;
-    const params = job ? shareParams(job.target, focusField.value) : null;
-    if (!params) {
+    if (!job || !shareParams(job.target)) {
       ctx.setActions();
       return;
     }
-    ctx.setActions(CopyButton(() => ctx.shareUrl({ target: params.target, focus: params.focus }), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    // The focus domain is read at the click: one edited after the sweep is in the link.
+    ctx.setActions(CopyButton(() => {
+      const params = shareParams(job.target, focusField.value);
+      return ctx.shareUrl({ target: params.target, focus: params.focus });
+    }, { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
+
+  /** The focus domain changed: the URL keeps its target and carries the new focus (never an invalid one). */
+  const syncRouteFocus = debounce(() => {
+    if (!session.routeTarget || ctx.signal.aborted) return;
+    if (focusField.value.trim() && !focusValue()) return;
+    ctx.setParams({ target: session.routeTarget, focus: focusValue() });
+  }, 300);
 
   /* --- an AS's prefixes ------------------------------------------------------ */
   function listPrefixes(asn) {

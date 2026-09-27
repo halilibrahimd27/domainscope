@@ -549,7 +549,7 @@ registerStrings('en', {
   'sub.act.names': 'names.txt',
 
   'sub.sum.noneFound': 'No subdomains found. Check the spelling — or try a larger wordlist.',
-  'sub.sum.sourcesFailed': { one: '{count} passive source did not answer (see the Sources tab). The DNS discovery does not depend on it, but a few names may be missing.', other: '{count} passive sources did not answer (see the Sources tab). The DNS discovery does not depend on them, but a few names may be missing.' },
+  'sub.sum.sourcesFailed': { one: '{count} passive source did not answer. The DNS discovery does not depend on it, but a few names may be missing.', other: '{count} passive sources did not answer. The DNS discovery does not depend on them, but a few names may be missing.' },
   'sub.sum.sourcesLink': 'Show the source status',
   'sub.sum.wildcard': 'Wildcard DNS on {list}: every name there resolves, so look-alike names are hidden as “wildcard?”.',
   'sub.sum.cloudflare': { one: '{count} subdomain is behind Cloudflare: the IPs shown belong to Cloudflare and the origin server is hidden.', other: '{count} subdomains are behind Cloudflare: the IPs shown belong to Cloudflare and the origin servers are hidden.' },
@@ -888,7 +888,7 @@ registerStrings('tr', {
   'sub.host.resolvingTitle': 'Bir sonda ile bulundu; tam sınıflandırma çözümleme aşamasında gelir.',
   'sub.host.lookup': '{name} için DNS kayıtlarını sorgula',
   'sub.host.originHint': 'asıl sunucu?',
-  'sub.host.originHintTitle': 'Asıl sunucu adayları bulundu — Origin’ler sekmesinde görün',
+  'sub.host.originHintTitle': 'Asıl sunucu adayları bulundu — Origin’ler sekmesine bakın',
   'sub.ip.intel': '{ip} için IP Bilgisi',
 
   'sub.tech.label': 'Adlar nasıl bulundu',
@@ -987,7 +987,7 @@ registerStrings('tr', {
   'sub.act.names': 'names.txt',
 
   'sub.sum.noneFound': 'Hiç subdomain bulunamadı. Yazımı kontrol edin — ya da daha büyük bir kelime listesi deneyin.',
-  'sub.sum.sourcesFailed': '{count} pasif kaynak yanıt vermedi (Kaynaklar sekmesine bakın). DNS keşfi onlara bağlı değildir ama birkaç ad eksik olabilir.',
+  'sub.sum.sourcesFailed': '{count} pasif kaynak yanıt vermedi. DNS keşfi onlara bağlı değildir ama birkaç ad eksik olabilir.',
   'sub.sum.sourcesLink': 'Kaynak durumunu göster',
   'sub.sum.wildcard': '{list} üzerinde wildcard DNS var: oradaki her ad çözümlenir; bu yüzden benzer adlar “wildcard?” olarak gizlendi.',
   'sub.sum.cloudflare': '{count} subdomain Cloudflare arkasında: gösterilen IP’ler Cloudflare’e ait, asıl sunucu gizli.',

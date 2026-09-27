@@ -2181,6 +2181,23 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(running[1], /const hadFocus = [^\n]*activeElement === runBtn \|\| [^\n]*activeElement === cancelBtn/);
     assert.match(running[1], /if \(hadFocus\) \(on \? cancelBtn : runBtn\)\.focus\(\{ preventScroll: true \}\);/);
   });
+
+  test('SSL Targets Behind CDN: one shell choice for the sweep, step 3 and the Verify card', async () => {
+    const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
+    // Step 3 of the CLI card is launched with the interpreter of the chosen shell (not always python3).
+    assert.match(src, /cliCommand\(\{ certFile: cert \? 'new-cert\.pem' : null, python: PYTHON_FOR_SHELL\[cdnShell\(\)\] \}\)/);
+    // A change in either card re-renders the other one's control and commands.
+    assert.match(src, /setShell: \(sh\) => \{\s*session\.cdnShell = sh;\s*syncCdnShell\(\);/, 'Verify → Behind CDN');
+    const sync = /function syncCdnShell\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
+    assert.ok(sync, 'syncCdnShell found');
+    assert.match(sync[1], /cdnShellCtl\.setValue\(cdnShell\(\)\)/, 'the pressed segment follows the shared choice');
+    assert.match(sync[1], /for \(const fn of cdnShellRenders\) fn\(\);/, 'the quick sweep and step 3 are redrawn');
+    assert.match(src, /cdnShellRenders\.push\(renderQuick\);/);
+    assert.match(src, /cdnShellRenders\.push\(renderCommand\);/);
+    assert.match(src, /session\.cdnShell = SHELLS\.includes\(sh\) \? sh : 'posix';\s*syncCdnShell\(\);[^\n]*\n[^\n]*\n\s*if \(verifyUi && verifyUi\.refreshShell\) verifyUi\.refreshShell\(\);/, 'Behind CDN → Verify');
+    const vfy = await readFile(path.join(ROOT, 'assets/js/ui/verify-panel.js'), 'utf8');
+    assert.match(vfy, /refreshShell\(\) \{\s*if \(!disposed\) renderCli\(\);/, 'the Verify card re-reads getShell()');
+  });
 });
 
 /* ------------------------------------------------------------------------ */

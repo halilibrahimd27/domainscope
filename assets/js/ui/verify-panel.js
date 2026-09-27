@@ -1503,7 +1503,8 @@ export function verifyExport(run, version) {
  *     getShell?: () => string, setShell?: (shell: string) => void } }} opts
  *   `cli` shares the host view's CLI path and shell choice (so the CDN and Verify cards agree);
  *   `rememberTab` lets the background toast reopen this tab; `onChange` refreshes the tab badge.
- * @returns {{ el: HTMLElement, dispose(): void }}
+ *   After the host view changed the shared shell, `refreshShell` redraws the CLI card.
+ * @returns {{ el: HTMLElement, refreshShell?: () => void, dispose(): void }}
  */
 export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, rememberTab = null, cli = {} }) {
   const el = h('div', { class: 'vfy-panel', dataset: { vfy: 'panel' } });
@@ -2027,6 +2028,10 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
 
   return {
     el,
+    /** The shared shell (`cli.getShell`) was changed by another card: redraw the CLI card. */
+    refreshShell() {
+      if (!disposed) renderCli();
+    },
     dispose() {
       disposed = true;
       clearInterval(clock);

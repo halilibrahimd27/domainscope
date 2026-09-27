@@ -762,7 +762,8 @@
   font-weight: 650;
 }
 
-.scan-cli-steps .codeblock {
+.scan-cli-steps .codeblock,
+.scan-cli-command {
   align-self: stretch;
 }
 

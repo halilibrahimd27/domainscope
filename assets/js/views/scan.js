@@ -2017,6 +2017,16 @@ function buildRunUI(run, ctx, { onFinish }) {
   const cdnExclude = { raw: '', tokens: [] };
   const cdnOwnerCache = new Map();
   const cdnOwnerCtl = new AbortController();
+  // The shell of the Behind CDN commands (the quick sweep and step 3 of the CLI card), shared with
+  // the Verify tab's CLI card through session.cdnShell. renderCdnTab builds the one toggle and
+  // lists what to redraw when the choice changes.
+  const cdnShell = () => (SHELLS.includes(session.cdnShell) ? session.cdnShell : 'posix');
+  let cdnShellCtl = null;
+  const cdnShellRenders = [];
+  function syncCdnShell() {
+    if (cdnShellCtl && cdnShellCtl.value !== cdnShell()) cdnShellCtl.setValue(cdnShell());
+    for (const fn of cdnShellRenders) fn();
+  }
 
   /* --- progress panel --------------------------------------------------------- */
   const title = h('h2', { class: 'scan-run-title' });
@@ -2726,6 +2736,8 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function renderCdnTab() {
     clear(cdnPanel);
+    cdnShellCtl = null;
+    cdnShellRenders.length = 0;
     const r = run.result;
     if (!r) {
       cdnPanel.append(run.status === 'running' ? pendingState() : unavailableState());
@@ -2768,6 +2780,21 @@ function buildRunUI(run, ctx, { onFinish }) {
       }));
       return el;
     };
+    // One shell toggle: in the quick-sweep card when there is one, else in the CLI card.
+    cdnShellCtl = SegmentedControl({
+      label: t('scan.cdn.shell'),
+      size: 'sm',
+      className: 'scan-cli-shell',
+      value: cdnShell(),
+      options: SHELLS.map((sh) => ({ value: sh, label: t(`scan.cdn.shell.${sh}`), title: t(`scan.cdn.shellTitle.${sh}`) })),
+      onChange: (sh) => {
+        session.cdnShell = SHELLS.includes(sh) ? sh : 'posix';
+        syncCdnShell();
+        // The Verify tab's CLI card reads the same choice.
+        if (verifyUi && verifyUi.refreshShell) verifyUi.refreshShell();
+      }
+    });
+    let quickCard = false;
     cdnPanel.append(Alert({
       variant: 'info',
       icon: 'cloud',
@@ -2892,7 +2919,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         const renderQuick = () => {
           clear(quickHost);
           clear(quickReport);
-          const shell = SHELLS.includes(session.cdnShell) ? session.cdnShell : 'posix';
+          const shell = cdnShell();
           const sweep = originSweep(r, {
             names: cdnProxiedNames, networks: cdnNetworks, dropped: cdnDropped, shell,
             exclude: cdnExclude.tokens.length ? cdnExclude.tokens : null
@@ -2932,17 +2959,6 @@ function buildRunUI(run, ctx, { onFinish }) {
           if (unused.length) lines.push(h('div', { dataset: { role: 'exclude-unused' } }, Icon('info', { size: 13 }), h('span', null, t('sub.org.exclude.unused', { count: unused.length, list: unused.slice(0, 5).join(', ') }))));
           quickReport.append(...lines);
         };
-        const quickShell = SegmentedControl({
-          label: t('scan.cdn.shell'),
-          size: 'sm',
-          className: 'scan-cli-shell',
-          value: SHELLS.includes(session.cdnShell) ? session.cdnShell : 'posix',
-          options: SHELLS.map((sh) => ({ value: sh, label: t(`scan.cdn.shell.${sh}`), title: t(`scan.cdn.shellTitle.${sh}`) })),
-          onChange: (sh) => {
-            session.cdnShell = SHELLS.includes(sh) ? sh : 'posix';
-            renderQuick();
-          }
-        });
         const excludeField = textInput({
           label: t('sub.org.exclude.label'),
           value: cdnExclude.raw,
@@ -2958,12 +2974,14 @@ function buildRunUI(run, ctx, { onFinish }) {
           }
         });
         renderQuick();
+        cdnShellRenders.push(renderQuick);
+        quickCard = true;
         cdnPanel.append(Card({
           title: t('scan.cdn.quickTitle'),
           subtitle: t('scan.cdn.quickDesc'),
           icon: 'terminal',
           className: 'scan-cli-quick',
-          children: h('div', { class: 'stack-sm' }, quickShell.el, excludeField.el, quickHost, quickReport)
+          children: h('div', { class: 'stack-sm' }, cdnShellCtl.el, excludeField.el, quickHost, quickReport)
         }));
       }
     }
@@ -3011,10 +3029,11 @@ function buildRunUI(run, ctx, { onFinish }) {
         ]
       }).el);
     }
-    cdnPanel.append(cliCard());
+    cdnPanel.append(cliCard(quickCard ? null : cdnShellCtl));
   }
 
-  function cliCard() {
+  /** The CLI card (names.txt / targets.txt, the script, step 3's command); `shellCtl` shown in step 3 when given. */
+  function cliCard(shellCtl = null) {
     const namesBtn = Button({ icon: 'download', label: 'names.txt', dataset: { action: 'cli-names' }, onClick: () => downloadNames() });
     const targetsBtn = Button({ icon: 'download', label: 'targets.txt', dataset: { action: 'cli-targets' }, onClick: () => downloadTargets() });
     const refreshCounts = () => {
@@ -3041,7 +3060,15 @@ function buildRunUI(run, ctx, { onFinish }) {
         toast(t('scan.exported', { file }), { type: 'success', timeout: 2500 });
       }
     }) : null;
-    const command = cliCommand({ certFile: cert ? 'new-cert.pem' : null });
+    // Step 3 in the chosen shell (`python` on Windows PowerShell), redrawn when it changes.
+    const commandHost = h('div', { class: 'scan-cli-command' });
+    const renderCommand = () => {
+      clear(commandHost);
+      commandHost.append(CodeBlock(cliCommand({ certFile: cert ? 'new-cert.pem' : null, python: PYTHON_FOR_SHELL[cdnShell()] }),
+        { label: t('scan.cli.command'), wrap: true }));
+    };
+    renderCommand();
+    cdnShellRenders.push(renderCommand);
     const inv = state.inventory.servers.length > 0;
     return Card({
       title: t('scan.cli.title'),
@@ -3059,7 +3086,8 @@ function buildRunUI(run, ctx, { onFinish }) {
           ButtonLink({ href: CLI_PATH, label: t('scan.cli.download'), icon: 'download', download: 'ssl_origin_scan.py' })),
         h('li', null,
           h('div', { class: 'scan-cli-step-title' }, t('scan.cli.step3')),
-          CodeBlock(command, { label: t('scan.cli.command'), wrap: true })),
+          shellCtl ? shellCtl.el : null,
+          commandHost),
         h('li', null,
           h('div', { class: 'scan-cli-step-title' }, t('scan.cli.step4')),
           h('p', { class: 'text-sm text-2' }, t('scan.cli.result'))))
@@ -3091,6 +3119,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         getShell: () => session.cdnShell,
         setShell: (sh) => {
           session.cdnShell = sh;
+          syncCdnShell();
         }
       }
     });

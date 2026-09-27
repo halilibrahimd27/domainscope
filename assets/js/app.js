@@ -19,8 +19,8 @@ import {
 import { state, CONCURRENCY_RANGE } from './state.js';
 import { h, clear, uid } from './ui/dom.js';
 import {
-  Icon, SegmentedControl, IconButton, ButtonLink, Button, ErrorBanner, Spinner, Modal, toast,
-  select, Badge, confirmDialog, announce
+  Icon, SegmentedControl, IconButton, ButtonLink, Button, Alert, ErrorBanner, Spinner, Modal, toast,
+  select, Badge, confirmDialog, announce, describeError
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 
@@ -145,6 +145,46 @@ export function hasRepeatedKeys(searchParams) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Lazy modules after a deploy                                              */
+/* ------------------------------------------------------------------------ */
+
+/** A module fetched now does not match one this page loaded earlier (Chrome, Firefox, Safari). */
+const STALE_LINK_RE = /does(?: not|n['’]t) provide an export named|^import not found:|Importing binding name .+ is not found/i;
+/** A lazily imported module (or one of its imports) could not be fetched (Chrome, Firefox, Safari). */
+const STALE_FETCH_RE = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i;
+
+/**
+ * Did a lazy import fail because this page belongs to an earlier deploy? Either a module fetched
+ * now does not link against the ones already loaded (a missing export, SyntaxError), or it could
+ * not be fetched at all (TypeError): the Pages bundle serves each deploy from its own
+ * v/<version>/ directory (tools/assemble-site.mjs), so the old one is gone. The fetch case is
+ * also what an offline browser reports. Retrying in the same document cannot fix a link error —
+ * the browser keeps the modules it already has — so the shell offers a page reload.
+ * @param {unknown} err rejection of `import()`
+ * @returns {boolean}
+ */
+export function isStaleModuleError(err) {
+  if (!err || typeof err !== 'object') return false;
+  const message = typeof err.message === 'string' ? err.message : '';
+  if (err.name === 'SyntaxError') return STALE_LINK_RE.test(message);
+  if (err.name === 'TypeError') return STALE_FETCH_RE.test(message);
+  return false;
+}
+
+let outdatedNoticeShown = false;
+
+/** A shared lazy module (DoH, Globalping) failed to load after a deploy: say so once, with a reload button. */
+function noticeIfOutdated(err) {
+  if (outdatedNoticeShown || !isStaleModuleError(err)) return;
+  outdatedNoticeShown = true;
+  toast(t('shell.viewOutdated'), {
+    type: 'warn',
+    timeout: 0,
+    action: { label: t('shell.reload'), onClick: () => globalThis.location.reload() }
+  });
+}
+
+/* ------------------------------------------------------------------------ */
 /* Shared DNS client                                                        */
 /* ------------------------------------------------------------------------ */
 
@@ -188,8 +228,9 @@ export function getDns() {
     const promise = import('./lib/doh.js').then(({ DohClient }) => new DohClient({ chain, concurrency, balancePool }));
     dnsPromise = promise;
     // A failed import (offline, file missing) must not be cached forever.
-    promise.catch(() => {
+    promise.catch((err) => {
       if (dnsPromise === promise) dnsPromise = null;
+      noticeIfOutdated(err);
     });
   }
   return dnsPromise;
@@ -223,8 +264,9 @@ export function getGlobalping(load = () => import('./lib/globalping.js')) {
   if (!gpPromise) {
     const promise = Promise.resolve().then(load).then(({ createGlobalping }) => createGlobalping());
     gpPromise = promise;
-    promise.catch(() => {
+    promise.catch((err) => {
       if (gpPromise === promise) gpPromise = null;
+      noticeIfOutdated(err);
     });
   }
   return gpPromise;
@@ -416,6 +458,29 @@ function loadView(def) {
   return moduleCache.get(def.id);
 }
 
+/**
+ * The page body of a view whose module failed to load. After a deploy (see isStaleModuleError)
+ * the first action reloads the page; Retry stays only where it can help (a fetch failure may be
+ * a network blip, a link error never goes away in this document).
+ */
+function viewLoadFailure(def, params, sp, err) {
+  const retry = () => showRoute(def.id, params, { force: true, searchParams: sp });
+  if (!isStaleModuleError(err)) return ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: retry });
+  const { detail } = describeError(err);
+  const reload = Button({
+    label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
+    dataset: { action: 'reload-page' },
+    onClick: () => globalThis.location.reload()
+  });
+  return Alert({
+    variant: 'warn',
+    title: t('shell.viewLoadFailed'),
+    message: t('shell.viewOutdated'),
+    children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
+    actions: err.name === 'SyntaxError' ? [reload] : [reload, Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', onClick: retry })]
+  });
+}
+
 function titleKeyOf(def, view) {
   return (view && typeof view.titleKey === 'string' && view.titleKey) || `nav.${def.id}`;
 }
@@ -485,10 +550,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     // Logged on purpose: E2E runs fail on console errors, so a broken view never goes unnoticed.
     console.error(`[view:${def.id}] failed to load`, err);
     clear(dom.pageBody);
-    dom.pageBody.append(ErrorBanner(err, {
-      title: t('shell.viewLoadFailed'),
-      onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp })
-    }));
+    dom.pageBody.append(viewLoadFailure(def, params, sp, err));
     finishRoute(def);
     return;
   }

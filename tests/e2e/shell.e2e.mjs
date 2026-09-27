@@ -14,6 +14,9 @@
  *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
  *     i18n keys that are missing in either language.
+ * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
+ * the app boots from it, About's links resolve, and after a second "deploy" a view opened in the
+ * old tab offers a page reload that brings the new version.
  * No network access is needed: the shell views never call external APIs.
  */
 
@@ -26,6 +29,8 @@ import { launchBrowser } from './cdp.mjs';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { t as translate, setLang as setNodeLang } from '../../assets/js/i18n.js';
 import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
+import { REPO_URL } from '../../assets/js/app.js';
+import { assembleSite } from '../../tools/assemble-site.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
@@ -915,6 +920,56 @@ async function main() {
       await assertClean(phone, 'phone');
     });
     await phone.close();
+
+    /* ---------------- The Pages bundle, and a deploy while a tab is open ---------------- */
+    group('Pages bundle (tools/assemble-site.mjs)');
+    const site = path.join(tmpDir, 'site');
+    await assembleSite({ out: site, version: 'e2e-one' });
+    const pages = await startServer({ root: site, base: BASE });
+    const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    const moduleSrc = () => tab.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
+    try {
+      await step('boots from v/<version>/assets/; About links reach the licences, the CLI and its source on GitHub', async () => {
+        await tab.goto(`${pages.url}#/about`);
+        await waitReady(tab);
+        assertEqual(await moduleSrc(), 'v/e2e-one/assets/js/app.js', 'module script');
+        const links = await tab.evaluate(() => ({
+          licences: document.querySelector('a[href$="/THIRD_PARTY_LICENSES.txt"]')?.href,
+          downloads: [...document.querySelectorAll('a[download="ssl_origin_scan.py"]')].map((a) => a.href),
+          source: [...document.querySelectorAll('#about-cli a.btn')].find((a) => !a.hasAttribute('download'))?.href
+        }));
+        assertEqual(links.licences, `${pages.url}v/e2e-one/assets/data/THIRD_PARTY_LICENSES.txt`, 'licences link');
+        assert(links.downloads.length === 2 && links.downloads.every((u) => u === `${pages.url}cli/ssl_origin_scan.py`), `downloads: ${links.downloads}`);
+        // GitHub Pages serves .py as application/octet-stream: the site's copy would download, not show
+        assertEqual(links.source, `${REPO_URL}/blob/main/cli/ssl_origin_scan.py`, 'View source');
+        for (const url of [links.licences, links.downloads[0]]) {
+          assertEqual(await tab.evaluate(async (u) => (await fetch(u, { method: 'HEAD' })).status, url), 200, url);
+        }
+        await gotoRoute(tab, 'subdomains');
+        await assertClean(tab, 'bundle');
+      });
+
+      await step('a view first opened after a deploy offers a page reload, which loads the new version', async () => {
+        await assembleSite({ out: site, version: 'e2e-two' }); // the next deploy: v/e2e-one/ is gone
+        await tab.evaluate(() => { window.location.hash = '#/ip'; });
+        await tab.waitFor(() => !!document.querySelector('#page-body [data-action="reload-page"]'), { message: 'reload offered' });
+        setNodeLang('en');
+        const text = await tab.evaluate(() => document.querySelector('#page-body .alert').textContent);
+        assert(text.includes(translate('shell.viewOutdated')), `banner: ${text}`);
+        await tab.resetProblems(); // the failed import is logged on purpose
+        await tab.click('#page-body [data-action="reload-page"]');
+        await tab.waitFor(() => document.documentElement.dataset.appReady === 'true'
+          && document.querySelector('#page-body')?.dataset.view === 'ip'
+          && document.querySelector('#page-body').childElementCount > 0
+          && !document.querySelector('#page-body .page-loading'), { timeout: 15000, message: 'IP Intel after the reload' });
+        assertEqual(await moduleSrc(), 'v/e2e-two/assets/js/app.js', 'module script after the reload');
+        assertEqual(await tab.evaluate(() => !!document.querySelector('[data-action="reload-page"]')), false, 'banner gone');
+        await assertClean(tab, 'after the reload');
+      });
+    } finally {
+      await tab.close();
+      await pages.close();
+    }
   } finally {
     await browser.close();
     await server.close();

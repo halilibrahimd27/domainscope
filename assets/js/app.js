@@ -563,8 +563,8 @@ function chooseTheme(value) {
 function syncTheme(value) {
   applyTheme(value);
   if (!dom.headerActions) return;
-  const seg = dom.headerActions.querySelector('[data-control="theme"]');
-  if (seg) seg.querySelectorAll('.seg-btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === value)));
+  // Through the control's API: its click handler ignores a click on the value it holds.
+  if (dom.themeSeg) dom.themeSeg.setValue(value);
   const old = dom.headerActions.querySelector('[data-control="theme-cycle"]');
   if (old) {
     const hadFocus = globalThis.document.activeElement === old;
@@ -612,6 +612,7 @@ function renderHeaderActions() {
     onChange: chooseTheme
   });
   theme.el.dataset.control = 'theme';
+  dom.themeSeg = theme;
   const settingsBtn = IconButton({ icon: 'sliders', label: t('shell.settings'), onClick: openSettings });
   settingsBtn.dataset.control = 'settings';
   const gh = ButtonLink({ href: REPO_URL, label: 'GitHub', icon: 'code', variant: 'ghost', size: 'sm', external: true, title: t('shell.github') });

@@ -384,6 +384,27 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 
+    await step('theme toggle takes a click on its previous option after a change made elsewhere', async () => {
+      const theme = () => page.evaluate(() => document.documentElement.dataset.theme || 'auto');
+      await page.click('[data-control="theme"] [data-value="dark"]');
+      await page.waitFor(() => document.documentElement.dataset.theme === 'dark');
+      // "Delete all local data" resets the theme to auto without going through the toggle.
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.clearAll());
+      await page.waitFor(() => !document.documentElement.dataset.theme, { message: 'auto after clearAll' });
+      await page.click('[data-control="theme"] [data-value="dark"]');
+      await page.waitFor(() => document.documentElement.dataset.theme === 'dark', { message: 'Dark clicked again' });
+      assertEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings')).theme), 'dark', 'persisted theme');
+      // The phone cycle button (hidden on desktop) changes the theme too: dark → auto.
+      await page.evaluate(() => document.querySelector('[data-control="theme-cycle"]').click());
+      await page.waitFor(() => !document.documentElement.dataset.theme, { message: 'cycle to auto' });
+      await page.click('[data-control="theme"] [data-value="dark"]');
+      await page.waitFor(() => document.documentElement.dataset.theme === 'dark', { message: 'Dark after the cycle button' });
+      await page.click('[data-control="theme"] [data-value="auto"]');
+      await page.waitFor(() => !document.documentElement.dataset.theme);
+      assertEqual(await theme(), 'auto', 'back to auto');
+      await dismissToasts(page);
+    });
+
     await step('language toggle switches shell + view to Turkish and back', async () => {
       await gotoRoute(page, 'inventory');
       await setLangUi(page, 'tr');

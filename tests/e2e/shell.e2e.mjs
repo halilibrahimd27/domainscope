@@ -642,6 +642,37 @@ async function main() {
       await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
     });
 
+    await step('Servers: Settings › Delete all local data empties the open editor (no draft brings it back)', async () => {
+      await dismissToasts(page);
+      await page.click('[data-control="settings"]');
+      try {
+        await page.waitForSelector('dialog.modal[open] .settings-danger');
+        await page.click('dialog.modal[open] .settings-danger .btn-danger');
+        await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
+        await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
+        await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
+      } finally {
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+      const ui = () => page.evaluate(() => ({
+        text: document.querySelector('[data-role="inventory-text"]').value,
+        rows: document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length,
+        unsaved: !!document.querySelector('.inv-status .badge-warn'),
+        saveDisabled: document.querySelector('[data-action="save"]').disabled,
+        keys: Object.keys(localStorage).filter((k) => k.startsWith('ssds.'))
+      }));
+      const want = { text: '', rows: 0, unsaved: false, saveDisabled: true, keys: [] };
+      assertEqual(await ui(), want, 'editor emptied with the storage');
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'inventory');
+      assertEqual(await ui(), want, 'no session draft restored');
+      // Back to the saved sample for the steps below.
+      await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
+      await page.click('[data-action="save"]');
+      await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
+      await dismissToasts(page);
+    });
+
     await step('component gallery renders; DataTable paging, sorting, search and streaming work', async () => {
       await gotoRoute(page, 'about');
       await page.evaluate(buildGallery);

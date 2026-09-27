@@ -509,6 +509,15 @@ export function mount(container, ctx) {
   // Another tab saved/cleared the inventory: follow it unless the user has unsaved edits.
   let lastSavedText = state.inventory.text;
   const unsubscribe = state.subscribe(({ key, origin }) => {
+    if (key === 'cleared') {
+      // "Delete all local data" (Settings, while this view is open): drop the editor copy too,
+      // unsaved edits included, so no session draft keeps it and Save cannot bring it back.
+      reparseSoon.cancel();
+      editor.value = '';
+      lastSavedText = '';
+      reparse();
+      return;
+    }
     if (key !== 'inventory') return;
     const wasClean = editor.value === lastSavedText;
     lastSavedText = state.inventory.text;

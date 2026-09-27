@@ -311,8 +311,12 @@ async function jobsGroup(browser, server) {
       await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
       await jobs.press('Enter');
       await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]')?.getAttribute('aria-pressed') === 'true', { message: 'opted in' });
-      const state = await jobs.evaluate(() => ({ asked: window.__permAsked, label: document.querySelector('[data-action="job-notify"]').textContent.trim() }));
-      assertEqual(state, { asked: 1, label: 'Notifying when done' }, 'opted in for this page session');
+      const state = await jobs.evaluate(() => {
+        const btn = document.querySelector('[data-action="job-notify"]');
+        return { asked: window.__permAsked, label: btn.textContent.trim(), on: btn.classList.contains('is-on') };
+      });
+      // A toggle: the label stays (a screen reader hears "pressed" once, not a new label as well).
+      assertEqual(state, { asked: 1, label: 'Notify me when done', on: true }, 'opted in for this page session');
       await shot(jobs, 'desktop-light-en-job-notify');
     });
 

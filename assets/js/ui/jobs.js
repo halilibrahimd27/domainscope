@@ -30,8 +30,7 @@ registerStrings('en', {
   'jobs.running': 'running',
   'jobs.runningPercent': 'running, {percent} done',
   'jobs.notify': 'Notify me when done',
-  'jobs.notifyOn': 'Notifying when done',
-  'jobs.notifyTitle': 'A desktop notification when a job that ran over 30 seconds finishes while you are elsewhere. Your browser asks for permission first; the choice lasts until you close the page.',
+  'jobs.notifyTitle': 'Sends a desktop notification when a job that ran over 30 seconds finishes while you are elsewhere. Your browser asks for permission first; the choice lasts until you close the page.',
   'jobs.notifyBlocked': 'Desktop notifications are blocked for this site in your browser.',
   'jobs.notifyReady': 'You will get a desktop notification when it finishes.',
   'jobs.notifyOff': 'No desktop notification.',
@@ -43,8 +42,7 @@ registerStrings('tr', {
   'jobs.running': 'çalışıyor',
   'jobs.runningPercent': 'çalışıyor, {percent} tamam',
   'jobs.notify': 'Bitince bildir',
-  'jobs.notifyOn': 'Bitince bildirilecek',
-  'jobs.notifyTitle': '30 saniyeden uzun süren bir iş siz başka yerdeyken bitince masaüstü bildirimi. Tarayıcınız önce izin ister; seçim sayfayı kapatana kadar geçerlidir.',
+  'jobs.notifyTitle': '30 saniyeden uzun süren bir iş siz başka yerdeyken bitince masaüstü bildirimi gönderilir. Tarayıcınız önce izin ister; seçim sayfayı kapatana kadar geçerlidir.',
   'jobs.notifyBlocked': 'Bu site için masaüstü bildirimleri tarayıcınızda engellenmiş.',
   'jobs.notifyReady': 'Bitince masaüstü bildirimi alacaksınız.',
   'jobs.notifyOff': 'Masaüstü bildirimi yok.',
@@ -248,7 +246,8 @@ function notify(job, status, body) {
 /**
  * "Notify me when done" for a running job's panel. Offered once the job has run
  * 30 s (at once when this page session already opted in); the permission is asked
- * only on a click. A pressed button turns the opt-in off again. Hidden when the browser has no
+ * only on a click. A toggle: its label stays, `aria-pressed` (and a pressed look) says it is on,
+ * and pressing it again turns the opt-in off. Hidden when the browser has no
  * notifications; a blocked permission is said instead of offering the button.
  * @param {JobHandle|(() => JobHandle|null)|null} source the job, or a getter for one a panel built
  *   just before its job starts
@@ -273,9 +272,9 @@ export function NotifyButton(source) {
     el.hidden = !live || !offer;
     btn.hidden = perm === 'denied';
     blocked.hidden = perm !== 'denied';
+    // One label either way: a screen reader says "pressed" once, not a changed label as well.
     const on = notifyOptIn && perm === 'granted';
     btn.setAttribute('aria-pressed', String(on));
-    btn.querySelector('.btn-label').textContent = t(on ? 'jobs.notifyOn' : 'jobs.notify');
     btn.classList.toggle('is-on', on);
     return live;
   };

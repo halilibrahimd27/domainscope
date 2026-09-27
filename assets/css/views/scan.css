@@ -1246,12 +1246,22 @@
     max-width: 100%;
   }
 
-  /* Behind-CDN tables: long IPs and evidence wrap instead of scrolling off-screen. */
+  /* Behind-CDN tables: lists and evidence wrap between their entries, but never inside an IP,
+     a network or a hostname ("203.0.11 / 3.20" reads as two values) — a row still too wide
+     scrolls sideways in its table, like every DataTable. */
   .scan-cdn-hosts td,
   .scan-networks-table td,
   .scan-hints-table td {
     white-space: normal;
-    overflow-wrap: anywhere;
+  }
+
+  .scan-cdn-hosts td,
+  .scan-cdn-hosts td *,
+  .scan-networks-table td,
+  .scan-networks-table td *,
+  .scan-hints-table td,
+  .scan-hints-table td * {
+    overflow-wrap: normal;
   }
 }
 

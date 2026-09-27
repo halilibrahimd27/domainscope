@@ -10,7 +10,7 @@
  *
  * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
  * lookup ended; it says how many addresses are in the server list (never a server's name, the
- * tooltip says so), how many lookups failed (the rows showing "Lookup failed") and how many
+ * tooltip says so), how many lookups failed (rows whose every source failed) and how many
  * addresses a stopped lookup never reached, and its link leaves out private and inventory addresses.
  *
  * No silent dashes (lib/sourcestatus.js, ui/source-status.js): a cell that a failed source left

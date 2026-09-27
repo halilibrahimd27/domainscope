@@ -11,8 +11,9 @@
  * failures up, and Retry — per row, or per chip for every row it failed on — asks exactly those
  * sources again; a reverse lookup answered SERVFAIL says so; Stop leaves no chip "asking…"; a
  * Retry still in flight when a new lookup starts never draws over the new run's row; the CSV
- * says "n/a" in every language; stat cards with a zero count fold into one sentence; 1440 and
- * 375 px, light and dark, English and Turkish.
+ * says "n/a" in every language; stat cards with a zero count fold into one sentence; Copy
+ * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
+ * light and dark, English and Turkish.
  *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
@@ -33,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
-import { zoneHandoffScript } from './scan.e2e.mjs';
+import { zoneHandoffScript, stubClipboard, takeClipboard } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { parseIpInput, classifyIp, MAX_IPS } from '../../assets/js/views/ip.js';
 
@@ -533,6 +534,31 @@ async function offlineGroup(browser, server) {
       } finally {
         await page.evaluate(() => { window.__ipFake.slow = {}; });
       }
+    });
+
+    await step('Copy summary when every source fails: how many lookups failed, never a clean result or "no network data"; TR', async () => {
+      // Fresh addresses without a PTR record: RIPEstat answers 429 and ipwho.is has no quota left.
+      const failed = ['203.0.113.90', '203.0.113.91'];
+      await page.evaluate((list) => { window.__ipFake.limited = list; }, failed);
+      const copy = async () => {
+        await stubClipboard(page);
+        await page.click('[data-summary="ip"] [data-action="copy-summary"]');
+        await page.click('[data-summary="ip"] [data-action="copy-summary-text"]');
+        await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+        return (await takeClipboard(page)).map((x) => x.split('\n')[0]);
+      };
+      await gotoHash(page, `#/ip?ips=${failed.join(',')}`, 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      const i = await info();
+      assert(failed.every((ip) => i.rows[ip] && i.rows[ip].na.network), `every row says n/a: ${JSON.stringify(i.rows)}`);
+      assertEqual(await copy(), ['**IP Intel · 2 addresses**: 2 lookups failed', 'IP Intel · 2 addresses: 2 lookups failed'], 'several addresses');
+      await gotoHash(page, '#/about', 'about');
+      await gotoHash(page, `#/ip?ips=${failed[0]}`, 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+      assertEqual((await copy())[0], `**IP Intel · \`${failed[0]}\`**: Direct · lookup failed`, 'one address: the failure, not a clean "Direct"');
+      await setLangUi(page, 'tr');
+      assertEqual((await copy())[0], `**IP Bilgisi · \`${failed[0]}\`**: Doğrudan · sorgu başarısız`, 'Turkish, after the re-mount');
+      await setLangUi(page, 'en');
     });
 
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {

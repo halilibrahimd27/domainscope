@@ -10,13 +10,16 @@
  *   - a view reports a run with `ctx.runStarted(subject)` → `setTarget()`;
  *   - when a view unmounts, the shell keeps its `result()` and `snapshot()` → `keep()`;
  *   - the nav links point to `carryRoute(view, { kept, target })`;
- *   - on mount, `restorePlan()` decides whether the kept snapshot comes back as `ctx.restored`.
+ *   - on mount, `restorePlan()` decides whether the kept snapshot comes back as `ctx.restored`,
+ *     and `keptNote()` whether the page header says "Result from <time>".
  *
  * Route contract: a carried target goes into the view's main input param (`TARGET_ROUTES`, the
  * params the views already read) together with `run=0` (`FILL_PARAM` = `FILL_VALUE`): the view
- * fills an empty input and never runs, so opening a tool never sends a request by itself. A link
- * back to a kept result carries the result's own params with `run=0` too, so the same link opened
- * in a new tab only fills the form.
+ * fills its input (while empty, or while it still holds the tool's last run) and never runs, so
+ * opening a tool never sends a request by itself. A link back to a kept result carries the
+ * result's own params with `run=0` too, so the same link opened in a new tab only fills the form;
+ * a target set after the result was kept, about something else, wins over it (the result stays
+ * reachable through a bare route and Back).
  *
  * @example
  *   const session = createSessionStore();
@@ -207,21 +210,41 @@ export function routeKey(params) {
   return sp.toString();
 }
 
+/** Milliseconds of a Date, number or date string (NaN when it is none). */
+const timeOf = (value) => (value instanceof Date ? value.getTime() : new Date(value ?? NaN).getTime());
+
+/**
+ * Was the current target set after a tool's result was kept, and is it about something else
+ * than that result? Then the tool's link carries the target instead of leading back to the
+ * result (checking A across the tools, then B, fills B in everywhere).
+ * @param {{ value: string, at?: Date }|null} target
+ * @param {{ subject: string|null, at: Date }|null} kept
+ * @returns {boolean}
+ */
+export function targetSupersedes(target, kept) {
+  if (!target || !kept || !(timeOf(target.at) > timeOf(kept.at))) return false;
+  const about = parseTarget(kept.subject);
+  return !about || about.value !== target.value;
+}
+
 /**
  * Where a nav link to a tool leads: back to its kept result (the result's own params, with
  * `run=0` so a new tab only fills the form; a bare route for a tool that keeps its own state),
- * else the tool with the current target filled in, else the bare tool.
+ * unless a newer target about something else fits the tool ({@link targetSupersedes}); else the
+ * tool with the current target filled in, else the bare tool.
  * @param {string} view
- * @param {{ kept?: { params: Record<string, string> }|null, target?: { value: string, kind: string }|null }} [ctx]
+ * @param {{ kept?: { params: Record<string, string>, subject?: string|null, at?: Date }|null,
+ *   target?: { value: string, kind: string, at?: Date }|null }} [ctx]
  * @returns {Record<string, string>}
  */
 export function carryRoute(view, { kept = null, target = null } = {}) {
-  if (kept) {
+  const fill = fillRoute(view, target);
+  if (kept && !(fill && targetSupersedes(target, kept))) {
     const params = cleanParams(kept.params);
     if (Object.keys(params).length) params[FILL_PARAM] = FILL_VALUE;
     return params;
   }
-  return fillRoute(view, target) || {};
+  return fill || {};
 }
 
 /**

@@ -8,8 +8,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  parseTarget, commonTarget, targetFits, fillRoute, isFillOnly, routeKey, carryRoute, restorePlan, normalizeResult,
-  keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
+  parseTarget, commonTarget, targetFits, fillRoute, isFillOnly, fillReplaces, routeKey, targetSupersedes, carryRoute, restorePlan,
+  normalizeResult, keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
 } from '../../assets/js/lib/session.js';
 import { VIEWS, buildRoute, parseRoute, navHref, pageSession } from '../../assets/js/app.js';
 import { keptTimeText } from '../../assets/js/ui/session-ui.js';
@@ -113,6 +113,19 @@ describe('routes', () => {
     assert.equal(fillRoute('constructor', domain), null, 'no prototype lookups');
   });
 
+  test('fillReplaces: an empty box, or one that still holds the last run; never a draft', () => {
+    const read = (text) => text.split(/[\s,]+/).filter(Boolean).map((x) => x.toLowerCase());
+    assert.equal(fillReplaces('', null, read), true);
+    assert.equal(fillReplaces('   ', ['example.com'], read), true);
+    assert.equal(fillReplaces(null, null, read), true);
+    assert.equal(fillReplaces('example.com', ['example.com'], read), true, 'the last run');
+    assert.equal(fillReplaces('Example.com, www.example.com', ['www.example.com', 'example.com'], read), true, 'the same entries in any order');
+    assert.equal(fillReplaces('example.com', null, read), false, 'no run yet: a draft');
+    assert.equal(fillReplaces('example.org', ['example.com'], read), false, 'typed after the run');
+    assert.equal(fillReplaces('example.com, example.org', ['example.com'], read), false, 'one added');
+    assert.equal(fillReplaces('bad!', [], read), false, 'junk the user typed is a draft too');
+  });
+
   test('isFillOnly and routeKey', () => {
     assert.equal(isFillOnly({ name: 'x', run: '0' }), true);
     assert.equal(isFillOnly({ name: 'x', run: '1' }), false);
@@ -126,6 +139,22 @@ describe('routes', () => {
     assert.equal(routeKey({ name: 'example.com', resolver: null }), 'name=example.com', 'empty values are dropped');
   });
 
+  test('targetSupersedes: a target set after the result was kept, about something else', () => {
+    const kept = { subject: 'example.com', at: new Date(Date.UTC(2026, 8, 27, 10, 0)) };
+    const later = new Date(Date.UTC(2026, 8, 27, 10, 5));
+    const earlier = new Date(Date.UTC(2026, 8, 27, 9, 55));
+    assert.equal(targetSupersedes({ value: 'shop.example.com', at: later }, kept), true);
+    assert.equal(targetSupersedes({ value: 'shop.example.com', at: earlier }, kept), false, 'older than the result');
+    assert.equal(targetSupersedes({ value: 'shop.example.com', at: kept.at }, kept), false, 'same instant: the result wins');
+    assert.equal(targetSupersedes({ value: 'example.com', at: later }, kept), false, 'the result is about it');
+    assert.equal(targetSupersedes({ value: 'example.com', at: later }, { ...kept, subject: '_dmarc.example.com' }), false, 'as a target reads it');
+    assert.equal(targetSupersedes({ value: 'example.com', at: later }, { ...kept, subject: 'example.com, example.org' }), true, 'a list is about something else');
+    assert.equal(targetSupersedes({ value: 'example.com', at: later }, { ...kept, subject: null }), true);
+    assert.equal(targetSupersedes({ value: 'example.net' }, kept), false, 'no time: the result wins');
+    assert.equal(targetSupersedes(null, kept), false);
+    assert.equal(targetSupersedes({ value: 'example.net', at: later }, null), false);
+  });
+
   test('carryRoute: back to a kept result (with run=0), else the target filled in, else bare', () => {
     const kept = { params: { domain: 'example.com', selectors: 's1' } };
     assert.deepEqual(carryRoute('health', { kept, target: host }), { domain: 'example.com', selectors: 's1', run: '0' }, 'kept wins');
@@ -137,6 +166,24 @@ describe('routes', () => {
     // The routes are real routes: they round-trip through the router.
     const r = parseRoute(buildRoute('lookup', carryRoute('lookup', { target: ip })));
     assert.deepEqual([r.view, r.params], ['lookup', { name: '192.0.2.10', run: '0' }]);
+  });
+
+  test('carryRoute: a newer target about something else wins over the kept result (the second round)', () => {
+    const at = new Date(Date.UTC(2026, 8, 27, 10, 0));
+    const later = new Date(Date.UTC(2026, 8, 27, 10, 5));
+    const kept = { params: { name: 'example.com', type: 'A' }, subject: 'example.com', at };
+    const shop = { ...parseTarget('shop.example.com'), at: later };
+    assert.deepEqual(carryRoute('lookup', { kept, target: shop }), { name: 'shop.example.com', run: '0' }, 'filled in, nothing runs');
+    assert.deepEqual(carryRoute('lookup', { kept, target: { ...shop, at: new Date(at.getTime() - 1) } }),
+      { name: 'example.com', type: 'A', run: '0' }, 'a target older than the result: back to it');
+    assert.deepEqual(carryRoute('lookup', { kept, target: { ...parseTarget('example.com'), at: later } }),
+      { name: 'example.com', type: 'A', run: '0' }, 'the same target again: back to the result');
+    const own = { params: {}, subject: 'example.com', at };
+    assert.deepEqual(carryRoute('bulk', { kept: own, target: shop }), { names: 'shop.example.com', run: '0' }, 'a tool with its own state gets it too');
+    assert.deepEqual(carryRoute('bulk', { kept: own, target: { ...parseTarget('example.com'), at: later } }), {}, 'else it opens bare');
+    const addr = { ...parseTarget('192.0.2.10'), at: later };
+    assert.deepEqual(carryRoute('health', { kept: { params: { domain: 'example.com' }, subject: 'example.com', at }, target: addr }),
+      { domain: 'example.com', run: '0' }, 'a target the tool does not take leaves the link on its result');
   });
 
   test('restorePlan: a bare route or the result own params bring it back; others are a new query', () => {
@@ -326,6 +373,26 @@ describe('createSessionStore', () => {
 });
 
 describe('the shell: nav links carry the target (app.js)', () => {
+  test('navHref: the second round (check A across the tools, then B) fills B in everywhere', () => {
+    pageSession.clear();
+    try {
+      // example.com checked in DNS Lookup and Bulk Resolve (the results finished a minute ago).
+      const done = new Date(Date.now() - 60000);
+      pageSession.keep('lookup', { params: { name: 'example.com', type: 'A' }, subject: 'example.com', at: done, snapshot: { q: 1 } });
+      pageSession.keep('bulk', { subject: 'example.com', at: done });
+      pageSession.setTarget('example.com', { view: 'health' });
+      assert.equal(navHref('lookup'), '#/lookup?name=example.com&type=A&run=0', 'the same target: back to the kept answers');
+      assert.equal(navHref('bulk'), '#/bulk', 'a tool with its own state opens bare');
+      // Then shop.example.com in Domain Health: the tools get it filled in.
+      pageSession.setTarget('shop.example.com', { view: 'health' });
+      assert.equal(navHref('lookup'), '#/lookup?name=shop.example.com&run=0');
+      assert.equal(navHref('bulk'), '#/bulk?names=shop.example.com&run=0');
+      assert.equal(navHref('ip'), '#/ip', 'IP Intel still takes no host name');
+    } finally {
+      pageSession.clear();
+    }
+  });
+
   test('navHref: the target filled in with run=0, a kept result, else bare', () => {
     pageSession.clear();
     try {

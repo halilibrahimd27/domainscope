@@ -1224,6 +1224,8 @@ stateSingleton.subscribe(({ key }) => {
  * @property {Date} startedAt
  * @property {Date|null} finishedAt
  * @property {number|null} queriesAtStart DohClient query counter when the run started
+ * @property {string[]} [domainsInput] the domains step 2 held when the run started (none: the
+ *   certificate's names only); "Run again" puts them back
  * @property {Set<(type: string, payload: any) => void>} listeners
  */
 
@@ -1405,8 +1407,8 @@ export function mount(container, ctx) {
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeDomains(ctx.searchParams, ctx.params);
   // A domain carried over from another tool (`run=0`, lib/session.js) never replaces what step 2
-  // holds (typed, or filled from the certificate).
-  if (fromRoute.length && !(isFillOnly(ctx.params) && session.domainsText.trim())) {
+  // holds (typed, or filled from the certificate) unless that is the last scan's domains.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.domainsText, lastRunDomains(), stepDomains))) {
     session.domainsText = fromRoute.join('\n');
     session.domainsFromCert = false;
   }
@@ -2198,6 +2200,7 @@ export function mount(container, ctx) {
       cancelVerify(session.run);
       cancelDane(session.run);
     }
+    run.domainsInput = v.domains.slice();
     session.scanTab = null;
     session.run = run;
     hideLinkPrompt();
@@ -2251,13 +2254,23 @@ export function mount(container, ctx) {
     refreshVocab() {
       renderVocab();
     },
-    // "Run again" of the kept-result note: the form as it is (the Run again button's action).
+    // "Run again" of the kept-result note: the last scan's domains in step 2 again (the
+    // certificate and the options as they are set now).
     rerun() {
+      const run = session.run;
+      if (run && run.status !== 'running' && run.domainsInput) {
+        session.domainsText = run.domainsInput.join('\n');
+        session.domainsFromCert = false;
+        domainsField.value = session.domainsText;
+        domainsField.setError(null);
+        renderDomainsHint();
+        renderRunSummary();
+      }
       start();
     },
     applyParams(p, sp) {
       const list = routeDomains(sp, p);
-      if (list.length && !(isFillOnly(p) && domainsField.value.trim())) {
+      if (list.length && (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains))) {
         session.domainsText = list.join('\n');
         session.domainsFromCert = false;
         domainsField.value = session.domainsText;
@@ -2305,7 +2318,7 @@ export function result() {
   return { subject: run.config.domains.join(', ') || null, at: run.finishedAt };
 }
 
-/** "Run again" of the kept-result note: start a scan with the form as it is. */
+/** "Run again" of the kept-result note: scan the last scan's domains again. */
 export function rerun() {
   if (active) active.rerun();
 }

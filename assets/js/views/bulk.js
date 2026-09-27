@@ -759,8 +759,11 @@ export function mount(container, ctx) {
   // every value or that one — never both (that listed each name twice → "N duplicates removed").
   const routeNames = ctx.searchParams && ctx.searchParams.getAll ? ctx.searchParams.getAll('names') : [ctx.params.names || ''];
   const fromRoute = splitList(routeNames.join('\n'));
-  // A name carried over from another tool (`run=0`, lib/session.js) never replaces a pasted list.
-  if (fromRoute.length && !(isFillOnly(ctx.params) && session.text && session.text.trim())) session.text = fromRoute.join('\n');
+  // A name carried over from another tool (`run=0`, lib/session.js) never replaces a pasted list:
+  // only an empty one or the last job's names.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastJobNames(), listNames))) {
+    session.text = fromRoute.join('\n');
+  }
   if (session.text === null) session.text = '';
 
   /* --- input ------------------------------------------------------------------------ */
@@ -968,13 +971,20 @@ export function mount(container, ctx) {
   }
 
   active = {
+    // "Run again" of the kept-result note: the last job's names (with the options as set now).
     rerun() {
+      const job = session.job;
+      if (job && job.status !== 'running') {
+        area.value = job.names.join('\n');
+        session.text = area.value;
+        area.setError(null);
+      }
       start();
     },
     applyParams(p) {
       const list = splitList(p.names || '');
       if (!list.length) return;
-      if (isFillOnly(p) && area.value.trim()) return;
+      if (isFillOnly(p) && !fillReplaces(area.value, lastJobNames(), listNames)) return;
       area.value = list.join('\n');
       session.text = area.value;
       renderParse();
@@ -1015,7 +1025,7 @@ export function result() {
   return { subject: one ? one.value : job.names[0] || null, at: job.finishedAt };
 }
 
-/** "Run again" of the kept-result note: resolve the list in the box again. */
+/** "Run again" of the kept-result note: resolve the last job's names again. */
 export function rerun() {
   if (active) active.rerun();
 }

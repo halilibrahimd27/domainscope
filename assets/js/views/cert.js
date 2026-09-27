@@ -1763,9 +1763,13 @@ function linkList(urls) {
 export function mount(container, ctx) {
   const { state } = ctx;
   let load = getCurrentCert(state);
-  // A host name carried over from another tool fills the "No file?" field while it is empty.
+  // A host name carried over from another tool fills the "No file?" field while it is empty or
+  // still holds the last lookup (never a host the user typed); an outcome for another host goes.
   const carried = normalizeCtHost(ctx.params.host || '');
-  if (carried && !ctForm.text.trim()) ctForm.text = carried;
+  if (carried && fillReplaces(ctForm.text, lastCtLookup(load), ctFieldHosts)) {
+    if (ctForm.last && ctForm.last.host !== carried) ctForm.last = null;
+    ctForm.text = carried;
+  }
 
   const loaderHost = h('div');
   // The certificate's tabs are no part of a loader's form: Ctrl/Cmd+Enter there submits nothing.

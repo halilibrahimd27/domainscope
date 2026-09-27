@@ -2912,8 +2912,11 @@ export function mount(container, ctx) {
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeTargets(ctx.searchParams, ctx.params);
-  // A domain carried over from another tool (`run=0`) never replaces what the box holds.
-  if (fromRoute.length && !(isFillOnly(ctx.params) && session.text.trim())) session.text = fromRoute.join(', ');
+  // A domain carried over from another tool (`run=0`) never replaces what the user typed: only an
+  // empty box or the last scan's domains.
+  if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastRunDomains(), boxDomains))) {
+    session.text = fromRoute.join(', ');
+  }
 
   /* --- Zone File hand-off ------------------------------------------------------ */
   // A one-shot intent from the Zone File view ("Scan now"): pre-fill the zone's domain, preset how
@@ -3878,7 +3881,7 @@ export function mount(container, ctx) {
     applyParams(params) {
       const list = routeTargets(new URLSearchParams(params), params);
       if (!list.length) return;
-      if (isFillOnly(params) && domainField.value.trim()) return;
+      if (isFillOnly(params) && !fillReplaces(domainField.value, lastRunDomains(), boxDomains)) return;
       domainField.value = list.join(', ');
       session.text = domainField.value;
       domainField.setError(null);

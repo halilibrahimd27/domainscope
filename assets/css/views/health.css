@@ -540,6 +540,44 @@
   font-size: 12.5px;
 }
 
+/* Long MX and PTR names break anywhere rather than push the verdict out of the card. */
+.hlt-fcrdns-table .dt-table td:first-child,
+.hlt-fcrdns-table .dt-table td:nth-child(3) {
+  min-width: 7rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.badge.hlt-fcrdns-st-inline {
+  display: none;
+}
+
+/* A phone: the verdict under the address, its own column hidden; every cell (an IPv6
+   address too) may break, with tighter padding, so the three columns fit the card. */
+@media (max-width: 480px) {
+  .hlt-fcrdns-table .dt-table th:nth-child(4),
+  .hlt-fcrdns-table .dt-table td:nth-child(4) {
+    display: none;
+  }
+
+  .hlt-fcrdns-table .dt-table th,
+  .hlt-fcrdns-table .dt-table td {
+    padding: 6px 8px;
+  }
+
+  .hlt-fcrdns-table .dt-table td,
+  .hlt-fcrdns-table .dt-table td:first-child,
+  .hlt-fcrdns-table .dt-table td:nth-child(3) {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .hlt-fcrdns-ip .badge.hlt-fcrdns-st-inline {
+    display: inline-flex;
+  }
+}
+
 /* MTA-STS policy (one Globalping probe after a click) */
 .hlt-mtasts-body > * {
   min-width: 0;

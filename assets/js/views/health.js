@@ -904,19 +904,24 @@ export function mount(container, ctx) {
     const mi = report.mailIdentity;
     if (!mi || !mi.addresses.length) return null;
     const variant = { confirmed: 'ok', mismatch: 'warn', 'no-ptr': 'neutral', nxdomain: 'neutral', servfail: 'error', error: 'error' };
+    const status = (a, className) => Badge(t(`hlt.fcrdns.st.${a.status}`), {
+      variant: variant[a.status] || 'neutral', icon: a.status === 'confirmed' ? 'check' : null, title: a.error || null, className
+    });
+    // On a phone the verdict sits under the address (hlt-fcrdns-st-inline) and its own column is hidden.
     const rows = mi.addresses.map((a) => [
       h('span', { class: 'hlt-fcrdns-host' }, hostLink(a.host),
         a.own ? null : Badge(t('hlt.fcrdns.provider'), { title: t('hlt.fcrdns.providerTitle') })),
       h('span', { class: 'hlt-fcrdns-ip' }, ipLink(a.ip),
-        h('a', { class: 'hlt-fcrdns-sweep text-xs', href: ctx.href('ptr', { target: a.ip, focus: report.domain }), title: t('hlt.fcrdns.sweepTitle', { ip: a.ip }) }, t('hlt.fcrdns.sweep'))),
+        h('a', { class: 'hlt-fcrdns-sweep text-xs', href: ctx.href('ptr', { target: a.ip, focus: report.domain }), title: t('hlt.fcrdns.sweepTitle', { ip: a.ip }) }, t('hlt.fcrdns.sweep')),
+        status(a, 'hlt-fcrdns-st-inline')),
       a.names.length ? h('span', { class: 'hlt-fcrdns-ptr' }, h('span', { class: 'mono' }, a.names[0]),
         a.generic ? Badge(t('hlt.fcrdns.generic'), { variant: 'info' }) : null) : null,
-      Badge(t(`hlt.fcrdns.st.${a.status}`), { variant: variant[a.status] || 'neutral', icon: a.status === 'confirmed' ? 'check' : null, title: a.error || null })
+      status(a, 'hlt-fcrdns-st')
     ]);
     const block = h('div', { class: 'stack-sm hlt-mail-block hlt-fcrdns', dataset: { block: 'fcrdns' } },
       h('div', { class: 'hlt-subtitle' }, t('hlt.fcrdns')),
       h('p', { class: 'muted text-xs hlt-fcrdns-hint' }, t('hlt.fcrdns.hint')),
-      miniTable([t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')], rows),
+      miniTable([t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')], rows, 'hlt-fcrdns-table'),
       mi.total > mi.checked ? h('p', { class: 'muted text-xs' }, t('hlt.fcrdns.capped', { checked: formatNumber(mi.checked), total: formatNumber(mi.total) })) : null);
     [...block.querySelectorAll('tbody tr')].forEach((tr, i) => { tr.dataset.status = mi.addresses[i].status; });
     return block;

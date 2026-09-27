@@ -58,8 +58,13 @@ function fakeTable() {
   add('server-192-0-2-15.fra50.r.cloudfront.net', 'A', '192.0.2.15');
   add(rev('198.51.100.1'), 'PTR', 'ns1.example.org');
   add('ns1.example.org', 'A', '198.51.100.1');
-  add('example.com', 'MX', { preference: 10, exchange: 'mail.example.com' }, { preference: 20, exchange: 'mx2.example.com' });
+  add('example.com', 'MX', { preference: 10, exchange: 'mail.example.com' }, { preference: 20, exchange: 'mx2.example.com' },
+    { preference: 30, exchange: 'mx-in-01.inbound.mailhost-provider.example.net' });
   add('mx2.example.com', 'A', '192.0.2.4');
+  // a mail provider's MX host with a long name and a generic PTR that forward-confirms
+  add('mx-in-01.inbound.mailhost-provider.example.net', 'A', '192.0.2.200');
+  add(rev('192.0.2.200'), 'PTR', '192-0-2-200.out.mailhost-provider.example.net');
+  add('192-0-2-200.out.mailhost-provider.example.net', 'A', '192.0.2.200');
   return T;
 }
 
@@ -437,13 +442,32 @@ async function main() {
       await page.evaluate(() => { location.hash = '#/health?domain=example.com'; });
       await page.waitFor(() => !!document.querySelector('.hlt-check[data-id="mail-identity.fcrdns-ok"]'), { timeout: 30000, message: 'health report' });
       const ids = await page.evaluate(() => [...document.querySelectorAll('.hlt-check')].filter((c) => c.dataset.id.startsWith('mail-identity')).map((c) => `${c.dataset.id}:${c.dataset.severity}`));
+      // the provider's generic PTR gets no "set a PTR that names the host" advice (it is not the user's to set)
       assertEqual(ids.sort(), ['mail-identity.fcrdns-missing:warn', 'mail-identity.fcrdns-ok:ok'], 'checks');
       assert(/mx2\.example\.com \(192\.0\.2\.4\)/.test(await text(page, '.hlt-check[data-id="mail-identity.fcrdns-missing"]')), 'missing detail');
-      const table = await page.evaluate(() => [...document.querySelectorAll('.hlt-fcrdns tbody tr')].map((tr) => `${tr.dataset.status}:${tr.cells[1].textContent}`));
-      assertEqual(table, ['confirmed:192.0.2.1Reverse DNS', 'nxdomain:192.0.2.4Reverse DNS'], 'table');
+      const table = await page.evaluate(() => [...document.querySelectorAll('.hlt-fcrdns tbody tr')].map((tr) => `${tr.dataset.status}:${tr.cells[1].querySelector('.hlt-ip').textContent}`));
+      assertEqual(table, ['confirmed:192.0.2.1', 'nxdomain:192.0.2.4', 'confirmed:192.0.2.200'], 'table');
+      assert(/provider/.test(await text(page, '.hlt-fcrdns tbody tr:nth-child(3) .hlt-fcrdns-host')) && /generic name/.test(await text(page, '.hlt-fcrdns tbody tr:nth-child(3) .hlt-fcrdns-ptr')), 'provider row');
       assertEqual(await page.evaluate(() => document.querySelector('.hlt-fcrdns a.hlt-fcrdns-sweep').getAttribute('href')), '#/ptr?target=192.0.2.1&focus=example.com', 'sweep link');
       await page.evaluate(() => document.querySelector('.hlt-fcrdns').scrollIntoView());
       await shot(page, opts, 'ptr-health-fcrdns-desktop-light-en');
+      // on a phone the verdict sits under the address and the table fits its card
+      await page.setViewport({ width: 375, height: 667, mobile: true });
+      await sleep(150);
+      const phone = await page.evaluate(() => {
+        const box = document.querySelector('.hlt-fcrdns-table');
+        const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
+        return {
+          fits: box.scrollWidth <= box.clientWidth + 1,
+          inline: [...box.querySelectorAll('.hlt-fcrdns-st-inline')].every(visible),
+          column: [...box.querySelectorAll('td:nth-child(4)')].some(visible)
+        };
+      });
+      assertEqual(phone, { fits: true, inline: true, column: false }, 'phone table');
+      await assertNoHorizontalScroll(page, 'health fcrdns');
+      await page.evaluate(() => document.querySelector('.hlt-fcrdns').scrollIntoView());
+      await shot(page, opts, 'ptr-health-fcrdns-mobile-light-en');
+      await page.setViewport({ width: 1440, height: 900 });
     });
 
     run.group('Phone 375×667, Turkish / English, light / dark');

@@ -1467,7 +1467,8 @@ export const MAIL_FCRDNS_MAX = 10;
  * senders). A host under the checked domain's registrable domain is the domain's own server:
  * a missing or unconfirmed PTR there is a warning. A provider's MX host (another domain) is
  * the provider's to set: info. A generic, templated PTR name (the address written into it, a
- * pool word) is info: legitimate relays carry cloud default names too.
+ * pool word) on the domain's own server is info: legitimate relays carry cloud default names
+ * too; on a provider's host it is only marked in the table (`generic`), with no advice.
  * @param {string} name the checked domain
  * @param {{ mx: Array<{ exchange: string }>, hosts: Object<string, { ipv4: string[], ipv6: string[] }> }} mx analyzeMx result
  * @param {object} d adapted DNS client
@@ -1510,7 +1511,8 @@ async function analyzeMailIdentity(name, mx, d) {
   const mismatch = out.addresses.filter((a) => a.status === 'mismatch');
   const failedAddr = out.addresses.filter((a) => a.status === 'servfail' || a.status === 'error');
   const provider = [...missing, ...mismatch].filter((a) => !a.own);
-  const generic = out.addresses.filter((a) => a.generic && (a.status === 'confirmed' || a.status === 'mismatch'));
+  // Only the domain's own servers: a provider's generic names are the provider's to change.
+  const generic = out.addresses.filter((a) => a.generic && a.own && (a.status === 'confirmed' || a.status === 'mismatch'));
   if (confirmed.length) {
     checks.push(makeCheck('mail-identity.fcrdns-ok', 'ok', { count: confirmed.length, items: confirmed.map((a) => `${a.ip} → ${a.confirmed[0]}`) }));
   }

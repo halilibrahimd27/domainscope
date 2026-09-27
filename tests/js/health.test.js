@@ -640,6 +640,7 @@ test('mail identity (FCrDNS): own servers warn, a provider’s are info, failure
     { preference: 30, exchange: 'mx3.example.com' },
     { preference: 40, exchange: 'mx4.example.com' },
     { preference: 50, exchange: 'in1.mailhost.example.net' },
+    { preference: 55, exchange: 'in2.mailhost.example.net' },
     { preference: 60, exchange: 'internal.example.com' }
   ];
   zone['mx1.example.com'] = { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] };
@@ -649,6 +650,9 @@ test('mail identity (FCrDNS): own servers warn, a provider’s are info, failure
   zone['mx4.example.com'] = { A: ['192.0.2.40'] }; // reverse zone broken
   zone['in1.mailhost.example.net'] = { A: ['198.51.100.5'] }; // a provider's host without PTR
   zone['5.100.51.198.in-addr.arpa'] = { SOA: SOA('100.51.198.in-addr.arpa') }; // NOERROR, no PTR
+  zone['in2.mailhost.example.net'] = { A: ['198.51.100.6'] }; // a provider's host with a generic, confirmed PTR
+  zone['6.100.51.198.in-addr.arpa'] = { PTR: '198-51-100-6.out.provider.example.net' };
+  zone['198-51-100-6.out.provider.example.net'] = { A: ['198.51.100.6'] };
   zone['internal.example.com'] = { A: ['10.1.1.1'] };
   zone['0.1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa'] = { PTR: '2001-db8--10.v6.isp.example.net' };
   zone['2001-db8--10.v6.isp.example.net'] = { AAAA: ['2001:db8::10'] };
@@ -656,15 +660,17 @@ test('mail identity (FCrDNS): own servers warn, a provider’s are info, failure
   const r = await run('example.com', dns);
   assertRenderable(r);
   const byIp = Object.fromEntries(r.mailIdentity.addresses.map((x) => [x.ip, x]));
-  assert.deepEqual(Object.keys(byIp), ['192.0.2.10', '2001:db8::10', '192.0.2.20', '192.0.2.30', '192.0.2.40', '198.51.100.5'], 'MX order, private skipped');
+  assert.deepEqual(Object.keys(byIp), ['192.0.2.10', '2001:db8::10', '192.0.2.20', '192.0.2.30', '192.0.2.40', '198.51.100.5', '198.51.100.6'], 'MX order, private skipped');
   assert.deepEqual([byIp['192.0.2.20'].status, byIp['192.0.2.30'].status, byIp['192.0.2.40'].status, byIp['198.51.100.5'].status], ['mismatch', 'nxdomain', 'servfail', 'no-ptr']);
   assert.deepEqual([byIp['2001:db8::10'].status, byIp['2001:db8::10'].generic], ['confirmed', '2001-db8--10.v6.isp.example.net']);
   assert.equal(byIp['198.51.100.5'].own, false);
-  assert.equal(find(r, 'mail-identity.fcrdns-ok').params.count, 2);
+  assert.deepEqual([byIp['198.51.100.6'].status, byIp['198.51.100.6'].own, byIp['198.51.100.6'].generic], ['confirmed', false, '198-51-100-6.out.provider.example.net']);
+  assert.equal(find(r, 'mail-identity.fcrdns-ok').params.count, 3);
   assert.equal(has(r, 'mail-identity.fcrdns-missing', 'warn').params.items, 'mx3.example.com (192.0.2.30)');
   assert.equal(has(r, 'mail-identity.fcrdns-mismatch', 'warn').params.items, '192.0.2.20 → relay.example.org');
   assert.equal(has(r, 'mail-identity.fcrdns-provider', 'info').params.items, 'in1.mailhost.example.net (198.51.100.5)');
   assert.equal(has(r, 'mail-identity.fcrdns-error', 'info').params.items, 'mx4.example.com (192.0.2.40): SERVFAIL');
+  // the generic-name advice (set a PTR that names the host) is for the domain's own servers only
   assert.equal(has(r, 'mail-identity.ptr-generic', 'info').params.items, '2001:db8::10 → 2001-db8--10.v6.isp.example.net');
   lacks(r, 'mail-identity.fcrdns-capped');
   assert.ok(dns.calls.some((c) => c.name === '2001-db8--10.v6.isp.example.net' && c.type === 'AAAA'), 'IPv6 forward-confirms with AAAA');

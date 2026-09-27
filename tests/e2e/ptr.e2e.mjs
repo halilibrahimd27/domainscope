@@ -409,6 +409,7 @@ async function main() {
           await shot(page, opts, `ptr-results-mobile-${scheme}-${lang}`);
         }
       }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await typeTarget(page, 'AS64496');
       await page.click('[data-action="ptr-run"]');
       await page.waitFor(() => document.querySelectorAll('.ptr-asn-table tbody tr.dt-row').length === 5, { message: 'picker (phone)' });

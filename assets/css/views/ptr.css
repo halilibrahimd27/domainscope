@@ -36,6 +36,16 @@
   display: none;
 }
 
+/* The explanation stays next to its icon / badge on phones instead of wrapping below it. */
+.ptr-parsed > .icon {
+  flex: none;
+}
+
+.ptr-parsed > span:last-child {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
 .ptr-actions {
   display: flex;
   flex-wrap: wrap;

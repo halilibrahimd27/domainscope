@@ -817,6 +817,12 @@ async function main() {
       await openTab(page, 'sources');
       assert(await page.evaluate(() => document.querySelectorAll('.sub-tab-sources .sub-stage').length === 7
         && document.querySelectorAll('.sub-tab-sources .sub-chip').length > 0 && document.querySelectorAll('.sub-src-quota').length > 0), 'stages, chips and limits in the Sources tab');
+      // Its status lines were spoken from the run's header: a live region in a hidden panel says nothing.
+      const spoken = await page.evaluate(() => {
+        const said = new Set([...document.querySelectorAll('.sub-run .sub-src-live p')].map((x) => x.textContent));
+        return [...document.querySelectorAll('.sub-tab-sources .sub-src-note > span')].map((x) => x.textContent).filter((x) => !said.has(x));
+      });
+      assertEqual(spoken, [], 'every source status line is also in the live region of the run header');
       await shot(page, opts, 'subdomains-desktop-light-en-sources');
       await openTab(page, 'hosts');
     });
@@ -1376,10 +1382,13 @@ async function main() {
         assert(log.counts.length > 0 && log.counts.every((c) => /^\d+$/.test(c) && Number(c) > 0), `the Hosts label counted while running: ${log.counts}`);
         const end = await tt.evaluate(() => ({
           rows: [...document.querySelectorAll('.sub-table tbody tr.dt-row .sub-host-name')].map((a) => a.textContent).sort(),
-          hostsHidden: document.querySelector('.sub-tab-hosts').closest('[role="tabpanel"]').hidden
+          hostsHidden: document.querySelector('.sub-tab-hosts').closest('[role="tabpanel"]').hidden,
+          // Source news is spoken from the run's header; a live region in a hidden panel would say nothing.
+          live: [document.querySelectorAll('.sub-run > .sub-src-live[aria-live="polite"]').length, document.querySelectorAll('.sub-tab-sources [aria-live]').length]
         }));
         assertEqual(end.rows, [...Object.keys(TABS_ZONE)].sort(), 'every host is in the (hidden) Hosts table');
         assert(end.hostsHidden, 'the Hosts panel is hidden while Sources is shown');
+        assertEqual(end.live, [1, 0], 'one live region for the sources, in the run header; none in the Sources panel');
         assertEqual(await tabBadges(tt), { overview: null, hosts: '7', origins: '2', sources: null }, 'the final counts (no passive source asked)');
         await shot(tt, opts, 'subdomains-tabs-desktop-light-en-sources');
       });

@@ -4037,9 +4037,12 @@ function buildRunUI(run, ctx, { onFinish }) {
   const chips = h('div', { class: 'sub-chips', attrs: { role: 'group', 'aria-label': t('sub.opt.sources') } });
   const chipEls = new Map();
   // "crt.sh still fetching (up to 12 s)" while the DNS sweep already runs — so the wait is not
-  // mistaken for another stage (task 3). Live region: it is news worth announcing.
-  const sourceWaitNote = h('div', { class: 'sub-src-wait', attrs: { 'aria-live': 'polite' }, hidden: true });
-  const sourceNotes = h('div', { class: 'sub-src-notes', attrs: { 'aria-live': 'polite' } });
+  // mistaken for another stage (task 3). Both it and the per-source notes are news worth
+  // announcing, but they live in the Sources tab, whose panel is hidden while another tab is open
+  // (and a hidden live region says nothing): sourceLive, in the run's header, speaks each new line.
+  const sourceWaitNote = h('div', { class: 'sub-src-wait', hidden: true });
+  const sourceNotes = h('div', { class: 'sub-src-notes' });
+  const sourceLive = h('div', { class: 'sr-only sub-src-live', attrs: { 'aria-live': 'polite' } });
   const notice = h('div', { class: 'sub-run-notice' });
   // How this run used an imported zone file (exact: its names only; discover: added as seeds).
   const zoneBanner = run.config.zoneMode === 'exact' || run.config.zoneMode === 'discover'
@@ -4065,7 +4068,15 @@ function buildRunUI(run, ctx, { onFinish }) {
     h('div', { class: 'sub-run-head' },
       h('span', { class: 'sub-run-icon', attrs: { 'aria-hidden': 'true' } }, Icon('layers', { size: 18 })),
       h('div', { class: 'sub-run-titles' }, title, meta)),
-    progress, zoneBanner, handoffBanner, notice);
+    progress, zoneBanner, handoffBanner, notice, sourceLive);
+
+  /** Source lines already spoken: a re-render (every source event redraws them) says nothing new. */
+  const spoken = new Set();
+  function speakSource(text) {
+    if (!text || spoken.has(text)) return;
+    spoken.add(text);
+    sourceLive.append(h('p', null, text));
+  }
 
   /** Grace-window default (lib/scanner DEFAULT_SOURCE_GRACE_MS); only the wording seconds. */
   const SOURCE_GRACE_SECONDS = 12;
@@ -4079,8 +4090,9 @@ function buildRunUI(run, ctx, { onFinish }) {
     sourceWaitNote.hidden = !waiting.length;
     if (!waiting.length) return;
     const list = waiting.map((sid) => SOURCE_NAMES[sid] || sid).join(', ');
-    sourceWaitNote.append(Icon('clock', { size: 14 }),
-      h('span', null, t('sub.srcWait', { list, seconds: SOURCE_GRACE_SECONDS, count: waiting.length })));
+    const text = t('sub.srcWait', { list, seconds: SOURCE_GRACE_SECONDS, count: waiting.length });
+    sourceWaitNote.append(Icon('clock', { size: 14 }), h('span', null, text));
+    speakSource(text);
   }
 
   function renderTitle() {
@@ -4235,6 +4247,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       lines.push(h('li', { class: 'sub-src-note', dataset: { source: sid, tone: text.tone, health: hl.state } },
         Icon({ ok: 'info', warn: 'alert', limited: 'clock', error: 'x-circle' }[text.tone] || 'info', { size: 14 }),
         h('span', null, text.detail)));
+      speakSource(text.detail);
     }
     if (!lines.length) return;
     const failed = [...health.values()].some((x) => !x.ok);
@@ -4242,7 +4255,10 @@ function buildRunUI(run, ctx, { onFinish }) {
       ? h('p', { class: 'sub-src-dns' }, t('sub.srcnote.dnsFound', { count: techniqueCounts(run.result.hosts).dnsOnly }))
       : null;
     sourceNotes.append(h('div', { class: 'sub-src-notes-title' }, t('sub.srcnote.title')), h('ul', { class: 'sub-src-list' }, lines));
-    if (tail) sourceNotes.append(tail);
+    if (tail) {
+      sourceNotes.append(tail);
+      speakSource(tail.textContent);
+    }
   }
 
   /* --- stats -------------------------------------------------------------------- */

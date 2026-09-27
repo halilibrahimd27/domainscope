@@ -2089,6 +2089,19 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /tabs\.el\.addEventListener\('focusout', \(\) => \{\s*setTimeout\(\(\) => \{\s*if \(root\.isConnected\) followRun\(lastCounts \? lastCounts\.found : 0\);/);
   });
 
+  test('Subdomains source news is spoken from the run header, since the Sources panel is hidden under another tab', async () => {
+    // Wiring guard: a live region inside a hidden tab panel says nothing, so the one that speaks
+    // the wait note and the per-source lines sits in the always-visible run header.
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    assert.match(src, /const sourceLive = h\('div', \{ class: 'sr-only sub-src-live', attrs: \{ 'aria-live': 'polite' \} \}\);/);
+    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\)\),\s*progress, zoneBanner, handoffBanner, notice, sourceLive\);/, 'in the run header');
+    assert.match(src, /const sourceWaitNote = h\('div', \{ class: 'sub-src-wait', hidden: true \}\);/, 'the note in the panel is no live region of its own');
+    assert.match(src, /const sourceNotes = h\('div', \{ class: 'sub-src-notes' \}\);/);
+    // Each line once: every source event redraws the panel's lines.
+    assert.match(src, /function speakSource\(text\) \{\s*if \(!text \|\| spoken\.has\(text\)\) return;\s*spoken\.add\(text\);\s*sourceLive\.append\(h\('p', null, text\)\);/);
+    for (const call of ['speakSource(text);', 'speakSource(text.detail);', 'speakSource(tail.textContent);']) assert.ok(src.includes(call), call);
+  });
+
   test('on a phone a host name still breaks inside a label too long for its card (subdomains.css)', async () => {
     const css = (await readFile(path.join(ROOT, 'assets/css/views/subdomains.css'), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
     const start = css.indexOf('@media (max-width: 640px) {');

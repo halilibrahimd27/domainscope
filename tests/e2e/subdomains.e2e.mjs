@@ -1481,7 +1481,7 @@ async function main() {
         assertEqual(await tt.evaluate(() => document.querySelector('.sub-view').dataset.marker), 'kept', 'no re-mount');
       });
 
-      await run.step('Overview: a stat card filters the hosts and opens their tab with the focus on it; "See the origin candidates" opens Origins', async () => {
+      await run.step('Overview: a stat card filters the hosts and opens their tab with the focus on it; "See the origin candidates" opens Origins, whose selected tab keeps its warn count colour', async () => {
         await openTab(tt, 'overview');
         await tt.click('.sub-stats [data-stat="cloudflare"]');
         const info = await tt.evaluate(() => ({
@@ -1496,6 +1496,18 @@ async function main() {
         await tt.click('[data-action="sub-origin-link"]');
         await tt.waitFor(() => document.activeElement?.classList.contains('sub-org-title'), { message: 'focus on the ORIGIN panel title' });
         assertEqual([await selectedTab(tt), await routeTab(tt)], ['origins', 'origins'], 'the link opened Origins');
+        // Its warn count keeps the warn colours while the tab is selected (not the accent of a plain count).
+        const badge = await tt.evaluate(() => {
+          const el = document.querySelector('.sub-tabs .tab[data-tab="origins"] .tab-badge');
+          const ref = document.createElement('span');
+          ref.className = 'tab-badge tab-badge-warn';
+          document.body.append(ref);
+          const [got, want] = [getComputedStyle(el), getComputedStyle(ref)];
+          const out = { warn: el.classList.contains('tab-badge-warn'), same: got.color === want.color && got.backgroundColor === want.backgroundColor };
+          ref.remove();
+          return out;
+        });
+        assertEqual(badge, { warn: true, same: true }, 'the selected Origins tab shows its count in the warn colours');
       });
 
       await run.step('phone 375 px (EN/TR × light/dark): all four tabs in view; a host name wraps only after a dot (or inside a label too long for the card), an IP never breaks', async () => {

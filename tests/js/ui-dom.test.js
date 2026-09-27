@@ -2476,4 +2476,12 @@ describe('security & shell invariants', () => {
     }
     for (const kind of KINDS) assert.ok(css.includes(`.badge-${kind}`), `.badge-${kind}`);
   });
+
+  test('a status count on a tab keeps its colour when the tab is selected (not the accent of a plain count)', async () => {
+    const css = await readFile(path.join(ROOT, 'assets/css/style.css'), 'utf8');
+    assert.match(css, /\.tab\.is-selected \.tab-badge \{\s*background: var\(--accent-soft\);/);
+    for (const v of ['warn', 'error', 'ok']) {
+      assert.match(css, new RegExp(`\\.tab-badge-${v},\\s*\\.tab\\.is-selected \\.tab-badge-${v} \\{\\s*background: var\\(--${v}-bg\\);\\s*color: var\\(--${v}\\);`), v);
+    }
+  });
 });

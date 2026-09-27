@@ -2876,17 +2876,21 @@ button.nav-status:hover {
   color: var(--accent-text);
 }
 
-.tab-badge-warn {
+/* A status count keeps its colour on the selected tab too (the accent is for a plain count). */
+.tab-badge-warn,
+.tab.is-selected .tab-badge-warn {
   background: var(--warn-bg);
   color: var(--warn);
 }
 
-.tab-badge-error {
+.tab-badge-error,
+.tab.is-selected .tab-badge-error {
   background: var(--error-bg);
   color: var(--error);
 }
 
-.tab-badge-ok {
+.tab-badge-ok,
+.tab.is-selected .tab-badge-ok {
   background: var(--ok-bg);
   color: var(--ok);
 }

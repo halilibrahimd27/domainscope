@@ -1732,6 +1732,30 @@ test('a failed MX lookup is "not known": the MTA-STS policy check never reads it
   assert.deepEqual([mtaStsContext(none).mxHosts, none.failedLookups], [[], []]);
 });
 
+test('an _mta-sts TXT set senders reject is not an announcement: the policy check reads txt-invalid, never ok', async () => {
+  const fetch = {
+    finished: true, failure: null, httpStatus: 200, contentType: 'text/plain', location: null, truncated: false, tls: null,
+    body: 'version: STSv1\nmode: enforce\nmx: mx1.example.com\nmx: mx2.example.com\nmax_age: 1209600\n'
+  };
+  const ok = await run('example.com', fakeDns(goodZone()));
+  assert.equal(mtaStsContext(ok).txtInvalid, 0);
+  assert.equal(validateMtaSts({ domain: 'example.com', fetch, ...mtaStsContext(ok), now: NOW }).headline, 'ok');
+  // RFC 8461 §3.1: two v=STSv1 records, or one without an id, mean "no MTA-STS" to senders
+  for (const [txt, count] of [[['v=STSv1; id=1', 'v=STSv1; id=2'], 2], [['v=STSv1;'], 1], [['v=STSv1; id='], 1]]) {
+    const zone = goodZone();
+    zone['_mta-sts.example.com'].TXT = txt;
+    const r = await run('example.com', fakeDns(zone));
+    has(r, 'mta-sts.invalid', 'warn');
+    const ctx = mtaStsContext(r);
+    assert.deepEqual([ctx.txt, ctx.txtInvalid], [txt[0], count], txt.join(' | '));
+    const v = validateMtaSts({ domain: 'example.com', fetch, ...ctx, now: NOW });
+    assert.deepEqual([v.headline, v.severity, v.usable], ['txt-invalid', 'warn', true], txt.join(' | '));
+    const finding = v.findings.find((f) => f.id === 'txt.invalid');
+    assert.deepEqual([finding.severity, finding.params.count, finding.params.domain], ['warn', count, 'example.com']);
+    assert.ok(!v.findings.some((f) => f.id === 'txt.missing'));
+  }
+});
+
 /* ==================================================================== */
 /* RDAP-derived checks                                                  */
 /* ==================================================================== */

@@ -534,6 +534,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The _mta-sts record, and the badge when senders reject it (RFC 8461 §3.1). */
+.hlt-mtasts-txt {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
 .hlt-mtasts-actions {
   display: flex;
   flex-wrap: wrap;

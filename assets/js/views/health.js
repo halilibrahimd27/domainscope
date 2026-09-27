@@ -206,6 +206,7 @@ registerStrings('en', {
 
   'hlt.mtasts.title': 'MTA-STS policy',
   'hlt.mtasts.txt': 'TXT record',
+  'hlt.mtasts.txtInvalid': 'not valid: senders ignore it',
   'hlt.mtasts.url': 'Policy URL',
   'hlt.mtasts.intro': 'Sending mail servers that support MTA-STS read the policy at this URL. This page cannot read another site’s file itself, so one Globalping probe can fetch it for you, only when you click. Its HTTP answer and certificate are then checked, and its mx lines are compared with the domain’s MX hosts.',
   'hlt.mtasts.noHost': 'Globalping does not accept the host name {host}, so the policy cannot be fetched from here.',
@@ -391,6 +392,7 @@ registerStrings('tr', {
 
   'hlt.mtasts.title': 'MTA-STS politikası',
   'hlt.mtasts.txt': 'TXT kaydı',
+  'hlt.mtasts.txtInvalid': 'geçersiz: gönderenler yok sayar',
   'hlt.mtasts.url': 'Politika adresi',
   'hlt.mtasts.intro': 'MTA-STS destekleyen gönderen e-posta sunucuları politikayı bu adresten okur. Bu sayfa başka bir sitenin dosyasını kendisi okuyamaz; bu yüzden yalnızca siz tıkladığınızda tek bir Globalping ölçüm noktası dosyayı sizin için alabilir. Ardından HTTP yanıtı ve sertifikası kontrol edilir, mx satırları da alan adının MX sunucularıyla karşılaştırılır.',
   'hlt.mtasts.noHost': 'Globalping {host} host adını kabul etmiyor; bu yüzden politika buradan alınamıyor.',
@@ -504,16 +506,29 @@ function knownRecord(report, key) {
 }
 
 /**
- * What lib/mtasts.validateMtaSts needs from a health report besides the fetch: the MX exchanges
- * (undefined when the MX lookup failed: not known, never "no MX") and the `_mta-sts` /
- * `_smtp._tls` records (null = not published, undefined = not known).
+ * The number of `_mta-sts` "v=STSv1" TXT records when senders reject them (two or more, or one
+ * without an id: the report's mta-sts.invalid check), else 0.
  * @param {object} report a lib/health.domainHealth report
- * @returns {{ mxHosts: string[]|undefined, txt: string|null|undefined, tlsRpt: string|null|undefined }}
+ * @returns {number}
+ */
+export function mtaStsTxtInvalid(report) {
+  const check = (report.checks || []).find((c) => c.id === 'mta-sts.invalid');
+  return check ? Math.max(1, Number(check.params?.count) || 1) : 0;
+}
+
+/**
+ * What lib/mtasts.validateMtaSts needs from a health report besides the fetch: the MX exchanges
+ * (undefined when the MX lookup failed: not known, never "no MX"), the `_mta-sts` /
+ * `_smtp._tls` records (null = not published, undefined = not known) and whether senders reject
+ * the `_mta-sts` records (`txtInvalid`, {@link mtaStsTxtInvalid}).
+ * @param {object} report a lib/health.domainHealth report
+ * @returns {{ mxHosts: string[]|undefined, txt: string|null|undefined, txtInvalid: number, tlsRpt: string|null|undefined }}
  */
 export function mtaStsContext(report) {
   return {
     mxHosts: lookupFailed(report, 'mx') ? undefined : (report.records.mx || []).map((m) => m.exchange),
     txt: knownRecord(report, 'mtaSts'),
+    txtInvalid: mtaStsTxtInvalid(report),
     tlsRpt: knownRecord(report, 'tlsRpt')
   };
 }
@@ -956,7 +971,9 @@ export function mount(container, ctx) {
     policyEl.append(KeyValueList([
       {
         key: t('hlt.mtasts.txt'),
-        value: report.records.mtaSts ? h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts)
+        value: report.records.mtaSts
+          ? h('span', { class: 'hlt-mtasts-txt' }, h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts),
+            mtaStsTxtInvalid(report) ? Badge(t('hlt.mtasts.txtInvalid'), { variant: 'warn', className: 'hlt-mtasts-txt-invalid' }) : null)
           : h('span', { class: 'muted text-sm' }, t(lookupFailed(report, 'mtaSts') ? 'hlt.lookupFailed' : 'hlt.missing'))
       },
       { key: t('hlt.mtasts.url'), value: h('span', { class: 'mono text-sm hlt-mtasts-url' }, url), copy: url }

@@ -433,14 +433,16 @@ test('every placeholder a finding text uses is filled by its params', () => {
   for (const fetch of fetches) {
     for (const [mx, tlsRpt] of [[['mail.example.com', 'other.example.org'], null], [[], 'v=TLSRPTv1'], [['mail.example.com'], undefined],
       [['.'], null], [undefined, 'v=TLSRPTv1']]) {
-      const v = validateMtaSts({ domain: 'example.com', fetch, mxHosts: mx, txt: null, tlsRpt, now: NOW });
-      assert.ok(MTA_STS_HEADLINES.includes(v.headline), v.headline);
-      for (const f of v.findings) {
-        seen.add(f.id);
-        for (const lang of ['en', 'tr']) {
-          for (const part of ['title', 'detail']) {
-            for (const text of forms(MTA_STS_I18N[lang][`mtasts.${f.id}.${part}`])) {
-              for (const m of text.matchAll(/\{(\w+)\}/g)) assert.ok(m[1] in f.params, `${f.id}.${part} (${lang}) needs {${m[1]}}`);
+      for (const [txt, txtInvalid] of [[null, 0], ['v=STSv1; id=1', 2]]) {
+        const v = validateMtaSts({ domain: 'example.com', fetch, mxHosts: mx, txt, txtInvalid, tlsRpt, now: NOW });
+        assert.ok(MTA_STS_HEADLINES.includes(v.headline), v.headline);
+        for (const f of v.findings) {
+          seen.add(f.id);
+          for (const lang of ['en', 'tr']) {
+            for (const part of ['title', 'detail']) {
+              for (const text of forms(MTA_STS_I18N[lang][`mtasts.${f.id}.${part}`])) {
+                for (const m of text.matchAll(/\{(\w+)\}/g)) assert.ok(m[1] in f.params, `${f.id}.${part} (${lang}) needs {${m[1]}}`);
+              }
             }
           }
         }

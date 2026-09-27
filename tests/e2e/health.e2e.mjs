@@ -204,7 +204,10 @@ const MAIL_ZONE = {
   '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] },
   // A name whose MX query fails (SERVFAIL) while its _mta-sts record answers.
   'mxfail.example.com': { A: ['192.0.2.81'], MX: [{ preference: 10, exchange: 'mx.example.com' }], RCODE: { MX: 'SERVFAIL' } },
-  '_mta-sts.mxfail.example.com': { TXT: [['v=STSv1; id=20260927T1300']] }
+  '_mta-sts.mxfail.example.com': { TXT: [['v=STSv1; id=20260927T1300']] },
+  // Two v=STSv1 records: senders assume no policy (RFC 8461 §3.1), however valid the file is.
+  'twosts.example.com': { A: ['192.0.2.82'], MX: [{ preference: 10, exchange: 'mx.example.com' }, { preference: 20, exchange: 'alt1.mx.example.com' }] },
+  '_mta-sts.twosts.example.com': { TXT: [['v=STSv1; id=20260927T1400'], ['v=STSv1; id=20260927T1401']] }
 };
 const MTASTS_CARD = '[data-mtasts="card"]';
 const GP_DIALOG = 'dialog.gp-confirm[open]';
@@ -336,6 +339,7 @@ async function mtaStsGroup(browser, server) {
     wrongtype: { ...live.result, headers: { ...live.result.headers, 'content-type': 'application/octet-stream' } },
     // the live policy on mta-sts.mxfail.example.com, with a certificate for that name
     mxfail: { ...live.result, tls: { ...live.result.tls, subject: { CN: 'mta-sts.mxfail.example.com', alt: 'DNS:mta-sts.mxfail.example.com' } } },
+    twosts: { ...live.result, tls: { ...live.result.tls, subject: { CN: 'mta-sts.twosts.example.com', alt: 'DNS:mta-sts.twosts.example.com' } } },
     nohost: m27.final.body.results[0].result
   };
 
@@ -605,12 +609,30 @@ async function mtaStsGroup(browser, server) {
       await shotCard(page, 'health-mtasts-desktop-light-en-mx-unknown');
     });
 
+    await step('two _mta-sts records: the TXT row says senders ignore them, and a valid policy is never "ok"', async () => {
+      const domain = `twosts.${MAIL_APEX}`;
+      await gotoHash(page, `#/health?domain=${domain}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [domain], timeout: 30000, message: 'twosts report' });
+      const badge = () => page.evaluate((sel) => document.querySelector(`${sel} .hlt-mtasts-txt-invalid`)?.textContent ?? null, MTASTS_CARD);
+      assertEqual(await badge(), 'not valid: senders ignore it', 'the TXT row is marked');
+      await page.evaluate(() => { window.__gp.next.push('twosts'); });
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'done', { args: [MTASTS_CARD], timeout: 20000, message: 'policy checked' });
+      const c = await card();
+      assertEqual(c.headline, 'txt-invalid', 'headline');
+      assert(c.findings.some((f) => f.id === 'txt.invalid') && !c.findings.some((f) => f.id === 'txt.missing'), `findings: ${JSON.stringify(c.findings)}`);
+      assert(/RFC 8461 §3\.1/.test(c.text), 'the finding cites the rule');
+      assertEqual(await badge(), 'not valid: senders ignore it', 'still marked after the check');
+      await shotCard(page, 'health-mtasts-desktop-light-en-txt-invalid');
+    });
+
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {
       const blocked = await page.evaluate(() => window.__zoneBlocked.slice());
       assertEqual(netHits, [], 'https requests that reached the network');
       assert(!blocked.some((u) => u.includes('globalping')), `Globalping never reached the zone guard: ${blocked}`);
       const calls = await gpCalls();
-      assertEqual(posts(calls).length, 10, 'ten fake probes in total');
+      assertEqual(posts(calls).length, 11, 'eleven fake probes in total');
       await checkI18n(page);
       await assertClean(page, 'mta-sts offline');
     });

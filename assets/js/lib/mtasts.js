@@ -45,16 +45,17 @@ export const MTA_STS_FINDINGS = Object.freeze([
   'mode.enforce', 'mode.testing', 'mode.testing-no-report', 'mode.none',
   'max-age.short', 'max-age.days', 'max-age.ok',
   'mx.ok', 'mx.unmatched', 'mx.unused', 'mx.none', 'mx.null', 'mx.unknown',
-  'txt.missing'
+  'txt.missing', 'txt.invalid'
 ]);
 /**
  * The one-line verdicts (`mtasts.head.<key>`), worst first: 'not-published' (a usable policy no
- * `_mta-sts` TXT record announces), 'wrong-type' (served as something other than text/plain,
+ * `_mta-sts` TXT record announces), 'txt-invalid' (the `_mta-sts` TXT records are not exactly one
+ * valid record, so senders assume there is no policy: RFC 8461 §3.1), 'wrong-type' (served as something other than text/plain,
  * which strict senders ignore), 'off' (mode none), 'no-mx' (the domain has no MX host to compare
  * the mx patterns with) and 'mx-unknown' (the MX lookup failed) keep a usable policy from reading
  * 'ok', which claims every MX host matched.
  */
-export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'not-published', 'wrong-type', 'problems', 'warnings',
+export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'not-published', 'txt-invalid', 'wrong-type', 'problems', 'warnings',
   'off', 'no-mx', 'mx-unknown', 'ok']);
 
 const FIELDS = ['version', 'mode', 'max_age', 'mx'];
@@ -271,29 +272,38 @@ export function interpretPolicyFetch(measurement, { host = null } = {}) {
  * §3.3; a policy cached earlier still applies until it expires). A media type other than
  * text/plain is an error but no stop: senders that do not check it still use the policy, strict
  * ones (RFC 8461 §3.2, SHOULD) ignore it.
- * A usable policy reads 'wrong-type' when strict senders ignore it (unless `txt === null`, or
- * another error puts delivery at risk: 'problems'), else 'off' in mode none, 'not-published'
- * without the `_mta-sts` TXT record (`txt === null`), then 'problems' / 'warnings' by the worst
+ * A usable policy reads 'wrong-type' when strict senders ignore it (unless the policy is not
+ * announced, or another error puts delivery at risk: 'problems'), else 'off' in mode none,
+ * 'not-published' without the `_mta-sts` TXT record (`txt === null`), 'txt-invalid' when the TXT
+ * records senders would read are not exactly one valid record (`txtInvalid`: senders then assume
+ * the domain has no policy, RFC 8461 §3.1), then 'problems' / 'warnings' by the worst
  * finding, and 'ok' only when the MX hosts were compared ('no-mx' without any, 'mx-unknown' when
  * they are not known).
  *
  * @param {{ domain: string, fetch: ReturnType<typeof interpretPolicyFetch>, mxHosts?: string[],
- *   txt?: string|null, tlsRpt?: string|null, now?: Date|number }} input
+ *   txt?: string|null, txtInvalid?: number, tlsRpt?: string|null, now?: Date|number }} input
  *   `mxHosts`: the domain's MX exchanges (a null MX "." is no host; not an array = not known, e.g.
  *   the MX lookup failed: mx.unknown); `txt` / `tlsRpt`: the `_mta-sts` / `_smtp._tls` TXT records
- *   (undefined = not known, no finding)
+ *   (undefined = not known, no finding); `txtInvalid`: the number of "v=STSv1" TXT records when they
+ *   are not one record with an id (two or more, or one without an id; 0 = valid or none)
  * @returns {{ headline: string, severity: 'ok'|'info'|'warn'|'error', mode: string|null, policy: object|null,
  *   usable: boolean, host: string|null, findings: Array<{ id: string, severity: string, params: object }>,
  *   mx: Array<{ host: string, matchedBy: string|null }>, unusedPatterns: string[] }}
  *   `usable`: fetched and valid, so senders that do not check the media type use it.
  */
-export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undefined, tlsRpt = undefined, now = Date.now() } = {}) {
+export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undefined, txtInvalid = 0, tlsRpt = undefined, now = Date.now() } = {}) {
   const host = mtaStsPolicyHost(domain) || `mta-sts.${canon(domain)}`;
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   const f = fetch && typeof fetch === 'object' ? fetch : { finished: false, failure: { kind: 'unknown', text: '' } };
   const findings = [];
   const add = (id, severity, params = {}) => findings.push({ id, severity, params: { host, ...params } });
   const out = { headline: 'ok', severity: 'ok', mode: null, policy: null, usable: false, host, findings, mx: [], unusedPatterns: [] };
+  // Senders fetch the policy only through exactly one valid _mta-sts TXT record (RFC 8461 §3.1).
+  const invalidTxt = txt !== null && Number(txtInvalid) > 0;
+  const announce = () => {
+    if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
+    else if (invalidTxt) add('txt.invalid', 'warn', { domain: canon(domain), count: Number(txtInvalid) });
+  };
   const finish = (headline, calm = 'ok') => {
     out.severity = findings.reduce((w, x) => (SEVERITY_RANK[x.severity] < SEVERITY_RANK[w] ? x.severity : w), 'ok');
     out.headline = headline || (out.severity === 'error' ? 'problems' : out.severity === 'warn' ? 'warnings' : calm);
@@ -309,7 +319,7 @@ export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undef
     else if (['refused', 'unreachable', 'connect-timeout'].includes(kind)) add('fetch.unreachable', 'error', { text });
     else if (['tls-timeout', 'tls-alert', 'reset', 'not-tls'].includes(kind)) add('fetch.tls-failed', 'error', { text });
     else add('fetch.probe', 'warn', { text });
-    if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
+    announce();
     return finish(findings.some((x) => x.id === 'fetch.probe') ? 'inconclusive' : 'unreachable');
   }
   let blocked = false;
@@ -346,7 +356,7 @@ export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undef
     add('http.status', 'error', { status: f.httpStatus });
   }
   if (blocked) {
-    if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
+    announce();
     return finish('unreachable');
   }
   // RFC 8461 §3.2: senders SHOULD accept text/plain only, and strict ones do. An error, but the
@@ -365,7 +375,7 @@ export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undef
     add(`policy.${x.code}`, severity, x.params);
   }
   if (!policy.valid) {
-    if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
+    announce();
     return finish('invalid');
   }
   out.usable = true;
@@ -398,15 +408,15 @@ export function validateMtaSts({ domain, fetch, mxHosts = undefined, txt = undef
       if (out.unusedPatterns.length) add('mx.unused', 'info', { patterns: join(out.unusedPatterns) });
     }
   }
-  if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
+  announce();
   // What senders do with a usable policy comes first: strict ones ignore it when it is not
   // text/plain, nobody applies MTA-STS rules in mode none, and nobody fetches it without the TXT
   // record that tells them to (RFC 8461 §3.1). 'ok' needs MX hosts that were compared.
-  const announced = txt !== null;
+  const announced = txt !== null && !invalidTxt;
   const atRisk = findings.some((x) => x.severity === 'error' && x.id !== 'http.content-type');
   if (wrongType && announced && !atRisk) return finish('wrong-type');
   if (policy.mode === 'none') return finish('off');
-  if (!announced) return finish('not-published');
+  if (!announced) return finish(invalidTxt ? 'txt-invalid' : 'not-published');
   return finish(null, !known ? 'mx-unknown' : hosts.length ? 'ok' : 'no-mx');
 }
 
@@ -469,6 +479,8 @@ const STRINGS = [
   ['head.inconclusive', ['The check was inconclusive: the probe could not complete it.', 'Kontrol sonuçsuz kaldı: ölçüm noktası kontrolü tamamlayamadı.']],
   ['head.not-published', ['The policy is valid, but senders never fetch it: no _mta-sts TXT record announces it, so MTA-STS is not in effect.',
     'Politika geçerli, ancak gönderenler onu hiç almaz: onu duyuran bir _mta-sts TXT kaydı yok; bu yüzden MTA-STS devrede değil.']],
+  ['head.txt-invalid', ['The policy is valid, but senders never fetch it: the _mta-sts TXT record is not valid, so they treat the domain as having no MTA-STS.',
+    'Politika geçerli, ancak gönderenler onu hiç almaz: _mta-sts TXT kaydı geçerli değil; bu yüzden alan adında MTA-STS yokmuş gibi davranırlar.']],
   ['head.problems', ['The policy is valid, but mail delivery is at risk (see below).', 'Politika geçerli, ancak e-posta teslimi risk altında (aşağıya bakın).']],
   ['head.warnings', ['The policy works; some settings need attention.', 'Politika çalışıyor; bazı ayarların gözden geçirilmesi gerekiyor.']],
   ['head.off', ['The policy is valid and switches MTA-STS off (mode none): senders apply no MTA-STS rules to this domain.',
@@ -606,7 +618,10 @@ const STRINGS = [
 
   ['txt.missing', ['No _mta-sts TXT record', '_mta-sts TXT kaydı yok'],
     ['Senders look for the policy only when _mta-sts.{domain} has a "v=STSv1; id=…" TXT record. Publish one (and change its id whenever the policy changes).',
-      'Gönderenler politikayı yalnızca _mta-sts.{domain} için "v=STSv1; id=…" TXT kaydı varsa arar. Bir tane yayınlayın (ve politika her değiştiğinde id değerini değiştirin).']]
+      'Gönderenler politikayı yalnızca _mta-sts.{domain} için "v=STSv1; id=…" TXT kaydı varsa arar. Bir tane yayınlayın (ve politika her değiştiğinde id değerini değiştirin).']],
+  ['txt.invalid', ['Invalid _mta-sts TXT record', 'Geçersiz _mta-sts TXT kaydı'],
+    ['Senders read the policy only when _mta-sts.{domain} has exactly one "v=STSv1" TXT record with an id; with two or more, or one without an id, they treat the domain as having no MTA-STS (RFC 8461 §3.1). Keep exactly one "v=STSv1; id=…" record, its id 1–32 letters and digits (change it whenever the policy changes).',
+      'Gönderenler politikayı yalnızca _mta-sts.{domain} için id içeren tam olarak bir "v=STSv1" TXT kaydı varsa okur; iki ya da daha fazla kayıt ya da id içermeyen bir kayıt varsa alan adında MTA-STS yokmuş gibi davranırlar (RFC 8461 §3.1). Yalnızca bir "v=STSv1; id=…" kaydı bırakın; id 1–32 harf ve rakamdan oluşsun (politika her değiştiğinde değiştirin).']]
 ];
 
 function buildStrings(lang) {

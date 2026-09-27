@@ -308,20 +308,23 @@ export function normalizeResult(res) {
 /**
  * What the page header's kept-result note says after a view mounted, or null for none. A
  * language re-mount keeps the note it had (`note` given, null included); a result too large to
- * keep says so. Otherwise only a finished result older than this mount gets the note: for a tool
- * with `snapshot()` that is the result it got back; a tool that keeps its own state (`restorable`
- * false) gets it only for the result the shell kept when the tool was left (the same `at`) —
- * never for one that came from elsewhere (a certificate loaded in SSL Targets) or finished while
- * the tool was not shown. `rerun`: the note offers "Run again"; `label`: the result's own wording
- * ({@link normalizeResult}).
+ * keep says so, with "Run again" only when its query came back (the result had route params: an
+ * IP Intel run of more than 40 entries has none, so the tool opens empty). Otherwise only a
+ * finished result older than this mount gets the note: for a tool with `snapshot()` that is the
+ * result it got back; a tool that keeps its own state (`restorable` false) gets it only for the
+ * result the shell kept when the tool was left (the same `at`) — never for one that came from
+ * elsewhere (a certificate loaded in SSL Targets) or finished while the tool was not shown.
+ * `rerun`: the note offers "Run again"; `label`: the result's own wording ({@link normalizeResult}).
  * @param {{ note?: { at: Date, dropped: boolean, rerun: boolean, label?: string|null }|null,
- *   plan?: 'restore'|'carry'|'dropped'|null, kept?: { at: Date }|null,
+ *   plan?: 'restore'|'carry'|'dropped'|null, kept?: { at: Date, params?: Record<string, string> }|null,
  *   result?: { at: Date, rerun?: boolean, label?: string|null }|null, mountedAt: number, restorable?: boolean }} info
  * @returns {{ at: Date, dropped: boolean, rerun: boolean, label: string|null }|null}
  */
 export function keptNote({ note = undefined, plan = null, kept = null, result = null, mountedAt, restorable = true }) {
   if (note !== undefined) return note;
-  if (plan === 'dropped' && kept) return { at: kept.at, dropped: true, rerun: true, label: null };
+  if (plan === 'dropped' && kept) {
+    return { at: kept.at, dropped: true, rerun: Object.keys(cleanParams(kept.params)).length > 0, label: null };
+  }
   const at = result ? timeOf(result.at) : NaN;
   if (!(at < mountedAt)) return null;
   if (!restorable && !(kept && timeOf(kept.at) === at)) return null;

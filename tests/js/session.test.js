@@ -270,7 +270,10 @@ describe('results and the note', () => {
     assert.deepEqual(keptNote({ result: { ...older, rerun: false }, mountedAt }), { at: older.at, dropped: false, rerun: false, label: null }, 'no Run again');
     assert.equal(keptNote({ result: fresh, mountedAt }), null);
     assert.equal(keptNote({ result: null, mountedAt }), null);
-    assert.deepEqual(keptNote({ plan: 'dropped', kept: { at: older.at }, result: null, mountedAt }), { at: older.at, dropped: true, rerun: true, label: null });
+    assert.deepEqual(keptNote({ plan: 'dropped', kept: { at: older.at, params: { ips: '192.0.2.1' } }, result: null, mountedAt }),
+      { at: older.at, dropped: true, rerun: true, label: null }, 'too large to keep: its query came back, Run again runs it');
+    assert.deepEqual(keptNote({ plan: 'dropped', kept: { at: older.at, params: {} }, result: null, mountedAt }),
+      { at: older.at, dropped: true, rerun: false, label: null }, 'no query came back (IP Intel over 40 entries): nothing to run again');
   });
 
   test('keptNote: a result with its own wording keeps it (the Zone File\'s live check)', () => {
@@ -393,6 +396,12 @@ describe('createSessionStore', () => {
     assert.deepEqual([e.snapshot, e.dropped, e.size], [null, true, 0]);
     assert.equal(restorePlan({}, s.kept('ip')), 'dropped');
     assert.deepEqual(carryRoute('ip', { kept: s.kept('ip') }), { ips: '192.0.2.1', run: '0' }, 'the query comes back filled in');
+    assert.equal(keptNote({ plan: 'dropped', kept: s.kept('ip'), mountedAt: Date.now() }).rerun, true, 'Run again');
+    // More than 40 addresses give no route params: the tool opens empty, with no Run again.
+    const many = s.keep('ip', { params: { ips: null }, subject: '192.0.2.1', at: new Date(), snapshot: { rows: ['x'.repeat(2000)] } });
+    assert.deepEqual([many.params, many.dropped], [{}, true]);
+    assert.equal(restorePlan({}, s.kept('ip')), 'dropped');
+    assert.equal(keptNote({ plan: 'dropped', kept: s.kept('ip'), mountedAt: Date.now() }).rerun, false, 'nothing to run again');
   });
 
   test('memory: over the total bound the oldest other snapshots go first', () => {

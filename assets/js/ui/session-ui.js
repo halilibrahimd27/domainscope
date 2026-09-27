@@ -21,6 +21,7 @@ registerStrings('en', {
   'session.kept.title': 'Kept from your last visit to this tool in this tab. It is not updated until you run it again.',
   'session.kept.dropped': 'The result from {time} was too large to keep',
   'session.kept.droppedTitle': 'This result was too large to keep in memory; its query is filled in again.',
+  'session.kept.droppedBareTitle': 'This result was too large to keep in memory, and its query too long to fill in again.',
   'session.kept.rerun': 'Run again'
 });
 
@@ -34,6 +35,7 @@ registerStrings('tr', {
   'session.kept.title': 'Bu sekmede bu araca son girişinizden kalan sonuç. Yeniden çalıştırana kadar güncellenmez.',
   'session.kept.dropped': 'Önceki sonuç ({time}) bellekte tutulamayacak kadar büyüktü',
   'session.kept.droppedTitle': 'Bu sonuç bellekte tutulamayacak kadar büyüktü; sorgusu yeniden dolduruldu.',
+  'session.kept.droppedBareTitle': 'Bu sonuç bellekte tutulamayacak kadar büyüktü, sorgusu da yeniden doldurulamayacak kadar uzundu.',
   'session.kept.rerun': 'Yeniden çalıştır'
 });
 
@@ -99,7 +101,8 @@ export function TargetChip({ target, onClear }) {
 
 /**
  * The note over a tool's kept result: when it finished and, when the tool offers it, "Run again".
- * `dropped`: the result was too large to keep and only its query came back. `label`: the tool's
+ * `dropped`: the result was too large to keep and only its query came back — or nothing did, when
+ * there is no "Run again" (lib/session.js keptNote). `label`: the tool's
  * own translation key for the text (with `{time}`), in place of "Result from {time}". It is one
  * run of text (icon, words, link) that wraps like a sentence on a narrow screen.
  * @param {{ at: Date, dropped?: boolean, label?: string|null, onRerun?: (() => void)|null, now?: number }} opts
@@ -107,9 +110,11 @@ export function TargetChip({ target, onClear }) {
  */
 export function KeptNote({ at, dropped = false, label = null, onRerun = null, now = Date.now() }) {
   const time = keptTimeText(at, now);
+  let title = 'session.kept.title';
+  if (dropped) title = onRerun ? 'session.kept.droppedTitle' : 'session.kept.droppedBareTitle';
   return h('p', { class: 'kept-note', dataset: { kept: dropped ? 'dropped' : 'result' } },
     Icon('clock', { size: 14, className: 'kept-note-icon' }),
-    h('span', { class: 'kept-note-text', title: t(dropped ? 'session.kept.droppedTitle' : 'session.kept.title') },
+    h('span', { class: 'kept-note-text', title: t(title) },
       t(dropped ? 'session.kept.dropped' : label || 'session.kept.from', { time })),
     onRerun ? ' ' : null,
     onRerun ? h('button', {

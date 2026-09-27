@@ -5203,9 +5203,15 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   the changes for any other URL; --notify-format overrides the choice (e.g. slack
   for a Slack-compatible Mattermost). Set the URL in DOMAINSCOPE_NOTIFY_URL rather
   than on the command line, where it ends up in the shell history: whoever has it can
-  post. It is never printed - only its host. One retry, 10 s timeout, no redirects,
-  the system proxy settings apply. A notification that fails is reported on stderr
-  and changes the exit code only with --fail-on-notify-error.
+  post. It is never printed - only its host; user:password@ in it is sent as Basic
+  authentication. One retry, 10 s timeout, no redirects, the system proxy settings
+  apply. A notification that fails is reported on stderr and changes the exit code
+  only with --fail-on-notify-error. When the --json file is also the baseline and a
+  message with changes was not delivered, the file keeps the previous report, so the
+  next run reports those changes again (expiring certificates are listed on every
+  run anyway).
+  Cron mails what a job prints: -q and the summary in a file (> last.txt) leave only
+  errors, such as a notification that failed.
 
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
             and PRIVATE_CERT only with --strict-public),
@@ -5705,7 +5711,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.baseline or args.warn_days is not None:
         monitor = build_monitor(report, baseline, args.baseline, args.warn_days)
 
-    failed = []  # type: List[str]
+    failed, kept = [], []  # type: List[str], List[str]
 
     def write_report(path: str, text: str, encoding: str = 'utf-8', atomic: bool = False
                      ) -> None:
@@ -5720,13 +5726,14 @@ def _run(args: argparse.Namespace) -> int:
             print('%s: error: %s' % (PROG, exc), file=err)
             failed.append(path)
 
+    json_text = None  # type: Optional[str]
     if args.json:
         # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
-        # A report that is also the baseline is replaced whole or not at all: a half-written
-        # one would stop every later run with a usage error.
-        write_report(args.json, render_json(
+        json_text = render_json(
             report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout),
-            monitor=monitor), atomic=_same_path(args.baseline, args.json))
+            monitor=monitor)
+        if not json_is_baseline:  # the baseline is replaced after the notification
+            write_report(args.json, json_text)
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
         if args.csv == '-':
@@ -5738,30 +5745,48 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.write(render_summary(report, color=use_color(args.no_color, sys.stdout),
                                         show_all=args.show_all, width=width, monitor=monitor))
         sys.stdout.flush()
-    if not quiet:
-        for path, label in ((args.json, 'JSON'), (args.csv, 'CSV')):
-            if path and path != '-' and path not in failed:
-                print('%s report written to %s' % (label, path), file=err)
 
-    notify_failed = False
+    notify_failed = interrupted = False
     if notify_url and notify_format and should_notify(monitor, args.notify_always):
         post_url, payload = build_notification(notify_format, notify_url,
                                                report_to_dict(report, monitor), monitor)
         host = notify_host(notify_url)
+        problem = None  # type: Optional[str]
         try:
             problem = send_notification(post_url, payload, timeout=NOTIFY_TIMEOUT,
                                         retry_delay=NOTIFY_RETRY_DELAY)
         except KeyboardInterrupt:
+            interrupted = True
             print('\n%s: error: notification (%s, %s) interrupted' % (PROG, notify_format, host),
                   file=err)
-            return EXIT_INTERRUPTED
-        if problem:
-            notify_failed = True
-            print('%s: error: notification failed (%s, %s): %s' % (
-                PROG, notify_format, host, redact_url(problem, notify_url)), file=err)
-        elif not quiet:
-            print('Notification sent (%s, %s)' % (notify_format, host), file=err)
+        else:
+            if problem:
+                print('%s: error: notification failed (%s, %s): %s' % (
+                    PROG, notify_format, host, redact_url(problem, notify_url)), file=err)
+            elif not quiet:
+                print('Notification sent (%s, %s)' % (notify_format, host), file=err)
+        notify_failed = interrupted or bool(problem)
 
+    if json_text is not None and json_is_baseline:
+        undelivered = len(monitor.changes or []) if notify_failed and monitor else 0
+        if undelivered:
+            # This run's report would be the next baseline: the next run would compare
+            # with it, find nothing and never send these changes. Keep the previous one.
+            kept.append(args.json)
+            print('%s: kept the previous baseline in %s (this report is not written there): '
+                  'the %d change%s will be reported again on the next run' % (
+                      PROG, args.json, undelivered, '' if undelivered == 1 else 's'), file=err)
+        else:
+            # Replaced whole or not at all: a half-written baseline would stop every
+            # later run with a usage error.
+            write_report(args.json, json_text, atomic=True)
+    if not quiet:
+        for path, label in ((args.json, 'JSON'), (args.csv, 'CSV')):
+            if path and path != '-' and path not in failed and path not in kept:
+                print('%s report written to %s' % (label, path), file=err)
+
+    if interrupted:
+        return EXIT_INTERRUPTED
     if failed:
         return EXIT_OUTPUT_ERROR
     if notify_failed and args.fail_on_notify_error:

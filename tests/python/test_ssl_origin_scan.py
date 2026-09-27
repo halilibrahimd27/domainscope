@@ -3792,6 +3792,48 @@ class NotifyDeliveryTests(unittest.TestCase):
                       "'***@hooks.example.com'", err)
         self.assertNotIn(password, err)
 
+    def test_undelivered_changes_keep_the_previous_baseline(self):
+        """--baseline and --json on one file: a message that did not go out is not lost."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            Path(state).write_text(sos.render_json(self.before), encoding='utf-8')
+            previous = Path(state).read_bytes()
+            args = ('--baseline', state, '--json', state, '--notify', 'URL')
+            code, out, err, hook = self.run_cli(*args, '--fail-on-notify-error', '-q',
+                                                script=[503, 503])
+            self.assertEqual((code, len(hook.requests)), (sos.EXIT_NOTIFY_ERROR, 2))
+            self.assertIn('Changes since the baseline', out)
+            self.assertIn('error: notification failed (json, 127.0.0.1:', err)
+            self.assertIn('kept the previous baseline in %s (this report is not written '
+                          'there): the 9 changes will be reported again on the next run'
+                          % state, err)
+            self.assertEqual(Path(state).read_bytes(), previous)
+            self.assertEqual(os.listdir(tmp), ['state.json'])
+            # interrupted while posting: not known to be delivered, kept as well
+            with mock.patch.object(sos, 'send_notification', side_effect=KeyboardInterrupt):
+                code, _, err, _ = self.run_cli(*args)
+            self.assertEqual(code, sos.EXIT_INTERRUPTED)
+            self.assertIn('notification (json, 127.0.0.1:', err)
+            self.assertIn('kept the previous baseline', err)
+            self.assertNotIn('JSON report written', err)
+            self.assertEqual(Path(state).read_bytes(), previous)
+            # the next run that gets through still carries the changes, then moves on
+            code, _, err, hook = self.run_cli(*args)
+            self.assertEqual((code, len(hook.requests)), (0, 1), err)
+            self.assertEqual(hook.payloads()[0]['changesTotal'], 9)
+            self.assertIn('Notification sent', err)
+            self.assertIn('JSON report written to %s' % state, err)
+            self.assertLess(err.index('Notification sent'), err.index('JSON report written'))
+            self.assertEqual(len(read_json(state)['changes']), 9)
+            code, _, err, hook = self.run_cli(*args)
+            self.assertEqual((code, hook.requests, read_json(state)['changes']), (0, [], []))
+            # an expiry warning that did not go out comes back on its own: the baseline moves
+            code, _, err, hook = self.run_cli(*args, '--warn-days', '3650', script=[400])
+            self.assertEqual(len(hook.requests), 1)
+            self.assertIn('error: notification failed', err)
+            self.assertNotIn('kept the previous baseline', err)
+            self.assertEqual(read_json(state)['options']['warnDays'], 3650)
+
     def test_send_notification_directly(self):
         with WebhookReceiver([500, 500]) as hook, no_proxy():
             slept = []

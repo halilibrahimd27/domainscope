@@ -359,6 +359,53 @@ test('regression: name maps and hosts that only look like attributes keep their 
   assert.deepEqual(ipsById(json), { web01: ['10.0.1.11'], web02: ['10.0.1.12', '2001:db8::12'] });
 });
 
+test('regression: a host name holding host / public / internal is no address key of a machine record', () => {
+  // A name → IP map stays a map: one such name must not merge the others into one server.
+  const lb = parseInventory(JSON.stringify({ web01: '10.0.0.1', web02: '10.0.0.2', 'public-lb': '10.0.0.5' }));
+  assert.deepEqual(ipsById(lb), { web01: ['10.0.0.1'], web02: ['10.0.0.2'], '10.0.0.5': ['10.0.0.5'] });
+  const api = parseInventory(JSON.stringify({ 'internal-api': '10.0.0.5', 'dns-1': '10.0.0.53', web01: '10.0.0.1' }));
+  assert.deepEqual(ipsById(api), { '10.0.0.5': ['10.0.0.5'], 'dns-1': ['10.0.0.53'], web01: ['10.0.0.1'] });
+  // Even a real address key (EC2's ip-10-0-0-1 host name) leaves host-shaped names alone.
+  const ec2 = parseInventory(JSON.stringify({ 'ip-10-0-0-1': '10.0.0.1', 'dns-1': '10.0.0.53', web01: '10.0.0.2' }));
+  assert.deepEqual(ipsById(ec2), { '10.0.0.1': ['10.0.0.1'], 'dns-1': ['10.0.0.53'], web01: ['10.0.0.2'] });
+  // Listed Ansible hosts name their entry, whatever their name looks like.
+  const yaml = parseInventory([
+    'all:',
+    '  children:',
+    '    infra:',
+    '      hosts:',
+    '        docker-host-1:',
+    '          ansible_host: 10.0.0.10',
+    '        dns-1:',
+    '          ansible_host: 10.0.0.53',
+    '        web01:',
+    '          ansible_host: 10.0.0.1'
+  ].join('\n'));
+  assert.deepEqual(ipsById(yaml), { 'docker-host-1': ['10.0.0.10'], 'dns-1': ['10.0.0.53'], web01: ['10.0.0.1'] });
+  assert.deepEqual(groupsById(yaml), { 'docker-host-1': ['infra'], 'dns-1': ['infra'], web01: ['infra'] });
+  assert.deepEqual(codes(yaml), []);
+  const hostvars = { 'docker-host-1': { ansible_host: '10.0.0.10' }, 'dns-1': { ansible_host: '10.0.0.53' } };
+  const list = parseInventory(JSON.stringify({ _meta: { hostvars }, infra: { hosts: ['docker-host-1', 'dns-1'] } }));
+  assert.deepEqual(ipsById(list), { 'docker-host-1': ['10.0.0.10'], 'dns-1': ['10.0.0.53'] });
+  assert.deepEqual(groupsById(list), { 'docker-host-1': ['infra'], 'dns-1': ['infra'] });
+  assert.deepEqual(codes(list), []);
+  // --list of ungrouped hosts only: _meta.hostvars alone lists them
+  const bare = parseInventory(JSON.stringify({ _meta: { hostvars } }));
+  assert.deepEqual(ipsById(bare), { 'docker-host-1': ['10.0.0.10'], 'dns-1': ['10.0.0.53'] });
+  const all = parseInventory([
+    'all:',
+    '  hosts:',
+    '    web01:',
+    '      ansible_host: 10.0.0.1',
+    '    backup-host:',
+    '      ansible_host: 10.0.0.8',
+    '    mail-gw:',
+    '      ansible_host: 10.0.0.25'
+  ].join('\n'));
+  assert.deepEqual(ipsById(all), { web01: ['10.0.0.1'], 'backup-host': ['10.0.0.8'], 'mail-gw': ['10.0.0.25'] });
+  assert.deepEqual(codes(all), []);
+});
+
 /* -------------------------------------------------------------------- */
 /* Duplicates / edge cases                                             */
 /* -------------------------------------------------------------------- */

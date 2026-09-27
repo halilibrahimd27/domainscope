@@ -413,12 +413,18 @@ const RECORD_ATTR_EXCLUDE_RE = /(^|_)(gateway|gw|netmask|mask|subnet|broadcast|c
 const isScalarish = (v) => v === null || typeof v !== 'object'
   || (Array.isArray(v) && v.every((x) => x === null || typeof x !== 'object'));
 
-/** A key holding the enclosing machine's own address (ip, ansible_host, name: <ip>…). */
-function isIpField(key) {
-  if (NAME_KEY_SET.has(key)) return true;
-  const nk = normalizeKey(key);
-  return !IP_KEY_EXCLUDE_RE.test(nk) && IP_FIELD_KEY_RE.test(nk);
+/**
+ * A key holding the enclosing machine's own address: `ip`, `ips`, `address`,
+ * `ansible_host`, `public_ip`… or a name key holding an IP. Deliberately not the
+ * broad IP_FIELD_KEY_RE (host / public / internal / endpoint…), which host names
+ * such as docker-host-1, public-lb or vpn-endpoint also match.
+ */
+function isAddressKey(key) {
+  return NAME_KEY_SET.has(key) || isIpKey(normalizeKey(key));
 }
+
+/** A key shaped like a host name (dns-1, mail-gw, ntp.example.com), not like a variable. */
+const isHostLikeKey = (key) => /[-.]/.test(key);
 
 function keyKind(key, value) {
   if (isTerraformOutput(value)) return 'name';
@@ -436,11 +442,12 @@ const NO_HOSTS = new Set();
  * Walk a JSON/YAML value. Named objects claim every IP below them; unnamed
  * objects pass their IPs up (one group per object); keys that look like
  * names (terraform outputs, `{ web01: {...} }` maps) name what is below.
- * In a machine record (named, holding an address field, or an Ansible vars map)
- * gateway / DNS / NTP / iLO / version attributes are skipped and a scalar
- * attribute never names another server.
+ * A listed Ansible host always names what is below it. In a machine record
+ * (named, holding an address key, or an Ansible vars map) gateway / DNS / NTP /
+ * iLO / version attributes are skipped, and in a vars map a scalar variable
+ * never names another server.
  * Returns groups of { ip, raw } not claimed by any name.
- * @param {Set<string>} [hosts] host names listed in Ansible groups
+ * @param {Set<string>} [hosts] host names listed in Ansible groups or `_meta.hostvars`
  * @param {boolean} [isVars] `node` is a vars map: one of those hosts' (hostvars) or a group's `vars`
  */
 function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
@@ -467,23 +474,30 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
   const entries = [];
   for (const [key, value] of Object.entries(node)) {
     if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
-    const kind = keyKind(key, value);
+    // A listed host (a `hosts:` / hostvars map, a plain YAML host map), however
+    // it is named; a machine's own variables are never hosts.
+    const host = !name && !isVars && hosts.has(key) && isNameToken(String(key));
+    const kind = host ? 'name' : keyKind(key, value);
     const sub = [];
-    const groups = visitStructured(value, depth + 1, sub, hosts, key === 'vars' || hosts.has(key));
-    entries.push({ key, value, kind, groups, sub });
+    const groups = visitStructured(value, depth + 1, sub, hosts, host || key === 'vars');
+    entries.push({ key, value, kind, host, groups, sub });
   }
-  const record = !!name || isVars || entries.some((e) => e.kind === 'field' && e.groups.length && isIpField(e.key));
+  const strong = !!name || isVars;
+  const record = strong || entries.some((e) => e.kind === 'field' && e.groups.length && isAddressKey(e.key));
   const own = [];
   const pass = [];
-  for (const { key, value, kind, groups, sub } of entries) {
-    if (record && RECORD_ATTR_EXCLUDE_RE.test(normalizeKey(key))) continue; // gateway, dns, ntp, iLO, version…
+  for (const { key, value, kind, host, groups, sub } of entries) {
+    // gateway, dns, ntp, iLO, version… A record known only by its address key
+    // may still be a name map ({ ip-10-0-0-1: …, dns-1: … }): there a key shaped
+    // like a host name stays.
+    if (record && !host && RECORD_ATTR_EXCLUDE_RE.test(normalizeKey(key)) && (strong || !isHostLikeKey(key))) continue;
     found.push(...sub);
     if (groups.length === 0) continue;
     if (name) {
       own.push(...groups.flat());
       continue;
     }
-    const k = kind === 'name' && record && isScalarish(value) ? 'field' : kind;
+    const k = kind === 'name' && isVars && isScalarish(value) ? 'field' : kind;
     if (k === 'field') own.push(...groups.flat());
     else if (k === 'structural') pass.push(...groups);
     else found.push({ name: key, items: groups.flat() });
@@ -498,7 +512,7 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
 
 /**
  * Collect Ansible group definitions ({group: {hosts, children, vars}}).
- * @returns {Set<string>} every host listed under a group's `hosts`
+ * @returns {Set<string>} every host listed under a group's `hosts` or in `_meta.hostvars`
  */
 function collectGroupDefs(root, ctx) {
   const listed = new Set();
@@ -535,6 +549,11 @@ function collectGroupDefs(root, ctx) {
       && ('hosts' in value || 'children' in value)) {
       scan(key, value, 0);
     }
+  }
+  // `ansible-inventory --list`: every host has an entry here, grouped or not.
+  const hostvars = root._meta && root._meta.hostvars;
+  if (hostvars && typeof hostvars === 'object' && !Array.isArray(hostvars)) {
+    for (const h of Object.keys(hostvars)) listed.add(h);
   }
   return listed;
 }

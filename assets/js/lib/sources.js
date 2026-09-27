@@ -653,7 +653,7 @@ function parseCrtsh(domain, data, form, failures, includeExpired) {
   return { rows: data.length, certs: list, hints: [], collector, partialError, queryForm: form };
 }
 
-/** Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages; a full 5th page → `truncated`). */
+/** Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages; a non-empty 5th page, more possibly left, → `truncated`). */
 async function fromCertspotter(domain, ctx) {
   const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}`
     + '&include_subdomains=true&expand=dns_names&expand=issuer';
@@ -718,8 +718,9 @@ async function fromCertspotter(domain, ctx) {
     // continue until an empty page (at most MAX_CERTSPOTTER_PAGES requests).
     const link = headers ? headers.get('link') : null;
     if (typeof link === 'string' && link.trim() && !/rel="?next"?/i.test(link)) break;
-    // A full last page under the cap: more issuances may exist (certain with a
-    // readable rel="next"; without the header it cannot be told apart).
+    // A non-empty last page under the cap: more issuances may exist (certain with
+    // a readable rel="next"; without the header, as in a browser, a short final
+    // page cannot be told apart, so it is reported as possibly more).
     if (page === MAX_CERTSPOTTER_PAGES - 1) truncated = true;
     // Readable X-RateLimit-Remaining: 0 (Node) → the next page would be a 429
     // (which may prolong the penalty): stop and report the quota instead.

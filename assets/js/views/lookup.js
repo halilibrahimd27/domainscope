@@ -1369,21 +1369,20 @@ export function mount(container, ctx) {
     }
   }
 
-  /**
-   * @param {object} q the query ({@link readForm})
-   * @param {Array<object|null>} responses
-   * @param {number|null} elapsed
-   * @param {Date|null} at when the last answer arrived
-   */
   /** The summary card of the current lookup, updated in place by {@link renderSummary}. */
   let summaryParts = null;
 
   /**
    * Draw the summary card, again on every answer and Retry. In place: the card's header facts are
-   * redrawn, while its actions (the same for the whole lookup) and a "No records" line whose types
-   * did not change are kept as they are, so what the user opened there (the raw answer inside it
-   * too) and the keyboard focus stay. A line whose types changed is drawn anew with the same open
-   * state and focus.
+   * redrawn, while its actions (the same for the whole lookup; Copy summary is enabled once every
+   * type has answered) and a "No records" line whose types did not change are kept as they are,
+   * so what the user opened there (the raw answer inside it too) and the keyboard focus stay. A
+   * line whose types changed is drawn anew with the same open state and focus.
+   * @param {object} q the query ({@link readForm})
+   * @param {Array<object|null>} responses
+   * @param {number|null} elapsed
+   * @param {Date|null} at when the last answer arrived (the summary's time)
+   * @param {object} [layout] lib/density.js lookupLayout of the answers
    */
   function renderSummary(q, responses, elapsed, at, layout = lookupLayout(q.types, responses)) {
     clear(noteEl);
@@ -1414,14 +1413,16 @@ export function mount(container, ctx) {
     if (!prev) {
       // A new lookup: everything drawn anew, its "No records" line closed.
       const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
+      // Reads the facts at click time: the answers, and the time the last one arrived.
+      const summary = SummaryButton({
+        kind: 'lookup',
+        disabled: done !== q.types.length,
+        facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at: summaryParts ? summaryParts.at : at }),
+        url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
+      });
       const actions = h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
-        SummaryButton({
-          kind: 'lookup',
-          disabled: done !== q.types.length,
-          facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at }),
-          url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
-        }),
+        summary,
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
         !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null);
@@ -1429,11 +1430,13 @@ export function mount(container, ctx) {
       const card = h('div', { class: 'lkp-sum card' }, main, actions, line);
       clear(summaryEl);
       summaryEl.append(card);
-      summaryParts = { q, card, main, line, types };
+      summaryParts = { q, card, main, line, types, summary, at };
       return;
     }
     prev.main.replaceWith(main);
     prev.main = main;
+    prev.at = at;
+    prev.summary.setDisabled(done !== q.types.length);
     if (prev.types === types) return;
     const old = prev.line;
     const doc = globalThis.document;

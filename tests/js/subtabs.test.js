@@ -1,10 +1,11 @@
 // Unit tests for the Subdomains results tabs model (assets/js/lib/subtabs.js): the route's tab,
-// the automatic choice and when it moves, the live tab badges, the Overview's summary alerts and
-// the wrap points of a host name. Pure: no DOM, no storage.
+// the automatic choice and when it moves, what a picked tab writes into the URL, the live tab
+// badges, the Overview's summary alerts and the wrap points of a host name. Pure: no DOM, no storage.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SUB_TABS, MAX_KEPT_LABEL, parseSubTab, autoSubTab, initialSubTab, nextAutoTab, summaryAlerts, subTabBadges, hostSegments
+  SUB_TABS, MAX_KEPT_LABEL, parseSubTab, autoSubTab, initialSubTab, subTabParams, nextAutoTab, summaryAlerts, subTabBadges,
+  hostSegments
 } from '../../assets/js/lib/subtabs.js';
 
 const health = (source, state, extra = {}) => ({
@@ -44,6 +45,32 @@ describe('autoSubTab / initialSubTab — which tab a run opens', () => {
     assert.deepEqual(initialSubTab({ hosts: 0, running: true }), { tab: 'sources', chosen: false });
     assert.deepEqual(initialSubTab({ route: 'x', chosen: 'y', hosts: 0 }), { tab: 'overview', chosen: false });
     assert.deepEqual(initialSubTab(), { tab: 'overview', chosen: false });
+  });
+});
+
+describe('subTabParams — what a picked tab writes into the URL', () => {
+  test('only tab= when the route already names a domain (merged, so domain and run=1 stay)', () => {
+    assert.deepEqual(subTabParams('origins', { named: true, domains: ['example.com'] }), { tab: 'origins' });
+  });
+
+  test('after a return through the nav link: the domains of the run too, domain first', () => {
+    const params = subTabParams('hosts', { named: false, domains: ['example.com', 'example.net'] });
+    assert.deepEqual(params, { domain: 'example.com,example.net', tab: 'hosts' });
+    assert.deepEqual(Object.keys(params), ['domain', 'tab']);
+    assert.deepEqual(subTabParams('sources', { domains: ['example.org'] }), { domain: 'example.org', tab: 'sources' }, 'named defaults to false');
+  });
+
+  test('no domains to name: tab= alone; empty and non-string entries are skipped', () => {
+    assert.deepEqual(subTabParams('hosts'), { tab: 'hosts' });
+    assert.deepEqual(subTabParams('hosts', { domains: [] }), { tab: 'hosts' });
+    assert.deepEqual(subTabParams('hosts', { domains: 'example.com' }), { tab: 'hosts' }, 'not a list');
+    assert.deepEqual(subTabParams('hosts', { domains: ['', null, 'example.com', 7] }), { domain: 'example.com', tab: 'hosts' });
+  });
+
+  test('an unknown tab writes nothing', () => {
+    for (const v of [undefined, null, '', 'records', 'Hosts', '__proto__']) {
+      assert.deepEqual(subTabParams(v, { domains: ['example.com'] }), {}, JSON.stringify(v));
+    }
   });
 });
 

@@ -41,11 +41,12 @@
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
  * reload or a restored tab pre-fills the box instead of silently scanning again. Picking a results
- * tab adds `tab=overview|hosts|origins|sources` (replaceState); a re-mount (a language switch,
- * Back from another view) opens that tab again. A domain carried over from another tool (`run=0`,
- * lib/session.js) fills the box only while it is empty or still holds the last scan's domains or
- * the domain carried before. "Delete all local data" forgets the box and the last scan (a running
- * one is stopped), whether or not the view is mounted.
+ * tab adds `tab=overview|hosts|origins|sources` (replaceState; the run's `domain` too when the URL
+ * has none); a re-mount (a language switch, Back from another view) opens that tab again. A
+ * domain carried over from another tool (`run=0`, lib/session.js) fills the box only while it is
+ * empty or still holds the last scan's domains or the domain carried before. "Delete all local
+ * data" forgets the box and the last scan (a running one is stopped), whether or not the view is
+ * mounted.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
@@ -72,7 +73,7 @@ import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
-import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
+import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, subTabParams, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
 
@@ -5004,10 +5005,15 @@ function buildRunUI(run, ctx, { onFinish }) {
   };
   for (const tabId of SUB_TABS) tabs.panel(tabId).append(panels[tabId]);
 
-  /** A tab the user picked (a click, the arrow keys, a stat card, a link): kept for this run and in the URL. */
+  /**
+   * A tab the user picked (a click, the arrow keys, a stat card, a link): kept for this run and in
+   * the URL next to `domain` (lib/subtabs.subTabParams; the run's domains after a return through
+   * the nav link, whose route names none).
+   */
   function remember(tabId) {
     session.tab = tabId;
-    ctx.setParams({ tab: tabId }, { merge: true });
+    const named = routeTargets(ctx.searchParams, ctx.params).length > 0;
+    ctx.setParams(subTabParams(tabId, { named, domains: run.config.domains }), { merge: true });
   }
   /** Open a tab for the user (it counts as their choice). */
   function showTab(tabId, { focus = false } = {}) {

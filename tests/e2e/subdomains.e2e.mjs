@@ -43,7 +43,8 @@
  *     first host, live counts on the labels, a picked tab kept while hosts stream in, an automatic
  *     move held back while the focus is in a panel and made once it leaves, a click on the tab
  *     shown as a choice, arrow keys / Home / End with a roving tabindex, `tab=` in the URL kept
- *     across a language switch and a visit to another view, stat cards and the "origin?" links
+ *     across a language switch and a visit to another view (always next to the domain, also
+ *     after a return through the nav link), stat cards and the "origin?" links
  *     opening their tab, and at 375 px (TR/EN × light/dark) all four tabs in view, host names
  *     wrapping only after a dot (a label wider than the card inside itself), IPs whole, no page
  *     scrolling sideways on Hosts or Origins
@@ -1473,6 +1474,10 @@ async function main() {
         await gotoRoute(tt, '#/lookup');
         await gotoRoute(tt, '#/subdomains');
         assertEqual([await selectedTab(tt), await routeTab(tt)], ['origins', null], 'from the nav link: the page session keeps the tab');
+        // A tab picked there names the run's domain too (never a `tab=` on its own).
+        await openTab(tt, 'hosts');
+        assertEqual(await tt.evaluate(() => Object.fromEntries(new URLSearchParams(location.hash.split('?')[1] || ''))), { domain: FAKE_APEX, tab: 'hosts' },
+          'a tab picked after the nav link goes into the URL with the domain of the run');
         await setLangUi(tt, 'en');
         // An edited `tab=` opens that tab without a re-mount.
         await tt.evaluate(() => { document.querySelector('.sub-view').dataset.marker = 'kept'; });

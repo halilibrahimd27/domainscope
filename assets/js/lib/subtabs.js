@@ -52,6 +52,21 @@ export function initialSubTab({ route = null, chosen = null, hosts = 0, running 
 }
 
 /**
+ * The route params a tab the user picked merges into the URL: `tab=`, plus the run's domains
+ * when the route names none (a return through the nav link, `#/subdomains`), so a `tab=` never
+ * stands alone and a reload pre-fills the box. Nothing for an unknown tab.
+ * @param {unknown} tab
+ * @param {{ named?: boolean, domains?: string[] }} [route] `named`: the route already names a domain
+ * @returns {{ domain?: string, tab?: string }}
+ */
+export function subTabParams(tab, { named = false, domains = [] } = {}) {
+  const id = parseSubTab(tab);
+  if (!id) return {};
+  const list = Array.isArray(domains) ? domains.filter((d) => typeof d === 'string' && d !== '') : [];
+  return named || !list.length ? { tab: id } : { domain: list.join(','), tab: id };
+}
+
+/**
  * Where an automatic choice moves while the run streams (the first host arrives, the run ends
  * without one), or null to stay. A tab the user chose never moves, and neither does one while
  * the keyboard focus is inside the tabs: hiding its panel would drop the focus to the page.

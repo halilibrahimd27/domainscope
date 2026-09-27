@@ -2073,8 +2073,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // Every panel is built up front, so a live run updates the hidden ones too.
     assert.match(src, /for \(const tabId of SUB_TABS\) tabs\.panel\(tabId\)\.append\(panels\[tabId\]\);/);
     assert.match(src, /const opening = initialSubTab\(\{\s*route: ctx\.params\.tab,\s*chosen: session\.tab,/, 'route first, then the page session');
-    // A choice goes into the URL (merged, so `domain` stays); an automatic move never does.
-    assert.match(src, /function remember\(tabId\) \{\s*session\.tab = tabId;\s*ctx\.setParams\(\{ tab: tabId \}, \{ merge: true \}\);/);
+    // A choice goes into the URL (merged, so `domain` stays; the run's domains when the route has
+    // none, lib/subtabs.subTabParams); an automatic move never does.
+    assert.match(src, /function remember\(tabId\) \{\s*session\.tab = tabId;\s*const named = routeTargets\(ctx\.searchParams, ctx\.params\)\.length > 0;\s*ctx\.setParams\(subTabParams\(tabId, \{ named, domains: run\.config\.domains \}\), \{ merge: true \}\);/);
     assert.match(src, /if \(next\) tabs\.select\(next, \{ silent: true \}\);/);
     // start(): a new run is automatic again, and its setParams drops `tab=`.
     const start = src.slice(src.indexOf('async function start()'), src.indexOf('function cancel()'));

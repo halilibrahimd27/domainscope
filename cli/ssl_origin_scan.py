@@ -4107,6 +4107,16 @@ def baseline_problem(doc: Any) -> Optional[str]:
     results = doc.get('results')
     if not isinstance(results, list):
         return 'it has no "results" list'
+    # the containers the comparison walks: a damaged one is a usage error, never a traceback
+    for key in ('names', 'newCertificates'):
+        if doc.get(key) is not None and not isinstance(doc.get(key), list):
+            return 'its "%s" is not a list' % key
+    options = doc.get('options')
+    if options is not None and not isinstance(options, dict):
+        return 'its "options" is not an object'
+    if isinstance(options, dict) and options.get('ports') is not None \
+            and not isinstance(options.get('ports'), list):
+        return 'its "options.ports" is not a list'
     for index, row in enumerate(results):
         problem = _baseline_row_problem(row)
         if problem:

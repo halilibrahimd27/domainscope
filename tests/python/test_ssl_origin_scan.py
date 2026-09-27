@@ -2966,6 +2966,11 @@ class BaselineTests(unittest.TestCase):
             with_row(certSha256='abc'): 'results[0] has no valid "certSha256"',
             with_row(name=5): 'results[0] has a "name" that is not text',
             '[' * 100000: 'is not JSON',
+            # the containers the comparison walks: a usage error, never a traceback after the scan
+            json.dumps(dict(good, names=5)): 'its "names" is not a list',
+            json.dumps(dict(good, newCertificates=5)): 'its "newCertificates" is not a list',
+            json.dumps(dict(good, options=[])): 'its "options" is not an object',
+            json.dumps(dict(good, options={'ports': 5})): 'its "options.ports" is not a list',
         }
         with tempfile.TemporaryDirectory() as tmp:
             for index, (text, needle) in enumerate(cases.items()):

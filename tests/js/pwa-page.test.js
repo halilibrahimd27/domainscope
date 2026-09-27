@@ -139,25 +139,58 @@ describe('registerServiceWorker', () => {
 });
 
 describe('reloadPage', () => {
-  test('without a waiting version it is a plain reload', async () => {
+  test('without a service worker in control it is a plain reload', async () => {
     const s = setup();
     await registerServiceWorker(s.env);
-    reloadPage({ win: s.win });
+    await reloadPage({ win: s.win });
     assert.equal(s.win.reloads, 1);
   });
 
-  test('with one it asks the waiting worker to take over and reloads once it controls the page', async () => {
-    const messages = [];
-    const s = setup({ controller: {}, waiting: { postMessage: (m) => messages.push(m) } });
+  test('with nothing newer on the server it is a plain reload after one update check', async () => {
+    const s = setup({ controller: {} });
     await registerServiceWorker(s.env);
-    reloadPage({ win: s.win });
+    s.reg.active = { state: 'activated' };
+    await reloadPage({ win: s.win });
+    assert.equal(s.reg.updates, 1);
+    assert.equal(s.win.reloads, 1);
+  });
+
+  test('"this page is older than the site": it asks for the new version, waits for its install, then goes through it', async () => {
+    const messages = [];
+    const s = setup({ controller: {} });
+    await registerServiceWorker(s.env);
+    s.reg.active = { state: 'activated' };
+    const worker = emitter({ state: 'installing', postMessage: (m) => messages.push(m), removeEventListener() {} });
+    s.reg.update = () => {
+      s.reg.installing = worker; // the browser found a new sw.js and is precaching its app shell
+      return Promise.resolve();
+    };
+    const reloading = reloadPage({ win: s.win });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(messages, [], 'not before it has installed');
+    worker.state = 'installed';
+    worker.fire('statechange');
+    await reloading;
+    assert.deepEqual(messages, [{ type: 'skip-waiting' }]);
+    assert.equal(s.win.reloads, 0, 'not before the new version controls the page');
+    s.container.fire('controllerchange');
+    assert.equal(s.win.reloads, 1);
+  });
+
+  test('with a waiting version it asks it to take over and reloads once it controls the page', async () => {
+    const messages = [];
+    const s = setup({ controller: {}, waiting: { state: 'installed', postMessage: (m) => messages.push(m) } });
+    await registerServiceWorker(s.env);
+    const before = s.win.timers.length;
+    await reloadPage({ win: s.win });
     assert.deepEqual(messages, [{ type: 'skip-waiting' }]);
     assert.equal(s.win.reloads, 0, 'not before the new version controls the page');
     s.container.fire('controllerchange');
     assert.equal(s.win.reloads, 1);
     // should the takeover never come, the fallback timer reloads anyway
-    assert.equal(s.win.timers.length, 1);
-    assert.ok(s.win.timers[0].ms > 0 && s.win.timers[0].ms <= 5000);
+    const fallback = s.win.timers.slice(before);
+    assert.equal(fallback.length, 1);
+    assert.ok(fallback[0].ms > 0 && fallback[0].ms <= 5000);
   });
 });
 

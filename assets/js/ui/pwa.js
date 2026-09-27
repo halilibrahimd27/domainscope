@@ -7,8 +7,8 @@
  * - When a new version has installed next to the running one it offers "Update ready — Reload";
  *   the click has the waiting worker take over and reloads once it controls the page.
  * - reloadPage(): the shell's other reload buttons ("this page is older than the site") go through
- *   a waiting version the same way; a plain reload would get the old version back from the old
- *   worker's cache.
+ *   the new version the same way — asking the browser for it first when none has been found yet —
+ *   because a plain reload would get the old version back from the old worker's cache.
  * - A hash-routed page never navigates, so the browser's own update check would not run while it
  *   stays open: it asks for one when the tab becomes visible or comes back online, at most hourly.
  * - setManifestLang(): links the web app manifest of the UI language (boot.js does it at load).
@@ -33,6 +33,8 @@ registerStrings('tr', {
 
 /** How long a reload waits for the new version to take control before reloading anyway. */
 const TAKEOVER_TIMEOUT_MS = 3000;
+/** How long a reload waits for a new version to be found and installed (its app shell downloaded). */
+const INSTALL_TIMEOUT_MS = 15000;
 
 let registration = null;
 let reloadRequested = false;
@@ -85,20 +87,51 @@ function offerUpdate(win) {
 }
 
 /**
- * Reload into the newest version: through a waiting service worker when there is one (it takes
- * control, then the page reloads), else a plain reload.
- * @param {{ win?: Window }} [env]
+ * Reload into the newest version. With a service worker in control a plain reload would be
+ * answered from its cache, so the new version goes first: one already waiting or installing, else
+ * one the browser is asked for now (the shell's "this page is older than the site" offers come
+ * before the browser has looked). Once it has installed it takes control and the page reloads;
+ * without one (no worker, nothing newer, a timeout) it is a plain reload.
+ * @param {{ win?: Window, timeoutMs?: number }} [env]
+ * @returns {Promise<void>}
  */
-export function reloadPage({ win = globalThis } = {}) {
-  const waiting = registration && registration.waiting;
-  if (!waiting) {
-    win.location.reload();
+export async function reloadPage({ win = globalThis, timeoutMs = INSTALL_TIMEOUT_MS } = {}) {
+  const reg = registration;
+  let worker = reg && (reg.waiting || reg.installing);
+  if (!worker && reg && reg.active) {
+    await within(reg.update().catch(() => {}), timeoutMs, win);
+    worker = reg.waiting || reg.installing;
+  }
+  if (worker && (await installed(worker, timeoutMs, win))) {
+    reloadRequested = true;
+    worker.postMessage({ type: 'skip-waiting' });
+    // controllerchange reloads; should it never come (the worker became redundant), reload anyway.
+    win.setTimeout(() => win.location.reload(), TAKEOVER_TIMEOUT_MS);
     return;
   }
-  reloadRequested = true;
-  waiting.postMessage({ type: 'skip-waiting' });
-  // controllerchange reloads; should it never come (the worker became redundant), reload anyway.
-  win.setTimeout(() => win.location.reload(), TAKEOVER_TIMEOUT_MS);
+  win.location.reload();
+}
+
+/** Settle when `promise` does or after `ms`, whichever comes first. */
+function within(promise, ms, win) {
+  return Promise.race([promise, new Promise((resolve) => win.setTimeout(resolve, ms))]);
+}
+
+/** Has `worker` installed (it waits to take over)? False once it failed or after `ms`. */
+function installed(worker, ms, win) {
+  if (worker.state === 'installed') return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (ok) => {
+      worker.removeEventListener?.('statechange', onChange);
+      resolve(ok);
+    };
+    const onChange = () => {
+      if (worker.state === 'installed') done(true);
+      else if (worker.state === 'redundant' || worker.state === 'activated') done(false);
+    };
+    worker.addEventListener('statechange', onChange);
+    win.setTimeout(() => done(false), ms);
+  });
 }
 
 /** Ask for a new version when the tab becomes visible or comes back online, at most hourly. */

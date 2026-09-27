@@ -933,7 +933,8 @@ def _host_text(value: str) -> Optional[str]:
 
 # UTS #46 deviation characters: IDNA 2003 (Python's 'idna' codec) maps them away - ß to
 # ss, ς to σ, ZWJ / ZWNJ dropped - while browsers (non-transitional processing) keep them.
-_IDN_DEVIATION_RE = re.compile('([ßς‌‍])')
+_IDN_DEVIATION_RE = re.compile('([\u00df\u03c2\u200c\u200d])')
+_JOINERS = ('\u200c', '\u200d')  # ZWNJ, ZWJ
 _VIRAMA = 9  # canonical combining class of a virama (RFC 5892 CONTEXTJ for ZWJ / ZWNJ)
 
 
@@ -943,22 +944,33 @@ def _idna_label(label: str) -> Optional[str]:
 
     Python's ``idna`` codec is IDNA 2003: ``straße`` would become ``strasse``, another
     registrable name. A deviation character is kept as it is (ZWJ / ZWNJ only right after
-    a virama); the text around it gets the codec's nameprep mapping.
+    a virama, so a Persian ZWNJ name needs its ``xn--`` form); the text around it gets the
+    codec's nameprep mapping, and the whole label its bidi rule (``\u03c2`` next to a Hebrew
+    letter mixes directions). A label may not start with a combining mark either: the web
+    app rejects both.
     """
-    label = label.replace('ẞ', 'ß')  # capital sharp s
+    label = label.replace('\u1e9e', '\u00df')  # capital sharp s
+    if not label or unicodedata.category(label[0]).startswith('M'):
+        return None
     try:
         if not _IDN_DEVIATION_RE.search(label):
             return label.encode('idna').decode('ascii').lower()
         out = ''
         for part in _IDN_DEVIATION_RE.split(label):
-            if part in ('‌', '‍'):
+            if part in _JOINERS:
                 if not out or unicodedata.combining(out[-1]) != _VIRAMA:
                     return None
                 out += part
-            elif part in ('ß', 'ς'):
+            elif part in ('\u00df', '\u03c2'):
                 out += part
             elif part:
                 out += _idna_codec.nameprep(part)
+        # RFC 3454 section 6, as nameprep checks a label: right-to-left letters rule out
+        # left-to-right ones (ß, ς are) and must start and end the label.
+        bidi = [unicodedata.bidirectional(char) for char in out]
+        if ({'R', 'AL'} & set(bidi)
+                and ('L' in bidi or not {bidi[0], bidi[-1]} <= {'R', 'AL'})):
+            return None
         return 'xn--' + out.encode('punycode').decode('ascii')
     except UnicodeError:
         return None
@@ -974,6 +986,8 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
     (``2026092401``, ``127.1``, ``0x7f.0x1`` - see :func:`is_numeric_host`).
     ``allow_wildcard`` permits a single leading ``*.`` label.
     """
+    for dot in _IDEOGRAPHIC_DOTS:  # label separators in UTS #46, as in the web app
+        value = value.replace(dot, '.')
     text = _host_text(value)
     if not text:
         return None

@@ -121,7 +121,9 @@ def _node_major() -> int:
 
 # normalize_hostname(..., allow_wildcard=True) -> what the web app's normalizeHostname gives
 # (new URL: UTS #46 non-transitional). The deviation characters \u00df, \u03c2, ZWJ and
-# ZWNJ are where Python's IDNA 2003 codec differs.
+# ZWNJ are where Python's IDNA 2003 codec differs; ideographic full stops separate labels
+# (never punycoded into one), and a label mixing directions or starting with a combining
+# mark is invalid.
 IDN_CASES = {
     'stra\u00dfe.example.com': 'xn--strae-oqa.example.com',
     'STRA\u1e9eE.example.com': 'xn--strae-oqa.example.com',
@@ -134,6 +136,15 @@ IDN_CASES = {
     'a\u200db.example.com': None,       # a joiner only after a virama (CONTEXTJ)
     'm\u00fcnchen.example.com': 'xn--mnchen-3ya.example.com',
     '\u00d6RNEK.example.net': 'xn--rnek-4qa.example.net',
+    'stra\u00dfe\u3002example.com': 'xn--strae-oqa.example.com',
+    'stra\u00dfe\uff61example.com': 'xn--strae-oqa.example.com',
+    '*.stra\u00dfe\uff0eexample.com': '*.xn--strae-oqa.example.com',
+    '\u03c2a\u3002example.net': 'xn--a-xmb.example.net',
+    'www\u3002example\uff0ecom\u3002': 'www.example.com',
+    '\u03c2\u05d0.example.com': None,     # a right-to-left letter next to \u03c2
+    '\u05d0\u05d1.\u00df.example.com': 'xn--4dbc.xn--zca.example.com',  # label by label
+    '\u0301\u00df.example.com': None,     # a leading combining mark
+    '\u0301a.example.com': None,
 }
 
 

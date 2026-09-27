@@ -9,16 +9,20 @@
  *   node tests/e2e/ptr.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
  * Covers: the nav entry (DNS group, after IP Intel), the empty state, input issues (an IPv6
- * network, a network over the /22 cap with its suggestion, private space), a /28 sweep with a
- * focus domain (focus rows first, a collapsed pattern, the forward-check statuses, the operator
- * from a PTR name, the inventory match, stats, filters, "Expand patterns", row details), the
- * CSV / JSON / names.txt exports, "Add to Servers" (the Servers editor gets a draft, nothing is
- * saved), "Add names to a scan" (Subdomains gets the names in exact mode, the user presses Scan,
- * the scan's origin panel links an IPv4 network back to a sweep that waits for a click), an AS
- * (one RIPEstat request, the prefix picker, the cap, a sweep of the picked prefixes), a shared
- * link that pre-fills and waits, keyboard focus Sweep ⇄ Stop and a stopped sweep, Domain
- * Health's mail identity (FCrDNS) rows, TR / EN × light / dark at 375 px, zero console errors /
- * CSP violations / missing i18n keys, nothing sent outside the page.
+ * network, a network over the /22 cap with its suggestion, a wholly private one without,
+ * private space, a range typed with spaces, "ASN 64496"), a /28 sweep with a focus domain
+ * (focus rows first, a collapsed pattern, the forward-check statuses, the operator from a PTR
+ * name, the inventory match, stats, filters, "Expand patterns", row details), the CSV / JSON /
+ * names.txt exports (a filtered JSON export keeps the whole sweep's summary), "Add to Servers"
+ * (the Servers editor gets a draft in the list's own format, nothing is saved, a second click
+ * adds nothing, a JSON map is left alone and the hosts are shown to copy), "Add names to a
+ * scan" (Subdomains gets the names in exact mode, the user presses Scan, the scan's origin
+ * panel links an IPv4 network back to a sweep that waits for a click), an AS (Stop cancels
+ * the lookup, typing a network drops it; one RIPEstat request, the prefix picker, the cap, a
+ * sweep of the picked prefixes), a shared link that pre-fills and waits, keyboard focus
+ * Sweep ⇄ Stop and a stopped sweep, Domain Health's mail identity (FCrDNS) rows and table
+ * (at 375 px too), TR / EN × light / dark at 375 px, zero console errors / CSP violations /
+ * missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, 192.0.2.0/24, 198.51.100.0/24,
  * 203.0.113.0/24, 198.18.0.0/15, 2001:db8::/32, AS64496) plus the Cloudflare edge 104.16.1.1.
@@ -92,13 +96,19 @@ const fakeScript = (table, rcodes, ripe) => `(() => {
   window.__fakeDnsLog = [];
   window.__ripeLog = [];
   window.__fakeDnsDelay = 0;
+  window.__ripeDelay = 0;
   let wire = null;
   const realFetch = window.fetch.bind(window);
   const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
+  const wait = (ms, signal) => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (url.startsWith('https://stat.ripe.net/data/announced-prefixes/')) {
       window.__ripeLog.push(url);
+      if (window.__ripeDelay) await wait(window.__ripeDelay, init?.signal);
       return json(RIPE);
     }
     if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [] });
@@ -418,6 +428,32 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.ptr-progress').dataset.status), 'cancelled', 'cancelled');
       assert(/Stopped — \d+ of 256 addresses were looked up/.test(await text(page, '.ptr-progress')), 'stopped note');
       await page.evaluate(() => { window.__fakeDnsDelay = 0; });
+    });
+
+    await run.step('an AS lookup: Stop cancels it, and typing something else drops it (no stale prefix list)', async () => {
+      const controls = () => page.evaluate(() => ({
+        run: !document.querySelector('[data-action="ptr-run"]').hidden,
+        stop: !document.querySelector('[data-action="ptr-stop"]').hidden,
+        busy: document.querySelector('[aria-busy="true"]') !== null,
+        card: !!document.querySelector('.ptr-asn'),
+        picker: !!document.querySelector('.ptr-asn-table')
+      }));
+      await page.evaluate(() => { window.__ripeDelay = 5000; });
+      await typeTarget(page, 'AS64496');
+      await page.waitFor(() => /List prefixes/.test(document.querySelector('[data-action="ptr-run"]').textContent), { message: 'button label' });
+      await page.click('[data-action="ptr-run"]');
+      await page.waitFor(() => !document.querySelector('[data-action="ptr-stop"]').hidden, { message: 'Stop shown' });
+      assertEqual(await controls(), { run: false, stop: true, busy: true, card: true, picker: false }, 'listing');
+      await page.click('[data-action="ptr-stop"]');
+      await page.waitFor(() => !document.querySelector('[data-action="ptr-run"]').hidden, { message: 'stopped' });
+      assertEqual(await controls(), { run: true, stop: false, busy: false, card: false, picker: false }, 'after Stop');
+      await page.click('[data-action="ptr-run"]');
+      await page.waitFor(() => !document.querySelector('[data-action="ptr-stop"]').hidden, { message: 'listing again' });
+      await typeTarget(page, '192.0.2.0/30');
+      await page.waitFor(() => !document.querySelector('[data-action="ptr-run"]').hidden && !document.querySelector('.ptr-asn'), { message: 'dropped' });
+      assertEqual(await controls(), { run: true, stop: false, busy: false, card: false, picker: false }, 'after typing a network');
+      assert(/Sweep/.test(await text(page, '[data-action="ptr-run"]')), 'Sweep again');
+      await page.evaluate(() => { window.__ripeDelay = 0; window.__ripeLog = []; });
     });
 
     await run.step('an AS: one RIPEstat request, the prefix picker, the cap, a sweep of the picked prefixes', async () => {

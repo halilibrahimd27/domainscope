@@ -27,7 +27,7 @@
 import { h, clear, debounce, uid } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, EmptyState, ErrorBanner, Icon, KeyValueList, KindBadge,
-  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, select, setButtonBusy, textInput, textarea, toast
+  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, select, textInput, textarea, toast
 } from '../ui/components.js';
 import {
   t, registerStrings, formatNumber, formatDuration, formatDateTime
@@ -673,6 +673,8 @@ export function mount(container, ctx) {
 
   function renderParsed() {
     parsed = parseSweepTarget(targetField.value);
+    // An AS lookup belongs to the AS in the form: typing something else drops it (no stale list later).
+    if (isListing() && !(parsed.kind === 'asn' && parsed.asn === session.asn.asn)) session.asn.controller.abort();
     clear(parsedEl);
     clear(issuesEl);
     runBtn.querySelector('.btn-label').textContent = parsed.kind === 'asn' ? t('ptr.list') : t('ptr.run');
@@ -730,21 +732,30 @@ export function mount(container, ctx) {
   let ui = null;
   let starting = false;
   const isRunning = () => !!(session.job && session.job.status === 'running');
+  const isListing = () => !!(session.asn && session.asn.status === 'loading' && session.asn.controller);
 
-  function setRunning(on) {
+  /**
+   * Sweep ⇄ Stop and the page's busy state follow what runs: a sweep, or an AS lookup (Stop
+   * cancels either). Derived from both each time, so the end of one never clears the other's.
+   */
+  function syncControls() {
+    const sweeping = isRunning();
+    const listing = isListing();
+    const stoppable = sweeping || listing;
     // Keyboard focus follows Sweep ⇄ Stop instead of falling to <body> when one is hidden.
     const doc = globalThis.document;
-    const moveFocus = doc && doc.activeElement === (on ? runBtn : stopBtn);
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
-    targetField.input.readOnly = on;
-    if (moveFocus) (on ? stopBtn : runBtn).focus({ preventScroll: true });
-    ctx.setBusy(on ? t('ptr.busy') : false);
+    const moveFocus = doc && doc.activeElement === (stoppable ? runBtn : stopBtn);
+    runBtn.hidden = stoppable;
+    stopBtn.hidden = !stoppable;
+    targetField.input.readOnly = sweeping;
+    if (moveFocus) (stoppable ? stopBtn : runBtn).focus({ preventScroll: true });
+    ctx.setBusy(sweeping ? t('ptr.busy') : listing ? t('ptr.busyAsn') : false);
     renderHeaderActions();
   }
 
   function stop() {
     if (isRunning()) session.job.controller.abort();
+    else if (isListing()) session.asn.controller.abort();
   }
 
   async function start() {
@@ -767,7 +778,7 @@ export function mount(container, ctx) {
       return;
     }
     if (parsed.kind === 'asn') {
-      listPrefixes(parsed.asn);
+      if (!(isListing() && session.asn.asn === parsed.asn)) listPrefixes(parsed.asn);
       return;
     }
     // A typed network replaces an earlier AS's prefix list (it no longer belongs to the form).
@@ -813,10 +824,10 @@ export function mount(container, ctx) {
     emptyEl.hidden = true;
     ui = buildJobUI(job, ctx, {
       focus: focusValue,
-      onFinish: () => setRunning(false)
+      onFinish: () => syncControls()
     });
     resultsHost.append(ui.el);
-    setRunning(job.status === 'running');
+    syncControls();
   }
 
   /**
@@ -859,29 +870,31 @@ export function mount(container, ctx) {
     followAsn(entry);
   }
 
-  /** Show an AS lookup (running or finished) and follow it to its end. */
+  /**
+   * Show an AS lookup (running or finished) and follow it to its end; its result is announced
+   * once, when it arrives (never again on a re-mount).
+   */
   function followAsn(entry) {
     renderAsn();
+    syncControls();
     if (entry.status !== 'loading') return;
-    setButtonBusy(runBtn, true);
-    ctx.setBusy(t('ptr.busyAsn'));
     entry.promise.then(() => {
       if (ctx.signal.aborted) return;
-      // Another lookup started meanwhile keeps the busy state; a replaced one gives it back.
-      if (!(session.asn && session.asn !== entry && session.asn.status === 'loading')) {
-        setButtonBusy(runBtn, false);
-        if (!isRunning()) ctx.setBusy(false);
-      }
+      syncControls();
       if (session.asn !== entry) return;
       renderAsn();
-      announce(entry.status === 'done' ? t('ptr.asn.title', { asn: entry.asn }) : t('ptr.asn.failed', { asn: entry.asn }));
+      if (entry.status === 'done') announce(t('ptr.asn.title', { asn: entry.asn }));
+      else if (entry.status === 'error') announce(t('ptr.asn.failed', { asn: entry.asn }));
     });
   }
 
   function renderAsn() {
     clear(asnHost);
     const entry = session.asn;
-    if (!entry || entry.status === 'cancelled') return;
+    if (!entry || entry.status === 'cancelled') {
+      emptyEl.hidden = !!session.job;
+      return;
+    }
     emptyEl.hidden = true;
     if (entry.status === 'loading') {
       asnHost.append(Card({
@@ -1433,7 +1446,8 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
 
   /* lifecycle */
-  function finish() {
+  /** Show the job's end; `live`: it just ended (announced), else a re-mount shows a finished job. */
+  function finish(live) {
     clear(notice);
     progressCard.dataset.status = job.status;
     // A re-mounted view shows the real count, not the bar's default scale.
@@ -1441,7 +1455,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     if (job.status === 'done') {
       progress.done(t('ptr.progress.done'));
       progress.setVariant('ok');
-      announce(t('ptr.doneToast', { count: job.results.length }));
+      if (live) announce(t('ptr.doneToast', { count: job.results.length }));
     } else if (job.status === 'cancelled') {
       progress.setVariant('warn');
       progress.setLabel(t('ptr.progress.stopped'));
@@ -1468,7 +1482,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
       syncSoon();
       renderProgress();
     } else if (type === 'done' || type === 'cancelled' || type === 'error') {
-      finish();
+      finish(true);
     }
   };
 
@@ -1479,7 +1493,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     ticker = setInterval(renderProgress, 1000);
     job.listeners.add(listener);
   } else {
-    finish();
+    finish(false);
   }
 
   return {

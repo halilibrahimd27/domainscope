@@ -594,7 +594,7 @@ An internationalised name is kept in its punycode form (`xn--…`). Anything els
 **Extensions.** These are additive; without them every output is byte-identical to before.
 - **`exclude`** (IPs / CIDRs, or a string split on whitespace and commas) becomes `--exclude a b …` right after the `-t` targets. Excludes are validated like targets.
   - A target that an exclude covers entirely is removed from `-t` and reported in `excluded`.
-  - An exclude that overlaps no remaining target is left out of the command and reported in `excludeUnused`.
+  - An exclude that overlaps no remaining target is left out of the command and reported in `excludeUnused` — unless a host-name target is kept (below).
   - An invalid exclude is dropped and reported in `dropped.exclude`.
   - An IPv4-mapped IPv6 target or exclude (`::ffff:10.0.0.5`, `::ffff:10.0.0.0/104`) also matches its IPv4 form, as the CLI does; a wider IPv6 range such as `::/0` does not.
   - These four fields appear only when `exclude` is given, and `targets` then lists only what is left in `-t`.
@@ -604,7 +604,7 @@ An internationalised name is kept in its punycode form (`xn--…`). Anything els
   - `targetsFile` and `maxInlineTargets`: when the targets exceed `maxInlineTargets`, the names exceed `maxInlineNames` or the command exceeds `maxLength`, BOTH lists go to files (`-t <targetsFile> … -n <namesFile>`). The result then carries `targetsInline` / `targetsFile`. An invalid `targetsFile` is reported as `'targetsFile'` in `dropped.options`.
   - `validateTargets(list, { allowHostTargets })` and `validateNames(list, { allowWildcard })` expose the same rules.
 - **Numeric host names:** a host target or name that glibc `inet_aton` would read as an IPv4 address is always dropped (`2026092401`, `0x7f.0x1`, `0177.1`, `10.1`), so it never reaches `getaddrinfo`. `isInetAtonNumeric(s)` is exported for tests.
-- **Known gap:** an exclude that only a host target's resolved address would match cannot be checked in the browser, so it is reported as unused and left out of the command.
+- **Host targets and excludes:** with a host-name target kept, every valid exclude is emitted and none is reported in `excludeUnused`, because the host's addresses are known only once the CLI resolves it inside the network. Without a host target, the unused rule above applies.
 
 ### 5.18 `lib/globalping.js` — the Globalping v1 client (transport only)
 DOM-free; knows nothing about certificates (§5.19 interprets results). All I/O goes through `util.fetchWithTimeout` with an injected `fetchImpl` (default: `globalThis.fetch`, looked up at call time), `sleepImpl` and `now`.

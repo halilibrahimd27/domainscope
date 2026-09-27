@@ -1,0 +1,109 @@
+{
+  "name": "m26-mta-sts-policy",
+  "capturedAt": "2026-09-27T11:50:18.990Z",
+  "request": {
+    "type": "http",
+    "target": "mta-sts.example.com",
+    "limit": 1,
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/mta-sts.txt"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "1",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "249",
+      "x-ratelimit-reset": "3600",
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2IuWbVoKnaKkYjabJ00021DDq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2IuWbVoKnaKkYjabJ00021DDq",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-27T11:50:18.990Z",
+      "updatedAt": "2026-09-27T11:50:19.354Z",
+      "target": "mta-sts.example.com",
+      "timeout": 10,
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "method": "GET",
+          "path": "/.well-known/mta-sts.txt"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "192.0.2.80",
+            "headers": {
+              "content-encoding": "br",
+              "content-type": "text/plain"
+            },
+            "rawBody": "version: STSv1\r\nmode: enforce\r\nmx: smtp.example.com\r\nmx: mx.example.com\r\nmx: *.mx.example.com\r\nmax_age: 86400\r\n",
+            "truncated": false,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 63,
+              "dns": 5,
+              "tcp": 3,
+              "tls": 8,
+              "firstByte": 46,
+              "download": 1
+            },
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_256_GCM_SHA384",
+              "createdAt": "2026-09-10T19:23:19.000Z",
+              "expiresAt": "2026-12-03T19:23:18.000Z",
+              "issuer": {
+                "C": "US",
+                "O": "Google Trust Services",
+                "CN": "WR2"
+              },
+              "subject": {
+                "CN": "example.com",
+                "alt": "DNS:example.com, DNS:*.example.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "BF:A2:DB:AB:78:73:FF:0E:0A:0E:98:F6:A5:61:D8:32",
+              "fingerprint256": "35:2C:FD:40:FF:B3:B9:BF:67:4A:EF:2E:84:B3:7A:C6:25:3B:07:14:A0:F8:6B:50:A1:A9:30:24:AB:5C:FD:62"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scrubbed": "a large mailbox provider's live policy: its names (target, certificate names, the MX names in the policy body) became example.com and resolvedAddress 192.0.2.80; fingerprint256 and serialNumber are the captured certificate's"
+}

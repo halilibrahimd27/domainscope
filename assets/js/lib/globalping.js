@@ -1,9 +1,10 @@
 /**
  * globalping.js — DOM-free client for the Globalping v1 API (https://globalping.io, run by
  * jsDelivr and volunteers): one HTTPS HEAD request from a probe on the public internet to a server,
- * reporting the TLS certificate it was served. This module is the transport only — create, get,
- * poll, measure, limits, quota tracking, the request builder and the target prefilters. It knows
- * nothing about certificates (lib/verify.js interprets results). Runs in browsers and Node 22.
+ * reporting the TLS certificate it was served (or one HTTPS GET of a path, for the MTA-STS policy).
+ * This module is the transport only — create, get, poll, measure, limits, quota tracking, the
+ * request builders and the target prefilters. It knows nothing about certificates or policies
+ * (lib/verify.js and lib/mtasts.js interpret results). Runs in browsers and Node 22.
  *
  * API facts this client relies on (verified live 2026-09-24, see tests/fixtures/globalping/):
  * - POST bodies must be `application/json` (a text/plain body is ignored → 400), so every create
@@ -239,6 +240,40 @@ export function httpsCheckRequest({ ip, name, port = 443, timeoutS = 10, probes 
   body.timeout = timeout;
   body.measurementOptions = { protocol: 'HTTPS', port, request: { method: 'HEAD', host: name, path: '/' } };
   return body;
+}
+
+/** A request path Globalping takes and nothing else shapes: '/', then printable ASCII without spaces, '?' or '#'. */
+const GET_PATH_RE = /^\/[\x21-\x22\x24-\x3e\x40-\x7e]{0,500}$/;
+
+/**
+ * Body for one HTTPS GET of `path` on a host name (Domain Health's MTA-STS policy fetch). The
+ * probe resolves `host` itself and uses it as SNI and Host header; the result carries the status
+ * code, the response headers, the body (`rawBody`, decoded, cut at 10 KB with `truncated`) and
+ * `tls` like a HEAD check (verified live 2026-09-27, tests/fixtures/globalping/m26 + m27).
+ *
+ * - The target is the host name (no `request.host`); `port` and `timeout` (rounded, clamped to
+ *   5–30 s) are always sent, `ipVersion` and a query string never.
+ * @param {{ host: string, path?: string, port?: number, timeoutS?: number, probes?: number }} opts
+ * @returns {{ type: 'http', target: string, limit: number, timeout: number,
+ *   measurementOptions: { protocol: 'HTTPS', port: number, request: { method: 'GET', path: string } } }}
+ * @throws {TypeError} for a host Globalping refuses, a path outside {@link GET_PATH_RE}, an unprobeable
+ *   port, a bad probe count or timeout, or any unknown option
+ */
+export function httpsGetRequest({ host, path = '/', port = 443, timeoutS = 10, probes = 1, ...rest } = {}) {
+  const unknown = Object.keys(rest);
+  if (unknown.length) throw new TypeError(`Unknown option: ${unknown[0]}`);
+  if (!isProbeableHost(host)) throw new TypeError(`Globalping does not accept this host name: ${String(host)}`);
+  if (typeof path !== 'string' || !GET_PATH_RE.test(path)) throw new TypeError(`Not a plain request path: ${String(path)}`);
+  if (!isProbeablePort(port)) throw new TypeError(`Port cannot be checked through Globalping: ${String(port)}`);
+  if (!Number.isInteger(probes) || probes < 1 || probes > GP_LIMITS.maxProbesPerMeasurement) {
+    throw new TypeError(`probes must be an integer 1–${GP_LIMITS.maxProbesPerMeasurement}`);
+  }
+  if (typeof timeoutS !== 'number' || !Number.isFinite(timeoutS)) throw new TypeError('timeoutS must be a finite number');
+  const timeout = Math.min(GP_LIMITS.maxTimeoutS, Math.max(GP_LIMITS.minTimeoutS, Math.round(timeoutS)));
+  return {
+    type: 'http', target: host, limit: probes, timeout,
+    measurementOptions: { protocol: 'HTTPS', port, request: { method: 'GET', path } }
+  };
 }
 
 /**

@@ -95,6 +95,8 @@ results are public by id on Globalping anyway (retained for about six months).
 | `m23-ip-san.json` | 21V7t2Vbhc1ZeCrZF00021C1P | 1.1.1.1, host one.one.one.one | IP SANs (IPv6 uncompressed) |
 | `m24-not-tls.json` | 243iGekdndBucV9f800021C1P | badssl:80, host http.badssl.com | `wrong version number` |
 | `m25-v6-doc-enetunreach.json` | 2pTgtxLlyWvamuItO00021C2q | 3fff::1 (IPv6 documentation prefix) | accepted **and charged**, `connect ENETUNREACH` |
+| `m26-mta-sts-policy.json` | 2IuWbVoKnaKkYjabJ00021DDq | hostname target mta-sts.<domain>, HTTPS GET `/.well-known/mta-sts.txt` | an MTA-STS policy: `statusCode` 200, `headers` (`content-type`), the decoded `rawBody` (CRLF lines), `tls` (scrubbed, see below) |
+| `m27-mta-sts-no-host.json` | 2JRJUjOJwPhya37ZH00021DDt | the same GET on mta-sts.example.com | `queryA ENODATA`: no policy host |
 | `v-private-target-400.json` | – | 10.0.0.1 | `"target" must not be a private hostname` |
 | `v-testnet1-400.json` | – | 192.0.2.1 | same (TEST-NET-1) |
 | `v-bad-host-400.json` | – | host github.com:443 | `measurementOptions.request.host` invalid |
@@ -103,6 +105,15 @@ results are public by id on Globalping anyway (retained for about six months).
 | `v-no-probes-422.json` | – | `locations: [{ country: 'AQ' }]` | 422 `no_probes_found` |
 | `validation-cases.json` | – | every refused POST (28 saved + 7 from the review) | data for the prefilter tests |
 | `create-parallel-quota.json` | 6 ids | six concurrent POSTs | remaining 220, 216, 215, 219, 217, 218 |
+
+**MTA-STS policy fetches** (Domain Health, captured 2026-09-27, 2 probes): `m26` and `m27` keep
+what `lib/mtasts.js` reads, so unlike the trim rules above their results keep `rawBody` and the
+`content-type` / `content-encoding` headers (`rawHeaders` and the other headers are dropped). `m26`
+was a large mailbox provider's live policy: its names (the target, the certificate's names and the
+MX names in the policy) became `example.com` and its `resolvedAddress` `192.0.2.80`, as its
+`scrubbed` field says; the policy's shape (three `mx` lines, one of them `*.`, CRLF line ends,
+`max_age: 86400`) and the certificate's other fields are as captured. The body arrived
+`content-encoding: br`: `rawBody` is already decoded.
 
 **Synthetic** (`"synthetic": true`, built from the verbatim bodies recorded on 2026-09-24; no live
 429 was provoked, to save quota): `limits-fresh.json` (`reset: 0`, no window open yet),

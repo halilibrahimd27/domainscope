@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   GLOBALPING_API, GP_LIMITS, NON_HTTP_TLS_PORTS, GP_ERROR_CODES, GlobalpingError,
-  isMeasurementId, isProbeableIP, probeTarget, isProbeableHost, isProbeablePort, httpsCheckRequest,
+  isMeasurementId, isProbeableIP, probeTarget, isProbeableHost, isProbeablePort, httpsCheckRequest, httpsGetRequest,
   probeSummary, quotaFromHeaders, quotaFromLimits, mergeQuota, createGlobalping
 } from '../../assets/js/lib/globalping.js';
 import { errorKind, throwIfAborted } from '../../assets/js/lib/util.js';
@@ -241,6 +241,43 @@ test('httpsCheckRequest: refuses private / reserved IPs, bad hosts, bad ports an
   for (const probes of [0, 51, 1.5, '1']) assert.throws(() => httpsCheckRequest({ ...base, probes }), TypeError, String(probes));
   assert.throws(() => httpsCheckRequest(), TypeError);
   assert.equal(httpsCheckRequest({ ...base, ip: '::ffff:140.82.121.4' }).target, '140.82.121.4');
+});
+
+test('httpsGetRequest: the MTA-STS policy fetch body, exactly as sent live (m26)', () => {
+  const body = httpsGetRequest({ host: 'mta-sts.example.com', path: '/.well-known/mta-sts.txt' });
+  assert.deepEqual(body, fx('m26-mta-sts-policy').request);
+  assert.deepEqual(body, {
+    type: 'http', target: 'mta-sts.example.com', limit: 1, timeout: 10,
+    measurementOptions: { protocol: 'HTTPS', port: 443, request: { method: 'GET', path: '/.well-known/mta-sts.txt' } }
+  });
+  assert.equal('host' in body.measurementOptions.request, false, 'the target is the host: no request.host');
+  assert.equal(httpsGetRequest({ host: 'www.example.com' }).measurementOptions.request.path, '/');
+  assert.equal(httpsGetRequest({ host: 'www.example.com', timeoutS: 99 }).timeout, 30);
+});
+
+test('httpsGetRequest: refuses hosts Globalping rejects, paths with a query, spaces or no leading slash, and unknown options', () => {
+  for (const host of ['10.0.0.1', '_mta-sts.example.com', 'mta-sts.example.com.', 'localhost', '*.example.com', '', null]) {
+    assert.throws(() => httpsGetRequest({ host }), TypeError, String(host));
+  }
+  for (const path of ['.well-known/mta-sts.txt', '/a b', '/a?x=1', '/a#top', '/a\n', '', 42, `/${'a'.repeat(501)}`]) {
+    assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', path }), TypeError, JSON.stringify(path));
+  }
+  assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', port: 0 }), TypeError);
+  assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', probes: 0 }), TypeError);
+  assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', method: 'POST' }), /Unknown option: method/);
+  assert.throws(() => httpsGetRequest(), TypeError);
+});
+
+test('measure: an HTTPS GET measurement replays m26 (status, headers, decoded body, tls) at a cost of one probe', async () => {
+  const { gp, calls } = client([postOf('m26-mta-sts-policy'), finalOf('m26-mta-sts-policy')]);
+  const res = await gp.measure(fx('m26-mta-sts-policy').request);
+  assert.equal(res.cost, 1);
+  assert.equal(JSON.parse(calls[0].init.body).measurementOptions.request.method, 'GET');
+  const r = res.measurement.results[0].result;
+  assert.deepEqual([r.statusCode, r.headers['content-type'], r.truncated, r.tls.authorized], [200, 'text/plain', false, true]);
+  assert.match(r.rawBody, /^version: STSv1\r\nmode: enforce\r\n/);
+  const nx = fx('m27-mta-sts-no-host').final.body.results[0].result;
+  assert.deepEqual([nx.status, nx.statusCode, nx.tls, nx.rawOutput], ['failed', null, null, 'queryA ENODATA mta-sts.example.com']);
 });
 
 /* ---- probe summary --------------------------------------------------------------------- */

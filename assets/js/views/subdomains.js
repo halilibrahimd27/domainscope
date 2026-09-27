@@ -570,6 +570,8 @@ registerStrings('en', {
   'sub.org.zone': 'Exact origins from your zone file',
   'sub.org.zoneHint': 'Your zone file names the real server behind these proxied names. The command below probes these exact addresses and never widens them to a /24.',
   'sub.org.ptr': 'Reverse DNS sweep',
+  'sub.org.ptrIps': { one: 'Reverse DNS of its address', other: 'Reverse DNS of its {count} addresses' },
+  'sub.org.ptrIpsTitle': 'Shared cloud / hosting space: the rest of this block belongs to other customers, so only the addresses your names resolve to are looked up (opens the Reverse DNS view, you press Sweep)',
   'sub.org.ptrTitle': 'Look up the reverse DNS (PTR) of every address in {cidr}: other hosts of yours often live next to the origin (opens the Reverse DNS view, you press Sweep)',
   'sub.handoff.chip': { one: '{count} name from the reverse DNS sweep of {label}', other: '{count} names from the reverse DNS sweep of {label}' },
   'sub.handoff.mode': 'How this scan uses these names',
@@ -995,6 +997,8 @@ registerStrings('tr', {
   'sub.org.zone': 'Zone dosyanızdaki kesin originler',
   'sub.org.zoneHint': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
   'sub.org.ptr': 'Ters DNS taraması',
+  'sub.org.ptrIps': '{count} adresinin ters DNS’i',
+  'sub.org.ptrIpsTitle': 'Paylaşımlı bulut / barındırma alanı: bu bloğun geri kalanı başka müşterilerin, bu yüzden yalnızca adlarınızın çözümlendiği adreslere bakılır (Ters DNS görünümünü açar, Tara’ya siz basarsınız)',
   'sub.org.ptrTitle': '{cidr} içindeki her adresin ters DNS (PTR) kaydına bak: sizin diğer sunucularınız çoğu zaman origin’in yanında durur (Ters DNS görünümünü açar, Tara’ya siz basarsınız)',
   'sub.handoff.chip': { one: '{label} ters DNS taramasından {count} ad', other: '{label} ters DNS taramasından {count} ad' },
   'sub.handoff.mode': 'Bu tarama bu adları nasıl kullansın',
@@ -4444,14 +4448,18 @@ function buildRunUI(run, ctx, { onFinish }) {
         const ownerEl = h('span', { class: 'sub-org-owner', attrs: { 'aria-live': 'polite' } });
         renderOwner(ownerEl, net);
         // An IPv4 network can be swept for reverse DNS (a /48 cannot): other hosts of the same
-        // owner often sit next to the origin. The link only fills the form; the user presses Sweep.
+        // owner often sit next to the origin. In shared cloud / hosting space the rest of the /24
+        // is other customers' (provider-generated names), so only its own addresses are offered.
+        // The link only fills the form; the user presses Sweep.
         const focusDomain = registrableDomain(net.hosts[0] || '') || run.config.domains[0] || '';
-        const ptrLink = net.cidr.includes(':') ? null : h('a', {
+        const ownV4 = net.ips.filter((ip) => !ip.includes(':'));
+        const ptrTarget = net.shared ? ownV4.join(',') : net.cidr;
+        const ptrLink = net.cidr.includes(':') || !ptrTarget ? null : h('a', {
           class: 'sub-org-ptr',
-          href: ctx.href('ptr', { target: net.cidr, focus: focusDomain }),
-          title: t('sub.org.ptrTitle', { cidr: net.cidr }),
-          dataset: { action: 'sub-org-ptr', cidr: net.cidr }
-        }, Icon('swap', { size: 13 }), h('span', null, t('sub.org.ptr')));
+          href: ctx.href('ptr', { target: ptrTarget, focus: focusDomain }),
+          title: net.shared ? t('sub.org.ptrIpsTitle') : t('sub.org.ptrTitle', { cidr: net.cidr }),
+          dataset: { action: 'sub-org-ptr', cidr: net.cidr, target: net.shared ? 'ips' : 'cidr' }
+        }, Icon('swap', { size: 13 }), h('span', null, net.shared ? t('sub.org.ptrIps', { count: ownV4.length }) : t('sub.org.ptr')));
         return h('li', { class: 'sub-org-net', dataset: { cidr: net.cidr, sweep: net.sweep, shared: net.shared ? '1' : '0' } },
           h('div', { class: 'sub-org-net-head' },
             h('span', { class: 'sub-org-cidr mono' }, net.cidr),

@@ -156,6 +156,29 @@ describe('zone view: helpers', () => {
     assert.equal(V.relativeName('www.example.org', 'example.com'), 'www.example.org');
   });
 
+  test('every problem of every fixture reads without a left-over {placeholder} in EN and TR', () => {
+    const files = ['cloudflare-export.txt', 'cloudflare-api.json', 'route53.json', 'example.com.yaml', 'bind-edge.zone.txt', 'cpanel-example.com.db.txt',
+      'directadmin-example.com.db.txt', 'godaddy.txt', 'cli53.txt', 'plesk-info.txt', 'internal.zone.txt', 'placeholder.cf.txt', 'axfr-dig.txt',
+      'bad/unterminated-quote.txt', 'bad/unbalanced-paren.txt', 'bad/include.txt'];
+    const inputs = [...files.map((f) => ({ name: f.split('/').pop(), text: fixture(f) })),
+      { name: 'db.example.com', text: '$ORIGIN example.com.\n_sip._tcp.@ 300 IN SRV 10 5 5060 sip.@\nmail 300 IN CNAME www.@\n' }];
+    const was = i18n.getLang();
+    try {
+      for (const lang of ['en', 'tr']) {
+        i18n.setLang(lang);
+        for (const f of inputs) {
+          const z = V.parseFiles([f]);
+          for (const p of V.problemList(z, L.lintZone(z))) {
+            const text = i18n.t(p.source === 'lint' ? `zone.lint.${p.code}` : `zone.issue.${p.code}`, p.params);
+            assert.doesNotMatch(text, /\{[A-Za-z]+\}/, `${lang} ${f.name} ${p.code}`);
+          }
+        }
+      }
+    } finally {
+      i18n.setLang(was);
+    }
+  });
+
   test('problemList merges parse issues and lint findings, errors first', () => {
     const zone = { warnings: [{ code: 'TTL_DEFAULTED', severity: 'info', line: 1, params: {} }, { code: 'BAD_TTL', severity: 'warn', line: 9, params: {} }] };
     const lint = { findings: [{ code: 'MULTIPLE_SPF', severity: 'error', name: 'example.com', type: 'TXT', line: 20, params: {} }] };

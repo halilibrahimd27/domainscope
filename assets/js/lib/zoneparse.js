@@ -1574,7 +1574,7 @@ function parseSvcParams(toks, base) {
  * @param {{ origin: string|null, base: 8|10, absolute: boolean }} ctx
  */
 function parseRdata(type, toks, ctx) {
-  const out = { data: null, text: '', targets: [], rel: [], at: false, idn: false };
+  const out = { data: null, text: '', targets: [], rel: [], atNames: [], idn: false };
   const exact = (n) => {
     if (toks.length < n) throw new RdataError('missing-field');
     if (toks.length > n) throw new RdataError('extra-field');
@@ -1597,7 +1597,7 @@ function parseRdata(type, toks, ctx) {
     if (!tok) throw new RdataError('missing-field');
     const r = parseName(tok.t, ctx);
     if (!r.ok) throw new RdataError(r.reason === 'no-origin' ? 'relative-without-origin' : 'bad-name');
-    if (r.at) out.at = true;
+    if (r.at) out.atNames.push({ raw: tok.t, name: r.name });
     if (r.idn) out.idn = true;
     if (r.relative && !r.at && !r.apex && r.relLabels >= 2 && r.name !== r.rel) out.rel.push({ index: out.targets.length, rel: r.rel, relLabels: r.relLabels });
     out.targets.push(rootToEmpty(r.name));
@@ -1997,7 +1997,9 @@ class Builder {
     rec.data = res.data;
     rec.text = res.text;
     rec.targets = res.targets;
-    if (res.at) this.issues.add('AT_INSIDE_NAME', line, { name: rec.name }, '"x.@" read as a name below the origin', { name: rec.name, type: rec.type });
+    for (const a of res.atNames) {
+      this.issues.add('AT_INSIDE_NAME', line, { name: a.name, raw: safeText(a.raw, 80) }, '"x.@" read as a name below the origin', { name: rec.name, type: rec.type });
+    }
     if (res.idn) this.issues.add('NON_ASCII_LABEL', line, { name: rec.name }, 'non-ASCII label converted to punycode', { name: rec.name, type: rec.type });
     for (const r of res.rel) this.relTargets.push({ rec, ...r });
     return true;

@@ -426,6 +426,11 @@ describe('names', () => {
     const bad = Z('a@b A 192.0.2.1\nx CNAME a.@\nok A 192.0.2.3');
     assert.deepEqual(bad.warnings.map((w) => [w.code, w.params.reason ?? null]), [['BAD_NAME', 'at-sign'], ['AT_INSIDE_NAME', null]]);
     assert.equal(find(bad, 'x.example.com').data, 'a.example.com');
+    // in RDATA the issue names the target as read (one per "x.@" target), anchored on the record
+    const srv = Z('_sip._tcp.@ IN SRV 10 5 5060 sip.@');
+    assert.deepEqual(srv.warnings.map((w) => [w.code, w.params, w.name]), [
+      ['AT_INSIDE_NAME', { name: '_sip._tcp.example.com', raw: '_sip._tcp.@' }, '_sip._tcp.example.com'],
+      ['AT_INSIDE_NAME', { name: 'sip.example.com', raw: 'sip.@' }, '_sip._tcp.example.com']]);
   });
 
   test('RELATIVE_WITHOUT_ORIGIN per record when a later $ORIGIN exists; others kept', () => {

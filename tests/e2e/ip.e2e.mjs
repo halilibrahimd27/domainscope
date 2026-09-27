@@ -243,9 +243,9 @@ const PTR_ZONE = {
 
 /**
  * RIPEstat and ipwho.is answered in the page (installed after the zone script, which blocks
- * every other request): addresses in `window.__ipFake.limited` get HTTP 429 from RIPEstat, an
- * address in `window.__ipFake.slow` (ip → ms) is answered that much later (an abort still ends
- * the wait), and ipwho.is always says its quota is used up. `calls` lists "<dataset> <ip>" per
+ * every other request): addresses in `window.__ipFake.limited` when the request is made get
+ * HTTP 429 from RIPEstat, an address in `window.__ipFake.slow` (ip → ms) is answered that much
+ * later (an abort still ends the wait), and ipwho.is always says its quota is used up. `calls` lists "<dataset> <ip>" per
  * request.
  */
 const IP_FAKE_SCRIPT = `(() => {
@@ -264,8 +264,9 @@ const IP_FAKE_SCRIPT = `(() => {
       const ip = u.searchParams.get('resource');
       const call = u.pathname.split('/')[2];
       fake.calls.push(call + ' ' + ip);
+      const limited = fake.limited.includes(ip);
       if (fake.slow[ip]) await wait(fake.slow[ip], (init && init.signal) || (typeof input === 'object' && input && input.signal) || null);
-      if (fake.limited.includes(ip)) return new Response('Too Many Requests', { status: 429 });
+      if (limited) return new Response('Too Many Requests', { status: 429 });
       if (call === 'prefix-overview') {
         return json({ status: 'ok', data: { announced: true, asns: [{ asn: 64500, holder: 'EXAMPLE-NET - Example Networks B.V.' }],
           resource: ip.split('.').slice(0, 3).join('.') + '.0/24', block: { desc: 'Administered by RIPE NCC' } } });
@@ -412,6 +413,27 @@ async function offlineGroup(browser, server) {
       assert(focus, 'keyboard focus stays in the row');
     });
 
+    await step('Look up again once the limit is over: only the failed sources are asked, the cells fill in', async () => {
+      // A cached answer with failed sources is never served as it is: "try again in a few minutes" has to work.
+      const ip = '203.0.113.12';
+      await page.evaluate((x) => { window.__ipFake.limited = [x]; }, ip);
+      await gotoHash(page, `#/ip?ips=${ip},198.51.100.20`, 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      assertEqual(Object.keys((await info()).rows[ip].na), ['network', 'prefix', 'location'], 'n/a after the 429');
+      await page.evaluate(() => { window.__ipFake.limited = []; });
+      const before = (await calls()).length;
+      await page.click('[data-action="run"]');
+      await page.waitFor((x) => {
+        const tr = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === x);
+        return tr && !tr.classList.contains('is-pending') && !tr.querySelector('.na-mark') && !document.querySelector('[data-action="run"]').hidden;
+      }, { args: [ip], timeout: 15000, message: 'row filled in' });
+      const after = (await calls()).slice(before).sort();
+      assertEqual(after, [`maxmind-geo-lite ${ip}`, `prefix-overview ${ip}`], 'requests of the new lookup (the complete row and the PTR come from the cache)');
+      const i = await info();
+      assertEqual([Object.keys(i.rows[ip].na), i.rows[ip].retry], [[], null], 'no n/a, no Retry');
+      assertEqual(i.chips[0].state, 'ok', 'RIPEstat chip ok');
+    });
+
     await step('a chip Retry asks again for every row its service failed on, and only those', async () => {
       // Answers are cached per address for an hour (a retried one too): fresh addresses here.
       await page.evaluate(() => { window.__ipFake.limited = ['203.0.113.8', '203.0.113.9']; });
@@ -473,7 +495,7 @@ async function offlineGroup(browser, server) {
     });
 
     await step('a Retry still in flight when a new lookup starts is cancelled: the new run’s row settles, no busy Retry', async () => {
-      // 203.0.113.60 has a PTR record, so its partial answer (RIPEstat 429) is cached for the next run.
+      // 203.0.113.60 has a PTR record, so its answer is partial (RIPEstat 429) and cached; the next run asks RIPEstat again.
       const ip = '203.0.113.60';
       await page.evaluate((x) => { window.__ipFake.limited = [x]; }, ip);
       await gotoHash(page, `#/ip?ips=${ip},198.51.100.20`, 'ip');
@@ -485,6 +507,8 @@ async function offlineGroup(browser, server) {
         await page.click(`.ipi-retry[data-ip="${ip}"]`);
         await page.waitFor((x) => document.querySelector(`.ipi-retry[data-ip="${x}"]`)?.getAttribute('aria-busy') === 'true', { args: [ip], message: 'Retry busy' });
         await new Promise((resolve) => { setTimeout(resolve, 300); });
+        // The new run's own question to RIPEstat is still limited (the Retry's would have been answered).
+        await page.evaluate((x) => { window.__ipFake.limited = [x]; window.__ipFake.slow = {}; }, ip);
         await page.click('[data-action="run"]');
         await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'new run done' });
         // Past the moment the cancelled Retry would have answered.
@@ -492,10 +516,10 @@ async function offlineGroup(browser, server) {
         const i = await info();
         const row = i.rows[ip];
         assertEqual([Object.keys(row.na), row.retry, row.busy], [['network', 'prefix', 'location'], 'ripestat ipwhois ripestat-geo', false],
-          'the new run’s row: its own (cached) answer and a Retry ready to use');
+          'the new run’s row: its own answer and a Retry ready to use');
         assertEqual(i.chips[0].state, 'failed', 'the chip agrees with the row');
         // That Retry works: the row fills in.
-        await page.evaluate(() => { window.__ipFake.slow = {}; });
+        await page.evaluate(() => { window.__ipFake.limited = []; window.__ipFake.slow = {}; });
         await page.click(`.ipi-retry[data-ip="${ip}"]`);
         await page.waitFor((x) => {
           const tr = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === x);

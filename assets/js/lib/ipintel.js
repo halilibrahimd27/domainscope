@@ -445,8 +445,8 @@ function emptyInfo(ip, version) {
  * - Order: RIPEstat prefix-overview + maxmind-geo-lite (in parallel), then
  *   ipwho.is only to fill what RIPEstat could not answer. PTR comes from
  *   `dns.ptr()` (DohClient) or, without a DNS client, RIPEstat reverse-dns-ip.
- * - Results are cached per IP (1 h; complete failures are not cached) and
- *   concurrent calls for the same IP share one lookup.
+ * - Results are cached per IP (1 h; complete failures are not cached; a cached result with
+ *   failed sources asks those sources again) and concurrent calls for the same IP share one lookup.
  * - `concurrency` bounds simultaneous HTTP requests to the intel APIs
  *   (RIPEstat asks for ≤ 8 concurrent requests per client).
  *
@@ -649,7 +649,10 @@ export function createIpIntel({
     }
     if (!noCache) {
       const hit = infoCache.get(canonical);
-      if (hit) return cloneInfo(hit);
+      if (hit && !hit.errors.length) return cloneInfo(hit);
+      // A cached partial result asks its failed sources again ("try again in 5 min" has to work);
+      // what they answered before is not asked twice.
+      if (hit) return cloneInfo(await shared(infoInflight, canonical, signal, (sig) => retrySources(hit, { signal: sig })));
     }
     const result = await shared(infoInflight, canonical, signal, async (sig) => {
       const res = await lookupInfo(canonical, version, sig);

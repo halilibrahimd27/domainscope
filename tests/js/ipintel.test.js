@@ -512,6 +512,52 @@ test('retry: asks only the failed sources again, merges them and updates the cac
   assert.equal(cached.prefix, '140.82.121.0/24');
 });
 
+test('info: a cached result with failed sources asks them again, not the ones that answered', async () => {
+  const log = [];
+  let limited = true;
+  let ptrCalls = 0;
+  const f = mockFetch({
+    'prefix-overview': () => (limited ? new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '60' } }) : PO_GITHUB),
+    'maxmind-geo-lite': GEO_GITHUB,
+    'ipwho.is': IPWHO_GITHUB
+  }, { log });
+  const dns = { ptr: async () => { ptrCalls += 1; return ['lb.example.com']; } };
+  const intel = createIpIntel({ fetchImpl: f, dns, retries: 0 });
+  const first = await intel.info('140.82.121.4');
+  assert.deepEqual(first.errors.map((e) => e.source), ['ripestat']);
+  assert.equal(first.error, null, 'a partial result (ipwho.is filled the AS)');
+  // Still limited: the next lookup asks RIPEstat again and keeps the failure, with its new time.
+  let n = log.length;
+  const still = await intel.info('140.82.121.4');
+  assert.deepEqual(log.slice(n).map((u) => u.split('/')[4]), ['prefix-overview']);
+  assert.deepEqual(still.errors.map((e) => e.source), ['ripestat']);
+  assert.ok(still.errors[0].at >= first.errors[0].at);
+  // The service recovered: one request for what failed, nothing for PTR or the location that answered.
+  limited = false;
+  n = log.length;
+  const again = await intel.info('140.82.121.4');
+  assert.deepEqual(log.slice(n).map((u) => u.split('/')[4]), ['prefix-overview']);
+  assert.equal(ptrCalls, 1, 'the PTR answered the first time and is not asked again');
+  assert.deepEqual(again.errors, []);
+  assert.equal(again.prefix, '140.82.121.0/24');
+  assert.deepEqual(again.ptr, ['lb.example.com']);
+  // Complete now: served from the cache.
+  n = log.length;
+  const cached = await intel.info('140.82.121.4');
+  assert.equal(log.length, n);
+  assert.equal(cached.prefix, '140.82.121.0/24');
+  // Concurrent lookups of a cached partial result share one retry.
+  limited = true;
+  const other = createIpIntel({ fetchImpl: f, dns, retries: 0 });
+  await other.info('140.82.121.4');
+  limited = false;
+  n = log.length;
+  const [x, y] = await Promise.all([other.info('140.82.121.4'), other.info('140.82.121.4')]);
+  assert.equal(log.slice(n).length, 1, 'one prefix-overview request for both');
+  assert.equal(x.prefix, y.prefix);
+  assert.notEqual(x, y, 'each caller gets its own copy');
+});
+
 test('retry: explicit sources, a fallback nobody needs any more, a failure that stays', async () => {
   const log = [];
   let ptrCalls = 0;

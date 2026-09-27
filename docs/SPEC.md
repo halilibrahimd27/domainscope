@@ -598,7 +598,8 @@ IpInfo = { ip, version, private: boolean, provider: provider|null, ptr: string[]
 //   lookup answered SERVFAIL, REFUSED … */, at /* ms */ } (read by §5.28), and createIpIntel(...).retry(prev, { sources?, signal }) -> Promise<IpInfo>: asks again only the given sources
 //   (default: every source in prev.errors), merged like info() does (RIPEstat first; ipwho.is only for what is still missing, and
 //   not asked at all when nothing is), replacing the old failures of the sources asked; a result that learned something is cached.
-//   Rejects only with an AbortError from `signal`.
+//   Rejects only with an AbortError from `signal`. info() on a cached result that has errors[] runs this retry (shared in flight)
+//   instead of returning the old failures, so a later lookup really asks the failed sources again.
 export function describeNetwork(target /* IP or CIDR */, { fetchImpl, signal, noCache = false } = {}) -> Promise<NetworkDescription>
   // Who announces an origin network, ON DEMAND: the views call it on a click, the scanner never does.
   // ONE RIPEstat prefix-overview request for the block's network address; private / reserved space is never looked up.

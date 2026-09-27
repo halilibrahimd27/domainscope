@@ -1602,16 +1602,17 @@ const CLI_SKIPS = new Set(['private', 'reserved', 'bad-name', 'bad-port', 'over-
  * @returns {{ targets: string[], names: string[], rows: number }}
  */
 export function cliPlan(rows) {
-  const targets = [];
-  const names = [];
+  // Sets keep the order of first appearance, and every row past the cap can be here.
+  const targets = new Set();
+  const names = new Set();
   let count = 0;
   for (const r of Array.isArray(rows) ? rows : []) {
     const inPlan = (r.state === 'skipped' && CLI_SKIPS.has(r.skip))
       || (hasVerdict(r) && (r.status === 'TIMEOUT' || r.status === 'CLOSED'));
     if (!inPlan) continue;
     count += 1;
-    if (!targets.includes(r.ip)) targets.push(r.ip);
-    if (!names.includes(r.name)) names.push(r.name);
+    targets.add(r.ip);
+    names.add(r.name);
   }
-  return { targets, names, rows: count };
+  return { targets: [...targets], names: [...names], rows: count };
 }

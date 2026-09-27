@@ -67,6 +67,16 @@ function hasServiceLabel(name) {
   return name.split('.').some((label) => label.startsWith('_'));
 }
 
+/**
+ * The mailbox domain of an SOA RNAME ('hostmaster.example.com' → 'example.com'),
+ * honouring a '\.' escape in the local part ('dns\.admin.example.com' →
+ * 'example.com'), as dnswire's decoder does for `email`. Null when there is none.
+ */
+function soaMailDomain(rname) {
+  const m = /^(?:[^.\\]|\\.)+\.(.+)$/.exec(rname);
+  return m ? m[1] : null;
+}
+
 /** Extract the host part of a `mailto:` / URL value (for iodef, rua, ruf). */
 function hostFromUri(uri) {
   const s = String(uri || '').trim();
@@ -99,13 +109,15 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
 
   const names = new Set();
   const evidence = [];
+  const evidenceSeen = new Set();
   const external = new Set();
   const ips = new Set();
 
   /**
    * Record a referenced name: in-domain → names + evidence, else externalRefs.
    * An in-domain service-label name (`_dmarc.<domain>`, a CNAME'd probe name)
-   * is dropped.
+   * is dropped. The same (name, from, record) is kept once: the SOA carried in
+   * the authority section of every NXDOMAIN / NODATA answer is one piece of evidence.
    */
   const addName = (value, from, record) => {
     const norm = normalizeHostname(String(value ?? ''), { allowSingleLabel: true });
@@ -114,7 +126,11 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
       if (norm === apex) return; // the apex itself is not a discovery
       if (hasServiceLabel(norm)) return; // a record name, never a host
       names.add(norm);
-      evidence.push({ name: norm, from, record: String(record ?? norm) });
+      const rec = String(record ?? norm);
+      const key = `${norm}\u0000${from}\u0000${rec}`;
+      if (evidenceSeen.has(key)) return;
+      evidenceSeen.add(key);
+      evidence.push({ name: norm, from, record: rec });
     } else {
       external.add(norm);
     }
@@ -186,10 +202,8 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
         case 'SOA':
           if (rr.data) {
             if (typeof rr.data.mname === 'string') addName(rr.data.mname, 'SOA', rr.data.mname);
-            if (typeof rr.data.rname === 'string') {
-              const dot = rr.data.rname.indexOf('.');
-              if (dot !== -1) addName(rr.data.rname.slice(dot + 1), 'SOA', rr.data.rname);
-            }
+            const mailDomain = typeof rr.data.rname === 'string' ? soaMailDomain(rr.data.rname) : null;
+            if (mailDomain) addName(mailDomain, 'SOA', rr.data.rname);
           }
           break;
         case 'HTTPS':

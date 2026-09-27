@@ -185,6 +185,34 @@ describe('mineDnsNames', () => {
     assert.deepEqual(evidence, []);
   });
 
+  test('SOA RNAME: an escaped dot stays in the mailbox; the mail domain is still mined', async () => {
+    const soa = (rname) => ({
+      ...ZONE,
+      [`${APEX}|SOA`]: [{ name: APEX, type: 'SOA', ttl: 3600, data: { mname: 'ns1.example.net', rname, serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 } }]
+    });
+    const escaped = await mineDnsNames(APEX, { dns: makeDns(soa('dns\\.admin.example.net')) });
+    assert.ok(!escaped.names.includes('admin.example.net'), 'dns\\.admin is a mailbox, not a host');
+
+    const nested = await mineDnsNames(APEX, { dns: makeDns(soa('hostmaster.corp.example.net')) });
+    assert.ok(nested.names.includes('corp.example.net'));
+    assert.ok(nested.evidence.some((e) => e.name === 'corp.example.net' && e.from === 'SOA'));
+  });
+
+  test('the SOA repeated in every negative answer is one evidence row', async () => {
+    const soaRr = { name: APEX, type: 'SOA', ttl: 3600, data: { mname: 'ns1.example.net', rname: 'hostmaster.example.net', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 } };
+    const dns = {
+      async query(name, type) {
+        const answers = ZONE[`${name}|${type}`] || [];
+        // NXDOMAIN / NODATA answers carry the zone's SOA in the authority section
+        return { ok: true, rcode: answers.length ? 'NOERROR' : 'NXDOMAIN', answers, authorities: answers.length ? [] : [soaRr], additionals: [] };
+      }
+    };
+    const { evidence } = await mineDnsNames(APEX, { dns });
+    const keys = evidence.map((e) => `${e.name}|${e.from}|${e.record}`);
+    assert.equal(new Set(keys).size, keys.length, 'no duplicate evidence rows');
+    assert.equal(evidence.filter((e) => e.name === 'ns1.example.net' && e.from === 'SOA').length, 1);
+  });
+
   test('invalid input returns empty', async () => {
     assert.deepEqual(await mineDnsNames('', { dns: makeDns() }), { names: [], evidence: [], externalRefs: [] });
     assert.deepEqual(await mineDnsNames(APEX, {}), { names: [], evidence: [], externalRefs: [] });

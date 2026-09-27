@@ -14,8 +14,9 @@
  * against a still-fresh cached module of the previous one ("does not provide an export named …").
  * Every import inside assets/ is relative (data files too, through import.meta.url), so the whole
  * module graph moves with the prefix and each deploy gets new module URLs. A tab left open across
- * a deploy then fails to fetch v/<old>/…; app.js offers a page reload for that
- * (`isStaleModuleError`). The repository itself stays build-free: `npm run serve` serves it as is.
+ * a deploy then fails to fetch v/<old>/…; app.js confirms that its own v/<old>/ is gone (404,
+ * `confirmStaleModule`) and offers a page reload. The repository itself stays build-free:
+ * `npm run serve` serves it as is.
  *
  * Usage:
  *   node tools/assemble-site.mjs <out> [version]   # version: [A-Za-z0-9._-]{1,64};
@@ -45,6 +46,14 @@ export const VERSION_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const SKIP_NAMES = new Set(['__pycache__', '.DS_Store', 'Thumbs.db']);
 
 /**
+ * An href / src attribute in any HTML spelling: any case, spaces around '=', and a double-quoted,
+ * single-quoted or unquoted value (groups: lead, "value", 'value', value).
+ */
+const URL_ATTR_RE = /(\s(?:href|src)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+/** A page-relative assets/ URL the rewrite does not cover (srcset, imagesrcset) — refused. */
+const UNVERSIONED_RE = /\s(?:href|src|srcset|imagesrcset)\s*=\s*["']?(?:\.\/)?assets\//i;
+
+/**
  * Site-relative prefix of the versioned assets.
  * @param {string} version
  * @returns {string} e.g. 'v/0123456789ab/assets/'
@@ -57,7 +66,8 @@ export function versionedAssetsPath(version) {
 }
 
 /**
- * Point every `href="assets/…"` / `src="assets/…"` of index.html at the versioned directory.
+ * Point every `href="assets/…"` / `src="assets/…"` of index.html (also `./assets/…`, single-quoted,
+ * unquoted or upper-case) at the versioned directory, keeping the attribute's quotes.
  * @param {string} html
  * @param {string} version
  * @returns {{ html: string, count: number }} count: URLs rewritten
@@ -65,24 +75,29 @@ export function versionedAssetsPath(version) {
 export function versionIndexHtml(html, version) {
   const prefix = versionedAssetsPath(version);
   let count = 0;
-  const out = String(html).replace(/(\s(?:href|src)=")assets\//g, (_, attr) => {
+  const out = String(html).replace(URL_ATTR_RE, (whole, lead, dq, sq, bare) => {
+    const value = dq ?? sq ?? bare;
+    const local = /^(?:\.\/)?assets\//.exec(value);
+    if (!local) return whole;
     count += 1;
-    return `${attr}${prefix}`;
+    const quote = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
+    return `${lead}${quote}${prefix}${value.slice(local[0].length)}${quote}`;
   });
   return { html: out, count };
 }
 
 /**
- * Relative URLs in href="…" / src="…" attributes (no scheme, no fragment-only, no protocol-relative).
+ * Relative URLs in href / src attributes, in any spelling versionIndexHtml rewrites (no scheme,
+ * no fragment-only, no protocol-relative).
  * @param {string} html
  * @returns {string[]}
  */
 export function localUrls(html) {
   const urls = [];
-  for (const m of String(html).matchAll(/\s(?:href|src)="([^"]*)"/g)) {
-    const u = m[1];
+  for (const m of String(html).matchAll(URL_ATTR_RE)) {
+    const u = m[2] ?? m[3] ?? m[4];
     if (!u || u.startsWith('#') || u.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(u)) continue;
-    urls.push(u.split(/[?#]/)[0]);
+    urls.push(u.split(/[?#]/)[0].replace(/^\.\//, ''));
   }
   return urls;
 }
@@ -98,7 +113,8 @@ function isInside(child, parent) {
  * @param {{ out: string, version: string, root?: string }} opts
  * @returns {Promise<{ out: string, version: string, assetsPath: string, rewritten: number }>}
  * @throws when `out` is the repository, contains it or lies inside a copied directory; when
- *   index.html references no assets/ URL; when a local URL of the new index.html is missing
+ *   index.html references no assets/ URL, or one the rewrite does not cover (srcset); when a
+ *   local URL of the new index.html is missing
  */
 export async function assembleSite({ out, version, root = REPO_ROOT }) {
   const assetsPath = versionedAssetsPath(version);
@@ -111,6 +127,8 @@ export async function assembleSite({ out, version, root = REPO_ROOT }) {
 
   const index = versionIndexHtml(await readFile(path.join(src, 'index.html'), 'utf8'), version);
   if (!index.count) throw new Error('index.html references no assets/ URL; nothing to version');
+  const unversioned = UNVERSIONED_RE.exec(index.html);
+  if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned[0].trim()}`);
 
   await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await mkdir(target, { recursive: true });

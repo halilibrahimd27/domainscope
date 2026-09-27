@@ -6,7 +6,7 @@
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
@@ -40,6 +40,16 @@ describe('versionIndexHtml / versionedAssetsPath', () => {
     assert.match(r.html, /https:\/\/example\.com\/assets\/x\.js/);
     assert.match(r.html, /<p>assets\/js\/app\.js stays text<\/p>/);
     assert.match(r.html, /data-href="assets\/x"/);
+  });
+
+  test('any attribute spelling is rewritten (quotes kept): single-quoted, unquoted, upper-case, spaced, ./', () => {
+    const html = `<link href='assets/a.css'><script src=assets/b.js></script><LINK HREF="assets/c.css">`
+      + `<link href = "assets/d.css"><script src="./assets/e.js"></script><a href='https://example.com/assets/f'>x</a>`;
+    const r = versionIndexHtml(html, 'v1');
+    assert.equal(r.count, 5);
+    assert.equal(r.html, `<link href='v/v1/assets/a.css'><script src=v/v1/assets/b.js></script><LINK HREF="v/v1/assets/c.css">`
+      + `<link href = "v/v1/assets/d.css"><script src="v/v1/assets/e.js"></script><a href='https://example.com/assets/f'>x</a>`);
+    assert.deepEqual(localUrls(html), ['assets/a.css', 'assets/b.js', 'assets/c.css', 'assets/d.css', 'assets/e.js']);
   });
 
   test('refuses versions that are not a plain path segment', () => {
@@ -99,6 +109,24 @@ describe('assembleSite', () => {
     await assembleSite({ out: other, version: 'two' });
     assert.deepEqual(readdirSync(join(other, 'v')), ['two']);
     assert.match(readFileSync(join(other, 'index.html'), 'utf8'), /src="v\/two\/assets\/js\/app\.js"/);
+  });
+
+  test('checks every attribute spelling for missing files, and refuses an assets/ URL it cannot rewrite', async () => {
+    const root = join(tmp, 'repo');
+    const write = (rel, text = '') => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    for (const f of ['favicon.svg', '.nojekyll', 'cli/ssl_origin_scan.py', 'assets/js/app.js', 'assets/css/a.css']) write(f);
+    const site = join(tmp, 'edge');
+    write('index.html', `<link rel=stylesheet href='assets/css/a.css'><script type=module SRC=assets/js/app.js></script>`);
+    assert.equal((await assembleSite({ out: site, version: 'e1', root })).rewritten, 2);
+    assert.equal(readFileSync(join(site, 'index.html'), 'utf8'),
+      `<link rel=stylesheet href='v/e1/assets/css/a.css'><script type=module SRC=v/e1/assets/js/app.js></script>`);
+    write('index.html', `<link rel=stylesheet href='assets/css/gone.css'><script type=module src="assets/js/app.js"></script>`);
+    await assert.rejects(assembleSite({ out: site, version: 'e1', root }), /not in the bundle: v\/e1\/assets\/css\/gone\.css/);
+    write('index.html', `<img srcset="assets/css/a.css 1x"><script type=module src="assets/js/app.js"></script>`);
+    await assert.rejects(assembleSite({ out: site, version: 'e1', root }), /does not rewrite: srcset="assets\//);
   });
 
   test('refuses to delete the repository or to copy a directory into itself', async () => {

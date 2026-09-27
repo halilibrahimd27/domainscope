@@ -935,6 +935,11 @@ def _host_text(value: str) -> Optional[str]:
 # ss, ς to σ, ZWJ / ZWNJ dropped - while browsers (non-transitional processing) keep them.
 _IDN_DEVIATION_RE = re.compile('([\u00df\u03c2\u200c\u200d])')
 _JOINERS = ('\u200c', '\u200d')  # ZWNJ, ZWJ
+# UTS #46 maps small Cherokee letters to capital ones (Python's lower() goes the other way,
+# and IDNA 2003 knows no small Cherokee letter), so both spellings give the web app's name.
+_CHEROKEE_CAPITAL = dict([(0xAB70 + i, 0x13A0 + i) for i in range(0x50)]
+                         + [(0x13F8 + i, 0x13F0 + i) for i in range(6)])
+_CHEROKEE_RE = re.compile('[\u13a0-\u13f5]')
 _VIRAMA = 9  # canonical combining class of a virama (RFC 5892 CONTEXTJ for ZWJ / ZWNJ)
 
 
@@ -947,13 +952,17 @@ def _idna_label(label: str) -> Optional[str]:
     a virama, so a Persian ZWNJ name needs its ``xn--`` form); the text around it gets the
     codec's nameprep mapping, and the whole label its bidi rule (``ς`` next to a Hebrew
     letter mixes directions). A label may not start with a combining mark either: the web
-    app rejects both.
+    app rejects both. Cherokee letters stay capital, as UTS #46 maps them (nameprep lowers
+    them with today's Unicode data, so such a label is prepared here, not by the codec).
     """
     label = label.replace('\u1e9e', '\u00df')  # capital sharp s
+    label = label.translate(_CHEROKEE_CAPITAL)
     if not label or unicodedata.category(label[0]).startswith('M'):
         return None
+    if label.startswith('xn--'):
+        return None  # an ACE prefix on a non-ASCII label: refused by the codec and the web app
     try:
-        if not _IDN_DEVIATION_RE.search(label):
+        if not _IDN_DEVIATION_RE.search(label) and not _CHEROKEE_RE.search(label):
             return label.encode('idna').decode('ascii').lower()
         out = ''
         for part in _IDN_DEVIATION_RE.split(label):
@@ -964,7 +973,7 @@ def _idna_label(label: str) -> Optional[str]:
             elif part in ('\u00df', '\u03c2'):
                 out += part
             elif part:
-                out += _idna_codec.nameprep(part)
+                out += _idna_codec.nameprep(part).translate(_CHEROKEE_CAPITAL)
         # RFC 3454 section 6, as nameprep checks a label: right-to-left letters rule out
         # left-to-right ones (ß, ς are) and must start and end the label.
         bidi = [unicodedata.bidirectional(char) for char in out]
@@ -986,8 +995,6 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
     (``2026092401``, ``127.1``, ``0x7f.0x1`` - see :func:`is_numeric_host`).
     ``allow_wildcard`` permits a single leading ``*.`` label.
     """
-    for dot in _IDEOGRAPHIC_DOTS:  # label separators in UTS #46, as in the web app
-        value = value.replace(dot, '.')
     text = _host_text(value)
     if not text:
         return None
@@ -997,6 +1004,12 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
             return None
         wildcard = True
         text = text[2:]
+    # Label separators in UTS #46, mapped as the web app does: after lowercasing (a final
+    # sigma before one stays final) and after the wildcard test (``*。`` is no wildcard).
+    for dot in _IDEOGRAPHIC_DOTS:
+        text = text.replace(dot, '.')
+    if text.endswith('.'):
+        text = text[:-1]
     if not text or normalize_ip(text) is not None:
         return None
     labels = []

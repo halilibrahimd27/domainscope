@@ -145,6 +145,14 @@ IDN_CASES = {
     '\u05d0\u05d1.\u00df.example.com': 'xn--4dbc.xn--zca.example.com',  # label by label
     '\u0301\u00df.example.com': None,     # a leading combining mark
     '\u0301a.example.com': None,
+    '\u0391\u03a3\u3002example.com': 'xn--mxa8a.example.com',  # final sigma before an ideographic dot
+    '\u0391\u03a3.example.com': 'xn--mxa0b.example.com',
+    '*\u3002stra\u00dfe.example.com': None,  # an ideographic dot never makes a wildcard
+    'xn--\u00df.example.com': None,       # an ACE prefix on a non-ASCII label
+    '\u13a0.example.com': 'xn--58d.example.com',  # Cherokee stays capital (UTS #46)
+    '\uab70.example.com': 'xn--58d.example.com',
+    '\u13f8a.example.com': 'xn--a-mei.example.com',
+    '\u13a0\u00df.example.com': 'xn--zca517g.example.com',
 }
 
 

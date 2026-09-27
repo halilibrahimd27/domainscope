@@ -53,7 +53,7 @@ registerStrings('tr', {
   'srcst.naLabel': 'alınamadı',
   'srcst.status': '{source}: {reason}',
   'srcst.retry': 'Yeniden dene',
-  'srcst.retryTitle': '{sources} yeniden sorgulansın',
+  'srcst.retryTitle': '{sources} yeniden sorgulanır',
   'srcst.retryFor': 'Yeniden dene: {target} ({sources})',
   'srcst.source.ripestat': 'RIPEstat',
   'srcst.source.ripestat-geo': 'RIPEstat (konum)',

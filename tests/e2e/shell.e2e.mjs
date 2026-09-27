@@ -363,7 +363,7 @@ async function jobsGroup(browser, server) {
       });
       assert(motion !== null && motion < 0.01, `ring transition off: ${motion}`);
       const sr = (await signals()).ring.sr;
-      assert(/^, çalışıyor, %\d+ tamam$/.test(sr), `TR screen-reader text: ${sr}`);
+      assert(/^, çalışıyor, %\d+ tamamlandı$/.test(sr), `TR screen-reader text: ${sr}`);
       await shot(jobs, 'desktop-dark-tr-job-elsewhere');
       await jobs.evaluate(() => { window.__dnsDelay = 0; });
       await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });

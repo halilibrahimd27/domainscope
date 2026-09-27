@@ -40,7 +40,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'jobs.running': 'çalışıyor',
-  'jobs.runningPercent': 'çalışıyor, {percent} tamam',
+  'jobs.runningPercent': 'çalışıyor, {percent} tamamlandı',
   'jobs.notify': 'Bitince bildir',
   'jobs.notifyTitle': '30 saniyeden uzun süren bir iş siz başka yerdeyken bitince masaüstü bildirimi gönderilir. Tarayıcınız önce izin ister; seçim sayfayı kapatana kadar geçerlidir.',
   'jobs.notifyBlocked': 'Bu site için masaüstü bildirimleri tarayıcınızda engellenmiş.',

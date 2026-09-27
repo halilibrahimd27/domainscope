@@ -63,7 +63,7 @@ import {
 import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
 import { errorKind, splitList } from '../lib/util.js';
-import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
@@ -1205,6 +1205,21 @@ const lastRunDomains = () => (session.run && session.run.domainsInput) || null;
 /** The domains step 2 holds, as a scan reads them. */
 const stepDomains = (text) => parseDomainsInput(text).domains;
 
+/**
+ * A route without a domain (the nav link back to the kept scan): step 2 holding only a domain
+ * carried over since the scan goes back to the scan's domains, as the chip and the kept result
+ * did (lib/session.js backToLastRun). Domains the user typed stay.
+ * @returns {boolean} whether step 2 changed
+ */
+function backToLastScan() {
+  const run = session.run;
+  if (!run || run.status === 'running' || !backToLastRun(session.domainsText, session.carried, lastRunDomains(), stepDomains)) return false;
+  session.domainsText = lastRunDomains().join('\n');
+  session.carried = null;
+  session.domainsFromCert = false;
+  return true;
+}
+
 // "Delete all local data" (About, or Settings on any view) forgets step 2 and the last scan with
 // its checks, stopping what runs; the shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
@@ -1433,7 +1448,7 @@ export function mount(container, ctx) {
     session.domainsText = fromRoute.join('\n');
     session.carried = isFillOnly(ctx.params) ? session.domainsText : null;
     session.domainsFromCert = false;
-  }
+  } else if (!fromRoute.length) backToLastScan();
 
   /* --- Zone File hand-off ("Find certificate targets") ---------------------- */
   // A one-shot intent pre-fills step 2 with the zone's domain and presets exact mode; it never
@@ -2294,7 +2309,15 @@ export function mount(container, ctx) {
     },
     applyParams(p, sp) {
       const list = routeDomains(sp, p);
-      if (list.length && (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains, session.carried))) {
+      if (!list.length) {
+        session.domainsText = domainsField.value;
+        if (backToLastScan()) {
+          domainsField.value = session.domainsText;
+          domainsField.setError(null);
+          renderDomainsHint();
+          renderRunSummary();
+        }
+      } else if (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains, session.carried)) {
         session.domainsText = list.join('\n');
         session.carried = isFillOnly(p) ? session.domainsText : null;
         session.domainsFromCert = false;

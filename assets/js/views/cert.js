@@ -49,7 +49,7 @@ import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
 import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
-import { fillReplaces } from '../lib/session.js';
+import { backToLastRun, fillReplaces } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -1823,6 +1823,14 @@ export function mount(container, ctx) {
     if (ctForm.last && ctForm.last.host !== carried) ctForm.last = null;
     ctForm.text = carried;
     ctForm.carried = carried;
+  } else if (!ctx.params.host && !ctForm.running) {
+    // The link back to the kept certificate: a field that holds only a host carried over since
+    // goes back to the certificate's host, as the chip did (lib/session.js backToLastRun).
+    const back = lastCtLookup(load);
+    if (backToLastRun(ctForm.text, ctForm.carried, back, ctFieldHosts)) {
+      ctForm.text = back[0];
+      ctForm.carried = null;
+    }
   }
 
   const loaderHost = h('div');

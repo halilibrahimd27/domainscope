@@ -194,6 +194,27 @@ export function fillReplaces(text, lastRun, entries, carried = null) {
   return typeof carried === 'string' && !!carried.trim() && holds(entries(carried));
 }
 
+/**
+ * A tool that keeps its own state, opened on a route without a target (the nav link back to its
+ * kept result): does its box go back to the last run's query? Only when it still holds exactly
+ * a target it took from a carry since that run — checking A across the tools, then B, then A
+ * again leaves B in the box while the chip and the kept result are about A again. Never over a
+ * draft of the user's, never without a finished run, never when the box already holds the run.
+ * @param {string} text the box's text
+ * @param {string|null} carried the text the box last took from a carried target (null: none)
+ * @param {string[]|null|undefined} lastRun the entries of the tool's last finished run (null: none)
+ * @param {(text: string) => string[]} entries how the tool reads its box
+ * @returns {boolean}
+ */
+export function backToLastRun(text, carried, lastRun, entries) {
+  if (typeof carried !== 'string' || !carried.trim() || !Array.isArray(lastRun) || !lastRun.length) return false;
+  if (typeof entries !== 'function') return false;
+  const set = (list) => [...new Set(list)].sort();
+  const same = (a, b) => a.length > 0 && a.length === b.length && a.every((x, i) => x === b[i]);
+  const box = set(entries(String(text ?? '')));
+  return same(box, set(entries(carried))) && !same(box, set(lastRun));
+}
+
 /* ------------------------------------------------------------------------ */
 /* Routes                                                                   */
 /* ------------------------------------------------------------------------ */

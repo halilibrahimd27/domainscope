@@ -517,6 +517,45 @@ async function desktop(browser, server) {
       }
     });
 
+    await run.step('A, then B, then A again: Bulk Resolve\'s box goes back to its kept job about A, as the chip does', async () => {
+      const lookup = async (name) => {
+        await clickNav(page, 'lookup');
+        await page.type('[data-role="lookup-name"]', name);
+        await page.click('.lkp-form [data-action="run"]');
+        await page.waitFor((n) => document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent === n,
+          { args: [name], message: `target ${name}` });
+        await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: `lookup of ${name}` });
+      };
+      const bulk = () => page.evaluate(() => ({
+        box: document.querySelector('[data-role="bulk-input"]').value.trim(),
+        job: document.querySelector('.bulk-results')?.dataset.job || null
+      }));
+      const [a, b] = [`mx.${APEX}`, `ns2.${APEX}`];
+      await lookup(a);
+      await clickNav(page, 'bulk');
+      assertEqual((await bulk()).box, a, 'A filled in');
+      const prev = (await bulk()).job;
+      await page.click('[data-action="bulk-run"]');
+      await waitJobDone(page, prev);
+      const job = (await bulk()).job;
+      await lookup(b);
+      await clickNav(page, 'bulk');
+      assertEqual(await bulk(), { box: b, job }, 'B over the job about A, the job still shown');
+      await lookup(a);
+      queries = await dnsCount(page);
+      assertEqual((await page.evaluate(shellInfo)).hrefs.bulk, '#/bulk', 'the kept job is about A: the link leads back to it');
+      await clickNav(page, 'bulk');
+      assertEqual(await bulk(), { box: a, job }, 'the box goes back to the job about A (the chip\'s target), no draft lost');
+      await assertQuiet(page, queries, 'back to A');
+      // A draft typed over B is never taken back.
+      await lookup(b);
+      await clickNav(page, 'bulk');
+      await page.type('[data-role="bulk-input"]', `www.${APEX}`);
+      await lookup(a);
+      await clickNav(page, 'bulk');
+      assertEqual((await bulk()).box, `www.${APEX}`, 'a draft stays');
+    });
+
     await run.step('DNS Lookup follows the targets Domain Health sets, twice in a row, over its kept answers', async () => {
       for (const name of [`www.${APEX}`, `shop.${APEX}`]) {
         await clickNav(page, 'health');

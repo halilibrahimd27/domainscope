@@ -32,7 +32,7 @@ import { lookupServers } from '../lib/inventory.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
-import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
+import { backToLastRun, commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { bulkFraction } from '../lib/jobprogress.js';
 import { ipFieldStatus, sourceStatus, EXPORT_NA } from '../lib/sourcestatus.js';
@@ -503,6 +503,20 @@ const lastJobNames = () => (session.job ? session.job.names : null);
 /** The names a list holds, as a job would resolve them. */
 const listNames = (text) => parseBulkInput(text).names;
 
+/**
+ * A route without names (the nav link back to the kept job): a list that holds only a name
+ * carried over since the job goes back to the job's names, as the chip and the kept result did
+ * (lib/session.js backToLastRun). A list the user typed stays.
+ * @returns {boolean} whether the list changed
+ */
+function backToJob() {
+  const job = session.job;
+  if (!job || job.status === 'running' || !backToLastRun(session.text, session.carried, lastJobNames(), listNames)) return false;
+  session.text = job.names.join('\n');
+  session.carried = null;
+  return true;
+}
+
 // "Delete all local data" (About, or Settings on any view) forgets the pasted list and the last
 // job, stopping one that runs; the shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
@@ -825,7 +839,7 @@ export function mount(container, ctx) {
   if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastJobNames(), listNames, session.carried))) {
     session.text = fromRoute.join('\n');
     session.carried = isFillOnly(ctx.params) ? session.text : null;
-  }
+  } else if (!fromRoute.length) backToJob();
   if (session.text === null) session.text = '';
 
   /* --- input ------------------------------------------------------------------------ */
@@ -1048,7 +1062,15 @@ export function mount(container, ctx) {
     },
     applyParams(p) {
       const list = splitList(p.names || '');
-      if (!list.length) return;
+      if (!list.length) {
+        session.text = area.value;
+        if (backToJob()) {
+          area.value = session.text;
+          area.setError(null);
+          renderParse();
+        }
+        return;
+      }
       if (isFillOnly(p) && !fillReplaces(area.value, lastJobNames(), listNames, session.carried)) return;
       area.value = list.join('\n');
       session.text = area.value;

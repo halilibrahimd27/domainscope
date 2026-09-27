@@ -74,7 +74,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
-import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
@@ -2769,6 +2769,20 @@ const lastRunDomains = () => (session.run ? session.run.config.domains : null);
 /** The domains the search box holds, as a scan reads them. */
 const boxDomains = (text) => parseTargets(text).domains;
 
+/**
+ * A route without a domain (the nav link back to the kept scan): a box that holds only a domain
+ * carried over since the scan goes back to the scan's domains, as the chip and the kept result
+ * did (lib/session.js backToLastRun). A box the user typed in stays.
+ * @returns {boolean} whether the box changed
+ */
+function backToLastScan() {
+  const run = session.run;
+  if (!run || run.status === 'running' || !backToLastRun(session.text, session.carried, lastRunDomains(), boxDomains)) return false;
+  session.text = run.config.domains.join(', ');
+  session.carried = null;
+  return true;
+}
+
 /** Forget the search box and the last scan, stopping one that runs ("Delete all local data"). */
 function forgetRuns() {
   const run = session.run;
@@ -3070,7 +3084,7 @@ export function mount(container, ctx) {
   if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.text, lastRunDomains(), boxDomains, session.carried))) {
     session.text = fromRoute.join(', ');
     session.carried = isFillOnly(ctx.params) ? session.text : null;
-  }
+  } else if (!fromRoute.length) backToLastScan();
 
   /* --- Zone File hand-off ------------------------------------------------------ */
   // A one-shot intent from the Zone File view ("Scan now"): pre-fill the zone's domain, preset how
@@ -4041,7 +4055,19 @@ export function mount(container, ctx) {
       const tab = parseSubTab(params.tab);
       if (tab && ui) ui.showTab(tab);
       const list = routeTargets(new URLSearchParams(params), params);
-      if (!list.length) return;
+      if (!list.length) {
+        session.text = domainField.value;
+        if (backToLastScan()) {
+          domainField.value = session.text;
+          domainField.setError(null);
+          renderScope();
+          renderZoneChip();
+          renderPlan();
+          if (options.locales === null) renderLangs();
+          renderAdvSummary();
+        }
+        return;
+      }
       if (isFillOnly(params) && !fillReplaces(domainField.value, lastRunDomains(), boxDomains, session.carried)) return;
       domainField.value = list.join(', ');
       session.text = domainField.value;

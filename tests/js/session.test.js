@@ -8,7 +8,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  parseTarget, commonTarget, targetFits, fillRoute, isFillOnly, fillReplaces, routeKey, targetSupersedes, carryRoute, restorePlan,
+  parseTarget, commonTarget, targetFits, fillRoute, isFillOnly, fillReplaces, backToLastRun, routeKey, targetSupersedes, carryRoute, restorePlan,
   normalizeResult, keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
 } from '../../assets/js/lib/session.js';
 import { VIEWS, buildRoute, parseRoute, navHref, pageSession } from '../../assets/js/app.js';
@@ -124,6 +124,19 @@ describe('routes', () => {
     assert.equal(fillReplaces('example.org', ['example.com'], read), false, 'typed after the run');
     assert.equal(fillReplaces('example.com, example.org', ['example.com'], read), false, 'one added');
     assert.equal(fillReplaces('bad!', [], read), false, 'junk the user typed is a draft too');
+  });
+
+  test('backToLastRun: a bare route takes a box that holds only a later carried target back to the last run (A, B, A)', () => {
+    const read = (text) => text.split(/[\s,]+/).filter(Boolean).map((x) => x.toLowerCase());
+    assert.equal(backToLastRun('www.example.com', 'www.example.com', ['example.com'], read), true, 'B carried over the run on A');
+    assert.equal(backToLastRun(' WWW.example.com ', 'www.example.com', ['example.com'], read), true, 'as the tool reads its box');
+    assert.equal(backToLastRun('example.org', 'www.example.com', ['example.com'], read), false, 'typed over the carried target: a draft');
+    assert.equal(backToLastRun('example.com', 'example.com', ['example.com'], read), false, 'the box holds the run already');
+    assert.equal(backToLastRun('www.example.com', null, ['example.com'], read), false, 'nothing carried: the user typed it');
+    assert.equal(backToLastRun('www.example.com', 'www.example.com', null, read), false, 'no finished run to go back to');
+    assert.equal(backToLastRun('www.example.com', 'www.example.com', [], read), false, 'an empty run');
+    assert.equal(backToLastRun('', 'www.example.com', ['example.com'], read), false, 'an emptied box stays empty');
+    assert.equal(backToLastRun('www.example.com', 'www.example.com', ['example.com'], null), false, 'no reader');
   });
 
   test('fillReplaces: the target the tool took before is no draft either, so the box follows every newer one', () => {

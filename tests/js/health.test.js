@@ -1259,6 +1259,43 @@ test('DNSSEC broken: SERVFAIL without CD, answer with CD → only dnssec.broken 
   const r2 = await run('example.com', lame);
   assert.equal(r2.dnssec.broken, false);
   has(r2, 'soa.error', 'warn');
+
+  // a name below a broken zone: its DS query SERVFAILs as well
+  zone['www.example.com'] = { A: ['192.0.2.40'] };
+  const sub = await run('www.example.com', fakeDns(zone, { broken: ['example.com'] }));
+  assert.equal(sub.dnssec.broken, true);
+  has(sub, 'dnssec.broken', 'error');
+});
+
+test('DNSSEC broken needs a DS and a failing SOA: other SERVFAILs keep their own checks', async () => {
+  const unsigned = goodZone();
+  delete unsigned['example.com'].DS;
+  delete unsigned['example.com'].DNSKEY;
+  /** SERVFAIL for some example.com types unless CD=1 (a flaky server, not DNSSEC). */
+  const flaky = (zone, types) => {
+    const dns = fakeDns(zone);
+    dns.query = ((orig) => async (n, t, o = {}) => (!o.cd && n === 'example.com' && types.includes(t)
+      ? { ...(await orig(n, t, o)), rcode: 'SERVFAIL', answers: [], authorities: [] }
+      : orig(n, t, o)))(dns.query);
+    return dns;
+  };
+
+  // unsigned zone (the DS answer proves it): a CD flip is not a broken chain
+  let r = await run('example.com', flaky(unsigned, ['SOA', 'MX']));
+  assertRenderable(r);
+  assert.equal(r.dnssec.broken, false);
+  lacks(r, 'dnssec.broken');
+  has(r, 'soa.error', 'warn');
+  has(r, 'mx.error', 'warn');
+
+  // only DNSKEY fails while SOA validates: not broken, signed or not
+  for (const zone of [unsigned, goodZone()]) {
+    r = await run('example.com', flaky(zone, ['DNSKEY']));
+    assert.equal(r.dnssec.broken, false);
+    lacks(r, 'dnssec.broken');
+    has(r, 'soa.ok');
+    has(r, 'dnssec.error', 'warn');
+  }
 });
 
 /* ==================================================================== */

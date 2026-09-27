@@ -1458,13 +1458,18 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
   };
   const info = out.dnssec;
   // Broken-chain detection: validating resolvers SERVFAIL, but with CD=1 (no validation) the answer comes back.
-  const probe = [soaR, dnskeyR, dsR].find((r) => r && r.ok && r.rcode === 'SERVFAIL');
+  // Only a zone with a DS (or whose DS lookup fails too, as below a broken zone) can fail validation, and the
+  // CD=1 probe asks for the SOA, so the validated SOA must be what failed; any other flip is not DNSSEC.
+  const servfail = (r) => !!(r && r.ok && r.rcode === 'SERVFAIL');
+  const probe = [soaR, dnskeyR, dsR].find(servfail);
   if (probe) {
-    const cdRes = await d.query(name, 'SOA', { cd: true });
     info.ede = uniq(arr(probe.ede).map((e) => {
       const text = String(e.text || '').trim().replace(/\.+$/, '');
       return `${e.code}${EDE_CODES[e.code] ? ` ${EDE_CODES[e.code]}` : ''}${text ? `: ${text}` : ''}`;
     }));
+  }
+  if (servfail(soaR) && (records(dsR, 'DS').length > 0 || servfail(dsR))) {
+    const cdRes = await d.query(name, 'SOA', { cd: true });
     if (cdRes.ok && (cdRes.rcode === 'NOERROR' || cdRes.rcode === 'NXDOMAIN')) {
       info.broken = true;
       info.validated = false;

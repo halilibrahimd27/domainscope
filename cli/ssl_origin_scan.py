@@ -1324,8 +1324,8 @@ def _malformed_ip_block(token: str) -> bool:
     ``10.0.0.5-9x``, ``10.0.0.5-09``, ``10.0.0.0/33``.
 
     Such typos are valid LDH names, so without this check they would go to the resolver
-    (and a search domain could even answer). A name whose last label starts with a
-    letter (``10.0.0.5-web.example.com``) is a host name, not a typo.
+    (and a search domain could even answer). A name whose last label or range end starts
+    with a letter (``10.0.0.5-web.example.com``, ``192.0.2.1-db``) is a host name.
     """
     token = token.strip()
     head = re.split(r'[/-]', token, maxsplit=1)[0]
@@ -1333,9 +1333,11 @@ def _malformed_ip_block(token: str) -> bool:
         return False
     if re.match(r'[a-z]', token.rsplit('.', 1)[-1], re.I):
         return False
-    if '/' in token:
+    if token[len(head)] == '/':
         return _parse_network(token) is None
-    end_text = token.split('-', 1)[1]
+    end_text = token[len(head) + 1:]
+    if ':' not in head and re.match(r'[a-z]', end_text, re.I):
+        return False  # 10.0.0.5-web: a short host name, not a range with a typo
     if normalize_ip(end_text) is not None:
         return False
     if end_text.isdigit() and '.' in head:  # 10.0.0.5-9, as expand_ip_block reads it

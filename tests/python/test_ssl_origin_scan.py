@@ -1039,9 +1039,15 @@ class LoadTargetsTests(unittest.TestCase):
                 self.assertEqual((inv.servers, [w.code for w in inv.warnings]),
                                  ([], ['INVALID_IP']))
         # names that only start like an address are still host names
-        for name in ('10.0.0.5-web.example.com', '10.0.0.5-a.example.net'):
+        for name in ('10.0.0.5-web.example.com', '10.0.0.5-a.example.net', '10.0.0.5-web',
+                     '192.0.2.1-db'):
             with self.subTest(name=name):
                 self.assertEqual(sos.parse_target_tokens(name).servers[0].hostnames, [name])
+        inv = sos.parse_inventory('192.0.2.1-db\n10.0.0.5-web.example.com\n', 'x.txt')
+        self.assertEqual([(s.name, s.hostnames) for s in inv.servers],
+                         [('192.0.2.1-db', ['192.0.2.1-db']),
+                          ('10.0.0.5-web.example.com', ['10.0.0.5-web.example.com'])])
+        self.assertEqual(inv.warnings, [])
 
     def test_browser_cli_suggestion_targets(self):
         # The web app's cliSuggestion `-t` tokens: an IPv4 /24 where origins cluster, exact IPv4

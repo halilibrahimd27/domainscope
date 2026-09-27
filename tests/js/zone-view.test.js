@@ -191,6 +191,15 @@ describe('zone view: samples and parsing', () => {
       assert.deepEqual([z.origin, z.originSource], ['example.com', '$ORIGIN']);
       assert.deepEqual(z.records.map((r) => r.name).sort(), ['api.lab.example.com', 'example.com']);
     }
+    // ... also when the main file names its zone only by its file name (the part's origin is sure)
+    const guessed = { name: 'db.example.com', text: '$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE lab.inc\n' };
+    for (const files of [[guessed, lab], [lab, guessed]]) {
+      const z = V.parseFiles(files);
+      const order = files.map((f) => f.name).join();
+      assert.equal(z.fatal, null, order);
+      assert.deepEqual([z.origin, z.originSource, z.originConfidence], ['example.com', 'filename', 'low'], order);
+      assert.deepEqual(z.records.map((r) => r.name).sort(), ['api.lab.example.com', 'example.com', 'example.com', 'ns1.example.com'], order);
+    }
   });
 
   test('files of different zones → ORIGIN_MISMATCH; a certificate → NOT_A_ZONE pem', () => {

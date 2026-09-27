@@ -937,6 +937,16 @@ export function parseFiles(files, { origin = null, format = 'auto' } = {}) {
     + (includesOf(z, i).length ? (included.has(i) ? 2 : 4) : 0) + (z.origin ? 1 : 0));
   let li = 0;
   alone.forEach((z, i) => { if (rank(z, i) > rank(alone[li], li)) li = i; });
+  // A part opening its own sub-block (`$ORIGIN lab.example.com.`) outranks a main file that only
+  // guesses its zone from its name: the zone is still its includer's when that one's origin lies
+  // at or above the part's, so the lead walks up the $INCLUDE tree.
+  for (let hops = 0; hops < alone.length; hops += 1) {
+    const inner = alone[li].origin;
+    const up = inner ? alone.findIndex((z, i) => i !== li && !z.fatal && !!z.origin
+      && (inner === z.origin || inner.endsWith(`.${z.origin}`)) && includesOf(z, i).some((x) => x.j === li)) : -1;
+    if (up < 0) break;
+    li = up;
+  }
   const lead = alone[li];
   const ttl = lead.defaultTtl ?? null;
   const read = (i, want) => parseZone(list[i].text, { origin: want, filename: list[i].name, format, source: i, defaultTtl: ttl });

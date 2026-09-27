@@ -1324,6 +1324,8 @@ export function mount(container, ctx) {
       }
     });
     if (S.counts.errors) tabs.setBadge('problems', S.counts.errors, 'error');
+    // The analysis is no form: Ctrl/Cmd+Enter in a table's filter there submits nothing.
+    tabs.el.dataset.shortcutScope = 'results';
     root.append(tabs.el);
   }
   rerender = render;
@@ -1359,8 +1361,6 @@ export function mount(container, ctx) {
       }
     });
     const pasteBox = Disclosure({ summary: t('zone.paste.summary'), className: 'zone-paste', children: h('div', { class: 'stack-sm' }, pasteArea.el, h('div', { class: 'cluster' }, pasteBtn)) });
-    // A form of its own for the shell's Ctrl/Cmd+Enter: Import answers the paste box only.
-    pasteBox.dataset.shortcutScope = 'zone-paste';
     const originField = textInput({
       label: t('zone.origin.label'),
       value: S.originInput || (S.zone && S.zone.origin) || '',
@@ -1415,7 +1415,9 @@ export function mount(container, ctx) {
           'gcloud dns record-sets export example.com.txt --zone=ZONE --zone-file-format'
         ].join('\n'), { wrap: true }))
     });
-    const body = h('div', { class: 'stack-sm' },
+    // A form of its own for the shell's Ctrl/Cmd+Enter: Import answers the paste box, the zone name and the
+    // format (nothing while the paste box is closed); a field of the live check never imports.
+    const body = h('div', { class: 'stack-sm', dataset: { shortcutScope: 'zone-import' } },
       drop.el || drop,
       h('div', { class: 'zone-import-fields' }, originField.el, formatSel.el),
       pasteBox,
@@ -1993,10 +1995,10 @@ export function mount(container, ctx) {
         icon: 'play',
         variant: 'primary',
         disabled: running,
-        dataset: { action: 'zone-live-run' },
+        dataset: { action: 'zone-live-run', shortcut: 'submit' },
         onClick: runDrift
       });
-      box.append(Card({
+      const card = Card({
         title: t('zone.live.title'),
         icon: 'activity',
         className: 'zone-live-card',
@@ -2009,7 +2011,10 @@ export function mount(container, ctx) {
           h('div', { class: 'cluster' }, skipBox.el, wildBox.el),
           h('div', { class: 'cluster' }, runBtn,
             running ? Button({ label: t('zone.live.cancel'), icon: 'x', variant: 'secondary', dataset: { action: 'zone-live-cancel', shortcut: 'cancel' }, onClick: () => { if (controller) controller.abort(); } }) : null))
-      }));
+      });
+      // A form of its own for the shell's Ctrl/Cmd+Enter: an option of the check starts it (not while it runs).
+      card.dataset.shortcutScope = 'zone-live';
+      box.append(card);
       if (running) {
         progressEl = ProgressBar({ label: t('zone.live.progress', { done: formatNumber(cur.done), total: formatNumber(cur.total) }), value: cur.done, max: Math.max(1, cur.total) });
         box.append(h('div', { class: 'zone-live-progress', dataset: { status: 'running' } }, progressEl.el || progressEl));

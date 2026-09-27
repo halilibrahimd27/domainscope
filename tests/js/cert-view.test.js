@@ -1,18 +1,21 @@
 /**
  * views/cert.js pure helpers: the copy-ready `openssl s_client` command must never carry a
  * certificate name that is not a plain host name (a hostile SAN would run in the user's shell);
- * the bundled "Try a sample" certificate and the CertLoad of a Certificate Transparency lookup.
+ * the bundled "Try a sample" certificate, the CertLoad of a Certificate Transparency lookup and
+ * the text of a lookup that loaded nothing (why crt.sh was asked, Cert Spotter's hourly limit).
  * Pure Node (the view is DOM-free at import time). Names are documentation data only.
  */
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain
+  sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage
 } from '../../assets/js/views/cert.js';
+import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
+import { formatDate, setLang } from '../../assets/js/i18n.js';
 import { parseCertificate, parseCertificates } from '../../assets/js/lib/x509.js';
 import { baseDomainsFromNames } from '../../assets/js/lib/domain.js';
 import { caaIssuerInfo } from '../../assets/js/lib/health.js';
@@ -179,5 +182,73 @@ describe('cert view: a certificate from Certificate Transparency', () => {
     assert.equal(dnDisplayName('CN=Only CN'), 'Only CN');
     assert.equal(dnDisplayName('O=Same, CN=Same'), 'Same');
     assert.equal(dnDisplayName(''), '—');
+  });
+});
+
+describe('cert view: the text of a lookup that loaded nothing', () => {
+  after(() => setLang('en'));
+  const NOW = new Date('2026-09-27T12:00:00Z');
+  const RESET = new Date(NOW.getTime() + CT_COOLDOWN_MS);
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const limited = (state) => ({ state, error: 'HTTP 429', errorKind: 'rate-limit', quota: { limited: true, period: 'hour', resetAt: RESET } });
+  const base = { host: 'www.example.com', truncated: false, skipped: { notCovering: 0, notYetValid: 0, expired: 0, revoked: 0, unreadable: 0 } };
+
+  test('Cert Spotter rate limited and crt.sh down: the limit, the crt.sh error and until when only crt.sh is searched', async () => {
+    setLang('en');
+    const fetchImpl = async (url) => (String(url).startsWith('https://api.certspotter.com/')
+      ? json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429)
+      : new Response('bad gateway', { status: 502 }));
+    const cooldown = createCtCooldown();
+    const opts = { fetchImpl, now: NOW, cooldown, crtshRetryDelayMs: 0 };
+    const time = formatDate(RESET, { timeStyle: 'short' });
+    for (const state of ['failed', 'skipped']) {
+      const r = await lookupCtCertificate('www.example.com', opts);
+      assert.deepEqual([r.status, r.certspotter.state], ['error', state]);
+      assert.equal(ctOutcomeMessage(r, { now: NOW.getTime() }),
+        `Cert Spotter’s hourly limit for your IP address is used up, and crt.sh could not answer either: The service returned an error. Until about ${time}, “Try again” searches crt.sh only.`);
+    }
+    setLang('tr');
+    const r = await lookupCtCertificate('www.example.com', opts);
+    assert.equal(ctOutcomeMessage(r, { now: NOW.getTime() }),
+      `IP adresinizin saatlik Cert Spotter sınırı doldu ve crt.sh de yanıt veremedi: Hizmet bir hata döndürdü. Saat ${formatDate(RESET, { timeStyle: 'short' })} civarına kadar “Tekrar dene” yalnızca crt.sh’te arar.`);
+    setLang('en');
+    assert.equal(ctOutcomeMessage(r, { now: RESET.getTime() + 1 }),
+      'Cert Spotter’s hourly limit for your IP address is used up, and crt.sh could not answer either: The service returned an error.',
+      'a reset time that has passed is not promised');
+  });
+
+  test('any other error: the plain error text', () => {
+    setLang('en');
+    const r = { ...base, status: 'error', errorKind: 'network', error: 'Failed to fetch',
+      certspotter: { state: 'failed', error: 'HTTP 500', errorKind: 'http', quota: null }, crtsh: { entry: null, error: 'Failed to fetch', errorKind: 'network' } };
+    assert.equal(ctOutcomeMessage(r), 'Network error — offline, blocked by an extension or firewall, or the service is down.');
+  });
+
+  test('why crt.sh was asked: the hourly limit with its reset time, a refusal or no answer, a partial list, an unreadable copy', () => {
+    setLang('en');
+    const crtsh = { entry: null, candidates: 0, partial: false, error: null, errorKind: null };
+    const why = (certspotter) => ctCrtshWhy({ ...base, certspotter, crtsh }, { now: NOW.getTime() });
+    assert.equal(why(limited('skipped')),
+      `Cert Spotter’s hourly limit for your IP address is used up, so crt.sh was searched instead. Cert Spotter is asked again from about ${formatDate(RESET, { timeStyle: 'short' })}.`);
+    assert.equal(why({ state: 'failed', error: 'HTTP 403', errorKind: 'http', quota: null }), 'Cert Spotter could not answer, so crt.sh was searched instead.');
+    assert.equal(why({ state: 'partial', error: 'HTTP 500', errorKind: 'http', quota: null }), 'Cert Spotter answered only in part, so crt.sh was searched too.');
+    assert.equal(why({ state: 'ok', error: null, errorKind: null, quota: null }), 'Cert Spotter’s copy of the certificate could not be read, so crt.sh was searched instead.');
+    assert.equal(ctCrtshWhy({ ...base, certspotter: { state: 'ok' }, crtsh: null }), null, 'crt.sh not asked');
+  });
+
+  test('not found: flat on a complete list, hedged when Cert Spotter lists more than was read', () => {
+    setLang('en');
+    const ok = { state: 'ok', error: null, errorKind: null, quota: null };
+    const flat = ctOutcomeMessage({ ...base, status: 'not-found', certspotter: ok, crtsh: null, skipped: { ...base.skipped, revoked: 1 } });
+    assert.equal(flat, 'No currently valid certificate for www.example.com is logged in Certificate Transparency. Internal names and private CAs are never logged, and a certificate issued in the last few hours may not be listed yet. 1 revoked certificate was skipped.');
+    const cut = ctOutcomeMessage({ ...base, status: 'not-found', truncated: true, certspotter: ok, crtsh: null, skipped: { ...base.skipped, revoked: 500 } });
+    assert.match(cut, /^None of the certificates read for www.example.com is currently valid, but Cert Spotter lists more than were read, and the newest are among the unread ones: a valid certificate may still be logged. 500 revoked certificates were skipped.$/);
+    assert.doesNotMatch(cut, /No currently valid certificate/);
+    setLang('tr');
+    assert.match(ctOutcomeMessage({ ...base, status: 'not-found', truncated: true, certspotter: ok, crtsh: null }), /okunan sertifikaların hiçbiri şu an geçerli değil/);
+    setLang('en');
+    const partialThenCrtsh = ctOutcomeMessage({ ...base, status: 'not-found', truncated: true, certspotter: { ...ok, state: 'partial', errorKind: 'http' },
+      crtsh: { entry: null, candidates: 0, partial: false, error: null, errorKind: null } });
+    assert.match(partialThenCrtsh, /^Cert Spotter answered only in part, so crt.sh was searched too. No currently valid certificate/, 'crt.sh read the whole list');
   });
 });

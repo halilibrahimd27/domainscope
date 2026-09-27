@@ -15,10 +15,12 @@
  *     with_key.pem (private key ignored and never displayed), test.pfx (PKCS#12 instructions),
  *     test.csr (CSR), a pasted PEM (ec_wildcard.pem)
  *   - "No file?" (offline: Cert Spotter and crt.sh are answered inside the page): Try a sample
- *     (same-origin file only), a host name refused before any request, nothing logged, a
- *     certificate loaded from CT (badge, caveat, leaf-only chain note, Verify in SSL Targets),
- *     SSL Targets step 1 with the CT note and the sample (fills the domains, starts no scan), a
- *     Cert Spotter 429 → crt.sh download links, and the cool-down that skips Cert Spotter after it
+ *     (same-origin file only), a host name refused before any request, nothing logged, a lookup
+ *     still running when the sample loads (aborted at once: busy flag, language switch), a
+ *     certificate loaded from CT (badge, caveat, leaf-only chain note, Check servers in SSL
+ *     Targets), SSL Targets step 1 with the CT note and the sample (fills the domains, starts no
+ *     scan), a Cert Spotter 429 → crt.sh download links, the cool-down that skips Cert Spotter
+ *     after it, and crt.sh failing during the cool-down (the error says so, with the reset time)
  *   - LIVE (skipped with --offline): real_cloudflare.pem — CAA check over DoH and the
  *     Certificate Transparency lookup of its serial on crt.sh
  *   - "Find servers for this certificate" hands the certificate to SSL Targets; removing it
@@ -144,25 +146,38 @@ async function delayRequests(page, patterns, ms) {
  * Cert Spotter and crt.sh identity searches answered inside the page (installed before the app
  * loads), so the "No file?" steps are offline. `window.__ctFake.mode`: 'found' (one issuance
  * with the DER, then the empty page that ends the list), 'none' (nothing current), '429' (Cert
- * Spotter rate limited; crt.sh lists the certificate as precertificate + certificate rows).
- * Every intercepted request is recorded with its credentials mode; any other fetch goes out.
+ * Spotter rate limited; crt.sh lists the certificate as precertificate + certificate rows),
+ * 'down' (Cert Spotter rate limited, crt.sh answering 404), 'hold' (no answer until the request
+ * is aborted; `aborted` counts those). Every intercepted request is recorded with its
+ * credentials mode; any other fetch goes out.
  */
 const ctFakeScript = (row, crtshRows) => `(() => {
   const ROW = ${JSON.stringify(row)};
   const CRTSH = ${JSON.stringify(crtshRows)};
-  window.__ctFake = { mode: 'found', calls: [] };
+  window.__ctFake = { mode: 'found', calls: [], aborted: 0 };
   const realFetch = window.fetch.bind(window);
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const hold = (init) => new Promise((resolve, reject) => {
+    const signal = init && init.signal;
+    if (!signal) return;
+    signal.addEventListener('abort', () => {
+      window.__ctFake.aborted += 1;
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    }, { once: true });
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const mode = window.__ctFake.mode;
     if (url.startsWith('https://api.certspotter.com/v1/issuances')) {
       window.__ctFake.calls.push({ url, credentials: init && init.credentials });
-      if (mode === '429') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
+      if (mode === 'hold') return hold(init);
+      if (mode === '429' || mode === 'down') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
       return json(mode === 'none' || /[?&]after=/.test(url) ? [] : [ROW]);
     }
     if (url.startsWith('https://crt.sh/?q=')) {
       window.__ctFake.calls.push({ url, credentials: init && init.credentials });
+      if (mode === 'hold') return hold(init);
+      if (mode === 'down') return new Response('<html>Not found</html>', { status: 404, headers: { 'content-type': 'text/html' } });
       return json(mode === '429' ? CRTSH : []);
     }
     return realFetch(input, init);
@@ -300,7 +315,41 @@ async function main() {
       assertEqual(info.cn, 'example.com', 'the loaded certificate stays');
     });
 
-    await run.step('found: loaded with the CT badge, the caveat, Verify in SSL Targets; the chain note blames no file', async () => {
+    await run.step('a lookup still running when the sample loads is stopped at once: requests, busy flag, language switch', async () => {
+      await page.evaluate(() => { window.__ctFake.mode = 'hold'; window.__ctFake.calls = []; window.__ctFake.aborted = 0; });
+      await page.click('.cert-reload [data-action="ct-load"]');
+      const busy = () => page.evaluate(() => ({
+        main: document.getElementById('main').getAttribute('aria-busy'),
+        header: document.getElementById('app-header').classList.contains('is-busy')
+      }));
+      await page.waitFor(() => window.__ctFake.calls.length === 1 && document.getElementById('main').getAttribute('aria-busy') === 'true',
+        { message: 'lookup held open, view busy' });
+      const btn = await page.evaluate(() => {
+        const b = document.querySelector('.cert-reload [data-action="ct-load"]');
+        return { state: b.dataset.state, label: b.querySelector('.btn-label').textContent, cancelIcon: !!b.querySelector('.icon-x'), searchIcon: !!b.querySelector('.icon-search') };
+      });
+      assertEqual(btn, { state: 'running', label: 'Cancel', cancelIcon: true, searchIcon: false }, 'Load turns into Cancel, with its icon');
+      assertEqual((await busy()).header, true, 'header activity bar on');
+      await page.click('.cert-reload [data-action="cert-sample"]');
+      await page.waitFor(() => window.__ctFake.aborted === 1, { message: 'the held request is aborted' });
+      await page.waitFor(() => document.getElementById('main').getAttribute('aria-busy') !== 'true', { timeout: 2000, message: 'busy flag released at once' });
+      assertEqual(await busy(), { main: 'false', header: false }, 'not busy');
+      await setLangUi(page, 'tr');
+      const tr = await page.evaluate(() => ({
+        note: document.querySelector('.cert-content .cert-source-note')?.textContent || '',
+        toasts: [...document.querySelectorAll('.toast')].map((x) => x.textContent).join(' | ')
+      }));
+      assert(/DomainScope’u denemek için örnek sertifika/.test(tr.note), `view body re-mounted in Turkish: ${tr.note}`);
+      assert(!/işlem bitince/.test(tr.toasts), `no deferred language switch: ${tr.toasts}`);
+      await setLangUi(page, 'en');
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 1, 'nothing asked after the stop');
+      await page.evaluate(() => {
+        document.querySelectorAll('.toast').forEach((x) => x.remove());
+        document.querySelector('.cert-reload').open = true;
+      });
+    });
+
+    await run.step('found: loaded with the CT badge, the caveat, Check servers in SSL Targets; the chain note blames no file', async () => {
       await page.evaluate(() => { window.__ctFake.mode = 'found'; window.__ctFake.calls = []; });
       await page.click('.cert-reload [data-action="ct-load"]');
       await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'ct', { message: 'CT certificate loaded' });
@@ -315,7 +364,7 @@ async function main() {
       assertEqual(info.badge, 'ct', 'CT badge');
       assertEqual(info.title, 'Loaded from Certificate Transparency — the server may serve a different one.', 'caveat');
       assert(/newest valid certificate logged for www\.example\.net/.test(info.note), `note: ${info.note}`);
-      assertEqual(info.verify, 'Verify in SSL Targets', 'Verify link');
+      assertEqual(info.verify, 'Check servers in SSL Targets', 'SSL Targets link');
       assert(/^https:\/\/crt\.sh\/\?q=[0-9a-f]{64}$/.test(info.crtsh || ''), `crt.sh link ${info.crtsh}`);
       assertEqual(info.pages, [null, '17000000001'], 'paged until the empty page');
       await shot(page, opts, 'cert-desktop-light-en-ct');
@@ -325,7 +374,7 @@ async function main() {
       await page.click(tabSel('names'));
     });
 
-    await run.step('Verify in SSL Targets: step 1 has the certificate and the CT note; nothing is scanned', async () => {
+    await run.step('Check servers in SSL Targets: step 1 has the certificate and the CT note; nothing is scanned', async () => {
       await page.click('[data-action="ct-verify"]');
       await page.waitFor(() => document.documentElement.dataset.view === 'scan' && !!document.querySelector('.scan-step-cert .cert-summary'));
       const info = await page.evaluate(() => ({
@@ -399,6 +448,36 @@ async function main() {
       assertEqual(await ctResult(page, scope, 'manual'), 'manual', 'second outcome');
       info = await read();
       assertEqual(info.spotter, 1, 'Cert Spotter cooling down: not asked again');
+    });
+
+    await run.step('crt.sh failing while Cert Spotter cools down: the error says so, and until when only crt.sh is searched', async () => {
+      const scope = '.scan-cert-another';
+      await page.evaluate(() => { window.__ctFake.mode = 'down'; window.__ctFake.calls = []; });
+      await page.click(`${scope} [data-action="ct-load"]`);
+      assertEqual(await ctResult(page, scope, 'error'), 'error', 'outcome');
+      const info = await page.evaluate((sel) => {
+        const box = document.querySelector(`${sel} [data-ct-result]`);
+        return {
+          title: box.querySelector('.alert-title')?.textContent,
+          text: box.querySelector('.alert-message')?.textContent,
+          retry: !!box.querySelector('[data-action="ct-retry"]'),
+          detail: box.querySelector('.alert-details code')?.textContent || '',
+          spotter: window.__ctFake.calls.filter((c) => c.url.includes('certspotter')).length,
+          crtsh: window.__ctFake.calls.filter((c) => c.url.startsWith('https://crt.sh/')).length
+        };
+      }, scope);
+      assertEqual(info.title, 'Certificate Transparency could not be searched', 'title');
+      assert(/^Cert Spotter’s hourly limit for your IP address is used up, and crt\.sh could not answer either: The service returned an error\. Until about \d{1,2}:\d{2}\s?([AP]M)?, “Try again” searches crt\.sh only\.$/.test(info.text || ''), `text: ${info.text}`);
+      assert(info.retry, 'Try again');
+      assert(/HTTP 404/.test(info.detail), `details: ${info.detail}`);
+      assertEqual([info.spotter, info.crtsh], [0, 2], 'only crt.sh asked, not retried after a 404');
+      await assertNoHorizontalScroll(page, 'crt.sh error');
+      await shot(page, opts, 'scan-desktop-light-en-ct-error');
+      // Back to the crt.sh links for the next step.
+      await page.evaluate(() => { window.__ctFake.mode = '429'; window.__ctFake.calls = []; });
+      await page.click(`${scope} [data-ct-result] [data-action="ct-retry"]`);
+      await page.waitFor(() => window.__ctFake.calls.length === 2, { message: 'retry' });
+      assertEqual(await ctResult(page, scope, 'manual'), 'manual', 'links again');
     });
 
     await run.step('back in the Certificate view: the sample is shared, the crt.sh links are kept until a certificate loads', async () => {

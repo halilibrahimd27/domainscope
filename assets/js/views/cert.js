@@ -22,7 +22,7 @@
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
-  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, select, setButtonBusy, textInput, textarea, toast
+  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, describeError, select, setButtonBusy, textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText, sanitizeFilename } from '../ui/download.js';
 import {
@@ -100,10 +100,14 @@ registerStrings('en', {
   'cert.alt.invalid': 'Enter a host name such as www.example.com (a *.example.com wildcard works too).',
   'cert.alt.searching': 'Searching the Certificate Transparency logs for {host}…',
   'cert.alt.notFound': 'No currently valid certificate for {host} is logged in Certificate Transparency. Internal names and private CAs are never logged, and a certificate issued in the last few hours may not be listed yet.',
+  'cert.alt.notFoundTruncated': 'None of the certificates read for {host} is currently valid, but Cert Spotter lists more than were read, and the newest are among the unread ones: a valid certificate may still be logged.',
   'cert.alt.revokedSkipped': { one: '{count} revoked certificate was skipped.', other: '{count} revoked certificates were skipped.' },
   'cert.alt.failed': 'Certificate Transparency could not be searched',
   'cert.alt.spotterQuota': 'Cert Spotter’s hourly limit for your IP address is used up, so crt.sh was searched instead.',
-  'cert.alt.spotterFailed': 'Cert Spotter did not answer, so crt.sh was searched instead.',
+  'cert.alt.spotterAgain': 'Cert Spotter is asked again from about {time}.',
+  'cert.alt.bothFailedQuota': 'Cert Spotter’s hourly limit for your IP address is used up, and crt.sh could not answer either:',
+  'cert.alt.retryCrtshOnly': 'Until about {time}, “Try again” searches crt.sh only.',
+  'cert.alt.spotterFailed': 'Cert Spotter could not answer, so crt.sh was searched instead.',
   'cert.alt.spotterUnreadable': 'Cert Spotter’s copy of the certificate could not be read, so crt.sh was searched instead.',
   'cert.alt.spotterPartial': 'Cert Spotter answered only in part, so crt.sh was searched too.',
   'cert.alt.crtshPartial': 'crt.sh did not answer every search, so a certificate may be missing here.',
@@ -123,7 +127,7 @@ registerStrings('en', {
   'cert.src.ctNewerPrecert': 'A newer certificate for this name (issued {date}) is logged only as a precertificate so far.',
   'cert.src.ctTruncated': 'Cert Spotter lists more certificates for this name than were read; a newer one may exist.',
   'cert.src.ctOpen': 'Open on crt.sh',
-  'cert.src.verify': 'Verify in SSL Targets',
+  'cert.src.verify': 'Check servers in SSL Targets',
   'cert.src.sample': 'Sample certificate for trying DomainScope: example.com and example.net, issued by a made-up “DomainScope Sample” CA. No server uses it.',
 
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'The file also contains a private key',
@@ -381,10 +385,14 @@ registerStrings('tr', {
   'cert.alt.invalid': 'www.example.com gibi bir host adı girin (*.example.com biçiminde wildcard da olur).',
   'cert.alt.searching': '{host} için Certificate Transparency kayıtları aranıyor…',
   'cert.alt.notFound': '{host} için şu an geçerli bir sertifika Certificate Transparency kayıtlarında yok. İç ağ adları ve özel CA’lar hiç kaydedilmez; son birkaç saatte verilen bir sertifika da henüz listelenmemiş olabilir.',
+  'cert.alt.notFoundTruncated': '{host} için okunan sertifikaların hiçbiri şu an geçerli değil; ancak Cert Spotter okunandan fazlasını listeliyor ve en yeniler okunmayanlar arasında: geçerli bir sertifika yine de kayıtlı olabilir.',
   'cert.alt.revokedSkipped': { one: 'İptal edilmiş {count} sertifika atlandı.', other: 'İptal edilmiş {count} sertifika atlandı.' },
   'cert.alt.failed': 'Certificate Transparency aranamadı',
   'cert.alt.spotterQuota': 'IP adresinizin saatlik Cert Spotter sınırı doldu; bu yüzden crt.sh’te arandı.',
-  'cert.alt.spotterFailed': 'Cert Spotter yanıt vermedi; bu yüzden crt.sh’te arandı.',
+  'cert.alt.spotterAgain': 'Cert Spotter’a saat {time} civarından itibaren yeniden sorulur.',
+  'cert.alt.bothFailedQuota': 'IP adresinizin saatlik Cert Spotter sınırı doldu ve crt.sh de yanıt veremedi:',
+  'cert.alt.retryCrtshOnly': 'Saat {time} civarına kadar “Tekrar dene” yalnızca crt.sh’te arar.',
+  'cert.alt.spotterFailed': 'Cert Spotter yanıt veremedi; bu yüzden crt.sh’te arandı.',
   'cert.alt.spotterUnreadable': 'Cert Spotter’daki sertifika kopyası okunamadı; bu yüzden crt.sh’te arandı.',
   'cert.alt.spotterPartial': 'Cert Spotter yalnızca kısmen yanıt verdi; bu yüzden crt.sh’te de arandı.',
   'cert.alt.crtshPartial': 'crt.sh her aramaya yanıt vermedi; bu yüzden bir sertifika burada eksik olabilir.',
@@ -404,7 +412,7 @@ registerStrings('tr', {
   'cert.src.ctNewerPrecert': 'Bu ad için daha yeni bir sertifika ({date} tarihinde verildi) şimdilik yalnızca ön sertifika olarak kayıtlı.',
   'cert.src.ctTruncated': 'Cert Spotter bu ad için okunandan daha fazla sertifika listeliyor; daha yeni bir tane olabilir.',
   'cert.src.ctOpen': 'crt.sh’te aç',
-  'cert.src.verify': 'SSL Hedefleri’nde doğrula',
+  'cert.src.verify': 'Sunucuları SSL Hedefleri’nde kontrol et',
   'cert.src.sample': 'DomainScope’u denemek için örnek sertifika: example.com ve example.net; uydurma “DomainScope Sample” CA’sı tarafından verildi. Hiçbir sunucu kullanmıyor.',
 
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'Dosyada özel anahtar da var',
@@ -761,10 +769,14 @@ export function getCurrentCert(appState) {
 /**
  * Share (or clear with null) the current certificate for this session. Loading one also drops the
  * "No file?" block's last outcome (not found, crt.sh links): it answered a question that is settled.
+ * Both views re-render that block on any change, so a host-name lookup still running in it is
+ * stopped here: its requests, the busy flag and a deferred language switch end now, not when the
+ * services answer.
  * @param {{ setSession: (name: string, value: any) => void }} appState
  * @param {CertLoad|null} load
  */
 export function setCurrentCert(appState, load) {
+  stopCtLookup();
   if (load) ctForm.last = null;
   appState.setSession(CURRENT_CERT, load || undefined);
 }
@@ -1139,18 +1151,98 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
 
 /**
  * The host-name form's state across re-mounts (a language switch, the other view): the typed
- * text and the last outcome that is not a loaded certificate (not found, crt.sh links, error).
+ * text, the last outcome that is not a loaded certificate (not found, crt.sh links, error) and
+ * the AbortController of the lookup in progress (stopped by {@link setCurrentCert}).
+ * @type {{ text: string, last: object|null, running: AbortController|null }}
  */
-const ctForm = { text: '', last: null };
+const ctForm = { text: '', last: null, running: null };
+
+/** Stop the host-name lookup in progress, if any (its block is being replaced). */
+function stopCtLookup() {
+  const ctl = ctForm.running;
+  ctForm.running = null;
+  if (ctl) ctl.abort();
+}
+
+/**
+ * When a lookup's Cert Spotter request is asked again after its hourly limit (the cool-down's
+ * end), or null: not rate limited, no reset time, or the time has passed.
+ * @param {import('../lib/ctcert.js').CtLookup} r
+ * @param {number} now
+ * @returns {Date|null}
+ */
+function spotterResetAt(r, now) {
+  const c = r && r.certspotter;
+  if (!c || c.errorKind !== 'rate-limit' || !c.quota || !c.quota.resetAt) return null;
+  const d = new Date(c.quota.resetAt);
+  return Number.isFinite(d.getTime()) && d.getTime() > now ? d : null;
+}
+
+/**
+ * Why crt.sh was asked in a lookup (null when it was not): Cert Spotter's hourly limit (with the
+ * time it is asked again), a refusal or no answer, a partial list or an unreadable copy.
+ * @param {import('../lib/ctcert.js').CtLookup} r
+ * @param {{ now?: number }} [opts]
+ * @returns {string|null}
+ */
+export function ctCrtshWhy(r, { now = Date.now() } = {}) {
+  if (!r || !r.crtsh || !r.certspotter) return null;
+  if (r.certspotter.errorKind === 'rate-limit') {
+    const reset = spotterResetAt(r, now);
+    return [t('cert.alt.spotterQuota'), reset ? t('cert.alt.spotterAgain', { time: formatDate(reset, { timeStyle: 'short' }) }) : null]
+      .filter(Boolean).join(' ');
+  }
+  if (r.certspotter.state === 'partial') return t('cert.alt.spotterPartial');
+  return r.certspotter.state === 'ok' ? t('cert.alt.spotterUnreadable') : t('cert.alt.spotterFailed');
+}
+
+/** The error of a failed lookup (status 'error'), shaped for describeError(). */
+function ctLookupError(r) {
+  return Object.assign(new Error((r && r.error) || ''), { kind: (r && r.errorKind) || 'unknown' });
+}
+
+/**
+ * The text of a lookup outcome that is not a loaded certificate (status 'manual', 'not-found' or
+ * 'error'), as the "No file?" block shows it. An error after Cert Spotter's hourly limit says so,
+ * and until when "Try again" searches crt.sh only; a not-found on a Cert Spotter list cut at the
+ * page cap is hedged (the unread issuances are the newest).
+ * @param {import('../lib/ctcert.js').CtLookup} r
+ * @param {{ now?: number }} [opts]
+ * @returns {string}
+ */
+export function ctOutcomeMessage(r, { now = Date.now() } = {}) {
+  const why = ctCrtshWhy(r, { now });
+  if (r.status === 'manual' && r.crtsh && r.crtsh.entry) {
+    const e = r.crtsh.entry;
+    return [why, t('cert.alt.manualCert', { host: r.host, names: e.names.join(', ') || r.host, issuer: dnDisplayName(e.issuer), date: formatDate(e.notAfter) })]
+      .filter(Boolean).join(' ');
+  }
+  if (r.status === 'not-found') {
+    const lines = [
+      why,
+      r.crtsh && r.crtsh.error ? t('cert.alt.crtshPartial') : null,
+      t(r.truncated && !r.crtsh ? 'cert.alt.notFoundTruncated' : 'cert.alt.notFound', { host: r.host })
+    ];
+    if (r.skipped && r.skipped.revoked) lines.push(t('cert.alt.revokedSkipped', { count: r.skipped.revoked }));
+    return lines.filter(Boolean).join(' ');
+  }
+  const { message } = describeError(ctLookupError(r));
+  if (!(r.certspotter && r.certspotter.errorKind === 'rate-limit')) return message;
+  const reset = spotterResetAt(r, now);
+  return [t('cert.alt.bothFailedQuota'), message, reset ? t('cert.alt.retryCrtshOnly', { time: formatDate(reset, { timeStyle: 'short' }) }) : null]
+    .filter(Boolean).join(' ');
+}
 
 /**
  * "No file?" block under a certificate picker: load the public certificate of a host name from
  * Certificate Transparency (lib/ctcert.js; only the name leaves the browser, and only on a
- * click), or the bundled sample. A lookup whose block was replaced meanwhile (another
- * certificate loaded, view left) is dropped, never loaded over the user's choice.
- * @param {{ onLoad: (load: CertLoad) => void, signal?: AbortSignal|null, onBusy?: ((busy: boolean|string) => void)|null,
+ * click), or the bundled sample. A certificate loaded meanwhile (the sample, a file, a hand-over)
+ * stops the lookup through {@link setCurrentCert}, and a lookup whose block was replaced is never
+ * loaded over the user's choice.
+ * @param {{ onLoad: (load: CertLoad) => void, signal?: AbortSignal|null, onBusy?: ((busy: boolean) => void)|null,
  *   onStale?: (() => void)|null }} opts onBusy: the view's busy flag while a lookup runs (defers a
- *   language re-mount); onStale: the sample file failed to load (ctx.checkOutdated)
+ *   language re-mount; the block's own live status says what runs); onStale: the sample file failed
+ *   to load (ctx.checkOutdated)
  * @returns {{ el: HTMLElement, input: HTMLInputElement }}
  */
 export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null }) {
@@ -1185,11 +1277,14 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     h('div', { class: 'cluster cert-alt-sample' }, sampleBtn, h('span', { class: 'muted text-sm' }, t('cert.alt.sampleHint'))));
 
   function setRunning(host) {
+    const icon = loadBtn.querySelector('.icon');
+    if (icon) icon.replaceWith(Icon(host ? 'x' : 'search', { size: 16 }));
     loadBtn.querySelector('.btn-label').textContent = host ? t('common.cancel') : t('cert.alt.load');
     loadBtn.dataset.state = host ? 'running' : 'idle';
     clear(status);
+    // The spinner's label is the one announcement (status is a live region), so onBusy gets no text.
     if (host) status.append(Spinner({ label: t('cert.alt.searching', { host }), showLabel: true }));
-    if (onBusy) onBusy(host ? t('cert.alt.searching', { host }) : false);
+    if (onBusy) onBusy(!!host);
   }
 
   async function lookup() {
@@ -1200,8 +1295,10 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
       return;
     }
     field.setError(null);
+    stopCtLookup();
     const ctl = new AbortController();
     running = ctl;
+    ctForm.running = ctl;
     ctForm.last = null;
     setRunning(host);
     let result = null;
@@ -1211,8 +1308,10 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
       if (errorKind(err) !== 'abort') result = { host, status: 'error', error: String(err && err.message ? err.message : err), errorKind: errorKind(err) };
     }
     running = null;
+    if (ctForm.running === ctl) ctForm.running = null;
     if (!el.isConnected || (signal && signal.aborted)) {
-      if (onBusy) onBusy(false);
+      // Stopped with its block: release the busy flag, unless a newer lookup holds it.
+      if (onBusy && !ctForm.running) onBusy(false);
       return;
     }
     setRunning(null);
@@ -1239,14 +1338,6 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     }
   }
 
-  /** Why crt.sh was asked (null when it was not): Cert Spotter's quota, a failure, a partial list or an unreadable copy. */
-  function crtshWhy(r) {
-    if (!r.crtsh || !r.certspotter) return null;
-    if (r.certspotter.errorKind === 'rate-limit') return t('cert.alt.spotterQuota');
-    if (r.certspotter.state === 'partial') return t('cert.alt.spotterPartial');
-    return r.certspotter.state === 'ok' ? t('cert.alt.spotterUnreadable') : t('cert.alt.spotterFailed');
-  }
-
   function showOutcome(r) {
     clear(status);
     if (!r) return;
@@ -1258,7 +1349,7 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
         compact: true,
         icon: 'download',
         title: t('cert.alt.manualTitle'),
-        message: `${crtshWhy(r)} ${t('cert.alt.manualCert', { host: r.host, names: e.names.join(', ') || r.host, issuer: dnDisplayName(e.issuer), date: formatDate(e.notAfter) })}`,
+        message: ctOutcomeMessage(r),
         children: h('p', { class: 'text-sm cert-alt-why' }, t('cert.alt.manualWhy')),
         actions: [
           ...e.downloads.map((d) => ButtonLink({ href: d.url, label: t('cert.alt.download', { id: d.id }), icon: 'download', size: 'sm', external: true })),
@@ -1266,12 +1357,19 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
         ]
       });
     } else if (r.status === 'not-found') {
-      const lines = [crtshWhy(r), r.crtsh && r.crtsh.error ? t('cert.alt.crtshPartial') : null, t('cert.alt.notFound', { host: r.host })];
-      if (r.skipped && r.skipped.revoked) lines.push(t('cert.alt.revokedSkipped', { count: r.skipped.revoked }));
-      box = Alert({ variant: 'info', compact: true, icon: 'search', message: lines.filter(Boolean).join(' ') });
+      box = Alert({ variant: 'info', compact: true, icon: 'search', message: ctOutcomeMessage(r) });
     } else {
-      const err = Object.assign(new Error(r.error || ''), { kind: r.errorKind || 'unknown' });
-      box = ErrorBanner(err, { title: t('cert.alt.failed'), compact: true, onRetry: () => lookup() });
+      // ErrorBanner's layout, with a message that also says why only crt.sh was asked; the
+      // details are the failed request's own text ('HTTP 502 …', 'Failed to fetch').
+      const detail = r.error || '';
+      box = Alert({
+        variant: 'error',
+        compact: true,
+        title: t('cert.alt.failed'),
+        message: ctOutcomeMessage(r),
+        children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
+        actions: [Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', dataset: { action: 'ct-retry' }, onClick: () => lookup() })]
+      });
     }
     box.dataset.ctResult = r.status;
     status.append(box);

@@ -244,7 +244,7 @@ registerStrings('tr', {
   'ptr.target.hint': '/22’ye kadar bir IPv4 ağı ({max} adres), bir aralık, tek tek IPv4 / IPv6 adresleri ya da duyurduğu öneklerden seçmek için bir AS numarası. IPv6: yalnızca tam adresler.',
   'ptr.focus.label': 'Alan adınız',
   'ptr.focus.placeholder': 'example.com',
-  'ptr.focus.hint': 'Altındaki adlar vurgulanır, en üstte listelenir ve hiçbir zaman bir şablona katlanmaz.',
+  'ptr.focus.hint': 'Altındaki adlar vurgulanır, en üstte listelenir ve hiçbir zaman bir şablon satırında toplanmaz.',
   'ptr.focus.invalid': 'example.com gibi bir alan adı girin ya da boş bırakın.',
   'ptr.run': 'Tara',
   'ptr.list': 'Önekleri listele',

@@ -35,13 +35,13 @@ import {
 import {
   SWEEP_MAX_ADDRESSES, SWEEP_MAX_CONCURRENCY, SWEEP_FILTERS, SWEEP_CSV_COLUMNS, FCRDNS_STATUSES, parseSweepTarget, announcedPrefixes,
   prefixSelection, runPtrSweep, sweepRows, sweepRowMatches, sweepRowResults, sweepSummary, sweepExportRows, sweepExportJson,
-  sweepNames, inventoryAdditions, inventoryDraft, scanHandoff, isFocusName
+  sweepNames, inventoryAdditions, inventoryDraft, scanHandoff, isFocusName, targetTokens
 } from '../lib/ptrsweep.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { parseInventory } from '../lib/inventory.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
-import { errorKind, splitList } from '../lib/util.js';
+import { errorKind } from '../lib/util.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 
 /** Route id (`#/ptr`). */
@@ -101,6 +101,7 @@ registerStrings('en', {
 
   'ptr.link.prompt': { one: 'Opened from a link: press Sweep to look up the reverse DNS of {target} ({count} address). Nothing has been sent yet.', other: 'Opened from a link: press Sweep to look up the reverse DNS of {target} ({count} addresses). Nothing has been sent yet.' },
   'ptr.link.promptAsn': 'Opened from a link: press List prefixes to see what {asn} announces. Nothing has been sent yet.',
+  'ptr.link.waiting': 'Opened from a link: {target} goes into the form when the running sweep ends or you stop it, and then waits for your click. Nothing has been sent for it yet.',
 
   'ptr.asn.title': 'Prefixes announced by AS{asn}',
   'ptr.asn.loading': 'Asking RIPEstat for the prefixes of AS{asn}…',
@@ -284,6 +285,7 @@ registerStrings('tr', {
 
   'ptr.link.prompt': 'Bir bağlantıdan açıldı: {target} için ({count} adres) ters DNS’e bakmak üzere Tara’ya basın. Henüz hiçbir şey gönderilmedi.',
   'ptr.link.promptAsn': 'Bir bağlantıdan açıldı: {asn} tarafından duyurulan önekleri görmek için Önekleri listele’ye basın. Henüz hiçbir şey gönderilmedi.',
+  'ptr.link.waiting': 'Bir bağlantıdan açıldı: {target}, çalışan tarama bitince ya da onu durdurduğunuzda forma girer ve sizin başlatmanızı bekler. Bunun için henüz hiçbir şey gönderilmedi.',
 
   'ptr.asn.title': 'AS{asn} tarafından duyurulan önekler',
   'ptr.asn.loading': 'AS{asn} önekleri RIPEstat’a soruluyor…',
@@ -475,13 +477,14 @@ export function confirmedHint(s) {
 
 /**
  * The route params of a sweep's share link, or null when the target is too long for a URL.
+ * The target is the form's tokens joined with commas (lib/ptrsweep targetTokens), so a range
+ * typed with spaces or an en dash stays one token: `192.0.2.10-192.0.2.20`.
  * @param {string} target the form text
  * @param {string} [focus]
  * @returns {{ target: string, focus: string|null }|null}
  */
 export function shareParams(target, focus = '') {
-  const tokens = splitList(target);
-  const text = tokens.join(',');
+  const text = targetTokens(target).join(',');
   if (!text || text.length > LINK_MAX_CHARS) return null;
   const f = normalizeHostname(String(focus || ''));
   return { target: text, focus: f || null };
@@ -493,16 +496,19 @@ export function shareParams(target, focus = '') {
 
 /**
  * The form, the current / last sweep and AS lookup, the table's filter, kept for the page session.
- * `routeTarget`: the target in the URL that is already in the form (a link applied, or the last
- * run's); `prompt`: a link pre-filled the form and waits for a click. Each sweep starts at the
- * 'ptr' filter; `filterChosen`: the user picked one for this sweep (else a sweep that ends
- * without any PTR name shows all its addresses).
+ * `routeTarget`: the target in the URL that is in the form or waits for it (a link applied or
+ * waiting, or the last run's); `prompt`: a link pre-filled the form and waits for a click;
+ * `pending`: a link opened while a sweep runs ({ text, focus }), put into the form when that
+ * sweep ends. Each sweep starts at the 'ptr' filter; `filterChosen`: the user picked one for
+ * this sweep (else a sweep that ends without any PTR name shows all its addresses).
  */
 const session = {
-  text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false, routeTarget: null
+  text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false, routeTarget: null, pending: null
 };
 let jobCounter = 0;
 let active = null;
+/** A sweep runs (in this view or in the background). */
+const sweepRunning = () => !!(session.job && session.job.status === 'running');
 
 function emit(job, type, payload) {
   for (const fn of [...job.listeners]) {
@@ -592,6 +598,8 @@ export function mount(container, ctx) {
   const { state } = ctx;
   const cleanups = [];
   applyRoute(ctx.params);
+  // A link that waited for a sweep which ended while this view was not mounted.
+  if (!sweepRunning()) takePending();
 
   /* --- form ---------------------------------------------------------------- */
   const targetField = textarea({
@@ -736,13 +744,32 @@ export function mount(container, ctx) {
   function showPrompt() {
     clear(promptEl);
     promptEl.hidden = false;
-    const message = parsed.kind === 'asn'
-      ? t('ptr.link.promptAsn', { asn: `AS${parsed.asn}` })
-      : t('ptr.link.prompt', { target: parsed.label, count: parsed.addresses.length });
+    let message;
+    if (session.pending) {
+      const next = parseSweepTarget(session.pending.text);
+      message = t('ptr.link.waiting', { target: next.label || targetTokens(session.pending.text).slice(0, 3).join(', ') });
+    } else {
+      message = parsed.kind === 'asn'
+        ? t('ptr.link.promptAsn', { asn: `AS${parsed.asn}` })
+        : t('ptr.link.prompt', { target: parsed.label, count: parsed.addresses.length });
+    }
     const alert = Alert({ variant: 'info', icon: 'link', compact: true, message });
-    alert.dataset.prompt = 'link';
+    alert.dataset.prompt = session.pending ? 'waiting' : 'link';
     promptEl.append(alert);
   }
+
+  /** Fill the form from the session (a link applied): re-read it, re-rank the results for its focus, prompt. */
+  function fillFromSession() {
+    targetField.value = session.text;
+    focusField.value = session.focus;
+    targetField.setError(null);
+    focusField.setError(null);
+    renderParsed();
+    if (ui) ui.refocus();
+    if (parsed.ok) showPrompt();
+    else hidePrompt();
+  }
+
   function hidePrompt() {
     session.prompt = false;
     clear(promptEl);
@@ -754,7 +781,7 @@ export function mount(container, ctx) {
   let starting = false;
   /** The prefix picker's "Sweep selected" state, re-derived when a sweep starts or ends. */
   let syncPicker = null;
-  const isRunning = () => !!(session.job && session.job.status === 'running');
+  const isRunning = sweepRunning;
   const isListing = () => !!(session.asn && session.asn.status === 'loading' && session.asn.controller);
 
   /**
@@ -851,7 +878,10 @@ export function mount(container, ctx) {
     emptyEl.hidden = true;
     ui = buildJobUI(job, ctx, {
       focus: focusValue,
-      onFinish: () => syncControls()
+      onFinish: () => {
+        syncControls();
+        if (takePending()) fillFromSession();
+      }
     });
     resultsHost.append(ui.el);
     syncControls();
@@ -882,7 +912,7 @@ export function mount(container, ctx) {
 
   /** The focus domain changed: the URL keeps its target and carries the new focus (never an invalid one). */
   const syncRouteFocus = debounce(() => {
-    if (!session.routeTarget || ctx.signal.aborted) return;
+    if (!session.routeTarget || session.pending || ctx.signal.aborted) return;
     if (focusField.value.trim() && !focusValue()) return;
     ctx.setParams({ target: session.routeTarget, focus: focusValue() });
   }, 300);
@@ -1088,7 +1118,7 @@ export function mount(container, ctx) {
   if (session.asn) followAsn(session.asn);
   if (session.job) attach(session.job);
   else renderHeaderActions();
-  if (session.prompt && parsed.ok) showPrompt();
+  if (session.pending || (session.prompt && parsed.ok)) showPrompt();
 
   cleanups.push(state.subscribe(({ key }) => {
     if (key === 'settings') renderConcurrency();
@@ -1098,10 +1128,8 @@ export function mount(container, ctx) {
   active = {
     applyParams(params) {
       if (applyRoute(params)) {
-        targetField.value = session.text;
-        focusField.value = session.focus;
-        renderParsed();
-        if (parsed.ok) showPrompt();
+        if (session.pending) showPrompt();
+        else fillFromSession();
       }
       return true;
     }
@@ -1116,18 +1144,38 @@ export function mount(container, ctx) {
 }
 
 /**
+ * The form text of a link's `target`: one token a line, read as the form reads it
+ * (lib/ptrsweep targetTokens), so `192.0.2.10 - 192.0.2.20` stays one range.
+ * @param {string} raw
+ * @returns {string}
+ */
+export function linkText(raw) {
+  return targetTokens(raw).join('\n');
+}
+
+/**
  * Pre-fill the form from route params (`target`, `focus`); a link waits for a click. The target
  * this page put into the URL itself (the last run, `session.routeTarget`) is not a new link:
- * a reload or a re-mount keeps what the form holds.
+ * a reload or a re-mount keeps what the form holds. A link opened while a sweep runs waits in
+ * `session.pending`: the form keeps the running sweep's target until that sweep ends.
  * @returns {boolean} whether the params carried a new target
  */
 function applyRoute(params) {
   const raw = params && typeof params.target === 'string' ? params.target : '';
-  const target = splitList(raw).join('\n');
-  if (!target || splitList(raw).join(',') === session.routeTarget) return false;
-  session.routeTarget = splitList(raw).join(',');
-  session.text = target;
-  session.focus = params.focus ? String(params.focus) : '';
+  const text = linkText(raw);
+  if (!text || text.replace(/\n/g, ',') === session.routeTarget) return false;
+  session.routeTarget = text.replace(/\n/g, ',');
+  session.pending = { text, focus: params.focus ? String(params.focus) : '' };
+  if (!sweepRunning()) takePending();
+  return true;
+}
+
+/** Move a waiting link into the form (no sweep runs any more); it then waits for a click. */
+function takePending() {
+  if (!session.pending) return false;
+  session.text = session.pending.text;
+  session.focus = session.pending.focus;
+  session.pending = null;
   session.prompt = true;
   return true;
 }

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { setLang, t } from '../../assets/js/i18n.js';
 import { parseSweepTarget, FCRDNS_STATUSES, TARGET_ISSUES } from '../../assets/js/lib/ptrsweep.js';
-import { shareParams, issueKey, buildNamesIntent, confirmedHint, LINK_MAX_CHARS } from '../../assets/js/views/ptr.js';
+import { shareParams, linkText, issueKey, buildNamesIntent, confirmedHint, LINK_MAX_CHARS } from '../../assets/js/views/ptr.js';
 import '../../assets/js/views/health.js'; // registers the hlt.fcrdns.* strings
 import {
   namesFromIntent, handoffScanOverrides, handoffForDomains, NAMES_INTENT_MAX_AGE, NAMES_HANDOFF_MAX, ZONE_MODES
@@ -22,6 +22,25 @@ describe('Reverse DNS view helpers', () => {
     const long = Array.from({ length: 60 }, (_, i) => `192.0.2.${i}`).join('\n');
     assert.ok(long.length > LINK_MAX_CHARS);
     assert.equal(shareParams(long), null);
+  });
+
+  test('a range typed with spaces or an en dash survives the share link and the link read back', () => {
+    const cases = [
+      ['192.0.2.10 - 192.0.2.14', '192.0.2.10-192.0.2.14', 5],
+      ['192.0.2.10 – 20', '192.0.2.10-20', 11],
+      ['192.0.2.10–20\n198.51.100.7', '192.0.2.10-20,198.51.100.7', 12],
+      ['AS 64496', 'AS64496', 0]
+    ];
+    for (const [typed, target, count] of cases) {
+      assert.equal(shareParams(typed).target, target, typed);
+      const back = parseSweepTarget(linkText(target));
+      assert.deepEqual([back.issues, back.addresses.length], [[], count], typed);
+      assert.equal(back.label, parseSweepTarget(typed).label, typed);
+    }
+    // a link typed by hand (spaces, an en dash) reads as the form would
+    assert.equal(linkText('192.0.2.10 - 192.0.2.14, 198.51.100.7'), '192.0.2.10-192.0.2.14\n198.51.100.7');
+    assert.equal(linkText('192.0.2.20 – 22'), '192.0.2.20-22');
+    assert.equal(linkText(''), '');
   });
 
   test('issueKey: a network too large gets its first /22, or why it is not swept at all; a range has no network to suggest', () => {

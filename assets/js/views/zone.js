@@ -898,10 +898,12 @@ const baseName = (p) => String(p || '').split(/[\\/]/).pop().toLowerCase();
  * Parse one or several loaded files into one zone (zone spec §6.1.1 multi-file rule): when
  * every file is Cloudflare API JSON (or every one Route 53 JSON) the texts are joined and parsed
  * once (pages merged, PARTIAL_EXPORT over all pages); otherwise each file is parsed alone and
- * the results are merged (same origin required). The lead file (one that `$INCLUDE`s another
- * dropped file, else one whose origin comes from an SOA / `$ORIGIN` / header) goes first
- * whatever the drop order; a part that does not name its own zone is read under its
- * `$INCLUDE` origin, else the lead's, with the lead's `$TTL`.
+ * the results are merged in drop order (same origin required). The lead file names the zone
+ * whatever the drop order: one whose origin comes from the user / an SOA / `$ORIGIN` / a header
+ * (the main file of an `$INCLUDE` tree first), else the main file. A part it `$INCLUDE`s (also
+ * through another part) that does not name its own zone is read under its `$INCLUDE` origin,
+ * a fragment that names no zone at all under the lead's, both with the lead's `$TTL` and origin
+ * confidence; any other file keeps its own zone name (two zones → ORIGIN_MISMATCH).
  * @param {Array<{ name: string, text: string }>} files
  * @param {{ origin?: string|null, format?: string }} [opts]
  * @returns {object} Zone
@@ -919,33 +921,48 @@ export function parseFiles(files, { origin = null, format = 'auto' } = {}) {
   if (formats.every((x) => x === 'cloudflare-api') || formats.every((x) => x === 'route53')) {
     return parseZone(list.map((f) => f.text).join('\n'), { origin: o, filename: list[0].name, format });
   }
-  // The lead goes first so $INCLUDE fragments inherit its origin (critic B4).
   const alone = list.map((f, i) => parseZone(f.text, { origin: o, filename: f.name, format, source: i }));
-  const dropped = new Set(list.map((f) => baseName(f.name)));
-  const includesOther = (z) => !z.fatal && z.warnings.some((w) => w.code === 'INCLUDE_REJECTED' && dropped.has(baseName(w.params.path)));
-  let li = alone.findIndex(includesOther);
-  if (li < 0) li = alone.findIndex((z) => !z.fatal && z.origin && z.originConfidence === 'high');
-  if (li < 0) li = 0;
+  const byBase = new Map();
+  list.forEach((f, i) => { if (!byBase.has(baseName(f.name))) byBase.set(baseName(f.name), i); });
+  // the other dropped files a zone `$INCLUDE`s, with the origin each is read under (null: unknown)
+  const includesOf = (z, i) => (z.fatal ? [] : z.warnings.flatMap((w) => {
+    const j = w.code === 'INCLUDE_REJECTED' ? byBase.get(baseName(w.params.path)) : undefined;
+    return j === undefined || j === i ? [] : [{ j, at: w.params.at || null }];
+  }));
+  const included = new Set(alone.flatMap((z, i) => includesOf(z, i).map((x) => x.j)));
+  // The lead (critic B4): a confident origin first, then the main file of an $INCLUDE tree
+  // (includes another, included by none), then any includer, then any origin (a confident main
+  // file before a confident part); ties go to the drop order.
+  const rank = (z, i) => (z.fatal ? 0 : (z.origin && z.originConfidence === 'high' ? 8 : 0)
+    + (includesOf(z, i).length ? (included.has(i) ? 2 : 4) : 0) + (z.origin ? 1 : 0));
+  let li = 0;
+  alone.forEach((z, i) => { if (rank(z, i) > rank(alone[li], li)) li = i; });
   const lead = alone[li];
-  const includeAt = new Map();
-  for (const w of lead.warnings) if (w.code === 'INCLUDE_REJECTED' && w.params.at) includeAt.set(baseName(w.params.path), w.params.at);
+  const ttl = lead.defaultTtl ?? null;
+  const read = (i, want) => parseZone(list[i].text, { origin: want, filename: list[i].name, format, source: i, defaultTtl: ttl });
+  const zones = alone.map((z, i) => (i === li || ttl === null ? z : read(i, o)));
   // no zone name of its own: a missing origin, or one guessed from the file name / the records
   const adoptable = (z) => (z.fatal ? z.fatal.code === 'ORIGIN_REQUIRED' : z.originConfidence !== 'high' || z.originSource === 'user');
-  const zones = [lead];
-  list.forEach((f, i) => {
-    if (i === li) return;
-    const base = { filename: f.name, format, source: i, defaultTtl: lead.defaultTtl ?? null };
-    let z = (lead.defaultTtl ?? null) === null ? alone[i] : parseZone(f.text, { ...base, origin: o });
-    const at = includeAt.get(baseName(f.name)) || null;
-    const want = at || lead.origin;
-    if (want && adoptable(z) && z.origin !== want) z = parseZone(f.text, { ...base, origin: want });
-    // included below the apex (`$INCLUDE lab lab.example.com.`): still a part of the lead's zone
-    if (at && z.origin === at && lead.origin && at.endsWith(`.${lead.origin}`)) {
-      z = { ...z, origin: lead.origin, originSource: lead.originSource, originConfidence: lead.originConfidence };
+  // at or below the lead's origin (`$INCLUDE lab lab.example.com.`): a part of the lead's zone,
+  // as sure of its name as the lead (a re-read part says 'user' / 'high' by itself)
+  const inLead = (z) => !z.fatal && !!lead.origin && !!z.origin && (z.origin === lead.origin || z.origin.endsWith(`.${lead.origin}`));
+  const adopt = (z) => (inLead(z) ? { ...z, origin: lead.origin, originSource: lead.originSource, originConfidence: lead.originConfidence } : z);
+  const seen = new Set([li]);
+  const queue = [li];
+  while (queue.length) {
+    const i = queue.shift();
+    for (const { j, at } of includesOf(zones[i], i)) {
+      if (seen.has(j)) continue;
+      seen.add(j);
+      const want = at || lead.origin;
+      zones[j] = adopt(want && adoptable(zones[j]) && zones[j].origin !== want ? read(j, want) : zones[j]);
+      queue.push(j);
     }
-    zones.push(z);
+  }
+  zones.forEach((z, i) => {
+    if (!seen.has(i) && lead.origin && z.fatal && z.fatal.code === 'ORIGIN_REQUIRED') zones[i] = adopt(read(i, lead.origin));
   });
-  return mergeZones(zones);
+  return mergeZones(zones, { lead });
 }
 
 /**

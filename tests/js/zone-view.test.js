@@ -135,10 +135,85 @@ describe('zone view: samples and parsing', () => {
     assert.equal(abs.origin, 'example.com');
   });
 
+  test('a merged zone keeps the drop order: every record names the file it came from', () => {
+    const main = { name: 'db.example.com', text: '; Zone file for example.com\n$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE mail.inc\n' };
+    const part = { name: 'mail.inc', text: 'mail IN A 192.0.2.80\n@ IN MX 10 mail\n' };
+    const alone = Zp.parseZone(main.text, { filename: main.name });
+    for (const files of [[part, main], [main, part]]) {
+      const z = V.parseFiles(files);
+      assert.equal(z.fatal, null);
+      assert.deepEqual(z.sources.map((s) => s.name), files.map((f) => f.name));
+      const from = Object.fromEntries(z.records.map((r) => [`${r.name} ${r.type}`, `${z.sources[r.source].name}:${r.line}`]));
+      assert.deepEqual(from, {
+        'example.com SOA': 'db.example.com:4', 'example.com NS': 'db.example.com:5', 'ns1.example.com A': 'db.example.com:6',
+        'mail.example.com A': 'mail.inc:1', 'example.com MX': 'mail.inc:2'
+      });
+      // the main file, not the part dropped first, gives the format, dialect and $TTL
+      assert.deepEqual([z.format, z.dialect, z.defaultTtl, z.originSource], [alone.format, alone.dialect, 300, '$ORIGIN']);
+    }
+  });
+
+  test('a lead named only by its file name passes that doubt on to its $INCLUDE parts', () => {
+    const main = (inc) => ({ name: 'db.example.com', text: `$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE ${inc}\n` });
+    for (const inc of ['mail.inc', 'mail']) {
+      const part = { name: inc, text: 'mail IN A 192.0.2.80\n' };
+      for (const files of [[main(inc), part], [part, main(inc)]]) {
+        const z = V.parseFiles(files);
+        assert.equal(z.fatal, null, inc);
+        assert.deepEqual([z.origin, z.originSource, z.originConfidence], ['example.com', 'filename', 'low'], inc);
+        assert.ok(z.records.some((r) => r.name === 'mail.example.com'), inc);
+        assert.equal(V.originConfirmed(z, false), false, `${inc}: the user still confirms the zone name`);
+      }
+    }
+  });
+
+  test('nested $INCLUDEs and a part with its own sub-block $ORIGIN merge in any drop order', () => {
+    const perms = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap((x, i) => perms([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p])));
+    const a = { name: 'a.inc', text: 'www IN A 192.0.2.1\n$INCLUDE b.inc\n' };
+    const b = { name: 'b.inc', text: 'api IN A 192.0.2.2\n' };
+    for (const [head, conf] of [['$ORIGIN example.com.\n', 'high'], ['', 'low']]) {
+      const main = { name: 'db.example.com', text: `${head}$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\n$INCLUDE a.inc\n` };
+      for (const files of perms([main, a, b])) {
+        const z = V.parseFiles(files);
+        const order = files.map((f) => f.name).join();
+        assert.equal(z.fatal, null, order);
+        assert.deepEqual([z.origin, z.originConfidence], ['example.com', conf], order);
+        assert.deepEqual(z.records.map((r) => r.name).sort(), ['api.example.com', 'example.com', 'example.com', 'www.example.com'], order);
+        assert.equal(z.warnings.filter((w) => w.code === 'INCLUDE_MERGED').length, 2, order);
+      }
+    }
+    // BIND loads a part that opens its own `$ORIGIN lab.example.com.` below the zone
+    const main = { name: 'db.example.com', text: '$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n$INCLUDE lab.inc\n' };
+    const lab = { name: 'lab.inc', text: '$ORIGIN lab.example.com.\napi IN A 192.0.2.30\n' };
+    for (const files of [[main, lab], [lab, main]]) {
+      const z = V.parseFiles(files);
+      assert.equal(z.fatal, null);
+      assert.deepEqual([z.origin, z.originSource], ['example.com', '$ORIGIN']);
+      assert.deepEqual(z.records.map((r) => r.name).sort(), ['api.lab.example.com', 'example.com']);
+    }
+  });
+
   test('files of different zones → ORIGIN_MISMATCH; a certificate → NOT_A_ZONE pem', () => {
     const a = 'example.com. 300 IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\nexample.com. 300 IN A 192.0.2.10\nwww.example.com. 300 IN A 192.0.2.10\n';
     const b = 'example.org. 300 IN SOA ns1.example.org. h.example.org. 1 2 3 4 5\nexample.org. 300 IN A 192.0.2.10\nwww.example.org. 300 IN A 192.0.2.10\n';
     assert.equal(V.parseFiles([{ name: 'a.txt', text: a }, { name: 'b.txt', text: b }]).fatal.code, 'ORIGIN_MISMATCH');
+    // a file that only guesses its zone from its name is not read under another file's zone
+    const yamlA = { name: 'example.com.yaml', text: "'':\n  type: A\n  value: 192.0.2.10\nwww:\n  type: A\n  value: 192.0.2.11\n" };
+    const yamlB = { name: 'example.net.yaml', text: "'':\n  type: A\n  value: 198.51.100.10\napi:\n  type: A\n  value: 198.51.100.11\n" };
+    const bindA = { name: 'example.com.zone', text: '$TTL 300\nwww IN A 192.0.2.1\n' };
+    const bindB = { name: 'example.net.zone', text: '$TTL 300\nwww IN A 198.51.100.1\n' };
+    const soa = { name: 'db.example.com', text: '$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n' };
+    for (const files of [[yamlA, yamlB], [yamlB, yamlA], [bindA, bindB], [soa, yamlB], [yamlB, soa], [soa, bindB]]) {
+      const z = V.parseFiles(files);
+      const order = files.map((f) => f.name).join();
+      assert.equal(z.fatal && z.fatal.code, 'ORIGIN_MISMATCH', order);
+      assert.deepEqual([...z.fatal.params.origins].sort(), ['example.com', 'example.net'], order);
+    }
+    // a fragment with nothing to guess its zone from still joins the one zone
+    const frag = V.parseFiles([{ name: 'extra', text: 'ftp IN A 192.0.2.21\n' }, soa]);
+    assert.equal(frag.fatal, null);
+    assert.deepEqual([frag.origin, frag.originSource, frag.originConfidence], ['example.com', '$ORIGIN', 'high']);
+    assert.ok(frag.records.some((r) => r.name === 'ftp.example.com' && r.ttl === 300));
     const pem = V.parseFiles([{ name: 'cert.pem.txt', text: fixture('bad/cert.pem.txt') }]);
     assert.equal(pem.fatal.code, 'NOT_A_ZONE');
     assert.equal(pem.fatal.params.hint, 'pem');

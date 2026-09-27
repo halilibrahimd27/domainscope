@@ -2609,14 +2609,20 @@ class TlsProber:
         return result
 
 
-def _parallel(func: Callable[[Any], Any], items: Sequence[Any], workers: int,
+# Yielded by a _parallel item source: its next item has to wait for a running task.
+_WAIT = object()
+
+
+def _parallel(func: Callable[[Any], Any], items: Iterable[Any], workers: int,
               on_result: Callable[[Any, Any], None], cancel: threading.Event,
               poll: float = 0.2) -> None:
     """Run ``func`` over ``items`` on a thread pool, calling ``on_result`` in this thread.
 
     At most ``2 * workers`` tasks are in flight, so huge CIDRs do not create millions of
-    futures. Waits in short slices so Ctrl-C (KeyboardInterrupt) is delivered promptly;
-    on any exception pending work is cancelled and the pool is abandoned (not joined).
+    futures. ``items`` may yield :data:`_WAIT` (never while nothing runs): the next item
+    is then asked for after the next ``on_result``. Waits in short slices so Ctrl-C
+    (KeyboardInterrupt) is delivered promptly; on any exception pending work is cancelled
+    and the pool is abandoned (not joined).
     """
     executor = ThreadPoolExecutor(max_workers=max(1, workers),
                                   thread_name_prefix='ssl-origin-scan')
@@ -2630,6 +2636,8 @@ def _parallel(func: Callable[[Any], Any], items: Sequence[Any], workers: int,
                     item = next(iterator)
                 except StopIteration:
                     exhausted = True
+                    break
+                if item is _WAIT:
                     break
                 inflight[executor.submit(func, item)] = item
             if not inflight:
@@ -2670,10 +2678,10 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     :attr:`ScanReport.excluded`. Phase 1 TCP-connects each unique ip:port
     (``connect_fn``); phase 2 runs one TLS handshake per open endpoint and unique SNI
     plus one without SNI (``tls_fn``), at most :data:`MAX_PER_ENDPOINT` at a time per
-    endpoint, and retries a closed / reset / refused handshake (:func:`is_transient`)
-    once where others completed. Both functions are injectable for tests.
-    ``progress(phase, done, total, info)`` is called from this thread with phase
-    ``connect``, ``tls`` or ``retry``. KeyboardInterrupt propagates.
+    endpoint unless its first ones all timed out, and retries a closed / reset / refused
+    handshake (:func:`is_transient`) once where others completed. Both functions are
+    injectable for tests. ``progress(phase, done, total, info)`` is called from this
+    thread with phase ``connect``, ``tls`` or ``retry``. KeyboardInterrupt propagates.
     """
     connect_fn = connect_fn or tcp_connect
     tls_fn = tls_fn or TlsProber()
@@ -2714,39 +2722,66 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     # Phase 2 - one handshake per open endpoint and distinct SNI (None = no SNI). The jobs
     # go name by name across the endpoints and at most MAX_PER_ENDPOINT run against one
     # ip:port at a time: dozens of simultaneous handshakes from one client trip per-client
-    # connection limits, and the resets would read as "server refused this name".
+    # connection limits, and the resets would read as "server refused this name". The cap
+    # is kept by handing out jobs, so a job that has to wait never holds a worker thread.
     snis = [None] if default_probe else []  # type: List[Optional[str]]
     seen_snis = set()  # type: Set[str]
     for probe in probes:
         if probe.sni not in seen_snis:
             seen_snis.add(probe.sni)
             snis.append(probe.sni)
-    open_endpoints = [endpoint for endpoint in endpoints.values() if endpoint.state == OPEN]
-    jobs = [(endpoint, sni) for sni in snis for endpoint in open_endpoints]
-    slots = {(endpoint.ip, endpoint.port): threading.BoundedSemaphore(MAX_PER_ENDPOINT)
-             for endpoint in open_endpoints}
+    open_keys = [key for key, endpoint in endpoints.items() if endpoint.state == OPEN]
+    tls_total = len(open_keys) * len(snis)
+    handed = dict.fromkeys(open_keys, 0)    # SNIs handed out, in the order of snis
+    running = dict.fromkeys(open_keys, 0)
+    answered = dict.fromkeys(open_keys, 0)
+    timeouts = dict.fromkeys(open_keys, 0)
     handshakes = {}  # type: Dict[Tuple[str, int, Optional[str]], TlsResult]
     tls_done = [0]
 
+    def capped(key: Tuple[str, int]) -> bool:
+        # A silent endpoint - its first MAX_PER_ENDPOINT handshakes all timed out: a
+        # tarpit, a balancer without a backend, not TLS - is not capped: there is no
+        # limiter to spare, and one timeout per MAX_PER_ENDPOINT names would stall the
+        # scan. The cap is back as soon as a handshake there ends otherwise.
+        silent = answered[key] >= MAX_PER_ENDPOINT and timeouts[key] == answered[key]
+        return running[key] >= MAX_PER_ENDPOINT and not silent
+
+    def tls_jobs() -> Iterable[Any]:
+        pending = list(open_keys)
+        while pending:
+            progressed = False
+            for key in pending:
+                if not capped(key):
+                    progressed = True
+                    running[key] += 1
+                    handed[key] += 1
+                    yield endpoints[key], snis[handed[key] - 1]
+            pending = [key for key in pending if handed[key] < len(snis)]
+            if not progressed:
+                yield _WAIT  # every endpoint left is at its cap: wait for a handshake
+
     def do_tls(job: Tuple[Endpoint, Optional[str]]) -> TlsResult:
         endpoint, sni = job
-        with slots[(endpoint.ip, endpoint.port)]:  # waiting here is not handshake time
-            if cancel.is_set():
-                return TlsResult(status=TLS_ERROR, error='not probed')
-            try:
-                return tls_fn(endpoint.ip, endpoint.port, sni, timeout)
-            except Exception as exc:  # noqa: BLE001 - injected/unknown failures
-                status, message = classify_exception(exc)
-                return TlsResult(status=status, error=message, refused=is_refusal(exc),
-                                 transient=is_transient(exc))
+        try:
+            return tls_fn(endpoint.ip, endpoint.port, sni, timeout)
+        except Exception as exc:  # noqa: BLE001 - injected/unknown failures
+            status, message = classify_exception(exc)
+            return TlsResult(status=status, error=message, refused=is_refusal(exc),
+                             transient=is_transient(exc))
 
     def on_tls(job: Tuple[Endpoint, Optional[str]], result: TlsResult) -> None:
-        handshakes[(job[0].ip, job[0].port, job[1])] = result
+        key = (job[0].ip, job[0].port)
+        handshakes[(key[0], key[1], job[1])] = result
+        running[key] -= 1
+        answered[key] += 1
+        if result.status == TIMEOUT:
+            timeouts[key] += 1
         tls_done[0] += 1
         if progress:
-            progress('tls', tls_done[0], len(jobs), {})
+            progress('tls', tls_done[0], tls_total, {})
 
-    _parallel(do_tls, jobs, workers, on_tls, cancel)
+    _parallel(do_tls, tls_jobs(), workers, on_tls, cancel)
 
     # Endpoints where at least one handshake completed: TLS itself works there, so a
     # handshake the server refuses for one particular name means "not hosted".

@@ -1651,6 +1651,44 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([s.status for s in report.server_summaries()], [sos.NEEDS_UPDATE] * 2)
         self.assertEqual(len(sos.report_to_dict(report)['servers'][0]['needsUpdate']), 60)
 
+    def test_a_silent_endpoint_does_not_stall_the_scan(self):
+        # Two endpoints accept TCP and never finish TLS (a tarpit, a balancer without a
+        # backend). Held to MAX_PER_ENDPOINT handshakes, each would cost one timeout per
+        # four names; the cap is lifted there once the first handshakes all time out.
+        silent = {'10.0.0.1', '10.0.0.2'}
+        active, peak, lock = {}, {}, threading.Lock()
+
+        def tls(ip, port, sni, timeout):
+            with lock:
+                active[ip] = active.get(ip, 0) + 1
+                peak[ip] = max(peak.get(ip, 0), active[ip])
+            try:
+                if ip in silent:
+                    time.sleep(timeout)
+                    raise socket.timeout('timed out')
+                time.sleep(0.005)
+                return sos.TlsResult(der=EC_DER, version='TLSv1.3')
+            finally:
+                with lock:
+                    active[ip] -= 1
+
+        names = ['h%02d.wild.example.net' % i for i in range(80)]
+        timeout = 0.2
+        began = time.monotonic()
+        report = sos.run_scan([sos.Server('s%d' % i, ['10.0.0.%d' % i]) for i in range(1, 9)],
+                              sos.build_probe_names(names), [443], timeout=timeout, workers=32,
+                              connect_fn=lambda *a: None, tls_fn=tls)
+        elapsed = time.monotonic() - began
+        capped = -(-(len(names) + 1) // sos.MAX_PER_ENDPOINT) * timeout  # 21 rounds: 4.2 s
+        self.assertLess(elapsed, capped / 2)
+        self.assertLessEqual(max(n for ip, n in peak.items() if ip not in silent),
+                             sos.MAX_PER_ENDPOINT)
+        rows = [r for r in report.results if r.ip in silent]
+        self.assertEqual(len(rows), 2 * 81)  # every name is still probed there
+        self.assertEqual({r.status for r in rows}, {sos.TIMEOUT})
+        self.assertEqual({r.status for r in report.results
+                          if r.ip not in silent and r.probe == sos.PROBE_SNI}, {sos.NEEDS_UPDATE})
+
     def test_without_new_cert_every_hit_is_needs_update(self):
         network = FakeNetwork({}, {'10.0.0.1': by_old_or_new(EC_DER)})
         report = self.scan([sos.Server('s', ['10.0.0.1'])], ['www.example-test.com.tr'],

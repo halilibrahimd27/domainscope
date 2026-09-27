@@ -589,9 +589,10 @@ export function mount(container, ctx) {
     if (res.limited) {
       return h('div', { class: 'ipi-rev', dataset: { state: 'limited' } }, Badge(t('ipi.rev.limited'), { variant: 'warn', icon: 'alert', title: t('ipi.rev.limitedTitle') }));
     }
+    const st = sourceStatus({ source: 'hackertarget', error: res.error, errorKind: res.errorKind });
     return h('div', { class: 'ipi-rev', dataset: { state: 'error' } },
-      Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: res.error || '' }),
-      Button({ label: t('common.retry'), icon: 'refresh', size: 'sm', variant: 'ghost', onClick: () => reverseLookup(r) }));
+      Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: statusText(st) }),
+      RetryButton({ sources: ['hackertarget'], onClick: () => reverseLookup(r) }));
   }
 
   function renderDetails(r) {

@@ -35,6 +35,8 @@ import { errorKind, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { bulkFraction } from '../lib/jobprogress.js';
+import { ipFieldStatus } from '../lib/sourcestatus.js';
+import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 
 /** Route id. */
@@ -1147,6 +1149,20 @@ function buildJobUI(job, ctx, { onFinish }) {
   const enrichSkipped = (row) => row.ips.some((ip) => ipOf(ip)?.skipped);
   const pendingCell = () => h('span', { class: 'muted text-sm' }, t('bulk.pending'));
   const skippedCell = () => h('span', { class: 'muted text-sm', title: t('bulk.skippedTitle') }, t('bulk.skipped'));
+  /** "⚠ n/a" when a failed intel source left this field empty (lib/sourcestatus.js), never a silent dash. */
+  const naOf = (r, field) => {
+    const st = r.info ? ipFieldStatus(r.info, field) : null;
+    return st ? NaMark(st.statuses) : null;
+  };
+  /** The same for a host row: the first of its addresses whose failed source left `field` empty. */
+  const hostNa = (row, field) => {
+    for (const ip of row.ips) {
+      const r = ipOf(ip);
+      const mark = r ? naOf(r, field) : null;
+      if (mark) return mark;
+    }
+    return null;
+  };
 
   const copyBtn = (labelKey, getLines, action) => Button({
     label: t(labelKey),
@@ -1209,7 +1225,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         render: (r) => {
           const list = ptrText(r);
           if (list.length) return TruncatedList(list, { max: 2 });
-          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : null;
+          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'ptr');
         }
       } : null,
       showAsn ? {
@@ -1220,7 +1236,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         render: (r) => {
           const list = asnText(r);
           if (list.length) return TruncatedList(list, { max: 2, mono: false });
-          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : null;
+          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'network');
         }
       } : null,
       {
@@ -1309,7 +1325,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         searchValue: (r) => (r.ptr || []).join(' '),
         exportValue: (r) => (r.ptr || []).join(' '),
         render: (r) => (r.ptr && r.ptr.length ? TruncatedList(r.ptr, { max: 2 })
-          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : null))
+          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : naOf(r, 'ptr')))
       } : null,
       showAsn ? {
         key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
@@ -1320,7 +1336,7 @@ function buildJobUI(job, ctx, { onFinish }) {
           ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
           : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
             : r.skipped ? skippedCell()
-              : (r.enrichError ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
+              : naOf(r, 'network') || (r.enrichError && !r.info ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
       } : null,
       showAsn ? {
         key: 'country', label: t('bulk.col.country'), sortable: true,
@@ -1329,13 +1345,13 @@ function buildJobUI(job, ctx, { onFinish }) {
         exportValue: (r) => (r.info && r.info.country) || '',
         render: (r) => (r.info && r.info.country
           ? h('span', { title: r.info.city || '' }, `${formatRegion(r.info.country, r.info.country)}`)
-          : null)
+          : naOf(r, 'location'))
       } : null,
       showAsn ? {
         key: 'prefix', label: t('bulk.col.prefix'), sortable: true, mono: true,
         sortValue: (r) => (r.info && r.info.prefix) || '',
         exportValue: (r) => (r.info && r.info.prefix) || '',
-        render: (r) => (r.info && r.info.prefix ? r.info.prefix : null)
+        render: (r) => (r.info && r.info.prefix ? r.info.prefix : naOf(r, 'prefix'))
       } : null
     ].filter(Boolean)
   });

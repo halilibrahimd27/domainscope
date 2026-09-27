@@ -59,8 +59,8 @@ jobs:
       # image has the switch, so a missing one is fine
       - name: Allow the Chrome sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      # shell, zone and verify never leave the machine (fake DoH / Globalping inside the page,
+      # shell, zone, verify and dane never leave the machine (fake DoH / Globalping inside the page,
       # every other https:// request blocked); the other suites hit live, quota-limited APIs
       # and are run by hand. Uses the runner's Google Chrome (/usr/bin/google-chrome).
-      - name: Offline E2E (shell, zone, verify)
+      - name: Offline E2E (shell, zone, verify, dane)
         run: npm run test:e2e:offline

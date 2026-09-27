@@ -517,9 +517,9 @@ async function main() {
       assertEqual(await gpCount(page), 0, 'no Globalping call during the scan');
     });
 
-    await run.step('the Verify tab follows Behind CDN; Servers tab and summary link to it; nothing is sent', async () => {
+    await run.step('the Verify tab follows Behind CDN (DANE after it); Servers tab and summary link to it; nothing is sent', async () => {
       const tabs = await page.evaluate(() => [...document.querySelectorAll('.scan-tabs .tab[data-tab]')].map((b) => b.dataset.tab));
-      assertEqual(tabs, ['hosts', 'servers', 'cdn', 'verify', 'sources', 'ct'], 'tab order');
+      assertEqual(tabs, ['hosts', 'servers', 'cdn', 'verify', 'dane', 'sources', 'ct'], 'tab order');
       assert(await page.evaluate(() => !!document.querySelector('[data-summary="verify"]')), 'summary hint');
       await openTab(page, 'servers');
       await page.waitFor(() => document.querySelector('[data-action="scan-open-verify"]'), { message: 'Servers tab hint' });

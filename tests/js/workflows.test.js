@@ -70,8 +70,8 @@ describe('ci.yml', () => {
 
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
-    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,zone,verify --no-shots$/);
-    for (const suite of ['shell', 'zone', 'verify']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
+    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,zone,verify,dane --no-shots$/);
+    for (const suite of ['shell', 'zone', 'verify', 'dane']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
   });
 });
 

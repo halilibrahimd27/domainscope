@@ -36,9 +36,10 @@
  * opening a subdomain in DNS Lookup and coming back keeps the results (a toast says when a
  * scan finished in the background).
  *
- * "Copy summary" in the results head (ui/summary-button.js, subdomainsSummaryFacts): the stat cards,
- * the proxied hosts with their origin candidates and the dangling CNAMEs as Markdown for Jira /
- * Slack, or plain text; a cancelled scan's summary says what it found, without origin candidates.
+ * "Copy summary" in the run's header, so every tab has it (ui/summary-button.js,
+ * subdomainsSummaryFacts): the stat cards, the proxied hosts with their origin candidates and the
+ * dangling CNAMEs as Markdown for Jira / Slack, or plain text; a cancelled scan's summary says
+ * what it found, without origin candidates.
  *
  * Route params: `#/subdomains?domain=example.com` (comma-separated or repeated) pre-fills the
  * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
@@ -4094,13 +4095,23 @@ function buildRunUI(run, ctx, { onFinish }) {
     handoffBanner.classList.add('sub-zone-banner');
     handoffBanner.dataset.handoffMode = handoffMode;
   }
-  // The run's header stays above the tabs: its title, time and progress bar (whose label names
-  // the current stage) are in view whichever tab is open; the stage pills and the per-source
-  // chips are in the Sources tab.
+  // "Copy summary": what the stat cards, the summary alerts and the ORIGIN panel show (lib/summary.js).
+  // It sits in the run's header, so every tab offers it.
+  const summaryFacts = () => subdomainsSummaryFacts(run);
+  const summary = SummaryButton({
+    kind: 'subdomains',
+    facts: summaryFacts,
+    disabled: true,
+    url: () => ctx.shareUrl(permalinkParams('subdomains', { domain: run.config.domains.join(','), run: '1' }))
+  });
+  // The run's header stays above the tabs: its title, time, Copy summary and progress bar (whose
+  // label names the current stage) are in view whichever tab is open; the stage pills and the
+  // per-source chips are in the Sources tab.
   const panel = h('section', { class: 'sub-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
     h('div', { class: 'sub-run-head' },
       h('span', { class: 'sub-run-icon', attrs: { 'aria-hidden': 'true' } }, Icon('layers', { size: 18 })),
-      h('div', { class: 'sub-run-titles' }, title, meta)),
+      h('div', { class: 'sub-run-titles' }, title, meta),
+      summary.el),
     progress, zoneBanner, handoffBanner, notice, sourceLive);
 
   /** Source lines already spoken: a re-render (every source event redraws them) says nothing new. */
@@ -4509,18 +4520,9 @@ function buildRunUI(run, ctx, { onFinish }) {
       subdomains: exportRows()
     })}\n`, 'application/json;charset=utf-8'))
   });
-  // "Copy summary": what the stat cards, the summary alerts and the ORIGIN panel show (lib/summary.js).
-  const summaryFacts = () => subdomainsSummaryFacts(run);
-  const summary = SummaryButton({
-    kind: 'subdomains',
-    facts: summaryFacts,
-    disabled: true,
-    url: () => ctx.shareUrl(permalinkParams('subdomains', { domain: run.config.domains.join(','), run: '1' }))
-  });
   const actions = h('div', { class: 'sub-actions', attrs: { role: 'group', 'aria-label': t('sub.act.label') } },
     h('div', { class: 'sub-actions-main' }, copyBtn, resolvingBox.el),
-    h('div', { class: 'sub-actions-files' }, namesBtn, csvBtn, jsonBtn),
-    summary.el);
+    h('div', { class: 'sub-actions-files' }, namesBtn, csvBtn, jsonBtn));
 
   function syncActions() {
     const n = exportList().length;

@@ -2095,7 +2095,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // the wait note and the per-source lines sits in the always-visible run header.
     const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
     assert.match(src, /const sourceLive = h\('div', \{ class: 'sr-only sub-src-live', attrs: \{ 'aria-live': 'polite' \} \}\);/);
-    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\)\),\s*progress, zoneBanner, handoffBanner, notice, sourceLive\);/, 'in the run header');
+    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\),\s*summary\.el\),\s*progress, zoneBanner, handoffBanner, notice, sourceLive\);/, 'in the run header');
     assert.match(src, /const sourceWaitNote = h\('div', \{ class: 'sub-src-wait', hidden: true \}\);/, 'the note in the panel is no live region of its own');
     assert.match(src, /const sourceNotes = h\('div', \{ class: 'sub-src-notes' \}\);/);
     // Each line once: every source event redraws the panel's lines.

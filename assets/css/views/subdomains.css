@@ -497,6 +497,7 @@
 
 .sub-run-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
 }
@@ -524,8 +525,13 @@
 }
 
 .sub-run-titles {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
+}
+
+/* Copy summary: at the end of the header line, under the title where the line is too narrow */
+.sub-run-head > .sum-actions {
+  margin-left: auto;
 }
 
 .sub-run-title {

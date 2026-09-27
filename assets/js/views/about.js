@@ -28,6 +28,16 @@ export const CLI_PATH = 'cli/ssl_origin_scan.py';
 export const LICENSES_URL = new URL('../../data/THIRD_PARTY_LICENSES.txt', import.meta.url).href;
 
 /**
+ * Where "View source" opens the CLI: GitHub's file view. GitHub Pages serves .py files as
+ * application/octet-stream, so the site's own copy would download instead of showing.
+ * @param {string} repoUrl e.g. ctx.repoUrl
+ * @returns {string}
+ */
+export function cliSourceUrl(repoUrl) {
+  return `${String(repoUrl).replace(/\/+$/, '')}/blob/main/${CLI_PATH}`;
+}
+
+/**
  * "Cloudflare, Google, DNS.SB, CZ.NIC" — the display names of the default resolver chain
  * (lib/resolvers DEFAULT_CHAIN), used in "How it works".
  * @returns {string}
@@ -493,7 +503,7 @@ export function mount(container, ctx) {
           h('div', { class: 'muted text-sm' }, t('about.cliReq'))),
         h('div', { class: 'cluster' },
           ButtonLink({ href: CLI_PATH, label: t('common.download'), icon: 'download', variant: 'primary', download: 'ssl_origin_scan.py' }),
-          ButtonLink({ href: CLI_PATH, label: t('about.viewSource'), icon: 'eye', variant: 'ghost', external: true }))),
+          ButtonLink({ href: cliSourceUrl(ctx.repoUrl), label: t('about.viewSource'), icon: 'eye', variant: 'ghost', external: true }))),
       h('div', { class: 'about-examples' }, CLI_EXAMPLES.map((ex) => CodeBlock(ex.cmd, { label: t(ex.key), wrap: true }))),
       h('h3', { class: 'about-subtitle' }, t('about.statusesTitle')),
       simpleTable([t('common.status'), t('common.details')], CLI_STATUSES.map((s) => [

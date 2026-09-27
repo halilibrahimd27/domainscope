@@ -1277,6 +1277,37 @@ def expand_ip_block(token: str, allow_large: bool = False) -> Optional[List[str]
     return None
 
 
+def _malformed_ip_block(token: str) -> bool:
+    """An IP address followed by a broken range end or prefix: ``10.0.0.5-300``,
+    ``10.0.0.5-9x``, ``10.0.0.5-09``, ``10.0.0.0/33``.
+
+    Such typos are valid LDH names, so without this check they would go to the resolver
+    (and a search domain could even answer). A name whose last label starts with a
+    letter (``10.0.0.5-web.example.com``) is a host name, not a typo.
+    """
+    token = token.strip()
+    head = re.split(r'[/-]', token, 1)[0]
+    if head == token or normalize_ip(head) is None:
+        return False
+    if re.match(r'[a-z]', token.rsplit('.', 1)[-1], re.I):
+        return False
+    if '/' in token:
+        return _parse_network(token) is None
+    end_text = token.split('-', 1)[1]
+    if normalize_ip(end_text) is not None:
+        return False
+    if end_text.isdigit() and '.' in head:  # 10.0.0.5-9, as expand_ip_block reads it
+        return normalize_ip(head.rsplit('.', 1)[0] + '.' + end_text) is None
+    return True
+
+
+def _malformed_block_error(token: str, block: str) -> str:
+    if '/' in block:
+        return 'invalid target %r: not a valid CIDR (write e.g. 192.0.2.0/24)' % token
+    return ('invalid target %r: not a valid IP range (write 192.0.2.5-192.0.2.9 or '
+            '192.0.2.5-9)' % token)
+
+
 def _ip_text(addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]) -> str:
     if isinstance(addr, ipaddress.IPv6Address):
         return _format_ipv6(addr)
@@ -1343,6 +1374,9 @@ class _InventoryBuilder:
         A numeric name (``2026092401``, ``127.1``) is an INVALID_IP, never resolved;
         anything else that is not a hostname is NO_IP (text: ``fallback`` or the name).
         """
+        if _malformed_ip_block(name):  # 10.0.0.5-300: a typo'd range, not a host to resolve
+            self.warn(line, 'INVALID_IP', name)
+            return
         host = normalize_hostname(name)
         if host:
             self.add(name, [], line, groups, [host])
@@ -1368,7 +1402,7 @@ class _InventoryBuilder:
                 for block_ip in block:
                     self.add(block_ip, [block_ip], line, list(groups) + ([name] if name else []))
                 continue
-            if _looks_like_ip(value):
+            if _looks_like_ip(value) or _malformed_ip_block(value):
                 self.warn(line, 'INVALID_IP', value)
                 continue
             if is_numeric_host(value):
@@ -1559,7 +1593,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                 continue  # other Ansible variables (ansible_user=...) are irrelevant
             if normalize_ip(token) or is_ip_block(token):
                 values.append(token)
-            elif _looks_like_ip(token):
+            elif _looks_like_ip(token) or _malformed_ip_block(token):
                 builder.warn(number, 'INVALID_IP', token)
                 had_invalid = True
             elif name is None:
@@ -1719,6 +1753,8 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
             if is_numeric_host(target):
                 raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
                                  % (token, numeric_host_note(target)))
+            if _malformed_ip_block(target):
+                raise UsageError(_malformed_block_error(token, target))
             builder.add_token_values(name, [target], 0)
             continue
         ip = normalize_ip(token)
@@ -1739,6 +1775,8 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
         if is_numeric_host(token) and not _looks_like_ip(token):
             raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
                              % (token, numeric_host_note(token)))
+        if _malformed_ip_block(token):  # 10.0.0.5-300, 10.0.0.0/33 (not a missing file)
+            raise UsageError(_malformed_block_error(token, token))
         if _looks_like_path(token):
             raise UsageError('target file not found: %s' % value)
         host = normalize_hostname(token)

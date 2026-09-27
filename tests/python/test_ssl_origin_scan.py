@@ -947,6 +947,37 @@ class LoadTargetsTests(unittest.TestCase):
         with self.assertRaisesRegex(sos.UsageError, 'allow-large'):
             sos.load_targets(['10.0.0.0/8'])
 
+    def test_malformed_ranges_and_cidrs_are_never_resolved(self):
+        # valid LDH names, so they used to reach the resolver (and a search domain)
+        for token in ('10.0.0.5-300', '10.0.0.5-9x', '10.0.0.5-09', '192.168.1.10-192.168.1.2x',
+                      'web=10.0.0.5-300'):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(sos.UsageError,
+                                            r"invalid target .*not a valid IP range \(write"):
+                    sos.parse_target_tokens(token)
+        for token in ('10.0.0.0/33', '10.0.0.1/24x', '2001:db8::/129'):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(sos.UsageError, 'not a valid CIDR'):
+                    sos.parse_target_tokens(token)  # was "target file not found"
+        resolver = RecordingResolver()
+        with self.assertRaises(sos.UsageError):
+            sos.load_targets(['10.0.0.1 10.0.0.5-300'], resolver=resolver)
+        self.assertEqual(resolver.calls, [])
+        inv = sos.parse_inventory('10.0.0.1\n10.0.0.5-09\n10.0.0.5-300\n10.0.0.5-9x\n'
+                                  'web01 10.0.0.5-300\nweb02 10.0.0.5-9x\n10.0.0.0/33\n', 'x.txt')
+        self.assertEqual([s.name for s in inv.servers], ['10.0.0.1'])
+        self.assertEqual([w.code for w in inv.warnings], ['INVALID_IP'] * 6)
+        for text in ('name,ip\n10.0.0.5-300,\n', 'name,ip\nweb01,10.0.0.5-9x\n',
+                     json.dumps({'web01': {'ansible_host': '10.0.0.5-9x'}})):
+            with self.subTest(text=text):
+                inv = sos.parse_inventory(text)
+                self.assertEqual((inv.servers, [w.code for w in inv.warnings]),
+                                 ([], ['INVALID_IP']))
+        # names that only start like an address are still host names
+        for name in ('10.0.0.5-web.example.com', '10.0.0.5-a.example.net'):
+            with self.subTest(name=name):
+                self.assertEqual(sos.parse_target_tokens(name).servers[0].hostnames, [name])
+
     def test_browser_cli_suggestion_targets(self):
         # The web app's cliSuggestion `-t` tokens: an IPv4 /24 where origins cluster, exact IPv4
         # addresses otherwise, and exact IPv6 addresses (never the /48 it only displays).

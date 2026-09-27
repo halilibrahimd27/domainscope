@@ -865,4 +865,18 @@ describe('ptr', () => {
     const dns = new DohClient({ fetchImpl, ...fast() });
     assert.deepEqual(await dns.ptr('8.8.8.8'), ['dns.google']);
   });
+
+  test('throwOnError: "could not ask" rejects, "no PTR record" stays []', async () => {
+    const { fetchImpl } = zoneFetch();
+    const dns = new DohClient({ fetchImpl, ...fast() });
+    assert.deepEqual(await dns.ptr('192.0.2.200', { throwOnError: true }), [], 'NXDOMAIN is an answer');
+    assert.deepEqual(await dns.ptr('8.8.8.8', { throwOnError: true }), ['dns.google']);
+    const { fetchImpl: down } = mockFetch(() => { throw new TypeError('Failed to fetch'); });
+    await assert.rejects(new DohClient({ fetchImpl: down, retries: 0, ...fast() }).ptr('8.8.8.8', { throwOnError: true }),
+      (e) => e.kind === 'network' && /Failed to fetch|network/i.test(e.message));
+    const { fetchImpl: servfail } = mockFetch(() => ({ rcode: 'SERVFAIL' }));
+    await assert.rejects(new DohClient({ fetchImpl: servfail, ...fast() }).ptr('8.8.8.8', { throwOnError: true }),
+      (e) => e.message === 'PTR lookup answered SERVFAIL');
+    assert.deepEqual(await new DohClient({ fetchImpl: servfail, ...fast() }).ptr('8.8.8.8'), [], 'without the option: [] as before');
+  });
 });

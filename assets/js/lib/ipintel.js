@@ -487,7 +487,8 @@ export function createIpIntel({
 
   async function lookupPtr(ip, signal) {
     if (dns && typeof dns.ptr === 'function') {
-      const names = await dns.ptr(ip, { signal });
+      // A lookup that could not be made is a failure (errors[] 'ptr'), never "no PTR record".
+      const names = await dns.ptr(ip, { signal, throwOnError: true });
       return { names: cleanNames(names), source: 'dns' };
     }
     const json = await getJson(ripeUrl('reverse-dns-ip', ip), signal);

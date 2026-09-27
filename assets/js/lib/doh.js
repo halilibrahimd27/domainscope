@@ -857,10 +857,14 @@ export class DohClient {
    * Reverse DNS (PTR) names of an IP address. Invalid IPs and failed lookups
    * yield []. RFC 2317 CNAME-delegated PTRs are followed by the resolver.
    * @param {string} ip
-   * @param {{ signal?: AbortSignal, resolver?: string }} [opts]
+   * @param {{ signal?: AbortSignal, resolver?: string, throwOnError?: boolean }} [opts]
+   *   throwOnError (extension): a lookup that got no DNS answer, or an rcode other than NOERROR /
+   *   NXDOMAIN (SERVFAIL, REFUSED …), rejects with an Error (`kind`: util.errorKind() of the failure,
+   *   `retryAfterMs` when known) instead of yielding [] — so a caller can tell "no PTR record" from
+   *   "could not ask" (lib/ipintel.js, lib/sourcestatus.js)
    * @returns {Promise<string[]>}
    */
-  async ptr(ip, { signal, resolver } = {}) {
+  async ptr(ip, { signal, resolver, throwOnError = false } = {}) {
     checkAbort(signal);
     let qname;
     try {
@@ -869,6 +873,12 @@ export class DohClient {
       return [];
     }
     const res = await this.query(qname, 'PTR', { signal, resolver });
+    if (throwOnError && (!res.ok || (res.rcode !== 'NOERROR' && res.rcode !== 'NXDOMAIN'))) {
+      const err = new Error(res.ok ? `PTR lookup answered ${res.rcode}` : res.error || 'PTR lookup failed');
+      err.kind = res.ok ? 'unknown' : res.errorKind || 'unknown';
+      if (Number.isFinite(res.retryAfterMs)) err.retryAfterMs = res.retryAfterMs;
+      throw err;
+    }
     if (!res.ok || res.rcode !== 'NOERROR') return [];
     const out = [];
     for (const rr of res.answers) {

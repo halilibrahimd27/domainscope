@@ -50,6 +50,18 @@ test('/etc/hosts: aliases, comments, loopback/boilerplate skipped', () => {
   assert.ok(web.aliases.includes('web01'));
 });
 
+test('/etc/hosts: the stock macOS file (fe80::1%lo0 localhost) adds no server', () => {
+  const r = parseInventory([
+    '127.0.0.1\tlocalhost',
+    '255.255.255.255\tbroadcasthost',
+    '::1             localhost',
+    'fe80::1%lo0     localhost',
+    '10.0.0.5 web01'
+  ].join('\n'));
+  assert.deepEqual(ipsById(r), { web01: ['10.0.0.5'] });
+  assert.deepEqual(r.warnings, []);
+});
+
 test('same name across lines merges IPs (case-insensitive)', () => {
   const r = parseInventory('web01 10.0.0.1\nWEB01 10.0.0.2\nweb01 10.0.0.1');
   assert.equal(r.servers.length, 1);

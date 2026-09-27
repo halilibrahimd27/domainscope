@@ -42,9 +42,10 @@ const IGNORED_GROUPS = new Set(['all', 'ungrouped']);
 /* ------------------------------------------------------------------------ */
 
 // Addresses that never identify a server: loopback, unspecified, multicast,
-// broadcast and the /etc/hosts "fe00::0 ip6-localnet" boilerplate.
+// broadcast, the /etc/hosts "fe00::0 ip6-localnet" boilerplate and IPv6
+// link-local (macOS "fe80::1%lo0 localhost": meaningless once the zone is stripped).
 const NON_HOST_RANGES = ['127.0.0.0/8', '0.0.0.0/32', '224.0.0.0/4', '255.255.255.255/32',
-  '::1/128', '::/128', 'ff00::/8', 'fe00::/16'].map(parseCidr);
+  '::1/128', '::/128', 'ff00::/8', 'fe00::/16', 'fe80::/10'].map(parseCidr);
 
 function isNonHostIP(ip) {
   return NON_HOST_RANGES.some((c) => ipInCidr(ip, c));

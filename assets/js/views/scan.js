@@ -1352,14 +1352,19 @@ export function mount(container, ctx) {
   }
 
   // "No file?": a host name's certificate from CT, or the sample. Neither starts a scan: loading
-  // one only fills step 2, like a dropped file. A running scan keeps the busy flag its own.
+  // one only fills step 2, like a dropped file. A running scan keeps the busy flag its own, and
+  // hands it back to a lookup still running when it ends (setRunning), so a language switch
+  // cannot re-mount the view, and silently abort that lookup, before it answers.
+  let ctBusy = false;
   const certAlternatives = () => CertAlternatives({
     onLoad: onCertLoad,
     signal: ctx.signal,
     onBusy: (busy) => {
+      ctBusy = busy;
       if (!(session.run && session.run.status === 'running')) ctx.setBusy(busy);
     },
-    onStale: ctx.checkOutdated
+    onStale: ctx.checkOutdated,
+    focusTarget: () => certBody.querySelector('.cert-source-note') || certBody.querySelector('.cert-summary')
   }).el;
 
   /** Step 1's note for a certificate that is not the user's file (CT: what Verify adds; the sample: it starts nothing). */
@@ -1790,7 +1795,7 @@ export function mount(container, ctx) {
     runBtn.querySelector('.btn-label').textContent = session.run && !on ? t('scan.runAgain') : t('scan.run');
     if (hadFocus) (on ? cancelBtn : runBtn).focus({ preventScroll: true });
     if (on) ctx.setBusy(t('scan.busy'));
-    else ctx.setBusy(false);
+    else ctx.setBusy(ctBusy);
   }
 
   /* --- layout ------------------------------------------------------------------ */

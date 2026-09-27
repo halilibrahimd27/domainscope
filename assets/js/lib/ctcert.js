@@ -492,8 +492,10 @@ export async function lookupCtCertificate(input, {
         out.status = 'found';
         return out;
       }
-      // Cert Spotter's answer is complete and nothing current covers the name: crt.sh reads the
-      // same logs, so asking it too would only cost time.
+      // Cert Spotter answered and nothing current covers the name: crt.sh reads the same logs, so
+      // asking it too would only cost time. A list cut at the page cap stays `truncated` (the
+      // views hedge their note: the unread issuances are the newest); crt.sh is not asked for it
+      // either, because a name with that many certificates is where its search times out.
       if (!pages.error && !sel.skipped.unreadable) return out;
     } catch (err) {
       if (errorKind(err) === 'abort') throw err;

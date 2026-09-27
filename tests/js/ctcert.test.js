@@ -361,6 +361,16 @@ describe('lookupCtCertificate', () => {
     assert.equal(f.spotterCalls().length, 3);
   });
 
+  test('page cap with nothing current among the pages read: not-found, truncated, crt.sh not asked', async () => {
+    const f = mockFetch({ spotter: () => json([issuance({ names: ['www.example.com'], revoked: true })]) });
+    const r = await lookup('www.example.com', f, { maxPages: 2 });
+    assert.equal(r.status, 'not-found');
+    assert.equal(r.truncated, true, 'the views hedge the note: the unread issuances are the newest');
+    assert.equal(r.skipped.revoked, 2);
+    assert.equal(r.crtsh, null);
+    assert.equal(f.crtshCalls().length, 0);
+  });
+
   test('a later page that fails: the pages read so far still count (partial, truncated)', async () => {
     const f = mockFetch({
       spotter: (url, n) => (n === 0 ? json([issuance({ names: ['www.example.com'] })]) : json({ code: 'rate_limited' }, { status: 429 }))
@@ -455,6 +465,25 @@ describe('lookupCtCertificate', () => {
     assert.equal(none.status, 'not-found');
     assert.equal(none.provider, 'crtsh');
     assert.equal(none.crtsh.entry, null);
+  });
+
+  test('Cert Spotter 429 and crt.sh down: error with the crt.sh error, the quota and its reset time kept', async () => {
+    const f = mockFetch({
+      spotter: () => json({ code: 'rate_limited', message: 'Rate limit exceeded' }, { status: 429 }),
+      crtsh: () => new Response('bad gateway', { status: 502 })
+    });
+    const cooldown = createCtCooldown();
+    const r = await lookup('www.example.com', f, { cooldown });
+    assert.equal(r.status, 'error');
+    assert.equal(r.errorKind, 'http');
+    assert.deepEqual([r.certspotter.state, r.certspotter.errorKind], ['failed', 'rate-limit']);
+    assert.equal(r.certspotter.quota.resetAt.getTime(), NOW.getTime() + CT_COOLDOWN_MS);
+    assert.equal(f.crtshCalls().length, 4, 'two searches, each retried once');
+
+    const again = await lookup('www.example.com', f, { cooldown });
+    assert.deepEqual([again.status, again.certspotter.state, again.certspotter.errorKind], ['error', 'skipped', 'rate-limit']);
+    assert.equal(again.certspotter.quota.resetAt.getTime(), NOW.getTime() + CT_COOLDOWN_MS, 'the cool-down keeps the reset time');
+    assert.equal(f.spotterCalls().length, 1);
   });
 
   test('one crt.sh search failing leaves the other one\'s rows (partial)', async () => {

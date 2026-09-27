@@ -511,8 +511,9 @@ function keepResult(cur) {
  * @property {() => void} checkOutdated  a data file (wordlist tier, locale pack) or a module loaded on first use
  *                                         failed to load: if this page belongs to an earlier deploy, the shell
  *                                         offers a reload (once)
- * @property {() => boolean} requireOnline  network work is about to start: false, with a toast saying it needs
- *                                         the network, while the browser is offline (then send nothing)
+ * @property {(opts?: { quiet?: boolean }) => boolean} requireOnline  network work is about to start: false, with
+ *                                         a toast saying it needs the network, while the browser is offline (then
+ *                                         send nothing); `quiet` for work the view starts by itself (no toast)
  * @property {(busy: boolean|string) => void} setBusy  header activity bar + aria-busy; defers language re-mounts
  * @property {(subject: string|null) => void} runStarted  a run starts (or a certificate loads) for `subject` (a domain,
  *                                         host name or IP address): it becomes the current target, and the
@@ -865,12 +866,15 @@ function renderOfflineNote() {
 
 /**
  * ctx.requireOnline: true while the browser has a connection; offline it says the work needs
- * the network (a toast) and returns false, so the view sends nothing.
+ * the network (a toast) and returns false, so the view sends nothing. `quiet`: work the view
+ * starts by itself (a check when a tab opens) — the user clicked nothing, so no toast; the view
+ * says it in place.
+ * @param {{ quiet?: boolean }} [opts]
  * @returns {boolean}
  */
-function requireOnline() {
+function requireOnline({ quiet = false } = {}) {
   if (!isOffline()) return true;
-  toast(t('shell.offlineAction'), { type: 'warn' });
+  if (!quiet) toast(t('shell.offlineAction'), { type: 'warn' });
   return false;
 }
 

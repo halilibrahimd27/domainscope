@@ -330,6 +330,7 @@ registerStrings('en', {
   'cert.caa.run': 'Check CAA',
   'cert.caa.rerun': 'Check again',
   'cert.caa.checking': 'Looking up CAA records…',
+  'cert.caa.offline': 'You are offline, so the CAA records were not checked. Use “{button}” once the connection is back.',
   'cert.caa.col.name': 'Name',
   'cert.caa.col.at': 'CAA record set',
   'cert.caa.col.records': 'Records',
@@ -357,6 +358,7 @@ registerStrings('en', {
   'cert.ct.run': 'Search crt.sh',
   'cert.ct.rerun': 'Search again',
   'cert.ct.searching': 'Searching crt.sh… this can take up to a minute.',
+  'cert.ct.offline': 'You are offline, so crt.sh was not searched. Use “{button}” once the connection is back.',
   'cert.ct.found': { one: 'Found {count} log entry for this certificate.', other: 'Found {count} log entries for this certificate (usually the precertificate and the final certificate).' },
   'cert.ct.notFound': 'Not found on crt.sh. Normal for private / internal CAs and test certificates; a brand-new public certificate can take a few hours to be indexed.',
   'cert.ct.otherIssuers': { one: '{count} entry with the same serial number from another CA was ignored.', other: '{count} entries with the same serial number from other CAs were ignored.' },
@@ -619,6 +621,7 @@ registerStrings('tr', {
   'cert.caa.run': 'CAA kontrol et',
   'cert.caa.rerun': 'Yeniden kontrol et',
   'cert.caa.checking': 'CAA kayıtları sorgulanıyor…',
+  'cert.caa.offline': 'Çevrimdışısınız; bu yüzden CAA kayıtları kontrol edilmedi. Bağlantı gelince “{button}” düğmesini kullanın.',
   'cert.caa.col.name': 'Ad',
   'cert.caa.col.at': 'CAA kayıt kümesi',
   'cert.caa.col.records': 'Kayıtlar',
@@ -643,6 +646,7 @@ registerStrings('tr', {
   'cert.ct.run': 'crt.sh’te ara',
   'cert.ct.rerun': 'Yeniden ara',
   'cert.ct.searching': 'crt.sh’te aranıyor… bir dakikayı bulabilir.',
+  'cert.ct.offline': 'Çevrimdışısınız; bu yüzden crt.sh’te arama yapılmadı. Bağlantı gelince “{button}” düğmesini kullanın.',
   'cert.ct.found': { one: 'Bu sertifika için {count} kayıt bulundu.', other: 'Bu sertifika için {count} kayıt bulundu (genellikle ön sertifika ve asıl sertifika).' },
   'cert.ct.notFound': 'crt.sh’te bulunamadı. Özel / kurum içi CA’lar ve test sertifikaları için normaldir; yeni bir genel sertifikanın dizine eklenmesi birkaç saat sürebilir.',
   'cert.ct.otherIssuers': { one: 'Aynı seri numaralı, başka bir CA’ya ait {count} kayıt yok sayıldı.', other: 'Aynı seri numaralı, başka CA’lara ait {count} kayıt yok sayıldı.' },
@@ -2442,7 +2446,14 @@ export function mount(container, ctx) {
           show(cached);
           return;
         }
-        if (!ctx.requireOnline()) return;
+        // Opening the tab offline sends nothing and says so here; only a click warns (a toast).
+        if (!ctx.requireOnline({ quiet: !force })) {
+          if (!force) {
+            show(null);
+            body.append(offlineNote('cert.caa.offline', 'cert.caa.run'));
+          }
+          return;
+        }
         const issuer = cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN;
         const list = names.slice(0, CAA_MAX_NAMES);
         show(startTask(caaCache, key, async () => {
@@ -2477,6 +2488,13 @@ export function mount(container, ctx) {
       // Automatic check: a few DoH queries, cached per certificate.
       if (!caaCache.has(key)) run();
       return panel;
+    }
+
+    /** Why a panel's automatic check did not run: the browser is offline (its button runs it later). */
+    function offlineNote(key, buttonKey) {
+      const note = Alert({ variant: 'info', compact: true, icon: 'cloud-off', message: t(key, { button: t(buttonKey) }) });
+      note.dataset.offline = 'auto';
+      return note;
     }
 
     /* --- DANE / TLSA (sends nothing until its button is clicked) ----------------- */
@@ -2562,7 +2580,13 @@ export function mount(container, ctx) {
           show(cached);
           return;
         }
-        if (!ctx.requireOnline()) return;
+        if (!ctx.requireOnline({ quiet: !force })) { // see caaPanel
+          if (!force) {
+            show(null);
+            body.append(offlineNote('cert.ct.offline', 'cert.ct.run'));
+          }
+          return;
+        }
         show(startTask(ctCache, key, async () => {
           const json = await retry(() => fetchJson(`${serialUrl}&output=json`, {
             signal: ctx.signal, timeoutMs: 60000, headers: { accept: 'application/json' }

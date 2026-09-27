@@ -1912,6 +1912,17 @@ async function main() {
         await gotoRoute(pwa, 'cert');
         await pwa.click('[data-action="cert-sample"]');
         await pwa.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'example.com', { message: 'sample certificate parsed offline' });
+        // Opening the CAA tab starts its check by itself: offline it sends nothing and says so in
+        // place — no "this needs the network" toast for something nobody clicked.
+        await dismissToasts(pwa);
+        await pwa.click('.cert-tabs [data-tab="caa"]');
+        await pwa.waitFor(() => !!document.querySelector('.cert-caa [data-offline="auto"]'), { message: 'CAA offline note' });
+        setNodeLang('en');
+        const caaOffline = await pwa.evaluate((text) => ({
+          toasts: [...document.querySelectorAll('.toast')].filter((el) => el.textContent.includes(text)).length,
+          button: document.querySelector('.cert-caa [data-action="caa-run"]')?.disabled
+        }), translate('shell.offlineAction'));
+        assertEqual(caaOffline, { toasts: 0, button: false }, 'CAA tab offline');
         await gotoRoute(pwa, 'zone');
         await pwa.click('[data-sample="bind"]');
         await pwa.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'zone file parsed offline' });

@@ -756,7 +756,10 @@ export function mount(container, ctx) {
       const result = await getIntel(dns).reverseIp(row.ip, { signal: ctx.signal });
       row.reverse = { state: 'done', result };
     } catch (err) {
-      if (err && err.name === 'AbortError') return;
+      if (err && err.name === 'AbortError') {
+        row.reverse = null; // cancelled with the view: the button is offered again
+        return;
+      }
       row.reverse = { state: 'done', result: { ok: false, domains: [], error: err && err.message ? err.message : String(err), limited: false } };
     }
     table.updateRow(row);
@@ -775,7 +778,11 @@ export function mount(container, ctx) {
       if (current && current.controller) current.controller.abort();
     },
     snapshot() {
-      const rows = current && !current.controller ? current.rows : null;
+      // A reverse lookup still running belongs to this view and is cancelled with it: the
+      // re-mounted row offers the button again instead of a spinner nothing would ever stop.
+      const rows = current && !current.controller
+        ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
+        : null;
       return { text: input.value, rows };
     },
     update(params) {

@@ -351,6 +351,29 @@ async function main() {
     });
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
+    await step('a reverse IP lookup cut short by a language switch leaves its button usable (no quota spent)', async () => {
+      // Hold the HackerTarget request in the browser (it never leaves: no quota unit is used).
+      if (NO_QUOTA_APIS) await page.send('Network.setBlockedURLs', { urls: [] });
+      await page.send('Fetch.enable', { patterns: [{ urlPattern: '*hackertarget*', requestStage: 'Request' }] });
+      const btn = '[data-action="reverse"][data-ip="9.9.9.9"]';
+      try {
+        await page.evaluate((sel) => document.querySelector(sel).click(), btn);
+        await page.waitFor((sel) => document.querySelector(sel)?.getAttribute('aria-busy') === 'true', { args: [btn], message: 'reverse lookup running' });
+        await setLangUi(page, 'tr');
+        await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula');
+        await page.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 300); }));
+        const state = await page.evaluate((sel) => {
+          const b = document.querySelector(sel);
+          return b ? { disabled: b.disabled, busy: b.getAttribute('aria-busy') } : null;
+        }, btn);
+        assertEqual(state, { disabled: false, busy: null }, 'reverse button after the re-mount');
+      } finally {
+        await page.send('Fetch.disable');
+        if (NO_QUOTA_APIS) await blockQuotaApis(page);
+        await setLangUi(page, 'en');
+      }
+    });
+
     await step('i18n: no missing keys; ipi.* TR/EN key sets match', () => checkI18n(page));
     await step('desktop: no console errors, exceptions or CSP violations', () => assertClean(page, 'desktop'));
     await page.evaluate(async () => (await import('./assets/js/state.js')).state.clearInventory());

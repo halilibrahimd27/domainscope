@@ -679,6 +679,35 @@ button.nav-status:hover {
   color: var(--ok);
 }
 
+/* Short desktop screens (a 1366 × 768 laptop leaves ~650 px): every tool link of the six groups stays in view */
+@media (min-width: 900.02px) and (max-height: 860px) {
+  .app-nav {
+    padding-top: 10px;
+  }
+
+  .nav-group + .nav-group {
+    margin-top: 8px;
+  }
+
+  .nav-group-label {
+    padding-bottom: 3px;
+  }
+
+  .nav-list {
+    gap: 1px;
+  }
+
+  .nav-link {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .nav-foot {
+    padding-top: 10px;
+    gap: 4px;
+  }
+}
+
 /* Tools button bar: replaces the groups below 720 px (see the phone media query) */
 .nav-menu-bar {
   display: none;

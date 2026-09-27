@@ -913,6 +913,58 @@ async function main() {
       await dismissToasts(page);
     });
 
+    await step('a laptop screen (1366 × 657): every tool link of the sidebar in view; shorter still, the sidebar scrolls to the open tool', async () => {
+      const sidebar = () => page.evaluate(() => {
+        const nav = document.getElementById('app-nav');
+        const box = nav.getBoundingClientRect();
+        const links = [...nav.querySelectorAll('.nav-link')].map((a) => ({ view: a.dataset.view, r: a.getBoundingClientRect() }));
+        const inside = (r) => r.top >= box.top && r.bottom <= box.bottom;
+        const active = links.find((l) => l.view === document.documentElement.dataset.view);
+        return {
+          count: links.length,
+          outside: links.filter((l) => !inside(l.r)).map((l) => l.view),
+          room: Math.round(box.bottom - links[links.length - 1].r.bottom),
+          linkHeight: Math.round(links[0].r.height),
+          activeInside: !!active && inside(active.r),
+          navScrolled: nav.scrollTop > 0,
+          pageScrolled: window.scrollY > 0
+        };
+      });
+      await page.setViewport({ width: 1366, height: 657 });
+      try {
+        await gotoRoute(page, 'about');
+        const fit = await sidebar();
+        assertEqual(fit.count, ROUTES.length, 'nav links');
+        assertEqual(fit.outside, [], `every link inside the sidebar: ${JSON.stringify(fit)}`);
+        assert(fit.room >= fit.linkHeight, `room for one more tool: ${JSON.stringify(fit)}`);
+        assert(!fit.navScrolled, 'nothing to scroll');
+        await shot(page, 'desktop-light-en-sidebar-1366x657');
+        // Too short for every link: the sidebar (not the page) scrolls to the open tool, About the last one.
+        await page.setViewport({ width: 1280, height: 480 });
+        await gotoRoute(page, 'lookup');
+        await gotoRoute(page, 'about');
+        const short = await sidebar();
+        assert(short.outside.length > 0, `some links below the fold at 480 px: ${JSON.stringify(short)}`);
+        assert(short.activeInside && short.navScrolled && !short.pageScrolled, `the open tool's link in view: ${JSON.stringify(short)}`);
+        // A link already in view: following it moves nothing.
+        const before = await page.evaluate(() => {
+          const nav = document.getElementById('app-nav');
+          const link = nav.querySelector('.nav-link[data-view="inventory"]');
+          const r = link.getBoundingClientRect();
+          const box = nav.getBoundingClientRect();
+          if (r.top < box.top || r.bottom > box.bottom) return null;
+          const top = nav.scrollTop;
+          link.click();
+          return top;
+        });
+        assert(before !== null, 'the Servers link is in view');
+        await page.waitFor(() => document.documentElement.dataset.view === 'inventory', { message: 'Servers opened from the sidebar' });
+        assertEqual(await page.evaluate(() => document.getElementById('app-nav').scrollTop), before, 'the sidebar stays put');
+      } finally {
+        await page.setViewport({ width: 1440, height: 900 });
+      }
+    });
+
     await step('i18n: no missing keys, TR and EN key sets match', async () => {
       const info = await page.evaluate(async () => {
         const i = await import('./assets/js/i18n.js');

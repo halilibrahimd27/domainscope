@@ -882,12 +882,26 @@ function markBusy(id, on) {
   if (entry) entry.classList.toggle('is-busy', on);
 }
 
-/** 720–900 px: the nav is a strip that scrolls sideways; bring the active link into view (no page scroll). */
+/**
+ * Bring the active link into view by scrolling the nav itself, never the page: 720–900 px, the
+ * strip that scrolls sideways (the link centred); a desktop screen too short for the sidebar, the
+ * sidebar (only as far as needed, so a click on a link in view moves nothing). Below 720 px the
+ * links are hidden (the Tools bar shows the tool).
+ */
 function scrollNavToActive(id) {
-  const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
-  if (link && dom.nav.scrollWidth > dom.nav.clientWidth + 1) {
-    const left = link.offsetLeft - (dom.nav.clientWidth - link.offsetWidth) / 2;
-    dom.nav.scrollLeft = Math.max(0, left);
+  const nav = dom.nav;
+  const link = nav.querySelector(`.nav-link[data-view="${id}"]`);
+  if (!link || !link.getClientRects().length) return;
+  const strip = globalThis.getComputedStyle(nav).flexDirection === 'row';
+  if (strip && nav.scrollWidth > nav.clientWidth + 1) {
+    const left = link.offsetLeft - (nav.clientWidth - link.offsetWidth) / 2;
+    nav.scrollLeft = Math.max(0, left);
+  } else if (!strip && nav.scrollHeight > nav.clientHeight + 1) {
+    const margin = 8;
+    const top = link.getBoundingClientRect().top - nav.getBoundingClientRect().top - nav.clientTop + nav.scrollTop;
+    const bottom = top + link.offsetHeight;
+    if (top - margin < nav.scrollTop) nav.scrollTop = Math.max(0, top - margin);
+    else if (bottom + margin > nav.scrollTop + nav.clientHeight) nav.scrollTop = bottom + margin - nav.clientHeight;
   }
 }
 
@@ -1447,13 +1461,16 @@ function boot() {
 
   globalThis.addEventListener('hashchange', handleRoute);
   document.addEventListener('keydown', onShortcutKey);
-  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip: its active link comes into
-  // view, and an open Tools menu closes (its button is gone: the focus goes to the page title).
-  const toolsBar = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia('(max-width: 719.98px)') : null;
-  if (toolsBar && typeof toolsBar.addEventListener === 'function') {
-    toolsBar.addEventListener('change', (event) => {
+  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip, a window resized across 900 px
+  // the strip and the sidebar: the active link comes into view. Past 720 px an open Tools menu closes (its
+  // button is gone: the focus goes to the page title).
+  const toolsBar = '(max-width: 719.98px)';
+  for (const query of [toolsBar, '(max-width: 900px)']) {
+    const list = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia(query) : null;
+    if (!list || typeof list.addEventListener !== 'function') continue;
+    list.addEventListener('change', (event) => {
       if (current) scrollNavToActive(current.id);
-      if (!event.matches && navMenu) navMenu.close({ wide: true });
+      if (query === toolsBar && !event.matches && navMenu) navMenu.close({ wide: true });
     });
   }
   globalThis.addEventListener('unhandledrejection', (event) => {

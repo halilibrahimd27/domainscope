@@ -105,6 +105,37 @@ def pem_of(der: bytes) -> bytes:
     return ('-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' % body).encode('ascii')
 
 
+def _node_major() -> int:
+    node = shutil.which('node')
+    if not node:
+        return 0
+    try:
+        text = subprocess.run([node, '--version'], capture_output=True, text=True,
+                              timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    match = re.match(r'v(\d+)', text.strip())
+    return int(match.group(1)) if match else 0
+
+
+# normalize_hostname(..., allow_wildcard=True) -> what the web app's normalizeHostname gives
+# (new URL: UTS #46 non-transitional). The deviation characters \u00df, \u03c2, ZWJ and
+# ZWNJ are where Python's IDNA 2003 codec differs.
+IDN_CASES = {
+    'stra\u00dfe.example.com': 'xn--strae-oqa.example.com',
+    'STRA\u1e9eE.example.com': 'xn--strae-oqa.example.com',
+    'fa\u00df.example.com': 'xn--fa-hia.example.com',
+    '*.stra\u00dfe.example.com': '*.xn--strae-oqa.example.com',
+    '\u03c2a.example.net': 'xn--a-xmb.example.net',
+    'a\u03c2.example.net': 'xn--a-ymb.example.net',
+    '\u0915\u094d\u200d.example.com': 'xn--11b6iy14e.example.com',
+    '\u0915\u094d\u200c\u0937.example.com': 'xn--11b2ezcs70k.example.com',
+    'a\u200db.example.com': None,       # a joiner only after a virama (CONTEXTJ)
+    'm\u00fcnchen.example.com': 'xn--mnchen-3ya.example.com',
+    '\u00d6RNEK.example.net': 'xn--rnek-4qa.example.net',
+}
+
+
 # Certificates OpenSSL accepts in a handshake that once crashed the parser with something
 # other than DerError: an offset pushing a GeneralizedTime out of range (OverflowError), an
 # OID arc beyond Python's int-to-str digit limit (ValueError), and - from a file only - an
@@ -426,6 +457,33 @@ class HostnameTests(unittest.TestCase):
         for raw in ('1password.com', '123.example.com', 'deadbeef', 'x.0x10', 'web-01.example.com'):
             with self.subTest(raw=raw):
                 self.assertEqual(sos.normalize_hostname(raw), raw)
+
+    def test_idn_deviation_characters_follow_uts46_like_the_web_app(self):
+        # IDNA 2003 (Python's 'idna' codec) would give strasse / σ / drop the joiners:
+        # another registrable name than the one the certificate and the web app carry
+        for raw, expected in IDN_CASES.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(sos.normalize_hostname(raw, allow_wildcard=True), expected)
+        self.assertEqual(sos.parse_names_text('straße.example.com\n')[0],
+                         ['xn--strae-oqa.example.com'])
+        resolver = RecordingResolver({'xn--strae-oqa.example.com': ['192.0.2.10']})
+        servers, _ = sos.load_targets(['straße.example.com'], resolver=resolver)
+        self.assertEqual(resolver.calls, ['xn--strae-oqa.example.com'])
+        self.assertEqual(servers[0].ips, ['192.0.2.10'])
+
+    @unittest.skipUnless(_node_major() >= 22, 'needs Node 22+ to run assets/js/lib/domain.js')
+    def test_idn_cases_match_the_web_app(self):
+        script = ('import { normalizeHostname } from %s;\n'
+                  'const cases = JSON.parse(process.argv[1]);\n'
+                  'console.log(JSON.stringify(cases.map((c) => normalizeHostname(c, '
+                  '{ allowWildcard: true }))));\n'
+                  % json.dumps((ROOT / 'assets' / 'js' / 'lib' / 'domain.js').as_uri()))
+        cases = list(IDN_CASES)
+        proc = subprocess.run([shutil.which('node'), '--input-type=module', '-e', script,
+                               json.dumps(cases)], capture_output=True, text=True,
+                              encoding='utf-8', timeout=60, cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(dict(zip(cases, json.loads(proc.stdout))), IDN_CASES)
 
     def test_normalize_hostname_wildcards(self):
         self.assertEqual(sos.normalize_hostname('*.Example.com', allow_wildcard=True),
@@ -2206,19 +2264,6 @@ ZONE_TARGETS_TXT = (ZONE_HEADER + 'web01 192.0.2.10\n192.0.2.12\n2001:db8::10\n'
                     'origin.example.com\napp.example.net\n')
 
 
-def _node_major() -> int:
-    node = shutil.which('node')
-    if not node:
-        return 0
-    try:
-        text = subprocess.run([node, '--version'], capture_output=True, text=True,
-                              timeout=20).stdout
-    except (OSError, subprocess.SubprocessError):
-        return 0
-    match = re.match(r'v(\d+)', text.strip())
-    return int(match.group(1)) if match else 0
-
-
 class WebAppCommandTests(unittest.TestCase):
     """The sweep commands the web app prints (cmdline.js buildSweepCommand, zone hand-off)
     are accepted by the CLI parser as the shell would split them, and scan exactly the
@@ -2880,7 +2925,8 @@ class CompatibilityTests(unittest.TestCase):
         stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'bisect', 'csv', 'hashlib', 'io',
                   'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
-                  'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata'}
+                  'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
+                  'encodings'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

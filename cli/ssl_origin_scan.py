@@ -55,6 +55,7 @@ import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from encodings import idna as _idna_codec
 from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
                     Set, TextIO, Tuple, Union)
 
@@ -914,12 +915,46 @@ def _host_text(value: str) -> Optional[str]:
     return text.lower()
 
 
+# UTS #46 deviation characters: IDNA 2003 (Python's 'idna' codec) maps them away - ß to
+# ss, ς to σ, ZWJ / ZWNJ dropped - while browsers (non-transitional processing) keep them.
+_IDN_DEVIATION_RE = re.compile('([ßς‌‍])')
+_VIRAMA = 9  # canonical combining class of a virama (RFC 5892 CONTEXTJ for ZWJ / ZWNJ)
+
+
+def _idna_label(label: str) -> Optional[str]:
+    """One non-ASCII label -> ``xn--`` form, as the web app (``new URL``, UTS #46
+    non-transitional) computes it; ``None`` if invalid.
+
+    Python's ``idna`` codec is IDNA 2003: ``straße`` would become ``strasse``, another
+    registrable name. A deviation character is kept as it is (ZWJ / ZWNJ only right after
+    a virama); the text around it gets the codec's nameprep mapping.
+    """
+    label = label.replace('ẞ', 'ß')  # capital sharp s
+    try:
+        if not _IDN_DEVIATION_RE.search(label):
+            return label.encode('idna').decode('ascii').lower()
+        out = ''
+        for part in _IDN_DEVIATION_RE.split(label):
+            if part in ('‌', '‍'):
+                if not out or unicodedata.combining(out[-1]) != _VIRAMA:
+                    return None
+                out += part
+            elif part in ('ß', 'ς'):
+                out += part
+            elif part:
+                out += _idna_codec.nameprep(part)
+        return 'xn--' + out.encode('punycode').decode('ascii')
+    except UnicodeError:
+        return None
+
+
 def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str]:
     """Lowercase ASCII (punycode) hostname without trailing dot, or ``None`` if invalid.
 
-    Strips scheme, userinfo, path/query/fragment and port. IDN labels are converted with
-    Python's IDNA codec. ``_`` is allowed in labels. IP literals are rejected (``None``),
-    and so are numeric names the system resolver would read as an IPv4 address
+    Strips scheme, userinfo, path/query/fragment and port. IDN labels are converted like
+    the web app does (UTS #46 non-transitional: ``straße`` -> ``xn--strae-oqa``, never
+    ``strasse``; see :func:`_idna_label`). ``_`` is allowed in labels. IP literals are
+    rejected (``None``), and so are numeric names the system resolver would read as an IPv4 address
     (``2026092401``, ``127.1``, ``0x7f.0x1`` - see :func:`is_numeric_host`).
     ``allow_wildcard`` permits a single leading ``*.`` label.
     """
@@ -939,9 +974,8 @@ def normalize_hostname(value: str, allow_wildcard: bool = False) -> Optional[str
         if not label:
             return None
         if not label.isascii():
-            try:
-                label = label.encode('idna').decode('ascii').lower()
-            except UnicodeError:
+            label = _idna_label(label)
+            if label is None:
                 return None
         if not _LABEL_RE.match(label):
             return None

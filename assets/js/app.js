@@ -896,6 +896,7 @@ function renderFooter() {
       type: 'button',
       class: 'footer-button',
       dataset: { control: 'shortcuts' },
+      attrs: { 'aria-haspopup': 'dialog' },
       on: { click: openShortcutHelp }
     }, t('keys.title'), ' ', h('kbd', { attrs: { 'aria-hidden': 'true' } }, '?')),
     h('span', { class: 'spacer' }),

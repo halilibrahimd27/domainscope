@@ -90,6 +90,7 @@ DEFAULT_PORTS = '443'
 DEFAULT_WORKERS = 64
 DEFAULT_TIMEOUT = 5.0
 MAX_WORKERS = 1024
+MAX_PER_ENDPOINT = 4        # TLS handshakes in flight to one ip:port (per-client limits)
 MAX_TIMEOUT = 300.0
 CIDR_LIMIT = 1 << 16        # addresses per CIDR/range without --allow-large (a /16)
 CIDR_HARD_LIMIT = 1 << 20   # absolute cap even with --allow-large (a /12)
@@ -2188,6 +2189,9 @@ class TlsResult:
     # The server actively refused the handshake (TLS alert, EOF or reset). When other
     # names complete on the same ip:port, that means "this name is not hosted here".
     refused: bool = False
+    # Closed, reset or refused below TLS (no alert): a per-client connection limiter does
+    # that too, so run_scan retries such a handshake once before it counts.
+    transient: bool = False
 
 
 @dataclass
@@ -2395,6 +2399,16 @@ def is_refusal(exc: BaseException) -> bool:
     return isinstance(exc, (ConnectionResetError, ConnectionAbortedError))
 
 
+def is_transient(exc: BaseException) -> bool:
+    """The connection was closed, reset or refused without a TLS alert.
+
+    A server that does not host a name says so with an alert or a close, but a per-client
+    connection limiter (nginx stream ``limit_conn``, HAProxy ``src_conn_cur``, a WAF)
+    also closes or resets - so these failures are worth one retry.
+    """
+    return isinstance(exc, (ssl.SSLEOFError, ConnectionError))
+
+
 def classify_connect_exception(exc: BaseException) -> Tuple[str, str]:
     """Map a phase-1 connect exception to ``(CLOSED|TIMEOUT, message)``."""
     if isinstance(exc, (socket.timeout, TimeoutError)):
@@ -2430,7 +2444,8 @@ class TlsProber:
                 result = TlsResult(status=TLS_ERROR, error='server sent no certificate')
         except Exception as exc:  # noqa: BLE001 - every failure becomes a status
             status, message = classify_exception(exc)
-            result = TlsResult(status=status, error=message, refused=is_refusal(exc))
+            result = TlsResult(status=status, error=message, refused=is_refusal(exc),
+                               transient=is_transient(exc))
         finally:
             if sock is not None:
                 try:
@@ -2501,9 +2516,11 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     strings) are removed first - never connected to - and listed in
     :attr:`ScanReport.excluded`. Phase 1 TCP-connects each unique ip:port
     (``connect_fn``); phase 2 runs one TLS handshake per open endpoint and unique SNI
-    plus one without SNI (``tls_fn``). Both are injectable for tests.
+    plus one without SNI (``tls_fn``), at most :data:`MAX_PER_ENDPOINT` at a time per
+    endpoint, and retries a closed / reset / refused handshake (:func:`is_transient`)
+    once where others completed. Both functions are injectable for tests.
     ``progress(phase, done, total, info)`` is called from this thread with phase
-    ``connect`` or ``tls``. KeyboardInterrupt propagates.
+    ``connect``, ``tls`` or ``retry``. KeyboardInterrupt propagates.
     """
     connect_fn = connect_fn or tcp_connect
     tls_fn = tls_fn or TlsProber()
@@ -2541,25 +2558,34 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
 
     _parallel(do_connect, list(endpoints.values()), workers, on_connect, cancel)
 
-    # Phase 2 - one handshake per open endpoint and distinct SNI (None = no SNI).
+    # Phase 2 - one handshake per open endpoint and distinct SNI (None = no SNI). The jobs
+    # go name by name across the endpoints and at most MAX_PER_ENDPOINT run against one
+    # ip:port at a time: dozens of simultaneous handshakes from one client trip per-client
+    # connection limits, and the resets would read as "server refused this name".
     snis = [None] if default_probe else []  # type: List[Optional[str]]
     seen_snis = set()  # type: Set[str]
     for probe in probes:
         if probe.sni not in seen_snis:
             seen_snis.add(probe.sni)
             snis.append(probe.sni)
-    jobs = [(endpoint, sni) for endpoint in endpoints.values() if endpoint.state == OPEN
-            for sni in snis]
+    open_endpoints = [endpoint for endpoint in endpoints.values() if endpoint.state == OPEN]
+    jobs = [(endpoint, sni) for sni in snis for endpoint in open_endpoints]
+    slots = {(endpoint.ip, endpoint.port): threading.BoundedSemaphore(MAX_PER_ENDPOINT)
+             for endpoint in open_endpoints}
     handshakes = {}  # type: Dict[Tuple[str, int, Optional[str]], TlsResult]
     tls_done = [0]
 
     def do_tls(job: Tuple[Endpoint, Optional[str]]) -> TlsResult:
         endpoint, sni = job
-        try:
-            return tls_fn(endpoint.ip, endpoint.port, sni, timeout)
-        except Exception as exc:  # noqa: BLE001 - injected/unknown failures
-            status, message = classify_exception(exc)
-            return TlsResult(status=status, error=message, refused=is_refusal(exc))
+        with slots[(endpoint.ip, endpoint.port)]:  # waiting here is not handshake time
+            if cancel.is_set():
+                return TlsResult(status=TLS_ERROR, error='not probed')
+            try:
+                return tls_fn(endpoint.ip, endpoint.port, sni, timeout)
+            except Exception as exc:  # noqa: BLE001 - injected/unknown failures
+                status, message = classify_exception(exc)
+                return TlsResult(status=status, error=message, refused=is_refusal(exc),
+                                 transient=is_transient(exc))
 
     def on_tls(job: Tuple[Endpoint, Optional[str]], result: TlsResult) -> None:
         handshakes[(job[0].ip, job[0].port, job[1])] = result
@@ -2568,6 +2594,33 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
             progress('tls', tls_done[0], len(jobs), {})
 
     _parallel(do_tls, jobs, workers, on_tls, cancel)
+
+    # Endpoints where at least one handshake completed: TLS itself works there, so a
+    # handshake the server refuses for one particular name means "not hosted".
+    working = {(ip, port) for (ip, port, _sni), result in handshakes.items() if result.der}
+    # Before that rule applies, a close / reset / refusal there is retried once, one
+    # handshake at a time per endpoint (endpoints in parallel): a connection limiter lets
+    # it through now, a server that does not host the name refuses it again.
+    retries = {}  # type: Dict[Tuple[str, int], List[Optional[str]]]
+    for (ip, port, sni), result in handshakes.items():
+        if result.transient and (ip, port) in working:
+            retries.setdefault((ip, port), []).append(sni)
+    retry_total = sum(len(names) for names in retries.values())
+    retry_done = [0]
+
+    def do_retries(key: Tuple[str, int]) -> List[Tuple[Optional[str], TlsResult]]:
+        return [(sni, do_tls((endpoints[key], sni))) for sni in retries[key]]
+
+    def on_retries(key: Tuple[str, int], outcomes: List[Tuple[Optional[str], TlsResult]]
+                   ) -> None:
+        for sni, result in outcomes:
+            handshakes[(key[0], key[1], sni)] = result
+        retry_done[0] += len(outcomes)
+        if progress:
+            progress('retry', retry_done[0], retry_total, {})
+
+    if retries and not cancel.is_set():
+        _parallel(do_retries, list(retries), workers, on_retries, cancel)
 
     # Verdicts.
     new_fps = {cert.sha256 for cert in new_certs}
@@ -2592,9 +2645,6 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
 
     # The no-SNI default cert only matters for names the new certificate is meant for.
     relevant_probes = [probe for probe in probes if new_covers(probe.sni) is not False]
-    # Endpoints where at least one handshake completed: TLS itself works there, so a
-    # handshake the server refuses for one particular name means "not hosted".
-    working = {(ip, port) for (ip, port, _sni), result in handshakes.items() if result.der}
     results = []  # type: List[ProbeResult]
     for server in servers:
         for ip in server.ips:
@@ -3120,7 +3170,8 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
 class ProgressPrinter:
     """Single-line progress on stderr (only when it is a TTY)."""
 
-    _LABELS = {'connect': 'Checking ports', 'tls': 'TLS handshakes', 'resolve': 'Resolving'}
+    _LABELS = {'connect': 'Checking ports', 'tls': 'TLS handshakes', 'resolve': 'Resolving',
+               'retry': 'Retrying reset handshakes'}
 
     def __init__(self, stream: TextIO, enabled: bool) -> None:
         self.stream = stream
@@ -3217,6 +3268,7 @@ statuses (per server, port and name):
   NEEDS_UPDATE  serves a certificate covering the name, but not the new one
   NOT_HOSTED    the certificate served does not cover the name (default cert), or
                 the server refused this name while other names work on that port
+                (a closed or reset connection is retried once first)
   TLS_ERROR     the TLS handshake failed (also: its connection was refused after
                 the port check found the port open)
   TIMEOUT       no answer within --timeout
@@ -3264,7 +3316,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument('-p', '--ports', default=DEFAULT_PORTS, metavar='LIST',
                       help='TLS ports, comma separated, ranges allowed (default: 443)')
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
-                      help='parallel connections (default: %(default)s)')
+                      help='parallel connections (default: %%(default)s; at most %d at a '
+                           'time to one ip:port)' % MAX_PER_ENDPOINT)
     scan.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='SECONDS',
                       help='per-connection timeout in seconds (default: %(default)s)')
     scan.add_argument('--allow-large', action='store_true',

@@ -1362,10 +1362,58 @@ class EngineTests(unittest.TestCase):
             self.assertIn('server requires SNI', default.error)
         self.assertEqual(rows[('broken', 443, 'other.example.com')].status, sos.TLS_ERROR)
         self.assertEqual(rows[('broken', 443, None)].status, sos.TLS_ERROR)
+        # a close / reset is retried once (it could be a connection limiter); an alert is not
+        calls = {(ip, sni): network.calls.count((ip, 443, sni)) for ip, _, sni in network.calls}
+        self.assertEqual(calls[('10.0.0.2', 'other.example.com')], 2)
+        self.assertEqual(calls[('10.0.0.2', None)], 2)
+        self.assertEqual(calls[('10.0.0.2', 'www.example-test.com.tr')], 1)
+        self.assertEqual({count for (ip, _), count in calls.items() if ip != '10.0.0.2'}, {1})
         self.assertTrue(sos.is_refusal(ssl.SSLEOFError()))
         self.assertTrue(sos.is_refusal(ConnectionResetError()))
         self.assertFalse(sos.is_refusal(socket.timeout()))
         self.assertFalse(sos.is_refusal(ssl.SSLError(1, 'no reason')))
+        for exc in (ssl.SSLEOFError(), ConnectionResetError(), ConnectionAbortedError(),
+                    ConnectionRefusedError(), BrokenPipeError()):
+            self.assertTrue(sos.is_transient(exc), exc)
+        for exc in (alert('SSLV3_ALERT_HANDSHAKE_FAILURE'), socket.timeout(), OSError(5, 'io')):
+            self.assertFalse(sos.is_transient(exc), exc)
+
+    def test_connection_limit_resets_are_not_read_as_refusals(self):
+        # A server that resets a client's connections beyond 3 open ones (nginx stream
+        # limit_conn, HAProxy src_conn_cur, WAF appliances), probed with 64 workers.
+        active, peak, lock = {}, {}, threading.Lock()
+
+        def limited(ip, port, sni, timeout):
+            key = (ip, port)
+            with lock:
+                active[key] = active.get(key, 0) + 1
+                peak[key] = max(peak.get(key, 0), active[key])
+                over = active[key] > 3
+            try:
+                time.sleep(0.02)
+                if over:
+                    raise ConnectionResetError(10054, 'reset by a connection limiter')
+                return sos.TlsResult(der=EC_DER if sni and sni.endswith('wild.example.net')
+                                     else CN_ONLY_DER, version='TLSv1.3')
+            finally:
+                with lock:
+                    active[key] -= 1
+
+        names = ['h%02d.wild.example.net' % i for i in range(60)] + ['app.example.com']
+        report = sos.run_scan([sos.Server('web', ['10.0.0.1']), sos.Server('api', ['10.0.0.2'])],
+                              sos.build_probe_names(names), [443],
+                              new_certs=[fixture_cert('cli_renewed_wild.pem')], timeout=1,
+                              workers=64, connect_fn=lambda *a: None, tls_fn=limited)
+        self.assertLessEqual(max(peak.values()), sos.MAX_PER_ENDPOINT)
+        rows = [r for r in report.results if r.probe == sos.PROBE_SNI]
+        self.assertEqual(len(rows), 2 * 61)
+        self.assertEqual({r.status for r in rows if r.name != 'app.example.com'},
+                         {sos.NEEDS_UPDATE})
+        self.assertEqual({r.status for r in rows if r.name == 'app.example.com'},
+                         {sos.NOT_HOSTED})
+        self.assertFalse([r for r in report.results if r.error])
+        self.assertEqual([s.status for s in report.server_summaries()], [sos.NEEDS_UPDATE] * 2)
+        self.assertEqual(len(sos.report_to_dict(report)['servers'][0]['needsUpdate']), 60)
 
     def test_without_new_cert_every_hit_is_needs_update(self):
         network = FakeNetwork({}, {'10.0.0.1': by_old_or_new(EC_DER)})
@@ -2509,6 +2557,32 @@ class TlsServer(_Listener):
             pass
 
 
+class LimitedTlsServer(TlsServer):
+    """Hangs up on every connection beyond ``limit`` open ones (a per-client limiter)."""
+
+    def __init__(self, *args, limit: int = 2, **kwargs) -> None:
+        self.limit = limit
+        self.active = 0
+        self.dropped = 0
+        self.lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
+    def handle(self, conn: socket.socket) -> None:
+        with self.lock:
+            self.active += 1
+            over = self.active > self.limit
+            self.dropped += over
+        try:
+            if over:
+                conn.close()
+                return
+            time.sleep(0.05)  # a slow backend: concurrent handshakes overlap
+            super().handle(conn)
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
 class PlainServer(_Listener):
     """Speaks HTTP, not TLS -> the client handshake fails (TLS_ERROR)."""
 
@@ -2676,6 +2750,21 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('HANDSHAKE_FAILURE', rows[(port, 'nothere.example.com')]['error'])
         self.assertEqual(rows[(port, '(default)')]['status'], 'NOT_HOSTED')
         self.assertIn('server requires SNI', rows[(port, '(default)')]['error'])
+
+    def test_connection_limiter_does_not_turn_hosted_names_into_not_hosted(self):
+        server = LimitedTlsServer('cn_only', WILD_OLD, limit=2)
+        names = ['h%02d.wild.example.net' % i for i in range(30)]
+        try:
+            code, out, err = run_main('-t', 'web=127.0.0.1', '-p', str(server.port),
+                                      '-n', *names, '--timeout', '5', '--json', '-', '-q')
+        finally:
+            server.close()
+        self.assertEqual(code, 0, err)
+        self.assertGreater(server.dropped, 0)  # the limiter really cut connections
+        doc = json.loads(out)
+        statuses = {row['name']: row['status'] for row in doc['results'] if row['name']}
+        self.assertEqual(set(statuses.values()), {'NEEDS_UPDATE'}, statuses)
+        self.assertEqual(len(doc['servers'][0]['needsUpdate']), 30)
 
     def test_tls_error_and_handshake_timeout(self):
         json_path = self.path('e.json')

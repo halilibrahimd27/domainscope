@@ -5733,6 +5733,9 @@ def _run(args: argparse.Namespace) -> int:
     if sum(list(values).count('-') for values in (args.targets, args.names, args.exclude)) > 1:
         raise UsageError('stdin ("-") can be used only once')
     json_is_baseline = _same_path(args.baseline, args.json)
+    if _same_path(args.baseline, args.csv):
+        raise UsageError('--csv would overwrite the --baseline file %s, and a CSV cannot be '
+                         'compared: give that file to --json' % args.csv)
     _check_output_path(args.json, '--json', replace=json_is_baseline)
     _check_output_path(args.csv, '--csv')
     exclude_rules = load_excludes(args.exclude)  # strict: bad input stops before any lookup

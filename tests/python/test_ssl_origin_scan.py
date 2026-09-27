@@ -4046,6 +4046,10 @@ class MonitorCliTests(unittest.TestCase):
             secret = 'SECRETTOKEN0123456789'
             cases = [
                 (('--baseline', bad), 'not a --json report'),
+                (('--baseline', bad, '--csv', bad),
+                 '--csv would overwrite the --baseline file %s' % bad),
+                (('--baseline', bad, '--json', os.path.join(tmp, 'r.json'), '--csv',
+                  os.path.join(tmp, '.', 'bad.json')), '--csv would overwrite'),
                 (('--fail-on-change',), '--fail-on-change needs --baseline'),
                 (('--baseline', '-'), '--baseline reads a file, not stdin'),
                 (('--warn-days', '-1'), '--warn-days must be between 0 and 3650'),

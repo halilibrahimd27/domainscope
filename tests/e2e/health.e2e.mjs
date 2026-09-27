@@ -15,13 +15,15 @@
  * (scan.e2e.mjs zoneHandoffScript: every other request is blocked) and a fake Globalping API
  * built from the live captures tests/fixtures/globalping/m26 + m27 — 0 real probes, and a
  * network guard proves nothing left the page. It checks the CAA card's RFC 8657 restriction
- * (only dns-01, with its renewal note) and the MTA-STS policy check: nothing sent before the
- * click; one free /limits read and the consent + cost dialog (Escape / Cancel sends nothing);
- * exactly the lib/mtasts request; a valid policy covering both MX hosts; keyboard focus back on
- * the card's button after the dialog and after the result, every outcome announced; "Check again" without a dialog and
- * an MX host the policy misses (error); the policy in "Report (JSON)"; a language switch that
- * keeps the result without a new probe; a quota at 0 (nothing asked or sent); a policy host
- * that does not resolve; 1440 px and a 375 px phone, light and dark, without horizontal scroll.
+ * (only dns-01, with its renewal note; a wrong-case DNS-01 allows no method) and the MTA-STS
+ * policy check: nothing sent before the click; one free /limits read and the consent + cost
+ * dialog (Escape / Cancel sends nothing); exactly the lib/mtasts request; a valid policy
+ * covering both MX hosts; keyboard focus back on the card's button after the dialog and after
+ * the result, every outcome announced; "Check again" without a dialog and an MX host the policy
+ * misses (error); the policy in "Report (JSON)"; a language switch that keeps the result
+ * without a new probe; a quota at 0 (nothing asked or sent); a policy host that does not
+ * resolve; mode none ("off", never "every MX host matches"); 1440 px and a 375 px phone, light
+ * and dark, without horizontal scroll.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -185,7 +187,11 @@ const MAIL_ZONE = {
     A: ['192.0.2.80'], SOA: [MAIL_SOA], NS: ['ns1.example.com', 'ns2.example.com'],
     MX: [{ preference: 10, exchange: 'mx.example.com' }, { preference: 20, exchange: 'alt1.mx.example.com' }],
     TXT: [['v=spf1 mx -all']],
-    CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org; validationmethods=dns-01' }, { flags: 0, tag: 'issuewild', value: ';' }]
+    CAA: [
+      { flags: 0, tag: 'issue', value: 'letsencrypt.org; validationmethods=dns-01' },
+      { flags: 0, tag: 'issue', value: 'sectigo.com; validationmethods=DNS-01' }, // labels are case-sensitive: no method at all
+      { flags: 0, tag: 'issuewild', value: ';' }
+    ]
   },
   'ns1.example.com': { A: ['192.0.2.53'] },
   'ns2.example.com': { A: ['198.51.100.53'] },
@@ -320,6 +326,7 @@ async function mtaStsGroup(browser, server) {
   const results = {
     ok: live.result,
     unmatched: { ...live.result, rawBody: 'version: STSv1\r\nmode: enforce\r\nmx: mx.example.com\r\nmax_age: 1209600\r\n' },
+    off: { ...live.result, rawBody: 'version: STSv1\r\nmode: none\r\nmax_age: 86400\r\n' },
     nohost: m27.final.body.results[0].result
   };
 
@@ -351,10 +358,13 @@ async function mtaStsGroup(browser, server) {
       assert(c.text.includes('v=STSv1; id=20260927T1200') && c.text.includes('https://mta-sts.example.com/.well-known/mta-sts.txt'), `TXT + URL: ${c.text.slice(0, 300)}`);
       const caa = await page.evaluate(() => ({
         restricted: [...document.querySelectorAll('.hlt-caa [data-caa="restricted"]')].map((x) => x.dataset.issuer),
+        unusable: [...document.querySelectorAll('.hlt-caa [data-caa="unusable"]')].map((x) => `${x.dataset.issuer}: ${x.querySelector('.hlt-ca-problem')?.textContent}`),
         note: document.querySelector('.hlt-caa [data-note="methods"]')?.textContent || '',
         text: document.querySelector('.hlt-caa')?.textContent.replace(/\s+/g, ' ') || ''
       }));
       assertEqual(caa.restricted, ['letsencrypt.org'], 'CAA: letsencrypt.org restricted');
+      assertEqual(caa.unusable.length, 1, `CAA: sectigo.com unusable: ${caa.unusable}`);
+      assert(/^sectigo\.com: .*case-sensitive/.test(caa.unusable[0]), `DNS-01 is no method: ${caa.unusable[0]}`);
       assert(/only dns-01/.test(caa.text) && /http-01/.test(caa.note), `CAA restriction and renewal note: ${caa.note}`);
       assertEqual(await gpCalls(), [], 'no Globalping call, not even /limits');
       await assertNoHorizontalScroll(page, 'mta-sts idle');
@@ -490,6 +500,17 @@ async function mtaStsGroup(browser, server) {
       assertEqual([c.mx, c.file], [[], false], 'no MX table, no file');
     });
 
+    await step('mode none: the headline says MTA-STS is off, as information, and claims no MX match', async () => {
+      await page.evaluate(() => { window.__gp.next.push('off'); });
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((sel) => document.querySelector(`${sel} [data-mtasts-headline="off"]`), { args: [MTASTS_CARD], timeout: 20000, message: 'off verdict' });
+      const c = await card();
+      assert(c.findings.some((f) => f.id === 'mode.none') && !c.findings.some((f) => f.id.startsWith('mx.')), `findings: ${JSON.stringify(c.findings)}`);
+      assertEqual(await page.evaluate((sel) => document.querySelector(`${sel} [data-mtasts-headline]`).classList.contains('alert-info'), MTASTS_CARD), true, 'an info alert, not a green one');
+      assert(/switches MTA-STS off/.test(c.text) && !/every MX host matches/.test(c.text), 'headline text');
+      await announced(page, /switches MTA-STS off/, 'announced');
+    });
+
     await step('a result that cannot be read: the paid measurement is read again, never a new probe', async () => {
       await page.evaluate(() => { window.__gp.getDown = true; });
       const before = posts(await gpCalls()).length;
@@ -545,7 +566,7 @@ async function mtaStsGroup(browser, server) {
       assertEqual(netHits, [], 'https requests that reached the network');
       assert(!blocked.some((u) => u.includes('globalping')), `Globalping never reached the zone guard: ${blocked}`);
       const calls = await gpCalls();
-      assertEqual(posts(calls).length, 7, 'seven fake probes in total');
+      assertEqual(posts(calls).length, 8, 'eight fake probes in total');
       await checkI18n(page);
       await assertClean(page, 'mta-sts offline');
     });

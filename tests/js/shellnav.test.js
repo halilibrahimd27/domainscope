@@ -1,9 +1,13 @@
 // Unit tests for the shell's navigation model (assets/js/lib/shellnav.js): the tool groups the
 // sidebar and the phone Tools menu share, the first-visit task picker's jobs and "has run
-// something" signals, and the keyboard shortcuts — which key press means what, and which marked
-// control answers it. Pure: no DOM (elements are plain objects), no storage.
+// something" signals, and the keyboard shortcuts — which key press means what, which marked
+// control answers it, and (read from the sources) that the views keep their results out of their
+// forms. Pure: no DOM (elements are plain objects), no storage.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   NAV_GROUPS, OTHER_GROUP, groupViews, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
@@ -15,6 +19,7 @@ import { hasString } from '../../assets/js/i18n.js';
 import { createState } from '../../assets/js/state.js';
 import { createLearnedStore } from '../../assets/js/lib/learned.js';
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ids = (list) => list.map((x) => x.id);
 
 /** Web Storage stub: just enough for state.js and lib/learned.js. */
@@ -308,6 +313,32 @@ describe('pickShortcutTarget — which marked control answers', () => {
     assert.equal(pickShortcutTarget({ candidates: [read, run], scopes: [make('root')], contains, usable, localOf }), run);
   });
 
+  test('a sub-form without a submit (a results area, a table) answers nothing; Esc from there still cancels', () => {
+    // Bulk Resolve after a run: the view's Run is shown again, the results area (a data-shortcut-scope
+    // without a submit) holds a table whose filter has the focus, and an option of its own.
+    const run = make('run');
+    const stop = make('stop');
+    const results = make('results');
+    const table = make('table');
+    const filter = make('filter');
+    const option = make('option');
+    const textarea = make('textarea');
+    const within = { filter: table, option: results }; // the nearest data-shortcut-scope
+    const localOf = (node) => within[node.name] || null;
+    const contains = tree({ root: [run, stop] });
+    const usable = (c) => c.usable;
+    const submit = (from, scopes) => pickShortcutTarget({
+      candidates: [run], scopes: [from, ...scopes, make('root')], contains, usable, strict: true, from, localOf
+    });
+    assert.equal(submit(filter, [table, results]), null, 'the table\'s filter starts no new run');
+    assert.equal(submit(option, [results]), null, 'nor does an option of the results');
+    assert.equal(submit(textarea, [make('card')]), run, 'a field of the form runs the tool');
+    // Esc takes no localOf: the Stop button of the run answers from the results too.
+    assert.equal(pickShortcutTarget({
+      candidates: [stop], scopes: [filter, table, results, make('root')], contains, usable
+    }), stop);
+  });
+
   test('strict (submit): a scope whose action is unavailable stops the search', () => {
     const run = make('run', { usable: false }); // hidden while the scan runs
     const other = make('other');
@@ -339,5 +370,23 @@ describe('pickShortcutTarget — which marked control answers', () => {
     const a = make('a');
     const b = make('b');
     assert.equal(pickShortcutTarget({ candidates: [b, a], scopes: [make('root')], contains: () => true }), b);
+  });
+});
+
+describe('the controls the views mark for the shortcuts', () => {
+  const source = (rel) => readFileSync(path.join(ROOT, rel), 'utf8');
+
+  test('a view with a submit keeps its results out of the form: a results scope without a submit', () => {
+    // Ctrl/Cmd+Enter in a results filter once started the view's run again, dropping the results on screen.
+    const withSubmit = VIEWS.filter((v) => /shortcut: 'submit'/.test(source(`assets/js/views/${v.id}.js`)));
+    assert.ok(withSubmit.length >= 10, `views with a submit: ${ids(withSubmit)}`);
+    for (const v of withSubmit) {
+      assert.match(source(`assets/js/views/${v.id}.js`), /shortcutScope(?::|\s*=)\s*'results'/,
+        `${v.id}: mark the results container with data-shortcut-scope="results"`);
+    }
+  });
+
+  test('every DataTable is a form of its own without a submit (its search box never runs the view)', () => {
+    assert.match(source('assets/js/ui/components.js'), /class: \['dt', className\], dataset: \{ shortcutScope: 'table' \}/);
   });
 });

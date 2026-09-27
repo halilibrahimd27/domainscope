@@ -482,7 +482,9 @@ export function mount(container, ctx) {
   const quotaNote = Alert({ variant: 'info', compact: true, icon: 'info', message: t('ipi.quota') });
   const statsGrid = h('div', { class: 'stat-grid ipi-stats' }, stats.ips, stats.cdn, stats.mine, stats.priv, stats.nets, stats.countries);
   const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
-  const results = h('div', { class: 'stack ipi-results', hidden: true }, progress, notesEl, statsGrid, quotaNote, table);
+  // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
+  const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
+    progress, notesEl, statsGrid, quotaNote, table);
   container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results));
 
   /* --- cell renderers ----------------------------------------------------------------- */

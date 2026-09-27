@@ -663,7 +663,8 @@ export function mount(container, ctx) {
   });
   filterCtl.el.dataset.control = 'health-filter';
   const emptyEl = h('div', { class: 'card hlt-empty' }, EmptyState({ icon: 'activity', title: t('hlt.emptyTitle'), message: t('hlt.emptyBody') }));
-  const results = h('div', { class: 'stack-lg hlt-results', hidden: true },
+  // No part of the form: Ctrl/Cmd+Enter on the checks filter starts no new check.
+  const results = h('div', { class: 'stack-lg hlt-results', hidden: true, dataset: { shortcutScope: 'results' } },
     heroEl,
     h('section', { class: 'stack hlt-checks-section' },
       h('div', { class: 'hlt-section-head' }, h('h2', { class: 'section-title' }, t('hlt.checksTitle')), filterCtl.el),

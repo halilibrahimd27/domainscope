@@ -2040,7 +2040,9 @@ export function mount(container, ctx) {
     h('div', { class: 'scan-runbar-info' }, planLine, runSummary, runError));
   cancelBtn.hidden = true;
 
-  const resultsHost = h('div', { class: 'scan-results-host' });
+  // The run's results are no part of the form: Ctrl/Cmd+Enter in a filter or a Verify option there
+  // starts no new scan (the shell's shortcut; a data-shortcut-scope without a submit).
+  const resultsHost = h('div', { class: 'scan-results-host', dataset: { shortcutScope: 'results' } });
   container.append(h('div', { class: 'scan-view stack-lg' },
     h('div', { class: 'scan-form' }, linkPrompt, reqLine, setup, runbar),
     resultsHost));

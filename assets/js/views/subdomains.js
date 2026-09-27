@@ -3601,7 +3601,8 @@ export function mount(container, ctx) {
     h('p', { class: 'sub-intro-foot' }, Icon('lock', { size: 13 }), h('span', null, t('sub.intro.privacy')),
       h('a', { href: ctx.href('about'), dataset: { action: 'sub-about' } }, t('sub.intro.more'))));
 
-  const resultsHost = h('div', { class: 'sub-results-host' });
+  // The scan's results are no part of the form: Ctrl/Cmd+Enter in a filter there starts no new scan.
+  const resultsHost = h('div', { class: 'sub-results-host', dataset: { shortcutScope: 'results' } });
   container.append(h('div', { class: 'sub-view stack-lg' }, hero, intro, resultsHost));
 
   renderScope();

@@ -1702,7 +1702,8 @@ export function mount(container, ctx) {
   let load = getCurrentCert(state);
 
   const loaderHost = h('div');
-  const content = h('div', { class: 'stack cert-content' });
+  // The certificate's tabs are no part of a loader's form: Ctrl/Cmd+Enter there submits nothing.
+  const content = h('div', { class: 'stack cert-content', dataset: { shortcutScope: 'results' } });
   container.append(h('div', { class: 'stack cert-view' }, loaderHost, content));
 
   function setLoad(next, { announce = true } = {}) {

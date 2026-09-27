@@ -673,7 +673,8 @@ export function mount(container, ctx) {
   const noteEl = h('div', { class: 'lkp-note' });
   const cardsEl = h('div', { class: 'lkp-cards' });
   const emptyEl = h('div', { class: 'card lkp-empty' }, EmptyState({ icon: 'search', title: t('lkp.emptyTitle'), message: t('lkp.emptyBody') }));
-  const results = h('div', { class: 'stack lkp-results', hidden: true }, summaryEl, noteEl, cardsEl);
+  // No part of the form: Ctrl/Cmd+Enter in a field here starts no new lookup.
+  const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, cardsEl);
   container.append(h('div', { class: 'stack-lg lkp-view' }, formCard, emptyEl, results));
 
   /* --- record renderers ---------------------------------------------------------------- */

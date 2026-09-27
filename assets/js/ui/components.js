@@ -33,6 +33,7 @@
  *   C.Button({ label: t('common.stop'), dataset: { shortcut: 'cancel' }, onClick: stop }); // Esc while it is shown
  *   C.textInput({ label: 'Domain', attrs: { 'data-shortcut': 'focus' } });                 // where '/' jumps
  *   pasteBox.dataset.shortcutScope = 'paste';   // a sub-form: the submit inside answers its own fields only, Run the rest
+ *   h('div', { class: 'x-results', dataset: { shortcutScope: 'results' } });   // no submit inside: a results filter runs nothing
  *
  *   // Layout
  *   C.Section({ title: 'Results', actions: [btn], children: [...] });
@@ -1873,7 +1874,9 @@ export function DataTable(opts) {
   const moreBtn = Button({ label: t('common.showMore'), size: 'sm', variant: 'secondary', icon: 'chevron-down', onClick: () => showMore(pageSize) });
   const allBtn = Button({ label: t('common.showMore'), size: 'sm', variant: 'ghost', onClick: () => showMore(Infinity) });
   const footer = h('div', { class: 'dt-footer' }, countEl, h('div', { class: 'dt-more' }, moreBtn, allBtn));
-  const el = h('div', { class: ['dt', className] }, toolbarEl, scroll, emptyEl, footer);
+  // A form of its own for the shell's Ctrl/Cmd+Enter, with no submit: the search box and the row
+  // controls never start the view's run (app.js; lib/shellnav.js pickShortcutTarget).
+  const el = h('div', { class: ['dt', className], dataset: { shortcutScope: 'table' } }, toolbarEl, scroll, emptyEl, footer);
 
   // --- header ---------------------------------------------------------------
   function renderHead() {

@@ -867,7 +867,8 @@ export function mount(container, ctx) {
         h('div', { class: 'bulk-actions' }, runBtn, cancelBtn)))
   });
 
-  const resultsHost = h('div', { class: 'bulk-results-host' });
+  // The results are no part of the form: Ctrl/Cmd+Enter in a filter there starts no new run.
+  const resultsHost = h('div', { class: 'bulk-results-host', dataset: { shortcutScope: 'results' } });
   container.append(h('div', { class: 'bulk-layout' }, inputCard, resultsHost));
 
   renderScanNames();

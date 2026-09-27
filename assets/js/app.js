@@ -18,9 +18,10 @@
  *
  * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
  * clicks the `data-shortcut="submit"` control of the field's form (the view's Run; inside a
- * `data-shortcut-scope` sub-form such as a paste box, that sub-form's own button), Esc the
- * view's visible `"cancel"` one (not in a search field with text: Esc clears it there), '/'
- * focuses its `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
+ * `data-shortcut-scope` sub-form such as a paste box, that sub-form's own button; in one without
+ * a submit — a view's results area, a DataTable — nothing), Esc the view's visible `"cancel"`
+ * one (not in a search field with text: Esc clears it there), '/' focuses its `"focus"` input
+ * (else its first text field), '?' opens the shortcuts dialog.
  */
 
 import {

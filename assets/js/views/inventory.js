@@ -378,7 +378,8 @@ export function mount(container, ctx) {
     children: warningsList
   });
 
-  const resultsCol = h('div', { class: 'stack inv-results' },
+  // No part of the editor's form: Ctrl/Cmd+Enter in the table's filter saves nothing.
+  const resultsCol = h('div', { class: 'stack inv-results', dataset: { shortcutScope: 'results' } },
     h('div', { class: 'stat-grid inv-stats' }, stats.servers, stats.ips, stats.groups, stats.warnings),
     warningsCard,
     Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));

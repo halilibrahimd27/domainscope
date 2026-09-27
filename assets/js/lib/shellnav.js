@@ -226,11 +226,13 @@ export function shortcutFor(event) {
  * ancestors, and this picks one.
  *
  * Sub-forms: a small form of its own inside a view (a certificate paste box with its Read button,
- * a zone paste box, a host name lookup) sits in a container marked `data-shortcut-scope`, and
+ * a zone importer, a host name lookup) sits in a container marked `data-shortcut-scope`, and
  * `localOf(node)` returns the sub-form a node is in (null: the view's own form). With `localOf`,
  * only the candidates of the focused element's own form take part: the paste box's Read answers
  * the paste box, the view's Run every field outside a sub-form, and neither stands in for the
  * other (a sub-form further up the page never outranks the view's Run by document order).
+ * A sub-form without a submit — a view's results area, a table — answers nothing: a results
+ * filter, a table's search box or a panel's option never starts the view's run again.
  *
  * Scopes are then tried nearest first; the first scope holding a candidate decides:
  * - `strict` (submit): its first usable candidate, or null when all of its candidates are hidden or

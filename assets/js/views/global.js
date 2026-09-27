@@ -907,7 +907,8 @@ export function mount(container, ctx) {
     title: t('glb.emptyTitle'),
     message: t('glb.emptyBody', { count: formatNumber(GEO_VANTAGES.length) })
   });
-  const results = h('div', { class: 'stack-lg glb-results', hidden: true },
+  // No part of the form: Ctrl/Cmd+Enter in a table's filter here starts no new check.
+  const results = h('div', { class: 'stack-lg glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
     h('div', { class: 'stack' }, progress, summaryEl, statsGrid, linksEl),
     legendCard, ipSection, resSection, geoSection);
 

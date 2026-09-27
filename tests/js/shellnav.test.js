@@ -249,14 +249,49 @@ describe('pickShortcutTarget — which marked control answers', () => {
     return (scope, candidate) => (members.get(scope.name) || []).includes(candidate);
   };
 
-  test('the nearest scope with a candidate wins (a paste box\'s Read, not the page\'s Run)', () => {
-    const read = make('read');
+  test('the nearest scope with a candidate wins', () => {
+    const save = make('save');
     const run = make('run');
-    const contains = tree({ pasteBlock: [read], form: [read, run], root: [read, run] });
-    const scopes = [make('field'), make('pasteBlock'), make('form'), make('root')];
-    assert.equal(pickShortcutTarget({ candidates: [read, run], scopes, contains, usable: (c) => c.usable }), read);
-    // From a field outside the paste block: the form's first usable one.
-    assert.equal(pickShortcutTarget({ candidates: [read, run], scopes: [make('other'), make('form')], contains, usable: (c) => c.usable }), read);
+    const contains = tree({ card: [save], root: [save, run] });
+    const usable = (c) => c.usable;
+    assert.equal(pickShortcutTarget({ candidates: [run, save], scopes: [make('field'), make('card'), make('root')], contains, usable }), save);
+    assert.equal(pickShortcutTarget({ candidates: [run, save], scopes: [make('other'), make('root')], contains, usable }), run, 'document order at the root');
+  });
+
+  test('sub-forms: a paste box\'s Read answers the paste box only, the view\'s Run every other field', () => {
+    // SSL Targets: step 1 holds a paste box (a sub-form, earlier in the page than Run) and a CT lookup.
+    const read = make('read');
+    const load = make('load');
+    const run = make('run');
+    const pasteBox = make('pasteBox');
+    const ctLookup = make('ctLookup');
+    const pasteField = make('pasteField');
+    const ctField = make('ctField');
+    const domains = make('domains');
+    const within = { pasteField: pasteBox, read: pasteBox, ctField: ctLookup, load: ctLookup };
+    const localOf = (node) => within[node.name] || null;
+    const contains = tree({ pasteBox: [read], ctLookup: [load], certStep: [read, load], root: [read, load, run] });
+    const usable = (c) => c.usable;
+    const pick = (from, scopes, extra = {}) => pickShortcutTarget({
+      candidates: [read, load, run], scopes: [from, ...scopes], contains, usable, strict: true, from, localOf, ...extra
+    });
+    assert.equal(pick(domains, [make('stepDomains'), make('root')]), run, 'the domains field runs the scan');
+    assert.equal(pick(pasteField, [pasteBox, make('certStep'), make('root')]), read, 'the paste box reads the certificate');
+    assert.equal(pick(ctField, [ctLookup, make('certStep'), make('root')]), load, 'the host field loads from CT');
+    // Without sub-forms the paste box's Read, first in the page, would answer the domains field.
+    assert.equal(pick(domains, [make('stepDomains'), make('root')], { localOf: null }), read, 'what sub-forms prevent');
+    // A running lookup turns its button into a Cancel: its field then submits nothing, never the view's Run.
+    assert.equal(pickShortcutTarget({
+      candidates: [read, run], scopes: [ctField, ctLookup, make('root')], contains, usable, strict: true, from: ctField, localOf
+    }), null);
+    // A run in progress hides Run: nothing, and a sub-form's action does not stand in.
+    const hiddenRun = make('run', { usable: false });
+    assert.equal(pickShortcutTarget({
+      candidates: [read, hiddenRun], scopes: [domains, make('root')], contains: tree({ root: [read, hiddenRun] }), usable, strict: true,
+      from: domains, localOf
+    }), null);
+    // Nothing focused: the view's own form.
+    assert.equal(pickShortcutTarget({ candidates: [read, run], scopes: [make('root')], contains, usable, localOf }), run);
   });
 
   test('strict (submit): a scope whose action is unavailable stops the search', () => {

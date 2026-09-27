@@ -1358,6 +1358,9 @@ export function mount(container, ctx) {
         if (text.trim()) importFiles([{ name: t('file.pasted'), size: text.length, text }]);
       }
     });
+    const pasteBox = Disclosure({ summary: t('zone.paste.summary'), className: 'zone-paste', children: h('div', { class: 'stack-sm' }, pasteArea.el, h('div', { class: 'cluster' }, pasteBtn)) });
+    // A form of its own for the shell's Ctrl/Cmd+Enter: Import answers the paste box only.
+    pasteBox.dataset.shortcutScope = 'zone-paste';
     const originField = textInput({
       label: t('zone.origin.label'),
       value: S.originInput || (S.zone && S.zone.origin) || '',
@@ -1415,7 +1418,7 @@ export function mount(container, ctx) {
     const body = h('div', { class: 'stack-sm' },
       drop.el || drop,
       h('div', { class: 'zone-import-fields' }, originField.el, formatSel.el),
-      Disclosure({ summary: t('zone.paste.summary'), className: 'zone-paste', children: h('div', { class: 'stack-sm' }, pasteArea.el, h('div', { class: 'cluster' }, pasteBtn)) }),
+      pasteBox,
       S.zone ? null : samples,
       S.zone ? null : howto);
     // With a zone loaded the importer folds away (open while the zone name still needs a look).

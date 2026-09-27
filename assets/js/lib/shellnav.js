@@ -211,20 +211,32 @@ export function shortcutFor(event) {
 /**
  * The control that answers a shortcut: the view marks its buttons `data-shortcut="submit"` /
  * `"cancel"` and its main input `"focus"`; the shell collects them and the focused element's
- * ancestors, and this picks one. Scopes are tried nearest first; the first scope holding a
- * candidate decides:
+ * ancestors, and this picks one.
+ *
+ * Sub-forms: a small form of its own inside a view (a certificate paste box with its Read button,
+ * a zone paste box, a host name lookup) sits in a container marked `data-shortcut-scope`, and
+ * `localOf(node)` returns the sub-form a node is in (null: the view's own form). With `localOf`,
+ * only the candidates of the focused element's own form take part: the paste box's Read answers
+ * the paste box, the view's Run every field outside a sub-form, and neither stands in for the
+ * other (a sub-form further up the page never outranks the view's Run by document order).
+ *
+ * Scopes are then tried nearest first; the first scope holding a candidate decides:
  * - `strict` (submit): its first usable candidate, or null when all of its candidates are hidden or
  *   disabled — the field's own action is not available (a run in progress), and an action of
  *   another form must not stand in for it;
  * - otherwise (cancel, focus): its first usable candidate, else the next scope's.
  * @template T
  * @param {{ candidates: ReadonlyArray<T>, scopes: ReadonlyArray<any>, contains: (scope: any, el: T) => boolean,
- *   usable?: (el: T) => boolean, strict?: boolean }} opts candidates in document order; scopes from
- *   the focused element's nearest ancestor out to the view's root
+ *   usable?: (el: T) => boolean, strict?: boolean, from?: any, localOf?: ((node: any) => any)|null }} opts
+ *   candidates in document order; scopes from the focused element (`from`) out to the view's root
  * @returns {T|null}
  */
-export function pickShortcutTarget({ candidates, scopes, contains, usable = () => true, strict = false }) {
-  const list = [...(candidates || [])];
+export function pickShortcutTarget({ candidates, scopes, contains, usable = () => true, strict = false, from = null, localOf = null }) {
+  let list = [...(candidates || [])];
+  if (localOf) {
+    const own = (from && localOf(from)) || null;
+    list = list.filter((el) => (localOf(el) || null) === own);
+  }
   if (!list.length) return null;
   for (const scope of scopes || []) {
     const inScope = list.filter((el) => contains(scope, el));

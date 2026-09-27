@@ -1153,6 +1153,8 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
     children: h('div', { class: 'stack-sm' }, area.el,
       h('div', { class: 'cluster' }, Button({ label: t('cert.pasteApply'), icon: 'check', size: 'sm', onClick: read, dataset: { action: 'cert-paste-read', shortcut: 'submit' } })))
   });
+  // A form of its own for the shell's Ctrl/Cmd+Enter: Read answers the paste box, never a field of the page around it.
+  paste.dataset.shortcutScope = 'cert-paste';
   const el = h('div', { class: 'cert-loader stack-sm' }, drop, paste);
   return { el, drop, input: drop.input, paste: area };
 }
@@ -1304,7 +1306,8 @@ export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale
     const ids = (field.input.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== hintId);
     field.input.setAttribute('aria-describedby', [hintId, ...ids].join(' '));
   };
-  const el = h('div', { class: 'cert-alt stack-sm', dataset: { role: 'cert-alt' } },
+  // A form of its own for the shell's shortcuts: Load answers the host name field only.
+  const el = h('div', { class: 'cert-alt stack-sm', dataset: { role: 'cert-alt', shortcutScope: 'ct-lookup' } },
     h('label', { class: 'field-label', for: field.input.id }, t('cert.alt.title')),
     h('div', { class: 'cert-alt-row' }, field.el, loadBtn),
     h('p', { class: 'muted text-sm cert-alt-hint', id: hintId }, t('cert.alt.hint')),

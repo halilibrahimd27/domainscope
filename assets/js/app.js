@@ -1012,9 +1012,25 @@ function startPicker() {
 /* Keyboard shortcuts                                                       */
 /* ------------------------------------------------------------------------ */
 
-/** Can a marked control act now? On the page, enabled and rendered (not hidden, not in a closed <details>). */
+/**
+ * Is the element inside the collapsed part of a closed <details> (its own <summary> excepted)?
+ * Chrome keeps boxes for that content (content-visibility: hidden), so a box alone does not show
+ * that a control can be seen.
+ */
+function inClosedDetails(el) {
+  for (let node = el; node && node.parentElement; node = node.parentElement) {
+    const parent = node.parentElement;
+    if (parent.localName === 'details' && !parent.open
+      && !(node.localName === 'summary' && node === parent.querySelector(':scope > summary'))) return true;
+  }
+  return false;
+}
+
+/** Can a marked control act now? On the page, enabled, visible (not hidden, not in a closed <details>). */
 function usableControl(el) {
-  return !!el && el.isConnected && !el.disabled && !el.closest('[inert]') && el.getClientRects().length > 0;
+  if (!el || !el.isConnected || el.disabled || el.closest('[inert]') || inClosedDetails(el)) return false;
+  if (typeof el.checkVisibility === 'function') return el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true });
+  return el.getClientRects().length > 0;
 }
 
 /** The ancestors of `from` inside `root`, nearest first, then `root` itself. */
@@ -1025,10 +1041,19 @@ function scopesFrom(from, root) {
   return scopes;
 }
 
+/** The sub-form (`data-shortcut-scope` container) a node of the page body is in, or null. */
+function shortcutScopeOf(node) {
+  const root = dom.pageBody;
+  const scope = node && node.closest ? node.closest('[data-shortcut-scope]') : null;
+  return scope && root && root.contains(scope) ? scope : null;
+}
+
 /**
  * The current view's control for a shortcut (`data-shortcut="submit"` / `"cancel"`) nearest to
- * the focused element (lib/shellnav.js pickShortcutTarget: a submit never falls through to
- * another form's button).
+ * the focused element (lib/shellnav.js pickShortcutTarget). A submit answers the field's own
+ * form only: a sub-form's action (`data-shortcut-scope`: a paste box's Read) its own fields, the
+ * view's Run every other field, and it never falls through to another form's button. A cancel
+ * stops whatever runs, nearest first.
  * @param {'submit'|'cancel'} kind
  * @param {Element|null} from
  * @returns {HTMLElement|null}
@@ -1036,12 +1061,15 @@ function scopesFrom(from, root) {
 function shortcutControl(kind, from) {
   const root = dom.pageBody;
   if (!root || !current) return null;
+  const submit = kind === 'submit';
   return pickShortcutTarget({
     candidates: [...root.querySelectorAll(`[data-shortcut="${kind}"]`)],
     scopes: scopesFrom(from, root),
     contains: (scope, el) => scope.contains(el),
     usable: usableControl,
-    strict: kind === 'submit'
+    strict: submit,
+    from,
+    localOf: submit ? shortcutScopeOf : null
   });
 }
 

@@ -32,6 +32,7 @@
  *   C.Button({ label: t('common.run'), dataset: { shortcut: 'submit' }, onClick: run });   // Ctrl/Cmd+Enter in a field near it
  *   C.Button({ label: t('common.stop'), dataset: { shortcut: 'cancel' }, onClick: stop }); // Esc while it is shown
  *   C.textInput({ label: 'Domain', attrs: { 'data-shortcut': 'focus' } });                 // where '/' jumps
+ *   pasteBox.dataset.shortcutScope = 'paste';   // a sub-form: the submit inside answers its own fields only, Run the rest
  *
  *   // Layout
  *   C.Section({ title: 'Results', actions: [btn], children: [...] });

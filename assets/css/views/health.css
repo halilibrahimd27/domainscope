@@ -530,17 +530,85 @@
 
 .hlt-ca {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hlt-ca-head {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
+  min-width: 0;
 }
 
 .hlt-ca-icon {
+  flex: none;
   color: var(--ok);
+}
+
+.hlt-ca-unusable .hlt-ca-icon,
+.hlt-ca-malformed .hlt-ca-icon {
+  color: var(--error);
 }
 
 .hlt-ca-name {
   font-weight: 600;
+}
+
+.hlt-ca-raw {
+  overflow-wrap: anywhere;
+}
+
+/* RFC 8657 details under a CA: the account URI, why a value is unusable, renewal notes */
+.hlt-ca-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-left: 23px;
+}
+
+.hlt-ca-account {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.hlt-ca-problem {
+  color: var(--error);
+}
+
+.hlt-ca-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hlt-ca-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+.hlt-ca-note > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hlt-ca-note-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--info);
+}
+
+.hlt-caa-rfc {
+  margin: 0;
 }
 
 .hlt-caa-deny {

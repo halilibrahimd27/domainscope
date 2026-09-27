@@ -22,7 +22,7 @@ import {
   registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, daysUntil, getLang
 } from '../i18n.js';
 import {
-  domainHealth, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
+  domainHealth, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
 } from '../lib/health.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES } from '../lib/dnswire.js';
 import { classifyResolution, ipVersion, normalizeIP } from '../lib/netinfo.js';
@@ -181,6 +181,11 @@ registerStrings('en', {
   'hlt.caa.records': 'CAA records',
   'hlt.caa.distrusted': 'distrusted since {year}',
   'hlt.caa.error': 'The CAA lookup failed: {error}',
+  'hlt.caa.onlyMethods': 'only {methods}',
+  'hlt.caa.accountOnly': 'one ACME account only',
+  'hlt.caa.unusable': 'never usable',
+  'hlt.caa.malformed': 'malformed',
+  'hlt.caa.rfc8657': 'accounturi and validationmethods (RFC 8657) limit a CA to one ACME account or to some validation methods. They bind only CAs that support RFC 8657; the others may ignore them.',
 
   'hlt.dns.title': 'DNS records',
   'hlt.dns.ns': 'Name servers',
@@ -333,6 +338,11 @@ registerStrings('tr', {
   'hlt.caa.records': 'CAA kayıtları',
   'hlt.caa.distrusted': '{year} yılından beri güvenilmiyor',
   'hlt.caa.error': 'CAA sorgusu başarısız oldu: {error}',
+  'hlt.caa.onlyMethods': 'yalnızca {methods}',
+  'hlt.caa.accountOnly': 'yalnızca bir ACME hesabı',
+  'hlt.caa.unusable': 'hiç kullanılamaz',
+  'hlt.caa.malformed': 'hatalı',
+  'hlt.caa.rfc8657': 'accounturi ve validationmethods (RFC 8657) bir otoriteyi tek bir ACME hesabıyla ya da belirli doğrulama yöntemleriyle sınırlar. Yalnızca RFC 8657’yi destekleyen otoriteleri bağlarlar; diğerleri bunları yok sayabilir.',
 
   'hlt.dns.title': 'DNS kayıtları',
   'hlt.dns.ns': 'Ad sunucuları',
@@ -748,24 +758,61 @@ export function mount(container, ctx) {
       children.push(Alert({ variant: 'info', compact: true, icon: 'info', message: t('hlt.caa.none') }));
     } else {
       const p = caa.parsed;
-      const caItem = (issuer) => {
+      const caLabel = (issuer) => {
         const ca = caNameFor(issuer);
-        return h('li', { class: 'hlt-ca' },
-          Icon('check-circle', { size: 15, className: 'hlt-ca-icon' }),
+        return [
           h('span', { class: 'hlt-ca-name' }, ca ? ca.name : issuer),
           ca ? h('span', { class: 'muted mono text-xs' }, issuer) : null,
-          ca && ca.distrusted ? Badge(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null);
+          ca && ca.distrusted ? Badge(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null
+        ];
       };
-      const list = (issuers, hasProperty) => {
-        if (!hasProperty) return null;
-        if (!issuers.length) return h('p', { class: 'hlt-caa-deny text-sm' }, Icon('x-circle', { size: 14 }), ' ', t('hlt.caa.nobody'));
-        return h('ul', { class: 'hlt-ca-list' }, issuers.map(caItem));
+      // One entry per issue / issuewild value: usable (optionally restricted by RFC 8657
+      // parameters, with what that means for the next renewal), unsatisfiable or malformed.
+      const caItem = (x, wildcard) => {
+        const problem = x.valid ? x.problem : x.error;
+        const state = problem ? (x.valid ? 'unusable' : 'malformed') : x.restricted ? 'restricted' : 'allowed';
+        const badges = [];
+        if (x.restricted && x.methods) badges.push(Badge(t('hlt.caa.onlyMethods', { methods: x.methods.join(', ') }), { variant: 'info', icon: 'shield' }));
+        if (x.restricted && x.accountUri) badges.push(Badge(t('hlt.caa.accountOnly'), { variant: 'info', icon: 'key' }));
+        if (state === 'unusable') badges.push(Badge(t('hlt.caa.unusable'), { variant: 'error', icon: 'x-circle' }));
+        if (state === 'malformed') badges.push(Badge(t('hlt.caa.malformed'), { variant: 'error', icon: 'x-circle' }));
+        const notes = x.restricted ? caaRestrictionNotes([x], { wildcard }) : [];
+        const body = [
+          x.restricted && x.accountUri ? h('div', { class: 'hlt-ca-account mono text-xs' }, x.accountUri) : null,
+          problem ? h('div', { class: 'hlt-ca-problem text-sm' }, t(`health.caa.problem.${problem}`)) : null,
+          notes.length ? h('ul', { class: 'hlt-ca-notes' }, notes.map((n) => h('li', { class: 'hlt-ca-note text-sm', dataset: { note: n.code } },
+            Icon('info', { size: 13, className: 'hlt-ca-note-icon' }), h('span', null, t(n.key, n.params))))) : null
+        ].filter(Boolean);
+        return h('li', { class: ['hlt-ca', `hlt-ca-${state}`], dataset: { caa: state, issuer: x.issuer } },
+          h('div', { class: 'hlt-ca-head' },
+            Icon(problem ? 'x-circle' : 'check-circle', { size: 15, className: 'hlt-ca-icon' }),
+            x.valid ? caLabel(x.issuer) : h('span', { class: 'hlt-ca-raw mono text-sm' }, x.raw),
+            badges),
+          body.length ? h('div', { class: 'hlt-ca-body' }, body) : null);
+      };
+      const list = (entries, wildcard) => {
+        // An unrestricted value repeated for the same CA adds nothing; ";" values authorize nobody.
+        const seen = new Set();
+        const shown = entries.filter((x) => {
+          if (x.valid && !x.issuer) return false;
+          const plain = x.valid && !x.problem && !x.restricted;
+          if (plain && seen.has(x.issuer)) return false;
+          if (plain) seen.add(x.issuer);
+          return true;
+        });
+        const usable = shown.some((x) => x.valid && !x.problem);
+        return h('div', { class: 'stack-sm' },
+          usable ? null : h('p', { class: 'hlt-caa-deny text-sm' }, Icon('x-circle', { size: 14 }), ' ', t('hlt.caa.nobody')),
+          shown.length ? h('ul', { class: 'hlt-ca-list' }, shown.map((x) => caItem(x, wildcard))) : null);
       };
       children.push(h('p', { class: 'muted text-sm' }, t('hlt.caa.foundAt', { name: caa.foundAt })));
-      children.push(h('div', { class: 'stack-sm' }, h('div', { class: 'hlt-subtitle' }, t('hlt.caa.issue')),
-        p.issue.length ? list(p.issuers, true) : h('p', { class: 'text-sm' }, t('hlt.caa.anyone'))));
-      children.push(h('div', { class: 'stack-sm' }, h('div', { class: 'hlt-subtitle' }, t('hlt.caa.issuewild')),
-        p.issuewild.length ? list(p.wildIssuers, true) : h('p', { class: 'muted text-sm' }, t('hlt.caa.sameAsIssue'))));
+      children.push(h('div', { class: 'stack-sm', dataset: { caaProperty: 'issue' } }, h('div', { class: 'hlt-subtitle' }, t('hlt.caa.issue')),
+        p.issue.length ? list(p.issue, false) : h('p', { class: 'text-sm' }, t('hlt.caa.anyone'))));
+      children.push(h('div', { class: 'stack-sm', dataset: { caaProperty: 'issuewild' } }, h('div', { class: 'hlt-subtitle' }, t('hlt.caa.issuewild')),
+        p.issuewild.length ? list(p.issuewild, true) : h('p', { class: 'muted text-sm' }, t('hlt.caa.sameAsIssue'))));
+      if ([...p.issue, ...p.issuewild].some((x) => x.valid && (x.accountUri !== null || x.methods !== null))) {
+        children.push(h('p', { class: 'muted text-xs hlt-caa-rfc' }, t('hlt.caa.rfc8657')));
+      }
       if (p.iodef.length) {
         children.push(h('div', { class: 'stack-sm' }, h('div', { class: 'hlt-subtitle' }, t('hlt.caa.iodef')),
           h('div', { class: 'stack-sm' }, p.iodef.map((x) => (/^https?:/i.test(x.url) ? ExternalLink(x.url, x.url) : h('span', { class: 'mono text-sm' }, x.url))))));

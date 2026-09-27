@@ -454,6 +454,34 @@
   flex-direction: column;
   gap: 3px;
   align-items: flex-start;
+  min-width: 0;
+}
+
+/* RFC 8657: the allowed combinations, renewal notes and unusable values under a verdict */
+.cert-caa-list,
+.cert-caa-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+  max-width: 44rem;
+}
+
+.cert-caa-list li,
+.cert-caa-notes li {
+  overflow-wrap: anywhere;
+}
+
+.cert-caa-notes li {
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+.cert-caa-unusable li {
+  color: var(--error);
 }
 
 /* PEM */

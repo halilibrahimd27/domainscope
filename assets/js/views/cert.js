@@ -27,7 +27,7 @@ import { parseCertificates, computeFingerprints, pemEncode, formatFingerprint } 
 import {
   normalizeHostname, certCovers, baseDomainsFromNames, stripWildcard, sortHostnames
 } from '../lib/domain.js';
-import { findCaa, checkCaaAllows, caaIssuerInfo, HEALTH_I18N } from '../lib/health.js';
+import { findCaa, checkCaaAllows, caaIssuerInfo, caaRestrictionNotes, caaRestrictionText, HEALTH_I18N } from '../lib/health.js';
 import { validateNames } from '../lib/cmdline.js';
 import { fetchJson, retry, errorKind } from '../lib/util.js';
 
@@ -262,12 +262,20 @@ registerStrings('en', {
   'cert.caa.col.result': 'Result',
   'cert.caa.none': 'none',
   'cert.caa.allowed': 'Allowed',
+  'cert.caa.restricted': 'Allowed, with restrictions',
+  'cert.caa.onlyMethods': 'only {methods}',
+  'cert.caa.onlyAccount': 'only ACME account {account}',
+  'cert.caa.anyMethod': 'any method',
   'cert.caa.denied': 'Blocked',
   'cert.caa.unknown': 'Unknown',
   'cert.caa.error': 'Lookup failed',
   'cert.caa.summaryOk': 'The issuer is allowed to issue for every name.',
   'cert.caa.summaryDenied': { one: 'CAA blocks this CA for {count} name — fix the CAA records before the next renewal.', other: 'CAA blocks this CA for {count} names — fix the CAA records before the next renewal.' },
   'cert.caa.summaryUnknown': 'CAA could not be evaluated for every name.',
+  'cert.caa.summaryRestricted': {
+    one: 'The issuer may issue for every name, but CAA restricts how for {count} name: the next renewal must meet the conditions below.',
+    other: 'The issuer may issue for every name, but CAA restricts how for {count} names: the next renewal must meet the conditions below.'
+  },
   'cert.caa.noNames': 'The certificate has no DNS names to check.',
   'cert.caa.truncated': 'Only the first {count} names were checked.',
 
@@ -499,12 +507,17 @@ registerStrings('tr', {
   'cert.caa.col.result': 'Sonuç',
   'cert.caa.none': 'yok',
   'cert.caa.allowed': 'İzinli',
+  'cert.caa.restricted': 'Kısıtlamalarla izinli',
+  'cert.caa.onlyMethods': 'yalnızca {methods}',
+  'cert.caa.onlyAccount': 'yalnızca {account} ACME hesabı',
+  'cert.caa.anyMethod': 'her yöntem',
   'cert.caa.denied': 'Engelli',
   'cert.caa.unknown': 'Bilinmiyor',
   'cert.caa.error': 'Sorgu başarısız',
   'cert.caa.summaryOk': 'Veren otoritenin her ad için sertifika vermesine izin var.',
   'cert.caa.summaryDenied': { one: 'CAA bu otoriteyi {count} ad için engelliyor — bir sonraki yenilemeden önce CAA kayıtlarını düzeltin.', other: 'CAA bu otoriteyi {count} ad için engelliyor — bir sonraki yenilemeden önce CAA kayıtlarını düzeltin.' },
   'cert.caa.summaryUnknown': 'CAA her ad için değerlendirilemedi.',
+  'cert.caa.summaryRestricted': 'Veren otorite her ad için sertifika verebilir, ancak CAA {count} ad için bunun nasıl yapılacağını kısıtlıyor: bir sonraki yenileme aşağıdaki koşulları karşılamalıdır.',
   'cert.caa.noNames': 'Sertifikada kontrol edilecek DNS adı yok.',
   'cert.caa.truncated': 'Yalnızca ilk {count} ad kontrol edildi.',
 
@@ -532,9 +545,10 @@ registerStrings('tr', {
   'cert.pem.spki': 'Bu sertifikanın açık anahtar SHA-256 değeri'
 });
 
-// CAA verdict reasons (health.caa.reason.*) come with lib/health.js.
+// CAA verdict reasons, problems and renewal notes (health.caa.reason.* / problem.* / note.*) come with lib/health.js.
 for (const lang of ['en', 'tr']) {
-  registerStrings(lang, Object.fromEntries(Object.entries(HEALTH_I18N[lang]).filter(([k]) => k.startsWith('health.caa.reason.'))));
+  registerStrings(lang, Object.fromEntries(Object.entries(HEALTH_I18N[lang])
+    .filter(([k]) => /^health\.caa\.(?:reason|problem|note)\./.test(k))));
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1629,12 +1643,13 @@ export function mount(container, ctx) {
         }
         const denied = entry.rows.filter((r) => r.verdict && r.verdict.allowed === false).length;
         const unknown = entry.rows.filter((r) => !r.verdict || r.verdict.allowed === null).length;
-        const summary = denied
-          ? Alert({ variant: 'error', compact: true, message: t('cert.caa.summaryDenied', { count: denied }) })
-          : unknown
-            ? Alert({ variant: 'info', compact: true, message: t('cert.caa.summaryUnknown') })
-            : Alert({ variant: 'ok', compact: true, message: t('cert.caa.summaryOk') });
-        summary.dataset.caaSummary = denied ? 'denied' : unknown ? 'unknown' : 'ok';
+        const restricted = entry.rows.filter((r) => r.verdict && r.verdict.verdict === 'restricted').length;
+        let summary;
+        if (denied) summary = Alert({ variant: 'error', compact: true, message: t('cert.caa.summaryDenied', { count: denied }) });
+        else if (unknown) summary = Alert({ variant: 'info', compact: true, message: t('cert.caa.summaryUnknown') });
+        else if (restricted) summary = Alert({ variant: 'warn', compact: true, message: t('cert.caa.summaryRestricted', { count: restricted }) });
+        else summary = Alert({ variant: 'ok', compact: true, message: t('cert.caa.summaryOk') });
+        summary.dataset.caaSummary = denied ? 'denied' : unknown ? 'unknown' : restricted ? 'restricted' : 'ok';
         body.append(summary);
         if (entry.truncated) body.append(h('p', { class: 'muted text-sm' }, t('cert.caa.truncated', { count: CAA_MAX_NAMES })));
         body.append(DataTable({
@@ -1665,21 +1680,43 @@ export function mount(container, ctx) {
             },
             {
               key: 'result', label: t('cert.caa.col.result'), sortable: true, wrap: true,
-              sortValue: (r) => (r.verdict ? String(r.verdict.allowed) : 'x'),
-              exportValue: (r) => (r.verdict ? r.verdict.reason : 'error'),
-              render: (r) => {
-                if (!r.verdict) return Badge(t('cert.caa.error'), { variant: 'error', icon: 'x-circle', title: r.error || '' });
-                const a = r.verdict.allowed;
-                return h('div', { class: 'cert-caa-verdict' },
-                  Badge(a === true ? t('cert.caa.allowed') : a === false ? t('cert.caa.denied') : t('cert.caa.unknown'), {
-                    variant: a === true ? 'ok' : a === false ? 'error' : 'neutral',
-                    icon: a === true ? 'check-circle' : a === false ? 'x-circle' : 'help'
-                  }),
-                  h('span', { class: 'muted text-sm' }, t(r.verdict.reasonKey)));
-              }
+              sortValue: (r) => (r.verdict ? { denied: 0, unknown: 1, restricted: 2, allowed: 3 }[r.verdict.verdict] : -1),
+              exportValue: (r) => {
+                if (!r.verdict) return 'error';
+                const extra = [...r.verdict.restrictions.map(caaRestrictionText), ...r.verdict.unusable.map((u) => `${u.raw} (${u.problem})`)];
+                return extra.length ? `${r.verdict.reason}: ${extra.join(' | ')}` : r.verdict.reason;
+              },
+              render: (r) => (r.verdict ? caaVerdictCell(r.verdict, r.wildcard)
+                : Badge(t('cert.caa.error'), { variant: 'error', icon: 'x-circle', title: r.error || '' }))
             }
           ]
         }).el);
+      }
+
+      /**
+       * The Result cell: the verdict badge and reason; for a restricted CA every allowed
+       * combination (RFC 8657) and what it means for the next renewal; for a CA whose values
+       * are unusable, each value and why.
+       */
+      function caaVerdictCell(v, wildcard) {
+        const spec = {
+          allowed: ['cert.caa.allowed', 'ok', 'check-circle'], restricted: ['cert.caa.restricted', 'warn', 'shield'],
+          denied: ['cert.caa.denied', 'error', 'x-circle'], unknown: ['cert.caa.unknown', 'neutral', 'help']
+        }[v.verdict] || ['cert.caa.unknown', 'neutral', 'help'];
+        const combo = (x) => [
+          Array.isArray(x.methods) ? t('cert.caa.onlyMethods', { methods: x.methods.join(', ') }) : t('cert.caa.anyMethod'),
+          x.accountUri ? t('cert.caa.onlyAccount', { account: x.accountUri }) : null
+        ].filter(Boolean).join(' · ');
+        const notes = v.verdict === 'restricted' ? caaRestrictionNotes(v.restrictions, { wildcard }) : [];
+        const restrictions = v.restrictions || [];
+        const unusable = v.unusable || [];
+        return h('div', { class: 'cert-caa-verdict', dataset: { caaVerdict: v.verdict } },
+          Badge(t(spec[0]), { variant: spec[1], icon: spec[2] }),
+          h('span', { class: 'muted text-sm' }, t(v.reasonKey)),
+          restrictions.length ? h('ul', { class: 'cert-caa-list' }, restrictions.map((x) => h('li', { class: 'mono text-xs' }, combo(x)))) : null,
+          notes.length ? h('ul', { class: 'cert-caa-notes' }, notes.map((n) => h('li', { class: 'text-sm', dataset: { note: n.code } }, t(n.key, n.params)))) : null,
+          unusable.length ? h('ul', { class: 'cert-caa-list cert-caa-unusable' }, unusable.map((u) => h('li', null,
+            h('span', { class: 'mono text-xs' }, u.raw), ' ', h('span', { class: 'text-sm' }, `— ${t(`health.caa.problem.${u.problem}`)}`)))) : null);
       }
 
       function run(force = false) {

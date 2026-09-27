@@ -687,6 +687,13 @@ INVENTORY_PARITY_CASES = {
     'Turkish device': 'Cihaz Adı,İP,Grup\nfw01,10.0.0.7,edge\n',
     'name columns': 'Display Name,Hostname,IP\nWeb One,web01,10.0.0.5\n',
     'header line': 'hostname   ip\nweb01 10.0.0.5\n',
+    # what the Reverse DNS view's "Add to Servers" writes into an Ansible INI list
+    # (lib/ptrsweep.js inventoryDraft): one line a host, further addresses in ips=
+    'reverse dns ini draft': (
+        '[web]\nweb01 ansible_host=192.0.2.10\n\n'
+        '# reverse DNS sweep of 192.0.2.0/28 (2026-09-27): forward-confirmed hosts\n'
+        '[reverse_dns]\nmail.example.com ansible_host=192.0.2.1\n'
+        'vpn.example.com ansible_host=192.0.2.6 ips=192.0.2.6,2001:db8::6\n'),
 }
 
 

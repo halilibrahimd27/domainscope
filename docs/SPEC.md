@@ -1110,7 +1110,8 @@ export function inventoryAdditions(results, { servers, index, focus }) -> [{ nam
 export const INVENTORY_GROUP = 'reverse_dns' ; export function inventoryLines(additions) -> string[]   // 'name ip [ip …]'
 export function inventoryDraft(base, additions, { label, date }) -> { text: string|null, format /* inventory.inventoryFormat */, reason: null|'format'|'check', group, newGroup, lines }
   // the additions written in the base text's own format: plain lines / empty / a hosts file (`ip name`) under '# reverse DNS sweep of <label> (<date>):
-  // forward-confirmed hosts'; Ansible INI: 'name ansible_host=ip' under a [reverse_dns] header (a second one when the file has the group, which Ansible
+  // forward-confirmed hosts'; Ansible INI: one 'name ansible_host=ip [ips=ip,ip…]' line a host (Ansible keeps one ansible_host; `ips` holds every
+  // address, read by this parser and the CLI) under a [reverse_dns] header (a second one when the file has the group, which Ansible
   // merges; `newGroup` false); JSON Lines (a host record alone on one line too): one object per line; a JSON array of objects: one element per host —
   // both with the first record's name / address keys (else name / ip), its addresses as a list when that record holds a list; CSV: a row in the header's
   // column order (name + first address column, no comment row); YAML: an Ansible inventory gets a top-level reverse_dns group, or, when it has one (an

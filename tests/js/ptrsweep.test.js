@@ -866,7 +866,8 @@ describe('rows, summary, exports and hand-offs', async () => {
   test('inventoryDraft: Ansible INI gets its own [reverse_dns] group, never the last group of the file', () => {
     const base = '[web]\nweb01 ansible_host=192.0.2.10\n\n[db]\ndb01 ansible_host=192.0.2.11\n';
     const out = drafted(base, { format: 'ini', group: 'reverse_dns' });
-    assert.match(out.text, /\n\[reverse_dns\]\nmail\.example\.com ansible_host=192\.0\.2\.1\nvpn\.example\.com ansible_host=192\.0\.2\.6\nvpn\.example\.com ansible_host=2001:db8::6\n$/);
+    // one line a host (Ansible keeps one ansible_host per host): its further addresses go into `ips`
+    assert.match(out.text, /\n\[reverse_dns\]\nmail\.example\.com ansible_host=192\.0\.2\.1\nvpn\.example\.com ansible_host=192\.0\.2\.6 ips=192\.0\.2\.6,2001:db8::6\n$/);
     const groups = Object.fromEntries(parseInventory(out.text).servers.map((s) => [s.name, s.groups]));
     assert.deepEqual(groups, { web01: ['web'], db01: ['db'], 'mail.example.com': ['reverse_dns'], 'vpn.example.com': ['reverse_dns'] });
     assert.equal(out.newGroup, true);

@@ -1385,8 +1385,9 @@ function addsExactly(before, after, additions) {
  * (inventory.inventoryFormat), for `state.session.inventoryDraft`: the user reviews and saves
  * it, nothing is saved here.
  * - plain lines and an empty text: `name ip …` lines under a comment line (`ip name` in a hosts file);
- * - Ansible INI: `name ansible_host=ip` lines under a `[reverse_dns]` header ({@link INVENTORY_GROUP};
- *   a second one when the file has the group already, which Ansible merges);
+ * - Ansible INI: one `name ansible_host=ip` line a host under a `[reverse_dns]` header
+ *   ({@link INVENTORY_GROUP}; a second one when the file has the group already, which Ansible
+ *   merges), a host's further addresses in `ips=ip,ip…` (Ansible keeps one ansible_host);
  * - JSON Lines (a host record alone on one line too): one object per line; a JSON array: one
  *   element per host. Both with the name and address keys of the first record when it has plain
  *   ones (`name` / `ip` otherwise), and its addresses as a list when that record holds them so;
@@ -1431,7 +1432,9 @@ export function inventoryDraft(base, additions, { label = '', date = new Date() 
     case 'ini':
       out.group = INVENTORY_GROUP;
       out.newGroup = !head.split(/\r\n|\r|\n/).some((l) => l.trim() === `[${INVENTORY_GROUP}]`);
-      text = append([comment, `[${INVENTORY_GROUP}]`, ...perAddress.map((x) => `${x.name} ansible_host=${x.ip}`)]);
+      // One line a host: Ansible keeps one ansible_host per host (a second line would replace
+      // it). Its other addresses go into `ips`, which this parser and the CLI read.
+      text = append([comment, `[${INVENTORY_GROUP}]`, ...list.map((a) => `${a.name} ansible_host=${a.ips[0]}${a.ips.length > 1 ? ` ips=${a.ips.join(',')}` : ''}`)]);
       break;
     case 'jsonl': {
       const keys = recordKeys(firstJsonLine(head));

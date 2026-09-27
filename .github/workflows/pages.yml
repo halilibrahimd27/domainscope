@@ -22,14 +22,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
       # Publish only the static site (and the CLI so it can be downloaded from the page).
+      # assets/ goes under v/<commit>/ so every deploy has new module URLs and browsers never
+      # mix cached modules of two deploys; nothing is built (see tools/assemble-site.mjs).
       - name: Assemble site
-        run: |
-          mkdir -p _site
-          cp index.html favicon.svg .nojekyll _site/
-          cp -r assets cli _site/
-          find _site -name '__pycache__' -type d -prune -exec rm -rf {} +
+        run: node tools/assemble-site.mjs _site "${GITHUB_SHA::12}"
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

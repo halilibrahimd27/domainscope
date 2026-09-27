@@ -1,4 +1,6 @@
 node_modules/
+# GitHub Pages bundle (tools/assemble-site.mjs)
+/_site/
 __pycache__/
 *.pyc
 .DS_Store

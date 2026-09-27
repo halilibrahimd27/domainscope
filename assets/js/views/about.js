@@ -22,6 +22,12 @@ export const icon = 'info';
 export const CLI_PATH = 'cli/ssl_origin_scan.py';
 
 /**
+ * The wordlist licence texts, resolved from this module: the Pages bundle serves assets/ under
+ * v/<version>/ (tools/assemble-site.mjs), so a page-relative 'assets/…' link would miss it.
+ */
+export const LICENSES_URL = new URL('../../data/THIRD_PARTY_LICENSES.txt', import.meta.url).href;
+
+/**
  * "Cloudflare, Google, DNS.SB, CZ.NIC" — the display names of the default resolver chain
  * (lib/resolvers DEFAULT_CHAIN), used in "How it works".
  * @returns {string}
@@ -511,7 +517,7 @@ export function mount(container, ctx) {
       h('p', null, t('about.licenseBody')),
       h('p', { class: 'muted' }, t('about.thanks')),
       h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ',
-        h('a', { href: 'assets/data/THIRD_PARTY_LICENSES.txt', target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
+        h('a', { href: LICENSES_URL, target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
       h('div', { class: 'cluster' },
         Badge('MIT', { variant: 'accent', icon: 'book' }),
         Badge(t('about.version', { version: ctx.version }), { variant: 'neutral' }),

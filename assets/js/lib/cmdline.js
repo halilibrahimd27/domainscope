@@ -38,7 +38,10 @@
  *    quoted, `*` is in neither safe set). A host target or a name (opt-in or
  *    not) that glibc `inet_aton` would read as an IPv4 address (`2026092401`,
  *    `0x7f.0x1`, `0177.1`, `10.1`) is dropped: it must never reach getaddrinfo,
- *    and the CLI refuses such a `-n` argument outright.
+ *    and the CLI refuses such a `-n` argument outright;
+ *  - a third opt-in, `allowPorts`, keeps an address with its own port
+ *    (`203.0.113.10:8443`, `[2001:db8::1]:8443`), which the CLI scans on that
+ *    port instead of `-p` (the Verify card's pairs on a port other than 443).
  *
  * The whole design assumes the command may be pasted verbatim into either a
  * POSIX shell or PowerShell, so it must be inert under both.
@@ -67,6 +70,34 @@ function canonTarget(raw) {
     return `${formatIP(c.network, c.version)}/${c.prefix}`;
   }
   return normalizeIP(s); // canonical address text, or null
+}
+
+/**
+ * The address and port of an `ip:port` target (`203.0.113.10:8443`, `[2001:db8::1]:8443`; an
+ * IPv6 address needs the brackets, as in the CLI), or null for anything else, a port outside
+ * 1–65535 included.
+ * @param {unknown} raw
+ * @returns {{ ip: string, port: number }|null} canonical address
+ */
+function splitEndpoint(raw) {
+  const s = String(raw ?? '').trim();
+  const m = /^\[([0-9A-Fa-f:.]+)\]:(\d{1,5})$/.exec(s) || /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/.exec(s);
+  if (!m) return null;
+  const ip = normalizeIP(m[1]);
+  const port = Number(m[2]);
+  return ip && port >= 1 && port <= 65535 ? { ip, port } : null;
+}
+
+/**
+ * Canonicalise one `ip:port` target (the `allowPorts` opt-in): the CLI scans that address on
+ * that port instead of `-p`. Re-emitted as `203.0.113.10:8443` / `[2001:db8::1]:8443`.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function canonEndpoint(raw) {
+  const e = splitEndpoint(raw);
+  if (!e) return null;
+  return e.ip.includes(':') ? `[${e.ip}]:${e.port}` : `${e.ip}:${e.port}`;
 }
 
 // After normalizeHostname the output is already lowercase ASCII (IDN → puny),
@@ -157,14 +188,17 @@ function validateList(list, canon) {
 
 /**
  * Validate sweep targets (IP addresses / CIDR blocks; host names too with
- * `allowHostTargets`).
+ * `allowHostTargets`, `ip:port` / `[v6]:port` addresses with `allowPorts`).
  * @param {unknown[]} list
- * @param {{ allowHostTargets?: boolean }} [opts]
+ * @param {{ allowHostTargets?: boolean, allowPorts?: boolean }} [opts]
  * @returns {{ valid: string[], dropped: string[] }}
  */
-export function validateTargets(list, { allowHostTargets = false } = {}) {
-  if (allowHostTargets !== true) return validateList(list, canonTarget);
-  return validateList(list, (raw) => canonTarget(raw) ?? canonHostTarget(raw));
+export function validateTargets(list, { allowHostTargets = false, allowPorts = false } = {}) {
+  const hosts = allowHostTargets === true;
+  const ports = allowPorts === true;
+  if (!hosts && !ports) return validateList(list, canonTarget);
+  return validateList(list, (raw) => canonTarget(raw) ?? (ports ? canonEndpoint(raw) : null)
+    ?? (hosts ? canonHostTarget(raw) : null));
 }
 
 /**
@@ -284,10 +318,12 @@ function validateOptions({ cert = null, json = null, ports = null }) {
  * A validated target / exclude token as its ranges: [{ version, network, prefix }]
  * (null when invalid). A range inside ::ffff:0:0/96 is IPv4 too, as the CLI
  * matches it (ExcludeRule.spans / _match_keys): `::ffff:10.0.0.0/104` also
- * gives 10.0.0.0/8. A wider IPv6 range (`::/0`) does not.
+ * gives 10.0.0.0/8. A wider IPv6 range (`::/0`) does not. An `ip:port` target is its address:
+ * the CLI excludes addresses, whatever port they are scanned on.
  */
 function rangeOf(token) {
-  const range = parseCidr(String(token ?? ''));
+  const endpoint = splitEndpoint(token);
+  const range = parseCidr(endpoint ? endpoint.ip : String(token ?? ''));
   if (!range) return null;
   if (range.version === 6 && range.prefix >= 96 && range.network >> 32n === 0xffffn) {
     return [range, { version: 4, network: range.network & 0xffffffffn, prefix: range.prefix - 96 }];
@@ -408,6 +444,10 @@ function applyExcludes(targets, excludes) {
  *   it targets are always inline and neither field is present.
  * @param {number|null} [opts.maxInlineTargets=null] more targets than this →
  *   the file form (only with `targetsFile`)
+ * @param {boolean} [opts.allowPorts=false] opt-in: keep an `ip:port` /
+ *   `[v6]:port` target (see {@link validateTargets}), which the CLI scans on that
+ *   port instead of `-p`; an exclude never takes a port, and one covering the
+ *   address removes the target
  * @returns {{ command: string|null, targets: string[], names: string[],
  *   dropped: { targets: string[], names: string[], options: string[], exclude?: string[] }, length: number,
  *   namesInline: boolean, namesFile: string|null, exclude?: string[], excluded?: string[],
@@ -424,12 +464,14 @@ export function buildSweepCommand({
   targets = [], names = [], script = DEFAULT_SCRIPT, shell = 'posix',
   namesFile = DEFAULT_NAMES_FILE, maxInlineNames = MAX_INLINE_NAMES, maxLength = MAX_INLINE_LENGTH,
   cert = null, json = null, ports = null, exclude = null,
-  allowHostTargets = false, allowWildcardNames = false, targetsFile = null, maxInlineTargets = null
+  allowHostTargets = false, allowWildcardNames = false, targetsFile = null, maxInlineTargets = null,
+  allowPorts = false
 } = {}) {
-  const t = validateTargets(targets, { allowHostTargets: allowHostTargets === true });
+  const t = validateTargets(targets, { allowHostTargets: allowHostTargets === true, allowPorts: allowPorts === true });
   if (allowHostTargets === true) {
-    // IP / CIDR targets first, host names after (a stable, readable order).
-    t.valid = [...t.valid.filter((x) => canonTarget(x) !== null), ...t.valid.filter((x) => canonTarget(x) === null)];
+    // IP / CIDR (and ip:port) targets first, host names after (a stable, readable order).
+    const isAddress = (x) => rangeOf(x) !== null;
+    t.valid = [...t.valid.filter(isAddress), ...t.valid.filter((x) => !isAddress(x))];
   }
   const n = validateNames(names, { allowWildcard: allowWildcardNames === true });
   const opts = validateOptions({ cert, json, ports });

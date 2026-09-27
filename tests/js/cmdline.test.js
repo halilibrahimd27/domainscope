@@ -552,3 +552,37 @@ describe('buildSweepCommand: shell review fixes', () => {
     assert.equal(over.overLength, true);
   });
 });
+
+describe('allowPorts: ip:port targets (an address the CLI scans on its own port)', () => {
+  test('validateTargets keeps ip:port / [v6]:port only when asked, canonical; bad ports and forms are dropped', () => {
+    const list = ['203.0.113.10:8443', '[2001:DB8::1]:8443', '[203.0.113.11]:443', '203.0.113.12', '203.0.113.13:0',
+      '203.0.113.14:65536', '[2001:db8::1]:https', '2001:db8::1:8443', 'web01.example.com:8443', '203.0.113.0/24:443',
+      '203.0.113.15:8443; rm -rf /', '[2001:db8::1]', '203.0.113.10:8443'];
+    assert.deepEqual(validateTargets(list, { allowPorts: true }), {
+      valid: ['203.0.113.10:8443', '[2001:db8::1]:8443', '203.0.113.11:443', '203.0.113.12', '2001:db8::1:8443', '2001:db8::1'],
+      dropped: ['203.0.113.13:0', '203.0.113.14:65536', '[2001:db8::1]:https', 'web01.example.com:8443', '203.0.113.0/24:443',
+        '203.0.113.15:8443; rm -rf /']
+    });
+    // '2001:db8::1:8443' is itself an IPv6 address: a port on IPv6 needs the brackets, as in the CLI.
+    assert.deepEqual(validateTargets(['203.0.113.10:8443']).valid, [], 'off by default');
+    assert.deepEqual(validateTargets(['203.0.113.10:8443', 'web01.example.com'], { allowHostTargets: true }).valid, ['web01.example.com']);
+    assert.deepEqual(validateTargets(['203.0.113.10:8443', 'web01.example.com'], { allowHostTargets: true, allowPorts: true }).valid,
+      ['203.0.113.10:8443', 'web01.example.com']);
+  });
+
+  test('buildSweepCommand: quoted where a shell needs it; an exclude never takes a port and removes the address', () => {
+    const base = { targets: ['[2001:db8::1]:8443', '203.0.113.10:8443', '203.0.113.11'], names: ['a.example.com'], allowPorts: true };
+    assert.equal(buildSweepCommand(base).command,
+      "ssl_origin_scan.py -t '[2001:db8::1]:8443' 203.0.113.10:8443 203.0.113.11 -n a.example.com");
+    assert.equal(buildSweepCommand({ ...base, shell: 'powershell' }).command,
+      "ssl_origin_scan.py -t '[2001:db8::1]:8443' 203.0.113.10:8443 203.0.113.11 -n a.example.com");
+    const ex = buildSweepCommand({ ...base, exclude: ['203.0.113.10', '203.0.113.11:443', '2001:db8::/32'] });
+    assert.deepEqual([ex.targets, ex.excluded, ex.dropped.exclude], [['203.0.113.11'], ['[2001:db8::1]:8443', '203.0.113.10:8443'],
+      ['203.0.113.11:443']]);
+    // Host names come after every address, ip:port included.
+    assert.deepEqual(buildSweepCommand({ ...base, targets: ['web01.example.com', '203.0.113.10:8443'], allowHostTargets: true }).targets,
+      ['203.0.113.10:8443', 'web01.example.com']);
+    // Without the opt-in the command is what it always was.
+    assert.deepEqual(buildSweepCommand({ ...base, allowPorts: false }).targets, ['203.0.113.11']);
+  });
+});

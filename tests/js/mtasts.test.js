@@ -13,6 +13,7 @@ import {
   mtaStsPolicyHost, mtaStsPolicyUrl, mtaStsPolicyRequest, mxPatternMatches, parseMtaStsPolicy,
   interpretPolicyFetch, validateMtaSts, mtaStsExport
 } from '../../assets/js/lib/mtasts.js';
+import { registerStrings, setLang, getLang, t } from '../../assets/js/i18n.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'globalping');
 const fx = (name) => JSON.parse(readFileSync(join(FIX, `${name}.json`), 'utf8'));
@@ -35,6 +36,8 @@ function measurement(result = {}, { tls = {} } = {}) {
 }
 const policyFetch = (body, extra = {}, opts = {}) => interpretPolicyFetch(measurement({ rawBody: body, ...extra }, opts), { host: HOST });
 const ids = (v) => v.findings.map((f) => f.id);
+/** Every form of a text: a string, or each form of a plural object. */
+const forms = (value) => (typeof value === 'string' ? [value] : Object.values(value || {}));
 const sev = (v, id) => v.findings.find((f) => f.id === id)?.severity;
 const MX = ['mx.example.com', 'alt1.mx.example.com'];
 
@@ -119,6 +122,10 @@ test('parseMtaStsPolicy: required fields, values and the grammar', () => {
   // a blank line between fields is outside the grammar, but the policy is still read
   p = parseMtaStsPolicy('version: STSv1\n\nmode: enforce\nmx: m.example.com\nmax_age: 86400\n\n');
   assert.deepEqual([p.valid, p.issues], [true, [{ code: 'blank-line', params: { line: 2 } }]]);
+  // a byte-order mark (Notepad) has its own issue, not "line 1 is not key: value"; the rest is still read
+  p = parseMtaStsPolicy(`\ufeff${RFC_POLICY}`);
+  assert.deepEqual([p.valid, p.issues, p.version, p.mode, p.mx.length], [false, [{ code: 'bom', params: {} }], 'STSv1', 'enforce', 3]);
+  assert.equal(parseMtaStsPolicy(`${RFC_POLICY.slice(0, 5)}\ufeff${RFC_POLICY.slice(5)}`).issues[0].code, 'syntax', 'only a leading one is a BOM');
 });
 
 test('parseMtaStsPolicy: mx patterns must be A-label host names, optionally "*."-prefixed', () => {
@@ -172,6 +179,7 @@ test('validateMtaSts: a good enforce policy that covers every MX host', () => {
   assert.deepEqual(v.unusedPatterns, ['backupmx.example.com']);
   assert.equal(sev(v, 'mx.unused'), 'info');
   assert.deepEqual(v.findings.find((f) => f.id === 'max-age.ok').params, { host: HOST, value: 604800, days: 7 });
+  assert.equal(v.findings.find((f) => f.id === 'mx.ok').params.count, 2, 'mx.ok picks its plural form by count');
 });
 
 test('validateMtaSts: the live policy (m26) against the MX hosts it was written for', () => {
@@ -188,11 +196,18 @@ test('validateMtaSts: an MX host missing from the policy is an error in enforce 
   assert.deepEqual(v.findings.find((f) => f.id === 'mx.unmatched').params, { host: HOST, hosts: 'backup.example.org', patterns: 'mx.example.com' });
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('testing')), mxHosts: ['backup.example.org'], tlsRpt: null, now: NOW });
   assert.deepEqual([v.headline, sev(v, 'mx.unmatched'), sev(v, 'mode.testing'), sev(v, 'mode.testing-no-report')], ['warnings', 'warn', 'info', 'warn']);
-  // mode none: nothing to match; no MX at all: noted
+  // mode none: nothing to match, and the headline says MTA-STS is off (never "every MX host matches")
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch('version: STSv1\nmode: none\nmax_age: 86400\n'), mxHosts: ['backup.example.org'], now: NOW });
-  assert.deepEqual(ids(v), ['tls.ok', 'mode.none', 'max-age.ok']);
+  assert.deepEqual([ids(v), v.headline, v.severity, v.usable], [['tls.ok', 'mode.none', 'max-age.ok'], 'off', 'info', true]);
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch('version: STSv1\nmode: none\nmax_age: 86400\n', { headers: {} }), mxHosts: MX, txt: null, now: NOW });
+  assert.deepEqual([v.headline, v.severity], ['off', 'warn'], 'off before not-published and warnings');
+  // no MX at all: noted, and the headline makes no MX claim
   v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce')), mxHosts: [], now: NOW });
-  assert.ok(ids(v).includes('mx.none'));
+  assert.deepEqual([v.headline, sev(v, 'mx.none')], ['no-mx', 'info']);
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce')), mxHosts: ['.'], now: NOW });
+  assert.equal(v.headline, 'no-mx', 'a null MX is no MX host');
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(policy('enforce'), { headers: {} }), mxHosts: [], now: NOW });
+  assert.equal(v.headline, 'warnings', 'a warning still reads as one');
 });
 
 test('validateMtaSts: max_age thresholds and a missing TXT record', () => {
@@ -201,9 +216,15 @@ test('validateMtaSts: max_age thresholds and a missing TXT record', () => {
   assert.equal(sev(check(3600), 'max-age.short'), 'warn');
   assert.equal(sev(check(86400), 'max-age.days'), 'info');
   assert.equal(sev(check(604800), 'max-age.ok'), 'ok');
-  const v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(p(604800)), mxHosts: ['mx.example.com'], txt: null, now: NOW });
-  assert.deepEqual([v.headline, sev(v, 'txt.missing')], ['warnings', 'warn']);
+  // a valid policy no _mta-sts TXT record announces is never fetched: MTA-STS is not in effect
+  let v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(p(604800)), mxHosts: ['mx.example.com'], txt: null, now: NOW });
+  assert.deepEqual([v.headline, v.severity, sev(v, 'txt.missing'), v.usable], ['not-published', 'warn', 'warn', true]);
   assert.equal(v.findings.find((f) => f.id === 'txt.missing').params.domain, 'example.com');
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(p(604800)), mxHosts: ['mx.example.com', 'backup.example.org'], txt: null, now: NOW });
+  assert.deepEqual([v.headline, v.severity], ['not-published', 'error'], 'before the MX problems, which still show');
+  // txt undefined (not known, e.g. the lookup failed): no finding, no claim
+  v = validateMtaSts({ domain: 'example.com', fetch: policyFetch(p(604800)), mxHosts: ['mx.example.com'], txt: undefined, now: NOW });
+  assert.deepEqual([v.headline, ids(v).includes('txt.missing')], ['ok', false]);
 });
 
 test('validateMtaSts: transport failures (probe results shaped like the fixtures)', () => {
@@ -243,8 +264,11 @@ test('validateMtaSts: the certificate (expired, wrong name, chain, self-signed, 
   assert.deepEqual(ids(v), ['tls.untrusted']);
   v = tlsCase({ authorized: false, error: 'CERT_REVOKED' });
   assert.deepEqual(ids(v), ['tls.rejected']);
+  // rejected without an error code: still a finding, never a green "unreachable" with nothing under it
+  v = tlsCase({ authorized: false, error: null });
+  assert.deepEqual([ids(v), v.headline, v.severity, v.findings[0].params.error], [['tls.rejected'], 'unreachable', 'error', '—']);
   v = tlsCase({ expiresAt: new Date(NOW + 5 * 86400000).toISOString() });
-  assert.deepEqual([v.headline, sev(v, 'tls.expiring'), v.findings[0].params.days], ['warnings', 'warn', 5]);
+  assert.deepEqual([v.headline, sev(v, 'tls.expiring'), v.findings[0].params.days, v.findings[0].params.count], ['warnings', 'warn', 5, 5]);
 });
 
 test('validateMtaSts: HTTP status, redirect, content type and truncation', () => {
@@ -306,7 +330,7 @@ test('mtaStsExport: the live check as plain JSON (ISO dates, no coordinates), an
 /* ---- i18n ---------------------------------------------------------------------------- */
 
 test('MTA_STS_I18N: every finding has an English and a Turkish title + detail with the same placeholders; headlines too', () => {
-  const ph = (s) => [...String(s).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join();
+  const ph = (v) => [...new Set(forms(v).flatMap((s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1])))].sort().join();
   for (const id of MTA_STS_FINDINGS) {
     for (const part of ['title', 'detail']) {
       const key = `mtasts.${id}.${part}`;
@@ -317,6 +341,34 @@ test('MTA_STS_I18N: every finding has an English and a Turkish title + detail wi
   for (const k of MTA_STS_HEADLINES) assert.ok(MTA_STS_I18N.en[`mtasts.head.${k}`] && MTA_STS_I18N.tr[`mtasts.head.${k}`], k);
   assert.deepEqual(Object.keys(MTA_STS_I18N.en).sort(), Object.keys(MTA_STS_I18N.tr).sort());
   assert.equal(Object.keys(MTA_STS_I18N.en).length, MTA_STS_FINDINGS.length * 2 + MTA_STS_HEADLINES.length, 'no stray keys');
+  // plural texts have the forms each language needs, and no number-bound wording elsewhere
+  for (const lang of ['en', 'tr']) {
+    for (const [key, value] of Object.entries(MTA_STS_I18N[lang])) {
+      if (typeof value === 'string') assert.doesNotMatch(value, /\{(?:count|days)\} (?:days?|MX hosts?|gün)/, `${lang} ${key}`);
+      else assert.ok(typeof value.other === 'string' && (lang === 'tr' || typeof value.one === 'string'), `${lang} ${key}`);
+    }
+  }
+  assert.equal(typeof MTA_STS_I18N.en['mtasts.mx.ok.detail'], 'object');
+  assert.equal(typeof MTA_STS_I18N.en['mtasts.tls.expiring.detail'], 'object');
+});
+
+test('the plural texts read right for one, several and zero (through i18n.t)', () => {
+  registerStrings('en', MTA_STS_I18N.en);
+  registerStrings('tr', MTA_STS_I18N.tr);
+  const prev = getLang();
+  try {
+    setLang('en');
+    assert.equal(t('mtasts.mx.ok.detail', { count: 1 }), 'The domain\'s only MX host matches an mx pattern.');
+    assert.equal(t('mtasts.mx.ok.detail', { count: 3 }), 'All 3 MX hosts of the domain match an mx pattern.');
+    assert.match(t('mtasts.tls.expiring.detail', { count: 1, days: 1, date: '2026-10-01' }), /^It expires in 1 day \(2026-10-01\)\./);
+    assert.match(t('mtasts.tls.expiring.detail', { count: 0, days: 0, date: '2026-09-28' }), /^It expires within a day \(2026-09-28\)\./);
+    setLang('tr');
+    assert.equal(t('mtasts.mx.ok.detail', { count: 1 }), 'Alan adının tek MX sunucusu bir mx kalıbıyla eşleşiyor.');
+    assert.match(t('mtasts.tls.expiring.detail', { count: 0, days: 0, date: '2026-09-28' }), /^Bir gün içinde \(2026-09-28\)/);
+    assert.match(t('mtasts.tls.expiring.detail', { count: 5, days: 5, date: '2026-10-02' }), /^5 gün içinde/);
+  } finally {
+    setLang(prev);
+  }
 });
 
 test('every placeholder a finding text uses is filled by its params', () => {
@@ -327,6 +379,7 @@ test('every placeholder a finding text uses is filled by its params', () => {
     policyFetch('Version: STSv1\nmx: bad..example.com\nmax_age: 99999999999'), policyFetch(RFC_POLICY, { statusCode: 301 }),
     policyFetch(RFC_POLICY, { statusCode: 500, headers: {} }), policyFetch(RFC_POLICY, { truncated: true, headers: { 'content-type': 'text/html' } }),
     policyFetch('version: STSv1\nmode: none\nmax_age: 86400'), policyFetch('version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400\nmax_age: 5'),
+    policyFetch(`\ufeff${RFC_POLICY}`),
     interpretPolicyFetch(measurement({ rawBody: RFC_POLICY }, { tls: { authorized: false, error: 'CERT_HAS_EXPIRED' } }), { host: 'mta-sts.example.org' }),
     interpretPolicyFetch(measurement({ rawBody: RFC_POLICY }, { tls: { authorized: false, error: 'UNABLE_TO_GET_ISSUER_CERT' } }), { host: HOST }),
     interpretPolicyFetch(measurement({ rawBody: RFC_POLICY }, { tls: { authorized: false, error: 'SELF_SIGNED_CERT_IN_CHAIN' } }), { host: HOST }),
@@ -338,12 +391,13 @@ test('every placeholder a finding text uses is filled by its params', () => {
   for (const fetch of fetches) {
     for (const [mx, tlsRpt] of [[['mail.example.com', 'other.example.org'], null], [[], 'v=TLSRPTv1'], [['mail.example.com'], undefined]]) {
       const v = validateMtaSts({ domain: 'example.com', fetch, mxHosts: mx, txt: null, tlsRpt, now: NOW });
+      assert.ok(MTA_STS_HEADLINES.includes(v.headline), v.headline);
       for (const f of v.findings) {
         seen.add(f.id);
         for (const lang of ['en', 'tr']) {
           for (const part of ['title', 'detail']) {
-            for (const m of MTA_STS_I18N[lang][`mtasts.${f.id}.${part}`].matchAll(/\{(\w+)\}/g)) {
-              assert.ok(m[1] in f.params, `${f.id}.${part} (${lang}) needs {${m[1]}}`);
+            for (const text of forms(MTA_STS_I18N[lang][`mtasts.${f.id}.${part}`])) {
+              for (const m of text.matchAll(/\{(\w+)\}/g)) assert.ok(m[1] in f.params, `${f.id}.${part} (${lang}) needs {${m[1]}}`);
             }
           }
         }

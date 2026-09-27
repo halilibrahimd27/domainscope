@@ -206,7 +206,7 @@ registerStrings('en', {
   'hlt.mtasts.title': 'MTA-STS policy',
   'hlt.mtasts.txt': 'TXT record',
   'hlt.mtasts.url': 'Policy URL',
-  'hlt.mtasts.intro': 'Sending mail servers that support MTA-STS read the policy at this URL. This page cannot read another site’s file itself, so one Globalping probe can fetch it for you, only when you click. Its HTTP answer, certificate and content are then checked against the domain’s MX hosts.',
+  'hlt.mtasts.intro': 'Sending mail servers that support MTA-STS read the policy at this URL. This page cannot read another site’s file itself, so one Globalping probe can fetch it for you, only when you click. Its HTTP answer and certificate are then checked, and its mx lines are compared with the domain’s MX hosts.',
   'hlt.mtasts.noHost': 'Globalping does not accept the host name {host}, so the policy cannot be fetched from here.',
   'hlt.mtasts.check': 'Check the policy (1 Globalping probe)',
   'hlt.mtasts.again': 'Check again (1 probe)',
@@ -390,7 +390,7 @@ registerStrings('tr', {
   'hlt.mtasts.title': 'MTA-STS politikası',
   'hlt.mtasts.txt': 'TXT kaydı',
   'hlt.mtasts.url': 'Politika adresi',
-  'hlt.mtasts.intro': 'MTA-STS destekleyen gönderen e-posta sunucuları politikayı bu adresten okur. Bu sayfa başka bir sitenin dosyasını kendisi okuyamaz; bu yüzden yalnızca siz tıkladığınızda tek bir Globalping ölçüm noktası dosyayı sizin için alabilir. Ardından HTTP yanıtı, sertifikası ve içeriği alan adının MX sunucularıyla karşılaştırılarak kontrol edilir.',
+  'hlt.mtasts.intro': 'MTA-STS destekleyen gönderen e-posta sunucuları politikayı bu adresten okur. Bu sayfa başka bir sitenin dosyasını kendisi okuyamaz; bu yüzden yalnızca siz tıkladığınızda tek bir Globalping ölçüm noktası dosyayı sizin için alabilir. Ardından HTTP yanıtı ve sertifikası kontrol edilir, mx satırları da alan adının MX sunucularıyla karşılaştırılır.',
   'hlt.mtasts.noHost': 'Globalping {host} host adını kabul etmiyor; bu yüzden politika buradan alınamıyor.',
   'hlt.mtasts.check': 'Politikayı kontrol et (1 Globalping ölçümü)',
   'hlt.mtasts.again': 'Yeniden kontrol et (1 ölçüm)',
@@ -852,7 +852,9 @@ export function mount(container, ctx) {
     const v = job.validation;
     const f = job.fetch;
     const p = v.policy;
-    const headline = Alert({ variant: { error: 'error', warn: 'warn' }[v.severity] || 'ok', compact: true, message: t(`mtasts.head.${v.headline}`) });
+    // Green only for 'ok'; a policy that is off or had no MX hosts to compare is information.
+    const variant = { error: 'error', warn: 'warn' }[v.severity] || (v.headline === 'ok' ? 'ok' : 'info');
+    const headline = Alert({ variant, compact: true, message: t(`mtasts.head.${v.headline}`) });
     headline.dataset.mtastsHeadline = v.headline;
     const items = [];
     if (p && p.mode) {

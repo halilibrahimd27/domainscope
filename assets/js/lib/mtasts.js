@@ -40,15 +40,19 @@ export const MTA_STS_FINDINGS = Object.freeze([
   'fetch.dns', 'fetch.private', 'fetch.unreachable', 'fetch.tls-failed', 'fetch.probe',
   'tls.ok', 'tls.expiring', 'tls.expired', 'tls.name', 'tls.chain', 'tls.untrusted', 'tls.rejected',
   'http.redirect', 'http.status', 'http.content-type', 'http.truncated',
-  'policy.syntax', 'policy.blank-line', 'policy.field-case', 'policy.duplicate', 'policy.version', 'policy.mode',
+  'policy.bom', 'policy.syntax', 'policy.blank-line', 'policy.field-case', 'policy.duplicate', 'policy.version', 'policy.mode',
   'policy.max-age', 'policy.max-age-too-large', 'policy.mx-missing', 'policy.mx-invalid',
   'mode.enforce', 'mode.testing', 'mode.testing-no-report', 'mode.none',
   'max-age.short', 'max-age.days', 'max-age.ok',
   'mx.ok', 'mx.unmatched', 'mx.unused', 'mx.none',
   'txt.missing'
 ]);
-/** The one-line verdicts (`mtasts.head.<key>`), worst first. */
-export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'problems', 'warnings', 'ok']);
+/**
+ * The one-line verdicts (`mtasts.head.<key>`), worst first: 'not-published' (a usable policy no
+ * `_mta-sts` TXT record announces), 'off' (mode none) and 'no-mx' (nothing to compare the mx
+ * patterns with) keep a usable policy from reading 'ok', which claims every MX host matched.
+ */
+export const MTA_STS_HEADLINES = Object.freeze(['unreachable', 'invalid', 'inconclusive', 'not-published', 'problems', 'warnings', 'off', 'no-mx', 'ok']);
 
 const FIELDS = ['version', 'mode', 'max_age', 'mx'];
 const FIELD_RE = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,31}):[ \t]*(.*?)[ \t]*$/;
@@ -129,6 +133,8 @@ function validMxPattern(value) {
  * - Lines end in LF or CRLF; a final line break is optional. A line that is not `key: value`
  *   (no space before the colon, a key of letters, digits, `_`, `-`, `.`) breaks the grammar
  *   ('syntax'); a blank line between fields is outside it too ('blank-line').
+ * - A leading UTF-8 byte-order mark (Notepad's default) is outside the grammar and hides the
+ *   first field name from a strict sender ('bom', fatal); the rest is read without it.
  * - Field names are case-sensitive: `Version:` is an unknown extension ('field-case').
  * - version, mode and max_age are required once (a duplicate keeps the first, 'duplicate'); `mx`
  *   is required at least once unless the mode is "none". Unknown fields are ignored.
@@ -144,11 +150,17 @@ function validMxPattern(value) {
 export function parseMtaStsPolicy(text) {
   const out = { version: null, mode: null, maxAge: null, mx: [], extensions: [], issues: [], valid: false };
   const issue = (code, params = {}) => out.issues.push({ code, params });
-  const lines = String(text ?? '').split(/\r?\n/);
+  let body = String(text ?? '');
+  let fatal = false;
+  if (body.charCodeAt(0) === 0xfeff) {
+    issue('bom');
+    fatal = true;
+    body = body.slice(1);
+  }
+  const lines = body.split(/\r?\n/);
   while (lines.length && lines[lines.length - 1] === '') lines.pop(); // the optional final line break
   const seen = new Set();
   const raw = {};
-  let fatal = false;
   lines.forEach((line, i) => {
     const n = i + 1;
     if (!line.trim()) {
@@ -253,6 +265,9 @@ export function interpretPolicyFetch(measurement, { host = null } = {}) {
  * A policy senders cannot fetch (no answer, an invalid certificate, a status other than 200, a
  * redirect) or cannot parse stops after the transport / grammar findings: senders then deliver as
  * if the domain had no MTA-STS (RFC 8461 §3.3; a policy cached earlier still applies until it expires).
+ * A usable policy reads 'off' in mode none, 'not-published' without the `_mta-sts` TXT record
+ * (`txt === null`), then 'problems' / 'warnings' by the worst finding, and 'ok' only when the MX
+ * hosts were compared ('no-mx' without any).
  *
  * @param {{ domain: string, fetch: ReturnType<typeof interpretPolicyFetch>, mxHosts?: string[],
  *   txt?: string|null, tlsRpt?: string|null, now?: Date|number }} input
@@ -269,9 +284,9 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
   const findings = [];
   const add = (id, severity, params = {}) => findings.push({ id, severity, params: { host, ...params } });
   const out = { headline: 'ok', severity: 'ok', mode: null, policy: null, usable: false, host, findings, mx: [], unusedPatterns: [] };
-  const finish = (headline) => {
+  const finish = (headline, calm = 'ok') => {
     out.severity = findings.reduce((w, x) => (SEVERITY_RANK[x.severity] < SEVERITY_RANK[w] ? x.severity : w), 'ok');
-    out.headline = headline || (out.severity === 'error' ? 'problems' : out.severity === 'warn' ? 'warnings' : 'ok');
+    out.headline = headline || (out.severity === 'error' ? 'problems' : out.severity === 'warn' ? 'warnings' : calm);
     return out;
   };
 
@@ -295,6 +310,7 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
     const nameOk = tls.covers !== false && tls.error !== 'ERR_TLS_CERT_ALTNAME_INVALID';
     if (!tls.authorized || !nameOk) {
       blocked = true;
+      const before = findings.length;
       const error = tls.error || '—';
       if (tls.error === 'CERT_HAS_EXPIRED' || (days !== null && days < 0)) add('tls.expired', 'error', { error, date: expires });
       if (!nameOk) add('tls.name', 'error', { error, names: join(tls.hostnames) || '—' });
@@ -302,8 +318,10 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
       else if (tls.error && tls.error !== 'CERT_HAS_EXPIRED' && tls.error !== 'ERR_TLS_CERT_ALTNAME_INVALID') {
         add(UNTRUSTED_ERRORS.has(tls.error) ? 'tls.untrusted' : 'tls.rejected', 'error', { error });
       }
+      // Rejected without a reason the probe could name: still say so.
+      if (findings.length === before) add('tls.rejected', 'error', { error });
     } else if (days !== null && days < MTA_STS_CERT_WARN_DAYS) {
-      add('tls.expiring', 'warn', { days, date: expires });
+      add('tls.expiring', 'warn', { days, date: expires, count: Math.max(0, days) });
     } else {
       add('tls.ok', 'ok', { issuer: tls.issuer || '—', date: expires || '—' });
     }
@@ -363,7 +381,11 @@ export function validateMtaSts({ domain, fetch, mxHosts = [], txt = undefined, t
     }
   }
   if (txt === null) add('txt.missing', 'warn', { domain: canon(domain) });
-  return finish(null);
+  // What senders do with a usable policy comes first: nothing at all in mode none, and nothing
+  // without the TXT record that tells them to fetch it (RFC 8461 §3.1). 'ok' needs MX hosts.
+  if (policy.mode === 'none') return finish('off');
+  if (txt === null) return finish('not-published');
+  return finish(null, hosts.length ? 'ok' : 'no-mx');
 }
 
 /**
@@ -415,15 +437,21 @@ export function mtaStsExport({ domain, fetch, validation, checkedAt = null } = {
 /* i18n                                                                     */
 /* ------------------------------------------------------------------------ */
 
-// [id, [en, tr] title, [en, tr] detail]; headlines are plain labels (`mtasts.head.<key>`).
+// [id, [en, tr] title, [en, tr] detail]; headlines are plain labels (`mtasts.head.<key>`). A text
+// that shows a number is a plural object picked by its `count` param (i18n.js).
 const STRINGS = [
   ['head.unreachable', ['Senders cannot use this policy: they deliver as if the domain had no MTA-STS (a policy they cached earlier still applies until it expires).',
     'Gönderenler bu politikayı kullanamıyor: alan adında MTA-STS yokmuş gibi teslim ederler (daha önce önbelleğe aldıkları bir politika süresi dolana kadar geçerli kalır).']],
   ['head.invalid', ['The policy is invalid: senders treat the domain as if it had no MTA-STS.',
     'Politika geçersiz: gönderenler alan adını MTA-STS yokmuş gibi değerlendirir.']],
   ['head.inconclusive', ['The check was inconclusive: the probe could not complete it.', 'Kontrol sonuçsuz kaldı: ölçüm noktası kontrolü tamamlayamadı.']],
+  ['head.not-published', ['The policy is valid, but senders never fetch it: no _mta-sts TXT record announces it, so MTA-STS is not in effect.',
+    'Politika geçerli, ancak gönderenler onu hiç almaz: onu duyuran bir _mta-sts TXT kaydı yok; bu yüzden MTA-STS devrede değil.']],
   ['head.problems', ['The policy is valid, but mail delivery is at risk (see below).', 'Politika geçerli, ancak e-posta teslimi risk altında (aşağıya bakın).']],
-  ['head.warnings', ['The policy works; some settings need attention.', 'Politika çalışıyor; bazı ayarlar ilgi istiyor.']],
+  ['head.warnings', ['The policy works; some settings need attention.', 'Politika çalışıyor; bazı ayarların gözden geçirilmesi gerekiyor.']],
+  ['head.off', ['The policy is valid and switches MTA-STS off (mode none): senders apply no MTA-STS rules to this domain.',
+    'Politika geçerli ve MTA-STS’yi kapatıyor (mode none): gönderenler bu alan adına hiçbir MTA-STS kuralı uygulamaz.']],
+  ['head.no-mx', ['The policy is valid; the domain has no MX hosts to compare it with.', 'Politika geçerli; alan adının onunla karşılaştırılacak MX sunucusu yok.']],
   ['head.ok', ['The policy is valid and every MX host matches it.', 'Politika geçerli ve her MX sunucusu onunla eşleşiyor.']],
 
   ['fetch.dns', ['The policy host does not resolve', 'Politika sunucusu çözümlenmiyor'],
@@ -444,8 +472,14 @@ const STRINGS = [
     ['{host} serves a trusted certificate for its name (issuer: {issuer}, valid until {date}).',
       '{host} kendi adı için güvenilir bir sertifika sunuyor (veren: {issuer}, {date} tarihine kadar geçerli).']],
   ['tls.expiring', ['The policy host certificate expires soon', 'Politika sunucusunun sertifikası yakında doluyor'],
-    ['It expires in {days} days ({date}). Once it has expired, senders can no longer fetch the policy.',
-      '{days} gün içinde ({date}) sona eriyor. Süresi dolduğunda gönderenler politikayı artık alamaz.']],
+    [{
+      zero: 'It expires within a day ({date}). Once it has expired, senders can no longer fetch the policy.',
+      one: 'It expires in {count} day ({date}). Once it has expired, senders can no longer fetch the policy.',
+      other: 'It expires in {count} days ({date}). Once it has expired, senders can no longer fetch the policy.'
+    }, {
+      zero: 'Bir gün içinde ({date}) sona eriyor. Süresi dolduğunda gönderenler politikayı artık alamaz.',
+      other: '{count} gün içinde ({date}) sona eriyor. Süresi dolduğunda gönderenler politikayı artık alamaz.'
+    }]],
   ['tls.expired', ['The policy host certificate has expired', 'Politika sunucusunun sertifikasının süresi dolmuş'],
     ['{host} serves an expired certificate ({error}, {date}); senders refuse to fetch the policy over it (RFC 8461 §3.3). Renew it.',
       '{host} süresi dolmuş bir sertifika sunuyor ({error}, {date}); gönderenler politikayı bu bağlantı üzerinden almayı reddeder (RFC 8461 §3.3). Sertifikayı yenileyin.']],
@@ -474,16 +508,19 @@ const STRINGS = [
     ['Globalping returns at most 10 KB of a response. A policy is normally a few lines long; check what the file holds.',
       'Globalping bir yanıtın en fazla 10 KB’ını döndürür. Bir politika normalde birkaç satırdır; dosyanın içeriğine bakın.']],
 
+  ['policy.bom', ['The file starts with a byte-order mark', 'Dosya bir bayt sırası işaretiyle (BOM) başlıyor'],
+    ['An invisible UTF-8 byte-order mark (BOM) precedes the first line. It is outside the RFC 8461 grammar, so a strict sender does not see the first field and rejects the policy. Save the file as UTF-8 without BOM (or plain ASCII).',
+      'İlk satırın önünde görünmeyen bir UTF-8 bayt sırası işareti (BOM) var. Bu, RFC 8461 sözdiziminin dışındadır; bu yüzden katı bir gönderen ilk anahtarı görmez ve politikayı reddeder. Dosyayı BOM olmadan UTF-8 (ya da düz ASCII) olarak kaydedin.']],
   ['policy.syntax', ['Line outside the policy grammar', 'Politika sözdizimine uymayan satır'],
     ['Line {line} ("{text}") is not a "key: value" field (RFC 8461 §3.2); a strict sender rejects the whole policy.',
       '{line}. satır ("{text}") "anahtar: değer" biçiminde değil (RFC 8461 §3.2); katı bir gönderen tüm politikayı reddeder.']],
   ['policy.blank-line', ['Blank line inside the policy', 'Politikanın içinde boş satır'],
     ['Line {line} is blank, which the RFC 8461 grammar does not allow between fields. Remove it.',
-      '{line}. satır boş; RFC 8461 sözdizimi alanlar arasında boş satıra izin vermez. Kaldırın.']],
-  ['policy.field-case', ['Field name in the wrong case', 'Alan adı yanlış harf büyüklüğünde'],
+      '{line}. satır boş; RFC 8461 sözdizimi "anahtar: değer" satırları arasında boş satıra izin vermez. Kaldırın.']],
+  ['policy.field-case', ['Field name in the wrong case', 'Politika anahtarı yanlış harf büyüklüğünde'],
     ['"{field}" is not "{expected}": field names are case-sensitive (RFC 8461 §3.2), so senders ignore it.',
-      '"{field}", "{expected}" değil: alan adları büyük/küçük harfe duyarlıdır (RFC 8461 §3.2); bu yüzden gönderenler onu yok sayar.']],
-  ['policy.duplicate', ['Field given more than once', 'Alan birden fazla kez verilmiş'],
+      '"{field}", "{expected}" değil: anahtar adları büyük/küçük harfe duyarlıdır (RFC 8461 §3.2); bu yüzden gönderenler onu yok sayar.']],
+  ['policy.duplicate', ['Field given more than once', 'Anahtar birden fazla kez verilmiş'],
     ['"{field}" appears more than once; senders use the first one and ignore the rest (RFC 8461 §3.2).',
       '"{field}" birden fazla kez geçiyor; gönderenler ilkini kullanır, diğerlerini yok sayar (RFC 8461 §3.2).']],
   ['policy.version', ['Missing or wrong version', 'Sürüm eksik ya da hatalı'],
@@ -498,7 +535,7 @@ const STRINGS = [
     ['A policy in enforce or testing mode must list at least one valid "mx:" line.', 'enforce ya da testing modundaki bir politika en az bir geçerli "mx:" satırı içermelidir.']],
   ['policy.mx-invalid', ['Invalid mx patterns', 'Geçersiz mx kalıpları'],
     ['These are not host names (optionally "*."-prefixed, in A-label form, without a trailing dot) and match no MX: {values}.',
-      'Bunlar ana makine adı değil (isteğe bağlı "*." önekiyle, A-label biçiminde, sonda nokta olmadan) ve hiçbir MX ile eşleşmez: {values}.']],
+      'Bunlar host adı değil (isteğe bağlı "*." önekiyle, A-label biçiminde, sonda nokta olmadan) ve hiçbir MX ile eşleşmez: {values}.']],
 
   ['mode.enforce', ['Mode: enforce', 'Mod: enforce'],
     ['Senders that support MTA-STS deliver only over authenticated TLS to the MX hosts the policy lists.',
@@ -523,7 +560,8 @@ const STRINGS = [
     ['Senders keep the policy for up to {value} seconds before they fetch it again.', 'Gönderenler politikayı yeniden almadan önce en fazla {value} saniye önbellekte tutar.']],
 
   ['mx.ok', ['Every MX host matches the policy', 'Her MX sunucusu politikayla eşleşiyor'],
-    ['All {count} MX hosts of the domain match an mx pattern.', 'Alan adının {count} MX sunucusunun tamamı bir mx kalıbıyla eşleşiyor.']],
+    [{ one: 'The domain\'s only MX host matches an mx pattern.', other: 'All {count} MX hosts of the domain match an mx pattern.' },
+      { one: 'Alan adının tek MX sunucusu bir mx kalıbıyla eşleşiyor.', other: 'Alan adının {count} MX sunucusunun tamamı bir mx kalıbıyla eşleşiyor.' }]],
   ['mx.unmatched', ['MX hosts missing from the policy', 'Politikada olmayan MX sunucuları'],
     ['No mx pattern ({patterns}) matches {hosts}. Senders that support MTA-STS do not deliver to an MX host the policy does not list (in testing mode they deliver and report a failure). Add an "mx:" line for each.',
       '{hosts} hiçbir mx kalıbıyla eşleşmiyor ({patterns}). MTA-STS destekleyen gönderenler politikada listelenmeyen bir MX sunucusuna teslim etmez (test modunda teslim eder ve bir hata bildirir). Her biri için bir "mx:" satırı ekleyin.']],
@@ -554,7 +592,8 @@ function buildStrings(lang) {
 
 /**
  * English and Turkish texts: `mtasts.<finding>.title` / `.detail` for every {@link MTA_STS_FINDINGS}
- * id and `mtasts.head.<key>` for every {@link MTA_STS_HEADLINES} key. Placeholders: `{param}`.
- * @type {{ en: Object<string, string>, tr: Object<string, string> }}
+ * id and `mtasts.head.<key>` for every {@link MTA_STS_HEADLINES} key. Placeholders: `{param}`;
+ * a text that shows a number is a plural object `{ zero?, one?, other }` (tls.expiring, mx.ok).
+ * @type {{ en: Object<string, string|object>, tr: Object<string, string|object> }}
  */
 export const MTA_STS_I18N = Object.freeze({ en: Object.freeze(buildStrings(0)), tr: Object.freeze(buildStrings(1)) });

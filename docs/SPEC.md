@@ -873,12 +873,13 @@ How drift reads a zone:
 DOM-free. A browser cannot read `https://mta-sts.<domain>/.well-known/mta-sts.txt` (no CORS), so Domain Health fetches it through one Globalping probe (§3, §5.18) after an explicit click; this module builds that request and interprets the result. The probe cannot open SMTP: the MX hosts' STARTTLS certificates (RFC 8461 §4.2) are not checked.
 ```js
 export const MTA_STS_PATH = '/.well-known/mta-sts.txt', MTA_STS_MAX_AGE_LIMIT = 31557600, MTA_STS_MODES = ['enforce','testing','none'], MTA_STS_TIMEOUT_S = 10,
-  MTA_STS_CERT_WARN_DAYS = 14, MTA_STS_SHORT_MAX_AGE = 86400, MTA_STS_WEEK = 604800, MTA_STS_FINDINGS /* 38 ids */, MTA_STS_HEADLINES /* unreachable, invalid, inconclusive, problems, warnings, ok */
+  MTA_STS_CERT_WARN_DAYS = 14, MTA_STS_SHORT_MAX_AGE = 86400, MTA_STS_WEEK = 604800, MTA_STS_FINDINGS /* 39 ids */, MTA_STS_HEADLINES /* unreachable, invalid, inconclusive, not-published, problems, warnings, off, no-mx, ok */
 export function mtaStsPolicyHost(domain) -> 'mta-sts.<domain>'|null   // null when Globalping would refuse the host (isProbeableHost)
 export function mtaStsPolicyUrl(domain) -> string|null ; export function mtaStsPolicyRequest(domain, { timeoutS = 10 }) -> body   // httpsGetRequest, 1 probe; TypeError without a policy host
 export function mxPatternMatches(pattern, host) -> bool   // literal, or '*.' matching exactly one more left-most label (RFC 8461 §4.1); case / trailing dot ignored
 export function parseMtaStsPolicy(text) -> { version, mode, maxAge, mx: string[], extensions, issues: Array<{ code, params }>, valid }
-  // never throws; LF or CRLF; case-sensitive field names ('Version:' → field-case); a line that is not `key: value` → syntax (fatal); a blank line → blank-line;
+  // never throws; LF or CRLF; a leading UTF-8 BOM → bom (fatal; the rest is read without it); case-sensitive field names ('Version:' → field-case);
+  // a line that is not `key: value` → syntax (fatal); a blank line → blank-line;
   // duplicates keep the first (duplicate); version STSv1, a known mode, max_age ≤ 10 digits and ≤ 31557600, ≥ 1 valid mx pattern unless mode none
 export function interpretPolicyFetch(measurement, { host }) -> { measurementId, probe, finished, failure: { kind /* verify.parseFailure */, text }|null,
   httpStatus, contentType, location, body, truncated, tls: { authorized, error, hostnames, covers /* certCovers(host) */, notAfter, issuer }|null }
@@ -887,7 +888,9 @@ export function validateMtaSts({ domain, fetch, mxHosts, txt, tlsRpt, now }) -> 
   // order: transport (fetch.* / tls.* / http.*), grammar (policy.*), mode.*, max-age.*, mx.*, txt.missing. A policy senders cannot fetch (no answer, a certificate that is
   // not valid for mta-sts.<domain>, a status other than 200, any redirect) or cannot parse stops there ('unreachable' / 'invalid'). An MX host no pattern matches is
   // an error in enforce mode, a warning in testing mode; text/plain, truncation, a short max_age, testing without TLS-RPT (tlsRpt === null) and a missing
-  // _mta-sts TXT (txt === null) are warnings; `undefined` txt / tlsRpt means "not known" (no finding). Params are language-neutral, pre-joined.
+  // _mta-sts TXT (txt === null) are warnings; `undefined` txt / tlsRpt means "not known" (no finding). A certificate rejected without an error code is tls.rejected.
+  // A usable policy's headline: 'off' (mode none), 'not-published' (txt === null: senders never fetch it), else 'problems' / 'warnings' by the worst finding,
+  // else 'ok' only when MX hosts were compared ('no-mx' without any). Params are language-neutral, pre-joined; tls.expiring and mx.ok carry `count` for their plural texts.
 export function mtaStsExport({ domain, fetch, validation, checkedAt }) -> plain JSON (url, checkedAt, measurementId, probe, headline, severity, usable, mode, maxAge,
   mx, unusedPatterns, http, failure, tls, policy, findings)   // Domain Health's "Report (JSON)" `mtaStsPolicy`
 export const MTA_STS_I18N = { en, tr }   // mtasts.<finding>.title / .detail and mtasts.head.<headline>

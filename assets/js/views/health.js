@@ -596,7 +596,7 @@ export function mount(container, ctx) {
   // show them in the UI language.
   const localWords = { yes: 'common.yes', no: 'common.no', [LOOKUP_FAILED_PARAM]: 'hlt.lookupFailed' };
   const localParams = (params) => Object.fromEntries(Object.entries(params || {})
-    .map(([k, v]) => [k, Object.hasOwn(localWords, v) ? t(localWords[v]) : v]));
+    .map(([k, v]) => [k, typeof v === 'string' && Object.hasOwn(localWords, v) ? t(localWords[v]) : v]));
   const checkTitle = (c) => tr(c.titleKey, localParams(c.params), c.id);
   const checkDetail = (c) => tr(c.detailKey, localParams(c.params), Object.entries(c.params || {}).map(([k, v]) => `${k}: ${v}`).join(' · '));
   const caNameFor = (issuer) => {

@@ -2298,6 +2298,87 @@ button.nav-status:hover {
   color: var(--error);
 }
 
+/* Source status (ui/source-status.js): a cell a failed source left empty, never a silent dash */
+.na-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.na-mark-text {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.src-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.src-chips[hidden] {
+  display: none;
+}
+
+.src-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.src-chip .spinner-inline {
+  width: 12px;
+  height: 12px;
+}
+
+.src-chip-name {
+  font-weight: 650;
+}
+
+.src-chip-value {
+  padding-right: 6px;
+  color: var(--text-3);
+}
+
+.src-chip[data-state="ok"] .icon {
+  color: var(--ok);
+}
+
+.src-chip[data-state="idle"] {
+  border-style: dashed;
+  color: var(--text-3);
+}
+
+/* A used-up free quota or a service that is down: amber, like the Subdomains chips. */
+.src-chip[data-state="failed"] {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.src-chip[data-state="failed"] .icon,
+.src-chip[data-state="failed"] .src-chip-value {
+  color: var(--warn);
+}
+
+.src-chip .btn {
+  min-height: 24px;
+  padding-block: 0;
+}
+
 /* Alerts */
 .alert {
   --a-fg: var(--info);

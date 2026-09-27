@@ -13,6 +13,11 @@
  * tooltip says so), how many lookups failed (the rows showing "Lookup failed") and how many
  * addresses a stopped lookup never reached, and its link leaves out private and inventory addresses.
  *
+ * No silent dashes (lib/sourcestatus.js, ui/source-status.js): a cell that a failed source left
+ * empty says "⚠ n/a" with the source and the reason, a chip per service sums the failures up,
+ * and Retry (per row, or per chip for every row it failed on) asks only those sources again.
+ * Stat cards whose count is zero fold into one sentence (lib/density.js).
+ *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
  * The finished rows are kept for the page session (`result()` / `snapshot()`); coming back
@@ -22,10 +27,13 @@
 import { h, clear } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ExternalLink, KeyValueList, KindBadge, ProgressBar, StatCard,
-  TruncatedList, ipSortValue, setButtonBusy, textarea
+  TruncatedList, announce, ipSortValue, setButtonBusy, textarea
 } from '../ui/components.js';
-import { registerStrings, hasString, formatNumber, formatRegion } from '../i18n.js';
+import { registerStrings, formatNumber, formatRegion, localeTag } from '../i18n.js';
 import { createIpIntel, networkHint } from '../lib/ipintel.js';
+import { ipFieldStatus, ipRetrySources, ipSourceChips, sourceStatus, IP_FIELDS } from '../lib/sourcestatus.js';
+import { foldZeroStats } from '../lib/density.js';
+import { NaMark, RetryButton, SourceChip, setRetryBusy, statusText } from '../ui/source-status.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
@@ -82,6 +90,11 @@ registerStrings('en', {
   'ipi.stat.private': 'Private',
   'ipi.stat.networks': 'Networks (ASN)',
   'ipi.stat.countries': 'Countries',
+  'ipi.zero': { one: 'This address is not {list}.', other: 'None of these addresses is {list}.' },
+  'ipi.zero.cdn': 'behind a CDN / proxy',
+  'ipi.zero.mine': 'one of your servers',
+  'ipi.zero.priv': 'private',
+  'ipi.retried': { one: 'Asked again for {count} address.', other: 'Asked again for {count} addresses.' },
 
   'ipi.col.ip': 'IP address',
   'ipi.col.ptr': 'Reverse DNS (PTR)',
@@ -93,7 +106,6 @@ registerStrings('en', {
   'ipi.col.reverse': 'Other domains on this IP',
   'ipi.fromHost': 'from {host}',
   'ipi.pending': 'Looking up…',
-  'ipi.failed': 'Lookup failed',
   'ipi.notAnnounced': 'not announced',
   'ipi.notAnnouncedTitle': 'No route is announced for this address on the Internet (unused or reserved space).',
 
@@ -162,6 +174,11 @@ registerStrings('tr', {
   'ipi.stat.private': 'Özel',
   'ipi.stat.networks': 'Ağ (ASN)',
   'ipi.stat.countries': 'Ülke',
+  'ipi.zero': { one: 'Bu adres {list} değil.', other: 'Bu adreslerin hiçbiri {list} değil.' },
+  'ipi.zero.cdn': 'CDN / proxy arkasında',
+  'ipi.zero.mine': 'sunucularınızdan biri',
+  'ipi.zero.priv': 'özel (private)',
+  'ipi.retried': '{count} adres yeniden soruldu.',
 
   'ipi.col.ip': 'IP adresi',
   'ipi.col.ptr': 'Ters DNS (PTR)',
@@ -173,7 +190,6 @@ registerStrings('tr', {
   'ipi.col.reverse': 'Bu IP’deki diğer alan adları',
   'ipi.fromHost': '{host} adından',
   'ipi.pending': 'Sorgulanıyor…',
-  'ipi.failed': 'Sorgu başarısız',
   'ipi.notAnnounced': 'duyurulmuyor',
   'ipi.notAnnouncedTitle': 'Bu adres için İnternet’te duyurulan bir rota yok (kullanılmayan ya da ayrılmış alan).',
 
@@ -400,9 +416,14 @@ export function mount(container, ctx) {
       announced: r.info ? r.info.announced : null,
       servers: r.servers.map((s) => s.name),
       reverseIp: r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains : null,
-      error: r.info ? r.info.error : null
+      error: r.info ? r.info.error : null,
+      // Fields a failed source left empty (not "none"), and why.
+      unavailable: Object.fromEntries(IP_FIELDS.map((f) => [f, ipFieldStatus(r.info, f)]).filter(([, st]) => st).map(([f, st]) => [f, st.sources])),
+      sourceErrors: r.info ? r.info.errors.map((e) => ({ source: e.source, error: e.error, errorKind: e.errorKind, status: e.status ?? null })) : []
     }))
   };
+  /** CSV text of a cell: its value, or "n/a" when a failed source left it empty. */
+  const csvValue = (r, field, value) => (value ? value : ipFieldStatus(r.info, field) ? t('srcst.na') : '');
 
   const table = DataTable({
     caption: t('nav.ip'),
@@ -419,7 +440,8 @@ export function mount(container, ctx) {
         searchValue: (r) => [r.ip, ...r.hosts].join(' '), exportValue: (r) => r.ip,
         render: (r) => h('div', { class: 'ipi-ipcell' },
           h('span', { class: 'mono ipi-ip' }, r.ip),
-          r.hosts.length ? h('span', { class: 'muted text-xs' }, t('ipi.fromHost', { host: r.hosts.slice(0, 2).join(', ') + (r.hosts.length > 2 ? ` +${r.hosts.length - 2}` : '') })) : null)
+          r.hosts.length ? h('span', { class: 'muted text-xs' }, t('ipi.fromHost', { host: r.hosts.slice(0, 2).join(', ') + (r.hosts.length > 2 ? ` +${r.hosts.length - 2}` : '') })) : null,
+          rowRetry(r))
       },
       {
         key: 'operator', label: t('ipi.col.operator'), sortable: true, sortValue: (r) => r.classification.kind,
@@ -442,20 +464,19 @@ export function mount(container, ctx) {
         render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
       },
       {
-        key: 'ptr', label: t('ipi.col.ptr'), sortable: true, sortValue: (r) => (r.info && r.info.ptr[0]) || null,
-        searchValue: (r) => (r.info ? r.info.ptr.join(' ') : ''), exportValue: (r) => (r.info ? r.info.ptr.join(' ') : ''),
-        render: (r) => (r.pending ? pendingCell() : r.info && r.info.ptr.length ? TruncatedList(r.info.ptr, { max: 2, render: hostLink }) : null)
+        key: 'ptr', label: t('ipi.col.ptr'), sortable: true, className: 'ipi-col-ptr', sortValue: (r) => (r.info && r.info.ptr[0]) || null,
+        searchValue: (r) => (r.info ? r.info.ptr.join(' ') : ''), exportValue: (r) => csvValue(r, 'ptr', r.info ? r.info.ptr.join(' ') : ''),
+        render: (r) => (r.pending ? pendingCell() : r.info && r.info.ptr.length ? TruncatedList(r.info.ptr, { max: 2, render: hostLink }) : naCell(r, 'ptr'))
       },
       {
-        key: 'network', label: t('ipi.col.holder'), sortable: true,
+        key: 'network', label: t('ipi.col.holder'), sortable: true, className: 'ipi-col-network',
         sortValue: (r) => (r.info ? r.info.asn : null),
         searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.asName || ''} ${r.info.holder || ''}` : ''),
-        exportValue: (r) => (r.info ? [r.info.asn ? `AS${r.info.asn}` : '', [r.info.asName, r.info.holder].filter((x, i, arr) => x && arr.indexOf(x) === i).join(' - ')].filter(Boolean).join(' ') : ''),
+        exportValue: (r) => csvValue(r, 'network', r.info ? [r.info.asn ? `AS${r.info.asn}` : '', [r.info.asName, r.info.holder].filter((x, i, arr) => x && arr.indexOf(x) === i).join(' - ')].filter(Boolean).join(' ') : ''),
         render: (r) => {
           if (r.pending || !r.info) return null;
           if (!r.info.asn && !r.info.holder) {
-            if (r.info.error) return failedCell(r.info);
-            return r.info.announced === false ? Badge(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null;
+            return naCell(r, 'network') || (r.info.announced === false ? Badge(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null);
           }
           const same = !r.info.holder || r.info.asName === r.info.holder;
           return h('div', { class: 'ipi-holder' },
@@ -467,19 +488,19 @@ export function mount(container, ctx) {
         }
       },
       {
-        key: 'prefix', label: t('ipi.col.prefix'), sortable: true, mono: true,
+        key: 'prefix', label: t('ipi.col.prefix'), sortable: true, mono: true, className: 'ipi-col-prefix',
         sortValue: (r) => (r.info && r.info.prefix ? ipSortValue(r.info.prefix.split('/')[0]) : null),
-        exportValue: (r) => (r.info ? r.info.prefix || '' : ''),
-        render: (r) => (r.info ? r.info.prefix : null)
+        exportValue: (r) => csvValue(r, 'prefix', r.info ? r.info.prefix || '' : ''),
+        render: (r) => (r.info && r.info.prefix ? r.info.prefix : naCell(r, 'prefix'))
       },
       {
-        key: 'location', label: t('ipi.col.location'), sortable: true,
+        key: 'location', label: t('ipi.col.location'), sortable: true, className: 'ipi-col-location',
         sortValue: (r) => (r.info && r.info.country ? `${formatRegion(r.info.country)} ${r.info.city || ''}` : null),
         searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)} ${r.info.city || ''}` : ''),
-        exportValue: (r) => (r.info && r.info.country ? [r.info.country, r.info.city].filter(Boolean).join(' ') : ''),
+        exportValue: (r) => csvValue(r, 'location', r.info && r.info.country ? [r.info.country, r.info.city].filter(Boolean).join(' ') : ''),
         render: (r) => (r.info && r.info.country ? h('div', { class: 'ipi-loc' },
           h('span', null, flag(r.info.country), ' ', formatRegion(r.info.country)),
-          r.info.city ? h('span', { class: 'muted text-xs' }, r.info.city) : null) : null)
+          r.info.city ? h('span', { class: 'muted text-xs' }, r.info.city) : null) : naCell(r, 'location'))
       },
       {
         key: 'reverse', label: t('ipi.col.reverse'), searchable: true,
@@ -491,7 +512,11 @@ export function mount(container, ctx) {
   });
 
   const quotaNote = Alert({ variant: 'info', compact: true, icon: 'info', message: t('ipi.quota') });
+  for (const [key, card] of Object.entries(stats)) card.el.dataset.stat = key;
   const statsGrid = h('div', { class: 'stat-grid ipi-stats' }, stats.ips, stats.cdn, stats.mine, stats.priv, stats.nets, stats.countries);
+  // Zero counts of these fold into one sentence (ipi.zero); networks and countries grow while lookups run.
+  const zeroNote = h('p', { class: 'muted text-sm ipi-zero', hidden: true });
+  const sourcesEl = h('div', { class: 'src-chips ipi-sources', hidden: true, attrs: { role: 'group', 'aria-label': t('ipi.det.sources'), tabindex: -1 } });
   const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
   // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
   // "Copy summary": one line (lib/summary.js); the link leaves out private and inventory addresses.
@@ -505,10 +530,28 @@ export function mount(container, ctx) {
     }))
   });
   const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, quotaNote, table);
+    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, zeroNote, quotaNote, sourcesEl, table);
   container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results));
 
   /* --- cell renderers ----------------------------------------------------------------- */
+  /** "⚠ n/a" when a failed source left `field` empty (null for a real "none" or a pending row). */
+  function naCell(r, field) {
+    if (r.pending || !r.info) return null;
+    const st = ipFieldStatus(r.info, field);
+    return st ? NaMark(st.statuses) : null;
+  }
+
+  /** The row's Retry: asks again only the sources whose failure left a field empty. */
+  function rowRetry(r) {
+    if (r.pending || !r.info) return null;
+    const sources = ipRetrySources(r.info);
+    if (!sources.length) return null;
+    const btn = RetryButton({ sources, onClick: () => retryRows([r]), dataset: { ip: r.ip } });
+    btn.classList.add('ipi-retry');
+    if (r.retrying) setRetryBusy(btn);
+    return btn;
+  }
+
   /** Operator cell: the classification badge, or for plain 'direct' addresses on a well-known
    *  network (1.1.1.1 → AS13335) a badge naming that network plus a one-line explanation. */
   function renderOperator(r) {
@@ -524,11 +567,6 @@ export function mount(container, ctx) {
 
   function pendingCell() {
     return h('span', { class: 'ipi-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('ipi.pending'));
-  }
-
-  function failedCell(info) {
-    const kind = info.errorKind && info.errorKind !== 'unknown' && hasString(`error.kind.${info.errorKind}`, 'en') ? t(`error.kind.${info.errorKind}`) : '';
-    return h('span', { class: 'ipi-failed', title: info.error || '' }, Badge(t('ipi.failed'), { variant: 'error', icon: 'x-circle' }), kind ? h('span', { class: 'muted text-xs' }, ` ${kind}`) : null);
   }
 
   function renderReverse(r) {
@@ -574,7 +612,16 @@ export function mount(container, ctx) {
       if (info.rir) items.push({ key: t('ipi.det.rir'), value: info.rir });
       if (info.announced !== null && info.announced !== undefined) items.push({ key: t('ipi.det.announced'), value: info.announced ? t('common.yes') : t('common.no') });
       if (info.sources.length) items.push({ key: t('ipi.det.sources'), value: info.sources.join(', ') });
-      if (info.errors.length) items.push({ key: t('ipi.det.errors'), value: h('div', { class: 'stack-sm' }, info.errors.map((e) => h('span', { class: 'mono text-xs' }, `${e.source}: ${e.error}`))) });
+      if (info.errors.length) {
+        items.push({
+          key: t('ipi.det.errors'),
+          value: h('div', { class: 'stack-sm' }, info.errors.map((e) => {
+            const st = sourceStatus(e);
+            return h('span', { class: 'ipi-problem', dataset: { source: e.source } }, statusText(st),
+              st.detail ? h('span', { class: 'mono text-xs muted' }, ` · ${st.detail}`) : null);
+          }))
+        });
+      }
     }
     if (!isPrivateIP(r.ip)) {
       items.push({
@@ -619,6 +666,81 @@ export function mount(container, ctx) {
     stats.nets.set({ value: asns.size });
     const countries = [...new Set(rows.map((r) => r.info && r.info.country).filter(Boolean))];
     stats.countries.set({ value: countries.length, hint: countries.slice(0, 6).join(' ') || null });
+    // Zero counts fold into one muted sentence (never the address count, nor the networks and
+    // countries, which are still growing while lookups run).
+    const { folded } = foldZeroStats([
+      { id: 'ips', value: rows.length }, { id: 'cdn', value: cdn.length }, { id: 'mine', value: mine.length },
+      { id: 'priv', value: rows.filter((r) => isPrivateIP(r.ip)).length }
+    ], { foldable: rows.length ? ['cdn', 'mine', 'priv'] : [] });
+    for (const [key, card] of Object.entries(stats)) card.el.hidden = folded.includes(key);
+    // "one of your servers" only when there is a server list to match against.
+    const parts = folded.filter((id) => id !== 'mine' || ctx.state.inventory.servers.length).map((id) => t(`ipi.zero.${id}`));
+    zeroNote.hidden = !parts.length;
+    zeroNote.textContent = parts.length ? t('ipi.zero', { count: rows.length, list: listText(parts) }) : '';
+    renderSources(rows);
+  }
+
+  /** "a, b or c" in the UI language. */
+  function listText(parts) {
+    try {
+      return new Intl.ListFormat(localeTag(), { type: 'disjunction' }).format(parts);
+    } catch {
+      return parts.join(', ');
+    }
+  }
+
+  /** One chip per service: where its failures left fields empty, with a Retry of those rows. */
+  function renderSources(rows) {
+    const looked = rows.some((r) => !isPrivateIP(r.ip));
+    // A chip's Retry that had the keyboard focus gets it back, or the group when that Retry is gone.
+    const focused = sourcesEl.contains(globalThis.document.activeElement) ? globalThis.document.activeElement.dataset.chip || '' : null;
+    sourcesEl.hidden = !looked;
+    clear(sourcesEl);
+    if (!looked) return;
+    for (const chip of ipSourceChips(rows)) {
+      const failedRows = rows.filter((r) => chip.ips.includes(r.ip));
+      sourcesEl.append(SourceChip(chip, {
+        onRetry: () => retryRows(failedRows, chip.sources),
+        busy: failedRows.some((r) => r.retrying)
+      }));
+    }
+    if (focused !== null) (sourcesEl.querySelector(`[data-chip="${focused}"]`) || sourcesEl).focus();
+  }
+
+  /**
+   * Ask again, for each row, only the sources that failed there (and are in `sources`, when a
+   * chip's Retry names them); the rows re-render as their answers arrive.
+   */
+  async function retryRows(list, sources = null) {
+    const state = current;
+    const rows = list.filter((r) => r.info && !r.retrying);
+    if (!state || !rows.length) return;
+    for (const r of rows) {
+      r.retrying = true;
+      table.updateRow(r);
+    }
+    renderSources(state.rows);
+    let intel = null;
+    try {
+      intel = getIntel(await ctx.getDns());
+    } catch (err) {
+      ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+    }
+    await Promise.all(rows.map(async (r) => {
+      try {
+        if (!intel) return;
+        const want = ipRetrySources(r.info).filter((s) => !sources || sources.includes(s));
+        r.info = await intel.retry(r.info, { sources: want, signal: ctx.signal });
+      } catch (err) {
+        if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      } finally {
+        r.retrying = false;
+        if (!ctx.signal.aborted) table.updateRow(r);
+      }
+    }));
+    if (ctx.signal.aborted || current !== state) return;
+    renderStats(state.rows);
+    announce(t('ipi.retried', { count: rows.length }));
   }
 
   function note(variant, message) {
@@ -717,6 +839,8 @@ export function mount(container, ctx) {
     emptyEl.hidden = true;
     results.hidden = false;
     clear(notesEl);
+    zeroNote.hidden = true;
+    sourcesEl.hidden = true;
     if (parsed.invalid.length) note('warn', t('ipi.invalid', { items: parsed.invalid.slice(0, 12).join(', ') + (parsed.invalid.length > 12 ? ' …' : '') }));
     if (parsed.cidrs.length) note('info', t('ipi.cidr', { range: parsed.cidrs[0] }));
     table.setRows([]);
@@ -863,8 +987,9 @@ export function mount(container, ctx) {
     snapshot() {
       // A reverse lookup still running belongs to this view and is cancelled with it: the
       // re-mounted row offers the button again instead of a spinner nothing would ever stop.
+      // A Retry in flight is cancelled the same way: the re-mounted row offers it again.
       const rows = current && !current.controller
-        ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
+        ? current.rows.map((r) => ({ ...r, retrying: false, reverse: r.reverse && r.reverse.state === 'loading' ? null : r.reverse }))
         : null;
       return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, stopped: !!(rows && current.stopped) };
     },

@@ -39,8 +39,11 @@ import {
   registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, formatRegion, daysUntil, getLang
 } from '../i18n.js';
 import {
-  domainHealth, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
+  domainHealth, applyRdap, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS
 } from '../lib/health.js';
+import { rdapDomain } from '../lib/rdap.js';
+import { rdapStatus } from '../lib/sourcestatus.js';
+import { NaMark, RetryButton, statusText } from '../ui/source-status.js';
 import {
   MTA_STS_I18N, MTA_STS_PATH, mtaStsPolicyHost, mtaStsPolicyUrl, mtaStsPolicyRequest, interpretPolicyFetch, validateMtaSts, mtaStsExport
 } from '../lib/mtasts.js';
@@ -144,6 +147,7 @@ registerStrings('en', {
   'hlt.rdap.notFound': '{domain} is not registered (the registry answered “not found”).',
   'hlt.rdap.error': 'Registration data could not be retrieved.',
   'hlt.rdap.skipped': 'Not checked.',
+  'hlt.rdap.retried': 'Registration data loaded.',
 
   'hlt.dnssec.title': 'DNSSEC',
   'hlt.dnssec.broken': 'Broken — validating resolvers fail',
@@ -348,6 +352,7 @@ registerStrings('tr', {
   'hlt.rdap.notFound': '{domain} kayıtlı değil (kayıt kuruluşu “bulunamadı” yanıtı verdi).',
   'hlt.rdap.error': 'Kayıt bilgileri alınamadı.',
   'hlt.rdap.skipped': 'Kontrol edilmedi.',
+  'hlt.rdap.retried': 'Kayıt bilgileri alındı.',
 
   'hlt.dnssec.title': 'DNSSEC',
   'hlt.dnssec.broken': 'Bozuk — doğrulayan çözümleyiciler başarısız',
@@ -755,8 +760,25 @@ export function mount(container, ctx) {
   /* --- detail panels ------------------------------------------------------------------ */
   function rdapCard(report) {
     const r = report.rdap;
+    const failed = rdapStatus(r);
     let body;
+    let actions = null;
     if (!r) body = h('p', { class: 'muted text-sm' }, t('hlt.rdap.skipped'));
+    else if (failed) {
+      // No silent dashes: every field RDAP would have filled says "n/a" and why, and Retry asks RDAP alone again.
+      const na = () => NaMark([failed]);
+      body = h('div', { class: 'stack-sm' },
+        h('p', { class: 'hlt-rdap-status text-sm', dataset: { reason: failed.reason } }, Icon('alert', { size: 14 }), h('span', null, statusText(failed))),
+        KeyValueList([
+          { key: t('hlt.rdap.domain'), value: r.domain, mono: true },
+          { key: t('hlt.rdap.registrar'), value: na() },
+          { key: t('hlt.rdap.created'), value: na() },
+          { key: t('hlt.rdap.expires'), value: na() },
+          { key: t('hlt.rdap.status'), value: na() },
+          { key: t('hlt.rdap.nameservers'), value: na() }
+        ]));
+      actions = RetryButton({ sources: ['rdap'], onClick: (e) => retryRdap(e.currentTarget) });
+    }
     else if (r.unsupportedTld) {
       body = Alert({
         variant: 'info', compact: true,
@@ -792,7 +814,43 @@ export function mount(container, ctx) {
         { key: t('hlt.rdap.server'), value: r.url ? ExternalLink(r.url, r.rdapServer || r.url) : r.rdapServer }
       ].filter((it) => it.value !== null && it.value !== undefined && it.value !== ''));
     }
-    return Card({ title: t('hlt.rdap.title'), icon: 'calendar', className: 'hlt-card hlt-rdap', children: body });
+    const card = Card({ title: t('hlt.rdap.title'), icon: 'calendar', className: 'hlt-card hlt-rdap', actions, children: body });
+    card.dataset.rdap = !r ? 'skipped' : failed ? 'failed' : r.ok ? 'ok' : 'answer';
+    return card;
+  }
+
+  /**
+   * The RDAP card's Retry: asks RDAP alone again (the DNS part of the report is kept) and puts
+   * the new registration data, its checks and the new score on screen. Keyboard focus stays on
+   * the card.
+   * @param {HTMLButtonElement} btn
+   */
+  async function retryRdap(btn) {
+    const state = current;
+    if (!state || !state.report || state.rdapRetry) return;
+    const controller = new AbortController();
+    state.rdapRetry = controller;
+    setButtonBusy(btn, true);
+    try {
+      const rdap = await rdapDomain(state.report.domain, { signal: mergeSignals(ctx.signal, controller.signal) });
+      if (current !== state) return;
+      state.report = applyRdap(state.report, rdap);
+      renderReport(state.report);
+      const card = detailsEl.querySelector('.hlt-rdap');
+      const again = card && card.querySelector('[data-action="retry-source"]');
+      if (again) again.focus();
+      else if (card) {
+        card.setAttribute('tabindex', '-1');
+        card.focus({ preventScroll: true });
+      }
+      const st = rdapStatus(rdap);
+      announce(st ? statusText(st) : t('hlt.rdap.retried'));
+    } catch (err) {
+      if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+    } finally {
+      if (state.rdapRetry === controller) state.rdapRetry = null;
+      if (btn.isConnected) setButtonBusy(btn, false);
+    }
   }
 
   function dnssecCard(report) {
@@ -1360,6 +1418,7 @@ export function mount(container, ctx) {
   async function run(domain, extraSelectors) {
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
+    if (current && current.rdapRetry) current.rdapRetry.abort();
     const controller = new AbortController();
     const state = {
       domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
@@ -1429,6 +1488,7 @@ export function mount(container, ctx) {
     teardown() {
       if (current && current.controller) current.controller.abort();
       if (current && current.policy && current.policy.controller) current.policy.controller.abort();
+      if (current && current.rdapRetry) current.rdapRetry.abort();
     },
     snapshot() {
       const report = current && !current.controller ? current.report : null;

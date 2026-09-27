@@ -246,6 +246,13 @@ describe('i18n coverage', () => {
     const summary = await imp('assets/js/lib/summary.js');
     for (const k of Object.keys(summary.SUMMARY_I18N.en)) add(k);
     for (const kind of summary.SUMMARY_KINDS) add(`nav.${kind}`);
+    // No silent dashes (lib/sourcestatus.js through ui/source-status.js): every reason, source and
+    // chip state; IP Intel's folded zero counts (lib/density.js).
+    const ss = await imp('assets/js/lib/sourcestatus.js');
+    for (const r of ss.STATUS_REASONS) add(`srcst.reason.${r}`);
+    for (const s of [...Object.keys(ss.STATUS_SOURCES), ...Object.keys(ss.IP_SOURCE_GROUPS)]) add(`srcst.source.${s}`);
+    for (const st of ['ok', 'idle', 'pending', 'failed']) add(`srcst.chip.${st}`);
+    for (const id of ['cdn', 'mine', 'priv']) add(`ipi.zero.${id}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

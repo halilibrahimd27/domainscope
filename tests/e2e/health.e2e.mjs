@@ -218,6 +218,51 @@ const MTASTS_CARD = '[data-mtasts="card"]';
 const GP_DIALOG = 'dialog.gp-confirm[open]';
 
 /**
+ * RDAP answered in the page: while `window.__rdap.on` is false every RDAP request (the IANA
+ * bootstrap, the registry, rdap.org) fails like a blocked or unreachable service; once it is on,
+ * the bootstrap sends .com to rdap.example.net, which knows example.com (registered by "Example
+ * Registrar, Inc.", expiring in 400 days). Requests are recorded in __rdap.calls.
+ */
+const RDAP_FAKE_SCRIPT = `(() => {
+  const inner = window.fetch;
+  const rdap = window.__rdap = { on: false, calls: [] };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/rdap+json' } });
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!/^https:\\/\\/(data\\.iana\\.org\\/rdap\\/|rdap\\.example\\.net\\/|rdap\\.org\\/)/.test(url)) return inner(input, init);
+    rdap.calls.push(url);
+    if (!rdap.on) throw new TypeError('Failed to fetch');
+    if (url === 'https://data.iana.org/rdap/dns.json') return json({ services: [[['com', 'net', 'org'], ['https://rdap.example.net/']]] });
+    if (url === 'https://rdap.example.net/domain/example.com') {
+      return json({
+        objectClassName: 'domain', ldhName: 'EXAMPLE.COM', status: ['client transfer prohibited'],
+        entities: [{ roles: ['registrar'], publicIds: [{ type: 'IANA Registrar ID', identifier: '376' }], vcardArray: ['vcard', [['fn', {}, 'text', 'Example Registrar, Inc.']]] }],
+        events: [{ eventAction: 'registration', eventDate: '1995-08-14T04:00:00Z' }, { eventAction: 'expiration', eventDate: new Date(Date.now() + 400 * 864e5).toISOString() }],
+        secureDNS: { delegationSigned: false },
+        nameservers: [{ ldhName: 'NS1.EXAMPLE.COM' }, { ldhName: 'NS2.EXAMPLE.COM' }]
+      });
+    }
+    return json({ errorCode: 404, title: 'Not Found' }, 404);
+  };
+})();`;
+
+/** What the RDAP card shows. */
+function rdapInfo() {
+  const card = document.querySelector('.hlt-rdap');
+  if (!card) return null;
+  const marks = [...card.querySelectorAll('.na-mark')];
+  return {
+    state: card.dataset.rdap,
+    na: marks.length,
+    title: marks[0]?.title || null,
+    status: card.querySelector('.hlt-rdap-status')?.textContent || null,
+    retry: !!card.querySelector('[data-action="retry-source"]'),
+    text: card.textContent.replace(/\s+/g, ' '),
+    days: card.querySelector('.hlt-expiry')?.dataset.days ?? null
+  };
+}
+
+/**
  * Fake Globalping v1 API (the outermost window.fetch wrapper): /limits (window.__gp.limitsRemaining),
  * POST /measurements (202 + quota headers; the result scenario is the next of window.__gp.next,
  * default 'ok') and GET /measurements/:id (in progress for 600 ms + __gp.delayMs, then the
@@ -353,6 +398,7 @@ async function mtaStsGroup(browser, server) {
   const netHits = await networkGuard(page);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(MAIL_APEX, MAIL_ZONE) });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGlobalpingScript(results, live.probe) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: RDAP_FAKE_SCRIPT });
   await installDownloadCapture(page);
   await page.emulateMedia({ 'prefers-color-scheme': 'light' });
   const gpCalls = () => page.evaluate(() => window.__gp.calls.map((c) => ({ method: c.method, path: c.path, body: c.body })));
@@ -700,6 +746,58 @@ async function mtaStsGroup(browser, server) {
       assert(/RFC 8461 §3\.1/.test(c.text), 'the finding cites the rule');
       assertEqual(await badge(), 'not valid: senders ignore it', 'still marked after the check');
       await shotCard(page, 'health-mtasts-desktop-light-en-txt-invalid');
+    });
+
+    await step('RDAP out of reach: its fields say n/a and why, never "—"; Retry (keyboard) asks RDAP alone again', async () => {
+      await gotoHash(page, `#/health?domain=${MAIL_APEX}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [MAIL_APEX], timeout: 30000, message: 'example.com report' });
+      let r = await page.evaluate(rdapInfo);
+      assertEqual([r.state, r.na, r.retry], ['failed', 5, true], 'failed RDAP card');
+      assertEqual(r.title, 'RDAP: could not be reached (offline, blocked, or no browser access)', 'n/a tooltip');
+      assertEqual(r.status, r.title, 'the reason is also written out (touch screens have no tooltip)');
+      assert(!/—/.test(r.text), `no silent dash: ${r.text}`);
+      assert((await page.evaluate(reportInfo)).checks.some((c) => c.id === 'rdap.error'), 'rdap.error check');
+      await shotSelector(page, 'health-rdap-desktop-light-en-failed', '.hlt-rdap');
+      const before = await page.evaluate(() => ({ dns: window.__zoneDnsQueries, rdap: window.__rdap.calls.length, score: document.querySelector('.hlt-hero').dataset.score }));
+      await page.evaluate(() => {
+        window.__rdap.on = true;
+        document.querySelector('.hlt-rdap [data-action="retry-source"]').focus();
+      });
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.hlt-rdap')?.dataset.rdap === 'ok', { timeout: 15000, message: 'RDAP answered' });
+      r = await page.evaluate(rdapInfo);
+      assert(/Example Registrar, Inc\./.test(r.text) && Number(r.days) >= 399, `registration data: ${r.text.slice(0, 200)} (${r.days} days)`);
+      const after = await page.evaluate(() => ({
+        dns: window.__zoneDnsQueries,
+        rdap: window.__rdap.calls.slice(),
+        focus: document.activeElement === document.querySelector('.hlt-rdap')
+      }));
+      assertEqual(after.dns, before.dns, 'no DNS query: only RDAP was asked again');
+      assertEqual(after.rdap.slice(before.rdap), ['https://data.iana.org/rdap/dns.json', 'https://rdap.example.net/domain/example.com'], 'RDAP requests of the Retry');
+      assert(after.focus, 'keyboard focus on the RDAP card');
+      const checks = (await page.evaluate(reportInfo)).checks.map((c) => c.id);
+      assert(checks.includes('rdap.expiry-ok') && !checks.includes('rdap.error'), `registration checks: ${checks.filter((c) => c.startsWith('rdap'))}`);
+      await announced(page, /Registration data loaded/, 'retry announced');
+      await shotSelector(page, 'health-rdap-desktop-light-en-retried', '.hlt-rdap');
+    });
+
+    await step('[dark, TR, 375 px] the failed RDAP card fits and is translated', async () => {
+      await page.evaluate(() => { window.__rdap.on = false; });
+      await page.setViewport({ width: 375, height: 812, mobile: true });
+      await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await setLangUi(page, 'tr');
+      await gotoHash(page, `#/health?domain=twosts.${MAIL_APEX}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [`twosts.${MAIL_APEX}`], timeout: 30000, message: 'twosts report' });
+      const r = await page.evaluate(rdapInfo);
+      assertEqual([r.state, r.retry], ['failed', true], 'failed RDAP card');
+      assertEqual(r.title, 'RDAP: ulaşılamadı (çevrimdışı, engellenmiş ya da tarayıcı erişimine kapalı)', 'TR tooltip');
+      await assertNoHorizontalScroll(page, 'rdap phone');
+      await shotSelector(page, 'health-rdap-mobile-dark-tr-failed', '.hlt-rdap');
+      await page.setViewport({ width: 1440, height: 900 });
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(page, 'en');
     });
 
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {

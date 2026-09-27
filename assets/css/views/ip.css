@@ -136,11 +136,19 @@
   color: var(--text-3);
 }
 
-.ipi-failed {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+/* The row's Retry (only the sources that failed there) sits under the address. */
+.ipi-ipcell .ipi-retry {
+  align-self: flex-start;
+  margin: 2px 0 0 -8px;
+}
+
+.ipi-problem {
+  overflow-wrap: anywhere;
+}
+
+/* Stat cards whose count is zero, folded into one sentence under the grid. */
+.ipi-zero {
+  margin: -6px 0 0;
 }
 
 .ipi-rev {

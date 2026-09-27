@@ -16,8 +16,9 @@
  *   server of the inventory. CSV / JSON and names.txt.
  * - Hand-offs, never silent: "Add names to a scan" opens Subdomains with the names
  *   (state.session.namesScanIntent, exact mode preset, the user presses Scan); "Add to Servers"
- *   appends the forward-confirmed hosts to the Servers editor (state.session.inventoryDraft,
- *   the user reviews and saves).
+ *   writes the forward-confirmed hosts into the Servers editor in the list's own format
+ *   (state.session.inventoryDraft, the user reviews and saves), or, for a format it does not
+ *   write, shows them to copy and leaves the editor alone.
  *
  * Shareable: `#/ptr?target=192.0.2.0/24&focus=example.com` pre-fills the form and waits for a
  * click (a link never starts a thousand DNS queries by itself).
@@ -25,8 +26,8 @@
 
 import { h, clear, debounce, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ErrorBanner, Icon, KeyValueList, KindBadge,
-  ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, select, setButtonBusy, textInput, textarea, toast
+  Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, EmptyState, ErrorBanner, Icon, KeyValueList, KindBadge,
+  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, select, setButtonBusy, textInput, textarea, toast
 } from '../ui/components.js';
 import {
   t, registerStrings, formatNumber, formatDuration, formatDateTime
@@ -34,9 +35,10 @@ import {
 import {
   SWEEP_MAX_ADDRESSES, SWEEP_MAX_CONCURRENCY, SWEEP_FILTERS, SWEEP_CSV_COLUMNS, parseSweepTarget, announcedPrefixes,
   prefixSelection, runPtrSweep, sweepRows, sweepRowMatches, sweepSummary, sweepExportRows, sweepExportJson, sweepNames,
-  inventoryAdditions, inventoryDraftText, scanHandoff, isFocusName
+  inventoryAdditions, inventoryDraft, scanHandoff, isFocusName
 } from '../lib/ptrsweep.js';
 import { normalizeHostname } from '../lib/domain.js';
+import { parseInventory } from '../lib/inventory.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
@@ -53,6 +55,8 @@ export const icon = 'swap';
 export const LINK_MAX_CHARS = 400;
 /** The example the form offers: RIPE NCC's AS, one RIPEstat request that lists its prefixes. */
 const EXAMPLE_ASN = 'AS3333';
+/** The server-list formats (inventory.inventoryFormat) lib/ptrsweep.inventoryDraft may not write, by name. */
+const INVENTORY_FORMAT_NAMES = Object.freeze({ json: 'JSON', yaml: 'YAML', csv: 'CSV' });
 
 /* ------------------------------------------------------------------------ */
 /* Strings                                                                  */
@@ -215,7 +219,14 @@ registerStrings('en', {
   'ptr.toInventory': 'Add to Servers',
   'ptr.toInventoryTitle': { one: 'Add the {count} forward-confirmed host that is not in your server list yet to the Servers editor (you review and save)', other: 'Add the {count} forward-confirmed hosts that are not in your server list yet to the Servers editor (you review and save)' },
   'ptr.inv.added': { one: '{count} host added to the Servers editor — review it and press Save.', other: '{count} hosts added to the Servers editor — review them and press Save.' },
+  'ptr.inv.addedGroup': { one: '{count} host added to the Servers editor, in a new {group} group — review it and press Save.', other: '{count} hosts added to the Servers editor, in a new {group} group — review them and press Save.' },
   'ptr.inv.none': 'Every forward-confirmed host is already in your server list.',
+  'ptr.inv.inDraft': 'Every forward-confirmed host is already in the Servers editor (not saved yet).',
+  'ptr.inv.manualTitle': 'Add the hosts to your server list yourself',
+  'ptr.inv.manualFormat': 'Your server list is {format} in a shape this page does not add hosts to, so the Servers editor was left as it is. Copy these hosts into it in that shape, or download them.',
+  'ptr.inv.manualCheck': 'Adding these lines would change how the rest of your server list is read, so the Servers editor was left as it is. Copy the hosts into it yourself, or download them.',
+  'ptr.inv.manualLines': { one: '{count} host: name and address', other: '{count} hosts: name and addresses' },
+  'ptr.inv.openServers': 'Open Servers',
   'ptr.scan.none': 'No PTR name to scan.',
   'ptr.emptyTitle': 'Who is behind a block of addresses?',
   'ptr.emptyBody': 'Look up the reverse DNS of a whole network, an address range or the prefixes of an AS, check that each name resolves back (forward-confirmed reverse DNS) and spot the hosts that are not in your inventory yet.'
@@ -378,7 +389,14 @@ registerStrings('tr', {
   'ptr.toInventory': 'Sunuculara ekle',
   'ptr.toInventoryTitle': 'Sunucu listenizde henüz olmayan {count} ileri doğrulanmış host’u Sunucular düzenleyicisine ekle (siz kontrol edip kaydedersiniz)',
   'ptr.inv.added': '{count} host Sunucular düzenleyicisine eklendi — kontrol edip Kaydet’e basın.',
+  'ptr.inv.addedGroup': '{count} host Sunucular düzenleyicisine, yeni bir {group} grubuna eklendi — kontrol edip Kaydet’e basın.',
   'ptr.inv.none': 'İleri doğrulanan her host zaten sunucu listenizde.',
+  'ptr.inv.inDraft': 'İleri doğrulanan her host zaten Sunucular düzenleyicisinde (henüz kaydedilmedi).',
+  'ptr.inv.manualTitle': 'Host’ları sunucu listenize kendiniz ekleyin',
+  'ptr.inv.manualFormat': 'Sunucu listeniz, bu sayfanın host ekleyemediği bir {format} yapısında; bu yüzden Sunucular düzenleyicisine dokunulmadı. Bu host’ları aynı yapıda kendiniz ekleyin ya da indirin.',
+  'ptr.inv.manualCheck': 'Bu satırları eklemek sunucu listenizin geri kalanının okunuşunu değiştirirdi; bu yüzden Sunucular düzenleyicisine dokunulmadı. Host’ları kendiniz ekleyin ya da indirin.',
+  'ptr.inv.manualLines': '{count} host: ad ve adres',
+  'ptr.inv.openServers': 'Sunucuları aç',
   'ptr.scan.none': 'Taranacak PTR adı yok.',
   'ptr.emptyTitle': 'Bir adres bloğunun arkasında kim var?',
   'ptr.emptyBody': 'Bütün bir ağın, bir adres aralığının ya da bir AS’in öneklerinin ters DNS’ine bakın, her adın yine o adrese çözüldüğünü doğrulayın (ileri doğrulanmış ters DNS) ve envanterinizde henüz olmayan sunucuları görün.'
@@ -1223,7 +1241,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   function renderActions() {
     const f = focus();
     const names = scanHandoff(job.results, { focus: f }).names;
-    const adds = inventoryAdditions(job.results, { index: ctx.getInventoryIndex(), focus: f });
+    const adds = inventoryAdditions(job.results, { servers: state.inventory.servers, index: ctx.getInventoryIndex(), focus: f });
     namesBtn.disabled = !sweepNames(job.results, { focus: f }).length;
     scanBtn.disabled = !names.length || job.status === 'running';
     scanBtn.title = t('ptr.toScanTitle', { count: names.length });
@@ -1326,16 +1344,57 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
 
   function addToInventory() {
-    const adds = inventoryAdditions(job.results, { index: ctx.getInventoryIndex(), focus: focus() });
+    // An unsaved draft of the Servers editor is kept, never replaced by the saved text; what
+    // it already holds (an earlier click included) is not added again.
+    const draft = state.getSession('inventoryDraft');
+    const base = draft ?? state.inventory.text;
+    const adds = inventoryAdditions(job.results, { servers: parseInventory(base).servers, focus: focus() });
     if (!adds.length) {
-      toast(t('ptr.inv.none'), { type: 'info' });
+      toast(t(typeof draft === 'string' && draft !== state.inventory.text ? 'ptr.inv.inDraft' : 'ptr.inv.none'), { type: 'info' });
       return;
     }
-    // An unsaved draft of the Servers editor is kept, never replaced by the saved text.
-    const base = state.getSession('inventoryDraft') ?? state.inventory.text;
-    state.setSession('inventoryDraft', inventoryDraftText(base, adds, { label: job.label, date: new Date() }));
-    toast(t('ptr.inv.added', { count: adds.length }), { type: 'info', timeout: 8000 });
+    const out = inventoryDraft(base, adds, { label: job.label, date: new Date() });
+    if (out.text === null) {
+      manualAdd(out);
+      return;
+    }
+    state.setSession('inventoryDraft', out.text);
+    const message = out.group ? t('ptr.inv.addedGroup', { count: adds.length, group: out.group }) : t('ptr.inv.added', { count: adds.length });
+    toast(message, { type: 'info', timeout: 8000 });
     ctx.navigate('inventory');
+  }
+
+  /**
+   * The server list is in a format this view does not write (or the addition would not read
+   * back as expected): the editor is left alone and the hosts are offered as lines to copy.
+   */
+  function manualAdd(out) {
+    const text = `${out.lines.join('\n')}\n`;
+    const why = out.reason === 'format'
+      ? t('ptr.inv.manualFormat', { format: INVENTORY_FORMAT_NAMES[out.format] || out.format })
+      : t('ptr.inv.manualCheck');
+    Modal({
+      title: t('ptr.inv.manualTitle'),
+      className: 'ptr-inv-manual',
+      content: h('div', { class: 'stack-sm' },
+        h('p', { class: 'modal-message', dataset: { reason: out.reason, format: out.format } }, why),
+        CodeBlock(text, { label: t('ptr.inv.manualLines', { count: out.lines.length }), maxHeight: '16rem' })),
+      actions: [
+        { label: t('common.close'), value: null },
+        {
+          label: t('common.download'),
+          icon: 'download',
+          onClick: () => {
+            const file = downloadText(timestampedName('reverse-dns-servers', 'txt'), text);
+            toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
+            return false;
+          }
+        },
+        { label: t('ptr.inv.openServers'), icon: 'server', variant: 'primary', value: 'open', autofocus: true }
+      ]
+    }).open().then((value) => {
+      if (value === 'open') ctx.navigate('inventory');
+    });
   }
 
   /* lifecycle */

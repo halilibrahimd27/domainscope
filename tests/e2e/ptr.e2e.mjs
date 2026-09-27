@@ -296,6 +296,47 @@ async function main() {
       await shot(page, opts, 'ptr-inventory-draft-desktop-light-en');
     });
 
+    await run.step('Add to Servers in the list’s own format: nothing twice, a JSON list gets an element, a JSON map is left alone', async () => {
+      const inventory = (text) => page.evaluate(async (t) => {
+        const { state } = await import('./assets/js/state.js');
+        state.takeSession('inventoryDraft');
+        state.setInventory(t);
+      }, text);
+      const editor = () => page.evaluate(() => document.querySelector('[data-role="inventory-text"]').value);
+      // a second click while the draft is unsaved adds nothing (the draft already has the host)
+      await gotoRoute(page, 'ptr');
+      await page.waitFor(() => document.querySelector('.ptr-progress')?.dataset.status === 'done', { message: 'results kept' });
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      await page.click('[data-action="ptr-to-inventory"]');
+      await page.waitFor(() => [...document.querySelectorAll('.toast')].some((el) => /already in the Servers editor/.test(el.textContent)), { message: 'nothing twice' });
+      assertEqual(await page.evaluate(() => document.documentElement.dataset.view), 'ptr', 'stays on the page');
+      // a JSON array gets one more element and stays JSON
+      await inventory('[\n  {"name": "web01", "ip": "192.0.2.1"}\n]');
+      await page.click('[data-action="ptr-to-inventory"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'inventory' && !!document.querySelector('[data-role="inventory-text"]'), { message: 'Servers view (JSON)' });
+      assertEqual(JSON.parse(await editor()), [{ name: 'web01', ip: '192.0.2.1' }, { name: 'host.example.net', ip: '192.0.2.3' }], 'JSON draft');
+      // a JSON map is not rewritten: the hosts are shown to copy, the editor is untouched
+      await gotoRoute(page, 'ptr');
+      await page.waitFor(() => document.querySelector('.ptr-progress')?.dataset.status === 'done', { message: 'results kept (2)' });
+      await inventory('{"web01": "192.0.2.1"}');
+      await page.click('[data-action="ptr-to-inventory"]');
+      await page.waitFor(() => !!document.querySelector('dialog.ptr-inv-manual[open]'), { message: 'dialog' });
+      const dialog = await page.evaluate(() => {
+        const d = document.querySelector('dialog.ptr-inv-manual');
+        const p = d.querySelector('.modal-message');
+        return { reason: p.dataset.reason, format: p.dataset.format, message: p.textContent, lines: d.querySelector('pre').textContent };
+      });
+      assertEqual([dialog.reason, dialog.format, dialog.lines], ['format', 'json', 'host.example.net 192.0.2.3\n'], 'dialog');
+      assert(/Your server list is JSON/.test(dialog.message), dialog.message);
+      assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.getSession('inventoryDraft') ?? null), null, 'no draft');
+      await shot(page, opts, 'ptr-inventory-manual-desktop-light-en');
+      await page.evaluate(() => [...document.querySelectorAll('dialog.ptr-inv-manual .modal-foot .btn')].find((b) => /Open Servers/.test(b.textContent)).click());
+      await page.waitFor(() => document.documentElement.dataset.view === 'inventory' && !!document.querySelector('[data-role="inventory-text"]'), { message: 'Servers view (map)' });
+      assertEqual(await editor(), '{"web01": "192.0.2.1"}', 'the saved map, unchanged');
+      await gotoRoute(page, 'ptr');
+      await inventory('web01 192.0.2.1');
+    });
+
     await run.step('back on #/ptr the results are kept; Add names to a scan → Subdomains in exact mode, the user presses Scan', async () => {
       await gotoRoute(page, 'ptr');
       await page.waitFor(() => document.querySelector('.ptr-progress')?.dataset.status === 'done', { message: 'results kept' });

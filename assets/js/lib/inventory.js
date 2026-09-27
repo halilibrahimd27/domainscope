@@ -1335,6 +1335,76 @@ function emptyResult(lines, warnings = []) {
   return { servers: [], warnings, stats: { lines, servers: 0, ips: 0 } };
 }
 
+/** The input as parseInventory reads it: size-capped, BOM stripped, split into lines. */
+function prepareSource(text) {
+  let source = typeof text === 'string' ? text : text === null || text === undefined ? '' : String(text);
+  const truncated = source.length > MAX_INPUT;
+  if (truncated) source = source.slice(0, MAX_INPUT);
+  source = source.replace(/^\uFEFF/, '');
+  const lines = source.split(/\r\n|\r|\n/);
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return { source, lines, truncated };
+}
+
+/**
+ * Which reader parseInventory hands the text to: one JSON document, the YAML subset, CSV with
+ * a header row, else the line-oriented reader (name ip, hosts, Ansible INI, JSON Lines). May
+ * throw on pathological input (parseInventory catches it).
+ */
+function detectFormat(source, lines) {
+  const trimmed = source.trim();
+  if (!trimmed) return { format: 'empty' };
+  if (trimmed[0] === '{' || trimmed[0] === '[') {
+    const data = tryJson(trimmed);
+    if (data !== undefined) return { format: 'json', data };
+  }
+  if (looksLikeYaml(lines)) {
+    const data = parseYamlSubset(lines);
+    if (data !== null && typeof data === 'object') return { format: 'yaml', data };
+  }
+  const csv = detectCsv(lines);
+  if (csv) return { format: 'csv', csv };
+  return { format: 'lines' };
+}
+
+/**
+ * The format parseInventory reads `text` as, for a tool that adds hosts to it in the same
+ * format (the Reverse DNS view's "Add to Servers"). Never throws.
+ * - 'json': one JSON document (`data`, parsed); 'yaml': the YAML subset (`data`, parsed);
+ * - 'csv': a header row (`delimiter`, `header` = each column's `role` 'name' | 'ip' | 'group' |
+ *   'other' and normalised `key`, `nameColumn` = the index of the column the name is read from,
+ *   -1 without one);
+ * - 'ini': line-oriented with an Ansible `[group]` header; 'jsonl': every line a JSON object;
+ *   'lines': `name ip`, `ip name`, hosts file; 'empty'.
+ * @param {string} text
+ * @returns {{ format: 'empty'|'json'|'yaml'|'csv'|'ini'|'jsonl'|'lines', data?: unknown, delimiter?: string,
+ *   header?: Array<{ role: 'name'|'ip'|'group'|'other', key: string }>, nameColumn?: number }}
+ */
+export function inventoryFormat(text) {
+  const { source, lines } = prepareSource(text);
+  let found;
+  try {
+    found = detectFormat(source, lines);
+  } catch {
+    return { format: 'lines' };
+  }
+  if (found.format === 'csv') {
+    const header = found.csv.columns.map((c) => ({ role: c.role, key: c.key }));
+    const names = found.csv.columns.map((c, i) => ({ ...c, i })).filter((c) => c.role === 'name').sort((a, b) => a.rank - b.rank);
+    return { format: 'csv', delimiter: found.csv.delimiter, header, nameColumn: names.length ? names[0].i : -1 };
+  }
+  if (found.format !== 'lines') return found;
+  const meaningful = lines.map((l) => l.trim()).filter((l) => l && !/^(#|;|\/\/)/.test(l) && l !== '---' && l !== '...');
+  // The section headers parseLines takes (a bracketed IPv6 literal is no header).
+  const isHeader = (l) => {
+    const m = /^\[([^\]]+)\]$/.exec(l);
+    return !!m && !cleanIpToken(l) && /^[\p{L}\p{N}_.-]+$/u.test(m[1].trim().split(':')[0]);
+  };
+  if (meaningful.some(isHeader)) return { format: 'ini' };
+  if (meaningful.length && meaningful.every((l) => l.startsWith('{') && l.endsWith('}') && tryJson(l) !== undefined)) return { format: 'jsonl' };
+  return { format: 'lines' };
+}
+
 /**
  * Parse a server inventory in any supported format. Never throws.
  * @param {string} text
@@ -1342,44 +1412,18 @@ function emptyResult(lines, warnings = []) {
  *   stats: { lines: number, servers: number, ips: number } }}
  */
 export function parseInventory(text) {
-  let source = typeof text === 'string' ? text : text === null || text === undefined ? '' : String(text);
+  const { source, lines, truncated } = prepareSource(text);
   const warnings = [];
-  if (source.length > MAX_INPUT) {
-    source = source.slice(0, MAX_INPUT);
-    warnings.push({ line: 0, code: 'PARSE', text: `Input truncated to ${MAX_INPUT} characters` });
-  }
-  source = source.replace(/^\uFEFF/, '');
-  const lines = source.split(/\r\n|\r|\n/);
-  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  if (truncated) warnings.push({ line: 0, code: 'PARSE', text: `Input truncated to ${MAX_INPUT} characters` });
   const lineCount = source.trim() ? lines.length : 0;
   if (!source.trim()) return emptyResult(lineCount, warnings);
 
   try {
     const ctx = createCollector(source, lines);
-    const trimmed = source.trim();
-    let handled = false;
-    if (trimmed[0] === '{' || trimmed[0] === '[') {
-      const data = tryJson(trimmed);
-      if (data !== undefined) {
-        extractStructured(data, ctx);
-        handled = true;
-      }
-    }
-    if (!handled && looksLikeYaml(lines)) {
-      const data = parseYamlSubset(lines);
-      if (data !== null && typeof data === 'object') {
-        extractStructured(data, ctx);
-        handled = true;
-      }
-    }
-    if (!handled) {
-      const csv = detectCsv(lines);
-      if (csv) {
-        parseCsv(source, csv, ctx);
-        handled = true;
-      }
-    }
-    if (!handled) parseLines(lines, ctx);
+    const found = detectFormat(source, lines);
+    if (found.format === 'json' || found.format === 'yaml') extractStructured(found.data, ctx);
+    else if (found.format === 'csv') parseCsv(source, found.csv, ctx);
+    else parseLines(lines, ctx);
     const result = ctx.finalize(lineCount);
     result.warnings.unshift(...warnings);
     return result;

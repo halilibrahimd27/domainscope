@@ -21,7 +21,7 @@
  *   {@link sweepRows} collapses each template into one row with a count.
  * - {@link sweepRows}, {@link sweepSummary} and the exports / hand-offs the view offers
  *   ({@link sweepExportRows}, {@link sweepExportJson}, {@link sweepNames},
- *   {@link inventoryAdditions}, {@link inventoryDraftText}, {@link scanHandoff}).
+ *   {@link inventoryAdditions}, {@link inventoryDraft}, {@link scanHandoff}).
  *
  * Nothing is sent by importing this module. A sweep sends PTR queries (the reverse names) and
  * A / AAAA queries (the PTR names) to the resolvers of the client it is given; the network's
@@ -34,7 +34,7 @@ import {
   matchProviderByCname, classifyResolution
 } from './netinfo.js';
 import { normalizeHostname, isSubdomainOf, registrableDomain, sortHostnames } from './domain.js';
-import { lookupServers } from './inventory.js';
+import { lookupServers, buildIpIndex, parseInventory, inventoryFormat } from './inventory.js';
 import { followCnames } from './doh.js';
 import { RIPESTAT_BASE, RIPESTAT_SOURCEAPP } from './ipintel.js';
 
@@ -1061,20 +1061,25 @@ export function sweepNames(results, { focus = null, templated = false, onlyFocus
 }
 
 /**
- * The hosts "Add to Servers" appends: forward-confirmed, not templated (unless under the focus
- * domain), and not an address the inventory already has. One entry per PTR name, with every
- * address that confirms it.
+ * The hosts "Add to Servers" offers: forward-confirmed, not templated (unless under the focus
+ * domain), and neither an address nor a name the server list already has (so a second click
+ * adds nothing twice). One entry per PTR name, with every address that confirms it.
  * @param {SweepResult[]} results
- * @param {{ index?: Map<string, object[]>|null, focus?: string|null }} [opts]
+ * @param {{ servers?: Array<{ name: string, ips: string[], aliases?: string[] }>|null, index?: Map<string, object[]>|null,
+ *   focus?: string|null }} [opts] `servers`: the list the hosts go into (the saved inventory, or the Servers editor's
+ *   draft parsed); `index`: its IP index (inventory.buildIpIndex), built from `servers` when left out
  * @returns {Array<{ name: string, ips: string[] }>} sortHostnames order
  */
-export function inventoryAdditions(results, { index = null, focus = null } = {}) {
+export function inventoryAdditions(results, { servers = null, index = null, focus = null } = {}) {
+  const list = Array.isArray(servers) ? servers.filter((s) => s && typeof s.name === 'string') : [];
+  const idx = index || (list.length ? buildIpIndex(list) : null);
+  const known = new Set(list.flatMap((s) => [s.name, ...(Array.isArray(s.aliases) ? s.aliases : [])]).map(canonName));
   const byName = new Map();
   for (const r of (Array.isArray(results) ? results : []).filter(Boolean)) {
     if (r.status !== 'confirmed') continue;
-    if (index && lookupServers([r.ip], index).length) continue;
+    if (idx && lookupServers([r.ip], idx).length) continue;
     const name = r.confirmed[0];
-    if (!name || (ptrTemplate(name, r.ip) && !isFocusName(name, focus))) continue;
+    if (!name || known.has(name) || (ptrTemplate(name, r.ip) && !isFocusName(name, focus))) continue;
     const ips = byName.get(name) || [];
     if (!ips.includes(r.ip)) ips.push(r.ip);
     byName.set(name, ips);
@@ -1082,25 +1087,152 @@ export function inventoryAdditions(results, { index = null, focus = null } = {})
   return sortHostnames([...byName.keys()]).map((name) => ({ name, ips: byName.get(name) }));
 }
 
+/** The group an Ansible inventory (INI or YAML) gets the added hosts under. */
+export const INVENTORY_GROUP = 'reverse_dns';
+
 /**
- * The Servers editor text with the additions appended under a comment line (`name ip [ip …]`
- * lines, lib/inventory's plain format), for `state.session.inventoryDraft`: the user reviews
- * and saves it, nothing is saved here.
+ * The additions as plain `name ip [ip …]` lines: the simplest inventory format, which the
+ * Servers editor and the CLI both read.
+ * @param {Array<{ name: string, ips: string[] }>} additions
+ * @returns {string[]}
+ */
+export function inventoryLines(additions) {
+  return (Array.isArray(additions) ? additions : []).map((a) => `${a.name} ${a.ips.join(' ')}`);
+}
+
+const NAME_KEY_RE = /^(?:name|host_?name|fqdn|server(?:_?name)?|host|inventory_hostname)$/i;
+
+/** The name and address keys of a record to copy (the first element of a JSON / YAML list). */
+function recordKeys(first) {
+  const keys = { name: 'name', ip: 'ip' };
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return keys;
+  const entries = Object.entries(first);
+  const name = entries.find(([k, v]) => NAME_KEY_RE.test(k) && typeof v === 'string' && !normalizeIP(v));
+  const ip = entries.find(([, v]) => (typeof v === 'string' && normalizeIP(v))
+    || (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && normalizeIP(x))));
+  if (name && ip && name[0] !== ip[0]) return { name: name[0], ip: ip[0] };
+  return keys;
+}
+
+/** One host as a record: the address as a string, several as a list. */
+const hostRecord = (a, keys) => ({ [keys.name]: a.name, [keys.ip]: a.ips.length === 1 ? a.ips[0] : [...a.ips] });
+
+/** A CSV cell, quoted when it holds the delimiter, a quote or a line break. */
+const csvField = (value, delimiter) => (value.includes(delimiter) || /["\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+
+/** A host name or IPv4 address as a plain YAML scalar; anything else (IPv6, a number) as a JSON string, valid YAML too. */
+const yamlValue = (v) => (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(v)
+  || (/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(v) && /[A-Za-z]/.test(v) && !/^(?:true|false|yes|no|on|off|null)$/i.test(v))
+  ? v
+  : JSON.stringify(v));
+const yamlList = (ips) => (ips.length === 1 ? yamlValue(ips[0]) : `[${ips.map(yamlValue).join(', ')}]`);
+
+/** Does `after` parse to exactly the servers of `before` plus the additions, with no new warning? */
+function addsExactly(before, after, additions) {
+  const a = parseInventory(before);
+  const b = parseInventory(after);
+  const sig = (name, ips) => `${String(name).toLowerCase()}\u0000${ips.join(' ')}`;
+  const want = [...a.servers.map((s) => sig(s.name, s.ips)), ...additions.map((x) => sig(x.name, x.ips))].sort();
+  const got = b.servers.map((s) => sig(s.name, s.ips)).sort();
+  return b.warnings.length <= a.warnings.length && want.length === got.length && want.every((v, i) => v === got[i]);
+}
+
+/**
+ * The Servers editor text with the additions written in the text's own format
+ * (inventory.inventoryFormat), for `state.session.inventoryDraft`: the user reviews and saves
+ * it, nothing is saved here.
+ * - plain lines and an empty text: `name ip …` lines under a comment line (`ip name` in a hosts file);
+ * - Ansible INI: `name ansible_host=ip` lines under their own `[reverse_dns]` group ({@link INVENTORY_GROUP});
+ * - JSON Lines: one object per line; a JSON array: one element per host, with the name and
+ *   address keys of the array's first element when it has plain ones (`name` / `ip` otherwise);
+ * - CSV: one row per host in the header's column order (the name and first address columns);
+ * - YAML: an Ansible inventory gets a top-level `reverse_dns` group, a list one item per host.
+ * Anything else (a JSON object such as Terraform or ansible-inventory output, a YAML map of
+ * another shape, a CSV without a name column) is not rewritten: `text` is null with
+ * `reason: 'format'`, and the caller offers `lines` to copy. The new text is always parsed
+ * back: unless it gives exactly the old servers plus the additions, with no new warning,
+ * `text` is null with `reason: 'check'`.
  * @param {string} base the editor's current text (an unsaved draft, else the saved inventory)
  * @param {Array<{ name: string, ips: string[] }>} additions
- * @param {{ label?: string, date?: Date }} [opts] the sweep's target, the date for the comment
- * @returns {string}
+ * @param {{ label?: string, date?: Date }} [opts] the sweep's target and the date, for the comment line
+ * @returns {{ text: string|null, format: string, reason: null|'format'|'check', group: string|null, lines: string[] }}
  */
-export function inventoryDraftText(base, additions, { label = '', date = new Date() } = {}) {
+export function inventoryDraft(base, additions, { label = '', date = new Date() } = {}) {
   const head = String(base ?? '').replace(/\s+$/, '');
-  const list = Array.isArray(additions) ? additions : [];
-  if (!list.length) return head ? `${head}\n` : '';
+  const list = (Array.isArray(additions) ? additions : []).filter((a) => a && a.name && Array.isArray(a.ips) && a.ips.length);
+  const lines = inventoryLines(list);
+  const info = inventoryFormat(head);
+  const out = { text: null, format: info.format, reason: null, group: null, lines };
+  if (!list.length) return { ...out, text: head ? `${head}\n` : '' };
   const day = date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString().slice(0, 10) : '';
   // The label is user text: one line, no comment-breaking characters.
   const what = String(label || '').replace(/[\r\n]+/g, ' ').slice(0, 120);
   const comment = `# reverse DNS sweep${what ? ` of ${what}` : ''}${day ? ` (${day})` : ''}: forward-confirmed hosts`;
-  const lines = list.map((a) => `${a.name} ${a.ips.join(' ')}`);
-  return `${head ? `${head}\n\n` : ''}${comment}\n${lines.join('\n')}\n`;
+  const append = (block, sep = '\n\n') => `${head ? `${head}${sep}` : ''}${block.join('\n')}\n`;
+  const perAddress = list.flatMap((a) => a.ips.map((ip) => ({ name: a.name, ip })));
+  let text = null;
+  switch (info.format) {
+    case 'empty':
+    case 'lines': {
+      // A hosts file (`ip name` lines) keeps its order.
+      const firsts = head.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l && !/^(#|;|\/\/)/.test(l)).map((l) => l.split(/\s+/)[0]);
+      const ipFirst = firsts.length > 0 && firsts.filter((x) => normalizeIP(x)).length * 2 > firsts.length;
+      text = append([comment, ...(ipFirst ? perAddress.map((x) => `${x.ip} ${x.name}`) : lines)]);
+      break;
+    }
+    case 'ini':
+      out.group = INVENTORY_GROUP;
+      text = append([comment, `[${INVENTORY_GROUP}]`, ...perAddress.map((x) => `${x.name} ansible_host=${x.ip}`)]);
+      break;
+    case 'jsonl':
+      text = append(list.map((a) => JSON.stringify(hostRecord(a, recordKeys(null)))), '\n');
+      break;
+    case 'json': {
+      if (!Array.isArray(info.data) || !info.data.every((x) => x && typeof x === 'object' && !Array.isArray(x))) break;
+      const keys = recordKeys(info.data[0]);
+      const items = list.map((a) => JSON.stringify(hostRecord(a, keys)));
+      const end = head.lastIndexOf(']');
+      const before = head.slice(0, end).replace(/\s+$/, '');
+      const comma = info.data.length ? ',' : '';
+      if (!head.includes('\n')) {
+        text = `${before}${comma}${comma ? ' ' : ''}${items.join(', ')}]\n`;
+      } else {
+        const indent = (/\[[ \t]*\r?\n([ \t]*)\S/.exec(head) || [null, '  '])[1];
+        text = `${before}${comma}\n${items.map((x) => `${indent}${x}`).join(',\n')}\n]\n`;
+      }
+      break;
+    }
+    case 'csv': {
+      const ipColumn = info.header.findIndex((c) => c.role === 'ip');
+      if (info.nameColumn < 0 || ipColumn < 0) break;
+      const d = info.delimiter;
+      const row = (a) => info.header.map((c, i) => csvField(i === info.nameColumn ? a.name : i === ipColumn ? a.ips.join(' ') : '', d)).join(d);
+      text = append(list.map(row), '\n');
+      break;
+    }
+    case 'yaml': {
+      const data = info.data;
+      if (Array.isArray(data) && data.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+        const keys = recordKeys(data[0]);
+        const indent = (/^([ \t]*)-[ \t]/m.exec(head) || [null, ''])[1];
+        text = append([comment, ...list.flatMap((a) => [
+          `${indent}- ${keys.name}: ${yamlValue(a.name)}`, `${indent}  ${keys.ip}: ${yamlList(a.ips)}`
+        ])]);
+      } else if (data && !Array.isArray(data) && ('all' in data || /(^|\s)ansible_host\s*:/m.test(head)) && !(INVENTORY_GROUP in data)) {
+        // A top-level group next to `all`; a host's further addresses go into `ips`.
+        out.group = INVENTORY_GROUP;
+        text = append([comment, `${INVENTORY_GROUP}:`, '  hosts:', ...list.flatMap((a) => [
+          `    ${yamlValue(a.name)}:`, `      ansible_host: ${yamlValue(a.ips[0])}`, ...(a.ips.length > 1 ? [`      ips: ${yamlList(a.ips)}`] : [])
+        ])]);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  if (text === null) return { ...out, group: null, reason: 'format' };
+  if (!addsExactly(head, text, list)) return { ...out, group: null, reason: 'check' };
+  return { ...out, text };
 }
 
 /**

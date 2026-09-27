@@ -639,15 +639,96 @@ describe('rows, summary, exports and hand-offs', async () => {
     assert.deepEqual(P.sweepNames(results, { confirmedOnly: true }), ['mail.example.com', 'host.example.net']);
   });
 
-  test('inventoryAdditions / inventoryDraftText: confirmed, not templated, not already a server', () => {
+  test('inventoryAdditions: confirmed, not templated, neither an address nor a name the list already has', () => {
     const adds = P.inventoryAdditions(results, { index: buildIpIndex(parseInventory('web01 192.0.2.1').servers) });
     assert.deepEqual(adds, [{ name: 'host.example.net', ips: ['192.0.2.3'] }]);
     assert.deepEqual(P.inventoryAdditions(results).map((x) => x.name), ['mail.example.com', 'host.example.net']);
-    const text = P.inventoryDraftText('web01 192.0.2.1\n\n', adds, { label: '192.0.2.0/28\nx', date: new Date('2026-09-27T12:00:00Z') });
-    assert.equal(text, 'web01 192.0.2.1\n\n# reverse DNS sweep of 192.0.2.0/28 x (2026-09-27): forward-confirmed hosts\nhost.example.net 192.0.2.3\n');
-    assert.deepEqual(parseInventory(text).servers.map((s) => [s.name, s.ips]), [['web01', ['192.0.2.1']], ['host.example.net', ['192.0.2.3']]]);
-    assert.equal(P.inventoryDraftText('', adds, { date: new Date('2026-09-27T12:00:00Z') }), '# reverse DNS sweep (2026-09-27): forward-confirmed hosts\nhost.example.net 192.0.2.3\n');
-    assert.equal(P.inventoryDraftText('web01 192.0.2.1', []), 'web01 192.0.2.1\n');
+    assert.deepEqual(P.inventoryAdditions(results, { servers: parseInventory('web01 192.0.2.1').servers }), adds, 'the index is built from the servers');
+    // a name the list has (on another address, or as an alias) is not added a second time
+    assert.deepEqual(P.inventoryAdditions(results, { servers: parseInventory('HOST.example.net 198.51.100.9').servers }).map((x) => x.name), ['mail.example.com']);
+    assert.deepEqual(P.inventoryAdditions(results, { servers: parseInventory('198.51.100.9 mail01 mail.example.com').servers }).map((x) => x.name), ['host.example.net']);
+  });
+
+  const DAY = new Date('2026-09-27T12:00:00Z');
+  const ADDS = [{ name: 'mail.example.com', ips: ['192.0.2.1'] }, { name: 'vpn.example.com', ips: ['192.0.2.6', '2001:db8::6'] }];
+  const serversOf = (text) => parseInventory(text).servers.map((s) => [s.name.toLowerCase(), s.ips]);
+  /** The draft of `base` must read back as the old servers plus ADDS, and add nothing on a second click. */
+  const drafted = (base, extra = {}) => {
+    const out = P.inventoryDraft(base, ADDS, { label: '192.0.2.0/28', date: DAY });
+    assert.equal(out.reason, null, `${out.format}: ${out.reason}`);
+    assert.deepEqual(serversOf(out.text), [...serversOf(base), ...ADDS.map((a) => [a.name, a.ips])], out.text);
+    assert.ok(parseInventory(out.text).warnings.length <= parseInventory(base).warnings.length, 'no new warning');
+    const again = P.inventoryAdditions([
+      { status: 'confirmed', ip: '192.0.2.1', names: ['mail.example.com'], confirmed: ['mail.example.com'] }
+    ], { servers: parseInventory(out.text).servers });
+    assert.deepEqual(again, [], 'a second click adds nothing');
+    assert.deepEqual(out.lines, ['mail.example.com 192.0.2.1', 'vpn.example.com 192.0.2.6 2001:db8::6']);
+    for (const [k, v] of Object.entries(extra)) assert.equal(out[k], v, k);
+    return out;
+  };
+
+  test('inventoryDraft: plain lines, an empty list and a hosts file keep their line format', () => {
+    const plain = drafted('web01 192.0.2.10\n\n', { format: 'lines', group: null });
+    assert.equal(plain.text, 'web01 192.0.2.10\n\n# reverse DNS sweep of 192.0.2.0/28 (2026-09-27): forward-confirmed hosts\n'
+      + 'mail.example.com 192.0.2.1\nvpn.example.com 192.0.2.6 2001:db8::6\n');
+    assert.equal(drafted('', { format: 'empty' }).text, '# reverse DNS sweep of 192.0.2.0/28 (2026-09-27): forward-confirmed hosts\n'
+      + 'mail.example.com 192.0.2.1\nvpn.example.com 192.0.2.6 2001:db8::6\n');
+    const hosts = drafted('192.0.2.10 web01 web01.example.org\n192.0.2.11 web02', { format: 'lines' });
+    assert.match(hosts.text, /\n192\.0\.2\.1 mail\.example\.com\n192\.0\.2\.6 vpn\.example\.com\n2001:db8::6 vpn\.example\.com\n$/);
+    // the label is one comment line whatever the user typed
+    const odd = P.inventoryDraft('', ADDS, { label: '192.0.2.0/28\n[web]\r\nx', date: DAY });
+    assert.equal(odd.text.split('\n')[0], '# reverse DNS sweep of 192.0.2.0/28 [web] x (2026-09-27): forward-confirmed hosts');
+    assert.equal(P.inventoryDraft('web01 192.0.2.10', []).text, 'web01 192.0.2.10\n');
+  });
+
+  test('inventoryDraft: Ansible INI gets its own [reverse_dns] group, never the last group of the file', () => {
+    const base = '[web]\nweb01 ansible_host=192.0.2.10\n\n[db]\ndb01 ansible_host=192.0.2.11\n';
+    const out = drafted(base, { format: 'ini', group: 'reverse_dns' });
+    assert.match(out.text, /\n\[reverse_dns\]\nmail\.example\.com ansible_host=192\.0\.2\.1\nvpn\.example\.com ansible_host=192\.0\.2\.6\nvpn\.example\.com ansible_host=2001:db8::6\n$/);
+    const groups = Object.fromEntries(parseInventory(out.text).servers.map((s) => [s.name, s.groups]));
+    assert.deepEqual(groups, { web01: ['web'], db01: ['db'], 'mail.example.com': ['reverse_dns'], 'vpn.example.com': ['reverse_dns'] });
+  });
+
+  test('inventoryDraft: JSON arrays get elements (with the array’s own keys), JSON Lines get lines', () => {
+    const pretty = drafted('[\n  {"hostname": "web01", "address": "192.0.2.10"},\n  {"hostname": "web02", "address": "192.0.2.11"}\n]', { format: 'json' });
+    assert.equal(pretty.text, '[\n  {"hostname": "web01", "address": "192.0.2.10"},\n  {"hostname": "web02", "address": "192.0.2.11"},\n'
+      + '  {"hostname":"mail.example.com","address":"192.0.2.1"},\n  {"hostname":"vpn.example.com","address":["192.0.2.6","2001:db8::6"]}\n]\n');
+    assert.deepEqual(JSON.parse(pretty.text).length, 4, 'still one JSON document');
+    const inline = drafted('[{"name":"web01","ip":"192.0.2.10"}]', { format: 'json' });
+    assert.equal(inline.text, '[{"name":"web01","ip":"192.0.2.10"}, {"name":"mail.example.com","ip":"192.0.2.1"}, {"name":"vpn.example.com","ip":["192.0.2.6","2001:db8::6"]}]\n');
+    assert.equal(JSON.parse(drafted('[]').text).length, 2);
+    const lines = drafted('{"name":"web01","ip":"192.0.2.10"}\n{"name":"web02","ip":"192.0.2.11"}', { format: 'jsonl' });
+    assert.ok(lines.text.split('\n').filter(Boolean).every((l) => JSON.parse(l)), 'every line is JSON');
+  });
+
+  test('inventoryDraft: CSV rows follow the header’s column order and delimiter', () => {
+    const out = drafted('hostname,ip,role\nweb01,192.0.2.10,web\nweb02,192.0.2.11,web', { format: 'csv' });
+    assert.match(out.text, /\nweb02,192\.0\.2\.11,web\nmail\.example\.com,192\.0\.2\.1,\nvpn\.example\.com,192\.0\.2\.6 2001:db8::6,\n$/);
+    const semi = drafted('IP;Sunucu Adı;Rol\n192.0.2.10;web01;web', { format: 'csv' });
+    assert.match(semi.text, /\n192\.0\.2\.1;mail\.example\.com;\n192\.0\.2\.6 2001:db8::6;vpn\.example\.com;\n$/);
+    assert.ok(!/#/.test(out.text), 'no comment row in a CSV file');
+  });
+
+  test('inventoryDraft: YAML — an Ansible inventory gets a reverse_dns group, a list gets items', () => {
+    const ansible = drafted('all:\n  children:\n    web:\n      hosts:\n        web01:\n          ansible_host: 192.0.2.10\n', { format: 'yaml', group: 'reverse_dns' });
+    assert.match(ansible.text, /\nreverse_dns:\n {2}hosts:\n {4}mail\.example\.com:\n {6}ansible_host: 192\.0\.2\.1\n {4}vpn\.example\.com:\n {6}ansible_host: 192\.0\.2\.6\n {6}ips: \[192\.0\.2\.6, "2001:db8::6"\]\n$/);
+    const list = drafted('- name: web01\n  ip: 192.0.2.10\n- name: web02\n  ip: 192.0.2.11\n', { format: 'yaml', group: null });
+    assert.match(list.text, /\n- name: mail\.example\.com\n {2}ip: 192\.0\.2\.1\n- name: vpn\.example\.com\n {2}ip: \[192\.0\.2\.6, "2001:db8::6"\]\n$/);
+  });
+
+  test('inventoryDraft: a shape it does not write, or an addition that would not read back, leaves the text alone', () => {
+    const untouched = (base, format, reason, adds = ADDS) => {
+      const out = P.inventoryDraft(base, adds, { date: DAY });
+      assert.deepEqual([out.text, out.format, out.reason, out.group], [null, format, reason, null], base);
+      assert.deepEqual(out.lines, adds.map((a) => `${a.name} ${a.ips.join(' ')}`));
+    };
+    untouched('{"web01": "192.0.2.10", "web02": "192.0.2.11"}', 'json', 'format'); // a map (or Terraform / ansible-inventory output)
+    untouched('[["web01", "192.0.2.10"]]', 'json', 'format');
+    untouched('servers:\n  web01: 192.0.2.10\n  web02: 192.0.2.11\n', 'yaml', 'format');
+    untouched('ip,role\n192.0.2.10,web', 'csv', 'format'); // no name column to put the host name in
+    // an address the list has already: a DUPLICATE_IP warning; a name it has: the servers merge
+    untouched('web01 192.0.2.10', 'lines', 'check', [{ name: 'mail.example.com', ips: ['192.0.2.10'] }]);
+    untouched('mail.example.com 192.0.2.10', 'lines', 'check', [{ name: 'mail.example.com', ips: ['192.0.2.1'] }]);
   });
 
   test('scanHandoff: the focus domain and its names, else the most frequent registrable domains', () => {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets
+  parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets, inventoryFormat
 } from '../../assets/js/lib/inventory.js';
 
 /** Map server id -> sorted ips for order-independent comparison. */
@@ -694,6 +694,29 @@ test('result shape is stable', () => {
   assert.equal(s.name, 'web01');
   assert.equal(s.line, 1);
   assert.deepEqual(Object.keys(r.stats).sort(), ['ips', 'lines', 'servers']);
+});
+
+test('inventoryFormat: the reader parseInventory picks, with the CSV header and the JSON / YAML data', () => {
+  assert.deepEqual(inventoryFormat(''), { format: 'empty' });
+  assert.deepEqual(inventoryFormat(null), { format: 'empty' });
+  assert.deepEqual(inventoryFormat('web01 192.0.2.1\n192.0.2.2 web02'), { format: 'lines' });
+  assert.deepEqual(inventoryFormat('# servers\n[web]\nweb01 ansible_host=192.0.2.1'), { format: 'ini' });
+  assert.deepEqual(inventoryFormat('[2001:db8::1]:8443\nweb01 192.0.2.1'), { format: 'lines' }, 'a bracketed address is no INI header');
+  assert.deepEqual(inventoryFormat('{"name":"web01","ip":"192.0.2.1"}\n{"name":"web02","ip":"192.0.2.2"}'), { format: 'jsonl' });
+  assert.deepEqual(inventoryFormat('[{"name":"web01","ip":"192.0.2.1"}]'), { format: 'json', data: [{ name: 'web01', ip: '192.0.2.1' }] });
+  assert.equal(inventoryFormat('{"web01": "192.0.2.1"}').format, 'json');
+  assert.deepEqual(inventoryFormat('all:\n  hosts:\n    web01:\n      ansible_host: 192.0.2.1\n'), {
+    format: 'yaml', data: { all: { hosts: { web01: { ansible_host: '192.0.2.1' } } } }
+  });
+  assert.deepEqual(inventoryFormat('\uFEFFrole;IP;Hostname\nweb;192.0.2.1;web01'), {
+    format: 'csv', delimiter: ';', nameColumn: 2,
+    header: [{ role: 'group', key: 'role' }, { role: 'ip', key: 'ip' }, { role: 'name', key: 'hostname' }]
+  });
+  assert.equal(inventoryFormat('ip,role\n192.0.2.1,web').nameColumn, -1);
+  // parseInventory reads each of them with that reader
+  for (const text of ['web01 192.0.2.1', '[web]\nweb01 ansible_host=192.0.2.1', 'hostname,ip\nweb01,192.0.2.1', '[{"name":"web01","ip":"192.0.2.1"}]']) {
+    assert.deepEqual(parseInventory(text).servers.map((s) => [s.name, s.ips]), [['web01', ['192.0.2.1']]], text);
+  }
 });
 
 /* -------------------------------------------------------------------- */

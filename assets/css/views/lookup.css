@@ -410,6 +410,47 @@
   font-size: 12px;
 }
 
+/* The raw answer is one click away on every card: a slim summary, like the signatures line. */
+.lkp-raw > .disclosure-summary {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.lkp-raw > .disclosure-body {
+  padding: 0 12px 12px;
+}
+
+/* Phones: the SOA's short timers sit two to a row under the full-width names and serial. */
+@media (max-width: 560px) {
+  .lkp-soa {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+  }
+
+  .lkp-soa .kv-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .lkp-soa .kv-row:nth-child(-n+3) {
+    grid-column: 1 / -1;
+  }
+
+  .lkp-soa .kv-row:last-child {
+    border-bottom: 0;
+  }
+
+  .lkp-soa .kv-row .kv-key,
+  .lkp-soa .kv-row .kv-value {
+    padding: 0;
+    border-bottom: 0;
+  }
+}
+
 .lkp-rrsig-validity .badge {
   white-space: nowrap;
 }

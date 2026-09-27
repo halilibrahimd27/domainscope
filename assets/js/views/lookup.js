@@ -742,7 +742,8 @@ export function mount(container, ctx) {
       return kinds.length ? Math.min(...kinds.map((k) => KIND_ORDER[k.kind] ?? 6)) : 8;
     };
     const sorted = rrs.map((rr, i) => ({ rr, i, r: rank(rr) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.rr);
-    const LIMIT = 8;
+    // SPF / DMARC / DKIM … come first; on a phone four records, then "+N more" (each is a tall block there).
+    const LIMIT = globalThis.matchMedia && globalThis.matchMedia('(max-width: 600px)').matches ? 4 : 8;
     const list = h('ul', { class: 'lkp-txt-list' }, sorted.slice(0, LIMIT).map((rr) => txtItem(rr, qname)));
     if (sorted.length <= LIMIT) return list;
     const more = Button({

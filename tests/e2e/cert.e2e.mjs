@@ -595,6 +595,24 @@ async function main() {
       assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the same lines in plain text');
     });
 
+    await run.step('print from dark mode: the lifetime bar keeps its colours on paper', async () => {
+      await page.send('Emulation.setEmulatedMedia', { media: 'print', features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+      try {
+        const bar = await page.evaluate(() => {
+          const track = document.querySelector('.cert-overview .cert-validity-track');
+          const fill = document.querySelector('.cert-overview .cert-validity-fill');
+          return {
+            adjust: [getComputedStyle(track).printColorAdjust, getComputedStyle(fill).printColorAdjust],
+            shown: track.getBoundingClientRect().height > 0 && fill.getBoundingClientRect().width > 0,
+            painted: getComputedStyle(fill).backgroundColor !== 'rgba(0, 0, 0, 0)'
+          };
+        });
+        assertEqual(bar, { adjust: ['exact', 'exact'], shown: true, painted: true }, 'the bar is printed with its backgrounds');
+      } finally {
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      }
+    });
+
     await run.step('Names tab: 8 SANs, IDN in Unicode, registrable domain links to a scan', async () => {
       const info = await page.evaluate(() => ({
         rows: [...document.querySelectorAll('.cert-tabs .dt-table tbody tr.dt-row')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim())),

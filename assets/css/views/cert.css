@@ -631,4 +631,11 @@
   .cert-overview-foot {
     display: none;
   }
+
+  /* The lifetime bar is drawn with backgrounds, which paper leaves out by default. */
+  .cert-validity-track,
+  .cert-validity-fill {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }

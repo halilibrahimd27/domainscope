@@ -115,6 +115,21 @@ async function clickNav(page, view) {
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 
+/** On a phone: open the Tools menu, follow its link to a view (a real click), wait for the view; returns the link's href. */
+async function clickMenu(page, view) {
+  await page.click('[data-control="nav-menu"]');
+  await page.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'tools menu open' });
+  const href = await page.evaluate((v) => document.querySelector(`.navmenu-link[data-view="${v}"]`).getAttribute('href'), view);
+  await page.click(`.navmenu-link[data-view="${view}"]`);
+  await page.waitFor((v) => document.documentElement.dataset.view === v
+    && document.querySelector('#page-body')?.dataset.view === v
+    && document.querySelector('#page-body').childElementCount > 0
+    && !document.querySelector('#page-body .page-loading')
+    && !document.querySelector('dialog.navmenu-modal[open]'), { args: [view], message: `view ${view}`, timeout: 15000 });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  return href;
+}
+
 /** Press the page header's "Copy link" and return the hash it copied (the clipboard is stubbed in the page). */
 async function copiedLink(page) {
   await page.evaluate(() => {
@@ -567,7 +582,8 @@ async function phone(browser, server) {
           await gotoRoute(page, `#/health?domain=${APEX}`);
           await page.waitFor(HEALTH_DONE, { timeout: 30000, message: 'health report' });
           await gotoRoute(page, '#/about');
-          await clickNav(page, 'health');
+          const href = await clickMenu(page, 'health');
+          assert(href.includes(`domain=${APEX}`) && href.includes('run=0'), `the Tools menu leads back to the kept report: ${href}`);
           await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
           const layout = await page.evaluate(() => {
             const r = (sel) => document.querySelector(sel)?.getBoundingClientRect();

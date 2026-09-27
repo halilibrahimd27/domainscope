@@ -1174,7 +1174,8 @@ function openNavMenu() {
         const here = v.id === openedOn;
         return h('li', null, h('a', {
           class: ['navmenu-link', { 'is-busy': here && busy }],
-          href: buildRoute(v.id),
+          // Like the sidebar's links: to the tool's kept result or with the current target filled in.
+          href: navHref(v.id),
           dataset: { view: v.id, autofocus: here ? '1' : null },
           attrs: { 'aria-current': here ? 'page' : null },
           on: {

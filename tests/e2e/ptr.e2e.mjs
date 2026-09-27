@@ -339,8 +339,10 @@ async function main() {
       assertEqual(mismatch.csv, ['192.0.2.2 mismatch', '192.0.2.10 mismatch'], 'CSV: not the seven confirmed members');
       assertEqual([mismatch.json, mismatch.filter, mismatch.done], [['192.0.2.2 mismatch', '192.0.2.10 mismatch'], { show: 'mismatch', search: '' }, 16], 'JSON');
       await shot(page, opts, 'ptr-filter-pattern-desktop-light-en');
-      // the search judges a pattern's members one by one too
+      // the search judges a pattern's members one by one too; the mismatch filter's note says
+      // "1 of 8" as well and goes on the next frame, so wait for "all" to drop it first
       await setSelect(page, '[data-role="ptr-filter"]', 'all');
+      await page.waitFor(() => document.querySelectorAll('.ptr-table tbody tr.dt-row').length === 9 && !document.querySelector('.ptr-matching'), { message: 'every row, no note' });
       await page.type('.ptr-table .dt-search-input', '192.0.2.9');
       await page.waitFor(() => /1 of 8/.test(document.querySelector('.ptr-row-pattern .ptr-matching')?.textContent || ''), { message: 'search note' });
       assertEqual((await rows(page)).length, 1, 'only the pattern row');

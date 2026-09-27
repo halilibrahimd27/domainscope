@@ -445,7 +445,12 @@ async function main() {
       assert(asked.includes('mail.example.com') && asked.includes('www.example.com'), 'the names were resolved');
     });
 
-    await run.step('the origin panel links an IPv4 network to a Reverse DNS sweep that waits for a click', async () => {
+    await run.step('the origin panel (the Origins tab) links an IPv4 network to a Reverse DNS sweep that waits for a click', async () => {
+      await page.click('.sub-tabs .tab[data-tab="origins"]');
+      await page.waitFor(() => {
+        const link = document.querySelector('.sub-org-net[data-cidr="192.0.2.0/24"] [data-action="sub-org-ptr"]');
+        return !!link && !link.closest('[hidden]');
+      }, { message: 'Origins tab' });
       const href = await page.evaluate(() => document.querySelector('.sub-org-net[data-cidr="192.0.2.0/24"] [data-action="sub-org-ptr"]')?.getAttribute('href'));
       assertEqual(href, '#/ptr?target=192.0.2.0%2F24&focus=example.com', 'link');
       await shot(page, opts, 'ptr-subdomains-origin-link-desktop-light-en');

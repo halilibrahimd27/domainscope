@@ -442,7 +442,8 @@ ScanResult = {
 }
 HostRecord = { name, origins: string[], resolution: HostResolution, classification, cert: { covered, by } | null, servers: Array<{ serverId, name, ip }>, wildcardSuspect: boolean, ipHints: IpHint[],
   candidateNetworks: string[] /* extension: origin-network CIDRs to sweep; empty unless the host hides its origin */,
-  customOnly: boolean /* extension: found ONLY through a custom-list label that is not in WORDLIST_SMALL (never learned) */ }
+  customOnly: boolean /* extension: found ONLY through a custom-list label that is not in WORDLIST_SMALL — by the wordlist stage, or a
+    probe-only permutation / recursive host whose left-most labels carry such a label (never learned) */ }
   // origins: 'input' | 'cert' | source ids | 'dns-mine:<RR>' (MX|NS|SOA|SPF|DMARC|SRV|CNAME|CAA|HTTPS|PTR) | 'wordlist' | 'permutation' | 'recursive'; legacy results may show 'bruteforce' (= 'wordlist')
 OriginHint = { ip, reasons: Reason[], servers: Array<{ serverId, name }>, provider: provider|null, hosts: string[] /* extension */ }
 Reason =                                   // `detail` is log text; views read the structured fields only

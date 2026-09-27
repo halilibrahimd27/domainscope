@@ -1187,6 +1187,60 @@ describe('discovery engine v2: the tab-only custom list is never learned', () =>
     assert.ok(labels.includes('www') && labels.includes('crm'), 'public evidence is still learned');
   });
 
+  test('a custom label found only by the recursive round is custom-only, never learned', async () => {
+    const A = 'priv.example';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`api.${A}`]: { A: ['203.0.113.2'] },
+      [`dev.api.${A}`]: { A: ['203.0.113.3'] },
+      [`zzprojectx.api.${A}`]: { A: ['203.0.113.4'] } // no zzprojectx.<apex>: only the recursive round finds it
+    };
+    const { fetchImpl, dns } = mkWorld({ zone, sources: anubis([`api.${A}`, `dev.api.${A}`]) });
+    const scan = await runScan({
+      domains: [A], sources: ['anubis'], bruteforce: 'small', customWordlist: ['zzprojectx'],
+      mine: false, permutationBudget: 0, recursive: true, originHints: false, balance: false, dns, fetchImpl
+    });
+    const host = byName(scan).get(`zzprojectx.api.${A}`);
+    assert.deepEqual(host.origins, ['recursive']);
+    assert.equal(host.customOnly, true);
+    const labels = learnedLabelsFromScan(scan);
+    assert.ok(!labels.some((l) => l.includes('zzprojectx')), labels.join(','));
+    assert.ok(labels.includes('api') && labels.includes('dev'));
+  });
+
+  test('level off: a custom label found only by a permutation sibling swap is custom-only, never learned', async () => {
+    const A = 'priv.example';
+    const zone = { [A]: { A: ['203.0.113.1'] }, [`api.${A}`]: { A: ['203.0.113.2'] }, [`zzprojectx.${A}`]: { A: ['203.0.113.3'] } };
+    const { fetchImpl, dns } = mkWorld({ zone, sources: anubis([`api.${A}`]) });
+    const scan = await runScan({
+      domains: [A], sources: ['anubis'], bruteforce: 'off', customWordlist: ['zzprojectx'],
+      mine: false, permutationBudget: 1500, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    });
+    const host = byName(scan).get(`zzprojectx.${A}`);
+    assert.deepEqual(host.origins, ['permutation']);
+    assert.equal(host.customOnly, true);
+    const labels = learnedLabelsFromScan(scan);
+    assert.ok(!labels.includes('zzprojectx'), labels.join(','));
+    assert.ok(labels.includes('api'));
+  });
+
+  test('a core custom label found by the recursive round stays public (learned)', async () => {
+    const A = 'priv.example';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`api.${A}`]: { A: ['203.0.113.2'] },
+      [`dev.api.${A}`]: { A: ['203.0.113.3'] },
+      [`www.api.${A}`]: { A: ['203.0.113.4'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone, sources: anubis([`api.${A}`, `dev.api.${A}`]) });
+    const scan = await runScan({
+      domains: [A], sources: ['anubis'], bruteforce: 'small', customWordlist: ['www'],
+      mine: false, permutationBudget: 0, recursive: true, originHints: false, balance: false, dns, fetchImpl
+    });
+    assert.equal(byName(scan).get(`www.api.${A}`).customOnly, false);
+    assert.ok(learnedLabelsFromScan(scan).includes('www'));
+  });
+
   test('learnedLabelsFromScan never returns an IP written into a label', () => {
     const res = (ip) => ({ ipv4: [ip], ipv6: [], cnames: [] });
     const scan = {

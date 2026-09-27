@@ -64,7 +64,8 @@ import { AbortError, abortReasonToError, splitList, sleep } from './util.js';
  *   candidates for THIS proxied host, strongest first — host-specific exact IPs (zone file,
  *   resolver-leak, history, sibling-domain) above candidate networks. Empty unless the host hides its origin.
  * @property {boolean} customOnly extension: found ONLY by a custom-wordlist label that is not in the
- *   built-in core list (the tab-only custom list is its sole evidence) — never learned
+ *   built-in core list (the tab-only custom list is its sole evidence: the wordlist stage, or a
+ *   permutation / recursive candidate carrying such a label) — never learned
  * @property {boolean} zoneOnly extension (zone import): its only evidence is the user's zone file
  *   (origin 'zone', possibly with probe origins) — like customOnly, its labels are never learned
  */
@@ -1598,7 +1599,15 @@ export async function runScan(config = {}, hooks = {}) {
   // Found ONLY by a custom-list label that is not built-in core vocabulary: the
   // tab-only custom list is the sole evidence, so the host is never learned
   // (learnedLabelsFromScan). A core label (www, api …) is public, so not flagged.
+  // The custom labels also feed the permutation sibling swap and the recursive
+  // round (at every level, Off included), so a host only the probe stages found
+  // whose left-most labels carry one of this scan's private custom labels
+  // (zzx.api from the recursive round, zzx or zzx2 from a permutation) is
+  // custom-only too.
+  const customPrivate = [...new Set(customLabels.flatMap((c) => c.split('.')))].filter((l) => l && !CORE_LABELS.has(l));
   const isCustomOnly = (name, nameOrigins) => {
+    if (customPrivate.length && [...nameOrigins].every((o) => PROBE_ORIGINS.has(o))
+      && leftmostLabels(name, targetDomains).some((l) => customPrivate.some((p) => l.includes(p)))) return true;
     if (nameOrigins.size !== 1 || !nameOrigins.has('wordlist')) return false;
     const attr = bfAttribution.get(name);
     if (!attr || attr.tier !== 'custom') return false;

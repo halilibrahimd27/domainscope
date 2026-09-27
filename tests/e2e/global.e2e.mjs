@@ -236,6 +236,21 @@ async function main() {
       await assertNoHorizontalScroll(page, 'empty');
     });
 
+    await step('a typed but unsubmitted name survives a language switch without querying', async () => {
+      await page.type('[data-role="global-name"]', 'example.org');
+      await page.evaluate(() => performance.clearResourceTimings());
+      await setLangUi(page, 'tr');
+      await page.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 800); }));
+      const info = await page.evaluate(() => ({
+        requests: performance.getEntriesByType('resource').filter((e) => !e.name.startsWith(window.location.origin)).map((e) => e.name),
+        hash: window.location.hash,
+        name: document.querySelector('[data-role="global-name"]').value,
+        resultsHidden: document.querySelector('.glb-results').hidden
+      }));
+      await setLangUi(page, 'en');
+      assertEqual(info, { requests: [], hash: '#/global', name: 'example.org', resultsHidden: true }, 'draft kept, nothing sent');
+    });
+
     await step('shared link #/global?name=www.amazon.com&type=A runs, streams and groups 12 + 31 sources', async () => {
       await gotoHash(page, '#/about', 'about');
       await gotoHash(page, '#/global?name=www.amazon.com&type=A', 'global');

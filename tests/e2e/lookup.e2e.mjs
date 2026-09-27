@@ -209,6 +209,22 @@ async function main() {
     await waitReady(page);
     await setLangUi(page, 'en');
 
+    await step('a typed but unsubmitted name survives a language switch without querying', async () => {
+      await gotoHash(page, '#/lookup', 'lookup');
+      await page.type('[data-role="lookup-name"]', 'example.org');
+      await page.evaluate(() => performance.clearResourceTimings());
+      await setLangUi(page, 'tr');
+      await page.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 800); }));
+      const info = await page.evaluate(() => ({
+        requests: performance.getEntriesByType('resource').filter((e) => !e.name.startsWith(window.location.origin)).map((e) => e.name),
+        hash: window.location.hash,
+        name: document.querySelector('[data-role="lookup-name"]').value,
+        cards: document.querySelectorAll('.lkp-card').length
+      }));
+      await setLangUi(page, 'en');
+      assertEqual(info, { requests: [], hash: '#/lookup', name: 'example.org', cards: 0 }, 'draft kept, nothing sent');
+    });
+
     await step('shared link: cloudflare.com, 10 types, DNSSEC on → parsed cards', async () => {
       await gotoHash(page, '#/lookup?name=cloudflare.com&type=A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS,DS,DNSKEY&dnssec=1', 'lookup');
       await page.waitFor(ALL_DONE, { timeout: 45000, message: 'all cards answered' });

@@ -204,6 +204,22 @@ async function main() {
     await waitReady(page);
     await setLangUi(page, 'en');
 
+    await step('a typed but unsubmitted domain survives a language switch without querying', async () => {
+      await gotoHash(page, '#/health', 'health');
+      await page.type('[data-role="health-domain"]', 'example.org');
+      await page.evaluate(() => performance.clearResourceTimings());
+      await setLangUi(page, 'tr');
+      await page.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 800); }));
+      const info = await page.evaluate(() => ({
+        requests: performance.getEntriesByType('resource').filter((e) => !e.name.startsWith(window.location.origin)).map((e) => e.name),
+        hash: window.location.hash,
+        domain: document.querySelector('[data-role="health-domain"]').value,
+        report: !!document.querySelector('.hlt-hero')
+      }));
+      await setLangUi(page, 'en');
+      assertEqual(info, { requests: [], hash: '#/health', domain: 'example.org', report: false }, 'draft kept, nothing sent');
+    });
+
     await step('github.com via shared link: summary, grouped translated checks and detail panels', async () => {
       await gotoHash(page, '#/health?domain=github.com', 'health');
       await page.waitFor(DONE, { timeout: 60000, message: 'health report' });

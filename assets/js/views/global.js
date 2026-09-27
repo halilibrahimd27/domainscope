@@ -1201,8 +1201,8 @@ export function mount(container, ctx) {
   /* --- initial state --------------------------------------------------------- */
   if (restored && Array.isArray(restored.items) && restored.items.length && restored.name) {
     restore(restored);
-  } else if (initialName) {
-    // Shared link: run immediately.
+  } else if (!restored && initialName) {
+    // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
     Promise.resolve().then(() => start());
   }
 

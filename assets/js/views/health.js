@@ -897,7 +897,8 @@ export function mount(container, ctx) {
   if (restored && restored.report) {
     current = { domain: restored.report.domain, controller: null, report: restored.report, selectorCount: restored.selectorCount };
     renderReport(restored.report);
-  } else if (initialDomain) {
+  } else if (!restored && initialDomain) {
+    // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
     Promise.resolve().then(() => start());
   }
   if (restored && restored.report) setShareAction();

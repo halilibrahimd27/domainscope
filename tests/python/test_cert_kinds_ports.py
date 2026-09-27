@@ -651,7 +651,8 @@ class CommandLineTests(unittest.TestCase):
         code, out, _err = run_main('--help')
         self.assertEqual(code, 0)
         for needle in ('ORIGIN_CERT', 'PRIVATE_CERT', '--private-ca', '--strict-public',
-                       '[2001:db8::5]:8443', 'instead of -p'):
+                       '[2001:db8::5]:8443', 'instead of -p', "is Ansible's SSH port (ansible_port)",
+                       "Ansible'\u0131n SSH portudur"):
             self.assertIn(needle, out)
 
 

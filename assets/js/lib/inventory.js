@@ -15,7 +15,10 @@
  * An address may carry its own port (`203.0.113.10:8443`, `[2001:db8::1]:8443`), as
  * cli/ssl_origin_scan.py reads it: the CLI scans that address on that port instead of
  * `-p`. The port is kept in `Server.ports` and written back by {@link serverTargets}; a
- * port outside 1–65535 makes the token an INVALID_IP, never a silently dropped one.
+ * port outside 1–65535 makes the token an INVALID_IP, never a silently dropped one. In an
+ * Ansible INI context (a line under a `[group]` header or with `ansible_*` variables) a port
+ * on the host pattern, the first token (`203.0.113.10:2222`, `badwolf.example.com:5309`), is
+ * Ansible's SSH port: the host stays on `-p` and a PARSE warning (reason 'sshPort') says so.
  */
 
 import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
@@ -39,10 +42,12 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  * @property {'NO_IP'|'INVALID_IP'|'DUPLICATE_IP'|'PARSE'} code
  * @property {string} text  The offending line (trimmed, ≤ 200 chars).
  * @property {string} [detail] Extension: offending token / IP / server name.
- * @property {'port'|'hostPort'} [reason] Extension, a finer cause: 'port' — an INVALID_IP whose
- *   address is fine but whose port is not 1–65535 (`203.0.113.10:99999`); 'hostPort' — a PARSE
+ * @property {'port'|'zone'|'hostPort'|'sshPort'} [reason] Extension, a finer cause: 'port' — an
+ *   INVALID_IP whose address is fine but whose port is not 1–65535 (`203.0.113.10:99999`); 'zone'
+ *   — an INVALID_IP for an IPv6 zone id with a port (`[fe80::1%eth0]:8443`); 'hostPort' — a PARSE
  *   for a host name with a port (`web01.example.net:8443`), which the CLI can resolve but a server
- *   here is only matched by address.
+ *   here is only matched by address; 'sshPort' — a PARSE for the port on an Ansible host pattern
+ *   (`203.0.113.10:2222` under `[web]`), Ansible's SSH port: the address is kept, on `-p`.
  */
 
 const MAX_INPUT = 10 * 1024 * 1024;
@@ -86,7 +91,8 @@ function withPort(ip, text) {
 /**
  * Parse one token as an IP with its optional port: accepts brackets, `ip:port`,
  * `[v6]:port`, `ip/32`, `ip/128`, a trailing sentence dot. An empty port (`ip:`,
- * as in "10.0.0.1: web01") means none; a port outside 1–65535 makes it invalid.
+ * as in "10.0.0.1: web01") means none; a port outside 1–65535 makes it invalid, and
+ * so does a zone id with a port (`[fe80::1%eth0]:8443`: the CLI cannot keep the zone).
  * @param {unknown} token
  * @returns {{ ip: string, port: number|null }|null} canonical IP, or null
  */
@@ -96,7 +102,7 @@ function parseIpToken(token) {
   if (!t || t.length > 64) return null;
   if (t.endsWith('.') && !t.includes(':')) t = t.slice(0, -1);
   let m = /^\[([^\]]+)\](?::(\d*))?$/.exec(t);
-  if (m) return withPort(normalizeIP(m[1]), m[2]);
+  if (m) return m[2] && m[1].includes('%') ? null : withPort(normalizeIP(m[1]), m[2]);
   m = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d*)$/.exec(t);
   if (m) return withPort(normalizeIP(m[1]), m[2]);
   m = /^([^/]+)\/(\d{1,3})$/.exec(t);
@@ -118,6 +124,36 @@ function isBadPort(token) {
   return !!(m && normalizeIP(m[1]) && !parseIpToken(t));
 }
 
+/**
+ * Why an address token is invalid, when the address itself is fine: 'zone' — an IPv6 zone id
+ * with a port (`[fe80::1%eth0]:8443`); 'port' — a port that is not 1–65535 ({@link isBadPort}).
+ * The CLI (`split_endpoint`) refuses both. undefined for any other token.
+ * @param {string} token
+ * @returns {'zone'|'port'|undefined}
+ */
+function invalidReason(token) {
+  const t = unwrap(token);
+  const m = /^\[([^\]]+)\]:(\d+)$/.exec(t);
+  if (m && m[1].includes('%') && normalizeIP(m[1])) return 'zone';
+  return isBadPort(t) ? 'port' : undefined;
+}
+
+/**
+ * The host of an Ansible host pattern written with its SSH port (`192.0.2.50:2222`,
+ * `[2001:db8::1]:2222`, `badwolf.example.com:5309`), or null: no port, or one that is not
+ * 1–65535 (then the token is invalid as any other).
+ * @param {string} token
+ * @returns {string|null}
+ */
+function sshHostOf(token) {
+  const hit = parseIpToken(token);
+  if (hit) return hit.port === null ? null : hit.ip;
+  if (!HOST_PORT_RE.test(token)) return null;
+  const at = token.lastIndexOf(':');
+  const port = Number(token.slice(at + 1));
+  return port >= 1 && port <= 65535 ? token.slice(0, at) : null;
+}
+
 /** {@link parseIpToken} without the port: the canonical IP or null. */
 function cleanIpToken(token) {
   const hit = parseIpToken(token);
@@ -126,9 +162,11 @@ function cleanIpToken(token) {
 
 /**
  * Token that is *meant* to be an IP but is not valid (10.0.0.256, 1::2::3, a CIDR, a port
- * outside 1–65535 or not a number: 10.0.0.1:99999, [2001:db8::1]:https…).
+ * outside 1–65535 or not a number: 10.0.0.1:99999, [2001:db8::1]:https, a bracketed address
+ * with a zone id and a port or with text after it that is no port: [2001:db8::1]8443…).
  */
 function looksLikeIp(token) {
+  if (BRACKETED_ADDRESS_RE.test(unwrap(token))) return true;
   let t = unwrap(token).replace(/\/\d{1,3}(?::[^/]*)?$/, '');
   t = t.replace(/^\[/, '').replace(/\](?::.*)?$/, '');
   if (t.endsWith('.') && !t.includes(':')) t = t.slice(0, -1);
@@ -139,6 +177,9 @@ function looksLikeIp(token) {
     && /[0-9a-f]/i.test(t)
     && !/^\d{1,2}:\d{2}(?::\d{2})?$/.test(t); // clock times
 }
+
+/** A token that starts as a bracketed address (the CLI's `_BRACKETED_ADDRESS_RE`). */
+const BRACKETED_ADDRESS_RE = /^\[(?:[0-9a-f.]*:[0-9a-f:.]*|\d{1,3}(?:\.\d{1,3}){3})(?:%[^\]\s]*)?\]/i;
 
 const NAME_TOKEN_RE = /^[\p{L}\p{N}_](?:[\p{L}\p{N}_.-]*[\p{L}\p{N}_])?$/u;
 const ANSIBLE_RANGE_RE = /^[\p{L}\p{N}_.-]*\[[^\]\s]+:[^\]\s]+\][\p{L}\p{N}_.-]*$/u;
@@ -422,19 +463,28 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     }
   }
 
-  // 5) The same IP on several distinct servers (VIPs, NAT, copy-paste errors).
-  const owners = new Map();
+  // 5) The same endpoint on several distinct servers (VIPs, copy-paste errors): an address on
+  //    its own port, or bare (the CLI's -p ports). One address on different ports (a NAT
+  //    forwarding each port to another machine) is no duplicate, as in the CLI.
+  const owners = new Map(); // endpoint → its servers, in order
+  const uniqueIps = new Set();
   for (const s of servers) {
     for (const ip of s.ips) {
-      if (!owners.has(ip)) owners.set(ip, []);
-      owners.get(ip).push(s);
+      uniqueIps.add(ip);
+      for (const endpoint of addressTargets(s, ip)) {
+        if (!owners.has(endpoint)) owners.set(endpoint, []);
+        owners.get(endpoint).push(s);
+      }
     }
   }
-  for (const [ip, list] of owners) {
-    for (const s of list.slice(1)) {
+  for (const s of servers) {
+    for (const ip of s.ips) {
+      // One warning per server and address: its first endpoint an earlier server has too.
+      const endpoint = addressTargets(s, ip).find((e) => owners.get(e)[0] !== s);
+      if (!endpoint) continue;
       warnings.push({
         line: s.line, code: 'DUPLICATE_IP', text: lineText(s.line),
-        detail: `${ip} (${list.map((x) => x.name).join(', ')})`
+        detail: `${endpoint} (${owners.get(endpoint).map((x) => x.name).join(', ')})`
       });
     }
   }
@@ -443,7 +493,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   return {
     servers,
     warnings,
-    stats: { lines: lineCount, servers: servers.length, ips: owners.size }
+    stats: { lines: lineCount, servers: servers.length, ips: uniqueIps.size }
   };
 }
 
@@ -470,7 +520,7 @@ const IP_FIELD_KEY_RE = /(^|_)(ip|ips|ip\d+|ipv4|ipv6|addr|address|addresses|adr
 function validName(v) {
   if (typeof v !== 'string') return null;
   const s = v.trim();
-  if (!s || s.length > 253 || /[\r\n]/.test(s) || cleanIpToken(s)) return null;
+  if (!s || s.length > 253 || /[\r\n]/.test(s) || cleanIpToken(s) || invalidReason(s)) return null;
   return s;
 }
 
@@ -557,7 +607,16 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
     const parts = node.length <= 200 ? node.split(/[\s,;]+/) : [];
     for (const part of parts) {
       const hit = parseIpToken(part);
+      const bad = hit ? null : invalidReason(part);
       if (hit) items.push({ ip: hit.ip, port: hit.port, raw: part });
+      else if (bad) items.push({ bad, raw: part }); // 203.0.113.10:99999: a warning, never dropped silently
+    }
+    // A whole value that is a host name with a port ("web01": "web01.example.net:8443"), as a
+    // line has it: the CLI resolves it, here it is a warning. Dotted only: "image": "redis:7" is none.
+    const words = parts.filter(Boolean);
+    const value = words.length === 1 ? words[0] : '';
+    if (!items.length && HOST_PORT_RE.test(value) && isDottedHost(value.slice(0, value.lastIndexOf(':')))) {
+      items.push({ bad: 'hostPort', raw: value });
     }
     return items.length ? [items] : [];
   }
@@ -663,9 +722,20 @@ function extractStructured(root, ctx, fixedLine = null) {
   const leftovers = visitStructured(root, 0, found, hosts);
   for (const items of leftovers) found.push({ name: null, items });
   for (const f of found) {
-    const ips = [...new Set(f.items.map((i) => i.ip))];
-    const line = fixedLine ?? ctx.lineOf(f.items[0]?.raw);
-    ctx.add({ name: f.name, ips, ports: portsOf(f.items), line });
+    // Values that cannot be used ({ bad, raw }): an INVALID_IP for a bad port or a zone id, a
+    // PARSE for a host name with a port, as on a line (the CLI warns about the first two too).
+    const good = f.items.filter((i) => i.ip);
+    const bad = f.items.filter((i) => i.bad);
+    for (const b of bad) {
+      ctx.warn(fixedLine ?? ctx.lineOf(b.raw), b.bad === 'hostPort' ? 'PARSE' : 'INVALID_IP', undefined, b.raw, b.bad);
+    }
+    const line = fixedLine ?? ctx.lineOf((good[0] || f.items[0])?.raw);
+    if (!good.length) {
+      // A named server keeps its groups; a mistyped address is not warned about twice (NO_IP).
+      if (f.name) ctx.add({ name: f.name, ips: [], line, quiet: bad.some((b) => b.bad !== 'hostPort') });
+      continue;
+    }
+    ctx.add({ name: f.name, ips: [...new Set(good.map((i) => i.ip))], ports: portsOf(good), line });
   }
 }
 
@@ -1020,7 +1090,7 @@ function parseCsv(text, csv, ctx) {
           eps.push(hit);
         } else if (strict && looksLikeIp(part)) {
           invalid += 1;
-          ctx.warn(rec.line, 'INVALID_IP', undefined, part, isBadPort(part) ? 'port' : undefined);
+          ctx.warn(rec.line, 'INVALID_IP', undefined, part, invalidReason(part));
         }
       }
     };
@@ -1126,10 +1196,22 @@ function parseHostLine(line, lineNo, group, ctx) {
   const others = [];
   const hostPorts = [];
   let ipFirst = false;
+  // Ansible INI: a line under a [group] header, or one with ansible_* variables. There a port
+  // on the host pattern (the first token: `badwolf.example.com:5309`, `192.0.2.50:2222`,
+  // `[2001:db8::1]:2222`) is Ansible's SSH port (ansible_port), never a TLS port: the host
+  // stays on the CLI's -p ports, as cli/ssl_origin_scan.py reads it.
+  const ansible = group !== null || tokens.some((t) => /^ansible_\w*=/i.test(unwrap(t)));
 
   tokens.forEach((raw, i) => {
-    const tok = unwrap(raw);
+    let tok = unwrap(raw);
     if (!tok) return;
+    if (i === 0 && ansible && !tok.includes('=')) {
+      const host = sshHostOf(tok);
+      if (host) {
+        ctx.warn(lineNo, 'PARSE', undefined, tok, 'sshPort');
+        tok = host;
+      }
+    }
     const eq = tok.indexOf('=');
     if (eq > 0) {
       const key = tok.slice(0, eq);
@@ -1185,7 +1267,7 @@ function parseHostLine(line, lineNo, group, ctx) {
     else others.push(tok);
   });
 
-  for (const bad of invalid) ctx.warn(lineNo, 'INVALID_IP', undefined, bad, isBadPort(bad) ? 'port' : undefined);
+  for (const bad of invalid) ctx.warn(lineNo, 'INVALID_IP', undefined, bad, invalidReason(bad));
   for (const hp of hostPorts) ctx.warn(lineNo, 'PARSE', undefined, hp, 'hostPort');
   const groups = group && !IGNORED_GROUPS.has(group) ? [group] : [];
   const hostish = names.filter(isHostish);

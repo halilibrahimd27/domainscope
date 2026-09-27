@@ -294,6 +294,19 @@ describe('CLI helpers', () => {
     ].join('\n'));
   });
 
+  test('targetsForCli: the port on an Ansible host pattern is its SSH port, so the address goes to -p', () => {
+    // As Ansible reads its INI: 203.0.113.11:2222 under [web] sets ansible_port, not a TLS port.
+    const { servers } = parseInventory('[web]\n203.0.113.11:2222\nweb02 203.0.113.12:8443\n[db]\n[2001:db8::5]:2222 ansible_user=admin\n'
+      + 'db02.example.com:2222 ansible_host=203.0.113.14\n');
+    assert.equal(targetsForCli(servers), [
+      'web02 203.0.113.12:8443', // a later token keeps its TLS port
+      'db02.example.com 203.0.113.14',
+      '203.0.113.11',
+      '2001:db8::5',
+      ''
+    ].join('\n'));
+  });
+
   test('cliServerName: one token the CLI reads as the whole name (never a comment, variable or IP)', () => {
     const cases = [
       ['web01', 'web01'],

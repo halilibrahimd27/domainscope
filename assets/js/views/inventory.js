@@ -107,10 +107,12 @@ registerStrings('en', {
   'inv.warningsSubtitle': 'Lines that could not be used as-is — click one to jump to it',
   'inv.warn.NO_IP': 'No IP address — this server cannot be matched',
   'inv.warn.INVALID_IP': 'Invalid IP address',
-  'inv.warn.DUPLICATE_IP': 'The same IP address belongs to several servers',
+  'inv.warn.DUPLICATE_IP': 'The same IP address (on the same port) belongs to several servers',
   'inv.warn.PARSE': 'Line could not be understood',
   'inv.warn.INVALID_IP.port': 'Invalid port — a port is a number from 1 to 65535',
   'inv.warn.PARSE.hostPort': 'Host name with a port — servers are matched by address here, so write the address with the port',
+  'inv.warn.INVALID_IP.zone': 'IPv6 zone id — an address written with a zone (%eth0) cannot be a target with a port',
+  'inv.warn.PARSE.sshPort': 'Ansible SSH port — a port on an Ansible host is its SSH port (ansible_port), not a TLS port: the CLI scans this server on its -p ports',
   'inv.lineN': 'line {n}',
   'inv.wholeInput': 'input',
   'inv.formatsTitle': 'Supported formats & examples',
@@ -122,7 +124,7 @@ registerStrings('en', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
-  'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too. An address written with a port (203.0.113.10:8443, [2001:db8::1]:8443) keeps it: the CLI scans it on that port instead of -p.'
+  'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too. An address written with a port (203.0.113.10:8443, [2001:db8::1]:8443) keeps it: the CLI scans it on that port instead of -p. In an Ansible INI inventory (a [group] section, or a line with ansible_* variables) the port of the host at the start of a line (203.0.113.10:2222) is Ansible’s SSH port, so that host is scanned on -p.'
 });
 
 registerStrings('tr', {
@@ -170,10 +172,12 @@ registerStrings('tr', {
   'inv.warningsSubtitle': 'Olduğu gibi kullanılamayan satırlar — gitmek için tıklayın',
   'inv.warn.NO_IP': 'IP adresi yok — bu sunucu eşleştirilemez',
   'inv.warn.INVALID_IP': 'Geçersiz IP adresi',
-  'inv.warn.DUPLICATE_IP': 'Aynı IP adresi birden fazla sunucuya ait',
+  'inv.warn.DUPLICATE_IP': 'Aynı IP adresi (aynı portta) birden fazla sunucuya ait',
   'inv.warn.PARSE': 'Satır anlaşılamadı',
   'inv.warn.INVALID_IP.port': 'Geçersiz port — port 1 ile 65535 arasında bir sayıdır',
-  'inv.warn.PARSE.hostPort': 'Portlu ana makine adı — burada sunucular adresle eşleştirilir, adresi portuyla yazın',
+  'inv.warn.PARSE.hostPort': 'Portlu host adı — burada sunucular adresle eşleştirilir; adresi portuyla yazın',
+  'inv.warn.INVALID_IP.zone': 'IPv6 bölge kimliği (zone id) — bölgesiyle (%eth0) yazılan bir adres portlu bir hedef olamaz',
+  'inv.warn.PARSE.sshPort': 'Ansible SSH portu — bir Ansible host adının ya da adresinin portu SSH portudur (ansible_port), TLS portu değil: CLI bu sunucuyu -p portlarından tarar',
   'inv.lineN': '{n}. satır',
   'inv.wholeInput': 'girdi',
   'inv.formatsTitle': 'Desteklenen biçimler ve örnekler',
@@ -185,7 +189,7 @@ registerStrings('tr', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
-  'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır. Portuyla yazılan bir adres (203.0.113.10:8443, [2001:db8::1]:8443) portunu korur: CLI onu -p yerine o porttan tarar.'
+  'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır. Portuyla yazılan bir adres (203.0.113.10:8443, [2001:db8::1]:8443) portunu korur: CLI onu -p yerine o porttan tarar. Ansible INI envanterinde ([grup] bölümü ya da ansible_* değişkenli bir satır) satır başındaki host adının ya da adresin portu (203.0.113.10:2222) Ansible’ın SSH portudur; o sunucu -p portlarından taranır.'
 });
 
 /* ------------------------------------------------------------------------ */

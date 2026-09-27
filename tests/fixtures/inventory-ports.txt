@@ -1,5 +1,5 @@
 # Addresses with their own port: lib/inventory.js and cli/ssl_origin_scan.py read them alike
-# (tests/js/inventory.test.js, tests/python/test_inventory_targets.py). Lines 10-15 are warnings:
+# (tests/js/inventory.test.js, tests/python/test_inventory_targets.py). Warnings: lines 10-15, 24, 26, 27:
 web01 203.0.113.10:8443
 web02 [2001:db8::2]:8443 203.0.113.12
 web03 203.0.113.13 203.0.113.13:8443
@@ -17,3 +17,12 @@ web13 203.0.113.23 12:00
 # a bad port (10-13); a host name with a port next to an address (14), ignored by both; alone (15),
 # the CLI resolves it and scans that port, while the web app, which matches by address, warns. 12:00
 # on line 16 is a time of day, not a host and its port.
+web16 203.0.113.10:9443
+# 203.0.113.10 on another port (20) is another endpoint: no DUPLICATE_IP. Ansible INI: a port on the
+# host pattern, the first token of a line with ansible_* variables or under a [group] header, is its
+# SSH port, so the host stays on -p with a PARSE warning (24, 26, 27); on a later token (28) it is TLS.
+web14.example.com:2222 ansible_host=203.0.113.24
+[web]
+203.0.113.25:2222
+[2001:db8::26]:2222 ansible_user=admin
+web15 203.0.113.27:8443

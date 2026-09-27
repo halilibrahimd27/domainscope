@@ -1731,6 +1731,22 @@ describe('cliPlan', () => {
     const sweep = buildSweepCommand({ targets: V.cliPlan(rows).targets, names: ['a.example.com'], allowPorts: true });
     assert.match(sweep.command, /^ssl_origin_scan\.py -t 10\.0\.0\.13:8443 10\.0\.0\.14 10\.0\.0\.14:9443 /);
   });
+
+  test('the SSH port of an Ansible host never reaches the CLI card: the address is planned on -p', () => {
+    const inv = parseInventory('[web]\n10.0.0.11:2222\nweb02.example.com:2222 ansible_host=10.0.0.12\n');
+    const result = {
+      hosts: ['a', 'b'].map((n) => host(`${n}.example.com`, { ips: [], kind: 'private' })),
+      servers: [
+        { server: inv.servers[0], hosts: [e('b.example.com', '10.0.0.12')], needsCert: true, maybeNeedsCert: false },
+        { server: inv.servers[1], hosts: [e('a.example.com', '10.0.0.11')], needsCert: true, maybeNeedsCert: false }
+      ],
+      unmatchedIps: []
+    };
+    assert.deepEqual(inv.servers.map((s) => [s.id, s.ports]), [['web02.example.com', undefined], ['10.0.0.11', undefined]]);
+    const { pairs } = V.buildVerifyPairs(result);
+    assert.deepEqual(pairs.map((p) => [p.ip, p.port, p.cliTargets]), [['10.0.0.12', 443, null], ['10.0.0.11', 443, null]]);
+    assert.deepEqual(V.cliPlan(V.createVerifyRows(pairs)).targets, ['10.0.0.12', '10.0.0.11']);
+  });
 });
 
 describe('exports', () => {

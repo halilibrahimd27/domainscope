@@ -451,7 +451,12 @@ test('tests/fixtures/inventory-ports.txt: the endpoints and warnings the CLI rea
     web06: ['[2001:db8::16]:443'],
     '203.0.113.17': ['203.0.113.17:8443'],
     web11: ['203.0.113.22'],
-    web13: ['203.0.113.23']
+    web13: ['203.0.113.23'],
+    web16: ['203.0.113.10:9443'],
+    'web14.example.com': ['203.0.113.24'],
+    web15: ['203.0.113.27:8443'],
+    '203.0.113.25': ['203.0.113.25'],
+    '2001:db8::26': ['2001:db8::26']
   });
   assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail, w.reason]), [
     [10, 'INVALID_IP', '203.0.113.18:99999', 'port'],
@@ -461,7 +466,11 @@ test('tests/fixtures/inventory-ports.txt: the endpoints and warnings the CLI rea
     // the CLI warns about line 14 too, and resolves line 15's host name (servers here are matched by address)
     [14, 'PARSE', 'db.example.net:5432', 'hostPort'],
     [15, 'PARSE', 'web12.example.net:8443', 'hostPort'],
-    [15, 'NO_IP', 'web12', undefined]
+    [15, 'NO_IP', 'web12', undefined],
+    // an Ansible host's own port is its SSH port: the host stays on -p (and line 20 is no DUPLICATE_IP)
+    [24, 'PARSE', 'web14.example.com:2222', 'sshPort'],
+    [26, 'PARSE', '203.0.113.25:2222', 'sshPort'],
+    [27, 'PARSE', '[2001:db8::26]:2222', 'sshPort']
   ], 'a port that cannot be used is a warning, never a silently dropped address');
   assert.deepEqual(r.servers.find((s) => s.id === 'web03').ports, { '203.0.113.13': [null, 8443] }, 'null: also on -p');
   assert.equal(r.servers.find((s) => s.id === 'web04').ports, undefined, 'an empty port is none');
@@ -524,6 +533,80 @@ test('NAME=HOST[:PORT] as the first token: the server has no IP here, and says s
   assert.deepEqual(bad.warnings.map((w) => [w.code, w.reason]), [['INVALID_IP', undefined], ['INVALID_IP', 'port']]);
 });
 
+test('Ansible INI: a port on the host pattern is its SSH port, the address stays on -p', () => {
+  // As Ansible reads its INI: "badwolf.example.com:5309", "192.0.2.50:2222" set ansible_port.
+  const r = parseInventory([
+    '[web]', '203.0.113.11:2222', 'web02 203.0.113.12:8443', '10:30 203.0.113.13',
+    '[db]', '[2001:db8::5]:2222 ansible_user=admin', 'db02.example.com:5309', 'db03:2222 ansible_host=203.0.113.14',
+    '[db:vars]', 'ansible_port=2222'
+  ].join('\n'));
+  assert.deepEqual(targetsById(r), {
+    web02: ['203.0.113.12:8443'], // a later token keeps the TLS meaning (not valid Ansible anyway)
+    db03: ['203.0.113.14'],
+    '203.0.113.11': ['203.0.113.11'],
+    '203.0.113.13': ['203.0.113.13'],
+    '2001:db8::5': ['2001:db8::5']
+  });
+  assert.deepEqual(groupsById(r), { web02: ['web'], db03: ['db'], '203.0.113.11': ['web'], '203.0.113.13': ['web'], '2001:db8::5': ['db'] });
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail, w.reason]), [
+    [2, 'PARSE', '203.0.113.11:2222', 'sshPort'],
+    [6, 'PARSE', '[2001:db8::5]:2222', 'sshPort'],
+    [7, 'PARSE', 'db02.example.com:5309', 'sshPort'],
+    [7, 'NO_IP', 'db02.example.com', undefined], // the CLI resolves it, on -p
+    [8, 'PARSE', 'db03:2222', 'sshPort']
+  ]);
+  // Outside Ansible (no [group], no ansible_* variable) the same first token is a TLS target.
+  assert.deepEqual(targetsById(parseInventory('203.0.113.11:2222\n[2001:db8::5]:8443 web05')), {
+    '203.0.113.11': ['203.0.113.11:2222'], web05: ['[2001:db8::5]:8443']
+  });
+  // ansible_* variables without a group make the context too; a bad port there is INVALID_IP as anywhere.
+  const vars = parseInventory('web01.example.com:2222 ansible_host=203.0.113.10\n203.0.113.11:99999 ansible_user=admin');
+  assert.deepEqual(targetsById(vars), { 'web01.example.com': ['203.0.113.10'] });
+  assert.deepEqual(vars.warnings.map((w) => [w.line, w.code, w.reason]), [[1, 'PARSE', 'sshPort'], [2, 'INVALID_IP', 'port']]);
+});
+
+test('JSON: an address with a bad port or a host name with a port is a warning, never dropped silently', () => {
+  // tests/python/test_inventory_targets.py reads the same values with the CLI (JSON_CASES).
+  const cases = [
+    ['[{"name":"web01","ip":"203.0.113.10:99999"}]', [['INVALID_IP', '203.0.113.10:99999', 'port']]],
+    ['{"web01":"203.0.113.10:99999"}', [['INVALID_IP', '203.0.113.10:99999', 'port']]],
+    ['{"_meta":{"hostvars":{"web01":{"ansible_host":"203.0.113.10:99999"}}}}', [['INVALID_IP', '203.0.113.10:99999', 'port']]],
+    ['[{"ip":"[fe80::1%eth0]:8443"}]', [['INVALID_IP', '[fe80::1%eth0]:8443', 'zone']]],
+    ['["web01 203.0.113.10:99999"]', [['INVALID_IP', '203.0.113.10:99999', 'port']]],
+    // the CLI resolves a host name with a port; here it is a PARSE, and the server has no address
+    ['{"web01":"web01.example.net:8443"}', [['PARSE', 'web01.example.net:8443', 'hostPort'], ['NO_IP', 'web01', undefined]]],
+    // a name key holding a mistyped address names nothing
+    ['[{"name":"203.0.113.10:99999","ip":"203.0.113.11"}]', [['INVALID_IP', '203.0.113.10:99999', 'port']]],
+    // neither an address nor a dotted host: silent, as before
+    ['[{"name":"cache01","image":"redis:7","ip":"203.0.113.12"}]', []]
+  ];
+  for (const [text, expected] of cases) {
+    const r = parseInventory(text);
+    assert.deepEqual(r.warnings.map((w) => [w.code, w.detail, w.reason]), expected, text);
+    if (expected.length) assert.deepEqual(r.servers.filter((s) => s.ips.includes('203.0.113.10')), [], text);
+  }
+  assert.deepEqual(targetsById(parseInventory(cases[6][0])), { '203.0.113.11': ['203.0.113.11'] });
+  assert.deepEqual(targetsById(parseInventory(cases[7][0])), { cache01: ['203.0.113.12'] });
+  // YAML and JSON Lines go the same way, with the line of the value.
+  const yaml = parseInventory('all:\n  hosts:\n    web01:\n      ansible_host: 203.0.113.10:99999\n    web02:\n      ansible_host: 203.0.113.12\n');
+  assert.deepEqual(targetsById(yaml), { web02: ['203.0.113.12'] });
+  assert.deepEqual(yaml.warnings.map((w) => [w.line, w.code, w.reason]), [[4, 'INVALID_IP', 'port']]);
+  const lines = parseInventory('{"name":"web01","ip":"203.0.113.10"}\n{"name":"web02","ip":"203.0.113.12:0"}');
+  assert.deepEqual(lines.warnings.map((w) => [w.line, w.code, w.reason]), [[2, 'INVALID_IP', 'port']]);
+});
+
+test('a bracketed address that cannot be read is INVALID_IP, with a zone id named', () => {
+  const r = parseInventory('web01 [fe80::1%eth0]:8443\nweb02 [2001:db8::1]8443\nweb03=[fe80::1%eth0]:8443\nweb04 [2001:db8::4]:8443');
+  assert.deepEqual(targetsById(r), { web04: ['[2001:db8::4]:8443'] });
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail, w.reason]), [
+    [1, 'INVALID_IP', '[fe80::1%eth0]:8443', 'zone'],
+    [2, 'INVALID_IP', '[2001:db8::1]8443', undefined],
+    [3, 'INVALID_IP', '[fe80::1%eth0]:8443', 'zone']
+  ]);
+  const csv = parseInventory('name,ip\nweb01,[fe80::1%eth0]:8443\n');
+  assert.deepEqual(csv.warnings.map((w) => [w.code, w.reason]), [['INVALID_IP', 'zone']]);
+});
+
 test('formatEndpoint, addressTargets and serverTargets', () => {
   assert.equal(formatEndpoint('203.0.113.10', 8443), '203.0.113.10:8443');
   assert.equal(formatEndpoint('2001:DB8::1', 8443), '[2001:db8::1]:8443');
@@ -549,6 +632,15 @@ test('duplicate IP across distinct servers is warned', () => {
   assert.ok(codes(r).includes('DUPLICATE_IP'));
   const dup = r.warnings.find((w) => w.code === 'DUPLICATE_IP');
   assert.match(dup.detail, /10\.0\.0\.1/);
+});
+
+test('duplicates are per endpoint: one address on different ports is no duplicate, as in the CLI', () => {
+  const r = parseInventory('web01 203.0.113.10:8443\nweb02 203.0.113.10:9443\nweb03 203.0.113.10:9443\nweb04 203.0.113.10\nweb05 203.0.113.10 203.0.113.10:8443');
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [
+    [3, 'DUPLICATE_IP', '203.0.113.10:9443 (web02, web03)'],
+    [5, 'DUPLICATE_IP', '203.0.113.10 (web04, web05)'] // one warning per server and address
+  ]);
+  assert.equal(r.stats.ips, 1, 'stats count addresses, not endpoints');
 });
 
 test('empty / whitespace / non-string input', () => {

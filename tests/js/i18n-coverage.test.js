@@ -171,7 +171,7 @@ describe('i18n coverage', () => {
     for (const c of ['PRIVATE_KEY_PRESENT', 'NO_CERTIFICATE', 'PKCS12_UNSUPPORTED', 'CSR_NOT_CERT', 'PARSE_ERROR', 'EXPIRED', 'NOT_YET_VALID']) add(`cert.warn.${c}.title`);
     for (const l of ['EV', 'OV', 'IV', 'DV']) add(`cert.level.${l}`);
     for (const r of ['leaf', 'intermediate', 'root', 'unrelated']) add(`cert.role.${r}`);
-    for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'PARSE.hostPort']) add(`inv.warn.${c}`);
+    for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);
     for (const k of [...views.bulk.BULK_FILTERS, ...views.bulk.IP_FILTERS]) add(`bulk.filter.${k}`);
     for (const k of Object.keys(views.lookup.TYPE_PRESETS)) add(`lkp.preset.${k}`);
     for (const g of views.health.HEALTH_GROUPS) add(`health.group.${g}`);

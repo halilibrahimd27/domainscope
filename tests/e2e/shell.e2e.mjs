@@ -65,7 +65,8 @@ const PORT_INVENTORY = [
   'web02 [2001:db8::2]:8443 203.0.113.12',
   'web04 203.0.113.14:99999',
   'web05 web05.example.net:8443',
-  'web03 10.0.0.13 10.0.0.13:8443'
+  'web03 10.0.0.13 10.0.0.13:8443',
+  '203.0.113.17:2222 ansible_user=deploy'
 ].join('\n');
 const FILE_INVENTORY = 'hostname,ip_address,role\napi01,10.0.3.21,api\napi02,10.0.3.22,api\nmail01,192.168.10.5,mail\n';
 
@@ -689,21 +690,25 @@ async function main() {
       await dismissToasts(page);
     });
 
-    await step('Servers: an address written with a port is shown and exported with it; a bad port is a warning', async () => {
+    await step('Servers: an address written with a port is shown and exported with it; a bad port is a warning; an Ansible host keeps -p', async () => {
       await page.type('[data-role="inventory-text"]', PORT_INVENTORY);
-      await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length === n,
-        { args: [expectedPorts.servers.length], message: 'parsed rows' });
+      // The saved sample has as many servers: wait for this inventory's own rows.
+      await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row').length === n
+        && [...document.querySelectorAll('.inv-results .inv-ip')].some((s) => s.firstChild.textContent === '203.0.113.10:8443'),
+      { args: [expectedPorts.servers.length], message: 'parsed rows' });
       const ui = await page.evaluate(() => ({
         ips: [...document.querySelectorAll('.inv-results .dt-table tbody tr.dt-row')]
           .map((tr) => [...tr.querySelectorAll('.inv-ip')].map((s) => s.firstChild.textContent)),
         warnings: [...document.querySelectorAll('.inv-warning')].map((w) => [Number(w.dataset.line), w.dataset.code]),
         texts: [...document.querySelectorAll('.inv-warning .inv-warning-code')].map((c) => c.textContent)
       }));
-      assertEqual(ui.ips, [['203.0.113.10:8443'], ['[2001:db8::2]:8443', '203.0.113.12'], ['10.0.0.13', '10.0.0.13:8443']],
-        'ip:port in the table');
-      assertEqual(ui.warnings, [[4, 'INVALID_IP'], [5, 'PARSE'], [5, 'NO_IP']], 'bad port and host:port warned');
-      assertEqual(ui.texts.slice(0, 2), ['Invalid port — a port is a number from 1 to 65535',
-        'Host name with a port — servers are matched by address here, so write the address with the port'], 'the warnings say what is wrong');
+      assertEqual(ui.ips, [['203.0.113.10:8443'], ['[2001:db8::2]:8443', '203.0.113.12'], ['10.0.0.13', '10.0.0.13:8443'], ['203.0.113.17']],
+        'ip:port in the table, an Ansible SSH port not');
+      assertEqual(ui.warnings, [[4, 'INVALID_IP'], [5, 'PARSE'], [5, 'NO_IP'], [7, 'PARSE']], 'bad port, host:port and SSH port warned');
+      assertEqual([...ui.texts.slice(0, 2), ui.texts[3]], ['Invalid port — a port is a number from 1 to 65535',
+        'Host name with a port — servers are matched by address here, so write the address with the port',
+        'Ansible SSH port — a port on an Ansible host is its SSH port (ansible_port), not a TLS port: the CLI scans this server on its -p ports'],
+      'the warnings say what is wrong');
       const file = await page.evaluate(async () => {
         // Capture the download: ui/download.js creates a Blob URL and clicks a temporary <a download>.
         const create = URL.createObjectURL;
@@ -724,8 +729,8 @@ async function main() {
         return got && { name: got.name, text: await got.blob.text() };
       });
       assertEqual(file && file.name, 'targets.txt', 'targets.txt downloaded');
-      assertEqual(file.text, 'web01 203.0.113.10:8443\nweb02 [2001:db8::2]:8443 203.0.113.12\nweb03 10.0.0.13 10.0.0.13:8443\n',
-        'the CLI scans the same ip:port');
+      assertEqual(file.text, 'web01 203.0.113.10:8443\nweb02 [2001:db8::2]:8443 203.0.113.12\nweb03 10.0.0.13 10.0.0.13:8443\n203.0.113.17\n',
+        'the CLI scans the same ip:port, and the Ansible host on -p');
       await shot(page, 'desktop-light-en-inventory-ports');
       // Back to the saved sample (the editor was only edited, never saved).
       await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);

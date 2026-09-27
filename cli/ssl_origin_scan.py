@@ -1456,6 +1456,10 @@ _ENDPOINT_BRACKET_RE = re.compile(r'^\[([^\[\]\s:]*:[^\[\]\s]*|\d{1,3}(?:\.\d{1,
                                   r'(?::(.*))?$')
 _ENDPOINT_V4_RE = re.compile(r'^(\d{1,3}(?:\.\d{1,3}){3}):(.*)$')
 _ENDPOINT_HOST_RE = re.compile(r'^([^\s:\[\]@=]+):(\d+)$')
+# A token that starts as a bracketed address but is no [ADDRESS] / [ADDRESS]:PORT form
+# ("[2001:db8::1]8443"): meant as an address, so a warning rather than a word to skip.
+_BRACKETED_ADDRESS_RE = re.compile(
+    r'^\[(?:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*|\d{1,3}(?:\.\d{1,3}){3})(?:%[^\]\s]*)?\]')
 # A time of day in a free-form line ("backup 10:30 203.0.113.10"): neither a host and its port
 # nor an IPv6 address (lib/inventory.js looksLikeIp skips it the same way).
 _CLOCK_RE = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?$')
@@ -1479,8 +1483,10 @@ def split_endpoint(token: str) -> Optional[Tuple[str, Optional[int]]]:
     Also ``[2001:db8::1]:8443`` (the address canonical) and ``web01.example.net:8443`` (the
     host text as written, validated by the caller). An empty port gives ``(target, None)``.
     Raises ``ValueError`` for such a form that cannot be used: a port outside 1-65535 or not
-    a number, a bracketed text or dotted quad that is no IP address, or a CIDR / range with
-    a port - the caller warns about it instead of dropping it silently.
+    a number, a bracketed text or dotted quad that is no IP address, a bracketed address
+    with a zone id and a port (``[fe80::1%eth0]:8443``) or with text after it that is no
+    port (``[2001:db8::1]8443``), or a CIDR / range with a port - the caller warns about it
+    instead of dropping it silently.
     """
     token = token.strip()
     match = _ENDPOINT_BRACKET_RE.match(token) or _ENDPOINT_V4_RE.match(token)
@@ -1488,7 +1494,13 @@ def split_endpoint(token: str) -> Optional[Tuple[str, Optional[int]]]:
         ip = normalize_ip(match.group(1))
         if ip is None:
             raise ValueError('%s is not a valid IP address' % match.group(1))
+        if match.group(2) and '%' in match.group(1):
+            # normalize_ip drops the zone, and a link-local address is unreachable without it
+            raise ValueError('an IPv6 zone id (%%%s) is not supported in a target'
+                             % match.group(1).split('%', 1)[1])
         return ip, _endpoint_port(match.group(2))
+    if _BRACKETED_ADDRESS_RE.match(token):
+        raise ValueError('expected [ADDRESS] or [ADDRESS]:PORT')
     match = _ENDPOINT_HOST_RE.match(token)
     if match is None:
         return None
@@ -1503,6 +1515,20 @@ def format_endpoint(ip: str, port: Optional[int]) -> str:
     if port is None:
         return ip
     return '[%s]:%d' % (ip, port) if ':' in ip else '%s:%d' % (ip, port)
+
+
+def _bad_port(text: str) -> Optional[str]:
+    """Why ``text``, an IP address written with a port, cannot be used (``203.0.113.10:99999``,
+    ``[fe80::1%eth0]:8443``); None for anything else, a good endpoint included."""
+    text = text.strip()
+    match = _ENDPOINT_BRACKET_RE.match(text) or _ENDPOINT_V4_RE.match(text)
+    if match is None or normalize_ip(match.group(1)) is None:
+        return None
+    try:
+        split_endpoint(text)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _address_token(text: str) -> Optional[str]:
@@ -1671,16 +1697,24 @@ class _InventoryBuilder:
             self.add(name, ips, line, groups, [] if ips else hosts)
 
     def result(self, line_count: int) -> Inventory:
-        """Finish: flag IPs shared by several servers and compute stats."""
+        """Finish: flag endpoints shared by several servers and compute stats.
+
+        An endpoint is an address on its own port, or bare (the -p ports): one address on
+        different ports (``web01 203.0.113.10:8443``, ``web02 203.0.113.10:9443``, a NAT
+        forwarding each port to another machine) is no duplicate, as in lib/inventory.js.
+        """
         servers = list(self.servers.values())
         seen = {}  # type: Dict[str, str]
         for server in servers:
+            warned = set()  # type: Set[str]
             for ip in server.ips:
-                if ip in seen and seen[ip] != server.name:
-                    self.warn(server.line, 'DUPLICATE_IP',
-                              '%s is listed for %s and %s' % (ip, seen[ip], server.name))
-                else:
-                    seen.setdefault(ip, server.name)
+                for port in server.port_spec(ip):
+                    endpoint = format_endpoint(ip, port)
+                    owner = seen.setdefault(endpoint, server.name)
+                    if owner != server.name and ip not in warned:
+                        warned.add(ip)
+                        self.warn(server.line, 'DUPLICATE_IP', '%s is listed for %s and %s'
+                                  % (endpoint, owner, server.name))
         stats = {'lines': line_count, 'servers': len(servers),
                  'ips': len({ip for server in servers for ip in server.ips})}
         return Inventory(servers, self.warnings, stats)
@@ -1815,6 +1849,19 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
         builder.add_token_values(key, [key], number, groups)
 
 
+def _ssh_port(token: str) -> Optional[Tuple[str, int]]:
+    """An Ansible host pattern with its SSH port (``192.0.2.50:2222``,
+    ``[2001:db8::1]:2222``, ``badwolf.example.com:5309``) -> ``(host, port)``; else None
+    (a bad port included: the caller warns about it as for any other target)."""
+    try:
+        endpoint = split_endpoint(token)
+    except ValueError:
+        return None
+    if endpoint is None or endpoint[1] is None:
+        return None
+    return endpoint[0], endpoint[1]
+
+
 def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
     """Plain lists, /etc/hosts files and Ansible INI inventories."""
     group = None  # type: Optional[str]
@@ -1835,11 +1882,26 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
         name = None  # type: Optional[str]
         values = []  # type: List[str]
         had_invalid = False
-        for index, token in enumerate(t for t in re.split(r'[\s,;]+', line) if t):
+        tokens = [t for t in re.split(r'[\s,;]+', line) if t]
+        # Ansible INI: a line under a [group] header, or one with ansible_* variables. There a
+        # port on the host pattern (the first token: "badwolf.example.com:5309",
+        # "192.0.2.50:2222", "[2001:db8::1]:2222") is Ansible's SSH port (ansible_port), never
+        # a TLS port: the host stays on the -p ports (lib/inventory.js reads it alike).
+        ansible = group is not None or any(re.match(r'ansible_\w*=', t, re.I) for t in tokens)
+        for index, token in enumerate(tokens):
+            if index == 0 and ansible and '=' not in token and not _CLOCK_RE.match(token):
+                ssh = _ssh_port(token)
+                if ssh is not None:
+                    builder.warn(number, 'PARSE', '%s: port %d on an Ansible host is its SSH '
+                                 'port (ansible_port), not a TLS port - scanned on -p'
+                                 % (token, ssh[1]))
+                    token = ssh[0]
             if '=' in token:
                 key, _, value = token.partition('=')
                 if key.lower() in _IP_KEYS:
                     values.append(value)
+                elif index == 0 and key and _CLOCK_RE.match(value):
+                    continue  # "time=10:30": a time of day, not a host and its port
                 elif index == 0 and key and not key.lower().startswith('ansible_'):
                     # "web01=203.0.113.10", "web01=203.0.113.10:8443", "web01=web01.example.net"
                     # or "web01=web01.example.net:8443": NAME=TARGET as -t takes it
@@ -1888,7 +1950,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
             builder.add_token_values(name, values, number, groups)
         elif had_invalid:
             continue  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
-        elif _is_header_like([t for t in re.split(r'[\s,;]+', line) if t]):
+        elif _is_header_like(tokens):
             continue  # "hostname   ip": a column heading, not a server called "hostname"
         elif name is not None:
             # A zone file's "2026092401 ; serial" line must never be resolved (glibc -> IP).
@@ -1898,7 +1960,8 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
 def _json_name(obj: Dict[str, Any]) -> Optional[str]:
     for key in _JSON_NAME_KEYS:
         value = obj.get(key)
-        if isinstance(value, str) and value.strip() and _address_token(value) is None:
+        if (isinstance(value, str) and value.strip() and _address_token(value) is None
+                and _bad_port(value) is None):
             return value.strip()
     tags = obj.get('tags', obj.get('Tags'))
     if isinstance(tags, dict):
@@ -1914,20 +1977,24 @@ def _json_name(obj: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _json_ips(node: Any, out: List[str], key: str = '') -> None:
-    """Collect IP strings anywhere below ``node`` (skipping netmask/gateway/dns-like keys)."""
+def _json_ips(node: Any, out: List[str], key: str = '',
+              invalid: Optional[List[str]] = None) -> None:
+    """Collect IP strings anywhere below ``node`` (skipping netmask/gateway/dns-like keys);
+    an address whose port cannot be used (``203.0.113.10:99999``) goes to ``invalid``."""
     if key and _JSON_SKIP_KEY_RE.search(key):
         return
     if isinstance(node, str):
         ip = _address_token(node)  # 203.0.113.10, or 203.0.113.10:8443 with its port
         if ip and ip not in out:
             out.append(ip)
+        elif not ip and invalid is not None and _bad_port(node) and node.strip() not in invalid:
+            invalid.append(node.strip())
     elif isinstance(node, list):
         for item in node:
-            _json_ips(item, out, key)
+            _json_ips(item, out, key, invalid)
     elif isinstance(node, dict):
         for child_key, child in node.items():
-            _json_ips(child, out, str(child_key))
+            _json_ips(child, out, str(child_key), invalid)
 
 
 def _json_host_values(obj: Dict[str, Any]) -> List[str]:
@@ -1935,7 +2002,7 @@ def _json_host_values(obj: Dict[str, Any]) -> List[str]:
     out = []
     for key in ('ansible_host', 'ansible_ssh_host'):
         value = obj.get(key)
-        if isinstance(value, str) and _address_token(value) is None:
+        if isinstance(value, str) and _address_token(value) is None and _bad_port(value) is None:
             out.append(value)
     return out
 
@@ -1952,21 +2019,41 @@ def _json_has_ip_field(obj: Dict[str, Any]) -> bool:
         if not _is_ip_key(str(key)):
             continue
         items = value if isinstance(value, list) else [value]
-        if any(isinstance(item, str) and _address_token(item) for item in items):
+        if any(isinstance(item, str) and (_address_token(item) or _bad_port(item))
+               for item in items):
             return True
     return False
 
 
 def _json_target_tokens(text: str) -> List[str]:
     """Tokens of a JSON string that can be targets: IPs (with a port too), CIDRs/ranges,
-    dotted hostnames."""
+    dotted hostnames (with a port too: ``web01.example.net:8443``, as ``NAME=HOST:PORT``
+    in a file), and addresses whose port cannot be used, which
+    :meth:`_InventoryBuilder.add_token_values` reports instead of dropping them."""
     out = []
     for token in (t for t in re.split(r'[\s,;]+', text) if t):
-        if _address_token(token) or is_ip_block(token):
+        if _address_token(token) or is_ip_block(token) or _bad_port(token):
             out.append(token)
-        elif '.' in token and normalize_hostname(token) and not _looks_like_ip(token):
+        elif _is_dotted_host(token) or _is_dotted_host(_host_of(token)):
             out.append(token)
     return out
+
+
+def _is_dotted_host(token: Optional[str]) -> bool:
+    return (bool(token) and '.' in token and not _looks_like_ip(token)
+            and normalize_hostname(token) is not None)
+
+
+def _host_of(token: str) -> Optional[str]:
+    """The host of ``host.name:port`` (a port 1-65535); else None."""
+    match = _ENDPOINT_HOST_RE.match(token)
+    if match is None or _CLOCK_RE.match(token):
+        return None
+    try:
+        _endpoint_port(match.group(2))
+    except ValueError:
+        return None
+    return match.group(1)
 
 
 def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] = None) -> None:
@@ -1978,8 +2065,8 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
             return
         if key_hint is not None or len(tokens) == 1:
             builder.add_token_values(key_hint, targets, 0)       # {"web01": "10.0.0.5"}
-        elif any(_address_token(t) for t in tokens):
-            first_ip = _address_token(tokens[0])                  # "ip name" / "name ip"
+        elif any(_address_token(t) or _bad_port(t) for t in tokens):
+            first_ip = _address_token(tokens[0]) or _bad_port(tokens[0])  # "ip name" / "name ip"
             name = tokens[1] if first_ip else tokens[0]
             builder.add_token_values(name, [t for t in targets if t != name], 0)
         return
@@ -1991,12 +2078,15 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
         return
     name = _json_name(data)
     if name is not None or _json_has_ip_field(data) or _json_host_values(data):
-        ips = []  # type: List[str]
-        _json_ips(data, ips)
+        ips, invalid = [], []  # type: List[str], List[str]
+        _json_ips(data, ips, invalid=invalid)
         values = ips or _json_host_values(data)
+        for token in invalid:
+            builder.warn(0, 'INVALID_IP', '%s (%s)' % (token, _bad_port(token)))
         if values:
             builder.add_token_values(name or key_hint, values, 0)
-        elif name:
+        elif name and not invalid:
+            # "web01" with a mistyped port is a warning, never the name resolved instead
             builder.add_hostname(name, 0)
         return
     for child_key, child in data.items():
@@ -3967,6 +4057,10 @@ targets (-t, repeatable):
   1-65535 is an error on the command line and a warning in a file; a CIDR or range
   takes no port. Next to an address on the same line, a hostname with a port is a
   warning, not a target: write the address with the port.
+  In an Ansible INI inventory (a line under a [group] header or with ansible_* variables)
+  a port on the host at the start of the line - 10.0.0.5:2222, [2001:db8::5]:2222,
+  web01.example.com:2222 - is Ansible's SSH port (ansible_port), not a TLS port: that
+  host is scanned on -p, with a warning. Leave the SSH port there; give TLS ports in -p.
   CIDRs/ranges larger than a /16 need --allow-large.
   Numeric "hostnames" such as 2026092401, 127.1 or 0x7f.0x1 are refused (usage error
   on the command line, skipped in files): the system resolver would read them as an
@@ -4031,7 +4125,9 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   2026092401 ya da 0x7f.0x1 gibi sayısal "alan adları" reddedilir: sistem çözümleyicisi
   bunları IPv4 adresi olarak okur.
   Portu yazılmış bir hedef (10.0.0.5:8443, [2001:db8::5]:8443) yalnızca o porttan
-  taranır; -p portu olmayan hedefler içindir.
+  taranır; -p portu olmayan hedefler içindir. Ansible INI envanterinde satırın başındaki
+  adresin ya da host adının portu (10.0.0.5:2222) Ansible'ın SSH portudur: o sunucu -p
+  portlarından taranır.
   Cloudflare Origin CA sertifikası sunan sunucular ORIGIN_CERT, kendinden imzalı ya da
   --private-ca ile verdiğiniz iç CA'nın imzaladığı sertifikayı sunanlar PRIVATE_CERT
   olarak ayrı listelenir ve "yeni sertifika gerekiyor" sayılmaz; --strict-public

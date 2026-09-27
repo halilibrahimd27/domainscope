@@ -548,6 +548,18 @@ test('retry: explicit sources, a fallback nobody needs any more, a failure that 
   assert.deepEqual(all.sources, ['dns', 'ripestat']);
 });
 
+test('info: a reverse lookup answered SERVFAIL keeps its rcode', async () => {
+  const servfail = Object.assign(new Error('PTR lookup answered SERVFAIL'), { kind: 'unknown', rcode: 'SERVFAIL' });
+  const intel = createIpIntel({ fetchImpl: mockFetch(RIPE_OK_ROUTES), dns: { ptr: async () => { throw servfail; } }, retries: 0 });
+  const r = await intel.info('140.82.121.4');
+  const e = r.errors.find((x) => x.source === 'ptr');
+  assert.equal(e.rcode, 'SERVFAIL');
+  assert.equal(e.error, 'PTR lookup answered SERVFAIL');
+  const plain = await createIpIntel({ fetchImpl: mockFetch(RIPE_OK_ROUTES), dns: { ptr: async () => { throw new Error('dns down'); } }, retries: 0 })
+    .info('140.82.121.4');
+  assert.equal('rcode' in plain.errors.find((x) => x.source === 'ptr'), false, 'no rcode without a DNS answer');
+});
+
 test('retry: private or complete results make no requests; an aborted signal rejects', async () => {
   const log = [];
   const intel = createIpIntel({ fetchImpl: mockFetch(RIPE_OK_ROUTES, { log }), dns: { ptr: async () => [] } });

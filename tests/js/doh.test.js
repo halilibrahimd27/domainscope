@@ -876,7 +876,9 @@ describe('ptr', () => {
       (e) => e.kind === 'network' && /Failed to fetch|network/i.test(e.message));
     const { fetchImpl: servfail } = mockFetch(() => ({ rcode: 'SERVFAIL' }));
     await assert.rejects(new DohClient({ fetchImpl: servfail, ...fast() }).ptr('8.8.8.8', { throwOnError: true }),
-      (e) => e.message === 'PTR lookup answered SERVFAIL');
+      (e) => e.message === 'PTR lookup answered SERVFAIL' && e.rcode === 'SERVFAIL');
+    await assert.rejects(new DohClient({ fetchImpl: down, retries: 0, ...fast() }).ptr('8.8.8.8', { throwOnError: true }),
+      (e) => e.rcode === undefined, 'no rcode without a DNS answer');
     assert.deepEqual(await new DohClient({ fetchImpl: servfail, ...fast() }).ptr('8.8.8.8'), [], 'without the option: [] as before');
   });
 });

@@ -58,8 +58,9 @@ const REVERSE_TTL_MS = 30 * 60 * 1000;
  * @property {string|null} error set only when nothing could be learned
  * @property {string|null} errorKind extension: util.errorKind() of `error` ('invalid' for bad input)
  * @property {Array<{ source: string, error: string, errorKind: string, status: number|null, retryAfterMs: number|null,
- *   at: number }>} errors extension: every partial failure ('ptr' | 'ripestat' | 'ripestat-geo' | 'ipwhois') with its
- *   HTTP status, the service's Retry-After when readable and when it failed (ms) — read by lib/sourcestatus.js
+ *   rcode?: string, at: number }>} errors extension: every partial failure ('ptr' | 'ripestat' | 'ripestat-geo' |
+ *   'ipwhois') with its HTTP status, the service's Retry-After when readable, the DNS rcode of a reverse lookup
+ *   answered SERVFAIL / REFUSED …, and when it failed (ms) — read by lib/sourcestatus.js
  * @property {Array<{ asn: number, holder: string|null }>} asns extension: all origin ASes (MOAS prefixes have several)
  * @property {boolean|null} announced extension: RIPEstat says the IP is routed (null when unknown)
  * @property {string|null} rir extension: 'ARIN' | 'RIPE NCC' | 'APNIC' | 'LACNIC' | 'AFRINIC' (from the IANA block)
@@ -499,7 +500,9 @@ export function createIpIntel({
   function failure(source, err) {
     const status = err instanceof HttpError ? err.status : null;
     const retryAfterMs = err && Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null;
-    return { source, error: describe(err), errorKind: errorKind(err), status, retryAfterMs, at: Date.now() };
+    const out = { source, error: describe(err), errorKind: errorKind(err), status, retryAfterMs, at: Date.now() };
+    if (err && typeof err.rcode === 'string' && err.rcode) out.rcode = err.rcode;
+    return out;
   }
 
   /** Query one source of an address: 'ptr' | 'ripestat' (prefix-overview) | 'ripestat-geo' | 'ipwhois'. */

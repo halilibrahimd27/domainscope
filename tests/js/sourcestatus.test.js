@@ -64,6 +64,10 @@ describe('sourceStatus', () => {
     assert.deepEqual(r({ source: 'doh', errorKind: 'http', error: 'HTTP 502 Bad Gateway' }), ['http', 'http-status', { status: 502 }], 'status read from the message');
     assert.deepEqual(r({ source: 'rdap', errorKind: 'http' }), ['http', 'http', {}]);
     assert.deepEqual(r({ source: 'ipwhois', errorKind: 'parse' }), ['parse', 'parse', {}]);
+    assert.deepEqual(r({ source: 'ptr', errorKind: 'unknown', rcode: 'SERVFAIL', error: 'PTR lookup answered SERVFAIL' }), ['rcode', 'rcode', { rcode: 'SERVFAIL' }]);
+    assert.deepEqual(r({ source: 'ptr', rcode: 'refused' }), ['rcode', 'rcode', { rcode: 'REFUSED' }], 'upper case');
+    assert.deepEqual(r({ source: 'ptr', rcode: 'not an rcode!' }), ['unknown', 'unknown', {}], 'junk is not an rcode');
+    assert.deepEqual(r({ source: 'ptr', rcode: 'SERVFAIL', status: 429 }), ['rate-limit', 'rate-limit-minutes', {}], 'a rate limit wins');
     assert.deepEqual(r({ source: 'ptr', errorKind: 'unknown', error: 'dns down' }), ['unknown', 'unknown', {}]);
     assert.deepEqual(r({ source: 'ptr', errorKind: 'abort' }), ['unknown', 'unknown', {}]);
     assert.deepEqual(r({ source: 'ptr', errorKind: 'invalid' }), ['unknown', 'unknown', {}]);
@@ -77,7 +81,7 @@ describe('sourceStatus', () => {
       for (const f of [
         { errorKind: 'rate-limit' }, { errorKind: 'rate-limit', retryAfterMs: MIN, at: NOW }, { errorKind: 'rate-limit', retryAfterMs: 0, at: NOW - 1 },
         { errorKind: 'timeout' }, { errorKind: 'network' }, { errorKind: 'unavailable' }, { errorKind: 'http', status: 500 }, { errorKind: 'http' },
-        { errorKind: 'parse' }, {}
+        { errorKind: 'parse' }, { rcode: 'SERVFAIL' }, {}
       ]) seen.add(sourceStatus({ source, ...f }, { now: NOW }).reason);
     }
     seen.add(sourceStatus({ source: 'unknown-source', errorKind: 'rate-limit' }).reason);
@@ -109,6 +113,10 @@ describe('ipFieldStatus / ipRetrySources', () => {
     assert.equal(ipFieldStatus(i, 'ptr'), null);
     const slow = info({}, [{ source: 'ptr', errorKind: 'timeout', status: null, error: 'Request timed out after 8000 ms' }]);
     assert.equal(ipFieldStatus(slow, 'ptr').statuses[0].reason, 'timeout');
+    // A broken reverse delegation: "answered SERVFAIL", not a bare "failed".
+    const broken = info({}, [{ source: 'ptr', errorKind: 'unknown', status: null, rcode: 'SERVFAIL', error: 'PTR lookup answered SERVFAIL' }]);
+    const st = ipFieldStatus(broken, 'ptr', { now: NOW }).statuses[0];
+    assert.deepEqual([st.kind, st.reason, st.params], ['rcode', 'rcode', { rcode: 'SERVFAIL' }]);
   });
 
   test('a failure another source made up for is not shown, and not retried', () => {

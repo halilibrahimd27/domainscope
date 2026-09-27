@@ -31,7 +31,7 @@ export const STATUS_SOURCES = Object.freeze({
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */
 export const STATUS_REASONS = Object.freeze([
   'rate-limit-wait', 'rate-limit-now', 'rate-limit-day', 'rate-limit-minutes', 'rate-limit',
-  'timeout', 'network', 'unavailable', 'http-status', 'http', 'parse', 'unknown'
+  'timeout', 'network', 'unavailable', 'http-status', 'http', 'rcode', 'parse', 'unknown'
 ]);
 
 /**
@@ -69,15 +69,17 @@ const MINUTE = 60 * 1000;
  * @property {number|null} [status] HTTP status, when the service answered one
  * @property {number|null} [retryAfterMs] the service's Retry-After, when readable
  * @property {boolean} [limited] the service said its quota is used up (HackerTarget's 200 text)
+ * @property {string|null} [rcode] the DNS rcode of a lookup that was answered but not usable (SERVFAIL, REFUSED …)
  * @property {number|Date|null} [at] when the failure happened (ms or Date; default: now)
  */
 
 /**
  * @typedef {object} SourceStatus
  * @property {string} source
- * @property {'rate-limit'|'timeout'|'network'|'unavailable'|'http'|'parse'|'unknown'} kind
+ * @property {'rate-limit'|'timeout'|'network'|'unavailable'|'http'|'rcode'|'parse'|'unknown'} kind
  * @property {string} reason one of {@link STATUS_REASONS}
- * @property {Record<string, number>} params reason parameters: `{ minutes }` (rate-limit-wait), `{ status }` (http-status)
+ * @property {Record<string, number|string>} params reason parameters: `{ minutes }` (rate-limit-wait), `{ status }`
+ *   (http-status), `{ rcode }` (rcode: 'SERVFAIL', 'REFUSED' …)
  * @property {Date|null} retryAt when the service said it takes requests again
  * @property {string|null} detail the technical message, for a details line or a tooltip
  */
@@ -120,6 +122,11 @@ export function sourceStatus(failure, { now = Date.now() } = {}) {
     out.params = { status };
     return out;
   }
+  if (kind === 'rcode') {
+    out.reason = 'rcode';
+    out.params = { rcode: rcodeOf(f) };
+    return out;
+  }
   out.reason = kind;
   return out;
 }
@@ -131,8 +138,14 @@ function httpStatusOf(f) {
   return m ? Number(m[1]) : null;
 }
 
+/** The rcode of a failure that got a DNS answer (upper case), else null. */
+function rcodeOf(f) {
+  return typeof f.rcode === 'string' && /^[A-Za-z0-9]{1,16}$/.test(f.rcode) ? f.rcode.toUpperCase() : null;
+}
+
 function failureKind(f, status) {
   if (f.limited === true || status === 429) return 'rate-limit';
+  if (rcodeOf(f)) return 'rcode';
   const k = typeof f.errorKind === 'string' ? f.errorKind : null;
   if (k === 'rate-limit' || k === 'timeout' || k === 'network' || k === 'unavailable' || k === 'parse') return k;
   if (k === 'http' || status) return 'http';

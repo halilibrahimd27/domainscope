@@ -21,6 +21,10 @@
  *     (downloads are captured in the page, nothing is written to disk)
  *   - route params (#/scan?domain=…), language switch keeping the results, dark mode,
  *     390 px phone layout without horizontal scrolling, screenshots in tests/e2e/screenshots/
+ *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
+ *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
+ *     names.txt with coverage), reduced motion (no smooth scroll), and one shell choice shared
+ *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card
  *   - zero console errors, exceptions and CSP violations; failures of the third-party APIs
  *     themselves (crt.sh 502 without CORS, 429s) are reported but do not fail the run.
  *
@@ -467,6 +471,42 @@ export const zoneHandoffScript = (apex, zone) => `(() => {
       id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
       questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities, edns: {}
     }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/**
+ * The offline certificate scan: tests/fixtures/ec_wildcard.pem (*.wild.example.net,
+ * wild.example.net) against an emulated example.net. web01 serves wild / www, shop is proxied
+ * (a Cloudflare address) and vpn is private (a pair the Verify tab hands to the CLI).
+ * Documentation ranges only; no last octet .11/.27/.28/.41.
+ */
+const OFFLINE_APEX = 'example.net';
+const OFFLINE_DNS = {
+  'example.net': { A: ['203.0.113.10'] },
+  'www.example.net': { A: ['203.0.113.10'] },
+  'mail.example.net': { A: ['203.0.113.12'] },
+  'wild.example.net': { A: ['203.0.113.20'] },
+  'www.wild.example.net': { A: ['203.0.113.20'] },
+  'mail.wild.example.net': { A: ['203.0.113.22'] },
+  'api.wild.example.net': { A: ['203.0.113.21'] },
+  'shop.wild.example.net': { A: ['104.16.5.5'] },
+  'vpn.wild.example.net': { A: ['10.0.0.5'] }
+};
+const OFFLINE_INVENTORY = 'web01 203.0.113.20\ndb01 10.0.0.5';
+/** Slows every DoH answer by `window.__dnsDelay` ms (0 = off), so a run can be cancelled mid-wordlist. */
+const dnsDelayScript = `(() => {
+  const inner = window.fetch;
+  window.__dnsDelay = 0;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (window.__dnsDelay && /[?&]dns=/.test(url)) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, window.__dnsDelay);
+        const signal = init && init.signal;
+        if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+      });
+    }
+    return inner(input, init);
   };
 })();`;
 
@@ -1068,6 +1108,168 @@ async function main() {
         }, saved);
       }
     });
+
+    run.group('Offline certificate scan (emulated DNS, nothing else leaves the page)');
+    {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      // The live suite's stored options / inventory are restored afterwards.
+      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }))
+        .catch(() => null);
+      const pressed = (scope) => tab.evaluate((s) => document.querySelector(`${s} .seg-btn[aria-pressed="true"]`)?.dataset.value || null, scope);
+      const code = (sel) => tab.evaluate((s) => document.querySelector(s)?.textContent || null, sel);
+      // Page scroll positions from the moment Start is pressed (the smooth scroll to the results).
+      const armScrollLog = async () => {
+        await tab.evaluate(() => window.scrollTo(0, 0));
+        await sleep(250);
+        await tab.evaluate(() => {
+          if (!window.__scrollLog) window.addEventListener('scroll', () => window.__scrollLog.push({ y: Math.round(window.scrollY), t: performance.now() }), { passive: true });
+          window.__scrollLog = [];
+          window.__scrollT0 = performance.now();
+        });
+      };
+      /** Distinct positions in the first 600 ms: a smooth scroll passes many, a jump one or two. */
+      const earlyScroll = () => tab.evaluate(() => {
+        const early = window.__scrollLog.filter((x) => x.t - window.__scrollT0 < 600).map((x) => x.y);
+        return { distinct: new Set(early).size, last: early[early.length - 1] || 0, ys: early.slice(0, 16).join(',') };
+      });
+      const openTab = async (id) => {
+        await tab.evaluate((x) => document.querySelector(`.scan-tabs [data-tab="${x}"]`).click(), id);
+        await tab.waitFor((x) => document.querySelector(`.scan-tabs [data-tab="${x}"]`)?.getAttribute('aria-selected') === 'true', { args: [id], message: `tab ${id}` });
+      };
+      try {
+        await run.step('keyboard Start → focus on Cancel → Enter cancels mid-wordlist → focus back; the export bar exports the streamed hits', async () => {
+          await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(OFFLINE_APEX, OFFLINE_DNS) });
+          await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: dnsDelayScript });
+          await installDownloadCapture(tab);
+          await tab.goto(`${server.url}#/about`);
+          await waitReady(tab);
+          await setLangUi(tab, 'en');
+          const known = LIB_SOURCES.map((s) => s.id);
+          await tab.evaluate((k, inv) => {
+            localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'small', permutations: false, originHints: true }));
+            localStorage.setItem('ssds.inventory', JSON.stringify({ v: 1, text: inv, updatedAt: new Date().toISOString() }));
+          }, known, OFFLINE_INVENTORY);
+          await tab.reload();
+          await waitReady(tab);
+          await gotoRoute(tab, 'scan');
+          await tab.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'ec_wildcard.pem')]);
+          await tab.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
+          assertEqual(await tab.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), OFFLINE_APEX, 'domain from the certificate');
+          // Slow answers keep the wordlist stage running; the scroll log is the reduced-motion control.
+          await armScrollLog();
+          await tab.evaluate(() => {
+            window.__dnsDelay = 250;
+            document.querySelector('[data-action="scan-run"]').focus({ preventScroll: true });
+          });
+          await tab.press('Enter');
+          const started = await tab.waitFor(() => {
+            const st = document.querySelector('.scan-run-ui .scan-run')?.dataset.status;
+            return st === 'running' && document.activeElement?.dataset.action === 'scan-cancel' ? st : false;
+          }, { timeout: 15000, message: 'running, keyboard focus on Cancel (not <body>)' });
+          assertEqual(started, 'running', 'status');
+          await tab.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')]
+            .filter((tr) => /resolving/.test(tr.textContent)).length >= 2, { timeout: 30000, message: 'two streamed "resolving…" rows' });
+          await tab.press('Enter');
+          await tab.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled', { timeout: 15000, message: 'cancelled' });
+          await tab.waitFor(() => document.activeElement?.dataset.action === 'scan-run', { timeout: 5000, message: 'keyboard focus back on Start' });
+          const smooth = await earlyScroll();
+          assert(smooth.distinct >= 5 && smooth.last > 0, `the control run scrolls smoothly: ${JSON.stringify(smooth)}`);
+          const kept = await tab.evaluate(() => ({
+            names: [...document.querySelectorAll('.scan-hosts tbody tr.dt-row .scan-host-name')].map((n) => n.textContent),
+            hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
+            names_: document.querySelector('.scan-exports [data-export="names"]').disabled,
+            json: document.querySelector('.scan-exports [data-export="json"]').disabled
+          }));
+          assert(kept.names.length >= 2, `rows kept after Cancel: ${kept.names}`);
+          assertEqual([kept.hosts, kept.names_, kept.json], [false, false, true], 'hosts CSV and names.txt enabled, full JSON waits for a finished scan');
+          await takeDownloads(tab);
+          await tab.evaluate(() => {
+            document.querySelector('.scan-exports [data-export="hosts-csv"]').click();
+            document.querySelector('.scan-exports [data-export="names"]').click();
+          });
+          const files = await takeDownloads(tab);
+          const csv = files.find((f) => /^hosts-.*\.csv$/.test(f.name));
+          const names = files.find((f) => f.name === 'names.txt');
+          assert(csv && names, `downloads: ${files.map((f) => f.name)}`);
+          for (const n of kept.names) assert(csv.text.includes(n), `hosts CSV lists ${n}`);
+          // names.txt is "only covered" with a certificate: *.wild.example.net covers one label under wild.
+          const covered = kept.names.filter((n) => n === 'wild.example.net' || /^[^.]+\.wild\.example\.net$/.test(n));
+          assert(covered.length >= 1, `a covered name among ${kept.names}`);
+          assertEqual(names.text.split('\n').filter(Boolean).sort(), [...covered].sort(), 'names.txt: the covered hits found so far');
+        });
+
+        await run.step('reduced motion: Start jumps to the results instead of scrolling smoothly', async () => {
+          await tab.emulateMedia({ 'prefers-color-scheme': 'light', 'prefers-reduced-motion': 'reduce' });
+          const before = await runStatus(tab);
+          await armScrollLog();
+          await tab.evaluate(() => {
+            window.__dnsDelay = 0;
+            document.querySelector('[data-action="scan-run"]').click();
+          });
+          await tab.waitFor((prev) => {
+            const ui = document.querySelector('.scan-run-ui');
+            return ui && ui.dataset.run !== prev && ui.querySelector('.scan-run').dataset.status === 'done';
+          }, { args: [before.id], timeout: 60000, message: 'offline scan done' });
+          const jump = await earlyScroll();
+          assert(jump.last > 0 && jump.distinct <= 2, `one jump to the results, no animation: ${JSON.stringify(jump)}`);
+          await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+        });
+
+        await run.step('Behind CDN and Verify share one shell: step 3, the sweep and both toggles follow a change in either card', async () => {
+          await openTab('cdn');
+          const posix = 'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem';
+          const ps = 'python ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem';
+          const cdn = async () => ({
+            toggles: await tab.evaluate(() => document.querySelectorAll('.scan-tab-cdn .scan-cli-shell').length),
+            pressed: await pressed('.scan-tab-cdn .scan-cli-shell'),
+            step3: await code('.scan-tab-cdn .scan-cli-command code'),
+            quick: await code('.scan-tab-cdn .scan-cli-quick code')
+          });
+          const first = await cdn();
+          process.stdout.write(`        quick sweep: ${first.quick || 'none (the toggle sits in the CLI card)'}\n`);
+          assertEqual([first.toggles, first.pressed, first.step3], [1, 'posix', posix], 'one toggle, POSIX');
+          // Behind CDN → PowerShell: step 3 and the sweep switch to `python`.
+          await tab.evaluate(() => document.querySelector('.scan-tab-cdn .scan-cli-shell .seg-btn[data-value="powershell"]').click());
+          const second = await cdn();
+          assertEqual([second.pressed, second.step3], ['powershell', ps], 'PowerShell in Behind CDN');
+          if (first.quick) assert(second.quick.startsWith('python ssl_origin_scan.py'), `quick sweep: ${second.quick}`);
+          // … and the Verify card follows (the reverse of the next check).
+          await openTab('verify');
+          await tab.waitFor(() => document.querySelector('.scan-tab-verify .vfy-cli code'), { message: 'Verify CLI card' });
+          assertEqual(await pressed('.scan-tab-verify [data-vfy="shell"]'), 'powershell', 'Verify toggle follows Behind CDN');
+          assert((await code('.scan-tab-verify .vfy-cli code')).startsWith('python ssl_origin_scan.py'), 'Verify command follows Behind CDN');
+          // Verify → POSIX: back in Behind CDN the pressed segment and every command agree.
+          await tab.evaluate(() => document.querySelector('.scan-tab-verify [data-vfy="shell"] .seg-btn[data-value="posix"]').click());
+          assert((await code('.scan-tab-verify .vfy-cli code')).startsWith('python3 ssl_origin_scan.py'), 'Verify POSIX command');
+          await openTab('cdn');
+          const third = await cdn();
+          assertEqual([third.pressed, third.step3], ['posix', posix], 'Behind CDN follows the Verify card');
+          if (first.quick) {
+            assert(third.quick.startsWith('python3 ssl_origin_scan.py'), `quick sweep: ${third.quick}`);
+            // Redrawing the sweep (an exclude) keeps the shell the toggle shows.
+            await tab.type('[data-role="scan-cdn-exclude"]', '203.0.113.99');
+            await tab.waitFor(() => /203\.0\.113\.99/.test(document.querySelector('.scan-cli-quick code')?.textContent || ''), { message: 'sweep redrawn with the exclude' });
+            const fourth = await cdn();
+            assertEqual(fourth.pressed, 'posix', 'toggle after an exclude');
+            assert(fourth.quick.startsWith('python3 ssl_origin_scan.py'), `quick sweep after an exclude: ${fourth.quick}`);
+          }
+          const after = await tab.evaluate(() => ({ blocked: window.__zoneBlocked }));
+          assertEqual(after.blocked, [], 'nothing but DNS for the zone left the page');
+          await assertClean(tab, 'offline certificate scan', origin);
+        });
+      } finally {
+        await tab.close();
+        if (saved) {
+          await page.evaluate((s) => {
+            for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
+              if (value === null) localStorage.removeItem(key);
+              else localStorage.setItem(key, value);
+            }
+          }, saved);
+        }
+      }
+    }
 
     run.group('Quality');
     await run.step('i18n: no missing keys, TR and EN key sets match', async () => {

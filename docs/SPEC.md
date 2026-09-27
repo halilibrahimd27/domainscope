@@ -899,7 +899,7 @@ python3 ssl_origin_scan.py -t targets.txt [-t 10.0.0.0/24 -t web01.internal ...]
 - Untrusted certificates: any server in a swept range can answer with any certificate.
   - A certificate the parser cannot read (malformed, out-of-range times, oversized OIDs) becomes a `TLS_ERROR` row (`unparseable certificate: ...`), or a `PARSE_ERROR` for `--cert`, never a crash.
   - The summary and the warnings escape control, format and line-separator characters of certificate text and inventory names (`\x1b[2K` is printed as the text `\x1b[2K`), so a subject cannot move the cursor, rewrite lines or set the window title. The JSON keeps the exact values.
-  - CSV text cells follow the web app's `toCsv` rule (§5.16): a cell starting with `=` `+` `-` `@` TAB or CR gets a leading `'`, so a CN such as `=HYPERLINK(...)` stays text in Excel; control characters are escaped as in the summary. Numbers (port, days left) are left as they are.
+  - CSV text cells follow the web app's `toCsv` rule (§5.16): a cell starting with `=` `+` `-` `@` TAB or CR gets a leading `'`, so a CN such as `=HYPERLINK(...)` stays text in Excel. Control characters and bidi embeddings / overrides / isolates are escaped; ZWNJ, ZWJ, the soft hyphen and LRM / RLM of real names stay in a file, and only `--csv -` escapes everything the summary does. Numbers (port, days left) are left as they are.
 - `--exclude ADDR [ADDR ...]` (repeatable) takes IPs, CIDRs (v4 / v6), ranges, `-` for stdin, or a file of them (`#` comments).
   - Host names are refused (exit 2).
   - IPv4-mapped addresses match both ways.

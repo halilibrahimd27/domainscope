@@ -3022,25 +3022,35 @@ CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covere
 _CSV_FORMULA_START = ('=', '+', '-', '@', '\t', '\r')
 
 
-def _csv_cell(value: Any) -> Any:
+# Escaped in a CSV file: C0 / C1 controls and the bidi embeddings, overrides and isolates,
+# which can make a cell show other text than it holds. ZWNJ, ZWJ, the soft hyphen and
+# LRM / RLM are part of real names (a Persian O=) and stay as they are.
+_CSV_ESCAPE_RE = re.compile(r'[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
+
+
+def _csv_cell(value: Any, terminal: bool = False) -> Any:
     """A spreadsheet-safe cell: text starting with ``= + - @`` TAB or CR gets a leading
-    apostrophe, like the web app's ``toCsv``, and control characters are escaped
-    (:func:`display_text`, for ``--csv -`` on a terminal). Numbers are left untouched."""
+    apostrophe, like the web app's ``toCsv``, and :data:`_CSV_ESCAPE_RE` characters are
+    escaped; for ``--csv -`` (``terminal``) every character :func:`display_text` escapes.
+    Numbers are left untouched."""
     if not isinstance(value, str):
         return value
     if value.startswith(_CSV_FORMULA_START):
         value = "'" + value
-    return display_text(value)
+    if terminal:
+        return display_text(value)
+    return _CSV_ESCAPE_RE.sub(lambda match: _escape_char(match.group()), value)
 
 
-def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
+def render_csv(report: ScanReport, lineterminator: str = '\r\n',
+               terminal: bool = False) -> str:
     """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`.
 
     With ``--exclude``, one more row per excluded target address follows the results:
     probe ``excluded``, status ``EXCLUDED``, empty port, the matching rule in ``error``.
     Certificate fields come from whatever server answered, so every text cell goes
-    through :func:`_csv_cell` (a certificate CN ``=HYPERLINK(...)`` stays text in Excel);
-    the JSON report keeps the exact values.
+    through :func:`_csv_cell` (a certificate CN ``=HYPERLINK(...)`` stays text in Excel;
+    ``terminal`` for ``--csv -``); the JSON report keeps the exact values.
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
@@ -3048,7 +3058,7 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
     for row in report.results:
         data = _row_dict(row, report.finished_at)
         covers = data['newCertCovers']
-        writer.writerow([_csv_cell(value) for value in (
+        writer.writerow([_csv_cell(value, terminal) for value in (
             data['server'], data['ip'], data['port'], data['probe'], data['name'] or '',
             data['sni'] or '', data['status'], data['coveredBy'] or '',
             '' if covers is None else ('yes' if covers else 'no'),
@@ -3061,7 +3071,7 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n') -> str:
         row = dict.fromkeys(CSV_COLUMNS, '')  # type: Dict[str, Any]
         row.update(server=entry.server, ip=entry.ip, probe=PROBE_EXCLUDED, status=EXCLUDED,
                    error='excluded by --exclude %s (never probed)' % entry.rule)
-        writer.writerow([_csv_cell(row[column]) for column in CSV_COLUMNS])
+        writer.writerow([_csv_cell(row[column], terminal) for column in CSV_COLUMNS])
     return buffer.getvalue()
 
 
@@ -3131,15 +3141,15 @@ def display_text(text: str) -> str:
     """
     if text.isprintable():
         return text
-    out = []
-    for char in text:
-        if unicodedata.category(char) in ('Cc', 'Cf', 'Zl', 'Zp'):
-            code = ord(char)
-            out.append('\\x%02x' % code if code < 0x100 else
-                       '\\u%04x' % code if code < 0x10000 else '\\U%08x' % code)
-        else:
-            out.append(char)
-    return ''.join(out)
+    return ''.join(_escape_char(char) if unicodedata.category(char) in ('Cc', 'Cf', 'Zl', 'Zp')
+                   else char for char in text)
+
+
+def _escape_char(char: str) -> str:
+    """``char`` as the text ``\\xNN``, ``\\uNNNN`` or ``\\UNNNNNNNN``."""
+    code = ord(char)
+    return ('\\x%02x' % code if code < 0x100 else
+            '\\u%04x' % code if code < 0x10000 else '\\U%08x' % code)
 
 
 def _endpoint_label(ip: str, port: int) -> str:
@@ -3865,7 +3875,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
         if args.csv == '-':
-            write_report('-', render_csv(report, lineterminator='\n'))
+            write_report('-', render_csv(report, lineterminator='\n', terminal=True))
         else:
             write_report(args.csv, render_csv(report), encoding='utf-8-sig')
     if args.json != '-' and args.csv != '-':

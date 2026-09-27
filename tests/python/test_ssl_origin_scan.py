@@ -2002,6 +2002,20 @@ class OutputTests(unittest.TestCase):
         # the JSON report keeps the exact values
         doc = json.loads(sos.render_json(report))
         self.assertEqual(doc['results'][0]['certSubjectCN'], link)
+        # a file keeps the format characters of real names (ZWNJ in a Persian O=, a soft
+        # hyphen, LRM) and escapes bidi overrides; --csv - escapes both, as the summary
+        persian = '\u0646\u0627\u0645\u0647\u200c\u0627\u06cc co\u00adop\u200e'
+        named = dataclasses.replace(base, issuer_cn='CA', issuer={'CN': 'CA', 'O': persian},
+                                    subject_cn='a\u202egpj.exe\u2066')
+        report.results[1] = dataclasses.replace(report.results[1], cert=named)
+        second = dict(zip(sos.CSV_COLUMNS, list(csv.reader(io.StringIO(
+            sos.render_csv(report))))[2]))
+        self.assertEqual(second['cert_issuer'], 'CA (%s)' % persian)
+        self.assertEqual(second['cert_subject_cn'], 'a\\u202egpj.exe\\u2066')
+        second = dict(zip(sos.CSV_COLUMNS, list(csv.reader(io.StringIO(
+            sos.render_csv(report, lineterminator='\n', terminal=True))))[2]))
+        self.assertEqual(second['cert_issuer'], 'CA (%s)' % sos.display_text(persian))
+        self.assertIn('\\u200c', second['cert_issuer'])
         self.assertEqual(doc['results'][1]['certSubjectCN'], '\tx\x1b[2K')
 
     def test_csv_formula_rule_matches_the_web_app(self):

@@ -437,6 +437,10 @@ describe('checkDane', () => {
     assert.deepEqual([d['example.edu'].rcode, d['example.edu'].mx], ['NXDOMAIN', []]);
     assert.deepEqual(report.endpoints.map((e) => [e.qname, e.status, e.implicit]), [['_25._tcp.example.org', 'safe', true]]);
     assert.deepEqual(report.endpoints[0].notes.map((n) => n.code), ['spki-match', 'implicit-mx']);
+    // The failed MX lookup is a failed lookup in the summary, never "safe" or "DANE not used".
+    const s = D.daneSummary(report);
+    assert.deepEqual([s.mxFailed, s.nullMx], [['example.net'], ['example.com']]);
+    assert.deepEqual([s.headline, s.variant, s.count], ['error', 'warn', 1]);
   });
 
   test('a shared MX host is checked once for every domain; an unvalidated MX set makes its TLSA irrelevant', async () => {
@@ -478,12 +482,34 @@ describe('checkDane', () => {
     assert.equal(ep.status, 'safe');
     assert.deepEqual([ep.records[0].matchedBy, ep.records[0].anchor], ['chain', 0]);
     assert.deepEqual(report.associations.anchors.map((a) => [a.subjectCN, a.issuer]), [['Subdomain Scanner Test Root CA', true]]);
+    assert.equal(D.issuedBy(CHAIN_LEAF, CHAIN_ROOT), true);
+    assert.equal(D.issuedBy(CHAIN_LEAF, CHAIN_LEAF), false, 'never itself');
+    assert.equal(D.issuedBy(CHAIN_LEAF, { ...CHAIN_ROOT, subjectKeyId: '00' }), false, 'the AKI of the leaf names another key');
+    assert.equal(D.issuedBy(CHAIN_LEAF, { ...CHAIN_ROOT, subjectKeyId: null }), true, 'no SKI: the subject decides');
+    assert.equal(D.issuedBy(NEW, CHAIN_ROOT), false);
     // Leaf only: the same record cannot be compared.
     const alone = await D.checkDane({ leaf: CHAIN_LEAF }, { dns: client(zone).dns, mx: false });
     const ep2 = alone.endpoints.find((e) => e.qname === owner);
     assert.equal(ep2.status, 'ta-unchecked');
     assert.deepEqual(ep2.suggestions.map((s) => [s.usage, s.selector, s.matchingType, s.data]), [[3, 1, 1, CHAIN_A[1][1]]]);
     assert.equal(D.daneSummary(alone).headline, 'warn');
+  });
+
+  test('noCache: a check again right after publishing asks the resolvers again', async () => {
+    const zone = {
+      'example.net|MX': mx('example.net', [[10, 'wild.example.net']]),
+      '_25._tcp.wild.example.net|TLSA': tlsa('_25._tcp.wild.example.net', [rec(3, 1, 1, OLD_A[1][1])])
+    };
+    const f = zoneFetch(zone);
+    const dns = new DohClient({ chain: ['cloudflare'], fetchImpl: f.fetchImpl, retries: 0 }); // caching on, as in the app
+    assert.equal((await D.checkDane({ leaf: NEW }, { dns, https: false })).endpoints[0].status, 'danger');
+    // The new record is published next to the old one.
+    zone['_25._tcp.wild.example.net|TLSA'] = tlsa('_25._tcp.wild.example.net', [rec(3, 1, 1, OLD_A[1][1]), rec(3, 1, 1, NEW_A[1][1])]);
+    const n = f.calls.length;
+    assert.equal((await D.checkDane({ leaf: NEW }, { dns, https: false })).endpoints[0].status, 'danger', 'the cached answer');
+    assert.equal(f.calls.length, n, 'served from the cache');
+    assert.equal((await D.checkDane({ leaf: NEW }, { dns, https: false, noCache: true })).endpoints[0].status, 'safe');
+    assert.equal(f.calls.length, n + 2);
   });
 
   test('caps the MX hosts; every name unused → "unused"; an abort rejects', async () => {
@@ -506,6 +532,7 @@ describe('daneSummary / daneExportJson', () => {
 
   test('headline order: danger > servfail > warn > error > safe > unused / clear', () => {
     const head = (s) => D.daneSummary(report(s)).headline;
+    const pick = (s) => [s.headline, s.count, s.mxFailed, s.nullMx];
     assert.equal(head(['safe', 'danger', 'servfail']), 'danger');
     assert.equal(head(['safe', 'servfail', 'pkix']), 'servfail');
     assert.equal(head(['safe', 'ta-unchecked', 'error']), 'warn');
@@ -514,6 +541,12 @@ describe('daneSummary / daneExportJson', () => {
     assert.equal(head(['none', 'none']), 'unused');
     assert.equal(head(['none', 'insecure', 'not-covered', 'unusable']), 'clear');
     assert.equal(head([]), null);
+    // A domain whose MX lookup failed: its mail servers were not checked.
+    const failedMx = { ...report(['safe']), domains: [{ domain: 'example.net', error: 'offline' }, { domain: 'example.com', nullMx: true, error: null }] };
+    assert.deepEqual(pick(D.daneSummary(failedMx)), ['error', 1, ['example.net'], ['example.com']]);
+    assert.deepEqual(pick(D.daneSummary({ ...failedMx, endpoints: [] })), ['error', 1, ['example.net'], ['example.com']]);
+    assert.deepEqual(pick(D.daneSummary({ ...report(['danger', 'error']), domains: failedMx.domains })), ['danger', 1, ['example.net'], ['example.com']]);
+    assert.deepEqual(pick(D.daneSummary({ ...report(['error']), domains: failedMx.domains })), ['error', 2, ['example.net'], ['example.com']]);
     for (const s of D.DANE_STATUSES) assert.ok(D.DANE_SEVERITY[s], s);
     assert.ok(D.DANE_HEADLINES.includes('clear'));
   });

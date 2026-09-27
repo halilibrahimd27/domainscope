@@ -483,10 +483,10 @@ export function planDane(leaf, { extraNames = [], mx = true, https = true, limit
 }
 
 /** Query that never rejects except with AbortError (DohClient.query already behaves so). */
-async function ask(dns, name, type, { signal, cd = false }) {
+async function ask(dns, name, type, { signal, cd = false, noCache = false }) {
   throwIfAborted(signal);
   try {
-    return await dns.query(name, type, { dnssec: true, cd, signal });
+    return await dns.query(name, type, { dnssec: true, cd, signal, noCache });
   } catch (err) {
     if (err && err.name === 'AbortError') throw err;
     return { ok: false, rcode: null, flags: {}, answers: [], error: err && err.message ? err.message : String(err), errorKind: 'unknown' };
@@ -543,17 +543,27 @@ function mxEntry(domain, response) {
  */
 
 /**
+ * Did `ca` issue `leaf`? Its subject is the leaf's issuer and, when both carry one, its
+ * subject key identifier is the leaf's authority key identifier.
+ * @param {{ issuerDN: string, authorityKeyId?: string|null }} leaf lib/x509.js Certificate
+ * @param {{ subjectDN: string, subjectKeyId?: string|null }} ca
+ * @returns {boolean}
+ */
+export function issuedBy(leaf, ca) {
+  if (!leaf || !ca || ca === leaf || ca.subjectDN !== leaf.issuerDN) return false;
+  return !leaf.authorityKeyId || !ca.subjectKeyId || leaf.authorityKeyId === ca.subjectKeyId;
+}
+
+/**
  * The anchors a DANE-TA record may pin: the other certificates of the file, the leaf's
- * issuer marked (subject = the leaf's issuer and, when both carry one, SKI = the leaf's AKI).
+ * issuer marked ({@link issuedBy}).
  */
 async function anchorsOf(leaf, chain, subtle) {
   const list = (Array.isArray(chain) ? chain : []).filter((c) => c && c !== leaf && c.der instanceof Uint8Array && c.spkiDer instanceof Uint8Array);
   const out = [];
   for (const c of list) {
     if (out.some((a) => a.cert.der.length === c.der.length && a.cert.der.every((b, i) => b === c.der[i]))) continue;
-    const issuer = c.subjectDN === leaf.issuerDN
-      && (!leaf.authorityKeyId || !c.subjectKeyId || leaf.authorityKeyId === c.subjectKeyId);
-    out.push({ cert: c, issuer, assoc: await certAssociations(c, { subtle }) });
+    out.push({ cert: c, issuer: issuedBy(leaf, c), assoc: await certAssociations(c, { subtle }) });
   }
   return out;
 }
@@ -565,13 +575,15 @@ async function anchorsOf(leaf, chain, subtle) {
  * DNSSEC from broken name servers.
  * @param {{ leaf: object, chain?: object[] }} certs the new certificate and the other certificates of its file
  * @param {{ dns: { query: Function }, subtle?: SubtleCrypto, signal?: AbortSignal, extraNames?: string[],
- *   mx?: boolean, https?: boolean, limits?: Partial<typeof DANE_LIMITS>,
+ *   mx?: boolean, https?: boolean, limits?: Partial<typeof DANE_LIMITS>, noCache?: boolean,
  *   onProgress?: (p: { phase: 'mx'|'tlsa', done: number, total: number }) => void, now?: () => number }} opts
+ *   `noCache`: bypass the client's answer cache (a check right after publishing a record must
+ *   ask the resolvers again)
  * @returns {Promise<DaneReport>} rejects only with AbortError, a DaneError ('no-crypto') or a TypeError
  */
 export async function checkDane({ leaf, chain = [] } = {}, {
   dns, subtle = globalThis.crypto?.subtle, signal, extraNames = [], mx = true, https = true, limits = {},
-  onProgress = null, now = Date.now
+  noCache = false, onProgress = null, now = Date.now
 } = {}) {
   if (!leaf || !Array.isArray(leaf.hostnames)) throw new TypeError('checkDane: a parsed leaf certificate is required');
   if (!dns || typeof dns.query !== 'function') throw new TypeError('checkDane: a DNS client with query(name, type, opts) is required');
@@ -597,7 +609,7 @@ export async function checkDane({ leaf, chain = [] } = {}, {
   progress('mx', 0, plan.domains.length);
   const domains = await Promise.all(plan.domains.map(async (domain) => {
     queries += 1;
-    const entry = mxEntry(domain, await ask(dns, domain, 'MX', { signal }));
+    const entry = mxEntry(domain, await ask(dns, domain, 'MX', { signal, noCache }));
     progress('mx', ++mxDone, plan.domains.length);
     return entry;
   }));
@@ -642,11 +654,11 @@ export async function checkDane({ leaf, chain = [] } = {}, {
   progress('tlsa', 0, endpoints.length);
   const results = await Promise.all(endpoints.map(async (ep) => {
     queries += 1;
-    const response = await ask(dns, ep.qname, 'TLSA', { signal });
+    const response = await ask(dns, ep.qname, 'TLSA', { signal, noCache });
     let cdResponse = null;
     if (response && response.ok && response.rcode === 'SERVFAIL') {
       queries += 1;
-      cdResponse = await ask(dns, ep.qname, 'TLSA', { signal, cd: true });
+      cdResponse = await ask(dns, ep.qname, 'TLSA', { signal, cd: true, noCache });
     }
     // Senders use an MX host's TLSA only when an MX record set naming it was validated.
     const mxAuthenticated = ep.service !== 'smtp' || ep.implicit ? null
@@ -679,25 +691,32 @@ export async function checkDane({ leaf, chain = [] } = {}, {
 
 /**
  * Counts per status and the headline of a report.
+ * A registrable domain whose MX lookup failed counts as a failed lookup: its mail servers were
+ * not checked, so the report must not read "DANE not used" or "safe" for them.
  * @param {DaneReport|null} report
  * @returns {{ total: number, counts: Record<string, number>, headline: string|null, variant: string|null, count: number,
- *   warn: number, action: DaneEndpoint[], waitSeconds: number|null }}
+ *   warn: number, action: DaneEndpoint[], waitSeconds: number|null, mxFailed: string[], nullMx: string[] }}
  *   `headline` is one of {@link DANE_HEADLINES}; `action` lists the endpoints whose records to
- *   publish first ({@link DANE_ACTION_STATUSES}); `waitSeconds` is the longest of their waits
+ *   publish first ({@link DANE_ACTION_STATUSES}); `waitSeconds` is the longest of their waits;
+ *   `mxFailed` / `nullMx`: the domains whose MX lookup failed / that accept no mail (RFC 7505)
  */
 export function daneSummary(report) {
   const counts = Object.fromEntries(DANE_STATUSES.map((s) => [s, 0]));
   const endpoints = report && Array.isArray(report.endpoints) ? report.endpoints : [];
+  const domains = report && Array.isArray(report.domains) ? report.domains : [];
   for (const ep of endpoints) if (Object.prototype.hasOwnProperty.call(counts, ep.status)) counts[ep.status] += 1;
+  const mxFailed = domains.filter((d) => d && d.error).map((d) => d.domain);
+  const nullMx = domains.filter((d) => d && d.nullMx).map((d) => d.domain);
   const warn = counts['ta-mismatch'] + counts['ta-unchecked'] + counts.pkix;
+  const failed = counts.error + mxFailed.length;
   let headline = null;
   let variant = null;
   let count = 0;
-  if (!endpoints.length) headline = null;
+  if (!endpoints.length && !failed) headline = null;
   else if (counts.danger) [headline, variant, count] = ['danger', 'error', counts.danger];
   else if (counts.servfail) [headline, variant, count] = ['servfail', 'error', counts.servfail];
   else if (warn) [headline, variant, count] = ['warn', 'warn', warn];
-  else if (counts.error) [headline, variant, count] = ['error', 'warn', counts.error];
+  else if (failed) [headline, variant, count] = ['error', 'warn', failed];
   else if (counts.safe) [headline, variant, count] = ['safe', 'ok', counts.safe];
   else if (counts.none === endpoints.length) [headline, variant, count] = ['unused', 'info', endpoints.length];
   else [headline, variant, count] = ['clear', 'info', endpoints.length];
@@ -705,7 +724,8 @@ export function daneSummary(report) {
   const waits = action.map((ep) => ep.waitSeconds).filter((w) => Number.isFinite(w));
   return {
     total: endpoints.length, counts, headline, variant, count, warn, action,
-    waitSeconds: waits.length ? Math.max(...waits) : null
+    waitSeconds: waits.length ? Math.max(...waits) : null,
+    mxFailed, nullMx
   };
 }
 
@@ -730,7 +750,7 @@ export function daneExportJson(report, { app = 'DomainScope', version = '' } = {
     finishedAt: report.finishedAt,
     certificate: { ...report.leaf, tlsa: digests(report.associations.leaf) },
     chain: report.associations.anchors.map((a) => ({ subjectCN: a.subjectCN, subjectDN: a.subjectDN, issuer: a.issuer, tlsa: digests(a.assoc) })),
-    summary: { headline: summary.headline, counts: summary.counts, waitSeconds: summary.waitSeconds },
+    summary: { headline: summary.headline, counts: summary.counts, waitSeconds: summary.waitSeconds, mxFailed: summary.mxFailed },
     domains: report.domains,
     endpoints: report.endpoints.map((ep) => ({
       qname: ep.qname, service: ep.service, port: ep.port, host: ep.host, source: ep.source, via: ep.via, implicit: ep.implicit,

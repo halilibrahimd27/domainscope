@@ -77,8 +77,9 @@ export function TargetChip({ target, onClear }) {
 }
 
 /**
- * The note over a tool's kept result: when it finished and, when the tool can, "Run again".
- * `dropped`: the result was too large to keep and only its query came back.
+ * The note over a tool's kept result: when it finished and, when the tool offers it, "Run again".
+ * `dropped`: the result was too large to keep and only its query came back. It is one run of
+ * text (icon, words, link) that wraps like a sentence on a narrow screen.
  * @param {{ at: Date, dropped?: boolean, onRerun?: (() => void)|null, now?: number }} opts
  * @returns {HTMLElement}
  */
@@ -88,7 +89,7 @@ export function KeptNote({ at, dropped = false, onRerun = null, now = Date.now()
     Icon('clock', { size: 14, className: 'kept-note-icon' }),
     h('span', { class: 'kept-note-text', title: t(dropped ? 'session.kept.droppedTitle' : 'session.kept.title') },
       t(dropped ? 'session.kept.dropped' : 'session.kept.from', { time })),
-    onRerun ? h('span', { class: 'kept-note-sep', attrs: { 'aria-hidden': 'true' } }, '·') : null,
+    onRerun ? ' ' : null,
     onRerun ? h('button', {
       type: 'button',
       class: 'link-btn kept-note-rerun',

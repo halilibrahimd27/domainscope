@@ -985,27 +985,30 @@ button.nav-status:hover {
   margin-top: 8px;
 }
 
+/* One run of text, not a flex row: on a narrow screen it wraps like a sentence (the link as a
+   whole), in a box whose corners suit two lines. */
 .kept-note {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 6px;
+  display: inline-block;
+  max-width: 100%;
   margin: 0;
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius);
   background: var(--surface-2);
   color: var(--text-2);
   font-size: 12.5px;
+  line-height: 1.5;
 }
 
-.kept-note-icon {
-  flex: none;
+.kept-note .kept-note-icon {
+  margin-right: 6px;
+  vertical-align: -2px;
   color: var(--text-3);
 }
 
-.kept-note-sep {
-  color: var(--text-3);
+.kept-note-rerun {
+  margin-left: 4px;
+  white-space: nowrap;
 }
 
 .kept-note[data-kept="dropped"] {

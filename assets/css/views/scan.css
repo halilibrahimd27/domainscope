@@ -1283,13 +1283,20 @@
     max-width: 100%;
   }
 
-  /* Behind-CDN tables: lists and evidence wrap between their entries, but never inside an IP,
-     a network or a hostname ("203.0.11 / 3.20" reads as two values) — a row still too wide
-     scrolls sideways in its table, like every DataTable. */
+  /* Behind-CDN tables: the text columns (sweep, owner, evidence) wrap, but a hostname, an IP or
+     a network never breaks ("old-" / "shop.example.com" and "203.0.11" / "3.20" read as two
+     values): the mono columns list one entry per line and keep each whole — a row still too
+     wide scrolls sideways in its table, like every DataTable. */
   .scan-cdn-hosts td,
   .scan-networks-table td,
   .scan-hints-table td {
     white-space: normal;
+  }
+
+  .scan-cdn-hosts td.mono,
+  .scan-networks-table td.mono,
+  .scan-hints-table td.mono {
+    white-space: nowrap;
   }
 
   .scan-cdn-hosts td,

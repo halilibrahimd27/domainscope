@@ -57,7 +57,9 @@ const REVERSE_TTL_MS = 30 * 60 * 1000;
  * @property {string[]} sources contributing sources: 'ripestat' | 'ipwhois' | 'dns'
  * @property {string|null} error set only when nothing could be learned
  * @property {string|null} errorKind extension: util.errorKind() of `error` ('invalid' for bad input)
- * @property {Array<{ source: string, error: string, errorKind: string }>} errors extension: every partial failure
+ * @property {Array<{ source: string, error: string, errorKind: string, status: number|null, retryAfterMs: number|null,
+ *   at: number }>} errors extension: every partial failure ('ptr' | 'ripestat' | 'ripestat-geo' | 'ipwhois') with its
+ *   HTTP status, the service's Retry-After when readable and when it failed (ms) — read by lib/sourcestatus.js
  * @property {Array<{ asn: number, holder: string|null }>} asns extension: all origin ASes (MOAS prefixes have several)
  * @property {boolean|null} announced extension: RIPEstat says the IP is routed (null when unknown)
  * @property {string|null} rir extension: 'ARIN' | 'RIPE NCC' | 'APNIC' | 'LACNIC' | 'AFRINIC' (from the IANA block)
@@ -454,6 +456,7 @@ function emptyInfo(ip, version) {
  *   cacheSize, hackertargetApiKey (member key appended as &apikey=),
  *   ipwhois (false disables the ipwho.is fallback).
  * @returns {{ info: (ip: string, opts?: { signal?: AbortSignal, noCache?: boolean }) => Promise<IpInfo>,
+ *   retry: (prev: IpInfo, opts?: { sources?: string[]|null, signal?: AbortSignal }) => Promise<IpInfo>,
  *   reverseIp: (ip: string, opts?: { signal?: AbortSignal, noCache?: boolean }) => Promise<ReverseIpResult>,
  *   clearCache: () => void, setConcurrency: (n: number) => void }}
  */
@@ -491,77 +494,131 @@ export function createIpIntel({
     return { names: parseRipeReverseDns(json), source: 'ripestat' };
   }
 
+  /** One failed source of an IpInfo (`errors[]`): what failed, how, and when (for "try again in …"). */
+  function failure(source, err) {
+    const status = err instanceof HttpError ? err.status : null;
+    const retryAfterMs = err && Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null;
+    return { source, error: describe(err), errorKind: errorKind(err), status, retryAfterMs, at: Date.now() };
+  }
+
+  /** Query one source of an address: 'ptr' | 'ripestat' (prefix-overview) | 'ripestat-geo' | 'ipwhois'. */
+  function querySource(source, ip, signal) {
+    switch (source) {
+      case 'ptr': return lookupPtr(ip, signal);
+      case 'ripestat': return getJson(ripeUrl('prefix-overview', ip), signal).then(parsePrefixOverview);
+      case 'ripestat-geo': return getJson(ripeUrl('maxmind-geo-lite', ip), signal).then(parseGeoLite);
+      case 'ipwhois': return getJson(`${IPWHOIS_BASE}/${ip}`, signal).then(parseIpwhois);
+      default: return Promise.reject(new TypeError(`Unknown IP intel source: ${source}`));
+    }
+  }
+
+  /** Merge one source's answer into `out` (RIPEstat is primary; ipwho.is only fills what is missing). */
+  function applySource(out, source, value) {
+    const addSource = (s) => { if (!out.sources.includes(s)) out.sources.push(s); };
+    if (source === 'ptr') {
+      out.ptr = value.names;
+      addSource(value.source);
+    } else if (source === 'ripestat') {
+      Object.assign(out, { prefix: value.prefix, announced: value.announced, rir: value.rir });
+      // An answer without an origin AS keeps what the fallback found (a retry after ipwho.is).
+      if (value.asn !== null || !out.asns.length) {
+        Object.assign(out, { asn: value.asn, asName: value.asName, holder: value.holder, asns: value.asns });
+      }
+      addSource('ripestat');
+    } else if (source === 'ripestat-geo') {
+      if (value.country || out.country === null) {
+        out.country = value.country;
+        out.city = value.city;
+      }
+      addSource('ripestat');
+    } else if (source === 'ipwhois') {
+      let used = false;
+      if (out.asn === null && value.asn !== null) {
+        out.asn = value.asn;
+        out.holder = out.holder || value.holder;
+        out.asns = [{ asn: value.asn, holder: value.holder }];
+        used = true;
+      }
+      if (out.country === null && value.country) {
+        out.country = value.country;
+        out.city = out.city || value.city;
+        used = true;
+      }
+      if (used) addSource('ipwhois');
+    }
+  }
+
+  /**
+   * Does the ipwho.is fallback have anything to fill? Never for unrouted space (RIPEstat answered
+   * `announced: false`), where ipwho.is would only answer "Reserved range".
+   */
+  function needsFallback(out, prefixAnswered) {
+    if (prefixAnswered && out.announced === false) return false;
+    return out.asn === null || out.country === null;
+  }
+
+  /** `error` / `errorKind` only when nothing could be learned (the failures stay in `errors`). */
+  function settleError(out) {
+    const learned = out.asn !== null || out.country !== null || out.ptr.length > 0 || out.announced !== null;
+    out.error = !learned && out.errors.length ? out.errors.map((e) => `${e.source}: ${e.error}`).join('; ') : null;
+    out.errorKind = out.error ? out.errors[0].errorKind : null;
+    return out;
+  }
+
+  /**
+   * Query `sources` of `out.ip` in parallel and merge them in order; each failure is recorded in
+   * `out.errors` (an abort of the caller's signal rethrows). Resolves with one ok flag per source.
+   */
+  async function runSources(out, sources, signal) {
+    const settled = await Promise.allSettled(sources.map((s) => querySource(s, out.ip, signal)));
+    throwIfAborted(signal);
+    settled.forEach((res, i) => {
+      if (res.status === 'fulfilled') {
+        applySource(out, sources[i], res.value);
+      } else {
+        if (isAbort(res.reason) && signal?.aborted) throw res.reason;
+        out.errors.push(failure(sources[i], res.reason));
+      }
+    });
+    return settled.map((res) => res.status === 'fulfilled');
+  }
+
   async function lookupInfo(ip, version, signal) {
     const out = emptyInfo(ip, version);
     out.provider = matchProviderByIP(ip);
-    const addSource = (s) => { if (!out.sources.includes(s)) out.sources.push(s); };
-    const fail = (source, err) => {
-      if (isAbort(err) && signal?.aborted) throw err;
-      out.errors.push({ source, error: describe(err), errorKind: errorKind(err) });
-    };
+    const [, prefixOk] = await runSources(out, ['ptr', 'ripestat', 'ripestat-geo'], signal);
+    // Fallback only for what is still missing.
+    if (ipwhois && needsFallback(out, prefixOk)) await runSources(out, ['ipwhois'], signal);
+    return settleError(out);
+  }
 
-    const [ptrRes, poRes, geoRes] = await Promise.allSettled([
-      lookupPtr(ip, signal),
-      getJson(ripeUrl('prefix-overview', ip), signal).then(parsePrefixOverview),
-      getJson(ripeUrl('maxmind-geo-lite', ip), signal).then(parseGeoLite)
-    ]);
+  /**
+   * Ask again only the sources that failed for an address (or the ones given): each answer is
+   * merged into a copy of `prev` the way {@link info} merges it (RIPEstat first, ipwho.is only for
+   * what is still missing), the old failures of the sources asked are replaced by the new ones,
+   * and a result that learned something replaces the cached one. Rejects only with an AbortError
+   * from `signal`.
+   * @param {IpInfo} prev an earlier result of info() or retry()
+   * @param {{ sources?: string[]|null, signal?: AbortSignal }} [opts] sources: 'ptr' | 'ripestat' |
+   *   'ripestat-geo' | 'ipwhois' (default: every source in `prev.errors`)
+   * @returns {Promise<IpInfo>}
+   */
+  async function retrySources(prev, { sources = null, signal } = {}) {
     throwIfAborted(signal);
-
-    if (ptrRes.status === 'fulfilled') {
-      out.ptr = ptrRes.value.names;
-      addSource(ptrRes.value.source);
-    } else {
-      fail('ptr', ptrRes.reason);
-    }
-    if (poRes.status === 'fulfilled') {
-      const po = poRes.value;
-      Object.assign(out, {
-        asn: po.asn, asName: po.asName, holder: po.holder, prefix: po.prefix,
-        announced: po.announced, asns: po.asns, rir: po.rir
-      });
-      addSource('ripestat');
-    } else {
-      fail('ripestat', poRes.reason);
-    }
-    if (geoRes.status === 'fulfilled') {
-      out.country = geoRes.value.country;
-      out.city = geoRes.value.city;
-      addSource('ripestat');
-    } else {
-      fail('ripestat-geo', geoRes.reason);
-    }
-
-    // Fallback only for what is still missing (and not for unrouted space,
-    // where ipwho.is would only answer "Reserved range").
-    const unrouted = poRes.status === 'fulfilled' && out.announced === false;
-    const needAsn = out.asn === null && !unrouted;
-    const needGeo = out.country === null && !unrouted;
-    if (ipwhois && (needAsn || needGeo)) {
-      try {
-        const w = parseIpwhois(await getJson(`${IPWHOIS_BASE}/${ip}`, signal));
-        let used = false;
-        if (needAsn && w.asn !== null) {
-          out.asn = w.asn;
-          out.holder = out.holder || w.holder;
-          out.asns = [{ asn: w.asn, holder: w.holder }];
-          used = true;
-        }
-        if (needGeo && w.country) {
-          out.country = w.country;
-          out.city = out.city || w.city;
-          used = true;
-        }
-        if (used) addSource('ipwhois');
-      } catch (err) {
-        fail('ipwhois', err);
-      }
-    }
-
-    const learned = out.asn !== null || out.country !== null || out.ptr.length > 0 || out.announced !== null;
-    if (!learned && out.errors.length) {
-      out.error = out.errors.map((e) => `${e.source}: ${e.error}`).join('; ');
-      out.errorKind = out.errors[0].errorKind;
-    }
+    if (!prev || typeof prev !== 'object') return prev;
+    const out = cloneInfo(prev);
+    if (prev.private || !prev.version) return out;
+    const known = ['ptr', 'ripestat', 'ripestat-geo', 'ipwhois'];
+    const wanted = Array.isArray(sources) ? sources : prev.errors.map((e) => e.source);
+    const asked = uniq(wanted.filter((s) => known.includes(s)));
+    if (!asked.length) return out;
+    out.errors = out.errors.filter((e) => !asked.includes(e.source));
+    const first = asked.filter((s) => s !== 'ipwhois');
+    const oks = first.length ? await runSources(out, first, signal) : [];
+    const prefixOk = first.includes('ripestat') ? oks[first.indexOf('ripestat')] : !out.errors.some((e) => e.source === 'ripestat');
+    if (asked.includes('ipwhois') && ipwhois && needsFallback(out, prefixOk)) await runSources(out, ['ipwhois'], signal);
+    settleError(out);
+    if (!out.error) infoCache.set(out.ip, cloneInfo(out));
     return out;
   }
 
@@ -638,6 +695,7 @@ export function createIpIntel({
 
   return {
     info,
+    retry: retrySources,
     reverseIp,
     /**
      * Who announces an origin network (extension): see the module-level {@link describeNetwork}.

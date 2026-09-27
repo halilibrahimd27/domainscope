@@ -1969,6 +1969,31 @@ function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
   return { checks, mtaSts: mta[0] || null, tlsRpt: tls[0] || null, bimi: bimi[0] || null, failedLookups };
 }
 
+/** Registry (parent) vs DNS (child) name server sets, at a zone apex RDAP answered for. */
+function rdapNsChecks(name, apex, r, nsHosts) {
+  if (!r || !r.ok || r.domain !== name || !apex || !r.nameservers.length || !nsHosts.length) return [];
+  const reg = [...r.nameservers].sort();
+  const live = [...nsHosts].sort();
+  return reg.join(' ') !== live.join(' ') ? [makeCheck('ns.rdap-mismatch', 'warn', { registry: reg, dns: live })] : [];
+}
+
+/**
+ * A report with new registration data: Domain Health's Retry of a failed RDAP lookup asks RDAP
+ * alone again, and this replaces `rdap`, every check that depends on it (the rdap.* checks and
+ * ns.rdap-mismatch) and the summary. The DNS part of the report is kept as it is. Pure.
+ * @param {object} report a domainHealth() report
+ * @param {object|null} rdap a new lib/rdap.js rdapDomain() result
+ * @param {{ now?: Date|null }} [opts] clock for the expiry maths (default: now)
+ * @returns {object} a new report (the given one is not changed)
+ */
+export function applyRdap(report, rdap, { now = null } = {}) {
+  const clock = now instanceof Date ? now : new Date();
+  const kept = (Array.isArray(report.checks) ? report.checks : []).filter((c) => c.category !== 'rdap' && c.id !== 'ns.rdap-mismatch');
+  const nsHosts = report.records && Array.isArray(report.records.ns) ? report.records.ns : [];
+  const checks = [...kept, ...rdapNsChecks(report.domain, report.apex, rdap, nsHosts), ...analyzeRdap(rdap, clock).checks];
+  return finishReport({ ...report, rdap, checks });
+}
+
 function analyzeRdap(r, now) {
   const checks = [];
   if (!r) return { checks };
@@ -2031,7 +2056,8 @@ function analyzeRdap(r, now) {
  *   `failedLookups` names the records whose lookup failed: 'mx' (`records.mx` is then empty
  *   without meaning "no MX"; the check is mx.error) and the mail-extra records (`records.mtaSts` /
  *   `tlsRpt` / `bimi`), whose null then means "not known", not "not published" (no `*.missing` check).
- * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null,
+ *   `apex` (extension) is true when the name has its own SOA (a zone apex), null when that is not known.
+ * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null, apex: boolean|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
  *     aaaa: string[], txt: string[], spf: string|null, dmarc: string|null,
  *     dkim: Array<{ selector: string, record: string, keyType: string, keyBits: number|null, revoked: boolean,
@@ -2117,7 +2143,7 @@ export async function domainHealth(domain, {
     throwIfAborted(signal);
     const checks = [analyzeNxdomain(name, soa.zone, aR, soaR), ...analyzeRdap(rdapResult, clock).checks];
     return finishReport({
-      domain: name, checkedAt: clock, zone: soa.zone, records: records0,
+      domain: name, checkedAt: clock, zone: soa.zone, apex: soa.apex, records: records0,
       dnssec: { signed: null, validated: null, broken: false, dsCount: 0, dnskeyCount: 0, algorithms: [], ede: [] },
       rdap: rdapResult, wildcard: null, spf: { record: null, parsed: null, lookups: null },
       dmarc: { record: null, parsed: null, foundAt: null, inherited: false }, caa: null, caaCert: null,
@@ -2156,13 +2182,7 @@ export async function domainHealth(domain, {
     }));
   } else wildcardChecks.push(makeCheck('wildcard.none', 'ok', {}));
 
-  // Registry (parent) vs DNS (child) name server sets.
-  const nsChecks = [...ns.checks];
-  if (rdapResult && rdapResult.ok && rdapResult.domain === name && soa.apex && rdapResult.nameservers.length && ns.hosts.length) {
-    const reg = [...rdapResult.nameservers].sort();
-    const live = [...ns.hosts].sort();
-    if (reg.join(' ') !== live.join(' ')) nsChecks.push(makeCheck('ns.rdap-mismatch', 'warn', { registry: reg, dns: live }));
-  }
+  const nsChecks = [...ns.checks, ...rdapNsChecks(name, soa.apex, rdapResult, ns.hosts)];
 
   let checks = [
     ...soa.checks, ...nsChecks, ...apex.checks, ...https.checks, ...wildcardChecks,
@@ -2179,6 +2199,7 @@ export async function domainHealth(domain, {
     domain: name,
     checkedAt: clock,
     zone: soa.zone,
+    apex: soa.apex,
     records: {
       ...records0,
       ns: ns.hosts,

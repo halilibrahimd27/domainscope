@@ -462,3 +462,102 @@ test('reverseIp: private / invalid IPs, network errors, api key', async () => {
   assert.equal(r.errorKind, 'network');
   assert.equal(log[0], 'https://api.hackertarget.com/reverseiplookup/?q=2001:4860:4860::8888&apikey=k%26y');
 });
+
+/* -------------------------------------------------------------------- */
+/* retry: only the sources that failed                                  */
+/* -------------------------------------------------------------------- */
+
+test('info: a failure records its HTTP status, the Retry-After and when it happened', async () => {
+  const before = Date.now();
+  const f = mockFetch({
+    'prefix-overview': () => new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '120' } }),
+    'maxmind-geo-lite': GEO_GITHUB,
+    'ipwho.is': IPWHO_GITHUB
+  });
+  const intel = createIpIntel({ fetchImpl: f, dns: { ptr: async () => [] }, retries: 0 });
+  const r = await intel.info('140.82.121.4');
+  const e = r.errors.find((x) => x.source === 'ripestat');
+  assert.equal(e.errorKind, 'rate-limit');
+  assert.equal(e.status, 429);
+  assert.equal(e.retryAfterMs, 120000);
+  assert.ok(e.at >= before && e.at <= Date.now());
+  assert.equal(r.asn, 36459, 'ipwho.is filled the AS');
+  assert.equal(r.prefix, null, 'only RIPEstat knows the prefix');
+});
+
+test('retry: asks only the failed sources again, merges them and updates the cache', async () => {
+  const log = [];
+  let limited = true;
+  const f = mockFetch({
+    'prefix-overview': () => (limited ? new Response('Too Many Requests', { status: 429 }) : PO_GITHUB),
+    'maxmind-geo-lite': GEO_GITHUB,
+    'ipwho.is': IPWHO_GITHUB
+  }, { log });
+  const intel = createIpIntel({ fetchImpl: f, dns: { ptr: async () => ['lb.example.com'] }, retries: 0 });
+  const first = await intel.info('140.82.121.4');
+  assert.deepEqual(first.errors.map((e) => e.source), ['ripestat']);
+  limited = false;
+  const n = log.length;
+  const again = await intel.retry(first);
+  assert.deepEqual(log.slice(n).map((u) => u.replace(/\?.*/, '')), ['https://stat.ripe.net/data/prefix-overview/data.json'], 'one request: prefix-overview');
+  assert.deepEqual(again.errors, []);
+  assert.equal(again.prefix, '140.82.121.0/24');
+  assert.equal(again.asName, 'GITHUB', 'RIPEstat is the primary source of the AS');
+  assert.equal(again.country, 'DE');
+  assert.deepEqual(again.ptr, ['lb.example.com'], 'untouched fields are kept');
+  assert.equal(first.prefix, null, 'the earlier result is not mutated');
+  const m = log.length;
+  const cached = await intel.info('140.82.121.4');
+  assert.equal(log.length, m, 'the retried result is cached');
+  assert.equal(cached.prefix, '140.82.121.0/24');
+});
+
+test('retry: explicit sources, a fallback nobody needs any more, a failure that stays', async () => {
+  const log = [];
+  let ptrCalls = 0;
+  const f = mockFetch({
+    'prefix-overview': () => new TypeError('Failed to fetch'),
+    'maxmind-geo-lite': () => new TypeError('Failed to fetch'),
+    'ipwho.is': () => ({ success: false, message: 'You have exceeded the rate limit' })
+  }, { log });
+  const dns = {
+    ptr: async () => {
+      ptrCalls += 1;
+      if (ptrCalls === 1) throw new Error('dns down');
+      return ['a.example.com'];
+    }
+  };
+  const intel = createIpIntel({ fetchImpl: f, dns, retries: 0 });
+  const first = await intel.info('140.82.121.4');
+  assert.deepEqual(first.errors.map((e) => e.source), ['ptr', 'ripestat', 'ripestat-geo', 'ipwhois']);
+  assert.equal(first.errors[3].errorKind, 'rate-limit', 'ipwho.is quota text');
+  assert.ok(first.error, 'nothing learned');
+  // Only the PTR: RIPEstat and ipwho.is are not asked, and their failures stay.
+  const n = log.length;
+  const ptrOnly = await intel.retry(first, { sources: ['ptr'] });
+  assert.equal(log.length, n, 'no HTTP request for a PTR retry');
+  assert.deepEqual(ptrOnly.ptr, ['a.example.com']);
+  assert.deepEqual(ptrOnly.errors.map((e) => e.source), ['ripestat', 'ripestat-geo', 'ipwhois']);
+  assert.equal(ptrOnly.error, null, 'a PTR was learned');
+  // RIPEstat answers now: ipwho.is has nothing left to fill, so it is not asked and its failure is dropped.
+  const g = mockFetch({ 'prefix-overview': PO_GITHUB, 'maxmind-geo-lite': GEO_GITHUB });
+  const all = await createIpIntel({ fetchImpl: g, dns, retries: 0 }).retry(first);
+  assert.deepEqual(g.stats.calls.map((u) => u.split('/')[4]), ['prefix-overview', 'maxmind-geo-lite']);
+  assert.deepEqual(all.errors, []);
+  assert.equal(all.error, null);
+  assert.deepEqual(all.sources, ['dns', 'ripestat']);
+});
+
+test('retry: private or complete results make no requests; an aborted signal rejects', async () => {
+  const log = [];
+  const intel = createIpIntel({ fetchImpl: mockFetch(RIPE_OK_ROUTES, { log }), dns: { ptr: async () => [] } });
+  const priv = await intel.info('10.0.0.1');
+  assert.deepEqual(await intel.retry(priv), priv);
+  const ok = await intel.info('140.82.121.4');
+  const n = log.length;
+  const same = await intel.retry(ok);
+  assert.deepEqual(same, ok);
+  assert.notEqual(same, ok, 'a copy');
+  assert.equal(log.length, n);
+  await assert.rejects(intel.retry(ok, { sources: ['ripestat'], signal: AbortSignal.abort() }), { name: 'AbortError' });
+});

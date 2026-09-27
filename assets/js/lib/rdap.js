@@ -359,7 +359,22 @@ function domainResult(domain) {
     url: null,
     handle: null,
     registrarUrl: null,
-    abuseEmail: null
+    abuseEmail: null,
+    // a failed lookup (`error` set): the last HTTP status, the Retry-After when readable, when it failed (ms)
+    httpStatus: null,
+    retryAfterMs: null,
+    failedAt: null
+  };
+}
+
+/** The failure fields of a lookup that got no answer (lib/sourcestatus.js words them). */
+function failureFields(err) {
+  return {
+    error: describe(err),
+    errorKind: errorKind(err),
+    httpStatus: err instanceof HttpError ? err.status : null,
+    retryAfterMs: err && Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null,
+    failedAt: Date.now()
   };
 }
 
@@ -397,7 +412,10 @@ function isNoServiceBody(err) {
  *   created: Date|null, updated: Date|null, expires: Date|null, status: string[], nameservers: string[],
  *   dnssecSigned: boolean|null, rdapServer: string|null, unsupportedTld: boolean, error: string|null,
  *   errorKind: string|null, notFound: boolean, input: string, tld: string|null, url: string|null,
- *   handle: string|null, registrarUrl: string|null, abuseEmail: string|null }>}
+ *   handle: string|null, registrarUrl: string|null, abuseEmail: string|null,
+ *   httpStatus: number|null, retryAfterMs: number|null, failedAt: number|null }>}
+ *   Extensions for a lookup that got no answer (`error` without notFound / unsupportedTld): the last
+ *   HTTP status, the service's Retry-After when readable and when it failed (ms since the epoch).
  */
 export async function rdapDomain(domain, {
   fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, fallback = true
@@ -476,7 +494,7 @@ export async function rdapDomain(domain, {
       lastErr = err;
     }
   }
-  return { ...out, error: describe(lastErr), errorKind: errorKind(lastErr) };
+  return { ...out, ...failureFields(lastErr) };
 }
 
 /* ------------------------------------------------------------------------ */

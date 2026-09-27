@@ -2,12 +2,12 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
-  domainHealth, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
+  domainHealth, applyRdap, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
   spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa, caaRestrictionNotes, caaRestrictionText,
   DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX,
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
-import { clearRdapCache, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
+import { clearRdapCache, rdapDomain, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
 import { validateMtaSts } from '../../assets/js/lib/mtasts.js';
 import { mtaStsContext } from '../../assets/js/views/health.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
@@ -540,6 +540,49 @@ test('NS: registry (RDAP) vs zone mismatch', async () => {
   const c = has(r, 'ns.rdap-mismatch', 'warn');
   assert.equal(c.params.registry, 'ns1.old-dns.net, ns2.old-dns.net');
   assert.equal(c.params.dns, 'ns1.dns-a.net, ns2.dns-b.org');
+});
+
+test('applyRdap: a retried RDAP lookup replaces the RDAP checks and the summary, and nothing else', async () => {
+  const r = await domainHealth('example.com', {
+    dns: fakeDns(goodZone()), fetchImpl: rdapFetch(new TypeError('Failed to fetch')), now: NOW, dkimSelectors: []
+  });
+  has(r, 'rdap.error', 'info');
+  assert.equal(r.apex, true);
+  assert.equal(r.rdap.errorKind, 'network');
+  assert.ok(Number.isFinite(r.rdap.failedAt), 'the failure is timed');
+  assert.equal(r.rdap.httpStatus, null);
+
+  const rdap = await rdapDomain('example.com', { fetchImpl: rdapFetch(rdapBody({ nameservers: ['NS1.OLD-DNS.NET', 'NS2.OLD-DNS.NET'] })) });
+  const next = applyRdap(r, rdap, { now: NOW });
+  assertRenderable(next);
+  assert.equal(next.rdap, rdap);
+  lacks(next, 'rdap.error');
+  has(next, 'rdap.expiry-ok', 'ok');
+  has(next, 'ns.rdap-mismatch', 'warn');
+  const others = (x) => ids(x).filter((id) => !id.startsWith('rdap.') && id !== 'ns.rdap-mismatch');
+  assert.deepEqual(others(next), others(r), 'the DNS checks are kept as they were');
+  assert.deepEqual(next.records, r.records);
+  assert.deepEqual([next.summary.warn, next.summary.ok], [r.summary.warn + 1, r.summary.ok + 1]);
+  assert.equal(next.summary.info, r.summary.info - 1);
+  // Category order: the mismatch sits with the other name server checks.
+  const nsIds = ids(next).filter((id) => id.startsWith('ns.'));
+  assert.equal(ids(next).indexOf('ns.rdap-mismatch'), ids(next).indexOf(nsIds[0]) + nsIds.length - 1);
+  has(r, 'rdap.error', 'info'); // the report given is not changed
+  lacks(r, 'rdap.expiry-ok');
+
+  // Failing again brings the first report's checks back.
+  assert.deepEqual(ids(applyRdap(next, r.rdap, { now: NOW })), ids(r));
+  // Below a zone apex (or with the apex unknown) the registry's name servers are not compared.
+  lacks(applyRdap({ ...r, apex: null }, rdap, { now: NOW }), 'ns.rdap-mismatch');
+});
+
+test('applyRdap: an NXDOMAIN report keeps domain.nxdomain and takes the new RDAP answer', async () => {
+  const dns = fakeDns({ 'other.com': { A: ['1.1.1.1'] } });
+  const r = await domainHealth('gone.com', { dns, fetchImpl: rdapFetch(new TypeError('Failed to fetch')), now: NOW });
+  assert.deepEqual(ids(r), ['domain.nxdomain', 'rdap.error']);
+  const next = applyRdap(r, await rdapDomain('gone.com', { fetchImpl: rdapFetch(404) }), { now: NOW });
+  assert.deepEqual(ids(next), ['domain.nxdomain', 'rdap.not-found']);
+  assert.deepEqual(next.summary, { ok: 0, info: 0, warn: 1, error: 1 });
 });
 
 /* ==================================================================== */

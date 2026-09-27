@@ -707,7 +707,8 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  *  4. `bruteforce` — courteous A-only wordlist sweep (balance mode) under the
  *     apex and each certificate wildcard base; wildcard look-alikes dropped.
  *  5. `permutations` — alterx/dnsgen-style variants of everything found so far
- *     (env / number / region / sibling), then one recursive wordlist round under
+ *     (env / number / region / sibling; every level above a candidate is
+ *     wildcard-checked first), then one recursive wordlist round under
  *     discovered parents that already have children.
  *  6. `resolve` — resolve every surviving name (A + AAAA; streamed via `onHost`).
  *  7. `hints` — origin hints for hosts hidden behind a CDN, all DNS-only and
@@ -1413,16 +1414,21 @@ export async function runScan(config = {}, hooks = {}) {
         }
         if (permCandidates.length >= permBudget) break;
       }
-      // Level-insertion permutations (dev.api.x, us.api.x) go one level deeper.
-      // Wildcard-check any discovered parent of a candidate that was not seen in
-      // the wildcard stage, so a per-host wildcard (*.api.x) does not turn every
-      // insertion into a false 'permutation' hit.
+      // Level-insertion permutations go one level deeper, both ways: under a
+      // found parent (dev.api.x, us.api.x) and under a level nobody has seen
+      // (api.dev.x, shop.staging.x — an empty non-terminal under a wildcard).
+      // Wildcard-check EVERY in-scope ancestor of a candidate below the scope
+      // root that was not seen yet, shallowest first (so the cap keeps the env
+      // levels), so neither a per-host wildcard (*.api.x) nor an environment
+      // wildcard (*.dev.x) turns every insertion into a false 'permutation' hit.
       const permParents = new Set();
       for (const cand of permCandidates) {
-        const p = parentOf(cand);
-        if (p && origins.has(p) && !targetDomains.includes(p)) permParents.add(p);
+        for (let p = parentOf(cand); p && p.includes('.') && !scopeRoots.includes(p); p = parentOf(p)) {
+          if (!inScope(p)) break;
+          permParents.add(p);
+        }
       }
-      await ensureWildcards([...permParents]);
+      await ensureWildcards([...permParents].sort((a, b) => a.split('.').length - b.split('.').length));
       checkAbort(signal);
       Object.assign(perm, await probeNames(permCandidates, 'permutation', 'permutations', 0, permCandidates.length));
     }

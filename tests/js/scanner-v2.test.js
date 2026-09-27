@@ -574,7 +574,7 @@ describe('discovery engine v2: permutation wildcard safety + compact denial', ()
     const zone = {
       [A]: { A: ['203.0.113.1'] },
       [`api.${A}`]: { A: ['203.0.113.2'] },
-      [`*.api.${A}`]: { A: ['203.0.113.99'] } // every dev.api / us.api / api.dev-style insertion resolves here
+      [`*.api.${A}`]: { A: ['203.0.113.99'] } // every dev.api / us.api-style (prefix) insertion resolves here
     };
     const { fetchImpl, dns } = mkWorld({ zone });
     const scan = await runScan({
@@ -584,6 +584,31 @@ describe('discovery engine v2: permutation wildcard safety + compact denial', ()
     assert.equal(scan.stats.permutationFound, 0, 'level-insertion permutations under *.api are wildcard-dropped');
     assert.ok(!scan.hosts.some((h) => h.origins.includes('permutation') && h.name.endsWith(`.api.${A}`)));
     assert.equal(scan.wildcards[`api.${A}`] && scan.wildcards[`api.${A}`].wildcard, true, 'the found parent was wildcard-checked');
+  });
+
+  test('environment wildcards (*.staging, *.dev) do not turn suffix level-insertions (api.staging) into permutation hits', async () => {
+    const A = 'example.org';
+    const zone = {
+      [A]: { A: ['203.0.113.1'] },
+      [`api.${A}`]: { A: ['203.0.113.2'] },
+      [`shop.${A}`]: { A: ['203.0.113.3'] },
+      [`*.staging.${A}`]: { A: ['198.51.100.77'] },
+      [`*.dev.${A}`]: { CNAME: 'dev-lb.example-hosting.net' },
+      'dev-lb.example-hosting.net': { A: ['192.0.2.55'] }
+    };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], extraNames: [`api.${A}`, `shop.${A}`], sources: [], bruteforce: 'off', mine: false,
+      permutationBudget: 1500, recursive: false, originHints: true, balance: false, dns, fetchImpl
+    });
+    assert.equal(scan.stats.permutationFound, 0);
+    assert.ok(!scan.hosts.some((h) => h.name.endsWith(`.staging.${A}`) || h.name.endsWith(`.dev.${A}`)),
+      scan.hosts.map((h) => h.name).join(', '));
+    assert.equal(scan.wildcards[`staging.${A}`].wildcard, true);
+    assert.equal(scan.wildcards[`staging.${A}`].kind, 'A');
+    assert.equal(scan.wildcards[`dev.${A}`].kind, 'CNAME');
+    assert.ok(scan.stats.permutationWildcardDropped >= 4, String(scan.stats.permutationWildcardDropped));
+    assert.ok(!scan.originNetworks.some((n) => n.cidr === '198.51.100.0/24'));
   });
 
   test('DNSSEC compact denial (Cloudflare) is not a wildcard and does not flag typed NXDOMAIN-equivalent names', async () => {

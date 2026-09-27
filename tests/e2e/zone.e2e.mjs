@@ -366,6 +366,18 @@ async function main() {
       await page.waitFor(() => document.querySelector('.zone-drift')?.dataset.status === 'done', { timeout: 30000, message: 're-run done' });
     });
 
+    await run.step('Live check options keep the keyboard focus when toggled with Space', async () => {
+      for (const role of ['zone-live-skip', 'zone-live-wildcards']) {
+        for (let round = 0; round < 2; round += 1) {
+          const before = await page.evaluate((r) => { const el = document.querySelector(`[data-role="${r}"]`); el.focus(); return el.checked; }, role);
+          await page.press('Space');
+          await page.waitFor((r, b) => document.querySelector(`[data-role="${r}"]`)?.checked === !b, { args: [role, before], message: `${role} toggled` });
+          const now = await page.evaluate(() => ({ role: document.activeElement?.dataset.role, checked: document.activeElement?.checked }));
+          assertEqual(now, { role, checked: !before }, `${role}: focus kept on the option`);
+        }
+      }
+    });
+
     await run.step('Scan these names (exact): publishes the zone + one-shot intent and opens Subdomains', async () => {
       await clickTab(page, 'overview');
       const before = await page.evaluate(() => localStorage.getItem('ssds.subdomains.options'));

@@ -1948,6 +1948,8 @@ export function mount(container, ctx) {
           renderLiveIfShown2();
         }
       });
+      skipBox.input.dataset.role = 'zone-live-skip';
+      wildBox.input.dataset.role = 'zone-live-wildcards';
       const running = cur.status === 'running';
       const runBtn = Button({
         label: cur.status === 'idle' ? t('zone.live.run', { rrsets: formatNumber(plan.rrsets) }) : t('zone.live.rerun'),
@@ -1982,11 +1984,16 @@ export function mount(container, ctx) {
       if (cur.result || cur.rows.length) box.append(driftResults(z, cur));
     }
     function renderLiveIfShown2() {
-      // Options change the plan (counts in the card): rebuild the whole tab.
+      // Options change the plan (counts in the card): rebuild the whole tab, and give the focus
+      // back to the option that was toggled (keyboard and screen-reader users keep their place).
       const panel = box.parentElement;
       if (!panel) return;
+      const active = document.activeElement;
+      const role = active && box.contains(active) ? active.dataset.role : null;
       clear(panel);
       panel.append(liveTab(z));
+      const again = role ? panel.querySelector(`[data-role="${role}"]`) : null;
+      if (again) again.focus();
     }
     liveHook = { render: renderLiveIfShown, progress: updateProgress };
     fillLive();

@@ -8,7 +8,8 @@
  * reload, the tab closing or "Delete all local data" (the shell calls `clear()`) forgets it all.
  * The shell (app.js) owns the one store of the page:
  *   - a view reports a run with `ctx.runStarted(subject)` → `setTarget()`;
- *   - when a view unmounts, the shell keeps its `result()` and `snapshot()` → `keep()`;
+ *   - when a view unmounts, the shell keeps its `result()` (with the result's own route params)
+ *     and `snapshot()` → `keep()`;
  *   - the nav links point to `carryRoute(view, { kept, target })`;
  *   - on mount, `restorePlan()` decides whether the kept snapshot comes back as `ctx.restored`,
  *     and `keptNote()` whether the page header says "Result from <time>".
@@ -17,9 +18,10 @@
  * params the views already read) together with `run=0` (`FILL_PARAM` = `FILL_VALUE`): the view
  * fills its input (while empty, or while it still holds the tool's last run) and never runs, so
  * opening a tool never sends a request by itself. A link back to a kept result carries the
- * result's own params with `run=0` too, so the same link opened in a new tab only fills the form;
- * a target set after the result was kept, about something else, wins over it (the result stays
- * reachable through a bare route and Back).
+ * result's own params with `run=0` too, so the same link opened in a new tab only fills the form.
+ * A target set after the result was kept, about something else, wins the link: the tool opens
+ * with the target in its box and its kept result under it (`restorePlan` → 'carry'), as the
+ * tools that keep their own state do.
  *
  * @example
  *   const session = createSessionStore();
@@ -27,6 +29,7 @@
  *   carryRoute('lookup', { target: session.target });         // { name: 'www.example.com', run: '0' }
  *   session.keep('health', { params: { domain: 'example.com' }, subject: 'example.com', at, snapshot });
  *   restorePlan({}, session.kept('health'));                   // 'restore'
+ *   restorePlan({ domain: 'www.example.com', run: '0' }, session.kept('health'));   // 'carry'
  */
 
 import { normalizeHostname, registrableDomain, isPublicSuffix } from './domain.js';
@@ -231,7 +234,8 @@ export function targetSupersedes(target, kept) {
  * Where a nav link to a tool leads: back to its kept result (the result's own params, with
  * `run=0` so a new tab only fills the form; a bare route for a tool that keeps its own state),
  * unless a newer target about something else fits the tool ({@link targetSupersedes}); else the
- * tool with the current target filled in, else the bare tool.
+ * tool with the current target filled in (its kept result still shows under it:
+ * {@link restorePlan} 'carry'), else the bare tool.
  * @param {string} view
  * @param {{ kept?: { params: Record<string, string>, subject?: string|null, at?: Date }|null,
  *   target?: { value: string, kind: string, at?: Date }|null }} [ctx]
@@ -248,18 +252,21 @@ export function carryRoute(view, { kept = null, target = null } = {}) {
 }
 
 /**
- * Does a route bring a tool's kept result back? Only a bare route or one with the result's own
- * params does (any other params are a new query); 'dropped' when the result was too large to
- * keep — the tool then opens with its query filled in, and nothing runs.
+ * Does a route bring a tool's kept result back? A bare route or one with the result's own params
+ * does ('restore': the URL then shows those params with `run=0`), and so does a route that only
+ * fills the form with something else — a carried target ('carry': the URL and the tool's box keep
+ * the target, the kept result shows under it). Any other params are a new query (null).
+ * 'dropped' when the result was too large to keep: a bare route or its own params open the tool
+ * with its query filled in and nothing run; a carried target then only fills the box (null).
  * @param {Record<string, string>} params the route's params
  * @param {{ params: Record<string, string>, snapshot: any, dropped: boolean }|null} kept
- * @returns {'restore'|'dropped'|null}
+ * @returns {'restore'|'carry'|'dropped'|null}
  */
 export function restorePlan(params, kept) {
   if (!kept || !(kept.snapshot || kept.dropped)) return null;
   const key = routeKey(params);
-  if (key && key !== routeKey(kept.params)) return null;
-  return kept.snapshot ? 'restore' : 'dropped';
+  if (!key || key === routeKey(kept.params)) return kept.snapshot ? 'restore' : 'dropped';
+  return isFillOnly(params) && kept.snapshot ? 'carry' : null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -267,14 +274,17 @@ export function restorePlan(params, kept) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * A view's `result()` in the shape the shell uses: `{ subject, at, rerun, label }` with a valid
- * Date, or null (no finished result, or not a usable one). `rerun` is false when the view says its
- * note offers no "Run again" (`rerun: false`: its own Re-run sits in the page header, or the result
- * cannot be run again, like a certificate file). `label`: the translation key of the note's text
- * (with `{time}`) when "Result from <time>" would not say which result it is, like the Zone File's
- * live check under its other tabs; null for the shell's own wording.
+ * A view's `result()` in the shape the shell uses: `{ subject, at, params, rerun, label }` with a
+ * valid Date, or null (no finished result, or not a usable one). `params`: the route params of the
+ * result itself (they bring it back, and its Copy link shares them), without `run`; null when the
+ * view gives none. They can differ from the URL's, which say what the tool's box holds (a carried
+ * target). `rerun` is false when the view says its note offers no "Run again" (`rerun: false`: its
+ * own Re-run sits in the page header, or the result cannot be run again, like a certificate file).
+ * `label`: the translation key of the note's text (with `{time}`) when "Result from <time>" would
+ * not say which result it is, like the Zone File's live check under its other tabs; null for the
+ * shell's own wording.
  * @param {unknown} res
- * @returns {{ subject: string|null, at: Date, rerun: boolean, label: string|null }|null}
+ * @returns {{ subject: string|null, at: Date, params: Record<string, string>|null, rerun: boolean, label: string|null }|null}
  */
 export function normalizeResult(res) {
   if (!res || typeof res !== 'object') return null;
@@ -283,6 +293,7 @@ export function normalizeResult(res) {
   return {
     subject: typeof res.subject === 'string' && res.subject ? res.subject : null,
     at,
+    params: res.params && typeof res.params === 'object' && !Array.isArray(res.params) ? cleanParams(res.params) : null,
     rerun: res.rerun !== false,
     label: typeof res.label === 'string' && res.label ? res.label : null
   };
@@ -298,7 +309,7 @@ export function normalizeResult(res) {
  * the tool was not shown. `rerun`: the note offers "Run again"; `label`: the result's own wording
  * ({@link normalizeResult}).
  * @param {{ note?: { at: Date, dropped: boolean, rerun: boolean, label?: string|null }|null,
- *   plan?: 'restore'|'dropped'|null, kept?: { at: Date }|null,
+ *   plan?: 'restore'|'carry'|'dropped'|null, kept?: { at: Date }|null,
  *   result?: { at: Date, rerun?: boolean, label?: string|null }|null, mountedAt: number, restorable?: boolean }} info
  * @returns {{ at: Date, dropped: boolean, rerun: boolean, label: string|null }|null}
  */
@@ -387,7 +398,7 @@ export function estimateSize(value, limit = Infinity) {
 /**
  * @typedef {object} KeptResult
  * @property {string} view
- * @property {Record<string, string>} params the tool's route params when it was left (no `run`)
+ * @property {Record<string, string>} params the result's own route params (no `run`): they bring it back
  * @property {string|null} subject what the result is about (a domain, a list's first entry …)
  * @property {Date} at when the result finished
  * @property {any} snapshot the tool's snapshot(), handed back as ctx.restored; null for a tool

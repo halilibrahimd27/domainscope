@@ -27,7 +27,7 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { CAA_ISSUERS } from '../lib/health.js';
 import { mergeSignals } from '../lib/util.js';
-import { isFillOnly } from '../lib/session.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/lookup`). */
 export const id = 'lookup';
@@ -1172,15 +1172,41 @@ export function mount(container, ctx) {
       typeGroup.values = ['PTR'];
       otherField.value = '';
     }
-    ctx.setParams({ name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null });
+    ctx.setParams(queryParams(q));
     setShareAction();
     ctx.runStarted(q.input);
     run(q);
   }
 
-  /** "Copy link" in the page header (after a run, and again for a run restored by a re-mount). */
+  /** The route params of a query (what a shared link runs). */
+  function queryParams(q) {
+    return { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null };
+  }
+
+  /**
+   * "Copy link" in the page header (after a run, and again for a run restored by a re-mount): the
+   * query on screen, not the box, which may hold a carried name.
+   */
   function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? queryParams(current.q) : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+  }
+
+  /** The names the box holds, as a query reads them (what a carried name may replace). */
+  const boxNames = (text) => {
+    const parsed = parseLookupName(text);
+    return [parsed ? parsed.ptrFor || parsed.name : String(text).trim()];
+  };
+
+  /**
+   * A name carried over from another tool (`run=0`) goes into the box while it is empty or still
+   * holds the finished query's name — never over a draft — and nothing is queried; the answers stay.
+   */
+  function takeCarried(name) {
+    const last = current && !current.controller ? [current.q.input] : null;
+    if (fillReplaces(nameField.value, last, boxNames)) {
+      nameField.value = name;
+      nameField.setError(null);
+    }
   }
 
   function renderSummary(q, responses, elapsed) {
@@ -1274,6 +1300,8 @@ export function mount(container, ctx) {
   if (restored && restored.q && Array.isArray(restored.responses)) {
     run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed });
     setShareAction();
+    // The kept answers under a name carried over from another tool: the box takes the name.
+    if (isFillOnly(ctx.params) && ctx.params.name) takeCarried(ctx.params.name);
   } else if (!restored && params.name && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
     // from another tool (`run=0`) only fills the form.
@@ -1310,18 +1338,16 @@ export function mount(container, ctx) {
     },
     result() {
       if (!current || current.controller || !current.finishedAt) return null;
-      return { subject: current.q.input, at: current.finishedAt };
+      return { subject: current.q.input, at: current.finishedAt, params: queryParams(current.q) };
     },
     rerun() {
-      const q = current && current.q;
-      if (q) fillForm({ name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : '', cd: q.cd ? '1' : '' });
+      if (current && current.q) fillForm(queryParams(current.q));
       start();
     },
     update(next) {
       if (!next.name) return false;
       if (isFillOnly(next)) {
-        // A carried-over name fills an empty box and queries nothing.
-        if (!nameField.value.trim()) nameField.value = next.name;
+        takeCarried(next.name);
         return true;
       }
       fillForm(next);

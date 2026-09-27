@@ -35,7 +35,7 @@ import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { mergeSignals } from '../lib/util.js';
-import { isFillOnly } from '../lib/session.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/global`). */
 export const id = 'global';
@@ -485,7 +485,7 @@ export function mount(container, ctx) {
   });
 
   /* --- form -------------------------------------------------------------- */
-  const initialName = restored?.name ?? ctx.params.name ?? '';
+  const initialName = restored?.draft ?? restored?.name ?? ctx.params.name ?? '';
   const initialType = GLOBAL_TYPES.includes(String(restored?.type ?? ctx.params.type ?? '').toUpperCase())
     ? String(restored?.type ?? ctx.params.type).toUpperCase() : 'A';
   const initialGeo = restored ? restored.geo !== false : ctx.params.geo !== '0';
@@ -1238,10 +1238,43 @@ export function mount(container, ctx) {
       ctx.setActions();
       return;
     }
-    const params = { name: current.name, type: current.type, geo: current.geo ? null : '0' };
+    const params = checkParams(current);
     ctx.setActions(
       CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }),
-      Button({ label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'rerun' }, onClick: () => start() }));
+      Button({ label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'rerun' }, onClick: () => rerunCheck() }));
+  }
+
+  /** The route params of a check (what a shared link runs). */
+  function checkParams(check) {
+    return { name: check.name, type: check.type, geo: check.geo ? null : '0' };
+  }
+
+  /** Re-run: the check on screen again (its name, type and locations), not what the box holds now. */
+  function rerunCheck() {
+    if (current) {
+      nameField.value = current.name;
+      typeField.value = current.type;
+      geoField.checked = current.geo;
+    }
+    start();
+  }
+
+  /** The names the box holds, as a check reads them (what a carried name may replace). */
+  const boxNames = (text) => {
+    const raw = String(text).trim();
+    return [normalizeHostname(raw, { allowSingleLabel: true }) || raw];
+  };
+
+  /**
+   * A name carried over from another tool (`run=0`) goes into the box while it is empty or still
+   * holds the finished check's name — never over a draft — and nothing is queried; the check stays.
+   */
+  function takeCarried(name) {
+    const last = current && !current.controller ? [current.name] : null;
+    if (fillReplaces(nameField.value, last, boxNames)) {
+      nameField.value = name;
+      nameField.setError(null);
+    }
   }
 
   /** Validate the form and run a new check. */
@@ -1370,6 +1403,8 @@ export function mount(container, ctx) {
   /* --- initial state --------------------------------------------------------- */
   if (restored && Array.isArray(restored.items) && restored.items.length && restored.name) {
     restore(restored);
+    // The kept check under a name carried over from another tool: the box takes the name.
+    if (isFillOnly(ctx.params) && ctx.params.name) takeCarried(ctx.params.name);
   } else if (!restored && initialName && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
     // from another tool (`run=0`) only fills the form.
@@ -1387,27 +1422,24 @@ export function mount(container, ctx) {
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
         key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix
       }));
-      return { name: current.name, type: current.type, geo: current.geo, items, done: current.done, at: current.finishedAt };
+      return {
+        name: current.name, type: current.type, geo: current.geo, items, done: current.done, at: current.finishedAt,
+        draft: nameField.value
+      };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.some((r) => !r.pending)) return null;
       // The page header already has Re-run next to Copy link: the note offers no second one.
-      return { subject: current.name, at: current.finishedAt, rerun: false };
+      return { subject: current.name, at: current.finishedAt, params: checkParams(current), rerun: false };
     },
     rerun() {
-      if (current) {
-        nameField.value = current.name;
-        typeField.value = current.type;
-        geoField.checked = current.geo;
-      }
-      start();
+      rerunCheck();
     },
     update(params) {
       const name = params.name || '';
       if (!name) return false;
       if (isFillOnly(params)) {
-        // A carried-over name fills an empty box and queries nothing.
-        if (!nameField.value.trim()) nameField.value = name;
+        takeCarried(name);
         return true;
       }
       nameField.value = name;

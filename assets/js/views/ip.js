@@ -26,7 +26,7 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
 import { mergeSignals, splitList } from '../lib/util.js';
-import { commonTarget, isFillOnly } from '../lib/session.js';
+import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/ip`). */
 export const id = 'ip';
@@ -631,20 +631,48 @@ export function mount(container, ctx) {
       return;
     }
     const tokens = [...parsed.ips, ...parsed.hosts];
-    ctx.setParams({ ips: tokens.length <= 40 ? tokens.join(',') : null });
-    setShareAction();
+    const params = lookupParams(input.value);
+    ctx.setParams(params);
+    setShareAction(params);
     const one = commonTarget(tokens);
     ctx.runStarted(one ? one.value : null);
     run(parsed, null, { text: input.value });
   }
 
+  /** The addresses and host names of an input, as a run reads them. */
+  const entriesOf = (text) => {
+    const p = parseIpInput(text);
+    return [...p.ips, ...p.hosts];
+  };
+
+  /** The route params of a run's input: its addresses and host names, at most 40 (else none). */
+  function lookupParams(text) {
+    const tokens = entriesOf(text);
+    return { ips: tokens.length && tokens.length <= 40 ? tokens.join(',') : null };
+  }
+
   /**
-   * "Copy link" in the page header when the URL carries the addresses (at most 40 of them), after
-   * a run and again for a run restored by a re-mount.
+   * "Copy link" in the page header when a link can carry the run's addresses (at most 40 of
+   * them), after a run and again for a run restored by a re-mount: the run on screen, not the box,
+   * which may hold a carried address.
    */
-  function setShareAction() {
-    if (ctx.params.ips) ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+  function setShareAction(params) {
+    if (params.ips) ctx.setActions(CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
     else ctx.setActions();
+  }
+
+  /**
+   * An address carried over from another tool (`run=0`) goes into the box while it is empty or
+   * still holds the finished run's entries — never over a draft — and nothing is looked up; the
+   * rows stay.
+   */
+  function takeCarried(text) {
+    const last = current && !current.controller ? entriesOf(current.text) : null;
+    if (fillReplaces(input.value, last, entriesOf)) {
+      input.value = text;
+      input.setError(null);
+      updateParsed();
+    }
   }
 
   /**
@@ -785,7 +813,9 @@ export function mount(container, ctx) {
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
     run(parseIpInput(text), restored.rows, { text, at: restored.at });
-    setShareAction();
+    setShareAction(lookupParams(text));
+    // The kept rows under an address carried over from another tool: the box takes the address.
+    if (isFillOnly(ctx.params) && paramText) takeCarried(splitList(paramText).join('\n'));
   } else if (paramText && !isFillOnly(ctx.params)) {
     // Shared link: run immediately; an address carried over from another tool (`run=0`) only
     // fills the box.
@@ -807,7 +837,7 @@ export function mount(container, ctx) {
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;
       const one = commonTarget(current.rows.map((r) => r.ip));
-      return { subject: one ? one.value : current.rows[0].ip, at: current.finishedAt };
+      return { subject: one ? one.value : current.rows[0].ip, at: current.finishedAt, params: lookupParams(current.text) };
     },
     rerun() {
       if (current && current.text) {
@@ -820,11 +850,7 @@ export function mount(container, ctx) {
       const text = [params.ips, params.ip, params.q].filter(Boolean).join('\n');
       if (!text) return false;
       if (isFillOnly(params)) {
-        // A carried-over address fills an empty box and looks nothing up.
-        if (!input.value.trim()) {
-          input.value = splitList(text).join('\n');
-          updateParsed();
-        }
+        takeCarried(splitList(text).join('\n'));
         return true;
       }
       input.value = splitList(text).join('\n');

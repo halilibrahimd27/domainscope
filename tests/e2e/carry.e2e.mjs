@@ -17,11 +17,13 @@
  *     note goes;
  *   - a certificate loaded in SSL Targets shows in the Certificate view without a note until that
  *     view kept it, and then without "Run again" (a file);
- *   - a lookup of www.example.com makes that the target: Domain Health gets it filled in (its
- *     older report comes back on the bare route); the lookup comes back after a trip too (also
- *     in Turkish);
+ *   - a lookup of www.example.com makes that the target: Domain Health gets it filled in over its
+ *     kept report of example.com, which shows with its note (Copy link shares the report, and a
+ *     bare route later brings it back under its own params); the lookup comes back after a trip
+ *     too (also in Turkish);
  *   - the second round: after Domain Health for shop.example.com, DNS Lookup and Bulk Resolve get
- *     it filled in over their kept results; Bulk's "Run again" resolves the kept job's names;
+ *     it filled in over their kept results, which still show with the note; Bulk's "Run again"
+ *     resolves the kept job's names;
  *     the same target run again (after a Bulk job about several names) is newer than that job,
  *     and the Bulk Resolve link says so at once;
  *   - the chip's × clears the target (focus stays on the page); "Delete all local data" forgets
@@ -107,6 +109,17 @@ async function clickNav(page, view) {
     && document.querySelector('#page-body').childElementCount > 0
     && !document.querySelector('#page-body .page-loading'), { args: [view], message: `view ${view}`, timeout: 15000 });
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
+/** Press the page header's "Copy link" and return the hash it copied (the clipboard is stubbed in the page). */
+async function copiedLink(page) {
+  await page.evaluate(() => {
+    window.__copied = null;
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async (text) => { window.__copied = text; } });
+  });
+  await page.click('.page-actions .copy-btn');
+  await page.waitFor(() => window.__copied !== null, { message: 'Copy link' });
+  return page.evaluate(() => new URL(window.__copied).hash);
 }
 
 /** Wait for a Bulk Resolve job other than `prevId` to end. */
@@ -276,7 +289,7 @@ async function desktop(browser, server) {
       await assertQuiet(page, queries, 'certificate');
     });
 
-    await run.step('a lookup makes its name the target: Domain Health gets it filled in, its report comes back on the bare route', async () => {
+    await run.step('a lookup makes its name the target: Domain Health gets it filled in over its kept report, which still shows', async () => {
       await clickNav(page, 'lookup');
       await page.type('[data-role="lookup-name"]', `www.${APEX}`);
       await page.click('.lkp-form [data-action="run"]');
@@ -289,16 +302,26 @@ async function desktop(browser, server) {
       await shot(page, opts, 'carry-desktop-light-en-lookup-run');
       queries = await dnsCount(page);
       await clickNav(page, 'health');
-      const fresh = await page.evaluate(() => ({
+      await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
+      const carried = await page.evaluate(() => ({
         domain: document.querySelector('[data-role="health-domain"]').value,
-        report: !!document.querySelector('.hlt-hero')
+        report: document.querySelector('.hlt-hero-domain')?.textContent || null
       }));
-      assertEqual(fresh, { domain: `www.${APEX}`, report: false }, 'filled in, nothing run');
-      assertEqual((await page.evaluate(shellInfo)).note, null, 'no note');
+      assertEqual(carried, { domain: `www.${APEX}`, report: APEX }, 'the new target in the box, the kept report of example.com under it');
+      const s2 = await page.evaluate(shellInfo);
+      assertEqual(s2.hash, `#/health?domain=www.${APEX}&run=0`, 'the URL keeps the target (a reload only fills the form)');
+      assert(/^Result from /.test(s2.note || '') && s2.rerun === 'Run again', `note: ${JSON.stringify(s2)}`);
+      assertEqual(await copiedLink(page), `#/health?domain=${APEX}`, 'Copy link shares the report on screen, not the box');
+      await assertQuiet(page, queries, 'health under the carried target');
+      await shot(page, opts, 'carry-desktop-light-en-health-carried');
+      // Left without a run, the report is kept under its own params, not the box's.
+      await clickNav(page, 'lookup');
       await gotoRoute(page, '#/health');
       await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
+      const back = await page.evaluate(shellInfo);
+      assertEqual(back.hash, `#/health?domain=${APEX}&run=0`, 'the bare route brings it back under example.com');
       assertEqual(await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent), APEX, 'still example.com');
-      assert((await page.evaluate(shellInfo)).note, 'with the note');
+      assert(back.note, 'with the note');
       await assertQuiet(page, queries, 'health kept again');
     });
 
@@ -319,7 +342,7 @@ async function desktop(browser, server) {
       await setLangUi(page, 'en');
     });
 
-    await run.step('the second round: after shop.example.com, DNS Lookup and Bulk Resolve get it over their kept results', async () => {
+    await run.step('the second round: after shop.example.com, DNS Lookup and Bulk Resolve get it over their kept results, still shown', async () => {
       await clickNav(page, 'bulk');
       await page.type('[data-role="bulk-input"]', APEX);
       await page.click('[data-action="bulk-run"]');
@@ -335,7 +358,11 @@ async function desktop(browser, server) {
       queries = await dnsCount(page);
       await clickNav(page, 'lookup');
       const lk = await page.evaluate(() => ({ name: document.querySelector('[data-role="lookup-name"]').value, results: !document.querySelector('.lkp-results').hidden }));
-      assertEqual(lk, { name: `shop.${APEX}`, results: false }, 'DNS Lookup filled in, nothing run');
+      assertEqual(lk, { name: `shop.${APEX}`, results: true }, 'DNS Lookup: the new name in the box over its kept answers, nothing run');
+      const lks = await page.evaluate(shellInfo);
+      assertEqual(lks.hash, `#/lookup?name=shop.${APEX}&run=0`, 'the URL keeps the target');
+      assert(/^Result from /.test(lks.note || '') && lks.rerun === 'Run again', `lookup note: ${JSON.stringify(lks)}`);
+      assert((await copiedLink(page)).startsWith(`#/lookup?name=www.${APEX}&type=`), 'Copy link shares the kept answers');
       await clickNav(page, 'bulk');
       const bk = await page.evaluate(() => ({
         text: document.querySelector('[data-role="bulk-input"]').value.trim(),

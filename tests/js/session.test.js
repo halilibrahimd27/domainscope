@@ -198,15 +198,34 @@ describe('routes', () => {
     assert.equal(restorePlan({}, { params: {}, snapshot: null, dropped: false }), null, 'a tool keeping its own state');
     assert.equal(restorePlan({}, null), null);
   });
+
+  test('restorePlan: a carried target brings the result back under it (carry); a new query does not', () => {
+    const kept = { params: { domain: 'example.com' }, snapshot: { report: 1 }, dropped: false };
+    // Domain Health for example.com, then DNS Lookup made www.example.com the target: the link to
+    // Domain Health carries it (the second round), and the report still comes back.
+    const link = carryRoute('health', { kept: { ...kept, subject: 'example.com', at: new Date(1000) }, target: { ...parseTarget('www.example.com'), at: new Date(2000) } });
+    assert.deepEqual(link, { domain: 'www.example.com', run: '0' });
+    assert.equal(restorePlan(link, kept), 'carry');
+    assert.equal(restorePlan({ domain: 'www.example.com', selectors: 's1', run: '0' }, kept), 'carry', 'any route that only fills the form');
+    assert.equal(restorePlan({ domain: 'www.example.com' }, kept), null, 'a shared link runs its own query');
+    assert.equal(restorePlan({ domain: 'example.com', run: '0' }, kept), 'restore', 'its own params: the URL shows them');
+    assert.equal(restorePlan(link, { ...kept, snapshot: null, dropped: true }), null, 'too large to keep: the target is only filled in');
+    assert.equal(restorePlan(link, { params: {}, snapshot: null, dropped: false }), null, 'a tool keeping its own state shows its own');
+  });
 });
 
 describe('results and the note', () => {
-  test('normalizeResult accepts { subject, at, rerun?, label? } with a valid date', () => {
+  test('normalizeResult accepts { subject, at, params?, rerun?, label? } with a valid date', () => {
     const at = new Date(Date.UTC(2026, 8, 27, 10, 0));
-    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at, rerun: true, label: null });
-    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at, rerun: true, label: null });
-    assert.deepEqual(normalizeResult({ at: at.toISOString(), rerun: false }), { subject: null, at, rerun: false, label: null });
-    assert.deepEqual(normalizeResult({ subject: null, at, label: 'zone.live.kept' }), { subject: null, at, rerun: true, label: 'zone.live.kept' });
+    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at, params: null, rerun: true, label: null });
+    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at, params: null, rerun: true, label: null });
+    assert.deepEqual(normalizeResult({ at: at.toISOString(), rerun: false }), { subject: null, at, params: null, rerun: false, label: null });
+    assert.deepEqual(normalizeResult({ subject: null, at, label: 'zone.live.kept' }), { subject: null, at, params: null, rerun: true, label: 'zone.live.kept' });
+    // The result's own params: strings, without the fill marker and empty values.
+    assert.deepEqual(normalizeResult({ subject: 'example.com', at, params: { domain: 'example.com', selectors: null, run: '0', n: 2 } }).params,
+      { domain: 'example.com', n: '2' });
+    assert.equal(normalizeResult({ at, params: ['example.com'] }).params, null);
+    assert.equal(normalizeResult({ at, params: 'domain=example.com' }).params, null);
     assert.equal(normalizeResult({ at, label: 42 }).label, null, 'a label is a translation key');
     assert.equal(normalizeResult({ subject: 'x', at: null }), null);
     assert.equal(normalizeResult({ subject: 'x', at: 'soon' }), null);

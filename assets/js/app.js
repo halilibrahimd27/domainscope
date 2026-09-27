@@ -26,10 +26,11 @@
  * Page session (lib/session.js, memory only): a view reports each run with
  * `ctx.runStarted(subject)`, which makes it the current target shown in the header chip; the
  * nav links carry that target into the other tools (`run=0`: filled in, never run). A view that
- * also exports `result()` → `{ subject, at, rerun?, label? } | null` (its finished result) keeps it
- * when it is left — with `snapshot()` when it has one — and gets it back as `ctx.restored` when it
- * is opened again; the page header then says "Result from <time>" (or the result's own `label`),
- * with "Run again" calling `rerun(ctx)` unless the result says `rerun: false`. The note goes with
+ * also exports `result()` → `{ subject, at, params?, rerun?, label? } | null` (its finished result;
+ * `params`: the result's own route params) keeps it when it is left — with `snapshot()` when it
+ * has one — and gets it back as `ctx.restored` when it is opened again, also under a carried
+ * target that its box then takes; the page header says "Result from <time>" (or the result's own
+ * `label`), with "Run again" calling `rerun(ctx)` unless the result says `rerun: false`. The note goes with
  * the next `runStarted()`, or with `ctx.resultChanged()` when the result is replaced or dropped
  * some other way. "Delete all local data" forgets all of it and opens the tool on screen again,
  * bare.
@@ -395,7 +396,7 @@ function forgetShown() {
  * A view's finished result as the shell uses it (`result()` export), or null.
  * @param {object} view the view module
  * @param {ViewContext} ctx
- * @returns {{ subject: string|null, at: Date, rerun: boolean, label: string|null }|null}
+ * @returns {{ subject: string|null, at: Date, params: Record<string, string>|null, rerun: boolean, label: string|null }|null}
  */
 function resultOf(view, ctx) {
   if (!view || typeof view.result !== 'function') return null;
@@ -409,10 +410,11 @@ function resultOf(view, ctx) {
 
 /**
  * Keep the finished result of a view that is being left. A view with `snapshot()` is kept with
- * it and its route params (they bring it back); any other view keeps its own state, so only
- * the fact is kept (its nav link then opens it bare). A run still going is not a result: the
- * result kept before stays. Nothing is kept on the way out after "Delete all local data"
- * (`forget`).
+ * it and the result's own route params (`result().params`; they bring it back) — not the URL's,
+ * which say what the box holds (a carried target, a draft) and fall back only for a view that
+ * gives none. Any other view keeps its own state, so only the fact is kept (its nav link then
+ * opens it bare). A run still going is not a result: the result kept before stays. Nothing is
+ * kept on the way out after "Delete all local data" (`forget`).
  * @param {{ id: string, view: object, ctx: ViewContext, forget?: boolean }} cur
  */
 function keepResult(cur) {
@@ -429,7 +431,8 @@ function keepResult(cur) {
       return;
     }
   }
-  pageSession.keep(cur.id, { params: restorable ? cur.ctx.params : {}, subject: res.subject, at: res.at, snapshot });
+  const params = restorable ? res.params || cur.ctx.params : {};
+  pageSession.keep(cur.id, { params, subject: res.subject, at: res.at, snapshot });
 }
 
 /* ------------------------------------------------------------------------ */
@@ -765,14 +768,16 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
 
   // Coming back to a tool (a bare route or its result's own params) brings its kept result back;
   // the URL then shows that result's params with `run=0`, so a reload or a later Back only fills
-  // the form (the view's Copy link drops the marker). A language re-mount has its own snapshot.
+  // the form (the view's Copy link shares the result's own params). Under a carried target
+  // ('carry') the result comes back too and the URL keeps the target, which the view's box takes
+  // when it holds nothing of the user's. A language re-mount has its own snapshot.
   const kept = note === undefined ? pageSession.kept(def.id) : null;
   const plan = restorePlan(params, kept);
-  if (plan) {
+  if (plan === 'restore' || plan === 'carry') restored = kept.snapshot;
+  if (plan === 'restore' || plan === 'dropped') {
     params = { ...kept.params };
     if (Object.keys(params).length) params[FILL_PARAM] = FILL_VALUE;
     sp = new URLSearchParams(params);
-    if (plan === 'restore') restored = kept.snapshot;
     const hash = buildRoute(def.id, params);
     if (hash !== currentHash()) globalThis.history.replaceState(null, '', hash);
   }

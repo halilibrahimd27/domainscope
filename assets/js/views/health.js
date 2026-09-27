@@ -45,7 +45,7 @@ import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { errorKind, mergeSignals, splitList } from '../lib/util.js';
-import { isFillOnly } from '../lib/session.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/health`). */
 export const id = 'health';
@@ -1295,8 +1295,33 @@ export function mount(container, ctx) {
     ctx.setBusy(on);
   }
 
+  /** The route params of a check: its domain and extra selectors (what a shared link runs). */
+  function checkParams(check) {
+    const selectors = check.selectors || [];
+    return { domain: check.domain, selectors: selectors.length ? selectors.join(',') : null };
+  }
+
+  /** "Copy link" shares the check on screen (not the box, which may hold a carried domain). */
   function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? checkParams(current) : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+  }
+
+  /** The domains the box holds, as a check reads them (what a carried domain may replace). */
+  const boxDomains = (text) => {
+    const raw = String(text).trim();
+    return [normalizeHostname(raw.replace(/^\*\./, '')) || raw];
+  };
+
+  /**
+   * A domain carried over from another tool (`run=0`) goes into the box while it is empty or still
+   * holds the report's domain — never over a draft — and nothing runs; the report stays.
+   */
+  function takeCarried(domain) {
+    const last = current && current.report ? [current.report.domain] : null;
+    if (fillReplaces(domainField.value, last, boxDomains)) {
+      domainField.value = domain;
+      domainField.setError(null);
+    }
   }
 
   function start() {
@@ -1320,7 +1345,10 @@ export function mount(container, ctx) {
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     const controller = new AbortController();
-    const state = { domain, controller, report: null, finishedAt: null, selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null };
+    const state = {
+      domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
+      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null
+    };
     current = state;
     clear(errorEl);
     progress.el.hidden = false;
@@ -1364,13 +1392,16 @@ export function mount(container, ctx) {
   if (restored && restored.report) {
     const policy = restored.policy && restored.policy.domain === restored.report.domain ? restored.policy : null;
     current = {
-      domain: restored.report.domain, controller: null, report: restored.report, selectorCount: restored.selectorCount,
+      domain: restored.report.domain, selectors: Array.isArray(restored.runSelectors) ? restored.runSelectors : [],
+      controller: null, report: restored.report, selectorCount: restored.selectorCount,
       finishedAt: restored.at ? new Date(restored.at) : new Date(),
       policy: policy && policy.status !== 'running' ? policy : null
     };
     renderReport(restored.report);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
     if (policy && policy.status === 'running') checkPolicy(policy);
+    // The kept report under a domain carried over from another tool: the box takes the domain.
+    if (isFillOnly(ctx.params) && (ctx.params.domain || ctx.params.name)) takeCarried(ctx.params.domain || ctx.params.name);
   } else if (!restored && initialDomain && !isFillOnly(ctx.params)) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) or a domain carried over
     // from another tool (`run=0`) only fills the form.
@@ -1397,23 +1428,27 @@ export function mount(container, ctx) {
         filter,
         report,
         at: report ? current.finishedAt : null,
+        runSelectors: report ? current.selectors : null,
         selectorCount: current ? current.selectorCount : null,
         policy
       };
     },
     result() {
-      return current && !current.controller && current.report ? { subject: current.report.domain, at: current.finishedAt } : null;
+      if (!current || current.controller || !current.report) return null;
+      return { subject: current.report.domain, at: current.finishedAt, params: checkParams(current) };
     },
     rerun() {
-      if (current && current.report) domainField.value = current.report.domain;
+      if (current && current.report) {
+        domainField.value = current.report.domain;
+        selectorsField.value = current.selectors.join(', ');
+      }
       start();
     },
     update(params) {
       const domain = params.domain || params.name;
       if (!domain) return false;
       if (isFillOnly(params)) {
-        // A carried-over domain fills an empty box and runs nothing.
-        if (!domainField.value.trim()) domainField.value = domain;
+        takeCarried(domain);
         return true;
       }
       domainField.value = domain;

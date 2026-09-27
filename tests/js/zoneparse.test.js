@@ -1118,6 +1118,17 @@ describe('origin inference (critic A1)', () => {
     const typed = P(text, { origin: 'example.com' });
     assert.equal(typed.records.length, 6);
     assert.ok(!codes(typed).includes('ORIGIN_OVERRIDDEN'));
+    // a late $ORIGIN outside a mere file-name guess names the zone (still to be confirmed)
+    const late = '$TTL 300\n@ IN SOA ns1.example.com. h.example.com. 1 2 3 4 5\n  IN NS ns1.example.com.\n$ORIGIN example.com.\nwww A 192.0.2.1\nmail A 192.0.2.2\n';
+    for (const filename of ['example.com.backup.txt', 'named.conf.local.txt', 'zone-2024.txt', undefined]) {
+      const g = P(late, { filename });
+      assert.deepEqual([g.origin, g.originSource, g.originConfidence], ['example.com', '$ORIGIN', 'low'], filename);
+      assert.deepEqual(g.records.map((r) => r.name), ['www.example.com', 'mail.example.com'], filename);
+      assert.ok(!codes(g).includes('OUT_OF_ZONE'), filename);
+    }
+    // ... but not one at or below it (the sub-block above)
+    assert.deepEqual(P(late, { filename: 'db.example.com' }).records.map((r) => r.name),
+      ['example.com', 'example.com', 'www.example.com', 'mail.example.com']);
   });
 
   test('a $ORIGIN before the first record names the zone (directives may precede it)', () => {

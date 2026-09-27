@@ -4,6 +4,7 @@ Prioritised from a survey of popular DNS / recon projects and web tools, an idea
 
 Constraints every item respects: runs in a browser from a static page (only CORS-enabled endpoints, no required API keys) **or** belongs in the stdlib-only Python CLI; vanilla JS, no dependencies, no build step, CSP-safe (no inline scripts/styles, never `innerHTML` with dynamic data), TR + EN, light/dark, mobile.
 
+- **Wave 1 — shipped 2026-09-27** ([what shipped and where](#wave-1--shipped-2026-09-27)): CLI certificate kinds and per-target ports, CLI monitoring (`--baseline`, `--warn-days`, `--notify`), CAA RFC 8657 restrictions and the MTA-STS policy check, the DANE / TLSA renewal guard, the Global DNS verdict, a certificate from CT or a sample, and the SSL Targets setup form.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -51,6 +52,18 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - [Rejected (with reasons)](#rejected)
 - [UI upgrade spec](#ui-upgrade-spec)
 - [Reusable data](#reusable-data)
+
+## Wave 1 — shipped 2026-09-27
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| `ORIGIN_CERT` (Cloudflare Origin CA) and `PRIVATE_CERT` (self-signed or `--private-ca`) statuses with `--strict-public`; targets with their own port (`203.0.113.10:8443`, `[2001:db8::10]:8443`, `web01.example.com:8443`), an Ansible host pattern's port read as its SSH port; the same verdicts and ports in the Servers view, `targets.txt` and the Verify tab | CLI, Servers, SSL Targets › Verify | new; the port part of [P1.10](#p110-cli-tls-on-mail-database-and-other-non-https-ports) (plain TLS only) |
+| Monitoring between visits: `--baseline` diff per IP, port and name, `--warn-days` expiry list, `--notify` to Slack, Teams / Power Automate, Discord, Telegram, Google Chat or JSON, exit codes 4 and 5 | CLI, About (cron example) | the CLI part of [P2.3](#p23-monitoringautomation-exports-web--cli) and of [P2.2](#p22-run-history-and-diff-between-scans) |
+| CAA RFC 8657 (`accounturi`, `validationmethods`) with what they mean for the next renewal; the MTA-STS policy fetched by one Globalping probe and validated against RFC 8461 and the MX hosts | Certificate, Domain Health | the MTA-STS part of [P2.12](#p212-cli-mail-checks-mta-sts-mx-starttls-certs-dnsbl-incl-spamhaus-fcrdns), in the browser |
+| DANE / TLSA renewal guard: TLSA records at the mail servers and names that pin another certificate or key, the record to publish first and the 2 × TTL wait | Certificate, SSL Targets | new |
+| Why Global DNS answers differ: an operator per answer group, "differs by design" (CDN / GeoDNS edges) vs propagation or a misconfiguration | Global DNS | new (groundwork for [P0.6](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner)) |
+| A host name's newest logged certificate from Cert Spotter (crt.sh as fallback), and a bundled sample certificate | Certificate, SSL Targets | new (groundwork for [P0.7](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts)) |
+| SSL Targets setup form: one requirement line, step checks, options in one line, a sticky Start bar on phones | SSL Targets | [UI upgrade spec](#ui-upgrade-spec) |
 
 ## P0 — next iteration
 
@@ -128,6 +141,8 @@ DNS-side flagship. Behaviour in Global DNS: an 'Expected value' input (exact / c
 ### P0.7 CT watchlist: expiry radar and new-issuance alerts
 
 id `ct-watchlist` · where: **browser** · effort: **M**
+
+**Status (2026-09-27): groundwork shipped in wave 1.** `lib/ctcert.js` loads the newest currently valid certificate of one host name (Cert Spotter's single-host quota, two requests per lookup; crt.sh download links as fallback) for the Certificate view and SSL Targets. The watchlist itself, issuance history and alerts are not started.
 
 Behaviour: a watchlist of domains in localStorage. On open, query certspotter per name-set: show the newest non-revoked cert, days-left, issuer, bucketed ≤7/≤30/≤60. Store the last issuance id per domain; next time list certs issued since (after=&lt;id&gt;), flagging issuers not allowed by current CAA, issuers outside a user 'expected CAs' list, new wildcards, never-seen names (shadow IT), revoked certs. Links to the CA problem-reporting contact (expand=problem_reporting works anonymously). .ics export with VALARMs at 30/14/7/1 days. Caveat banner: CT proves issuance, not deployment. Replaces the Let's Encrypt expiry emails that ended 2025-06-04. New view 'watch' (new nav group). Reuses lib/sources.js certspotter path. NEW: watchlistCheck(domains, {fetchImpl, signal, lastIds})-&gt; per-domain {newest, sinceLast[], flags}. Edge cases: anonymous quota is bucketed — include_subdomains queries get 10/h, exact-name queries 100/h; neither header is CORS-exposed so only react to 429; use exact-name queries + staggered refresh for 20+ domains, offer an optional SSLMate key (certspotter CORS allows Authorization: '*, Authorization'); certspotter normal responses are Cache-Control max-age=14400 so fetch with {cache:'no-cache'} to see new issuances; some domains 403 not_allowed_by_plan; crt.sh only as opt-in fallback (18-48s, intermittent 404/502 with no ACAO); localStorage subject to Safari 7-day eviction → export. Test: mocked certspotter pages incl. after= empty (Retry-After 3600); bucketing + flag logic unit; ics alarms; 429 handling.
 
@@ -371,6 +386,8 @@ Original plan (superseded by the status above: the default budget is 1,500, not 
 
 id `cli-starttls` · where: **cli** · effort: **M**
 
+**Status (2026-09-27): per-target ports shipped in wave 1** (`203.0.113.10:8443`, `[2001:db8::10]:8443`, `web01.example.com:8443` on `-t` and in files, kept by the web app's exports), for plain TLS only. The protocol-aware STARTTLS handshakes below are still open.
+
 Behaviour: protocol-aware handshakes in ssl_origin_scan.py — SMTP 25/587 (EHLO+STARTTLS), 465 implicit, IMAP 143 STARTTLS + 993 implicit, POP3 110 STLS + 995, FTP 21 AUTH TLS, PostgreSQL 5432 (SSLRequest 00000008 04d2162f then wrap), LDAPS 636 (+ LDAP StartTLS OID 1.3.6.1.4.1.1466.20037), RDP 3389 (X.224 CR RDP_NEG_REQ requestedProtocols=0x3), XMPP 5222 optional. Presets --profile web|mail|all. Statuses/output unchanged, add a proto column. All 7 upgrades verified against in-process fake servers + live Gmail/Outlook. Edge cases: imaplib.starttls / poplib.stls re-send CAPABILITY and failed against minimal servers → for IMAP/POP3/LDAP/PG/RDP use a RAW exchange (send command, read one line/PDU, wrap); smtplib + ftplib.FTP_TLS are fine; RDP tested only against a fake server — servers using the RDP Security Layer return RDP_NEG_FAILURE → report 'no TLS' (unverified on real Windows); outbound 25 blocked on most cloud VMs → distinct 'blocked' status. Test: tests/python fake SMTP/IMAP/POP3/FTP/PG/LDAP/RDP server threads (already prototyped in a local research script, tls_lab.py — not committed) asserting the expected leaf fingerprint per protocol; no real mail server needed in CI.
 
 **Verified endpoints / data**
@@ -442,6 +459,8 @@ Save scan/health/lookup results per domain in IndexedDB (try/catch; JSON export/
 
 id `toolchain-exports` · where: **both**
 
+**Status (2026-09-27): the CLI's own monitoring shipped in wave 1.** `--baseline` compares a scan with a previous `--json` report (the same file can be both), `--warn-days` lists served certificates that expire soon, and `--notify` (or `DOMAINSCOPE_NOTIFY_URL`) posts a short summary to Slack, Teams / Power Automate, Discord, Telegram, Google Chat or any JSON endpoint; `--fail-on-change` and `--fail-on-notify-error` give exit codes 4 and 5. The exports below (blackbox_exporter, Gatus, Nagios / Icinga, Ansible groups, Prometheus textfile, JUnit) are still open.
+
 From Hosts/Servers/Board generate: Prometheus blackbox_exporter file_sd targets JSON + alert rule (probe_ssl_earliest_cert_expiry - time() &lt; 21*86400), Gatus endpoints YAML ([CERTIFICATE_EXPIRATION] &gt; 336h), Nagios/Icinga check_ssl_cert commands (-H name --resolve IP -c 7 -w 21), Ansible INI inventory with [needs_new_cert]/[behind_cdn]. CLI mirrors with --prometheus-textfile (ssl_cert_not_after_seconds{name,ip,port,serial}), --jsonl, --junit, --ansible-inventory. Pure text. blackbox file_sd for IP+SNI needs a relabel (target=IP, tls_config.server_name per module) — include the relabel in the export. DROP the Uptime Kuma export: v2.0 removed JSON backup/restore.
 
 ### P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)
@@ -497,6 +516,8 @@ Stdlib UDP/TCP DNS client (port of dnswire.js) in the single file. dns-diff reso
 ### P2.12 CLI mail checks: MTA-STS, MX STARTTLS certs, DNSBL incl. Spamhaus, FCrDNS
 
 id `cli-mail` · where: **cli**
+
+**Status (2026-09-27): the MTA-STS policy check shipped in the browser in wave 1**, not in the CLI: Domain Health fetches the policy through one Globalping probe on a click (shared consent and quota with Verify) and validates it against RFC 8461, the MX hosts and the `_mta-sts` record. The MX STARTTLS certificates, DNSBL and FCrDNS still need the CLI.
 
 What the browser cannot do: urllib fetch https://mta-sts.&lt;domain&gt;/.well-known/mta-sts.txt (no ACAO), validate version/mode/max_age/mx vs the real MX set + the mta-sts host cert; STARTTLS :25 to each MX to check the cert covers the MX name and expiry (in enforce mode an expired MX cert stops inbound mail); DNSBL via the stdlib client iterating to each zone's authoritative NS (verified: query Spamhaus b.gns/e.gns directly → real answers), because the 'local resolver' often forwards to Google/Cloudflare (false clean); self-test the 127.0.0.2 point; compare PTR/FCrDNS with the SMTP banner/EHLO. --fail-on-listed for cron. Port 25 blocked on most cloud VMs → clear 'blocked' status. Spamhaus free use 'low-volume non-commercial' (terms unverified).
 

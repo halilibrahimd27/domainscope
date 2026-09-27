@@ -702,6 +702,8 @@ function loadView(def) {
 
 /** Injected view stylesheets: file → promise settled when the sheet has loaded (or failed). */
 const stylesheets = new Map();
+/** A view waits this long for a stalled stylesheet, then mounts (the sheet applies once it arrives). */
+const STYLESHEET_WAIT_MS = 8000;
 
 /**
  * Load a view's stylesheets (VIEWS[].css) before it mounts. Each is one `<link rel="stylesheet">`
@@ -709,7 +711,7 @@ const stylesheets = new Map();
  * (the CSP's style-src 'self' allows it; nothing is inlined), inserted in VIEW_CSS_ORDER and kept
  * for the rest of the page's life. Never rejects: a sheet that cannot load (offline without the
  * service worker, a deploy) leaves the view unstyled rather than unusable, and is tried again the
- * next time the view opens.
+ * next time the view opens; one that stalls holds the view back STYLESHEET_WAIT_MS at most.
  * @param {{ css: readonly string[] }} def
  * @returns {Promise<void>}
  */
@@ -727,6 +729,7 @@ function loadStylesheet(file) {
       link.remove();
       resolve();
     }, { once: true });
+    setTimeout(resolve, STYLESHEET_WAIT_MS);
   });
   stylesheets.set(file, settled);
   const present = [...document.querySelectorAll('link[data-view-css]')];

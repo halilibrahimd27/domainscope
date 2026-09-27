@@ -510,6 +510,7 @@ async function main() {
       assert(!/Internal names|is logged in Certificate Transparency/.test(info.text), `no flat not-found: ${info.text}`);
       assert(info.retry, 'Try again offered');
       assertEqual(info.crtsh, ['*.example.net', 'www.example.net'], 'both searches sent, the failed 404 not retried');
+      await shot(page, opts, 'scan-desktop-light-en-ct-partial');
       // Back to the crt.sh links for the next step.
       await page.evaluate(() => { window.__ctFake.mode = '429'; window.__ctFake.calls = []; });
       await page.click(`${scope} [data-ct-result] [data-action="ct-retry"]`);

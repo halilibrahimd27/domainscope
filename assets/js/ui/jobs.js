@@ -122,14 +122,6 @@ export function refreshJobIndicators() {
   render();
 }
 
-/**
- * Views that run jobs right now (for tests and the shell).
- * @returns {Array<{ view: string, percent: number|null }>}
- */
-export function runningJobs() {
-  return [...jobs.values()].map((j) => ({ view: j.view, percent: percentOf(j.fraction) }));
-}
-
 function emit() {
   for (const fn of [...listeners]) {
     try {

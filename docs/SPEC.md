@@ -596,6 +596,7 @@ An internationalised name is kept in its punycode form (`xn--…`). Anything els
   - A target that an exclude covers entirely is removed from `-t` and reported in `excluded`.
   - An exclude that overlaps no remaining target is left out of the command and reported in `excludeUnused`.
   - An invalid exclude is dropped and reported in `dropped.exclude`.
+  - An IPv4-mapped IPv6 target or exclude (`::ffff:10.0.0.5`, `::ffff:10.0.0.0/104`) also matches its IPv4 form, as the CLI does; a wider IPv6 range such as `::/0` does not.
   - These four fields appear only when `exclude` is given, and `targets` then lists only what is left in `-t`.
 - **Zone hand-off opt-ins**, all off by default:
   - `allowHostTargets` keeps HOST NAME targets (a proxied record's CNAME origin, resolved by the CLI inside the network). Validation: `normalizeHostname`, `[a-z0-9_.-]`, at least one dot, no leading `-`. IP / CIDR targets come first, then the host names.

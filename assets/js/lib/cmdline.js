@@ -275,17 +275,32 @@ function validateOptions({ cert = null, json = null, ports = null }) {
 /* --exclude                                                                 */
 /* ------------------------------------------------------------------------ */
 
-/** A validated target / exclude token as a range: { version, network, prefix } (null when invalid). */
+/**
+ * A validated target / exclude token as its ranges: [{ version, network, prefix }]
+ * (null when invalid). A range inside ::ffff:0:0/96 is IPv4 too, as the CLI
+ * matches it (ExcludeRule.spans / _match_keys): `::ffff:10.0.0.0/104` also
+ * gives 10.0.0.0/8. A wider IPv6 range (`::/0`) does not.
+ */
 function rangeOf(token) {
-  return parseCidr(String(token ?? ''));
+  const range = parseCidr(String(token ?? ''));
+  if (!range) return null;
+  if (range.version === 6 && range.prefix >= 96 && range.network >> 32n === 0xffffn) {
+    return [range, { version: 4, network: range.network & 0xffffffffn, prefix: range.prefix - 96 }];
+  }
+  return [range];
 }
 
-/** Does range `outer` contain the whole of range `inner`? */
-function rangeCovers(outer, inner) {
-  if (!outer || !inner || outer.version !== inner.version || outer.prefix > inner.prefix) return false;
+/** Does range `outer` contain the whole of range `inner` (same IP version)? */
+function spanCovers(outer, inner) {
+  if (outer.version !== inner.version || outer.prefix > inner.prefix) return false;
   const bits = outer.version === 4 ? 32 : 128;
   const shift = BigInt(bits - outer.prefix);
   return (inner.network >> shift) === (outer.network >> shift);
+}
+
+/** Does `outer` (rangeOf) contain the whole of `inner` (rangeOf) in either form? */
+function rangeCovers(outer, inner) {
+  return !!outer && !!inner && outer.some((o) => inner.some((i) => spanCovers(o, i)));
 }
 
 /** Do two ranges share at least one address? */

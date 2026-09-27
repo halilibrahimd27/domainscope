@@ -489,4 +489,25 @@ describe('buildSweepCommand: shell review fixes', () => {
     assert.equal(r.command, 'ssl_origin_scan.py -t 192.0.2.1 -n www.example.com');
     assert.deepEqual(r.dropped.names, ['0x7f.0x1']);
   });
+
+  test('--exclude matches an IPv4-mapped IPv6 target and a mapped exclude like the CLI does', () => {
+    const names = ['www.example.com'];
+    const a = buildSweepCommand({ targets: ['::ffff:10.0.0.5', '192.0.2.4'], names, exclude: '10.0.0.0/8' });
+    assert.equal(a.command, 'ssl_origin_scan.py -t 192.0.2.4 -n www.example.com');
+    assert.deepEqual([a.excluded, a.excludeUnused], [['::ffff:10.0.0.5'], []]);
+    const b = buildSweepCommand({ targets: ['10.0.0.5', '192.0.2.4'], names, exclude: '::ffff:10.0.0.0/104' });
+    assert.deepEqual([b.targets, b.excluded, b.excludeUnused], [['192.0.2.4'], ['10.0.0.5'], []]);
+    const c = buildSweepCommand({ targets: ['::ffff:10.0.0.0/120', '192.0.2.4'], names, exclude: '10.0.0.0/8' });
+    assert.deepEqual(c.excluded, ['::ffff:10.0.0.0/120'], 'a mapped block inside the IPv4 exclude');
+    // partial overlap in either direction: the exclude is emitted
+    const d = buildSweepCommand({ targets: ['::ffff:10.0.0.0/120'], names, exclude: '10.0.0.7' });
+    assert.equal(d.command, 'ssl_origin_scan.py -t ::ffff:10.0.0.0/120 --exclude 10.0.0.7 -n www.example.com');
+    const e = buildSweepCommand({ targets: ['10.0.0.0/24'], names, exclude: '::ffff:10.0.0.7' });
+    assert.deepEqual(e.exclude, ['::ffff:10.0.0.7']);
+    // a wider IPv6 range is not IPv4 (the CLI's ExcludeRule.spans rule)
+    for (const wide of ['::/0', '::ffff:0:0/95']) {
+      const f = buildSweepCommand({ targets: ['10.0.0.5'], names, exclude: wide });
+      assert.deepEqual([f.targets, f.excludeUnused.length], [['10.0.0.5'], 1], wide);
+    }
+  });
 });

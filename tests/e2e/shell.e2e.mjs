@@ -451,7 +451,7 @@ async function main() {
       const examples = () => page.evaluate(async () => {
         const i = await import('./assets/js/i18n.js');
         return {
-          want: i.t('about.ex6'),
+          want: i.t('about.ex7'),
           list: [...document.querySelectorAll('#about-cli .about-examples .codeblock')].map((b) => ({
             label: b.querySelector('.codeblock-label')?.textContent ?? '',
             cmd: b.querySelector('pre code').textContent

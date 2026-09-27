@@ -147,7 +147,7 @@ registerStrings('en', {
   'about.ex4': 'A subnet and two names, no certificate (“who hosts these?”)',
   'about.ex5': 'CI / cron — exit code 1 while any server still needs the new certificate',
   'about.ex6': 'Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE; an address with its own port is scanned on that port',
-  'about.ex7': 'Cron — what changed since the previous run, and served certificates that expire within 21 days; set DOMAINSCOPE_NOTIFY_URL to get them in Slack, Teams, Discord or Telegram',
+  'about.ex7': 'Cron — changes since the last run and certificates expiring within 21 days (set DOMAINSCOPE_NOTIFY_URL for Slack, Teams, Discord or Telegram)',
   'about.statusesTitle': 'Result statuses',
   'about.st.UPDATED': 'Serves the new certificate for the name.',
   'about.st.NEEDS_UPDATE': 'Serves a certificate that covers the name, but not the new one — install it here.',
@@ -270,7 +270,7 @@ registerStrings('tr', {
   'about.ex4': 'Bir alt ağ ve iki ad, sertifikasız (“bunları kim barındırıyor?”)',
   'about.ex5': 'CI / cron — yeni sertifikaya ihtiyaç duyan sunucu kaldıkça çıkış kodu 1',
   'about.ex6': 'Kendi CA’nızın imzaladığı iç sunucular NEEDS_UPDATE değil PRIVATE_CERT olur; portuyla yazılan bir adres o porttan taranır',
-  'about.ex7': 'Cron — bir önceki çalıştırmadan beri neyin değiştiği ve sunucuların sunduğu, süresi 21 gün içinde dolacak sertifikalar; Slack, Teams, Discord ya da Telegram’a gelmesi için DOMAINSCOPE_NOTIFY_URL tanımlayın',
+  'about.ex7': 'Cron — son çalıştırmadan beri değişenler ve 21 gün içinde süresi dolacak sertifikalar (Slack, Teams, Discord ya da Telegram bildirimi için DOMAINSCOPE_NOTIFY_URL ortam değişkenini tanımlayın)',
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
@@ -314,7 +314,7 @@ const CLI_EXAMPLES = [
   { key: 'about.ex4', cmd: 'python3 ssl_origin_scan.py -t 10.0.0.0/24 -n www.example.com api.example.com' },
   { key: 'about.ex5', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color' },
   { key: 'about.ex6', cmd: 'python3 ssl_origin_scan.py -t hosts.ini -t 10.0.0.5:8443 --cert new.pem --private-ca internal-ca.pem' },
-  { key: 'about.ex7', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json --json last.json --warn-days 21 -q --no-color' }
+  { key: 'about.ex7', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json --json last.json --warn-days 21 -q > last.txt' }
 ];
 
 const CLI_STATUSES = [

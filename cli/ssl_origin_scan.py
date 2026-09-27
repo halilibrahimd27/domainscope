@@ -5144,10 +5144,11 @@ examples:
   Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --private-ca internal-ca.pem
   Cron - compare every run with the previous one, warn 21 days before a served
-  certificate expires, post to a chat webhook only when there is something to say:
+  certificate expires, post to a chat webhook only when there is something to say
+  (the summary goes to a file, so cron mails only errors):
     export DOMAINSCOPE_NOTIFY_URL='https://hooks.slack.com/services/...'
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json \\
-      --json last.json --warn-days 21 -q --no-color
+      --json last.json --warn-days 21 -q > last.txt
 
 targets (-t, repeatable):
   an IP, hostname, CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.50 or 10.0.0.10-50),
@@ -5279,9 +5280,12 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
   DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord veya
-  Telegram'a kısa bir özet gönderir. Örnek:
-  python3 ssl_origin_scan.py -t sunucular.txt --cert yeni.pem --baseline son.json \
-    --json son.json --warn-days 21
+  Telegram'a kısa bir özet gönderir. Aynı dosya hem --baseline hem --json ise ve
+  bildirim gönderilemezse önceki rapor korunur; değişiklikler bir sonraki
+  çalıştırmada yeniden bildirilir. Özet dosyaya yazılırsa cron yalnızca hataları
+  e-postayla gönderir. Örnek:
+  python3 ssl_origin_scan.py -t sunucular.txt --cert yeni.pem --baseline son.json \\
+    --json son.json --warn-days 21 -q > son.txt
 """
 
 

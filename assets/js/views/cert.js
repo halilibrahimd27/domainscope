@@ -1673,13 +1673,14 @@ export function mount(container, ctx) {
                 : r.foundAt || h('span', { class: 'muted' }, t('cert.caa.none')))
             },
             {
-              key: 'records', label: t('cert.caa.col.records'), mono: true,
+              // RFC 8657 values (an accounturi) make records long: they wrap, so Result stays in view.
+              key: 'records', label: t('cert.caa.col.records'), mono: true, wrap: true, className: 'cert-caa-records',
               searchValue: (r) => r.records.join(' '),
               exportValue: (r) => r.records.join(' | '),
               render: (r) => (r.records.length ? TruncatedList(r.records, { max: 4 }) : null)
             },
             {
-              key: 'result', label: t('cert.caa.col.result'), sortable: true, wrap: true,
+              key: 'result', label: t('cert.caa.col.result'), sortable: true, wrap: true, className: 'cert-caa-result',
               sortValue: (r) => (r.verdict ? { denied: 0, unknown: 1, restricted: 2, allowed: 3 }[r.verdict.verdict] : -1),
               exportValue: (r) => {
                 if (!r.verdict) return 'error';

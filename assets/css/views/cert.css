@@ -449,6 +449,14 @@
 }
 
 /* CAA / CT */
+.dt-table td.cert-caa-records {
+  min-width: 16rem;
+}
+
+.dt-table td.cert-caa-result {
+  min-width: 17rem;
+}
+
 .cert-caa-verdict {
   display: flex;
   flex-direction: column;

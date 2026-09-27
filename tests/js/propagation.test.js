@@ -180,6 +180,23 @@ describe('checkPropagation', () => {
     assert.equal(r.addresses[0].private, false);
     assert.deepEqual(ist.addresses, ['192.0.2.34']);
     assert.ok(streamed.every((s) => Array.isArray(s.addresses)));
+
+    // verdict (extension): direct addresses, one resolver still returns another one
+    assert.equal(r.verdict.state, 'differ');
+    assert.deepEqual(r.verdict.findings.map((f) => f.code), ['direct']);
+    assert.deepEqual(r.verdict.groups.map((g) => g.key), r.groups.map((g) => g.key));
+  });
+
+  test('verdict: CDN edges that differ per location are by design', async () => {
+    const { fetchImpl } = mockFetch(({ resolver, name, ecs }) => {
+      const chain = [{ name, type: 'CNAME', ttl: 60, data: 'd111111abcdef8.cloudfront.net' }];
+      if (resolver === 'google' && ecs) return { answers: [...chain, ...A('d111111abcdef8.cloudfront.net', ecs.startsWith('78.') ? '13.32.0.34' : '13.32.0.49')] };
+      return { answers: [...chain, ...A('d111111abcdef8.cloudfront.net', resolver === 'iij' ? '13.32.0.200' : '13.32.0.49')] };
+    });
+    const r = await checkPropagation('www.example.com', 'A', { dns: client(fetchImpl), resolvers: ['cloudflare', 'google', 'iij'], vantages: ['tr-ist-tt', 'de-ham'] });
+    assert.equal(r.consistent, false);
+    assert.equal(r.verdict.state, 'by-design');
+    assert.deepEqual(r.verdict.operators.map((op) => [op.id, op.members.length]), [['cloudfront', 5]]);
   });
 
   test('address summary classifies providers and skips sinkhole answers', async () => {

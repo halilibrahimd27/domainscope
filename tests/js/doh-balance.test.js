@@ -506,3 +506,82 @@ describe('detectWildcardDeep', () => {
     assert.equal(w.cnames.length, 1);
   });
 });
+
+describe('detectWildcardDeep: probes that disagree', () => {
+  const POOL = ['cloudflare', 'google', 'dnssb'];
+  const A = (ip) => ({ status: 'NOERROR', cnames: [], ipv4: [ip], ipv6: [] });
+  const NODATA = { status: 'NOERROR', cnames: [], ipv4: [], ipv6: [] };
+  const NX = { status: 'NXDOMAIN', cnames: [], ipv4: [], ipv6: [] };
+  const FAIL = { status: 'ERROR', cnames: [], ipv4: [], ipv6: [], error: 'timeout' };
+  /** A client whose answer depends on the route ('chain' or the resolver id) and the call count on it. */
+  const fakeDns = (answer) => {
+    const calls = [];
+    return {
+      calls,
+      async resolveHost(name, opts = {}) {
+        const route = opts.resolver || 'chain';
+        const n = calls.filter((c) => c.route === route).length;
+        calls.push({ route, name });
+        return { name, ...answer(route, n) };
+      }
+    };
+  };
+
+  test('one resolver answering NODATA or NXDOMAIN does not veto a wildcard the chain probes proved', async () => {
+    const dns = fakeDns((route) => ({ google: NODATA, dnssb: NX })[route] || A('198.51.100.10'));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.wildcard, true);
+    assert.equal(w.kind, 'A');
+    assert.deepEqual(w.ipv4, ['198.51.100.10']);
+    assert.equal(w.variable, false, 'the address never varied');
+    assert.equal(w.conclusive, true);
+    assert.equal(dns.calls.length, 5, 'no confirmation probe: the chain settled it');
+  });
+
+  test('the chain resolver answering NODATA is outvoted by two resolvers that see the wildcard', async () => {
+    const dns = fakeDns((route) => (route === 'chain' || route === 'cloudflare' ? NODATA : A('198.51.100.10')));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.kind, 'A');
+    assert.deepEqual(w.ipv4, ['198.51.100.10']);
+  });
+
+  test('a lone synthesized answer is re-asked on the same resolver and counts once it repeats', async () => {
+    const dns = fakeDns((route) => (route === 'google' ? A('198.51.100.20') : NX));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.wildcard, true);
+    assert.equal(w.kind, 'A');
+    assert.deepEqual(w.ipv4, ['198.51.100.20']);
+    assert.equal(dns.calls.filter((c) => c.route === 'google').length, 2);
+    assert.notEqual(dns.calls.filter((c) => c.route === 'google')[1].name, dns.calls.filter((c) => c.route === 'google')[0].name,
+      'the confirmation asks a fresh random label');
+  });
+
+  test('a lone answer that does not repeat proves nothing: no wildcard, inconclusive', async () => {
+    const dns = fakeDns((route, n) => (route === 'google' && n === 0 ? A('198.51.100.20') : NX));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.wildcard, false);
+    assert.equal(w.conclusive, false, 'an NXDOMAIN next to an answer is inconclusive');
+  });
+
+  test('chain probes of a NODATA wildcard decide over a resolver that answers NXDOMAIN', async () => {
+    const dns = fakeDns((route) => (route === 'dnssb' ? NX : NODATA));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.wildcard, true);
+    assert.equal(w.kind, 'NODATA');
+  });
+
+  test('chain probes that disagree, with nothing synthesized twice, are inconclusive', async () => {
+    const dns = fakeDns((route, n) => (route === 'chain' ? [NODATA, NX, NX][n] : FAIL));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL });
+    assert.equal(w.wildcard, false);
+    assert.equal(w.conclusive, false);
+  });
+
+  test('flood re-sample: two resolving labels are enough, whatever the rest answer', async () => {
+    const dns = fakeDns((route, n) => (route === 'chain' && n < 2 ? A(`198.51.100.${30 + n}`) : NODATA));
+    const w = await detectWildcardDeep(dns, 'example.org', { resolvers: POOL, probes: 8 });
+    assert.equal(w.kind, 'A');
+    assert.equal(w.variable, true);
+    assert.deepEqual([...w.ipv4].sort(), ['198.51.100.30', '198.51.100.31']);
+  });
+});

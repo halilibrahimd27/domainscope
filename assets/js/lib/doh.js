@@ -381,18 +381,26 @@ async function dnssecProvesNonexistent(dns, probeName, signal) {
  * Some zones answer *any* label with NODATA (NOERROR, no records) or with a
  * fixed CNAME rather than an address — the plain "did a random label get an A?"
  * test misses those and lets wildcard hits pollute results. This resolves
- * random labels below `parent` (`probes` on the failover chain, 2 by default,
- * plus one on each resolver of `resolvers`) and only reports a wildcard when
- * every probe that got an answer shows the same kind.
+ * random labels below `parent`: `probes` on the failover chain (2 by default)
+ * plus one on each resolver of `resolvers`.
+ *
+ * A synthesized kind ('A' or 'CNAME') is a wildcard when every chain probe
+ * shows it, or at least two probes do. A probe of another kind does not veto
+ * it: a resolver may answer NODATA or NXDOMAIN where the others see the
+ * wildcard (GeoDNS with no default record, a stale resolver), and its guesses
+ * are no hits anyway. An answer only one probe saw (one region of such a
+ * wildcard) is asked once more on the same resolver before it can count.
+ * Without a synthesized kind, the chain probes decide: all NOERROR-empty is a
+ * NODATA wildcard, all NXDOMAIN is none, and chain probes that disagree prove
+ * nothing. A probe that failed (transport error, SERVFAIL) says nothing and is
+ * skipped.
  *
  * A wildcard's answer need not be one fixed value: GeoDNS / ECS steering or a
  * CDN alias answers each resolver differently, and a multivalue / weighted
  * wildcard answers each label with another subset of a pool. So an 'A'
  * wildcard carries the UNION of the probes' addresses, and a 'CNAME' one every
  * first target in `targets` (`cnames` is the first probe's chain); `variable`
- * is set when the probes disagreed on the value. A probe that failed (transport
- * error, SERVFAIL) says nothing and is skipped; mixed kinds, or an NXDOMAIN next
- * to an answer, are no wildcard.
+ * is set when the probes disagreed on the value.
  *
  * A NODATA (NOERROR-empty) result is only reported as a wildcard when a DNSSEC
  * query does NOT prove the name's non-existence: many DNSSEC zones (all
@@ -401,9 +409,10 @@ async function dnssecProvesNonexistent(dns, probeName, signal) {
  * flag every NXDOMAIN-equivalent name (including ones the user typed) as a
  * wildcard suspect.
  *
- * `conclusive` is false when the check proved nothing (too few answers, mixed
- * kinds); a "no wildcard" from probes that all got NXDOMAIN (or a DNSSEC-proven
- * non-existence) is conclusive, and so is every wildcard.
+ * `conclusive` is false when the check proved nothing (too few answers, chain
+ * probes that disagree, an NXDOMAIN next to an answer); a "no wildcard" from
+ * probes that all got NXDOMAIN (or a DNSSEC-proven non-existence) is
+ * conclusive, and so is every wildcard.
  *
  * @param {{ resolveHost: Function, query?: Function }} dns injected DoH client
  * @param {string} parent the zone to test (apex or any level)
@@ -420,40 +429,51 @@ export async function detectWildcardDeep(dns, parent, { signal, resolvers = [], 
   const base = normalizeHostname(String(parent ?? ''), { allowSingleLabel: true });
   if (!base || !dns || typeof dns.resolveHost !== 'function') return none();
 
-  const count = Math.max(2, Math.min(16, Math.floor(Number(probes)) || 2));
-  const plan = Array.from({ length: count }, () => ({ name: `${randomLabel(12)}.${base}`, resolver: null }));
-  for (const id of new Set(Array.isArray(resolvers) ? resolvers : [])) {
-    if (typeof id === 'string' && id) plan.push({ name: `${randomLabel(12)}.${base}`, resolver: id });
-  }
-  const results = await Promise.all(plan.map(({ name, resolver }) => dns.resolveHost(name, resolver
-    ? { signal, resolver, timeoutMs: WILDCARD_RESOLVER_TIMEOUT_MS, retries: 0 } : { signal })));
-  const answers = [];
-  results.forEach((r, i) => {
+  /** One random label on `resolver` (null: the failover chain), classified; null when it failed. */
+  const probe = async (resolver) => {
+    const name = `${randomLabel(12)}.${base}`;
+    const r = await dns.resolveHost(name, resolver
+      ? { signal, resolver, timeoutMs: WILDCARD_RESOLVER_TIMEOUT_MS, retries: 0 } : { signal });
     const p = classifyProbe(r);
-    if (p.kind) answers.push({ ...p, name: plan[i].name });
-    else if (r && r.status === 'NXDOMAIN') answers.push({ kind: 'NXDOMAIN' });
-  });
-  if (answers.length < 2) return none();
-  const kind = answers[0].kind;
-  if (answers.some((p) => p.kind !== kind)) return none();
-  if (kind === 'NXDOMAIN') return none(true);
+    if (p.kind) return { ...p, name, resolver };
+    return r && r.status === 'NXDOMAIN' ? { kind: 'NXDOMAIN', name, resolver } : null;
+  };
+  const count = Math.max(2, Math.min(16, Math.floor(Number(probes)) || 2));
+  const named = new Set((Array.isArray(resolvers) ? resolvers : []).filter((id) => typeof id === 'string' && id));
+  const answers = (await Promise.all([...Array(count).fill(null), ...named].map(probe))).filter(Boolean);
+  const synthesized = (kind) => kind === 'A' || kind === 'CNAME';
+  const votes = (kind) => answers.filter((p) => p.kind === kind).length;
+  const lone = answers.filter((p) => synthesized(p.kind) && votes(p.kind) === 1);
+  answers.push(...(await Promise.all(lone.map((p) => probe(p.resolver)))).filter(Boolean));
 
+  /** The kind every answer of `list` shows, when at least two answered. */
+  const agreed = (list) => (list.length >= 2 && list.every((p) => p.kind === list[0].kind) ? list[0].kind : null);
+  const chain = answers.filter((p) => !p.resolver);
+  let kind = synthesized(agreed(chain)) ? agreed(chain) : null;
+  if (!kind && Math.max(votes('A'), votes('CNAME')) >= 2) kind = votes('A') >= votes('CNAME') ? 'A' : 'CNAME';
+
+  if (!kind) {
+    // Nothing synthesized: the chain sample decides (every answer when fewer than two chain probes answered).
+    const verdict = agreed(chain.length >= 2 ? chain : answers);
+    if (!verdict) return none();
+    if (verdict === 'NXDOMAIN') return none(answers.every((p) => p.kind === 'NXDOMAIN'));
+    // NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not prove the
+    // probe name's non-existence (compact denial of existence / NXNAME).
+    if (await dnssecProvesNonexistent(dns, answers.find((p) => p.kind === 'NODATA').name, signal)) return none(true);
+    return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [], targets: [], variable: false, conclusive: true };
+  }
+
+  const hits = answers.filter((p) => p.kind === kind);
   if (kind === 'CNAME') {
-    const targets = [...new Set(answers.map((p) => p.cname))];
+    const targets = [...new Set(hits.map((p) => p.cname))];
     return {
-      wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...answers[0].cnames],
+      wildcard: true, kind: 'CNAME', ipv4: [], ipv6: [], cnames: [...hits[0].cnames],
       targets, variable: targets.length > 1, conclusive: true
     };
   }
-  if (kind === 'A') {
-    const union = (key) => [...new Set(answers.flatMap((p) => p[key]))];
-    const variable = answers.some((p) => !setsEqual(p.ipv4, answers[0].ipv4) || !setsEqual(p.ipv6, answers[0].ipv6));
-    return { wildcard: true, kind: 'A', ipv4: union('ipv4'), ipv6: union('ipv6'), cnames: [], targets: [], variable, conclusive: true };
-  }
-  // Every answer NOERROR-empty. This is a NODATA wildcard only if DNSSEC does not
-  // prove the probe name's non-existence (compact denial of existence / NXNAME).
-  if (await dnssecProvesNonexistent(dns, answers[0].name, signal)) return none(true);
-  return { wildcard: true, kind: 'NODATA', ipv4: [], ipv6: [], cnames: [], targets: [], variable: false, conclusive: true };
+  const union = (key) => [...new Set(hits.flatMap((p) => p[key]))];
+  const variable = hits.some((p) => !setsEqual(p.ipv4, hits[0].ipv4) || !setsEqual(p.ipv6, hits[0].ipv6));
+  return { wildcard: true, kind: 'A', ipv4: union('ipv4'), ipv6: union('ipv6'), cnames: [], targets: [], variable, conclusive: true };
 }
 
 /* ------------------------------------------------------------------------ */

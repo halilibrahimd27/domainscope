@@ -1778,6 +1778,47 @@ describe('discovery review fixes: wildcards whose answer varies', () => {
     assert.ok(scan.stats.bruteforceWildcardDropped > 100, String(scan.stats.bruteforceWildcardDropped));
     assert.ok(byName(scan).has(`shop.${A}`), 'a typed name is never dropped');
   });
+
+  // One pool resolver does not see the wildcard: a GeoDNS wildcard with no default
+  // record answers it NOERROR-empty, a stale one NXDOMAIN. It must not cancel the
+  // wildcard the other resolvers answer.
+  for (const [label, rcode] of [['NODATA', 'NOERROR'], ['NXDOMAIN', 'NXDOMAIN']]) {
+    test(`a wildcard that one pool resolver answers with ${label} still drops the look-alikes in balance mode`, async () => {
+      const A = `blind-${label.toLowerCase()}.example`;
+      const zone = {
+        [A]: { A: ['203.0.113.10'] },
+        [`*.${A}`]: { A: ['198.51.100.10'] },
+        [`www.${A}`]: { A: ['203.0.113.20'] }
+      };
+      const blind = rcode === 'NOERROR' ? 'google' : 'dnssb';
+      const answer = (name, type, resolver) => (resolver === blind && name.endsWith(`.${A}`) && !zone[name]
+        ? { rcode, answers: [] } : undefined);
+      const scan = await run(A, mkWorld({ zone, answer }));
+      const wc = scan.wildcards[A];
+      assert.equal(wc.wildcard, true);
+      assert.equal(wc.kind, 'A');
+      assert.deepEqual(wc.ipv4, ['198.51.100.10']);
+      assert.equal(wc.flooded, undefined);
+      assert.deepEqual(wordlistHosts(scan), [`www.${A}`]);
+      assert.equal(scan.stats.wordlistFound, 1);
+      assert.ok(scan.stats.bruteforceWildcardDropped > 50, String(scan.stats.bruteforceWildcardDropped));
+    });
+  }
+
+  test('flood guard: the re-sample still marks the parent when one pool resolver answers NODATA', async () => {
+    const A = 'flood-blind.example';
+    const zone = { [A]: { A: ['203.0.113.10'] } };
+    const answer = (name, type, resolver) => {
+      if (!name.endsWith(`.${A}`) || zone[name]) return undefined;
+      if (resolver === 'google') return { rcode: 'NOERROR', answers: [] };
+      const h = hash(name);
+      const answers = type === 'A' ? [{ name, type: 'A', ttl: 60, data: `10.${h % 200}.${(h >>> 8) % 250}.7` }] : [];
+      return { rcode: 'NOERROR', answers };
+    };
+    const scan = await run(A, mkWorld({ zone, answer }));
+    assert.equal(scan.wildcards[A].flooded, true);
+    assert.deepEqual(wordlistHosts(scan), []);
+  });
 });
 
 describe('discovery review fixes: closest encloser', () => {

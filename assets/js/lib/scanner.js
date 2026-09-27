@@ -1275,7 +1275,8 @@ export async function runScan(config = {}, hooks = {}) {
     await mapPool(flooded, 4, async (p) => {
       resampled.add(p);
       const next = await detectWildcardDeep(dns, p, { ...wildcardOpts(), probes: FLOOD_RESAMPLE_PROBES });
-      if (!next.wildcard) return; // random labels still do not resolve: the hits stand
+      // Random labels still do not resolve (none, or only NOERROR-empty): the hits stand.
+      if (!next.wildcard || next.kind === 'NODATA') return;
       const prev = wildcards[p] && wildcards[p].wildcard && wildcards[p].kind === next.kind ? wildcards[p] : null;
       const union = (key) => [...new Set([...((prev && prev[key]) || []), ...(next[key] || [])])];
       const merged = { ...next, ipv4: union('ipv4'), ipv6: union('ipv6'), targets: union('targets') };

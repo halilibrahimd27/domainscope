@@ -143,6 +143,8 @@ registerStrings('en', {
   'bulk.ip.private': 'private',
   'bulk.ip.public': 'public',
   'bulk.pending': 'looking up…',
+  'bulk.skipped': 'not looked up',
+  'bulk.skippedTitle': 'The run was cancelled before this address was looked up',
   'bulk.copyIps': 'Copy IPs',
   'bulk.copyResolving': 'Copy resolving names',
   'bulk.copied': { one: '{count} line copied', other: '{count} lines copied' },
@@ -250,6 +252,8 @@ registerStrings('tr', {
   'bulk.ip.private': 'özel',
   'bulk.ip.public': 'genel',
   'bulk.pending': 'sorgulanıyor…',
+  'bulk.skipped': 'sorgulanmadı',
+  'bulk.skippedTitle': 'Çalıştırma bu adres sorgulanmadan iptal edildi',
   'bulk.copyIps': 'IP’leri kopyala',
   'bulk.copyResolving': 'Çözümlenen adları kopyala',
   'bulk.copied': { one: '{count} satır kopyalandı', other: '{count} satır kopyalandı' },
@@ -441,7 +445,8 @@ function newIpRow(ip, index) {
     ptr: null,
     info: null,
     enriching: false,
-    enrichError: null
+    enrichError: null,
+    skipped: false
   };
 }
 
@@ -477,7 +482,13 @@ async function pool(items, limit, fn, signal) {
  * @property {Set<Function>} listeners
  */
 
-function createJob(names, options) {
+/**
+ * A new job (not started). Internal: exported for the tests only.
+ * @param {string[]} names
+ * @param {BulkJob['options']} options
+ * @returns {BulkJob}
+ */
+export function createJob(names, options) {
   jobCounter += 1;
   return {
     id: jobCounter,
@@ -497,7 +508,14 @@ function createJob(names, options) {
   };
 }
 
-async function runJob(job, { dns, index, concurrency }) {
+/**
+ * Resolve every name, then enrich each new IP (PTR, or ASN / owner with its PTR); rejects with
+ * AbortError when the job's controller aborts. Internal: exported for the tests only.
+ * @param {BulkJob} job
+ * @param {{ dns: object, index: object|null, concurrency: number }} deps
+ * @returns {Promise<void>}
+ */
+export async function runJob(job, { dns, index, concurrency }) {
   const { signal } = job.controller;
   const opts = job.options;
   const resolver = opts.resolver || undefined;
@@ -533,18 +551,31 @@ async function runJob(job, { dns, index, concurrency }) {
     while (enrichRunning < limit && enrichQueue.length && !signal.aborted) {
       const row = enrichQueue.shift();
       enrichRunning += 1;
-      enrichOne(row).catch(() => {}).then(() => {
+      // Only a finished lookup counts as done (a cancelled one rejects with AbortError).
+      enrichOne(row).then(() => { job.ipDone += 1; }, () => {}).then(() => {
         enrichRunning -= 1;
-        job.ipDone += 1;
         emit(job, 'ip', row);
         if (!enrichQueue.length && !enrichRunning && idleResolve) idleResolve();
         pump();
       });
     }
   };
+  // Cancel: IPs still queued or in flight are never looked up. Mark them `skipped` so the tables
+  // say "not looked up" instead of "looking up…" for good (an answer that still arrives wins).
+  const skip = (row) => {
+    if (row.private || row.ptr !== null) return;
+    row.ptr = [];
+    row.skipped = true;
+    row.enriching = false;
+  };
+  if (opts.ptr || opts.asn) signal.addEventListener('abort', () => job.ips.forEach(skip), { once: true });
   const enrich = (row) => {
     if (!opts.ptr && !opts.asn) return;
     job.ipTotal += 1;
+    if (signal.aborted) {
+      skip(row);
+      return;
+    }
     enrichQueue.push(row);
     pump();
   };
@@ -973,6 +1004,10 @@ function buildJobUI(job, ctx, { onFinish }) {
     const r = ipOf(ip);
     return r && !r.private && (r.enriching || r.ptr === null);
   });
+  /** Cells of IPs a cancelled run never looked up (`skipped`, see runJob). */
+  const enrichSkipped = (row) => row.ips.some((ip) => ipOf(ip)?.skipped);
+  const pendingCell = () => h('span', { class: 'muted text-sm' }, t('bulk.pending'));
+  const skippedCell = () => h('span', { class: 'muted text-sm', title: t('bulk.skippedTitle') }, t('bulk.skipped'));
 
   const copyBtn = (labelKey, getLines, action) => Button({
     label: t(labelKey),
@@ -1035,7 +1070,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         render: (r) => {
           const list = ptrText(r);
           if (list.length) return TruncatedList(list, { max: 2 });
-          return enrichPending(r) ? h('span', { class: 'muted text-sm' }, t('bulk.pending')) : null;
+          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : null;
         }
       } : null,
       showAsn ? {
@@ -1046,7 +1081,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         render: (r) => {
           const list = asnText(r);
           if (list.length) return TruncatedList(list, { max: 2, mono: false });
-          return enrichPending(r) ? h('span', { class: 'muted text-sm' }, t('bulk.pending')) : null;
+          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : null;
         }
       } : null,
       {
@@ -1135,7 +1170,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         searchValue: (r) => (r.ptr || []).join(' '),
         exportValue: (r) => (r.ptr || []).join(' '),
         render: (r) => (r.ptr && r.ptr.length ? TruncatedList(r.ptr, { max: 2 })
-          : (!r.private && (r.enriching || r.ptr === null) ? h('span', { class: 'muted text-sm' }, t('bulk.pending')) : null))
+          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : null))
       } : null,
       showAsn ? {
         key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
@@ -1144,8 +1179,9 @@ function buildJobUI(job, ctx, { onFinish }) {
         exportValue: (r) => (r.info && r.info.asn ? `AS${r.info.asn} ${r.info.holder || ''}`.trim() : ''),
         render: (r) => (r.info && r.info.asn
           ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
-          : (!r.private && (r.enriching || r.ptr === null) ? h('span', { class: 'muted text-sm' }, t('bulk.pending'))
-            : (r.enrichError ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
+          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
+            : r.skipped ? skippedCell()
+              : (r.enrichError ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
       } : null,
       showAsn ? {
         key: 'country', label: t('bulk.col.country'), sortable: true,

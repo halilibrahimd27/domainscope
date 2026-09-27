@@ -21,6 +21,7 @@ registerStrings('en', {
   'srcst.status': '{source}: {reason}',
   'srcst.retry': 'Retry',
   'srcst.retryTitle': 'Ask {sources} again',
+  'srcst.retryFor': 'Retry {target} ({sources})',
   'srcst.source.ripestat': 'RIPEstat',
   'srcst.source.ripestat-geo': 'RIPEstat (location)',
   'srcst.source.ipwhois': 'ipwho.is',
@@ -53,6 +54,7 @@ registerStrings('tr', {
   'srcst.status': '{source}: {reason}',
   'srcst.retry': 'Yeniden dene',
   'srcst.retryTitle': '{sources} yeniden sorgulansın',
+  'srcst.retryFor': 'Yeniden dene: {target} ({sources})',
   'srcst.source.ripestat': 'RIPEstat',
   'srcst.source.ripestat-geo': 'RIPEstat (konum)',
   'srcst.source.ipwhois': 'ipwho.is',
@@ -128,11 +130,14 @@ export function NaMark(statuses, { className = '' } = {}) {
 }
 
 /**
- * The Retry of a row or card: asks `sources` again (only those).
- * @param {{ sources: string[], onClick: Function, size?: 'sm'|'md', variant?: string, dataset?: object }} opts
+ * The Retry of a row or card: asks `sources` again (only those). With `target` (the row's address,
+ * the card's type) its accessible name says what it retries — "Retry 192.0.2.1 (RIPEstat,
+ * ipwho.is)" — so a list of rows is not "Retry, Retry, Retry" to a screen reader.
+ * @param {{ sources: string[], onClick: Function, target?: string|null, size?: 'sm'|'md', variant?: string,
+ *   dataset?: object }} opts
  * @returns {HTMLButtonElement}
  */
-export function RetryButton({ sources, onClick, size = 'sm', variant = 'ghost', dataset = {} }) {
+export function RetryButton({ sources, onClick, target = null, size = 'sm', variant = 'ghost', dataset = {} }) {
   const names = [...new Set((sources || []).map(sourceName))].join(', ');
   return Button({
     label: t('srcst.retry'),
@@ -140,6 +145,7 @@ export function RetryButton({ sources, onClick, size = 'sm', variant = 'ghost', 
     size,
     variant,
     title: t('srcst.retryTitle', { sources: names }),
+    ariaLabel: target ? t('srcst.retryFor', { target, sources: names }) : null,
     dataset: { action: 'retry-source', sources: (sources || []).join(' '), ...dataset },
     onClick
   });

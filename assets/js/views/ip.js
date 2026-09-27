@@ -546,7 +546,7 @@ export function mount(container, ctx) {
     if (r.pending || !r.info) return null;
     const sources = ipRetrySources(r.info);
     if (!sources.length) return null;
-    const btn = RetryButton({ sources, onClick: () => retryRows([r]), dataset: { ip: r.ip } });
+    const btn = RetryButton({ sources, target: r.ip, onClick: () => retryRows([r]), dataset: { ip: r.ip } });
     btn.classList.add('ipi-retry');
     if (r.retrying) setRetryBusy(btn);
     return btn;
@@ -592,7 +592,7 @@ export function mount(container, ctx) {
     const st = sourceStatus({ source: 'hackertarget', error: res.error, errorKind: res.errorKind });
     return h('div', { class: 'ipi-rev', dataset: { state: 'error' } },
       Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: statusText(st) }),
-      RetryButton({ sources: ['hackertarget'], onClick: () => reverseLookup(r) }));
+      RetryButton({ sources: ['hackertarget'], target: r.ip, onClick: () => reverseLookup(r) }));
   }
 
   function renderDetails(r) {

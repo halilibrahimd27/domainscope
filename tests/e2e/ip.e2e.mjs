@@ -329,7 +329,10 @@ function failureInfo() {
       if (mark) na[col] = { sources: mark.dataset.na, title: mark.title, sr: mark.querySelector('.sr-only')?.textContent || '' };
     }
     const retry = tr.querySelector('.ipi-retry');
-    rows[ip] = { na, retry: retry ? retry.dataset.sources : null, busy: retry?.getAttribute('aria-busy') === 'true', text: tr.textContent.replace(/\s+/g, ' ') };
+    rows[ip] = {
+      na, retry: retry ? retry.dataset.sources : null, retryName: retry ? retry.getAttribute('aria-label') : null,
+      busy: retry?.getAttribute('aria-busy') === 'true', text: tr.textContent.replace(/\s+/g, ' ')
+    };
   }
   return {
     rows,
@@ -371,6 +374,7 @@ async function offlineGroup(browser, server) {
       assert(/^not available: RIPEstat: rate limited/.test(bad.na.prefix.sr), `screen-reader text: ${bad.na.prefix.sr}`);
       assert(/web\.example\.com/.test(bad.text), 'the PTR answered: shown');
       assertEqual(bad.retry, 'ripestat ipwhois ripestat-geo', 'the row Retry asks only the failed sources');
+      assertEqual(bad.retryName, 'Retry 203.0.113.7 (RIPEstat, ipwho.is, RIPEstat (location))', 'its accessible name says which row and which sources');
       assertEqual(i.rows['198.51.100.20'].na, {}, 'a complete row has no n/a');
       assertEqual(i.rows['198.51.100.20'].retry, null, 'and no Retry');
       assertEqual([i.rows['10.0.0.1'].na, i.rows['10.0.0.1'].retry], [{}, null], 'a private address is never looked up, never n/a');

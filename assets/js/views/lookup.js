@@ -1142,7 +1142,7 @@ export function mount(container, ctx) {
           h('div', { class: 'text-sm' }, t('lkp.card.attempts')),
           h('ul', { class: 'lkp-attempt-list text-sm' }, attempts.map((a) => h('li', null,
             h('strong', null, resolverName(a.resolver)), ': ', h('span', { class: 'mono' }, a.text), a.times > 1 ? ` (×${a.times})` : null)))) : null,
-        actions: onRetry ? [RetryButton({ sources: ['doh'], onClick: onRetry, variant: 'secondary', dataset: { type } })] : null
+        actions: onRetry ? [RetryButton({ sources: ['doh'], target: type, onClick: onRetry, variant: 'secondary', dataset: { type } })] : null
       }));
       return body;
     }

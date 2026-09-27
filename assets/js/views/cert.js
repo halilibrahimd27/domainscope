@@ -1593,7 +1593,11 @@ export function mount(container, ctx) {
       const runBtn = Button({ label: t('cert.caa.run'), icon: 'play', size: 'sm', dataset: { action: 'caa-run' }, onClick: () => run(true) });
       const panel = h('div', { class: 'stack cert-caa' }, header, h('div', { class: 'cluster' }, runBtn), body);
       const refresh = (entry) => {
-        if (panel.isConnected) show(entry.status === 'aborted' ? null : entry);
+        if (!panel.isConnected) return;
+        // A re-mount (language switch) joined the old view's task, which its unmount then
+        // cancelled: start again under this view's signal instead of leaving the panel blank.
+        if (entry.status === 'aborted' && !ctx.signal.aborted) run();
+        else show(entry.status === 'aborted' ? null : entry);
       };
 
       const names = [];
@@ -1739,7 +1743,9 @@ export function mount(container, ctx) {
           domain ? ExternalLink(`https://crt.sh/?q=${encodeURIComponent(domain)}`, t('cert.ct.openDomain', { domain })) : null),
         body);
       const refresh = (entry) => {
-        if (panel.isConnected) show(entry.status === 'aborted' ? null : entry);
+        if (!panel.isConnected) return;
+        if (entry.status === 'aborted' && !ctx.signal.aborted) run(); // see caaPanel
+        else show(entry.status === 'aborted' ? null : entry);
       };
 
       function show(entry) {

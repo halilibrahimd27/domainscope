@@ -120,6 +120,21 @@ async function uploadAndWait(page, file) {
   await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
 }
 
+/**
+ * Hold requests matching `patterns` for `ms` before they go out (CDP Fetch), so a lookup is
+ * surely still in flight when the test acts. Returns a function that stops holding them.
+ */
+async function delayRequests(page, patterns, ms) {
+  const off = page.conn.on('Fetch.requestPaused', (p) => {
+    setTimeout(() => page.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {}), ms);
+  }, page.sessionId);
+  await page.send('Fetch.enable', { patterns: patterns.map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
+  return async () => {
+    off();
+    await page.send('Fetch.disable');
+  };
+}
+
 async function main() {
   const opts = cliOptions();
   const OFFLINE = opts.has('--offline');
@@ -349,6 +364,21 @@ async function main() {
     });
 
     if (!OFFLINE) {
+      await run.step('LIVE: a CAA lookup cut short by a language switch starts again (not a blank panel)', async () => {
+        await uploadAndWait(page, 'real_cloudflare.pem');
+        const release = await delayRequests(page, ['*dns-query*'], 1500);
+        try {
+          await page.click(tabSel('caa'));
+          await page.waitForSelector('.cert-caa .spinner');
+          await setLangUi(page, 'tr');
+          await page.waitFor(() => !!document.querySelector('.cert-caa [data-caa-summary]') || !!document.querySelector('.cert-caa .alert-error'),
+            { timeout: 60000, message: 'CAA result after the re-mount' });
+        } finally {
+          await release();
+          await setLangUi(page, 'en');
+        }
+      });
+
       await run.step('LIVE real_cloudflare.pem: CAA over DoH allows Google Trust Services', async () => {
         await uploadAndWait(page, 'real_cloudflare.pem');
         await page.click(tabSel('caa'));
@@ -364,6 +394,19 @@ async function main() {
         assertEqual(info.summary, 'ok', `CAA summary (rows: ${JSON.stringify(info.rows)})`);
         assert(info.rows.every((r) => r[3].startsWith('Allowed')), 'every name allowed');
         await shot(page, opts, 'cert-desktop-light-en-caa');
+      });
+
+      await run.step('LIVE: a crt.sh search cut short by a language switch starts again', async () => {
+        const release = await delayRequests(page, ['*crt.sh*'], 1500);
+        try {
+          await page.click(tabSel('ct'));
+          await page.waitForSelector('.cert-ct .spinner');
+          await setLangUi(page, 'tr');
+          await page.waitFor(() => !!document.querySelector('.cert-ct .spinner'), { message: 'crt.sh search running again after the re-mount' });
+        } finally {
+          await release();
+        }
+        await setLangUi(page, 'en'); // the search is started again once more, under the English view
       });
 
       await run.step('LIVE: the serial is looked up on crt.sh automatically (public CA)', async () => {

@@ -126,6 +126,9 @@ describe('parseSweepTarget', () => {
     const t = P.parseSweepTarget('[2001:DB8::5], 192.0.2.1 ::ffff:192.0.2.2 192.0.2.1 2001:db8:0:0::5');
     assert.deepEqual(t.addresses, ['2001:db8::5', '192.0.2.1', '192.0.2.2']);
     assert.equal(P.parseSweepTarget('2001:db8::7/128').addresses[0], '2001:db8::7');
+    // the label names each address once
+    assert.equal(P.parseSweepTarget('2001:db8::1, 2001:db8::1, 2001:db8::1').label, '2001:db8::1');
+    assert.equal(P.parseSweepTarget('2001:db8::1 192.0.2.0/30 2001:db8::1 192.0.2.0/30').label, '2001:db8::1, 192.0.2.0/30');
   });
 
   test('IPv6 networks and ranges are never swept: a warning, and an error when nothing else is left', () => {
@@ -165,9 +168,10 @@ describe('parseSweepTarget', () => {
   });
 
   test('the cap applies to the distinct addresses of everything together (over-cap); overlaps count once', () => {
-    const t = P.parseSweepTarget('192.0.2.0/24 198.18.0.0/23 198.19.0.0/23');
+    const t = P.parseSweepTarget('192.0.2.0/24 198.51.100.0/22');
     assert.deepEqual(t.issues.map((i) => i.code), ['over-cap']);
-    assert.equal(t.issues[0].params.count, 1280);
+    assert.deepEqual(t.issues[0].params, { count: 1280, max: 1024 });
+    assert.deepEqual([t.addresses, t.skipped], [[], { private: 0, reserved: 0 }]);
     assert.equal(P.parseSweepTarget('192.0.2.0/28', { max: 8 }).issues[0].params.suggestion, '192.0.2.0/29');
     // a network and one inside it, the same network twice, a range across both: 1,024 and 256 distinct addresses
     const nested = P.parseSweepTarget('192.0.2.0/22 192.0.2.0/24');
@@ -176,6 +180,25 @@ describe('parseSweepTarget', () => {
     const twice = P.parseSweepTarget('192.0.2.0/24 192.0.2.0/24 192.0.2.10-192.0.2.20 192.0.2.7');
     assert.deepEqual([twice.total, twice.addresses.length, twice.ok], [256, 256, true]);
     assert.equal(P.parseSweepTarget('192.0.2.0/24 198.51.100.0/24 203.0.113.0/24 192.0.2.0/24 198.51.100.0/24').total, 768);
+  });
+
+  test('the cap counts the addresses a sweep looks up: private and reserved ones are left out first', () => {
+    // 1,280 addresses typed, 256 looked up: the private /22 and /23s never reach a resolver
+    for (const text of ['10.0.0.0/22 192.0.2.0/24', '192.0.2.0/24 198.18.0.0/23 198.19.0.0/23']) {
+      const t = P.parseSweepTarget(text);
+      assert.deepEqual([t.ok, t.total, t.addresses.length, t.skipped, t.issues.map((i) => i.code)], [true, 1280, 256, { private: 1024, reserved: 0 }, ['private']], text);
+    }
+    const reserved = P.parseSweepTarget('224.0.0.0/22 239.255.255.0/24 192.0.2.0/24');
+    assert.deepEqual([reserved.ok, reserved.addresses.length, reserved.skipped], [true, 256, { private: 0, reserved: 1280 }]);
+    // a block across a private boundary is counted address by address; overlaps once
+    const across = P.parseSweepTarget('192.0.0.0/22 192.0.0.0/24 192.0.0.128/25 10.0.0.0/30 10.0.0.1');
+    assert.deepEqual([across.ok, across.total, across.addresses.length, across.skipped], [true, 1028, 768, { private: 260, reserved: 0 }]);
+    assert.ok(across.addresses.every((ip) => !P.skipReason(ip)) && across.addresses.includes('192.0.2.0'), 'the public part only');
+    // IPv6 exact addresses count one by one
+    assert.deepEqual(P.parseSweepTarget('fe80::1 fe80::2 ff02::1 2001:db8::1').skipped, { private: 2, reserved: 1 });
+    // over the cap only once the addresses to look up are
+    assert.deepEqual(P.parseSweepTarget('10.0.0.0/24 192.0.2.0/24 198.51.100.0/24', { max: 300 }).issues.map((i) => [i.code, i.params.count]), [['over-cap', 512]]);
+    assert.equal(P.parseSweepTarget('10.0.0.0/24 192.0.2.0/24', { max: 300 }).ok, true);
   });
 
   test('"AS 64496" / "ASN 64496" and ranges typed with spaces or an en dash are one token', () => {
@@ -189,6 +212,14 @@ describe('parseSweepTarget', () => {
     }
     const v6 = P.parseSweepTarget('2001:db8::1 - 2001:db8::9');
     assert.deepEqual(v6.issues.map((i) => i.code), ['v6-range', 'nothing']);
+    // two networks around a dash are no range: both are kept, the dash is ignored
+    const nets = P.parseSweepTarget('192.0.2.0/24 - 198.51.100.0/24');
+    assert.deepEqual([nets.blocks.map((b) => b.label), nets.issues.map((i) => [i.code, i.params.items])], [['192.0.2.0/24', '198.51.100.0/24'], [['invalid', '-']]]);
+    assert.deepEqual(P.parseSweepTarget('192.0.2.0/28 – 198.51.100.7').blocks.map((b) => b.label), ['192.0.2.0/28', '198.51.100.7']);
+    assert.deepEqual(P.parseSweepTarget('www.example.com - 192.0.2.9').blocks.map((b) => b.label), ['192.0.2.9']);
+    // a dash before a word that is no address keeps the address before it
+    const note = P.parseSweepTarget('192.0.2.1 - 2nd server');
+    assert.deepEqual([note.addresses, note.issues.map((i) => i.code)], [['192.0.2.1'], ['invalid']]);
     // a list stays a list: no dash, or a dash at a line start (a bullet)
     assert.equal(P.parseSweepTarget('192.0.2.10 192.0.2.20').addresses.length, 2);
     assert.deepEqual(P.parseSweepTarget('- 192.0.2.10\n- 192.0.2.20').addresses, ['192.0.2.10', '192.0.2.20']);

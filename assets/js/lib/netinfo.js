@@ -216,10 +216,12 @@ export function ipInCidr(ip, cidr) {
   return cidrContains(range, addr);
 }
 
-const PRIVATE_V4 = [
+/** The IPv4 ranges {@link isPrivateIP} holds private (no two of them touch). */
+export const PRIVATE_V4_RANGES = Object.freeze([
   '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
   '172.16.0.0/12', '192.168.0.0/16', '192.0.0.0/24', '198.18.0.0/15'
-].map(parseCidr);
+]);
+const PRIVATE_V4 = PRIVATE_V4_RANGES.map(parseCidr);
 const PRIVATE_V6 = ['::/128', '::1/128', 'fc00::/7', 'fe80::/10'].map(parseCidr);
 
 /**

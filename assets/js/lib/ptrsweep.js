@@ -31,7 +31,7 @@
 import { fetchJson, retry, errorKind, throwIfAborted, uniq, splitList } from './util.js';
 import {
   parseIP, parseCidr, formatIP, normalizeIP, ipVersion, ipInCidr, isPrivateIP, privateRangeOf, reversePtrName,
-  matchProviderByCname, classifyResolution
+  matchProviderByCname, classifyResolution, PRIVATE_V4_RANGES
 } from './netinfo.js';
 import { normalizeHostname, isSubdomainOf, registrableDomain, sortHostnames } from './domain.js';
 import { lookupServers, buildIpIndex, parseInventory, inventoryFormat } from './inventory.js';
@@ -99,6 +99,11 @@ const MAX_ASN = 4294967295;
 const RESERVED_V4 = ['224.0.0.0/4', '240.0.0.0/4'].map(parseCidr);
 /** 224/4 and 240/4 together: the top eighth of IPv4, one contiguous block. */
 const RESERVED_V4_FIRST = parseCidr('224.0.0.0/3').network;
+/** Every IPv4 block {@link skipReason} leaves out, as [first, last] (none of them overlap). */
+const SKIPPED_V4 = [...PRIVATE_V4_RANGES.map((c) => [c, 'private']), ['224.0.0.0/3', 'reserved']].map(([cidr, why]) => {
+  const c = parseCidr(cidr);
+  return { first: c.network, last: c.network + 2n ** BigInt(32 - c.prefix) - 1n, why };
+});
 const MULTICAST_V6 = parseCidr('ff00::/8');
 
 /* ------------------------------------------------------------------------ */
@@ -156,23 +161,59 @@ function wholeBlockSkipped(first, last) {
 }
 
 /**
- * Distinct addresses in a set of blocks: overlapping ones (a network and a smaller one inside
- * it, the same network twice) count once.
+ * The blocks as disjoint spans in address order (IPv4 first): overlapping ones (a network and
+ * a smaller one inside it, the same network twice) and neighbours merge.
+ * @param {Array<{ version: 4|6, first: bigint, count: number }>} blocks
+ * @returns {Array<{ version: 4|6, first: bigint, last: bigint }>}
+ */
+function mergedSpans(blocks) {
+  const sorted = blocks.map((b) => ({ version: b.version, first: b.first, last: b.first + BigInt(b.count) - 1n }))
+    .sort((a, b) => a.version - b.version || (a.first < b.first ? -1 : a.first > b.first ? 1 : 0));
+  const out = [];
+  for (const span of sorted) {
+    const prev = out[out.length - 1];
+    if (prev && prev.version === span.version && span.first <= prev.last + 1n) {
+      if (span.last > prev.last) prev.last = span.last;
+    } else {
+      out.push({ ...span });
+    }
+  }
+  return out;
+}
+
+/**
+ * Distinct addresses in a set of blocks, overlaps counted once.
  * @param {Array<{ version: 4|6, first: bigint, count: number }>} blocks
  * @returns {number}
  */
 function uniqueAddressCount(blocks) {
-  const spans = blocks.map((b) => ({ start: (BigInt(b.version) << 130n) + b.first, count: BigInt(b.count) }))
-    .sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
-  let total = 0n;
-  let end = -1n; // one past the last address counted
-  for (const { start, count } of spans) {
-    const stop = start + count;
-    if (stop <= end) continue;
-    total += stop - (start > end ? start : end);
-    end = stop;
+  return Number(mergedSpans(blocks).reduce((n, s) => n + s.last - s.first + 1n, 0n));
+}
+
+/**
+ * How many distinct addresses of the blocks {@link skipReason} leaves out, by reason, without
+ * listing them (a pasted list of private /22s costs nothing): IPv4 spans are intersected with
+ * the private and reserved blocks, IPv6 ones (exact addresses only) are asked one by one.
+ * @param {Array<{ version: 4|6, first: bigint, count: number }>} blocks
+ * @returns {{ private: number, reserved: number }}
+ */
+function skippedCounts(blocks) {
+  const out = { private: 0n, reserved: 0n };
+  for (const span of mergedSpans(blocks)) {
+    if (span.version === 4) {
+      for (const r of SKIPPED_V4) {
+        const lo = span.first > r.first ? span.first : r.first;
+        const hi = span.last < r.last ? span.last : r.last;
+        if (hi >= lo) out[r.why] += hi - lo + 1n;
+      }
+      continue;
+    }
+    for (let v = span.first; v <= span.last; v += 1n) {
+      const why = skipReason(formatIP(v, 6));
+      if (why) out[why] += 1n;
+    }
   }
-  return Number(total);
+  return { private: Number(out.private), reserved: Number(out.reserved) };
 }
 
 /**
@@ -256,7 +297,7 @@ function parseRange(token) {
  * @property {SweepBlock[]} blocks
  * @property {string[]} addresses what a sweep looks up, input order, de-duplicated (none while an error stands)
  * @property {number} total distinct addresses in the blocks before the private / reserved ones are left out
- * @property {{ private: number, reserved: number }} skipped
+ * @property {{ private: number, reserved: number }} skipped distinct addresses left out (zero while an error stands)
  * @property {SweepIssue[]} issues
  * @property {boolean} ok nothing blocks a sweep (or an AS lookup)
  * @property {string} label short text for the results heading and the share link
@@ -268,21 +309,24 @@ const listText = (items, max = 6) => (items.length > max ? `${items.slice(0, max
 /**
  * One token per address, range, network or AS number: `AS 64496` / `ASN 64496` and a range
  * typed with spaces or an en dash (`192.0.2.10 - 192.0.2.20`, `192.0.2.10–20`) are joined
- * before the text is split.
+ * before the text is split. Two words around a dash are joined only when together they read
+ * as a range: two networks (`192.0.2.0/24 - 198.51.100.0/24`) stay two tokens.
  * @param {string} text
  * @returns {string[]}
  */
 function targetTokens(text) {
   const joined = String(text ?? '')
     .replace(/(^|[\s,;])(ASN?)[ \t]+(\d{1,10})(?=$|[\s,;#])/gim, '$1$2$3')
-    .replace(/([0-9A-Fa-f.:])[ \t]*[-\u2013][ \t]*(?=\d|[0-9A-Fa-f]{1,4}:|::)/g, '$1-');
+    .replace(/([^\s,;#]+)[ \t]*[-\u2013][ \t]*(?=([^\s,;#]+))/g,
+      (whole, left, right) => (parseRange(`${left}-${right}`) ? `${left}-` : whole));
   return splitList(joined);
 }
 
 /**
  * Read what the user typed. Tokens are split on whitespace, commas and semicolons (`#` starts
- * a comment). Every IPv4 network or range must fit the cap on its own, and so must all of
- * them together, overlaps counted once; an error issue then stands and `addresses` stays
+ * a comment). Every IPv4 network or range must fit the cap on its own, and the addresses all
+ * of them together would look up must too (overlaps counted once, the private and reserved
+ * ones left out as they are from the sweep); an error issue then stands and `addresses` stays
  * empty. A network too large and wholly private or reserved says so instead of suggesting a
  * part of it (`params.skipped`); the suggested first /22 is never one with nothing to sweep.
  * @param {string} text
@@ -366,7 +410,9 @@ export function parseSweepTarget(text, { max = SWEEP_MAX_ADDRESSES } = {}) {
     return out;
   }
   out.kind = 'addresses';
-  out.label = out.blocks.length === 1 ? out.blocks[0].label : listText(out.blocks.map((b) => b.label), 3);
+  // The same address or network typed twice is named once.
+  const labels = uniq(out.blocks.map((b) => b.label));
+  out.label = labels.length === 1 ? labels[0] : listText(labels, 3);
   out.total = uniqueAddressCount(out.blocks);
   for (const b of out.blocks) {
     if (b.count > max) {
@@ -377,17 +423,22 @@ export function parseSweepTarget(text, { max = SWEEP_MAX_ADDRESSES } = {}) {
       out.issues.push(issue('too-large', { input: b.label, count: b.count, max, suggestion, kind: b.kind, skipped: skipped || '' }));
     }
   }
-  if (!out.issues.some((i) => i.code === 'too-large') && out.total > max) out.issues.push(issue('over-cap', { count: out.total, max }));
+  if (!out.issues.some((i) => i.code === 'too-large')) {
+    const skipped = skippedCounts(out.blocks);
+    const lookups = out.total - skipped.private - skipped.reserved;
+    if (lookups > max) out.issues.push(issue('over-cap', { count: lookups, max }));
+    else out.skipped = skipped;
+  }
   if (out.issues.some((i) => i.severity === 'error')) return out;
 
   const seen = new Set();
   for (const b of out.blocks) {
+    // A block wholly private or reserved has nothing to list (its addresses are counted above).
+    if (b.version === 4 && wholeBlockSkipped(b.first, b.first + BigInt(b.count) - 1n)) continue;
     for (const ip of addressesFrom(b.first, b.count, b.version)) {
       if (seen.has(ip)) continue;
       seen.add(ip);
-      const why = skipReason(ip);
-      if (why) out.skipped[why] += 1;
-      else out.addresses.push(ip);
+      if (!skipReason(ip)) out.addresses.push(ip);
     }
   }
   if (out.skipped.private) out.issues.push(issue('private', { count: out.skipped.private }));

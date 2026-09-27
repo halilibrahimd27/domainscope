@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
-  ctCrtshIncomplete, focusLoadedCert
+  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData
 } from '../../assets/js/views/cert.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';
@@ -175,6 +175,19 @@ describe('cert view: a certificate from Certificate Transparency', () => {
     assert.equal(load.name, 'shop.wild.example.net');
     assert.equal(load.result.leaf.subjectCN, '*.wild.example.net');
     assert.deepEqual(load.ct, { host: 'shop.wild.example.net', provider: 'certspotter', issuance, precertificate: false, newerPrecertificate: null, truncated: true });
+  });
+
+  test('certTarget: the looked-up host of a CT load, else the first DNS name (a wildcard as its base)', () => {
+    const der = parseCertificates(readFileSync(join(FIX, 'ec_wildcard.pem'))).leaf.der;
+    const ct = ctCertLoad({ host: 'shop.wild.example.net', provider: 'certspotter', der, issuance: null, precertificate: false, newerPrecertificate: null, truncated: false });
+    assert.equal(certTarget(ct), 'shop.wild.example.net');
+    const file = loadCertificateData(readFileSync(join(FIX, 'ec_wildcard.pem')), { name: 'ec_wildcard.pem' });
+    assert.equal(file.result.leaf.hostnames[0], '*.wild.example.net');
+    assert.equal(certTarget(file), 'wild.example.net');
+    const sample = loadCertificateData(readFileSync(join(FIX, '..', '..', 'assets', 'data', 'sample-cert.pem'), 'utf8'), { source: 'sample' });
+    assert.equal(certTarget(sample), 'example.com');
+    assert.equal(certTarget(loadCertificateData('not a certificate')), null, 'no leaf');
+    assert.equal(certTarget(null), null);
   });
 
   test('dnDisplayName: "O (CN)" of a crt.sh issuer', () => {

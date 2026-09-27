@@ -17,7 +17,9 @@
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
- * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`) runs on open.
+ * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`) runs on open; with
+ *   `run=0` (a name carried over from another tool, lib/session.js) it is only filled in. The
+ *   finished check is kept for the page session (`result()` / `snapshot()`).
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -33,6 +35,7 @@ import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { mergeSignals } from '../lib/util.js';
+import { isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/global`). */
 export const id = 'global';
@@ -1260,6 +1263,7 @@ export function mount(container, ctx) {
     const type = GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A';
     const geo = geoField.checked;
     ctx.setParams({ name, type, geo: geo ? null : '0' });
+    ctx.runStarted(name);
     await runCheck(name, type, geo);
   }
 
@@ -1277,7 +1281,7 @@ export function mount(container, ctx) {
       renderTimer = null;
     }
     const rows = makeRows(geo);
-    current = { name, type, geo, rows, rowByKey: new Map(rows.map((r) => [r.key, r])), ips: new Map(), controller: null, done: false, cancelled: false };
+    current = { name, type, geo, rows, rowByKey: new Map(rows.map((r) => [r.key, r])), ips: new Map(), controller: null, done: false, cancelled: false, finishedAt: null };
     filterKey = null;
     groups = [];
     groupByKey = new Map();
@@ -1333,6 +1337,7 @@ export function mount(container, ctx) {
     } finally {
       if (current === run) {
         run.controller = null;
+        run.finishedAt = new Date();
         if (!ctx.signal.aborted) setRunning(false);
       }
     }
@@ -1353,6 +1358,7 @@ export function mount(container, ctx) {
     for (const item of snap.items) applyItem(item);
     current.done = !!snap.done;
     current.cancelled = !snap.done;
+    current.finishedAt = snap.at ? new Date(snap.at) : new Date();
     if (renderTimer) {
       clearTimeout(renderTimer);
       renderTimer = null;
@@ -1364,8 +1370,9 @@ export function mount(container, ctx) {
   /* --- initial state --------------------------------------------------------- */
   if (restored && Array.isArray(restored.items) && restored.items.length && restored.name) {
     restore(restored);
-  } else if (!restored && initialName) {
-    // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
+  } else if (!restored && initialName && !isFillOnly(ctx.params)) {
+    // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
+    // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start());
   }
 
@@ -1380,11 +1387,28 @@ export function mount(container, ctx) {
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
         key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix
       }));
-      return { name: current.name, type: current.type, geo: current.geo, items, done: current.done };
+      return { name: current.name, type: current.type, geo: current.geo, items, done: current.done, at: current.finishedAt };
+    },
+    result() {
+      if (!current || current.controller || !current.finishedAt || !current.rows.some((r) => !r.pending)) return null;
+      return { subject: current.name, at: current.finishedAt };
+    },
+    rerun() {
+      if (current) {
+        nameField.value = current.name;
+        typeField.value = current.type;
+        geoField.checked = current.geo;
+      }
+      start();
     },
     update(params) {
       const name = params.name || '';
       if (!name) return false;
+      if (isFillOnly(params)) {
+        // A carried-over name fills an empty box and queries nothing.
+        if (!nameField.value.trim()) nameField.value = name;
+        return true;
+      }
       nameField.value = name;
       const type = String(params.type || 'A').toUpperCase();
       typeField.value = GLOBAL_TYPES.includes(type) ? type : 'A';
@@ -1402,11 +1426,25 @@ export function unmount() {
 }
 
 /**
- * State carried over a language re-mount: the query and the answers received (no re-query).
+ * State carried over a language re-mount and kept for the next visit: the query and the answers
+ * received (no re-query).
  * @returns {object|null}
  */
 export function snapshot() {
   return active ? active.snapshot() : null;
+}
+
+/**
+ * The finished (or stopped) check on screen (kept by the shell when the view is left), or null.
+ * @returns {{ subject: string, at: Date }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: the same name, type and locations again. */
+export function rerun() {
+  if (active) active.rerun();
 }
 
 /**
@@ -1418,4 +1456,4 @@ export function update(params) {
   return active ? active.update(params) : false;
 }
 
-export default { id, titleKey, icon, mount, unmount, snapshot, update };
+export default { id, titleKey, icon, mount, unmount, snapshot, result, rerun, update };

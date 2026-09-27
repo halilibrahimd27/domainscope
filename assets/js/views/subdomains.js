@@ -35,7 +35,8 @@
  * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
- * reload or a restored tab pre-fills the box instead of silently scanning again.
+ * reload or a restored tab pre-fills the box instead of silently scanning again. A domain carried
+ * over from another tool (`run=0`, lib/session.js) fills the box only while it is empty.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
@@ -58,6 +59,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
+import { isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
 import { toCsv, toJson, scanHostRows } from '../lib/export.js';
@@ -2892,7 +2894,8 @@ export function mount(container, ctx) {
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeTargets(ctx.searchParams, ctx.params);
-  if (fromRoute.length) session.text = fromRoute.join(', ');
+  // A domain carried over from another tool (`run=0`) never replaces what the box holds.
+  if (fromRoute.length && !(isFillOnly(ctx.params) && session.text.trim())) session.text = fromRoute.join(', ');
 
   /* --- Zone File hand-off ------------------------------------------------------ */
   // A one-shot intent from the Zone File view ("Scan now"): pre-fill the zone's domain, preset how
@@ -3739,6 +3742,7 @@ export function mount(container, ctx) {
     // Only `domain`: a reload or a restored tab pre-fills the box instead of scanning again
     // (the header's "Copy link" adds `run=1` for a shared link).
     ctx.setParams({ domain: v.domains.join(',') });
+    ctx.runStarted(v.domains[0]);
     attach(run);
     startRun(run, {
       domains: v.domains,
@@ -3780,6 +3784,15 @@ export function mount(container, ctx) {
     renderHeaderActions();
   }
 
+  /** Scan the last run's domains again (the header's Re-run and the kept-result note's "Run again"). */
+  function rerunLast() {
+    const run = session.run;
+    if (!run || isRunning()) return;
+    domainField.value = run.config.domains.join(', ');
+    session.text = domainField.value;
+    start();
+  }
+
   function renderHeaderActions() {
     const run = session.run;
     if (!run) {
@@ -3791,12 +3804,7 @@ export function mount(container, ctx) {
       CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }),
       Button({
         label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'sub-rerun' }, disabled: run.status === 'running',
-        onClick: () => {
-          if (isRunning()) return;
-          domainField.value = run.config.domains.join(', ');
-          session.text = domainField.value;
-          start();
-        }
+        onClick: rerunLast
       }));
   }
 
@@ -3852,6 +3860,7 @@ export function mount(container, ctx) {
     applyParams(params) {
       const list = routeTargets(new URLSearchParams(params), params);
       if (!list.length) return;
+      if (isFillOnly(params) && domainField.value.trim()) return;
       domainField.value = list.join(', ');
       session.text = domainField.value;
       domainField.setError(null);
@@ -3863,6 +3872,7 @@ export function mount(container, ctx) {
       if (linkAction(params, list, session.run) === 'prompt') showLinkPrompt(list);
       else hideLinkPrompt();
     },
+    rerun: rerunLast,
     // A finished background scan grew the learned store: refresh the count + plan live.
     refreshLearned() {
       renderLearned();
@@ -3894,7 +3904,23 @@ export function update(params) {
 /** Nothing else to clean up (mount returns its own cleanup; a running scan continues). */
 export function unmount() {}
 
-export default { id, titleKey, icon, mount, unmount, update };
+/**
+ * The page's last scan once it has ended (done, cancelled or failed), or null while none has or
+ * one runs. It stays in this module, so the shell keeps only the fact (lib/session.js).
+ * @returns {{ subject: string, at: Date }|null}
+ */
+export function result() {
+  const run = session.run;
+  if (!run || run.status === 'running' || !run.finishedAt) return null;
+  return { subject: run.config.domains.join(', '), at: run.finishedAt };
+}
+
+/** "Run again" of the kept-result note: scan the last run's domains again. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 
 /* ------------------------------------------------------------------------ */
 /* Run UI: progress + results                                               */

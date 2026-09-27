@@ -9,6 +9,8 @@
  *
  * Shareable: `#/lookup?name=example.com&type=MX` (type may repeat or be comma-separated;
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
+ * With `run=0` (a name carried over from another tool, lib/session.js) the form is only filled
+ * in. The finished answers are kept for the page session (`result()` / `snapshot()`).
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -25,6 +27,7 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { CAA_ISSUERS } from '../lib/health.js';
 import { mergeSignals } from '../lib/util.js';
+import { isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/lookup`). */
 export const id = 'lookup';
@@ -1171,6 +1174,7 @@ export function mount(container, ctx) {
     }
     ctx.setParams({ name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null });
     setShareAction();
+    ctx.runStarted(q.input);
     run(q);
   }
 
@@ -1206,10 +1210,14 @@ export function mount(container, ctx) {
         !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null)));
   }
 
-  async function run(q, preset = null) {
+  /**
+   * Query every type of `q`, or show `preset` answers (a kept or re-mounted run: no network) with
+   * the time the run finished and took.
+   */
+  async function run(q, preset = null, { at = null, elapsed = null } = {}) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null };
+    const state = { q, controller, responses: new Array(q.types.length).fill(null), startedAt: performance.now(), elapsed: null, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -1222,7 +1230,10 @@ export function mount(container, ctx) {
       if (current !== state) return;
       state.responses[i] = response;
       cards[i].set(response);
-      if (state.responses.every(Boolean)) state.elapsed = performance.now() - state.startedAt;
+      if (state.responses.every(Boolean)) {
+        state.elapsed = preset ? elapsed : performance.now() - state.startedAt;
+        state.finishedAt = preset && at ? new Date(at) : new Date();
+      }
       renderSummary(q, state.responses, state.elapsed);
     };
 
@@ -1261,11 +1272,25 @@ export function mount(container, ctx) {
 
   /* --- initial state ------------------------------------------------------------------ */
   if (restored && restored.q && Array.isArray(restored.responses)) {
-    run(restored.q, restored.responses);
+    run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed });
     setShareAction();
-  } else if (!restored && params.name) {
-    // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
+  } else if (!restored && params.name && !isFillOnly(ctx.params)) {
+    // Shared link: run immediately. A re-mounted draft (typed, never run) or a name carried over
+    // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start());
+  }
+
+  /** Fill the form from route-style params (`name`, `type`, `resolver`, `dnssec`, `cd`). */
+  function fillForm(next) {
+    nameField.value = next.name;
+    const types = parseTypes(String(next.type || '').split(',')).types;
+    if (types.length) {
+      typeGroup.values = types.filter((x) => known.has(x));
+      otherField.value = types.filter((x) => !known.has(x)).join(', ');
+    }
+    resolverField.value = getResolver(next.resolver) ? next.resolver : '';
+    dnssecField.checked = next.dnssec === '1';
+    cdField.checked = next.cd === '1';
   }
 
   active = {
@@ -1281,19 +1306,25 @@ export function mount(container, ctx) {
         cd: cdField.checked
       };
       if (!current || current.controller) return { form };
-      return { form, q: current.q, responses: current.responses };
+      return { form, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
+    },
+    result() {
+      if (!current || current.controller || !current.finishedAt) return null;
+      return { subject: current.q.input, at: current.finishedAt };
+    },
+    rerun() {
+      const q = current && current.q;
+      if (q) fillForm({ name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : '', cd: q.cd ? '1' : '' });
+      start();
     },
     update(next) {
       if (!next.name) return false;
-      nameField.value = next.name;
-      const types = parseTypes(String(next.type || '').split(',')).types;
-      if (types.length) {
-        typeGroup.values = types.filter((x) => known.has(x));
-        otherField.value = types.filter((x) => !known.has(x)).join(', ');
+      if (isFillOnly(next)) {
+        // A carried-over name fills an empty box and queries nothing.
+        if (!nameField.value.trim()) nameField.value = next.name;
+        return true;
       }
-      resolverField.value = getResolver(next.resolver) ? next.resolver : '';
-      dnssecField.checked = next.dnssec === '1';
-      cdField.checked = next.cd === '1';
+      fillForm(next);
       start();
       return true;
     }
@@ -1307,11 +1338,24 @@ export function unmount() {
 }
 
 /**
- * Form + finished results carried over a language re-mount.
+ * Form + finished results carried over a language re-mount and kept for the next visit.
  * @returns {object|null}
  */
 export function snapshot() {
   return active ? active.snapshot() : null;
+}
+
+/**
+ * The finished answers on screen (kept by the shell when the view is left), or null.
+ * @returns {{ subject: string, at: Date }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: the same query again. */
+export function rerun() {
+  if (active) active.rerun();
 }
 
 /**
@@ -1323,4 +1367,4 @@ export function update(params) {
   return active ? active.update(params) : false;
 }
 
-export default { id, titleKey, icon, mount, unmount, snapshot, update };
+export default { id, titleKey, icon, mount, unmount, snapshot, result, rerun, update };

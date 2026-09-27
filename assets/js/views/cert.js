@@ -17,6 +17,12 @@
  * (assets/data/sample-cert.pem); CertSourceNote says where such a certificate came from.
  * The loaded certificate is shared between the two views for the session through
  * `state.session.currentCert` (a {@link CertLoad}); it is never persisted or uploaded.
+ *
+ * Page session (lib/session.js): loading a certificate makes its name the current target
+ * ({@link certTarget}); `#/cert?host=example.com&run=0` (a host carried over from another tool)
+ * fills the "No file?" field while it is empty, and loading still takes a click. Coming back
+ * shows the loaded certificate with a "Result from <time>" note whose "Run again" checks its CAA
+ * and CT again.
  */
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
@@ -787,6 +793,21 @@ export function setCurrentCert(appState, load) {
   stopCtLookup();
   if (load) ctForm.last = null;
   appState.setSession(CURRENT_CERT, load || undefined);
+}
+
+/**
+ * What a loaded certificate is about, as the page session's current target: the host name a
+ * Certificate Transparency load was asked for, else the leaf's first DNS name (a wildcard as
+ * its base name); null without a leaf or a name.
+ * @param {CertLoad|null} load
+ * @returns {string|null}
+ */
+export function certTarget(load) {
+  const leaf = load && load.result ? load.result.leaf : null;
+  if (!leaf) return null;
+  if (load.source === 'ct' && load.ct && load.ct.host) return stripWildcard(load.ct.host).base;
+  const names = Array.isArray(leaf.hostnames) ? leaf.hostnames : [];
+  return names.length ? stripWildcard(names[0]).base : null;
 }
 
 /**
@@ -1642,6 +1663,8 @@ const daneHolders = new Map();
 /** View state that survives navigation and language re-mounts. */
 const viewState = { key: null, selected: 0, tab: 'names' };
 let teardown = null;
+/** The mounted view's page-session hooks ({@link result}, {@link rerun}); null while another tool is shown. */
+let active = null;
 
 /**
  * Start (or join) a cached async task. Every panel showing the running entry registers a
@@ -1700,6 +1723,9 @@ function linkList(urls) {
 export function mount(container, ctx) {
   const { state } = ctx;
   let load = getCurrentCert(state);
+  // A host name carried over from another tool fills the "No file?" field while it is empty.
+  const carried = normalizeCtHost(ctx.params.host || '');
+  if (carried && !ctForm.text.trim()) ctForm.text = carried;
 
   const loaderHost = h('div');
   // The certificate's tabs are no part of a loader's form: Ctrl/Cmd+Enter there submits nothing.
@@ -1709,6 +1735,9 @@ export function mount(container, ctx) {
   function setLoad(next, { announce = true } = {}) {
     load = next;
     setCurrentCert(state, next);
+    ctx.runStarted(certTarget(next));
+    // A carried-over host name (`?host=…&run=0`) has done its job once a certificate is chosen.
+    if (ctx.params.host) ctx.setParams({});
     if (next && next.result.leaf) {
       const key = certKey(next.result.leaf);
       if (viewState.key !== key) {
@@ -2494,12 +2523,44 @@ export function mount(container, ctx) {
     off();
     disposeDane();
   };
+  active = {
+    result() {
+      return load && load.result.leaf ? { subject: certTarget(load), at: load.loadedAt } : null;
+    },
+    // Check CAA and CT of this certificate again: the cached answers go, the open tab asks anew.
+    rerun() {
+      if (!load || !load.result.leaf) return;
+      for (const cert of load.result.certificates) {
+        for (const cache of [caaCache, ctCache]) {
+          const entry = cache.get(certKey(cert));
+          if (entry && entry.status !== 'running') cache.delete(certKey(cert));
+        }
+      }
+      ctx.runStarted(certTarget(load));
+      render();
+    }
+  };
 }
 
 /** Stop listening for session changes. */
 export function unmount() {
   if (teardown) teardown();
   teardown = null;
+  active = null;
 }
 
-export default { id, titleKey, icon, mount, unmount };
+/**
+ * The loaded certificate (it stays in `state.session.currentCert`, so the shell keeps only the
+ * fact, lib/session.js), or null.
+ * @returns {{ subject: string|null, at: Date }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: check the certificate's CAA and CT again. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, result, rerun };

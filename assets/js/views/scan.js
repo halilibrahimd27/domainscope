@@ -56,6 +56,7 @@ import {
 import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
 import { errorKind, splitList } from '../lib/util.js';
+import { isFillOnly } from '../lib/session.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
@@ -1381,7 +1382,9 @@ export function mount(container, ctx) {
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeDomains(ctx.searchParams, ctx.params);
-  if (fromRoute.length) {
+  // A domain carried over from another tool (`run=0`, lib/session.js) never replaces what step 2
+  // holds (typed, or filled from the certificate).
+  if (fromRoute.length && !(isFillOnly(ctx.params) && session.domainsText.trim())) {
     session.domainsText = fromRoute.join('\n');
     session.domainsFromCert = false;
   }
@@ -2177,6 +2180,7 @@ export function mount(container, ctx) {
     session.run = run;
     hideLinkPrompt();
     ctx.setParams(v.domains.length ? { domain: v.domains.join(',') } : {});
+    ctx.runStarted(shownDomains[0] || null);
     attach(run);
     startRun(run, {
       domains: v.domains,
@@ -2225,9 +2229,13 @@ export function mount(container, ctx) {
     refreshVocab() {
       renderVocab();
     },
+    // "Run again" of the kept-result note: the form as it is (the Run again button's action).
+    rerun() {
+      start();
+    },
     applyParams(p, sp) {
       const list = routeDomains(sp, p);
-      if (list.length) {
+      if (list.length && !(isFillOnly(p) && domainsField.value.trim())) {
         session.domainsText = list.join('\n');
         session.domainsFromCert = false;
         domainsField.value = session.domainsText;
@@ -2264,7 +2272,23 @@ export function update(params, ctx) {
 /** Nothing else to clean up (mount returns its own cleanup; a running scan continues). */
 export function unmount() {}
 
-export default { id, titleKey, icon, mount, unmount, update };
+/**
+ * The page's last scan once it has ended, or null while none has or one runs. It stays in this
+ * module, so the shell keeps only the fact (lib/session.js).
+ * @returns {{ subject: string|null, at: Date }|null}
+ */
+export function result() {
+  const run = session.run;
+  if (!run || run.status === 'running' || !run.finishedAt) return null;
+  return { subject: run.config.domains.join(', ') || null, at: run.finishedAt };
+}
+
+/** "Run again" of the kept-result note: start a scan with the form as it is. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 
 /* ------------------------------------------------------------------------ */
 /* Run UI: progress + results                                               */

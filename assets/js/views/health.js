@@ -18,7 +18,9 @@
  *   result belongs to the report on screen: a language switch keeps it (a fetch in flight goes
  *   on polling its paid measurement), a new check drops it, and "Report (JSON)" carries it.
  *
- * Shareable: `#/health?domain=example.com` (also `name=`) runs on open.
+ * Shareable: `#/health?domain=example.com` (also `name=`) runs on open; with `run=0` (a domain
+ * carried over from another tool, lib/session.js) it is only filled in. The finished report is
+ * kept for the page session (`result()` / `snapshot()`): coming back shows it without a new check.
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -43,6 +45,7 @@ import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { errorKind, mergeSignals, splitList } from '../lib/util.js';
+import { isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/health`). */
 export const id = 'health';
@@ -1309,6 +1312,7 @@ export function mount(container, ctx) {
     const extra = parseSelectors(selectorsField.value);
     ctx.setParams({ domain, selectors: extra.length ? extra.join(',') : null });
     setShareAction();
+    ctx.runStarted(domain);
     run(domain, extra);
   }
 
@@ -1316,7 +1320,7 @@ export function mount(container, ctx) {
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     const controller = new AbortController();
-    const state = { domain, controller, report: null, selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null };
+    const state = { domain, controller, report: null, finishedAt: null, selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null };
     current = state;
     clear(errorEl);
     progress.el.hidden = false;
@@ -1339,6 +1343,7 @@ export function mount(container, ctx) {
       });
       if (current !== state) return;
       state.report = report;
+      state.finishedAt = new Date();
       progress.done(`${t('common.done')} · ${formatDuration(performance.now() - startedAt)}`);
       renderReport(report);
       setTimeout(() => { if (current === state) progress.el.hidden = true; }, 1200);
@@ -1360,13 +1365,15 @@ export function mount(container, ctx) {
     const policy = restored.policy && restored.policy.domain === restored.report.domain ? restored.policy : null;
     current = {
       domain: restored.report.domain, controller: null, report: restored.report, selectorCount: restored.selectorCount,
+      finishedAt: restored.at ? new Date(restored.at) : new Date(),
       policy: policy && policy.status !== 'running' ? policy : null
     };
     renderReport(restored.report);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
     if (policy && policy.status === 'running') checkPolicy(policy);
-  } else if (!restored && initialDomain) {
-    // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
+  } else if (!restored && initialDomain && !isFillOnly(ctx.params)) {
+    // Shared link: run immediately. A re-mounted draft (typed, never run) or a domain carried over
+    // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start());
   }
   if (restored && restored.report) setShareAction();
@@ -1389,13 +1396,26 @@ export function mount(container, ctx) {
         selectors: selectorsField.value,
         filter,
         report,
+        at: report ? current.finishedAt : null,
         selectorCount: current ? current.selectorCount : null,
         policy
       };
     },
+    result() {
+      return current && !current.controller && current.report ? { subject: current.report.domain, at: current.finishedAt } : null;
+    },
+    rerun() {
+      if (current && current.report) domainField.value = current.report.domain;
+      start();
+    },
     update(params) {
       const domain = params.domain || params.name;
       if (!domain) return false;
+      if (isFillOnly(params)) {
+        // A carried-over domain fills an empty box and runs nothing.
+        if (!domainField.value.trim()) domainField.value = domain;
+        return true;
+      }
       domainField.value = domain;
       if (params.selectors !== undefined) selectorsField.value = params.selectors;
       start();
@@ -1411,11 +1431,24 @@ export function unmount() {
 }
 
 /**
- * Form + finished report carried over a language re-mount (no re-check).
+ * Form + finished report carried over a language re-mount and kept for the next visit (no re-check).
  * @returns {object|null}
  */
 export function snapshot() {
   return active ? active.snapshot() : null;
+}
+
+/**
+ * The finished report on screen (kept by the shell when the view is left), or null.
+ * @returns {{ subject: string, at: Date }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: check the report's domain again. */
+export function rerun() {
+  if (active) active.rerun();
 }
 
 /**
@@ -1427,4 +1460,4 @@ export function update(params) {
   return active ? active.update(params) : false;
 }
 
-export default { id, titleKey, icon, mount, unmount, snapshot, update };
+export default { id, titleKey, icon, mount, unmount, snapshot, result, rerun, update };

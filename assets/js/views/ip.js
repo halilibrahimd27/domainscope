@@ -8,7 +8,10 @@
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
  * leave the browser. Results stream into the table; CSV/JSON export.
  *
- * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open.
+ * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
+ * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
+ * The finished rows are kept for the page session (`result()` / `snapshot()`); coming back
+ * matches them against the servers as they are then.
  */
 
 import { h, clear } from '../ui/dom.js';
@@ -23,6 +26,7 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
 import { mergeSignals, splitList } from '../lib/util.js';
+import { commonTarget, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/ip`). */
 export const id = 'ip';
@@ -570,6 +574,9 @@ export function mount(container, ctx) {
   /* --- run -------------------------------------------------------------------------------- */
   let current = null;
 
+  /** The user's servers with this address (the inventory as it is now). */
+  const serversOf = (ip) => lookupServers([ip], ctx.getInventoryIndex()).map((m) => m.server);
+
   function makeRow(ip) {
     return {
       ip,
@@ -577,7 +584,7 @@ export function mount(container, ctx) {
       info: null,
       pending: true,
       classification: classifyIp(ip),
-      servers: lookupServers([ip], ctx.getInventoryIndex()).map((m) => m.server),
+      servers: serversOf(ip),
       reverse: null
     };
   }
@@ -626,7 +633,9 @@ export function mount(container, ctx) {
     const tokens = [...parsed.ips, ...parsed.hosts];
     ctx.setParams({ ips: tokens.length <= 40 ? tokens.join(',') : null });
     setShareAction();
-    run(parsed);
+    const one = commonTarget(tokens);
+    ctx.runStarted(one ? one.value : null);
+    run(parsed, null, { text: input.value });
   }
 
   /**
@@ -638,10 +647,15 @@ export function mount(container, ctx) {
     else ctx.setActions();
   }
 
-  async function run(parsed, preset = null) {
+  /**
+   * Look up every address of `parsed`, or show `preset` rows (a kept or re-mounted run: no
+   * network, the servers matched again). `text`: the input the run was made from; `at`: when a
+   * preset run finished.
+   */
+  async function run(parsed, preset = null, { text = '', at = null } = {}) {
     if (current && current.controller) current.controller.abort();
     const controller = new AbortController();
-    const state = { controller, rows: [], stopped: false };
+    const state = { controller, rows: [], stopped: false, text, finishedAt: null };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
@@ -651,10 +665,11 @@ export function mount(container, ctx) {
     table.setRows([]);
 
     if (preset) {
-      state.rows = preset;
-      table.setRows(preset);
-      renderStats(preset);
+      state.rows = preset.map((r) => ({ ...r, servers: serversOf(r.ip) }));
+      table.setRows(state.rows);
+      renderStats(state.rows);
       state.controller = null;
+      state.finishedAt = at ? new Date(at) : new Date();
       return;
     }
 
@@ -735,6 +750,7 @@ export function mount(container, ctx) {
     } finally {
       if (current === state) {
         state.controller = null;
+        state.finishedAt = new Date();
         for (const row of state.rows) {
           if (row.pending) {
             row.pending = false;
@@ -767,9 +783,12 @@ export function mount(container, ctx) {
 
   /* --- initial state ---------------------------------------------------------------- */
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
-    run(parseIpInput(restored.text || ''), restored.rows);
+    const text = restored.query ?? restored.text ?? '';
+    run(parseIpInput(text), restored.rows, { text, at: restored.at });
     setShareAction();
-  } else if (paramText) {
+  } else if (paramText && !isFillOnly(ctx.params)) {
+    // Shared link: run immediately; an address carried over from another tool (`run=0`) only
+    // fills the box.
     Promise.resolve().then(() => start());
   }
 
@@ -783,11 +802,31 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => (r.reverse && r.reverse.state === 'loading' ? { ...r, reverse: null } : r))
         : null;
-      return { text: input.value, rows };
+      return { text: input.value, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null };
+    },
+    result() {
+      if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;
+      const one = commonTarget(current.rows.map((r) => r.ip));
+      return { subject: one ? one.value : current.rows[0].ip, at: current.finishedAt };
+    },
+    rerun() {
+      if (current && current.text) {
+        input.value = current.text;
+        updateParsed();
+      }
+      start();
     },
     update(params) {
       const text = [params.ips, params.ip, params.q].filter(Boolean).join('\n');
       if (!text) return false;
+      if (isFillOnly(params)) {
+        // A carried-over address fills an empty box and looks nothing up.
+        if (!input.value.trim()) {
+          input.value = splitList(text).join('\n');
+          updateParsed();
+        }
+        return true;
+      }
       input.value = splitList(text).join('\n');
       updateParsed();
       start();
@@ -803,11 +842,24 @@ export function unmount() {
 }
 
 /**
- * Input text and finished rows carried over a language re-mount.
+ * Input text and finished rows carried over a language re-mount and kept for the next visit.
  * @returns {object|null}
  */
 export function snapshot() {
   return active ? active.snapshot() : null;
+}
+
+/**
+ * The finished rows on screen (kept by the shell when the view is left), or null.
+ * @returns {{ subject: string, at: Date }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: the same addresses again. */
+export function rerun() {
+  if (active) active.rerun();
 }
 
 /**
@@ -819,4 +871,4 @@ export function update(params) {
   return active ? active.update(params) : false;
 }
 
-export default { id, titleKey, icon, mount, unmount, snapshot, update };
+export default { id, titleKey, icon, mount, unmount, snapshot, result, rerun, update };

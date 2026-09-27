@@ -29,6 +29,7 @@ import { lookupServers } from '../lib/inventory.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
+import { commonTarget, isFillOnly } from '../lib/session.js';
 
 /** Route id. */
 export const id = 'bulk';
@@ -739,7 +740,8 @@ export function mount(container, ctx) {
   // every value or that one — never both (that listed each name twice → "N duplicates removed").
   const routeNames = ctx.searchParams && ctx.searchParams.getAll ? ctx.searchParams.getAll('names') : [ctx.params.names || ''];
   const fromRoute = splitList(routeNames.join('\n'));
-  if (fromRoute.length) session.text = fromRoute.join('\n');
+  // A name carried over from another tool (`run=0`, lib/session.js) never replaces a pasted list.
+  if (fromRoute.length && !(isFillOnly(ctx.params) && session.text && session.text.trim())) session.text = fromRoute.join('\n');
   if (session.text === null) session.text = '';
 
   /* --- input ------------------------------------------------------------------------ */
@@ -916,6 +918,8 @@ export function mount(container, ctx) {
       starting = false;
     }
     if (ctx.signal.aborted) return;
+    const one = commonTarget(parsed.names);
+    ctx.runStarted(one ? one.value : null);
     const job = createJob(parsed.names.slice(), { ...options });
     job.inventoryServers = state.inventory.servers.length;
     session.job = job;
@@ -945,9 +949,13 @@ export function mount(container, ctx) {
   }
 
   active = {
+    rerun() {
+      start();
+    },
     applyParams(p) {
       const list = splitList(p.names || '');
       if (!list.length) return;
+      if (isFillOnly(p) && area.value.trim()) return;
       area.value = list.join('\n');
       session.text = area.value;
       renderParse();
@@ -976,7 +984,24 @@ export function update(params) {
 /** Nothing else to clean up (a running job continues in the background). */
 export function unmount() {}
 
-export default { id, titleKey, icon, mount, unmount, update };
+/**
+ * The page's last job once it has ended, or null while none has or one runs. It stays in this
+ * module, so the shell keeps only the fact (lib/session.js).
+ * @returns {{ subject: string|null, at: Date }|null}
+ */
+export function result() {
+  const job = session.job;
+  if (!job || job.status === 'running' || !job.finishedAt) return null;
+  const one = commonTarget(job.names);
+  return { subject: one ? one.value : job.names[0] || null, at: job.finishedAt };
+}
+
+/** "Run again" of the kept-result note: resolve the list in the box again. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 
 /* ------------------------------------------------------------------------ */
 /* Job UI                                                                   */

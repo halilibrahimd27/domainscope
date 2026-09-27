@@ -1248,7 +1248,7 @@ export function mount(container, ctx) {
    * The "No records: AAAA, CAA, …" line of the summary: the NODATA types in one place (their
    * negative-caching time and raw answers one click away), instead of a card each.
    */
-  function noRecordsLine(q, responses, types, open = false) {
+  function noRecordsLine(q, responses, types, { open = false, rawOpen = false } = {}) {
     const list = types.map((type) => responses[q.types.indexOf(type)]).filter(Boolean);
     const neg = list.length ? negativeTtl(list[0]) : null;
     return h('div', { class: 'lkp-nodata', dataset: { types: types.join(' ') } },
@@ -1260,9 +1260,12 @@ export function mount(container, ctx) {
         open,
         children: h('div', { class: 'stack-sm' },
           h('p', { class: 'text-sm lkp-nodata-body' }, [t('lkp.noRecordsBody'), neg].filter(Boolean).join(' ')),
-          Disclosure({ summary: t('lkp.card.raw'), className: 'lkp-raw', children: CodeBlock(list.map(responseText).join('\n\n'), { wrap: true }) }))
+          Disclosure({ summary: t('lkp.card.raw'), className: 'lkp-raw', open: rawOpen, children: CodeBlock(list.map(responseText).join('\n\n'), { wrap: true }) }))
       }));
   }
+
+  /** The keyboard-reachable elements of `root`, in document order. */
+  const focusablesOf = (root) => [...root.querySelectorAll('summary, button, a[href], [tabindex]')];
 
   /* --- run --------------------------------------------------------------------------- */
   let current = null;
@@ -1372,35 +1375,46 @@ export function mount(container, ctx) {
    * @param {number|null} elapsed
    * @param {Date|null} at when the last answer arrived
    */
+  /** The summary card of the current lookup, updated in place by {@link renderSummary}. */
+  let summaryParts = null;
+
+  /**
+   * Draw the summary card, again on every answer and Retry. In place: the card's header facts are
+   * redrawn, while its actions (the same for the whole lookup) and a "No records" line whose types
+   * did not change are kept as they are, so what the user opened there (the raw answer inside it
+   * too) and the keyboard focus stay. A line whose types changed is drawn anew with the same open
+   * state and focus.
+   */
   function renderSummary(q, responses, elapsed, at, layout = lookupLayout(q.types, responses)) {
-    // A "No records" line the user opened stays open while later answers (or a Retry) redraw the summary.
-    const openBefore = !!summaryEl.querySelector('.lkp-nodata-box[open]');
-    clear(summaryEl);
     clear(noteEl);
     if (q.ptrFor) noteEl.append(Alert({ variant: 'info', compact: true, icon: 'info', message: t('lkp.ptrNote', { name: q.name }) }));
     const total = responses.reduce((n, r) => n + (r && r.ok ? r.answers.filter((rr) => rr.type === r.type).length : 0), 0);
     const failed = responses.filter((r) => r && !r.ok).length;
     const done = responses.filter(Boolean).length;
     const resolverLabel = q.resolver ? resolverName(q.resolver) : t('lkp.resolverAuto', { chain: chainNames });
-    const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
     // Said once for every answer (lib/density.js): who answered, its PoP and the header flags.
     const shared = layout.shared;
-    summaryEl.append(h('div', { class: 'lkp-sum card' },
-      h('div', { class: 'lkp-sum-main' },
-        h('div', { class: 'lkp-sum-name mono' }, q.input),
-        h('div', { class: 'lkp-sum-meta' },
-          h('span', null, t('lkp.sum.types', { count: q.types.length })),
-          h('span', null, t('lkp.sum.records', { count: total })),
-          failed ? h('span', { class: 'lkp-sum-failed' }, SeverityIcon('error'), ' ', `${formatNumber(failed)} × ${t('lkp.card.failed')}`) : null,
-          shared.resolver
-            ? h('span', { class: 'lkp-sum-resolver', dataset: { resolver: shared.resolver } }, t('lkp.sum.answeredBy', { resolver: resolverName(shared.resolver) }))
-            : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
-          shared.nsid ? h('span', { class: 'mono lkp-pop', title: shared.nsid }, t('lkp.card.pop', { id: shared.nsid })) : null,
-          Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
-          q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
-          q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
-        shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null),
-      h('div', { class: 'lkp-sum-actions cluster' },
+    const main = h('div', { class: 'lkp-sum-main' },
+      h('div', { class: 'lkp-sum-name mono' }, q.input),
+      h('div', { class: 'lkp-sum-meta' },
+        h('span', null, t('lkp.sum.types', { count: q.types.length })),
+        h('span', null, t('lkp.sum.records', { count: total })),
+        failed ? h('span', { class: 'lkp-sum-failed' }, SeverityIcon('error'), ' ', `${formatNumber(failed)} × ${t('lkp.card.failed')}`) : null,
+        shared.resolver
+          ? h('span', { class: 'lkp-sum-resolver', dataset: { resolver: shared.resolver } }, t('lkp.sum.answeredBy', { resolver: resolverName(shared.resolver) }))
+          : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
+        shared.nsid ? h('span', { class: 'mono lkp-pop', title: shared.nsid }, t('lkp.card.pop', { id: shared.nsid })) : null,
+        Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
+        q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
+        q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
+      shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null);
+    const types = layout.noRecords.join(' ');
+
+    const prev = summaryParts && summaryParts.q === q && summaryParts.card.isConnected ? summaryParts : null;
+    if (!prev) {
+      // A new lookup: everything drawn anew, its "No records" line closed.
+      const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
+      const actions = h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
         SummaryButton({
           kind: 'lookup',
@@ -1410,8 +1424,30 @@ export function mount(container, ctx) {
         }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
-        !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null),
-      layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords, openBefore) : null));
+        !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null);
+      const line = layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords) : null;
+      const card = h('div', { class: 'lkp-sum card' }, main, actions, line);
+      clear(summaryEl);
+      summaryEl.append(card);
+      summaryParts = { q, card, main, line, types };
+      return;
+    }
+    prev.main.replaceWith(main);
+    prev.main = main;
+    if (prev.types === types) return;
+    const old = prev.line;
+    const doc = globalThis.document;
+    const focusAt = old && doc && old.contains(doc.activeElement) ? focusablesOf(old).indexOf(doc.activeElement) : -1;
+    const line = layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords, {
+      open: !!old?.querySelector('.lkp-nodata-box[open]'),
+      rawOpen: !!old?.querySelector('.lkp-raw[open]')
+    }) : null;
+    if (old && line) old.replaceWith(line);
+    else if (old) old.remove();
+    else if (line) prev.card.append(line);
+    if (line && focusAt >= 0) (focusablesOf(line)[focusAt] || focusablesOf(line)[0])?.focus({ preventScroll: true });
+    prev.line = line;
+    prev.types = types;
   }
 
   /** Ask one type of the current lookup (a run, or the Retry of a query that got no answer). */

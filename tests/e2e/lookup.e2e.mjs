@@ -395,6 +395,40 @@ async function offlineGroup(browser, server) {
       await page.evaluate(() => { window.__dohFail.slow = {}; });
     });
 
+    await step('the "No records" line keeps its open raw answer and the keyboard focus while slower types answer', async () => {
+      // TXT (a card) answers after 1.5 s, HTTPS (one more NODATA type) after 3 s.
+      await page.evaluate(() => { window.__dohFail.slow = { TXT: 1500, HTTPS: 3000 }; });
+      await gotoHash(page, '#/lookup?name=example.com&type=A,TXT,CNAME,CAA,HTTPS', 'lookup');
+      await page.waitFor(() => document.querySelector('.lkp-nodata')?.dataset.types === 'CNAME CAA', { timeout: 3000, message: 'the line, before TXT' });
+      await page.evaluate(() => document.querySelector('.lkp-nodata summary').focus());
+      await page.press('Enter');
+      await page.evaluate(() => document.querySelector('.lkp-nodata .lkp-raw summary').focus());
+      await page.press('Enter');
+      await page.evaluate(() => { document.querySelector('.lkp-nodata').dataset.mark = 'kept'; });
+      const line = () => page.evaluate(() => {
+        const el = document.querySelector('.lkp-nodata');
+        const a = document.activeElement;
+        return {
+          types: el.dataset.types,
+          mark: el.dataset.mark || null,
+          open: el.querySelector('.lkp-nodata-box').open,
+          raw: el.querySelector('.lkp-raw').open,
+          focus: a && a.tagName === 'SUMMARY' && el.contains(a) ? (a.closest('.lkp-raw') ? 'raw' : 'line') : a?.tagName,
+          text: el.querySelector('.lkp-raw code').textContent
+        };
+      });
+      assertEqual(await line().then(({ text, ...x }) => x), { types: 'CNAME CAA', mark: 'kept', open: true, raw: true, focus: 'raw' }, 'opened with the keyboard');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="TXT"]')?.dataset.state === 'noerror', { timeout: 5000, message: 'TXT answered' });
+      // TXT is a card: the line is the same node, nothing closed, the focus where it was.
+      assertEqual(await line().then(({ text, ...x }) => x), { types: 'CNAME CAA', mark: 'kept', open: true, raw: true, focus: 'raw' }, 'after TXT');
+      await page.waitFor(ALL_DONE, { timeout: 10000, message: 'HTTPS answered' });
+      // HTTPS joins the line: drawn anew with its raw answer, still open, the focus on the same control.
+      const last = await line();
+      assertEqual([last.types, last.mark, last.open, last.raw, last.focus], ['CNAME CAA HTTPS', null, true, true, 'raw'], 'after HTTPS joined');
+      assert(last.text.includes('example.com. HTTPS @'), `the new raw answer: ${last.text.slice(0, 200)}`);
+      await page.evaluate(() => { window.__dohFail.slow = {}; });
+    });
+
     for (const [scheme, lang, width] of [['light', 'en', 375], ['dark', 'tr', 375], ['dark', 'tr', 1440]]) {
       await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the compact lookup reads well and fits`, async () => {
         await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });

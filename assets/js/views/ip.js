@@ -625,9 +625,17 @@ export function mount(container, ctx) {
     }
     const tokens = [...parsed.ips, ...parsed.hosts];
     ctx.setParams({ ips: tokens.length <= 40 ? tokens.join(',') : null });
-    if (tokens.length <= 40) ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
-    else ctx.setActions();
+    setShareAction();
     run(parsed);
+  }
+
+  /**
+   * "Copy link" in the page header when the URL carries the addresses (at most 40 of them), after
+   * a run and again for a run restored by a re-mount.
+   */
+  function setShareAction() {
+    if (ctx.params.ips) ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    else ctx.setActions();
   }
 
   async function run(parsed, preset = null) {
@@ -757,6 +765,7 @@ export function mount(container, ctx) {
   /* --- initial state ---------------------------------------------------------------- */
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     run(parseIpInput(restored.text || ''), restored.rows);
+    setShareAction();
   } else if (paramText) {
     Promise.resolve().then(() => start());
   }

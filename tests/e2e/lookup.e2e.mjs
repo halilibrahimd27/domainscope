@@ -331,12 +331,15 @@ async function main() {
 
     await step('language switch keeps results (snapshot) and translates', async () => {
       const before = await page.evaluate(cardsInfo);
+      const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.page-actions button')].map((b) => b.textContent.trim()));
+      assertEqual(await shareLabel(), ['Copy link'], 'header action before the switch');
       await setLangUi(page, 'tr');
       await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula', { message: 'TR form' });
       const after = await page.evaluate(cardsInfo);
       assertEqual(Object.keys(after), Object.keys(before), 'cards kept');
       assert(Object.values(after).every((c) => c.state !== 'pending'), 'restored without re-query');
       assert(/Ham yanıt/.test(Object.values(after)[0].text), 'Turkish card text');
+      assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], 'header "Copy link" kept (translated) for the restored run');
       await shot(page, 'lookup-desktop-dark-tr-ietf');
       await setLangUi(page, 'en');
     });

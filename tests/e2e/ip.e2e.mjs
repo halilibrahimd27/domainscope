@@ -337,11 +337,14 @@ async function main() {
       await page.waitFor(ROWS_DONE, { timeout: 60000 });
       await shot(page, 'ip-desktop-dark-en');
       const before = Object.keys(await page.evaluate(rowsInfo));
+      const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.page-actions button')].map((b) => b.textContent.trim()));
+      assertEqual(await shareLabel(), ['Copy link'], 'header action before the switch');
       await setLangUi(page, 'tr');
       await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula');
       const after = await page.evaluate(rowsInfo);
       assertEqual(Object.keys(after), before, 'rows kept');
       assert(Object.values(after).every((r) => !/Looking up|Sorgulanıyor/.test(r.text)), 'no pending rows');
+      assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], 'header "Copy link" kept (translated) for the restored rows');
       await assertNoHorizontalScroll(page, 'dark tr');
       await shot(page, 'ip-desktop-dark-tr');
       await setLangUi(page, 'en');

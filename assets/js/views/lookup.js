@@ -1158,8 +1158,13 @@ export function mount(container, ctx) {
       otherField.value = '';
     }
     ctx.setParams({ name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null });
-    ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    setShareAction();
     run(q);
+  }
+
+  /** "Copy link" in the page header (after a run, and again for a run restored by a re-mount). */
+  function setShareAction() {
+    ctx.setActions(CopyButton(() => ctx.shareUrl(), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   function renderSummary(q, responses, elapsed) {
@@ -1245,6 +1250,7 @@ export function mount(container, ctx) {
   /* --- initial state ------------------------------------------------------------------ */
   if (restored && restored.q && Array.isArray(restored.responses)) {
     run(restored.q, restored.responses);
+    setShareAction();
   } else if (!restored && params.name) {
     // Shared link: run immediately. A re-mounted draft (typed, never run) only refills the form.
     Promise.resolve().then(() => start());

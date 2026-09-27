@@ -1210,6 +1210,35 @@ test('DNSSEC: unsigned, no DS, DS without DNSKEY, mismatch, not validated, depre
   has(r, 'dnssec.error', 'warn');
 });
 
+test('DNSSEC: one failed half (DS or DNSKEY) is a lookup error, not a misconfiguration', async () => {
+  const noDnssecErrors = (r) => assert.deepEqual(r.checks.filter((c) => c.category === 'dnssec' && c.severity === 'error').map((c) => c.id), []);
+  const signed = { signed: ['example.com'] };
+
+  let r = await run('example.com', fakeDns(goodZone(), { ...signed, fail: { 'example.com|DNSKEY': 'timeout' } }));
+  assertRenderable(r);
+  assert.equal(has(r, 'dnssec.error', 'warn').params.error, 'DNSKEY: timeout');
+  lacks(r, 'dnssec.ds-no-dnskey');
+  noDnssecErrors(r);
+
+  r = await run('example.com', fakeDns(goodZone(), { ...signed, fail: { 'example.com|DS': 'timeout' } }));
+  assert.equal(has(r, 'dnssec.error', 'warn').params.error, 'DS: timeout');
+  lacks(r, 'dnssec.no-ds');
+  lacks(r, 'dnssec.unsigned');
+  assert.equal(r.dnssec.signed, null);
+
+  r = await run('example.com', fakeDns(goodZone(), { ...signed, rcodes: { 'example.com|DNSKEY': 'REFUSED' } }));
+  assert.equal(has(r, 'dnssec.error', 'warn').params.error, 'DNSKEY: REFUSED');
+  lacks(r, 'dnssec.ds-no-dnskey');
+
+  // DNSKEY SERVFAIL that persists with CD=1 is not a broken chain either
+  const lame = fakeDns(goodZone(), { rcodes: { 'example.com|DNSKEY': 'SERVFAIL' } });
+  lame.query = ((orig) => async (n, t, o = {}) => (o.cd && t === 'SOA' ? { ...(await orig(n, t, o)), rcode: 'SERVFAIL' } : orig(n, t, o)))(lame.query);
+  r = await run('example.com', lame);
+  assert.equal(r.dnssec.broken, false);
+  has(r, 'dnssec.error', 'warn');
+  noDnssecErrors(r);
+});
+
 test('DNSSEC broken: SERVFAIL without CD, answer with CD → only dnssec.broken remains', async () => {
   const zone = goodZone();
   const dns = fakeDns(zone, { broken: ['example.com'] });

@@ -1481,6 +1481,13 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
   const algNums = uniq([...ds.map((x) => x.algorithm), ...dnskey.map((x) => x.algorithm)].filter(Number.isInteger));
   info.algorithms = algNums.map((n) => DNSSEC_ALGORITHMS[n] || `ALG${n}`);
 
+  if (failed(dsR) || failed(dnskeyR)) {
+    // Only one side answered: the other side's empty list is not a proven absence,
+    // so no unsigned / no-ds / ds-no-dnskey / ds-mismatch verdict.
+    const dsFailed = failed(dsR);
+    checks.push(makeCheck('dnssec.error', 'warn', { error: `${dsFailed ? 'DS' : 'DNSKEY'}: ${errText(dsFailed ? dsR : dnskeyR)}` }));
+    return out;
+  }
   if (!ds.length && !dnskey.length) {
     if (isApex !== false) checks.push(makeCheck('dnssec.unsigned', 'info', { domain: name }));
     return out;

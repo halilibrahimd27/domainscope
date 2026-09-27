@@ -1,12 +1,52 @@
 /*
  * views/scan.css — "SSL Targets" view (.scan-*).
- * Setup steps (numbered cards), run bar, live progress panel (stages + source chips),
- * results (stats, tabs, tables, CLI card). Uses the design tokens from style.css only.
+ * Setup form (requirement line, numbered step cards, the Options disclosure), run bar (sticky
+ * on narrow screens), live progress panel (stages + source chips), results (stats, tabs,
+ * tables, CLI card). Uses the design tokens from style.css only.
  */
 
 /* ------------------------------------------------------------------------ */
 /* Setup steps                                                              */
 /* ------------------------------------------------------------------------ */
+
+/* Link prompt, requirement line, steps and the run bar (the bar's sticky range ends here) */
+.scan-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* "A certificate or at least one domain is required" — a check once met */
+.scan-req {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.scan-req .icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-3);
+}
+
+.scan-req[data-state="met"] {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.scan-req[data-state="met"] .icon {
+  color: var(--ok);
+}
 
 .scan-setup {
   display: grid;
@@ -72,6 +112,13 @@
   color: var(--accent-text);
   font-size: 13px;
   font-weight: 700;
+}
+
+/* A completed step: a check in place of its number */
+.scan-step-num[data-done="true"] {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok);
 }
 
 .scan-step-titles {
@@ -171,6 +218,78 @@
   margin: 0;
 }
 
+/* Step 4: one line (like Subdomains › Advanced options) listing what differs from the defaults */
+.scan-options-box {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.scan-options-box > .disclosure-summary {
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+}
+
+.scan-options-box[open] > .disclosure-summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.scan-options-box > .disclosure-summary > span {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The chevron goes last, so the step number lines up with the numbers of the cards above */
+.scan-options-box > .disclosure-summary > .disclosure-chevron {
+  order: 1;
+  flex: none;
+  margin-top: 6px;
+}
+
+.scan-opt-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.scan-opt-text {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+  padding-top: 3px;
+}
+
+.scan-opt-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.scan-opt-title .icon {
+  color: var(--text-3);
+}
+
+.scan-opt-summary {
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.scan-options-box > .disclosure-body {
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
 .scan-options {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
@@ -235,25 +354,7 @@
   font-weight: 500;
 }
 
-/* Wordlist plan (candidate count + time estimate) and the shared vocabulary line */
-.scan-wl-plan {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text-2);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.scan-wl-plan .icon {
-  flex: none;
-  color: var(--text-3);
-  transform: translateY(2px);
-}
-
+/* The shared vocabulary line (languages, custom and learned names) */
 .scan-vocab {
   display: flex;
   flex-wrap: wrap;
@@ -302,15 +403,35 @@
 }
 
 .scan-runbar-info {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 4px;
   min-width: 220px;
+}
+
+/* The query estimate (wordlist plan with the whole-scan range and time) */
+.scan-wl-plan {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.scan-wl-plan .icon {
+  flex: none;
+  color: var(--text-3);
+  transform: translateY(2px);
 }
 
 .scan-runbar-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 8px;
-  color: var(--text-2);
+  gap: 2px 8px;
+  color: var(--text-3);
 }
 
 .scan-dot {
@@ -322,7 +443,71 @@
 }
 
 .scan-runbar-error {
-  margin-top: 8px;
+  margin-top: 4px;
+}
+
+/*
+ * Narrow screens (one column of steps): the bar sticks to the bottom of the viewport while the
+ * form scrolls under it and rests in its own place at the form's end, so it never hides the last
+ * field. The page keeps focused fields clear of it (--scan-runbar-h, measured by the view), the
+ * home indicator / rounded corners get their safe-area insets, and a shadow shows only while it
+ * floats (data-stuck).
+ */
+@media (max-width: 1100px) {
+  :root[data-view="scan"] {
+    scroll-padding-bottom: calc(var(--scan-runbar-h, 0px) + 12px);
+  }
+
+  .scan-runbar {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    transition: box-shadow var(--dur) var(--ease);
+  }
+
+  /* Cast upwards, in the theme's backdrop colour (darker in dark mode) */
+  .scan-runbar[data-stuck="true"] {
+    box-shadow: 0 -10px 24px -14px var(--backdrop);
+  }
+}
+
+/* Phones: an edge-to-edge bar (the page gutter is 16px here), the primary action full width */
+@media (max-width: 900px) {
+  .scan-runbar {
+    gap: 8px 14px;
+    margin-inline: -16px;
+    padding-top: 10px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    border-inline: 0;
+    border-radius: 0;
+  }
+
+  .scan-runbar-buttons {
+    flex: 1 1 100%;
+  }
+
+  .scan-runbar-buttons .btn {
+    flex: 1;
+  }
+
+  .scan-runbar-info {
+    min-width: 0;
+  }
+}
+
+/* The plan line is enough next to Start on a phone; the summary's parts are on the steps. */
+@media (max-width: 600px) {
+  .scan-runbar-summary {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-runbar {
+    transition: none;
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1015,17 +1200,21 @@
     padding: 12px;
   }
 
-  .scan-step-status {
-    display: none;
-  }
-
-  .scan-runbar {
+  .scan-options-box > .disclosure-summary {
+    gap: 10px;
     padding: 12px;
   }
 
-  .scan-runbar-buttons,
-  .scan-runbar-buttons .btn {
-    width: 100%;
+  .scan-opt-head {
+    gap: 10px;
+  }
+
+  .scan-options-box > .disclosure-body {
+    padding: 12px;
+  }
+
+  .scan-step-status {
+    display: none;
   }
 
   .scan-run {

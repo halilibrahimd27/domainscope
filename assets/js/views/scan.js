@@ -4,11 +4,18 @@
  * A renewed certificate arrives (e.g. *.example.com) and the question is: which names
  * exist, where do they point, and which of *my* servers need the new certificate?
  *
- *   1. Certificate (optional) — its names seed the search; every host is checked against it
+ *   1. Certificate — its names seed the search; every host is checked against it
  *   2. Domains — auto-filled from the certificate (registrable domains), editable
  *   3. Inventory — the saved server list (state.inventory) used to match IPs to machines
- *   4. Options — passive sources (with quota notes), expired certificates, brute force,
- *      origin hints and extra names
+ *   4. Options — a collapsed disclosure whose summary lists what differs from the defaults:
+ *      passive sources (with quota notes), expired certificates, brute force, origin hints and
+ *      extra names
+ *
+ * One requirement line above the steps says what Start needs (a certificate or at least one
+ * domain, lib/scanform.formProgress) and turns into a check once met; a completed step shows a
+ * check in place of its number. The run bar (Start / Cancel, the query estimate and a summary)
+ * follows the steps; on narrow screens it sticks to the bottom of the viewport while the form is
+ * scrolled, so Start is always within reach.
  *
  * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the
  * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Verify (only with a
@@ -41,6 +48,7 @@ import {
 import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sources.js';
 import { runScan, SCAN_STAGES } from '../lib/scanner.js';
+import { formProgress, optionChanges, barStuck } from '../lib/scanform.js';
 import {
   toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
 } from '../lib/export.js';
@@ -58,7 +66,7 @@ import {
   liveHosts, originOverview, originSweep, partialHostRecord, planQueryRange,
   realOriginNetworks, reasonText, rememberLearned, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages, techniqueCounts,
   wordlistCount, wordlistFellShort, wordlistPlan, wordlistPlanText, wordlistScanConfig,
-  ZoneChip, isResolving, validZoneIntent, zoneForDomains, zoneScanOverrides
+  ZoneChip, isResolving, validZoneIntent, zoneChipCounts, zoneForDomains, zoneScanOverrides
 } from './subdomains.js';
 import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
@@ -112,14 +120,14 @@ registerStrings('en', {
   'scan.step.inventory': 'Your servers',
   'scan.step.inventoryDesc': 'Tells which of your machines the names point to',
   'scan.step.options': 'Options',
-  'scan.step.optionsDesc': 'Where to look and how thoroughly',
-  'scan.optional': 'optional',
   'scan.stepDone': 'ready',
+  'scan.req.text': 'A certificate or at least one domain is required',
+  'scan.req.done': '(done)',
 
   'scan.cert.details': 'Details',
   'scan.cert.remove': 'Remove',
   'scan.cert.another': 'Use another certificate',
-  'scan.cert.none': 'Optional: without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
+  'scan.cert.none': 'Without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
   'scan.cert.isCA': 'This is a CA certificate, not a server certificate. Load the certificate issued for your domain.',
   'scan.cert.taken': 'Certificate taken over from the Certificate view.',
   'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves.',
@@ -176,6 +184,13 @@ registerStrings('en', {
   'scan.vocab.learnedOff': 'learned names off',
   'scan.vocab.shared': 'Shared with Subdomains › Advanced options (languages, custom wordlist, learned names).',
   'scan.vocab.change': 'Change in Subdomains',
+  'scan.optSum.defaults': 'recommended defaults',
+  'scan.optSum.sources': { zero: 'no passive sources', other: '{count} of {total} sources' },
+  'scan.optSum.noLangs': 'no language packs',
+  'scan.optSum.noPerm': 'no permutations',
+  'scan.optSum.budget': { one: 'up to {count} variation', other: 'up to {count} variations' },
+  'scan.optSum.noExpired': 'without expired certificates',
+  'scan.optSum.noHints': 'no origin hints',
 
   'scan.run': 'Start scan',
   'scan.runAgain': 'Scan again',
@@ -488,14 +503,14 @@ registerStrings('tr', {
   'scan.step.inventory': 'Sunucularınız',
   'scan.step.inventoryDesc': 'Adların hangi makinelerinize işaret ettiğini gösterir',
   'scan.step.options': 'Seçenekler',
-  'scan.step.optionsDesc': 'Nerede ve ne kadar kapsamlı aranacağı',
-  'scan.optional': 'isteğe bağlı',
   'scan.stepDone': 'hazır',
+  'scan.req.text': 'Bir sertifika ya da en az bir alan adı gerekli',
+  'scan.req.done': '(tamam)',
 
   'scan.cert.details': 'Ayrıntılar',
   'scan.cert.remove': 'Kaldır',
   'scan.cert.another': 'Başka sertifika kullan',
-  'scan.cert.none': 'İsteğe bağlı: sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
+  'scan.cert.none': 'Sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
   'scan.cert.isCA': 'Bu bir CA sertifikası, sunucu sertifikası değil. Alan adınız için verilen sertifikayı yükleyin.',
   'scan.cert.taken': 'Sertifika, Sertifika görünümünden aktarıldı.',
   'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder.',
@@ -552,6 +567,13 @@ registerStrings('tr', {
   'scan.vocab.learnedOff': 'öğrenilen adlar kapalı',
   'scan.vocab.shared': 'Subdomain Tarama › Gelişmiş seçenekler ile ortaktır (diller, özel kelime listesi, öğrenilen adlar).',
   'scan.vocab.change': 'Subdomain Tarama’da değiştir',
+  'scan.optSum.defaults': 'önerilen varsayılanlar',
+  'scan.optSum.sources': { zero: 'pasif kaynak yok', other: '{count}/{total} kaynak' },
+  'scan.optSum.noLangs': 'dil paketi yok',
+  'scan.optSum.noPerm': 'varyasyon yok',
+  'scan.optSum.budget': 'en fazla {count} varyasyon',
+  'scan.optSum.noExpired': 'süresi dolmuş sertifikalar hariç',
+  'scan.optSum.noHints': 'asıl sunucu ipuçları yok',
 
   'scan.run': 'Taramayı başlat',
   'scan.runAgain': 'Yeniden tara',
@@ -945,6 +967,28 @@ function saveOptions(options) {
 }
 
 /**
+ * One entry of the collapsed Options summary: a change from lib/scanform.optionChanges as text.
+ * @param {{ id: string, value?: any, count?: number, total?: number }} change
+ * @returns {string}
+ */
+export function optionChangeText(change) {
+  const c = change || {};
+  switch (c.id) {
+    case 'sources': return t('scan.optSum.sources', { count: c.count, total: formatNumber(c.total) });
+    case 'bruteforce': return t(`scan.summary.bf.${BRUTEFORCE_MODES.includes(c.value) ? c.value : 'smart'}`);
+    case 'languages': return c.value && c.value.length ? t('sub.sum.langs', { list: c.value.map(languageName).join(', ') }) : t('scan.optSum.noLangs');
+    case 'permutations': return c.value ? t('scan.summary.perm') : t('scan.optSum.noPerm');
+    case 'permutationBudget': return t('scan.optSum.budget', { count: c.value });
+    case 'includeExpired': return c.value ? t('sub.sum.expired') : t('scan.optSum.noExpired');
+    case 'originHints': return c.value ? t('sub.sum.origin') : t('scan.optSum.noHints');
+    case 'extraNames': return t('sub.sum.extra', { count: c.count });
+    case 'custom': return t('sub.sum.custom', { count: c.count });
+    case 'learned': return t('sub.sum.learned', { count: c.count });
+    default: return '';
+  }
+}
+
+/**
  * Does a host match a "Show" filter value?
  * @param {{ classification: { kind: string, dangling: boolean, hidesOrigin: boolean } }} host
  * @param {string} filter one of {@link KIND_FILTERS}
@@ -1112,6 +1156,8 @@ const session = {
   domainsFromCert: false,
   certKeyForDomains: null,
   extraText: '',
+  /** The Options step (a disclosure) is open; collapsed on first view, remembered for the session. */
+  optionsOpen: false,
   cdnShell: 'posix',
   /** Results tab shown when the run UI is rebuilt (null = Hosts); the Verify toast sets it. */
   scanTab: null,
@@ -1343,9 +1389,61 @@ export function mount(container, ctx) {
     zoneModes.set(state.getSession('zone'), zoneIntent.mode === 'discover' ? 'discover' : 'exact');
   }
 
+  /* --- step progress + the requirement line ------------------------------------ */
+  // No step is optional-labelled: one line above the steps says what Start needs, and turns
+  // into a check once met; a step with usable input shows a check in place of its number and a
+  // short status badge (lib/scanform.formProgress decides both).
+  const stepNums = {};
+  // "(done)" inside a completed step's heading: the check and the badge are visual only on phones.
+  const stepDoneSr = {};
+  const stepStatus = {
+    cert: h('span', { class: 'scan-step-status' }),
+    domains: h('span', { class: 'scan-step-status' }),
+    inventory: h('span', { class: 'scan-step-status' })
+  };
+  // aria-live: its content is replaced only when the requirement flips, so the change is announced.
+  const reqLine = h('p', { class: 'scan-req', dataset: { role: 'scan-requirement' }, attrs: { 'aria-live': 'polite' } });
+
+  function renderProgress() {
+    const parsed = parseDomainsInput(domainsField.value);
+    const leaf = certLeaf();
+    const p = formProgress({
+      cert: !!leaf,
+      certNames: leaf ? leaf.hostnames.length : 0,
+      domains: parsed.domains.length,
+      invalid: parsed.invalid.length,
+      publicSuffixes: parsed.publicSuffixes.length,
+      extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid.length,
+      servers: state.inventory.servers.length
+    });
+    const badges = {
+      cert: t('scan.stepDone'),
+      domains: t('scan.summary.domains', { count: parsed.domains.length }),
+      inventory: t('scan.stepDone')
+    };
+    for (const key of Object.keys(stepStatus)) {
+      const done = p.steps[key];
+      const num = stepNums[key];
+      clear(num.el);
+      num.el.append(done ? Icon('check', { size: 14, strokeWidth: 2.6 }) : String(num.n));
+      num.el.dataset.done = String(done);
+      stepDoneSr[key].hidden = !done;
+      clear(stepStatus[key]);
+      if (done) stepStatus[key].append(Badge(badges[key], { variant: 'ok' }));
+    }
+    const met = p.ready ? 'met' : 'unmet';
+    reqLine.dataset.via = p.via || '';
+    if (reqLine.dataset.state === met) return;
+    reqLine.dataset.state = met;
+    clear(reqLine);
+    append(reqLine,
+      Icon(p.ready ? 'check-circle' : 'info', { size: 16 }),
+      h('span', null, t('scan.req.text')),
+      p.ready ? h('span', { class: 'sr-only' }, ` ${t('scan.req.done')}`) : null);
+  }
+
   /* --- step 1: certificate --------------------------------------------------- */
   const certBody = h('div', { class: 'stack-sm' });
-  const certStatus = h('span', { class: 'scan-step-status' });
 
   function certLeaf() {
     return certLoad && certLoad.result.leaf ? certLoad.result.leaf : null;
@@ -1374,11 +1472,8 @@ export function mount(container, ctx) {
 
   function renderCertStep() {
     clear(certBody);
-    clear(certStatus);
+    renderProgress();
     const leaf = certLeaf();
-    certStatus.append(leaf
-      ? Badge(t('scan.stepDone'), { variant: 'ok', icon: 'check' })
-      : Badge(t('scan.optional'), { variant: 'neutral' }));
     if (!certLoad) {
       certBody.append(CertLoader({ onLoad: onCertLoad }).el,
         h('p', { class: 'muted text-sm' }, t('scan.cert.none')),
@@ -1458,8 +1553,6 @@ export function mount(container, ctx) {
       }
     }));
   }
-  const domainsStatus = h('span', { class: 'scan-step-status' });
-
   function certDomains() {
     const leaf = certLeaf();
     return leaf ? baseDomainsFromNames(leaf.hostnames) : [];
@@ -1483,12 +1576,9 @@ export function mount(container, ctx) {
 
   function renderDomainsHint() {
     renderZoneChip();
+    renderProgress();
     clear(domainsHint);
-    clear(domainsStatus);
     const parsed = parseDomainsInput(domainsField.value);
-    domainsStatus.append(parsed.domains.length
-      ? Badge(t('scan.summary.domains', { count: parsed.domains.length }), { variant: 'ok', icon: 'check' })
-      : Badge(t('scan.optional'), { variant: 'neutral' }));
     const list = certDomains();
     if (!list.length) return;
     const same = list.length === parsed.domains.length && list.every((d) => parsed.domains.includes(d));
@@ -1514,15 +1604,13 @@ export function mount(container, ctx) {
 
   /* --- step 3: inventory ------------------------------------------------------ */
   const invBody = h('div', { class: 'stack-sm' });
-  const invStatus = h('span', { class: 'scan-step-status' });
 
   function renderInventoryStep() {
     clear(invBody);
-    clear(invStatus);
+    renderProgress();
     const inv = state.inventory;
     const servers = inv.servers.length;
     if (!servers) {
-      invStatus.append(Badge(t('scan.optional'), { variant: 'neutral' }));
       invBody.append(EmptyState({
         compact: true,
         icon: 'server',
@@ -1534,7 +1622,6 @@ export function mount(container, ctx) {
       return;
     }
     const ips = new Set(inv.servers.flatMap((s) => s.ips)).size;
-    invStatus.append(Badge(t('scan.stepDone'), { variant: 'ok', icon: 'check' }));
     invBody.append(h('div', { class: 'scan-inv' },
       h('span', { class: 'scan-inv-icon' }, Icon('server', { size: 18 })),
       h('div', { class: 'scan-inv-text' },
@@ -1584,6 +1671,7 @@ export function mount(container, ctx) {
   // The shared vocabulary (languages, custom wordlist, learned names — set in Subdomains ›
   // Advanced) and the wordlist plan for the domains typed here, like the Subdomains page shows.
   const vocabLine = h('div', { class: 'scan-vocab text-sm', dataset: { role: 'scan-vocab' } });
+  // The query estimate lives in the run bar, next to Start (it follows the domains and options).
   const planLine = h('div', { class: 'scan-wl-plan text-sm', dataset: { role: 'scan-wl-plan' }, attrs: { 'aria-live': 'polite' } });
   /**
    * The bases the scan brute-forces, as lib/scanner builds them: the typed domains (or, with none
@@ -1597,29 +1685,41 @@ export function mount(container, ctx) {
     const extras = parseHostList(session.extraText || '', { allowWildcard: true }).valid;
     return bruteforceBases(parseDomainsInput(domainsField.value).domains, [...(leaf ? leaf.hostnames : []), ...extras]);
   }
+  /** Plan line + vocabulary line, and the Options summary (it lists the shared vocabulary too). */
   function renderVocab() {
     renderBfOptions();
+    renderOptSummary();
     clear(vocabLine);
     clear(planLine);
+    for (const k of ['total', 'queriesMin', 'queriesMax']) delete planLine.dataset[k];
     const vocab = sharedVocabulary();
     const domains = planDomains();
     vocabLine.hidden = options.bruteforce === 'off';
+    const learnedCount = vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0;
+    if (options.bruteforce !== 'off') {
+      const parts = [t('scan.vocab.langs', { summary: localeSummary(vocab.locales, domains) })];
+      if (vocab.custom.length) parts.push(t('scan.vocab.custom', { count: vocab.custom.length }));
+      parts.push(vocab.learnedOn ? t('scan.vocab.learned', { count: learnedCount }) : t('scan.vocab.learnedOff'));
+      vocabLine.append(Icon('list', { size: 14 }),
+        h('span', { class: 'scan-vocab-text' }, parts.join(' · ')),
+        h('span', { class: 'scan-vocab-shared' }, t('scan.vocab.shared'), ' ',
+          h('a', { href: ctx.href('subdomains'), class: 'scan-vocab-change', dataset: { action: 'scan-vocab-change' } }, t('scan.vocab.change'))));
+    }
+    // Exact zone mode (one run): only the zone's names are resolved, whatever the stored options say.
+    const zone = activeZone();
+    planLine.dataset.zoneExact = zone && zoneModes.get(zone) === 'exact' ? '1' : '0';
+    if (planLine.dataset.zoneExact === '1') {
+      planLine.append(Icon('file-text', { size: 13 }), h('span', null, t('sub.plan.zoneExact', { count: zoneChipCounts(zone).names })));
+      return;
+    }
     if (options.bruteforce === 'off') {
       planLine.append(Icon('info', { size: 13 }), h('span', null, t('sub.plan.off')));
       return;
     }
-    const parts = [t('scan.vocab.langs', { summary: localeSummary(vocab.locales, domains) })];
-    if (vocab.custom.length) parts.push(t('scan.vocab.custom', { count: vocab.custom.length }));
-    parts.push(vocab.learnedOn ? t('scan.vocab.learned', { count: Math.min(vocab.learned.length, LEARNED_TRY_MAX) }) : t('scan.vocab.learnedOff'));
-    vocabLine.append(Icon('list', { size: 14 }),
-      h('span', { class: 'scan-vocab-text' }, parts.join(' · ')),
-      h('span', { class: 'scan-vocab-shared' }, t('scan.vocab.shared'), ' ',
-        h('a', { href: ctx.href('subdomains'), class: 'scan-vocab-change', dataset: { action: 'scan-vocab-change' } }, t('scan.vocab.change'))));
     if (!domains.length) {
       planLine.append(Icon('info', { size: 13 }), h('span', null, t('sub.plan.none')));
       return;
     }
-    const learnedCount = vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0;
     const plan = wordlistPlan({
       level: options.bruteforce,
       domains,
@@ -1700,6 +1800,7 @@ export function mount(container, ctx) {
     onChange: (on) => {
       options = { ...options, includeExpired: on };
       saveOptions(options);
+      renderOptSummary();
     }
   });
   const hintsBox = checkbox({
@@ -1724,8 +1825,10 @@ export function mount(container, ctx) {
     onInput: (value) => {
       session.extraText = value;
       extraField.setError(null);
-      // A wildcard extra name (`*.api.example.com`) is one more base the wordlist runs under.
+      // A wildcard extra name (`*.api.example.com`) is one more base the wordlist runs under; extra
+      // names alone also give Start something to scan.
       renderVocab();
+      renderProgress();
     }
   });
   const dohLine = h('div', { class: 'scan-doh text-sm' });
@@ -1739,6 +1842,41 @@ export function mount(container, ctx) {
         on: { click: () => globalThis.document.querySelector('[data-control="settings"]')?.click() }
       }, t('scan.opt.dohChange')),
       h('span', { class: 'scan-doh-spread' }, t('scan.opt.dohSpread')));
+  }
+
+  // The collapsed step reads as one line: its title and what differs from the defaults.
+  const defaultOptions = sanitizeOptions(null);
+  const optSummary = h('span', { class: 'scan-opt-summary', dataset: { role: 'scan-opt-summary' } });
+  const optionsBox = Disclosure({
+    summary: h('span', { class: 'scan-opt-head' },
+      h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, '4'),
+      h('span', { class: 'scan-opt-text' },
+        h('span', { class: 'scan-opt-title', id: 'scan-step-options' }, Icon('sliders', { size: 15 }), h('span', null, t('scan.step.options'))),
+        optSummary)),
+    className: 'scan-options-box',
+    open: session.optionsOpen,
+    children: h('div', { class: 'scan-options' },
+      sourcesGroup.el,
+      h('div', { class: 'stack' }, bfGroup.el, vocabLine,
+        h('div', { class: 'scan-perm-row' }, permBox.el, budgetSelect.el),
+        h('div', { class: 'stack-sm' }, expiredBox.el, hintsBox.el)),
+      h('div', { class: 'stack-sm' }, extraField.el, dohLine))
+  });
+  optionsBox.addEventListener('toggle', () => {
+    session.optionsOpen = optionsBox.open;
+  });
+
+  function renderOptSummary() {
+    const vocab = sharedVocabulary();
+    const changes = optionChanges(options, defaultOptions, {
+      totalSources: SOURCES.length,
+      extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid.length,
+      locales: vocab.locales,
+      custom: vocab.custom.length,
+      learned: vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0
+    });
+    optSummary.textContent = changes.length ? changes.map(optionChangeText).join(' · ') : t('scan.optSum.defaults');
+    optSummary.dataset.changes = changes.map((c) => c.id).join(' ');
   }
 
   /* --- run bar ----------------------------------------------------------------- */
@@ -1785,6 +1923,47 @@ export function mount(container, ctx) {
       h('span', null, certLeaf() ? t('scan.summary.cert') : t('scan.summary.noCert')));
   }
 
+  /**
+   * Narrow screens (the bar is position: sticky there): mark the run bar while it floats over the
+   * form (data-stuck → its shadow), and publish its height as --scan-runbar-h on the root, which
+   * keeps focus scrolling clear of it (scroll-padding-bottom in scan.css). Removed on unmount.
+   */
+  function watchRunbar() {
+    const form = runbar.parentElement;
+    const doc = globalThis.document;
+    const root = doc && doc.documentElement;
+    if (!form || !root || typeof globalThis.getComputedStyle !== 'function') return;
+    let stopped = false;
+    const measure = frameThrottle(() => {
+      if (stopped || !runbar.isConnected) return;
+      const r = form.getBoundingClientRect();
+      const stuck = barStuck({
+        sticky: globalThis.getComputedStyle(runbar).position === 'sticky',
+        top: r.top,
+        bottom: r.bottom,
+        viewportHeight: globalThis.innerHeight
+      });
+      if (runbar.dataset.stuck !== String(stuck)) runbar.dataset.stuck = String(stuck);
+      root.style.setProperty('--scan-runbar-h', `${Math.ceil(runbar.getBoundingClientRect().height)}px`);
+    });
+    globalThis.addEventListener('scroll', measure, { passive: true });
+    globalThis.addEventListener('resize', measure);
+    cleanups.push(() => {
+      stopped = true;
+      globalThis.removeEventListener('scroll', measure);
+      globalThis.removeEventListener('resize', measure);
+      root.style.removeProperty('--scan-runbar-h');
+    });
+    // The form grows and shrinks without a scroll (Options opened, a certificate loaded, an error).
+    if (typeof globalThis.ResizeObserver === 'function') {
+      const ro = new globalThis.ResizeObserver(measure);
+      ro.observe(form);
+      ro.observe(runbar);
+      cleanups.push(() => ro.disconnect());
+    }
+    measure();
+  }
+
   function setRunning(on) {
     // The button just used hides itself: its keyboard focus moves to the one shown in its
     // place (Start → Cancel, and back when the run ends) instead of falling to <body>.
@@ -1799,37 +1978,41 @@ export function mount(container, ctx) {
   }
 
   /* --- layout ------------------------------------------------------------------ */
-  const step = (n, key, iconName, status, body, className = '') => h('section', {
-    class: ['scan-step', 'card', className],
-    dataset: { step: key },
-    attrs: { 'aria-labelledby': `scan-step-${key}` }
-  },
-  h('div', { class: 'scan-step-head' },
-    h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, String(n)),
-    h('div', { class: 'scan-step-titles' },
-      h('h2', { class: 'scan-step-title', id: `scan-step-${key}` }, Icon(iconName, { size: 15 }), h('span', null, t(`scan.step.${key}`))),
-      h('p', { class: 'scan-step-desc' }, t(`scan.step.${key}Desc`))),
-    status),
-  h('div', { class: 'scan-step-body' }, body));
+  const step = (n, key, iconName, body, className = '') => {
+    stepNums[key] = { n, el: h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, String(n)) };
+    stepDoneSr[key] = h('span', { class: 'sr-only', hidden: true }, ` ${t('scan.req.done')}`);
+    return h('section', {
+      class: ['scan-step', 'card', className],
+      dataset: { step: key },
+      attrs: { 'aria-labelledby': `scan-step-${key}` }
+    },
+    h('div', { class: 'scan-step-head' },
+      stepNums[key].el,
+      h('div', { class: 'scan-step-titles' },
+        h('h2', { class: 'scan-step-title', id: `scan-step-${key}` }, Icon(iconName, { size: 15 }), h('span', null, t(`scan.step.${key}`)), stepDoneSr[key]),
+        h('p', { class: 'scan-step-desc' }, t(`scan.step.${key}Desc`))),
+      stepStatus[key]),
+    h('div', { class: 'scan-step-body' }, body));
+  };
 
   const setup = h('div', { class: 'scan-setup' },
-    step(1, 'cert', 'certificate', certStatus, certBody, 'scan-step-cert'),
-    step(2, 'domains', 'globe', domainsStatus, h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
-    step(3, 'inventory', 'server', invStatus, invBody, 'scan-step-inventory'),
-    step(4, 'options', 'sliders', null, h('div', { class: 'scan-options' },
-      sourcesGroup.el,
-      h('div', { class: 'stack' }, bfGroup.el, planLine, vocabLine,
-        h('div', { class: 'scan-perm-row' }, permBox.el, budgetSelect.el),
-        h('div', { class: 'stack-sm' }, expiredBox.el, hintsBox.el)),
-      h('div', { class: 'stack-sm' }, extraField.el, dohLine)), 'scan-step-options'));
+    step(1, 'cert', 'certificate', certBody, 'scan-step-cert'),
+    step(2, 'domains', 'globe', h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
+    step(3, 'inventory', 'server', invBody, 'scan-step-inventory'),
+    h('section', { class: 'scan-step scan-step-options', dataset: { step: 'options' }, attrs: { 'aria-labelledby': 'scan-step-options' } }, optionsBox));
 
-  const runbar = h('div', { class: 'scan-runbar card' },
+  // Start / Cancel with the query estimate: in the flow on wide screens; on narrow ones it sticks
+  // to the bottom of the viewport while the form scrolls (scan.css), so Start is always in reach.
+  const runbar = h('div', { class: 'scan-runbar card', dataset: { role: 'scan-runbar', stuck: 'false' } },
     h('div', { class: 'scan-runbar-buttons' }, runBtn, cancelBtn),
-    h('div', { class: 'scan-runbar-info' }, runSummary, linkPrompt, runError));
+    h('div', { class: 'scan-runbar-info' }, planLine, runSummary, runError));
   cancelBtn.hidden = true;
 
   const resultsHost = h('div', { class: 'scan-results-host' });
-  container.append(h('div', { class: 'scan-view stack-lg' }, setup, runbar, resultsHost));
+  container.append(h('div', { class: 'scan-view stack-lg' },
+    h('div', { class: 'scan-form' }, linkPrompt, reqLine, setup, runbar),
+    resultsHost));
+  watchRunbar();
 
   renderCertStep();
   autoFillDomains();
@@ -1846,9 +2029,12 @@ export function mount(container, ctx) {
       renderBfOptions(); // a concurrency change moves the per-domain time estimate
       renderVocab();
     }
-    if (key === 'cleared') renderVocab();
-    // A zone imported, replaced or forgotten (Zone File view / "Delete all local data").
-    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') renderZoneChip();
+    // A zone imported, replaced or forgotten (Zone File view / "Delete all local data"): the chip,
+    // and the run bar's plan and summary (exact mode changes both; the vocabulary line follows too).
+    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') {
+      renderZoneChip();
+      renderRunSummary();
+    }
     if (key === 'session' && value && value.name === CURRENT_CERT) {
       const next = normalizeCertLoad(value.value);
       if (next !== certLoad) {
@@ -1869,27 +2055,29 @@ export function mount(container, ctx) {
     domainsField.setError(null);
     extraField.setError(null);
     const parsed = parseDomainsInput(domainsField.value);
-    let ok = true;
+    // The first field with an error takes the focus (the extra names sit in the Options step).
+    let invalidField = null;
     if (parsed.invalid.length) {
       domainsField.setError(t('scan.domains.invalid', { list: parsed.invalid.slice(0, 5).join(', ') }));
-      ok = false;
+      invalidField = domainsField;
     } else if (parsed.publicSuffixes.length) {
       domainsField.setError(t('scan.domains.publicSuffix', { list: parsed.publicSuffixes.join(', ') }));
-      ok = false;
+      invalidField = domainsField;
     }
     const extras = parseHostList(extraField.value, { allowWildcard: true });
     if (extras.invalid.length) {
       extraField.setError(t('scan.domains.invalid', { list: extras.invalid.slice(0, 5).join(', ') }));
-      ok = false;
+      invalidField = invalidField || extraField;
     }
     const leaf = certLeaf();
     const certNames = leaf ? leaf.hostnames.length : 0;
-    if (ok && !parsed.domains.length && !certNames && !extras.valid.length) {
+    if (!invalidField && !parsed.domains.length && !certNames && !extras.valid.length) {
       domainsField.setError(t('scan.domains.required'));
-      ok = false;
+      invalidField = domainsField;
     }
-    if (!ok) {
-      domainsField.input.focus();
+    if (invalidField) {
+      if (invalidField === extraField) optionsBox.open = true;
+      invalidField.input.focus();
       return null;
     }
     return { domains: parsed.domains, extraNames: extras.valid, cert: leaf };

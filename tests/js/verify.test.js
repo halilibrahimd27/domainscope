@@ -693,16 +693,22 @@ describe('buildVerifyPairs', () => {
     assert.ok(!pairs.some((p) => p.name === 'suspect.example.com'), 'wildcard suspects are left out');
     assert.deepEqual(stats, {
       names: 10, ips: 8, servers: 4, checkable: 6, originPairs: 3,
-      skipped: { private: 1, reserved: 2, 'cdn-edge': 1, 'bad-name': 1, 'bad-port': 0, 'over-cap': 0 },
+      skipped: { private: 1, reserved: 2, 'cdn-edge': 1, 'bad-name': 1, 'bad-port': 0 },
       proxiedNoOrigin: 1, managed: 1
     });
   });
 
-  test('maxRows caps the listed pairs; the rest are counted as over-cap', () => {
-    const { pairs, stats } = V.buildVerifyPairs(scanResult(), { maxRows: 3 });
-    assert.equal(pairs.length, 3);
-    assert.equal(stats.skipped['over-cap'], 8);
-    assert.ok(!pairs.some((p) => p.skip === 'over-cap'), 'over-cap pairs are counted, not listed');
+  test('every pair is returned: the cap on checks is applied to the rows of a scope', () => {
+    const { pairs } = V.buildVerifyPairs(scanResult(), { maxRows: 3 });
+    assert.equal(pairs.length, 11);
+    assert.ok(!pairs.some((p) => p.skip === 'over-cap'));
+    const rows = V.createVerifyRows(pairs, { maxRows: 3 });
+    assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map((r) => `${r.name} ${r.ip}`),
+      ['zone.example.com 1.2.3.4', 'shop.example.com 1.2.3.4', 'shop.example.com 2a01:4f8::1'],
+      'skipped pairs cost nothing, and the DNS pairs come before the origin pairs');
+    assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map((r) => r.state), ['skipped', 'skipped', 'skipped']);
+    assert.equal(V.createVerifyRows(pairs).filter((r) => r.skip === 'over-cap').length, 0, 'VERIFY_MAX_ROWS by default');
+    assert.equal(rows.find((r) => r.name === 'vpn.example.com').skip, 'private', 'a pair skip is kept');
   });
 
   test('empty / odd input never throws', () => {
@@ -735,6 +741,65 @@ describe('scopePairs / createVerifyRows', () => {
     assert.equal(on.find((r) => r.name === 'shop.example.com').state, 'pending');
     assert.equal(on.find((r) => r.name === 'zone.example.com').state, 'pending');
     assert.notEqual(rows[2].alsoServers, pairs[2].alsoServers, 'rows own their arrays');
+  });
+});
+
+describe('the cap on checks', () => {
+  /** web01 serves many covered names on one address (and origin hints for proxied names); web02 serves one. */
+  function busy(names, { hints = 0 } = {}) {
+    const dnsNames = Array.from({ length: names }, (_, i) => `n${i}.example.com`);
+    const hintNames = Array.from({ length: hints }, (_, i) => `p${i}.example.com`);
+    const cf = { kind: 'cloudflare', provider: 'Cloudflare', hidesOrigin: true, certManaged: true };
+    return {
+      hosts: [...dnsNames.map((n) => host(n, { ips: ['1.2.3.4'] })), ...hintNames.map((n) => host(n, { ips: ['104.16.5.6'], ...cf })),
+        host('api.example.com', { ips: ['1.2.3.5'] })],
+      servers: [
+        { server: srv('web01'), needsCert: true, hosts: [...dnsNames.map((n) => e(n, '1.2.3.4')), ...hintNames.map((n) => e(n, '1.2.3.4', 'hint'))] },
+        { server: srv('web02'), needsCert: true, hosts: [e('api.example.com', '1.2.3.5')] }
+      ],
+      unmatchedIps: []
+    };
+  }
+  const short = (r) => r.name.replace('.example.com', '');
+  const upd = (rows) => settle(rows.map((r) => (r.state === 'pending' ? done(r, [V_UPDATED()]) : r)));
+
+  test('it is applied after the scope, and every server address gets a check before any gets a second', () => {
+    const { pairs } = V.buildVerifyPairs(busy(8));
+    const all = V.createVerifyRows(V.scopePairs(pairs, 'all'), { maxRows: 5 });
+    assert.deepEqual(all.filter((r) => r.state === 'pending').map(short), ['n0', 'n1', 'n2', 'n3', 'api']);
+    assert.deepEqual(all.filter((r) => r.skip === 'over-cap').map(short), ['n4', 'n5', 'n6', 'n7']);
+    const perIp = V.createVerifyRows(V.scopePairs(pairs, 'perIp'), { maxRows: 5 });
+    assert.deepEqual(perIp.map((r) => `${short(r)} ${r.state}`), ['n0 pending', 'api pending'], 'one name per IP reaches web02');
+  });
+
+  test('origin pairs never push a DNS pair out, whatever the opt-in', () => {
+    const { pairs } = V.buildVerifyPairs(busy(1, { hints: 6 }));
+    for (const origins of [false, true]) {
+      const rows = V.createVerifyRows(pairs, { maxRows: 4, origins });
+      assert.deepEqual(rows.filter((r) => r.skip !== 'over-cap').map(short), ['n0', 'p0', 'p1', 'api']);
+      assert.deepEqual(rows.filter((r) => r.skip === 'over-cap').map(short), ['p2', 'p3', 'p4', 'p5']);
+    }
+    // Opted out, the origin checks past the cap count no more than the optional ones: both servers are live.
+    const rows = V.createVerifyRows(pairs, { maxRows: 4 });
+    upd(rows);
+    const sum = V.summarizeVerify(rows);
+    assert.deepEqual([sum.servers.live, sum.servers.base], [2, 2]);
+    assert.equal(V.verifyHeadline(sum)[0].key, 'vfy.head.all');
+  });
+
+  test('a server with names past the cap is never called live; its names go to the CLI card', () => {
+    const { pairs, stats } = V.buildVerifyPairs(busy(8));
+    const rows = V.createVerifyRows(pairs, { maxRows: 5 });
+    upd(rows);
+    const sum = V.summarizeVerify(rows);
+    assert.deepEqual([sum.servers.total, sum.servers.base, sum.servers.live, sum.servers.updated], [2, 2, 1, 2]);
+    assert.equal(sum.servers.incomplete, 0, '"Check again" cannot finish it: not called partly checked');
+    assert.equal(sum.servers.list.find((s) => s.key === 'web01').incomplete, true);
+    const head = V.verifyHeadline(sum, stats);
+    assert.deepEqual(head[0], { key: 'vfy.head.partial', variant: 'info', params: { live: 1, total: 2 } });
+    assert.ok(!head.some((x) => x.key === 'vfy.head.all' || x.key === 'vfy.head.incomplete'));
+    assert.deepEqual(head.at(-1).parts, [{ key: 'vfy.notHere.over-cap', params: { count: 4 } }]);
+    assert.deepEqual(V.cliPlan(rows), { targets: ['1.2.3.4'], names: ['n4.example.com', 'n5.example.com', 'n6.example.com', 'n7.example.com'], rows: 4 });
   });
 });
 
@@ -1373,9 +1438,11 @@ describe('summarizeVerify / verifyHeadline', () => {
         pair({ ip: '10.0.0.5', skip: 'private' }), pair({ ip: '10.0.0.5', name: 'b.example.com', skip: 'private' }),
         pair({ ip: '198.51.100.7', skip: 'reserved' }), pair({ ip: '104.16.5.5', skip: 'cdn-edge' }),
         pair({ ip: '5.6.7.8', name: 'x_y.example.com', skip: 'bad-name' }), pair({ ip: '5.6.7.9', name: 'x_y.example.com', skip: 'bad-name' })
-      ])
+      ]),
+      // checks past the cap are counted from the rows of the current scope, never from the pair stats
+      ...V.createVerifyRows(['a', 'b', 'c', 'd'].map((l) => pair({ name: `${l}.example.com` })), { maxRows: 0 })
     ];
-    const parts = V.notHereParts(V.summarizeVerify(rows), { skipped: { 'over-cap': 4 }, proxiedNoOrigin: 2, managed: 3 });
+    const parts = V.notHereParts(V.summarizeVerify(rows), { skipped: { 'over-cap': 9 }, proxiedNoOrigin: 2, managed: 3 });
     assert.deepEqual(parts.map((p) => [p.key.replace('vfy.notHere.', ''), p.params.count]),
       [['private', 1], ['reserved', 1], ['cdn-edge', 1], ['bad-name', 1], ['over-cap', 4], ['proxied', 2], ['managed', 3]]);
     for (const p of parts) assert.ok(V.NOT_HERE_KEYS.includes(p.key.replace('vfy.notHere.', '')));
@@ -1385,7 +1452,7 @@ describe('summarizeVerify / verifyHeadline', () => {
 /* ---- CLI plan and exports ---------------------------------------------------------- */
 
 describe('cliPlan', () => {
-  test('private / reserved / bad-name skips plus TIMEOUT and CLOSED rows; not cdn-edge or UPDATED', () => {
+  test('private / reserved / bad-name / over-cap skips plus TIMEOUT and CLOSED rows; not cdn-edge or UPDATED', () => {
     const rows = settle([
       ...V.createVerifyRows([
         pair({ ip: '10.0.0.5', name: 'vpn.example.com', skip: 'private' }),
@@ -1393,15 +1460,17 @@ describe('cliPlan', () => {
         pair({ ip: '5.6.7.8', name: 'x_y.example.com', skip: 'bad-name' }),
         pair({ ip: '104.16.5.5', name: 'edge.example.com', skip: 'cdn-edge' })
       ]),
+      ...V.createVerifyRows([pair({ ip: '1.2.3.7', name: 'many.example.com' })], { maxRows: 0 }),
       done(row({ ip: '1.2.3.5', name: 'legacy.example.com' }), [V_TIMEOUT()]),
       done(row({ ip: '1.2.3.6', name: 'closed.example.com' }), [V_CLOSED()]),
       done(row({ ip: '5.6.7.10', name: 'shop.example.com', via: 'hint', proxied: true }), [V_TIMEOUT()]),
       done(row({ ip: '1.2.3.4', name: 'github.com' }), [V_UPDATED()])
     ]);
     assert.deepEqual(V.cliPlan(rows), {
-      targets: ['10.0.0.5', '198.51.100.7', '5.6.7.8', '1.2.3.5', '1.2.3.6', '5.6.7.10'],
-      names: ['vpn.example.com', 'doc.example.com', 'x_y.example.com', 'legacy.example.com', 'closed.example.com', 'shop.example.com'],
-      rows: 6
+      targets: ['10.0.0.5', '198.51.100.7', '5.6.7.8', '1.2.3.7', '1.2.3.5', '1.2.3.6', '5.6.7.10'],
+      names: ['vpn.example.com', 'doc.example.com', 'x_y.example.com', 'many.example.com', 'legacy.example.com', 'closed.example.com',
+        'shop.example.com'],
+      rows: 7
     });
   });
 });

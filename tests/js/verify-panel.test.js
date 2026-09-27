@@ -440,6 +440,28 @@ describe('launch: only the confirmed batch is sent', () => {
     assert.deepEqual([maybe.state, maybe.notRun], ['not-run', 'budget']);
   });
 
+  test('the 500-check cap applies to the chosen scope and never gives a server past it the green badge', () => {
+    const names = Array.from({ length: 500 }, (_, i) => `n${i}.example.com`);
+    const run = scanRun({ servers: [
+      { server: { id: 's1', name: 'web01' }, needsCert: true, hosts: names.map((name) => ({ name, ip: '1.2.3.4', via: 'dns', covered: true })) },
+      { server: { id: 's2', name: 'web02' }, needsCert: true, hosts: [{ name: 'api.example.com', ip: '1.2.3.5', via: 'dns', covered: true }] }
+    ] });
+    const job = verifyJob(run);
+    const over = () => job.rows.filter((r) => r.skip === 'over-cap').map((r) => r.name);
+    assert.deepEqual([job.rows.length, planCounts(job.rows).checks, planCounts(job.rows).servers], [501, 500, 2]);
+    assert.deepEqual(over(), ['n499.example.com'], 'web02 keeps its check');
+    assert.equal(setVerifyScope(run, 'perIp'), true);
+    assert.deepEqual([job.rows.map((r) => r.name), over()], [['n0.example.com', 'api.example.com'], []]);
+    assert.equal(setVerifyScope(run, 'all'), true);
+    for (const r of job.rows.filter((x) => x.state === 'pending')) {
+      const d = doneRow({ ip: r.ip, name: r.name, server: r.server });
+      Object.assign(r, { state: 'done', status: d.status, reason: d.reason, verdict: d.verdict, served: d.served });
+    }
+    job.runs = 1;
+    assert.deepEqual(verifyTabBadge(run), { value: '1/2', variant: null });
+    assert.match(notHereSentence(job.rows, job.stats), /1 check over the 500 limit/);
+  });
+
   test('runOrder: batch rows first (needs-cert DNS, other DNS, origin checks, each in table order), then the rest', () => {
     const r = (name, extra) => ({ name, via: 'dns', needsCert: true, ...extra });
     const rows = [r('a', { via: 'hint' }), r('b', { needsCert: false }), r('c'), r('d'), r('e')];

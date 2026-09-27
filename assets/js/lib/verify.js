@@ -750,12 +750,13 @@ function skipReason(ip, name, port) {
  * cover and wildcard suspects are left out. Duplicate `ip|port|name` keys keep
  * the first (server-attributed) pair; another inventory server listing the
  * same IP (a shared VIP) is kept in `alsoServers`. Pairs that cannot be sent
- * are listed with `skip`; pairs beyond `maxRows` are only counted ('over-cap').
+ * are listed with `skip`. Every pair is returned: the cap on checks depends on
+ * the scope, so {@link createVerifyRows} applies it after {@link scopePairs}.
  * @param {object} result ScanResult
- * @param {{ maxRows?: number, port?: number }} [opts]
+ * @param {{ port?: number }} [opts]
  * @returns {{ pairs: VerifyPair[], stats: object }}
  */
-export function buildVerifyPairs(result, { maxRows = VERIFY_MAX_ROWS, port = VERIFY_PORT } = {}) {
+export function buildVerifyPairs(result, { port = VERIFY_PORT } = {}) {
   const r = result && typeof result === 'object' ? result : {};
   const hostList = Array.isArray(r.hosts) ? r.hosts : [];
   const byName = new Map(hostList.map((x) => [x.name, x]));
@@ -807,13 +808,12 @@ export function buildVerifyPairs(result, { maxRows = VERIFY_MAX_ROWS, port = VER
     }
   }
 
-  const cap = Number.isFinite(maxRows) && maxRows >= 0 ? Math.floor(maxRows) : Infinity;
-  const pairs = all.slice(0, cap);
-  const skipped = Object.fromEntries(SKIP_REASONS.map((k) => [k, 0]));
+  const pairs = all;
+  // 'over-cap' is not a property of a pair: createVerifyRows() decides it for the scope's rows.
+  const skipped = Object.fromEntries(SKIP_REASONS.filter((k) => k !== 'over-cap').map((k) => [k, 0]));
   for (const p of pairs) if (p.skip) skipped[p.skip] += 1;
-  skipped['over-cap'] = all.length - pairs.length;
   const checkable = pairs.filter((p) => !p.skip);
-  const pairNames = new Set(all.map((p) => p.name));
+  const pairNames = new Set(pairs.map((p) => p.name));
   const noPair = (h) => h && !h.wildcardSuspect && h.cert && h.cert.covered === true && !pairNames.has(h.name);
   const stats = {
     names: new Set(pairs.map((p) => p.name)).size,
@@ -851,20 +851,53 @@ export function scopePairs(pairs, scope) {
 }
 
 /**
- * Fresh rows for the pairs: skipped pairs → 'skipped'; origin pairs (hint or
- * zone, {@link isOriginPair}) → 'not-run: optional' unless `origins` is on;
- * the rest → 'pending'.
+ * The pairs past a cap of `maxRows` checks. Skipped pairs cost nothing; the
+ * others take the places in this order, each tier in execution order: the
+ * first DNS pair of every server address, the other DNS pairs, the first
+ * origin pair of every server address, the other origin pairs. So a server
+ * with many names never pushes another server out, and an origin pair (it may
+ * wait for the opt-in) never pushes out a DNS pair.
  * @param {VerifyPair[]} pairs
- * @param {{ origins?: boolean }} [opts]
+ * @param {number} maxRows
+ * @returns {Set<VerifyPair>}
+ */
+function pairsOverCap(pairs, maxRows) {
+  const cap = Number.isFinite(maxRows) && maxRows >= 0 ? Math.floor(maxRows) : Infinity;
+  const checkable = pairs.filter((p) => !p.skip);
+  if (checkable.length <= cap) return new Set();
+  const seen = new Set();
+  const ranked = checkable.map((p, i) => {
+    const origin = isOriginPair(p);
+    const k = `${origin ? 'origin' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}`;
+    const tier = (origin ? 2 : 0) + (seen.has(k) ? 1 : 0);
+    seen.add(k);
+    return { p, i, tier };
+  });
+  ranked.sort((a, b) => a.tier - b.tier || a.i - b.i);
+  return new Set(ranked.slice(cap).map((x) => x.p));
+}
+
+/**
+ * Fresh rows for the pairs (apply {@link scopePairs} first): skipped pairs →
+ * 'skipped'; pairs past the cap of `maxRows` checks (see pairsOverCap) →
+ * 'skipped' as 'over-cap', listed for the CLI; origin pairs (hint or zone,
+ * {@link isOriginPair}) → 'not-run: optional' unless `origins` is on; the
+ * rest → 'pending'.
+ * @param {VerifyPair[]} pairs
+ * @param {{ origins?: boolean, maxRows?: number }} [opts]
  * @returns {VerifyRow[]}
  */
-export function createVerifyRows(pairs, { origins = false } = {}) {
-  return (Array.isArray(pairs) ? pairs : []).map((p) => {
-    const optional = !p.skip && isOriginPair(p) && !origins;
+export function createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_ROWS } = {}) {
+  const list = Array.isArray(pairs) ? pairs : [];
+  const over = pairsOverCap(list, maxRows);
+  return list.map((p) => {
+    const skip = p.skip || (over.has(p) ? 'over-cap' : null);
+    const optional = !skip && isOriginPair(p) && !origins;
     return {
       ...p,
+      skip,
       alsoServers: Array.isArray(p.alsoServers) ? p.alsoServers.map((s) => ({ ...s })) : [],
-      state: p.skip ? 'skipped' : optional ? 'not-run' : 'pending',
+      state: skip ? 'skipped' : optional ? 'not-run' : 'pending',
       notRun: optional ? 'optional' : null,
       verdict: null, status: null, reason: null, warnings: [], exposure: null, served: null, httpStatus: null,
       tests: [], measurementId: null, measurementDone: false, measurementAt: null, reuseAttempts: 0,
@@ -1140,8 +1173,13 @@ const countBy = (items, keyFn) => {
   return out;
 };
 
-/** Rows that speak for their server: not skipped, and not an origin pair the user left out. */
-const considered = (r) => r.state !== 'skipped' && !(r.state === 'not-run' && r.notRun === 'optional' && !r.verdict);
+/**
+ * Rows that speak for their server: not skipped, and not an origin pair the user left out. A
+ * DNS pair past the cap speaks (never checked, it keeps its server from being called live); an
+ * origin pair past it is left out like an optional one.
+ */
+const considered = (r) => (r.state !== 'skipped' || (r.skip === 'over-cap' && !isOriginPair(r)))
+  && !(r.state === 'not-run' && r.notRun === 'optional' && !r.verdict);
 
 /**
  * Counts for the headline, the tab badge and the exports. Servers are
@@ -1157,7 +1195,9 @@ const considered = (r) => r.state !== 'skipped' && !(r.state === 'not-run' && r.
  * `notHostingOrigins` (complete, every answering row behaves as expected
  * behind a CDN and at least one origin-hint candidate answers "not this
  * name"), `unchecked` (no verdict at all), `incomplete` (≥ 1 considered row
- * that never produced a verdict: pending, running, not-run, error), `chain`
+ * that never produced a verdict: pending, running, not-run, error; a DNS pair
+ * past the cap also keeps its server from being live, but is not counted
+ * here: "Check again" cannot finish it, the not-checkable line names it), `chain`
  * (≥ 1 UPDATED row with chain-incomplete), `wrongCert` (rolled up NOT_HOSTED
  * because a DNS-matched name gets another certificate or a refusal there:
  * visitors of that name get an error), `served` (a server in the base with
@@ -1229,7 +1269,7 @@ export function summarizeVerify(rows) {
     servers.total += 1;
     if (status) servers.checked += 1;
     else servers.unchecked += 1;
-    if (incomplete) servers.incomplete += 1;
+    if (g.rows.some((r) => !hasVerdict(r) && r.skip !== 'over-cap')) servers.incomplete += 1;
     if (status === 'UPDATED') servers.updated += 1;
     if (status === 'UPDATED' && !incomplete) servers.live += 1;
     if (filtered) {
@@ -1269,8 +1309,9 @@ export function summarizeVerify(rows) {
 /**
  * The parts of the not-checkable line (`vfy.notHere` / `vfy.head.notHere`):
  * i18n keys `vfy.notHere.<reason>` with `{ count }` — unique addresses for
- * private / reserved / CDN-edge, unique names for bad-name, checks otherwise —
- * plus proxied names without a known origin and provider-managed names.
+ * private / reserved / CDN-edge, unique names for bad-name, checks otherwise
+ * (bad-port, and over-cap for the rows of the current scope) — plus proxied
+ * names without a known origin and provider-managed names.
  * The view joins them into the `{list}` placeholder.
  * @param {object} summary {@link summarizeVerify} result
  * @param {object} [stats] {@link buildVerifyPairs} stats
@@ -1280,7 +1321,7 @@ export function notHereParts(summary, stats = null) {
   const units = summary?.rows?.skippedUnits ?? {};
   const parts = [];
   for (const reason of SKIP_REASONS) {
-    const count = reason === 'over-cap' ? (stats?.skipped?.['over-cap'] ?? 0) : (units[reason] ?? 0);
+    const count = units[reason] ?? 0;
     if (count > 0) parts.push({ key: `vfy.notHere.${reason}`, params: { count } });
   }
   if (stats?.proxiedNoOrigin > 0) parts.push({ key: 'vfy.notHere.proxied', params: { count: stats.proxiedNoOrigin } });
@@ -1517,11 +1558,11 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
   };
 }
 
-const CLI_SKIPS = new Set(['private', 'reserved', 'bad-name', 'bad-port']);
+const CLI_SKIPS = new Set(['private', 'reserved', 'bad-name', 'bad-port', 'over-cap']);
 
 /**
  * Everything the internet could not answer, for the CLI card: rows skipped as
- * private / reserved / bad-name / bad-port, plus rows whose (last) verdict is
+ * private / reserved / bad-name / bad-port / over-cap, plus rows whose (last) verdict is
  * TIMEOUT or CLOSED — filtered origins included, since only a machine inside
  * the network can read their certificate. CDN-edge rows are not included (the
  * CDN serves its own certificate). Targets and names are unique, in row order.

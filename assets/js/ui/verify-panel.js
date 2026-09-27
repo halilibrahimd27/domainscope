@@ -11,7 +11,8 @@
  *   new scan cancels it ({@link cancelVerify}).
  * - Nothing is sent when the tab opens, not even the free /limits read. The first send of a page
  *   session shows the consent + cost dialog; consent is never stored and "Delete all local data"
- *   resets it. Origin checks (a proxied name on an inventory origin IP) are opt-in.
+ *   resets it. Origin checks (a proxied name on an inventory origin IP, from an origin hint or the
+ *   zone file) are opt-in.
  * - Private, reserved and CDN-edge addresses and names Globalping refuses are listed but never
  *   sent. Private and reserved addresses, refused names and every address the internet could not
  *   answer go into a ready-made CLI command; CDN edges do not (the CDN serves its own certificate).
@@ -41,7 +42,7 @@ import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
   VERIFY_SOFT_CONFIRM_PROBES, VERIFY_MAX_RETRIES, VERIFY_TIMEOUT_S, VERIFY_CSV_COLUMNS, VERIFY_REUSE_WINDOW_MS,
   buildVerifyPairs, scopePairs, createVerifyRows, expectationFor, runVerify, recheckRows, requeueRows, applyOriginOptIn,
-  verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan
+  isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan
 } from '../lib/verify.js';
 
 /* ------------------------------------------------------------------------ */
@@ -543,8 +544,12 @@ function hostSortKey(name) {
   return String(name || '').split('.').reverse().join('.');
 }
 
-/** True for an origin-check row: an inventory origin IP paired with a proxied name (opt-in, critic C.3.1). */
-export function isOriginRow(row) {
+/**
+ * True for an origin-hint row: a candidate origin IP, which may simply not host the name (its
+ * rank, badge and label). The opt-in and the consent cover every origin pair, the zone file's
+ * exact origins too: lib/verify.isOriginPair (critic C.3.1).
+ */
+export function isHintRow(row) {
   return !!row && row.via === 'hint';
 }
 
@@ -568,7 +573,7 @@ export function batchCost(rows, { now = Date.now() } = {}) {
  */
 export function targetRows(rows, { ran, origins, recheck = recheckRows }) {
   const list = ran ? recheck(rows || []) : (rows || []).filter((r) => r.state === 'pending');
-  return list.filter((r) => r.state !== 'skipped' && (origins || !isOriginRow(r)));
+  return list.filter((r) => r.state !== 'skipped' && (origins || !isOriginPair(r)));
 }
 
 /**
@@ -583,7 +588,7 @@ export function planCounts(rows) {
     servers.add(r.server ? `s:${r.server.id}` : `ip:${r.ip}`);
     for (const s of r.alsoServers || []) servers.add(`s:${s.id}`);
   }
-  const origins = (rows || []).filter((r) => isOriginRow(r) && r.state !== 'skipped');
+  const origins = (rows || []).filter((r) => isOriginPair(r) && r.state !== 'skipped');
   return { checks: pending.length, servers: servers.size, origins: origins.length, originsOn: origins.some((r) => r.state === 'pending') };
 }
 
@@ -620,13 +625,13 @@ export function resultRank(row) {
   if (row.state === 'not-run' && row.notRun === 'optional') return 7;
   if (row.state !== 'done') return 4;
   // An origin-hint candidate that is simply not this name's origin (NOT_HOSTED, or a refused SNI).
-  if (isOriginRow(row) && row.proxied && row.exposure === 'not-this-host') return 7;
+  if (isHintRow(row) && row.proxied && row.exposure === 'not-this-host') return 7;
   const w = row.warnings || [];
   switch (row.status) {
     case 'NEEDS_UPDATE': return row.newCertCovers === false || isOriginCa(row) ? 2 : 0;
     case 'TLS_ERROR': return 1;
     case 'UPDATED': return w.some((x) => NOTICE_WARNINGS.includes(x)) ? 1 : 6;
-    case 'NOT_HOSTED': return isOriginRow(row) ? 7 : 2;
+    case 'NOT_HOSTED': return isHintRow(row) ? 7 : 2;
     // A handshake timeout, an unreachable network or a single-probe mix is not "filtered as expected".
     case 'TIMEOUT':
     case 'CLOSED': return row.proxied && EXPECTED_EXPOSURES.has(row.exposure) ? 7 : 3;
@@ -654,7 +659,7 @@ export function statusBadgeSpec(row) {
       return { key: row.newCertCovers === false ? 'vfy.st.NEEDS_UPDATE.other' : 'vfy.st.NEEDS_UPDATE', variant: 'warn', icon: 'alert' };
     }
     // Visitors reach a DNS-matched address, so a wrong certificate there matters; an origin hint may just be another site.
-    case 'NOT_HOSTED': return { key: 'vfy.st.NOT_HOSTED', variant: isOriginRow(row) ? 'neutral' : 'warn', icon: 'minus-circle' };
+    case 'NOT_HOSTED': return { key: 'vfy.st.NOT_HOSTED', variant: isHintRow(row) ? 'neutral' : 'warn', icon: 'minus-circle' };
     case 'TLS_ERROR': return { key: 'vfy.st.TLS_ERROR', variant: 'error', icon: 'x-circle' };
     case 'TIMEOUT': {
       // "Probably filtered" only when no TCP connection was made; a handshake timeout means the origin answered.
@@ -682,7 +687,7 @@ export function verifyRowClass(r) {
 
 /**
  * The order a confirmed batch is queued in: the batch's rows first — DNS / zone rows of servers
- * that need the certificate, then the other DNS rows, then origin checks (so a partial batch
+ * that need the certificate, then the other DNS rows, then origin-hint checks (so a partial batch
  * spends the quota where vfy.confirm.partial says) — each in table order, then every other row
  * (the runner only sends 'pending' rows; the rest are there for the per-address works rule).
  * @param {object[]} rows every row of the job
@@ -692,7 +697,7 @@ export function verifyRowClass(r) {
 export function runOrder(rows, batch) {
   const list = Array.isArray(rows) ? rows : [];
   const inBatch = new Set(batch || []);
-  const rank = (r) => (isOriginRow(r) ? 2 : r.needsCert === false ? 1 : 0);
+  const rank = (r) => (isHintRow(r) ? 2 : r.needsCert === false ? 1 : 0);
   const first = list.filter((r) => inBatch.has(r)).map((r, i) => ({ r, i }))
     .sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r);
   return [...first, ...list.filter((r) => !inBatch.has(r))];
@@ -1005,7 +1010,7 @@ function resultSearchText(row) {
 }
 
 function ipCell(row) {
-  const sub = [serverLabel(row), isOriginRow(row) ? t('vfy.via.hint') : null].filter(Boolean).join(' · ');
+  const sub = [serverLabel(row), isOriginPair(row) ? t(`vfy.via.${row.via}`) : null].filter(Boolean).join(' · ');
   return h('div', { class: 'vfy-cell-2' },
     h('span', { class: 'mono vfy-ip' }, row.ip),
     sub ? h('span', { class: 'vfy-sub' }, sub) : null);
@@ -1181,12 +1186,12 @@ function backgroundToast(job) {
  */
 function execute(job, client, targets, { maxProbes, now = undefined }) {
   const inRows = new Set(job.rows);
-  const batch = targets.filter((r) => inRows.has(r) && r.state !== 'skipped' && (job.origins || !isOriginRow(r)));
+  const batch = targets.filter((r) => inRows.has(r) && r.state !== 'skipped' && (job.origins || !isOriginPair(r)));
   const inBatch = new Set(batch);
   for (const r of job.rows) {
     if (r.state !== 'pending' || inBatch.has(r)) continue;
     r.state = 'not-run';
-    r.notRun = isOriginRow(r) && !r.verdict && !job.origins ? 'optional' : 'budget';
+    r.notRun = isOriginPair(r) && !r.verdict && !job.origins ? 'optional' : 'budget';
     r.stale = !!r.verdict;
   }
   requeueRows(batch);
@@ -1346,7 +1351,7 @@ async function confirmAndRun(job, clickTargets, ctx, { signal, confirm, now }) {
       return false;
     }
     const covered = !!confirmed && sameRows(targets, confirmed.targets) && checks <= confirmed.checks;
-    const origins = targets.filter(isOriginRow).length;
+    const origins = targets.filter(isOriginPair).length;
     const ask = !covered && (!!confirmed || !consented || fit < checks || checks > VERIFY_SOFT_CONFIRM_PROBES
       || (origins > 0 && !originsConsented) || !sameRows(targets, clickTargets));
     if (ask) {
@@ -1611,7 +1616,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
 
   function scopeControl() {
-    const count = (scope) => scopePairs(job.pairs, scope).filter((p) => !p.skip && (job.origins || p.via !== 'hint')).length;
+    const count = (scope) => scopePairs(job.pairs, scope).filter((p) => !p.skip && (job.origins || !isOriginPair(p))).length;
     const all = count('all');
     const perIp = count('perIp');
     if (!(perIp < all)) return null;
@@ -1633,7 +1638,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
 
   function originsControl() {
-    const count = job.rows.filter((r) => isOriginRow(r) && r.state !== 'skipped').length;
+    const count = job.rows.filter((r) => isOriginPair(r) && r.state !== 'skipped').length;
     if (!count) return null;
     const box = checkbox({
       label: t('vfy.origins', { count }),

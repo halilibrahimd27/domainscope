@@ -11,6 +11,13 @@ import { GlobalpingError } from '../../assets/js/lib/globalping.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { toCsv } from '../../assets/js/lib/export.js';
 import { TimeoutError } from '../../assets/js/lib/util.js';
+import { runScan } from '../../assets/js/lib/scanner.js';
+import { DohClient } from '../../assets/js/lib/doh.js';
+import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
+import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
+import { parseInventory } from '../../assets/js/lib/inventory.js';
+import { parseZone } from '../../assets/js/lib/zoneparse.js';
+import { zoneScanInput } from '../../assets/js/lib/zoneorigins.js';
 
 const ROOT = new URL('../../', import.meta.url);
 const read = (p) => readFileSync(new URL(p, ROOT), 'utf8');
@@ -578,6 +585,18 @@ describe('recheckRows / requeueRows / applyOriginOptIn / verifyCost', () => {
     assert.equal(b.filtered.state, 'done', 'a hint row with a verdict is never touched');
   });
 
+  test('a zone-file origin is an origin pair: it waits for the opt-in and counts as an origin check', () => {
+    const zone = V.createVerifyRows([pair({ ip: '5.6.7.13', name: 'shop.example.com', via: 'zone', proxied: true })])[0];
+    assert.ok(V.isOriginPair(zone) && V.isOriginPair(pair({ via: 'hint' })) && !V.isOriginPair(pair()) && !V.isOriginPair(null));
+    assert.deepEqual([zone.state, zone.notRun], ['not-run', 'optional']);
+    assert.deepEqual(V.verifyCost([zone], { now: NOW }), { checks: 0, reuse: 0, probes: 0, servers: 0, origins: 0, optional: 1 });
+    assert.deepEqual(V.applyOriginOptIn([zone], true), [zone]);
+    assert.equal(zone.state, 'pending');
+    assert.deepEqual(V.verifyCost([zone], { now: NOW }), { checks: 1, reuse: 0, probes: 1, servers: 1, origins: 1, optional: 0 });
+    assert.deepEqual(V.applyOriginOptIn([zone], false), [zone]);
+    assert.deepEqual([zone.state, zone.notRun], ['not-run', 'optional']);
+  });
+
   test('verifyCost: a reusable paid measurement costs nothing', () => {
     const a = row({ ip: '1.2.3.4' });
     const b = Object.assign(row({ ip: '1.2.3.5' }), { measurementId: 'm1', measurementDone: false, measurementAt: NOW - 1000 });
@@ -673,7 +692,7 @@ describe('buildVerifyPairs', () => {
     assert.ok(!pairs.some((p) => p.name === 'old.example.com' || p.name === 'nope.example.com'), 'not covered → left out');
     assert.ok(!pairs.some((p) => p.name === 'suspect.example.com'), 'wildcard suspects are left out');
     assert.deepEqual(stats, {
-      names: 10, ips: 8, servers: 4, checkable: 6, originPairs: 2,
+      names: 10, ips: 8, servers: 4, checkable: 6, originPairs: 3,
       skipped: { private: 1, reserved: 2, 'cdn-edge': 1, 'bad-name': 1, 'bad-port': 0, 'over-cap': 0 },
       proxiedNoOrigin: 1, managed: 1
     });
@@ -693,26 +712,28 @@ describe('buildVerifyPairs', () => {
 });
 
 describe('scopePairs / createVerifyRows', () => {
-  test("perIp keeps one DNS-like and one origin pair per IP (zone counts as DNS); skipped pairs stay", () => {
+  test('perIp keeps one DNS pair and one origin pair (zone before hint) per IP; skipped pairs stay', () => {
     const { pairs } = V.buildVerifyPairs(scanResult());
     const per = V.scopePairs(pairs, 'perIp');
-    assert.deepEqual(per.filter((p) => p.ip === '1.2.3.4').map((p) => p.name), ['www.example.com', 'shop.example.com']);
+    assert.deepEqual(per.filter((p) => p.ip === '1.2.3.4').map((p) => p.name), ['www.example.com', 'zone.example.com']);
     assert.ok(per.some((p) => p.name === 'x_y.example.com'), 'skipped kept');
     assert.equal(per.length, pairs.length - 1);
     assert.deepEqual(V.scopePairs(pairs, 'all'), pairs);
     assert.notEqual(V.scopePairs(pairs, 'all'), pairs, 'a copy');
   });
 
-  test('origin-hint rows wait for the opt-in; zone rows do not', () => {
+  test('origin pairs, hint and zone alike, wait for the opt-in; DNS rows do not', () => {
     const { pairs } = V.buildVerifyPairs(scanResult());
     const rows = V.createVerifyRows(pairs);
     const by = (name, ip) => rows.find((r) => r.name === name && (!ip || r.ip === ip));
     assert.deepEqual([by('shop.example.com', '1.2.3.4').state, by('shop.example.com', '1.2.3.4').notRun], ['not-run', 'optional']);
-    assert.equal(by('zone.example.com').state, 'pending');
+    assert.deepEqual([by('zone.example.com').state, by('zone.example.com').notRun], ['not-run', 'optional'],
+      "the zone file's exact origin is not in public DNS either");
     assert.equal(by('www.example.com').state, 'pending');
     assert.equal(by('vpn.example.com').state, 'skipped');
     const on = V.createVerifyRows(pairs, { origins: true });
     assert.equal(on.find((r) => r.name === 'shop.example.com').state, 'pending');
+    assert.equal(on.find((r) => r.name === 'zone.example.com').state, 'pending');
     assert.notEqual(rows[2].alsoServers, pairs[2].alsoServers, 'rows own their arrays');
   });
 });
@@ -1093,6 +1114,57 @@ describe('runVerify', () => {
   });
 });
 
+/* ---- a zone hand-off, end to end --------------------------------------------------- */
+
+describe('a zone-file origin behind the CDN', () => {
+  /** Live DNS: www is proxied (a Cloudflare edge) and the apex is direct; answered for every DoH resolver. */
+  const LIVE = { 'example.com': { A: ['5.6.7.8'] }, 'www.example.com': { A: ['104.16.1.2'] } };
+  const SOA = { mname: 'a.invalid', rname: 'b.invalid', serial: 1, refresh: 1, retry: 1, expire: 1, minimum: 60 };
+  const fetchImpl = async (url) => {
+    const resolver = RESOLVERS.find((x) => url.startsWith(`${x.url}?`));
+    if (!resolver) throw new TypeError(`unexpected URL ${url}`);
+    const q = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns'))).questions[0];
+    const node = LIVE[q.name];
+    const answers = (node?.[q.type] || []).map((data) => ({ name: q.name, type: q.type, ttl: 300, data }));
+    return new Response(encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: node ? 'NOERROR' : 'NXDOMAIN', questions: [{ name: q.name, type: q.type }],
+      answers, authorities: answers.length ? [] : [{ name: 'example.com', type: 'SOA', ttl: 300, data: SOA }], edns: {}
+    }));
+  };
+  // A Cloudflare export: www's origin is known only from the zone file.
+  const ZONE = [
+    'example.com.\t3600\tIN\tSOA\tada.ns.cloudflare.com. dns.cloudflare.com. 2051234567 10000 2400 604800 3600',
+    'example.com.\t1\tIN\tA\t5.6.7.8 ; cf_tags=cf-proxied:false',
+    'www.example.com.\t1\tIN\tA\t1.2.3.4 ; cf_tags=cf-proxied:true',
+    ''
+  ].join('\n');
+
+  test('its pair (origin IP + proxied name) is never sent while the origin opt-in is off', async () => {
+    const result = await runScan({
+      domains: [], zone: zoneScanInput(parseZone(ZONE, { filename: 'example.com.txt' })), exact: true, originHints: false,
+      cert: { hostnames: ['example.com', '*.example.com'], serialHex: 'aa' },
+      inventory: parseInventory('web01 1.2.3.4\napex01 5.6.7.8'),
+      dns: new DohClient({ fetchImpl, baseDelayMs: 1, maxDelayMs: 2, retries: 0 }), fetchImpl, balance: false, sourceGraceMs: 0
+    });
+    const { pairs, stats } = V.buildVerifyPairs(result);
+    const www = pairs.find((p) => p.name === 'www.example.com');
+    assert.deepEqual([www.ip, www.via, www.proxied, www.skip], ['1.2.3.4', 'zone', true, null]);
+    assert.equal(stats.originPairs, 1);
+    const rows = V.createVerifyRows(pairs);
+    const zoneRow = rows.find((r) => r.name === 'www.example.com');
+    assert.deepEqual([zoneRow.state, zoneRow.notRun], ['not-run', 'optional']);
+    assert.deepEqual(V.verifyCost(rows, { now: NOW }), { checks: 1, reuse: 0, probes: 1, servers: 1, origins: 0, optional: 1 });
+    const client = fakeClient({ '5.6.7.8|example.com': [{ tests: T_UPDATED() }], '1.2.3.4|www.example.com': [{ tests: T_UPDATED() }] });
+    await V.runVerify(rows, runOpts(client));
+    assert.deepEqual(client.calls.create.map((c) => c.key), ['5.6.7.8|example.com'], 'the apex only');
+    // Opted in, the origin check runs.
+    V.applyOriginOptIn(rows, true);
+    assert.equal(V.verifyCost(rows, { now: NOW }).origins, 1);
+    await V.runVerify(rows, runOpts(client));
+    assert.deepEqual(client.calls.create.map((c) => c.key), ['5.6.7.8|example.com', '1.2.3.4|www.example.com']);
+  });
+});
+
 /* ---- summary / headline ------------------------------------------------------------ */
 
 /** The E2E scenario, as rows: web01 {wild ✓, www old, shop hint ✓+chain, exposed}, db01 {vpn private}, api ✓, legacy timeout. */
@@ -1277,12 +1349,14 @@ describe('summarizeVerify / verifyHeadline', () => {
     assert.deepEqual([sum.servers.old, sum.servers.other], [0, 1]);
   });
 
-  test('a via:"zone" row behaves like a DNS row', () => {
+  test('a via:"zone" row is judged like a DNS row', () => {
     const r = done(row({ name: 'github.com', via: 'zone' }), [V_UPDATED()]);
     const sum = V.summarizeVerify(settle([r]));
     assert.equal(sum.servers.live, 1);
     assert.equal(r.exposure, null);
-    assert.deepEqual(V.scopePairs([pair({ via: 'zone' }), pair({ via: 'dns', name: 'b.example.com' })], 'perIp').length, 1);
+    // …but it is an origin pair: in the per-IP scope it never shadows the DNS pair on its IP.
+    assert.deepEqual(V.scopePairs([pair({ via: 'zone' }), pair({ via: 'dns', name: 'b.example.com' })], 'perIp').map((p) => p.via),
+      ['zone', 'dns']);
   });
 
   test('origin pairs left out by the opt-in do not make a server incomplete', () => {

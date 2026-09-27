@@ -55,7 +55,7 @@ export const VERIFY_WARNINGS = Object.freeze(['chain-incomplete', 'expired', 'no
 export const VERIFY_STATES = Object.freeze(['skipped', 'pending', 'running', 'done', 'error', 'not-run']);
 /** Why a pair is listed but never sent. */
 export const SKIP_REASONS = Object.freeze(['private', 'reserved', 'cdn-edge', 'bad-name', 'bad-port', 'over-cap']);
-/** Why a pending row did not run. 'optional': an origin-hint pair while the origin opt-in is off. */
+/** Why a pending row did not run. 'optional': an origin pair (hint or zone) while the origin opt-in is off. */
 export const NOT_RUN_REASONS = Object.freeze(['quota', 'budget', 'cancelled', 'unreachable', 'optional']);
 /**
  * P0.2 exposure of a proxied origin pair. 'filtered' needs ≥ 2 probes from
@@ -659,10 +659,20 @@ export function requeueRows(rows) {
 }
 
 /**
- * The origin opt-in: origin-hint pairs (`via: 'hint'`) send an inventory
- * origin IP with a proxied name, which Globalping keeps public by measurement
- * id, so they run only when the user asks. Switches never-checked hint rows
- * between 'pending' (on) and 'not-run: optional' (off).
+ * An origin pair: an inventory origin IP with a proxied name it serves behind
+ * the CDN, from an origin hint (`via: 'hint'`, a candidate) or the zone file
+ * (`via: 'zone'`, that name's exact origin, which public DNS does not show).
+ * Globalping keeps the result public by measurement id, so these pairs wait
+ * for the origin opt-in. Verdict rules still treat a zone pair like a DNS one.
+ * @param {VerifyPair|VerifyRow|null|undefined} p
+ * @returns {boolean}
+ */
+export const isOriginPair = (p) => !!p && (p.via === 'hint' || p.via === 'zone');
+
+/**
+ * The origin opt-in: origin pairs ({@link isOriginPair}) run only when the
+ * user asks. Switches never-checked origin rows between 'pending' (on) and
+ * 'not-run: optional' (off).
  * @param {VerifyRow[]} rows
  * @param {boolean} enabled
  * @returns {VerifyRow[]} the rows that changed
@@ -670,7 +680,7 @@ export function requeueRows(rows) {
 export function applyOriginOptIn(rows, enabled) {
   const changed = [];
   for (const r of Array.isArray(rows) ? rows : []) {
-    if (r.via !== 'hint' || r.skip || r.verdict) continue;
+    if (!isOriginPair(r) || r.skip || r.verdict) continue;
     if (enabled && r.state === 'not-run' && r.notRun === 'optional') {
       r.state = 'pending';
       r.notRun = null;
@@ -694,8 +704,9 @@ function reusable(row, time) {
  * Plan and cost preview for the plan line and the confirm dialog, over the
  * rows in state 'pending': `checks` must post a new measurement (× probes per
  * check = `probes`), `reuse` poll an already-paid one for free, `servers` is
- * how many servers they cover, `origins` how many of them are origin-hint
- * pairs. `optional` counts the origin pairs still waiting for the opt-in.
+ * how many servers they cover, `origins` how many of them are origin pairs
+ * ({@link isOriginPair}). `optional` counts the origin pairs still waiting
+ * for the opt-in.
  * @param {VerifyRow[]} rows
  * @param {{ probesPerCheck?: number, now?: number|Date }} [opts]
  * @returns {{ checks: number, reuse: number, probes: number, servers: number, origins: number, optional: number }}
@@ -712,7 +723,7 @@ export function verifyCost(rows, { probesPerCheck = 1, now = Date.now() } = {}) 
     if (r.state !== 'pending') continue;
     if (reusable(r, time)) reuse += 1;
     else checks += 1;
-    if (r.via === 'hint') origins += 1;
+    if (isOriginPair(r)) origins += 1;
     servers.add(serverKeyOf(r));
   }
   return { checks, reuse, probes: checks * probesPerCheck, servers: servers.size, origins, optional };
@@ -809,7 +820,7 @@ export function buildVerifyPairs(result, { maxRows = VERIFY_MAX_ROWS, port = VER
     ips: new Set(pairs.map((p) => p.ip)).size,
     servers: new Set(checkable.map((p) => (p.server ? `s:${p.server.id}` : `ip:${p.ip}`))).size,
     checkable: checkable.length,
-    originPairs: checkable.filter((p) => p.via === 'hint').length,
+    originPairs: checkable.filter(isOriginPair).length,
     skipped,
     proxiedNoOrigin: hostList.filter((h) => noPair(h) && h.classification?.hidesOrigin).length,
     managed: hostList.filter((h) => noPair(h) && !h.classification?.hidesOrigin && h.classification?.certManagedByProvider).length
@@ -819,8 +830,9 @@ export function buildVerifyPairs(result, { maxRows = VERIFY_MAX_ROWS, port = VER
 
 /**
  * Narrow the pairs: 'all' keeps every pair; 'perIp' keeps, per IP, the first
- * DNS (or zone) pair and the first origin-hint pair (so the exposure check on
- * that IP survives). Skipped pairs are always kept.
+ * DNS pair and the first origin pair — zone before hint — (so the exposure
+ * check on that IP survives, and an origin pair waiting for the opt-in never
+ * displaces the DNS pair). Skipped pairs are always kept.
  * @param {VerifyPair[]} pairs
  * @param {'all'|'perIp'} scope
  * @returns {VerifyPair[]}
@@ -831,7 +843,7 @@ export function scopePairs(pairs, scope) {
   const seen = new Set();
   return list.filter((p) => {
     if (p.skip) return true;
-    const k = `${p.ip}|${p.port}|${isDnsLike(p.via) ? 'dns' : 'hint'}`;
+    const k = `${p.ip}|${p.port}|${isOriginPair(p) ? 'origin' : 'dns'}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -839,15 +851,16 @@ export function scopePairs(pairs, scope) {
 }
 
 /**
- * Fresh rows for the pairs: skipped pairs → 'skipped'; origin-hint pairs →
- * 'not-run: optional' unless `origins` is on; the rest → 'pending'.
+ * Fresh rows for the pairs: skipped pairs → 'skipped'; origin pairs (hint or
+ * zone, {@link isOriginPair}) → 'not-run: optional' unless `origins` is on;
+ * the rest → 'pending'.
  * @param {VerifyPair[]} pairs
  * @param {{ origins?: boolean }} [opts]
  * @returns {VerifyRow[]}
  */
 export function createVerifyRows(pairs, { origins = false } = {}) {
   return (Array.isArray(pairs) ? pairs : []).map((p) => {
-    const optional = !p.skip && p.via === 'hint' && !origins;
+    const optional = !p.skip && isOriginPair(p) && !origins;
     return {
       ...p,
       alsoServers: Array.isArray(p.alsoServers) ? p.alsoServers.map((s) => ({ ...s })) : [],

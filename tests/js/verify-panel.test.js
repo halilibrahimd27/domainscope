@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { setLang, t, hasString } from '../../assets/js/i18n.js';
 import {
   badgeFromSummary, headlineParams, resultRank, statusBadgeSpec, targetRows, planCounts, batchCost, notHereText,
-  isOriginRow, verifyTabBadge, verifyExport, cancelVerify, GP_CREDITS_URL,
+  isHintRow, verifyTabBadge, verifyExport, cancelVerify, GP_CREDITS_URL,
   verifyRowClass, runOrder, notHereSentence, emptyKey, liveQuota, quotaOutActive, planText, verifyCliSweep, errorText,
   verifyJob, launchVerify, setOriginOptIn, setVerifyScope
 } from '../../assets/js/ui/verify-panel.js';
@@ -172,13 +172,28 @@ describe('rows: rank, badge, what a click sends', () => {
     ];
     const rows = createVerifyRows(pairs, { origins: false });
     assert.deepEqual(targetRows(rows, { ran: false, origins: false }).map((r) => r.key), ['a']);
-    assert.ok(isOriginRow(rows[1]) && !isOriginRow(rows[0]));
+    assert.ok(isHintRow(rows[1]) && !isHintRow(rows[0]));
     const withOrigins = createVerifyRows(pairs, { origins: true });
     assert.deepEqual(targetRows(withOrigins, { ran: false, origins: true }).map((r) => r.key), ['a', 'b']);
     // After a batch: only what recheckRows returns, and never an origin row while the opt-in is off.
     const recheck = () => [withOrigins[0], withOrigins[1]];
     assert.deepEqual(targetRows(withOrigins, { ran: true, origins: false, recheck }).map((r) => r.key), ['a']);
     assert.deepEqual(targetRows(withOrigins, { ran: true, origins: true, recheck }).map((r) => r.key), ['a', 'b']);
+  });
+
+  test('a zone-file origin is an origin check for the opt-in, yet judged like a DNS match, not a hint', () => {
+    const pairs = [
+      { key: 'a', ip: '1.2.3.4', port: 443, name: 'www.example.com', server: { id: 's1', name: 'web01' }, via: 'zone', proxied: true, skip: null },
+      { key: 'b', ip: '5.6.7.8', port: 443, name: 'api.example.com', server: null, via: 'dns', skip: null }
+    ];
+    const rows = createVerifyRows(pairs, { origins: false });
+    assert.deepEqual(targetRows(rows, { ran: false, origins: false }).map((r) => r.key), ['b']);
+    assert.deepEqual(targetRows(createVerifyRows(pairs, { origins: true }), { ran: false, origins: true }).map((r) => r.key), ['a', 'b']);
+    assert.deepEqual(planCounts(rows), { checks: 1, servers: 1, origins: 1, originsOn: false });
+    const wrong = doneRow({ status: 'NOT_HOSTED', reason: 'not-covered', via: 'zone', proxied: true });
+    assert.ok(!isHintRow(wrong));
+    assert.equal(resultRank(wrong), 2, 'the zone file says this is the origin: another certificate there is a problem');
+    assert.equal(statusBadgeSpec(wrong).variant, 'warn');
   });
 
   test('plan: checks, servers (a shared VIP counts for each server) and optional origin checks', () => {
@@ -547,6 +562,37 @@ describe('launch: only the confirmed batch is sent', () => {
     const third = withOrigin();
     assert.equal(await launchVerify(third, ctxFor(gp), { confirm: async (o) => { asked.push([o.first, o.checks, o.origins]); return false; } }), false);
     assert.deepEqual(asked.at(-1), [true, 2, 1], '"Delete all local data" resets the origin consent too');
+  });
+
+  test('a zone-file origin (origin IP + proxied name) waits for the opt-in and is named in the dialog', async () => {
+    state.clearAll();
+    const zoneRun = () => {
+      const run = scanRun({
+        servers: [{ server: { id: 's1', name: 'web01' }, needsCert: true, hosts: [{ name: 'www.example.com', ip: '1.2.3.4', via: 'zone', covered: true }] }],
+        unmatchedIps: [{ ip: '5.6.7.8', hosts: ['api.example.com'] }],
+        hosts: [{ name: 'www.example.com', classification: { hidesOrigin: true, provider: { name: 'Cloudflare' } } }]
+      });
+      verifyJob(run);
+      return run;
+    };
+    const gp = fakeGp();
+    const asked = [];
+    const confirm = async (o) => { asked.push([o.first, o.checks, o.origins]); return true; };
+    const first = zoneRun();
+    const www = first.verify.rows.find((r) => r.name === 'www.example.com');
+    assert.deepEqual([www.via, www.proxied, www.state, www.notRun], ['zone', true, 'not-run', 'optional']);
+    let ended = whenEnded(first.verify);
+    assert.equal(await launchVerify(first, ctxFor(gp), { confirm }), true);
+    await ended;
+    assert.deepEqual(gp.posts, ['5.6.7.8 api.example.com'], 'the origin pair stayed in the browser');
+    const second = zoneRun();
+    assert.equal(setOriginOptIn(second, true), true);
+    ended = whenEnded(second.verify);
+    assert.equal(await launchVerify(second, ctxFor(gp), { confirm }), true);
+    await ended;
+    assert.deepEqual(asked, [[true, 1, 0], [false, 2, 1]], 'consent given, yet asked again with the origin sentence');
+    assert.ok(gp.posts.includes('1.2.3.4 www.example.com'));
+    state.clearAll();
   });
 });
 

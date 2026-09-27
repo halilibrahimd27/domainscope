@@ -1614,12 +1614,15 @@ export async function runScan(config = {}, hooks = {}) {
   // round (at every level, Off included), so a host only the probe stages found
   // whose left-most labels carry one of this scan's private custom labels
   // (zzx.api from the recursive round, zzx or zzx2 from a permutation) is
-  // custom-only too.
+  // custom-only too. A wordlist hit needs no such guess: its attribution names
+  // the tier, so a core-list 'jenkins' stays public next to a custom 'jenk'.
   const customPrivate = [...new Set(customLabels.flatMap((c) => c.split('.')))].filter((l) => l && !CORE_LABELS.has(l));
   const isCustomOnly = (name, nameOrigins) => {
-    if (customPrivate.length && [...nameOrigins].every((o) => PROBE_ORIGINS.has(o))
-      && leftmostLabels(name, targetDomains).some((l) => customPrivate.some((p) => l.includes(p)))) return true;
-    if (nameOrigins.size !== 1 || !nameOrigins.has('wordlist')) return false;
+    if (!nameOrigins.has('wordlist')) {
+      return customPrivate.length > 0 && nameOrigins.size > 0 && [...nameOrigins].every((o) => PROBE_ORIGINS.has(o))
+        && leftmostLabels(name, targetDomains).some((l) => customPrivate.some((p) => l.includes(p)));
+    }
+    if (nameOrigins.size !== 1) return false;
     const attr = bfAttribution.get(name);
     if (!attr || attr.tier !== 'custom') return false;
     return !attr.label.split('.').every((l) => CORE_LABELS.has(l));

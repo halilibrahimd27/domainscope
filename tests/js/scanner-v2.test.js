@@ -1241,6 +1241,20 @@ describe('discovery engine v2: the tab-only custom list is never learned', () =>
     assert.ok(learnedLabelsFromScan(scan).includes('www'));
   });
 
+  test('a core-list wordlist hit stays public even when a custom label is a substring of it', async () => {
+    const A = 'priv.example';
+    const zone = { [A]: { A: ['203.0.113.1'] }, [`jenkins.${A}`]: { A: ['203.0.113.2'] } };
+    const { fetchImpl, dns } = mkWorld({ zone });
+    const scan = await runScan({
+      domains: [A], sources: [], bruteforce: 'small', customWordlist: ['jenk'],
+      mine: false, permutationBudget: 0, recursive: false, originHints: false, balance: false, dns, fetchImpl
+    });
+    const host = byName(scan).get(`jenkins.${A}`);
+    assert.deepEqual(host.origins, ['wordlist']);
+    assert.equal(host.customOnly, false);
+    assert.ok(learnedLabelsFromScan(scan).includes('jenkins'));
+  });
+
   test('learnedLabelsFromScan never returns an IP written into a label', () => {
     const res = (ip) => ({ ipv4: [ip], ipv6: [], cnames: [] });
     const scan = {

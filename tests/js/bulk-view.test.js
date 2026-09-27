@@ -1,12 +1,12 @@
 /**
- * views/bulk.js — the parts that run without a DOM: the job runner (cancelling mid-enrichment,
- * the resolver of the run for every PTR query).
- * A fake DNS client and fetch stand in for the network. Documentation data only (example.com, 192.0.2.0/24).
+ * views/bulk.js — the parts that run without a DOM: the input parser (JSON lists) and the job
+ * runner (cancelling mid-enrichment, the resolver of the run for every PTR query). A fake DNS
+ * client and fetch stand in for the network. Documentation data only (example.com, 192.0.2.0/24).
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createJob, runJob } from '../../assets/js/views/bulk.js';
+import { parseBulkInput, createJob, runJob } from '../../assets/js/views/bulk.js';
 
 const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
@@ -36,6 +36,34 @@ function fakeDns(names, ptr) {
 /** Never settles until the signal aborts (a lookup still in flight when Cancel is pressed). */
 const hang = (signal) => new Promise((_, reject) => {
   signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+});
+
+describe('bulk view: input', () => {
+  test('a compact JSON array of host names (jq -c, JSON.stringify)', () => {
+    const r = parseBulkInput('["a.example.com","b.example.com"]');
+    assert.deepEqual([r.names, r.invalid], [['a.example.com', 'b.example.com'], []]);
+  });
+
+  test('a pretty-printed array reports no stray brackets', () => {
+    const r = parseBulkInput('[\n  "a.example.com",\n  "b.example.com"\n]\n');
+    assert.deepEqual([r.names, r.invalid], [['a.example.com', 'b.example.com'], []]);
+  });
+
+  test('objects: host-name fields are read, other values ignored; JSON lines too', () => {
+    const r = parseBulkInput(JSON.stringify([{ name: 'a.example.com', type: 'A', ttl: 300 }, { hostname: 'b.example.com', ip: '192.0.2.1' }]));
+    assert.deepEqual([r.names, r.invalid, r.ips], [['a.example.com', 'b.example.com'], [], []]);
+    const lines = parseBulkInput('{"host":"c.example.com","input":"example.com","source":"crtsh"}\n{"host":"d.example.com","input":"example.com","source":"crtsh"}\n');
+    assert.deepEqual([lines.names, lines.invalid], [['c.example.com', 'd.example.com'], []]);
+    const nested = parseBulkInput('{"names":["e.example.com","f.example.com"],"note":"from the zone"}');
+    assert.deepEqual([nested.names, nested.invalid], [['e.example.com', 'f.example.com'], []]);
+  });
+
+  test('plain lists are unchanged; text that only looks like JSON is read as a list', () => {
+    const r = parseBulkInput('www.example.com, api.example.com\n# comment\n192.0.2.7');
+    assert.deepEqual([r.names, r.ips, r.invalid], [['www.example.com', 'api.example.com'], ['192.0.2.7'], []]);
+    const broken = parseBulkInput('[a.example.com b.example.com');
+    assert.deepEqual([broken.names, broken.invalid], [['b.example.com'], ['[a.example.com']]);
+  });
 });
 
 describe('bulk view: job runner', () => {

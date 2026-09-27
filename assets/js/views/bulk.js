@@ -60,7 +60,7 @@ registerStrings('en', {
   'bulk.inputLabel': 'Hostnames to resolve',
   'bulk.placeholder': 'www.example.com.tr\napi.example.com.tr\nmail.example.com.tr\n\n# one per line, or separated by spaces / commas; URLs are fine',
   'bulk.dropTitle': 'Import a list',
-  'bulk.dropHint': 'text or CSV · drop, click or paste',
+  'bulk.dropHint': 'text, CSV or JSON · drop, click or paste',
   'bulk.fromScan': 'Use the {count} names of the last scan',
   'bulk.fromScanTitle': 'Hosts found by the SSL Targets scan of {domains}',
   'bulk.clear': 'Clear',
@@ -169,7 +169,7 @@ registerStrings('tr', {
   'bulk.inputLabel': 'Çözümlenecek host adları',
   'bulk.placeholder': 'www.example.com.tr\napi.example.com.tr\nmail.example.com.tr\n\n# her satıra bir ad, ya da boşluk / virgülle ayrılmış; URL de olur',
   'bulk.dropTitle': 'Liste içe aktar',
-  'bulk.dropHint': 'metin veya CSV · bırakın, tıklayın ya da yapıştırın',
+  'bulk.dropHint': 'metin, CSV veya JSON · bırakın, tıklayın ya da yapıştırın',
   'bulk.fromScan': 'Son taramadaki {count} adı kullan',
   'bulk.fromScanTitle': '{domains} için SSL Hedefleri taramasında bulunan host’lar',
   'bulk.clear': 'Temizle',
@@ -276,9 +276,53 @@ registerStrings('tr', {
 /* Pure helpers (exported for the E2E checks)                               */
 /* ------------------------------------------------------------------------ */
 
+/** Object keys whose string values are host names in JSON input (API and tool output). */
+const JSON_NAME_KEY = /^(?:names?|hosts?|host_?names?|domains?|fqdns?|subdomains?|dns_?names?|common_?name|name_value)$/i;
+
+/**
+ * Host-name tokens of a parsed JSON value: every string of an array, and of an object only the
+ * values of name-like keys ({@link JSON_NAME_KEY}) — `type`, `ttl`, `source` … are not names.
+ * @param {any} node
+ * @param {string|null} [key] the object key `node` is the value of (null: a list item / the top)
+ * @param {string[]} [out]
+ * @returns {string[]}
+ */
+function jsonTokens(node, key = null, out = []) {
+  const named = key === null || JSON_NAME_KEY.test(key);
+  if (typeof node === 'string') {
+    if (named) out.push(...splitList(node));
+  } else if (Array.isArray(node)) {
+    for (const item of node) jsonTokens(item, named ? null : key, out);
+  } else if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) jsonTokens(v, k, out);
+  }
+  return out;
+}
+
+/**
+ * Tokens of the pasted text or imported file. A JSON document (`jq -c`, JSON.stringify, API
+ * output) or JSON lines (one object per line) are read with {@link jsonTokens}, so brackets,
+ * quotes and field names never end up as "invalid entries"; anything else is a plain list.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function inputTokens(text) {
+  const json = (s) => {
+    const trimmed = s.trim();
+    if (!/^[[{]/.test(trimmed)) return null;
+    try {
+      return jsonTokens(JSON.parse(trimmed));
+    } catch {
+      return null;
+    }
+  };
+  return json(text) ?? text.split(/\r\n|\r|\n/).flatMap((line) => json(line) ?? splitList(line));
+}
+
 /**
  * Parse the pasted list: hostnames (normalized, de-duplicated, input order), invalid
  * tokens, IP addresses (reported separately — they belong in IP Intel) and duplicates.
+ * JSON (an array, an object, or JSON lines) is accepted too.
  * @param {string} text
  * @param {{ max?: number }} [opts]
  * @returns {{ names: string[], invalid: string[], ips: string[], duplicates: number, truncated: boolean, total: number }}
@@ -289,7 +333,7 @@ export function parseBulkInput(text, { max = MAX_NAMES } = {}) {
   const invalid = new Set();
   const ips = new Set();
   let duplicates = 0;
-  for (const tok of splitList(String(text ?? ''))) {
+  for (const tok of inputTokens(String(text ?? ''))) {
     const host = normalizeHostname(tok);
     if (host) {
       if (seen.has(host)) duplicates += 1;

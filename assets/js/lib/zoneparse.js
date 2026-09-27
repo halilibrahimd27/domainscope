@@ -3891,10 +3891,11 @@ export function toBindText(zone, { header = true } = {}) {
  * An INCLUDE_REJECTED whose path names another merged file (one without a fatal issue) becomes
  * INCLUDE_MERGED.
  * @param {object[]} zones
- * @param {{ limits?: object }} [opts]
+ * @param {{ limits?: object, lead?: object|null }} [opts] `lead`: the zone (one of `zones`) whose
+ *   format, dialect, origin and `$TTL` the merge takes; default: the first with a confident origin
  * @returns {object} Zone
  */
-export function mergeZones(zones, { limits = ZONE_LIMITS } = {}) {
+export function mergeZones(zones, { limits = ZONE_LIMITS, lead: chosen = null } = {}) {
   const L = { ...ZONE_LIMITS, ...limits };
   const list = Array.isArray(zones) ? zones.filter((z) => z && typeof z === 'object' && Array.isArray(z.records)) : [];
   const merged = newZone({ filename: '', bytes: 0 });
@@ -3910,7 +3911,8 @@ export function mergeZones(zones, { limits = ZONE_LIMITS } = {}) {
     merged.sources = list.flatMap((z) => z.sources || []);
     return failZone(merged, list[0].fatal);
   }
-  const lead = good.find((z) => z.originConfidence === 'high' && z.origin) || good.find((z) => z.origin) || good[0];
+  const lead = (chosen && good.includes(chosen) ? chosen : null)
+    || good.find((z) => z.originConfidence === 'high' && z.origin) || good.find((z) => z.origin) || good[0];
   merged.format = lead.format;
   merged.dialect = lead.dialect;
   merged.origin = lead.origin;

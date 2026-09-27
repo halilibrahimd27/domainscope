@@ -1327,6 +1327,13 @@ describe('helpers', () => {
     assert.deepEqual(m.sources.map((s) => s.name), ['main.zone', 'part.zone']);
     assert.deepEqual(m.warnings.map((w) => [w.code, w.severity]), [['INCLUDE_MERGED', 'info']]);
     assert.equal(m.stats.records, 3);
+    // `lead`: the part comes first (drop order) but the main file names the merged zone
+    const cp = parseZone('; Zone file for example.com\n$ORIGIN example.com.\n$TTL 300\n@ NS ns1\n', { filename: 'main.zone' });
+    const own = parseZone('$ORIGIN example.com.\n$TTL 60\nwww A 192.0.2.10\n', { filename: 'part.zone' });
+    const pick = (z) => [z.dialect, z.defaultTtl, z.sources.map((s) => s.name).join()];
+    assert.deepEqual(pick(mergeZones([own, cp])), ['generic', 60, 'part.zone,main.zone']);
+    assert.deepEqual(pick(mergeZones([own, cp], { lead: cp })), ['cpanel', 300, 'part.zone,main.zone']);
+    assert.deepEqual(pick(mergeZones([own, cp], { lead: parseZone('') })), ['generic', 60, 'part.zone,main.zone'], 'not one of the zones');
   });
 
   test('mergeZones: origin mismatch → fatal; duplicates across files; maxRecords', () => {

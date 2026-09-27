@@ -703,7 +703,7 @@ Pure, synchronous, DOM-free, no I/O. `parseZone()` never throws: every problem i
 ```js
 export function parseZone(input /* string | ArrayBuffer | Uint8Array */, { origin, filename, format = 'auto' /* | ZONE_FORMATS */, source, limits, defaultTtl } = {}) -> Zone
 export function detectZoneFormat(text, { filename }) -> { format, dialect, markers: string[], confidence: 'high'|'low', notZone, fatal: { code, params }|null }
-export function mergeZones(zones, { limits }) -> Zone                 // several files of ONE zone (API pages, a $INCLUDE part); different origins → fatal ORIGIN_MISMATCH
+export function mergeZones(zones, { limits, lead }) -> Zone           // several files of ONE zone (API pages, a $INCLUDE part); different origins → fatal ORIGIN_MISMATCH
 export function inferOriginFromFilename(filename) -> string|null      // 'db.example.com', 'example.com.zone.txt' → 'example.com'
 export function zoneNames(zone) -> string[] ; export function uniqueRecords(zone) -> ZoneRecord[] ; export function wildcardCovers(zone, name) -> string|null   // RFC 4592
 export function rdataKey(type, data) -> string ; export function txtJoinedKey(type, data) -> string   // THE comparison keys (file data and live dnswire rr.data alike)

@@ -1869,7 +1869,7 @@ class OutputTests(unittest.TestCase):
         cls.report = sample_report()
 
     def test_display_text_escapes_controls(self):
-        text = sos.display_text('a\x1b[2Kb\x07\x9b‮c\r\n \x7f')
+        text = sos.display_text('a\x1b[2Kb\x07\x9b\u202ec\r\n\u2028\x7f')
         self.assertEqual(text, 'a\\x1b[2Kb\\x07\\x9b\\u202ec\\x0d\\x0a\\u2028\\x7f')
         self.assertTrue(text.isprintable())
         for kept in ('Let’s Encrypt', 'Türkçe Şirket A.Ş.', '*.example.com',

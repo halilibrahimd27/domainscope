@@ -96,16 +96,22 @@ export function isRunSignal(change) {
 }
 
 /**
- * Has this browser used the app before the picker existed? Any stored key of the app other than
- * the settings record (which a theme or language change alone writes): a saved inventory,
- * remembered view options or learned names.
+ * Stored keys that only a run or a save leaves behind: saved servers (state.js) and the names a
+ * finished scan learned (lib/learned.js). Remembered view options are not among them: a switch
+ * flipped or a language pack opened on the start page writes those without running anything.
+ */
+export const RUN_STORAGE_KEYS = Object.freeze(['ssds.inventory', 'ssds.learned.labels']);
+
+/**
+ * Has this browser run something here before the picker existed? One of {@link RUN_STORAGE_KEYS}
+ * is stored. (Runs that left nothing stored cannot be told apart from a first visit.)
  * @param {Iterable<string>} keys localStorage keys
- * @param {{ prefix?: string, ignore?: ReadonlyArray<string> }} [opts]
+ * @param {ReadonlyArray<string>} [runKeys]
  * @returns {boolean}
  */
-export function hasUsedBefore(keys, { prefix = 'ssds.', ignore = ['ssds.settings', 'ssds.probe'] } = {}) {
+export function hasUsedBefore(keys, runKeys = RUN_STORAGE_KEYS) {
   for (const key of keys || []) {
-    if (typeof key === 'string' && key.startsWith(prefix) && !ignore.includes(key)) return true;
+    if (typeof key === 'string' && runKeys.includes(key)) return true;
   }
   return false;
 }

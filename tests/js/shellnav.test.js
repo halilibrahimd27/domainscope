@@ -6,13 +6,43 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  NAV_GROUPS, OTHER_GROUP, groupViews, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, hasUsedBefore,
-  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, shortcutFor, pickShortcutTarget
+  NAV_GROUPS, OTHER_GROUP, groupViews, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
+  SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, shortcutFor,
+  pickShortcutTarget
 } from '../../assets/js/lib/shellnav.js';
 import { VIEWS, DEFAULT_VIEW } from '../../assets/js/app.js';
 import { hasString } from '../../assets/js/i18n.js';
+import { createState } from '../../assets/js/state.js';
+import { createLearnedStore } from '../../assets/js/lib/learned.js';
 
 const ids = (list) => list.map((x) => x.id);
+
+/** Web Storage stub: just enough for state.js and lib/learned.js. */
+class MemoryStorage {
+  constructor() {
+    this.map = new Map();
+  }
+
+  get length() {
+    return this.map.size;
+  }
+
+  key(i) {
+    return [...this.map.keys()][i] ?? null;
+  }
+
+  getItem(k) {
+    return this.map.has(k) ? this.map.get(k) : null;
+  }
+
+  setItem(k, v) {
+    this.map.set(k, String(v));
+  }
+
+  removeItem(k) {
+    this.map.delete(k);
+  }
+}
 const el = (tagName, extra = {}) => ({ tagName: tagName.toUpperCase(), ...extra });
 const key = (k, extra = {}) => ({ key: k, target: el('body'), ...extra });
 
@@ -95,17 +125,32 @@ describe('first-visit task picker', () => {
     assert.equal(isRunSignal(null), false);
   });
 
-  test('hasUsedBefore: any stored key of the app except the settings record', () => {
+  test('hasUsedBefore: only what a run or a save leaves stored (saved servers, learned names)', () => {
+    assert.deepEqual(RUN_STORAGE_KEYS, ['ssds.inventory', 'ssds.learned.labels']);
     assert.equal(hasUsedBefore([]), false);
     assert.equal(hasUsedBefore(['ssds.settings']), false, 'a theme change alone');
     assert.equal(hasUsedBefore(['ssds.settings', 'other.app']), false, 'another app on the origin');
     assert.equal(hasUsedBefore(['ssds.inventory']), true);
-    assert.equal(hasUsedBefore(['ssds.settings', 'ssds.subdomains.options']), true);
-    assert.equal(hasUsedBefore(['ssds.learned.labels']), true);
-    assert.equal(hasUsedBefore(new Set(['ssds.probe'])), false, 'the storage probe');
-    assert.equal(hasUsedBefore([null, 1, 'ssds.bulk.options']), true);
-    assert.equal(hasUsedBefore(['x.y'], { prefix: 'x.', ignore: [] }), true);
+    assert.equal(hasUsedBefore(['ssds.settings', 'ssds.learned.labels']), true);
+    // A switch flipped or a language pack opened on the start page writes the view's options: no run.
+    for (const k of ['ssds.subdomains.options', 'ssds.scan.options', 'ssds.bulk.options', 'ssds.wordlist.custom', 'ssds.probe']) {
+      assert.equal(hasUsedBefore(['ssds.settings', k]), false, k);
+    }
+    assert.equal(hasUsedBefore(new Set([null, 1, 'ssds.inventory'])), true);
+    assert.equal(hasUsedBefore(['x.y'], ['x.y']), true);
     assert.equal(hasUsedBefore(null), false);
+  });
+
+  test('RUN_STORAGE_KEYS are the keys state.js and lib/learned.js really write', () => {
+    const storage = new MemoryStorage();
+    const s = createState({ storage, listenStorageEvents: false });
+    s.updateSettings({ theme: 'dark' });
+    assert.equal(hasUsedBefore([...storage.map.keys()]), false, 'settings only');
+    s.setInventory('web01 192.0.2.10');
+    assert.ok([...storage.map.keys()].includes(RUN_STORAGE_KEYS[0]), 'saved servers');
+    const learned = new MemoryStorage();
+    createLearnedStore(learned).record(['api.example.com', 'shop.example.com'], 'example.com');
+    assert.deepEqual([...learned.map.keys()], [RUN_STORAGE_KEYS[1]], 'learned names');
   });
 });
 

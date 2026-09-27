@@ -31,29 +31,39 @@ const count = (n) => (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
 /**
  * Where the setup form stands. The requirement matches what Start accepts: typed domains, the
  * certificate's names or extra hostnames (any one of them gives the scan something to search).
- * A step is complete when it has usable input: a loaded certificate, typed domains without an
- * invalid entry or a public suffix among them, a saved server.
- * @param {{ cert?: boolean, certNames?: number, domains?: number, invalid?: number, publicSuffixes?: number,
- *   extraNames?: number, servers?: number }} [input] counts from the form (`cert`: a leaf certificate is loaded)
+ * A step is complete when it has usable input: a server certificate with at least one DNS name
+ * (a CA certificate, or one without names, is flagged in `certIssue` instead), typed domains
+ * without an invalid entry or a public suffix among them, a saved server.
+ * @param {{ cert?: boolean, certCA?: boolean, certNames?: number, domains?: number, invalid?: number,
+ *   publicSuffixes?: number, extraNames?: number, servers?: number }} [input] counts from the form
+ *   (`cert`: a leaf certificate is loaded; `certCA`: it is a CA certificate; `certNames`: its hostnames)
  * @returns {{ ready: boolean, via: 'domains'|'cert'|'extra'|null,
- *   steps: { cert: boolean, domains: boolean, inventory: boolean, options: boolean } }}
- *   `via`: what meets the requirement (typed domains first, then the certificate, then extra names)
+ *   steps: { cert: boolean, domains: boolean, inventory: boolean, options: boolean },
+ *   certIssue: 'ca'|'noNames'|null }}
+ *   `via`: what meets the requirement (typed domains first, then the certificate, then extra
+ *   names); `certIssue`: why a loaded certificate leaves its step open (a CA certificate first)
  */
-export function formProgress({ cert = false, certNames = 0, domains = 0, invalid = 0, publicSuffixes = 0, extraNames = 0, servers = 0 } = {}) {
+export function formProgress({
+  cert = false, certCA = false, certNames = 0, domains = 0, invalid = 0, publicSuffixes = 0, extraNames = 0, servers = 0
+} = {}) {
   let via = null;
   if (count(domains)) via = 'domains';
   else if (cert && count(certNames)) via = 'cert';
   else if (count(extraNames)) via = 'extra';
+  let certIssue = null;
+  if (cert && certCA) certIssue = 'ca';
+  else if (cert && !count(certNames)) certIssue = 'noNames';
   return {
     ready: via !== null,
     via,
     steps: {
-      cert: !!cert,
+      cert: !!cert && certIssue === null,
       domains: count(domains) > 0 && !count(invalid) && !count(publicSuffixes),
       inventory: count(servers) > 0,
       // Always usable: the defaults are a complete choice (no check mark is drawn for it).
       options: true
-    }
+    },
+    certIssue
   };
 }
 

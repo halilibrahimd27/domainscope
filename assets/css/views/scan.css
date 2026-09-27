@@ -48,6 +48,29 @@
   color: var(--ok);
 }
 
+.scan-req-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* A certificate is loaded but names nothing: the line says why it is still unmet */
+.scan-req[data-note] {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--text);
+}
+
+.scan-req[data-note] .icon,
+.scan-req-note {
+  color: var(--warn);
+}
+
+.scan-req-note {
+  font-weight: 500;
+}
+
 .scan-setup {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -119,6 +142,13 @@
   background: var(--ok-bg);
   border-color: var(--ok-border);
   color: var(--ok);
+}
+
+/* Input the scan cannot use (a CA certificate, one without DNS names): a warning sign */
+.scan-step-num[data-warn="true"] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn);
 }
 
 .scan-step-titles {

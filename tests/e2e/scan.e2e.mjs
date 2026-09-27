@@ -27,7 +27,9 @@
  *   - offline at 375×667: the sticky run bar keeps Start on screen without scrolling once a
  *     domain is entered, never covers the focused field, rests at the form's end, keeps focus
  *     Start ⇄ Cancel, floats with a shadow in both themes (TR too), no transition with reduced
- *     motion, stays compact on a tablet and in the flow on a wide screen
+ *     motion, stays compact on a tablet and in the flow on a wide screen; a CA certificate
+ *     (tests/fixtures/ca.pem, no DNS names) leaves step 1 open with a warning sign, and the
+ *     requirement line and Start's error say why
  *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
  *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
  *     names.txt with coverage), reduced motion (no smooth scroll), and one shell choice shared
@@ -1218,6 +1220,53 @@ async function main() {
           await frames();
           const err = await layout('[data-role="scan-domains"]');
           assert(err.fieldTop >= 0 && err.fieldBottom <= err.barTop, `the focused field is not under the bar: ${JSON.stringify(err)}`);
+        });
+
+        await run.step('375 px: a CA certificate without DNS names leaves step 1 open with a warning; the requirement line and Start say why', async () => {
+          await tab.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'ca.pem')]);
+          await tab.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'CA certificate loaded' });
+          await frames();
+          const read = () => tab.evaluate(() => {
+            const num = document.querySelector('.scan-step-cert .scan-step-num');
+            const req = document.querySelector('[data-role="scan-requirement"]');
+            return {
+              done: num.dataset.done,
+              warn: num.dataset.warn,
+              heading: document.querySelector('#scan-step-cert').textContent,
+              badge: document.querySelector('.scan-step-cert .scan-step-status').textContent,
+              caAlert: /not a server certificate/.test(document.querySelector('.scan-step-cert .scan-step-body').textContent),
+              req: req.dataset.state,
+              note: req.dataset.note || '',
+              reqText: req.textContent,
+              domains: document.querySelector('[data-role="scan-domains"]').value
+            };
+          });
+          const ca = await read();
+          assertEqual([ca.done, ca.warn, ca.caAlert, ca.domains], ['false', 'true', true, ''], 'step 1: a warning sign, not a check');
+          assert(/\(needs attention: CA certificate\)$/.test(ca.heading) && !/done/.test(ca.heading), `spoken as a CA certificate: ${ca.heading}`);
+          assertEqual(ca.badge, 'CA certificate', 'status badge (desktop)');
+          assertEqual([ca.req, ca.note], ['unmet', 'certNoNames'], 'requirement still unmet, with a note');
+          assert(/is required\s*This certificate has no DNS names: enter at least one domain\.$/.test(ca.reqText), `requirement line: ${ca.reqText}`);
+          // Start: the error asks for a domain, not for the certificate that is loaded.
+          await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+          const error = await tab.waitFor(() => {
+            const text = document.querySelector('.scan-step-domains .field-error')?.textContent || '';
+            return /no DNS names/.test(text) ? text : false;
+          }, { message: 'Start error for a certificate without names' });
+          assert(!/load a certificate/.test(error), `Start error: ${error}`);
+          assert(await tab.evaluate(() => !document.querySelector('.scan-run-ui')), 'no run started');
+          await assertNoHorizontalScroll(tab, 'CA certificate 375 px');
+          await tab.evaluate(() => window.scrollTo(0, 0));
+          await frames();
+          await shot(tab, opts, 'scan-form-375-light-en-ca-cert');
+          // Removed: step 1 back to its number, the plain requirement line.
+          await tab.evaluate(() => document.querySelector('[data-action="cert-remove"]').click());
+          await tab.waitFor(() => !document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate removed' });
+          const gone = await read();
+          assertEqual([gone.done, gone.warn, gone.heading, gone.req, gone.note], ['false', 'false', 'Certificate', 'unmet', ''], 'back to the plain step');
+          // The next step focuses the domains field itself (the error left the focus there, and
+          // typing into a focused field only reveals its caret, not the whole field).
+          await tab.evaluate(() => document.activeElement?.blur());
         });
 
         await run.step('375×667: a domain entered — Start is visible without scrolling, the requirement and step 2 turn into checks, the estimate sits next to Start', async () => {

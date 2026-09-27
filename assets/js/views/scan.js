@@ -13,7 +13,8 @@
  *
  * One requirement line above the steps says what Start needs (a certificate or at least one
  * domain, lib/scanform.formProgress) and turns into a check once met; a completed step shows a
- * check in place of its number. The run bar (Start / Cancel, the query estimate and a summary)
+ * check in place of its number, a certificate the scan cannot use (a CA certificate, one without
+ * DNS names) a warning sign. The run bar (Start / Cancel, the query estimate and a summary)
  * follows the steps; on narrow screens it sticks to the bottom of the viewport while the form is
  * scrolled, so Start is always within reach.
  *
@@ -123,6 +124,10 @@ registerStrings('en', {
   'scan.stepDone': 'ready',
   'scan.req.text': 'A certificate or at least one domain is required',
   'scan.req.done': '(done)',
+  'scan.req.certNoNames': 'This certificate has no DNS names: enter at least one domain.',
+  'scan.certIssue.ca': 'CA certificate',
+  'scan.certIssue.noNames': 'no DNS names',
+  'scan.step.attention': '(needs attention: {issue})',
 
   'scan.cert.details': 'Details',
   'scan.cert.remove': 'Remove',
@@ -506,6 +511,10 @@ registerStrings('tr', {
   'scan.stepDone': 'hazır',
   'scan.req.text': 'Bir sertifika ya da en az bir alan adı gerekli',
   'scan.req.done': '(tamam)',
+  'scan.req.certNoNames': 'Bu sertifikada DNS adı yok: en az bir alan adı girin.',
+  'scan.certIssue.ca': 'CA sertifikası',
+  'scan.certIssue.noNames': 'DNS adı yok',
+  'scan.step.attention': '(kontrol edin: {issue})',
 
   'scan.cert.details': 'Ayrıntılar',
   'scan.cert.remove': 'Kaldır',
@@ -1392,10 +1401,12 @@ export function mount(container, ctx) {
   /* --- step progress + the requirement line ------------------------------------ */
   // No step is optional-labelled: one line above the steps says what Start needs, and turns
   // into a check once met; a step with usable input shows a check in place of its number and a
-  // short status badge (lib/scanform.formProgress decides both).
+  // short status badge. A loaded certificate the scan cannot use (a CA certificate, one without
+  // DNS names) shows a warning sign and says why instead (lib/scanform.formProgress decides it all).
   const stepNums = {};
-  // "(done)" inside a completed step's heading: the check and the badge are visual only on phones.
-  const stepDoneSr = {};
+  // "(done)" / "(needs attention: CA certificate)" inside a step's heading: the sign and the badge
+  // are visual only on phones.
+  const stepSr = {};
   const stepStatus = {
     cert: h('span', { class: 'scan-step-status' }),
     domains: h('span', { class: 'scan-step-status' }),
@@ -1409,6 +1420,7 @@ export function mount(container, ctx) {
     const leaf = certLeaf();
     const p = formProgress({
       cert: !!leaf,
+      certCA: !!(leaf && leaf.isCA),
       certNames: leaf ? leaf.hostnames.length : 0,
       domains: parsed.domains.length,
       invalid: parsed.invalid.length,
@@ -1421,26 +1433,40 @@ export function mount(container, ctx) {
       domains: t('scan.summary.domains', { count: parsed.domains.length }),
       inventory: t('scan.stepDone')
     };
+    const issues = { cert: p.certIssue ? t(`scan.certIssue.${p.certIssue}`) : null };
     // The Options step has no status: its defaults are always a complete choice.
     for (const key of FORM_STEPS.filter((k) => stepStatus[k])) {
       const done = p.steps[key];
+      const issue = done ? null : issues[key] || null;
       const num = stepNums[key];
       clear(num.el);
-      num.el.append(done ? Icon('check', { size: 14, strokeWidth: 2.6 }) : String(num.n));
+      if (done) num.el.append(Icon('check', { size: 14, strokeWidth: 2.6 }));
+      else if (issue) num.el.append(Icon('alert', { size: 14, strokeWidth: 2.4 }));
+      else num.el.append(String(num.n));
       num.el.dataset.done = String(done);
-      stepDoneSr[key].hidden = !done;
+      num.el.dataset.warn = String(!!issue);
+      stepSr[key].textContent = done ? ` ${t('scan.req.done')}` : issue ? ` ${t('scan.step.attention', { issue })}` : '';
+      stepSr[key].hidden = !done && !issue;
       clear(stepStatus[key]);
       if (done) stepStatus[key].append(Badge(badges[key], { variant: 'ok' }));
+      else if (issue) stepStatus[key].append(Badge(issue, { variant: 'warn' }));
     }
     const met = p.ready ? 'met' : 'unmet';
+    // A certificate is loaded and still nothing meets the requirement: its names are missing, so
+    // the line says so rather than read as if no certificate were there.
+    const note = !p.ready && p.certIssue ? 'certNoNames' : '';
     reqLine.dataset.via = p.via || '';
-    if (reqLine.dataset.state === met) return;
+    if (reqLine.dataset.state === met && (reqLine.dataset.note || '') === note) return;
     reqLine.dataset.state = met;
+    if (note) reqLine.dataset.note = note;
+    else delete reqLine.dataset.note;
     clear(reqLine);
     append(reqLine,
-      Icon(p.ready ? 'check-circle' : 'info', { size: 16 }),
-      h('span', null, t('scan.req.text')),
-      p.ready ? h('span', { class: 'sr-only' }, ` ${t('scan.req.done')}`) : null);
+      Icon(p.ready ? 'check-circle' : note ? 'alert' : 'info', { size: 16 }),
+      h('span', { class: 'scan-req-text' },
+        h('span', null, t('scan.req.text')),
+        p.ready ? h('span', { class: 'sr-only' }, ` ${t('scan.req.done')}`) : null,
+        note ? h('span', { class: 'scan-req-note' }, ` ${t(`scan.req.${note}`)}`) : null));
   }
 
   /* --- step 1: certificate --------------------------------------------------- */
@@ -1986,7 +2012,7 @@ export function mount(container, ctx) {
   const step = (key, iconName, body, className = '') => {
     const n = FORM_STEPS.indexOf(key) + 1;
     stepNums[key] = { n, el: h('span', { class: 'scan-step-num num', attrs: { 'aria-hidden': 'true' } }, String(n)) };
-    stepDoneSr[key] = h('span', { class: 'sr-only', hidden: true }, ` ${t('scan.req.done')}`);
+    stepSr[key] = h('span', { class: 'sr-only', hidden: true });
     return h('section', {
       class: ['scan-step', 'card', className],
       dataset: { step: key },
@@ -1995,7 +2021,7 @@ export function mount(container, ctx) {
     h('div', { class: 'scan-step-head' },
       stepNums[key].el,
       h('div', { class: 'scan-step-titles' },
-        h('h2', { class: 'scan-step-title', id: `scan-step-${key}` }, Icon(iconName, { size: 15 }), h('span', null, t(`scan.step.${key}`)), stepDoneSr[key]),
+        h('h2', { class: 'scan-step-title', id: `scan-step-${key}` }, Icon(iconName, { size: 15 }), h('span', null, t(`scan.step.${key}`)), stepSr[key]),
         h('p', { class: 'scan-step-desc' }, t(`scan.step.${key}Desc`))),
       stepStatus[key]),
     h('div', { class: 'scan-step-body' }, body));
@@ -2078,7 +2104,8 @@ export function mount(container, ctx) {
     const leaf = certLeaf();
     const certNames = leaf ? leaf.hostnames.length : 0;
     if (!invalidField && !parsed.domains.length && !certNames && !extras.valid.length) {
-      domainsField.setError(t('scan.domains.required'));
+      // With a certificate loaded, "or load a certificate" would read as if it were not there.
+      domainsField.setError(t(leaf ? 'scan.req.certNoNames' : 'scan.domains.required'));
       invalidField = domainsField;
     }
     if (invalidField) {

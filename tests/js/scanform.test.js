@@ -24,6 +24,7 @@ describe('formProgress — the requirement', () => {
     assert.equal(p.ready, false);
     assert.equal(p.via, null);
     assert.deepEqual(p.steps, { cert: false, domains: false, inventory: false, options: true });
+    assert.equal(p.certIssue, null);
   });
 
   test('typed domains meet it', () => {
@@ -33,12 +34,29 @@ describe('formProgress — the requirement', () => {
 
   test('a certificate meets it through its names', () => {
     const p = formProgress({ cert: true, certNames: 3 });
-    assert.deepEqual([p.ready, p.via, p.steps.cert, p.steps.domains], [true, 'cert', true, false]);
+    assert.deepEqual([p.ready, p.via, p.steps.cert, p.steps.domains, p.certIssue], [true, 'cert', true, false, null]);
   });
 
-  test('a loaded certificate without a name completes its step but gives the scan nothing', () => {
+  test('a loaded certificate without a DNS name neither completes its step nor meets the requirement', () => {
     const p = formProgress({ cert: true, certNames: 0 });
-    assert.deepEqual([p.ready, p.via, p.steps.cert], [false, null, true]);
+    assert.deepEqual([p.ready, p.via, p.steps.cert, p.certIssue], [false, null, false, 'noNames']);
+    // Typed domains still meet the requirement; the certificate step stays open.
+    const typed = formProgress({ cert: true, certNames: 0, domains: 1 });
+    assert.deepEqual([typed.ready, typed.via, typed.steps.cert, typed.certIssue], [true, 'domains', false, 'noNames']);
+  });
+
+  test('a CA certificate never completes its step (the CA is flagged first), its names still reach Start', () => {
+    const bare = formProgress({ cert: true, certCA: true, certNames: 0 });
+    assert.deepEqual([bare.ready, bare.steps.cert, bare.certIssue], [false, false, 'ca']);
+    // A CA naming a host (a hostname-like CN): Start scans that name, the step still asks for the leaf.
+    const named = formProgress({ cert: true, certCA: true, certNames: 1 });
+    assert.deepEqual([named.ready, named.via, named.steps.cert, named.certIssue], [true, 'cert', false, 'ca']);
+  });
+
+  test('no certificate: no issue, whatever the other inputs say', () => {
+    assert.equal(formProgress().certIssue, null);
+    assert.equal(formProgress({ certCA: true, certNames: 0, domains: 1 }).certIssue, null);
+    assert.equal(formProgress({ cert: true, certNames: 2 }).certIssue, null);
   });
 
   test('names without a loaded certificate do not count as one', () => {

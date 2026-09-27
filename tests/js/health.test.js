@@ -598,6 +598,9 @@ test('parseSpf: errors and warnings', () => {
   assert.deepEqual(w('v=spf1 -all ip4:1.2.3.4'), ['terms-after-all']);
   assert.deepEqual(w('v=spf1 ip4:0.0.0.0/0 ip6:::/0 -all'), ['broad-range', 'broad-range']);
   assert.deepEqual(w('v=spf1 -ip4:0.0.0.0/0 -all'), []); // a "-" broad range blocks, not authorizes
+  // a / mx take a dual CIDR length: a/0 or mx//0 match every address like ip4:0.0.0.0/0
+  assert.deepEqual(w('v=spf1 a/0 mx//0 a:mail.example.com/7 -all'), ['broad-range', 'broad-range', 'broad-range']);
+  assert.deepEqual(w('v=spf1 a mx a/24 mx//64 -a/0 -all'), []);
   assert.deepEqual(w(`v=spf1 ${'ip4:192.0.2.1 '.repeat(40)}-all`), ['too-long']);
   assert.equal(parseSpf('v=spf1 -all').valid, true);
   assert.equal(parseSpf('v=spf1').all, null);
@@ -683,6 +686,9 @@ test('SPF checks in domainHealth: missing, multiple, +all, ?all, ~all, no all, s
     [['v=spf1 ptr -all'], 'spf.ptr', 'warn'],
     [['v=spf1 ip4:0.0.0.0/0 -all'], 'spf.broad', 'error'],
     [['v=spf1 ip4:10.0.0.0/7 -all'], 'spf.broad', 'warn'],
+    [['v=spf1 a/0 -all'], 'spf.broad', 'error'],
+    [['v=spf1 mx//0 -all'], 'spf.broad', 'error'],
+    [['v=spf1 mx/4 -all'], 'spf.broad', 'warn'],
     [['v=spf1 redirect=_spf.mailer.net'], 'spf.lookups-ok', 'ok'],
     [['v=spf1 mx redirect=_spf.mailer.net -all'], 'spf.redirect-ignored', 'info'],
     [[`v=spf1 ${'ip4:192.0.2.1 '.repeat(40)}-all`], 'spf.too-long', 'warn']

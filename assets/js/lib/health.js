@@ -357,7 +357,8 @@ export function parseSpf(txt) {
   if (out.modifiers.redirect && out.allIndex >= 0) out.warnings.push(issue('redirect-ignored', `redirect=${out.modifiers.redirect}`));
   for (const t of out.terms) {
     if (t.mechanism === 'ptr') out.warnings.push(issue('ptr', t.raw));
-    if ((t.mechanism === 'ip4' && t.cidr4 < 8) || (t.mechanism === 'ip6' && t.cidr6 < 16)) {
+    // ip4 / ip6 and the dual CIDR length of a / mx (RFC 7208 §5.3, §5.4): a/0 or mx//0 matches every address.
+    if ((t.cidr4 !== null && t.cidr4 < 8) || (t.cidr6 !== null && t.cidr6 < 16)) {
       if (t.qualifier === '+') out.warnings.push(issue('broad-range', t.raw));
     }
   }
@@ -1199,7 +1200,7 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
   }
   const broad = parsed.warnings.filter((w) => w.code === 'broad-range').map((w) => w.token);
   if (broad.length) {
-    const open = parsed.terms.some((t) => t.qualifier === '+' && ((t.mechanism === 'ip4' && t.cidr4 === 0) || (t.mechanism === 'ip6' && t.cidr6 === 0)));
+    const open = parsed.terms.some((t) => t.qualifier === '+' && (t.cidr4 === 0 || t.cidr6 === 0)); // ip4/ip6/a/mx with /0
     checks.push(makeCheck('spf.broad', open ? 'error' : 'warn', { terms: broad }));
   }
   if (mxInfo.nullMx && parsed.all !== '-') checks.push(makeCheck('spf.null-mx', 'info', {}));

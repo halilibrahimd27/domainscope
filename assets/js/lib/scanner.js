@@ -384,6 +384,17 @@ function isWildcardSuspect(res, wc) {
   return ips.every((ip) => wips.has(ip));
 }
 
+/** The CNAME chain and the IPv4 addresses of an A {@link DnsResponse} for `name`. */
+function aAnswer(res, name) {
+  const { cnames } = followCnames(res.answers, name);
+  const owners = new Set([name, ...cnames]);
+  const ipv4 = [...new Set(res.answers
+    .filter((rr) => rr.type === 'A' && owners.has(rr.name))
+    .map((rr) => normalizeIP(rr.data))
+    .filter(Boolean))];
+  return { cnames, ipv4 };
+}
+
 /** Immediate parent zone of a name ('a.b.c' → 'b.c'); '' when it has one label. */
 function parentOf(name) {
   const dot = name.indexOf('.');
@@ -1296,16 +1307,11 @@ export async function runScan(config = {}, hooks = {}) {
       const load = loadOf(parentOf(name));
       load.tried += 1;
       if (res.rcode !== 'NOERROR' && res.rcode !== 'NXDOMAIN') return;
-      const { cnames } = followCnames(res.answers, name);
+      const { cnames, ipv4 } = aAnswer(res, name);
       // A dangling alias (a CNAME to a target that no longer exists) answers
       // NXDOMAIN with the chain (RFC 6604): a real, takeover-prone name. A plain
       // NXDOMAIN is no such name.
       if (res.rcode === 'NXDOMAIN' && !cnames.length) return;
-      const owners = new Set([name, ...cnames]);
-      const ipv4 = [...new Set(res.answers
-        .filter((rr) => rr.type === 'A' && owners.has(rr.name))
-        .map((rr) => normalizeIP(rr.data))
-        .filter(Boolean))];
       if (!ipv4.length && !cnames.length) return; // NODATA / no address — not a real hit
       if (isWildcardSuspect({ status: res.rcode, cnames, ipv4, ipv6: [] }, nearestWildcard(name))) {
         out.wildcardDropped += 1;
@@ -1601,19 +1607,47 @@ export async function runScan(config = {}, hooks = {}) {
   const records = new Map();
   const matchesByName = new Map();
   let resolvedDone = 0;
+  // Probe-only names dropped at resolve: as wildcard look-alikes, or because
+  // they are gone now (a clean NXDOMAIN / empty answer) — never for a failure.
   const droppedProbe = { wordlist: 0, permutation: 0, recursive: 0 };
+  const vanishedProbe = { wordlist: 0, permutation: 0, recursive: 0 };
+  /**
+   * A probe-only name answered its probe but has no answer at resolve. It is
+   * gone only on a clean NXDOMAIN; a failure (SERVFAIL, a timeout — or a failed
+   * A query hidden behind an empty AAAA answer) is re-asked once on the chain.
+   * Returns the resolution to keep (the fresh A answer, or the failure itself so
+   * the host is not lost), or null when the name is really gone.
+   */
+  const recheckProbeHit = async (name, resolution) => {
+    if (resolution.status === 'NXDOMAIN' && !resolution.error) return null;
+    const again = await dns.query(name, 'A', { signal, noCache: true });
+    if (!again.ok || (again.rcode !== 'NOERROR' && again.rcode !== 'NXDOMAIN')) {
+      if (resolution.error) return resolution;
+      return { ...resolution, status: again.ok ? again.rcode : 'ERROR', error: again.error || again.rcode || 'Query failed', errorKind: again.errorKind || null };
+    }
+    const { cnames, ipv4 } = aAnswer(again, name);
+    if (!ipv4.length && !cnames.length) return null;
+    return { ...resolution, status: again.rcode, cnames, ipv4, error: null, errorKind: null };
+  };
   await mapPool(names, pool, async (name) => {
-    const resolution = await dns.resolveHost(name, { signal, balance: useBalance });
+    let resolution = await dns.resolveHost(name, { signal, balance: useBalance });
     resolvedDone += 1;
     progress('resolve', resolvedDone, names.length);
-    const classification = classifyResolution(resolution);
     const nameOrigins = origins.get(name);
+    const onlyProbe = [...nameOrigins].every((o) => PROBE_ORIGINS.has(o));
+    const hasAnswer = resolution.ipv4.length || resolution.ipv6.length || resolution.cnames.length;
+    if (onlyProbe && !hasAnswer) {
+      resolution = await recheckProbeHit(name, resolution);
+      if (!resolution) {
+        for (const o of nameOrigins) if (o in vanishedProbe) vanishedProbe[o] += 1;
+        return;
+      }
+    }
+    const classification = classifyResolution(resolution);
     // A zone-file name is authoritative: it is a real record even when its
     // answer equals a covering wildcard's.
     const wildcardSuspect = !nameOrigins.has('zone') && isWildcardSuspect(resolution, nearestWildcard(name));
-    const onlyProbe = [...nameOrigins].every((o) => PROBE_ORIGINS.has(o));
-    const hasAnswer = resolution.ipv4.length || resolution.ipv6.length || resolution.cnames.length;
-    if (onlyProbe && (wildcardSuspect || !hasAnswer)) {
+    if (onlyProbe && wildcardSuspect) {
       for (const o of nameOrigins) if (o in droppedProbe) droppedProbe[o] += 1;
       return;
     }
@@ -2107,6 +2141,10 @@ export async function runScan(config = {}, hooks = {}) {
     recursiveTried: rec.tried,
     recursiveWildcardDropped: rec.wildcardDropped + droppedProbe.recursive,
     recursiveErrors: rec.errors,
+    // extension: probe hits that were gone by the resolve stage (a clean NXDOMAIN / empty answer)
+    bruteforceVanished: vanishedProbe.wordlist,
+    permutationVanished: vanishedProbe.permutation,
+    recursiveVanished: vanishedProbe.recursive,
     ctCerts: ctCerts.length,
     dnsQueries: typeof dns.stats === 'function' ? dns.stats().queries : null,
     truncated,

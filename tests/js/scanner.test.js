@@ -221,6 +221,7 @@ describe('runScan end-to-end', () => {
       bruteforceTried: 9, bruteforceFound: 3, bruteforceWildcardDropped: 4, bruteforceErrors: 0,
       permutationTried: 0, permutationWildcardDropped: 0, permutationErrors: 0,
       recursiveTried: 0, recursiveWildcardDropped: 0, recursiveErrors: 0,
+      bruteforceVanished: 0, permutationVanished: 0, recursiveVanished: 0,
       ctCerts: 3, dnsQueries: 0, truncated: false, elapsedMs: 0
     });
 

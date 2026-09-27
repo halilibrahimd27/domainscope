@@ -425,6 +425,8 @@ ScanResult = {
     fromSources, fromDns, wildcardParents, mineFound, wordlistFound, permutationFound, recursiveFound,
     bruteforceTried, bruteforceFound, bruteforceWildcardDropped, bruteforceErrors /* = the wordlist stage */,
     permutationTried, permutationWildcardDropped, permutationErrors, recursiveTried, recursiveWildcardDropped, recursiveErrors,
+    bruteforceVanished, permutationVanished, recursiveVanished /* probe hits gone by the resolve stage (clean NXDOMAIN / empty
+      answer); a resolve-stage failure is re-asked once and the host kept with its error, never dropped */,
     ctCerts, dnsQueries, truncated, elapsedMs },
   // extensions
   sourceDomains, sourceHealth: SourceHealth[] /* §5.11 */, wildcardBases, wildcardParents, mineEvidence, mineExternalRefs, lastSeen, warnings, hintErrors,

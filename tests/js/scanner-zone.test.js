@@ -90,9 +90,9 @@ const REGRESSION_WORLD = {
   'shop.example.net': { A: ['203.0.113.30'] },
   'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
 };
-// Re-pinned since: the wildcard results gained `targets` / `variable`, then `conclusive`
-// (each time the only difference in the normalised output).
-const PRE_ZONE_DIGEST = 'f4a10be9d760fdc5dc605b2e9ff25378f9e4b0375639ee5aab764cf0cf58e346';
+// Re-pinned since: the wildcard results gained `targets` / `variable`, then `conclusive`,
+// and the stats `*Vanished` (each time the only difference in the normalised output).
+const PRE_ZONE_DIGEST = 'c284192be594db1a0039da94201034abd94fd9f45ec3cce5a8d7896560600034';
 
 async function regressionScan(extra = {}) {
   const { fetchImpl, dns } = mkWorld({

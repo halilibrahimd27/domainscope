@@ -9,7 +9,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { runScan, SCAN_STAGES, learnedLabelsFromScan, estimateQueries } from '../../assets/js/lib/scanner.js';
 import { DohClient } from '../../assets/js/lib/doh.js';
-import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
+import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { AbortError } from '../../assets/js/lib/util.js';
 import { WORDLIST_SMALL, clearWordlistCache, loadWordlist } from '../../assets/js/lib/wordlist.js';
@@ -53,8 +53,9 @@ function zoneAnswer(zone, name, type) {
  * @param {Object<string,object>} [opts.zonesByResolver] per-resolver name overrides (merged over base)
  * @param {Object<string,Function>} [opts.sources] mocked source handlers by URL prefix
  * @param {number} [opts.dohDelay] ms delay per DoH answer
- * @param {Function} [opts.answer] (name, type, resolverId) → { rcode, answers } to answer a
- *   query dynamically (a wildcard whose answer varies per label), or undefined for the zone
+ * @param {Function} [opts.answer] (name, type, resolverId) → { rcode, answers } (or a raw
+ *   Response, e.g. an HTTP 503) to answer a query dynamically (a wildcard whose answer varies
+ *   per label, a flaky resolver), or undefined for the zone
  */
 function mkWorld({ zone, zonesByResolver = {}, sources = {}, dohDelay = 0, answer = null } = {}) {
   const log = { doh: [], http: [] };
@@ -66,6 +67,7 @@ function mkWorld({ zone, zonesByResolver = {}, sources = {}, dohDelay = 0, answe
       if (dohDelay) await new Promise((r) => setTimeout(r, dohDelay));
       const z = zonesByResolver[resolver.id] ? { ...zone, ...zonesByResolver[resolver.id] } : zone;
       const out = (answer && answer(q.name, q.type, resolver.id)) || zoneAnswer(z, q.name, q.type);
+      if (out instanceof Response) return out;
       return new Response(encodeMessage({
         id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
         questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities || [], edns: {}
@@ -1761,6 +1763,66 @@ describe('discovery review fixes: closest encloser', () => {
     assert.equal(scan.wildcards[`api.${A}`].conclusive, false);
     assert.ok(!byName(scan).has(`www.api.${A}`), 'the look-alike of the apex wildcard is dropped');
     assert.ok(scan.stats.recursiveWildcardDropped >= 1);
+  });
+});
+
+describe('discovery review fixes: the resolve stage never loses a probe hit to a transient failure', () => {
+  // The resolve stage re-asks every name; with a big sweep the client's LRU is long
+  // flushed, so model that with an uncached client.
+  const scanWith = (A, answer) => {
+    const zone = { [A]: { A: ['203.0.113.1'] }, [`api.${A}`]: { A: ['203.0.113.2'] } };
+    const world = mkWorld({ zone, answer });
+    const dns = new DohClient({ fetchImpl: world.fetchImpl, cache: false, baseDelayMs: 1, maxDelayMs: 2, retries: 0 });
+    return runScan({
+      domains: [A], sources: [], bruteforce: 'small', wordlist: ['api'], mine: false, permutationBudget: 0,
+      recursive: false, originHints: false, balance: false, dns, fetchImpl: world.fetchImpl
+    });
+  };
+
+  test('every resolver failing the resolve-stage A (AAAA answering NODATA) keeps the host; no wildcard is claimed', async () => {
+    const A = 'flaky.example';
+    let aQueries = 0;
+    const scan = await scanWith(A, (name, type) => {
+      if (name !== `api.${A}` || type !== 'A') return undefined;
+      aQueries += 1;
+      return aQueries > 1 ? new Response('busy', { status: 503 }) : undefined; // only the probe gets through
+    });
+    const api = byName(scan).get(`api.${A}`);
+    assert.ok(api, 'the probe-found host is kept');
+    assert.deepEqual(api.origins, ['wordlist']);
+    assert.equal(api.resolution.status, 'ERROR');
+    assert.ok(api.resolution.error);
+    assert.equal(scan.stats.bruteforceWildcardDropped, 0);
+    assert.equal(scan.stats.bruteforceVanished, 0);
+  });
+
+  test('a clean NXDOMAIN at the resolve stage drops the name as vanished, not as a wildcard look-alike', async () => {
+    const A = 'gone.example';
+    let queries = 0;
+    const scan = await scanWith(A, (name) => {
+      if (name !== `api.${A}`) return undefined;
+      queries += 1;
+      return queries > 1 ? { rcode: 'NXDOMAIN', answers: [] } : undefined;
+    });
+    assert.ok(!byName(scan).has(`api.${A}`));
+    assert.equal(scan.stats.bruteforceVanished, 1);
+    assert.equal(scan.stats.bruteforceWildcardDropped, 0);
+  });
+
+  test('a resolve-stage failure that answers on the re-check keeps the fresh answer', async () => {
+    const A = 'recheck.example';
+    let aQueries = 0;
+    const scan = await scanWith(A, (name, type) => {
+      if (name !== `api.${A}` || type !== 'A') return undefined;
+      aQueries += 1;
+      // the probe gets through; the resolve-stage A fails on every chain resolver; the re-check answers
+      return aQueries > 1 && aQueries <= 1 + DEFAULT_CHAIN.length ? { rcode: 'SERVFAIL', answers: [] } : undefined;
+    });
+    const api = byName(scan).get(`api.${A}`);
+    assert.ok(api);
+    assert.deepEqual(api.resolution.ipv4, ['203.0.113.2']);
+    assert.equal(api.resolution.error, null);
+    assert.equal(api.classification.kind, 'direct');
   });
 });
 

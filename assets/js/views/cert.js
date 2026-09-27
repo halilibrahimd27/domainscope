@@ -28,6 +28,7 @@ import {
   normalizeHostname, certCovers, baseDomainsFromNames, stripWildcard, sortHostnames
 } from '../lib/domain.js';
 import { findCaa, checkCaaAllows, caaIssuerInfo, HEALTH_I18N } from '../lib/health.js';
+import { validateNames } from '../lib/cmdline.js';
 import { fetchJson, retry, errorKind } from '../lib/util.js';
 
 /** Route id. */
@@ -838,6 +839,35 @@ export function fullchainCerts(analysis) {
  */
 export function pemBundle(certs) {
   return certs.map((c) => pemEncode(c.der)).join('');
+}
+
+/**
+ * Host for the copy-ready `openssl s_client` command: the first certificate name that passes
+ * lib/cmdline.js's name rules unchanged (exact names first, then a `*.x` wildcard as `www.x`),
+ * else `example.com`. SAN bytes are not validated by the parser, so a hostile name (`;`, `$(…)`,
+ * backticks, spaces, quotes, CR/LF, a leading '-', a port or path) is skipped here — never
+ * quoted into a command the user pastes into a shell.
+ * @param {string[]} hostnames certificate `hostnames`
+ * @returns {string}
+ */
+export function sClientHost(hostnames) {
+  const list = Array.isArray(hostnames) ? hostnames.filter((n) => typeof n === 'string') : [];
+  const ordered = [
+    ...list.filter((n) => !n.startsWith('*.')),
+    ...list.filter((n) => n.startsWith('*.')).map((n) => `www.${n.slice(2)}`)
+  ];
+  // Exact match only: normalizeHostname would quietly cut 'a.com/;id' or 'a.com:443' down to 'a.com'.
+  return ordered.find((n) => validateNames([n]).valid[0] === n) || 'example.com';
+}
+
+/**
+ * The `openssl s_client` line of the PEM & OpenSSL tab (POSIX shell).
+ * @param {string[]} hostnames certificate `hostnames`
+ * @returns {string}
+ */
+export function sClientCommand(hostnames) {
+  const host = sClientHost(hostnames);
+  return `openssl s_client -connect ${host}:443 -servername ${host} -showcerts </dev/null`;
 }
 
 /** Hex string → base64 (for the pin-sha256 value). */
@@ -1779,7 +1809,6 @@ export function mount(container, ctx) {
       } else {
         spkiOut.textContent = '—';
       }
-      const host = cert.hostnames.find((n) => !n.startsWith('*.')) || (cert.hostnames[0] || 'example.com').replace(/^\*\./, 'www.');
       const full = fullchainCerts(chain);
       return h('div', { class: 'stack' },
         CodeBlock(pemEncode(cert.der), { label: t('cert.pem.this'), maxHeight: '320px' }),
@@ -1800,7 +1829,7 @@ export function mount(container, ctx) {
           icon: 'terminal',
           children: h('div', { class: 'stack-sm' },
             CodeBlock('openssl x509 -in certificate.pem -noout -text', { label: 'x509' }),
-            CodeBlock(`openssl s_client -connect ${host}:443 -servername ${host} -showcerts </dev/null`, { label: 's_client', wrap: true }))
+            CodeBlock(sClientCommand(cert.hostnames), { label: 's_client', wrap: true }))
         }));
     }
   }

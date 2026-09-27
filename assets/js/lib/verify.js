@@ -37,6 +37,7 @@ import {
   httpsCheckRequest, isProbeableIP, isProbeableHost, isProbeablePort, probeSummary, GlobalpingError
 } from './globalping.js';
 import { certCovers, sortHostnames } from './domain.js';
+import { addressTargets, formatEndpoint } from './inventory.js';
 import { isPrivateIP, matchProviderByIP, normalizeIP, parseIP } from './netinfo.js';
 import { computeFingerprints, normalizeCertHostname } from './x509.js';
 
@@ -126,7 +127,9 @@ const DAY_MS = 86400000;
  * @typedef {ProbeVerdict & { agreement: 'all'|'mixed', probes: ProbeVerdict[] }} Verdict
  * @typedef {{ key: string, ip: string, port: number, name: string, server: { id: string, name: string }|null,
  *   alsoServers: Array<{ id: string, name: string }>, via: 'dns'|'zone'|'hint', proxied: boolean,
- *   provider: string|null, needsCert: boolean, newCertCovers: boolean|null, skip: string|null }} VerifyPair
+ *   provider: string|null, needsCert: boolean, newCertCovers: boolean|null, skip: string|null,
+ *   cliTargets: string[]|null }} VerifyPair `cliTargets`: the CLI `-t` tokens of the address when an
+ *   inventory server wrote it with its own port (`['10.0.0.13:8443']`), else null; see {@link cliPlan}.
  * @typedef {VerifyPair & { state: string, notRun: string|null, verdict: Verdict|null, status: string|null,
  *   reason: string|null, warnings: string[], exposure: string|null, served: ServedCert|null, httpStatus: number|null,
  *   tests: TrimmedTest[], measurementId: string|null, measurementDone: boolean, measurementAt: number|null,
@@ -833,6 +836,9 @@ function skipReason(ip, name, port) {
  * same IP (a shared VIP) is kept in `alsoServers`. Pairs that cannot be sent
  * are listed with `skip`. Every pair is returned: the cap on checks depends on
  * the scope, so {@link createVerifyRows} applies it after {@link scopePairs}.
+ * An address its inventory server(s) wrote with a port (`web03 10.0.0.13:8443`)
+ * carries the CLI targets for it in `cliTargets` (inventory.addressTargets), so
+ * the CLI card scans it where the CLI reading the inventory would.
  * @param {object} result ScanResult
  * @param {{ port?: number }} [opts]
  * @returns {{ pairs: VerifyPair[], stats: object }}
@@ -848,19 +854,25 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT } = {}) {
     if (prev) {
       if (pair.server && (!prev.server || prev.server.id !== pair.server.id)
         && !prev.alsoServers.some((s) => s.id === pair.server.id)) prev.alsoServers.push(pair.server);
+      // A shared address: the CLI scans it on every port one of its servers wrote (bare = -p).
+      if (pair.cliTargets || prev.cliTargets) {
+        prev.cliTargets = [...new Set([...(prev.cliTargets || [prev.ip]), ...(pair.cliTargets || [pair.ip])])];
+      }
       return;
     }
     byKey.set(pair.key, pair);
     all.push(pair);
   };
-  const pairFor = ({ ip: rawIp, name, server, via, needsCert, covered, host }) => {
+  const pairFor = ({ ip: rawIp, name, server, via, needsCert, covered, host, inventoryServer = null }) => {
     const ip = normalizeIP(rawIp) ?? String(rawIp);
     const cls = host?.classification ?? {};
+    const targets = inventoryServer ? addressTargets(inventoryServer, ip) : [];
     return {
       key: `${ip}|${port}|${name}`, ip, port, name, server, alsoServers: [], via,
       proxied: !!cls.hidesOrigin, provider: cls.provider?.name ?? null,
       needsCert: !!needsCert, newCertCovers: covered === true ? true : covered === false ? false : null,
-      skip: skipReason(ip, name, port)
+      skip: skipReason(ip, name, port),
+      cliTargets: targets.length && (targets.length > 1 || targets[0] !== ip) ? targets : null
     };
   };
 
@@ -875,7 +887,7 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT } = {}) {
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
     for (const e of entries) {
       add(pairFor({ ip: e.ip, name: e.name, server, via: e.via === 'hint' || e.via === 'zone' ? e.via : 'dns',
-        needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name) }));
+        needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name), inventoryServer: g.server }));
     }
   }
   const unmatched = (Array.isArray(r.unmatchedIps) ? r.unmatchedIps : []).slice().sort((a, b) => compareIp(a.ip, b.ip));
@@ -987,6 +999,7 @@ export function createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_
       skip,
       overCap,
       alsoServers: Array.isArray(p.alsoServers) ? p.alsoServers.map((s) => ({ ...s })) : [],
+      cliTargets: Array.isArray(p.cliTargets) ? [...p.cliTargets] : null,
       state: skip ? 'skipped' : optional ? 'not-run' : 'pending',
       notRun: optional ? 'optional' : null,
       verdict: null, status: null, reason: null, warnings: [], exposure: null, served: null, httpStatus: null,
@@ -1690,8 +1703,11 @@ const CLI_SKIPS = new Set(['private', 'reserved', 'bad-name', 'bad-port', 'over-
  * the network can read their certificate. CDN-edge rows are not included (the
  * CDN serves its own certificate). Targets and names are unique, in row order;
  * a row on another port than {@link VERIFY_PORT} (the CLI's default `-p`) is the
- * target `ip:port` (`[v6]:port`), which the CLI scans on that port — build the
- * command with cmdline's `allowPorts`.
+ * target `ip:port` (`[v6]:port`), which the CLI scans on that port; a row on
+ * that port whose inventory server wrote the address with its own port gives
+ * the same targets as the inventory (`cliTargets`: `10.0.0.13:8443`, or the bare
+ * address as well when it was also written without one) — build the command
+ * with cmdline's `allowPorts`.
  * @param {VerifyRow[]} rows
  * @returns {{ targets: string[], names: string[], rows: number }}
  */
@@ -1705,8 +1721,8 @@ export function cliPlan(rows) {
       || (hasVerdict(r) && (r.status === 'TIMEOUT' || r.status === 'CLOSED'));
     if (!inPlan) continue;
     count += 1;
-    const port = Number.isInteger(r.port) && r.port !== VERIFY_PORT ? r.port : null;
-    targets.add(port === null ? r.ip : r.ip.includes(':') ? `[${r.ip}]:${port}` : `${r.ip}:${port}`);
+    if (Number.isInteger(r.port) && r.port !== VERIFY_PORT) targets.add(formatEndpoint(r.ip, r.port) ?? r.ip);
+    else for (const target of Array.isArray(r.cliTargets) && r.cliTargets.length ? r.cliTargets : [r.ip]) targets.add(target);
     names.add(r.name);
   }
   return { targets: [...targets], names: [...names], rows: count };

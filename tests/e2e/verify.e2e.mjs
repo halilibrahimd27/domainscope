@@ -17,7 +17,8 @@
  *   - a network-level guard (CDP Fetch domain): any https request that still reached the network
  *     is failed and recorded. The suite asserts it stays empty, api.globalping.io included.
  *   - seed: no passive sources, no wordlist, no permutations, origin hints on; the inventory
- *     `web01 1.2.3.4` / `db01 10.0.0.5`; the certificate tests/fixtures/ec_wildcard.pem.
+ *     `web01 1.2.3.4` / `db01 10.0.0.5:8443` (served on its own port); the certificate
+ *     tests/fixtures/ec_wildcard.pem.
  *
  * What is checked (spec §9.4 as corrected by the critic notes C.2.6, C.2.7, C.3.1, C.6):
  *   - the Verify tab exists only with a certificate, sits after Behind CDN, is linked from the
@@ -35,7 +36,8 @@
  *     across the first batch, the origin opt-in, a certificate swap and "Check again"; a Cloudflare
  *     Origin CA certificate is ORIGIN_CERT, never "Old certificate" (a self-signed one stays old here:
  *     the new certificate is self-signed too);
- *   - the CLI card (targets, names, --cert, --json, PowerShell prefix), new-cert.pem, the CSV /
+ *   - the CLI card (targets, db01 with its inventory port, names, --cert, --json, PowerShell
+ *     prefix), new-cert.pem, the CSV /
  *     JSON exports and the scan's full JSON `verification` block;
  *   - quota: /limits at 0 → alert and 0 POSTs; a POST 429 in a new window → not-run · quota with
  *     the last verdict kept; the buttons stay usable;
@@ -72,7 +74,7 @@ const ZONE = {
   'shop.wild.example.net': { A: ['104.16.5.5'] }, // a Cloudflare address: proxied
   'vpn.wild.example.net': { A: ['10.0.0.5'] } // private
 };
-const INVENTORY = 'web01 1.2.3.4\ndb01 10.0.0.5';
+const INVENTORY = 'web01 1.2.3.4\ndb01 10.0.0.5:8443';
 const N = (label) => `${label}.wild.example.net`;
 const WILD = 'wild.example.net';
 /** Addresses that must never reach Globalping: private, and a CDN edge. */
@@ -637,7 +639,7 @@ async function main() {
       assert(cmd.startsWith('python3 ssl_origin_scan.py -t '), `POSIX command: ${cmd}`);
       assert(cmd.endsWith(' --cert new-cert.pem --json verify-cli.json'), `options: ${cmd}`);
       const [targets, names] = /-t (.+?) -n (.+?) --cert/.exec(cmd).slice(1).map((s) => s.split(' ').sort());
-      assertEqual(targets, ['1.2.3.5', '10.0.0.5'], 'targets');
+      assertEqual(targets, ['1.2.3.5', '10.0.0.5:8443'], 'targets: db01 on the port its inventory line gives, as the CLI reads it');
       assertEqual(names, [N('legacy'), N('shop'), N('vpn')].sort(), 'names');
       await page.click('.scan-tab-verify [data-vfy="shell"] [data-value="powershell"]');
       const ps = await page.waitFor(() => {

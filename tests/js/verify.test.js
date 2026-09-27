@@ -16,6 +16,7 @@ import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
+import { buildSweepCommand } from '../../assets/js/lib/cmdline.js';
 import { parseZone } from '../../assets/js/lib/zoneparse.js';
 import { zoneScanInput } from '../../assets/js/lib/zoneorigins.js';
 
@@ -1695,6 +1696,40 @@ describe('cliPlan', () => {
       pair({ ip: '10.0.0.6', port: 443, name: 'www.example.com', skip: 'private' })
     ]);
     assert.deepEqual(V.cliPlan(rows).targets, ['10.0.0.5:8443', '[fd00::5]:8443', '10.0.0.6']);
+  });
+
+  test('an inventory address written with its own port is planned on that port, as the CLI reads the inventory', () => {
+    // The scan's ServerGroup carries the inventory Server itself, `ports` included (lib/inventory.parseInventory).
+    const inv = parseInventory('web03 10.0.0.13:8443\nweb04 10.0.0.14 10.0.0.14:9443\nweb05 10.0.0.15\n'
+      + 'web06 10.0.0.16:8443\nweb07 10.0.0.16\nweb08 [fd00::8]:8443');
+    const byId = Object.fromEntries(inv.servers.map((s) => [s.id, s]));
+    const result = {
+      hosts: ['a', 'b', 'c', 'd', 'e'].map((n) => host(`${n}.example.com`, { ips: [], kind: 'private' })),
+      servers: [
+        { server: byId.web03, hosts: [e('a.example.com', '10.0.0.13')], needsCert: true, maybeNeedsCert: false },
+        { server: byId.web04, hosts: [e('b.example.com', '10.0.0.14')], needsCert: true, maybeNeedsCert: false },
+        { server: byId.web05, hosts: [e('c.example.com', '10.0.0.15')], needsCert: true, maybeNeedsCert: false },
+        // a shared address: web06 wrote it with a port, web07 without one (the CLI's -p)
+        { server: byId.web06, hosts: [e('d.example.com', '10.0.0.16')], needsCert: true, maybeNeedsCert: false },
+        { server: byId.web07, hosts: [e('d.example.com', '10.0.0.16')], needsCert: true, maybeNeedsCert: false },
+        { server: byId.web08, hosts: [e('e.example.com', 'fd00::8')], needsCert: true, maybeNeedsCert: false }
+      ],
+      unmatchedIps: []
+    };
+    const { pairs } = V.buildVerifyPairs(result);
+    assert.deepEqual(pairs.map((p) => [p.ip, p.port, p.skip, p.cliTargets]), [
+      ['10.0.0.13', 443, 'private', ['10.0.0.13:8443']],
+      ['10.0.0.14', 443, 'private', ['10.0.0.14', '10.0.0.14:9443']],
+      ['10.0.0.15', 443, 'private', null],
+      ['10.0.0.16', 443, 'private', ['10.0.0.16:8443', '10.0.0.16']],
+      ['fd00::8', 443, 'private', ['[fd00::8]:8443']]
+    ]);
+    const rows = V.createVerifyRows(pairs);
+    assert.deepEqual(V.cliPlan(rows).targets,
+      ['10.0.0.13:8443', '10.0.0.14', '10.0.0.14:9443', '10.0.0.15', '10.0.0.16:8443', '10.0.0.16', '[fd00::8]:8443']);
+    // The CLI card's command keeps them (cmdline allowPorts), so the CLI dials 8443, not -p's 443.
+    const sweep = buildSweepCommand({ targets: V.cliPlan(rows).targets, names: ['a.example.com'], allowPorts: true });
+    assert.match(sweep.command, /^ssl_origin_scan\.py -t 10\.0\.0\.13:8443 10\.0\.0\.14 10\.0\.0\.14:9443 /);
   });
 });
 

@@ -573,7 +573,7 @@ export function toJson(value) -> string   // Dates ISO, Map→object, Set→arra
 export function scanHostRows(scan) -> object[] ; export function scanServerRows(scan) -> object[]
 export function namesForCli(scan, { onlyCovered = false } = {}) -> string    // newline list
 export function targetsForCli(servers) -> string                             // "name ip" lines
-export function cliServerName(name) -> string   // the name as one -t token: runs of whitespace, control chars, , ; # = / → '_'; '' for an IP (written bare)
+export function cliServerName(name) -> string   // the name as one -t token: runs of whitespace, control chars, , ; # = / : → '_'; '' for an IP or an IP range (written bare)
 export function cliCommand({ namesFile = 'names.txt', targetsFile = 'targets.txt', certFile = 'new-cert.pem' } = {}) -> string
 ```
 

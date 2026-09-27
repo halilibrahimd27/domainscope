@@ -1018,7 +1018,9 @@ describe('routing', () => {
       { name: 'db primary', ips: ['203.0.113.1', '2001:db8::1'] },
       { name: 'db replica', ips: ['203.0.113.2'] },
       { name: 'rack\u001cweb', ips: ['203.0.113.3'] },
-      { name: '203.0.113.9', ips: ['203.0.113.9'] }
+      { name: '203.0.113.9', ips: ['203.0.113.9'] },
+      { name: '192.0.2.50-60', ips: ['192.0.2.15'] },
+      { name: 'ansible_host: web', ips: ['192.0.2.16'] }
     ]), expected);
   });
 });

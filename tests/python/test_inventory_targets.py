@@ -49,6 +49,8 @@ class InventoryTargetsRoundTrip(unittest.TestCase):
             ('db_replica', ['203.0.113.2'], []),
             ('rack_web', ['203.0.113.3'], []),
             ('203.0.113.9', ['203.0.113.9'], []),
+            ('192.0.2.15', ['192.0.2.15'], []),
+            ('ansible_host_web', ['192.0.2.16'], []),
         ])
 
 

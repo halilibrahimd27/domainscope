@@ -315,15 +315,27 @@ export function namesForCli(scan, { onlyCovered = false } = {}) {
  * A server name as ONE token of a `-t targets.txt` line, or '' when nothing usable is left (the
  * IPs are then written bare). The CLI splits a line on whitespace, ',' and ';', drops `#`, `;` and
  * `//` comments (also after a space), skips `key=value` Ansible variables and, like Python's
- * `splitlines()`, breaks lines on control characters — so every run of those becomes '_'. A name
- * that is itself an IP address is dropped: the CLI would probe it as one.
+ * `splitlines()`, breaks lines on control characters — so every run of those becomes '_'; so does
+ * ':', or a name such as `ansible_host: web` would make the CLI read the file as YAML. A name
+ * that is itself an IP address or an IP range (`192.0.2.50-60`) is dropped: the CLI would probe
+ * it as one.
  * @param {unknown} name
  * @returns {string}
  */
 export function cliServerName(name) {
+  const raw = String(name ?? '').trim();
   // eslint-disable-next-line no-control-regex
-  const token = String(name ?? '').trim().replace(/[\s\x00-\x1f\x7f\x85,;#=/]+/g, '_');
-  return token && !normalizeIP(token) ? token : '';
+  const token = raw.replace(/[\s\x00-\x1f\x7f\x85,;#=/:]+/g, '_');
+  return token && !normalizeIP(raw) && !isIpRangeToken(token) ? token : '';
+}
+
+/** An IP range as the CLI's is_ip_block reads one: `first-last` or `a.b.c.d-e`. */
+function isIpRangeToken(token) {
+  const dash = token.indexOf('-');
+  if (dash < 1) return false;
+  const start = normalizeIP(token.slice(0, dash));
+  const end = token.slice(dash + 1);
+  return !!start && (!!normalizeIP(end) || (/^\d+$/.test(end) && start.includes('.')));
 }
 
 /**

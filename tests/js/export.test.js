@@ -284,6 +284,12 @@ describe('CLI helpers', () => {
       ['şube-01', 'şube-01'],
       ['203.0.113.9', ''], // an IP as the name would be probed as one
       ['2001:db8::1', ''],
+      ['192.0.2.50-60', ''], // so would a range: the CLI expands it
+      ['192.0.2.50-192.0.2.60', ''],
+      ['db-1', 'db-1'],
+      ['face-b00c', 'face-b00c'],
+      ['ansible_host: web', 'ansible_host_web'], // never read as the YAML inventory key
+      ['db:primary', 'db_primary'],
       ['   ', ''],
       [null, '']
     ];

@@ -1138,6 +1138,15 @@
   color: var(--text-3);
 }
 
+/* "Reverse DNS sweep" of an IPv4 origin network (opens the Reverse DNS view, pre-filled). */
+.sub-org-ptr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* "Exclude addresses" input + its report. */
 .sub-org-exclude {
   margin: 4px 0 2px;
@@ -1725,6 +1734,11 @@
 .sub-zone-open {
   margin-left: auto;
   font-size: 13px;
+}
+
+/* Names handed over by the Reverse DNS view: the same chip, with a remove button. */
+.sub-handoff-remove {
+  --btn-h: 26px;
 }
 
 .sub-zone-mode.segmented {

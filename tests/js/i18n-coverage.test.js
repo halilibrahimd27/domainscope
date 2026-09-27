@@ -142,6 +142,20 @@ describe('i18n coverage', () => {
     for (const id of mtasts.MTA_STS_FINDINGS) { add(`mtasts.${id}.title`); add(`mtasts.${id}.detail`); }
     for (const k of mtasts.MTA_STS_HEADLINES) add(`mtasts.head.${k}`);
     for (const s of ['records', 'ns', 'mx', 'spf', 'dmarc', 'dkim', 'caa', 'dnssec', 'wildcard', 'rdap']) add(`hlt.step.${s}`);
+    // Reverse DNS (lib/ptrsweep.js): every FCrDNS status in Domain Health's mail card and in the
+    // Reverse DNS view, every target issue and results filter, the PTR-based operator reasons.
+    const ptrsweep = await imp('assets/js/lib/ptrsweep.js');
+    for (const s of ptrsweep.FCRDNS_STATUSES) { add(`hlt.fcrdns.st.${s}`); add(`ptr.st.${s}`); add(`ptr.st.${s}.title`); }
+    for (const s of ptrsweep.FORWARD_STATES) add(`ptr.fwd.${s}`);
+    for (const c of ptrsweep.TARGET_ISSUES) add(`ptr.issue.${c}`);
+    for (const f of ptrsweep.SWEEP_FILTERS) add(`ptr.filter.${f}`);
+    for (const k of ['embedded', 'generic']) add(`ptr.pattern.${k}`);
+    for (const p of netinfo.PROVIDERS) add(`ptr.op.${p.id === 'cloudflare' ? 'cloudflare' : p.category}`);
+    // Subdomains: the zone chip and the Reverse DNS names chip (one key per mode), the result banners.
+    for (const m of views.subdomains.ZONE_MODES) {
+      for (const k of ['zone', 'handoff']) { add(`sub.${k}.mode.${m}`); add(`sub.${k}.mode.${m}Title`); add(`sub.${k}.note.${m}`); }
+    }
+    for (const m of ['exact', 'discover']) { add(`sub.zone.${m}`); add(`sub.handoff.${m}`); }
     for (const s of scanner.SCAN_STAGES) { add(`scan.stage.${s}`); add(`scan.progress.${s}`); }
     // Every warning code runScan can emit (read from its source, so a new code cannot slip
     // through) plus the views' own list: both views render them as <view>.warn.<code>.

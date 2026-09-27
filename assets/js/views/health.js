@@ -185,6 +185,24 @@ registerStrings('en', {
   'hlt.present': 'present',
   'hlt.missing': 'not published',
   'hlt.lookupFailed': 'lookup failed',
+  'hlt.fcrdns': 'Reverse DNS of the mail servers (FCrDNS)',
+  'hlt.fcrdns.hint': 'Receivers check that a sending server’s PTR name resolves back to its address. MX hosts receive mail, so this stands in for your sending servers when they are the same machines.',
+  'hlt.fcrdns.col.host': 'MX host',
+  'hlt.fcrdns.col.ip': 'Address',
+  'hlt.fcrdns.col.ptr': 'PTR name',
+  'hlt.fcrdns.col.status': 'Forward check',
+  'hlt.fcrdns.st.confirmed': 'confirmed',
+  'hlt.fcrdns.st.mismatch': 'does not resolve back',
+  'hlt.fcrdns.st.no-ptr': 'no PTR record',
+  'hlt.fcrdns.st.nxdomain': 'no reverse DNS',
+  'hlt.fcrdns.st.servfail': 'SERVFAIL',
+  'hlt.fcrdns.st.error': 'lookup failed',
+  'hlt.fcrdns.provider': 'provider',
+  'hlt.fcrdns.providerTitle': 'This MX host belongs to another domain (your mail provider), which sets its reverse DNS.',
+  'hlt.fcrdns.generic': 'generic name',
+  'hlt.fcrdns.sweep': 'Reverse DNS',
+  'hlt.fcrdns.sweepTitle': 'Open {ip} in the Reverse DNS view',
+  'hlt.fcrdns.capped': 'The first {checked} of {total} addresses were checked.',
 
   'hlt.caa.title': 'Which CAs may issue certificates?',
   'hlt.caa.none': 'No CAA record — any certificate authority may issue certificates for this domain.',
@@ -371,6 +389,24 @@ registerStrings('tr', {
   'hlt.present': 'var',
   'hlt.missing': 'yayınlanmamış',
   'hlt.lookupFailed': 'sorgu başarısız',
+  'hlt.fcrdns': 'E-posta sunucularının ters DNS’i (FCrDNS)',
+  'hlt.fcrdns.hint': 'Alıcılar, gönderen sunucunun PTR adının yine onun adresine çözüldüğüne bakar. MX sunucuları e-posta alır; gönderen sunucularınız aynı makinelerse bu kontrol onların yerine geçer.',
+  'hlt.fcrdns.col.host': 'MX sunucusu',
+  'hlt.fcrdns.col.ip': 'Adres',
+  'hlt.fcrdns.col.ptr': 'PTR adı',
+  'hlt.fcrdns.col.status': 'İleri doğrulama',
+  'hlt.fcrdns.st.confirmed': 'doğrulandı',
+  'hlt.fcrdns.st.mismatch': 'adrese geri çözülmüyor',
+  'hlt.fcrdns.st.no-ptr': 'PTR kaydı yok',
+  'hlt.fcrdns.st.nxdomain': 'ters DNS yok',
+  'hlt.fcrdns.st.servfail': 'SERVFAIL',
+  'hlt.fcrdns.st.error': 'sorgu başarısız',
+  'hlt.fcrdns.provider': 'sağlayıcı',
+  'hlt.fcrdns.providerTitle': 'Bu MX sunucusu başka bir alan adına (e-posta sağlayıcınıza) ait; ters DNS’ini sağlayıcı ayarlar.',
+  'hlt.fcrdns.generic': 'genel ad',
+  'hlt.fcrdns.sweep': 'Ters DNS',
+  'hlt.fcrdns.sweepTitle': '{ip} adresini Ters DNS görünümünde aç',
+  'hlt.fcrdns.capped': '{total} adresin ilk {checked} tanesi kontrol edildi.',
 
   'hlt.caa.title': 'Hangi sertifika otoriteleri sertifika verebilir?',
   'hlt.caa.none': 'CAA kaydı yok — herhangi bir sertifika otoritesi bu alan adı için sertifika verebilir.',
@@ -856,8 +892,34 @@ export function mount(container, ctx) {
 
     return Card({
       title: t('hlt.mail.title'), icon: 'mail', className: 'hlt-card hlt-mail',
-      children: h('div', { class: 'hlt-mail-grid' }, spfBlock, dmarcBlock, dkimBlock, extrasBlock)
+      children: h('div', { class: 'hlt-mail-grid' }, spfBlock, dmarcBlock, dkimBlock, extrasBlock, fcrdnsBlock(report))
     });
+  }
+
+  /**
+   * Reverse DNS of the MX addresses (lib/health mailIdentity): host, address, PTR name and the
+   * forward check, a provider's host marked as such; each address opens in the Reverse DNS view.
+   */
+  function fcrdnsBlock(report) {
+    const mi = report.mailIdentity;
+    if (!mi || !mi.addresses.length) return null;
+    const variant = { confirmed: 'ok', mismatch: 'warn', 'no-ptr': 'neutral', nxdomain: 'neutral', servfail: 'error', error: 'error' };
+    const rows = mi.addresses.map((a) => [
+      h('span', { class: 'hlt-fcrdns-host' }, hostLink(a.host),
+        a.own ? null : Badge(t('hlt.fcrdns.provider'), { title: t('hlt.fcrdns.providerTitle') })),
+      h('span', { class: 'hlt-fcrdns-ip' }, ipLink(a.ip),
+        h('a', { class: 'hlt-fcrdns-sweep text-xs', href: ctx.href('ptr', { target: a.ip, focus: report.domain }), title: t('hlt.fcrdns.sweepTitle', { ip: a.ip }) }, t('hlt.fcrdns.sweep'))),
+      a.names.length ? h('span', { class: 'hlt-fcrdns-ptr' }, h('span', { class: 'mono' }, a.names[0]),
+        a.generic ? Badge(t('hlt.fcrdns.generic'), { variant: 'info' }) : null) : null,
+      Badge(t(`hlt.fcrdns.st.${a.status}`), { variant: variant[a.status] || 'neutral', icon: a.status === 'confirmed' ? 'check' : null, title: a.error || null })
+    ]);
+    const block = h('div', { class: 'stack-sm hlt-mail-block hlt-fcrdns', dataset: { block: 'fcrdns' } },
+      h('div', { class: 'hlt-subtitle' }, t('hlt.fcrdns')),
+      h('p', { class: 'muted text-xs hlt-fcrdns-hint' }, t('hlt.fcrdns.hint')),
+      miniTable([t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')], rows),
+      mi.total > mi.checked ? h('p', { class: 'muted text-xs' }, t('hlt.fcrdns.capped', { checked: formatNumber(mi.checked), total: formatNumber(mi.total) })) : null);
+    [...block.querySelectorAll('tbody tr')].forEach((tr, i) => { tr.dataset.status = mi.addresses[i].status; });
+    return block;
   }
 
   /* --- MTA-STS policy (one Globalping probe, only after a click) --------------------------- */

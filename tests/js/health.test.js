@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   domainHealth, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
   spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa, caaRestrictionNotes, caaRestrictionText,
-  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT,
+  DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX,
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
 import { clearRdapCache, IANA_BOOTSTRAP } from '../../assets/js/lib/rdap.js';
@@ -194,6 +194,8 @@ function goodZone() {
     'ns2.dns-b.org': { A: ['203.0.113.1'] },
     'mx1.example.com': { A: ['192.0.2.10'] },
     'mx2.example.com': { A: ['192.0.2.20'] },
+    '10.2.0.192.in-addr.arpa': { PTR: 'mx1.example.com' },
+    '20.2.0.192.in-addr.arpa': { PTR: 'mx2.example.com' },
     '_spf.mailer.net': { TXT: ['v=spf1 ip4:198.51.100.0/24 include:_spf2.mailer.net ~all'] },
     '_spf2.mailer.net': { TXT: [['v=spf1 ip6:2001:db8::/32', ' -all']] },
     '_dmarc.example.com': { TXT: ['v=DMARC1; p=reject; rua=mailto:dmarc@example.com,mailto:x@reports.vendor.net; pct=100'] },
@@ -329,8 +331,13 @@ test('domainHealth: healthy domain — records, checks, RDAP, progress, i18n', a
     ['soa.ok', 'ok'], ['ns.ok', 'ok'], ['ns.diversity', 'ok'], ['apex.ok', 'ok'], ['ipv6.present', 'ok'],
     ['https-rr.present', 'info'], ['wildcard.none', 'ok'], ['mx.ok', 'ok'], ['spf.present', 'ok'], ['spf.all-fail', 'ok'],
     ['spf.lookups-ok', 'ok'], ['dmarc.policy-reject', 'ok'], ['dkim.found', 'ok'], ['mta-sts.present', 'ok'],
-    ['tls-rpt.present', 'ok'], ['bimi.present', 'ok'], ['caa.present', 'ok'], ['dnssec.ok', 'ok'], ['rdap.expiry-ok', 'ok']
+    ['tls-rpt.present', 'ok'], ['bimi.present', 'ok'], ['caa.present', 'ok'], ['dnssec.ok', 'ok'], ['rdap.expiry-ok', 'ok'],
+    ['mail-identity.fcrdns-ok', 'ok']
   ]) has(r, id, sev);
+  assert.equal(find(r, 'mail-identity.fcrdns-ok').params.items, '192.0.2.10 → mx1.example.com, 192.0.2.20 → mx2.example.com');
+  assert.deepEqual(r.mailIdentity.addresses.map((x) => [x.host, x.ip, x.status, x.own]), [
+    ['mx1.example.com', '192.0.2.10', 'confirmed', true], ['mx2.example.com', '192.0.2.20', 'confirmed', true]
+  ]);
   assert.equal(find(r, 'spf.lookups-ok').params.count, 3);
   assert.equal(find(r, 'https-rr.present').params.alpn, 'h3, h2');
   assert.equal(find(r, 'https-rr.present').params.ech, 'yes');
@@ -623,6 +630,65 @@ test('MX: CNAME target, unresolvable, IP literal, private IP, lookup failure', a
   lacks(r, 'mx.unresolvable');
   lacks(r, 'ns.unresolvable');
   has(r, 'mx.ok');
+});
+
+test('mail identity (FCrDNS): own servers warn, a provider’s are info, failures, generic names, IPv6, private and the cap', async () => {
+  const zone = goodZone();
+  zone['example.com'].MX = [
+    { preference: 10, exchange: 'mx1.example.com' },
+    { preference: 20, exchange: 'mx2.example.com' },
+    { preference: 30, exchange: 'mx3.example.com' },
+    { preference: 40, exchange: 'mx4.example.com' },
+    { preference: 50, exchange: 'in1.mailhost.example.net' },
+    { preference: 60, exchange: 'internal.example.com' }
+  ];
+  zone['mx1.example.com'] = { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] };
+  zone['20.2.0.192.in-addr.arpa'] = { PTR: 'relay.example.org' }; // mx2 → a name pointing elsewhere
+  zone['relay.example.org'] = { A: ['198.51.100.77'] };
+  zone['mx3.example.com'] = { A: ['192.0.2.30'] }; // no PTR at all (NXDOMAIN)
+  zone['mx4.example.com'] = { A: ['192.0.2.40'] }; // reverse zone broken
+  zone['in1.mailhost.example.net'] = { A: ['198.51.100.5'] }; // a provider's host without PTR
+  zone['5.100.51.198.in-addr.arpa'] = { SOA: SOA('100.51.198.in-addr.arpa') }; // NOERROR, no PTR
+  zone['internal.example.com'] = { A: ['10.1.1.1'] };
+  zone['0.1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa'] = { PTR: '2001-db8--10.v6.isp.example.net' };
+  zone['2001-db8--10.v6.isp.example.net'] = { AAAA: ['2001:db8::10'] };
+  const dns = fakeDns(zone, { rcodes: { '40.2.0.192.in-addr.arpa|PTR': 'SERVFAIL' } });
+  const r = await run('example.com', dns);
+  assertRenderable(r);
+  const byIp = Object.fromEntries(r.mailIdentity.addresses.map((x) => [x.ip, x]));
+  assert.deepEqual(Object.keys(byIp), ['192.0.2.10', '2001:db8::10', '192.0.2.20', '192.0.2.30', '192.0.2.40', '198.51.100.5'], 'MX order, private skipped');
+  assert.deepEqual([byIp['192.0.2.20'].status, byIp['192.0.2.30'].status, byIp['192.0.2.40'].status, byIp['198.51.100.5'].status], ['mismatch', 'nxdomain', 'servfail', 'no-ptr']);
+  assert.deepEqual([byIp['2001:db8::10'].status, byIp['2001:db8::10'].generic], ['confirmed', '2001-db8--10.v6.isp.example.net']);
+  assert.equal(byIp['198.51.100.5'].own, false);
+  assert.equal(find(r, 'mail-identity.fcrdns-ok').params.count, 2);
+  assert.equal(has(r, 'mail-identity.fcrdns-missing', 'warn').params.items, 'mx3.example.com (192.0.2.30)');
+  assert.equal(has(r, 'mail-identity.fcrdns-mismatch', 'warn').params.items, '192.0.2.20 → relay.example.org');
+  assert.equal(has(r, 'mail-identity.fcrdns-provider', 'info').params.items, 'in1.mailhost.example.net (198.51.100.5)');
+  assert.equal(has(r, 'mail-identity.fcrdns-error', 'info').params.items, 'mx4.example.com (192.0.2.40): SERVFAIL');
+  assert.equal(has(r, 'mail-identity.ptr-generic', 'info').params.items, '2001:db8::10 → 2001-db8--10.v6.isp.example.net');
+  lacks(r, 'mail-identity.fcrdns-capped');
+  assert.ok(dns.calls.some((c) => c.name === '2001-db8--10.v6.isp.example.net' && c.type === 'AAAA'), 'IPv6 forward-confirms with AAAA');
+  assert.ok(!dns.calls.some((c) => c.name.startsWith('1.1.1.10.')), 'a private MX address is never looked up');
+  // the checks sit in the email group, right after the MX checks
+  const cats = r.checks.map((c) => c.category);
+  assert.ok(cats.lastIndexOf('mx') < cats.indexOf('mail-identity') && cats.lastIndexOf('mail-identity') < cats.indexOf('spf'));
+});
+
+test('mail identity (FCrDNS): at most MAIL_FCRDNS_MAX addresses; none without MX addresses', async () => {
+  const zone = goodZone();
+  const ips = Array.from({ length: 12 }, (_, i) => `192.0.2.${100 + i}`);
+  zone['mx1.example.com'] = { A: ips };
+  zone['example.com'].MX = [{ preference: 10, exchange: 'mx1.example.com' }];
+  const r = await run('example.com', fakeDns(zone));
+  assert.equal(MAIL_FCRDNS_MAX, 10);
+  assert.equal(r.mailIdentity.addresses.length, 10);
+  assert.deepEqual([r.mailIdentity.total, r.mailIdentity.checked], [12, 10]);
+  assert.deepEqual(find(r, 'mail-identity.fcrdns-capped').params, { checked: 10, total: 12 });
+  const none = goodZone();
+  delete none['example.com'].MX;
+  const r2 = await run('example.com', fakeDns(none));
+  assert.deepEqual(r2.mailIdentity, { addresses: [], total: 0, checked: 0 });
+  assert.ok(!r2.checks.some((c) => c.category === 'mail-identity'));
 });
 
 /* ==================================================================== */

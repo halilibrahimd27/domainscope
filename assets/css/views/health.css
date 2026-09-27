@@ -518,6 +518,28 @@
   overflow-wrap: anywhere;
 }
 
+/* Reverse DNS of the mail servers (FCrDNS): the full width of the mail card. */
+.hlt-mail-block.hlt-fcrdns {
+  grid-column: 1 / -1;
+}
+
+.hlt-fcrdns-hint {
+  margin: 0;
+}
+
+.hlt-fcrdns-host,
+.hlt-fcrdns-ip,
+.hlt-fcrdns-ptr {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hlt-fcrdns-ptr .mono {
+  font-size: 12.5px;
+}
+
 /* MTA-STS policy (one Globalping probe after a click) */
 .hlt-mtasts-body > * {
   min-width: 0;

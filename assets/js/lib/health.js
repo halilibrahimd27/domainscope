@@ -3,7 +3,8 @@
  * the recursive 10-DNS-lookup budget and void lookups), DMARC (RFC 7489),
  * DKIM (common selectors), CAA (RFC 8659, tree climbing), DNSSEC (DS / DNSKEY
  * / AD flag / broken-chain detection), wildcard DNS, MTA-STS, TLS-RPT, BIMI,
- * HTTPS records, IPv6 and RDAP registration / expiry.
+ * HTTPS records, IPv6 and RDAP registration / expiry, and the mail servers' identity: whether
+ * each MX address has reverse DNS that forward-confirms (FCrDNS, lib/ptrsweep.js).
  *
  * Every finding is a Check `{ id, severity, titleKey, detailKey, params }`
  * with i18n keys `health.<id>.title` / `health.<id>.detail`; English and
@@ -20,6 +21,7 @@ import { normalizeHostname, registrableDomain, isSubdomainOf } from './domain.js
 import { normalizeIP, ipVersion, isPrivateIP, parseIP } from './netinfo.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES, EDE_CODES, base64Decode, rcodeToName } from './dnswire.js';
 import { rdapDomain, registryDomain } from './rdap.js';
+import { checkFcrdns, ptrTemplate } from './ptrsweep.js';
 
 /**
  * DKIM selectors probed by default: generic ones plus the defaults of large
@@ -1262,7 +1264,7 @@ export async function findCaa(name, { dns, signal } = {}) {
 /** Check categories (the part of the id before the first '.') → UI groups. */
 export const HEALTH_CATEGORIES = Object.freeze({
   domain: 'dns', soa: 'dns', ns: 'dns', apex: 'dns', ipv6: 'dns', 'https-rr': 'dns', wildcard: 'dns',
-  mx: 'email', spf: 'email', dmarc: 'email', dkim: 'email', 'mta-sts': 'email', 'tls-rpt': 'email', bimi: 'email',
+  mx: 'email', 'mail-identity': 'email', spf: 'email', dmarc: 'email', dkim: 'email', 'mta-sts': 'email', 'tls-rpt': 'email', bimi: 'email',
   caa: 'security', dnssec: 'security',
   rdap: 'registration'
 });
@@ -1451,6 +1453,77 @@ async function analyzeMx(name, mxR, d) {
   if (!ipLiteral.length && !unresolvable.length) {
     checks.push(makeCheck('mx.ok', 'ok', { count: real.length, hosts: real.map((m) => `${m.preference} ${m.exchange}`) }));
   }
+  return out;
+}
+
+/** MX addresses whose reverse DNS is checked at most: the first ones, in MX preference order. */
+export const MAIL_FCRDNS_MAX = 10;
+
+/**
+ * Mail server identity: the reverse DNS (PTR) of every public MX address and whether it
+ * forward-confirms (FCrDNS: the PTR name resolves back to the address), through
+ * ptrsweep.checkFcrdns on the same memoised client. MX hosts receive mail, so this stands in
+ * for the sending servers, which is what receivers check (Gmail and Yahoo require FCrDNS for
+ * senders). A host under the checked domain's registrable domain is the domain's own server:
+ * a missing or unconfirmed PTR there is a warning. A provider's MX host (another domain) is
+ * the provider's to set: info. A generic, templated PTR name (the address written into it, a
+ * pool word) is info: legitimate relays carry cloud default names too.
+ * @param {string} name the checked domain
+ * @param {{ mx: Array<{ exchange: string }>, hosts: Object<string, { ipv4: string[], ipv6: string[] }> }} mx analyzeMx result
+ * @param {object} d adapted DNS client
+ */
+async function analyzeMailIdentity(name, mx, d) {
+  const checks = [];
+  const ownDomain = registrableDomain(name) || name;
+  const targets = [];
+  for (const m of mx.mx) {
+    const h = mx.hosts[m.exchange];
+    if (!h) continue;
+    for (const ip of [...h.ipv4, ...h.ipv6]) {
+      if (isPrivateIP(ip) || targets.some((x) => x.ip === ip)) continue;
+      targets.push({ host: m.exchange, ip });
+    }
+  }
+  const out = { checks, addresses: [], total: targets.length, checked: 0 };
+  if (!targets.length) return out;
+  const checked = targets.slice(0, MAIL_FCRDNS_MAX);
+  const results = await Promise.all(checked.map(({ ip }) => checkFcrdns(ip, { dns: d })));
+  out.checked = checked.length;
+  out.addresses = results.map((r, i) => {
+    const shown = r.confirmed[0] || r.names[0] || null;
+    return {
+      host: checked[i].host,
+      ip: r.ip,
+      status: r.status,
+      names: [...r.names],
+      confirmed: [...r.confirmed],
+      forward: r.forward.map((f) => ({ name: f.name, state: f.state, addresses: [...f.addresses] })),
+      own: isSubdomainOf(checked[i].host, ownDomain),
+      generic: shown && ptrTemplate(shown, r.ip) ? shown : null,
+      error: r.error
+    };
+  });
+  const who = (a) => `${a.host} (${a.ip})`;
+  const pair = (a) => `${a.ip} → ${a.names[0]}`;
+  const confirmed = out.addresses.filter((a) => a.status === 'confirmed');
+  const missing = out.addresses.filter((a) => a.status === 'no-ptr' || a.status === 'nxdomain');
+  const mismatch = out.addresses.filter((a) => a.status === 'mismatch');
+  const failedAddr = out.addresses.filter((a) => a.status === 'servfail' || a.status === 'error');
+  const provider = [...missing, ...mismatch].filter((a) => !a.own);
+  const generic = out.addresses.filter((a) => a.generic && (a.status === 'confirmed' || a.status === 'mismatch'));
+  if (confirmed.length) {
+    checks.push(makeCheck('mail-identity.fcrdns-ok', 'ok', { count: confirmed.length, items: confirmed.map((a) => `${a.ip} → ${a.confirmed[0]}`) }));
+  }
+  if (missing.some((a) => a.own)) checks.push(makeCheck('mail-identity.fcrdns-missing', 'warn', { items: missing.filter((a) => a.own).map(who) }));
+  if (mismatch.some((a) => a.own)) checks.push(makeCheck('mail-identity.fcrdns-mismatch', 'warn', { items: mismatch.filter((a) => a.own).map(pair) }));
+  if (provider.length) checks.push(makeCheck('mail-identity.fcrdns-provider', 'info', { items: provider.map((a) => (a.names.length ? pair(a) : who(a))) }));
+  if (failedAddr.length) {
+    checks.push(makeCheck('mail-identity.fcrdns-error', 'info', {
+      items: failedAddr.map((a) => `${who(a)}: ${a.status === 'servfail' ? 'SERVFAIL' : a.error || 'no answer'}`)
+    }));
+  }
+  if (generic.length) checks.push(makeCheck('mail-identity.ptr-generic', 'info', { items: generic.map((a) => `${a.ip} → ${a.generic}`) }));
+  if (targets.length > checked.length) checks.push(makeCheck('mail-identity.fcrdns-capped', 'info', { checked: checked.length, total: targets.length }));
   return out;
 }
 
@@ -1969,7 +2042,12 @@ function analyzeRdap(r, now) {
  *   rdap: object|null, wildcard: { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[], error: string|null }|null,
  *   spf: { record: string|null, parsed: object|null, lookups: object|null }, dmarc: { record: string|null, parsed: object|null,
  *     foundAt: string|null, inherited: boolean }, caa: object|null, caaCert: object|null, nsAddresses: Object<string, string[]>,
- *   mxHosts: object, checks: HealthCheck[], summary: { ok: number, info: number, warn: number, error: number } }>}
+ *   mxHosts: object, mailIdentity: { addresses: Array<{ host: string, ip: string, status: string, names: string[],
+ *     confirmed: string[], forward: object[], own: boolean, generic: string|null, error: string|null }>, total: number,
+ *     checked: number }|null, checks: HealthCheck[], summary: { ok: number, info: number, warn: number, error: number } }>}
+ *   `mailIdentity` (extension): the reverse DNS of the public MX addresses (at most {@link MAIL_FCRDNS_MAX}, in MX
+ *   preference order) with ptrsweep's FCRDNS_STATUSES; `own` = the MX host is under the checked domain's registrable
+ *   domain; null for a name that does not exist.
  */
 export async function domainHealth(domain, {
   dns,
@@ -2041,13 +2119,14 @@ export async function domainHealth(domain, {
       dnssec: { signed: null, validated: null, broken: false, dsCount: 0, dnskeyCount: 0, algorithms: [], ede: [] },
       rdap: rdapResult, wildcard: null, spf: { record: null, parsed: null, lookups: null },
       dmarc: { record: null, parsed: null, foundAt: null, inherited: false }, caa: null, caaCert: null,
-      nsAddresses: {}, mxHosts: {}, failedLookups: [], checks
+      nsAddresses: {}, mxHosts: {}, mailIdentity: null, failedLookups: [], checks
     });
   }
 
   const [ns, mx, dnssec, wildcard, dkim, caa] = await Promise.all([
     tracked('ns', analyzeNs(name, nsR, d, soa.apex)),
-    tracked('mx', analyzeMx(name, mxR, d)),
+    // The MX step includes the reverse DNS of the MX addresses (mail identity, FCrDNS).
+    tracked('mx', analyzeMx(name, mxR, d).then(async (res) => ({ ...res, identity: await analyzeMailIdentity(name, res, d) }))),
     tracked('dnssec', analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex: soa.apex, zone: soa.zone })),
     tracked('wildcard', d.detectWildcard(name)),
     tracked('dkim', analyzeDkim(name, dkimSelectors, d)),
@@ -2085,7 +2164,7 @@ export async function domainHealth(domain, {
 
   let checks = [
     ...soa.checks, ...nsChecks, ...apex.checks, ...https.checks, ...wildcardChecks,
-    ...mx.checks, ...spf.checks, ...dmarc.checks, ...dkim.checks, ...extras.checks,
+    ...mx.checks, ...mx.identity.checks, ...spf.checks, ...dmarc.checks, ...dkim.checks, ...extras.checks,
     ...caa.checks, ...dnssec.checks, ...rdapChecks.checks
   ];
   if (dnssec.dnssec.broken) {
@@ -2124,6 +2203,7 @@ export async function domainHealth(domain, {
     caaCert: caa.certCheck || null,
     nsAddresses: ns.addresses,
     mxHosts: mx.hosts,
+    mailIdentity: { addresses: mx.identity.addresses, total: mx.identity.total, checked: mx.identity.checked },
     failedLookups: [...(failed(mxR) ? ['mx'] : []), ...extras.failedLookups],
     checks
   });
@@ -2282,6 +2362,28 @@ const STRINGS = [
   ['mx.private-ip', ['MX host has a private IP', 'MX sunucusunun IP’si özel'],
     ['These mail servers resolve only to private addresses: {hosts}. External senders cannot reach them.',
       'Bu e-posta sunucuları yalnızca özel adreslere çözülüyor: {hosts}. Dışarıdan gönderenler ulaşamaz.']],
+
+  ['mail-identity.fcrdns-ok', ['Mail servers’ reverse DNS confirms: {count}', 'E-posta sunucularının ters DNS’i doğrulanıyor: {count}'],
+    ['Each of these MX addresses has a PTR name that resolves back to the same address (forward-confirmed reverse DNS, FCrDNS): {items}.',
+      'Bu MX adreslerinin her birinin, yine aynı adrese çözülen bir PTR adı var (ileri doğrulanmış ters DNS, FCrDNS): {items}.']],
+  ['mail-identity.fcrdns-missing', ['Mail server without reverse DNS', 'Ters DNS kaydı olmayan e-posta sunucusu'],
+    ['No PTR record for: {items}. Receiving mail does not need one, but if these servers also send mail, Gmail, Yahoo and most receivers require a PTR name that resolves back to the sending address. Ask whoever runs the address block (your hosting provider or ISP) to set the PTR to the server’s host name, and make that name’s A / AAAA record point back to the address.',
+      'Şunların PTR kaydı yok: {items}. E-posta almak için gerekmez; ancak bu sunucular e-posta da gönderiyorsa Gmail, Yahoo ve çoğu alıcı, gönderen adrese geri çözülen bir PTR adı ister. Adres bloğunu yöneten tarafa (barındırma firmanız ya da İSS’niz) PTR’yi sunucunun host adı yapmasını söyleyin ve o adın A / AAAA kaydının yine bu adresi göstermesini sağlayın.']],
+  ['mail-identity.fcrdns-mismatch', ['Mail server’s reverse DNS does not confirm', 'E-posta sunucusunun ters DNS’i doğrulanmıyor'],
+    ['The PTR name does not resolve back to the address: {items}. Gmail, Yahoo and many filters distrust a sender whose reverse DNS is not forward-confirmed. Add the address to the PTR name’s A / AAAA record, or change the PTR to a name that has it.',
+      'PTR adı yine aynı adrese çözülmüyor: {items}. Gmail, Yahoo ve birçok filtre, ters DNS’i ileri doğrulanmayan göndericiye güvenmez. Adresi PTR adının A / AAAA kaydına ekleyin ya da PTR’yi bu adrese çözülen bir adla değiştirin.']],
+  ['mail-identity.fcrdns-provider', ['Mail provider’s servers without confirmed reverse DNS', 'E-posta sağlayıcısının sunucularında doğrulanmış ters DNS yok'],
+    ['{items}. These MX hosts belong to your mail provider, which sets their reverse DNS; nothing to change on your side, and receiving servers do not need it.',
+      '{items}. Bu MX sunucuları e-posta sağlayıcınıza ait ve ters DNS’lerini sağlayıcı ayarlar; sizin tarafınızda değiştirilecek bir şey yok, alıcı sunucular için de gerekmez.']],
+  ['mail-identity.fcrdns-error', ['Reverse DNS of mail servers could not be checked', 'E-posta sunucularının ters DNS’i kontrol edilemedi'],
+    ['The lookups failed for: {items}. A SERVFAIL on a reverse zone usually means its delegation is broken at the network’s owner; check again later.',
+      'Şu sorgular başarısız oldu: {items}. Ters bölgede SERVFAIL genellikle ağ sahibindeki yetkilendirmenin bozuk olduğu anlamına gelir; daha sonra yeniden kontrol edin.']],
+  ['mail-identity.ptr-generic', ['Generic reverse DNS name on a mail server', 'E-posta sunucusunda genel (şablon) ters DNS adı'],
+    ['{items}: the name looks like a provider’s default (the address is written into it, or a dynamic / pool word). Some filters score such names as home or dynamic connections; for a sending server, set a PTR that names the host, such as mail.<your domain>.',
+      '{items}: ad, sağlayıcının varsayılan adına benziyor (adres adın içine yazılmış ya da dynamic / pool gibi bir sözcük var). Bazı filtreler böyle adları ev ya da dinamik bağlantı sayar; gönderen bir sunucu için host’u adlandıran bir PTR ayarlayın, örneğin mail.<alan adınız>.']],
+  ['mail-identity.fcrdns-capped', ['Reverse DNS checked for the first {checked} MX addresses', 'Ters DNS ilk {checked} MX adresi için kontrol edildi'],
+    ['The MX hosts have {total} public addresses; the others were not looked up.',
+      'MX sunucularının {total} genel adresi var; diğerleri sorgulanmadı.']],
 
   ['spf.present', ['SPF record found', 'SPF kaydı bulundu'],
     ['{record}', '{record}']],

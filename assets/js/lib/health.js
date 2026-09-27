@@ -788,8 +788,8 @@ function looksLikeDkim(s) {
 const CAA_LABEL = '[a-z0-9](?:-*[a-z0-9])*';
 const CAA_ISSUER_RE = new RegExp(`^${CAA_LABEL}(?:\\.${CAA_LABEL})*$`, 'i');
 const CAA_PARAM_RE = /^([a-z0-9](?:-*[a-z0-9])*)\s*=\s*([\x21-\x3a\x3c-\x7e]*)$/i;
-/** RFC 8657 §4: `label = 1*(ALPHA / DIGIT / "-")`. */
-const CAA_METHOD_LABEL_RE = /^[a-z0-9-]+$/i;
+/** RFC 8657 §4: `label = (ALPHA / DIGIT) *( *("-") (ALPHA / DIGIT))` (no leading or trailing hyphen). */
+const CAA_METHOD_LABEL_RE = new RegExp(`^${CAA_LABEL}$`, 'i');
 /** An RFC 3986 URI: a scheme, ':' and something after it (the CAA value grammar already bars spaces and ';'). */
 const CAA_URI_RE = /^[a-z][a-z0-9+.-]*:\S+$/i;
 
@@ -1092,8 +1092,9 @@ export function caaDomainsForIssuer(issuerDN) {
  * - no relevant issue property → allowed; no relevant value authorizes anybody (";", malformed
  *   or unsatisfiable values only) → denied ('deny-all');
  * - usable relevant values name the CA → 'allowed' when one of them carries neither accounturi
- *   nor validationmethods, else 'restricted': every usable value is an alternative in
- *   `restrictions`, and a request must satisfy one of them (RFC 8659 authorizations are additive);
+ *   nor validationmethods, else 'restricted': every distinct usable value is an alternative in
+ *   `restrictions` (a combination published twice is listed once), and a request must satisfy
+ *   one of them (RFC 8659 authorizations are additive);
  * - the values naming the CA (`letsencrypt.org.` with its trailing dot too) are all malformed
  *   ('malformed') or unsatisfiable ('unsatisfiable', including an issue value whose
  *   validationmethods cannot validate a wildcard) → denied, each listed in `unusable` with its
@@ -1144,9 +1145,18 @@ export function checkCaaAllows(caaRecords, issuerDN, { wildcard = false, issuerD
   if (usable.length) {
     const open = usable.find((r) => r.accountUri === null && r.methods === null);
     if (open) return result(true, 'allowed', { property, authorized, matched: open });
+    // The same combination published twice is one alternative, not two.
+    const seen = new Set();
+    const distinct = usable.filter((r) => {
+      const key = JSON.stringify([r.issuer, r.accountUri, r.methods && [...r.methods].sort(),
+        arr(r.otherParams).map((p) => `${p.tag}=${p.value}`).sort()]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     return result(true, 'restricted', {
       property, authorized, matched: usable[0], restricted: true,
-      restrictions: usable.map((r) => ({
+      restrictions: distinct.map((r) => ({
         issuer: r.issuer, accountUri: r.accountUri, methods: r.methods, unknownMethods: r.unknownMethods,
         otherParams: r.otherParams, raw: r.raw ?? ''
       }))
@@ -1656,7 +1666,7 @@ async function analyzeCaa(name, d, { issuerDN, wildcardCert }) {
     // RFC 8657: a value that names a CA but can never be satisfied authorizes nobody.
     const unsatisfiable = values.filter((x) => x.valid && x.issuer && x.problem).map((x) => x.raw);
     if (unsatisfiable.length) checks.push(makeCheck('caa.unsatisfiable', 'warn', { values: unsatisfiable }));
-    const restricted = values.filter((x) => x.restricted).map(caaRestrictionText);
+    const restricted = uniq(values.filter((x) => x.restricted).map(caaRestrictionText));
     if (restricted.length) checks.push(makeCheck('caa.restricted', 'info', { restrictions: restricted }));
     if (p.issue.length && !p.issuers.length && !p.wildIssuers.length) {
       checks.push(makeCheck('caa.deny-all', 'warn', { foundAt: caa.foundAt }));

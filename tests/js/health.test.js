@@ -1010,6 +1010,9 @@ test('parseCaaIssueValue: RFC 8657 accounturi / validationmethods', () => {
   assert.equal(problem('ca.example.net; validationmethods=dns-01; validationmethods=http-01'), 'validationmethods-multiple');
   assert.equal(problem('ca.example.net; validationmethods=dns-01,'), 'validationmethods-invalid', 'an empty label');
   assert.equal(problem('ca.example.net; validationmethods=dns_01'), 'validationmethods-invalid');
+  // RFC 8657 §4: a label starts and ends with a letter or digit
+  for (const bad of ['-dns-01', 'dns-01-', 'dns-01,-x', '-']) assert.equal(problem(`ca.example.net; validationmethods=${bad}`), 'validationmethods-invalid', bad);
+  assert.equal(problem('ca.example.net; validationmethods=ca--x'), null, 'inner hyphens may repeat');
   assert.equal(problem('ca.example.net; validationmethods='), 'validationmethods-none', 'zero labels');
   assert.equal(problem('ca.example.net; validationmethods=email-reply-00,tls-sni-01'), 'validationmethods-none', 'no method validates a domain name');
   assert.equal(problem('ca.example.net; validationmethods=xyz-01'), 'validationmethods-none', 'an unknown label is ignored');
@@ -1215,6 +1218,19 @@ test('checkCaaAllows: the RFC 8657 Appendix A examples (accounturi, validationme
     'example.net: validationmethods=dns-01; accounturi=https://example.net/account/1234',
     'example.net: validationmethods=http-01; accounturi=https://example.net/account/2345'
   ]);
+
+  // the same combination published twice is one alternative (methods in any order)
+  r = checkCaaAllows([
+    '0 issue "example.net; validationmethods=dns-01,http-01"', '0 issue "example.net; validationmethods=http-01,dns-01"',
+    '0 issue "example.net;validationmethods=dns-01,http-01"'
+  ], null, opts);
+  assert.deepEqual([r.verdict, r.restrictions.length, codes(r)], ['restricted', 1, ['methods']]);
+  r = checkCaaAllows([
+    '0 issue "example.net; accounturi=https://example.net/account/1234"', '0 issue "example.net; accounturi=https://example.net/account/1234"',
+    '0 issue "example.net; accounturi=https://example.net/account/2345"'
+  ], null, opts);
+  assert.deepEqual([r.restrictions.length, codes(r)], [2, ['account', 'alternatives']]);
+  assert.equal(caaRestrictionNotes(r.restrictions).find((n) => n.code === 'alternatives').params.count, 2);
 
   // dns-01 or a CA-specific method
   r = checkCaaAllows(['0 issue "example.net; validationmethods=dns-01,ca-foo"'], null, opts);

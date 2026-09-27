@@ -12,6 +12,7 @@
  * What is sent, and what never is (zone spec §10, critic D1/D2/G1):
  *  - names and types only, to the user's resolver chain with failover (or one chosen
  *    resolver); never `balance` rotation, never Globalping or a passive source;
+ *  - names outside the zone origin are never queried (name servers ignore them);
  *  - private-looking names are skipped by default (`skipPrivate`), as owners and as
  *    flattened / alias targets (a skipped target is never sent, even with `resolveTargets`);
  *  - a proxied CNAME's target (the hidden origin host) is never queried, and neither
@@ -53,7 +54,7 @@ export const DRIFT_STATUSES = Object.freeze(['match', 'differs', 'missing-live',
 export const DRIFT_REASONS = Object.freeze(['values', 'nxdomain', 'nodata', 'cname-live', 'proxy-on-live', 'proxy-off-live',
   'not-cloudflare', 'flatten-mismatch', 'alias-disjoint', 'routing-outside', 'wildcard', 'servfail', 'refused', 'transport',
   'timeout', 'budget', 'private', 'unsupported-type', 'dnssec-type', 'escaped-name', 'cf-synthesized', 'txt-chunking',
-  'ttl-stale', 'placeholder', 'tunnel', 'provider', 'cf-caa-added', 'alias-rotating', 'filtered', 'target-hidden']);
+  'ttl-stale', 'placeholder', 'tunnel', 'provider', 'cf-caa-added', 'alias-rotating', 'filtered', 'target-hidden', 'out-of-zone']);
 export const DRIFT_SEVERITY = Object.freeze({
   match: 'ok', 'proxied-ok': 'ok', 'flattened-ok': 'ok', 'alias-ok': 'ok', 'routing-ok': 'ok', occluded: 'info',
   skipped: 'info', differs: 'warn', 'missing-live': 'warn', 'origin-exposed': 'error', error: 'unknown'
@@ -261,7 +262,7 @@ function buildPlan(zone, opts) {
     g.records.push(r);
   }
 
-  const skipped = { private: 0, occluded: 0, unsupported: 0, escaped: 0, dnssec: 0, synthesized: 0, wildcard: 0, budget: 0 };
+  const skipped = { private: 0, occluded: 0, outOfZone: 0, unsupported: 0, escaped: 0, dnssec: 0, synthesized: 0, wildcard: 0, budget: 0 };
   const reserved = new Set();
   const needed = new Set();
   const live = !!origin && !(zone && zone.fatal);
@@ -284,6 +285,8 @@ function buildPlan(zone, opts) {
     const item = { ...g, index: items.length, mode: null, zero: null, queries: [], valid: [], wildcard: g.name.startsWith('*.'), targetHidden: false };
     const recs = g.records;
     if (recs.every((r) => idx.occludedRecords.has(r))) { zero(item, 'occluded', null, 'occluded'); continue; }
+    // outside the origin: name servers ignore it (the parser's OUT_OF_ZONE), and it may be someone else's name
+    if (origin && !idx.inZone(g.name)) { zero(item, 'skipped', 'out-of-zone', 'outOfZone'); continue; }
     if (DNSSEC_TYPES.has(g.type)) { zero(item, 'skipped', 'dnssec-type', 'dnssec'); continue; }
     item.valid = recs.filter((r) => usable(r, idx));
     if (!item.valid.length) { zero(item, 'skipped', 'unsupported-type', 'unsupported'); continue; }
@@ -361,7 +364,7 @@ function buildPlan(zone, opts) {
  * @param {{ skip?: Iterable<string>, skipPrivate?: boolean, wildcardProbes?: boolean, resolveTargets?: boolean,
  *   maxQueries?: number }} [opts]
  * @returns {{ rrsets: number, queries: number, needed: number, overBudget: boolean, maxQueries: number,
- *   names: number, skipped: { private: number, occluded: number, unsupported: number, escaped: number,
+ *   names: number, skipped: { private: number, occluded: number, outOfZone: number, unsupported: number, escaped: number,
  *   dnssec: number, synthesized: number, wildcard: number, budget: number }, targetsHidden: number,
  *   internalShare: number }} `needed`: queries without a budget; `targetsHidden`: flattened / alias
  *   targets left out (sent only with `resolveTargets`); `internalShare`: share of private addresses (0..1)

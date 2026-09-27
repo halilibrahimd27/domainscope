@@ -27,4 +27,4 @@ sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=
 sweep all targets=3 hosts=0 names=17 tokens=20 chars=396 probes=51 probesAtLeast=false fileForm=false
 scan names=16 wildcardBases=0 delegations=0 proxied=0 skipped=localhost.example.com
 drift rrsets=31 queries=31 needed=31 names=26 targetsHidden=0 internalShare=0.067
-drift skipped private=1 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0
+drift skipped private=1 occluded=0 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0

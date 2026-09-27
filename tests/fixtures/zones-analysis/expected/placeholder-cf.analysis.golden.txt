@@ -62,4 +62,4 @@ sweep proxied targets=2 hosts=2 names=6 tokens=10 chars=196 probes=24 probesAtLe
 sweep all targets=2 hosts=2 names=14 tokens=18 chars=337 probes=56 probesAtLeast=true fileForm=false
 scan names=13 wildcardBases=0 delegations=0 proxied=5 skipped=backend.example.com
 drift rrsets=20 queries=23 needed=23 names=16 targetsHidden=0 internalShare=0.125
-drift skipped private=1 occluded=0 unsupported=0 escaped=0 dnssec=0 synthesized=1 wildcard=0 budget=0
+drift skipped private=1 occluded=0 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=1 wildcard=0 budget=0

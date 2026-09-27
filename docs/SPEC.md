@@ -800,6 +800,7 @@ What is sent:
 - never through `balance` rotation, never to Globalping or a passive source.
 
 What is never sent:
+- names outside the zone origin (the parser's OUT_OF_ZONE: name servers ignore them; `skipped` / `out-of-zone`);
 - private-looking names (skipped by default), also as a flattened or alias target;
 - the target of a proxied CNAME;
 - flattened / alias targets outside the zone, unless `resolveTargets` (a skipped target stays hidden even then);
@@ -808,7 +809,7 @@ What is never sent:
 Every (name, type) is queried once.
 ```js
 export function planDrift(zone, { skip, skipPrivate = true, wildcardProbes = true, resolveTargets = false, maxQueries }) -> { rrsets, queries /* EXACTLY what driftZone sends */,
-  needed, overBudget, maxQueries, names, skipped: { private, occluded, unsupported, escaped, dnssec, synthesized, wildcard, budget }, targetsHidden, internalShare }
+  needed, overBudget, maxQueries, names, skipped: { private, occluded, outOfZone, unsupported, escaped, dnssec, synthesized, wildcard, budget }, targetsHidden, internalShare }
 export async function driftZone(zone, { dns, resolver, signal, onRow, onProgress, maxQueries = 2000, concurrency = 6, skip, skipPrivate = true, wildcardProbes = true,
   resolveTargets = false, labelFn, now }) -> { origin, startedAt, finishedAt, aborted, queries, planned, resolverPolicy,
   preflight: { originExists, liveSerial, fileSerial, serial: 'same'|'newer'|'older'|'unknown', fileNs, liveNs, nsMatch: 'same'|'overlap'|'disjoint'|'unknown' }, rows: DriftRow[], counts }
@@ -816,7 +817,7 @@ export async function driftZone(zone, { dns, resolver, signal, onRow, onProgress
   // then every other RRset. A missing origin (NXDOMAIN) turns every remaining row into error / nxdomain without another query.
 DriftRow = { key, name, type, status, reasons: string[], file, live, added, removed, resolver, rcode, fileTtl, liveTtl, proxied, recordIds, probe }
 export function classifyExtraNames(zone, liveNames) -> Array<{ name, kind: 'wildcard'|'delegated'|'extra', matchedBy }>   // live names missing from the file
-export const DRIFT_STATUSES /* match, differs, missing-live, proxied-ok, origin-exposed, flattened-ok, alias-ok, routing-ok, occluded, skipped, error */, DRIFT_REASONS /* 30 */,
+export const DRIFT_STATUSES /* match, differs, missing-live, proxied-ok, origin-exposed, flattened-ok, alias-ok, routing-ok, occluded, skipped, error */, DRIFT_REASONS /* 31 */,
   DRIFT_SEVERITY, DRIFT_DEFAULT_BUDGET = 2000, DRIFT_MAX_BUDGET = 10000, DRIFT_MAX_CONCURRENCY = 8, DRIFT_TTL_FLOOR = 60, CF_CAA_ISSUER_IDS, MANAGED_ALIAS_PROVIDERS
 ```
 How drift reads a zone:

@@ -315,6 +315,17 @@ describe('what is never sent', () => {
     assert.equal(explicit.asked('example.com', 'A'), false);
   });
 
+  test('names outside the zone (the parser\'s OUT_OF_ZONE, ignored by name servers) are never sent', async () => {
+    const z = zone([SOA, ['www', 'A', '192.0.2.10'], ['staging.example.org.', 'A', '192.0.2.77'], ['*.dev.example.org.', 'A', '192.0.2.78']]);
+    const r = await drift(z, { 'www.example.com|A': [A('192.0.2.10')] });
+    assert.equal(status(r.row('staging.example.org|A')), 'skipped out-of-zone');
+    assert.equal(status(r.row('*.dev.example.org|A')), 'skipped out-of-zone');
+    assert.equal(r.dns.log.some((q) => q.name.endsWith('example.org')), false);
+    const plan = planDrift(z);
+    assert.equal(plan.skipped.outOfZone, 2);
+    assert.equal(r.dns.log.length, plan.queries);
+  });
+
   test('an alias or flattened target that is private-looking or skipped is never sent', async () => {
     const same = (target) => ({ alias: { target, zoneId: null, evaluateTargetHealth: false, provider: 'same-zone' } });
     const z = zone([SOA, ['vpn', 'A', '10.1.2.3'], ['jira.corp', 'A', '198.51.100.7'], ['portal', 'A', null, same('vpn.example.com')],

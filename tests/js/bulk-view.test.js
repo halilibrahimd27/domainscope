@@ -58,6 +58,15 @@ describe('bulk view: input', () => {
     assert.deepEqual([nested.names, nested.invalid], [['e.example.com', 'f.example.com'], []]);
   });
 
+  test('JSON whose names sit under other keys still gives its strings, never nothing', () => {
+    for (const doc of [{ results: ['a.example.com', 'b.example.com'] }, { items: [{ fqdn_list: ['a.example.com'] }, { value: 'b.example.com' }] }]) {
+      const r = parseBulkInput(JSON.stringify(doc));
+      assert.deepEqual(r.names, ['a.example.com', 'b.example.com'], JSON.stringify(doc));
+    }
+    const r = parseBulkInput(JSON.stringify({ status: 'ok', items: ['a.example.com'] }));
+    assert.deepEqual([r.names, r.invalid], [['a.example.com'], ['ok']]);
+  });
+
   test('plain lists are unchanged; text that only looks like JSON is read as a list', () => {
     const r = parseBulkInput('www.example.com, api.example.com\n# comment\n192.0.2.7');
     assert.deepEqual([r.names, r.ips, r.invalid], [['www.example.com', 'api.example.com'], ['192.0.2.7'], []]);

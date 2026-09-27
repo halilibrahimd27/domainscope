@@ -299,10 +299,19 @@ function jsonTokens(node, key = null, out = []) {
   return out;
 }
 
+/** Every string of a parsed JSON value, whatever its key. */
+function jsonStrings(node, out = []) {
+  if (typeof node === 'string') out.push(...splitList(node));
+  else if (node && typeof node === 'object') for (const v of Object.values(node)) jsonStrings(v, out);
+  return out;
+}
+
 /**
  * Tokens of the pasted text or imported file. A JSON document (`jq -c`, JSON.stringify, API
  * output) or JSON lines (one object per line) are read with {@link jsonTokens}, so brackets,
- * quotes and field names never end up as "invalid entries"; anything else is a plain list.
+ * quotes and field names never end up as "invalid entries"; anything else is a plain list. A
+ * JSON value with no name-like key (`{"results": [...]}`) gives every string instead, so the
+ * user sees names or invalid entries rather than nothing.
  * @param {string} text
  * @returns {string[]}
  */
@@ -311,7 +320,9 @@ function inputTokens(text) {
     const trimmed = s.trim();
     if (!/^[[{]/.test(trimmed)) return null;
     try {
-      return jsonTokens(JSON.parse(trimmed));
+      const doc = JSON.parse(trimmed);
+      const tokens = jsonTokens(doc);
+      return tokens.length ? tokens : jsonStrings(doc);
     } catch {
       return null;
     }

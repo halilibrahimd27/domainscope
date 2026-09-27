@@ -2,7 +2,7 @@
 // with payloads shaped exactly like the real services (probed 2026-09-23).
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { SOURCES, fetchSource, fetchAllSources, mergeCerts } from '../../assets/js/lib/sources.js';
+import { SOURCES, fetchSource, fetchAllSources, mergeCerts, sourceHealthSummary } from '../../assets/js/lib/sources.js';
 import { AbortError } from '../../assets/js/lib/util.js';
 
 /** Route requests by URL prefix; each route returns a Response, a value (JSON), or throws. */
@@ -238,6 +238,26 @@ describe('Cert Spotter', () => {
     });
     await fetchSource('certspotter', 'example.com', { fetchImpl: f3 });
     assert.equal(c3.length, 2);
+  });
+
+  test('a full 5th page sets truncated (page limit reached); an early end or a final Link header does not', async () => {
+    let n = 0;
+    const { fetchImpl } = router({ [CS]: () => { n += 1; return [issuance(n, [`h${n}.example.com`])]; } });
+    const r = await fetchSource('certspotter', 'example.com', { fetchImpl });
+    assert.equal(r.truncated, true);
+    assert.match(sourceHealthSummary([r])[0].message, /\(page limit reached\)$/);
+
+    const pages = [[issuance(1, ['a.example.com'])], [issuance(2, ['b.example.com'])], []];
+    const { fetchImpl: f2 } = router({ [CS]: (url, k) => pages[k - 1] });
+    assert.equal((await fetchSource('certspotter', 'example.com', { fetchImpl: f2 })).truncated, false);
+
+    // a readable Link header on page 5 without rel="next": the last page, nothing was cut
+    const { fetchImpl: f3 } = router({
+      [CS]: (url, k) => new Response(JSON.stringify([issuance(k, [`h${k}.example.com`])]), {
+        headers: { link: k === 5 ? '<https://api.certspotter.com/issuances?after=0>; rel="prev"' : '<https://api.certspotter.com/issuances?after=1>; rel="next"' }
+      })
+    });
+    assert.equal((await fetchSource('certspotter', 'example.com', { fetchImpl: f3 })).truncated, false);
   });
 
   test('429 on the first page → rate-limit error; on a later page → partial result', async () => {

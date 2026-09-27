@@ -653,7 +653,7 @@ function parseCrtsh(domain, data, form, failures, includeExpired) {
   return { rows: data.length, certs: list, hints: [], collector, partialError, queryForm: form };
 }
 
-/** Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages). */
+/** Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages; a full 5th page → `truncated`). */
 async function fromCertspotter(domain, ctx) {
   const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}`
     + '&include_subdomains=true&expand=dns_names&expand=issuer';
@@ -663,6 +663,7 @@ async function fromCertspotter(domain, ctx) {
   let after = null;
   let partialError = null;
   let pages = 0;
+  let truncated = false;
   for (let page = 0; page < MAX_CERTSPOTTER_PAGES; page += 1) {
     const url = after ? `${base}&after=${encodeURIComponent(after)}` : base;
     let data;
@@ -717,6 +718,9 @@ async function fromCertspotter(domain, ctx) {
     // continue until an empty page (at most MAX_CERTSPOTTER_PAGES requests).
     const link = headers ? headers.get('link') : null;
     if (typeof link === 'string' && link.trim() && !/rel="?next"?/i.test(link)) break;
+    // A full last page under the cap: more issuances may exist (certain with a
+    // readable rel="next"; without the header it cannot be told apart).
+    if (page === MAX_CERTSPOTTER_PAGES - 1) truncated = true;
     // Readable X-RateLimit-Remaining: 0 (Node) → the next page would be a 429
     // (which may prolong the penalty): stop and report the quota instead.
     if (ctx.stats && ctx.stats.rate && ctx.stats.rate.remaining === 0 && page < MAX_CERTSPOTTER_PAGES - 1) {
@@ -726,7 +730,7 @@ async function fromCertspotter(domain, ctx) {
   }
   const unique = new Map();
   for (const c of certs) if (!unique.has(c.key)) unique.set(c.key, c);
-  return { rows, certs: [...unique.values()], hints: [], collector, partialError, pages };
+  return { rows, certs: [...unique.values()], hints: [], collector, partialError, pages, truncated };
 }
 
 const HACKERTARGET_QUOTA_RE = /api count exceeded|increase quota|too many requests/i;

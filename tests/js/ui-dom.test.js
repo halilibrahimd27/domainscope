@@ -1979,6 +1979,14 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.equal(S.zoneStartAction(run(['example.com'], 'running', 'discover'), ['example.com'], 'exact'), 'wait', 'the same domain in another zone mode');
     assert.equal(S.zoneStartAction(run(['example.com'], 'running', 'exact'), ['example.com'], 'exact'), null, 'that very zone scan is running');
     assert.equal(S.zoneStartAction(run(['example.com'], 'running'), ['example.com'], 'off'), null);
+    // a zone file imported again is another zone object: the scan of the old one is not that scan
+    const v1 = { v: 1, origin: 'example.com' };
+    const v2 = { v: 1, origin: 'example.com' };
+    const zoneRun = { ...run(['example.com'], 'running', 'exact'), zone: v1 };
+    assert.equal(S.zoneStartAction(zoneRun, ['example.com'], 'exact', v1), null);
+    assert.equal(S.zoneStartAction(zoneRun, ['example.com'], 'exact', v2), 'wait', 'the updated export waits for the old scan');
+    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    assert.match(src, /run\.zone = zoneCfg\.zone \|\| null;/, 'start() keeps the zone on the run');
     inLang('en', () => assert.equal(i18n.t('sub.zone.busy', { running: 'example.org', domain: 'example.com' }),
       'A scan of example.org is still running. The scan of your zone file (example.com) starts when it ends.'));
     inLang('tr', () => assert.equal(i18n.t('sub.zone.busy', { running: 'example.org', domain: 'example.com' }),

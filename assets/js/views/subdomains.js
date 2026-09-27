@@ -970,7 +970,7 @@ registerStrings('tr', {
   'sub.zone.discover': 'Zone dosyası dahil: adları bu taramaya başlangıç adı olarak eklendi.',
   'sub.zone.busy': '{running} taraması hâlâ sürüyor. Zone dosyanızın taraması ({domain}) o bitince başlar.',
   'sub.zone.busy.cancel': 'Onu iptal et, zone’u tara',
-  'sub.zone.busy.dismiss': 'Başlatma',
+  'sub.zone.busy.dismiss': 'Vazgeç',
   'sub.org.zone': 'Zone dosyanızdaki kesin originler',
   'sub.org.zoneHint': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
 
@@ -2446,15 +2446,18 @@ export function linkAction(params, targets, run) {
 /**
  * What the Zone File view's "Scan now" does on arrival: start the zone scan, or — while another
  * scan runs — wait for it ('wait': the page says so and offers to cancel it). Null when that very
- * zone scan is the one running.
- * @param {{ status: string, config: { domains: string[], zoneMode?: string|null } }|null} run the page's current run
+ * zone scan is the one running: same domains, same mode and the same imported zone (a zone file
+ * imported again is another scan).
+ * @param {{ status: string, zone?: object|null, config: { domains: string[], zoneMode?: string|null } }|null} run the page's current run
  * @param {string[]} domains the domains of the zone scan
  * @param {string} mode its zone mode (one of {@link ZONE_MODES})
+ * @param {object|null} [zone] the zone it scans (state.session.zone)
  * @returns {'start'|'wait'|null}
  */
-export function zoneStartAction(run, domains, mode) {
+export function zoneStartAction(run, domains, mode, zone = null) {
   if (!run || run.status !== 'running') return 'start';
-  const same = sameTargets(run.config.domains, domains) && (run.config.zoneMode || 'off') === mode;
+  const same = sameTargets(run.config.domains, domains) && (run.config.zoneMode || 'off') === mode
+    && (run.zone || null) === (mode === 'off' ? null : zone || null);
   return same ? null : 'wait';
 }
 
@@ -3507,6 +3510,7 @@ export function mount(container, ctx) {
     });
     // The DohClient counts queries for its whole life; remember where this run started.
     run.queriesAtStart = typeof dns.stats === 'function' ? dns.stats().queries : null;
+    run.zone = zoneCfg.zone || null; // the imported zone it scans (zoneStartAction)
     session.run = run;
     session.filter = 'all';
     hideLinkPrompt();
@@ -3615,7 +3619,7 @@ export function mount(container, ctx) {
   const startFromZoneClick = () => {
     if (ctx.signal.aborted) return;
     const zone = activeZone();
-    const action = zoneStartAction(session.run, parseTargets(domainField.value).domains, zone ? (zoneModes.get(zone) || 'discover') : 'off');
+    const action = zoneStartAction(session.run, parseTargets(domainField.value).domains, zone ? (zoneModes.get(zone) || 'discover') : 'off', zone);
     if (action === 'wait') showZoneBusyPrompt(zone);
     else if (action === 'start') start();
   };

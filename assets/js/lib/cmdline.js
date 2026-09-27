@@ -32,9 +32,10 @@
  *    default so every earlier caller is byte-identical: `allowHostTargets` keeps
  *    a HOST NAME target (a zone's proxied CNAME origin, resolved by the CLI
  *    inside the network) and `allowWildcardNames` keeps a `*.x` name (always
- *    quoted, `*` is in neither safe set). A host target (and, under the opt-in,
- *    a name) that glibc `inet_aton` would read as an IPv4 address (`2026092401`,
- *    `0x7f.0x1`, `0177.1`, `10.1`) is dropped: it must never reach getaddrinfo.
+ *    quoted, `*` is in neither safe set). A host target or a name (opt-in or
+ *    not) that glibc `inet_aton` would read as an IPv4 address (`2026092401`,
+ *    `0x7f.0x1`, `0177.1`, `10.1`) is dropped: it must never reach getaddrinfo,
+ *    and the CLI refuses such a `-n` argument outright.
  *
  * The whole design assumes the command may be pasted verbatim into either a
  * POSIX shell or PowerShell, so it must be inert under both.
@@ -70,8 +71,24 @@ function canonTarget(raw) {
 // name can never be read as an option. Underscore is allowed (service labels).
 const NAME_CHARS = /^[a-z0-9_.-]+$/;
 
+// The numeric forms glibc `inet_aton` accepts as an IPv4 address: 1–4 parts, each
+// decimal, octal (leading 0) or hex (0x…). `normalizeHostname` already rejects the
+// all-decimal forms, but `0x7f.0x1` passes it, so every validator checks this too.
+const INET_ATON = /^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+)){0,3}$/i;
+
 /**
- * Canonicalise one sweep name (a hostname).
+ * Would glibc `inet_aton` read `s` as an IPv4 address? Internal: exported for the
+ * tests only (the validators below use it).
+ * @param {unknown} s
+ * @returns {boolean}
+ */
+export function isInetAtonNumeric(s) {
+  return INET_ATON.test(String(s ?? ''));
+}
+
+/**
+ * Canonicalise one sweep name (a hostname). An inet_aton numeric form is
+ * dropped: the CLI refuses one given as a `-n` argument (a usage error).
  * @param {unknown} raw
  * @returns {string|null} normalised hostname, or null when invalid
  */
@@ -80,23 +97,8 @@ function canonName(raw) {
   if (!s) return null;
   const n = normalizeHostname(s);
   if (!n) return null;
-  if (n.startsWith('-') || !NAME_CHARS.test(n)) return null;
+  if (n.startsWith('-') || !NAME_CHARS.test(n) || isInetAtonNumeric(n)) return null;
   return n;
-}
-
-// The numeric forms glibc `inet_aton` accepts as an IPv4 address: 1–4 parts, each
-// decimal, octal (leading 0) or hex (0x…). `normalizeHostname` already rejects the
-// all-decimal forms, but `0x7f.0x1` passes it, so the opt-ins check this too.
-const INET_ATON = /^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+)){0,3}$/i;
-
-/**
- * Would glibc `inet_aton` read `s` as an IPv4 address? Internal: exported for the
- * tests only (the opt-in validators below use it).
- * @param {unknown} s
- * @returns {boolean}
- */
-export function isInetAtonNumeric(s) {
-  return INET_ATON.test(String(s ?? ''));
 }
 
 /**

@@ -479,3 +479,14 @@ describe('buildSweepCommand: review fixes', () => {
     }
   });
 });
+
+describe('buildSweepCommand: shell review fixes', () => {
+  test('a numeric name the CLI refuses on its command line (0x7f.0x1, 127.0x1) is dropped by default too', () => {
+    const { valid, dropped } = validateNames(['0x7f.0x1', '127.0x1', 'www.example.com', '0x7f.0x1.example.com']);
+    assert.deepEqual(valid, ['www.example.com', '0x7f.0x1.example.com']);
+    assert.deepEqual(dropped, ['0x7f.0x1', '127.0x1']);
+    const r = buildSweepCommand({ targets: ['192.0.2.1'], names: ['0x7f.0x1', 'www.example.com'] });
+    assert.equal(r.command, 'ssl_origin_scan.py -t 192.0.2.1 -n www.example.com');
+    assert.deepEqual(r.dropped.names, ['0x7f.0x1']);
+  });
+});

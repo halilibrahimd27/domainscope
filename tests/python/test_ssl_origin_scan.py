@@ -4186,6 +4186,32 @@ class MonitorCliTests(unittest.TestCase):
                 self.assertNotIn('kept the previous baseline', err)
                 self.assertEqual(len(read_json(state)['changes']), 4)
 
+    def test_failing_moves_come_after_the_changes_that_count_everywhere(self):
+        """A /24 sweep where closed and timed-out addresses take turns never hides the one
+        change that counts behind the summary's cap or at the end of the JSON."""
+        down = ['10.0.1.%d' % i for i in range(1, sos.MAX_SUMMARY_CHANGES + 11)]
+
+        def fleet(after):
+            connect = {ip: socket.timeout('timed out') if after
+                       else ConnectionRefusedError(111, 'Connection refused') for ip in down}
+            return scan_report([sos.Server('d%d' % i, [ip]) for i, ip in enumerate(down)]
+                               + [sos.Server('web', ['10.0.9.1'])],
+                               {'10.0.9.1': by_old_or_new(RENEWED_DER if after else EC_DER)},
+                               connect=connect)
+
+        report = fleet(True)
+        monitor = sos.build_monitor(report, sos.report_to_dict(fleet(False)), 'last.json')
+        self.assertEqual(len(monitor.changes), len(down) + 1)
+        first = monitor.changes[0]
+        self.assertEqual((first['ip'], first['transition']), ('10.0.9.1', 'updated'))
+        self.assertTrue(all(c['transition'] == 'failing' for c in monitor.changes[1:]))
+        self.assertEqual(sos.report_to_dict(report, monitor)['changes'][0]['ip'], '10.0.9.1')
+        text = sos.render_summary(report, width=200, monitor=monitor)
+        self.assertRegex(text, r'  UPDATED +web 10\.0\.9\.1:443')
+        self.assertIn('... and %d more' % (len(down) + 1 - sos.MAX_SUMMARY_CHANGES), text)
+        _, items, _ = sos.notification_message(sos.report_to_dict(report, monitor), monitor)
+        self.assertEqual(items[0].split()[1], 'UPDATED')
+
     def test_hosted_is_green_only_with_the_new_certificate(self):
         base = {'kind': 'status', 'scope': 'row', 'transition': 'hosted', 'servers': ['web'],
                 'ip': '10.0.0.1', 'port': 443, 'probe': 'sni', 'name': WILD,

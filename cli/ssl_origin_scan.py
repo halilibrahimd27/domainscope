@@ -4061,8 +4061,8 @@ MAX_SUMMARY_ENDPOINTS = 10  # endpoints per expiring certificate without --show-
 class MonitorResult:
     """What ``--baseline`` and ``--warn-days`` add to a scan (see :func:`build_monitor`).
 
-    ``changes`` (:func:`compare_reports`) and ``baseline`` (:func:`baseline_info`) are
-    None without a baseline, ``expiring`` (:func:`expiring_certificates`) is None
+    ``changes`` (:func:`compare_reports`, the ones that count first: :func:`order_changes`)
+    and ``baseline`` (:func:`baseline_info`) are None without a baseline, ``expiring`` (:func:`expiring_certificates`) is None
     without ``--warn-days``; the JSON keys follow the same rule.
     """
 
@@ -4256,6 +4256,13 @@ def notable_changes(changes: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[st
     return [change for change in changes or [] if counts_as_change(change)]
 
 
+def order_changes(changes: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The changes that count first, then the FAILING moves, each group in its order: the
+    summary's cap, the JSON ``changes``, the webhook payload's cap and the message all cut
+    the moves between failure states, never a change that counts."""
+    return notable_changes(changes) + [c for c in changes if not counts_as_change(c)]
+
+
 def _change(kind: str, scope: str, servers: Sequence[str] = (), ip: Optional[str] = None,
             port: Optional[int] = None, probe: Optional[str] = None,
             name: Optional[str] = None, before: Optional[Dict[str, Any]] = None,
@@ -4442,7 +4449,7 @@ def build_monitor(report: ScanReport, baseline: Optional[Dict[str, Any]] = None,
     monitor = MonitorResult(warn_days=warn_days)
     doc = report_to_dict(report)
     if baseline is not None:
-        monitor.changes = compare_reports(baseline, doc)
+        monitor.changes = order_changes(compare_reports(baseline, doc))
         monitor.baseline = baseline_info(baseline, doc, baseline_file)
     elif baseline_file is not None:
         monitor.changes = []
@@ -4953,10 +4960,8 @@ def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] =
             count, since = len(monitor.changes), _iso_minute(info.get('finishedAt'))
             parts.append('%d change%s since %s' % (count, '' if count == 1 else 's', since)
                          if count else 'no changes since %s' % since)
-            # the changes that count first: FAILING moves are the ones cut
-            ordered = notable_changes(monitor.changes)
-            ordered.extend(change for change in monitor.changes if not counts_as_change(change))
-            shown = ordered[:NOTIFY_MAX_CHANGES]
+            # FAILING moves come last (order_changes): they are the ones cut
+            shown = monitor.changes[:NOTIFY_MAX_CHANGES]
             items.extend('- %s %s' % (change_tag(change), change_text(change))
                          for change in shown)
             if len(monitor.changes) > len(shown):

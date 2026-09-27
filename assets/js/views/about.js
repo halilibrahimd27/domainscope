@@ -402,7 +402,7 @@ export function mount(container, ctx) {
   const start = section('start', {
     title: t('start.aboutTitle'),
     description: t('start.aboutDesc'),
-    children: StartTaskList({ views: ctx.views || [], href: (view) => ctx.href(view), className: 'about-start-tasks' })
+    children: StartTaskList({ views: ctx.views || [], href: (view) => ctx.href(view) })
   });
 
   /* How it works */

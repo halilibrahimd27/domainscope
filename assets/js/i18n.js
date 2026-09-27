@@ -448,7 +448,7 @@ registerStrings('en', {
   'nav.inventory': 'Servers',
   'nav.inventory.desc': 'Your server inventory, used to match IP addresses to machines. It never leaves your browser.',
   'nav.about': 'About',
-  'nav.about.desc': 'How it works, data sources and quotas, privacy and the companion CLI.',
+  'nav.about.desc': 'Where to start, how it works, data sources and quotas, privacy and the companion CLI.',
 
   'shell.skip': 'Skip to content',
   'shell.language': 'Language',
@@ -743,7 +743,7 @@ registerStrings('tr', {
   'nav.inventory': 'Sunucular',
   'nav.inventory.desc': 'IP adreslerini makinelerle eşleştirmek için kullanılan sunucu envanteriniz. Tarayıcınızdan hiç çıkmaz.',
   'nav.about': 'Hakkında',
-  'nav.about.desc': 'Nasıl çalışır, veri kaynakları ve kotalar, gizlilik ve yardımcı CLI aracı.',
+  'nav.about.desc': 'Nereden başlamalı, nasıl çalışır, veri kaynakları ve kotalar, gizlilik ve yardımcı CLI aracı.',
 
   'shell.skip': 'İçeriğe geç',
   'shell.language': 'Dil',

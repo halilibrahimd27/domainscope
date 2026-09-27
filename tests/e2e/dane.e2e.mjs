@@ -10,7 +10,9 @@
  *   - a fake DoH zone answered inside the page for every resolver: MX, A and TLSA records, the AD
  *     flag per name and an RRSIG (for its original TTL) when the query sets DO. Every query is
  *     recorded with its DO / CD bits in window.__dnsLog; any other external fetch gets a 503 and
- *     is recorded in window.__externalFetches;
+ *     is recorded in window.__externalFetches. A name listed in window.__dnsHang gets no answer
+ *     at all (a silent resolver): the request ends only when it is aborted, and window.__dnsHung
+ *     records when it started and ended;
  *   - a network-level guard (CDP Fetch): any https request that still reached the network is
  *     failed and recorded; the suite asserts it stays empty;
  *   - the new certificate is tests/fixtures/cli_renewed_wild.pem (*.wild.example.net), the old
@@ -21,10 +23,13 @@
  *     then exactly one MX and one TLSA query per endpoint, all with DO; the wildcard is not looked
  *     up. Verdicts: the MX host that pins the old key "will break" (with the exact record to add
  *     and 2 × the signed TTL), a third-party MX is "another certificate", the apex name is safe;
- *     the certificate's own TLSA values; CSV export; Turkish, dark mode, 375 px phone;
+ *     the certificate's own TLSA values; CSV export; Turkish, dark mode, 375 px phone; keyboard
+ *     focus follows Check → Stop → Check again; Stop ends a check stuck on a silent resolver at
+ *     once ("cancelled");
  *   - SSL Targets: the DANE tab follows Verify, a summary line points to it when the scan mined
  *     mail servers, the check adds the covered hosts the scan found (one breaks, one is not
- *     DNSSEC-validated), the tab badge, and the scan's full JSON carries `dane`;
+ *     DNSSEC-validated), the tab badge, the scan's full JSON carries `dane`, and a new scan
+ *     cancels the old run's running check;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations.
  */
 
@@ -102,6 +107,20 @@ const fakeZoneScript = (zone) => `(() => {
   let wire = null;
   window.__dnsLog = [];
   window.__externalFetches = [];
+  window.__dnsHang = [];
+  window.__dnsHung = [];
+  /** No answer until the request is aborted (a resolver that never replies). */
+  const silence = (name, signal) => new Promise((resolve, reject) => {
+    const entry = { name, start: Date.now(), end: null };
+    window.__dnsHung.push(entry);
+    const stop = () => {
+      entry.end = Date.now();
+      reject(signal.reason || new DOMException('aborted', 'AbortError'));
+    };
+    if (!signal) return;
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const m = /[?&]dns=([^&]+)/.exec(url);
@@ -116,6 +135,7 @@ const fakeZoneScript = (zone) => `(() => {
     const name = String(q.name).toLowerCase().replace(/[.]$/, '');
     const dnssecOk = !!(query.edns && query.edns.dnssecOk);
     window.__dnsLog.push({ name, type: q.type, do: dnssecOk, cd: !!query.flags.cd });
+    if (window.__dnsHang.includes(name)) return silence(name, init && init.signal);
     const out = apexOf(name) ? answer(name, q.type, dnssecOk) : { rcode: 'NXDOMAIN', ad: false, answers: [], authorities: [] };
     return new Response(wire.encodeMessage({
       id: 0, flags: { qr: true, rd: true, ra: true, ad: out.ad }, rcode: out.rcode,
@@ -175,6 +195,12 @@ const overflowingIn = (page, selector) => page.evaluate((sel) => {
 /** DNS queries of the given types recorded since index `from`. */
 const dnsLog = (page, from = 0, types = ['MX', 'TLSA']) => page.evaluate((f, ty) => window.__dnsLog.slice(f).filter((q) => ty.includes(q.type)), from, types);
 const dnsCount = (page) => page.evaluate(() => window.__dnsLog.length);
+
+/** The data-action of the focused element, else its tag name ('BODY' when the focus fell to the page). */
+const focusedAction = (page) => page.evaluate(() => {
+  const a = document.activeElement;
+  return (a && a.dataset && a.dataset.action) || (a ? a.tagName : null);
+});
 
 /** The DANE table rows under `root`: [{ qname, status, dnssec, recs }]. */
 const readRows = (page, root) => page.evaluate((r) => [...document.querySelectorAll(`${r} .dane-table tbody tr.dt-row`)].map((tr) => ({
@@ -314,9 +340,11 @@ async function main() {
         head: document.querySelector('.cert-tabs [data-dane-head]')?.dataset.daneHead,
         publish: document.querySelector('.cert-tabs [data-dane="publish"] pre')?.textContent || '',
         wait: document.querySelector('.cert-tabs [data-dane="wait"]')?.textContent || '',
+        card: document.querySelector('.cert-tabs [data-dane-publish]')?.dataset.danePublish,
         first: document.querySelector('.cert-tabs .dane-table tbody tr.dt-row [data-dane-status]')?.dataset.daneStatus
       }));
       assertEqual(out.head, 'danger', 'headline');
+      assertEqual(out.card, 'error', 'the publish card is an error: an endpoint would break');
       assertEqual(out.publish, `_25._tcp.mail.wild.example.net. IN TLSA 3 1 1 ${NEW_SPKI}`, 'record to publish');
       assert(/\(2 h\)/.test(out.wait), `wait: ${out.wait}`);
       assertEqual(out.first, 'danger', 'worst first');
@@ -373,7 +401,7 @@ async function main() {
       await sleep(200);
     });
 
-    await run.step('keyboard: the run button is reachable and starts a new check with Enter', async () => {
+    await run.step('keyboard: Enter on the run button starts a new check; the focus comes back to it', async () => {
       const from = await dnsCount(page);
       await page.evaluate(() => document.querySelector('.cert-tabs [data-action="dane-run"]').focus());
       const before = await page.evaluate(() => document.querySelector('.cert-tabs .dane-meta')?.textContent || '');
@@ -381,6 +409,36 @@ async function main() {
       await page.waitFor((b) => document.querySelector('.cert-tabs .dane-panel')?.dataset.state === 'done'
         && (document.querySelector('.cert-tabs .dane-meta')?.textContent || '') !== b, { args: [before], timeout: 20000, message: 'second check' });
       assertEqual((await dnsLog(page, from)).length, 4, 'a second check sends the same four queries');
+      assertEqual(await focusedAction(page), 'dane-run', 'focus on "Check again", not on <body>');
+    });
+
+    await run.step('Stop: a check stuck on a silent resolver ends at once as cancelled; focus Check → Stop → Check again', async () => {
+      await page.evaluate(() => { window.__dnsHang = ['_443._tcp.wild.example.net']; });
+      const hung0 = await page.evaluate(() => window.__dnsHung.length);
+      await page.evaluate(() => document.querySelector('.cert-tabs [data-action="dane-run"]').focus());
+      await page.press('Enter');
+      await page.waitFor((n) => window.__dnsHung.length > n, { args: [hung0], message: 'the TLSA query hangs' });
+      const running = await page.evaluate(() => ({
+        state: document.querySelector('.cert-tabs .dane-panel')?.dataset.state,
+        run: document.querySelector('.cert-tabs [data-action="dane-run"]').hidden,
+        stop: document.querySelector('.cert-tabs [data-action="dane-stop"]').hidden,
+        progress: document.querySelector('.cert-tabs .dane-actions .progress').hidden
+      }));
+      assertEqual(running, { state: 'running', run: true, stop: false, progress: false }, 'running: Stop in place of Check');
+      assertEqual(await focusedAction(page), 'dane-stop', 'the focus moved to Stop');
+      await shotEl(page, opts, 'dane-cert-desktop-light-en-running', '.cert-tabs .dane-actions');
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.cert-tabs .dane-panel')?.dataset.state === 'cancelled', { timeout: 3000, message: 'cancelled at once' });
+      const out = await page.evaluate((n) => ({
+        alert: document.querySelector('.cert-tabs [data-dane="cancelled"]')?.textContent || '',
+        label: document.querySelector('.cert-tabs [data-action="dane-run"] .btn-label')?.textContent || '',
+        stop: document.querySelector('.cert-tabs [data-action="dane-stop"]').hidden,
+        table: !!document.querySelector('.cert-tabs .dane-table'),
+        pending: window.__dnsHung.slice(n).filter((x) => x.end === null).length
+      }), hung0);
+      assertEqual(out, { alert: 'The check was cancelled.', label: 'Check again', stop: true, table: false, pending: 0 }, 'cancelled');
+      assertEqual(await focusedAction(page), 'dane-run', 'the focus is back on "Check again"');
+      await page.evaluate(() => { window.__dnsHang = []; });
     });
 
     run.group('SSL Targets');
@@ -464,6 +522,23 @@ async function main() {
       await shotEl(page, opts, 'dane-scan-phone-light-en', '.scan-tab-dane');
       assertEqual(await dnsLog(page, from), [], 'language and theme switches send nothing');
       await page.setViewport({ width: 1440, height: 900 });
+    });
+
+    await run.step('a new scan cancels the old run\'s running check', async () => {
+      await page.evaluate(() => { window.__dnsHang = ['_443._tcp.wild.example.net']; });
+      const hung0 = await page.evaluate(() => window.__dnsHung.length);
+      await page.click(`${SCAN} [data-action="dane-run"]`);
+      await page.waitFor((n) => window.__dnsHung.length > n, { args: [hung0], message: 'the TLSA query hangs' });
+      assertEqual(await page.evaluate(() => document.querySelector('.scan-tab-dane .dane-panel')?.dataset.state), 'running', 'running');
+      await page.click('[data-action="scan-run"]');
+      // The client's own timeout is 8 s: an end this soon is the cancel.
+      await page.waitFor((n) => window.__dnsHung.slice(n).every((x) => x.end !== null), { args: [hung0], timeout: 3000, message: 'the old check aborted' });
+      await page.waitFor(() => document.querySelector('.scan-run-ui .scan-run')?.dataset.status === 'done', { timeout: 90000, interval: 150, message: 'new scan done' });
+      await settleScroll(page);
+      await page.evaluate(() => { window.__dnsHang = []; });
+      await page.click('.scan-tabs .tab[data-tab="dane"]');
+      await page.waitFor(() => document.querySelector('.scan-tab-dane [data-dane="panel"]'), { message: 'DANE panel of the new run' });
+      assertEqual(await page.evaluate(() => document.querySelector('.scan-tab-dane .dane-panel')?.dataset.state), 'idle', 'the new run starts idle');
     });
 
     run.group('Quality');

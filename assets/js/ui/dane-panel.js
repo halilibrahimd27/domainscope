@@ -10,7 +10,11 @@
  *   the browser; its TLSA values below the table are computed locally.
  * - The job lives on a holder object owned by the host view (`holder.dane`: one per certificate
  *   in the Certificate view, the scan run in SSL Targets), so a result survives navigation and
- *   language re-mounts, and a check keeps running while another view is open.
+ *   language re-mounts, and a check keeps running while another view is open. Stop (or
+ *   {@link cancelDane}: a new scan cancels its old run's check) aborts it.
+ * - Keyboard focus follows the button in use: Check → Stop while the check runs, and back to
+ *   "Check again" when it ends, instead of falling to <body> (as SSL Targets does with Start /
+ *   Cancel).
  * - Every string is rendered through h() / text nodes: MX host names and TLSA data are DNS data.
  *
  * It lives in ui/ (not views/) because every views/*.js module is a routed view.
@@ -24,7 +28,7 @@ import {
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import { toCsv, toJson } from '../lib/export.js';
-import { errorKind } from '../lib/util.js';
+import { errorKind, throwIfAborted } from '../lib/util.js';
 import {
   DANE_STATUSES, DANE_SEVERITY, DANE_NOTES, DANE_ACTION_STATUSES, TLSA_USAGES, TLSA_SELECTORS, TLSA_MATCHING,
   certAssociations, checkDane, daneExportJson, daneSummary, issuedBy, planDane
@@ -479,6 +483,7 @@ export function startDane(holder, { certs, ctx, extraNames = [] }) {
   (async () => {
     try {
       const dns = await ctx.getDns();
+      throwIfAborted(job.controller.signal);
       job.report = await checkDane(certs, {
         dns,
         extraNames,
@@ -498,6 +503,16 @@ export function startDane(holder, { certs, ctx, extraNames = [] }) {
     if (holder.dane === job) emit(holder);
   })();
   return job;
+}
+
+/**
+ * Stop the running check on `holder`, if any: it ends as 'cancelled' (Stop; a new scan cancels
+ * the check of its old run). A finished check is left as it is.
+ * @param {object|null} holder
+ */
+export function cancelDane(holder) {
+  const job = holder && holder.dane;
+  if (job && job.status === 'running' && job.controller) job.controller.abort();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -667,20 +682,38 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
   if (plan.skipped.domainsOverCap) notes.push(t('dane.skipped.domainsCap', { count: plan.skipped.domainsOverCap }));
   for (const n of notes) infoHost.append(h('p', { class: 'dane-note' }, Icon('info', { size: 14 }), h('span', null, n)));
 
+  const hasPlan = plan.domains.length > 0 || plan.https.length > 0;
   const runBtn = Button({
     label: t('dane.run'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'dane-run' },
-    disabled: !plan.domains.length && !plan.https.length,
+    disabled: !hasPlan,
     onClick: () => startDane(holder, { certs, ctx, extraNames })
   });
+  // Shown in the run button's place while a check runs (the queries may wait for slow resolvers).
+  const stopBtn = Button({
+    label: t('common.stop'), icon: 'stop', variant: 'secondary', size: 'sm', dataset: { action: 'dane-stop' },
+    onClick: () => cancelDane(holder)
+  });
+  stopBtn.hidden = true;
   const progress = ProgressBar({ label: t('dane.running'), indeterminate: true, showCount: false });
   progress.el.hidden = true;
-  actions.append(runBtn, progress.el);
+  actions.append(runBtn, stopBtn, progress.el);
 
   let lastStatus = null;
   function render() {
     const job = holder.dane || null;
     const running = !!job && job.status === 'running';
-    runBtn.disabled = running || (!plan.domains.length && !plan.https.length);
+    // The result area is rebuilt only when the job changes state, not on every progress tick.
+    const key = job ? `${job.status}|${job.report ? job.report.finishedAt.getTime() : ''}` : 'idle';
+    const rebuild = key !== lastStatus;
+    // The control in use is about to be hidden (Check → Stop and back) or rebuilt (the error's
+    // Retry): its keyboard focus moves to the button shown in its place, never to <body>.
+    const doc = globalThis.document;
+    const active = doc ? doc.activeElement : null;
+    const moveFocus = !!active && (active === runBtn || active === stopBtn
+      || (rebuild && (statusHost.contains(active) || resultHost.contains(active))));
+    runBtn.hidden = running;
+    stopBtn.hidden = !running;
+    runBtn.disabled = !hasPlan;
     runBtn.querySelector('.btn-label').textContent = job && !running ? t('dane.rerun') : t('dane.run');
     runBtn.classList.toggle('btn-primary', !job);
     runBtn.classList.toggle('btn-secondary', !!job);
@@ -696,15 +729,24 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
         progress.setLabel(t('dane.running'));
       }
     }
-    // The result area is rebuilt only when the job changes state, not on every progress tick.
-    const key = job ? `${job.status}|${job.report ? job.report.finishedAt.getTime() : ''}` : 'idle';
-    if (key === lastStatus) return;
-    lastStatus = key;
+    if (rebuild) {
+      lastStatus = key;
+      renderResult(job);
+    }
+    if (moveFocus) {
+      const target = running ? stopBtn : runBtn;
+      if (!target.disabled && doc.activeElement !== target) target.focus({ preventScroll: true });
+    }
+  }
+
+  function renderResult(job) {
     clear(statusHost);
     clear(resultHost);
-    if (!job || running) return;
+    if (!job || job.status === 'running') return;
     if (job.status === 'cancelled') {
-      statusHost.append(Alert({ variant: 'info', compact: true, message: t('dane.cancelled') }));
+      const a = Alert({ variant: 'info', compact: true, message: t('dane.cancelled') });
+      a.dataset.dane = 'cancelled';
+      statusHost.append(a);
       return;
     }
     if (job.status === 'error') {

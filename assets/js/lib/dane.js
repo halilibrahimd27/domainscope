@@ -587,6 +587,7 @@ export async function checkDane({ leaf, chain = [] } = {}, {
 } = {}) {
   if (!leaf || !Array.isArray(leaf.hostnames)) throw new TypeError('checkDane: a parsed leaf certificate is required');
   if (!dns || typeof dns.query !== 'function') throw new TypeError('checkDane: a DNS client with query(name, type, opts) is required');
+  throwIfAborted(signal);
   const lim = { ...DANE_LIMITS, ...limits };
   const startedAt = new Date(now());
   const leafAssoc = await certAssociations(leaf, { subtle });

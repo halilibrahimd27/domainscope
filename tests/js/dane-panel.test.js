@@ -1,7 +1,8 @@
 /**
  * ui/dane-panel.js (the DANE / TLSA tab of the Certificate view and SSL Targets) — its pure
  * helpers: wait and record formatting, the explanation / record-state keys, the tab badge, the
- * export block, the CSV columns and the holder-owned job (the real DohClient over a mock fetch).
+ * export block, the CSV columns and the holder-owned job with its Stop (the real DohClient over
+ * a mock fetch).
  * No DOM: the panel itself is exercised in a real browser by tests/e2e/dane.e2e.mjs.
  */
 import { test, describe } from 'node:test';
@@ -10,7 +11,7 @@ import { readFileSync } from 'node:fs';
 
 import { setLang, t, hasString } from '../../assets/js/i18n.js';
 import {
-  waitText, shortRecord, recordMnemonic, whyKey, recordStateKey, daneTabBadge, daneExport, startDane, DANE_CSV_COLUMNS
+  waitText, shortRecord, recordMnemonic, whyKey, recordStateKey, daneTabBadge, daneExport, startDane, cancelDane, DANE_CSV_COLUMNS
 } from '../../assets/js/ui/dane-panel.js';
 import { DANE_STATUSES } from '../../assets/js/lib/dane.js';
 import { toCsv } from '../../assets/js/lib/export.js';
@@ -22,10 +23,22 @@ setLang('en');
 
 const NEW = parseCertificates(readFileSync(new URL('../fixtures/cli_renewed_wild.pem', import.meta.url))).leaf;
 
-/** A DoH server with one MX and one TLSA record set that pins another key (AD set). */
-function fakeDns() {
-  const fetchImpl = async (url) => {
+/**
+ * A DoH server with one MX and one TLSA record set that pins another key (AD set). `hang`: TLSA
+ * queries never get an answer (the request ends only when it is aborted); `seen` records them.
+ */
+function fakeDns({ hang = false, seen = [] } = {}) {
+  const fetchImpl = async (url, init = {}) => {
     const q = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns'))).questions[0];
+    if (hang && q.type === 'TLSA') {
+      seen.push(q.name);
+      return new Promise((resolve, reject) => {
+        const signal = init.signal;
+        const stop = () => reject(signal.reason ?? new DOMException('aborted', 'AbortError'));
+        if (signal && signal.aborted) stop();
+        else if (signal) signal.addEventListener('abort', stop, { once: true });
+      });
+    }
     const answers = q.type === 'MX' ? [{ name: q.name, type: 'MX', ttl: 300, data: { preference: 10, exchange: 'mail.wild.example.net' } }]
       : q.name === '_25._tcp.mail.wild.example.net' ? [{ name: q.name, type: 'TLSA', ttl: 600, data: { usage: 3, selector: 1, matchingType: 1, data: 'ab'.repeat(32) } }]
         : [];
@@ -35,8 +48,16 @@ function fakeDns() {
     });
     return new Response(bytes, { status: 200, headers: { 'content-type': 'application/dns-message' } });
   };
-  return new DohClient({ chain: ['cloudflare'], fetchImpl, cache: false, retries: 0 });
+  return new DohClient({ chain: ['cloudflare'], fetchImpl, cache: false, retries: 0, timeoutMs: 60000 });
 }
+
+const until = async (cond, ms = 5000) => {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
 
 describe('formatting', () => {
   test('waitText: seconds to a short human wait', () => {
@@ -108,6 +129,45 @@ describe('the job on its holder', () => {
     const csv = toCsv(job.report.endpoints, DANE_CSV_COLUMNS, { bom: false }).split('\r\n');
     assert.equal(csv[0], 'tlsa_name,service,port,host,via,status,dnssec,records,add_records,wait_seconds');
     assert.match(csv[1], /^_25\._tcp\.mail\.wild\.example\.net,smtp,25,mail\.wild\.example\.net,example\.net,danger,true,3 1 1 (ab){32},_25\._tcp\.mail\.wild\.example\.net\. IN TLSA 3 1 1 [0-9A-F]{64},1200$/);
+  });
+
+  test('Stop mid-flight: the check ends as cancelled, with no badge and no export; a finished check stays', async () => {
+    const holder = {};
+    const seen = [];
+    const job = startDane(holder, { certs: { leaf: NEW }, ctx: { getDns: async () => fakeDns({ hang: true, seen }) } });
+    // The MX answer came back; the TLSA queries hang.
+    await until(() => seen.length > 0);
+    assert.equal(job.status, 'running');
+    assert.equal(job.progress.phase, 'tlsa');
+    cancelDane(holder);
+    await until(() => job.status !== 'running');
+    assert.equal(job.status, 'cancelled');
+    assert.equal(job.error.name, 'AbortError');
+    assert.equal(job.report, null);
+    assert.equal(daneTabBadge(holder), null);
+    assert.equal(daneExport(holder, 'x'), null);
+    // Nothing to stop: no job, or a finished one.
+    cancelDane(null);
+    cancelDane({});
+    const done = startDane(holder, { certs: { leaf: NEW }, ctx: { getDns: async () => fakeDns() } });
+    assert.notEqual(done, job, 'a cancelled check is replaced by a new one');
+    await until(() => done.status !== 'running');
+    cancelDane(holder);
+    assert.equal(done.status, 'done');
+    assert.equal(done.controller.signal.aborted, false);
+  });
+
+  test('Stop while the DNS client is still loading: cancelled, nothing sent', async () => {
+    const holder = {};
+    const seen = [];
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const job = startDane(holder, { certs: { leaf: NEW }, ctx: { getDns: async () => { await gate; return fakeDns({ hang: true, seen }); } } });
+    cancelDane(holder);
+    release();
+    await until(() => job.status !== 'running');
+    assert.equal(job.status, 'cancelled');
+    assert.deepEqual(seen, []);
   });
 
   test('a failed DNS client load ends as an error, never a hang', async () => {

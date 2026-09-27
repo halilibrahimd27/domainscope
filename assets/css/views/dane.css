@@ -54,7 +54,7 @@
   margin-top: 2px;
 }
 
-/* Run button and progress: a wrapping row. */
+/* Run (or Stop) button and progress: a wrapping row. */
 .dane-actions {
   display: flex;
   flex-wrap: wrap;
@@ -239,7 +239,7 @@
   font-size: 12px;
 }
 
-/* Phones: a full-width run button; the table scrolls inside .dt-scroll (never the page). */
+/* Phones: a full-width run / stop button; the table scrolls inside .dt-scroll (never the page). */
 @media (max-width: 480px) {
   .dane-actions .btn {
     width: 100%;

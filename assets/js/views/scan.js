@@ -64,7 +64,7 @@ import { describeNetwork } from '../lib/ipintel.js';
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
-import { DanePanel, daneTabBadge, daneExport } from '../ui/dane-panel.js';
+import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 
 /** Route id. */
 export const id = 'scan';
@@ -1917,7 +1917,11 @@ export function mount(container, ctx) {
     });
     // The DohClient counts queries for its whole life; remember where this run started.
     run.queriesAtStart = typeof dns.stats === 'function' ? dns.stats().queries : null;
-    if (session.run) cancelVerify(session.run);
+    // A new scan ends the old run's checks (Verify, DANE): their results would describe another run.
+    if (session.run) {
+      cancelVerify(session.run);
+      cancelDane(session.run);
+    }
     session.scanTab = null;
     session.run = run;
     hideLinkPrompt();

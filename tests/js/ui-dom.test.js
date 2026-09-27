@@ -759,6 +759,30 @@ describe('dom.js', () => {
       if (prev !== undefined) globalThis.document = prev;
     }
   });
+
+  test('scrollBehavior: smooth, or a jump when the user asked for reduced motion', () => {
+    const prev = Object.getOwnPropertyDescriptor(globalThis, 'matchMedia');
+    const queries = [];
+    try {
+      for (const [reduce, expected] of [[true, 'auto'], [false, 'smooth']]) {
+        globalThis.matchMedia = (q) => {
+          queries.push(q);
+          return { matches: reduce };
+        };
+        assert.equal(dom.scrollBehavior(), expected);
+      }
+      assert.deepEqual(queries, ['(prefers-reduced-motion: reduce)', '(prefers-reduced-motion: reduce)']);
+      globalThis.matchMedia = () => {
+        throw new Error('unsupported');
+      };
+      assert.equal(dom.scrollBehavior(), 'smooth');
+      delete globalThis.matchMedia;
+      assert.equal(dom.scrollBehavior(), 'smooth', 'no matchMedia (Node): smooth');
+    } finally {
+      if (prev) Object.defineProperty(globalThis, 'matchMedia', prev);
+      else delete globalThis.matchMedia;
+    }
+  });
 });
 
 /* ------------------------------------------------------------------------ */
@@ -2202,6 +2226,19 @@ describe('security & shell invariants', () => {
       }
     }
     assert.deepEqual(hits, [], 'use dom.js append(parent, …) for nullable children');
+  });
+
+  test('scripted smooth scrolls honour reduced motion (dom.js scrollBehavior)', async () => {
+    // An explicit behavior: 'smooth' overrides the stylesheet's reduced-motion guard.
+    const files = await listFiles(path.join(ROOT, 'assets/js'), (n) => n.endsWith('.js'));
+    const hits = [];
+    for (const file of files) {
+      const src = await readFile(file, 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (/behavior: 'smooth'/.test(line)) hits.push(`${path.relative(ROOT, file)}:${i + 1}`);
+      });
+    }
+    assert.deepEqual(hits, []);
   });
 
   test('index.html carries exactly the spec CSP and no inline script/style', async () => {

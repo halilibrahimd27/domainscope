@@ -26,7 +26,7 @@
  * starts the scan on its own.
  */
 
-import { h, clear, append } from '../ui/dom.js';
+import { h, clear, append, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
@@ -1914,7 +1914,7 @@ export function mount(container, ctx) {
       dns,
       ...zoneCfg
     }, state);
-    resultsHost.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    resultsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   }
 
   function cancel() {

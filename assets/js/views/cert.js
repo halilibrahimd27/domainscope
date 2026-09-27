@@ -14,7 +14,7 @@
  * `state.session.currentCert` (a {@link CertLoad}); it is never persisted or uploaded.
  */
 
-import { h, clear, debounce } from '../ui/dom.js';
+import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, select, textInput, textarea, toast
@@ -1230,7 +1230,7 @@ export function mount(container, ctx) {
       const sel = content.querySelector('[data-role="cert-select"]');
       if (sel) sel.value = String(viewState.selected);
       renderTabs();
-      tabsHost.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      tabsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
     }
 
     /* --- overview ------------------------------------------------------- */

@@ -38,7 +38,7 @@
  * reload or a restored tab pre-fills the box instead of silently scanning again.
  */
 
-import { h, clear, uid, debounce } from '../ui/dom.js';
+import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, CodeBlock, CopyButton, DataTable, Disclosure, ErrorBanner, Icon, KindBadge,
   ProgressBar, SegmentedControl, StatCard, TruncatedList, announce, checkbox, checkboxGroup, decodeText, ipSortValue,
@@ -3522,7 +3522,7 @@ export function mount(container, ctx) {
       ...zoneCfg
     }, state);
     const r = resultsHost.getBoundingClientRect();
-    if (r.top > globalThis.innerHeight - 120) resultsHost.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (r.top > globalThis.innerHeight - 120) resultsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   }
 
   function cancel() {
@@ -4149,7 +4149,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   function jumpToOrigin() {
     const target = originHost.querySelector('.sub-org');
     if (!target) return;
-    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
     const heading = target.querySelector('.sub-org-title');
     if (heading) heading.focus({ preventScroll: true });
   }

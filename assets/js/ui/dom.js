@@ -389,6 +389,21 @@ export function debounce(fn, ms = 150) {
 }
 
 /**
+ * `behavior` for a scripted scroll: 'smooth', or 'auto' (a jump) when the user asked for
+ * reduced motion. An explicit 'smooth' wins over the stylesheet's reduced-motion guard, so
+ * every scrollIntoView / scrollTo that animates takes it from here.
+ * @returns {'auto'|'smooth'}
+ */
+export function scrollBehavior() {
+  try {
+    const mq = globalThis.matchMedia && globalThis.matchMedia('(prefers-reduced-motion: reduce)');
+    return mq && mq.matches ? 'auto' : 'smooth';
+  } catch {
+    return 'smooth';
+  }
+}
+
+/**
  * Visually hidden text for screen readers.
  * @param {string} value
  * @returns {HTMLSpanElement}

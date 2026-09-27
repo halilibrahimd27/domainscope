@@ -1994,6 +1994,15 @@ async function main() {
       await step('the other tab, whose version that update dropped from the cache, offers the reload again and takes it', async () => {
         await updateToast(other);
         assertEqual(await srcOf(other), 'v/app-one/assets/js/app.js', 'still its old version until the click');
+        // A language switch while it is on screen re-says it in the new language (and links that manifest).
+        await setLangUi(other, 'tr');
+        setNodeLang('tr');
+        const tr = await other.evaluate(() => ({
+          toasts: [...document.querySelectorAll('.toast[data-toast="pwa-update"]')].map((el) => [el.querySelector('.toast-message').textContent, el.querySelector('.btn-label').textContent]),
+          manifest: document.querySelector('link[rel="manifest"]').getAttribute('href')
+        }));
+        assertEqual(tr, { toasts: [[translate('pwa.updateReady'), translate('pwa.reload')]], manifest: 'manifest.tr.webmanifest' }, 'update toast in Turkish');
+        setNodeLang('en');
         await other.click('.toast[data-toast="pwa-update"] .btn');
         await other.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
           && document.documentElement.dataset.appReady === 'true', { timeout: 15000, message: 'the new version in the other tab' });

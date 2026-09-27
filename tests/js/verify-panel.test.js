@@ -27,7 +27,7 @@ setLang('en');
 /** A done row with a verdict (enough for lib/verify.summarizeVerify). */
 function doneRow({ ip = '1.2.3.4', name = 'www.example.com', server = { id: 's1', name: 'web01' }, status = 'UPDATED',
   reason = 'new-cert', warnings = [], via = 'dns', proxied = false, exposure = null, newCertCovers = true } = {}) {
-  const served = status === 'UPDATED' || status === 'NEEDS_UPDATE' || status === 'NOT_HOSTED'
+  const served = ['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT', 'NOT_HOSTED'].includes(status)
     ? { sha256: 'aa', hostnames: [name], dnsNames: [name] } : null;
   return {
     key: `${ip}|443|${name}`, ip, port: 443, name, server, alsoServers: [], via, proxied, provider: proxied ? 'Cloudflare' : null,
@@ -135,7 +135,8 @@ describe('rows: rank, badge, what a click sends', () => {
     ].map(resultRank);
     assert.deepEqual(order, [0, 1, 1, 2, 3, 4, 5, 6, 7, 8]);
     assert.equal(resultRank(doneRow({ status: 'NEEDS_UPDATE', newCertCovers: false })), 2, 'own certificate is not "still old"');
-    assert.equal(resultRank(doneRow({ status: 'NEEDS_UPDATE', warnings: ['origin-ca'] })), 2);
+    assert.equal(resultRank(doneRow({ status: 'ORIGIN_CERT', reason: 'origin-ca', via: 'zone', proxied: true })), 2);
+    assert.equal(resultRank(doneRow({ status: 'PRIVATE_CERT', reason: 'self-signed' })), 1, 'reached directly: a notice');
     assert.equal(resultRank(pendingRow({ via: 'hint', state: 'not-run', notRun: 'optional' })), 7, 'an origin check left out is not a problem');
     assert.equal(resultRank(pendingRow({ state: 'not-run', notRun: 'quota' })), 4);
   });
@@ -711,13 +712,30 @@ describe('rows and copy (review fixes)', () => {
     setLang('en');
   });
 
-  test('a Cloudflare Origin CA row is neither "Old certificate" nor highlighted as old (VFY-UI-06)', () => {
-    const ca = doneRow({ status: 'NEEDS_UPDATE', reason: 'old-cert', warnings: ['origin-ca'] });
-    const spec = statusBadgeSpec(ca);
-    assert.equal(spec.key, 'vfy.st.NEEDS_UPDATE.origin');
-    assert.notEqual(spec.variant, 'warn');
-    assert.ok(hasString(spec.key, 'en') && hasString(spec.key, 'tr'));
-    assert.equal(verifyRowClass(ca)['vfy-row-old'], false);
+  test('a Cloudflare Origin CA or self-signed row is neither "Old certificate" nor highlighted as old (VFY-UI-06)', () => {
+    const origin = doneRow({ status: 'ORIGIN_CERT', reason: 'origin-ca', warnings: ['origin-ca'], via: 'hint', proxied: true });
+    const spec = statusBadgeSpec(origin);
+    assert.deepEqual([spec.key, spec.variant, spec.icon], ['vfy.st.ORIGIN_CERT', 'info', 'cloud'], 'behind the CDN: as it should be');
+    assert.equal(resultRank(origin), 2);
+    assert.equal(verifyRowClass(origin)['vfy-row-old'], false);
+    // Reached directly (a DNS row): visitors get a certificate their browser rejects, so it warns and sorts up.
+    const direct = doneRow({ status: 'ORIGIN_CERT', reason: 'origin-ca', warnings: ['origin-ca'] });
+    assert.equal(statusBadgeSpec(direct).variant, 'warn');
+    assert.equal(resultRank(direct), 1);
+    const self = doneRow({ status: 'PRIVATE_CERT', reason: 'self-signed', warnings: ['self-signed'] });
+    assert.deepEqual([statusBadgeSpec(self).key, statusBadgeSpec(self).variant], ['vfy.st.PRIVATE_CERT', 'warn']);
+    assert.equal(verifyRowClass(self)['vfy-row-old'], false);
+    for (const key of ['vfy.st.ORIGIN_CERT', 'vfy.st.PRIVATE_CERT', 'vfy.reason.origin-ca', 'vfy.reason.self-signed',
+      'vfy.head.originCert', 'vfy.head.privateCert']) assert.ok(hasString(key, 'en') && hasString(key, 'tr'), key);
+    setLang('en');
+    assert.match(t('vfy.st.ORIGIN_CERT'), /Cloudflare Origin CA/);
+    assert.doesNotMatch(t('vfy.st.ORIGIN_CERT'), /old/i);
+    assert.match(t('vfy.head.originCert', { count: 2 }), /^2 servers serve a Cloudflare Origin CA certificate/);
+    // A rollout of an Origin CA certificate: an older one is NEEDS_UPDATE with the origin-ca warning, and old.
+    const rollout = doneRow({ status: 'NEEDS_UPDATE', reason: 'old-cert', warnings: ['origin-ca'] });
+    assert.equal(statusBadgeSpec(rollout).key, 'vfy.st.NEEDS_UPDATE');
+    assert.equal(verifyRowClass(rollout)['vfy-row-old'], true);
+    assert.equal(resultRank(rollout), 0);
     assert.equal(verifyRowClass(doneRow({ status: 'NEEDS_UPDATE', reason: 'old-cert' }))['vfy-row-old'], true);
     assert.equal(verifyRowClass(doneRow({ status: 'NEEDS_UPDATE', newCertCovers: false }))['vfy-row-old'], false);
   });
@@ -791,6 +809,10 @@ describe('rows and copy (review fixes)', () => {
       assert.deepEqual([sweep.targetsInline, sweep.targetsFile, sweep.targets.length, sweep.overLength], [false, 'verify-targets.txt', 1400, undefined], shell);
     }
     assert.equal(verifyCliSweep({ targets: targets.slice(0, 3), names: ['a.example.com'] }, 'posix').targetsFile, undefined);
+    // A pair on another port keeps it (lib cliPlan writes ip:port): the CLI scans that port, not -p.
+    const ported = verifyCliSweep({ targets: ['192.0.2.5:8443', '[2001:db8::5]:8443'], names: ['a.example.com'] }, 'posix');
+    assert.deepEqual(ported.targets, ['192.0.2.5:8443', '[2001:db8::5]:8443']);
+    assert.match(ported.command, /-t 192\.0\.2\.5:8443 '\[2001:db8::5\]:8443' -n/);
   });
 
   test('the plan line counts the probe-fault retries in its cost (F8)', () => {

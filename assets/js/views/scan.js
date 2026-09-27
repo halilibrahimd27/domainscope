@@ -420,7 +420,7 @@ registerStrings('en', {
   'scan.cli.onlyCovered': 'Only names the certificate covers',
   'scan.cli.targetsNote': 'targets.txt = every saved server + origin hints + unknown direct IPs.',
   'scan.cli.noInventoryNote': 'Without an inventory, targets.txt only holds origin hints and direct IPs — add your servers for a complete check.',
-  'scan.cli.result': 'UPDATED: already serves the new certificate · NEEDS_UPDATE: serves a certificate for the name, but not the new one — install it there · NOT_HOSTED: the name is not served there.',
+  'scan.cli.result': 'UPDATED: already serves the new certificate · NEEDS_UPDATE: serves a certificate for the name, but not the new one — install it there · ORIGIN_CERT: serves a Cloudflare Origin CA certificate, right behind Cloudflare Full (strict) · PRIVATE_CERT: serves a self-signed or --private-ca certificate · NOT_HOSTED: the name is not served there. ORIGIN_CERT and PRIVATE_CERT are not counted as needing the new certificate unless you add --strict-public.',
   'scan.cli.download': 'ssl_origin_scan.py',
   'scan.cli.command': 'Command',
 
@@ -793,7 +793,7 @@ registerStrings('tr', {
   'scan.cli.onlyCovered': 'Yalnızca sertifikanın kapsadığı adlar',
   'scan.cli.targetsNote': 'targets.txt = kayıtlı tüm sunucular + asıl sunucu ipuçları + bilinmeyen doğrudan IP’ler.',
   'scan.cli.noInventoryNote': 'Envanter olmadan targets.txt yalnızca ipuçlarını ve doğrudan IP’leri içerir — eksiksiz kontrol için sunucularınızı ekleyin.',
-  'scan.cli.result': 'UPDATED: yeni sertifikayı zaten sunuyor · NEEDS_UPDATE: ad için bir sertifika sunuyor ama yenisini değil — buraya kurun · NOT_HOSTED: ad orada sunulmuyor.',
+  'scan.cli.result': 'UPDATED: yeni sertifikayı zaten sunuyor · NEEDS_UPDATE: ad için bir sertifika sunuyor ama yenisini değil — buraya kurun · ORIGIN_CERT: Cloudflare Origin CA sertifikası sunuyor, Cloudflare Full (strict) arkasında doğru · PRIVATE_CERT: kendinden imzalı ya da --private-ca sertifikası sunuyor · NOT_HOSTED: ad orada sunulmuyor. --strict-public eklemezseniz ORIGIN_CERT ve PRIVATE_CERT yeni sertifikaya ihtiyaç duyuyor sayılmaz.',
   'scan.cli.download': 'ssl_origin_scan.py',
   'scan.cli.command': 'Komut',
 

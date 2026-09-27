@@ -7,8 +7,13 @@
  * module holds the semantics, mirroring cli/ssl_origin_scan.py:
  *
  *  - result interpretation: {@link trimTest}, {@link parseFailure},
- *    {@link servedCert} and {@link classifyTest}, which yields the CLI's six
- *    verdicts (UPDATED, NEEDS_UPDATE, NOT_HOSTED, TLS_ERROR, TIMEOUT, CLOSED);
+ *    {@link servedCert} and {@link classifyTest}, which yields the CLI's eight
+ *    verdicts (UPDATED, NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED,
+ *    TLS_ERROR, TIMEOUT, CLOSED). A covering certificate that is not the new one
+ *    is ORIGIN_CERT when the Cloudflare Origin CA issued it and PRIVATE_CERT when
+ *    it is self-signed ({@link servedKind}), unless the new certificate is of the
+ *    same kind (the CLI's HostedClassifier); the CLI's `--private-ca` has no
+ *    counterpart here, since a probe reports only the leaf;
  *  - identity is the leaf's SHA-256 fingerprint. Name coverage is computed from
  *    `subject.alt` (the CN only when there is no DNS SAN), never from
  *    `tls.error`: that field holds one code and chain errors mask name errors.
@@ -40,11 +45,12 @@ import { computeFingerprints, normalizeCertHostname } from './x509.js';
 /* ------------------------------------------------------------------------ */
 
 /** The CLI's STATUSES, in the CLI's order. */
-export const VERIFY_STATUSES = Object.freeze(['UPDATED', 'NEEDS_UPDATE', 'NOT_HOSTED', 'TLS_ERROR', 'TIMEOUT', 'CLOSED']);
+export const VERIFY_STATUSES = Object.freeze(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT', 'NOT_HOSTED',
+  'TLS_ERROR', 'TIMEOUT', 'CLOSED']);
 /** Why a verdict was given (`vfy.reason.<reason>`). */
-export const VERIFY_REASONS = Object.freeze(['new-cert', 'old-cert', 'no-new-cert', 'not-covered', 'unrecognized-name',
-  'refused-name', 'sni-refused', 'tls-alert', 'reset', 'not-tls', 'tls-failed', 'connect-timeout', 'tls-timeout',
-  'refused', 'unreachable']);
+export const VERIFY_REASONS = Object.freeze(['new-cert', 'old-cert', 'no-new-cert', 'origin-ca', 'self-signed',
+  'not-covered', 'unrecognized-name', 'refused-name', 'sni-refused', 'tls-alert', 'reset', 'not-tls', 'tls-failed',
+  'connect-timeout', 'tls-timeout', 'refused', 'unreachable']);
 /** `row.error.code` of a row in state 'error' — never a server verdict. */
 export const VERIFY_ERRORS = Object.freeze(['dns', 'private', 'probe', 'offline', 'no-probes', 'validation', 'deadline',
   'server', 'network', 'bad-response', 'poll-rate', 'unknown']);
@@ -67,7 +73,12 @@ export const FAILURE_KINDS = Object.freeze(['refused', 'unreachable', 'connect-t
   'reset', 'not-tls', 'dns', 'private', 'internal', 'offline', 'unknown']);
 /** `vfy.head.<key>` entries {@link verifyHeadline} can return. */
 export const HEADLINE_KEYS = Object.freeze(['all', 'some', 'partial', 'none', 'noAnswer', 'incomplete', 'chain',
-  'tlsError', 'unreachable', 'other', 'exposed', 'filtered', 'notHere']);
+  'tlsError', 'unreachable', 'other', 'originCert', 'privateCert', 'exposed', 'filtered', 'notHere']);
+/**
+ * Kinds of served certificate ({@link servedKind}; the CLI's `certificate_kind` without
+ * `--private-ca`): issued by the Cloudflare Origin CA, self-signed, or anything else.
+ */
+export const CERT_KINDS = Object.freeze(['origin-ca', 'self-signed', 'other']);
 /** `vfy.notHere.<key>` parts of the not-checkable line ({@link notHereParts}). */
 export const NOT_HERE_KEYS = Object.freeze([...SKIP_REASONS, 'proxied', 'managed']);
 
@@ -82,7 +93,11 @@ export const VERIFY_REUSE_WINDOW_MS = 120000;
 /** …and at most this many times; afterwards a new measurement is created. */
 export const VERIFY_MAX_REUSE = 1;
 
-const CERT_RANK = { NEEDS_UPDATE: 3, NOT_HOSTED: 2, UPDATED: 1 };
+const CERT_RANK = { NEEDS_UPDATE: 5, NOT_HOSTED: 4, ORIGIN_CERT: 3, PRIVATE_CERT: 2, UPDATED: 1 };
+/** A covering certificate that is not the new one (the CLI's HOSTED_STATUSES). */
+const HOSTED_STATUSES = new Set(['NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT']);
+/** The status of a covering certificate of this kind that is not the new one (see hostedStatus). */
+const KIND_STATUS = { 'origin-ca': 'ORIGIN_CERT', 'self-signed': 'PRIVATE_CERT' };
 const FAIL_RANK = { NOT_HOSTED: 4, TLS_ERROR: 3, TIMEOUT: 2, CLOSED: 1 };
 const CHAIN_ERRORS = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_GET_ISSUER_CERT']);
 const KNOWN_TLS_ERRORS = new Set([...CHAIN_ERRORS, 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT',
@@ -96,7 +111,8 @@ const ALPN_ALERT = 120;
 const DAY_MS = 86400000;
 
 /**
- * @typedef {{ sha256: string[], spkiHex: string[], hostnames: string[], subjectCN: string|null, notAfter: Date|null }} Expectation
+ * @typedef {{ sha256: string[], spkiHex: string[], hostnames: string[], subjectCN: string|null, notAfter: Date|null,
+ *   kinds?: string[] }} Expectation  kinds: the {@link CERT_KINDS} of the new certificate(s)
  * @typedef {{ sha256: string, serialHex: string, subjectCN: string|null, dnsNames: string[], ipAddresses: string[],
  *   hostnames: string[], issuerCN: string|null, issuerO: string|null, notBefore: Date|null, notAfter: Date|null,
  *   keyType: string|null, keyBits: number|null, protocol: string|null, cipher: string|null, authorized: boolean,
@@ -346,8 +362,8 @@ export function trimTest(test) {
 
 /**
  * What the loaded (new) certificate(s) look like to a probe: SHA-256
- * fingerprints (identity), SPKI DER hex (same-key hint) and the union of their
- * host names.
+ * fingerprints (identity), SPKI DER hex (same-key hint), the union of their
+ * host names and their {@link certKind}s.
  * @param {object|object[]} certs x509 Certificate(s)
  * @param {{ subtle?: SubtleCrypto|null }} [opts] forwarded to computeFingerprints
  * @returns {Promise<Expectation>}
@@ -357,24 +373,94 @@ export async function expectationFor(certs, { subtle } = {}) {
   const sha256 = [];
   const spkiHex = [];
   const hostnames = new Set();
+  const kinds = [];
   for (const c of list) {
     const fp = await computeFingerprints(c.der, subtle === undefined ? {} : { subtle });
     if (!sha256.includes(fp.sha256)) sha256.push(fp.sha256);
     const spki = c.spkiDer ? toHex(c.spkiDer) : '';
     if (spki && !spkiHex.includes(spki)) spkiHex.push(spki);
     for (const h of Array.isArray(c.hostnames) ? c.hostnames : []) hostnames.add(h);
+    const kind = certKind(c);
+    if (!kinds.includes(kind)) kinds.push(kind);
   }
   return {
     sha256,
     spkiHex,
     hostnames: [...hostnames],
     subjectCN: list[0]?.subjectCN ?? null,
-    notAfter: list[0]?.notAfter instanceof Date ? new Date(list[0].notAfter.getTime()) : null
+    notAfter: list[0]?.notAfter instanceof Date ? new Date(list[0].notAfter.getTime()) : null,
+    kinds
   };
 }
 
-const ORIGIN_CA_ISSUER_O = /cloudflare/i;
-const ORIGIN_CA_ISSUER_CN = /origin (ssl|ecc )?.*certificate authority/i;
+/* Certificate kinds: the CLI's ORIGIN_CERT / PRIVATE_CERT */
+
+// The Cloudflare Origin CA roots (developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem and
+// origin_ca_ecc_root.pem) are "C=US, O=CloudFlare, Inc., OU=CloudFlare Origin SSL [ECC ]Certificate
+// Authority, L=San Francisco, ST=California": no CN, the name is the OU (the CLI's ORIGIN_CA_NAMES).
+const ORIGIN_CA_ORG = /^cloudflare,? inc\.?$/i;
+const ORIGIN_CA_NAME = /^cloudflare origin (?:ssl )?(?:ecc )?certificate authority$/i;
+
+/**
+ * A served leaf issued by the Cloudflare Origin CA. Globalping reports the issuer's C, O and CN
+ * only, and the Origin CA has no CN, so its leaves show `O=CloudFlare, Inc.` and no CN. Every
+ * publicly trusted Cloudflare CA ("Cloudflare Inc ECC CA-3") has a CN, so that O without a CN on
+ * a leaf the probe did not trust is the Origin CA; an issuer CN naming it counts as well.
+ * @param {ServedCert} served
+ * @returns {boolean}
+ */
+function isOriginCaServed(served) {
+  if (!ORIGIN_CA_ORG.test((served.issuerO ?? '').trim())) return false;
+  const cn = (served.issuerCN ?? '').trim();
+  return cn ? ORIGIN_CA_NAME.test(cn) : !served.authorized;
+}
+
+/**
+ * The kind of a served certificate ({@link CERT_KINDS}): 'origin-ca' (issued by the Cloudflare
+ * Origin CA), 'self-signed' (the probe's DEPTH_ZERO_SELF_SIGNED_CERT) or 'other'.
+ * @param {ServedCert|null} served
+ * @returns {string|null} null without a certificate
+ */
+export function servedKind(served) {
+  if (!served) return null;
+  if (isOriginCaServed(served)) return 'origin-ca';
+  if (served.error === 'DEPTH_ZERO_SELF_SIGNED_CERT') return 'self-signed';
+  return 'other';
+}
+
+/**
+ * The kind of a parsed (x509.js) certificate, as the CLI's `certificate_kind` sorts it without
+ * `--private-ca`: issuer O `CloudFlare, Inc.` with an Origin CA name in OU or CN → 'origin-ca',
+ * `selfSigned` → 'self-signed', else 'other'.
+ * @param {object} cert x509 Certificate
+ * @returns {string}
+ */
+export function certKind(cert) {
+  const issuer = cert && cert.issuer && typeof cert.issuer === 'object' ? cert.issuer : {};
+  const names = ['OU', 'CN'].map((k) => String(first(issuer[k]) ?? '').trim());
+  if (ORIGIN_CA_ORG.test(String(first(issuer.O) ?? '').trim()) && names.some((n) => ORIGIN_CA_NAME.test(n))) return 'origin-ca';
+  return cert && cert.selfSigned ? 'self-signed' : 'other';
+}
+
+/** Self-signed and (in the CLI) private-CA certificates are one family: both private. */
+const kindFamily = (kind) => (kind === 'self-signed' ? 'private' : kind);
+
+/**
+ * The status of a covering certificate that is not the new one (the CLI's
+ * `HostedClassifier.status`): ORIGIN_CERT / PRIVATE_CERT for an Origin CA / self-signed one,
+ * unless a new certificate is of the same family (rolling out an Origin CA certificate still
+ * lists the older Origin CA ones as NEEDS_UPDATE); NEEDS_UPDATE otherwise.
+ * @param {ServedCert} served
+ * @param {Expectation|null} expect
+ * @returns {string}
+ */
+function hostedStatus(served, expect) {
+  const kind = servedKind(served);
+  const status = KIND_STATUS[kind];
+  const newKinds = expect && Array.isArray(expect.kinds) ? expect.kinds : [];
+  if (!status || newKinds.some((k) => kindFamily(k) === kindFamily(kind))) return 'NEEDS_UPDATE';
+  return status;
+}
 
 function certWarnings(served, { covered, statusCode, nowTime }) {
   const w = new Set();
@@ -390,8 +476,8 @@ function certWarnings(served, { covered, statusCode, nowTime }) {
   }
   if (served.notAfter && served.notAfter.getTime() < nowTime) w.add('expired');
   if (served.notBefore && served.notBefore.getTime() > nowTime) w.add('not-yet-valid');
-  // Unverified heuristic: a Cloudflare Origin CA leaf is trusted by Cloudflare only.
-  if (ORIGIN_CA_ISSUER_O.test(served.issuerO ?? '') && ORIGIN_CA_ISSUER_CN.test(served.issuerCN ?? '')) {
+  // A Cloudflare Origin CA leaf is trusted by Cloudflare only: its missing chain is expected.
+  if (isOriginCaServed(served)) {
     for (const x of ORIGIN_CA_REPLACES) w.delete(x);
     w.add('origin-ca');
   }
@@ -403,10 +489,14 @@ const orderWarnings = (set) => VERIFY_WARNINGS.filter((w) => set.has(w));
 
 /**
  * One probe's test → verdict, mirroring the CLI's `_verdict()` and
- * `classify_exception()`.
+ * `classify_exception()`. A covering certificate that is not the new one is
+ * ORIGIN_CERT / origin-ca or PRIVATE_CERT / self-signed by its kind (see
+ * {@link servedKind}; NEEDS_UPDATE when a new certificate has that kind too),
+ * else NEEDS_UPDATE.
  * @param {object} test a raw `{ probe, result }` test or a {@link TrimmedTest}
  * @param {{ name: string, expect: Expectation|null, now?: number|Date }} opts
- *   `expect` null = no certificate loaded (NEEDS_UPDATE / no-new-cert, as the CLI without --cert)
+ *   `expect` null = no certificate loaded (NEEDS_UPDATE / no-new-cert, as the CLI without --cert;
+ *   an Origin CA / self-signed certificate keeps its own status)
  * @returns {ProbeVerdict}
  */
 export function classifyTest(test, { name, expect = null, now = Date.now() } = {}) {
@@ -430,8 +520,11 @@ export function classifyTest(test, { name, expect = null, now = Date.now() } = {
     }
     if (!cov.covered) [v.status, v.reason] = ['NOT_HOSTED', 'not-covered'];
     else if (expect && sha.includes(served.sha256)) [v.status, v.reason] = ['UPDATED', 'new-cert'];
-    else if (expect) [v.status, v.reason] = ['NEEDS_UPDATE', 'old-cert'];
-    else [v.status, v.reason] = ['NEEDS_UPDATE', 'no-new-cert'];
+    else {
+      v.status = hostedStatus(served, expect);
+      v.reason = v.status === 'ORIGIN_CERT' ? 'origin-ca' : v.status === 'PRIVATE_CERT' ? 'self-signed'
+        : expect ? 'old-cert' : 'no-new-cert';
+    }
     const w = certWarnings(served, { covered: cov.covered, statusCode: t.statusCode, nowTime: nowMs(now) });
     if (v.status === 'NEEDS_UPDATE' && v.sameKey) w.add('same-key');
     v.warnings = orderWarnings(w);
@@ -470,8 +563,8 @@ export function classifyTest(test, { name, expect = null, now = Date.now() } = {
 
 /**
  * Several probes on one pair → one verdict. The worst verdict that carries a
- * certificate wins (NEEDS_UPDATE > NOT_HOSTED > UPDATED), so a timeout on one
- * probe never hides a certificate another probe saw. Only when no probe got a
+ * certificate wins (NEEDS_UPDATE > NOT_HOSTED > ORIGIN_CERT > PRIVATE_CERT >
+ * UPDATED), so a timeout on one probe never hides a certificate another probe saw. Only when no probe got a
  * certificate does a failure win (NOT_HOSTED by alert > TLS_ERROR > TIMEOUT >
  * CLOSED). Warnings are the union; 'mixed' is added when statuses differ.
  * @param {ProbeVerdict[]} verdicts
@@ -532,11 +625,11 @@ const hasVerdict = (r) => !!(r && r.verdict && r.status);
 /**
  * The roll-up status the CLI's `server_status()` gives, over one server's rows
  * that have a verdict (done, or stale with their last verdict):
- * NEEDS_UPDATE > UPDATED > TLS_ERROR > TIMEOUT (handshake) > NOT_HOSTED >
- * TIMEOUT (connect) > CLOSED. A NEEDS_UPDATE row the new certificate does not
- * cover (`newCertCovers === false`) counts as NOT_HOSTED, and so does one
- * serving a Cloudflare Origin CA certificate (`origin-ca`: hosted with its own
- * certificate on purpose, not "still old"; the row itself stays NEEDS_UPDATE).
+ * NEEDS_UPDATE > UPDATED > ORIGIN_CERT > PRIVATE_CERT > TLS_ERROR > TIMEOUT
+ * (handshake) > NOT_HOSTED > TIMEOUT (connect) > CLOSED. A NEEDS_UPDATE,
+ * ORIGIN_CERT or PRIVATE_CERT row the new certificate does not cover
+ * (`newCertCovers === false`) counts as NOT_HOSTED: the server hosts that name
+ * with its own certificate, and the new one would not change that.
  * Globalping's TCP-connect timeout is the CLI's connect-level TIMEOUT.
  * @param {VerifyRow[]} rows
  * @returns {string|null} null when no row has a verdict
@@ -547,14 +640,12 @@ export function serverStatus(rows) {
   for (const r of Array.isArray(rows) ? rows : []) {
     if (!hasVerdict(r)) continue;
     let s = r.status;
-    if (s === 'NEEDS_UPDATE' && (r.newCertCovers === false || (r.warnings || []).includes('origin-ca'))) s = 'NOT_HOSTED';
+    if (HOSTED_STATUSES.has(s) && r.newCertCovers === false) s = 'NOT_HOSTED';
     if (s === 'TIMEOUT' && r.reason === 'tls-timeout') handshakeTimeout = true;
     named.add(s);
   }
   if (!named.size) return null;
-  if (named.has('NEEDS_UPDATE')) return 'NEEDS_UPDATE';
-  if (named.has('UPDATED')) return 'UPDATED';
-  if (named.has('TLS_ERROR')) return 'TLS_ERROR';
+  for (const s of ['NEEDS_UPDATE', 'UPDATED', 'ORIGIN_CERT', 'PRIVATE_CERT', 'TLS_ERROR']) if (named.has(s)) return s;
   if (handshakeTimeout) return 'TIMEOUT';
   if (named.has('NOT_HOSTED')) return 'NOT_HOSTED';
   if (named.has('TIMEOUT')) return 'TIMEOUT';
@@ -1201,7 +1292,10 @@ const considered = (r) => (r.state !== 'skipped' || r.skip === 'over-cap')
  *
  * servers: `total` (≥ 1 considered row), `checked` (a roll-up status),
  * `live` (UPDATED and complete), `updated` (UPDATED, complete or not),
- * `old` (NEEDS_UPDATE), `other` (NOT_HOSTED),
+ * `old` (NEEDS_UPDATE), `other` (NOT_HOSTED), `originCert` / `privateCert`
+ * (ORIGIN_CERT / PRIVATE_CERT: not old, not live either) and `originDirect` /
+ * `privateDirect` (those of them with such a row that is not behind a CDN, so
+ * visitors reach that certificate directly),
  * `tlsError`, `unreachable` (TIMEOUT / CLOSED),
  * `filteredOrigins` (complete, and every answering row is a proxied origin
  * that is filtered, no-answer or closed — the desired state),
@@ -1267,9 +1361,9 @@ export function summarizeVerify(rows) {
       if (!g.ips.includes(r.ip)) g.ips.push(r.ip);
     }
   }
-  const servers = { total: 0, checked: 0, live: 0, updated: 0, old: 0, other: 0, tlsError: 0, unreachable: 0,
-    filteredOrigins: 0, notHostingOrigins: 0, unchecked: 0, incomplete: 0, chain: 0, wrongCert: 0, served: 0, base: 0,
-    list: [] };
+  const servers = { total: 0, checked: 0, live: 0, updated: 0, old: 0, other: 0, originCert: 0, privateCert: 0,
+    originDirect: 0, privateDirect: 0, tlsError: 0, unreachable: 0, filteredOrigins: 0, notHostingOrigins: 0,
+    unchecked: 0, incomplete: 0, chain: 0, wrongCert: 0, served: 0, base: 0, list: [] };
   let filteredDefinite = true;
   for (const g of groups.values()) {
     const answered = g.rows.filter(hasVerdict);
@@ -1293,6 +1387,15 @@ export function summarizeVerify(rows) {
     } else if (!expectedOnly) {
       if (status === 'NEEDS_UPDATE') servers.old += 1;
       if (status === 'NOT_HOSTED') servers.other += 1;
+      const direct = counted.some((r) => r.status === status && !r.proxied);
+      if (status === 'ORIGIN_CERT') {
+        servers.originCert += 1;
+        if (direct) servers.originDirect += 1;
+      }
+      if (status === 'PRIVATE_CERT') {
+        servers.privateCert += 1;
+        if (direct) servers.privateDirect += 1;
+      }
       if (status === 'NOT_HOSTED' && counted.some((r) => isDnsLike(r.via) && r.status === 'NOT_HOSTED')) servers.wrongCert += 1;
       if (status === 'TLS_ERROR') servers.tlsError += 1;
       if (status === 'TIMEOUT' || status === 'CLOSED') servers.unreachable += 1;
@@ -1359,7 +1462,10 @@ export function notHereParts(summary, stats = null) {
  * - noAnswer (info): otherwise — no counted server returned a certificate.
  * Then, only when non-zero and in this order: incomplete (info), chain (warn),
  * tlsError (warn), unreachable (info), other (warn when a DNS-matched name is
- * not served — wrongCert — else info), exposed (warn), filtered (ok when
+ * not served — wrongCert — else info), originCert and privateCert (servers
+ * serving a Cloudflare Origin CA / self-signed certificate, not counted as old:
+ * warn when one of them is reached directly, not through a CDN, else info),
+ * exposed (warn), filtered (ok when
  * every filtered origin is definite, info for single-probe no-answer),
  * notHere (info; `parts` for the view's `{list}`). Every entry whose string
  * counts one thing carries `params.count`.
@@ -1386,6 +1492,8 @@ export function verifyHeadline(summary, stats = null) {
   if (s.tlsError > 0) push('tlsError', 'warn', { count: s.tlsError });
   if (s.unreachable > 0) push('unreachable', 'info', { count: s.unreachable });
   if (s.other > 0) push('other', wrongCert > 0 ? 'warn' : 'info', { count: s.other });
+  if (s.originCert > 0) push('originCert', s.originDirect > 0 ? 'warn' : 'info', { count: s.originCert });
+  if (s.privateCert > 0) push('privateCert', s.privateDirect > 0 ? 'warn' : 'info', { count: s.privateCert });
   if (summary?.exposedServers > 0) push('exposed', 'warn', { count: summary.exposedServers });
   if (s.filteredOrigins > 0) push('filtered', summary.filteredDefinite ? 'ok' : 'info', { count: s.filteredOrigins });
   const parts = notHereParts(summary, stats);
@@ -1519,11 +1627,12 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
     exportedAt: new Date(time).toISOString(),
     newCertificate: expect ? {
       sha256: [...(expect.sha256 || [])], subjectCN: expect.subjectCN ?? null,
-      notAfter: isoOrNull(expect.notAfter), hostnames: [...(expect.hostnames || [])]
+      notAfter: isoOrNull(expect.notAfter), hostnames: [...(expect.hostnames || [])], kinds: [...(expect.kinds || [])]
     } : null,
     summary: {
       servers: {
         total: s.total ?? 0, checked: s.checked ?? 0, live: s.live ?? 0, old: s.old ?? 0, other: s.other ?? 0,
+        originCert: s.originCert ?? 0, privateCert: s.privateCert ?? 0,
         tlsError: s.tlsError ?? 0, unreachable: s.unreachable ?? 0, filteredOrigins: s.filteredOrigins ?? 0,
         notHostingOrigins: s.notHostingOrigins ?? 0, unchecked: s.unchecked ?? 0, incomplete: s.incomplete ?? 0
       },
@@ -1558,6 +1667,7 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
         stale: !!r.stale,
         skip: r.skip ?? null,
         reason: (hasVerdict(r) && r.reason) || null,
+        certKind: servedKind(served), // origin-ca | self-signed | other (the CLI's certificates[].kind)
         warnings: [...(r.warnings || [])],
         exposure: r.exposure ?? null,
         via: r.via,
@@ -1578,7 +1688,10 @@ const CLI_SKIPS = new Set(['private', 'reserved', 'bad-name', 'bad-port', 'over-
  * private / reserved / bad-name / bad-port / over-cap, plus rows whose (last) verdict is
  * TIMEOUT or CLOSED — filtered origins included, since only a machine inside
  * the network can read their certificate. CDN-edge rows are not included (the
- * CDN serves its own certificate). Targets and names are unique, in row order.
+ * CDN serves its own certificate). Targets and names are unique, in row order;
+ * a row on another port than {@link VERIFY_PORT} (the CLI's default `-p`) is the
+ * target `ip:port` (`[v6]:port`), which the CLI scans on that port — build the
+ * command with cmdline's `allowPorts`.
  * @param {VerifyRow[]} rows
  * @returns {{ targets: string[], names: string[], rows: number }}
  */
@@ -1592,7 +1705,8 @@ export function cliPlan(rows) {
       || (hasVerdict(r) && (r.status === 'TIMEOUT' || r.status === 'CLOSED'));
     if (!inPlan) continue;
     count += 1;
-    targets.add(r.ip);
+    const port = Number.isInteger(r.port) && r.port !== VERIFY_PORT ? r.port : null;
+    targets.add(port === null ? r.ip : r.ip.includes(':') ? `[${r.ip}]:${port}` : `${r.ip}:${port}`);
     names.add(r.name);
   }
   return { targets: [...targets], names: [...names], rows: count };

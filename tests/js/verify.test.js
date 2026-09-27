@@ -317,8 +317,12 @@ describe('classifyTest', () => {
     const exp = cls('m03-expired', 'expired.badssl.com', OTHER);
     assert.deepEqual(st(exp), ['NEEDS_UPDATE', 'old-cert']);
     assert.deepEqual(exp.warnings, ['expired']);
-    assert.deepEqual(cls('m04-self-signed', 'self-signed.badssl.com', OTHER).warnings, ['self-signed']);
-    assert.deepEqual(cls('m05-untrusted-root', 'untrusted-root.badssl.com', OTHER).warnings, ['untrusted-root']);
+    const self = cls('m04-self-signed', 'self-signed.badssl.com', OTHER);
+    assert.deepEqual(st(self), ['PRIVATE_CERT', 'self-signed'], 'PRIVATE_CERT as in the CLI, not an old certificate');
+    assert.deepEqual(self.warnings, ['self-signed']);
+    const root = cls('m05-untrusted-root', 'untrusted-root.badssl.com', OTHER);
+    assert.deepEqual(st(root), ['NEEDS_UPDATE', 'old-cert'], 'a private root is unknown without --private-ca, as in the CLI');
+    assert.deepEqual(root.warnings, ['untrusted-root']);
     const chain = V_CHAIN();
     assert.deepEqual(st(chain), ['UPDATED', 'new-cert']);
     assert.deepEqual(chain.warnings, ['chain-incomplete']);
@@ -400,12 +404,67 @@ describe('classifyTest', () => {
     assert.deepEqual(c(synthTls({ authorized: false, error: 'CERT_NOT_YET_VALID', createdAt: '2026-01-01T00:00:00.000Z' })).warnings, ['not-yet-valid']);
     const originCa = { O: 'CloudFlare, Inc.', OU: 'CloudFlare Origin SSL Certificate Authority', CN: 'CloudFlare Origin SSL Certificate Authority' };
     const ocaChain = c(synthTls({ authorized: false, error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: originCa }));
-    assert.deepEqual(st(ocaChain), ['NEEDS_UPDATE', 'old-cert']);
+    assert.deepEqual(st(ocaChain), ['ORIGIN_CERT', 'origin-ca']);
     assert.deepEqual(ocaChain.warnings, ['origin-ca'], 'origin-ca replaces chain-incomplete');
     assert.deepEqual(c(synthTls({ authorized: false, error: 'SELF_SIGNED_CERT_IN_CHAIN', issuer: originCa })).warnings, ['origin-ca'],
       'and untrusted-root (the Origin root sent along)');
     assert.deepEqual(c(synthTls({ issuer: { O: 'CloudFlare, Inc.', CN: 'CloudFlare Origin ECC Certificate Authority' } })).warnings, ['origin-ca']);
     assert.deepEqual(c(synthTls(), 'www.example.com', { statusCode: 421 }).warnings, ['http-421']);
+  });
+
+  test('certificate kinds: ORIGIN_CERT for the Cloudflare Origin CA, PRIVATE_CERT for self-signed (the CLI HostedClassifier)', () => {
+    const c = (tls, expect = OTHER) => V.classifyTest(withTls(tls), { name: 'www.example.com', expect, now: NOW });
+    // What a probe really reports for an Origin CA leaf: the issuer's C and O, no CN (the root's name is an OU).
+    const real = { authorized: false, error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: { C: 'US', O: 'CloudFlare, Inc.' },
+      subject: { CN: 'CloudFlare Origin Certificate', alt: 'DNS:*.example.com, DNS:example.com' } };
+    assert.deepEqual(st(c(synthTls(real))), ['ORIGIN_CERT', 'origin-ca']);
+    assert.equal(V.servedKind(c(synthTls(real)).served), 'origin-ca');
+    // Cloudflare's publicly trusted CAs carry a CN, and a trusted leaf is never the Origin CA's.
+    const edge = synthTls({ issuer: { C: 'US', O: 'Cloudflare, Inc.', CN: 'Cloudflare Inc ECC CA-3' } });
+    assert.deepEqual(st(c(edge)), ['NEEDS_UPDATE', 'old-cert']);
+    assert.deepEqual(st(c(synthTls({ ...real, authorized: true, error: null }))), ['NEEDS_UPDATE', 'old-cert']);
+    assert.deepEqual(st(c(synthTls({ ...real, issuer: { O: 'Example CloudFlare Resellers' } }))), ['NEEDS_UPDATE', 'old-cert']);
+    const self = synthTls({ authorized: false, error: 'DEPTH_ZERO_SELF_SIGNED_CERT', issuer: { O: 'Example Corp', CN: 'www.example.com' } });
+    assert.deepEqual(st(c(self)), ['PRIVATE_CERT', 'self-signed']);
+    assert.equal(V.servedKind(c(self).served), 'self-signed');
+    // Rolling out a certificate of that kind: the older ones of the kind still need it.
+    assert.deepEqual(st(c(synthTls(real), { ...OTHER, kinds: ['origin-ca'] })), ['NEEDS_UPDATE', 'old-cert']);
+    assert.deepEqual(st(c(self, { ...OTHER, kinds: ['self-signed'] })), ['NEEDS_UPDATE', 'old-cert']);
+    assert.deepEqual(st(c(synthTls(real), { ...OTHER, kinds: ['self-signed'] })), ['ORIGIN_CERT', 'origin-ca']);
+    assert.deepEqual(st(c(self, { ...OTHER, kinds: ['other'] })), ['PRIVATE_CERT', 'self-signed']);
+    // Without a certificate to compare, each keeps its own status (the CLI without --cert).
+    assert.deepEqual(st(c(synthTls(real), null)), ['ORIGIN_CERT', 'origin-ca']);
+    assert.deepEqual(st(c(synthTls(), null)), ['NEEDS_UPDATE', 'no-new-cert']);
+    // The new certificate itself is UPDATED whatever its kind; one that does not cover the name is NOT_HOSTED.
+    const own = { ...OTHER, sha256: ['ab'.repeat(32)], kinds: ['other'] };
+    assert.deepEqual(st(c(synthTls(real), own)), ['UPDATED', 'new-cert']);
+    assert.deepEqual(st(V.classifyTest(withTls(synthTls(real)), { name: 'www.example.net', expect: OTHER, now: NOW })),
+      ['NOT_HOSTED', 'not-covered']);
+    assert.equal(V.servedKind(null), null);
+    assert.deepEqual([...V.CERT_KINDS], ['origin-ca', 'self-signed', 'other']);
+  });
+
+  test('certKind and expectationFor: the kinds of the new certificate(s)', async () => {
+    const leaf = (file) => parseCertificates(read(`tests/fixtures/${file}`)).certificates[0];
+    assert.equal(V.certKind(leaf('cli_origin_wild.pem')), 'origin-ca', 'issuer OU names the Origin CA, no CN');
+    assert.equal(V.certKind(leaf('cloudflare_origin_ca_ecc.pem')), 'origin-ca', 'the real ECC root');
+    assert.equal(V.certKind(leaf('cloudflare_origin_ca_rsa.pem')), 'origin-ca', 'the real RSA root');
+    assert.equal(V.certKind(leaf('cli_private_ca.pem')), 'self-signed');
+    assert.equal(V.certKind(leaf('cli_private_wild.pem')), 'other', 'a private CA is unknown without --private-ca');
+    assert.equal(V.certKind(leaf('cli_public_wild.pem')), 'other');
+    assert.equal(V.certKind(GH), 'other');
+    assert.equal(V.certKind(null), 'other');
+    assert.deepEqual(NEW_GH.kinds, ['other']);
+    assert.deepEqual((await V.expectationFor([leaf('cli_origin_wild.pem'), leaf('cli_public_wild.pem')])).kinds, ['origin-ca', 'other']);
+  });
+
+  test('aggregateVerdicts ranks the kinds between NOT_HOSTED and UPDATED', () => {
+    const v = (status) => ({ status, served: {}, warnings: [] });
+    assert.equal(V.aggregateVerdicts([v('UPDATED'), v('ORIGIN_CERT')]).status, 'ORIGIN_CERT');
+    assert.equal(V.aggregateVerdicts([v('PRIVATE_CERT'), v('ORIGIN_CERT')]).status, 'ORIGIN_CERT');
+    assert.equal(V.aggregateVerdicts([v('ORIGIN_CERT'), v('NOT_HOSTED')]).status, 'NOT_HOSTED');
+    assert.equal(V.aggregateVerdicts([v('ORIGIN_CERT'), v('NEEDS_UPDATE')]).status, 'NEEDS_UPDATE');
+    assert.deepEqual(V.aggregateVerdicts([v('UPDATED'), v('PRIVATE_CERT')]).warnings, ['mixed']);
   });
 
   test('now matters: the same m01 test gains `expired` after 2026-11-29 (why fixtures pass capturedAt)', () => {
@@ -503,7 +562,15 @@ describe('serverStatus (CLI server_status parity)', () => {
     [[sr('TIMEOUT', 'tls-timeout'), sr('NOT_HOSTED')], 'TIMEOUT'],
     [[sr('TIMEOUT', 'connect-timeout'), sr('CLOSED')], 'TIMEOUT'],
     [[sr('CLOSED')], 'CLOSED'],
-    [[sr('NEEDS_UPDATE', 'old-cert', { warnings: ['origin-ca'] }), sr('TIMEOUT', 'connect-timeout')], 'NOT_HOSTED'],
+    [[sr('ORIGIN_CERT', 'origin-ca'), sr('TIMEOUT', 'connect-timeout')], 'ORIGIN_CERT'],
+    [[sr('ORIGIN_CERT', 'origin-ca'), sr('UPDATED')], 'UPDATED'],
+    [[sr('ORIGIN_CERT', 'origin-ca'), sr('NEEDS_UPDATE')], 'NEEDS_UPDATE'],
+    [[sr('PRIVATE_CERT', 'self-signed'), sr('ORIGIN_CERT', 'origin-ca')], 'ORIGIN_CERT'],
+    [[sr('PRIVATE_CERT', 'self-signed'), sr('TLS_ERROR')], 'PRIVATE_CERT'],
+    [[sr('ORIGIN_CERT', 'origin-ca', { newCertCovers: false })], 'NOT_HOSTED'],
+    [[sr('PRIVATE_CERT', 'self-signed', { newCertCovers: false }), sr('CLOSED')], 'NOT_HOSTED'],
+    // an Origin CA rollout: an older Origin CA certificate is still old
+    [[sr('NEEDS_UPDATE', 'old-cert', { warnings: ['origin-ca'] }), sr('TIMEOUT', 'connect-timeout')], 'NEEDS_UPDATE'],
     [[], null],
     [[{ verdict: null, status: null, state: 'pending' }], null]
   ];
@@ -1427,14 +1494,15 @@ describe('summarizeVerify / verifyHeadline', () => {
       { key: 'vfy.head.none', variant: 'warn', params: { count: 1 } },
       { key: 'vfy.head.other', variant: 'warn', params: { count: 1 } }
     ]);
-    // a Cloudflare Origin CA certificate on a zone row: hosted on purpose ("other", info), yet a certificate came back
+    // a Cloudflare Origin CA certificate on a zone row (behind the CDN): hosted on purpose, yet a certificate came back
     const oca = V.classifyTest(withTls(synthTls({ subject: { CN: 'github.com', alt: 'DNS:github.com' }, authorized: false,
       error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: { O: 'CloudFlare, Inc.', CN: 'CloudFlare Origin SSL Certificate Authority' } })),
     { name: 'github.com', expect: OTHER, now: NOW });
-    const zone = V.summarizeVerify(settle([done(row({ name: 'github.com', via: 'zone' }), [oca])]));
-    assert.deepEqual([zone.servers.other, zone.servers.wrongCert, zone.servers.served], [1, 0, 1]);
+    const zone = V.summarizeVerify(settle([done(row({ name: 'github.com', via: 'zone', proxied: true }), [oca])]));
+    assert.deepEqual([zone.servers.old, zone.servers.other, zone.servers.originCert, zone.servers.originDirect,
+      zone.servers.wrongCert, zone.servers.served], [0, 0, 1, 0, 0, 1]);
     assert.deepEqual(V.verifyHeadline(zone).map((x) => [x.key, x.variant]),
-      [['vfy.head.partial', 'info'], ['vfy.head.other', 'info']]);
+      [['vfy.head.partial', 'info'], ['vfy.head.originCert', 'info'], ['vfy.head.exposed', 'warn']]);
     // an origin-hint candidate that serves another certificate is not a DNS-matched name: no warning
     const hint = settle([done(row({ name: 'github.com' }), [V_UPDATED()]),
       done(row({ ip: '5.6.7.9', name: 'api.github.com', via: 'hint', proxied: false, server: { id: 'mail01', name: 'mail01' } }), [V_NOT_COVERED()])]);
@@ -1529,14 +1597,35 @@ describe('summarizeVerify / verifyHeadline', () => {
     assert.equal(sum.servers.live, 2);
   });
 
-  test('an origin-ca NEEDS_UPDATE row is "other", not "old"', () => {
-    const oca = V.classifyTest(withTls(synthTls({ subject: { CN: 'github.com', alt: 'DNS:github.com' }, authorized: false,
-      error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: { O: 'CloudFlare, Inc.', CN: 'CloudFlare Origin SSL Certificate Authority' } })),
-    { name: 'github.com', expect: OTHER, now: NOW });
-    const r = done(row({ name: 'github.com', via: 'hint', proxied: true }), [oca]);
-    const sum = V.summarizeVerify(settle([r]));
-    assert.equal(r.status, 'NEEDS_UPDATE', 'the row keeps CLI parity');
-    assert.deepEqual([sum.servers.old, sum.servers.other], [0, 1]);
+  test('ORIGIN_CERT / PRIVATE_CERT servers are neither old nor live; warn when visitors reach them directly', () => {
+    const tls = (over) => withTls(synthTls({ subject: { CN: 'github.com', alt: 'DNS:github.com' }, authorized: false, ...over }));
+    const oca = V.classifyTest(tls({ error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: { C: 'US', O: 'CloudFlare, Inc.' } }),
+      { name: 'github.com', expect: OTHER, now: NOW });
+    const self = V.classifyTest(tls({ error: 'DEPTH_ZERO_SELF_SIGNED_CERT', issuer: { CN: 'github.com' } }),
+      { name: 'github.com', expect: OTHER, now: NOW });
+    const origin = done(row({ name: 'github.com', via: 'hint', proxied: true }), [oca]);
+    const sum = V.summarizeVerify(settle([origin]));
+    assert.equal(origin.status, 'ORIGIN_CERT', 'the row keeps CLI parity');
+    assert.equal(origin.exposure, 'exposed', 'an origin that answers the internet is exposed, whatever its certificate');
+    assert.deepEqual([sum.servers.old, sum.servers.other, sum.servers.originCert, sum.servers.live], [0, 0, 1, 0]);
+    // a DNS row is reached directly (no CDN in front): an error for visitors, so the entry warns
+    const mixed = settle([
+      done(row({ name: 'github.com', ip: '192.0.2.10', server: { id: 'web01', name: 'web01' } }), [oca]),
+      done(row({ name: 'github.com', ip: '192.0.2.11', server: { id: 'web02', name: 'web02' } }), [self]),
+      done(row({ name: 'github.com', ip: '192.0.2.12', server: { id: 'web03', name: 'web03' } }), [V_UPDATED()]),
+      done(row({ name: 'github.com', ip: '192.0.2.13', server: { id: 'web04', name: 'web04' } }), [V_OLD()])
+    ]);
+    const ms = V.summarizeVerify(mixed);
+    assert.deepEqual([ms.servers.base, ms.servers.live, ms.servers.old, ms.servers.originCert, ms.servers.originDirect,
+      ms.servers.privateCert, ms.servers.privateDirect], [4, 1, 1, 1, 1, 1, 1]);
+    assert.deepEqual(V.verifyHeadline(ms).map((x) => [x.key, x.variant, x.params]), [
+      ['vfy.head.some', 'warn', { live: 1, total: 4, old: 1 }],
+      ['vfy.head.originCert', 'warn', { count: 1 }],
+      ['vfy.head.privateCert', 'warn', { count: 1 }]
+    ]);
+    assert.deepEqual(ms.rows.byStatus, { ORIGIN_CERT: 1, PRIVATE_CERT: 1, UPDATED: 1, NEEDS_UPDATE: 1 });
+    // Check again re-checks them: the certificate there may be replaced on purpose.
+    assert.equal(V.recheckRows(mixed).length, 3);
   });
 
   test('a via:"zone" row is judged like a DNS row', () => {
@@ -1597,6 +1686,15 @@ describe('cliPlan', () => {
         'shop.example.com'],
       rows: 7
     });
+  });
+
+  test('a pair on another port than 443 is the target ip:port, so the CLI scans that port', () => {
+    const rows = V.createVerifyRows([
+      pair({ ip: '10.0.0.5', port: 8443, name: 'vpn.example.com', skip: 'private' }),
+      pair({ ip: 'fd00::5', port: 8443, name: 'vpn6.example.com', skip: 'private' }),
+      pair({ ip: '10.0.0.6', port: 443, name: 'www.example.com', skip: 'private' })
+    ]);
+    assert.deepEqual(V.cliPlan(rows).targets, ['10.0.0.5:8443', '[fd00::5]:8443', '10.0.0.6']);
   });
 });
 
@@ -1669,8 +1767,11 @@ describe('exports', () => {
     assert.deepEqual(wild.vantage, [{ country: 'DE', city: 'Falkenstein', asn: 24940, network: 'Hetzner Online', kind: 'datacenter', adopted: false }]);
     const vpn = json.rows.find((r) => r.name === 'vpn.wild.example.net');
     assert.deepEqual([vpn.status, vpn.state, vpn.skip], [null, 'skipped', 'private']);
-    assert.deepEqual(json.summary.servers, { total: 3, checked: 3, live: 1, old: 1, other: 0, tlsError: 0, unreachable: 1,
-      filteredOrigins: 0, notHostingOrigins: 0, unchecked: 0, incomplete: 0 });
+    assert.deepEqual(json.newCertificate.kinds, ['other']);
+    assert.deepEqual(json.summary.servers, { total: 3, checked: 3, live: 1, old: 1, other: 0, originCert: 0, privateCert: 0,
+      tlsError: 0, unreachable: 1, filteredOrigins: 0, notHostingOrigins: 0, unchecked: 0, incomplete: 0 });
+    assert.equal(wild.certKind, 'other');
+    assert.equal(vpn.certKind, null);
   });
 
   test('the JSON never carries a public key, headers or DER', async () => {

@@ -32,7 +32,9 @@
  *     custom headers, no-store, at least 450 ms apart per measurement id; never a private or
  *     CDN-edge address; the origin-hint pair only after the opt-in is ticked;
  *   - verdicts, warnings (chain-incomplete), exposure (exposed), headline keys and the tab badge
- *     across the first batch, the origin opt-in, a certificate swap and "Check again";
+ *     across the first batch, the origin opt-in, a certificate swap and "Check again"; a Cloudflare
+ *     Origin CA certificate is ORIGIN_CERT, never "Old certificate" (a self-signed one stays old here:
+ *     the new certificate is self-signed too);
  *   - the CLI card (targets, names, --cert, --json, PowerShell prefix), new-cert.pem, the CSV /
  *     JSON exports and the scan's full JSON `verification` block;
  *   - quota: /limits at 0 → alert and 0 POSTs; a POST 429 in a new window → not-run · quota with
@@ -138,8 +140,9 @@ const fakeZoneScript = (apex, zone) => `(() => {
  * limitsRemaining (what /limits reports), postRemaining (a POST answers 429 at 0), delayMs
  * (extra time before a result is final), limitsDelayMs (a slow /limits answer; an abort ends
  * it), netDown (every /measurements request throws a
- * TypeError). __gpFlip() swaps www and shop to the new certificate; __gpNewWindow({limits,
- * post}) opens a later quota window (the hour rolled over).
+ * TypeError), legacyAs ('origin-ca' / 'self-signed': legacy answers with a Cloudflare Origin CA
+ * or a self-signed certificate instead of timing out). __gpFlip() swaps www and shop to the new
+ * certificate; __gpNewWindow({limits, post}) opens a later quota window (the hour rolled over).
  */
 const fakeGlobalpingScript = (newFp) => `(() => {
   const API = ${JSON.stringify(GP)};
@@ -153,7 +156,8 @@ const fakeGlobalpingScript = (newFp) => `(() => {
   ];
   const gp = window.__gp = {
     calls: [], gets: {}, measurements: {}, n: 0,
-    limitsRemaining: 250, postRemaining: 250, windowEnd: null, delayMs: 0, limitsDelayMs: 0, netDown: false, flipped: false
+    limitsRemaining: 250, postRemaining: 250, windowEnd: null, delayMs: 0, limitsDelayMs: 0, netDown: false, flipped: false,
+    legacyAs: null
   };
   window.__gpFlip = () => { gp.flipped = true; };
   window.__gpNewWindow = ({ limits, post }) => {
@@ -178,6 +182,14 @@ const fakeGlobalpingScript = (newFp) => `(() => {
     issuer: { C: 'US', O: 'Example Test CA', CN: 'Example Test CA E1' }, subject: { CN: '*.wild.example.net', alt: 'DNS:*.wild.example.net, DNS:wild.example.net' },
     keyType: 'EC', keyBits: 256, serialNumber: '5A:17:00:C3', fingerprint256: OLD_FP, publicKey: '04:33:44'
   });
+  // What a probe reports for a Cloudflare Origin CA leaf: the issuer's C and O only (that CA has no CN).
+  const originCaCert = () => ({
+    ...oldCert(), authorized: false, error: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', issuer: { C: 'US', O: 'CloudFlare, Inc.' },
+    subject: { CN: 'CloudFlare Origin Certificate', alt: 'DNS:*.wild.example.net, DNS:wild.example.net' }, fingerprint256: Array(32).fill('0C').join(':')
+  });
+  const selfSignedCert = () => ({
+    ...oldCert(), authorized: false, error: 'DEPTH_ZERO_SELF_SIGNED_CERT', issuer: { CN: '*.wild.example.net' }, fingerprint256: Array(32).fill('5E').join(':')
+  });
   const ok = (target, tls) => ({
     status: 'finished', resolvedAddress: target, statusCode: 200, statusCodeName: 'OK',
     timings: { total: 48, dns: null, tcp: 11, tls: 24, firstByte: 9, download: 1 }, tls,
@@ -194,7 +206,10 @@ const fakeGlobalpingScript = (newFp) => `(() => {
       case '1.2.3.4|shop.wild.example.net':
         return ok(target, gp.flipped ? newCert() : { ...newCert(), authorized: false, error: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' });
       case '5.6.7.8|api.wild.example.net': return ok(target, newCert());
-      case '1.2.3.5|legacy.wild.example.net': return failed('Request timed out while establishing the TCP connection.', 10001);
+      case '1.2.3.5|legacy.wild.example.net':
+        if (gp.legacyAs === 'origin-ca') return ok(target, originCaCert());
+        if (gp.legacyAs === 'self-signed') return ok(target, selfSignedCert());
+        return failed('Request timed out while establishing the TCP connection.', 10001);
       default: return failed('connect ECONNREFUSED ' + target + ':443');
     }
   };
@@ -739,6 +754,41 @@ async function main() {
       assert(/2 of 3/.test(text), `partial text: ${text}`);
       assertEqual((await badge(page)).text, '2/3', 'badge 2/3');
       assertEqual(await recheckCount(page), '1', 'only legacy left');
+    });
+
+    await run.step('a Cloudflare Origin CA certificate is ORIGIN_CERT, never "Old certificate"; a self-signed one is old in a self-signed rollout', async () => {
+      const recheck = async (as) => {
+        await page.evaluate((v) => { window.__gp.legacyAs = v; }, as);
+        const mark = await panelState(page);
+        await page.click('.scan-tab-verify [data-action="vfy-recheck"]');
+        await waitBatch(page, mark);
+        return byKey(await readRows(page))[`${N('legacy')}|1.2.3.5`];
+      };
+      const label = () => page.evaluate(() => {
+        const b = [...document.querySelectorAll('.scan-tab-verify .vfy-table tbody tr.dt-row')]
+          .find((tr) => tr.querySelector('.vfy-ip')?.textContent === '1.2.3.5').querySelector('[data-vfy-status]');
+        return { text: b.textContent, warn: b.classList.contains('badge-warn'), title: b.title };
+      });
+      const origin = await recheck('origin-ca');
+      assertEqual([origin.state, origin.status, origin.warn], ['done', 'ORIGIN_CERT', []], 'legacy: Origin CA (its chip is the status itself)');
+      const ol = await label();
+      assert(ol.text === 'Cloudflare Origin CA certificate' && ol.warn, `a DNS row reached directly warns: ${JSON.stringify(ol)}`);
+      assert(/Only Cloudflare trusts it/.test(ol.title) && /ORIGIN_CERT/.test(ol.title), `reason: ${ol.title}`);
+      assertEqual(await headKeys(page), ['partial', 'originCert', 'exposed', 'notHere'], 'headline keys (shop is still an exposed origin)');
+      const head = await page.evaluate(() => document.querySelector('.scan-tab-verify .vfy-headline [data-head="originCert"]').textContent);
+      assert(/1 server serves a Cloudflare Origin CA certificate/.test(head) && /Not counted as old/.test(head), `originCert: ${head}`);
+      assertEqual((await badge(page)).text, '2/3', 'still not live there');
+      assertEqual(await recheckCount(page), '1', 'Check again includes it');
+      await shotEl(page, opts, 'verify-desktop-light-en-origin-ca', '.scan-tab-verify');
+      // ec_wildcard.pem, the new certificate here, is itself self-signed: another self-signed one is simply
+      // the old one (the CLI's HostedClassifier family rule), never PRIVATE_CERT.
+      const self = await recheck('self-signed');
+      assertEqual([self.status, self.warn], ['NEEDS_UPDATE', ['self-signed']], 'legacy: an older self-signed certificate');
+      assertEqual((await label()).text, 'Old certificate', 'label');
+      assertEqual(await headKeys(page), ['some', 'exposed', 'notHere'], 'headline keys');
+      const back = await recheck(null);
+      assertEqual([back.status, back.warn], ['TIMEOUT', []], 'legacy times out again for the steps below');
+      assertEqual(await headKeys(page), ['partial', 'unreachable', 'exposed', 'notHere'], 'headline keys restored');
     });
 
     run.group('Quota');

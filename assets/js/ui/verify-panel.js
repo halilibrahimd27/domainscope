@@ -103,6 +103,8 @@ registerStrings('en', {
   'vfy.head.tlsError': { one: '1 server failed the TLS handshake.', other: '{count} servers failed the TLS handshake.' },
   'vfy.head.unreachable': { one: '1 server did not answer from the internet (no answer or port closed); check it from inside with the CLI.', other: '{count} servers did not answer from the internet (no answer or port closed); check them from inside with the CLI.' },
   'vfy.head.other': { one: '1 server answers, but not for these names.', other: '{count} servers answer, but not for these names.' },
+  'vfy.head.originCert': { one: '1 server serves a Cloudflare Origin CA certificate, which only Cloudflare trusts: right on an origin behind Cloudflare Full (strict), an error for visitors who reach it directly. Not counted as old.', other: '{count} servers serve a Cloudflare Origin CA certificate, which only Cloudflare trusts: right on an origin behind Cloudflare Full (strict), an error for visitors who reach it directly. Not counted as old.' },
+  'vfy.head.privateCert': { one: '1 server serves a self-signed certificate, which no browser trusts: an error for visitors who reach it directly (Cloudflare accepts it only in Full mode, not Full (strict)). Not counted as old.', other: '{count} servers serve a self-signed certificate, which no browser trusts: an error for visitors who reach it directly (Cloudflare accepts it only in Full mode, not Full (strict)). Not counted as old.' },
   'vfy.head.exposed': { one: '1 origin server behind a CDN answers the internet directly, so anyone can bypass the proxy. Allow only the CDN’s IP ranges on port 443, or use authenticated origin pulls (mTLS) or a tunnel.', other: '{count} origin servers behind a CDN answer the internet directly, so anyone can bypass the proxy. Allow only the CDN’s IP ranges on port 443, or use authenticated origin pulls (mTLS) or a tunnel.' },
   'vfy.head.filtered': { one: '1 origin server behind a CDN did not answer a probe from the internet (probably filtered, as it should be); confirm its certificate from inside with the CLI.', other: '{count} origin servers behind a CDN did not answer a probe from the internet (probably filtered, as they should be); confirm their certificates from inside with the CLI.' },
   'vfy.head.notHere': 'Not checkable from the internet: {list}.',
@@ -116,13 +118,14 @@ registerStrings('en', {
 
   'vfy.st.UPDATED': 'New certificate',
   'vfy.st.NEEDS_UPDATE': 'Old certificate',
+  'vfy.st.ORIGIN_CERT': 'Cloudflare Origin CA certificate',
+  'vfy.st.PRIVATE_CERT': 'Self-signed certificate',
   'vfy.st.NOT_HOSTED': 'Name not served here',
   'vfy.st.TLS_ERROR': 'TLS error',
   'vfy.st.TIMEOUT': 'No answer',
   'vfy.st.CLOSED': 'Port closed',
   'vfy.st.NEEDS_UPDATE.other': 'Own certificate (not in the new one)',
   'vfy.st.NEEDS_UPDATE.nocert': 'Serves a certificate',
-  'vfy.st.NEEDS_UPDATE.origin': 'Origin certificate (Cloudflare)',
   'vfy.st.TIMEOUT.origin': 'No answer (probably filtered)',
   'vfy.state.pending': 'Waiting',
   'vfy.state.running': 'Checking…',
@@ -159,6 +162,8 @@ registerStrings('en', {
   'vfy.reason.new-cert': 'The fingerprint matches the certificate you loaded.',
   'vfy.reason.old-cert': 'Serves another certificate that covers this name. Install the new one and reload the service.',
   'vfy.reason.no-new-cert': 'Serves this certificate (no new certificate loaded to compare).',
+  'vfy.reason.origin-ca': 'Serves a Cloudflare Origin CA certificate for this name. Only Cloudflare trusts it: right while the name stays proxied with Full (strict), an error for anyone who connects directly. Not counted as old (the CLI’s ORIGIN_CERT).',
+  'vfy.reason.self-signed': 'Serves a self-signed certificate for this name. No browser trusts it: usual on internal hosts, an error for visitors who connect directly. Not counted as old (the CLI’s PRIVATE_CERT).',
   'vfy.reason.not-covered': 'Answered with a certificate that does not cover this name.',
   'vfy.reason.unrecognized-name': 'The server does not know this name (unrecognized_name alert).',
   'vfy.reason.refused-name': 'Refused this name, while other names on this address work.',
@@ -303,6 +308,8 @@ registerStrings('tr', {
   'vfy.head.tlsError': '{count} sunucuda TLS el sıkışması başarısız oldu.',
   'vfy.head.unreachable': '{count} sunucu internetten yanıt vermedi (yanıt yok ya da port kapalı); CLI ile içeriden kontrol edin.',
   'vfy.head.other': '{count} sunucu yanıt veriyor ama bu adlar için değil.',
+  'vfy.head.originCert': '{count} sunucu, yalnızca Cloudflare’in güvendiği bir Cloudflare Origin CA sertifikası sunuyor: Cloudflare Full (strict) arkasındaki asıl sunucuda doğru, ona doğrudan ulaşan ziyaretçiler içinse hata. Eski sayılmaz.',
+  'vfy.head.privateCert': '{count} sunucu, hiçbir tarayıcının güvenmediği kendinden imzalı bir sertifika sunuyor: ona doğrudan ulaşan ziyaretçiler için hata (Cloudflare bunu yalnızca Full modunda kabul eder, Full (strict) modunda etmez). Eski sayılmaz.',
   'vfy.head.exposed': 'CDN arkasındaki {count} asıl sunucu internete doğrudan yanıt veriyor; proxy herkesçe atlanabilir. 443 numaralı portta yalnızca CDN’in IP aralıklarına izin verin ya da kimlik doğrulamalı origin çekme (mTLS) veya bir tünel kullanın.',
   'vfy.head.filtered': 'CDN arkasındaki {count} asıl sunucu internetteki bir ölçüm noktasına yanıt vermedi (büyük olasılıkla olması gerektiği gibi filtreli); sertifikasını CLI ile içeriden doğrulayın.',
   'vfy.head.notHere': 'İnternetten kontrol edilemeyenler: {list}.',
@@ -316,13 +323,14 @@ registerStrings('tr', {
 
   'vfy.st.UPDATED': 'Yeni sertifika',
   'vfy.st.NEEDS_UPDATE': 'Eski sertifika',
+  'vfy.st.ORIGIN_CERT': 'Cloudflare Origin CA sertifikası',
+  'vfy.st.PRIVATE_CERT': 'Kendinden imzalı sertifika',
   'vfy.st.NOT_HOSTED': 'Bu ad burada sunulmuyor',
   'vfy.st.TLS_ERROR': 'TLS hatası',
   'vfy.st.TIMEOUT': 'Yanıt yok',
   'vfy.st.CLOSED': 'Port kapalı',
   'vfy.st.NEEDS_UPDATE.other': 'Kendi sertifikası (yenisinde yok)',
   'vfy.st.NEEDS_UPDATE.nocert': 'Sertifika sunuyor',
-  'vfy.st.NEEDS_UPDATE.origin': 'Asıl sunucu sertifikası (Cloudflare)',
   'vfy.st.TIMEOUT.origin': 'Yanıt yok (büyük olasılıkla filtreli)',
   'vfy.state.pending': 'Sırada',
   'vfy.state.running': 'Kontrol ediliyor…',
@@ -359,6 +367,8 @@ registerStrings('tr', {
   'vfy.reason.new-cert': 'Parmak izi yüklediğiniz sertifikayla aynı.',
   'vfy.reason.old-cert': 'Bu adı kapsayan başka bir sertifika sunuyor. Yenisini kurup servisi yeniden yükleyin.',
   'vfy.reason.no-new-cert': 'Bu sertifikayı sunuyor (karşılaştırılacak yeni sertifika yüklenmedi).',
+  'vfy.reason.origin-ca': 'Bu ad için bir Cloudflare Origin CA sertifikası sunuyor. Ona yalnızca Cloudflare güvenir: ad Full (strict) ile proxy arkasında kaldıkça doğru, doğrudan bağlanan herkes içinse hata. Eski sayılmaz (CLI’daki ORIGIN_CERT).',
+  'vfy.reason.self-signed': 'Bu ad için kendinden imzalı bir sertifika sunuyor. Hiçbir tarayıcı ona güvenmez: iç sunucularda olağan, doğrudan bağlanan ziyaretçiler içinse hata. Eski sayılmaz (CLI’daki PRIVATE_CERT).',
   'vfy.reason.not-covered': 'Bu adı kapsamayan bir sertifikayla yanıt verdi.',
   'vfy.reason.unrecognized-name': 'Sunucu bu adı tanımıyor (unrecognized_name uyarısı).',
   'vfy.reason.refused-name': 'Bu adı reddetti; bu adresteki diğer adlar çalışıyor.',
@@ -508,9 +518,11 @@ const EXP_STYLE = Object.freeze({
 });
 const HEAD_ICONS = Object.freeze({
   all: 'check-circle', some: 'alert', none: 'alert', partial: 'info', noAnswer: 'help', incomplete: 'clock',
-  chain: 'link', tlsError: 'x-circle', unreachable: 'clock', other: 'minus-circle', exposed: 'unlock',
-  filtered: 'shield', notHere: 'lock'
+  chain: 'link', tlsError: 'x-circle', unreachable: 'clock', other: 'minus-circle', originCert: 'cloud',
+  privateCert: 'certificate', exposed: 'unlock', filtered: 'shield', notHere: 'lock'
 });
+/** The warning chip a kind status already says (the status badge carries its explanation). */
+const STATUS_WARNING = Object.freeze({ ORIGIN_CERT: 'origin-ca', PRIVATE_CERT: 'self-signed' });
 
 /** Consent for this page session: never stored; reset by "Delete all local data". */
 let consented = false;
@@ -612,8 +624,10 @@ export function notHereText(rows, stats = null, parts = null) {
 }
 
 /**
- * Sort rank of the Result column (problems first): 0 old certificate · 1 TLS error or a live
- * certificate with a notice · 2 name not served (DNS) / own certificate · 3 no answer / closed ·
+ * Sort rank of the Result column (problems first): 0 old certificate · 1 TLS error, a live
+ * certificate with a notice, or a Cloudflare Origin CA / self-signed certificate visitors reach
+ * directly · 2 name not served (DNS) / own certificate (not in the new one, or an Origin CA /
+ * self-signed one behind a CDN) · 3 no answer / closed ·
  * 4 error / not checked · 5 waiting / running · 6 new certificate · 7 hint or origin rows that
  * behave as expected (filtered, no answer to a TCP connect, port closed, or an origin check that
  * answers but not for this name — whatever its status, TLS_ERROR included: lib `recheckRows()`
@@ -633,7 +647,9 @@ export function resultRank(row) {
   if (isHintRow(row) && row.proxied && row.exposure === 'not-this-host') return 7;
   const w = row.warnings || [];
   switch (row.status) {
-    case 'NEEDS_UPDATE': return row.newCertCovers === false || isOriginCa(row) ? 2 : 0;
+    case 'NEEDS_UPDATE': return row.newCertCovers === false ? 2 : 0;
+    case 'ORIGIN_CERT':
+    case 'PRIVATE_CERT': return row.proxied ? 2 : 1;
     case 'TLS_ERROR': return 1;
     case 'UPDATED': return w.some((x) => NOTICE_WARNINGS.includes(x)) ? 1 : 6;
     case 'NOT_HOSTED': return isHintRow(row) ? 7 : 2;
@@ -642,11 +658,6 @@ export function resultRank(row) {
     case 'CLOSED': return row.proxied && EXPECTED_EXPOSURES.has(row.exposure) ? 7 : 3;
     default: return 4;
   }
-}
-
-/** A row serving a Cloudflare Origin CA certificate (hosted on purpose, not "still old": critic C.4.6). */
-function isOriginCa(row) {
-  return !!row && (row.warnings || []).includes('origin-ca');
 }
 
 /**
@@ -659,10 +670,11 @@ export function statusBadgeSpec(row) {
     case 'UPDATED': return { key: 'vfy.st.UPDATED', variant: 'ok', icon: 'check-circle' };
     case 'NEEDS_UPDATE': {
       if (row.reason === 'no-new-cert') return { key: 'vfy.st.NEEDS_UPDATE.nocert', variant: 'warn', icon: 'alert' };
-      // The headline counts it as live-or-own, not old: the badge must not say "Old certificate" under it.
-      if (isOriginCa(row)) return { key: 'vfy.st.NEEDS_UPDATE.origin', variant: 'info', icon: 'cloud' };
       return { key: row.newCertCovers === false ? 'vfy.st.NEEDS_UPDATE.other' : 'vfy.st.NEEDS_UPDATE', variant: 'warn', icon: 'alert' };
     }
+    // Not old (the CLI's ORIGIN_CERT / PRIVATE_CERT): expected behind a CDN, an error for visitors who reach it directly.
+    case 'ORIGIN_CERT': return { key: 'vfy.st.ORIGIN_CERT', variant: row.proxied ? 'info' : 'warn', icon: 'cloud' };
+    case 'PRIVATE_CERT': return { key: 'vfy.st.PRIVATE_CERT', variant: row.proxied ? 'info' : 'warn', icon: 'certificate' };
     // Visitors reach a DNS-matched address, so a wrong certificate there matters; an origin hint may just be another site.
     case 'NOT_HOSTED': return { key: 'vfy.st.NOT_HOSTED', variant: isHintRow(row) ? 'neutral' : 'warn', icon: 'minus-circle' };
     case 'TLS_ERROR': return { key: 'vfy.st.TLS_ERROR', variant: 'error', icon: 'x-circle' };
@@ -677,14 +689,15 @@ export function statusBadgeSpec(row) {
 }
 
 /**
- * Row classes of the checks table: an old certificate is highlighted, except a Cloudflare
- * Origin CA certificate (counted as hosted, not old) and a certificate the new one does not cover.
+ * Row classes of the checks table: an old certificate is highlighted, except a certificate the
+ * new one does not cover (a Cloudflare Origin CA or self-signed one is ORIGIN_CERT /
+ * PRIVATE_CERT, never NEEDS_UPDATE, unless the new certificate is of that kind too).
  * @param {object} r VerifyRow
  * @returns {Record<string, boolean>}
  */
 export function verifyRowClass(r) {
   return {
-    'vfy-row-old': r.state === 'done' && r.status === 'NEEDS_UPDATE' && r.newCertCovers !== false && !isOriginCa(r),
+    'vfy-row-old': r.state === 'done' && r.status === 'NEEDS_UPDATE' && r.newCertCovers !== false,
     'vfy-row-skipped': r.state === 'skipped',
     'vfy-row-stale': !!r.stale && r.state !== 'done'
   };
@@ -793,7 +806,7 @@ export function planText(rows, { quota = null } = {}) {
 export function verifyCliSweep(plan, shell) {
   return buildFittedSweepCommand({
     targets: plan.targets, names: plan.names, script: CLI_SCRIPT, shell, cert: CLI_CERT_FILE, json: CLI_JSON_FILE,
-    namesFile: CLI_NAMES_FILE
+    namesFile: CLI_NAMES_FILE, allowPorts: true
   }, CLI_TARGETS_FILE);
 }
 
@@ -995,6 +1008,7 @@ function resultCell(row) {
   const out = h('div', { class: 'vfy-result' }, primaryBadge(row));
   if (row.state === 'done') {
     for (const w of row.warnings || []) {
+      if (STATUS_WARNING[row.status] === w) continue;
       const [variant, icon] = WARN_STYLE[w] || ['neutral', 'info'];
       out.append(miniBadge(warnText(w), variant, icon, VERIFY_WARNINGS.includes(w) ? t(`vfy.warn.${w}.title`) : null, { vfyWarn: w }));
     }

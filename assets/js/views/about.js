@@ -146,9 +146,12 @@ registerStrings('en', {
   'about.ex3': 'Reports for scripts (JSON) and Excel (CSV)',
   'about.ex4': 'A subnet and two names, no certificate (“who hosts these?”)',
   'about.ex5': 'CI / cron — exit code 1 while any server still needs the new certificate',
+  'about.ex6': 'Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE; an address with its own port is scanned on that port',
   'about.statusesTitle': 'Result statuses',
   'about.st.UPDATED': 'Serves the new certificate for the name.',
   'about.st.NEEDS_UPDATE': 'Serves a certificate that covers the name, but not the new one — install it here.',
+  'about.st.ORIGIN_CERT': 'Serves a Cloudflare Origin CA certificate, which only Cloudflare trusts: right for an origin behind Cloudflare Full (strict) while its names stay proxied. Listed apart, not counted as needing the new certificate (--strict-public counts it).',
+  'about.st.PRIVATE_CERT': 'Serves a self-signed certificate, or one issued by a CA you list with --private-ca: usual on internal hosts. Listed apart, not counted as needing the new certificate (--strict-public counts it).',
   'about.st.NOT_HOSTED': 'Answers, but not for this name (only a default certificate).',
   'about.st.TLS_ERROR': 'The TLS handshake failed.',
   'about.st.TIMEOUT': 'No answer within the timeout.',
@@ -265,9 +268,12 @@ registerStrings('tr', {
   'about.ex3': 'Betikler (JSON) ve Excel (CSV) için raporlar',
   'about.ex4': 'Bir alt ağ ve iki ad, sertifikasız (“bunları kim barındırıyor?”)',
   'about.ex5': 'CI / cron — yeni sertifikaya ihtiyaç duyan sunucu kaldıkça çıkış kodu 1',
+  'about.ex6': 'Kendi CA’nızın imzaladığı iç sunucular NEEDS_UPDATE değil PRIVATE_CERT olur; portuyla yazılan bir adres o porttan taranır',
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
+  'about.st.ORIGIN_CERT': 'Yalnızca Cloudflare’in güvendiği bir Cloudflare Origin CA sertifikası sunuyor: adları proxy arkasında kaldıkça Cloudflare Full (strict) arkasındaki bir asıl sunucu için doğru. Ayrı listelenir, yeni sertifikaya ihtiyaç duyuyor sayılmaz (--strict-public sayar).',
+  'about.st.PRIVATE_CERT': 'Kendinden imzalı ya da --private-ca ile verdiğiniz bir CA’nın imzaladığı sertifika sunuyor: iç sunucularda olağan. Ayrı listelenir, yeni sertifikaya ihtiyaç duyuyor sayılmaz (--strict-public sayar).',
   'about.st.NOT_HOSTED': 'Yanıt veriyor ama bu ad için değil (yalnızca varsayılan sertifika).',
   'about.st.TLS_ERROR': 'TLS el sıkışması başarısız oldu.',
   'about.st.TIMEOUT': 'Zaman aşımı süresinde yanıt yok.',
@@ -304,12 +310,15 @@ const CLI_EXAMPLES = [
   { key: 'about.ex2', cmd: 'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem -p 443,8443' },
   { key: 'about.ex3', cmd: 'python3 ssl_origin_scan.py -t targets.txt --cert new.pem --json report.json --csv report.csv' },
   { key: 'about.ex4', cmd: 'python3 ssl_origin_scan.py -t 10.0.0.0/24 -n www.example.com api.example.com' },
-  { key: 'about.ex5', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color' }
+  { key: 'about.ex5', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color' },
+  { key: 'about.ex6', cmd: 'python3 ssl_origin_scan.py -t hosts.ini -t 10.0.0.5:8443 --cert new.pem --private-ca internal-ca.pem' }
 ];
 
 const CLI_STATUSES = [
   { code: 'UPDATED', variant: 'ok', icon: 'check-circle' },
   { code: 'NEEDS_UPDATE', variant: 'warn', icon: 'alert' },
+  { code: 'ORIGIN_CERT', variant: 'info', icon: 'cloud' },
+  { code: 'PRIVATE_CERT', variant: 'info', icon: 'certificate' },
   { code: 'NOT_HOSTED', variant: 'neutral', icon: 'minus-circle' },
   { code: 'TLS_ERROR', variant: 'error', icon: 'x-circle' },
   { code: 'TIMEOUT', variant: 'error', icon: 'clock' },

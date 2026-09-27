@@ -180,7 +180,7 @@ describe('i18n coverage', () => {
     // can produce; the panel builds these keys from the codes.
     const vf = await imp('assets/js/lib/verify.js');
     for (const s of vf.VERIFY_STATUSES) add(`vfy.st.${s}`);
-    for (const k of ['vfy.st.NEEDS_UPDATE.other', 'vfy.st.NEEDS_UPDATE.nocert', 'vfy.st.NEEDS_UPDATE.origin', 'vfy.st.TIMEOUT.origin']) add(k);
+    for (const k of ['vfy.st.NEEDS_UPDATE.other', 'vfy.st.NEEDS_UPDATE.nocert', 'vfy.st.TIMEOUT.origin']) add(k);
     for (const k of ['vfy.empty', 'vfy.empty.none', 'vfy.empty.noCli']) add(k); // emptyKey()
     for (const r of vf.VERIFY_REASONS) add(`vfy.reason.${r}`);
     for (const e of vf.VERIFY_ERRORS) add(`vfy.err.${e}`);

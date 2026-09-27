@@ -1148,12 +1148,22 @@ export async function runScan(config = {}, hooks = {}) {
   checkAbort(signal);
 
   const wildcards = {};
+  // Resolvers whose breaker is currently open would only time out — skip them.
+  const downResolvers = () => {
+    try {
+      const byResolver = (typeof dns.stats === 'function' ? dns.stats().byResolver : null) || {};
+      return new Set(Object.keys(byResolver).filter((id) => byResolver[id] && byResolver[id].down));
+    } catch { return new Set(); }
+  };
   // The bulk probes and the resolve stage rotate across the balance pool, and a
   // wildcard may answer each resolver differently (GeoDNS / ECS, a CDN alias):
-  // each wildcard check also probes every pool resolver, so the fingerprint
-  // holds what any of them answers.
+  // each wildcard check also probes every pool resolver that is up, so the
+  // fingerprint holds what any of them answers.
   const wildcardResolvers = useBalance && Array.isArray(dns.balancePool) ? dns.balancePool : [];
-  const wildcardOpts = { signal, resolvers: wildcardResolvers };
+  const wildcardOpts = () => {
+    const down = downResolvers();
+    return { signal, resolvers: wildcardResolvers.filter((id) => !down.has(id)) };
+  };
   /**
    * Deep-detect wildcards for a set of candidate parents not seen yet, in scope,
    * capped at MAX_WILDCARD_PARENTS. Reused for the catch-up passes (late source
@@ -1172,7 +1182,7 @@ export async function runScan(config = {}, hooks = {}) {
     }
     if (!todo.length) return;
     await mapPool(todo, 4, async (p) => {
-      wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts);
+      wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts());
     }, signal);
   };
 
@@ -1203,7 +1213,7 @@ export async function runScan(config = {}, hooks = {}) {
     ...(exactMode ? { skipped: true } : {})
   });
   await mapPool(parents, 4, async (p) => {
-    wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts);
+    wildcards[p] = await detectWildcardDeep(dns, p, wildcardOpts());
     wildcardDone += 1;
     progress('wildcard', wildcardDone, parents.length);
   }, signal);
@@ -1264,7 +1274,7 @@ export async function runScan(config = {}, hooks = {}) {
     if (!flooded.length) return;
     await mapPool(flooded, 4, async (p) => {
       resampled.add(p);
-      const next = await detectWildcardDeep(dns, p, { ...wildcardOpts, probes: FLOOD_RESAMPLE_PROBES });
+      const next = await detectWildcardDeep(dns, p, { ...wildcardOpts(), probes: FLOOD_RESAMPLE_PROBES });
       if (!next.wildcard) return; // random labels still do not resolve: the hits stand
       const prev = wildcards[p] && wildcards[p].wildcard && wildcards[p].kind === next.kind ? wildcards[p] : null;
       const union = (key) => [...new Set([...((prev && prev[key]) || []), ...(next[key] || [])])];
@@ -1846,13 +1856,6 @@ export async function runScan(config = {}, hooks = {}) {
     //    that specific host. DNS only, capped — never an HTTP/TLS probe.
     if (resolverLeak !== false && leakHosts.length && typeof dns.query === 'function') {
       const poolIds = Array.isArray(dns.chain) ? dns.chain : [];
-      // Resolvers whose breaker is currently open would only time out — skip them.
-      const downResolvers = () => {
-        try {
-          const byResolver = (typeof dns.stats === 'function' ? dns.stats().byResolver : null) || {};
-          return new Set(Object.keys(byResolver).filter((id) => byResolver[id] && byResolver[id].down));
-        } catch { return new Set(); }
-      };
       await mapPool(leakHosts, 4, async (host) => {
         if (resolverLeakQueries >= RESOLVER_LEAK_MAX_QUERIES) return;
         const already = new Set([...host.resolution.ipv4, ...host.resolution.ipv6]);

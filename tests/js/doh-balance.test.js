@@ -478,6 +478,17 @@ describe('detectWildcardDeep', () => {
     assert.ok(['cloudflare', 'google', 'dnssb'].every((id) => calls.some((c) => c.resolver === id && c.name.endsWith('.geo.example.org'))));
   });
 
+  test('a probe sent to one named resolver is capped short with no retry (no failover covers it)', async () => {
+    const seen = [];
+    const dns = { async resolveHost(name, opts) { seen.push(opts); return { name, status: 'NXDOMAIN', cnames: [], ipv4: [], ipv6: [] }; } };
+    await detectWildcardDeep(dns, 'example.org', { resolvers: ['google', 'google', 'dnssb'] });
+    assert.equal(seen.length, 4, '2 chain probes + one per distinct resolver');
+    const named = seen.filter((o) => o.resolver);
+    assert.deepEqual(named.map((o) => o.resolver), ['google', 'dnssb']);
+    assert.ok(named.every((o) => o.timeoutMs === 2500 && o.retries === 0));
+    assert.ok(seen.filter((o) => !o.resolver).every((o) => o.timeoutMs === undefined));
+  });
+
   test('a CNAME wildcard whose target varies per label keeps every target', async () => {
     const targets = ['va01.ingress.paas.example.net', 'ie02.ingress.paas.example.net'];
     let n = 0;

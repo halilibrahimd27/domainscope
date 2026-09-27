@@ -110,6 +110,9 @@ const SKIPPED = Symbol('skipped');
 // as failover, never as the rotating primary, and the circuit breaker drops them
 // after repeated transport errors.
 const DEFAULT_BALANCE_POOL = Object.freeze(['cloudflare', 'google', 'dnssb']);
+// A wildcard probe sent to one named resolver has no failover: cap it short with
+// no retry pass, so a black-holed resolver cannot stall every wildcard check.
+const WILDCARD_RESOLVER_TIMEOUT_MS = 2500;
 
 const clock = () => (globalThis.performance && typeof globalThis.performance.now === 'function'
   ? globalThis.performance.now()
@@ -422,7 +425,8 @@ export async function detectWildcardDeep(dns, parent, { signal, resolvers = [], 
   for (const id of new Set(Array.isArray(resolvers) ? resolvers : [])) {
     if (typeof id === 'string' && id) plan.push({ name: `${randomLabel(12)}.${base}`, resolver: id });
   }
-  const results = await Promise.all(plan.map(({ name, resolver }) => dns.resolveHost(name, resolver ? { signal, resolver } : { signal })));
+  const results = await Promise.all(plan.map(({ name, resolver }) => dns.resolveHost(name, resolver
+    ? { signal, resolver, timeoutMs: WILDCARD_RESOLVER_TIMEOUT_MS, retries: 0 } : { signal })));
   const answers = [];
   results.forEach((r, i) => {
     const p = classifyProbe(r);

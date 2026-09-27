@@ -180,6 +180,9 @@ describe('i18n coverage', () => {
     for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);
     for (const k of [...views.bulk.BULK_FILTERS, ...views.bulk.IP_FILTERS]) add(`bulk.filter.${k}`);
     for (const k of Object.keys(views.lookup.TYPE_PRESETS)) add(`lkp.preset.${k}`);
+    // Global DNS: every verdict finding the summary renders as glb.find.<code>.
+    const propagation = await imp('assets/js/lib/propagation.js');
+    for (const f of propagation.VERDICT_FINDINGS) add(`glb.find.${f}`);
     for (const g of views.health.HEALTH_GROUPS) add(`health.group.${g}`);
     // Verify tab (ui/verify-panel.js): every status, reason, error, warning (+ tooltip), state,
     // skip / not-run reason, exposure (+ tooltip), headline and not-checkable part lib/verify.js

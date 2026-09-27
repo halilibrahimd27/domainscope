@@ -153,6 +153,24 @@
   white-space: nowrap;
 }
 
+/* Who operates the group's addresses (Amazon CloudFront, Akamai, Direct …). On a narrow chip
+   the operator label gives way (ellipsis; full name in its tooltip) before the answer does. */
+.glb-chip-ops {
+  display: inline-flex;
+  flex: 0 6 auto;
+  gap: 4px;
+  min-width: 3.5rem;
+}
+
+.glb-chip-ops .glb-prov {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .glb-filter-note {
   display: flex;
   flex-wrap: wrap;
@@ -432,6 +450,42 @@
 }
 
 /* ---- summary ------------------------------------------------------------------ */
+
+/* Verdict findings: which groups look like propagation or a misconfiguration, and why. */
+.glb-findings {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.glb-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.glb-finding-marks {
+  display: inline-flex;
+  flex: none;
+  gap: 3px;
+}
+
+.glb-finding .glb-mark {
+  min-width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+
+.glb-finding-more {
+  align-self: center;
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 .glb-stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));

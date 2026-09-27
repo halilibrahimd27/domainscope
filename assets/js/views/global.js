@@ -5,7 +5,11 @@
  * - Results stream in (lib/propagation.checkPropagation `onResult`) into two tables that are
  *   pre-filled with "querying…" rows, so the user sees every source from the start.
  * - Identical answers are grouped; every group gets a letter (A, B, C …) and a colour, so the
- *   information never depends on colour alone. Clicking a group filters both tables.
+ *   information never depends on colour alone, and shows who operates its addresses. Clicking a
+ *   group filters both tables.
+ * - The summary says why answers differ (lib/propagation.propagationVerdict): CDN / GeoDNS edges
+ *   differ by design; NXDOMAIN, SERVFAIL, private or direct addresses among CDN edges and a CNAME
+ *   that differs before the CDN are named as propagation or a misconfiguration.
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
@@ -20,7 +24,7 @@ import {
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion } from '../i18n.js';
 import { RESOLVERS, GEO_VANTAGES } from '../lib/resolvers.js';
 import { Flag } from '../ui/flag.js';
-import { checkPropagation } from '../lib/propagation.js';
+import { checkPropagation, propagationVerdict, splitChain } from '../lib/propagation.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
@@ -79,13 +83,32 @@ registerStrings('en', {
   'glb.sum.agreeBody': { one: 'The source returned this answer.', other: 'All {count} resolvers and locations returned the same answer.' },
   'glb.sum.geoTitle': 'Resolvers agree — locations differ',
   'glb.sum.geoBody': 'The locations see {groups} different answers. That is normal for CDNs and GeoDNS: every region is sent to nearby servers.',
+  'glb.sum.designTitle': 'Differs by design: CDN / GeoDNS edges ({operators})',
+  'glb.sum.designBody': 'Every answer is an edge of a known CDN, platform or DNS steering service, and the CNAME chains agree up to it. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.designMulti': 'More than one operator answers (multi-CDN steering). If you are moving from one to the other, answers that point to the old one stay cached until their TTL expires.',
+  'glb.sum.designPart': 'The differences between {operators} edges are by design; these are not:',
   'glb.sum.differTitle': 'Answers differ',
-  'glb.sum.differBody': 'The resolvers return {groups} different answers. Typical causes: a recent change that is still propagating (old answers stay cached until their TTL expires), GeoDNS/CDN steering, or anycast resolvers answering from different PoPs.',
+  'glb.sum.differBody': 'The sources return {groups} different answers.',
   'glb.sum.failedTitle': 'No answers',
   'glb.sum.failedBody': 'Every query failed. Check your connection, or whether a browser extension or firewall blocks DNS-over-HTTPS.',
   'glb.sum.errors': { one: '{count} query failed (not counted as a difference).', other: '{count} queries failed (not counted as a difference).' },
   'glb.sum.blocked': { one: '{count} answer was blocked by a filtering resolver.', other: '{count} answers were blocked by filtering resolvers.' },
+  'glb.sum.rewritten': '{names}: an answer only filtering resolvers give — usually a deliberate rewrite (SafeSearch, a content filter), so it is not counted as a difference.',
   'glb.sum.unavailable': '{names}: not readable from a browser (HTTP/3 without a CORS header) — not counted as a failure.',
+
+  'glb.find.rcode': '{sources}: {rcode} — no answer at all, typically a DNSSEC validation failure or name servers that resolver cannot reach. A fault, not a propagation delay.',
+  'glb.find.nxdomain': '{sources}: NXDOMAIN (the name does not exist), unlike the other answers. The name was created or deleted recently — each answer stays cached until its TTL expires (for NXDOMAIN, the zone’s SOA minimum) — or its name servers disagree.',
+  'glb.find.nodata': '{sources}: an empty answer (no {type} records). A record added or removed recently (the empty answer stays cached for the zone’s SOA minimum), or a CNAME target without {type} records there.',
+  'glb.find.private': '{sources}: private addresses ({ips}) — an internal (split-horizon) answer or a mistake in the record; nobody on the internet can reach them.',
+  'glb.find.mixed': {
+    one: 'Group {groups} has a direct address ({ips}) that is not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.',
+    other: 'Groups {groups} have direct addresses ({ips}) that are not on {operators}. If the name moved onto or off the CDN recently, one side is an old answer that stays cached until its TTL expires; otherwise these sources are steered around the CDN.'
+  },
+  'glb.find.cname': 'The record at {owner} differs between sources: {targets}. It changed recently and the old answer stays cached until its TTL expires, or its name servers disagree.',
+  'glb.find.addressRecords': '{type} records',
+  'glb.find.direct': 'Different addresses, none on a CDN, platform or steering service this tool knows: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or GeoDNS / round-robin by an operator it does not recognise.',
+  'glb.find.records': 'Different records: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or name servers that disagree.',
+  'glb.find.more': '+{count} more',
 
   'glb.stat.answered': 'Answered',
   'glb.stat.failed': '{count} failed',
@@ -187,13 +210,32 @@ registerStrings('tr', {
   'glb.sum.agreeBody': { one: 'Kaynak bu yanıtı döndürdü.', other: '{count} çözümleyici ve konumun hepsi aynı yanıtı döndürdü.' },
   'glb.sum.geoTitle': 'Çözümleyiciler aynı — konumlar farklı',
   'glb.sum.geoBody': 'Konumlar {groups} farklı yanıt görüyor. CDN ve GeoDNS için bu normaldir: her bölge yakınındaki sunuculara yönlendirilir.',
+  'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
+  'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu işletenler her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designMulti': 'Birden fazla işleten yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
+  'glb.sum.designPart': '{operators} uç sunucuları arasındaki farklar tasarım gereği; şunlar öyle değil:',
   'glb.sum.differTitle': 'Yanıtlar farklı',
-  'glb.sum.differBody': 'Çözümleyiciler {groups} farklı yanıt döndürüyor. Olası nedenler: henüz yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır), GeoDNS/CDN yönlendirmesi ya da farklı PoP’lardan yanıt veren anycast çözümleyiciler.',
+  'glb.sum.differBody': 'Kaynaklar {groups} farklı yanıt döndürüyor.',
   'glb.sum.failedTitle': 'Yanıt alınamadı',
   'glb.sum.failedBody': 'Tüm sorgular başarısız oldu. Bağlantınızı ya da bir tarayıcı eklentisinin veya güvenlik duvarının DNS-over-HTTPS’i engelleyip engellemediğini kontrol edin.',
   'glb.sum.errors': '{count} sorgu başarısız oldu (farklılık sayılmadı).',
   'glb.sum.blocked': '{count} yanıt filtreleyen çözümleyiciler tarafından engellendi.',
+  'glb.sum.rewritten': '{names}: yalnızca filtreleyen çözümleyicilerin verdiği bir yanıt — genellikle bilinçli bir yeniden yazma (SafeSearch, içerik filtresi), bu yüzden farklılık sayılmadı.',
   'glb.sum.unavailable': '{names}: tarayıcıdan okunamıyor (HTTP/3’te CORS başlığı yok) — başarısız sayılmadı.',
+
+  'glb.find.rcode': '{sources}: {rcode} — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da o çözümleyicinin ulaşamadığı ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
+  'glb.find.nxdomain': '{sources}: NXDOMAIN (ad mevcut değil), diğer yanıtlardan farklı olarak. Ad yakın zamanda oluşturuldu ya da silindi — her yanıt TTL süresi dolana kadar önbellekte kalır (NXDOMAIN için bölgenin SOA minimum değeri) — ya da ad sunucuları birbiriyle çelişiyor.',
+  'glb.find.nodata': '{sources}: boş yanıt ({type} kaydı yok). Yakın zamanda eklenen ya da silinen bir kayıt (boş yanıt, bölgenin SOA minimum süresi boyunca önbellekte kalır) ya da orada {type} kaydı olmayan bir CNAME hedefi.',
+  'glb.find.private': '{sources}: özel adresler ({ips}) — iç ağa ait bir yanıt (split-horizon) ya da kayıtta bir hata; internetten kimse bu adreslere ulaşamaz.',
+  'glb.find.mixed': {
+    one: '{groups} grubunda {operators} üzerinde olmayan doğrudan bir adres var ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.',
+    other: '{groups} gruplarında {operators} üzerinde olmayan doğrudan adresler var ({ips}). Ad yakın zamanda CDN’e taşındıysa ya da CDN’den çıkarıldıysa taraflardan biri, TTL süresi dolana kadar önbellekte kalan eski yanıttır; değilse bu kaynaklar CDN’i atlayacak şekilde yönlendiriliyor.'
+  },
+  'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor ya da ad sunucuları birbiriyle çelişiyor.',
+  'glb.find.addressRecords': '{type} kayıtları',
+  'glb.find.direct': 'Farklı adresler; hiçbiri bu aracın tanıdığı bir CDN’de, platformda ya da yönlendirme hizmetinde değil: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da tanımadığı bir işletenin GeoDNS / round-robin dağıtımı.',
+  'glb.find.records': 'Farklı kayıtlar: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da birbiriyle çelişen ad sunucuları.',
+  'glb.find.more': '+{count} tane daha',
 
   'glb.stat.answered': 'Yanıtlanan',
   'glb.stat.failed': '{count} başarısız',
@@ -349,20 +391,8 @@ export function groupAnswers(rows) {
   });
 }
 
-/**
- * Split answer values into record values and the CNAME chain ('CNAME <target>' entries).
- * @param {string[]} values
- * @returns {{ plain: string[], chain: string[] }}
- */
-export function splitChain(values) {
-  const plain = [];
-  const chain = [];
-  for (const v of Array.isArray(values) ? values : []) {
-    if (typeof v === 'string' && v.startsWith('CNAME ')) chain.push(v.slice(6));
-    else plain.push(v);
-  }
-  return { plain, chain };
-}
+/** Split answer values into record values and the CNAME chain (lib/propagation.js). */
+export { splitChain };
 
 /**
  * Median of finite numbers (null for an empty list).
@@ -505,6 +535,9 @@ export function mount(container, ctx) {
   let filterKey = null;
   let groups = [];
   let groupByKey = new Map();
+  /** propagationVerdict of the finished rows, and its groups (operators) by answer key. */
+  let verdict = null;
+  let verdictByKey = new Map();
 
   const groupClass = (g) => {
     if (!g) return null;
@@ -524,6 +557,16 @@ export function mount(container, ctx) {
       withLabel ? h('span', { class: 'glb-mark-label' }, label) : h('span', { class: 'sr-only' }, label));
   };
   const rowGroup = (row) => (row.pending || isBrowserBlocked(row) ? null : groupByKey.get(row.values.join('\n')) || null);
+  const operatorName = (op) => op.name || t(`kind.${op.kind}`);
+  /** Who operates an answer group's addresses ("Amazon CloudFront", "Direct" …), at most two labels. */
+  function operatorLabels(ops) {
+    const shown = ops.slice(0, 2).map((op) => h('span', {
+      class: ['glb-prov', `glb-prov-${op.kind}`],
+      title: t(op.reasonKey, { provider: op.name || t('common.unknown') })
+    }, operatorName(op)));
+    if (ops.length > 2) shown.push(h('span', { class: 'glb-prov', title: ops.slice(2).map(operatorName).join(', ') }, `+${ops.length - 2}`));
+    return h('span', { class: 'glb-chip-ops' }, shown);
+  }
 
   /** One compact line for the CNAME chain: "alias → a.example.net → b.cdn.net". */
   function chainLine(chain) {
@@ -729,17 +772,11 @@ export function mount(container, ctx) {
     ]
   });
 
-  /** Unique operator classifications of a row's answer IPs (Cloudflare, CDN · X, Direct …). */
+  /** Operators of a row's answer IPs (Cloudflare, CDN · X, Direct …): those of its verdict group. */
   function operatorsOf(row) {
-    if (row.pending || !row.addresses || !row.addresses.length || row.filtered) return [];
-    const seen = new Map();
-    const { chain } = splitChain(row.values);
-    for (const ip of row.addresses) {
-      const c = classifyIp(ip, chain);
-      const k = `${c.kind}|${c.provider ? c.provider.id : ''}`;
-      if (!seen.has(k)) seen.set(k, c);
-    }
-    return [...seen.values()];
+    if (row.pending || row.filtered || !Array.isArray(row.values)) return [];
+    const g = verdictByKey.get(row.values.join('\n'));
+    return g ? g.operators : [];
   }
 
   /* --- IP table ----------------------------------------------------------------- */
@@ -919,8 +956,11 @@ export function mount(container, ctx) {
   /** Recompute groups and refresh every derived piece of UI (cheap: ≤ 43 rows). */
   function renderAll() {
     if (!current) return;
-    groups = groupAnswers(current.rows.filter((r) => !isBrowserBlocked(r)));
+    const readable = current.rows.filter((r) => !isBrowserBlocked(r));
+    groups = groupAnswers(readable);
     groupByKey = new Map(groups.map((g) => [g.key, g]));
+    verdict = propagationVerdict(readable, { type: current.type });
+    verdictByKey = new Map(verdict.groups.map((g) => [g.key, g]));
     if (filterKey && !groupByKey.has(filterKey)) setFilter(null);
     resolverTable.refresh();
     geoTable.refresh();
@@ -939,6 +979,7 @@ export function mount(container, ctx) {
       return;
     }
     for (const g of groups) {
+      const ops = g.filtered ? [] : verdictByKey.get(g.key)?.operators || [];
       const { plain, chain } = splitChain(g.values);
       const values = g.error ? [t('glb.value.failed')] : (plain.length ? plain : chain.map((c) => `→ ${c}`));
       const shown = values.slice(0, 3).join(', ') + (values.length > 3 ? ` +${values.length - 3}` : '') + (plain.length && chain.length ? ' ↪' : '');
@@ -952,6 +993,7 @@ export function mount(container, ctx) {
       },
       groupMark(g, { withLabel: !g.letter }),
       g.error ? null : h('span', { class: 'glb-chip-values mono' }, g.values.length === 1 && g.values[0] === 'NODATA' ? t('glb.value.nodata') : shown),
+      ops.length ? operatorLabels(ops) : null,
       h('span', { class: 'glb-chip-count' }, t('glb.group.members', { count: g.members.length }))));
     }
   }
@@ -992,7 +1034,10 @@ export function mount(container, ctx) {
       variant: failed && failed + unavailable === finished.length && current.done ? 'error' : 'accent'
     });
     const answerGroups = groups.filter((g) => g.letter).length;
-    stats.groups.set({ value: answerGroups, variant: answerGroups > 1 ? 'warn' : answerGroups === 1 ? 'ok' : 'default' });
+    // Several answers are a warning only when they are not explained (by design, GeoDNS, or a
+    // filtering resolver's own answer next to answers that agree).
+    const explained = verdict && ['agree', 'by-design', 'geo'].includes(verdict.state);
+    stats.groups.set({ value: answerGroups, variant: answerGroups > 1 ? (explained ? 'info' : 'warn') : answerGroups === 1 ? 'ok' : 'default' });
     const ipRows = [...current.ips.values()];
     const mine = ipRows.filter((r) => r.servers.length).length;
     const kinds = new Map();
@@ -1018,35 +1063,103 @@ export function mount(container, ctx) {
     const blocked = finished.filter((r) => r.filtered).length;
     const usable = finished.filter((r) => !r.filtered && !isErrorValues(r.values));
     const distinct = (list) => new Set(list.map((r) => r.values.join('\n'))).size;
-    const resolverGroups = distinct(usable.filter((r) => r.kind === 'resolver'));
-    const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
-    const allGroups = distinct(usable);
     const extra = [
       failed ? t('glb.sum.errors', { count: failed }) : null,
       blocked ? t('glb.sum.blocked', { count: blocked }) : null,
+      verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten) }) : null,
       unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
       current.cancelled ? t('glb.cancelled') : null
     ].filter(Boolean).join(' ');
+    const state = !current.done && !current.cancelled ? 'running'
+      : !usable.length ? (current.cancelled ? 'stopped' : 'failed')
+        : verdict.state;
+    const operators = shortList(verdict.operators.map((op) => op.name));
     let alert;
-    if (!current.done && !current.cancelled) {
+    if (state === 'running') {
       alert = Alert({ variant: 'info', icon: 'activity', compact: true, title: t('glb.sum.running'), message: null });
-    } else if (!usable.length && current.cancelled) {
+    } else if (state === 'stopped') {
       alert = Alert({ variant: 'info', icon: 'stop', compact: true, title: t('glb.sum.stoppedTitle'), message: extra || null });
-    } else if (!usable.length) {
+    } else if (state === 'failed') {
       alert = failed
         ? Alert({ variant: 'error', title: t('glb.sum.failedTitle'), message: [t('glb.sum.failedBody'), extra].filter(Boolean).join(' ') })
         : Alert({ variant: 'warn', title: t('glb.sum.differTitle'), message: extra || null });
-    } else if (allGroups === 1) {
-      alert = Alert({ variant: 'ok', title: t('glb.sum.agreeTitle'), message: [t('glb.sum.agreeBody', { count: usable.length }), extra].filter(Boolean).join(' ') });
-    } else if (resolverGroups <= 1) {
+    } else if (state === 'agree') {
+      const agreeing = usable.length - verdict.rewritten.length;
+      alert = Alert({ variant: 'ok', title: t('glb.sum.agreeTitle'), message: [t('glb.sum.agreeBody', { count: agreeing }), extra].filter(Boolean).join(' ') });
+    } else if (state === 'by-design') {
+      alert = Alert({
+        variant: 'info',
+        icon: 'globe',
+        title: t('glb.sum.designTitle', { operators }),
+        message: [t('glb.sum.designBody'), verdict.multiOperator ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
+      });
+    } else if (state === 'geo') {
+      const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
       alert = Alert({ variant: 'info', icon: 'map-pin', title: t('glb.sum.geoTitle'), message: [t('glb.sum.geoBody', { groups: formatNumber(geoGroups) }), extra].filter(Boolean).join(' ') });
     } else {
-      alert = Alert({ variant: 'warn', title: t('glb.sum.differTitle'), message: [t('glb.sum.differBody', { groups: formatNumber(resolverGroups) }), extra].filter(Boolean).join(' ') });
+      alert = Alert({
+        variant: 'warn',
+        title: t('glb.sum.differTitle'),
+        message: [
+          t('glb.sum.differBody', { groups: formatNumber(verdict.groups.filter((g) => !g.rewritten).length) }),
+          verdict.designPart ? t('glb.sum.designPart', { operators }) : null
+        ].filter(Boolean).join(' '),
+        children: [
+          verdict.findings.length ? h('ul', { class: 'glb-findings' }, verdict.findings.map(renderFinding)) : null,
+          extra ? h('div', { class: 'alert-message' }, extra) : null
+        ]
+      });
     }
-    alert.dataset.state = !current.done && !current.cancelled ? 'running'
-      : !usable.length ? (current.cancelled ? 'stopped' : 'failed')
-        : allGroups === 1 ? 'agree' : resolverGroups <= 1 ? 'geo' : 'differ';
+    alert.dataset.state = state;
     summaryEl.append(alert);
+  }
+
+  /** "a, b, c +2 more" — the first `max` entries of a list. */
+  function shortList(list, max = 3) {
+    return list.length > max ? `${list.slice(0, max).join(', ')} ${t('glb.find.more', { count: list.length - max })}` : list.join(', ');
+  }
+
+  /** Display names of answer sources (resolver names, location names), de-duplicated. */
+  function sourceNames(keys) {
+    const names = keys.map((key) => {
+      const row = current.rowByKey.get(key);
+      if (!row) return key;
+      return row.kind === 'geo' ? vantageName(row.vantage) : row.resolver.name;
+    });
+    return shortList([...new Set(names)]);
+  }
+
+  /** One verdict finding: the groups it is about (letter marks) and what it most likely means. */
+  function renderFinding(f) {
+    const letters = f.groups.map((key) => groupByKey.get(key)?.letter).filter(Boolean);
+    let text;
+    switch (f.code) {
+      case 'rcode': text = t('glb.find.rcode', { sources: sourceNames(f.members), rcode: f.rcode }); break;
+      case 'nxdomain': text = t('glb.find.nxdomain', { sources: sourceNames(f.members) }); break;
+      case 'nodata': text = t('glb.find.nodata', { sources: sourceNames(f.members), type: current.type }); break;
+      case 'private': text = t('glb.find.private', { sources: sourceNames(f.members), ips: shortList(f.ips) }); break;
+      case 'mixed':
+        text = t('glb.find.mixed', {
+          count: letters.length, groups: letters.join(', '), ips: shortList(f.ips), operators: shortList(verdict.operators.map((op) => op.name))
+        });
+        break;
+      case 'cname':
+        text = t('glb.find.cname', {
+          owner: f.owner || current.name,
+          targets: f.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)).join(' · ')
+        });
+        break;
+      default: text = t(`glb.find.${f.code}`);
+    }
+    // Marks in legend order; none when the finding is about every answer group ('direct',
+    // 'records', a CNAME that differs everywhere), where they would only repeat the legend.
+    const keys = groups.filter((g) => f.groups.includes(g.key)).map((g) => g.key);
+    const everyGroup = f.code === 'direct' || f.code === 'records' || keys.length === groups.filter((g) => g.letter).length;
+    const marks = everyGroup ? [] : keys.slice(0, 4).map((key) => groupMark(groupByKey.get(key)));
+    if (!everyGroup && keys.length > 4) marks.push(h('span', { class: 'glb-finding-more' }, `+${keys.length - 4}`));
+    return h('li', { class: 'glb-finding', dataset: { finding: f.code } },
+      marks.length ? h('span', { class: 'glb-finding-marks' }, marks) : null,
+      h('span', null, text));
   }
 
   function renderLinks(name, type) {

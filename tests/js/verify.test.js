@@ -184,6 +184,18 @@ describe('servedCert', () => {
     assert.deepEqual(V.servedCert(synthTls({ subject: { CN: 'www.example.com', alt: 'DNS:münchen.example-test.com' } })).hostnames,
       ['xn--mnchen-3ya.example-test.com']);
   });
+
+  test('a non-ASCII name with "@", ":" or a path is never cut down to the name after it (x509 parity)', () => {
+    // Node JSON-quotes and \u-escapes a non-ASCII SAN; the UTF-8 bytes arrive as Latin-1 characters.
+    const alt = 'DNS:"\\u00c3\\u00a4@victim.example"';
+    const served = V.servedCert(synthTls({ subject: { CN: 'ä@victim.example', alt } }));
+    assert.deepEqual(served.hostnames, ['Ã¤@victim.example'.toLowerCase()]);
+    const noSan = V.servedCert(synthTls({ subject: { CN: 'ä:1@victim.example', alt: undefined } }));
+    assert.deepEqual(noSan.hostnames, [], 'never a CN fallback');
+    const test = withTls(synthTls({ subject: { CN: 'www.example.com', alt } }));
+    const v = V.classifyTest(test, { name: 'victim.example', expect: OTHER, now: NOW });
+    assert.deepEqual([v.status, v.reason], ['NOT_HOSTED', 'not-covered']);
+  });
 });
 
 describe('trimTest', () => {

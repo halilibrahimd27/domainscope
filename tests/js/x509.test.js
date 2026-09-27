@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { certCovers } from '../../assets/js/lib/domain.js';
 import {
   CertificateParseError,
   computeFingerprints,
@@ -827,6 +828,14 @@ describe('extensions', () => {
     assert.deepEqual(fallback('_dmarc.example.org'), ['_dmarc.example.org']);
     for (const notHost of ['localhost', '10.0.0.1', 'Example Corp', 'a..b.com', '-bad.example.com', '*', '*.com', `${'a'.repeat(64)}.com`]) {
       assert.deepEqual(fallback(notHost), [], notHost);
+    }
+    // A non-ASCII name is converted only when it is made of label characters: the URL parser would read
+    // '@', ':', '/', '\', '?' or '#' as a user name, port or path and keep only part of it.
+    for (const name of ['ä@victim.example', 'ä:1@victim.example', 'victim.example/ä', 'victim.example\\ä', 'victim.example?ä', 'victim.example#ä']) {
+      const hostnames = withExt(san(dns(name))).hostnames;
+      assert.ok(!hostnames.includes('victim.example'), `${name} → ${hostnames}`);
+      assert.equal(certCovers(hostnames, 'victim.example').covered, false, name);
+      assert.deepEqual(fallback(name), [], `CN ${name}`);
     }
     // SAN with only IP addresses → CN fallback still applies (no dnsNames)
     const ipOnly = parseCertificate(makeCert({ subject: cn('ip-only.example.com'), extensions: [san(ctx(7, false, Buffer.from([1, 2, 3, 4])))] }));

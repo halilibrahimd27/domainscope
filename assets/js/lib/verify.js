@@ -163,10 +163,16 @@ const nowMs = (now) => (now instanceof Date ? now.getTime() : Number(now));
 const isDnsLike = (via) => via !== 'hint';
 const serverKeyOf = (row) => (row.server ? `s:${row.server.id}` : `ip:${row.ip}`);
 
-/** Lowercase, strip trailing dots, IDN → punycode (x509's private normalizeCertHostname). */
+const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
+
+/**
+ * Lowercase, strip trailing dots, IDN → punycode (x509's private normalizeCertHostname): only a
+ * name whose ASCII part is label characters, so the URL parser never drops a user name, port or
+ * path ('ä@victim.example' stays as it is, never 'victim.example').
+ */
 function normalizeCertHostname(name) {
   let h = String(name).trim().toLowerCase().replace(/\.+$/, '');
-  if (/[^\x00-\x7f]/.test(h)) {
+  if (/[^\x00-\x7f]/.test(h) && IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) {
     const wildcard = h.startsWith('*.');
     try {
       const host = new URL(`http://${wildcard ? h.slice(2) : h}/`).hostname;

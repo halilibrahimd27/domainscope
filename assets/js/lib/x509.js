@@ -813,10 +813,18 @@ function parseGeneralNames(node) {
   return childrenOf(node).map(parseGeneralName);
 }
 
-/** Lowercase, strip trailing dot(s), IDN → punycode (via WHATWG URL, available everywhere). */
+/** ASCII characters a name may hold for the IDN conversion: letters, digits, '-', '_', '.' and a leading '*.'. */
+const IDN_ASCII_RE = /^(?:\*\.)?[a-z0-9._-]*$/;
+
+/**
+ * Lowercase, strip trailing dot(s), IDN → punycode (via WHATWG URL, available everywhere). Only
+ * a name whose ASCII part is label characters is converted: the URL parser would read '@', ':',
+ * '/', '\', '?' or '#' as a user name, port or path and keep only part of the name
+ * ('ä@victim.example' → 'victim.example'); such a name stays as it is and never covers anything.
+ */
 function normalizeCertHostname(name) {
   let h = String(name).trim().toLowerCase().replace(/\.+$/, '');
-  if (/[^\x00-\x7f]/.test(h)) {
+  if (/[^\x00-\x7f]/.test(h) && IDN_ASCII_RE.test(h.replace(/[^\x00-\x7f]/g, ''))) {
     const wildcard = h.startsWith('*.');
     try {
       const host = new URL(`http://${wildcard ? h.slice(2) : h}/`).hostname;

@@ -1578,19 +1578,33 @@ async function main() {
           await assertClean(tab, 'offline certificate scan', origin);
         });
 
-        await run.step('a passive source that fails (crt.sh, stopped in the page): Copy summary says the host list may be incomplete, right under the host count', async () => {
+        await run.step('a passive source that fails (crt.sh answers 400 in the page): Copy summary says the host list may be incomplete, right under the host count', async () => {
           await setOptions(tab, { sources: ['crtsh'], bruteforce: 'small' });
+          // A 400 is no transient failure: crt.sh fails at once. (A network error would first go
+          // through its whole backoff, 45–75 s, before the scan could finish.)
+          await tab.evaluate(() => {
+            window.__crtshAsked = 0;
+            const inner = window.fetch;
+            window.fetch = (input, init) => {
+              const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+              if (/^https:\/\/crt\.sh\//.test(url)) {
+                window.__crtshAsked += 1;
+                return Promise.resolve(new Response('bad request', { status: 400 }));
+              }
+              return inner(input, init);
+            };
+          });
           const before = await runStatus(tab);
           await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
           await tab.waitFor((prev) => {
             const ui = document.querySelector('.scan-run-ui');
             return ui && ui.dataset.run !== prev && ui.querySelector('.scan-run').dataset.status === 'done';
-          }, { args: [before.id], timeout: 60000, message: 'offline scan with crt.sh done' });
+          }, { args: [before.id], timeout: 30000, message: 'offline scan with crt.sh done' });
           const shown = await tab.evaluate(() => ({
             warning: document.querySelector('.scan-summary [data-summary="sources-failed"]')?.textContent || '',
-            blocked: window.__zoneBlocked.filter((u) => /crt\.sh/.test(u)).length
+            asked: window.__crtshAsked
           }));
-          assert(shown.blocked > 0 && /1 source failed/.test(shown.warning), `the results warn about crt.sh: ${JSON.stringify(shown)}`);
+          assert(shown.asked > 0 && /1 source failed/.test(shown.warning), `the results warn about crt.sh: ${JSON.stringify(shown)}`);
           await stubClipboard(tab);
           await tab.click('[data-summary="scan"] [data-action="copy-summary"]');
           await tab.waitFor(() => window.__clip.length === 1, { message: 'copied' });

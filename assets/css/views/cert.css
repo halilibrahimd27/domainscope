@@ -30,6 +30,58 @@
   font-size: 13.5px;
 }
 
+/* "No file?": a host name's certificate from CT, or the sample */
+.cert-alt {
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.cert-alt > .field-label {
+  margin: 0;
+}
+
+.cert-alt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.cert-alt-row .cert-alt-field {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.cert-alt-row .btn {
+  flex: none;
+}
+
+.cert-alt-hint,
+.cert-alt-why {
+  margin: 0;
+}
+
+.cert-alt-status:empty {
+  display: none;
+}
+
+.cert-alt-status .alert-actions {
+  align-items: center;
+}
+
+.cert-alt-sample {
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.cert-alt-sample .btn {
+  margin-left: -8px;
+}
+
+.cert-source-note .alert-message {
+  overflow-wrap: anywhere;
+}
+
 .cert-summary {
   display: flex;
   flex-direction: column;

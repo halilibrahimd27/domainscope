@@ -1,16 +1,21 @@
 /**
  * views/cert.js pure helpers: the copy-ready `openssl s_client` command must never carry a
- * certificate name that is not a plain host name (a hostile SAN would run in the user's shell).
+ * certificate name that is not a plain host name (a hostile SAN would run in the user's shell);
+ * the bundled "Try a sample" certificate and the CertLoad of a Certificate Transparency lookup.
  * Pure Node (the view is DOM-free at import time). Names are documentation data only.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { sClientHost, sClientCommand } from '../../assets/js/views/cert.js';
+import {
+  sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain
+} from '../../assets/js/views/cert.js';
 import { parseCertificate, parseCertificates } from '../../assets/js/lib/x509.js';
+import { baseDomainsFromNames } from '../../assets/js/lib/domain.js';
+import { caaIssuerInfo } from '../../assets/js/lib/health.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 
@@ -111,5 +116,68 @@ describe('cert view: the openssl s_client command', () => {
       assert.match(sClientCommand(cert.hostnames), SAFE, JSON.stringify(cert.hostnames));
       assert.equal(sClientHost(cert.hostnames), 'example.com', JSON.stringify(cert.hostnames));
     }
+  });
+});
+
+describe('cert view: the bundled sample certificate', () => {
+  const SAMPLE = join(FIX, '..', '..', 'assets', 'data', 'sample-cert.pem');
+  const text = readFileSync(SAMPLE, 'utf8');
+
+  test('lives in assets/data (so the Pages bundle ships it) and is addressed relative to the module', () => {
+    assert.equal(new URL(SAMPLE_CERT_URL).href, pathToFileURL(SAMPLE).href);
+    assert.ok(!/PRIVATE KEY/.test(text), 'no key in the file');
+  });
+
+  test('a leaf for example.com / example.net and its intermediate, from a made-up CA, valid for years', () => {
+    const r = parseCertificates(text, { now: new Date('2026-09-27T00:00:00Z') });
+    assert.equal(r.certificates.length, 2);
+    assert.deepEqual(r.warnings, []);
+    const leaf = r.leaf;
+    assert.deepEqual(leaf.hostnames, ['example.com', '*.example.com', 'example.net', 'www.example.net']);
+    assert.deepEqual(baseDomainsFromNames(leaf.hostnames), ['example.com', 'example.net'], 'SSL Targets fills in only reserved domains');
+    assert.deepEqual(leaf.ipAddresses, []);
+    assert.equal(leaf.isCA, false);
+    assert.equal(leaf.isPrecertificate, false);
+    assert.deepEqual(leaf.extKeyUsage, ['serverAuth']);
+    assert.equal(leaf.issuer.O, 'DomainScope Sample');
+    assert.ok(leaf.notAfter >= new Date('2035-12-31T00:00:00Z'), 'does not expire on screen any time soon');
+    assert.deepEqual(caaIssuerInfo(leaf.issuer), [], 'not a public CA: the CT tab never searches crt.sh for it by itself');
+    const chain = analyzeChain(r.certificates, leaf);
+    assert.deepEqual(chain.ordered.map((c) => c.subjectCN), ['example.com', 'DomainScope Sample Intermediate CA']);
+    assert.deepEqual(chain.issues.map((i) => i.code), ['ends-at'], 'leaf + intermediate, the root left to trust stores');
+  });
+
+  test('loadSampleCert: a CertLoad with source "sample"', async () => {
+    const urls = [];
+    const fetchImpl = async (url) => {
+      urls.push(String(url));
+      return new Response(readFileSync(new URL(String(url))), { status: 200 });
+    };
+    const load = await loadSampleCert({ fetchImpl });
+    assert.deepEqual(urls, [SAMPLE_CERT_URL]);
+    assert.equal(load.source, 'sample');
+    assert.equal(load.name, 'sample-cert.pem');
+    assert.equal(load.result.leaf.subjectCN, 'example.com');
+    await assert.rejects(loadSampleCert({ fetchImpl: async () => new Response('gone', { status: 404 }) }), { name: 'HttpError' });
+  });
+});
+
+describe('cert view: a certificate from Certificate Transparency', () => {
+  test('ctCertLoad: source "ct", named after the host, provenance kept', () => {
+    const der = parseCertificates(readFileSync(join(FIX, 'ec_wildcard.pem'))).leaf.der;
+    const issuance = { id: '17000000001', notBefore: new Date('2025-01-01T00:00:00Z'), notAfter: new Date('2051-01-01T00:00:00Z'), dnsNames: ['*.wild.example.net'], sha256: null, url: null };
+    const load = ctCertLoad({ host: 'shop.wild.example.net', provider: 'certspotter', der, issuance, precertificate: false, newerPrecertificate: null, truncated: true });
+    assert.equal(load.source, 'ct');
+    assert.equal(load.name, 'shop.wild.example.net');
+    assert.equal(load.result.leaf.subjectCN, '*.wild.example.net');
+    assert.deepEqual(load.ct, { host: 'shop.wild.example.net', provider: 'certspotter', issuance, precertificate: false, newerPrecertificate: null, truncated: true });
+  });
+
+  test('dnDisplayName: "O (CN)" of a crt.sh issuer', () => {
+    assert.equal(dnDisplayName('C=US, O=Example Trust, CN=Example CA R1'), 'Example Trust (Example CA R1)');
+    assert.equal(dnDisplayName('C=US, O="Example, Inc.", CN=R1'), 'Example, Inc. (R1)');
+    assert.equal(dnDisplayName('CN=Only CN'), 'Only CN');
+    assert.equal(dnDisplayName('O=Same, CN=Same'), 'Same');
+    assert.equal(dnDisplayName(''), '—');
   });
 });

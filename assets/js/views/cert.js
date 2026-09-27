@@ -11,15 +11,18 @@
  * Targets view (state.session.pendingCert).
  *
  * The module also exports the certificate-loading helpers used by views/scan.js
- * (CertLoader, CertSummary, certWarningAlerts, …) so both views behave identically.
+ * (CertLoader, CertAlternatives, CertSummary, certWarningAlerts, …) so both views behave
+ * identically. Without a file, CertAlternatives loads the public certificate of a host name
+ * from Certificate Transparency (lib/ctcert.js; only the name is sent) or the bundled sample
+ * (assets/data/sample-cert.pem); CertSourceNote says where such a certificate came from.
  * The loaded certificate is shared between the two views for the session through
  * `state.session.currentCert` (a {@link CertLoad}); it is never persisted or uploaded.
  */
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
-  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, select, textInput, textarea, toast
+  Alert, Badge, Button, ButtonLink, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
+  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, select, setButtonBusy, textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText, sanitizeFilename } from '../ui/download.js';
 import {
@@ -31,7 +34,8 @@ import {
 } from '../lib/domain.js';
 import { findCaa, checkCaaAllows, caaIssuerInfo, caaRestrictionNotes, caaRestrictionText, HEALTH_I18N } from '../lib/health.js';
 import { validateNames } from '../lib/cmdline.js';
-import { fetchJson, retry, errorKind } from '../lib/util.js';
+import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
+import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
 import { DanePanel } from '../ui/dane-panel.js';
 
@@ -54,6 +58,13 @@ export const CERT_MAX_BYTES = 5 * 1024 * 1024;
 export const EXPIRING_DAYS = 30;
 /** At most this many names are checked for CAA. */
 export const CAA_MAX_NAMES = 60;
+
+/**
+ * The bundled "Try a sample" certificate (example.com / example.net, made-up CA; crafted by
+ * tests/fixtures/gen_x509_fixtures.mjs). Relative to this module, so it moves with assets/ under
+ * v/<commit>/ in the Pages bundle.
+ */
+export const SAMPLE_CERT_URL = new URL('../../data/sample-cert.pem', import.meta.url).href;
 
 const DAY_MS = 86400000;
 const CRTSH_SERIAL_URL = 'https://crt.sh/?serial=';
@@ -82,6 +93,39 @@ registerStrings('en', {
   'cert.emptyTitle': 'No certificate loaded',
   'cert.emptyBody': 'Load the certificate to see its names, validity, key, chain order, CAA status and Certificate Transparency entries — and to find the servers it must be installed on.',
 
+  'cert.alt.title': 'No file? Load the public certificate of a host name',
+  'cert.alt.placeholder': 'www.example.com',
+  'cert.alt.load': 'Load',
+  'cert.alt.hint': 'Reads the newest valid certificate for this name from the public Certificate Transparency logs (Cert Spotter, or crt.sh when Cert Spotter cannot answer). Only the host name is sent.',
+  'cert.alt.invalid': 'Enter a host name such as www.example.com (a *.example.com wildcard works too).',
+  'cert.alt.searching': 'Searching the Certificate Transparency logs for {host}…',
+  'cert.alt.notFound': 'No currently valid certificate for {host} is logged in Certificate Transparency. Internal names and private CAs are never logged, and a certificate issued in the last few hours may not be listed yet.',
+  'cert.alt.revokedSkipped': { one: '{count} revoked certificate was skipped.', other: '{count} revoked certificates were skipped.' },
+  'cert.alt.failed': 'Certificate Transparency could not be searched',
+  'cert.alt.spotterQuota': 'Cert Spotter’s hourly limit for your IP address is used up, so crt.sh was searched instead.',
+  'cert.alt.spotterFailed': 'Cert Spotter did not answer, so crt.sh was searched instead.',
+  'cert.alt.spotterUnreadable': 'Cert Spotter’s copy of the certificate could not be read, so crt.sh was searched instead.',
+  'cert.alt.spotterPartial': 'Cert Spotter answered only in part, so crt.sh was searched too.',
+  'cert.alt.crtshPartial': 'crt.sh did not answer every search, so a certificate may be missing here.',
+  'cert.alt.manualTitle': 'Found on crt.sh — download it and drop the file above',
+  'cert.alt.manualCert': 'Newest valid certificate for {host}: {names}, issued by {issuer}, valid until {date}.',
+  'cert.alt.manualWhy': 'crt.sh does not let web pages download certificates, so save the file yourself. crt.sh lists each certificate twice — as the precertificate and as the certificate servers send — and does not say which is which: if the file you drop is marked “Precertificate”, use the other link.',
+  'cert.alt.download': 'Download #{id}',
+  'cert.alt.openCrtsh': 'Open on crt.sh',
+  'cert.alt.sample': 'Try a sample',
+  'cert.alt.sampleHint': 'a made-up certificate for example.com and example.net',
+  'cert.alt.sampleFailed': 'The sample certificate could not be loaded.',
+
+  'cert.src.ctBadge': 'From Certificate Transparency',
+  'cert.src.sampleBadge': 'Sample',
+  'cert.src.ct': 'Loaded from Certificate Transparency — the server may serve a different one.',
+  'cert.src.ctWhat': 'The newest valid certificate logged for {host} (issued {date}). A log shows what a CA issued, not what is installed.',
+  'cert.src.ctNewerPrecert': 'A newer certificate for this name (issued {date}) is logged only as a precertificate so far.',
+  'cert.src.ctTruncated': 'Cert Spotter lists more certificates for this name than were read; a newer one may exist.',
+  'cert.src.ctOpen': 'Open on crt.sh',
+  'cert.src.verify': 'Verify in SSL Targets',
+  'cert.src.sample': 'Sample certificate for trying DomainScope: example.com and example.net, issued by a made-up “DomainScope Sample” CA. No server uses it.',
+
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'The file also contains a private key',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'It was ignored — never displayed, stored or uploaded. Only the certificate is needed here. Keep key files private and avoid sending them by e-mail.',
   'cert.warn.PKCS12_UNSUPPORTED.title': 'PKCS#12 (.pfx / .p12) files are password-protected',
@@ -98,6 +142,7 @@ registerStrings('en', {
   'cert.warn.NOT_YET_VALID.body': 'It becomes valid on {date}. Installed earlier, it causes errors until then.',
   'cert.warn.foundOnly': 'Found instead: {what}',
   'cert.warn.noSan': 'This certificate has no DNS names in its Subject Alternative Name extension. Browsers ignore the common name ({cn}) and reject the certificate for every hostname.',
+  'cert.warn.PRECERT': 'This is a precertificate: the CA logs it in Certificate Transparency before it issues the certificate. Servers send the final certificate — same names, dates and key, but another fingerprint — so load that one to check servers.',
 
   'cert.validity.expired': { one: 'Expired {count} day ago', other: 'Expired {count} days ago' },
   'cert.validity.expiredToday': 'Expired today',
@@ -242,6 +287,7 @@ registerStrings('en', {
   'cert.chain.intro': 'Servers must send the server certificate first, then each intermediate. The root is already in the clients’ trust stores.',
   'cert.chain.ok': 'The chain is complete and in the right order.',
   'cert.chain.leafOnly': 'Only the server certificate is in the file. Servers must also send the intermediate certificate — install the full chain (fullchain.pem / CA bundle), otherwise Android, curl, Java and many API clients fail.',
+  'cert.chain.ctLeafOnly': 'Certificate Transparency logs hold the server certificate only; which intermediate a server sends is not known here.',
   'cert.chain.order': 'The certificates are not in the order servers expect (server certificate first, then each issuer). “Download full chain” writes them in the right order.',
   'cert.chain.unrelated': { one: '{count} certificate in the file does not belong to this chain.', other: '{count} certificates in the file do not belong to this chain.' },
   'cert.chain.rootIncluded': 'The root certificate is included. Servers do not need to send it; it is harmless but adds bytes to every handshake.',
@@ -328,6 +374,39 @@ registerStrings('tr', {
   'cert.emptyTitle': 'Yüklü sertifika yok',
   'cert.emptyBody': 'Adlarını, geçerliliğini, anahtarını, zincir sırasını, CAA durumunu ve Certificate Transparency kayıtlarını görmek — ve kurulması gereken sunucuları bulmak — için sertifikayı yükleyin.',
 
+  'cert.alt.title': 'Dosyanız yok mu? Bir host adının herkese açık sertifikasını yükleyin',
+  'cert.alt.placeholder': 'www.example.com',
+  'cert.alt.load': 'Yükle',
+  'cert.alt.hint': 'Bu ad için geçerli en yeni sertifikayı herkese açık Certificate Transparency kayıtlarından okur (Cert Spotter; Cert Spotter yanıt veremezse crt.sh). Yalnızca host adı gönderilir.',
+  'cert.alt.invalid': 'www.example.com gibi bir host adı girin (*.example.com biçiminde wildcard da olur).',
+  'cert.alt.searching': '{host} için Certificate Transparency kayıtları aranıyor…',
+  'cert.alt.notFound': '{host} için şu an geçerli bir sertifika Certificate Transparency kayıtlarında yok. İç ağ adları ve özel CA’lar hiç kaydedilmez; son birkaç saatte verilen bir sertifika da henüz listelenmemiş olabilir.',
+  'cert.alt.revokedSkipped': { one: 'İptal edilmiş {count} sertifika atlandı.', other: 'İptal edilmiş {count} sertifika atlandı.' },
+  'cert.alt.failed': 'Certificate Transparency aranamadı',
+  'cert.alt.spotterQuota': 'IP adresinizin saatlik Cert Spotter sınırı doldu; bu yüzden crt.sh’te arandı.',
+  'cert.alt.spotterFailed': 'Cert Spotter yanıt vermedi; bu yüzden crt.sh’te arandı.',
+  'cert.alt.spotterUnreadable': 'Cert Spotter’daki sertifika kopyası okunamadı; bu yüzden crt.sh’te arandı.',
+  'cert.alt.spotterPartial': 'Cert Spotter yalnızca kısmen yanıt verdi; bu yüzden crt.sh’te de arandı.',
+  'cert.alt.crtshPartial': 'crt.sh her aramaya yanıt vermedi; bu yüzden bir sertifika burada eksik olabilir.',
+  'cert.alt.manualTitle': 'crt.sh’te bulundu — indirip dosyayı yukarı bırakın',
+  'cert.alt.manualCert': '{host} için geçerli en yeni sertifika: {names}; veren: {issuer}; {date} tarihine kadar geçerli.',
+  'cert.alt.manualWhy': 'crt.sh, web sayfalarının sertifika indirmesine izin vermez; dosyayı kendiniz kaydedin. crt.sh her sertifikayı iki kez listeler — ön sertifika olarak ve sunucuların gönderdiği sertifika olarak — ve hangisinin hangisi olduğunu söylemez: bıraktığınız dosya “Ön sertifika” olarak işaretlenirse diğer bağlantıyı kullanın.',
+  'cert.alt.download': '#{id} indir',
+  'cert.alt.openCrtsh': 'crt.sh’te aç',
+  'cert.alt.sample': 'Örnek deneyin',
+  'cert.alt.sampleHint': 'example.com ve example.net için uydurma bir sertifika',
+  'cert.alt.sampleFailed': 'Örnek sertifika yüklenemedi.',
+
+  'cert.src.ctBadge': 'Certificate Transparency’den',
+  'cert.src.sampleBadge': 'Örnek',
+  'cert.src.ct': 'Certificate Transparency’den yüklendi — sunucu farklı bir sertifika sunuyor olabilir.',
+  'cert.src.ctWhat': '{host} için kaydedilmiş, geçerli en yeni sertifika ({date} tarihinde verildi). Kayıt, bir CA’nın ne verdiğini gösterir; neyin kurulu olduğunu değil.',
+  'cert.src.ctNewerPrecert': 'Bu ad için daha yeni bir sertifika ({date} tarihinde verildi) şimdilik yalnızca ön sertifika olarak kayıtlı.',
+  'cert.src.ctTruncated': 'Cert Spotter bu ad için okunandan daha fazla sertifika listeliyor; daha yeni bir tane olabilir.',
+  'cert.src.ctOpen': 'crt.sh’te aç',
+  'cert.src.verify': 'SSL Hedefleri’nde doğrula',
+  'cert.src.sample': 'DomainScope’u denemek için örnek sertifika: example.com ve example.net; uydurma “DomainScope Sample” CA’sı tarafından verildi. Hiçbir sunucu kullanmıyor.',
+
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'Dosyada özel anahtar da var',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'Yok sayıldı — asla gösterilmedi, saklanmadı, yüklenmedi. Burada yalnızca sertifika gerekir. Anahtar dosyalarını gizli tutun, e-postayla göndermekten kaçının.',
   'cert.warn.PKCS12_UNSUPPORTED.title': 'PKCS#12 (.pfx / .p12) dosyaları parolayla korunur',
@@ -344,6 +423,7 @@ registerStrings('tr', {
   'cert.warn.NOT_YET_VALID.body': '{date} tarihinde geçerli olacak. Daha önce kurulursa o zamana kadar hata verir.',
   'cert.warn.foundOnly': 'Bunun yerine bulunan: {what}',
   'cert.warn.noSan': 'Bu sertifikanın Subject Alternative Name uzantısında DNS adı yok. Tarayıcılar ortak adı ({cn}) dikkate almaz ve sertifikayı her host adı için reddeder.',
+  'cert.warn.PRECERT': 'Bu bir ön sertifika: CA, sertifikayı vermeden önce bunu Certificate Transparency’ye kaydeder. Sunucular son sertifikayı gönderir — adları, tarihleri ve anahtarı aynı, parmak izi farklı — bu yüzden sunucuları kontrol etmek için onu yükleyin.',
 
   'cert.validity.expired': { one: 'Süresi {count} gün önce doldu', other: 'Süresi {count} gün önce doldu' },
   'cert.validity.expiredToday': 'Süresi bugün doldu',
@@ -488,6 +568,7 @@ registerStrings('tr', {
   'cert.chain.intro': 'Sunucular önce sunucu sertifikasını, ardından her ara sertifikayı göndermelidir. Kök sertifika istemcilerin güven deposunda zaten bulunur.',
   'cert.chain.ok': 'Zincir eksiksiz ve doğru sırada.',
   'cert.chain.leafOnly': 'Dosyada yalnızca sunucu sertifikası var. Sunucular ara sertifikayı da göndermelidir — tam zinciri (fullchain.pem / CA bundle) kurun; yoksa Android, curl, Java ve birçok API istemcisi hata verir.',
+  'cert.chain.ctLeafOnly': 'Certificate Transparency kayıtları yalnızca sunucu sertifikasını tutar; bir sunucunun hangi ara sertifikayı gönderdiği burada bilinemez.',
   'cert.chain.order': 'Sertifikalar sunucuların beklediği sırada değil (önce sunucu sertifikası, sonra sırayla verenler). “Tam zinciri indir” doğru sırayla yazar.',
   'cert.chain.unrelated': { one: 'Dosyadaki {count} sertifika bu zincire ait değil.', other: 'Dosyadaki {count} sertifika bu zincire ait değil.' },
   'cert.chain.rootIncluded': 'Kök sertifika da dahil edilmiş. Sunucuların bunu göndermesi gerekmez; zararsızdır ama her el sıkışmaya bayt ekler.',
@@ -563,12 +644,16 @@ for (const lang of ['en', 'tr']) {
 
 /**
  * @typedef {object} CertLoad
- * @property {string} name file name ('' when unknown)
+ * @property {string} name file name ('' when unknown; the host name for a CT load)
  * @property {number} size input size in bytes
- * @property {'pick'|'drop'|'paste'|'session'} source
+ * @property {'pick'|'drop'|'paste'|'session'|'ct'|'sample'} source 'ct': read from Certificate
+ *   Transparency for a host name ({@link ctCertLoad}); 'sample': the bundled sample
  * @property {Date} loadedAt
  * @property {{ certificates: object[], leaf: object|null, warnings: Array<{ code: string, detail?: string }> }} result
  *   lib/x509.parseCertificates() result
+ * @property {{ host: string, provider: string, issuance: object, precertificate: boolean,
+ *   newerPrecertificate: object|null, truncated: boolean }} [ct] source 'ct' only: what the lookup
+ *   found (lib/ctcert.js CtLookup fields)
  */
 
 /**
@@ -590,6 +675,54 @@ export function loadCertificateData(input, { name = '', size = null, source = 'p
     loadedAt: new Date(),
     result
   };
+}
+
+/**
+ * The {@link CertLoad} of a lib/ctcert.js lookup that found a certificate (status 'found'):
+ * source 'ct', named after the host, with the lookup's provenance in `ct`.
+ * @param {import('../lib/ctcert.js').CtLookup} lookup
+ * @returns {CertLoad}
+ */
+export function ctCertLoad(lookup) {
+  const load = loadCertificateData(lookup.der, { name: lookup.host, source: 'ct' });
+  load.ct = {
+    host: lookup.host,
+    provider: lookup.provider,
+    issuance: lookup.issuance,
+    precertificate: !!lookup.precertificate,
+    newerPrecertificate: lookup.newerPrecertificate || null,
+    truncated: !!lookup.truncated
+  };
+  return load;
+}
+
+/**
+ * Fetch the bundled sample certificate ({@link SAMPLE_CERT_URL}) as a {@link CertLoad} with
+ * source 'sample'. Rejects when the file cannot be fetched (offline, or a page left open across
+ * a deploy whose v/<commit>/ is gone).
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal }} [opts]
+ * @returns {Promise<CertLoad>}
+ */
+export async function loadSampleCert({ fetchImpl, signal } = {}) {
+  const text = await fetchText(SAMPLE_CERT_URL, { fetchImpl, signal, timeoutMs: 15000, headers: { accept: 'text/plain, */*' } });
+  return loadCertificateData(text, { name: 'sample-cert.pem', source: 'sample' });
+}
+
+/**
+ * "O (CN)" of a DN string as crt.sh prints it ('C=US, O=Example CA, CN=R1'), else the DN.
+ * @param {string} dn
+ * @returns {string}
+ */
+export function dnDisplayName(dn) {
+  const s = String(dn || '');
+  const attr = (k) => {
+    const m = new RegExp(`(?:^|,\\s*)${k}=("(?:[^"]|\\\\")*"|[^,]*)`).exec(s);
+    return m ? m[1].replace(/^"|"$/g, '').trim() : '';
+  };
+  const o = attr('O');
+  const cn = attr('CN');
+  if (o && cn && o !== cn) return `${o} (${cn})`;
+  return o || cn || s || '—';
 }
 
 /**
@@ -626,11 +759,13 @@ export function getCurrentCert(appState) {
 }
 
 /**
- * Share (or clear with null) the current certificate for this session.
+ * Share (or clear with null) the current certificate for this session. Loading one also drops the
+ * "No file?" block's last outcome (not found, crt.sh links): it answered a question that is settled.
  * @param {{ setSession: (name: string, value: any) => void }} appState
  * @param {CertLoad|null} load
  */
 export function setCurrentCert(appState, load) {
+  if (load) ctForm.last = null;
   appState.setSession(CURRENT_CERT, load || undefined);
 }
 
@@ -1003,6 +1138,198 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
 }
 
 /**
+ * The host-name form's state across re-mounts (a language switch, the other view): the typed
+ * text and the last outcome that is not a loaded certificate (not found, crt.sh links, error).
+ */
+const ctForm = { text: '', last: null };
+
+/**
+ * "No file?" block under a certificate picker: load the public certificate of a host name from
+ * Certificate Transparency (lib/ctcert.js; only the name leaves the browser, and only on a
+ * click), or the bundled sample. A lookup whose block was replaced meanwhile (another
+ * certificate loaded, view left) is dropped, never loaded over the user's choice.
+ * @param {{ onLoad: (load: CertLoad) => void, signal?: AbortSignal|null, onBusy?: ((busy: boolean|string) => void)|null,
+ *   onStale?: (() => void)|null }} opts onBusy: the view's busy flag while a lookup runs (defers a
+ *   language re-mount); onStale: the sample file failed to load (ctx.checkOutdated)
+ * @returns {{ el: HTMLElement, input: HTMLInputElement }}
+ */
+export function CertAlternatives({ onLoad, signal = null, onBusy = null, onStale = null }) {
+  const status = h('div', { class: 'cert-alt-status', attrs: { 'aria-live': 'polite' } });
+  let running = null;
+  const field = textInput({
+    value: ctForm.text,
+    placeholder: t('cert.alt.placeholder'),
+    mono: true,
+    className: 'cert-alt-field',
+    attrs: { 'data-role': 'ct-host', enterkeyhint: 'search' },
+    onInput: (v) => {
+      ctForm.text = v;
+      field.setError(null);
+    },
+    onEnter: () => {
+      if (!running) lookup();
+    }
+  });
+  const loadBtn = Button({
+    label: t('cert.alt.load'),
+    icon: 'search',
+    dataset: { action: 'ct-load' },
+    onClick: () => (running ? running.abort() : lookup())
+  });
+  const sampleBtn = Button({ label: t('cert.alt.sample'), icon: 'file-text', size: 'sm', variant: 'ghost', dataset: { action: 'cert-sample' }, onClick: () => sample() });
+  const el = h('div', { class: 'cert-alt stack-sm', dataset: { role: 'cert-alt' } },
+    h('label', { class: 'field-label', for: field.input.id }, t('cert.alt.title')),
+    h('div', { class: 'cert-alt-row' }, field.el, loadBtn),
+    h('p', { class: 'muted text-sm cert-alt-hint' }, t('cert.alt.hint')),
+    status,
+    h('div', { class: 'cluster cert-alt-sample' }, sampleBtn, h('span', { class: 'muted text-sm' }, t('cert.alt.sampleHint'))));
+
+  function setRunning(host) {
+    loadBtn.querySelector('.btn-label').textContent = host ? t('common.cancel') : t('cert.alt.load');
+    loadBtn.dataset.state = host ? 'running' : 'idle';
+    clear(status);
+    if (host) status.append(Spinner({ label: t('cert.alt.searching', { host }), showLabel: true }));
+    if (onBusy) onBusy(host ? t('cert.alt.searching', { host }) : false);
+  }
+
+  async function lookup() {
+    const host = normalizeCtHost(field.value);
+    if (!host) {
+      field.setError(t('cert.alt.invalid'));
+      field.focus();
+      return;
+    }
+    field.setError(null);
+    const ctl = new AbortController();
+    running = ctl;
+    ctForm.last = null;
+    setRunning(host);
+    let result = null;
+    try {
+      result = await lookupCtCertificate(host, { signal: mergeSignals(signal, ctl.signal) });
+    } catch (err) {
+      if (errorKind(err) !== 'abort') result = { host, status: 'error', error: String(err && err.message ? err.message : err), errorKind: errorKind(err) };
+    }
+    running = null;
+    if (!el.isConnected || (signal && signal.aborted)) {
+      if (onBusy) onBusy(false);
+      return;
+    }
+    setRunning(null);
+    if (!result) return; // cancelled
+    if (result.status === 'found') {
+      onLoad(ctCertLoad(result));
+      return;
+    }
+    ctForm.last = result;
+    showOutcome(result);
+  }
+
+  async function sample() {
+    setButtonBusy(sampleBtn, true);
+    try {
+      const load = await loadSampleCert({ signal });
+      if (el.isConnected) onLoad(load);
+    } catch (err) {
+      if (errorKind(err) === 'abort') return;
+      toast(t('cert.alt.sampleFailed'), { type: 'error' });
+      if (onStale) onStale();
+    } finally {
+      setButtonBusy(sampleBtn, false);
+    }
+  }
+
+  /** Why crt.sh was asked (null when it was not): Cert Spotter's quota, a failure, a partial list or an unreadable copy. */
+  function crtshWhy(r) {
+    if (!r.crtsh || !r.certspotter) return null;
+    if (r.certspotter.errorKind === 'rate-limit') return t('cert.alt.spotterQuota');
+    if (r.certspotter.state === 'partial') return t('cert.alt.spotterPartial');
+    return r.certspotter.state === 'ok' ? t('cert.alt.spotterUnreadable') : t('cert.alt.spotterFailed');
+  }
+
+  function showOutcome(r) {
+    clear(status);
+    if (!r) return;
+    let box = null;
+    if (r.status === 'manual' && r.crtsh && r.crtsh.entry) {
+      const e = r.crtsh.entry;
+      box = Alert({
+        variant: 'warn',
+        compact: true,
+        icon: 'download',
+        title: t('cert.alt.manualTitle'),
+        message: `${crtshWhy(r)} ${t('cert.alt.manualCert', { host: r.host, names: e.names.join(', ') || r.host, issuer: dnDisplayName(e.issuer), date: formatDate(e.notAfter) })}`,
+        children: h('p', { class: 'text-sm cert-alt-why' }, t('cert.alt.manualWhy')),
+        actions: [
+          ...e.downloads.map((d) => ButtonLink({ href: d.url, label: t('cert.alt.download', { id: d.id }), icon: 'download', size: 'sm', external: true })),
+          ExternalLink(e.pageUrl, t('cert.alt.openCrtsh'), { className: 'text-sm' })
+        ]
+      });
+    } else if (r.status === 'not-found') {
+      const lines = [crtshWhy(r), r.crtsh && r.crtsh.error ? t('cert.alt.crtshPartial') : null, t('cert.alt.notFound', { host: r.host })];
+      if (r.skipped && r.skipped.revoked) lines.push(t('cert.alt.revokedSkipped', { count: r.skipped.revoked }));
+      box = Alert({ variant: 'info', compact: true, icon: 'search', message: lines.filter(Boolean).join(' ') });
+    } else {
+      const err = Object.assign(new Error(r.error || ''), { kind: r.errorKind || 'unknown' });
+      box = ErrorBanner(err, { title: t('cert.alt.failed'), compact: true, onRetry: () => lookup() });
+    }
+    box.dataset.ctResult = r.status;
+    status.append(box);
+  }
+
+  if (ctForm.last) showOutcome(ctForm.last);
+  return { el, input: field.input };
+}
+
+/**
+ * "From Certificate Transparency" / "Sample" badge of a {@link CertLoad}; null for a file.
+ * @param {CertLoad|null} load
+ * @returns {HTMLSpanElement|null}
+ */
+export function certSourceBadge(load) {
+  if (!load) return null;
+  let el = null;
+  if (load.source === 'ct') el = Badge(t('cert.src.ctBadge'), { variant: 'info', icon: 'eye', title: t('cert.src.ct') });
+  else if (load.source === 'sample') el = Badge(t('cert.src.sampleBadge'), { variant: 'accent', icon: 'file-text' });
+  if (el) el.dataset.certSource = load.source;
+  return el;
+}
+
+/**
+ * Where a certificate that is not the user's file came from, as a compact callout: the CT
+ * caveat ("the server may serve a different one", what was found, a newer precertificate, a
+ * list read only in part) or the sample note. null for a file.
+ * @param {CertLoad|null} load
+ * @param {{ actions?: Array<Node|null>, extra?: string|null }} [opts] actions: e.g. a Verify link;
+ *   extra: one more sentence (the SSL Targets view's)
+ * @returns {HTMLElement|null}
+ */
+export function CertSourceNote(load, { actions = [], extra = null } = {}) {
+  if (!load) return null;
+  const acts = (actions || []).filter(Boolean);
+  let el = null;
+  if (load.source === 'sample') {
+    el = Alert({ variant: 'info', compact: true, icon: 'file-text', message: [t('cert.src.sample'), extra].filter(Boolean).join(' '), actions: acts });
+  } else if (load.source === 'ct' && load.ct) {
+    const ct = load.ct;
+    const issued = ct.issuance && ct.issuance.notBefore ? formatDate(ct.issuance.notBefore) : '—';
+    const lines = [
+      t('cert.src.ctWhat', { host: ct.host, date: issued }),
+      ct.newerPrecertificate ? t('cert.src.ctNewerPrecert', { date: formatDate(ct.newerPrecertificate.notBefore) }) : null,
+      ct.truncated ? t('cert.src.ctTruncated') : null,
+      extra
+    ].filter(Boolean);
+    const link = ct.issuance && ct.issuance.url ? ExternalLink(ct.issuance.url, t('cert.src.ctOpen'), { className: 'text-sm' }) : null;
+    el = Alert({ variant: 'info', compact: true, icon: 'eye', title: t('cert.src.ct'), message: lines.join(' '), actions: [...acts, link].filter(Boolean) });
+  }
+  if (el) {
+    el.classList.add('cert-source-note');
+    el.dataset.certSource = load.source;
+  }
+  return el;
+}
+
+/**
  * Alerts for parseCertificates() warnings (translated; technical details collapsed).
  * NO_CERTIFICATE is dropped when a more specific reason (PKCS#12 / CSR) explains it.
  * @param {{ warnings: Array<{ code: string, detail?: string }> }} result
@@ -1071,6 +1398,12 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
     a.dataset.warning = 'NO_SAN';
     out.push(a);
   }
+  // A precertificate (CT poison) never reaches a server: its fingerprint matches nothing served.
+  if (leaf && leaf.isPrecertificate) {
+    const a = Alert({ variant: 'warn', compact, icon: 'alert', message: t('cert.warn.PRECERT') });
+    a.dataset.warning = 'PRECERT';
+    out.push(a);
+  }
   return out;
 }
 
@@ -1094,6 +1427,7 @@ export function CertSummary(load, { actions = null, maxNames = 8 } = {}) {
           h('span', { class: 'cert-summary-file' }, t('cert.fileInfo', { name: load.name || '—', count: t('cert.count', { count }) })))),
       actions ? h('div', { class: 'cert-summary-actions' }, actions) : null),
     h('div', { class: 'cluster cert-summary-badges' },
+      certSourceBadge(load),
       ValidityBadge(cert),
       Badge(t('cert.names.count', { count: cert.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
       cert.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
@@ -1192,9 +1526,16 @@ export function mount(container, ctx) {
     render();
   }
 
+  /** Hand the certificate to SSL Targets (the scan that finds its servers, then Verify). */
+  function openInTargets() {
+    state.setSession(PENDING_CERT, load);
+    ctx.navigate('scan');
+  }
+
   function renderLoader() {
     clear(loaderHost);
     const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load });
+    const alternatives = CertAlternatives({ onLoad: (l) => setLoad(l), signal: ctx.signal, onBusy: ctx.setBusy, onStale: ctx.checkOutdated });
     if (!load) {
       loaderHost.append(Card({
         title: t('cert.loaderTitle'),
@@ -1202,14 +1543,15 @@ export function mount(container, ctx) {
         icon: 'certificate',
         className: 'cert-loader-card',
         children: h('div', { class: 'stack' }, loader.el,
-          h('p', { class: 'muted text-sm cert-privacy' }, Icon('lock', { size: 14 }), ' ', t('cert.privacy')))
+          h('p', { class: 'muted text-sm cert-privacy' }, Icon('lock', { size: 14 }), ' ', t('cert.privacy')),
+          alternatives.el)
       }));
       return;
     }
     loaderHost.append(Disclosure({
       summary: t('cert.loadAnother'),
       className: 'cert-reload',
-      children: h('div', { class: 'stack-sm' }, loader.el, h('p', { class: 'muted text-sm' }, t('cert.privacy')))
+      children: h('div', { class: 'stack-sm' }, loader.el, h('p', { class: 'muted text-sm' }, t('cert.privacy')), alternatives.el)
     }));
   }
 
@@ -1232,6 +1574,13 @@ export function mount(container, ctx) {
     const analysis = analyzeChain(result.certificates, result.leaf);
     const certs = [...analysis.ordered, ...analysis.unrelated];
     if (viewState.selected >= result.certificates.length) viewState.selected = 0;
+    // A CT certificate is what a CA issued, not what a server sends: point at the check that knows.
+    const sourceNote = CertSourceNote(load, {
+      actions: load.source === 'ct' ? [Button({
+        label: t('cert.src.verify'), icon: 'check-circle', size: 'sm', dataset: { action: 'ct-verify' }, onClick: openInTargets
+      })] : []
+    });
+    if (sourceNote) content.append(sourceNote);
     content.append(overviewCard(result.leaf, analysis));
     if (result.certificates.length > 1) {
       const sel = select({
@@ -1299,10 +1648,7 @@ export function mount(container, ctx) {
         variant: 'primary',
         title: t('cert.findTargetsHint'),
         dataset: { action: 'find-targets' },
-        onClick: () => {
-          state.setSession(PENDING_CERT, load);
-          ctx.navigate('scan');
-        }
+        onClick: openInTargets
       });
       const actions = h('div', { class: 'cluster cert-actions' },
         findBtn,
@@ -1330,6 +1676,7 @@ export function mount(container, ctx) {
               h('h2', { class: 'cert-overview-cn mono' }, certDisplayName(leaf)),
               h('div', { class: 'cert-overview-issuer' }, t('cert.issuedBy', { issuer: issuerDisplayName(leaf) })),
               h('div', { class: 'cluster cert-overview-badges' },
+                certSourceBadge(load),
                 Badge(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
                 leaf.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
                 leaf.validationLevel ? Badge(t(`cert.level.${leaf.validationLevel}`), { variant: 'info', icon: 'shield' }) : null,
@@ -1548,10 +1895,16 @@ export function mount(container, ctx) {
         a.dataset.chainIssue = code;
         alerts.push(a);
       };
+      // A CT log holds the leaf alone: there is no file to blame, and the served chain is unknown
+      // (still no "complete" verdict).
+      const fromCt = load.source === 'ct';
       for (const is of chain.issues) {
         switch (is.code) {
           case 'self-signed': add('warn', t('cert.chain.selfSigned'), is.code); break;
-          case 'leaf-only': add('warn', t('cert.chain.leafOnly'), is.code); break;
+          case 'leaf-only':
+            if (fromCt) add('info', t('cert.chain.ctLeafOnly'), 'ct-leaf-only');
+            else add('warn', t('cert.chain.leafOnly'), is.code);
+            break;
           case 'order': add('warn', t('cert.chain.order'), is.code); break;
           case 'unrelated': add('warn', t('cert.chain.unrelated', { count: is.count }), is.code); break;
           case 'root-included': add('info', t('cert.chain.rootIncluded'), is.code); break;

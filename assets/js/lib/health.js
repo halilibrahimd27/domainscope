@@ -1928,7 +1928,8 @@ function analyzeApex(name, aR, aaaaR) {
     const priv = all.filter(isPrivateIP);
     if (priv.length) checks.push(makeCheck('apex.private-ip', 'warn', { ips: priv }));
     if (aaaa.length) checks.push(makeCheck('ipv6.present', 'ok', { ipv6: aaaa }));
-    else checks.push(makeCheck('ipv6.missing', 'info', { domain: name }));
+    // A failed AAAA lookup is not "no IPv6" (the DNS card says the lookup failed).
+    else if (!failed(aaaaR)) checks.push(makeCheck('ipv6.missing', 'info', { domain: name }));
   }
   return { checks, a, aaaa };
 }
@@ -2053,9 +2054,10 @@ function analyzeRdap(r, now) {
  *   For a name below its zone apex (`zone` !== `domain`) `dnssec` is the enclosing zone's state: signed
  *   from its DS, validated from the AD bit (the zone's own DNSKEY answer when the name is a CNAME);
  *   `zone` is the name's own zone, also when it is a CNAME.
- *   `failedLookups` names the records whose lookup failed: 'mx' (`records.mx` is then empty
- *   without meaning "no MX"; the check is mx.error) and the mail-extra records (`records.mtaSts` /
- *   `tlsRpt` / `bimi`), whose null then means "not known", not "not published" (no `*.missing` check).
+ *   `failedLookups` names the records whose lookup failed: the name's own 'soa', 'ns', 'mx', 'a',
+ *   'aaaa', 'txt', 'https' (the record in `records` is then empty or null without meaning "none";
+ *   for MX the check is mx.error) and the mail-extra records (`records.mtaSts` / `tlsRpt` / `bimi`),
+ *   whose null then means "not known", not "not published" (no `*.missing` check).
  *   `apex` (extension) is true when the name has its own SOA (a zone apex), null when that is not known.
  * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null, apex: boolean|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
@@ -2064,7 +2066,7 @@ function analyzeRdap(r, now) {
  *       testing: boolean, cname: string|null }>,
  *     caa: Array<{ flags: number, tag: string, value: string }>, mtaSts: string|null, tlsRpt: string|null,
  *     bimi: string|null, ds: object[], dnskey: object[], https: object[] },
- *   failedLookups: Array<'mx'|'mtaSts'|'tlsRpt'|'bimi'>,
+ *   failedLookups: Array<'soa'|'ns'|'mx'|'a'|'aaaa'|'txt'|'https'|'mtaSts'|'tlsRpt'|'bimi'>,
  *   dnssec: { signed: boolean|null, validated: boolean|null, broken: boolean, dsCount: number, dnskeyCount: number,
  *     algorithms: string[], ede: string[] },
  *   rdap: object|null, wildcard: { wildcard: boolean, ipv4: string[], ipv6: string[], cnames: string[], error: string|null }|null,
@@ -2227,7 +2229,10 @@ export async function domainHealth(domain, {
     nsAddresses: ns.addresses,
     mxHosts: mx.hosts,
     mailIdentity: { addresses: mx.identity.addresses, total: mx.identity.total, checked: mx.identity.checked },
-    failedLookups: [...(failed(mxR) ? ['mx'] : []), ...extras.failedLookups],
+    failedLookups: [
+      ...[[soaR, 'soa'], [nsR, 'ns'], [mxR, 'mx'], [aR, 'a'], [aaaaR, 'aaaa'], [txtR, 'txt'], [httpsR, 'https']].filter(([r]) => failed(r)).map(([, key]) => key),
+      ...extras.failedLookups
+    ],
     checks
   });
 }

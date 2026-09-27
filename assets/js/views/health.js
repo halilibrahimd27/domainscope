@@ -529,7 +529,10 @@ export function parseSelectors(text) {
   return out;
 }
 
-/** Did the report's lookup of 'mx' or a mail-extra record ('mtaSts', 'tlsRpt', 'bimi') fail? Its empty value is then "not known". */
+/**
+ * Did the report's lookup of a record fail ('soa', 'ns', 'mx', 'a', 'aaaa', 'txt', 'https' or a
+ * mail extra: 'mtaSts', 'tlsRpt', 'bimi')? Its empty value is then "not known".
+ */
 function lookupFailed(report, key) {
   return Array.isArray(report.failedLookups) && report.failedLookups.includes(key);
 }
@@ -1303,6 +1306,9 @@ export function mount(container, ctx) {
 
   function dnsCard(report) {
     const rec = report.records;
+    const failedText = () => h('span', { class: 'muted text-sm', dataset: { lookup: 'failed' } }, t('hlt.lookupFailed'));
+    /** A record's value, or "lookup failed" when its query got no usable answer (never a bare dash). */
+    const known = (key, value) => (lookupFailed(report, key) ? failedText() : value);
     const classify = (ip) => classifyResolution({ status: 'NOERROR', ipv4: ipVersion(ip) === 4 ? [ip] : [], ipv6: ipVersion(ip) === 6 ? [ip] : [] });
     const addrList = (ips) => (ips && ips.length ? h('div', { class: 'stack-sm' }, ips.map((ip) => h('span', { class: 'cluster' }, ipLink(ip), KindBadge(classify(ip))))) : null);
     const nsValue = rec.ns.length ? h('div', { class: 'stack-sm' }, rec.ns.map((ns) => h('div', { class: 'hlt-ns' },
@@ -1312,7 +1318,7 @@ export function mount(container, ctx) {
     const mxValue = nullMx ? Badge(t('hlt.dns.nullMx'), { variant: 'info' }) : rec.mx.length ? h('div', { class: 'stack-sm' }, rec.mx.map((m) => h('div', { class: 'hlt-ns' },
       h('span', { class: 'num muted' }, String(m.preference)), ' ', hostLink(m.exchange),
       ipList(mxHosts[m.exchange] ? [...mxHosts[m.exchange].ipv4, ...mxHosts[m.exchange].ipv6] : []))))
-      : lookupFailed(report, 'mx') ? h('span', { class: 'muted text-sm' }, t('hlt.lookupFailed')) : null;
+      : lookupFailed(report, 'mx') ? failedText() : null;
     const w = report.wildcard;
     const https = rec.https || [];
     const alpn = [...new Set(https.flatMap((x) => (x.params && x.params.alpn) || []))];
@@ -1320,14 +1326,15 @@ export function mount(container, ctx) {
       title: t('hlt.dns.title'), icon: 'globe', className: 'hlt-card hlt-dns',
       actions: h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('lookup', { name: report.domain, type: 'A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS' }) }, Icon('search', { size: 14 }), h('span', { class: 'btn-label' }, t('hlt.dns.lookupAll'))),
       children: KeyValueList([
-        { key: t('hlt.dns.ns'), value: nsValue },
-        { key: t('hlt.dns.soa'), value: rec.soa ? h('span', { class: 'mono text-sm' }, t('hlt.dns.soaValue', { mname: rec.soa.mname, email: rec.soa.email || rec.soa.rname, serial: rec.soa.serial })) : null },
+        { key: t('hlt.dns.ns'), value: known('ns', nsValue) },
+        { key: t('hlt.dns.soa'), value: known('soa', rec.soa ? h('span', { class: 'mono text-sm' }, t('hlt.dns.soaValue', { mname: rec.soa.mname, email: rec.soa.email || rec.soa.rname, serial: rec.soa.serial })) : null) },
         { key: t('hlt.dns.mx'), value: mxValue },
-        { key: t('hlt.dns.a'), value: addrList(rec.a) },
-        { key: t('hlt.dns.aaaa'), value: addrList(rec.aaaa) },
-        { key: t('hlt.dns.https'), value: https.length ? h('span', { class: 'cluster' }, alpn.map((a) => Badge(a, { mono: true }))) : null },
-        { key: t('hlt.dns.txt'), value: h('a', { href: ctx.href('lookup', { name: report.domain, type: 'TXT' }) }, t('hlt.dns.txtCount', { count: rec.txt.length })) },
-        { key: t('hlt.dns.wildcard'), value: w ? (w.wildcard ? h('span', { class: 'mono text-sm' }, t('hlt.dns.wildcardYes', { values: [...w.cnames, ...w.ipv4, ...w.ipv6].join(', ') })) : t('hlt.dns.wildcardNo')) : null }
+        { key: t('hlt.dns.a'), value: known('a', addrList(rec.a)) },
+        { key: t('hlt.dns.aaaa'), value: known('aaaa', addrList(rec.aaaa)) },
+        { key: t('hlt.dns.https'), value: known('https', https.length ? h('span', { class: 'cluster' }, alpn.map((a) => Badge(a, { mono: true }))) : null) },
+        { key: t('hlt.dns.txt'), value: known('txt', h('a', { href: ctx.href('lookup', { name: report.domain, type: 'TXT' }) }, t('hlt.dns.txtCount', { count: rec.txt.length }))) },
+        // No wildcard probe answered: not known, never "No".
+        { key: t('hlt.dns.wildcard'), value: w ? (w.wildcard ? h('span', { class: 'mono text-sm' }, t('hlt.dns.wildcardYes', { values: [...w.cnames, ...w.ipv4, ...w.ipv6].join(', ') })) : w.error ? failedText() : t('hlt.dns.wildcardNo')) : null }
       ], { className: 'hlt-kv' })
     });
   }

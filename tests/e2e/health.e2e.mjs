@@ -24,8 +24,8 @@
  * without a new probe; a quota at 0 (nothing asked or sent); a policy host that does not
  * resolve; mode none ("off", never "every MX host matches"); a policy served as
  * application/octet-stream (strict senders ignore it: an error headline, never "works"); a failed
- * MX lookup (mxfail.example.com: "lookup failed" in the DNS card, the policy check "not
- * compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
+ * MX and AAAA lookup (mxfail.example.com: "lookup failed" in the DNS card, never a dash or "no
+ * IPv6"; the policy check "not compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
  * It also clicks Copy summary (a clipboard recorder, scan.e2e.mjs stubClipboard): the Markdown and
  * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
  * refused clipboard gets; then a second check that is stopped: the button is off while it runs,
@@ -207,8 +207,8 @@ const MAIL_ZONE = {
   '_mta-sts.example.com': { TXT: [['v=STSv1; id=20260927T1200']] },
   '_smtp._tls.example.com': { TXT: [['v=TLSRPTv1; rua=mailto:tls-reports@example.com']] },
   '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] },
-  // A name whose MX query fails (SERVFAIL) while its _mta-sts record answers.
-  'mxfail.example.com': { A: ['192.0.2.81'], MX: [{ preference: 10, exchange: 'mx.example.com' }], RCODE: { MX: 'SERVFAIL' } },
+  // A name whose MX and AAAA queries fail (SERVFAIL) while its _mta-sts record answers.
+  'mxfail.example.com': { A: ['192.0.2.81'], MX: [{ preference: 10, exchange: 'mx.example.com' }], RCODE: { MX: 'SERVFAIL', AAAA: 'SERVFAIL' } },
   '_mta-sts.mxfail.example.com': { TXT: [['v=STSv1; id=20260927T1300']] },
   // Two v=STSv1 records: senders assume no policy (RFC 8461 §3.1), however valid the file is.
   'twosts.example.com': { A: ['192.0.2.82'], MX: [{ preference: 10, exchange: 'mx.example.com' }, { preference: 20, exchange: 'alt1.mx.example.com' }] },
@@ -719,6 +719,10 @@ async function mtaStsGroup(browser, server) {
       assertEqual([c.state, c.button], ['idle', 'Check the policy (1 Globalping probe)'], 'the card shows for the _mta-sts record');
       const dnsText = await page.evaluate(() => document.querySelector('.hlt-dns').textContent.replace(/\s+/g, ' '));
       assert(/Mail servers \(MX\)\s*lookup failed/.test(dnsText), `DNS card MX row: ${dnsText.slice(0, 300)}`);
+      // A failed AAAA lookup is never a bare dash nor "no IPv6".
+      assert(/IPv6 \(AAAA\)\s*lookup failed/.test(dnsText) && /IPv4 \(A\)\s*192\.0\.2\.81/.test(dnsText), `DNS card address rows: ${dnsText.slice(0, 400)}`);
+      const ids = (await page.evaluate(reportInfo)).checks.map((x) => x.id);
+      assert(ids.includes('apex.ok') && !ids.includes('ipv6.missing'), `address checks: ${ids.filter((x) => /apex|ipv6/.test(x))}`);
       await page.evaluate(() => { window.__gp.next.push('mxfail'); });
       await page.click('[data-action="mtasts-check"]');
       await page.waitFor((sel) => document.querySelector(sel)?.dataset.state === 'done', { args: [MTASTS_CARD], timeout: 20000, message: 'policy checked' });

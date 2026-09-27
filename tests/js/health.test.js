@@ -1847,6 +1847,27 @@ test('a failed MX lookup is "not known": the MTA-STS policy check never reads it
   assert.deepEqual([mtaStsContext(none).mxHosts, none.failedLookups], [[], []]);
 });
 
+test('failed A / AAAA / NS / SOA / TXT / HTTPS lookups are named in failedLookups, never read as "none"', async () => {
+  const zone = goodZone();
+  const fail = Object.fromEntries(['A', 'AAAA', 'NS', 'TXT', 'HTTPS'].map((type) => [`example.com|${type}`, 'HTTP 429']));
+  const r = await run('example.com', fakeDns(zone, { fail }));
+  assertRenderable(r);
+  assert.deepEqual(r.failedLookups, ['ns', 'a', 'aaaa', 'txt', 'https']);
+  assert.deepEqual([r.records.a, r.records.aaaa, r.records.ns], [[], [], []], 'empty, and named as not known');
+  lacks(r, 'apex.no-address');
+  has(r, 'ns.error', 'error');
+  const soa = await run('example.com', fakeDns(zone, { rcodes: { 'example.com|SOA': 'SERVFAIL' } }));
+  assert.deepEqual(soa.failedLookups, ['soa'], 'a SERVFAIL is a failed lookup too');
+  // Only the AAAA query failed: the address is known, "no IPv6" is not.
+  const v6 = await run('example.com', fakeDns(zone, { fail: { 'example.com|AAAA': 'timeout' } }));
+  assert.deepEqual(v6.failedLookups, ['aaaa']);
+  has(v6, 'apex.ok', 'ok');
+  lacks(v6, 'ipv6.missing');
+  lacks(v6, 'ipv6.present');
+  const ok = await run('example.com', fakeDns(zone));
+  assert.deepEqual(ok.failedLookups, [], 'answered lookups are not listed');
+});
+
 test('an _mta-sts TXT set senders reject is not an announcement: the policy check reads txt-invalid, never ok', async () => {
   const fetch = {
     finished: true, failure: null, httpStatus: 200, contentType: 'text/plain', location: null, truncated: false, tls: null,

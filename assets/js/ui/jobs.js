@@ -298,7 +298,8 @@ export function NotifyButton(source) {
       }
     }
     notifyOptIn = perm === 'granted';
-    announce(t(notifyOptIn ? 'jobs.notifyReady' : 'jobs.notifyBlocked'));
+    // A prompt closed without an answer ('default') blocks nothing: only a refusal is called that.
+    announce(t(notifyOptIn ? 'jobs.notifyReady' : perm === 'denied' ? 'jobs.notifyBlocked' : 'jobs.notifyOff'));
     emit();
   });
 

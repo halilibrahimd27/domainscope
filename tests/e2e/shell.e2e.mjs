@@ -214,7 +214,8 @@ const JOB_ZONE = Object.fromEntries([['example.com', { A: ['203.0.113.10'] }],
  * Before the app loads: every DoH answer waits `window.__dnsDelay` ms (so a Bulk Resolve of 60
  * names takes seconds), `Date.now()` can be moved forward by `window.__clockSkew` ms (the 30 s
  * mark of "Notify me when done" without waiting for it), and a fake Notification API records
- * what would be shown (window.__notes) and how often permission was asked (__permAsked).
+ * what would be shown (window.__notes) and how often permission was asked (__permAsked); the
+ * prompt's answer is window.__permAnswer ('default' = closed without an answer).
  */
 const JOB_PAGE_SCRIPT = `(() => {
   const inner = window.fetch;
@@ -229,13 +230,14 @@ const JOB_PAGE_SCRIPT = `(() => {
   Date.now = () => realNow() + window.__clockSkew;
   window.__notes = [];
   window.__permAsked = 0;
+  window.__permAnswer = 'granted';
   window.Notification = class {
     constructor(title, opts) { window.__notes.push({ title, body: (opts && opts.body) || '' }); }
     close() {}
     static async requestPermission() {
       window.__permAsked += 1;
-      window.Notification.permission = 'granted';
-      return 'granted';
+      window.Notification.permission = window.__permAnswer;
+      return window.__permAnswer;
     }
   };
   window.Notification.permission = 'default';
@@ -308,6 +310,16 @@ async function jobsGroup(browser, server) {
       assertEqual(await jobs.evaluate(() => window.__permAsked), 0, 'nothing asked yet');
       await jobs.evaluate(() => { window.__clockSkew = 31000; });
       await jobs.waitFor(() => document.querySelector('.bulk-progress .job-notify')?.hidden === false, { timeout: 3000, message: 'offered at 30 s' });
+      const live = "[...document.querySelectorAll('[aria-live=\"polite\"]')].map((el) => el.textContent).join('|')";
+      // The prompt closed without an answer: nothing was blocked, the button stays offered.
+      await jobs.evaluate(() => { window.__permAnswer = 'default'; });
+      await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
+      await jobs.press('Enter');
+      await jobs.waitFor(`${live}.includes('No desktop notification.')`, { timeout: 3000, message: 'dismissed prompt announced' });
+      const dismissed = await jobs.evaluate(`({ text: ${live}, pressed: document.querySelector('[data-action="job-notify"]').getAttribute('aria-pressed'),
+        blocked: !document.querySelector('.job-notify-blocked')?.hidden })`);
+      assertEqual([dismissed.text.includes('blocked'), dismissed.pressed, dismissed.blocked], [false, 'false', false], 'a dismissed prompt is not "blocked"');
+      await jobs.evaluate(() => { window.__permAnswer = 'granted'; window.Notification.permission = 'default'; });
       await jobs.evaluate(() => document.querySelector('[data-action="job-notify"]').focus());
       await jobs.press('Enter');
       await jobs.waitFor(() => document.querySelector('[data-action="job-notify"]')?.getAttribute('aria-pressed') === 'true', { message: 'opted in' });
@@ -316,7 +328,7 @@ async function jobsGroup(browser, server) {
         return { asked: window.__permAsked, label: btn.textContent.trim(), on: btn.classList.contains('is-on') };
       });
       // A toggle: the label stays (a screen reader hears "pressed" once, not a new label as well).
-      assertEqual(state, { asked: 1, label: 'Notify me when done', on: true }, 'opted in for this page session');
+      assertEqual(state, { asked: 2, label: 'Notify me when done', on: true }, 'opted in for this page session');
       await shot(jobs, 'desktop-light-en-job-notify');
     });
 

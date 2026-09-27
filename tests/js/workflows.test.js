@@ -65,6 +65,7 @@ describe('ci.yml', () => {
     assert.match(j.python, /python -m unittest discover -s tests\/python/);
     assert.match(j.e2e, /runs-on: ubuntu-latest/);
     assert.match(j.e2e, /run: npm run test:e2e:offline/);
+    assert.match(j.e2e, /timeout-minutes: \d+/, 'a hung browser must not hold the deploy');
   });
 
   test('the offline E2E script runs exactly the suites that need no network', () => {

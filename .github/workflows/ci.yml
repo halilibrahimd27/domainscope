@@ -5,7 +5,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # pages.yml runs this whole workflow first and deploys only when it passes
+  # pages.yml runs this whole workflow first and deploys only when it passes; a push to main
+  # therefore runs it twice (here for the badge, there as the deploy gate), on purpose
   workflow_call:
 
 permissions:
@@ -47,6 +48,8 @@ jobs:
   e2e:
     name: E2E offline suites (headless Chrome)
     runs-on: ubuntu-latest
+    # a hung browser must not hold the deploy for run-all's 20 minutes per suite
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

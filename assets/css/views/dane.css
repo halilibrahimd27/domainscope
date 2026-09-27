@@ -76,6 +76,15 @@
   color: var(--error);
 }
 
+/* Only warnings to act on (a trust anchor or PKIX record, nothing certain to break): amber. */
+.dane-publish-warn {
+  border-color: var(--warn-border);
+}
+
+.dane-publish-warn .card-icon {
+  color: var(--warn);
+}
+
 .dane-steps {
   display: flex;
   flex-direction: column;

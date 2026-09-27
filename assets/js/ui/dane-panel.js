@@ -71,8 +71,8 @@ registerStrings('en', {
     other: '{count} endpoints would reject the new certificate. Publish the TLSA records below first, wait 2 × TTL, then install the certificate.'
   },
   'dane.head.servfail': {
-    one: 'The TLSA lookup fails at {count} endpoint (SERVFAIL). DANE senders already defer mail there, whatever the certificate.',
-    other: 'The TLSA lookup fails at {count} endpoints (SERVFAIL). DANE senders already defer mail there, whatever the certificate.'
+    one: 'The TLSA lookup fails at {count} endpoint (SERVFAIL). DANE senders and clients already fail there, whatever the certificate.',
+    other: 'The TLSA lookup fails at {count} endpoints (SERVFAIL). DANE senders and clients already fail there, whatever the certificate.'
   },
   'dane.head.warn': {
     one: '{count} endpoint needs a closer look before you install the new certificate.',
@@ -80,7 +80,7 @@ registerStrings('en', {
   },
   'dane.head.error': { one: '{count} lookup failed. Check again.', other: '{count} lookups failed. Check again.' },
   'dane.head.safe': 'Every TLSA record set in use matches the new certificate: installing it does not break DANE.',
-  'dane.head.clear': 'No TLSA record in use pins these hosts, so installing the new certificate breaks nothing.',
+  'dane.head.clear': 'No TLSA record in use applies to this certificate, so installing it breaks nothing.',
   'dane.head.unused': 'No TLSA records: DANE is not used at these mail servers and names. Nothing to do.',
   'dane.more.insecure': {
     one: '{count} TLSA record set is not in use: DANE clients ignore TLSA that DNSSEC does not validate (and senders ignore it at a mail server whose MX records are not validated).',
@@ -106,7 +106,7 @@ registerStrings('en', {
   'dane.why.danger.smtp': 'A DANE-EE record (usage 3) pins another certificate or key. Once the new certificate is installed, DANE senders queue mail for this server until a record matches.',
   'dane.why.danger.https': 'A DANE-EE record (usage 3) pins another certificate or key. Once the new certificate is installed, DANE-aware clients refuse the connection.',
   'dane.why.servfail': 'The TLSA lookup returns SERVFAIL, so DANE clients cannot tell whether records exist: senders defer mail, clients refuse to connect.',
-  'dane.why.ta-mismatch': 'Only trust-anchor records (usage 2 / 0) are published, and none matches a certificate of the loaded chain. If the new certificate comes from another CA certificate, publish its record first. If the server sends the pinned CA certificate in its chain anyway, nothing changes.',
+  'dane.why.ta-mismatch': 'No record matches, and the trust-anchor records (usage 2) match no certificate of the loaded chain. If the new certificate comes from another CA certificate, publish its record first. If the server sends the pinned CA certificate in its chain anyway, nothing changes.',
   'dane.why.ta-unchecked': 'Trust-anchor records (usage 2 / 0) pin a CA certificate, and the loaded file holds only the leaf. Load the full chain (fullchain.pem) to check them, or publish the DANE-EE record below as well.',
   'dane.why.pkix': 'Only PKIX records (usage 0 / 1) are published and none matches: DANE-aware clients would reject the new certificate. Browsers ignore them.',
   'dane.why.error': 'No DNS answer. Check again.',
@@ -219,8 +219,8 @@ registerStrings('tr', {
     other: '{count} uç nokta yeni sertifikayı reddeder. Önce aşağıdaki TLSA kayıtlarını yayınlayın, TTL’nin 2 katı kadar bekleyin, sonra sertifikayı kurun.'
   },
   'dane.head.servfail': {
-    one: '{count} uç noktada TLSA sorgusu başarısız (SERVFAIL). DANE gönderenler sertifikadan bağımsız olarak oraya e-posta teslimini şimdiden erteliyor.',
-    other: '{count} uç noktada TLSA sorgusu başarısız (SERVFAIL). DANE gönderenler sertifikadan bağımsız olarak oraya e-posta teslimini şimdiden erteliyor.'
+    one: '{count} uç noktada TLSA sorgusu başarısız (SERVFAIL). DANE gönderenler ve istemciler, sertifikadan bağımsız olarak orada şimdiden başarısız oluyor.',
+    other: '{count} uç noktada TLSA sorgusu başarısız (SERVFAIL). DANE gönderenler ve istemciler, sertifikadan bağımsız olarak orada şimdiden başarısız oluyor.'
   },
   'dane.head.warn': {
     one: '{count} uç nokta, yeni sertifikayı kurmadan önce daha yakından incelenmeli.',
@@ -228,7 +228,7 @@ registerStrings('tr', {
   },
   'dane.head.error': { one: '{count} sorgu başarısız oldu. Yeniden kontrol edin.', other: '{count} sorgu başarısız oldu. Yeniden kontrol edin.' },
   'dane.head.safe': 'Kullanımdaki her TLSA kayıt kümesi yeni sertifikayla eşleşiyor: kurmak DANE’i bozmaz.',
-  'dane.head.clear': 'Kullanımdaki hiçbir TLSA kaydı bu sunucuları sabitlemiyor; yeni sertifikayı kurmak hiçbir şeyi bozmaz.',
+  'dane.head.clear': 'Kullanımdaki hiçbir TLSA kaydı bu sertifikayı ilgilendirmiyor; onu kurmak hiçbir şeyi bozmaz.',
   'dane.head.unused': 'TLSA kaydı yok: bu e-posta sunucularında ve adlarda DANE kullanılmıyor. Yapılacak bir şey yok.',
   'dane.more.insecure': {
     one: '{count} TLSA kayıt kümesi kullanımda değil: DANE istemcileri DNSSEC’in doğrulamadığı TLSA’yı yok sayar (gönderenler, MX kayıtları doğrulanmayan bir e-posta sunucusundaki TLSA’yı da yok sayar).',
@@ -254,7 +254,7 @@ registerStrings('tr', {
   'dane.why.danger.smtp': 'Bir DANE-EE kaydı (kullanım 3) başka bir sertifikayı veya anahtarı sabitliyor. Yeni sertifika kurulunca DANE gönderenler, bir kayıt eşleşene kadar bu sunucunun e-postalarını kuyrukta bekletir.',
   'dane.why.danger.https': 'Bir DANE-EE kaydı (kullanım 3) başka bir sertifikayı veya anahtarı sabitliyor. Yeni sertifika kurulunca DANE destekli istemciler bağlantıyı reddeder.',
   'dane.why.servfail': 'TLSA sorgusu SERVFAIL döndürüyor; DANE istemcileri kayıt olup olmadığını anlayamaz: gönderenler e-postayı erteler, istemciler bağlanmayı reddeder.',
-  'dane.why.ta-mismatch': 'Yalnızca güven çapası kayıtları (kullanım 2 / 0) yayınlanmış ve hiçbiri yüklenen zincirdeki bir sertifikayla eşleşmiyor. Yeni sertifika başka bir CA sertifikasından geliyorsa önce onun kaydını yayınlayın. Sunucu sabitlenen CA sertifikasını zincirinde yine gönderiyorsa bir şey değişmez.',
+  'dane.why.ta-mismatch': 'Hiçbir kayıt eşleşmiyor ve güven çapası kayıtları (kullanım 2) yüklenen zincirdeki hiçbir sertifikayla eşleşmiyor. Yeni sertifika başka bir CA sertifikasından geliyorsa önce onun kaydını yayınlayın. Sunucu sabitlenen CA sertifikasını zincirinde yine gönderiyorsa bir şey değişmez.',
   'dane.why.ta-unchecked': 'Güven çapası kayıtları (kullanım 2 / 0) bir CA sertifikasını sabitliyor ve yüklenen dosyada yalnızca uç sertifika var. Kontrol için tam zinciri (fullchain.pem) yükleyin ya da aşağıdaki DANE-EE kaydını da yayınlayın.',
   'dane.why.pkix': 'Yalnızca PKIX kayıtları (kullanım 0 / 1) yayınlanmış ve hiçbiri eşleşmiyor: DANE destekli istemciler yeni sertifikayı reddeder. Tarayıcılar bu kayıtları yok sayar.',
   'dane.why.error': 'DNS yanıtı alınamadı. Yeniden kontrol edin.',
@@ -583,22 +583,25 @@ function endpointDetails(ep, anchors) {
   return box;
 }
 
+/** The steps to publish first: error styling when an endpoint would break, warn styling otherwise. */
 function publishCard(summary) {
   const lines = [];
   for (const ep of summary.action) for (const s of ep.suggestions) if (!lines.includes(s.text)) lines.push(s.text);
   const code = CodeBlock(lines.join('\n'), { label: t('dane.publish.label'), wrap: true });
   code.dataset.dane = 'publish';
   const wait = summary.waitSeconds !== null ? t('dane.publish.step2', { wait: waitText(summary.waitSeconds) }) : t('dane.publish.step2NoTtl');
-  return Card({
+  const card = Card({
     title: t('dane.publish.title'),
     icon: 'alert',
-    className: 'dane-publish',
+    className: ['dane-publish', { 'dane-publish-warn': !summary.counts.danger }],
     children: h('ol', { class: 'dane-steps' },
       h('li', null, h('p', null, t('dane.publish.step1')), code),
       h('li', { dataset: { dane: 'wait' } }, wait),
       h('li', null, t('dane.publish.step3')),
       h('li', null, t('dane.publish.step4')))
   });
+  card.dataset.danePublish = summary.counts.danger ? 'error' : 'warn';
+  return card;
 }
 
 function valuesBlock(certs) {
@@ -655,7 +658,7 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
   const notes = [];
   if (plan.skipped.wildcard.length) {
     const base = plan.skipped.wildcard[0].slice(2);
-    notes.push(extraNames.length
+    notes.push(fromScan
       ? t('dane.skipped.wildcardScan', { list: plan.skipped.wildcard.join(', ') })
       : t('dane.skipped.wildcard', { list: plan.skipped.wildcard.join(', '), example: `_443._tcp.www.${base}` }));
   }

@@ -535,7 +535,10 @@ function makeContext(id, params, searchParams, controller, restored) {
     },
     shareUrl(p = ctx.params) {
       const base = globalThis.location.href.split('#')[0];
-      return `${base}${buildRoute(id, p)}`;
+      // A shared link shows the result: without the fill-only marker of a kept or carried route.
+      const shared = { ...p };
+      if (shared[FILL_PARAM] === FILL_VALUE) delete shared[FILL_PARAM];
+      return `${base}${buildRoute(id, shared)}`;
     },
     setBusy(busy) {
       if (isCurrent(ctx)) setBusyState(busy);
@@ -750,11 +753,13 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   if (token !== routeToken) return;
 
   // Coming back to a tool (a bare route or its result's own params) brings its kept result back;
-  // the URL then shows that result's params. A language re-mount has its own snapshot.
+  // the URL then shows that result's params with `run=0`, so a reload or a later Back only fills
+  // the form (the view's Copy link drops the marker). A language re-mount has its own snapshot.
   const kept = note === undefined ? pageSession.kept(def.id) : null;
   const plan = restorePlan(params, kept);
   if (plan) {
-    params = plan === 'restore' ? { ...kept.params } : { ...kept.params, [FILL_PARAM]: FILL_VALUE };
+    params = { ...kept.params };
+    if (Object.keys(params).length) params[FILL_PARAM] = FILL_VALUE;
     sp = new URLSearchParams(params);
     if (plan === 'restore') restored = kept.snapshot;
     const hash = buildRoute(def.id, params);

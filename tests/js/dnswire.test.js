@@ -719,6 +719,19 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     assert.equal(m.answers[1].text, '0 issue "ca\\226\\129\\166.example"');
   });
 
+  test('CAA: a tag that is not alphanumeric degrades to the generic form (no raw bidi / newline in text)', () => {
+    for (const tag of ['iss‮ue', 'x\nexample.com.\t300\tIN\tCAA\t0 issue', 'is sue', 'is-sue']) {
+      const rr = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'CAA', data: { flags: 0, tag, value: 'letsencrypt.org' } }] })).answers[0];
+      assert.ok(rr.error, `tag ${JSON.stringify(tag)} must be rejected`);
+      assert.match(rr.text, /^\\# \d+ [0-9A-F]+$/);
+    }
+    for (const tag of ['issue', 'iodef', 'ISSUEWILD', 'issuemail', 'contactemail1']) {
+      const rr = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'CAA', data: { flags: 0, tag, value: 'ca.example' } }] })).answers[0];
+      assert.equal(rr.error, undefined, tag);
+      assert.equal(rr.text, `0 ${tag.toLowerCase()} "ca.example"`);
+    }
+  });
+
   test('a malformed EDNS option keeps the answer and reports edns.error', () => {
     const good = encodeMessage({ flags: { qr: true }, answers: [{ name: 'x', type: 'A', data: '1.2.3.4' }], edns: { nsid: 'ab' } });
     const bad = good.slice();

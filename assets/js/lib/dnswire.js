@@ -1058,6 +1058,11 @@ const RDATA_PARSERS = {
     const tagLen = r.u8();
     if (tagLen === 0) throw new DnsWireError('CAA tag must not be empty', r.pos);
     const tagBytes = r.bytes(tagLen);
+    // RFC 8659 §4.1: the tag is ASCII letters and digits. It goes into `text`
+    // unquoted, so anything else (a bidi override, a newline) must not pass.
+    if (!tagBytes.every((b) => (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a))) {
+      throw new DnsWireError('CAA tag must be alphanumeric', r.pos);
+    }
     const valueBytes = r.rest();
     const tag = decodeUtf8Lenient(tagBytes).toLowerCase();
     const value = decodeUtf8Lenient(valueBytes);

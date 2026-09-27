@@ -117,9 +117,13 @@ registerStrings('en', {
   'ptr.asn.col.notes': 'Notes',
   'ptr.asn.select': 'Sweep {prefix}',
   'ptr.asn.tooLarge': 'larger than a /22',
-  'ptr.asn.part': 'Sweep {part}',
+  'ptr.asn.part': 'Use {part}',
   'ptr.asn.partTitle': 'Put its first /22 into the form; change the third number to pick another part',
   'ptr.asn.v6only': 'IPv6: not swept',
+  'ptr.asn.private': 'private space: not swept',
+  'ptr.asn.privateTitle': 'Public resolvers cannot see the reverse zone of private address space, so it is not swept.',
+  'ptr.asn.reserved': 'reserved space: not swept',
+  'ptr.asn.reservedTitle': 'Multicast or reserved space holds no host addresses to sweep.',
   'ptr.asn.gone': 'no longer announced',
   'ptr.asn.goneTitle': 'Seen in the last two weeks, but not at the end of that window.',
   'ptr.asn.selected': { zero: 'Nothing selected yet', one: 'Selected: {count} prefix · {addresses} of at most {max} addresses', other: 'Selected: {count} prefixes · {addresses} of at most {max} addresses' },
@@ -296,9 +300,13 @@ registerStrings('tr', {
   'ptr.asn.col.notes': 'Notlar',
   'ptr.asn.select': '{prefix} taransın',
   'ptr.asn.tooLarge': 'bir /22’den büyük',
-  'ptr.asn.part': '{part} tara',
+  'ptr.asn.part': '{part} kullan',
   'ptr.asn.partTitle': 'İlk /22’sini forma koyar; başka bir parçayı seçmek için üçüncü sayıyı değiştirin',
   'ptr.asn.v6only': 'IPv6: taranmaz',
+  'ptr.asn.private': 'özel adres alanı: taranmaz',
+  'ptr.asn.privateTitle': 'Genel çözümleyiciler özel adres alanının ters bölgesini göremez, bu yüzden taranmaz.',
+  'ptr.asn.reserved': 'ayrılmış adres alanı: taranmaz',
+  'ptr.asn.reservedTitle': 'Multicast ya da ayrılmış adres alanında taranacak host adresi yoktur.',
   'ptr.asn.gone': 'artık duyurulmuyor',
   'ptr.asn.goneTitle': 'Son iki haftada görüldü, ama o sürenin sonunda görülmedi.',
   'ptr.asn.selected': { zero: 'Henüz bir şey seçilmedi', other: 'Seçilen: {count} önek · en çok {max} adresten {addresses} adres' },
@@ -486,10 +494,12 @@ export function shareParams(target, focus = '') {
 /**
  * The form, the current / last sweep and AS lookup, the table's filter, kept for the page session.
  * `routeTarget`: the target in the URL that is already in the form (a link applied, or the last
- * run's); `prompt`: a link pre-filled the form and waits for a click.
+ * run's); `prompt`: a link pre-filled the form and waits for a click. Each sweep starts at the
+ * 'ptr' filter; `filterChosen`: the user picked one for this sweep (else a sweep that ends
+ * without any PTR name shows all its addresses).
  */
 const session = {
-  text: '', focus: '', job: null, asn: null, filter: 'ptr', expand: false, prompt: false, routeTarget: null
+  text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false, routeTarget: null
 };
 let jobCounter = 0;
 let active = null;
@@ -693,14 +703,11 @@ export function mount(container, ctx) {
     for (const issue of parsed.issues) {
       // "Nothing to sweep" adds nothing next to another error that already says why.
       if (issue.code === 'nothing' && parsed.issues.some((i) => i !== issue && i.severity === 'error')) continue;
-      // t() groups a numeric {count} itself (and picks the plural form from it).
-      const params = { ...issue.params };
-      if (typeof params.max === 'number') params.max = formatNumber(params.max);
       const suggestion = issue.code === 'too-large' && issue.params.suggestion ? issue.params.suggestion : null;
       const alert = Alert({
         variant: issue.severity === 'error' ? 'error' : issue.severity === 'warn' ? 'warn' : 'info',
         compact: true,
-        message: t(issueKey(issue), params),
+        message: issueText(issue),
         actions: suggestion ? [Button({
           label: t('ptr.issue.use', { suggestion }), size: 'sm', dataset: { action: 'ptr-use-suggestion' },
           onClick: () => {
@@ -716,6 +723,13 @@ export function mount(container, ctx) {
     }
   }
   const renderParsedSoon = debounce(renderParsed, 150);
+
+  /** The message of a parseSweepTarget issue (t() groups a numeric {count} itself and picks its plural form). */
+  function issueText(issue) {
+    const params = { ...issue.params };
+    if (typeof params.max === 'number') params.max = formatNumber(params.max);
+    return t(issueKey(issue), params);
+  }
 
   /* --- link prompt ----------------------------------------------------------- */
   function showPrompt() {
@@ -737,6 +751,8 @@ export function mount(container, ctx) {
   /* --- run ------------------------------------------------------------------- */
   let ui = null;
   let starting = false;
+  /** The prefix picker's "Sweep selected" state, re-derived when a sweep starts or ends. */
+  let syncPicker = null;
   const isRunning = () => !!(session.job && session.job.status === 'running');
   const isListing = () => !!(session.asn && session.asn.status === 'loading' && session.asn.controller);
 
@@ -757,6 +773,7 @@ export function mount(container, ctx) {
     if (moveFocus) (stoppable ? stopBtn : runBtn).focus({ preventScroll: true });
     ctx.setBusy(sweeping ? t('ptr.busy') : listing ? t('ptr.busyAsn') : false);
     renderHeaderActions();
+    if (syncPicker) syncPicker();
   }
 
   function stop() {
@@ -811,6 +828,9 @@ export function mount(container, ctx) {
     }
     if (ctx.signal.aborted) return;
     setRouteTarget(target);
+    // Every sweep starts at the default filter (one picked for an earlier sweep does not carry over).
+    session.filter = 'ptr';
+    session.filterChosen = false;
     const job = startJob({
       addresses,
       label,
@@ -896,6 +916,7 @@ export function mount(container, ctx) {
 
   function renderAsn() {
     clear(asnHost);
+    syncPicker = null;
     const entry = session.asn;
     if (!entry || entry.status === 'cancelled') {
       emptyEl.hidden = !!session.job;
@@ -927,6 +948,8 @@ export function mount(container, ctx) {
       });
     }
     const selectedEl = h('div', { class: 'text-sm ptr-asn-selected', attrs: { 'aria-live': 'polite' } });
+    // Why "Sweep selected" did not start (the picked prefixes hold nothing to sweep).
+    const pickIssues = h('div', { class: 'stack-sm ptr-asn-issues' });
     const sweepBtn = Button({ label: t('ptr.asn.sweep'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'ptr-asn-sweep' }, onClick: () => sweepSelected() });
     const clearBtn = Button({
       label: t('ptr.asn.clear'), variant: 'ghost', size: 'sm', dataset: { action: 'ptr-asn-clear' },
@@ -939,17 +962,55 @@ export function mount(container, ctx) {
     function renderSelection() {
       const s = prefixSelection(r.prefixes, entry.selected);
       clear(selectedEl);
+      clear(pickIssues);
       selectedEl.append(h('span', null, t('ptr.asn.selected', { count: s.count, addresses: formatNumber(s.addresses), max: formatNumber(s.max) })));
       if (s.over) selectedEl.append(h('span', { class: 'ptr-asn-over' }, Icon('alert', { size: 13 }), ' ', t('ptr.asn.over')));
       selectedEl.dataset.over = s.over ? '1' : '0';
       sweepBtn.disabled = !s.count || s.over || isRunning();
       clearBtn.disabled = !s.count;
     }
+    /**
+     * Why a prefix cannot be ticked (IPv6, private or reserved space, larger than a /22 — with
+     * "Use <its first /22>", which fills the form) and whether it is still announced.
+     */
+    function prefixNotes(p) {
+      const bits = [];
+      if (p.version === 6) bits.push(Badge(t('ptr.asn.v6only'), { title: t('ptr.issue.v6-range', { items: p.prefix }) }));
+      else if (p.skipped) bits.push(Badge(t(`ptr.asn.${p.skipped}`), { title: t(`ptr.asn.${p.skipped}Title`), className: 'ptr-asn-skipped' }));
+      else if (!p.sweepable) {
+        bits.push(Badge(t('ptr.asn.tooLarge'), { variant: 'warn' }));
+        if (p.part) {
+          bits.push(h('button', {
+            type: 'button', class: 'link-btn text-sm', title: t('ptr.asn.partTitle'), dataset: { action: 'ptr-asn-part', part: p.part },
+            on: {
+              click: () => {
+                targetField.value = p.part;
+                session.text = p.part;
+                renderParsed();
+                targetField.focus();
+                targetField.input.scrollIntoView({ block: 'nearest' });
+              }
+            }
+          }, t('ptr.asn.part', { part: p.part })));
+        }
+      }
+      if (!p.current) bits.push(Badge(t('ptr.asn.gone'), { title: t('ptr.asn.goneTitle') }));
+      return bits.length ? h('div', { class: 'cluster' }, bits) : null;
+    }
+
     function sweepSelected() {
       const s = prefixSelection(r.prefixes, entry.selected);
       if (!s.count || s.over || isRunning()) return;
       const target = parseSweepTarget(s.cidrs.join('\n'));
-      if (!target.ok) return;
+      clear(pickIssues);
+      if (!target.ok) {
+        for (const issue of target.issues.filter((i) => i.severity === 'error')) {
+          const alert = Alert({ variant: 'error', compact: true, message: issueText(issue) });
+          alert.dataset.issue = issue.code;
+          pickIssues.append(alert);
+        }
+        return;
+      }
       const label = t('ptr.asn.label', { asn: entry.asn, prefixes: target.label });
       sweep(target.addresses, label, s.cidrs.join('\n'));
     }
@@ -981,45 +1042,32 @@ export function mount(container, ctx) {
             }
           })
         },
-        { key: 'prefix', label: t('ptr.asn.col.prefix'), mono: true, sortable: true, sortValue: (p) => ipSortValue(p.prefix.split('/')[0]), searchValue: (p) => p.prefix },
+        {
+          key: 'prefix', label: t('ptr.asn.col.prefix'), sortable: true, sortValue: (p) => ipSortValue(p.prefix.split('/')[0]), searchValue: (p) => p.prefix,
+          // On a phone the notes (why a box cannot be ticked) sit under the prefix; their own column is hidden.
+          render: (p) => {
+            const notes = prefixNotes(p);
+            return h('div', { class: 'ptr-asn-prefix' }, h('span', { class: 'mono' }, p.prefix),
+              notes ? h('div', { class: 'ptr-asn-notes-inline' }, notes) : null);
+          }
+        },
         {
           key: 'size', label: t('ptr.asn.col.size'), sortable: true, align: 'end', className: 'num',
           sortValue: (p) => p.size, render: (p) => (p.version === 4 ? formatNumber(p.size) : `/${p.length}`)
         },
-        {
-          key: 'notes', label: t('ptr.asn.col.notes'), searchable: false,
-          render: (p) => {
-            const bits = [];
-            if (p.version === 6) bits.push(Badge(t('ptr.asn.v6only'), { title: t('ptr.issue.v6-range', { items: p.prefix }) }));
-            else if (!p.sweepable) {
-              bits.push(Badge(t('ptr.asn.tooLarge'), { variant: 'warn' }));
-              bits.push(h('button', {
-                type: 'button', class: 'link-btn text-sm', title: t('ptr.asn.partTitle'), dataset: { action: 'ptr-asn-part', part: p.part },
-                on: {
-                  click: () => {
-                    targetField.value = p.part;
-                    session.text = p.part;
-                    renderParsed();
-                    targetField.focus();
-                    targetField.input.scrollIntoView({ block: 'nearest' });
-                  }
-                }
-              }, t('ptr.asn.part', { part: p.part })));
-            }
-            if (!p.current) bits.push(Badge(t('ptr.asn.gone'), { title: t('ptr.asn.goneTitle') }));
-            return bits.length ? h('div', { class: 'cluster' }, bits) : null;
-          }
-        }
+        { key: 'notes', label: t('ptr.asn.col.notes'), searchable: false, className: 'ptr-asn-notes', render: (p) => prefixNotes(p) }
       ]
     });
     renderSelection();
+    syncPicker = renderSelection;
     return Card({
       className: 'ptr-asn', title: t('ptr.asn.title', { asn: entry.asn }), icon: 'network',
       children: h('div', { class: 'stack-sm' },
         summary,
         h('p', { class: 'muted text-sm' }, t('ptr.asn.pick', { max: formatNumber(SWEEP_MAX_ADDRESSES) })),
         table.el,
-        h('div', { class: 'ptr-asn-foot' }, selectedEl, h('div', { class: 'cluster' }, clearBtn, sweepBtn)))
+        h('div', { class: 'ptr-asn-foot' }, selectedEl, h('div', { class: 'cluster' }, clearBtn, sweepBtn)),
+        pickIssues)
     });
   }
 
@@ -1118,14 +1166,15 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
 
   /* stats */
   const inv = () => state.inventory.servers.length > 0;
+  const pick = (f) => () => setFilter(f, { chosen: true });
   const stat = {
-    addresses: StatCard({ label: t('ptr.stat.addresses'), icon: 'network', variant: 'accent', onClick: () => setFilter('all') }),
-    named: StatCard({ label: t('ptr.stat.named'), icon: 'swap', variant: 'info', onClick: () => setFilter('ptr') }),
-    confirmed: StatCard({ label: t('ptr.stat.confirmed'), icon: 'check-circle', variant: 'ok', onClick: () => setFilter('confirmed') }),
-    none: StatCard({ label: t('ptr.stat.none'), icon: 'minus-circle', variant: 'unresolved', onClick: () => setFilter('none') }),
-    failed: StatCard({ label: t('ptr.stat.failed'), icon: 'x-circle', variant: 'nxdomain', onClick: () => setFilter('failed') }),
+    addresses: StatCard({ label: t('ptr.stat.addresses'), icon: 'network', variant: 'accent', onClick: pick('all') }),
+    named: StatCard({ label: t('ptr.stat.named'), icon: 'swap', variant: 'info', onClick: pick('ptr') }),
+    confirmed: StatCard({ label: t('ptr.stat.confirmed'), icon: 'check-circle', variant: 'ok', onClick: pick('confirmed') }),
+    none: StatCard({ label: t('ptr.stat.none'), icon: 'minus-circle', variant: 'unresolved', onClick: pick('none') }),
+    failed: StatCard({ label: t('ptr.stat.failed'), icon: 'x-circle', variant: 'nxdomain', onClick: pick('failed') }),
     // The sixth card: names under the focus domain, or (without one) the matched servers.
-    focus: StatCard({ label: t('ptr.stat.focus', { domain: '' }), icon: 'target', variant: 'accent', onClick: () => setFilter('focus') }),
+    focus: StatCard({ label: t('ptr.stat.focus', { domain: '' }), icon: 'target', variant: 'accent', onClick: pick('focus') }),
     servers: StatCard({ label: t('ptr.stat.servers'), icon: 'server', variant: 'direct' })
   };
   const statFilters = { addresses: 'all', named: 'ptr', confirmed: 'confirmed', none: 'none', failed: 'failed', focus: 'focus' };
@@ -1142,7 +1191,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     value: session.filter,
     className: 'ptr-filter',
     options: SWEEP_FILTERS.map((f) => ({ value: f, label: t(`ptr.filter.${f}`) })),
-    onChange: (v) => setFilter(v)
+    onChange: (v) => setFilter(v, { chosen: true })
   });
   filterSel.input.dataset.role = 'ptr-filter';
   const expandBox = checkbox({
@@ -1314,8 +1363,9 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
   const syncSoon = throttle(syncRows, 250);
 
-  /** Show `f` ({@link SWEEP_FILTERS}). */
-  function setFilter(f) {
+  /** Show `f` ({@link SWEEP_FILTERS}); `chosen`: the user picked it (the select or a stat card). */
+  function setFilter(f, { chosen = false } = {}) {
+    if (chosen) session.filterChosen = true;
     session.filter = SWEEP_FILTERS.includes(f) ? f : 'all';
     filterSel.value = session.filter;
     applyFilter();
@@ -1522,6 +1572,8 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     }
     table.setLoading(false);
     syncRows();
+    // The default filter would hide every row of a sweep that found no PTR name: show them all.
+    if (!session.filterChosen && session.filter === 'ptr' && job.results.length && !job.results.some((r) => r.names.length)) setFilter('all');
     renderProgress();
     stopTicker();
     onFinish();

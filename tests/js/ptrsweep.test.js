@@ -312,10 +312,24 @@ describe('announced prefixes', () => {
     const by = Object.fromEntries(r.prefixes.map((p) => [p.prefix, p]));
     assert.equal(by['192.0.2.0/24'].current, false, 'withdrawn before the window ended');
     assert.equal(by['198.51.100.0/24'].current, true, 'one timeline reaching the end is enough');
-    assert.deepEqual([by['198.18.0.0/15'].size, by['198.18.0.0/15'].sweepable, by['198.18.0.0/15'].part], [131072, false, '198.18.0.0/22']);
-    assert.deepEqual([by['203.0.113.0/24'].sweepable, by['203.0.113.0/24'].part], [true, null]);
-    assert.deepEqual([by['2001:db8::/32'].version, by['2001:db8::/32'].sweepable, by['2001:db8::/32'].part], [6, false, null]);
+    // a wholly private prefix is listed, never swept, and offers no part of it
+    assert.deepEqual([by['198.18.0.0/15'].size, by['198.18.0.0/15'].sweepable, by['198.18.0.0/15'].skipped, by['198.18.0.0/15'].part], [131072, false, 'private', null]);
+    assert.deepEqual([by['203.0.113.0/24'].sweepable, by['203.0.113.0/24'].skipped, by['203.0.113.0/24'].part], [true, null, null]);
+    assert.deepEqual([by['2001:db8::/32'].version, by['2001:db8::/32'].sweepable, by['2001:db8::/32'].skipped, by['2001:db8::/32'].part], [6, false, null, null]);
     assert.deepEqual([r.v4, r.v6, r.v4Addresses, r.sweepable], [4, 1, 131072 + 768, 3]);
+  });
+
+  test('parse: private and reserved prefixes are not sweepable; a large public one offers its first /22 with something to sweep', () => {
+    const r = P.parseAnnouncedPrefixes(ripe(['100.64.0.0/24', '192.0.0.0/24', '224.0.0.0/24', '192.0.0.0/20', '192.0.0.0/23', '198.51.100.0/24']
+      .map((prefix) => ({ prefix, timelines: tl() }))));
+    const by = Object.fromEntries(r.prefixes.map((p) => [p.prefix, [p.sweepable, p.skipped, p.part]]));
+    assert.deepEqual(by, {
+      '100.64.0.0/24': [false, 'private', null], '192.0.0.0/24': [false, 'private', null], '224.0.0.0/24': [false, 'reserved', null],
+      '192.0.0.0/20': [false, null, '192.0.0.0/22'], '192.0.0.0/23': [true, null, null], '198.51.100.0/24': [true, null, null]
+    });
+    assert.equal(r.sweepable, 2);
+    // a picked private prefix is never swept
+    assert.deepEqual(P.prefixSelection(r.prefixes, ['100.64.0.0/24', '198.51.100.0/24']).cidrs, ['198.51.100.0/24']);
     assert.equal(r.queryEnd, WINDOW.query_endtime);
   });
 
@@ -361,11 +375,11 @@ describe('announced prefixes', () => {
   });
 
   test('prefixSelection: a prefix and a more specific one inside it count their addresses once', () => {
-    const r = P.parseAnnouncedPrefixes(ripe(['198.18.0.0/22', '198.18.1.0/24', '198.18.2.0/23', '192.0.2.0/24'].map((prefix) => ({ prefix, timelines: tl() }))));
-    const all = P.prefixSelection(r.prefixes, r.prefixes.map((p) => p.prefix));
-    assert.deepEqual([all.count, all.addresses, all.over], [4, 1024 + 256, true]);
-    const nested = P.prefixSelection(r.prefixes, ['198.18.0.0/22', '198.18.1.0/24', '198.18.2.0/23']);
-    assert.deepEqual([nested.count, nested.addresses, nested.over], [3, 1024, false]);
+    const r = P.parseAnnouncedPrefixes(ripe(['192.0.2.0/24', '192.0.2.0/25', '192.0.2.128/26', '198.51.100.0/24', '203.0.113.0/24'].map((prefix) => ({ prefix, timelines: tl() }))));
+    const all = P.prefixSelection(r.prefixes, r.prefixes.map((p) => p.prefix), { max: 512 });
+    assert.deepEqual([all.count, all.addresses, all.over], [5, 768, true]);
+    const nested = P.prefixSelection(r.prefixes, ['192.0.2.0/24', '192.0.2.0/25', '192.0.2.128/26'], { max: 512 });
+    assert.deepEqual([nested.count, nested.addresses, nested.over], [3, 256, false]);
   });
 });
 

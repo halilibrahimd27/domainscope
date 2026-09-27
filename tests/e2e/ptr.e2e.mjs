@@ -83,7 +83,7 @@ const RIPE = {
   data: {
     resource: '64496', ...WINDOW, latest_time: WINDOW.query_endtime,
     prefixes: [
-      ['192.0.2.0/24', WINDOW.query_endtime], ['198.51.100.0/24', WINDOW.query_endtime], ['203.0.113.0/24', '2026-09-20T08:00:00'],
+      ['192.0.0.0/20', WINDOW.query_endtime], ['192.0.2.0/24', WINDOW.query_endtime], ['198.51.100.0/24', WINDOW.query_endtime], ['203.0.113.0/24', '2026-09-20T08:00:00'],
       ['198.18.0.0/15', WINDOW.query_endtime], ['2001:db8::/32', WINDOW.query_endtime]
     ].map(([prefix, endtime]) => ({ prefix, timelines: [{ starttime: WINDOW.query_starttime, endtime }] }))
   }
@@ -493,7 +493,7 @@ async function main() {
       await typeTarget(page, 'AS64496');
       await page.waitFor(() => /List prefixes/.test(document.querySelector('[data-action="ptr-run"]').textContent), { message: 'button label' });
       await page.click('[data-action="ptr-run"]');
-      await page.waitFor(() => document.querySelectorAll('.ptr-asn-table tbody tr.dt-row').length === 5, { message: 'picker' });
+      await page.waitFor(() => document.querySelectorAll('.ptr-asn-table tbody tr.dt-row').length === 6, { message: 'picker' });
       const ripe = await page.evaluate(() => window.__ripeLog);
       assertEqual(ripe, ['https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS64496&sourceapp=domainscope'], 'one request');
       const picker = await page.evaluate(() => [...document.querySelectorAll('.ptr-asn-table tbody tr.dt-row')].map((tr) => {
@@ -501,9 +501,13 @@ async function main() {
         return `${cb.dataset.prefix}:${cb.disabled ? 'off' : 'on'}:${tr.cells[3].textContent.trim()}`;
       }));
       assertEqual(picker, [
-        '192.0.2.0/24:on:—', '198.18.0.0/15:off:larger than a /22Sweep 198.18.0.0/22', '198.51.100.0/24:on:—',
-        '203.0.113.0/24:on:no longer announced', '2001:db8::/32:off:IPv6: not swept'
+        '192.0.0.0/20:off:larger than a /22Use 192.0.0.0/22', '192.0.2.0/24:on:—', '198.18.0.0/15:off:private space: not swept',
+        '198.51.100.0/24:on:—', '203.0.113.0/24:on:no longer announced', '2001:db8::/32:off:IPv6: not swept'
       ], 'rows');
+      // "Use" only fills the form with the /22 (nothing is sent)
+      await jsClick(page, '.ptr-asn-table td.ptr-asn-notes [data-action="ptr-asn-part"]');
+      await page.waitFor(() => document.querySelector('[data-role="ptr-target"]').value === '192.0.0.0/22', { message: 'part used' });
+      assertEqual(await page.evaluate(() => window.__ripeLog.length), 1, 'no new request');
       for (const p of ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24']) await jsClick(page, `.ptr-asn-table input[data-prefix="${p}"]`);
       assert(/Selected: 3 prefixes · 768 of at most 1,024 addresses/.test(await text(page, '.ptr-asn-selected')), 'selection');
       await jsClick(page, '.ptr-asn-table input[data-prefix="192.0.2.0/24"]');
@@ -516,6 +520,17 @@ async function main() {
       await sleep(120);
       assertEqual((await rows(page)).map((x) => `${x.ip} ${x.ptr} ${x.status}`), ['198.51.100.1 ns1.example.org confirmed'], 'the one name');
       assertEqual(await page.evaluate(() => window.__ripeLog.length), 1, 'still one RIPEstat request');
+    });
+
+    await run.step('each sweep starts at the default filter; one that finds no PTR name shows every address', async () => {
+      await setSelect(page, '[data-role="ptr-filter"]', 'confirmed');
+      await typeTarget(page, '203.0.113.0/26');
+      await sleep(200);
+      await page.click('[data-action="ptr-run"]');
+      await waitDone(page, 'a sweep without names');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="ptr-filter"]').value), 'all', 'filter');
+      assertEqual((await rows(page)).length, 64, 'every address');
+      assert(!await page.evaluate(() => !!document.querySelector('.ptr-table .empty')), 'no "nothing matches"');
     });
 
     await run.step('Domain Health: the MX addresses get forward-confirmed reverse DNS rows and a table', async () => {
@@ -569,8 +584,14 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await typeTarget(page, 'AS64496');
       await page.click('[data-action="ptr-run"]');
-      await page.waitFor(() => document.querySelectorAll('.ptr-asn-table tbody tr.dt-row').length === 5, { message: 'picker (phone)' });
+      await page.waitFor(() => document.querySelectorAll('.ptr-asn-table tbody tr.dt-row').length === 6, { message: 'picker (phone)' });
       await assertNoHorizontalScroll(page, 'picker');
+      // why a box cannot be ticked sits under the prefix; the Notes column is hidden
+      const notes = await page.evaluate(() => ({
+        column: [...document.querySelectorAll('.ptr-asn-table td.ptr-asn-notes')].some((td) => getComputedStyle(td).display !== 'none'),
+        inline: [...document.querySelectorAll('.ptr-asn-table .ptr-asn-notes-inline')].map((el) => getComputedStyle(el).display !== 'none' && el.textContent.trim())
+      }));
+      assertEqual(notes, { column: false, inline: ['larger than a /22Use 192.0.0.0/22', 'private space: not swept', 'no longer announced', 'IPv6: not swept'] }, 'notes under the prefix');
       await shot(page, opts, 'ptr-asn-picker-mobile-light-en');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await page.setViewport({ width: 1440, height: 900 });

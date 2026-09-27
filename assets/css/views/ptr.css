@@ -116,6 +116,37 @@
   margin: 0;
 }
 
+.ptr-asn-issues:empty {
+  display: none;
+}
+
+/* A phone: why a box cannot be ticked sits under the prefix, and the Notes column goes. */
+.ptr-asn-prefix {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.ptr-asn-notes-inline {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .ptr-asn-table .dt-table th.ptr-asn-notes,
+  .ptr-asn-table .dt-table td.ptr-asn-notes {
+    display: none;
+  }
+
+  .ptr-asn-notes-inline {
+    display: block;
+  }
+
+  .ptr-asn-table .dt-table td {
+    white-space: normal;
+  }
+}
+
 /* Results */
 .ptr-results-title {
   margin: 0;

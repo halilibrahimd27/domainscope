@@ -471,14 +471,19 @@ export function announcedPrefixesUrl(asn) {
  * @property {number} length prefix length
  * @property {number} size addresses (a float for IPv6)
  * @property {boolean} current seen until the end of the queried window (still announced)
- * @property {boolean} sweepable IPv4 and at most {@link SWEEP_MAX_ADDRESSES} addresses
- * @property {string|null} part the first sweepable /22 of an IPv4 prefix too large to sweep whole
+ * @property {boolean} sweepable IPv4, at most {@link SWEEP_MAX_ADDRESSES} addresses, and not
+ *   wholly private or reserved
+ * @property {'private'|'reserved'|null} skipped the whole IPv4 prefix is private or reserved
+ *   space (announced by mistake, or a lab): nothing in it would be swept
+ * @property {string|null} part the first /22 of a public IPv4 prefix too large to sweep whole
+ *   (null when that /22 holds nothing to sweep)
  */
 
 /**
  * Parse a RIPEstat announced-prefixes answer: IPv4 first in address order, then IPv6.
  * RIPEstat looks back two weeks; a prefix whose last timeline ends before the window does is
- * no longer announced (`current: false`).
+ * no longer announced (`current: false`). A wholly private or reserved IPv4 prefix is listed
+ * but never sweepable (`skipped`): public resolvers cannot see its reverse zone.
  * @param {object} json the full response ({ status, data: { prefixes: [{ prefix, timelines }], query_endtime } })
  * @param {{ asn?: number, max?: number }} [opts]
  * @returns {{ asn: number|null, prefixes: AnnouncedPrefix[], v4: number, v6: number, v4Addresses: number, sweepable: number,
@@ -507,10 +512,14 @@ export function parseAnnouncedPrefixes(json, { asn = null, max = SWEEP_MAX_ADDRE
       continue;
     }
     const size = 2 ** ((c.version === 4 ? 32 : 128) - c.prefix);
-    const sweepable = c.version === 4 && size <= max;
+    const skipped = c.version === 4 ? wholeBlockSkipped(c.network, c.network + BigInt(size) - 1n) : null;
+    const sweepable = c.version === 4 && !skipped && size <= max;
+    // The first /22 of a larger public prefix, unless that /22 has nothing to sweep either.
+    let part = c.version === 4 && !skipped && size > max ? firstSubnet(prefix, prefixFor(max)) : null;
+    const first = part ? parseCidr(part) : null;
+    if (first && wholeBlockSkipped(first.network, first.network + 2n ** BigInt(32 - first.prefix) - 1n)) part = null;
     byPrefix.set(prefix, {
-      prefix, version: c.version, length: c.prefix, size, current, sweepable,
-      part: c.version === 4 && !sweepable ? firstSubnet(prefix, prefixFor(max)) : null,
+      prefix, version: c.version, length: c.prefix, size, current, sweepable, skipped, part,
       sortKey: (BigInt(c.version) << 130n) + c.network
     });
   }

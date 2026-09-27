@@ -123,6 +123,7 @@ registerStrings('en', {
   'hlt.dnssec.signed': 'Signed, not validated',
   'hlt.dnssec.unsigned': 'Not signed',
   'hlt.dnssec.unknown': 'Unknown',
+  'hlt.dnssec.fromZone': 'Not a zone apex: this is the state of the zone {zone}.',
   'hlt.dnssec.ds': 'DS records (at the parent)',
   'hlt.dnssec.dnskey': 'DNSKEY records (in the zone)',
   'hlt.dnssec.algorithms': 'Algorithms',
@@ -274,6 +275,7 @@ registerStrings('tr', {
   'hlt.dnssec.signed': 'İmzalı, doğrulanmadı',
   'hlt.dnssec.unsigned': 'İmzasız',
   'hlt.dnssec.unknown': 'Bilinmiyor',
+  'hlt.dnssec.fromZone': 'Bölge kökü değil: bu, {zone} bölgesinin durumu.',
   'hlt.dnssec.ds': 'DS kayıtları (üst bölgede)',
   'hlt.dnssec.dnskey': 'DNSKEY kayıtları (bölgede)',
   'hlt.dnssec.algorithms': 'Algoritmalar',
@@ -637,6 +639,8 @@ export function mount(container, ctx) {
     const keys = report.records.dnskey || [];
     const children = [
       h('div', { class: 'cluster' }, Badge(t(`hlt.dnssec.${state}`), { variant, icon: state === 'validated' ? 'shield' : state === 'broken' ? 'x-circle' : null })),
+      // Below the apex lib/health reads the enclosing zone's state from the AD bit.
+      report.zone && report.zone !== report.domain && d.signed !== null ? h('p', { class: 'muted text-sm' }, t('hlt.dnssec.fromZone', { zone: report.zone })) : null,
       d.ede && d.ede.length ? Alert({ variant: 'error', compact: true, title: t('hlt.dnssec.ede'), message: d.ede.join(' · ') }) : null,
       d.algorithms && d.algorithms.length ? h('div', { class: 'text-sm' }, h('span', { class: 'muted' }, `${t('hlt.dnssec.algorithms')}: `), d.algorithms.join(', ')) : null,
       ds.length ? h('div', { class: 'stack-sm' }, h('div', { class: 'hlt-subtitle' }, t('hlt.dnssec.ds')),

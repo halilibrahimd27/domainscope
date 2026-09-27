@@ -1485,6 +1485,11 @@ async function analyzeDnssec(name, d, { dsR, dnskeyR, soaR, isApex }) {
   else info.validated = !!dnskeyR.flags.ad;
   const algNums = uniq([...ds.map((x) => x.algorithm), ...dnskey.map((x) => x.algorithm)].filter(Number.isInteger));
   info.algorithms = algNums.map((n) => DNSSEC_ALGORITHMS[n] || `ALG${n}`);
+  if (isApex === false && !ds.length && !dnskey.length) {
+    // Below the zone apex there is no DS / DNSKEY of its own: the name is signed when its zone is, which the
+    // AD bit on the (NODATA) DNSKEY answer shows. AD=0 from a validating resolver means insecure.
+    info.signed = info.validated;
+  }
 
   if (failed(dsR) || failed(dnskeyR)) {
     // Only one side answered: the other side's empty list is not a proven absence,
@@ -1651,6 +1656,8 @@ function analyzeRdap(r, now) {
  *   rdap?: boolean, issuerDN?: string|object|null, wildcardCert?: boolean, now?: Date }} opts
  *   Extensions: rdap (false skips the RDAP lookup), issuerDN + wildcardCert (adds a CAA check for
  *   that certificate's CA), now (clock for expiry maths, tests).
+ *   For a name below its zone apex (`zone` !== `domain`) `dnssec.signed` is the enclosing zone's
+ *   state, read from the AD bit; `zone` is the name's own zone, also when it is a CNAME.
  * @returns {Promise<{ domain: string, checkedAt: Date, zone: string|null,
  *   records: { ns: string[], soa: object|null, mx: Array<{ preference: number, exchange: string }>, a: string[],
  *     aaaa: string[], txt: string[], spf: string|null, dmarc: string|null,

@@ -3548,6 +3548,14 @@ class NotifyFormatTests(unittest.TestCase):
         self.assertEqual(generic['expiring'],
                          [dict(entry, endpointsTotal=7) for entry in self.monitor.expiring])
         json.dumps(generic)  # serialisable
+        # the state file's local path stays here: only its base name goes out
+        for path in ('/home/ops/state/last.json', 'C:\\ops\\state\\last.json'):
+            monitor = sos.MonitorResult(baseline=dict(self.monitor.baseline, file=path),
+                                        changes=self.monitor.changes)
+            _, generic = sos.build_notification('json', 'https://example.com/hook', self.doc,
+                                                monitor)
+            self.assertEqual(generic['baseline']['file'], 'last.json')
+            self.assertEqual(monitor.baseline['file'], path)  # not changed in place
         _, generic = sos.build_notification('json', 'https://example.com/hook',
                                             sos.report_to_dict(self.report))
         self.assertEqual((generic['changes'], generic['expiring'], generic['expiringTotal']),
@@ -3753,7 +3761,7 @@ class NotifyDeliveryTests(unittest.TestCase):
                     self.assertIn('9 changes', payload['text'])
                 else:
                     self.assertEqual(len(payload['changes']), 9)
-                    self.assertEqual(payload['baseline']['file'], self.baseline)
+                    self.assertEqual(payload['baseline']['file'], os.path.basename(self.baseline))
 
     def test_environment_variable_and_when_to_send(self):
         code, _, err, hook = self.run_cli('--baseline', self.baseline, env=True)

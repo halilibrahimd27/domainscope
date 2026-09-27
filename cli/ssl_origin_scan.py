@@ -5063,7 +5063,8 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
     * ``googlechat`` - ``{text}`` like Slack's, with ``<`` turned into a lookalike
       rather than escaped (:func:`_no_angle_brackets`);
     * ``json`` - ``{tool, version, title, text, finishedAt, summary, baseline, changes,
-      changesTotal, warnDays, expiring, expiringTotal}``: at most
+      changesTotal, warnDays, expiring, expiringTotal}`` (``baseline.file`` as a base
+      name): at most
       :data:`NOTIFY_MAX_JSON_CHANGES` changes and :data:`NOTIFY_MAX_JSON_EXPIRING`
       certificates, each with at most :data:`NOTIFY_MAX_JSON_ENDPOINTS` endpoints and
       their ``endpointsTotal`` - a receiver may refuse a large body.
@@ -5101,7 +5102,7 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
         'tool': 'ssl_origin_scan', 'version': __version__, 'title': title,
         'text': '%s\n%s' % (title, body), 'finishedAt': doc.get('finishedAt'),
         'summary': doc.get('summary'),
-        'baseline': monitor.baseline if monitor is not None else None,
+        'baseline': _payload_baseline(monitor.baseline if monitor is not None else None),
         'changes': (changes[:NOTIFY_MAX_JSON_CHANGES]
                     if monitor is not None and monitor.changes is not None else None),
         'changesTotal': len(changes),
@@ -5109,6 +5110,14 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
         'expiring': expiring,
         'expiringTotal': len(monitor.expiring or []) if monitor is not None else 0,
     }
+
+
+def _payload_baseline(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The ``baseline`` block of a JSON webhook: the state file's base name only, never
+    its local path, which a third-party endpoint has no use for."""
+    if info is None or not isinstance(info.get('file'), str):
+        return info
+    return dict(info, file=os.path.basename(info['file'].replace('\\', '/')))
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

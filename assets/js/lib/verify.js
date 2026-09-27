@@ -872,11 +872,12 @@ export function scopePairs(pairs, scope) {
  * on or off never moves another row past the cap). Skipped pairs cost
  * nothing; the others take the places in this order, each tier in execution
  * order: the first DNS or zone pair of every server address, the other DNS
- * and zone pairs, the first origin-hint pair of every address, the other hint
- * pairs. So a server with many names never pushes another server (or another
- * address of its own) out, whether DNS or the zone file ties it to the
- * certificate, and a hint candidate never pushes out a pair the verdicts
- * treat as authoritative.
+ * pairs, the other zone pairs, the first origin-hint pair of every address,
+ * the other hint pairs. So a server with many names never pushes another
+ * server (or another address of its own) out, whether DNS or the zone file
+ * ties it to the certificate; zone origins held back by the opt-in take at
+ * most one place per address ahead of a DNS name; and a hint candidate never
+ * pushes out a pair the verdicts treat as authoritative.
  * @param {VerifyPair[]} pairs
  * @param {number} maxRows
  * @returns {Set<VerifyPair>}
@@ -889,8 +890,9 @@ function pairsOverCap(pairs, maxRows) {
   const ranked = checkable.map((p, i) => {
     const hint = !isDnsLike(p.via);
     const k = `${hint ? 'hint' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}`;
-    const tier = (hint ? 2 : 0) + (seen.has(k) ? 1 : 0);
+    const first = !seen.has(k);
     seen.add(k);
+    const tier = hint ? (first ? 3 : 4) : first ? 0 : p.via === 'zone' ? 2 : 1;
     return { p, i, tier };
   });
   ranked.sort((a, b) => a.tier - b.tier || a.i - b.i);

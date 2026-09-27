@@ -887,6 +887,31 @@ describe('the cap on checks', () => {
     assert.deepEqual(V.cliPlan(off).targets, ['1.2.3.4']);
   });
 
+  test('zone origins waiting for the opt-in take one cap place per address, never a DNS name of another server', () => {
+    // A Cloudflare zone import: 400 exact origins on web01 first, 400 DNS names on web02.
+    const cf = { kind: 'cloudflare', provider: 'Cloudflare', hidesOrigin: true, certManaged: true };
+    const zoneNames = Array.from({ length: 400 }, (_, i) => `z${i}.example.com`);
+    const dnsNames = Array.from({ length: 400 }, (_, i) => `d${i}.example.com`);
+    const { pairs } = V.buildVerifyPairs({
+      hosts: [...zoneNames.map((n) => host(n, { ips: ['104.16.5.7'], ...cf })), ...dnsNames.map((n) => host(n, { ips: ['1.2.3.5'] }))],
+      servers: [
+        { server: srv('web01'), needsCert: true, hosts: zoneNames.map((n) => e(n, '1.2.3.4', 'zone')) },
+        { server: srv('web02'), needsCert: true, hosts: dnsNames.map((n) => e(n, '1.2.3.5')) }
+      ],
+      unmatchedIps: []
+    });
+    const off = V.createVerifyRows(pairs);
+    assert.equal(off.filter((r) => r.state === 'pending').length, 400);
+    assert.ok(off.filter((r) => r.server.id === 'web02').every((r) => r.state === 'pending'));
+    assert.deepEqual(V.notHereParts(V.summarizeVerify(off)), [], 'nothing is over the limit while 400 checks are planned');
+    const on = V.createVerifyRows(pairs, { origins: true });
+    assert.equal(on.filter((r) => r.state === 'pending').length, V.VERIFY_MAX_ROWS);
+    const over = on.filter((r) => r.skip === 'over-cap');
+    assert.equal(over.length, 300);
+    assert.ok(over.every((r) => r.via === 'zone'));
+    assert.equal(V.checkCount(pairs), 400);
+  });
+
   test('a server with names past the cap is never called live; its names go to the CLI card', () => {
     const { pairs, stats } = V.buildVerifyPairs(busy(8));
     const rows = V.createVerifyRows(pairs, { maxRows: 5 });

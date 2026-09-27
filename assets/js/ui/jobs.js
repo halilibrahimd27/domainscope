@@ -258,13 +258,17 @@ function notify(job, status, body) {
  * 30 s (at once when this page session already opted in); the permission is asked
  * only on a click. A pressed button turns the opt-in off again. Hidden when the browser has no
  * notifications; a blocked permission is said instead of offering the button.
- * @param {JobHandle|null} job
+ * @param {JobHandle|(() => JobHandle|null)|null} source the job, or a getter for one a panel built
+ *   just before its job starts
  * @returns {HTMLElement}
  */
-export function NotifyButton(job) {
+export function NotifyButton(source) {
   const el = h('span', { class: 'job-notify', hidden: true });
   const N = notificationApi();
-  if (!job || !N) return el;
+  if (!source || !N) return el;
+  const job = typeof source === 'function'
+    ? { get startedAt() { return (source() || {}).startedAt || new Date(); }, running: () => { const j = source(); return j ? j.running() : true; } }
+    : source;
   const btn = Button({ label: t('jobs.notify'), icon: 'bell', size: 'sm', variant: 'ghost', title: t('jobs.notifyTitle'), dataset: { action: 'job-notify' } });
   const blocked = h('span', { class: 'muted text-xs job-notify-blocked', hidden: true }, t('jobs.notifyBlocked'));
   el.append(btn, blocked);

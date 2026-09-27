@@ -4177,7 +4177,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       h('span', { class: 'sub-run-icon', attrs: { 'aria-hidden': 'true' } }, Icon('layers', { size: 18 })),
       h('div', { class: 'sub-run-titles' }, title, meta),
       summary.el,
-      NotifyButton(run.job || null)),
+      NotifyButton(() => run.job || null)),
     progress, zoneBanner, handoffBanner, notice, sourceLive);
 
   /** Source lines already spoken: a re-render (every source event redraws them) says nothing new. */

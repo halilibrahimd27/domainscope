@@ -2406,7 +2406,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     zoneBanner.dataset.zoneMode = run.config.zoneMode;
   }
   const panel = h('section', { class: 'scan-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
-    h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta), NotifyButton(run.job || null)),
+    h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta), NotifyButton(() => run.job || null)),
     zoneBanner, stageList, progress, sourceWaitNote, chips, runNotice);
 
   const SOURCE_GRACE_SECONDS = 12;

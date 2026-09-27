@@ -492,12 +492,16 @@
     position: sticky;
     bottom: 0;
     z-index: 20;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     transition: box-shadow var(--dur) var(--ease);
   }
 
-  /* Cast upwards, in the theme's backdrop colour (darker in dark mode) */
+  /*
+   * Cast upwards, in the theme's backdrop colour (darker in dark mode). The home indicator's
+   * inset applies only while the bar floats over the screen's bottom edge: resting at the form's
+   * end it would be empty space. Only the padding below the buttons changes, so they stay put.
+   */
   .scan-runbar[data-stuck="true"] {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     box-shadow: 0 -10px 24px -14px var(--backdrop);
   }
 }

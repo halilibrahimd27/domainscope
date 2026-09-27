@@ -446,6 +446,32 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('h1.page-title').textContent), title('inventory', 'en'), 'EN h1');
     });
 
+    await step('About › CLI examples are labelled in both languages, the cron monitoring one included', async () => {
+      await gotoRoute(page, 'about');
+      const examples = () => page.evaluate(async () => {
+        const i = await import('./assets/js/i18n.js');
+        return {
+          want: i.t('about.ex6'),
+          list: [...document.querySelectorAll('#about-cli .about-examples .codeblock')].map((b) => ({
+            label: b.querySelector('.codeblock-label')?.textContent ?? '',
+            cmd: b.querySelector('pre code').textContent
+          }))
+        };
+      });
+      const labels = {};
+      for (const lang of ['tr', 'en']) {
+        await setLangUi(page, lang);
+        const { want, list } = await examples();
+        assert(list.length >= 6 && list.every((ex) => ex.label && ex.cmd.startsWith('python3 ssl_origin_scan.py ')),
+          `examples (${lang}): ${JSON.stringify(list)}`);
+        const cron = list.find((ex) => ex.cmd.includes('--baseline'));
+        assertEqual(cron?.label, want, `cron example label (${lang})`);
+        assert(cron.cmd.includes('--baseline last.json --json last.json --warn-days 21'), `cron command: ${cron.cmd}`);
+        labels[lang] = cron.label;
+      }
+      assert(labels.tr !== labels.en && labels.tr.includes('DOMAINSCOPE_NOTIFY_URL'), `labels: ${JSON.stringify(labels)}`);
+    });
+
     await step('settings dialog: reorder/toggle resolvers, restore defaults, Esc closes', async () => {
       // Expectations are derived from DEFAULT_CHAIN so they follow any change of the default.
       assert(DEFAULT_CHAIN.length >= 3, `DEFAULT_CHAIN needs 3+ resolvers for this step: ${DEFAULT_CHAIN}`);

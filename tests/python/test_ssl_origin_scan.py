@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import codecs
 import contextlib
+import copy
 import csv
 import dataclasses
 import hashlib
@@ -3484,11 +3485,68 @@ class NotifyFormatTests(unittest.TestCase):
                                             self.monitor)
         self.assertEqual(set(generic), {'tool', 'version', 'title', 'text', 'finishedAt',
                                         'summary', 'baseline', 'changes', 'changesTotal',
-                                        'warnDays', 'expiring'})
+                                        'warnDays', 'expiring', 'expiringTotal'})
         self.assertEqual(generic['changes'], self.monitor.changes)
         self.assertEqual((generic['changesTotal'], generic['warnDays']), (9, 30))
         self.assertEqual(generic['summary'], self.doc['summary'])
+        self.assertEqual(generic['expiringTotal'], 1)
+        self.assertEqual(generic['expiring'],
+                         [dict(entry, endpointsTotal=7) for entry in self.monitor.expiring])
         json.dumps(generic)  # serialisable
+        _, generic = sos.build_notification('json', 'https://example.com/hook',
+                                            sos.report_to_dict(self.report))
+        self.assertEqual((generic['changes'], generic['expiring'], generic['expiringTotal']),
+                         (None, None, 0))
+
+    def test_generic_json_caps_expiring_certificates_and_endpoints(self):
+        entry = dict(self.monitor.expiring[0])
+        entry['endpoints'] = [dict(entry['endpoints'][0], server='web-%d' % i)
+                              for i in range(3000)]
+        many = [dict(entry, sha256='%064x' % i) for i in range(150)]
+        monitor = sos.MonitorResult(warn_days=30, expiring=many)
+        _, generic = sos.build_notification('json', 'https://example.com/hook', self.doc,
+                                            monitor)
+        self.assertEqual((len(generic['expiring']), generic['expiringTotal']),
+                         (sos.NOTIFY_MAX_JSON_EXPIRING, 150))
+        first = generic['expiring'][0]
+        self.assertEqual((len(first['endpoints']), first['endpointsTotal']),
+                         (sos.NOTIFY_MAX_JSON_ENDPOINTS, 3000))
+        self.assertEqual(len(monitor.expiring[0]['endpoints']), 3000)  # not changed in place
+        self.assertLess(len(json.dumps(generic)), 200000)
+
+    def test_ports_text(self):
+        self.assertEqual(sos.ports_text([443]), '443')
+        self.assertEqual(sos.ports_text([443, 8443, 9440, 9441, 9442]), '443,8443,9440-9442')
+        self.assertEqual(sos.ports_text(sos.parse_ports('8000-9023')), '8000-9023')
+        self.assertEqual(sos.ports_text(list(range(1000, 1040, 2))),
+                         '1000,1002,1004,1006,1008,1010,1012,1014 +12 more')
+        self.assertEqual(sos.ports_text(sos.parse_ports('1-9,20-1043,2000-3023,4000')
+                                        + list(range(5000, 5020, 2)), limit=3),
+                         '1-9,20-1043,2000-3023 +11 more')
+        self.assertEqual(sos.ports_text([]), '?')
+
+    def test_many_ports_fit_the_chat_limits(self):
+        """--ports up to 1024 per range, several ranges: the footer stays short."""
+        for spec in ('8000-9023', ','.join(str(port) for port in range(10000, 12048, 2)),
+                     '1-1024,2000-3023,4000-5023,6000-7023,9000,9002,9004,9006,9008,9010'):
+            ports = sos.parse_ports(spec)
+            doc = copy.deepcopy(self.doc)
+            doc['options']['ports'] = ports
+            _, discord = sos.build_notification('discord', 'https://discord.com/api/webhooks/1/x',
+                                                doc, self.monitor)
+            _, telegram = sos.build_notification('telegram', TELEGRAM_URL, doc, self.monitor)
+            _, slack = sos.build_notification('slack', SLACK_URL, doc, self.monitor)
+            with self.subTest(ports=spec[:20]):
+                self.assertLessEqual(len(discord['content']), 2000)
+                self.assertLessEqual(len(telegram['text']), 4096)
+                self.assertLessEqual(len(slack['text']), 4000)
+                footer = sos.notification_message(doc, self.monitor)[2][0]
+                self.assertLessEqual(len(footer), 400)
+                self.assertIn(', ports %s, ' % sos.ports_text(ports), footer)
+                self.assertIn('- UPDATED web 10.0.0.1:443', telegram['text'])  # items still fit
+        # a footer line longer than a message line is cut like one
+        lines = sos._fit_lines('title', ['- item'], ['x' * 1000], 1800)
+        self.assertEqual(lines, ['- item', 'x' * 397 + '...'])
 
     def test_long_messages_fit_every_format(self):
         many = [dict(self.monitor.changes[1], name='host-%03d.example.com' % i)

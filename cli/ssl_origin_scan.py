@@ -4690,7 +4690,10 @@ _NOTIFY_TEXT_LIMITS = {'slack': 3500, 'teams': 3500, 'discord': 1800, 'telegram'
 NOTIFY_MAX_CHANGES = 20       # change lines in a message (the JSON format has them all)
 NOTIFY_MAX_EXPIRING = 10      # expiring certificates in a message
 NOTIFY_MAX_JSON_CHANGES = 500
+NOTIFY_MAX_JSON_EXPIRING = 50     # expiring certificates in the generic JSON payload
+NOTIFY_MAX_JSON_ENDPOINTS = 20    # endpoints per expiring certificate there
 _NOTIFY_LINE_LIMIT = 400
+_NOTIFY_MAX_PORT_GROUPS = 8   # ports / port ranges named in a message footer
 _DISCORD_HOSTS = ('discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com')
 _TEAMS_HOSTS = ('outlook.office.com', 'outlook.office365.com')
 # Teams incoming webhooks, Power Automate / Logic Apps workflow triggers
@@ -4836,6 +4839,23 @@ def should_notify(monitor: Optional[MonitorResult], always: bool = False) -> boo
     return monitor is not None and bool(monitor.changes or monitor.expiring)
 
 
+def ports_text(ports: Sequence[Any], limit: int = _NOTIFY_MAX_PORT_GROUPS) -> str:
+    """``443,8000-9023``: the ports in their order, runs of consecutive ports as ranges;
+    after ``limit`` ports / ranges the rest is counted (``+1022 more``)."""
+    groups = []  # type: List[List[int]]
+    for port in ports:
+        if not isinstance(port, int) or isinstance(port, bool):
+            continue
+        if groups and port == groups[-1][1] + 1:
+            groups[-1][1] = port
+        else:
+            groups.append([port, port])
+    text = ','.join(str(first) if first == last else '%d-%d' % (first, last)
+                    for first, last in groups[:limit])
+    rest = sum(last - first + 1 for first, last in groups[limit:])
+    return (text or '?') + (' +%d more' % rest if rest else '')
+
+
 def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] = None
                          ) -> Tuple[str, List[str], List[str]]:
     """The notification text of a report dict: ``(title, items, footer)``.
@@ -4881,23 +4901,27 @@ def notification_message(doc: Dict[str, Any], monitor: Optional[MonitorResult] =
                                           summary.get('servers', '?'),
                                           summary.get('endpoints', '?'),
                                           summary.get('openEndpoints', '?'),
-                                          ','.join(str(port) for port in ports) or '?',
-                                          shown_names or 'none'))]
+                                          ports_text(ports), shown_names or 'none'))]
     if doc.get('newCertificates'):
         footer.append('Servers that need the new certificate: %s; serving it: %s.' % (
             summary.get('serversNeedingUpdate', '?'), summary.get('serversUpdated', '?')))
     return title, items, footer
 
 
+def _clip(line: str, limit: int = _NOTIFY_LINE_LIMIT) -> str:
+    return line if len(line) <= limit else line[:limit - 3] + '...'
+
+
 def _fit_lines(title: str, items: Sequence[str], footer: Sequence[str],
                limit: int) -> List[str]:
     """``items`` then ``footer``, as many items as fit in ``limit`` characters with
-    the title; the rest are counted in a last "... and N more" line."""
+    the title; the rest are counted in a last "... and N more" line. Every line is cut
+    at :data:`_NOTIFY_LINE_LIMIT` characters, the footer's too."""
+    footer = [_clip(line) for line in footer]
     budget = limit - len(title) - sum(len(line) + 1 for line in footer) - 60
     out = []  # type: List[str]
     for index, line in enumerate(items):
-        if len(line) > _NOTIFY_LINE_LIMIT:
-            line = line[:_NOTIFY_LINE_LIMIT - 3] + '...'
+        line = _clip(line)
         if len(line) + 1 > budget:
             out.append('- ... and %d more line(s) - see the --json report'
                        % (len(items) - index))
@@ -4942,7 +4966,10 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
     * ``telegram`` - ``{chat_id, text}`` without link previews, ``chat_id`` moved from
       the URL's query into the body;
     * ``json`` - ``{tool, version, title, text, finishedAt, summary, baseline, changes,
-      changesTotal, warnDays, expiring}``, at most :data:`NOTIFY_MAX_JSON_CHANGES` changes.
+      changesTotal, warnDays, expiring, expiringTotal}``: at most
+      :data:`NOTIFY_MAX_JSON_CHANGES` changes and :data:`NOTIFY_MAX_JSON_EXPIRING`
+      certificates, each with at most :data:`NOTIFY_MAX_JSON_ENDPOINTS` endpoints and
+      their ``endpointsTotal`` - a receiver may refuse a large body.
     """
     title, items, footer = notification_message(doc, monitor)
     lines = _fit_lines(title, items, footer, _NOTIFY_TEXT_LIMITS.get(fmt, 3500))
@@ -4965,6 +4992,11 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
                           'text': '%s\n\n%s' % (title, body),
                           'link_preview_options': {'is_disabled': True}}
     changes = list(monitor.changes or []) if monitor is not None else []
+    expiring = None  # type: Optional[List[Dict[str, Any]]]
+    if monitor is not None and monitor.expiring is not None:
+        expiring = [dict(entry, endpoints=entry['endpoints'][:NOTIFY_MAX_JSON_ENDPOINTS],
+                         endpointsTotal=len(entry['endpoints']))
+                    for entry in monitor.expiring[:NOTIFY_MAX_JSON_EXPIRING]]
     return url, {
         'tool': 'ssl_origin_scan', 'version': __version__, 'title': title,
         'text': '%s\n%s' % (title, body), 'finishedAt': doc.get('finishedAt'),
@@ -4974,7 +5006,8 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
                     if monitor is not None and monitor.changes is not None else None),
         'changesTotal': len(changes),
         'warnDays': monitor.warn_days if monitor is not None else None,
-        'expiring': monitor.expiring if monitor is not None else None,
+        'expiring': expiring,
+        'expiringTotal': len(monitor.expiring or []) if monitor is not None else 0,
     }
 
 

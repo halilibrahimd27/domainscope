@@ -12,8 +12,9 @@
  * or renamed after the import), the exact sweep
  * command (no /24, host target, wildcard name, PowerShell), the zone-targets.txt download, the
  * Problems → Records jump, the live check (nothing sent before the click, planned query count,
- * hidden targets / internal names never queried, statuses, redacted export, cancel), the
- * exact-mode hand-off contract, Route 53 (incomplete export) and cPanel imports, a certificate
+ * hidden targets / internal names never queried, statuses, redacted export, cancel, kept for the
+ * page session with "Result from" and Run again), the exact-mode hand-off contract, Route 53
+ * (incomplete export) and cPanel imports, a certificate
  * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
  * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
  * CSP violations / missing i18n keys.
@@ -378,6 +379,29 @@ async function main() {
           assertEqual(now, { role, checked: !before }, `${role}: focus kept on the option`);
         }
       }
+    });
+
+    await run.step('the finished live check is kept like a result: "Result from", Run again on the Live tab, nothing in the URL or the target', async () => {
+      await clickTab(page, 'overview');
+      const chip = () => page.evaluate(() => document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent || null);
+      const chipBefore = await chip();
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'zone');
+      const note = await page.evaluate(() => ({
+        text: document.querySelector('.page-kept:not([hidden]) .kept-note-text')?.textContent || '',
+        rerun: !!document.querySelector('.page-kept:not([hidden]) [data-action="kept-rerun"]'),
+        hash: location.hash
+      }));
+      assert(/^Result from /.test(note.text), `note: ${note.text}`);
+      assertEqual([note.rerun, note.hash], [true, '#/zone'], 'Run again; nothing in the URL');
+      const sent = await page.evaluate(() => window.__fakeDnsLog.length);
+      await page.click('[data-action="kept-rerun"]');
+      await page.waitFor((n) => window.__fakeDnsLog.length > n && !document.querySelector('.zone-tabs .tabpanel[data-tab="live"]')?.hidden
+        && document.querySelector('.zone-drift')?.dataset.status === 'done', { args: [sent], timeout: 30000, message: 'the live check again, on its tab' });
+      assertEqual(await page.evaluate(() => !!document.querySelector('.page-kept:not([hidden])')), false, 'note gone');
+      assertEqual(await chip(), chipBefore, 'the zone never becomes the current target');
+      assertEqual(await page.evaluate(() => location.hash), '#/zone?tab=live', 'only the tab in the URL');
+      assertEqual(external, [], 'no external request');
     });
 
     await run.step('Scan these names (exact): publishes the zone + one-shot intent and opens Subdomains', async () => {

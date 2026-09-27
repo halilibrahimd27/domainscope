@@ -7,7 +7,12 @@
  * - the file is read in the browser and kept in this module's memory only: nothing goes to
  *   localStorage / sessionStorage, and the route carries only `tab=`;
  * - nothing touches the network before a click: parsing, lint, the origin map and the command
- *   are offline; the live check runs only from its own button and sends names + types only;
+ *   are offline; the live check runs only from its own button (or, once one has finished, from
+ *   "Run again" in the page header's kept-result note: the same check again) and sends names +
+ *   types only;
+ * - the page session (lib/session.js) keeps only the fact that a live check finished
+ *   (`result()`: no subject, so nothing about the zone becomes the current target or reaches a
+ *   URL); the zone itself stays in this module;
  * - `state.session.zone` (in memory; cleared by "Delete all local data") is the scan input the
  *   Subdomains / SSL Targets views read; it is published only for a confirmed origin.
  *
@@ -1146,12 +1151,17 @@ function freshSession() {
     skipInternal: true,
     fileError: null,
     busy: false,
-    live: { skipPrivate: true, wildcards: true, includeOrigins: false, status: 'idle', rows: [], result: null, done: 0, total: 0, error: null, filter: 'all' }
+    live: {
+      skipPrivate: true, wildcards: true, includeOrigins: false, status: 'idle', rows: [], result: null, done: 0, total: 0, error: null,
+      filter: 'all', finishedAt: null
+    }
   };
 }
 
 let S = freshSession();
 let controller = null;
+/** The mounted view's page-session hook ({@link rerun}); null while another tool is shown. */
+let active = null;
 let rerender = null;
 let subscribed = false;
 /** The live-check tab currently shown: { render(), progress() } (a run outlives its tab). */
@@ -1900,6 +1910,53 @@ export function mount(container, ctx) {
   }
 
   /* --- live check -------------------------------------------------------- */
+  /** Run the live check of `z` with the options of the Live tab (its button, or "Run again"). */
+  const runDrift = async (z) => {
+    const plan = planDrift(z, { skipPrivate: S.live.skipPrivate, wildcardProbes: S.live.wildcards });
+    abortDrift();
+    const ac = new AbortController();
+    controller = ac;
+    S.live = { ...S.live, status: 'running', rows: [], result: null, done: 0, total: plan.rrsets, error: null, filter: 'all', finishedAt: null };
+    if (liveHook) liveHook.render();
+    try {
+      const dns = await ctx.getDns();
+      const result = await driftZone(z, {
+        dns,
+        signal: ac.signal,
+        skipPrivate: S.live.skipPrivate,
+        wildcardProbes: S.live.wildcards,
+        onRow: (row) => {
+          if (controller !== ac) return;
+          S.live.rows.push(row);
+        },
+        onProgress: ({ done, total }) => {
+          if (controller !== ac) return;
+          S.live.done = done;
+          S.live.total = total;
+          if (liveHook) liveHook.progress();
+        }
+      });
+      if (controller !== ac) return;
+      controller = null;
+      S.live.result = result;
+      S.live.rows = result.rows;
+      S.live.status = result.aborted ? 'cancelled' : 'done';
+      S.live.finishedAt = new Date();
+      if (!result.aborted) {
+        const diffs = result.rows.filter((r) => DRIFT_SEVERITY[r.status] === 'warn' || DRIFT_SEVERITY[r.status] === 'error').length;
+        if (!document.querySelector('.zone-live')) {
+          toast(t('zone.live.finished', { count: diffs }), { type: diffs ? 'warn' : 'success', action: { label: t('zone.tab.live'), onClick: () => ctx.navigate('zone', { tab: 'live' }) } });
+        }
+      }
+    } catch (err) {
+      if (controller !== ac) return;
+      controller = null;
+      S.live.status = 'failed';
+      S.live.error = err && err.message ? err.message : String(err);
+    }
+    if (liveHook) liveHook.render();
+  };
+
   function liveTab(z) {
     const box = h('div', { class: 'stack zone-live' });
     const L = S.live;
@@ -1907,50 +1964,6 @@ export function mount(container, ctx) {
     const plan = planDrift(z, { skipPrivate: L.skipPrivate, wildcardProbes: L.wildcards });
     const chain = state.settings.chain.map((rid) => (getResolver(rid) || { name: rid }).name);
     const priv = privateLookingNames(z);
-
-    const runDrift = async () => {
-      abortDrift();
-      const ac = new AbortController();
-      controller = ac;
-      S.live = { ...L, status: 'running', rows: [], result: null, done: 0, total: plan.rrsets, error: null, filter: 'all' };
-      if (liveHook) liveHook.render();
-      try {
-        const dns = await ctx.getDns();
-        const result = await driftZone(z, {
-          dns,
-          signal: ac.signal,
-          skipPrivate: S.live.skipPrivate,
-          wildcardProbes: S.live.wildcards,
-          onRow: (row) => {
-            if (controller !== ac) return;
-            S.live.rows.push(row);
-          },
-          onProgress: ({ done, total }) => {
-            if (controller !== ac) return;
-            S.live.done = done;
-            S.live.total = total;
-            if (liveHook) liveHook.progress();
-          }
-        });
-        if (controller !== ac) return;
-        controller = null;
-        S.live.result = result;
-        S.live.rows = result.rows;
-        S.live.status = result.aborted ? 'cancelled' : 'done';
-        if (!result.aborted) {
-          const diffs = result.rows.filter((r) => DRIFT_SEVERITY[r.status] === 'warn' || DRIFT_SEVERITY[r.status] === 'error').length;
-          if (!document.querySelector('.zone-live')) {
-            toast(t('zone.live.finished', { count: diffs }), { type: diffs ? 'warn' : 'success', action: { label: t('zone.tab.live'), onClick: () => ctx.navigate('zone', { tab: 'live' }) } });
-          }
-        }
-      } catch (err) {
-        if (controller !== ac) return;
-        controller = null;
-        S.live.status = 'failed';
-        S.live.error = err && err.message ? err.message : String(err);
-      }
-      if (liveHook) liveHook.render();
-    };
 
     let progressEl = null;
     const updateProgress = () => {
@@ -1996,7 +2009,7 @@ export function mount(container, ctx) {
         variant: 'primary',
         disabled: running,
         dataset: { action: 'zone-live-run', shortcut: 'submit' },
-        onClick: runDrift
+        onClick: () => runDrift(z)
       });
       const card = Card({
         title: t('zone.live.title'),
@@ -2114,9 +2127,21 @@ export function mount(container, ctx) {
   reindexServers(ctx.getInventoryIndex());
   render();
 
+  active = {
+    // "Run again" of the kept-result note: the Live tab, and the same check again.
+    rerun() {
+      const z = S.zone;
+      if (!z || z.fatal || !originConfirmed(z, S.confirmed) || S.live.status === 'running') return;
+      ctx.runStarted(null);
+      goTab('live');
+      runDrift(z);
+    }
+  };
+
   teardown = () => {
     rerender = null;
     liveHook = null;
+    active = null;
   };
 }
 
@@ -2128,4 +2153,21 @@ export function unmount() {
   teardown = null;
 }
 
-export default { id, titleKey, icon, mount, unmount };
+/**
+ * The finished (or stopped) live check of the loaded zone, or null. It stays in this module, so
+ * the shell keeps only the fact (lib/session.js); no subject: nothing about the zone becomes the
+ * current target or goes into a URL.
+ * @returns {{ subject: null, at: Date }|null}
+ */
+export function result() {
+  const L = S.live;
+  const finished = L.status === 'done' || (L.status === 'cancelled' && L.rows.length > 0);
+  return S.zone && finished && L.finishedAt ? { subject: null, at: L.finishedAt } : null;
+}
+
+/** "Run again" of the kept-result note: the live check again, on its tab. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, result, rerun };

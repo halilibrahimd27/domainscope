@@ -855,21 +855,6 @@
 
 /* ---- results ------------------------------------------------------------------ */
 
-.sub-results-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 16px;
-}
-
-.sub-results-title {
-  flex: 1;
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
 .sub-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1638,14 +1623,6 @@
 
   .sub-run {
     padding: 14px;
-  }
-
-  .sub-results-head {
-    align-items: flex-start;
-  }
-
-  .sub-results-title {
-    flex-basis: 100%;
   }
 
   .sub-stats {

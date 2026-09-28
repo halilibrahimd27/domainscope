@@ -7,7 +7,8 @@
  * - {@link RetryButton}: the per-row / per-card Retry that asks those sources again.
  * - {@link SourceChip}: one status chip per service (the Subdomains source-chip pattern).
  *
- * Used by IP Intel, Domain Health (RDAP) and DNS Lookup (a failed query). Every string is
+ * Used by IP Intel, Domain Health (RDAP), DNS Lookup (a failed query) and the Domain overview (a
+ * card's failed lookups, Certificate Transparency). Every string is
  * rendered as text.
  */
 
@@ -29,9 +30,12 @@ registerStrings('en', {
   'srcst.source.hackertarget': 'HackerTarget',
   'srcst.source.rdap': 'RDAP',
   'srcst.source.doh': 'DNS resolver',
+  'srcst.source.certspotter': 'Cert Spotter',
+  'srcst.source.crtsh': 'crt.sh',
   'srcst.reason.rate-limit-wait': 'rate limited — try again in {minutes} min',
   'srcst.reason.rate-limit-now': 'was rate limited — you can try again now',
   'srcst.reason.rate-limit-day': 'daily free quota used up — it resets within 24 hours',
+  'srcst.reason.rate-limit-hour': 'hourly free quota used up — try again within the hour',
   'srcst.reason.rate-limit-minutes': 'rate limited — try again in a few minutes',
   'srcst.reason.rate-limit': 'rate limited — try again later',
   'srcst.reason.timeout': 'no answer in time',
@@ -62,9 +66,12 @@ registerStrings('tr', {
   'srcst.source.hackertarget': 'HackerTarget',
   'srcst.source.rdap': 'RDAP',
   'srcst.source.doh': 'DNS çözümleyici',
+  'srcst.source.certspotter': 'Cert Spotter',
+  'srcst.source.crtsh': 'crt.sh',
   'srcst.reason.rate-limit-wait': 'hız sınırı — {minutes} dk sonra tekrar deneyin',
   'srcst.reason.rate-limit-now': 'hız sınırına takılmıştı — şimdi tekrar deneyebilirsiniz',
   'srcst.reason.rate-limit-day': 'günlük ücretsiz kota doldu — 24 saat içinde sıfırlanır',
+  'srcst.reason.rate-limit-hour': 'saatlik ücretsiz kota doldu — bir saat içinde tekrar deneyin',
   'srcst.reason.rate-limit-minutes': 'hız sınırı — birkaç dakika sonra tekrar deneyin',
   'srcst.reason.rate-limit': 'hız sınırı — daha sonra tekrar deneyin',
   'srcst.reason.timeout': 'zamanında yanıt vermedi',

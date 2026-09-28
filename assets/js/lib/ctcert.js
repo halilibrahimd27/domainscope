@@ -361,6 +361,27 @@ export function createCtCooldown() {
 /** The page session's cool-down, shared by every lookup that is not given its own. */
 export const ctCooldown = createCtCooldown();
 
+/**
+ * A Cert Spotter failure that is a rate limit (HTTP 429) starts the cool-down: its readable
+ * `Retry-After` (at most an hour), else an hour. Shared by {@link lookupCtCertificate} and the
+ * Domain overview's issuer lookup (lib/passport.js), so a 429 in one makes the other go straight
+ * to crt.sh too.
+ * @param {unknown} err the failed request's error
+ * @param {{ at: number, cooldown?: ReturnType<typeof createCtCooldown> }} opts `at`: when it failed (ms)
+ * @returns {object|null} the SourceQuota (hintKey 'source.quota.hour', resetAt = the cool-down's end), null when not a rate limit
+ */
+export function noteCertspotterLimit(err, { at, cooldown = ctCooldown }) {
+  if (errorKind(err) !== 'rate-limit') return null;
+  const waitMs = Number.isFinite(err.retryAfterMs) && err.retryAfterMs > 0 ? Math.min(err.retryAfterMs, CT_COOLDOWN_MS) : CT_COOLDOWN_MS;
+  const quota = {
+    ...sourceQuota('certspotter', { limited: true, retryAfterMs: waitMs }),
+    resetAt: new Date(at + waitMs),
+    resetHint: 'Cert Spotter’s hourly single-host quota for your IP (100 requests, about 50 lookups) is used up; try again in about an hour.'
+  };
+  cooldown.set(quota, at + waitMs);
+  return quota;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Lookup                                                                   */
 /* ------------------------------------------------------------------------ */
@@ -469,16 +490,7 @@ export async function lookupCtCertificate(input, {
   const count = () => { out.requests += 1; };
   // A 429 (readable Retry-After, else an hour) skips Cert Spotter for the rest of the cool-down.
   const spotterFailed = (state, err) => {
-    out.certspotter = { state, error: errorText(err), errorKind: errorKind(err), quota: null };
-    if (errorKind(err) !== 'rate-limit') return;
-    const waitMs = Number.isFinite(err.retryAfterMs) && err.retryAfterMs > 0 ? Math.min(err.retryAfterMs, CT_COOLDOWN_MS) : CT_COOLDOWN_MS;
-    const quota = {
-      ...sourceQuota('certspotter', { limited: true, retryAfterMs: waitMs }),
-      resetAt: new Date(at + waitMs),
-      resetHint: 'Cert Spotter’s hourly single-host quota for your IP (100 requests, about 50 lookups) is used up; try again in about an hour.'
-    };
-    cooldown.set(quota, at + waitMs);
-    out.certspotter.quota = quota;
+    out.certspotter = { state, error: errorText(err), errorKind: errorKind(err), quota: noteCertspotterLimit(err, { at, cooldown }) };
   };
 
   const cooling = cooldown.get(at);

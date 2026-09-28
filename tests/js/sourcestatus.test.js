@@ -86,7 +86,7 @@ describe('sourceStatus', () => {
     }
     seen.add(sourceStatus({ source: 'unknown-source', errorKind: 'rate-limit' }).reason);
     assert.deepEqual([...seen].sort(), [...STATUS_REASONS].sort());
-    for (const p of Object.values(STATUS_SOURCES)) assert.ok(['day', 'minutes', null].includes(p.period));
+    for (const p of Object.values(STATUS_SOURCES)) assert.ok(['day', 'hour', 'minutes', null].includes(p.period));
   });
 });
 

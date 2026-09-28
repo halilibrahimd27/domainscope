@@ -15,8 +15,8 @@
 /**
  * The sources a status can name. `period` is the quota window a rate limit of that service
  * usually lasts when it does not say itself (a browser can read `Retry-After` only when the
- * service exposes it to CORS): 'day' | 'minutes' | null (unknown).
- * @type {Readonly<Record<string, { period: 'day'|'minutes'|null }>>}
+ * service exposes it to CORS): 'day' | 'hour' | 'minutes' | null (unknown).
+ * @type {Readonly<Record<string, { period: 'day'|'hour'|'minutes'|null }>>}
  */
 export const STATUS_SOURCES = Object.freeze({
   ripestat: Object.freeze({ period: 'minutes' }),
@@ -25,12 +25,16 @@ export const STATUS_SOURCES = Object.freeze({
   ptr: Object.freeze({ period: 'minutes' }),
   hackertarget: Object.freeze({ period: 'day' }),
   rdap: Object.freeze({ period: 'minutes' }),
-  doh: Object.freeze({ period: 'minutes' })
+  doh: Object.freeze({ period: 'minutes' }),
+  // Certificate Transparency (the Domain overview's issuer lookup): Cert Spotter's anonymous
+  // single-host quota is hourly; crt.sh has no published quota.
+  certspotter: Object.freeze({ period: 'hour' }),
+  crtsh: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */
 export const STATUS_REASONS = Object.freeze([
-  'rate-limit-wait', 'rate-limit-now', 'rate-limit-day', 'rate-limit-minutes', 'rate-limit',
+  'rate-limit-wait', 'rate-limit-now', 'rate-limit-day', 'rate-limit-hour', 'rate-limit-minutes', 'rate-limit',
   'timeout', 'network', 'unavailable', 'http-status', 'http', 'rcode', 'parse', 'unknown'
 ]);
 

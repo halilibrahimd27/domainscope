@@ -1966,3 +1966,187 @@ export function formatFingerprint(hex) {
   const clean = String(hex ?? '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
   return (clean.match(/.{1,2}/g) || []).join(':');
 }
+
+// ---------------------------------------------------------------------------
+// Certificate signing requests and public keys (the Certificate view's "Does this CSR match?")
+// ---------------------------------------------------------------------------
+
+/** Why a pasted CSR was not read ({@link parseCertificateRequest}). */
+export const CSR_ERRORS = Object.freeze(['empty', 'private-key', 'certificate', 'not-csr', 'invalid']);
+
+const OID_EXTENSION_REQUEST = '1.2.840.113549.1.9.14';
+const PRIVATE_KEY_PEM_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+const CSR_PEM_RE = /-----BEGIN (NEW )?CERTIFICATE REQUEST-----([\s\S]*?)-----END (NEW )?CERTIFICATE REQUEST-----/;
+const CERT_PEM_RE = /-----BEGIN (?:X509 |TRUSTED )?CERTIFICATE-----/;
+
+/**
+ * @typedef {object} CertificateRequest
+ * @property {Uint8Array} der
+ * @property {string} subjectDN RFC 2253, like a certificate's
+ * @property {string|null} subjectCN
+ * @property {string[]} dnsNames the dNSNames of its extensionRequest's subjectAltName
+ * @property {string[]} hostnames the names normalized like a certificate's (lowercase, punycode), CN when there are none
+ * @property {Uint8Array} spkiDer its SubjectPublicKeyInfo DER
+ * @property {'RSA'|'EC'|'Ed25519'|'Ed448'|'DSA'|'unknown'} keyAlgorithm
+ * @property {number|null} keyBits
+ * @property {string|null} curve
+ * @property {string} signatureAlgorithm OpenSSL name, dotted OID when unknown
+ */
+
+/** A CertificationRequest DER → {@link CertificateRequest}; throws CertificateParseError. */
+function decodeCertificateRequest(bytes) {
+  const root = expect(readNode(bytes, 0, bytes.length), 0x30, 'CertificationRequest (SEQUENCE)');
+  if (root.next !== bytes.length) fail('Unexpected data after the certificate request', root.next);
+  const top = childrenOf(root);
+  if (top.length !== 3) fail('A certificate request must contain certificationRequestInfo, signatureAlgorithm and signature', root.offset);
+  const sigAlg = parseAlgorithm(top[1]);
+  bitString(top[2]);
+  const info = childrenOf(expect(top[0], 0x30, 'CertificationRequestInfo'));
+  if (info.length < 3) fail('CertificationRequestInfo is missing fields', top[0].offset);
+  integerValue(info[0]);
+  const subjectRDNs = parseName(info[1]);
+  const spkiNode = expect(info[2], 0x30, 'SubjectPublicKeyInfo');
+  const key = { keyAlgorithm: 'unknown', keyBits: null, curve: null, parseErrors: [] };
+  parsePublicKey(spkiNode, key);
+  const dnsNames = [];
+  for (const attrs of info.slice(3)) {
+    if (attrs.id !== 0xa0) continue;
+    for (const attr of childrenOf(attrs)) {
+      const [type, values] = childrenOf(expect(attr, 0x30, 'Attribute'));
+      if (!values || decodeOid(type) !== OID_EXTENSION_REQUEST) continue;
+      for (const extensions of childrenOf(values)) {
+        for (const ext of childrenOf(expect(extensions, 0x30, 'Extensions'))) {
+          const parts = childrenOf(expect(ext, 0x30, 'Extension'));
+          if (parts.length < 2 || decodeOid(parts[0]) !== OID.SAN) continue;
+          const value = contents(expect(parts[parts.length - 1], 0x04, 'extnValue'));
+          const names = parseGeneralNames(expect(parseSingle(value), 0x30, 'GeneralNames'));
+          dnsNames.push(...names.filter((n) => n.type === 'dns').map((n) => n.value));
+        }
+      }
+    }
+  }
+  const subject = firstValues(subjectRDNs);
+  const hostnames = new Set();
+  for (const name of dnsNames) {
+    const host = normalizeCertHostname(name);
+    if (host) hostnames.add(host);
+  }
+  if (!hostnames.size && subject.CN) {
+    const cn = normalizeCertHostname(subject.CN);
+    if (isHostnameLike(cn)) hostnames.add(cn);
+  }
+  return {
+    der: bytes,
+    subjectDN: formatDN(subjectRDNs),
+    subjectCN: subject.CN ?? null,
+    dnsNames,
+    hostnames: [...hostnames],
+    spkiDer: tlv(spkiNode),
+    keyAlgorithm: key.keyAlgorithm,
+    keyBits: key.keyBits,
+    curve: key.curve,
+    signatureAlgorithm: SIG_ALG_NAMES[sigAlg.oid] || sigAlg.oid
+  };
+}
+
+/**
+ * A pasted or loaded CSR (PKCS#10: PEM `CERTIFICATE REQUEST` / `NEW CERTIFICATE REQUEST`, bare
+ * base64 or DER) → `{ csr, error: null }` or `{ csr: null, error, detail? }` with a
+ * {@link CSR_ERRORS} code. Never throws. A private key is recognised by its PEM label (or its DER
+ * shape) and never decoded or kept: `error: 'private-key'`. The signature is not verified.
+ * @param {string|Uint8Array|ArrayBuffer} input
+ * @returns {{ csr: CertificateRequest|null, error: string|null, detail?: string }}
+ */
+export function parseCertificateRequest(input) {
+  const bytes = asBytes(input);
+  let text = null;
+  let der = null;
+  if (typeof input === 'string') text = input;
+  else if (bytes && bytes.length && bytes[0] === 0x30 && !looksLikeText(bytes)) der = new Uint8Array(bytes);
+  else if (bytes) text = decodeText(bytes);
+  if (text !== null) {
+    const trimmed = text.replace(/^﻿/, '').trim();
+    if (!trimmed) return { csr: null, error: 'empty' };
+    if (PRIVATE_KEY_PEM_RE.test(trimmed)) return { csr: null, error: 'private-key' };
+    const pem = CSR_PEM_RE.exec(trimmed);
+    if (pem) der = decodeBase64(cleanPemBody(pem[2]));
+    else if (CERT_PEM_RE.test(trimmed)) return { csr: null, error: 'certificate' };
+    else if (trimmed.includes('-----BEGIN ')) return { csr: null, error: 'not-csr' };
+    else der = /^[A-Za-z0-9+/=_\-\s]+$/.test(trimmed) ? decodeBase64(trimmed) : null;
+    if (!der || !der.length) return pem ? { csr: null, error: 'invalid', detail: 'invalid base64' } : { csr: null, error: 'not-csr' };
+  }
+  if (!der || !der.length) return { csr: null, error: 'empty' };
+  let node;
+  try {
+    node = readNode(der, 0, der.length);
+  } catch (err) {
+    return { csr: null, error: 'not-csr', detail: err.message };
+  }
+  const { kind } = classifyDer(node);
+  if (kind === 'privateKey') return { csr: null, error: 'private-key' };
+  if (kind === 'certificate') return { csr: null, error: 'certificate' };
+  if (kind !== 'csr') return { csr: null, error: 'not-csr' };
+  try {
+    return { csr: decodeCertificateRequest(der), error: null };
+  } catch (err) {
+    return { csr: null, error: 'invalid', detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * What identifies a public key whatever its encoding: an RSA key's modulus and exponent, an EC
+ * key's curve, x coordinate and the parity of y (a compressed and an uncompressed point are one
+ * key), the raw key bytes of any other algorithm; null when the SubjectPublicKeyInfo cannot be
+ * read. The same rule as the CLI's bundle-check (its PublicKey.ident).
+ * @param {Uint8Array|ArrayBuffer} spkiDer
+ * @returns {string|null}
+ */
+export function publicKeyId(spkiDer) {
+  const bytes = asBytes(spkiDer);
+  if (!bytes || !bytes.length) return null;
+  try {
+    const kids = childrenOf(expect(parseSingle(bytes), 0x30, 'SubjectPublicKeyInfo'));
+    if (kids.length !== 2) return null;
+    const alg = parseAlgorithm(kids[0]);
+    const { bytes: key } = bitString(kids[1]);
+    const family = KEY_FAMILIES[alg.oid] || 'unknown';
+    if (family === 'RSA') {
+      const [modulus, exponent] = sequenceOf(key, 'RSAPublicKey');
+      const strip = (hex) => hex.replace(/^0+(?=.)/, '');
+      return `RSA:${strip(toHex(contents(expect(modulus, 0x02, 'modulus'))))}:${strip(toHex(contents(expect(exponent, 0x02, 'exponent'))))}`;
+    }
+    if (family === 'EC') {
+      const curve = alg.params && alg.params.id === 0x06 ? decodeOid(alg.params) : '';
+      if (key.length > 1 && key.length % 2 === 1 && (key[0] === 4 || key[0] === 6 || key[0] === 7)) {
+        const size = (key.length - 1) / 2;
+        return `EC:${curve}:${toHex(key.subarray(1, 1 + size))}:${key[key.length - 1] & 1}`;
+      }
+      if (key.length > 1 && (key[0] === 2 || key[0] === 3)) return `EC:${curve}:${toHex(key.subarray(1))}:${key[0] & 1}`;
+      return `EC:${curve}:${toHex(key)}`;
+    }
+    return `${alg.oid}:${toHex(key)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does a CSR hold a certificate's public key — was the certificate issued from it (and not
+ * re-keyed since)? Only public keys are compared; no private key is ever needed. `missing`: names
+ * the CSR asked for that the certificate does not have; `added`: names of the certificate the CSR
+ * did not ask for (CAs add the bare domain or `www` to some requests).
+ * @param {CertificateRequest} csr
+ * @param {Certificate} cert
+ * @returns {{ match: boolean|null, missing: string[], added: string[] }} match null: a key that cannot be read
+ */
+export function csrMatchesCertificate(csr, cert) {
+  const a = csr ? publicKeyId(csr.spkiDer) : null;
+  const b = cert ? publicKeyId(cert.spkiDer) : null;
+  const asked = csr ? csr.hostnames : [];
+  const has = cert ? cert.hostnames : [];
+  return {
+    match: a === null || b === null ? null : a === b,
+    missing: asked.filter((n) => !has.includes(n)),
+    added: has.filter((n) => !asked.includes(n))
+  };
+}

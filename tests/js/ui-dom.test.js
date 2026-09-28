@@ -31,7 +31,7 @@ import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'retire', 'health', 'inventory', 'about'];
+const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */
@@ -1136,6 +1136,21 @@ describe('routing', () => {
     assert.equal(buildRoute(''), `#/${DEFAULT_VIEW}`);
     const params = { name: 'örnek.com.tr', q: 'a&b=c #x', n: '5' };
     assert.deepEqual(parseRoute(buildRoute('global', params)).params, params);
+  });
+
+  test('a view\'s sub-page: #/change/check keeps its word through parseRoute and buildRoute', () => {
+    const r = parseRoute('#/change/check?z=example.com&r=is+www+A+192.0.2.1');
+    assert.deepEqual([r.view, r.sub, r.params.z, r.searchParams.getAll('r')], ['change', 'check', 'example.com', ['is www A 192.0.2.1']]);
+    assert.equal(parseRoute('#/change').sub, '');
+    assert.equal(parseRoute('#/change/CHECK').sub, 'check');
+    assert.equal(parseRoute('#/change/check/deeper').sub, '', 'one word only');
+    assert.equal(parseRoute('#/change/%3Cb%3E').sub, '', 'never markup');
+    assert.equal(parseRoute('#/nope/check').sub, '', 'no sub-page of an unknown view');
+    assert.equal(parseRoute('#main').sub, '');
+    assert.equal(buildRoute('change/check', { z: 'example.com' }), '#/change/check?z=example.com');
+    assert.equal(buildRoute('change/<b>', { z: 'example.com' }), '#/change?z=example.com');
+    const back = parseRoute(buildRoute('change/check', { z: 'example.com', r: ['is www A 192.0.2.1', 'has x TXT "y"'] }));
+    assert.deepEqual([back.view, back.sub, back.searchParams.getAll('r')], ['change', 'check', ['is www A 192.0.2.1', 'has x TXT "y"']]);
   });
 
   test('sameParams compares shallowly as strings', () => {

@@ -89,9 +89,9 @@ const WORKSPACE_WAIT_MS = 8000;
  * order the views were opened in.
  */
 export const VIEW_CSS_ORDER = Object.freeze([
-  'views/subdomains.css', 'views/domain.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/renew.css',
-  'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css', 'views/health.css',
-  'views/inventory.css', 'views/about.css'
+  'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
+  'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
+  'views/health.css', 'views/inventory.css', 'views/about.css'
 ]);
 
 /**
@@ -114,7 +114,8 @@ export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js',
 export const VIEWS = Object.freeze([
   { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: ENGINE_MODULES, load: () => import('./views/subdomains.js') },
   { id: 'domain', group: 'discover', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
-  { id: 'zone', group: 'discover', icon: 'file-text', css: ['views/zone.css'], offline: true, load: () => import('./views/zone.js') },
+  // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css
+  { id: 'zone', group: 'discover', icon: 'file-text', css: ['views/fix.css', 'views/zone.css'], offline: true, load: () => import('./views/zone.js') },
   {
     id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
     // the setup form reuses the Subdomains options and the Certificate loader; Verify and DANE are tabs
@@ -128,10 +129,11 @@ export const VIEWS = Object.freeze([
   { id: 'global', group: 'dns', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
   { id: 'lookup', group: 'dns', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
   { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
+  { id: 'change', group: 'dns', icon: 'edit', css: ['views/fix.css', 'views/change.css'], load: () => import('./views/change.js') },
   { id: 'ip', group: 'ip', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
   { id: 'ptr', group: 'ip', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
   { id: 'retire', group: 'ip', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },
-  { id: 'health', group: 'mail', icon: 'activity', css: ['views/health.css'], load: () => import('./views/health.js') },
+  { id: 'health', group: 'mail', icon: 'activity', css: ['views/fix.css', 'views/health.css'], load: () => import('./views/health.js') },
   { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css'], offline: true, load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
 ].map((v) => Object.freeze({
@@ -144,34 +146,42 @@ const VIEW_BY_ID = new Map(VIEWS.map((v) => [v.id, v]));
 /* Route helpers (pure — unit-tested)                                        */
 /* ------------------------------------------------------------------------ */
 
+/** A view's sub-page ('#/change/check'): one lowercase word, else none. */
+const SUB_RE = /^[a-z][a-z0-9-]{0,31}$/;
+
 /**
  * Parse a location hash.
  * @param {string} hash e.g. '#/lookup?name=example.com&type=MX'
- * @returns {{ view: string|null, params: Record<string, string>, searchParams: URLSearchParams, isRoute: boolean }}
- *   view is null for unknown views or an empty route; isRoute is false for non-route anchors ('#main').
+ * @returns {{ view: string|null, sub: string, params: Record<string, string>, searchParams: URLSearchParams, isRoute: boolean }}
+ *   view is null for unknown views or an empty route; `sub` is a view's sub-page ('#/change/check' → 'check'),
+ *   '' when there is none or it is not one word; isRoute is false for non-route anchors ('#main').
  */
 export function parseRoute(hash) {
   const raw = String(hash ?? '').replace(/^#/, '');
-  if (!raw.startsWith('/')) return { view: null, params: {}, searchParams: new URLSearchParams(), isRoute: false };
+  if (!raw.startsWith('/')) return { view: null, sub: '', params: {}, searchParams: new URLSearchParams(), isRoute: false };
   const rest = raw.slice(1);
   const q = rest.indexOf('?');
   const path = q === -1 ? rest : rest.slice(0, q);
   const query = q === -1 ? '' : rest.slice(q + 1);
   let id = '';
+  let sub = '';
   try {
-    id = decodeURIComponent(path.split('/')[0] || '').trim().toLowerCase();
+    const [first, ...more] = path.split('/');
+    id = decodeURIComponent(first || '').trim().toLowerCase();
+    sub = decodeURIComponent(more.join('/')).trim().toLowerCase();
   } catch {
     id = '';
   }
   const searchParams = new URLSearchParams(query);
   const params = {};
   for (const [k, v] of searchParams) params[k] = v; // repeated keys: last wins (use searchParams.getAll)
-  return { view: VIEW_BY_ID.has(id) ? id : null, params, searchParams, isRoute: true };
+  const view = VIEW_BY_ID.has(id) ? id : null;
+  return { view, sub: view && SUB_RE.test(sub) ? sub : '', params, searchParams, isRoute: true };
 }
 
 /**
  * Build a route hash. null/undefined/''/false values are skipped, true → '1',
- * arrays become repeated keys.
+ * arrays become repeated keys. A view may name a sub-page: 'change/check'.
  * @param {string} view
  * @param {Record<string, unknown>} [params]
  * @returns {string} e.g. '#/global?name=www.example.com&type=A'
@@ -184,7 +194,8 @@ export function buildRoute(view, params = {}) {
     else sp.set(k, v === true ? '1' : String(v));
   }
   const qs = sp.toString();
-  return `#/${encodeURIComponent(String(view || DEFAULT_VIEW))}${qs ? `?${qs}` : ''}`;
+  const [id, sub = ''] = String(view || DEFAULT_VIEW).split('/');
+  return `#/${encodeURIComponent(id)}${SUB_RE.test(sub) ? `/${sub}` : ''}${qs ? `?${qs}` : ''}`;
 }
 
 /**
@@ -528,6 +539,8 @@ function keepResult(cur) {
 /**
  * @typedef {object} ViewContext
  * @property {string} id                      current view id
+ * @property {string} sub                     the view's sub-page ('#/change/check' → 'check'), '' for its main page;
+ *                                            setParams and shareUrl keep it
  * @property {typeof state} state             shared state (inventory, settings, session, subscribe)
  * @property {typeof t} t                     translate
  * @property {'tr'|'en'} lang                 language at mount time (views re-mount on change)
@@ -577,18 +590,18 @@ function currentHash() {
 }
 
 /**
- * Navigate to a view.
+ * Navigate to a view (or one of its sub-pages: 'change/check').
  * @param {string} view
  * @param {object} [params]
  * @param {{ replace?: boolean, force?: boolean }} [opts] replace: no new history entry; force: re-mount even if unchanged
  */
 export function navigate(view, params = {}, { replace = false, force = false } = {}) {
-  const target = VIEW_BY_ID.has(view) ? view : DEFAULT_VIEW;
+  const target = VIEW_BY_ID.has(String(view).split('/')[0]) ? view : DEFAULT_VIEW;
   const hash = buildRoute(target, params);
   if (hash === currentHash()) {
     if (force) {
       const route = parseRoute(hash);
-      showRoute(target, route.params, { force: true, searchParams: route.searchParams });
+      showRoute(route.view, route.params, { force: true, searchParams: route.searchParams, sub: route.sub });
     }
     return;
   }
@@ -600,10 +613,12 @@ export function navigate(view, params = {}, { replace = false, force = false } =
   }
 }
 
-function makeContext(id, params, searchParams, controller, restored) {
+function makeContext(id, params, searchParams, controller, restored, sub = '') {
   const cleanups = [];
+  const route = sub ? `${id}/${sub}` : id;
   const ctx = {
     id,
+    sub,
     state,
     t,
     lang: getLang(),
@@ -625,7 +640,7 @@ function makeContext(id, params, searchParams, controller, restored) {
     setParams(next, { merge = false } = {}) {
       if (!isCurrent(ctx)) return;
       const merged = merge ? { ...ctx.params, ...next } : { ...next };
-      const hash = buildRoute(id, merged);
+      const hash = buildRoute(route, merged);
       const parsed = parseRoute(hash);
       ctx.params = parsed.params;
       ctx.searchParams = parsed.searchParams;
@@ -638,7 +653,7 @@ function makeContext(id, params, searchParams, controller, restored) {
       // A shared link shows the result: without the fill-only marker of a kept or carried route.
       const shared = { ...p };
       if (shared[FILL_PARAM] === FILL_VALUE) delete shared[FILL_PARAM];
-      return `${base}${buildRoute(id, shared)}`;
+      return `${base}${buildRoute(route, shared)}`;
     },
     setBusy(busy) {
       if (isCurrent(ctx)) setBusyState(busy);
@@ -950,18 +965,20 @@ function setKeptNote(note) {
 /**
  * @param {string} id
  * @param {Record<string, string>} params
- * @param {{ force?: boolean, restored?: any, searchParams?: URLSearchParams|null, note?: object|null }} [opts]
+ * @param {{ force?: boolean, restored?: any, searchParams?: URLSearchParams|null, note?: object|null, sub?: string }} [opts]
  *   note: set by a language re-mount (the kept-result note it showed, or null); a mount without it
- *   may bring the view's kept result back (lib/session.js restorePlan)
+ *   may bring the view's kept result back (lib/session.js restorePlan); sub: the view's sub-page
  */
-async function showRoute(id, params, { force = false, restored = null, searchParams = null, note = undefined } = {}) {
+async function showRoute(id, params, { force = false, restored = null, searchParams = null, note = undefined, sub = '' } = {}) {
   const def = VIEW_BY_ID.get(id) || VIEW_BY_ID.get(DEFAULT_VIEW);
+  if (def.id !== id) sub = '';
   let sp = searchParams || new URLSearchParams(params);
-  if (!force && current && current.id === def.id && sameSearch(current.ctx.searchParams, sp)) return;
+  const sameSub = !!current && current.sub === sub;
+  if (!force && current && current.id === def.id && sameSub && sameSearch(current.ctx.searchParams, sp)) return;
 
   // Same view with new params: let the view take them without a re-mount if it can. A
   // query repeating a key is re-mounted: mount reads every value from ctx.searchParams.
-  if (!force && current && current.id === def.id && current.view && typeof current.view.update === 'function'
+  if (!force && current && current.id === def.id && sameSub && current.view && typeof current.view.update === 'function'
     && !hasRepeatedKeys(sp)) {
     const cur = current;
     const prev = { params: cur.ctx.params, searchParams: cur.ctx.searchParams };
@@ -989,7 +1006,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
   // the form (the view's Copy link shares the result's own params). Under a carried target
   // ('carry') the result comes back too and the URL keeps the target, which the view's box takes
   // when it holds nothing of the user's. A language re-mount has its own snapshot.
-  const kept = note === undefined ? pageSession.kept(def.id) : null;
+  const kept = note === undefined && !sub ? pageSession.kept(def.id) : null;
   const plan = restorePlan(params, kept);
   if (plan === 'restore' || plan === 'carry') restored = kept.snapshot;
   if (plan === 'restore' || plan === 'dropped') {
@@ -1035,8 +1052,8 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     setBaseTitle(`${t(titleKeyOf(def, view))} · ${t('app.name')}`);
   }
   const controller = new AbortController();
-  const { ctx, cleanups } = makeContext(def.id, params, sp, controller, restored);
-  current = { id: def.id, def, view, params: { ...params }, ctx, controller, cleanups, busy: false, note: null };
+  const { ctx, cleanups } = makeContext(def.id, params, sp, controller, restored, sub);
+  current = { id: def.id, sub, def, view, params: { ...params }, ctx, controller, cleanups, busy: false, note: null };
   clear(dom.pageBody);
   const mountedAt = Date.now();
   let mounted = false;
@@ -1100,7 +1117,7 @@ function handleRoute() {
     showRoute(DEFAULT_VIEW, {});
     return;
   }
-  showRoute(route.view, route.params, { searchParams: route.searchParams });
+  showRoute(route.view, route.params, { searchParams: route.searchParams, sub: route.sub });
 }
 
 function remountCurrent() {
@@ -1111,7 +1128,7 @@ function remountCurrent() {
   } catch (err) {
     reportError(err);
   }
-  showRoute(current.id, current.params, { force: true, restored: snapshot, searchParams: current.ctx.searchParams, note: current.note || null });
+  showRoute(current.id, current.params, { force: true, restored: snapshot, searchParams: current.ctx.searchParams, note: current.note || null, sub: current.sub });
 }
 
 /* ------------------------------------------------------------------------ */

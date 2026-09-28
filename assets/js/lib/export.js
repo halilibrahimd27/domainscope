@@ -398,9 +398,9 @@ function shellArg(s) {
 /**
  * The CLI invocation for the downloaded helper files, e.g.
  * `python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem`.
- * Extensions: `certFile: null` omits --cert; `python`, `script`, `ports`,
- * `json`, `csv` options.
- * @param {{ namesFile?: string, targetsFile?: string, certFile?: string|null, python?: string,
+ * Extensions: `certFile: null` omits --cert, a list of files gives one --cert
+ * each (several certificate sets); `python`, `script`, `ports`, `json`, `csv` options.
+ * @param {{ namesFile?: string, targetsFile?: string, certFile?: string|string[]|null, python?: string,
  *   script?: string, ports?: number[]|string|null, json?: string|null, csv?: string|null }} [opts]
  * @returns {string}
  */
@@ -409,7 +409,7 @@ export function cliCommand({
   python = 'python3', script = 'ssl_origin_scan.py', ports = null, json = null, csv = null
 } = {}) {
   const parts = [python, shellArg(script), '-t', shellArg(targetsFile), '-n', shellArg(namesFile)];
-  if (certFile) parts.push('--cert', shellArg(certFile));
+  for (const file of Array.isArray(certFile) ? certFile : [certFile]) if (file) parts.push('--cert', shellArg(file));
   const portList = Array.isArray(ports) ? ports.join(',') : ports;
   if (portList) parts.push('--ports', shellArg(portList));
   if (json) parts.push('--json', shellArg(json));

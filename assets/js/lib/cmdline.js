@@ -282,7 +282,8 @@ const CLI_DEFAULT_PORT = 443;
 /**
  * Validate the optional `-p` / `--cert` / `--json` options into command tokens.
  * Every rejected value is reported in `dropped` ('cert', 'json', 'ports:<value>'),
- * never quoted into the command.
+ * never quoted into the command. `cert` may be a list: one `--cert` per file (the CLI's
+ * --cert is repeatable; a served certificate matching any of them is UPDATED).
  * @param {{ cert?: unknown, json?: unknown, ports?: unknown }} opts
  * @returns {{ tokens: string[], dropped: string[] }} tokens in CLI order: -p, --cert, --json
  */
@@ -305,7 +306,7 @@ function validateOptions({ cert = null, json = null, ports = null }) {
     if (typeof value === 'string' && PATH_TOKEN.test(value)) tokens.push(flag, value);
     else dropped.push(label);
   };
-  pathOpt(cert, '--cert', 'cert');
+  for (const file of Array.isArray(cert) ? [...new Set(cert)] : [cert]) pathOpt(file, '--cert', 'cert');
   pathOpt(json, '--json', 'json');
   return { tokens, dropped };
 }
@@ -410,9 +411,10 @@ function applyExcludes(targets, excludes) {
  *   path, validated like `script`)
  * @param {number} [opts.maxInlineNames=200] more names than this → names file
  * @param {number} [opts.maxLength=8000] a longer inline command → names file
- * @param {string|null} [opts.cert=null] `--cert <file>`: the new certificate
+ * @param {string|string[]|null} [opts.cert=null] `--cert <file>`: the new certificate
  *   the CLI compares against (a plain path token like `script`; anything else
- *   is dropped and reported as `'cert'` in `dropped.options`)
+ *   is dropped and reported as `'cert'` in `dropped.options`); a list gives one
+ *   `--cert` per file, in order (several certificate sets: any of them is UPDATED)
  * @param {string|null} [opts.json=null] `--json <file>`: where the CLI writes
  *   its JSON report (plain path token; otherwise dropped as `'json'`)
  * @param {number[]|null} [opts.ports=null] `-p 443,8443`: integers 1–65535,

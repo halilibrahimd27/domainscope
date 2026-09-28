@@ -349,5 +349,9 @@ describe('CLI helpers', () => {
       cliCommand({ namesFile: 'my names.txt', targetsFile: 'hosts.csv', certFile: "yeni sertifika's.pem", python: 'python', ports: [443, 8443], json: 'out.json' }),
       "python ssl_origin_scan.py -t hosts.csv -n 'my names.txt' --cert 'yeni sertifika'\\''s.pem' --ports 443,8443 --json out.json"
     );
+    // several certificate sets: one --cert per file
+    assert.equal(cliCommand({ certFile: ['new-cert-a-rsa.pem', 'new-cert-a-ecdsa.pem', 'new-cert-b-rsa.pem'] }),
+      'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert-a-rsa.pem --cert new-cert-a-ecdsa.pem --cert new-cert-b-rsa.pem');
+    assert.equal(cliCommand({ certFile: [] }), 'python3 ssl_origin_scan.py -t targets.txt -n names.txt');
   });
 });

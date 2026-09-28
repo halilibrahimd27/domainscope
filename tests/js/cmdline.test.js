@@ -244,6 +244,17 @@ describe('buildSweepCommand — -p / --cert / --json options (Verify CLI card)',
     assert.deepEqual(buildSweepCommand({ ...base, cert: null, json: undefined }).dropped.options, []);
   });
 
+  test('a list of certificates gives one --cert each, in order (several certificate sets); bad ones are dropped one by one', () => {
+    const res = buildSweepCommand({ ...base, cert: ['new-cert-a-rsa.pem', 'new-cert-a-ecdsa.pem', 'new-cert-b-rsa.pem', 'new-cert-a-rsa.pem'], json: 'verify-cli.json' });
+    assert.equal(res.command, 'ssl_origin_scan.py -t 203.0.113.10 2001:db8::5 -n www.example.com api.example.com'
+      + ' --cert new-cert-a-rsa.pem --cert new-cert-a-ecdsa.pem --cert new-cert-b-rsa.pem --json verify-cli.json');
+    assert.deepEqual(res.dropped.options, []);
+    const bad = buildSweepCommand({ ...base, shell: 'powershell', cert: ['ok.pem', 'a b.pem', null, '-x'] });
+    assert.ok(bad.command.endsWith(' -n www.example.com api.example.com --cert ok.pem'));
+    assert.deepEqual(bad.dropped.options, ['cert', 'cert']);
+    assert.equal(buildSweepCommand({ ...base, cert: [] }).command, 'ssl_origin_scan.py -t 203.0.113.10 2001:db8::5 -n www.example.com api.example.com');
+  });
+
   test('ports: [443] (the CLI default) and [] give no -p; bad values are dropped one by one', () => {
     assert.ok(!buildSweepCommand({ ...base, ports: [443] }).command.includes('-p'));
     assert.ok(!buildSweepCommand({ ...base, ports: [] }).command.includes('-p'));

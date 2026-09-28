@@ -4,7 +4,9 @@
  * Microsoft- and a DMARCbis-style report, dropped files read by their content (a zip of zips and
  * gzip files, JSON TLS reports, what is neither), every report of a domain together (a report
  * dropped twice counts once), the current SPF over a fake DoH client, the four source classes
- * with their reasons and fixes, the headline verdicts and notes, and the CSV rows.
+ * with their reasons and fixes (an SPF record that gives receivers a permerror included: a syntax
+ * error, too many lookups, void lookups, several records), the headline verdicts and notes, and
+ * the CSV rows; hostile XML read in linear time.
  * Pure Node, no network; documentation data only (tests/fixtures/mailreports).
  */
 import { test, describe } from 'node:test';
@@ -14,9 +16,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import {
-  SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS, XML_LIMITS,
+  SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS, XML_LIMITS, DISPOSITIONS,
   XmlError, parseXml, xmlChild, xmlChildren, xmlText, looksLikeAggregate, parseAggregateReport, decodeReportText, readReportFiles,
-  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS
+  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS, MAX_REPORT_FILES
 } from '../../assets/js/lib/dmarcreport.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { hostResolutionFrom } from '../../assets/js/lib/doh.js';
@@ -75,6 +77,18 @@ const ZONE = {
 };
 const INVENTORY = 'mail01 203.0.113.25\napp02 203.0.113.99\n';
 
+/** A small aggregate report of example.com: records [ip, count, { dkim, spf, spfResult, disposition }]. */
+function smallReport(records, { p = 'none', extraPolicy = '', id = '1' } = {}) {
+  const rec = ([ip, count, o = {}]) => `<record><row><source_ip>${ip}</source_ip><count>${count}</count><policy_evaluated>
+    <disposition>${o.disposition || 'none'}</disposition><dkim>${o.dkim || 'fail'}</dkim><spf>${o.spf || 'pass'}</spf></policy_evaluated></row>
+    <identifiers><header_from>${o.from || 'example.com'}</header_from></identifiers>
+    <auth_results><spf><domain>example.com</domain><result>${o.spfResult || 'pass'}</result></spf></auth_results></record>`;
+  return `<?xml version="1.0"?><feedback><report_metadata><org_name>google.com</org_name><report_id>${id}</report_id>
+    <date_range><begin>1790294400</begin><end>1790899200</end></date_range></report_metadata>
+    <policy_published><domain>example.com</domain><p>${p}</p>${extraPolicy}</policy_published>${records.map(rec).join('')}</feedback>`;
+}
+const aggOf = (xml) => aggregateDmarc([parseAggregateReport(xml).report]).domains[0];
+
 /* ---- XML ---------------------------------------------------------------------------------- */
 
 describe('parseXml — a minimal reader for data-only XML', () => {
@@ -127,6 +141,29 @@ describe('parseXml — a minimal reader for data-only XML', () => {
     assert.equal(code('<a><b/><b/><b/></a>', { maxElements: 3 }), 'limit');
     assert.equal(code(`${'<a>'.repeat(10)}${'</a>'.repeat(10)}`, { maxDepth: 5 }), 'limit');
     assert.ok(XML_LIMITS.maxElements >= 1000000 && Object.isFrozen(XML_LIMITS));
+  });
+
+  test('hostile markup is read in linear time: a megabyte tag with no "=", many bare names, unclosed quotes', () => {
+    const cases = {
+      noEquals: `<feedback><record x${'a'.repeat(1000000)}></record></feedback>`,
+      spaces: `<feedback><record ${' '.repeat(1000000)}a="1"></record></feedback>`,
+      bareNames: `<feedback><record ${'a '.repeat(500000)}/></feedback>`,
+      equalsOnly: `<feedback><record ${'= '.repeat(500000)}/></feedback>`,
+      manyTags: `<feedback>${`<x ${'a'.repeat(2000)}/>`.repeat(500)}</feedback>`,
+      entities: `<feedback><x>${'&amp;'.repeat(500000)}${'&'.repeat(500000)}</x></feedback>`
+    };
+    for (const [name, xml] of Object.entries(cases)) {
+      const t0 = performance.now();
+      const root = parseXml(xml);
+      const ms = performance.now() - t0;
+      assert.equal(root.name, 'feedback', name);
+      // A backtracking attribute pattern took seconds on 50,000 characters; the margin is for shared CI runners.
+      assert.ok(ms < 1500, `${name}: ${Math.round(ms)} ms`);
+    }
+    assert.deepEqual(parseXml('<a b = "1" c=\'2\' d e=f g="&lt;"/>').attrs, { b: '1', c: '2', g: '<' }, 'a bare name and an unquoted value are passed over');
+    const t0 = performance.now();
+    assert.throws(() => parseXml(`<feedback><record a="${'x'.repeat(1000000)}`), (err) => err.code === 'unterminated');
+    assert.ok(performance.now() - t0 < 1500);
   });
 
   test('a large report parses quickly (50,000 records)', () => {
@@ -217,6 +254,10 @@ describe('parseAggregateReport — RFC 7489 Appendix C', () => {
     assert.ok(looksLikeAggregate('<dmarc:feedback xmlns:dmarc="urn:x">'));
     assert.ok(!looksLikeAggregate('<?xml version="1.0"?><rss/>'));
     assert.ok(!looksLikeAggregate('{"policies":[]}'));
+    // a DOCTYPE without an internal subset, which parseXml skips too
+    assert.ok(looksLikeAggregate('<?xml version="1.0"?>\n<!DOCTYPE feedback>\n<feedback>'));
+    assert.ok(looksLikeAggregate('<!DOCTYPE feedback SYSTEM "urn:a>b"><feedback>'), 'a ">" inside a quoted literal');
+    assert.ok(!looksLikeAggregate('<!DOCTYPE rss><rss/>'));
   });
 
   test('decodeReportText: byte order marks, an XML declaration\'s encoding, UTF-8 otherwise', () => {
@@ -277,6 +318,23 @@ describe('readReportFiles — told apart by their content', () => {
   test('an abort rejects', async () => {
     await assert.rejects(readReportFiles([{ name: 'a.xml', bytes: enc.encode('<a/>') }], { signal: AbortSignal.abort() }), (err) => err.name === 'AbortError');
   });
+
+  test('a report that starts with a DOCTYPE line is read', async () => {
+    const xml = smallReport([['192.0.2.1', 1]]).replace('<?xml version="1.0"?>', '<?xml version="1.0"?>\n<!DOCTYPE feedback>\n');
+    const r = await readReportFiles([{ name: 'd.xml', bytes: enc.encode(xml) }]);
+    assert.deepEqual([r.dmarc.length, r.problems], [1, []]);
+  });
+
+  test(`past ${MAX_REPORT_FILES} files, the rest is named, never unpacked`, async () => {
+    const xml = enc.encode(smallReport([['192.0.2.1', 1]]));
+    const files = Array.from({ length: MAX_REPORT_FILES + 3 }, (_, i) => ({ name: `r${i}.xml`, bytes: xml }));
+    // the last one is no zip at all: unpacked, it would be a 'not-zip' problem
+    files[files.length - 1] = { name: 'last.zip', bytes: enc.encode('PK\u0003\u0004 not really') };
+    const r = await readReportFiles(files);
+    assert.equal(r.read, MAX_REPORT_FILES);
+    assert.equal(r.dmarc.length, MAX_REPORT_FILES);
+    assert.deepEqual(r.problems.map((p) => [p.path, p.code]), [[`r${MAX_REPORT_FILES}.xml`, 'too-many'], [`r${MAX_REPORT_FILES + 1}.xml`, 'too-many'], ['last.zip', 'too-many']]);
+  });
 });
 
 /* ---- aggregation ----------------------------------------------------------------------------- */
@@ -303,11 +361,21 @@ describe('aggregateDmarc — a domain\'s reports together', () => {
     assert.deepEqual(mail01.envelopeFrom, ['example.com']);
     assert.equal(mail01.begin.toISOString(), '2026-09-25T00:00:00.000Z');
     const spoof = d.sources.find((s) => s.ip === '192.0.2.200');
-    assert.deepEqual([spoof.messages, spoof.fail, spoof.dispositions], [43, 43, { none: 43, quarantine: 0, reject: 0 }]);
+    assert.deepEqual([spoof.messages, spoof.fail, spoof.dispositions], [43, 43, { none: 43, pass: 0, quarantine: 0, reject: 0 }]);
     assert.equal(d.sources.find((s) => s.ip === '2001:db8:25::10').version, 6);
     const net = domains[1];
     assert.deepEqual(net.policy, { domain: 'example.net', p: 'reject', sp: 'quarantine', np: 'reject', pct: 100, adkim: 's', aspf: 's', fo: null, testing: null });
     assert.equal(net.sources[1].dispositions.reject, 4);
+  });
+
+  test('DMARCbis: the disposition pass is counted; a disposition that is no key of the tally is not', () => {
+    const agg = aggOf(smallReport([['192.0.2.1', 5, { disposition: 'pass', dkim: 'pass' }], ['192.0.2.1', 2, { disposition: 'constructor' }],
+      ['192.0.2.1', 3, { disposition: '__proto__' }], ['192.0.2.1', 1, { disposition: 'hasOwnProperty' }]]));
+    const s = agg.sources[0];
+    assert.deepEqual(s.dispositions, { none: 0, pass: 5, quarantine: 0, reject: 0 });
+    assert.equal(s.messages, 11);
+    assert.ok(Object.isFrozen(DISPOSITIONS) && DISPOSITIONS.includes('pass'));
+    assert.equal(dmarcCsvRows(agg, classifySources(agg))[0].disposition_pass, 5);
   });
 
   test('the latest report\'s policy, every p the reports saw', () => {
@@ -329,6 +397,12 @@ describe('aggregateDmarc — a domain\'s reports together', () => {
     assert.deepEqual(spfDomainsFor(agg), ['bounce.example.com', 'news.example.com', 'example.com']);
     const many = { domain: 'example.com', sources: Array.from({ length: 20 }, (_, i) => ({ messages: i, headerFrom: [`h${i}.example.com`], spfAuth: [] })) };
     assert.equal(spfDomainsFor(many).length, SPF_MAX_DOMAINS);
+    // A report may name any header_from: only the policy domain's organisation is ever looked up.
+    const crafted = {
+      domain: 'example.com',
+      sources: [{ messages: 99, headerFrom: ['victim.example.net', 'mail.example.com'], spfAuth: [{ domain: 'victim.example.net', messages: 99 }, { domain: 'bounce.example.org', messages: 99 }] }]
+    };
+    assert.deepEqual(spfDomainsFor(crafted), ['mail.example.com', 'example.com']);
   });
 });
 
@@ -456,6 +530,56 @@ describe('classifySources — yours, authorized third parties, forwarders, unkno
     assert.ok(!dmarcOverview(agg, classifySources(agg)).notes.includes('spf-all'));
   });
 
+  test('an SPF record that gives receivers a permerror: whom it lists still decides the class; the fix names the record', async () => {
+    const classify = async (table, xml) => {
+      const agg = aggOf(xml);
+      const spf = new Map([['example.com', await loadSpfContext('example.com', { dns: fakeDns(table) })]]);
+      const rows = classifySources(agg, { spf });
+      return { agg, rows, by: Object.fromEntries(rows.map((r) => [r.ip, r])), o: dmarcOverview({ ...agg, days: 30 }, rows) };
+    };
+    // (a) eleven includes: a third party listed in the 11th fails SPF with a permerror at receivers
+    const eleven = { 'example.com': { TXT: [[`v=spf1 ip4:203.0.113.25 ${Array.from({ length: 11 }, (_, i) => `include:s${i}.example.net`).join(' ')} -all`]] } };
+    for (let i = 0; i < 11; i += 1) eleven[`s${i}.example.net`] = { TXT: [[`v=spf1 ip4:198.51.100.${i} -all`]] };
+    const xml = smallReport([['203.0.113.25', 500, { spf: 'pass' }], ['198.51.100.10', 80, { spf: 'fail', spfResult: 'permerror' }]]);
+    const a = await classify(eleven, xml);
+    assert.deepEqual(brief(a.by['198.51.100.10']), ['third-party', 'include-listed', 's10.example.net']);
+    assert.deepEqual([a.by['198.51.100.10'].spfNow.result, a.by['198.51.100.10'].spfNow.reason, a.by['198.51.100.10'].spfListed.result], ['permerror', 'lookup-limit', 'pass']);
+    assert.deepEqual(a.by['198.51.100.10'].fixes, ['spf-permerror', 'dkim-sign'], 'the record first; never spf-add: it is listed');
+    assert.deepEqual(brief(a.by['203.0.113.25']), ['yours', 'spf', 'ip4:203.0.113.25'], 'matched before the limit');
+    assert.equal(a.o.verdict, 'fix-first');
+    assert.deepEqual(a.o.spfError, { domain: 'example.com', reason: 'lookup-limit', sources: 1 });
+    assert.ok(a.o.notes.includes('spf-permerror'));
+
+    // (b) three void lookups in front of the domain's own server
+    const voids = { 'example.com': { TXT: [['v=spf1 a:v1.example.com a:v2.example.com a:v3.example.com ip4:203.0.113.25 -all']] } };
+    const b = await classify(voids, smallReport([['203.0.113.25', 500]]));
+    assert.deepEqual(brief(b.by['203.0.113.25']), ['yours', 'spf-listed', 'ip4:203.0.113.25']);
+    assert.equal(b.by['203.0.113.25'].spfNow.reason, 'void-limit');
+
+    // (c) a syntax error: every address gets a permerror. The domain's own server passed SPF in the
+    // reports, through SPF alone: that mail fails from now on, so the verdict is no "ready".
+    const syntax = { 'example.com': { TXT: [['v=spf1 ip4:203.0.113.25 foo:bar -all']] } };
+    const c = await classify(syntax, smallReport([['203.0.113.25', 500], ['192.0.2.200', 40, { spf: 'fail', spfResult: 'permerror' }]]));
+    assert.deepEqual(brief(c.by['203.0.113.25']), ['yours', 'spf-listed', 'ip4:203.0.113.25'], 'never "unknown sender"');
+    assert.deepEqual([c.by['203.0.113.25'].atRisk, c.by['203.0.113.25'].fixes], [500, ['spf-permerror', 'dkim-sign']]);
+    assert.deepEqual(brief(c.by['192.0.2.200']), ['unknown', 'none', null], 'the record does not list it either');
+    assert.equal(c.o.verdict, 'spf-broken');
+    assert.deepEqual([c.o.blockers.length, c.o.atRisk.map((r) => r.ip), c.o.atRiskMessages], [0, ['203.0.113.25'], 500]);
+    assert.deepEqual(c.o.spfError, { domain: 'example.com', reason: 'syntax', sources: 2 });
+    assert.deepEqual(c.o.notes, ['spf-permerror']);
+    // with DKIM aligned as well, nothing rests on SPF alone: ready, the note still says the record errs
+    const signed = await classify(syntax, smallReport([['203.0.113.25', 500, { dkim: 'pass' }]]));
+    assert.deepEqual([signed.by['203.0.113.25'].atRisk, signed.o.verdict, signed.o.notes], [0, 'ready', ['spf-permerror']]);
+
+    // several SPF records leave no tree to ask: the reports' own evidence decides, as for a failed lookup
+    const two = { 'example.com': { TXT: [['v=spf1 ip4:203.0.113.25 -all'], ['v=spf1 -all']] } };
+    const m = await classify(two, smallReport([['203.0.113.25', 500]]));
+    assert.deepEqual(brief(m.by['203.0.113.25']), ['yours', 'spf-report', null]);
+    assert.deepEqual([m.by['203.0.113.25'].spfNow.reason, m.by['203.0.113.25'].fixes, m.o.verdict], ['multiple-records', ['spf-permerror', 'dkim-sign'], 'spf-broken']);
+    const csv = dmarcCsvRows(m.agg, m.rows)[0];
+    assert.deepEqual([csv.spf_now, csv.spf_now_reason], ['permerror', 'multiple-records']);
+  });
+
   test('vocabularies are frozen and every class and reason is reachable', () => {
     for (const v of [SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS]) assert.ok(Object.isFrozen(v));
     assert.deepEqual(SOURCE_CLASSES, ['yours', 'third-party', 'forwarder', 'unknown']);
@@ -494,10 +618,15 @@ describe('dmarcOverview — compliance, what blocks p=reject, what to fix first'
     assert.equal(enforced.verdict, 'enforced');
     assert.deepEqual(enforced.notes, ['rejected-now']);
     assert.equal(enforced.blockers.length, 2, 'legitimate mail rejected now');
+    // DMARCbis test mode: p=reject with t=y is not in force yet
+    const testing = dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'reject', testing: 'y' }, days: 30 }, clean);
+    assert.deepEqual([testing.verdict, testing.notes], ['ready', ['testing']]);
+    const quarantineTest = dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'quarantine', testing: 'y' }, days: 30 }, clean);
+    assert.deepEqual(quarantineTest.notes, ['testing'], 'no "next step is p=reject" while quarantine is only tested');
     const none = dmarcOverview({ ...agg, messages: 0, pass: 0, sources: [] }, []);
     assert.equal(none.verdict, 'no-mail');
     assert.equal(none.compliance, null);
-    for (const v of ['fix-first', 'ready', 'enforced', 'no-mail']) assert.ok(DMARC_VERDICTS.includes(v));
+    for (const v of ['fix-first', 'ready', 'enforced', 'no-mail', 'spf-broken']) assert.ok(DMARC_VERDICTS.includes(v));
   });
 });
 

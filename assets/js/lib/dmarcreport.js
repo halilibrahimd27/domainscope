@@ -14,12 +14,13 @@
  *   dropped twice counts once.
  * - {@link loadSpfContext}: the domain's current SPF, expanded once (lib/health.js spfLookupCount;
  *   names and types to the DoH resolvers only), so {@link classifySources} can ask for each
- *   address whether the policy authorizes it (health.spfEvaluate, no further query).
+ *   address whether the policy authorizes it (health.spfEvaluate, no further query, with the
+ *   RFC 7208 limits of 10 DNS lookups and 2 void lookups a receiver applies).
  * - {@link classifySources}: each source is one of {@link SOURCE_CLASSES} — your servers (in the
  *   server list, or authorized by the domain's own SPF terms), an authorized third party (through
  *   an include of another organisation, or signing with the domain's DKIM from its own bounce
  *   domain), a forwarder (DKIM passes, SPF does not) or an unknown sender — with the reason and,
- *   for a known source that fails DMARC, what to fix.
+ *   for a known source that fails DMARC or that a broken SPF record now fails, what to fix.
  * - {@link dmarcOverview}: the headline — DMARC compliance, the policy, whether `p=reject` can
  *   come, which sources must be fixed first; {@link dmarcCsvRows} the table as CSV rows.
  *
@@ -43,8 +44,11 @@ import { parseTlsReport } from './tlsrpt.js';
 export const SOURCE_CLASSES = Object.freeze(['yours', 'third-party', 'forwarder', 'unknown']);
 /**
  * Why a source is in its class (`rpt.why.<id>`): `inventory` a server in the list; `spf` the
- * domain's own SPF terms authorize it; `spf-report` SPF could not be checked here, but the reports
- * saw it pass aligned; `spf-include` an include of another organisation authorizes it;
+ * domain's own SPF terms authorize it; `spf-listed` its own terms list it, but receivers get a
+ * permerror from the record first (a syntax error, too many lookups); `spf-report` the current SPF
+ * cannot tell (not checked, a failed lookup, several records), but the reports saw it pass
+ * aligned; `spf-include` an include of another organisation authorizes it; `include-listed` such
+ * an include lists it, but receivers get a permerror first;
  * `dkim-signed` the current SPF tells nothing about it (it passes every address, or no longer
  * lists it), but it signs with the domain's DKIM and all its mail passed SPF aligned: a direct sender;
  * `dkim-service` it signs with the domain's DKIM and bounces through its own domain; `forwarded`
@@ -54,19 +58,27 @@ export const SOURCE_CLASSES = Object.freeze(['yours', 'third-party', 'forwarder'
  * authenticates only as another domain; `none` nothing authenticates it.
  */
 export const CLASS_REASONS = Object.freeze([
-  'inventory', 'spf', 'spf-report', 'spf-include', 'dkim-signed', 'dkim-service', 'forwarded', 'dkim-forwarded', 'dkim-only', 'spf-removed', 'foreign', 'none'
+  'inventory', 'spf', 'spf-listed', 'spf-report', 'spf-include', 'include-listed', 'dkim-signed', 'dkim-service', 'forwarded', 'dkim-forwarded', 'dkim-only',
+  'spf-removed', 'foreign', 'none'
 ]);
 /**
- * What a known source that fails DMARC needs (`rpt.fix.<id>`), most robust first: `dkim-sign`
- * sign with DKIM for the domain, `dkim-align` DKIM signs only as another domain, `dkim-fix` the
- * domain's DKIM signature does not verify, `spf-add` the domain's SPF does not authorize the
- * address, `spf-align` SPF passes only for another domain (the return-path).
+ * What a known source needs (`rpt.fix.<id>`). First `spf-permerror` when the current SPF gives
+ * the address a permerror (the record, not the sender, breaks SPF: for every sender it lists);
+ * then, for one that fails DMARC, the most robust first: `dkim-sign` sign with DKIM for the
+ * domain, `dkim-align` DKIM signs only as another domain, `dkim-fix` the domain's DKIM signature
+ * does not verify, `spf-add` the domain's SPF does not list the address, `spf-align` SPF passes
+ * only for another domain (the return-path).
  */
-export const FIX_CODES = Object.freeze(['dkim-sign', 'dkim-align', 'dkim-fix', 'spf-add', 'spf-align']);
+export const FIX_CODES = Object.freeze(['spf-permerror', 'dkim-sign', 'dkim-align', 'dkim-fix', 'spf-add', 'spf-align']);
 /** Headline verdicts of {@link dmarcOverview} (`rpt.verdict.<id>`). */
-export const DMARC_VERDICTS = Object.freeze(['no-mail', 'enforced', 'ready', 'fix-first']);
+export const DMARC_VERDICTS = Object.freeze(['no-mail', 'enforced', 'ready', 'fix-first', 'spf-broken']);
 /** Notes of {@link dmarcOverview} (`rpt.note.<id>`). */
-export const DMARC_NOTES = Object.freeze(['short-range', 'pct', 'mixed-policy', 'spf-unknown', 'quarantine', 'rejected-now', 'spf-all']);
+export const DMARC_NOTES = Object.freeze(['short-range', 'pct', 'testing', 'mixed-policy', 'spf-unknown', 'spf-permerror', 'quarantine', 'rejected-now', 'spf-all']);
+/**
+ * Dispositions a receiver applied (`policy_evaluated/disposition`): RFC 7489's none, quarantine,
+ * reject, and DMARCbis's `pass` (the message passed DMARC, no policy applied).
+ */
+export const DISPOSITIONS = Object.freeze(['none', 'pass', 'quarantine', 'reject']);
 /** Policy overrides of RFC 7489 Appendix C (`PolicyOverrideType`) that mean forwarded mail. */
 export const FORWARD_OVERRIDES = Object.freeze(['forwarded', 'mailing_list', 'trusted_forwarder']);
 /** Why a file or part of one is no report (`rpt.problem.<code>`): the zip reader's reasons, then these. */
@@ -74,7 +86,8 @@ export const REPORT_PROBLEMS = Object.freeze([...ZIP_ERRORS, 'not-report', 'xml'
 /** Columns of {@link dmarcCsvRows} (language-neutral; the view writes the same headers). */
 export const DMARC_CSV_COLUMNS = Object.freeze([
   'domain', 'source_ip', 'class', 'reason', 'detail', 'servers', 'messages', 'dmarc_pass', 'dmarc_fail', 'spf_aligned_pass', 'dkim_aligned_pass',
-  'disposition_none', 'disposition_quarantine', 'disposition_reject', 'spf_now', 'spf_now_term', 'fixes', 'header_from', 'envelope_from',
+  'disposition_none', 'disposition_pass', 'disposition_quarantine', 'disposition_reject', 'spf_now', 'spf_now_term', 'spf_now_reason', 'fixes',
+  'header_from', 'envelope_from',
   'spf_results', 'dkim_results', 'overrides', 'reporters', 'first_seen', 'last_seen'
 ]);
 
@@ -86,6 +99,8 @@ export const SPF_MAX_DOMAINS = 10;
 export const SPF_MAX_MX_HOSTS = 10;
 /** Most files one {@link readReportFiles} call reads (every file inside the archives together). */
 export const MAX_REPORT_FILES = 2000;
+/** Work between two turns of the event loop while {@link readReportFiles} reads (ms). */
+export const READ_YIELD_MS = 50;
 
 /* ------------------------------------------------------------------------ */
 /* A minimal XML reader                                                     */
@@ -132,6 +147,39 @@ const localName = (qname) => {
   const i = qname.indexOf(':');
   return (i === -1 ? qname : qname.slice(i + 1)).toLowerCase();
 };
+
+const isXmlSpace = (c) => c === 32 || c === 9 || c === 10 || c === 13;
+
+/**
+ * The `name="value"` pairs of a start tag's text after its name, in one pass: every step moves
+ * forward, so a hostile tag (a megabyte with no '=') costs linear time, never a backtracking
+ * regex's quadratic one. A name without a quoted value is passed over, as before.
+ * @param {string} s the tag's inner text
+ * @param {number} from where the attributes start
+ * @returns {Record<string, string>}
+ */
+function readAttributes(s, from) {
+  const attrs = {};
+  let i = from;
+  const end = s.length;
+  while (i < end) {
+    while (i < end && isXmlSpace(s.charCodeAt(i))) i += 1;
+    const start = i;
+    while (i < end && !isXmlSpace(s.charCodeAt(i)) && s.charCodeAt(i) !== 61) i += 1;
+    const name = s.slice(start, i);
+    while (i < end && isXmlSpace(s.charCodeAt(i))) i += 1;
+    if (s.charCodeAt(i) !== 61) continue; // no '=': a bare name (or nothing left)
+    i += 1;
+    while (i < end && isXmlSpace(s.charCodeAt(i))) i += 1;
+    const q = s.charCodeAt(i);
+    if (q !== 34 && q !== 39) continue; // an unquoted value: not XML, passed over
+    const close = s.indexOf(q === 34 ? '"' : '\'', i + 1);
+    if (close === -1) break;
+    if (name) attrs[name] = decodeEntities(s.slice(i + 1, close));
+    i = close + 1;
+  }
+  return attrs;
+}
 
 /** Where a tag ends: the first '>' outside a quoted attribute value. */
 function tagEnd(s, from) {
@@ -205,9 +253,7 @@ export function parseXml(text, { maxElements = XML_LIMITS.maxElements, maxDepth 
       if (!m) throw new XmlError('mismatch', 'a tag without a name');
       count += 1;
       if (count > maxElements || stack.length > maxDepth) throw new XmlError('limit', count > maxElements ? 'elements' : 'depth');
-      const attrs = {};
-      for (const a of inner.slice(m[0].length).matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attrs[a[1]] = decodeEntities(a[2] ?? a[3] ?? '');
-      const el = { name: localName(m[1]), attrs, children: [], text: '' };
+      const el = { name: localName(m[1]), attrs: readAttributes(inner, m[0].length), children: [], text: '' };
       top.children.push(el);
       if (!selfClosing) stack.push(el);
       i = end + 1;
@@ -236,7 +282,7 @@ export const xmlText = (el, name) => {
  * @typedef {object} DmarcRecord
  * @property {string} ip the source address (canonical)
  * @property {number} count messages
- * @property {string} disposition 'none' | 'quarantine' | 'reject' (as the receiver applied it)
+ * @property {string} disposition one of {@link DISPOSITIONS} as the receiver applied it (anything else is kept as written)
  * @property {string} dkim DMARC's DKIM result: 'pass' only for an aligned signature that verified
  * @property {string} spf DMARC's SPF result: 'pass' only for an aligned SPF pass
  * @property {Array<{ type: string, comment: string }>} reasons policy overrides
@@ -284,12 +330,13 @@ function epoch(s) {
 
 /**
  * Does a text look like a DMARC aggregate report (a `feedback` document element)? Cheap: only the
- * first few kilobytes are looked at, after the XML declaration and comments.
+ * first few kilobytes are looked at, after the XML declaration, comments and a DOCTYPE without an
+ * internal subset ({@link parseXml} skips that one too, and refuses the other).
  * @param {string} text
  * @returns {boolean}
  */
 export function looksLikeAggregate(text) {
-  const head = String(text ?? '').slice(0, 4096).replace(/<\?[\s\S]*?\?>|<!--[\s\S]*?-->/g, '').trimStart();
+  const head = String(text ?? '').slice(0, 4096).replace(/<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE(?:[^[>"']|"[^"]*"|'[^']*')*>/gi, '').trimStart();
   return /^<(?:[\w.-]+:)?feedback[\s>/]/i.test(head);
 }
 
@@ -429,7 +476,9 @@ export function decodeReportText(bytes) {
  * Read dropped files into reports: archives are unpacked (lib/zipread.js), then each file is
  * told apart by its content — XML with a `feedback` element is a DMARC aggregate report, JSON with
  * `policies` a TLS report — never by its name. Everything that is neither, or cannot be read, is a
- * {@link ReportProblem}; nothing is dropped silently.
+ * {@link ReportProblem}; nothing is dropped silently. At most {@link MAX_REPORT_FILES} plain files
+ * are read; the files after that are named, not unpacked. Between files the event loop gets a
+ * turn every {@link READ_YIELD_MS} ms, so a page can draw the progress and hear a Stop.
  * @param {Array<{ name: string, bytes: Uint8Array|ArrayBuffer }>} files
  * @param {{ signal?: AbortSignal, limits?: object, onProgress?: (done: number, total: number) => void }} [opts]
  *   `limits`: lib/zipread.js unpackFile bounds
@@ -439,9 +488,20 @@ export function decodeReportText(bytes) {
 export async function readReportFiles(files, { signal, limits = {}, onProgress = null } = {}) {
   const out = { dmarc: [], tls: [], problems: [], read: 0 };
   const list = Array.isArray(files) ? files : [];
+  let turn = Date.now();
   for (let n = 0; n < list.length; n += 1) {
+    if (Date.now() - turn >= READ_YIELD_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      turn = Date.now();
+    }
     throwIfAborted(signal);
     const file = list[n];
+    if (out.read >= MAX_REPORT_FILES) {
+      // Full: the rest is named, not unpacked.
+      out.problems.push({ path: String(file && file.name ? file.name : 'file'), code: 'too-many', detail: `${MAX_REPORT_FILES}` });
+      if (onProgress) onProgress(n + 1, list.length);
+      continue;
+    }
     const unpacked = await unpackFile(file, { ...limits, signal });
     out.problems.push(...unpacked.problems);
     for (const f of unpacked.files) {
@@ -488,7 +548,7 @@ export async function readReportFiles(files, { signal, limits = {}, onProgress =
  * @property {number} fail
  * @property {number} dkimAligned messages with an aligned DKIM pass
  * @property {number} spfAligned messages with an aligned SPF pass
- * @property {{ none: number, quarantine: number, reject: number }} dispositions
+ * @property {{ none: number, pass: number, quarantine: number, reject: number }} dispositions messages per {@link DISPOSITIONS}
  * @property {string[]} headerFrom
  * @property {string[]} envelopeFrom
  * @property {Array<{ domain: string, scope: string|null, result: string, messages: number }>} spfAuth
@@ -532,7 +592,7 @@ const DAY_MS = 86400000;
 function newSource(ip) {
   return {
     ip, version: ipVersion(ip) || 4, private: isPrivateIP(ip), messages: 0, pass: 0, fail: 0, dkimAligned: 0, spfAligned: 0,
-    dispositions: { none: 0, quarantine: 0, reject: 0 }, headerFrom: [], envelopeFrom: [],
+    dispositions: Object.fromEntries(DISPOSITIONS.map((d) => [d, 0])), headerFrom: [], envelopeFrom: [],
     spfAuth: [], dkimAuth: [], overrides: [], reporters: [], records: 0, begin: null, end: null
   };
 }
@@ -590,7 +650,7 @@ export function aggregateDmarc(reports) {
       else s.fail += rec.count;
       if (rec.dkim === 'pass') s.dkimAligned += rec.count;
       if (rec.spf === 'pass') s.spfAligned += rec.count;
-      if (rec.disposition in s.dispositions) s.dispositions[rec.disposition] += rec.count;
+      if (Object.hasOwn(s.dispositions, rec.disposition)) s.dispositions[rec.disposition] += rec.count;
       addUnique(s.headerFrom, rec.headerFrom);
       addUnique(s.envelopeFrom, rec.envelopeFrom);
       for (const a of rec.spfAuth) addAuth(s.spfAuth, a, rec.count, ['domain', 'scope', 'result']);
@@ -640,8 +700,10 @@ export function aggregateDmarc(reports) {
 
 /**
  * The domains whose SPF tells whether an aggregate's sources are authorized: each header-from
- * domain, and each SPF-checked domain aligned with one (a bounce subdomain under relaxed alignment),
- * most messages first, at most {@link SPF_MAX_DOMAINS}.
+ * domain of the policy domain's organisation, and each SPF-checked domain there (a bounce
+ * subdomain under relaxed alignment), most messages first, at most {@link SPF_MAX_DOMAINS}. A
+ * domain of another organisation a report names is never looked up: a crafted report cannot make
+ * the page ask the resolvers about names of its choosing.
  * @param {DomainAggregate} agg
  * @returns {string[]}
  */
@@ -650,10 +712,11 @@ export function spfDomainsFor(agg) {
   const add = (d, n) => {
     if (d) weight.set(d, (weight.get(d) || 0) + n);
   };
+  const org = agg ? registrableDomain(agg.domain) || agg.domain : null;
+  const inOrg = (d) => (registrableDomain(d) || d) === org;
   for (const s of agg ? agg.sources : []) {
-    for (const h of s.headerFrom) add(h, s.messages);
-    const orgs = new Set(s.headerFrom.map((h) => registrableDomain(h) || h));
-    for (const a of s.spfAuth) if (orgs.has(registrableDomain(a.domain) || a.domain)) add(a.domain, a.messages);
+    for (const h of s.headerFrom) if (inOrg(h)) add(h, s.messages);
+    for (const a of s.spfAuth) if (inOrg(a.domain)) add(a.domain, a.messages);
   }
   if (agg && !weight.has(agg.domain)) add(agg.domain, 0);
   return [...weight].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([d]) => d).slice(0, SPF_MAX_DOMAINS);
@@ -715,15 +778,22 @@ export async function loadSpfContext(domain, { dns: client, signal, noCache = fa
  * @property {string|null} detail what the reason names: a server list's names, the SPF term, the include's
  *   domain, a DKIM selector, the other domain it authenticates as
  * @property {string[]} servers the servers of the list with this address
- * @property {import('./health.js').SpfVerdict|null} spfNow the current SPF's verdict for the address
- *   (for the domain that authorized it, else for the policy domain); null when SPF was not checked
+ * @property {import('./health.js').SpfVerdict|null} spfNow the current SPF's verdict for the address, as a
+ *   receiver gets it (for the domain that authorized it, else for the policy domain); null when SPF was not checked
  * @property {string|null} spfDomain the domain `spfNow` is for
- * @property {string[]} fixes for a known source that fails DMARC: {@link FIX_CODES}, most robust first
+ * @property {import('./health.js').SpfVerdict|null} spfListed when `spfNow` is a permerror: what the record means
+ *   (health.spfEvaluate `strict: false`: no lookup limits, a syntax error passed over), else null
+ * @property {number} atRisk messages that passed DMARC through SPF alone (no aligned DKIM) while the current SPF
+ *   gives the address a permerror: in these reports they passed, from now on they fail
+ * @property {string[]} fixes for a known source that fails DMARC or has mail at risk: {@link FIX_CODES}
  */
 
 const orgOf = (d) => registrableDomain(d) || d;
 /** An SPF pass given by `all` itself (`+all`, `all`): every address passes, so it says nothing about this one. */
 const passesAll = (v) => !!v && v.result === 'pass' && /^\+?all$/i.test(v.term || '');
+/** A verdict that tells nothing about the address: none at all, `unknown`, or a permerror. */
+const untold = (v) => !v || v.result === 'unknown' || v.result === 'permerror';
+const isKnown = (r) => r.cls === 'yours' || r.cls === 'third-party';
 
 /**
  * The first organisation other than the checked domain's on the way to an SPF match: an include
@@ -744,6 +814,12 @@ function foreignOnPath(verdict, org) {
  * bounces through a domain of its own, else a forwarder; the rest are unknown. When
  * the SPF could not be checked (`spf` without the domain, a lookup that failed, a term this page
  * cannot tell), an address the reports saw pass SPF aligned is counted as yours (`spf-report`).
+ *
+ * A permerror is what receivers get, but it hides whom the record means to authorize: then the
+ * same tree is asked again without the RFC 7208 limits and past a syntax error (`spfListed`), only
+ * to tell whose the sender is (`spf-listed`, `include-listed`); several SPF records, which leave no
+ * tree to ask, fall back to the reports' own evidence like a failed lookup. Such a source gets the
+ * `spf-permerror` fix, and `atRisk` counts its mail that passed through SPF alone.
  * @param {DomainAggregate} agg
  * @param {{ spf?: Map<string, SpfContext>, index?: Map<string, object[]> }} [opts] `index`: inventory.buildIpIndex
  * @returns {Array<SourceRow & ClassifiedSource>} in the aggregate's order
@@ -761,25 +837,36 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
       const c = spf.get(d);
       if (!c) continue;
       const v = c.status === 'ok' ? spfEvaluate(c.tree, s.ip, { mxAddresses: c.mxAddresses })
-        : { result: c.status === 'none' ? 'none' : c.status === 'multiple' ? 'permerror' : 'unknown', term: null, holder: d, path: [d], via: null, reason: c.status === 'failed' ? 'lookup-failed' : c.status };
+        : { result: c.status === 'none' ? 'none' : c.status === 'multiple' ? 'permerror' : 'unknown', term: null, holder: d, path: [d], via: null,
+          reason: c.status === 'failed' ? 'lookup-failed' : c.status === 'multiple' ? 'multiple-records' : null };
       if (!spfNow || v.result === 'pass') {
         spfNow = v;
         spfDomain = d;
       }
       if (v.result === 'pass') break;
     }
-    return { ...s, servers, spfNow, spfDomain, cls: null, reason: null, detail: null, fixes: [] };
+    let spfListed = null;
+    if (spfNow && spfNow.result === 'permerror') {
+      const c = spf.get(spfDomain);
+      if (c && c.status === 'ok') spfListed = spfEvaluate(c.tree, s.ip, { mxAddresses: c.mxAddresses, strict: false });
+    }
+    const atRisk = spfNow && spfNow.result === 'permerror' ? Math.max(0, s.pass - s.dkimAligned) : 0;
+    return { ...s, servers, spfNow, spfDomain, spfListed, atRisk, cls: null, reason: null, detail: null, fixes: [] };
   });
 
   // Pass 1: the server list and the SPF decide. A pass by `+all` authorizes every address, so it
   // tells no sender apart (the overview's `spf-all` note says so).
   for (const r of rows) {
+    const auth = r.spfNow && r.spfNow.result === 'pass' ? r.spfNow : null;
+    const listed = !auth && r.spfListed && r.spfListed.result === 'pass' ? r.spfListed : null;
+    const by = auth || listed;
     if (r.servers.length) {
       Object.assign(r, { cls: 'yours', reason: 'inventory', detail: r.servers.join(', ') });
-    } else if (r.spfNow && r.spfNow.result === 'pass' && !passesAll(r.spfNow)) {
-      const foreign = foreignOnPath(r.spfNow, orgOf(r.spfDomain || agg.domain));
-      Object.assign(r, foreign ? { cls: 'third-party', reason: 'spf-include', detail: foreign } : { cls: 'yours', reason: 'spf', detail: r.spfNow.term });
-    } else if ((!r.spfNow || r.spfNow.result === 'unknown') && r.spfAligned > 0) {
+    } else if (by && !passesAll(by)) {
+      const foreign = foreignOnPath(by, orgOf(r.spfDomain || agg.domain));
+      Object.assign(r, foreign ? { cls: 'third-party', reason: auth ? 'spf-include' : 'include-listed', detail: foreign }
+        : { cls: 'yours', reason: auth ? 'spf' : 'spf-listed', detail: by.term });
+    } else if (untold(r.spfListed || r.spfNow) && r.spfAligned > 0) {
       Object.assign(r, { cls: 'yours', reason: 'spf-report', detail: null });
     }
   }
@@ -808,18 +895,24 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
     else Object.assign(r, { cls: 'unknown', reason: 'none', detail: null });
   }
 
-  // What a known source that fails DMARC needs, the most robust fix first.
+  // What a known source needs: a record that gives it a permerror first (it breaks SPF for every
+  // sender the record lists), then, for DMARC failures, the most robust fix first.
   for (const r of rows) {
-    if (!r.fail || (r.cls !== 'yours' && r.cls !== 'third-party')) continue;
-    const fixes = [];
+    const broken = !!r.spfNow && r.spfNow.result === 'permerror';
+    if (!isKnown(r) || !(r.fail || r.atRisk)) continue;
+    const fixes = broken ? ['spf-permerror'] : [];
     const ownDkim = r.dkimAuth.filter((a) => inOrg(a.domain) && a.result !== 'none');
     const foreignDkim = r.dkimAuth.some((a) => !inOrg(a.domain) && a.result === 'pass');
+    // Mail at risk passed through SPF alone: DKIM would carry it past a broken record too.
     if (!ownDkim.length) fixes.push(foreignDkim ? 'dkim-align' : 'dkim-sign');
     else if (!ownDkim.some((a) => a.result === 'pass')) fixes.push('dkim-fix');
-    const ownSpf = r.spfAuth.filter((a) => inOrg(a.domain));
-    const foreignSpf = r.spfAuth.some((a) => !inOrg(a.domain) && a.result === 'pass');
-    if (ownSpf.length && !ownSpf.some((a) => a.result === 'pass') && !(r.spfNow && r.spfNow.result === 'pass')) fixes.push('spf-add');
-    else if (!ownSpf.length && foreignSpf) fixes.push('spf-align');
+    if (r.fail) {
+      const ownSpf = r.spfAuth.filter((a) => inOrg(a.domain));
+      const foreignSpf = r.spfAuth.some((a) => !inOrg(a.domain) && a.result === 'pass');
+      const listed = [r.spfNow, r.spfListed].some((v) => v && v.result === 'pass');
+      if (ownSpf.length && !ownSpf.some((a) => a.result === 'pass') && !listed) fixes.push('spf-add');
+      else if (!ownSpf.length && foreignSpf) fixes.push('spf-align');
+    }
     r.fixes = fixes;
   }
   return rows;
@@ -841,6 +934,11 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
  * @property {Array<SourceRow & ClassifiedSource>} blockers the known sources (yours, third parties) that fail DMARC,
  *   the most failing messages first: what must be fixed before `p=reject`
  * @property {number} blocked messages of theirs that fail
+ * @property {Array<SourceRow & ClassifiedSource>} atRisk the known sources that pass in these reports, but through
+ *   SPF alone, which now gives them a permerror; the most such messages first
+ * @property {number} atRiskMessages those messages
+ * @property {{ domain: string, reason: string, sources: number }|null} spfError the permerror receivers get from
+ *   the current SPF (for the most mail: its domain and one of health.SPF_PERMERROR_REASONS) and for how many sources
  * @property {Array<SourceRow & ClassifiedSource>} unknown the unknown senders that fail, most messages first
  * @property {number} unknownFail messages of theirs that fail (what `p=reject` would turn away)
  * @property {string[]} notes {@link DMARC_NOTES}
@@ -848,8 +946,10 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
 
 /**
  * The headline of one domain's reports. The verdict: `no-mail` (no message in the reports),
- * `enforced` (`p=reject` at 100 %: any blocker is mail rejected now), `ready` (every known source
- * passes: only unknown senders would be turned away) or `fix-first`.
+ * `enforced` (`p=reject` at 100 % and not in test mode: any blocker is mail rejected now),
+ * `fix-first` (known sources fail), `spf-broken` (none fails in these reports, but some passed
+ * through SPF alone and the current SPF gives them a permerror) or `ready` (every known source
+ * passes: only unknown senders would be turned away).
  * @param {DomainAggregate} agg
  * @param {Array<SourceRow & ClassifiedSource>} rows from {@link classifySources}
  * @param {{ spfChecked?: boolean }} [opts] `spfChecked`: false adds the `spf-unknown` note
@@ -863,21 +963,36 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
     b.messages += r.messages;
     b.pass += r.pass;
   }
-  const blockers = rows.filter((r) => r.fail > 0 && (r.cls === 'yours' || r.cls === 'third-party')).sort((a, b) => b.fail - a.fail || b.messages - a.messages);
+  const blockers = rows.filter((r) => r.fail > 0 && isKnown(r)).sort((a, b) => b.fail - a.fail || b.messages - a.messages);
+  const atRisk = rows.filter((r) => !r.fail && r.atRisk > 0 && isKnown(r)).sort((a, b) => b.atRisk - a.atRisk || a.ip.localeCompare(b.ip));
   const unknown = rows.filter((r) => r.fail > 0 && r.cls === 'unknown').sort((a, b) => b.fail - a.fail || a.ip.localeCompare(b.ip));
+  // The permerror of the most mail, and how many sources get one.
+  const errors = new Map();
+  for (const r of rows) {
+    if (!r.spfNow || r.spfNow.result !== 'permerror') continue;
+    const e = bump(errors, `${r.spfDomain}|${r.spfNow.reason}`, () => ({ domain: r.spfDomain || agg.domain, reason: r.spfNow.reason || 'syntax', sources: 0, messages: 0 }));
+    e.sources += 1;
+    e.messages += r.messages;
+  }
+  const top = [...errors.values()].sort((a, b) => b.messages - a.messages)[0];
+  const spfError = top ? { domain: top.domain, reason: top.reason, sources: [...errors.values()].reduce((n, e) => n + e.sources, 0) } : null;
   const p = agg.policy;
-  const enforced = p.p === 'reject' && p.pct >= 100;
+  const testing = p.testing === 'y';
+  const enforced = p.p === 'reject' && p.pct >= 100 && !testing;
   let verdict;
   if (!agg.messages) verdict = 'no-mail';
-  else if (enforced) verdict = 'enforced';
-  else verdict = blockers.length ? 'fix-first' : 'ready';
+  else if (blockers.length) verdict = enforced ? 'enforced' : 'fix-first';
+  else if (atRisk.length) verdict = 'spf-broken';
+  else verdict = enforced ? 'enforced' : 'ready';
   const notes = [];
   if (agg.days < SHORT_RANGE_DAYS) notes.push('short-range');
   if (p.pct < 100) notes.push('pct');
+  if (testing) notes.push('testing');
   if (agg.policies.length > 1) notes.push('mixed-policy');
   if (!spfChecked) notes.push('spf-unknown');
-  if (p.p === 'quarantine' && p.pct >= 100 && !blockers.length && agg.messages) notes.push('quarantine');
-  if (rows.some((r) => r.dispositions.reject > 0 && (r.cls === 'yours' || r.cls === 'third-party'))) notes.push('rejected-now');
+  if (spfError) notes.push('spf-permerror');
+  if (p.p === 'quarantine' && p.pct >= 100 && !testing && verdict === 'ready') notes.push('quarantine');
+  if (rows.some((r) => r.dispositions.reject > 0 && isKnown(r))) notes.push('rejected-now');
   if (rows.some((r) => passesAll(r.spfNow))) notes.push('spf-all');
   return {
     domain: agg.domain,
@@ -889,6 +1004,9 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
     verdict,
     blockers,
     blocked: blockers.reduce((n, r) => n + r.fail, 0),
+    atRisk,
+    atRiskMessages: atRisk.reduce((n, r) => n + r.atRisk, 0),
+    spfError,
     unknown,
     unknownFail: unknown.reduce((n, r) => n + r.fail, 0),
     notes
@@ -922,10 +1040,12 @@ export function dmarcCsvRows(agg, rows) {
     spf_aligned_pass: r.spfAligned,
     dkim_aligned_pass: r.dkimAligned,
     disposition_none: r.dispositions.none,
+    disposition_pass: r.dispositions.pass,
     disposition_quarantine: r.dispositions.quarantine,
     disposition_reject: r.dispositions.reject,
     spf_now: r.spfNow ? r.spfNow.result : '',
     spf_now_term: r.spfNow && r.spfNow.term ? r.spfNow.term : '',
+    spf_now_reason: r.spfNow && r.spfNow.reason ? r.spfNow.reason : '',
     fixes: r.fixes.join(' '),
     header_from: r.headerFrom.join(' '),
     envelope_from: r.envelopeFrom.join(' '),

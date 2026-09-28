@@ -519,7 +519,7 @@ function diffDrift(before, after, { t }) {
       }
       const move = [...rowWhere(x), `${label(y.status)} → ${label(x.status)}`];
       if (x.status === 'error') out.push(change('FAILED', origin, x.key, move, { tone: 'bad', before: y.status, after: x.status }));
-      else if (y.status === 'error') out.push(change('RECOVERED', origin, x.key, move, { tone: 'good', before: y.status, after: x.status }));
+      else if (y.status === 'error') out.push(change('RECOVERED', origin, x.key, move, { tone: notable(driftSev(x.status)) ? 'bad' : 'good', before: y.status, after: x.status }));
       else if (x.status === 'skipped' || y.status === 'skipped') {
         out.push(change('CHANGED', origin, x.key, [...move, x.status === 'skipped' ? ' (not checked this run)' : ' (checked again this run)'], { tone: 'quiet', counts: false, before: y.status, after: x.status }));
       } else {
@@ -544,6 +544,8 @@ function diffDrift(before, after, { t }) {
 
 /** lib/renewal.js RENEWAL_VERDICTS, worst first. */
 const VERDICT_RANK = Object.freeze({ fail: 0, unknown: 1, warnings: 2, ready: 3 });
+/** The tone of a name checked again after "could not be checked": what it is now, never good news by itself. */
+const RECOVERED_TONE = Object.freeze({ fail: 'bad', warnings: 'info', ready: 'good' });
 
 function diffRenew(before, after, { t, localParams }) {
   const out = [];
@@ -576,7 +578,7 @@ function diffRenew(before, after, { t, localParams }) {
     }
     const move = [`${verdict(b.verdict)} → ${verdict(a.verdict)}`, ...detail];
     if (a.verdict === 'unknown') out.push(change('FAILED', name, null, move, { tone: 'bad', before: b.verdict, after: a.verdict }));
-    else if (b.verdict === 'unknown') out.push(change('RECOVERED', name, null, move, { tone: 'good', before: b.verdict, after: a.verdict }));
+    else if (b.verdict === 'unknown') out.push(change('RECOVERED', name, null, move, { tone: RECOVERED_TONE[a.verdict] || 'info', before: b.verdict, after: a.verdict }));
     else {
       const worse = VERDICT_RANK[a.verdict] < VERDICT_RANK[b.verdict];
       out.push(change(worse ? 'WORSE' : 'BETTER', name, null, move, { tone: worse ? 'bad' : 'good', before: b.verdict, after: a.verdict }));
@@ -613,7 +615,7 @@ function diffDane(before, after, { t }) {
     if (x.status === y.status) continue;
     const move = [...where, `${label(y.status)} → ${label(x.status)}`];
     if (x.status === 'error') out.push(change('FAILED', target, x.key, move, { tone: 'bad', before: y.status, after: x.status }));
-    else if (y.status === 'error') out.push(change('RECOVERED', target, x.key, move, { tone: 'good', before: y.status, after: x.status }));
+    else if (y.status === 'error') out.push(change('RECOVERED', target, x.key, move, { tone: notable(DANE_SEVERITY[x.status]) ? 'bad' : 'good', before: y.status, after: x.status }));
     else {
       const rb = SEVERITY_RANK[DANE_SEVERITY[y.status]] ?? 0;
       const ra = SEVERITY_RANK[DANE_SEVERITY[x.status]] ?? 0;

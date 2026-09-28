@@ -781,6 +781,22 @@ describe('diff: drift, renew, dane', () => {
     assert.match(changeText(changes[0]), /_25\._tcp\.mail\.example\.com — Safe → Will break/);
   });
 
+  test('checked again after a failure: the tone is what the state is now, never good news by itself', () => {
+    const f = (id, severity) => ({ id, severity, params: {} });
+    const rn = (verdict, findings = []) => report('renew', [{ target: 'example.com', verdict, findings }]);
+    const renew = diffReports('renew', rn('unknown', [{ ...f('caa.error', 'warn'), unchecked: true }]), rn('fail', [f('caa.denied', 'error')]), { t });
+    assert.deepEqual(tags(renew), ['RECOVERED example.com']);
+    assert.equal(renew[0].tone, 'bad');
+    assert.match(changeText(renew[0]), /^example\.com: Could not be checked → Will fail/);
+    assert.equal(diffReports('renew', rn('unknown'), rn('ready'), { t })[0].tone, 'good');
+    const dr = (status) => report('drift', [{ target: 'example.com', rows: [row('www.example.com|A', status)] }]);
+    assert.equal(diffReports('drift', dr('error'), dr('origin-exposed'), { t })[0].tone, 'bad');
+    assert.equal(diffReports('drift', dr('error'), dr('match'), { t })[0].tone, 'good');
+    const dn = (status) => report('dane', [{ target: 'example.com', endpoints: [{ key: 'smtp|mail.example.com', qname: '_25._tcp.mail.example.com', status }] }]);
+    assert.equal(diffReports('dane', dn('error'), dn('danger'), { t })[0].tone, 'bad');
+    assert.equal(diffReports('dane', dn('error'), dn('safe'), { t })[0].tone, 'good');
+  });
+
   test('changes that count come first; an unknown command or a missing translator is refused', () => {
     const list = [{ counts: false, n: 1 }, { counts: true, n: 2 }, { counts: false, n: 3 }, { counts: true, n: 4 }];
     assert.deepEqual(orderChanges(list).map((c) => c.n), [2, 4, 1, 3]);

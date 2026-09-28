@@ -67,6 +67,9 @@ export const titleKey = 'nav.cert';
 /** Nav/page icon. */
 export const icon = 'shield';
 
+/** PKCS12_UNSUPPORTED details worded on their own (the others are algorithm names, quoted as they are). */
+export const PKCS12_WORDED = Object.freeze(['webcrypto', 'iterations', 'envelopedData', 'signedData']);
+
 /** File types offered by the certificate pickers (PKCS#12 / CSR / keys are detected and explained). */
 export const CERT_ACCEPT = '.pem,.crt,.cer,.cert,.der,.p7b,.p7c,.pfx,.p12,.csr,.req,.txt,.key';
 /** state.session key holding the {@link CertLoad} shared by the Certificate and SSL Targets views. */
@@ -164,6 +167,8 @@ registerStrings('en', {
   'cert.warn.PKCS12_UNSUPPORTED.what': 'It uses {what}, which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'This browser cannot decrypt it here: the page needs WebCrypto, which works only over https or on localhost. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Its password is stretched with more iterations than this page runs. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.envelopedData': 'It is protected with a certificate’s key instead of a password (public-key privacy mode), which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.signedData': 'Its integrity is signed with a certificate’s key instead of a password (public-key integrity mode), which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_BAD_PASSWORD.title': 'Wrong password for the PKCS#12 file',
   'cert.warn.PKCS12_DAMAGED.title': 'The PKCS#12 file is damaged',
   'cert.warn.PKCS12_DAMAGED.body': 'Its contents cannot be read, although the password is right. Export the file again.',
@@ -464,6 +469,8 @@ registerStrings('tr', {
   'cert.warn.PKCS12_UNSUPPORTED.what': 'Bu sayfanın desteklemediği {what} kullanıyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyayı burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.envelopedData': 'Parola yerine bir sertifikanın anahtarıyla korunmuş (açık anahtarla gizlilik kipi); bu sayfa bunu desteklemiyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.signedData': 'Bütünlüğü parola yerine bir sertifikanın anahtarıyla imzalanmış (açık anahtarla bütünlük kipi); bu sayfa bunu desteklemiyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_BAD_PASSWORD.title': 'PKCS#12 dosyasının parolası yanlış',
   'cert.warn.PKCS12_DAMAGED.title': 'PKCS#12 dosyası bozuk',
   'cert.warn.PKCS12_DAMAGED.body': 'Parola doğru olduğu hâlde içeriği okunamıyor. Dosyayı yeniden dışa aktarın.',
@@ -1772,7 +1779,7 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
         const file = /^[\w.-]+\.(pfx|p12)$/i.test(name) ? name : 'file.pfx';
         const what = w.detail && !/^openssl /.test(w.detail) ? w.detail : null;
         let body = t('cert.warn.PKCS12_UNSUPPORTED.body');
-        if (what === 'webcrypto' || what === 'iterations') body = t(`cert.warn.PKCS12_UNSUPPORTED.${what}`);
+        if (PKCS12_WORDED.includes(what)) body = t(`cert.warn.PKCS12_UNSUPPORTED.${what}`);
         else if (what) body = t('cert.warn.PKCS12_UNSUPPORTED.what', { what });
         // OpenSSL 3 reads the legacy PBE algorithms (RC4, DES, MD5) only with -legacy.
         const legacy = what && /^pbeWith/.test(what) ? ' -legacy' : '';

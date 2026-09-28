@@ -212,7 +212,7 @@ describe('i18n coverage', () => {
     // A PKCS#12 bundle (ui/pfx-import.js, views/cert.js): the encryption strengths lib/pkcs12.js
     // reports, and the unsupported details the Certificate view words on their own.
     for (const s of ['weak', 'legacy']) { add(`pfx.strength.${s}`); add(`pfx.strength.${s}Title`); }
-    for (const d of ['webcrypto', 'iterations']) add(`cert.warn.PKCS12_UNSUPPORTED.${d}`);
+    for (const d of views.cert.PKCS12_WORDED) add(`cert.warn.PKCS12_UNSUPPORTED.${d}`);
     for (const l of ['EV', 'OV', 'IV', 'DV']) add(`cert.level.${l}`);
     for (const r of ['leaf', 'intermediate', 'root', 'unrelated']) add(`cert.role.${r}`);
     for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);

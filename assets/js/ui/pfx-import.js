@@ -59,7 +59,7 @@ registerStrings('en', {
   'pfx.key.mismatchBody': 'A server set up with this certificate and this key cannot complete a TLS handshake.',
   'pfx.key.owner': 'The key belongs to {name}.',
   'pfx.key.nokey': 'The file holds no private key: the server needs the key from elsewhere.',
-  'pfx.key.unsupported': 'A {algorithm} key cannot be checked in the browser.',
+  'pfx.key.unsupported': 'The browser cannot check this {algorithm} key.',
   'pfx.key.failed': 'The private key could not be decrypted with this password: it may have a password of its own, or the file is damaged.',
   'pfx.key.notChecked': 'The key was not checked. To check it, load the file again and tick “Check that the private key matches the certificate”.',
 

@@ -40,7 +40,7 @@ export const PKCS12_ERRORS = Object.freeze(['NOT_PKCS12', 'BAD_PASSWORD', 'DAMAG
 /**
  * Why a bundle could not be opened. `code`: one of {@link PKCS12_ERRORS}; `detail`: 'mac' or
  * 'no-mac' for BAD_PASSWORD, what is not supported for UNSUPPORTED (an algorithm name, 'webcrypto',
- * 'public-key privacy', …), else null.
+ * 'iterations', 'envelopedData' / 'signedData' for the public-key modes, …), else null.
  */
 export class Pkcs12Error extends Error {
   /**
@@ -60,9 +60,16 @@ export class Pkcs12Error extends Error {
 const MAX_DEPTH = 40;
 /** Safe bags read at most (a real bundle has a handful). */
 const MAX_BAGS = 1000;
-/** Highest iteration count accepted: PBKDF2 runs natively, the PKCS#12 KDF in JS. */
+/**
+ * Highest iteration counts accepted (real bundles use 2,000 to 100,000): PBKDF2 runs natively;
+ * the PKCS#12 KDF hashes in JS (about 2 µs a round) or, for SHA-384 / SHA-512, one WebCrypto
+ * digest a round (about 20 µs). A larger count is UNSUPPORTED ('iterations') at once.
+ */
 const MAX_PBKDF2_ITERATIONS = 10000000;
-const MAX_KDF_ITERATIONS = 2000000;
+const MAX_KDF_ITERATIONS = 1000000;
+const MAX_ASYNC_KDF_ITERATIONS = 200000;
+/** Rounds of the JS KDF between two yields to the event loop (the page keeps painting). */
+const KDF_YIELD_EVERY = 20000;
 /** What the key check signs (any fixed bytes do: nothing leaves the page). */
 const CHALLENGE = new TextEncoder().encode('DomainScope PKCS#12 key check');
 
@@ -370,7 +377,10 @@ async function hashIterate(hash, data, count, subtle) {
   const { sync } = HASHES[hash];
   let a = data;
   if (sync) {
-    for (let i = 0; i < count; i++) a = sync(a);
+    for (let i = 1; i <= count; i++) {
+      a = sync(a);
+      if (i % KDF_YIELD_EVERY === 0 && i < count) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     return a;
   }
   const s = needSubtle(subtle);
@@ -596,7 +606,7 @@ function readPfx(bytes) {
   if (smallInt(kids[0], 'PFX version') !== 3) damaged('Unknown PFX version');
   const [ctNode, content] = children(kids[1]);
   const type = oid(ctNode);
-  if (type === OID.SIGNED_DATA) throw new Pkcs12Error('UNSUPPORTED', 'Public-key integrity mode (signedData) is not supported', { detail: 'public-key integrity' });
+  if (type === OID.SIGNED_DATA) throw new Pkcs12Error('UNSUPPORTED', 'Public-key integrity mode (signedData) is not supported', { detail: 'signedData' });
   if (type !== OID.DATA) damaged('The authenticated safe is not data');
   const data = octets(children(expect(content, 0xa0, 'authSafe content'))[0]);
   return { data, mac: kids[2] ? readMac(kids[2]) : null };
@@ -625,7 +635,8 @@ function readMac(node) {
   const hash = DIGESTS[alg.id];
   if (!hash || !HASHES[hash]) throw new Pkcs12Error('UNSUPPORTED', `A ${hash || alg.id} MAC is not supported`, { detail: hash || alg.id });
   const salt = octetString(saltNode, 'MAC salt');
-  const iterations = iterNode ? checkIterations(smallInt(iterNode, 'MAC iteration count'), MAX_KDF_ITERATIONS, 'MAC') : 1;
+  const max = HASHES[hash].sync ? MAX_KDF_ITERATIONS : MAX_ASYNC_KDF_ITERATIONS;
+  const iterations = iterNode ? checkIterations(smallInt(iterNode, 'MAC iteration count'), max, 'MAC') : 1;
   return { kind: 'hmac', hash, digest, salt, iterations };
 }
 
@@ -662,7 +673,7 @@ function readAuthenticatedSafe(data) {
       const [, algNode, encrypted] = children(expect(eci, 0x30, 'EncryptedContentInfo'));
       out.push({ type: 'encrypted', scheme: encryptionScheme(algNode), ciphertext: encrypted ? octets(encrypted) : new Uint8Array(0) });
     } else if (type === OID.ENVELOPED_DATA) {
-      throw new Pkcs12Error('UNSUPPORTED', 'Public-key privacy mode (envelopedData) is not supported', { detail: 'public-key privacy' });
+      throw new Pkcs12Error('UNSUPPORTED', 'Public-key privacy mode (envelopedData) is not supported', { detail: 'envelopedData' });
     } else {
       damaged('Unknown content in the authenticated safe');
     }

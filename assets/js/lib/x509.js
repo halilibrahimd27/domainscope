@@ -1819,7 +1819,7 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
  *   opened gives PKCS12_BAD_PASSWORD (detail 'mac': the integrity check does not match; 'no-mac':
  *   nothing decrypts and there is no integrity check to tell a damaged file apart),
  *   PKCS12_DAMAGED (detail: what is wrong) or PKCS12_UNSUPPORTED (detail: the algorithm or mode,
- *   e.g. 'pbeWithSHAAnd128BitRC4', 'public-key privacy', 'webcrypto') instead.
+ *   e.g. 'pbeWithSHAAnd128BitRC4', 'envelopedData', 'webcrypto') instead.
  * - Private keys are never returned. `checkKey` decrypts them in memory only to check whether one
  *   belongs to the leaf (`pkcs12.keyCheck`), then drops them.
  *

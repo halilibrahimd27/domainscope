@@ -80,7 +80,7 @@ const oid = (s) => {
 const OIDS = {
   data: '1.2.840.113549.1.7.1', signedData: '1.2.840.113549.1.7.2', envelopedData: '1.2.840.113549.1.7.3',
   encryptedData: '1.2.840.113549.1.7.6', certBag: '1.2.840.113549.1.12.10.1.3', x509: '1.2.840.113549.1.9.22.1',
-  sha256: '2.16.840.1.101.3.4.2.1', sha224: '2.16.840.1.101.3.4.2.4', rc4: '1.2.840.113549.1.12.1.1',
+  sha256: '2.16.840.1.101.3.4.2.1', sha512: '2.16.840.1.101.3.4.2.3', sha224: '2.16.840.1.101.3.4.2.4', rc4: '1.2.840.113549.1.12.1.1',
   pbes2: '1.2.840.113549.1.5.13', pbkdf2: '1.2.840.113549.1.5.12', hmacSha256: '1.2.840.113549.2.9',
   aes256: '2.16.840.1.101.3.4.1.42'
 };
@@ -399,8 +399,8 @@ describe('openPkcs12: damaged and unsupported bundles', () => {
 
   test('unsupported modes and algorithms are named, before any password is tried', async () => {
     const cases = [
-      [seq(int(3), contentInfo('signedData', seq(int(1)))), 'public-key integrity'],
-      [await pfx(seq(contentInfo('envelopedData', seq(int(0))))), 'public-key privacy'],
+      [seq(int(3), contentInfo('signedData', seq(int(1)))), 'signedData'],
+      [await pfx(seq(contentInfo('envelopedData', seq(int(0))))), 'envelopedData'],
       [await pfx(seq(encryptedData(seq(oid(OIDS.rc4), seq(octet(randomBytes(8)), int(2048))), randomBytes(16)))), 'pbeWithSHAAnd128BitRC4'],
       [await pfx(seq(contentInfo('data', octet(seq()))), { password: 'x', digest: OIDS.sha224 }), 'SHA-224']
     ];
@@ -414,7 +414,18 @@ describe('openPkcs12: damaged and unsupported bundles', () => {
     const t0 = Date.now();
     const err = await rejection(openPkcs12(await pfx(seq(contentInfo('data', octet(seq()))), { password: 'x', iterations: 2 ** 40 }), 'x'));
     assert.deepEqual([err.code, err.detail], ['UNSUPPORTED', 'iterations']);
+    // A SHA-512 MAC key takes one WebCrypto digest a round: its cap is lower.
+    const sha512 = await rejection(openPkcs12(await pfx(seq(contentInfo('data', octet(seq()))), { password: 'x', digest: OIDS.sha512, iterations: 200001 }), 'x'));
+    assert.deepEqual([sha512.code, sha512.detail], ['UNSUPPORTED', 'iterations']);
     assert.ok(Date.now() - t0 < 2000);
+  });
+
+  test('a long JS key derivation yields to the event loop (the page keeps painting)', async () => {
+    let done = false;
+    let firedWhileRunning = null;
+    setTimeout(() => { firedWhileRunning = !done; }, 0);
+    await pkcs12Kdf({ hash: 'SHA-1', password: bmpPassword('x'), salt: new Uint8Array(8), id: 1, iterations: 45000, length: 20 }).then(() => { done = true; });
+    assert.equal(firedWhileRunning, true);
   });
 
   test('random corruption never escapes as anything but a Pkcs12Error', async () => {

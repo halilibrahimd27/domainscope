@@ -18,12 +18,18 @@
  *   - Subdomains › Sources › Related domains: a scan of example.com whose Cert Spotter and crt.sh
  *     answers name example.net (two certificates), example.org (a crt.sh common name only: the
  *     partial-names note) and thirteen customer domains of one shared certificate (folded, no
- *     scan button); opening the card sends nothing; "Scan too" scans example.com and example.net
- *     together; the ledger then names every host the scans contacted, none unknown;
+ *     scan button); opening the card sends nothing; "Scan too" (named for its domain) scans
+ *     example.com and example.net together and hands the focus to the new run's title; the ledger
+ *     then names every host the scans contacted, none unknown;
+ *   - a Globalping measurement of a host name (lib/globalping.js against an in-page fake, as
+ *     Domain Health's MTA-STS check sends it): the ledger says Globalping got host names, not an
+ *     address — the sender's note reached the meter;
  *   - Certificate › CT logs › Key continuity: the sample certificate's public-key SHA-256 computed
  *     in the page (compared with Node's), nothing sent before the click, then exactly one crt.sh
- *     search by that hash, "Key reused across renewals" with the TLSA / pinning consequences, and
- *     the button that opens the DANE / TLSA tab; the ledger names it "A public-key SHA-256";
+ *     search by that hash, which keeps running while About › What this page sent shows it and
+ *     answers when the view is back; "Key reused across renewals" worded as what crt.sh lists, with
+ *     the TLSA / pinning consequences, and the button that opens the DANE / TLSA tab; the ledger
+ *     names it "A public-key SHA-256";
  *   - the Pages bundle (tools/assemble-site.mjs into a temporary folder): the ledger names the
  *     deploy and links its commit from version.json;
  *   - 375 px (and 320 px for the ledger) without horizontal scroll, TR / EN × light / dark; zero
@@ -94,7 +100,10 @@ const KEY_ROWS = [
 /** Requests the test sends past the app, answered by CDP so Resource Timing reports them. */
 const WITNESS = ['https://crt.sh/?q=rt-witness.example.com&output=json', 'https://tracker.example.net/collect?id=1'];
 
-/** In-page fakes: DoH from ZONE, Cert Spotter, crt.sh (search and key search); anything else is refused. */
+/**
+ * In-page fakes: DoH from ZONE, Cert Spotter, crt.sh (search and key search; the key search waits
+ * while `__fake.keyHold` is a promise), a Globalping measurement created; anything else is refused.
+ */
 const fakeScript = () => `(() => {
   const ZONE = ${JSON.stringify(ZONE)};
   const SPOTTER = ${JSON.stringify(SPOTTER)};
@@ -102,7 +111,7 @@ const fakeScript = () => `(() => {
   const KEY_ROWS = ${JSON.stringify(KEY_ROWS)};
   const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
   window.__realFetch = window.fetch.bind(window);
-  window.__fake = { ct: [], key: [], blocked: [], dns: 0 };
+  window.__fake = { ct: [], key: [], blocked: [], dns: 0, gp: 0, keyHold: null };
   let wire = null;
   const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
   const apexOf = (name) => ['example.com', 'example.net'].find((a) => name === a || name.endsWith('.' + a)) || null;
@@ -116,10 +125,15 @@ const fakeScript = () => `(() => {
     if (url.startsWith('https://crt.sh/')) {
       if (url.includes('spkisha256=')) {
         window.__fake.key.push(url);
+        if (window.__fake.keyHold) await window.__fake.keyHold;
         return json(KEY_ROWS);
       }
       window.__fake.ct.push(url);
       return json(/example\\.com/.test(decodeURIComponent(url)) ? CRTSH : []);
+    }
+    if (url === 'https://api.globalping.io/v1/measurements' && init && init.method === 'POST') {
+      window.__fake.gp += 1;
+      return json({ id: 'E2eFakeMeasurement1', probesCount: 1 }, 202);
     }
     const m = /[?&]dns=([^&]+)/.exec(url);
     if (!m) {
@@ -321,14 +335,30 @@ async function main() {
       await gotoRoute(page, 'subdomains');
       await page.click('.sub-tabs [role="tab"][data-tab="sources"]');
       await page.waitFor(() => !!document.querySelector('.sub-rel-item[data-domain="example.net"] [data-action="rel-scan"]'), { message: 'kept result' });
+      assertEqual(await page.evaluate(() => document.querySelector('.sub-rel-item[data-domain="example.net"] [data-action="rel-scan"]').getAttribute('aria-label')),
+        'Scan too: example.net', 'the button names its domain');
       await page.click('.sub-rel-item[data-domain="example.net"] [data-action="rel-scan"]');
       await page.waitFor(() => /example\.com, example\.net/.test(document.querySelector('.sub-run-title')?.textContent || ''), { message: 'second scan' });
+      await page.waitFor(() => document.activeElement?.classList.contains('sub-run-title'), { message: 'the focus on the new run title, not on <body>' });
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="sub-domain"]').value), 'example.com, example.net', 'the box');
       await waitRun(page, 'second scan done');
       await page.click('.sub-tabs [role="tab"][data-tab="sources"]');
       await page.waitFor(() => document.querySelector('.sub-rel')?.dataset.state === 'ready' && !!document.querySelector('.sub-rel-item'), { message: 'related again' });
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.sub-rel-item')].map((li) => li.dataset.domain)), ['example.org'], 'example.net is scanned now');
       assert(/#\/subdomains\?domain=example\.com%2Cexample\.net/.test(await page.evaluate(() => location.hash)), 'the URL names both');
+    });
+
+    run.group('Globalping: what a measurement sent');
+    await run.step('a host-name measurement shows as host names, never an address', async () => {
+      await page.evaluate(async () => {
+        const gp = await import('./assets/js/lib/globalping.js');
+        await gp.createGlobalping().create(gp.httpsGetRequest({ host: 'mta-sts.example.com', path: '/.well-known/mta-sts.txt' }));
+      });
+      assertEqual(await page.evaluate(() => window.__fake.gp), 1, 'one measurement created (in-page fake)');
+      await gotoRoute(page, '#/about?section=sent');
+      await page.waitFor(() => [...document.querySelectorAll('.egress-name')].some((n) => n.textContent === 'Globalping'), { message: 'Globalping row' });
+      const gpRow = (await ledger(page)).find((r) => r.name === 'Globalping');
+      assertEqual(gpRow.kinds, ['hostnames'], 'what Globalping received');
     });
 
     run.group('Certificate › CT logs › Key continuity');
@@ -343,13 +373,31 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.cert-key-card').dataset.state), 'idle', 'idle');
     });
 
-    await run.step('the lookup sends one crt.sh search by the hash and says the key was reused, with what that means', async () => {
+    await run.step('the lookup keeps running while the ledger shows it, and answers when the view is back', async () => {
+      await page.evaluate(() => {
+        window.__fake.keyHold = new Promise((resolve) => { window.__fake.keyRelease = resolve; });
+      });
       await page.click('[data-action="key-run"]');
-      await page.waitFor(() => !!document.querySelector('[data-key-status]'), { timeout: 15000, message: 'key result' });
+      await page.waitFor(() => document.querySelector('.cert-key-card')?.dataset.state === 'running' && window.__fake.key.length === 1, { message: 'searching' });
+      await gotoRoute(page, '#/about?section=sent');
+      await page.waitFor(() => [...document.querySelectorAll('.egress-kinds li')].some((li) => li.dataset.kind === 'keyHash'), { message: 'the search in the ledger' });
+      const crt = (await ledger(page)).find((r) => r.name === 'crt.sh');
+      assert(crt && !crt.failed, `not given up: ${JSON.stringify(crt)}`);
+      await page.evaluate(() => {
+        window.__fake.keyRelease();
+        window.__fake.keyHold = null;
+      });
+      await gotoRoute(page, 'cert');
+      await page.click('.cert-tabs [role="tab"][data-tab="ct"]');
+      await page.waitFor(() => !!document.querySelector('.cert-key-card [data-key-status]'), { timeout: 15000, message: 'the answer after the return' });
+      assertEqual(await page.evaluate(() => window.__fake.key.length), 1, 'one search, not started again');
+    });
+
+    await run.step('the lookup sent one crt.sh search by the hash and says the key was reused, with what that means', async () => {
       assertEqual(await page.evaluate(() => window.__fake.key), [`https://crt.sh/?spkisha256=${SAMPLE_SPKI}&output=json`], 'one search, the hash only');
       assertEqual(await page.evaluate(() => document.querySelector('[data-key-status]').dataset.keyStatus), 'reused', 'status');
       const body = await text(page, '.cert-key-card');
-      assert(/Key reused across renewals/.test(body) && /1 other logged certificate/.test(body) && /1 issued before this one and 0 after it/.test(body), body);
+      assert(/Key reused across renewals/.test(body) && /crt\.sh lists this key in 1 other certificate:/.test(body) && /1 issued before this one and 0 after it/.test(body), body);
       assert(/TLSA 3 1 1: a record for this key keeps matching/.test(body) && /Key pinning/.test(body), 'consequences');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.cert-key-table tbody tr.dt-row')].map((tr) => tr.classList.contains('cert-key-row-this'))),
         [false, true], 'oldest first, this certificate marked');
@@ -425,9 +473,10 @@ async function main() {
         await p.waitFor(() => !!document.querySelector('[data-role="egress-version"] a'), { message: 'commit link' });
         const v = await p.evaluate(() => {
           const el = document.querySelector('[data-role="egress-version"]');
-          return { version: el.dataset.version, href: el.querySelector('a').getAttribute('href'), text: el.textContent };
+          return { version: el.dataset.version, state: el.dataset.state, href: el.querySelector('a').getAttribute('href'), text: el.textContent };
         });
-        assertEqual([v.version, v.href], ['e2e0123abcd', `${REPO_URL}/commit/${sha}`], 'deploy and commit');
+        assertEqual([v.version, v.state, v.href], ['e2e0123abcd', 'read', `${REPO_URL}/commit/${sha}`], 'deploy and commit');
+        assert(!/without a commit/.test(v.text), v.text);
         assert(/e2e0123abcd/.test(v.text) && /0123456789ab/.test(v.text), v.text);
         const self = (await ledger(p)).find((r) => r.kind === 'self');
         assert(self && self.requests > 0, 'the version file and the modules: the page\'s own files');

@@ -1231,12 +1231,15 @@ export function caaRestrictionText(r) {
 /**
  * Find the CAA RRset that applies to `name` (RFC 8659 §3): query the name,
  * then each parent, stopping at the first non-empty CAA RRset or after the
- * registrable (registry-level) domain. CNAMEs are followed by the resolver.
+ * registrable (registry-level) domain. CNAMEs are followed by the resolver
+ * (RFC 8659 §3: the alias target's CAA records answer for the name); the climb
+ * goes on with the parents of the name itself, never of the target.
  *
  * @param {string} name
  * @param {{ dns: object, signal?: AbortSignal }} opts
  * @returns {Promise<{ name: string, foundAt: string|null, records: object[], parsed: object,
- *   chain: Array<{ name: string, rcode: string|null, count: number }>, error: string|null }>}
+ *   chain: Array<{ name: string, rcode: string|null, count: number, cnames: string[] }>, error: string|null }>}
+ *   `chain[i].cnames` (extension): the CNAME chain the answer at that level came through ([] for none)
  */
 export async function findCaa(name, { dns, signal } = {}) {
   const start = normalizeHostname(String(name ?? '').replace(/^\*\./, ''));
@@ -1249,11 +1252,11 @@ export async function findCaa(name, { dns, signal } = {}) {
     const res = await d.query(cur, 'CAA');
     throwIfAborted(signal);
     if (failed(res)) {
-      chain.push({ name: cur, rcode: res.rcode, count: 0 });
+      chain.push({ name: cur, rcode: res.rcode, count: 0, cnames: cnameChain(res.answers, cur) });
       return { name: start, foundAt: null, records: [], parsed: parseCaa([]), chain, error: `${cur}: ${errText(res)}` };
     }
     const caa = records(res, 'CAA');
-    chain.push({ name: cur, rcode: res.rcode, count: caa.length });
+    chain.push({ name: cur, rcode: res.rcode, count: caa.length, cnames: cnameChain(res.answers, cur) });
     if (caa.length) return { name: start, foundAt: cur, records: caa, parsed: parseCaa(caa), chain, error: null };
     if (cur === stop || !cur.includes('.')) break;
     const parent = cur.slice(cur.indexOf('.') + 1);

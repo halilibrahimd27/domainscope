@@ -1467,6 +1467,9 @@ test('findCaa: tree climbing stops at the registrable domain; CNAMEs; errors', a
   r = await findCaa('alias.example.com.tr', { dns });
   assert.equal(r.foundAt, 'alias.example.com.tr');
   assert.deepEqual(r.parsed.issuers, ['pki.goog']);
+  // The level answered through its alias says so; a plain level has no chain.
+  assert.deepEqual(r.chain.map((c) => c.cnames), [['own.example.com.tr']]);
+  assert.deepEqual((await findCaa('a.b.example.com.tr', { dns })).chain.map((c) => c.cnames), [[], [], []]);
   const dns2 = fakeDns(zone);
   r = await findCaa('www.nocaa.com.tr', { dns: dns2 });
   assert.equal(r.foundAt, null);

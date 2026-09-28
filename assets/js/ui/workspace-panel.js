@@ -24,7 +24,7 @@ import {
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatRelative, formatDateTime } from '../i18n.js';
 import { parseInventory } from '../lib/inventory.js';
-import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, uniqueWorkspaceName, sanitizeExpectedCas } from '../lib/workspace.js';
+import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, WorkspaceError, uniqueWorkspaceName, sanitizeExpectedCas } from '../lib/workspace.js';
 import { exportWorkspaceFile, readWorkspaceFile, openWorkspaceFile, HANDOVER_MAX_BYTES } from '../lib/handover.js';
 import { MIN_PASSWORD_LENGTH } from '../lib/cryptobox.js';
 import { resolveExpectedCa } from '../lib/expectedca.js';
@@ -57,6 +57,8 @@ registerStrings('en', {
   'ws.delete': 'Delete “{name}”',
   'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes and recent domains? This cannot be undone. Export it first to keep a copy.',
   'ws.deleted': 'Workspace “{name}” deleted.',
+  'ws.deleteNotSaved': '“{name}” is deleted here, but not in this browser’s storage: {reason}. It comes back when the page is loaded again.',
+  'ws.gone': '“{name}” was deleted in another tab.',
   'ws.renamed': 'Renamed to “{name}”.',
   'ws.newLabel': 'New workspace',
   'ws.newPlaceholder': 'Customer or project name',
@@ -144,6 +146,8 @@ registerStrings('tr', {
   'ws.delete': '“{name}” alanını sil',
   'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları ve son alan adları? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
   'ws.deleted': '“{name}” çalışma alanı silindi.',
+  'ws.deleteNotSaved': '“{name}” burada silindi ama bu tarayıcının depolamasından silinemedi: {reason}. Sayfa yeniden yüklendiğinde geri gelir.',
+  'ws.gone': '“{name}” başka bir sekmede silindi.',
   'ws.renamed': 'Yeni adı “{name}”.',
   'ws.newLabel': 'Yeni çalışma alanı',
   'ws.newPlaceholder': 'Müşteri ya da proje adı',
@@ -357,7 +361,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     if (!state.workspacePersistence) memoryNote.append(Alert({ variant: 'warn', compact: true, message: t('ws.memoryOnly') }));
   }
 
-  function renderList({ focusId = null } = {}) {
+  /** @param {{ focusId?: string|null, focusAction?: string|null }} [opts] the row to focus, or one of its buttons */
+  function renderList({ focusId = null, focusAction = null } = {}) {
     clear(listEl);
     const activeId = state.workspace.id;
     for (const ws of state.workspaces) {
@@ -371,15 +376,20 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
           attrs: { maxlength: String(WORKSPACE_LIMITS.name), 'data-role': 'ws-rename-input' },
           onEnter: () => saveRename(ws, field)
         });
+        const cancel = () => {
+          renaming = null;
+          renderList({ focusId: ws.id, focusAction: 'ws-rename' });
+        };
+        // Esc cancels the rename only: the dialog stays open.
+        field.input.addEventListener('keydown', (e) => {
+          if ((e.key !== 'Escape' && e.key !== 'Esc') || e.isComposing) return;
+          e.preventDefault();
+          e.stopPropagation();
+          cancel();
+        });
         inline(field,
           Button({ label: t('ws.save'), variant: 'primary', size: 'sm', dataset: { action: 'ws-rename-save' }, onClick: () => saveRename(ws, field) }),
-          Button({
-            label: t('ws.cancel'), variant: 'ghost', size: 'sm', dataset: { action: 'ws-rename-cancel' },
-            onClick: () => {
-              renaming = null;
-              renderList({ focusId: ws.id });
-            }
-          }));
+          Button({ label: t('ws.cancel'), variant: 'ghost', size: 'sm', dataset: { action: 'ws-rename-cancel' }, onClick: cancel }));
         li.append(h('div', { class: 'ws-rename' }, field.el));
         listEl.append(li);
         queueMicrotask(() => field.focus());
@@ -409,9 +419,22 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       listEl.append(li);
     }
     if (focusId) {
-      const target = listEl.querySelector(`li[data-ws-id="${CSS.escape(focusId)}"]`);
+      const row = listEl.querySelector(`li[data-ws-id="${CSS.escape(focusId)}"]`);
+      const target = row && ((focusAction && row.querySelector(`[data-action="${focusAction}"]`)) || row);
       if (target) target.focus({ preventScroll: true });
     }
+  }
+
+  /**
+   * A change the browser's storage did not take: why, in a toast. A workspace deleted in another
+   * tab is said so (the list follows that tab); anything else lasts until this tab closes.
+   * @param {unknown} err
+   * @param {string} name the workspace's name as shown
+   */
+  function notSaved(err, name) {
+    const gone = err && err.code === 'not-found';
+    toast(gone ? t('ws.gone', { name }) : t('ws.notSaved', { reason: storageErrorText(err) }), { type: 'warn', timeout: 8000 });
+    if (gone) renderList();
   }
 
   async function create() {
@@ -426,7 +449,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     try {
       const { meta, persisted } = await state.createWorkspace(name);
       newName.value = '';
-      if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+      if (!persisted) notSaved(state.workspaceError, meta.name);
       await flushEdits();
       await switchTo(meta.id);
       renderList({ focusId: meta.id });
@@ -445,11 +468,18 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       return;
     }
     try {
-      const { meta } = await state.renameWorkspace(ws.id, field.value);
+      const { meta, persisted } = await state.renameWorkspace(ws.id, field.value);
       renaming = null;
-      renderList({ focusId: ws.id });
-      announce(t('ws.renamed', { name: meta.name }));
+      renderList({ focusId: ws.id, focusAction: 'ws-rename' });
+      if (persisted) announce(t('ws.renamed', { name: meta.name }));
+      else notSaved(state.workspaceError, workspaceLabel(ws));
     } catch (err) {
+      if (err && err.code === 'not-found') {
+        // Deleted in another tab while its name was being edited.
+        renaming = null;
+        notSaved(err, workspaceLabel(ws));
+        return;
+      }
       field.setError(errorMessage(err));
       field.focus();
     }
@@ -459,14 +489,22 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     const name = workspaceLabel(ws);
     const ok = await confirmDialog({ message: t('ws.deleteConfirm', { name }), confirmLabel: t('common.delete'), danger: true });
     if (!ok) return;
-    // Deleting the workspace in use is a switch to Default first (a long job there asks to stop).
-    if (ws.id === state.workspace.id) {
-      await flushEdits();
-      if (!(await switchTo(DEFAULT_WORKSPACE_ID))) return;
+    try {
+      // Deleting the workspace in use is a switch to Default first (a long job there asks to stop).
+      if (ws.id === state.workspace.id) {
+        await flushEdits();
+        if (!(await switchTo(DEFAULT_WORKSPACE_ID))) return;
+      }
+      const { persisted } = await state.deleteWorkspace(ws.id);
+      renderList({ focusId: state.workspace.id });
+      if (persisted) toast(t('ws.deleted', { name }), { type: 'success' });
+      else toast(t('ws.deleteNotSaved', { name, reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+    } catch (err) {
+      // Another tab deleted it while the confirmation was open: it is gone all the same.
+      if (err && err.code === 'not-found') notSaved(err, name);
+      else toast(errorMessage(err), { type: 'error' });
+      renderList({ focusId: state.workspace.id });
     }
-    await state.deleteWorkspace(ws.id);
-    renderList({ focusId: state.workspace.id });
-    toast(t('ws.deleted', { name }), { type: 'success' });
   }
 
   async function doSwitch(id) {
@@ -534,12 +572,15 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         }
       }, h('span', { class: 'ws-recent-value mono' }, r.value),
       r.at ? h('span', { class: 'ws-recent-at' }, formatRelative(new Date(r.at))) : null))))
-      : h('p', { class: 'ws-empty' }, t('ws.recentEmpty'));
+      : h('p', { class: 'ws-empty', dataset: { role: 'ws-recent-empty' }, attrs: { tabindex: -1 } }, t('ws.recentEmpty'));
     const recentClear = recent.length ? Button({
       label: t('ws.recentClear'), icon: 'x', size: 'sm', variant: 'ghost', dataset: { action: 'ws-recent-clear' },
       onClick: () => {
         state.setWorkspaceData('recent', []);
         renderCurrent();
+        // The button is gone: the focus goes to what took its place, not out of the dialog.
+        const empty = current.querySelector('[data-role="ws-recent-empty"]');
+        if (empty) empty.focus({ preventScroll: true });
       }
     }) : null;
 
@@ -783,8 +824,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
           const { meta, persisted } = await state.createWorkspace(unique, ws.data);
           pending = null;
           clear(importArea);
-          if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
-          toast(t('ws.imported', { name: meta.name }), { type: 'success' });
+          if (persisted) toast(t('ws.imported', { name: meta.name }), { type: 'success' });
+          else notSaved(state.workspaceError, meta.name);
           await flushEdits();
           await switchTo(meta.id);
           renderList({ focusId: meta.id });
@@ -797,14 +838,25 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         const label = workspaceLabel(into);
         const ok = await confirmDialog({ message: t('ws.replaceConfirm', { name: label }), confirmLabel: t('ws.importReplace', { name: label }), danger: true });
         if (!ok) return;
-        await flushEdits();
-        if (into.id !== state.workspace.id && !(await switchTo(into.id))) return;
-        const { persisted } = await state.replaceWorkspace(into.id, ws.data);
-        pending = null;
-        clear(importArea);
-        if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
-        toast(t('ws.replaced', { name: label }), { type: 'success' });
-        renderCurrent();
+        try {
+          if (!state.workspaces.some((w) => w.id === into.id)) throw new WorkspaceError('not-found');
+          await flushEdits();
+          if (into.id !== state.workspace.id && !(await switchTo(into.id))) return;
+          const { persisted } = await state.replaceWorkspace(into.id, ws.data);
+          pending = null;
+          clear(importArea);
+          if (persisted) toast(t('ws.replaced', { name: label }), { type: 'success' });
+          else notSaved(state.workspaceError, label);
+          renderCurrent();
+        } catch (err) {
+          // Deleted in another tab meanwhile: the file stays open, to import as a new workspace.
+          if (err && err.code === 'not-found') {
+            notSaved(err, label);
+            if (pending) showSummary();
+          } else {
+            showError(err);
+          }
+        }
       }
     }
 

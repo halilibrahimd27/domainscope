@@ -430,6 +430,15 @@
   align-items: center;
 }
 
+/* a long label (Linux fonts, Turkish) wraps inside the button on a phone instead of widening the page */
+.oc-actions .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: 36px;
+  white-space: normal;
+  text-align: start;
+}
+
 .oc-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);

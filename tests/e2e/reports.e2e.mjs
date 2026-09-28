@@ -19,7 +19,9 @@
  * only on a click, the CSV export (every column), Copy summary; the TLS-RPT tab: success rate,
  * policies, failure types with advice and links to Domain Health, DNS Lookup and the Certificate
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
- * back (no new query); Forget; 375 / 320 px without horizontal scroll, TR / EN × light / dark; zero
+ * back (no new query); Forget; offline, a dropped report classified from its own evidence with the SPF
+ * line saying it was not checked and nothing sent, then Check again online; 375 / 320 px without
+ * horizontal scroll, TR / EN × light / dark; zero
  * console errors / CSP violations / missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (tests/fixtures/mailreports: example.com / .net / .org,
@@ -35,6 +37,7 @@ import {
 } from './scan.e2e.mjs';
 
 const MAILBOX = path.join(FIXTURES, 'mailreports', 'reports-2026-09.zip');
+const MICROSOFT_GZ = path.join(FIXTURES, 'mailreports', 'enterprise.protection.outlook.com!example.com!1790294400!1790380800.xml.gz');
 
 /** example.com's SPF (its own server, its MX, its own include, a mailing service) and the reverse DNS of one sender. */
 const ZONE = {
@@ -342,6 +345,34 @@ async function main() {
       await page.waitFor(() => document.documentElement.dataset.view === 'reports' && !!document.querySelector('.rpt-page .empty'), { message: 'still empty' });
       assertEqual(await page.evaluate(() => !!document.querySelector('.page-kept:not([hidden]) .kept-note')), false, 'no kept note');
       await page.evaluate(saveInventory, '');
+    });
+
+    run.group('Offline');
+    await run.step('offline: a dropped .xml.gz is read and classified from the reports alone, the SPF line says so, nothing is sent; online, Check again', async () => {
+      const offline = (on) => page.send('Network.emulateNetworkConditions', { offline: on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+      const before = await counts(page);
+      await offline(true);
+      try {
+        await page.waitFor(() => navigator.onLine === false, { message: 'offline' });
+        await page.setFileInput('.rpt-load .filedrop-input', [MICROSOFT_GZ]);
+        await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'offline', { message: 'SPF not checked' });
+        assert(/not checked: the browser is offline/.test(await text(page, '.rpt-spf')), await text(page, '.rpt-spf'));
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-notes [data-note="spf-unknown"]')), 'the note');
+        // No server list any more, no SPF: what passed SPF aligned in the report counts as yours, the rest is unknown.
+        assertEqual(Object.fromEntries(await tableClasses(page)), {
+          '198.51.100.10': 'yours', '203.0.113.25': 'yours', '203.0.113.99': 'unknown', '192.0.2.200': 'unknown'
+        }, 'classes from the report');
+        assertEqual(await counts(page), before, 'nothing sent');
+      } finally {
+        await offline(false);
+      }
+      await page.waitFor(() => navigator.onLine === true, { message: 'online' });
+      await page.click('[data-action="rpt-spf-retry"]');
+      await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'ok', { message: 'checked online' });
+      const cls = Object.fromEntries(await tableClasses(page));
+      assertEqual([cls['198.51.100.10'], cls['203.0.113.25']], ['third-party', 'yours'], 'the SPF tells them apart');
+      await page.click('[data-action="rpt-forget"]');
+      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
     });
 
     run.group('Quality');

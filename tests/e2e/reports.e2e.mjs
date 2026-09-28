@@ -19,8 +19,13 @@
  * only on a click, the CSV export (every column), Copy summary; the TLS-RPT tab: success rate,
  * policies, failure types with advice and links to Domain Health, DNS Lookup and the Certificate
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
- * back (no new query); Forget; offline, a dropped report classified from its own evidence with the SPF
- * line saying it was not checked and nothing sent, then Check again online; 375 / 320 px without
+ * back (no new query); Forget; 150 daily reports in one drop (past the 100 other drop zones take) with
+ * a zip whose entries share one stream, refused at once; files dropped while reading wait their turn,
+ * the bar counts them, and Stop (Esc) ends the read with nothing half-read kept; an SPF record with a
+ * syntax error: the SPF line, the note and the verdict say receivers get a permanent error, the
+ * server it lists stays yours and its mail that passed through SPF alone is to fix; offline, a dropped
+ * report classified from its own evidence with the SPF line saying it was not checked and nothing
+ * sent, then Check again online; 375 / 320 px without
  * horizontal scroll, TR / EN × light / dark; zero
  * console errors / CSP violations / missing i18n keys, nothing sent outside the page.
  *
@@ -29,6 +34,9 @@
  */
 
 import path from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { deflateRawSync } from 'node:zlib';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
@@ -54,7 +62,7 @@ const ZONE = {
 
 /** In-page stubs: DoH from the zone (NXDOMAIN outside it), RIPEstat, ipwho.is. */
 const fakeScript = () => `(() => {
-  const Z = ${JSON.stringify(ZONE)};
+  const Z = window.__zone = ${JSON.stringify(ZONE)};
   window.__dnsLog = [];
   window.__ipLog = [];
   window.__rcodes = {};
@@ -93,6 +101,35 @@ const fakeScript = () => `(() => {
     }), { headers: { 'content-type': 'application/dns-message' } });
   };
 })();`;
+
+/** One day's aggregate report of example.com from one reporter (its own report id): 10 messages of 203.0.113.25. */
+const dailyReport = (day, { dkim = 'pass' } = {}) => {
+  const begin = 1790294400 + day * 86400;
+  return `<?xml version="1.0" encoding="UTF-8"?><feedback><report_metadata><org_name>google.com</org_name><email>noreply-dmarc-support@example.org</email>
+<report_id>daily-${day}</report_id><date_range><begin>${begin}</begin><end>${begin + 86399}</end></date_range></report_metadata>
+<policy_published><domain>example.com</domain><p>none</p></policy_published>
+<record><row><source_ip>203.0.113.25</source_ip><count>10</count><policy_evaluated><disposition>none</disposition><dkim>${dkim}</dkim><spf>pass</spf></policy_evaluated></row>
+<identifiers><header_from>example.com</header_from></identifiers><auth_results><dkim><domain>example.com</domain><selector>mail2026</selector><result>${dkim}</result></dkim>
+<spf><domain>example.com</domain><result>pass</result></spf></auth_results></record></feedback>`;
+};
+
+/** A zip of `n` central directory entries that all name one deflate stream of 8 MB (each claims 100 bytes). */
+function overlappingZip(n) {
+  const le = (v, size) => {
+    const b = Buffer.alloc(size);
+    if (size === 2) b.writeUInt16LE(v);
+    else b.writeUInt32LE(v);
+    return b;
+  };
+  const name = Buffer.from('a.xml');
+  const data = deflateRawSync(Buffer.alloc(8 * 1024 * 1024, 0x20), { level: 9 });
+  const local = Buffer.concat([le(0x04034b50, 4), le(20, 2), le(0, 2), le(8, 2), le(0, 4), le(0, 4), le(data.length, 4), le(100, 4), le(name.length, 2), le(0, 2), name, data]);
+  const entry = Buffer.concat([le(0x02014b50, 4), le(20, 2), le(20, 2), le(0, 2), le(8, 2), le(0, 4), le(0, 4), le(data.length, 4), le(100, 4),
+    le(name.length, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 4), le(0, 4), name]);
+  const central = Buffer.concat(Array.from({ length: n }, () => entry));
+  const end = Buffer.concat([le(0x06054b50, 4), le(0, 2), le(0, 2), le(n, 2), le(n, 2), le(central.length, 4), le(local.length, 4), le(0, 2)]);
+  return Buffer.concat([local, central, end]);
+}
 
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent.replace(/\s+/g, ' ').trim() || '', sel);
 const counts = (page) => page.evaluate(() => ({ dns: window.__dnsLog.length, ip: window.__ipLog.length }));
@@ -177,7 +214,7 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.rpt-spf').dataset.state), 'ok', 'SPF checked');
       assert(/v=spf1 ip4:203\.0\.113\.25 mx include:_spf\.example\.com/.test(await text(page, '.rpt-spf')), 'the record');
       assertEqual(await page.evaluate(() => document.querySelector('.rpt-verdict').dataset.verdict), 'fix-first', 'verdict');
-      assertEqual(await text(page, '.rpt-compliance'), '95%', 'compliance');
+      assertEqual(await text(page, '.rpt-compliance'), '94.9%', 'compliance, as Copy summary says it');
       const fixes = await page.evaluate(() => [...document.querySelectorAll('.rpt-fix-item')].map((li) => [li.dataset.ip, [...li.querySelectorAll('[data-fix]')].map((f) => f.dataset.fix)]));
       assertEqual(fixes, [['198.51.100.20', ['dkim-align', 'spf-align']], ['203.0.113.99', ['dkim-sign', 'spf-add']]], 'fix first');
       const first = await text(page, '.rpt-fix-item[data-ip="198.51.100.20"]');
@@ -354,6 +391,108 @@ async function main() {
       await page.waitFor(() => document.documentElement.dataset.view === 'reports' && !!document.querySelector('.rpt-page .empty'), { message: 'still empty' });
       assertEqual(await page.evaluate(() => !!document.querySelector('.page-kept:not([hidden]) .kept-note')), false, 'no kept note');
       await page.evaluate(saveInventory, '');
+    });
+
+    run.group('Many files, a hostile archive, Stop');
+    await run.step('150 daily reports in one drop are all read; a zip whose entries share one stream is refused at once', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-many-'));
+      try {
+        const files = [];
+        for (let day = 0; day < 150; day += 1) {
+          const f = path.join(dir, `google.com!example.com!${1790294400 + day * 86400}!${1790294400 + day * 86400 + 86399}.xml`);
+          await writeFile(f, dailyReport(day));
+          files.push(f);
+        }
+        const bomb = path.join(dir, 'bomb.zip');
+        await writeFile(bomb, overlappingZip(20));
+        files.push(bomb);
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+        await page.setFileInput('.rpt-load .filedrop-input', files);
+        await page.waitFor(() => /^151 files/.test(document.querySelector('[data-role="rpt-files"]')?.textContent || '')
+          && document.querySelector('.rpt-spf')?.dataset.state !== 'loading', { timeout: 20000, message: 'every file read' });
+        assertEqual(await text(page, '[data-role="rpt-files"]'), '151 files · 150 DMARC reports · 0 TLS reports · 20 could not be used', 'files line');
+        assertEqual(await page.evaluate(() => [...new Set([...document.querySelectorAll('.rpt-problem-list li')].map((li) => li.dataset.code))]), ['overlap'], 'the bomb, named');
+        assert(/an archive built to unpack far more than it holds/.test(await text(page, '.rpt-problem-list li')), 'why');
+        assertEqual(await page.evaluate(() => [...document.querySelectorAll('.toast-warn')].length), 0, 'nothing left out');
+        assertEqual(await page.evaluate(() => document.querySelector('.rpt-domain option') ? 'picker' : document.querySelector('.rpt-head .card-title')?.textContent), 'example.com', 'one domain');
+        assert(/Reports for example\.com/.test(await text(page, '.rpt-results-title')), 'results title');
+        await page.click('[data-action="rpt-forget"]');
+        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    await run.step('files dropped while reading wait their turn and the bar counts them; Stop (Esc) ends the read, nothing half-read kept', async () => {
+      // Every DecompressionStream holds its output until the gate opens: the read stays busy for as long as the test needs.
+      await page.evaluate(() => {
+        const Real = window.DecompressionStream;
+        window.__realDecompressionStream = Real;
+        window.__gate = new Promise((resolve) => { window.__openGate = resolve; });
+        window.DecompressionStream = function Gated(format) {
+          const real = new Real(format);
+          const hold = new TransformStream({ transform: async (chunk, c) => { await window.__gate; c.enqueue(chunk); } });
+          return { writable: real.writable, readable: real.readable.pipeThrough(hold) };
+        };
+        document.querySelectorAll('.toast').forEach((el) => el.remove());
+      });
+      const before = await counts(page);
+      try {
+        await page.setFileInput('.rpt-load .filedrop-input', [MICROSOFT_GZ]);
+        await page.waitFor(() => /^0 \/ 1\b/.test(document.querySelector('[data-role="rpt-busy"] .progress-value')?.textContent || ''), { message: 'reading, 0 of 1' });
+        assertEqual(await text(page, '[data-role="rpt-busy"] .progress-label'), 'Reading the reports…', 'the bar');
+        await page.setFileInput('.rpt-load .filedrop-input', [MAILBOX]);
+        await page.waitFor(() => /^0 \/ 2\b/.test(document.querySelector('[data-role="rpt-busy"] .progress-value')?.textContent || ''), { message: 'the second drop joins: 0 of 2' });
+        await page.evaluate(() => document.querySelector('.rpt-load .filedrop').focus());
+        await page.press('Escape');
+        await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
+        const toastText = await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent, { message: 'toast' });
+        assertEqual(toastText, 'Reading stopped. What was read before it stays.', 'the toast');
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing half-read kept');
+        assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus back on the drop zone');
+        assertEqual(await counts(page), before, 'nothing sent');
+      } finally {
+        await page.evaluate(() => {
+          window.__openGate();
+          window.DecompressionStream = window.__realDecompressionStream;
+        });
+      }
+      // The reader works again: the same file is read in full.
+      await page.setFileInput('.rpt-load .filedrop-input', [MICROSOFT_GZ]);
+      await waitDmarc(page, 'read after the stop');
+      assertEqual(await text(page, '[data-role="rpt-files"]'), '1 file · 1 DMARC report · 0 TLS reports', 'files line');
+      await page.click('[data-action="rpt-forget"]');
+      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+    });
+
+    await run.step('an SPF record with a syntax error: receivers get a permanent error, said on the SPF line, in a note and in the verdict', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-spf-'));
+      const good = ZONE['example.com'].TXT;
+      try {
+        const file = path.join(dir, 'google.com!example.com!spf-only.xml');
+        await writeFile(file, dailyReport(200, { dkim: 'fail' }));
+        await page.evaluate(() => { window.__zone['example.com'].TXT = [['v=spf1 ip4:203.0.113.25 mx include:_spf.example.com foo:bar ~all']]; });
+        await page.setFileInput('.rpt-load .filedrop-input', [file]);
+        await waitDmarc(page);
+        // The resolver's cache may still hold the record read before: Check again asks past it.
+        await page.click('[data-action="rpt-spf-retry"]');
+        await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.error === 'syntax', { message: 'the SPF line says it errs' });
+        assert(/checked .* · a permanent error for receivers: a syntax error/.test(await text(page, '.rpt-spf')), await text(page, '.rpt-spf'));
+        assertEqual(await page.evaluate(() => document.querySelector('.rpt-verdict').dataset.verdict), 'spf-broken', 'verdict');
+        assert(/Not ready for p=reject: the SPF record gives a permanent error/.test(await text(page, '.rpt-verdict')), await text(page, '.rpt-verdict'));
+        assertEqual(Object.fromEntries(await tableClasses(page)), { '203.0.113.25': 'yours' }, 'still your server');
+        const item = await text(page, '.rpt-fix-item[data-ip="203.0.113.25"]');
+        assert(/Listed by your SPF \(ip4:203\.0\.113\.25\), but receivers get a permanent error from the record first/.test(item)
+          && /10 of 10 messages passed through SPF alone/.test(item)
+          && /Repair the SPF record of example\.com: receivers get a permanent error from it \(a syntax error\)/.test(item), item);
+        assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpt-fix-item [data-fix]')].map((f) => f.dataset.fix)), ['spf-permerror', 'dkim-fix'], 'fixes: the record, then its DKIM signature that does not verify');
+        assert(/Receivers get a permanent error from the current SPF of example\.com for 1 sending address: a syntax error/.test(await text(page, '.rpt-notes [data-note="spf-permerror"]')), 'the note');
+      } finally {
+        await page.evaluate((txt) => { window.__zone['example.com'].TXT = txt; }, good);
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+      await page.click('[data-action="rpt-forget"]');
+      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
     });
 
     run.group('Offline');

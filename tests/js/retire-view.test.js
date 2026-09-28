@@ -73,6 +73,11 @@ describe('Retire an IP view helpers', () => {
       [change({ type: 'TXT', value: 'ip4:192.0.2.10', severity: 'mail', spf: { holder: 'example.com' } }), 'retire.act.remove.spf'],
       [change({ type: 'TXT', value: '-ip4:192.0.2.10', severity: 'stale', spf: { holder: 'example.com' } }), 'retire.act.remove.spfStale'],
       [change({ type: 'TXT', value: 'ip4:192.0.2.0/24', action: 'narrow', spf: { range: '192.0.2.0/24' } }), 'retire.act.narrow'],
+      [change({ type: 'TXT', value: 'a/24', action: 'narrow', severity: 'mail', spf: { mechanism: 'a', host: 'example.com', hostAddress: '192.0.2.77', hostOn: false, range: '192.0.2.0/24' } }), 'retire.act.narrow.cidr'],
+      [change({ type: 'TXT', value: 'a:mail.example.com/24', action: 'narrow', severity: 'mail', spf: { mechanism: 'a', host: 'mail.example.com', hostAddress: '192.0.2.10', hostOn: true, range: '192.0.2.0/24' } }), 'retire.act.narrow.cidrHost'],
+      [change({ type: 'TXT', value: '-ip4:192.0.2.10', action: 'keep', severity: 'stale', spf: { shields: ['ip4:192.0.2.0/24'] } }), 'retire.act.keep.shield'],
+      [change({ type: 'TXT', value: '~ip4:192.0.2.0/24', action: 'keep', severity: 'stale', spf: { shields: [] } }), 'retire.act.keep.range'],
+      [change({ type: 'TXT', value: 'ip4:192.0.2.0/24', action: 'narrow', severity: 'stale', spf: { range: '192.0.2.0/24', shadowedBy: { term: '-ip4:192.0.2.10', qualifier: '-' } } }), 'retire.act.shadowed'],
       [change({ type: 'TXT', value: 'a:mail.example.com', action: 'follow', spf: { host: 'mail.example.com' } }), 'retire.act.follow.spf'],
       [change({ type: 'CNAME', value: 'lb.example.net', action: 'follow', via: ['www.example.com', 'lb.example.net'] }), 'retire.act.follow.cname'],
       [change({ type: 'MX', value: '10 mail.example.com', action: 'repoint' }), 'retire.act.repoint.mx'],
@@ -95,12 +100,18 @@ describe('Retire an IP view helpers', () => {
         assert.ok(hasString(key, lang), `${key} [${lang}]`);
         setLang(lang);
         // An SPF macro such as %{i} is text, not a placeholder.
-        assert.doesNotMatch(t(key, { ...got.params, sources: 'HackerTarget' }), /(?:^|[^%])\{[a-z]+\}/, `${key} [${lang}] fills every placeholder`);
+        assert.doesNotMatch(t(key, { ...got.params, sources: 'HackerTarget' }), /(?:^|[^%])\{[A-Za-z]+\}/, `${key} [${lang}] fills every placeholder`);
       }
     }
     assert.deepEqual([...seen].sort(), [...CHANGE_ACTIONS].sort(), 'every action has a text');
     setLang('en');
-    assert.equal(t('retire.act.repoint.mx', changeText(cases[7][0]).params), 'Point the MX at a mail server that stays, or give mail.example.com its new address first. Senders queue mail for a few days, then bounce it.');
+    const text = (c) => { const x = changeText(c); return t(x.key, x.params); };
+    assert.equal(text(change({ type: 'MX', value: '10 mail.example.com', action: 'repoint' })), 'Point the MX at a mail server that stays, or give mail.example.com its new address first. Senders queue mail for a few days, then bounce it.');
+    // The a/24 term names the retiring address, never only its host's own one.
+    assert.equal(text(cases.find(([, k]) => k === 'retire.act.narrow.cidr')[0]),
+      'a/24 covers 192.0.2.10 only through its CIDR length: example.com is at 192.0.2.77, widened to 192.0.2.0/24. Give the term a narrower length (a larger number) so it no longer covers 192.0.2.10 — or keep it if the whole range stays yours.');
+    assert.equal(text(cases.find(([, k]) => k === 'retire.act.keep.shield')[0]),
+      'Keeps 192.0.2.10 out of ip4:192.0.2.0/24, which comes after it: leave it in place for as long as ip4:192.0.2.0/24 covers 192.0.2.10. Removed, it lets ip4:192.0.2.0/24 authorize the address.');
   });
 
   test('summaryFacts: what Copy summary says about a finished check', () => {

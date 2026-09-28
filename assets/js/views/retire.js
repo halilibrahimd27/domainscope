@@ -241,6 +241,11 @@ registerStrings('en', {
   'retire.act.remove.spf': 'Replace {term} with the new address, or remove it. Left in place, whoever gets the address next can send mail as {domain}.',
   'retire.act.remove.spfStale': 'No longer needed once the address is gone: remove {term}.',
   'retire.act.narrow': '{range} still covers {address}: split it so it no longer does — or keep it if the whole range stays yours — and cover the new address.',
+  'retire.act.narrow.cidr': '{term} covers {address} only through its CIDR length: {host} is at {hostAddress}, widened to {range}. Give the term a narrower length (a larger number) so it no longer covers {address} — or keep it if the whole range stays yours.',
+  'retire.act.narrow.cidrHost': '{host} is at {hostAddress}, and the CIDR length of {term} widens that to {range}: change the record of {host}, and give the term a narrower length (a larger number) unless the whole range stays yours — moved inside {range}, the term still covers {address}.',
+  'retire.act.keep.shield': 'Keeps {address} out of {later}, which comes after it: leave it in place for as long as {later} covers {address}. Removed, it lets {later} authorize the address.',
+  'retire.act.keep.range': '{term} does not authorize {address} and covers more than it: nothing to change here.',
+  'retire.act.shadowed': 'Not in effect for {address}: {shadow} comes first and decides for it. Remove {shadow} only once this term no longer covers {address}.',
   'retire.act.follow.spf': 'Follows the addresses of {host}: change those records and this term follows. Nothing to edit in the SPF record.',
   'retire.act.follow.cname': 'Follows {target}: change the record that holds the address ({holder}), or point this CNAME elsewhere.',
   'retire.act.repoint.mx': 'Point the MX at a mail server that stays, or give {host} its new address first. Senders queue mail for a few days, then bounce it.',
@@ -460,6 +465,11 @@ registerStrings('tr', {
   'retire.act.remove.spf': '{term} terimini yeni adresle değiştirin ya da kaldırın. Yerinde kalırsa adresi sonra alan kişi {domain} adına e-posta gönderebilir.',
   'retire.act.remove.spfStale': 'Adres kalkınca gereksiz: {term} terimini kaldırın.',
   'retire.act.narrow': '{range} hâlâ {address} adresini kapsıyor: artık kapsamayacak şekilde bölün — tüm aralık sizde kalıyorsa olduğu gibi bırakın — ve yeni adresi ekleyin.',
+  'retire.act.narrow.cidr': '{term}, {address} adresini yalnızca CIDR uzunluğu yüzünden kapsıyor: {host} {hostAddress} adresinde, uzunluk bunu {range} aralığına genişletiyor. Terime {address} adresini artık kapsamayacak daha dar bir uzunluk (daha büyük bir sayı) verin — tüm aralık sizde kalıyorsa olduğu gibi bırakın.',
+  'retire.act.narrow.cidrHost': '{host} {hostAddress} adresinde ve {term} teriminin CIDR uzunluğu bunu {range} aralığına genişletiyor: {host} kaydını değiştirin ve tüm aralık sizde kalmıyorsa terime daha dar bir uzunluk (daha büyük bir sayı) verin — {range} içinde taşınsa da terim {address} adresini kapsamaya devam eder.',
+  'retire.act.keep.shield': '{address} adresini kendisinden sonra gelen {later} teriminin dışında tutuyor: {later} {address} adresini kapsadığı sürece yerinde bırakın. Kaldırılırsa {later} adrese izin verir.',
+  'retire.act.keep.range': '{term} {address} adresine izin vermiyor ve ondan fazlasını kapsıyor: burada değiştirilecek bir şey yok.',
+  'retire.act.shadowed': '{address} için geçerli değil: önce {shadow} gelir ve onun için karar verir. {shadow} terimini ancak bu terim {address} adresini artık kapsamadığında kaldırın.',
   'retire.act.follow.spf': '{host} adreslerini izler: o kayıtları değiştirin, bu terim de izler. SPF kaydında düzenlenecek bir şey yok.',
   'retire.act.follow.cname': '{target} adresini izler: adresi tutan kaydı ({holder}) değiştirin ya da bu CNAME’i başka yere yönlendirin.',
   'retire.act.repoint.mx': 'MX’i kalacak bir e-posta sunucusuna yönlendirin ya da önce {host} sunucusuna yeni adresini verin. Gönderenler e-postayı birkaç gün kuyrukta tutar, sonra geri çevirir.',
@@ -584,13 +594,28 @@ export function hostsForDomains(domains, { scanHosts = null, zone = null, passiv
 export function changeText(c) {
   const spf = c.spf || {};
   const firstHost = (c.via && c.via[0]) || c.value.split(' ').pop();
+  const address = c.addresses.join(', ');
+  // An SPF term behind an earlier one that refuses the address (SPF stops at the first match): not in effect today.
+  if (c.type === 'TXT' && spf.shadowedBy && spf.shadowedBy.qualifier !== '+' && c.severity === 'stale' && !['keep', 'provider', 'check'].includes(c.action)) {
+    return { key: 'retire.act.shadowed', params: { term: c.value, shadow: spf.shadowedBy.term, address } };
+  }
   switch (c.action) {
     case 'remove':
       if (c.type === 'TXT') return { key: c.severity === 'mail' || c.severity === 'file' ? 'retire.act.remove.spf' : 'retire.act.remove.spfStale', params: { term: c.value, domain: (c.foundFor && c.foundFor[0]) || c.name } };
       if (c.type === 'HTTPS' || c.type === 'SVCB') return { key: 'retire.act.remove.https', params: {} };
       return { key: 'retire.act.remove.a', params: {} };
     case 'narrow':
-      return { key: 'retire.act.narrow', params: { range: spf.range || c.value, address: c.addresses.join(', ') } };
+      // An a / mx term: its host's address widened by the term's CIDR length (a/24).
+      if (c.type === 'TXT' && (spf.mechanism === 'a' || spf.mechanism === 'mx') && spf.host && spf.hostAddress) {
+        return {
+          key: spf.hostOn ? 'retire.act.narrow.cidrHost' : 'retire.act.narrow.cidr',
+          params: { term: c.value, host: spf.host, hostAddress: spf.hostAddress, range: spf.range || c.value, address }
+        };
+      }
+      return { key: 'retire.act.narrow', params: { range: spf.range || c.value, address } };
+    case 'keep':
+      if (spf.shields && spf.shields.length) return { key: 'retire.act.keep.shield', params: { later: spf.shields.join(', '), address } };
+      return { key: 'retire.act.keep.range', params: { term: c.value, address } };
     case 'follow':
       if (c.type === 'TXT') return { key: 'retire.act.follow.spf', params: { host: spf.host || c.name } };
       return { key: 'retire.act.follow.cname', params: { target: c.value, holder: c.via.length ? c.via[c.via.length - 1] : c.value } };

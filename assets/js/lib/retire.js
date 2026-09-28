@@ -11,9 +11,10 @@
  *   hit the user asked to check), its MX and NS hosts, its SPF policy (lib/health.js
  *   spfLookupCount, which walks the include tree) and the HTTPS record of its name.
  * - {@link spfCoverage}: every ip4 / ip6 / a / mx mechanism of an SPF tree that covers a retiring
- *   address, with the include path and the qualifier it has at the top (a match inside an include
- *   authorizes only when every link passes it on); a macro that needs the sender (`%{i}`, `%{s}` …),
- *   a `ptr` mechanism, a failed or skipped lookup → "cannot tell", never "not covered".
+ *   address, with the include path, the qualifier it has at the top (a match inside an include
+ *   authorizes only when every link passes it on) and the earlier term of the same policy that
+ *   decides for the address first (the first match wins); a macro that needs the sender (`%{i}`,
+ *   `%{s}` …), a `ptr` mechanism, a failed or skipped lookup → "cannot tell", never "not covered".
  * - {@link zoneCandidates}: the imported zone's records that reach an address (A / AAAA, in-zone
  *   CNAME chains, MX / NS / SRV / HTTPS targets, HTTPS hints, SPF ip4 / ip6), proxied origins
  *   included; {@link verifyZoneRefs} asks public DNS whether each is still served, and
@@ -74,12 +75,14 @@ export const SEVERITIES = Object.freeze(['mail', 'ns', 'live', 'origin', 'chain'
 export const VERIFIED_STATES = Object.freeze(['live', 'file', 'hidden', 'internal', 'unverified', 'unknown']);
 /**
  * What to change (`retire.act.<id>`): remove the value (or put the new address in), point the
- * record at a host that stays, narrow an SPF range that covers more than the retired addresses,
- * nothing in the record itself (an SPF a / mx mechanism, a CNAME: it follows the record it names),
- * change the glue at the parent too, a provider's record (not the user's), the proxy's origin
- * setting, or look at it by hand (cannot tell).
+ * record at a host that stays, narrow an SPF range (or an a / mx term's CIDR length) that covers
+ * more than the retired addresses, nothing in the record itself (an SPF a / mx mechanism, a CNAME:
+ * it follows the record it names), change the glue at the parent too, a provider's record (not the
+ * user's), the proxy's origin setting, keep it as it is (an SPF term that does not authorize the
+ * address: a carve-out in front of a wider pass range, a non-pass range wider than the retired
+ * addresses), or look at it by hand (cannot tell).
  */
-export const CHANGE_ACTIONS = Object.freeze(['remove', 'repoint', 'narrow', 'follow', 'glue', 'provider', 'origin', 'check']);
+export const CHANGE_ACTIONS = Object.freeze(['remove', 'repoint', 'narrow', 'follow', 'glue', 'provider', 'origin', 'keep', 'check']);
 /** Why an SPF term's coverage cannot be told (`retire.act.check.<id>`). */
 export const UNKNOWN_REASONS = Object.freeze(['macro', 'ptr', 'lookup-failed', 'skipped', 'include-failed', 'multiple']);
 /** What a failed lookup of one domain was for (DomainCheck.failures `what`; `retire.fail.<id>`). */
@@ -296,6 +299,10 @@ export function parseDomainList(text, { max = RETIRE_MAX_DOMAINS } = {}) {
  * @property {string} block the retiring block (CIDR)
  * @property {string} range the term's range (`192.0.2.0/24`)
  * @property {{ host: string, address: string }|null} via an a / mx term: the host and the address that matched
+ * @property {{ term: string, qualifier: string }|null} shadowedBy an earlier ip4 / ip6 / a / mx term of the same
+ *   policy that covers the whole block: SPF stops at the first match, so that term decides for the address
+ * @property {string[]} shields the later pass terms of the same policy this one decides for first (a carve-out
+ *   such as `-ip4:192.0.2.10` in front of `ip4:192.0.2.0/24`: without it they would authorize the address)
  */
 
 /**
@@ -336,6 +343,9 @@ export function effectiveQualifier(chain, qualifier) {
  * - include / redirect: followed with the path; a policy that could not be read → include-failed;
  * - a macro that needs the sender (`%{i}`, `%{s}`, `%{l}` …), `ptr`, a failed or skipped lookup → unknown.
  * `exists` without such a macro does not depend on the address (it matches every sender or none).
+ * Term order: within one policy the first ip4 / ip6 / a / mx term that covers a whole block decides
+ * for it; a later match gets `shadowedBy` (that term), and a later pass term is added to the earlier
+ * match's `shields`. (An include in between, or a term that cannot be told, is not weighed.)
  * @param {object|null} tree
  * @param {RetireBlock[]} blocks
  * @param {{ mxAddresses?: Map<string, { addresses: string[], error?: string|null }> }} [opts]
@@ -348,15 +358,20 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
   const at = (node, path, t, reason, target = null) => unknown.push({
     path: [...path], holder: node.domain, record: node.record, term: t.term, mechanism: t.mechanism, reason, target
   });
+  // The first term of a policy that covers a whole block (per policy, per block): it decides.
+  let decided = new Map();
   const matchRange = (node, path, chain, t, range, via = null) => {
     if (!range) return;
     for (const b of blocks) {
       const relation = rangeRelation(range, b);
       if (!relation) continue;
+      const first = decided.get(b.cidr) || null;
+      if (first && t.qualifier === '+' && !first.shields.includes(t.term)) first.shields.push(t.term);
       matches.push({
         path: [...path], holder: node.domain, record: node.record, term: t.term, mechanism: t.mechanism,
         qualifier: t.qualifier, effective: effectiveQualifier(chain, t.qualifier), relation, block: b.cidr,
-        range: `${formatIP(range.network, range.version)}/${range.prefix}`, via
+        range: `${formatIP(range.network, range.version)}/${range.prefix}`, via,
+        shadowedBy: first ? { term: first.term, qualifier: first.qualifier } : null, shields: []
       });
     }
   };
@@ -374,7 +389,10 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
     const key = `${path.join('>')}`;
     if (seen.has(key) || path.length > 12) return;
     seen.add(key);
+    const outer = decided;
+    decided = new Map();
     for (const t of node.terms || []) {
+      const before = matches.length;
       switch (t.mechanism) {
         case 'ip4':
         case 'ip6':
@@ -431,7 +449,14 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
         default:
           break;
       }
+      // After the whole term (every address of an a / mx host): a match that covers the block decides from here on.
+      if (t.mechanism === 'ip4' || t.mechanism === 'ip6' || t.mechanism === 'a' || t.mechanism === 'mx') {
+        for (const m of matches.slice(before)) {
+          if ((m.relation === 'equal' || m.relation === 'contains') && !decided.has(m.block)) decided.set(m.block, m);
+        }
+      }
     }
+    decided = outer;
   };
   walk(tree, [tree.domain], []);
   return { matches, unknown };
@@ -685,7 +710,8 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
  * @property {boolean} occluded
  * @property {number|null} line
  * @property {number|null} preference
- * @property {{ term: string, qualifier: string, relation: string, range: string }|null} spf an SPF ip4 / ip6 term
+ * @property {{ term: string, qualifier: string, relation: string, range: string, shadowedBy: { term: string, qualifier: string }|null,
+ *   shields: string[] }|null} spf an SPF ip4 / ip6 term (`shadowedBy` / `shields` as {@link SpfMatch} has them)
  * @property {boolean|null} [live] set by {@link verifyZoneRefs}: true / false, null when the lookup failed;
  *   undefined when it was not asked (proxied, internal, over the cap)
  * @property {string} [probe] set by {@link verifyZoneRefs} for a wildcard owner (`*.x`): the random name
@@ -778,17 +804,25 @@ export function zoneCandidates(records, blocks) {
       case 'SPF': {
         const parsed = parseSpf(r.value);
         if (!parsed.version) break;
+        // The first term that covers a whole block decides for it (as in spfCoverage).
+        const decided = new Map();
         for (const term of parsed.terms) {
           if (term.mechanism !== 'ip4' && term.mechanism !== 'ip6') continue;
           const range = rangeOf(term.value, term.mechanism === 'ip4' ? term.cidr4 : term.cidr6);
+          const found = [];
           for (const b of blocks) {
             const relation = rangeRelation(range, b);
             if (!relation) continue;
-            push(r, {
-              address: b.label, block: b.cidr,
-              spf: { term: term.raw, qualifier: term.qualifier, relation, range: `${formatIP(range.network, range.version)}/${range.prefix}` }
-            });
+            const first = decided.get(b.cidr) || null;
+            if (first && term.qualifier === '+' && !first.shields.includes(term.raw)) first.shields.push(term.raw);
+            const spf = {
+              term: term.raw, qualifier: term.qualifier, relation, range: `${formatIP(range.network, range.version)}/${range.prefix}`,
+              shadowedBy: first ? { term: first.term, qualifier: first.qualifier } : null, shields: []
+            };
+            push(r, { address: b.label, block: b.cidr, spf });
+            found.push([b.cidr, spf]);
           }
+          for (const [cidr, spf] of found) if ((spf.relation === 'equal' || spf.relation === 'contains') && !decided.has(cidr)) decided.set(cidr, spf);
         }
         break;
       }
@@ -1090,7 +1124,9 @@ export function inventoryOwners(blocks, servers) {
  *   from ({@link HOST_SOURCES}; a name listed in the zone file is 'zone-name')
  * @property {number|null} line the zone file line
  * @property {boolean|null} proxied
- * @property {object|null} spf `{ term, qualifier, effective, relation, range, holder, record, mechanism, host }`
+ * @property {object|null} spf `{ term, qualifier, effective, relation, range, holder, record, mechanism, host, hostAddress, hostOn,
+ *   shadowedBy, shields }`: `hostAddress` the a / mx host's address that matched, `hostOn` whether it is on the block itself (not
+ *   only through the term's CIDR length); `shadowedBy` / `shields` as {@link SpfMatch} has them
  * @property {string|null} reason an unknown row's reason ({@link UNKNOWN_REASONS})
  * @property {string|null} probe a wildcard zone record: the random name under it that was asked
  * @property {string[]} foundFor the checked domains whose check found it
@@ -1112,6 +1148,32 @@ function typeSeverity(type, { effective = null } = {}) {
   if (type === 'CNAME') return 'chain';
   if (type === 'TXT' || type === 'SPF') return effective === '+' ? 'mail' : 'stale';
   return 'live';
+}
+
+/**
+ * Severity of an SPF term: by what it gives the checked domain, unless an earlier term of its policy
+ * that does not pass decides for the address first (then the term authorizes nothing today).
+ */
+function spfSeverity(effective, shadowedBy) {
+  return shadowedBy && shadowedBy.qualifier !== '+' ? 'stale' : typeSeverity('TXT', { effective });
+}
+
+/**
+ * What to do with an SPF term that reaches a retiring block.
+ * - not the user's policy → provider;
+ * - a term that does not authorize the address (a qualifier other than a pass) is kept when it is a
+ *   carve-out in front of a later pass term (`shields`: removed, that term would authorize the
+ *   address) or covers more than the block;
+ * - an a / mx term follows its host's records, unless its CIDR length widens it over the block
+ *   (`contains`: moving the host is not enough) → narrow;
+ * - an ip4 / ip6 range wider than the block → narrow, else remove.
+ * @returns {string} one of {@link CHANGE_ACTIONS}
+ */
+function spfAction({ own, mechanism, qualifier, relation, shields }) {
+  if (!own) return 'provider';
+  if (qualifier !== '+' && ((shields && shields.length) || relation === 'contains')) return 'keep';
+  if (mechanism === 'a' || mechanism === 'mx') return relation === 'contains' ? 'narrow' : 'follow';
+  return relation === 'contains' ? 'narrow' : 'remove';
 }
 
 function compareNames(a, b) {
@@ -1227,16 +1289,16 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
       // central `_spf` policy several company domains include is exactly the record to edit.
       // Only one outside all of them may be a provider's.
       const ownRecord = (registrableDomain(m.holder) || m.holder) === own || groupFor(m.holder, homes) !== null;
-      let action;
-      if (!ownRecord) action = 'provider';
-      else if (m.mechanism === 'a' || m.mechanism === 'mx') action = 'follow';
-      else action = m.relation === 'contains' ? 'narrow' : 'remove';
+      const action = spfAction({ own: ownRecord, mechanism: m.mechanism, qualifier: m.qualifier, relation: m.relation, shields: m.shields });
+      // An a / mx term reaches the block through its host's address, or only through its CIDR length (a/24).
+      const hostOn = m.via ? ['equal', 'within'].includes(rangeRelation(rangeOf(m.via.address), byCidr.get(m.block))) : null;
       add({
-        name: m.holder, type: 'TXT', value: m.term, addresses: [m.via ? m.via.address : label(m.block)], blocks: [m.block],
-        severity: typeSeverity('TXT', { effective: m.effective }), action, verified: 'live', sources: ['spf'], via: m.path,
+        name: m.holder, type: 'TXT', value: m.term, addresses: [m.via && m.relation !== 'contains' ? m.via.address : label(m.block)], blocks: [m.block],
+        severity: spfSeverity(m.effective, m.shadowedBy), action, verified: 'live', sources: ['spf'], via: m.path,
         spf: {
           term: m.term, qualifier: m.qualifier, effective: m.effective, relation: m.relation, range: m.range,
-          holder: m.holder, record: m.record, mechanism: m.mechanism, host: m.via ? m.via.host : null
+          holder: m.holder, record: m.record, mechanism: m.mechanism, host: m.via ? m.via.host : null,
+          hostAddress: m.via ? m.via.address : null, hostOn, shadowedBy: m.shadowedBy || null, shields: [...(m.shields || [])]
         }
       }, c.domain);
     }
@@ -1254,6 +1316,9 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     const type = z.hint ? 'HTTPS' : z.type === 'SPF' ? 'TXT' : z.type;
     const value = type === 'MX' ? `${z.preference ?? 0} ${canon(z.value)}` : z.spf ? z.spf.term : type === 'A' || type === 'AAAA' || z.hint ? z.value : canon(z.value);
     const proxiedOrigin = z.proxied === true && (type === 'A' || type === 'AAAA' || type === 'CNAME');
+    // The zone's own SPF record: by its qualifier, unless an earlier term of it decides first.
+    const ownSeverity = z.spf ? spfSeverity(z.spf.qualifier, z.spf.shadowedBy) : typeSeverity(type);
+    const mechanism = z.spf ? z.spf.term.replace(/^[-+~?]/, '').split(/[:/]/)[0] : null;
     let verified;
     let severity;
     if (proxiedOrigin) {
@@ -1261,28 +1326,31 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
       severity = 'origin';
     } else if (z.internal) {
       verified = 'internal';
-      severity = typeSeverity(type, { effective: z.spf ? z.spf.qualifier : null });
+      severity = ownSeverity;
     } else if (z.live === true) {
       verified = 'live';
-      severity = typeSeverity(type, { effective: z.spf ? z.spf.qualifier : null });
+      severity = ownSeverity;
     } else if (z.live === false) {
       verified = 'file';
       severity = 'file';
     } else {
       // The lookup failed (or was never made: over the cap, a stop): not known either way.
       verified = z.live === null ? 'unknown' : 'unverified';
-      severity = typeSeverity(type, { effective: z.spf ? z.spf.qualifier : null });
+      severity = ownSeverity;
     }
     let action = 'remove';
     if (proxiedOrigin) action = 'origin';
     else if (type === 'CNAME') action = 'follow';
     else if (type === 'NS') action = isSubdomainOf(canon(z.value), z.name) ? 'glue' : 'repoint';
     else if (type === 'MX' || type === 'SRV' || ((type === 'HTTPS' || type === 'SVCB') && !z.hint)) action = 'repoint';
-    else if (z.spf && z.spf.relation === 'contains') action = 'narrow';
+    else if (z.spf) action = spfAction({ own: true, mechanism, qualifier: z.spf.qualifier, relation: z.spf.relation, shields: z.spf.shields });
     add({
       name: z.name, type, value, addresses: [z.address], blocks: [z.block], severity, action, verified,
       via: z.via.length ? [z.name, ...z.via] : [], line: z.line, proxied: z.proxied, sources: ['zone'], probe: z.probe || null,
-      spf: z.spf ? { term: z.spf.term, qualifier: z.spf.qualifier, effective: z.spf.qualifier, relation: z.spf.relation, range: z.spf.range, holder: z.name, record: z.value, mechanism: z.spf.term.replace(/^[-+~?]/, '').split(/[:/]/)[0], host: null } : null
+      spf: z.spf ? {
+        term: z.spf.term, qualifier: z.spf.qualifier, effective: z.spf.qualifier, relation: z.spf.relation, range: z.spf.range, holder: z.name, record: z.value,
+        mechanism, host: null, hostAddress: null, hostOn: null, shadowedBy: z.spf.shadowedBy || null, shields: [...(z.spf.shields || [])]
+      } : null
     }, groupFor(z.name, homes) || zoneOrigin);
   }
 
@@ -1310,8 +1378,10 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     }
   }
 
+  // Types and values by code point: the order is the same in every browser and locale.
+  const plain = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
   const changes = [...rows.values()].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
-    || compareNames(a.name, b.name) || a.type.localeCompare(b.type) || a.value.localeCompare(b.value));
+    || compareNames(a.name, b.name) || plain(a.type, b.type) || plain(a.value, b.value));
   const order = [...homes, 'other', 'passive'];
   const groups = order.map((key) => ({
     key,
@@ -1417,7 +1487,8 @@ export function retireExportJson({
     changes: changes.map((c) => ({
       group: c.group, severity: c.severity, name: c.name, type: c.type, value: c.value, addresses: [...c.addresses], blocks: [...c.blocks],
       action: c.action, verified: c.verified, via: [...c.via], roles: [...c.roles], sources: [...c.sources], line: c.line,
-      proxied: c.proxied, reason: c.reason, probe: c.probe ?? null, spf: c.spf ? { ...c.spf } : null, foundFor: [...c.foundFor]
+      proxied: c.proxied, reason: c.reason, probe: c.probe ?? null, foundFor: [...c.foundFor],
+      spf: c.spf ? { ...c.spf, shadowedBy: c.spf.shadowedBy ? { ...c.spf.shadowedBy } : null, shields: [...(c.spf.shields || [])] } : null
     })),
     passiveGone: gone.map((g) => ({ ...g, now: [...g.now] })),
     failures: failures.map((f) => ({ ...f }))

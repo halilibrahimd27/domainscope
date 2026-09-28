@@ -450,6 +450,60 @@ describe('the change list', () => {
     ]);
     assert.deepEqual(breakingChanges(changes).map((c) => c.value), ['ip4:192.0.2.0/25']);
   });
+
+  test('an a / mx term that covers the address only through its CIDR length is narrowed, never "follows"', async () => {
+    const dns = fakeDns({
+      'example.com': { A: ['192.0.2.77'], MX: [{ preference: 10, exchange: 'mail.example.com' }], TXT: ['v=spf1 a/24 mx/24 a:web.example.com/24 a:old.example.com -all'] },
+      'mail.example.com': { A: ['192.0.2.200'] },
+      'web.example.com': { A: ['192.0.2.10'] },
+      'old.example.com': { A: ['192.0.2.10'] }
+    });
+    const blocks = blocksOf('192.0.2.10');
+    const check = await checkDomain('example.com', { dns, blocks });
+    const spf = buildChanges({ blocks, checks: [check] }).changes.filter((c) => c.type === 'TXT');
+    assert.deepEqual(spf.map((c) => [c.value, c.severity, c.action, c.addresses.join(' '), c.spf.relation, c.spf.host, c.spf.hostAddress, c.spf.hostOn]), [
+      ['a/24', 'mail', 'narrow', '192.0.2.10', 'contains', 'example.com', '192.0.2.77', false],
+      ['a:old.example.com', 'mail', 'follow', '192.0.2.10', 'equal', 'old.example.com', '192.0.2.10', true],
+      ['a:web.example.com/24', 'mail', 'narrow', '192.0.2.10', 'contains', 'web.example.com', '192.0.2.10', true],
+      ['mx/24', 'mail', 'narrow', '192.0.2.10', 'contains', 'mail.example.com', '192.0.2.200', false]
+    ]);
+    // Retiring the host's own /24, the widened term is the block itself: it follows the host.
+    const whole = buildChanges({ blocks: blocksOf('192.0.2.0/24'), checks: [await checkDomain('example.com', { dns, blocks: blocksOf('192.0.2.0/24') })] });
+    assert.equal(whole.changes.find((c) => c.value === 'a/24').action, 'follow');
+  });
+
+  test('SPF stops at the first match: a carve-out in front of a wider pass range is kept, and the range authorizes nothing today', async () => {
+    const blocks = blocksOf('192.0.2.10');
+    const spfRows = async (record, table = {}) => {
+      const dns = fakeDns({ 'example.com': { TXT: [record] }, ...table });
+      const check = await checkDomain('example.com', { dns, blocks });
+      const built = buildChanges({ blocks, checks: [check] });
+      return {
+        rows: built.changes.filter((c) => c.type === 'TXT').map((c) => [c.value, c.severity, c.action]),
+        breaking: built.counts.breaking,
+        spf: Object.fromEntries(built.changes.map((c) => [c.value, c.spf]))
+      };
+    };
+    const carve = await spfRows('v=spf1 -ip4:192.0.2.10 ip4:192.0.2.0/24 -all');
+    assert.deepEqual(carve.rows, [['-ip4:192.0.2.10', 'stale', 'keep'], ['ip4:192.0.2.0/24', 'stale', 'narrow']]);
+    assert.equal(carve.breaking, 0, 'the address gets fail today');
+    assert.deepEqual(carve.spf['-ip4:192.0.2.10'].shields, ['ip4:192.0.2.0/24']);
+    assert.deepEqual(carve.spf['ip4:192.0.2.0/24'].shadowedBy, { term: '-ip4:192.0.2.10', qualifier: '-' });
+    // An earlier pass decides too, but the wider range behind it still authorizes the address once that one goes.
+    const pass = await spfRows('v=spf1 ip4:192.0.2.10 ip4:192.0.2.0/24 -all');
+    assert.deepEqual(pass.rows, [['ip4:192.0.2.0/24', 'mail', 'narrow'], ['ip4:192.0.2.10', 'mail', 'remove']]);
+    // A refusing range wider than the address: nothing to change in it.
+    assert.deepEqual((await spfRows('v=spf1 ~ip4:192.0.2.0/24 ip4:198.51.100.0/24 -all')).rows, [['~ip4:192.0.2.0/24', 'stale', 'keep']]);
+    // A carve-out of one address of a retired /28 does not decide for the whole block.
+    const dns = fakeDns({ 'example.com': { TXT: ['v=spf1 -ip4:192.0.2.10 ip4:192.0.2.0/24 -all'] } });
+    const b28 = blocksOf('192.0.2.0/28');
+    const part = buildChanges({ blocks: b28, checks: [await checkDomain('example.com', { dns, blocks: b28 })] });
+    assert.deepEqual(part.changes.map((c) => [c.value, c.severity, c.action]), [['ip4:192.0.2.0/24', 'mail', 'narrow'], ['-ip4:192.0.2.10', 'stale', 'remove']]);
+    // The same order in the imported zone's record.
+    const zone = zoneCandidates([rec('example.com', 'TXT', 'v=spf1 -ip4:192.0.2.10 ip4:192.0.2.0/24 -all')], blocks);
+    const zoned = buildChanges({ blocks, zone: { origin: 'example.com', refs: zone.map((z) => ({ ...z, live: true })) } });
+    assert.deepEqual(zoned.changes.map((c) => [c.value, c.severity, c.action]), [['-ip4:192.0.2.10', 'stale', 'keep'], ['ip4:192.0.2.0/24', 'stale', 'narrow']]);
+  });
 });
 
 /* ------------------------------------------------------------------------ */
@@ -494,7 +548,7 @@ describe('the imported zone', () => {
       ['*.dev.example.com', 'A', '192.0.2.10', '', null, false, false]
     ]);
     const spf = refs.find((r) => r.spf);
-    assert.deepEqual(spf.spf, { term: 'ip4:192.0.2.0/24', qualifier: '+', relation: 'contains', range: '192.0.2.0/24' });
+    assert.deepEqual(spf.spf, { term: 'ip4:192.0.2.0/24', qualifier: '+', relation: 'contains', range: '192.0.2.0/24', shadowedBy: null, shields: [] });
     assert.deepEqual(zoneCandidates(null, []), []);
   });
 

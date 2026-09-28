@@ -166,8 +166,9 @@ describe('i18n coverage', () => {
     for (const s of views.retire.EVIDENCE_SOURCES) add(`retire.ev.src.${s}`);
     for (const r of ['mx', 'ns', 'spf']) add(`retire.ev.roles.${r}`);
     for (const s of ['scan', 'zone', 'target']) add(`retire.filled.${s}`);
-    for (const k of ['remove.a', 'remove.https', 'remove.spf', 'remove.spfStale', 'narrow', 'follow.spf', 'follow.cname', 'repoint.mx',
-      'repoint.ns', 'repoint.other', 'glue', 'provider', 'origin', 'check.passive', 'check.record-failed']) add(`retire.act.${k}`);
+    for (const k of ['remove.a', 'remove.https', 'remove.spf', 'remove.spfStale', 'narrow', 'narrow.cidr', 'narrow.cidrHost', 'follow.spf', 'follow.cname',
+      'repoint.mx', 'repoint.ns', 'repoint.other', 'glue', 'provider', 'origin', 'keep.shield', 'keep.range', 'shadowed', 'check.passive',
+      'check.record-failed']) add(`retire.act.${k}`);
     for (const w of retire.FAILURE_KINDS) add(`retire.fail.${w}`);
     for (const a of retire.CHANGE_ACTIONS) assert.ok([...keys].some((k) => k.startsWith(`retire.act.${a}`)), `retire.act.${a}*`);
     // Subdomains: the zone chip and the Reverse DNS names chip (one key per mode), the result banners.

@@ -355,6 +355,17 @@ export function parseCommandLine(argv) {
     }
     targets = parsed.targets;
   }
+  // A report written over a file the run reads would replace the zone export, the certificate
+  // or the list with JSON / Markdown.
+  const inputs = [
+    ...options.lists.map((file) => ['--list', file]),
+    ...(options.exact ? [['--exact', options.exact]] : []),
+    ...(spec.targets === 'file' ? [[command === 'drift' ? 'the zone file' : 'the certificate file', rest[0]]] : [])
+  ];
+  for (const [option, out] of [['--json', options.json], ['--md', options.md]]) {
+    const same = out ? inputs.find(([, file]) => samePath(out, file)) : null;
+    if (same) throw new UsageError(`${option} names the same file as ${same[0]} (${same[1]}): the report would overwrite it`);
+  }
   return { command, targets, options, help: false, version: false };
 }
 
@@ -414,13 +425,18 @@ options:
 what is sent: names and record types to the DoH resolvers (renew also asks Cloudflare,
   Google and DNS.SB by name to compare CAA, as the app does); health asks RDAP; subdomains
   asks the passive sources (quota-limited, shared per IP address) unless --exact; ct asks
-  crt.sh and Cert Spotter. Nothing goes to Globalping: the checks that need a probe (Verify,
-  the MTA-STS policy, the HTTP-01 test) stay in the app, behind a click.
+  crt.sh and Cert Spotter. Over several domains, Cert Spotter is not asked again after it
+  answers "rate limited" until its wait (at most an hour) is over — it takes about 10
+  full-domain queries an hour per IP address — and crt.sh is not asked again that run once
+  it is down (ct --sources crtsh leaves Cert Spotter out). Nothing goes to Globalping: the
+  checks that need a probe (Verify, the MTA-STS policy, the HTTP-01 test) stay in the app,
+  behind a click.
 
 exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage error (report
-  files that cannot be written and a baseline that cannot be compared are refused before the
-  run), 3 a report file could not be written after the run, 4 something changed since
-  --baseline (only with --fail-on-change), 130 interrupted. When several apply: 3, then 4.
+  files that cannot be written or that are one of the run's input files, and a baseline that
+  cannot be compared, are refused before the run), 3 a report file could not be written
+  after the run, 4 something changed since --baseline (only with --fail-on-change), 130
+  interrupted (nothing written). When several apply: 3, then 4.
 
 examples:
   node tools/ds.mjs health example.com example.org --json health.json --md health.md

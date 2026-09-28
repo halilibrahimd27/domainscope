@@ -35,8 +35,11 @@ import { DohClient } from '../assets/js/lib/doh.js';
 import { parseHostList } from '../assets/js/lib/domain.js';
 import { toJson } from '../assets/js/lib/export.js';
 import { errorKind } from '../assets/js/lib/util.js';
+import { cleanText } from '../assets/js/lib/summary.js';
 
 const PROG = 'ds';
+/** After Ctrl-C, how long the program waits for its last output before it exits. */
+const INTERRUPT_GRACE_MS = 200;
 
 /**
  * Text of a file: UTF-8 (a BOM is dropped), UTF-16 with a BOM, or UTF-16LE without one (as
@@ -65,6 +68,31 @@ async function readInput(path, option) {
     const why = err && err.code === 'ENOENT' ? 'no such file' : err && err.code === 'EISDIR' ? 'it is a directory' : (err && err.message) || String(err);
     throw new UsageError(`${option ? `${option}: ` : ''}cannot read ${path}: ${why}`);
   }
+}
+
+/** Skipped entries of one file named one by one; the rest are counted. */
+export const MAX_SKIPPED_SHOWN = 5;
+/** An entry is quoted up to this many characters. */
+const MAX_ENTRY_CHARS = 80;
+
+/**
+ * The warnings for the entries of a `--list` / `--exact` file that were skipped: the first
+ * {@link MAX_SKIPPED_SHOWN} quoted (control and bidi characters out, long ones cut), then how many
+ * more — a wrong file named by mistake prints a few lines, not one per line of it.
+ * @param {string} label '--list domains.txt'
+ * @param {string[]} invalid
+ * @param {string} what 'a domain name'
+ * @returns {string[]}
+ */
+export function skippedWarnings(label, invalid, what) {
+  const quote = (s) => {
+    const clean = cleanText(s);
+    return clean.length > MAX_ENTRY_CHARS ? `${clean.slice(0, MAX_ENTRY_CHARS - 1)}…` : clean;
+  };
+  const out = invalid.slice(0, MAX_SKIPPED_SHOWN).map((bad) => `${label}: skipped "${quote(bad)}": not ${what}`);
+  const more = invalid.length - MAX_SKIPPED_SHOWN;
+  if (more > 0) out.push(`${label}: ${more} more ${more === 1 ? 'entry' : 'entries'} skipped: not ${what}`);
+  return out;
 }
 
 /** A temporary file next to `path` (the same directory, so the rename replaces it whole). */
@@ -197,7 +225,8 @@ export async function main(argv, io = {}) {
   try {
     for (const file of options.lists) {
       const { targets: listed, invalid } = parseListText(command, decodeText(await readInput(file, '--list')));
-      for (const bad of invalid) warn(`--list ${file}: skipped "${bad}": not ${COMMAND_SPECS[command].targets === 'names' ? 'a name a certificate can carry' : 'a domain name'}`);
+      const what = COMMAND_SPECS[command].targets === 'names' ? 'a name a certificate can carry' : 'a domain name';
+      for (const w of skippedWarnings(`--list ${file}`, invalid, what)) warn(w);
       for (const x of listed) if (!targets.includes(x)) targets = [...targets, x];
     }
     if (!targets.length) throw new UsageError(`${command}: no target: ${options.lists.map((f) => `--list ${f}`).join(', ')} names none`);
@@ -206,7 +235,7 @@ export async function main(argv, io = {}) {
     }
     if (options.exact) {
       const { valid, invalid } = parseHostList(decodeText(await readInput(options.exact, '--exact')));
-      for (const bad of invalid) warn(`--exact ${options.exact}: skipped "${bad}": not a host name`);
+      for (const w of skippedWarnings(`--exact ${options.exact}`, invalid, 'a host name')) warn(w);
       if (!valid.length) throw new UsageError(`--exact: ${options.exact} lists no host name`);
       inputs.exactNames = valid;
       inputs.exactFile = basename(options.exact);
@@ -302,6 +331,10 @@ async function cli() {
   const code = await main(process.argv.slice(2), { signal: controller.signal });
   process.removeListener('SIGINT', onSignal);
   process.exitCode = code;
+  // A stopped run can leave requests nobody waits for (lib/rdap.js' shared bootstrap download is
+  // bound by its own timeout and a retry, not by the run's signal): leave once the last line is
+  // out rather than half a minute later. The timer keeps nothing alive by itself.
+  if (code === EXIT.INTERRUPTED) setTimeout(() => process.exit(code), INTERRUPT_GRACE_MS).unref();
 }
 
 /** Is this module the program Node was started with (also through a symlinked path)? */

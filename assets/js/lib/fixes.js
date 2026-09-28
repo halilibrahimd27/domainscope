@@ -1323,11 +1323,24 @@ function currentFamily(ctx, name, family) {
   return c.values.filter((v) => txtFamily(v) === family).map(txtText);
 }
 
-/** A name in the zone from a form field, or null with a problem. */
-function formName(ctx, field, { wildcard = false } = {}) {
-  const abs = absoluteName(ctx.form[field], ctx.zone, { wildcard });
+/** A name in the zone from a form field (or `value`, the field's text as a template reads it), or null with a problem. */
+function formName(ctx, field, { wildcard = false, value = ctx.form[field] } = {}) {
+  const abs = absoluteName(value, ctx.zone, { wildcard });
   if (!abs.name) ctx.problems.push({ severity: 'error', key: abs.error === 'outside' ? 'fix.p.outside' : 'fix.p.name', params: { value: ctx.form[field], zone: ctx.zone } });
   return abs.name;
+}
+
+/**
+ * The certificate name of an ACME template. The record name an ACME client prints
+ * (`_acme-challenge.example.com`) is taken for the name it validates, with a word that says so:
+ * the record goes at `_acme-challenge.<name>`, never at a doubled label.
+ */
+function acmeName(ctx) {
+  const raw = String(ctx.form.name ?? '').trim();
+  const bare = raw.replace(/^_acme-challenge\./i, '');
+  const name = formName(ctx, 'name', { wildcard: true, value: bare });
+  if (name && bare !== raw) ctx.problems.push({ severity: 'info', key: 'fix.p.acme-name', params: { value: raw, name: `_acme-challenge.${name.replace(/^\*\./, '')}` } });
+  return name;
 }
 
 /** The SPF set of a template: `include:` added to the current record (after a read) or a new record. */
@@ -1403,7 +1416,7 @@ function recordValue(type, line) {
 
 const TEMPLATE_BUILDERS = {
   'acme-txt'(ctx) {
-    const name = formName(ctx, 'name', { wildcard: true });
+    const name = acmeName(ctx);
     if (!name) return [];
     const base = name.replace(/^\*\./, '');
     const owner = `_acme-challenge.${base}`;
@@ -1420,7 +1433,7 @@ const TEMPLATE_BUILDERS = {
   },
 
   'acme-cname'(ctx) {
-    const name = formName(ctx, 'name', { wildcard: true });
+    const name = acmeName(ctx);
     const target = normalizeValue('CNAME', ctx.form.target);
     if (!String(ctx.form.target ?? '').trim()) ctx.problems.push({ severity: 'error', key: 'fix.p.target-missing' });
     else if (!target) ctx.problems.push({ severity: 'error', key: 'fix.p.host', params: { value: ctx.form.target } });
@@ -2154,6 +2167,7 @@ const STRINGS = [
   ['fix.p.tokens-missing', ['Enter the TXT value your ACME client printed.', 'ACME istemcinizin yazdığı TXT değerini girin.']],
   ['fix.p.token-format', ['Does not look like an ACME DNS-01 value (43 characters of A–Z, a–z, 0–9, - and _): {values}', 'ACME DNS-01 değerine benzemiyor (A–Z, a–z, 0–9, - ve _ karakterlerinden 43 karakter): {values}']],
   ['fix.p.acme-delegated', ['{name} is a CNAME to {target}: CAs follow it, so the TXT record belongs at {target}, and a TXT next to the CNAME is not allowed.', '{name}, {target} adına bir CNAME: otoriteler onu izler, bu yüzden TXT kaydı {target} adına yazılmalı; CNAME’in yanında TXT olamaz.']],
+  ['fix.p.acme-name', ['The name field takes the name the certificate is for: “_acme-challenge.” was taken off {value}, and the record goes at {name}.', 'Ad alanı sertifikadaki adı alır: {value} adının başındaki “_acme-challenge.” çıkarıldı; kayıt {name} adına yazılır.']],
   ['fix.p.target-missing', ['Enter the name to delegate to.', 'Devredilecek adı girin.']],
   ['fix.p.selector', ['“{value}” is not a DKIM selector.', '“{value}” bir DKIM seçicisi değil.']],
   ['fix.p.dkim-key', ['The DKIM value must start with “v=DKIM1” and carry the key in p=.', 'DKIM değeri “v=DKIM1” ile başlamalı ve anahtarı p= içinde taşımalı.']],

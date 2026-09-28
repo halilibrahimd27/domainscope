@@ -1,0 +1,129 @@
+# case: acme-txt-pasted
+## problems
+info fix.p.acme-name {"value":"_acme-challenge.example.com","name":"_acme-challenge.example.com"}
+## notes
+fix.n.acme-remove {"name":"_acme-challenge.example.com"}
+## check
+z=example.com&r=has+_acme-challenge+TXT+%22gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk%22
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; _acme-challenge.example.com TXT
+; add; keep the TXT records _acme-challenge already has
+_acme-challenge 300 IN TXT "gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_acme-challenge.example.com.",
+        "Type": "TXT",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "\"gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 notes
+fix.fn.incomplete {"name":"_acme-challenge.example.com","type":"TXT"}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Add _acme-challenge.example.com TXT "gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"_acme-challenge.example.com","content":"\"gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk\"","ttl":300}'
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+_acme-challenge:
+  # keep the TXT values this name already has, and add the ones below
+  - type: TXT
+    ttl: 300
+    values:
+      - gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk
+## octodns notes
+fix.fn.incomplete {"name":"_acme-challenge.example.com","type":"TXT"}
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+resource "cloudflare_record" "txt_acme_challenge" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "_acme-challenge.example.com"
+  type     = "TXT"
+  content  = "gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"
+  ttl      = 300
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+# list the TXT values _acme-challenge.example.com already has here too (they were not read): this resource replaces the whole set
+
+resource "aws_route53_record" "txt_acme_challenge" {
+  zone_id = var.route53_zone_id
+  name    = "_acme-challenge.example.com"
+  type    = "TXT"
+  ttl     = 300
+  records = ["gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"]
+}
+## terraform-route53 notes
+fix.fn.incomplete {"name":"_acme-challenge.example.com","type":"TXT"}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Add: TXT records
+   Name: _acme-challenge.example.com
+   Value:
+     "gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"
+   TTL: 300
+   Keep the TXT records the name already has.
+
+Notes:
+- Once the certificate is issued, the TXT values at _acme-challenge.example.com can be removed; leftovers do no harm but pile up.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=has+_acme-challenge+TXT+%22gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk%22
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Ekle: TXT kayıtları
+   Ad: _acme-challenge.example.com
+   Değer:
+     "gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk"
+   TTL: 300
+   Adın mevcut TXT kayıtları kalsın.
+
+Notlar:
+- Sertifika verildikten sonra _acme-challenge.example.com adındaki TXT değerleri kaldırılabilir; kalanlar zarar vermez ama birikir.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=has+_acme-challenge+TXT+%22gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk%22

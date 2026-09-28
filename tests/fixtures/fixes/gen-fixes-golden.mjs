@@ -77,6 +77,8 @@ const TOKEN_B = 'LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0';
 export const CASES = Object.freeze([
   { id: 'acme-txt-wildcard', template: 'acme-txt', input: { name: '*.example.com', tokens: `${TOKEN_A}\n${TOKEN_B}` } },
   { id: 'acme-txt-delegated', template: 'acme-txt', input: { name: 'example.net', tokens: TOKEN_A }, read: true },
+  // The record name an ACME client prints, pasted as the certificate name: the label is not doubled.
+  { id: 'acme-txt-pasted', template: 'acme-txt', input: { name: '_acme-challenge.example.com', tokens: TOKEN_A } },
   { id: 'acme-cname', template: 'acme-cname', input: { name: 'www.example.com', target: 'd7c1f3a2.auth.example.org' } },
   { id: 'm365', template: 'm365', input: { domain: 'example.com', tenant: 'example.onmicrosoft.com', rua: 'dmarc@example.com' } },
   { id: 'm365-read', template: 'm365', input: { domain: 'example.com', tenant: 'example.onmicrosoft.com' }, read: true },

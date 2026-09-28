@@ -460,6 +460,19 @@ describe('templates', () => {
     }
   });
 
+  test('the ACME templates take the record name a client prints for the certificate name: the label is never doubled', () => {
+    for (const name of ['_acme-challenge.example.com', '_ACME-Challenge.example.com.']) {
+      const txt = buildChange('acme-txt', { name, tokens: TOKEN });
+      assert.deepEqual(txt.rrsets.map((r) => r.name), ['_acme-challenge.example.com'], name);
+      assert.deepEqual(txt.problems, [{ severity: 'info', key: 'fix.p.acme-name', params: { value: name, name: '_acme-challenge.example.com' } }]);
+      assert.ok(!hasErrors(txt));
+    }
+    const sub = buildChange('acme-cname', { name: '_acme-challenge.www.example.com', target: 'x.auth.example.net' });
+    assert.deepEqual([sub.zone, sub.rrsets.map((r) => `${r.name} ${r.type}`)], ['example.com', ['_acme-challenge.www.example.com CNAME']]);
+    assert.equal(sub.problems[0].key, 'fix.p.acme-name');
+    assert.deepEqual(buildChange('acme-txt', { name: '*.example.com', tokens: TOKEN }).problems, [], 'a plain name: no word');
+  });
+
   test('a delegated _acme-challenge is refused: the TXT belongs at the CNAME target', () => {
     const cur = { '_acme-challenge.example.com|CNAME': { status: 'ok', values: ['x.auth.example.net'], ttl: 300, cname: null } };
     const req = buildChange('acme-txt', { name: '*.example.com', tokens: TOKEN }, { current: cur });

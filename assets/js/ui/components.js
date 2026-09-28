@@ -1830,6 +1830,8 @@ export function rowsToCsv(rows, columns, { bom = true } = {}) {
  * @property {boolean} [searchable=true]
  * @property {(row: any) => any} [exportValue] value in CSV/JSON exports (default: searchValue/sortValue/row[key])
  * @property {boolean} [export=true] include in exports
+ * @property {boolean} [display=true] false: an export-only column (a value the table shows inside
+ *   another cell, still its own CSV / JSON column); it is neither rendered nor searched
  * @property {string} [exportHeader] CSV header (default: label)
  * @property {string} [className] added to th and td
  * @property {'start'|'end'|'center'} [align]
@@ -1949,7 +1951,7 @@ export function DataTable(opts) {
   function renderHead() {
     const cells = [];
     if (details) cells.push(h('th', { class: 'dt-expander-col', attrs: { scope: 'col' } }, h('span', { class: 'sr-only' }, t('common.details'))));
-    for (const col of columns) {
+    for (const col of shownColumns()) {
       const sorted = sortState && sortState.key === col.key;
       const th = h('th', {
         class: ['dt-th', col.className, col.align ? `dt-align-${col.align}` : null, { 'dt-sortable': col.sortable, 'is-sorted': sorted }],
@@ -1985,11 +1987,13 @@ export function DataTable(opts) {
 
   // --- data helpers -----------------------------------------------------------
   const colValue = (col, row) => (col.sortValue ? col.sortValue(row) : row == null ? undefined : row[col.key]);
+  /** The columns on screen (an export-only column, `display: false`, is left out). */
+  const shownColumns = () => columns.filter((c) => c.display !== false);
 
   function searchText(row) {
     let s = searchCache.get(row);
     if (s === undefined) {
-      s = normalizeSearch(columns.filter((c) => c.searchable !== false)
+      s = normalizeSearch(shownColumns().filter((c) => c.searchable !== false)
         .map((c) => valueToText(c.searchValue ? c.searchValue(row) : colValue(c, row)))
         .join('\u0001'));
       if (row && typeof row === 'object') searchCache.set(row, s);
@@ -2070,7 +2074,7 @@ export function DataTable(opts) {
         }
       }, Icon('chevron-right', { size: 14 }))));
     }
-    for (const col of columns) cells.push(renderCell(col, row));
+    for (const col of shownColumns()) cells.push(renderCell(col, row));
     tr = h('tr', {
       class: ['dt-row', rowClass ? rowClass(row) : null, { 'is-clickable': !!onRowClick, 'is-expanded': details && expanded.has(row) }],
       attrs: { tabindex: onRowClick ? 0 : null },
@@ -2095,7 +2099,7 @@ export function DataTable(opts) {
     let tr = detailCache.get(row);
     if (tr) return tr;
     const content = details(row);
-    tr = h('tr', { class: 'dt-details' }, h('td', { attrs: { colspan: columns.length + 1 } }, h('div', { class: 'dt-details-body' }, content)));
+    tr = h('tr', { class: 'dt-details' }, h('td', { attrs: { colspan: shownColumns().length + 1 } }, h('div', { class: 'dt-details-body' }, content)));
     if (row && typeof row === 'object') {
       detailCache.set(row, tr);
       rowOfTr.set(tr, row);

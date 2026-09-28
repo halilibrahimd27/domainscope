@@ -168,11 +168,13 @@ async function newProviderTable() {
  * In-page fake Globalping for DNS measurements: each new name server answers from `table` as an
  * authoritative server would (the dig flags line with aa, CNAME chains inside the zone, a
  * wildcard, NXDOMAIN, a referral for the delegation). Every call is logged in window.__gp.
+ * `window.__gp.allowUpTo`: measurements numbered above it stay in progress (a test holds a run
+ * part way, then lets it go on).
  */
 const fakeGlobalpingScript = (table, servers) => `(() => {
   const T = ${JSON.stringify(table)};
   const SERVERS = ${JSON.stringify(servers)};
-  const gp = window.__gp = { calls: [], remaining: 250, n: 0, measurements: {} };
+  const gp = window.__gp = { calls: [], remaining: 250, n: 0, measurements: {}, allowUpTo: Infinity };
   const prevFetch = window.fetch;
   const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
   const probe = { continent: 'EU', region: 'Western Europe', country: 'DE', city: 'Frankfurt', asn: 24940, network: 'Hetzner Online', tags: ['datacenter-network'] };
@@ -226,12 +228,13 @@ const fakeGlobalpingScript = (table, servers) => `(() => {
       gp.remaining -= 1;
       gp.n += 1;
       const id = 'fakeParity' + String(gp.n).padStart(6, '0');
-      gp.measurements[id] = { id, body };
+      gp.measurements[id] = { id, body, n: gp.n };
       return json({ id, probesCount: 1 }, 202, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': String(gp.remaining), 'x-ratelimit-reset': '3600', 'x-request-cost': '1' });
     }
     const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
     if (m && gp.measurements[m[1]]) {
-      const { id, body: b } = gp.measurements[m[1]];
+      const { id, body: b, n } = gp.measurements[m[1]];
+      if (n > gp.allowUpTo) return json({ id, type: 'dns', status: 'in-progress', target: b.target, probesCount: 1, results: [] });
       const result = answer(b.measurementOptions.resolver, b.target, b.measurementOptions.query.type);
       return json({ id, type: 'dns', status: 'finished', target: b.target, probesCount: 1, results: [{ probe, result }] });
     }
@@ -679,6 +682,76 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.par-step[data-step="fix"]').dataset.state), 'blocked', 'fix blocked');
       await typeNs(NEW_NS.join(' '));
       await page.waitFor(() => document.querySelector('[data-role="par-ns"]')?.value === 'ns1.example.net ns2.example.net', { message: 'typed' });
+    });
+
+    await run.step('A private server goes into the CLI command; with the internal skip off, the privacy line says those names are sent', async () => {
+      await typeNs(`${NEW_NS[0]}\n10.0.0.53`);
+      await page.waitFor(() => /10\.0\.0\.53/.test(document.querySelector('.par-command code')?.textContent || ''), { message: 'the private server in the command' });
+      assertEqual((await text(page, '.par-command code')).trim(), `python3 dns_parity.py example.com.parity.zone --ns ${NEW_NS[0]} 10.0.0.53`, 'CLI command');
+      assert(/asks it from your network/.test(await text(page, '[data-role="par-issues"] [data-code="private"]')), 'the issue points at the command');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="par-plan"]').dataset.probes !== '0'), true, 'the public server is still compared');
+      assert(/the names that look internal stay here/.test(await text(page, '[data-role="par-privacy"]')), 'internal names stay by default');
+      await page.click('[data-role="par-skip-private"]');
+      await page.waitFor(() => /are included, because you turned their skip off/.test(document.querySelector('[data-role="par-privacy"]')?.textContent || ''), { message: 'privacy with internal names' });
+      assert(!/stay here\. Anyone/.test(await text(page, '[data-role="par-privacy"]')), 'no promise that they stay');
+      await page.click('[data-role="par-skip-private"]');
+      await page.waitFor(() => /the names that look internal stay here/.test(document.querySelector('[data-role="par-privacy"]')?.textContent || ''), { message: 'skip on again' });
+      await typeNs(NEW_NS.join(' '));
+      await page.waitFor(() => !document.querySelector('[data-role="par-issues"]') && document.querySelector('[data-role="par-plan"]')?.dataset.probes !== '0', { message: 'typed' });
+    });
+
+    await run.step('Compare from the keyboard: focus goes to Stop while it runs and back to Compare; the stop counts what it left out', async () => {
+      const NP = await import('../../assets/js/lib/nsparity.js');
+      const V = await import('../../assets/js/views/zone.js');
+      const plan = NP.planParity(V.parseFiles([{ name: 'example.com.txt', text: await readFile(CF_FILE, 'utf8') }]), { nameservers: NEW_NS });
+      // Hold every new measurement: the stop comes while the first server's SOA question is out.
+      const base = await page.evaluate(() => { window.__gp.allowUpTo = window.__gp.n; return window.__gp.n; });
+      await page.evaluate(() => document.querySelector('[data-action="par-run"]').focus());
+      await page.press('Enter');
+      // The consent was given in this page session, and the batch is small: no dialog.
+      await page.waitFor(() => document.activeElement?.dataset.action === 'par-stop', { message: 'keyboard focus on Stop' });
+      await page.waitFor((b) => window.__gp.n > b, { args: [base], message: 'the SOA question sent' });
+      await page.press('Enter');
+      await page.waitFor(() => !document.querySelector('[data-action="par-stop"]') && document.querySelector('.par-results')?.dataset.status === 'done', { message: 'stopped' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'par-run', 'keyboard focus back on Compare');
+      assertEqual(await page.evaluate(() => document.querySelector('.par-results').dataset.verdict), 'partial', 'nothing judged');
+      const head = await text(page, '.par-results > .alert');
+      const left = plan.checked + plan.skipped.type + plan.skipped.budget;
+      assert(head.includes(`${left} record sets were not`), `the record sets the stop left out (${left}): ${head}`);
+      assert(/Stopped: what was answered is shown/.test(await text(page, '.par-results')), 'the stop alert');
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+    });
+
+    await run.step('Leaving Zone File during a run: the tab it comes back to keeps counting the probes', async () => {
+      const base = await page.evaluate(() => { window.__gp.allowUpTo = window.__gp.n; return window.__gp.n; });
+      await page.click('[data-action="par-run"]');
+      await page.waitFor((b) => !!document.querySelector('[data-action="par-stop"]') && window.__gp.n > b, { args: [base], message: 'running' });
+      await leaveAndReturn(page);
+      await clickTab(page, 'parity');
+      await page.waitFor(() => /^0 \/ \d+ probes/.test(document.querySelector('.par-progress .progress-label')?.textContent || ''), { message: 'the progress of the new tab' });
+      await page.evaluate((b) => { window.__gp.allowUpTo = b + 3; }, base);
+      await page.waitFor(() => /^3 \/ \d+ probes/.test(document.querySelector('.par-progress .progress-label')?.textContent || ''), { message: 'the new tab counts on' });
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.status === 'done' && !document.querySelector('[data-action="par-stop"]'), { timeout: 30000, message: 'done' });
+      assertEqual(await page.evaluate(() => document.querySelector('.par-results').dataset.verdict), 'fix', 'the whole comparison');
+    });
+
+    await run.step('The comparison table fits its card at 1280 and 1440 px: no inner horizontal scroll, the notes whole', async () => {
+      for (const width of [1280, 1440]) {
+        await page.setViewport({ width, height: 900 });
+        const fits = () => page.evaluate(() => {
+          const s = document.querySelector('.par-table .dt-scroll');
+          return s && document.querySelectorAll('.par-table tbody tr.dt-row').length > 0 ? { sw: s.scrollWidth, cw: s.clientWidth,
+            cols: [...document.querySelectorAll('.par-table thead th')].map((th) => `${th.dataset.key}:${th.offsetWidth}`).join(' ') } : null;
+        });
+        await page.waitFor(() => {
+          const s = document.querySelector('.par-table .dt-scroll');
+          return !!s && document.querySelectorAll('.par-table tbody tr.dt-row').length > 0 && s.scrollWidth <= s.clientWidth + 1;
+        }, { timeout: 3000, message: `the table fits at ${width} px` }).catch(async (err) => {
+          throw new Error(`${err.message}: ${JSON.stringify(await fits())}`);
+        });
+      }
+      await page.setViewport({ width: 1440, height: 900 });
     });
 
     await run.step('Scan these names (exact): publishes the zone + one-shot intent and opens Subdomains', async () => {

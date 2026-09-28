@@ -62,7 +62,7 @@ registerStrings('en', {
   'par.ns.placeholder': 'ns1.example.net\nns2.example.net',
   'par.ns.hint': 'The host names the new provider gave you (their addresses work too), one per line or separated by spaces. Up to {max}.',
   'par.nsIssue.invalid': 'Not a name server: {value}',
-  'par.nsIssue.private': '{value} is a private or documentation address: a probe cannot reach it. The CLI below can.',
+  'par.nsIssue.private': '{value} is a private or documentation address: a probe cannot reach it. The CLI command below asks it from your network.',
   'par.nsIssue.too-many': 'Only {max} name servers are compared; {value} is left out.',
   'par.nsIssue.in-file': '{value} is one of this file’s own name servers: that is the current provider, whose answers the Live check compares.',
   'par.nsNeeded': 'Enter the new provider’s name servers first.',
@@ -87,6 +87,7 @@ registerStrings('en', {
   'par.rerun': 'Compare again',
   'par.stop': 'Stop',
   'par.privacy': 'Sends to Globalping only the names and record types asked ({probes} DNS queries) and the name servers’ host names; one DS query of {origin} goes to your DNS-over-HTTPS resolvers. The values of the file, the origin addresses and the names that look internal stay here. Anyone with a measurement ID can read its result for about six months: the answers of your new name servers, which anyone can already ask them for.',
+  'par.privacyInternal': 'Sends to Globalping only the names and record types asked ({probes} DNS queries) and the name servers’ host names; one DS query of {origin} goes to your DNS-over-HTTPS resolvers. The values of the file and the origin addresses stay here. The names that look internal are included, because you turned their skip off: they become public with the measurements. Anyone with a measurement ID can read its result for about six months.',
   'par.running': 'Asking the new name servers…',
   'par.progress': '{done} / {total} probes',
   'par.failed': 'The comparison failed',
@@ -94,14 +95,21 @@ registerStrings('en', {
   'par.stopped.quota': 'The hourly Globalping quota ran out: the comparison stopped. What was answered is shown; compare again {when}, or use the CLI.',
   'par.stopped.unreachable': 'Globalping could not be reached: the comparison stopped. What was answered is shown.',
   'par.stopped.abort': 'Stopped: what was answered is shown.',
-  'par.finished': 'New name servers: {count} to fix',
-  'par.checkedAt': 'Compared {time} · {probes} probes',
+  'par.finished': { zero: 'New name servers: nothing to fix', one: 'New name servers: {count} problem to fix', other: 'New name servers: {count} problems to fix' },
+  'par.checkedAt': { one: 'Compared {time} · {count} probe', other: 'Compared {time} · {count} probes' },
 
   'par.head.ready': 'The new name servers serve every compared record set of this file.',
   'par.head.fix': 'Fix the new provider’s zone before you switch: {missing} missing, {different} different{servers}.',
   'par.head.fixServers': { one: ', {count} name server that does not serve it', other: ', {count} name servers that do not serve it' },
-  'par.head.check': 'Nothing is missing or different. Check the rest before you switch: {extra} extra, {unproxied} not proxied, {ttl} TTL differences.',
-  'par.head.partial': 'Nothing is missing or different so far, but not everything was compared: {unchecked} record sets were not (the CLI compares every record).',
+  'par.head.check': {
+    one: 'Nothing is missing or different. Check the rest before you switch: {extra} extra, {unproxied} not proxied, {count} TTL difference.',
+    other: 'Nothing is missing or different. Check the rest before you switch: {extra} extra, {unproxied} not proxied, {count} TTL differences.'
+  },
+  'par.head.partial': {
+    zero: 'Nothing is missing or different so far, but the comparison did not finish (the CLI compares every record).',
+    one: 'Nothing is missing or different so far, but not everything was compared: {count} record set was not (the CLI compares every record).',
+    other: 'Nothing is missing or different so far, but not everything was compared: {count} record sets were not (the CLI compares every record).'
+  },
   'par.head.blocked': 'No new name server serves {origin} yet: create the zone at the new provider (import this file there), then compare again.',
   'par.serials.differ': 'The name servers serve different SOA serials: they are not in sync yet.',
 
@@ -132,7 +140,8 @@ registerStrings('en', {
   'par.col.type': 'Type',
   'par.col.file': 'In the file',
   'par.col.new': 'At the new server',
-  'par.col.ttl': 'TTL (file → new)',
+  'par.col.fileTtl': 'TTL in the file',
+  'par.col.newTtl': 'TTL at the new server',
   'par.col.note': 'Note',
   'par.includeOrigins': 'Include origin addresses in exports',
 
@@ -208,7 +217,7 @@ registerStrings('tr', {
   'par.ns.placeholder': 'ns1.example.net\nns2.example.net',
   'par.ns.hint': 'Yeni sağlayıcının verdiği host adları (adresleri de olur), her satıra bir tane ya da boşlukla ayrılmış. En fazla {max}.',
   'par.nsIssue.invalid': 'Bir ad sunucusu değil: {value}',
-  'par.nsIssue.private': '{value} özel ya da dokümantasyon adresi: ölçüm noktası ona ulaşamaz. Aşağıdaki CLI ulaşır.',
+  'par.nsIssue.private': '{value} özel ya da dokümantasyon adresi: ölçüm noktası ona ulaşamaz. Aşağıdaki CLI komutu onu sizin ağınızdan sorar.',
   'par.nsIssue.too-many': 'Yalnızca {max} ad sunucusu karşılaştırılır; {value} dışarıda kaldı.',
   'par.nsIssue.in-file': '{value} bu dosyanın kendi ad sunucularından biri: bu, mevcut sağlayıcı; onun yanıtlarını Canlı kontrol karşılaştırır.',
   'par.nsNeeded': 'Önce yeni sağlayıcının ad sunucularını girin.',
@@ -227,6 +236,7 @@ registerStrings('tr', {
   'par.rerun': 'Yeniden karşılaştır',
   'par.stop': 'Durdur',
   'par.privacy': 'Globalping’e yalnızca sorulan adlar ve kayıt türleri ({probes} DNS sorgusu) ile ad sunucularının host adları gider; {origin} için bir DS sorgusu DNS-over-HTTPS çözümleyicilerinize gider. Dosyadaki değerler, origin adresleri ve iç ağa ait görünen adlar burada kalır. Ölçüm kimliğini bilen herkes sonucu yaklaşık altı ay okuyabilir: yeni ad sunucularınızın yanıtları, ki bunları herkes zaten onlara sorabilir.',
+  'par.privacyInternal': 'Globalping’e yalnızca sorulan adlar ve kayıt türleri ({probes} DNS sorgusu) ile ad sunucularının host adları gider; {origin} için bir DS sorgusu DNS-over-HTTPS çözümleyicilerinize gider. Dosyadaki değerler ve origin adresleri burada kalır. İç ağa ait görünen adlar da gönderilir, çünkü onları atlamayı kapattınız: ölçümlerle birlikte herkese açık olurlar. Ölçüm kimliğini bilen herkes sonucu yaklaşık altı ay okuyabilir.',
   'par.running': 'Yeni ad sunucularına soruluyor…',
   'par.progress': '{done} / {total} ölçüm',
   'par.failed': 'Karşılaştırma başarısız oldu',
@@ -234,14 +244,17 @@ registerStrings('tr', {
   'par.stopped.quota': 'Saatlik Globalping kotası doldu: karşılaştırma durdu. Yanıtlananlar gösteriliyor; {when} yeniden karşılaştırın ya da CLI’ı kullanın.',
   'par.stopped.unreachable': 'Globalping’e ulaşılamadı: karşılaştırma durdu. Yanıtlananlar gösteriliyor.',
   'par.stopped.abort': 'Durduruldu: yanıtlananlar gösteriliyor.',
-  'par.finished': 'Yeni ad sunucuları: düzeltilecek {count} şey',
-  'par.checkedAt': '{time} karşılaştırıldı · {probes} ölçüm',
+  'par.finished': { zero: 'Yeni ad sunucuları: düzeltilecek bir şey yok', other: 'Yeni ad sunucuları: düzeltilecek {count} sorun' },
+  'par.checkedAt': '{time} karşılaştırıldı · {count} ölçüm',
 
   'par.head.ready': 'Yeni ad sunucuları bu dosyanın karşılaştırılan her kayıt kümesini sunuyor.',
   'par.head.fix': 'Geçişten önce yeni sağlayıcıdaki zone’u düzeltin: {missing} eksik, {different} farklı{servers}.',
   'par.head.fixServers': ', zone’u sunmayan {count} ad sunucusu',
-  'par.head.check': 'Eksik ya da farklı bir şey yok. Geçişten önce kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, {ttl} TTL farkı.',
-  'par.head.partial': 'Şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı: {unchecked} kayıt kümesi karşılaştırılmadı (CLI her kaydı karşılaştırır).',
+  'par.head.check': 'Eksik ya da farklı bir şey yok. Geçişten önce kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, {count} TTL farkı.',
+  'par.head.partial': {
+    zero: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama karşılaştırma tamamlanmadı (CLI her kaydı karşılaştırır).',
+    other: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı: {count} kayıt kümesi karşılaştırılmadı (CLI her kaydı karşılaştırır).'
+  },
   'par.head.blocked': 'Henüz hiçbir yeni ad sunucusu {origin} zone’unu sunmuyor: zone’u yeni sağlayıcıda oluşturun (bu dosyayı oraya aktarın), sonra yeniden karşılaştırın.',
   'par.serials.differ': 'Ad sunucuları farklı SOA seri numaraları sunuyor: henüz eşitlenmemişler.',
 
@@ -272,7 +285,8 @@ registerStrings('tr', {
   'par.col.type': 'Tür',
   'par.col.file': 'Dosyada',
   'par.col.new': 'Yeni sunucuda',
-  'par.col.ttl': 'TTL (dosya → yeni)',
+  'par.col.fileTtl': 'Dosyadaki TTL',
+  'par.col.newTtl': 'Yeni sunucudaki TTL',
   'par.col.note': 'Not',
   'par.includeOrigins': 'Dışa aktarımlara origin adreslerini ekle',
 
@@ -304,7 +318,7 @@ registerStrings('tr', {
   'par.step.fix.info': 'Yeni ad sunucularını bu dosyayla karşılaştırın (yukarıda). Yeni sağlayıcıda eksik ya da farklı olanı düzeltin, hiçbir şey kalmayana kadar yeniden karşılaştırın.',
   'par.step.fix.todo': 'Yeni sağlayıcıda düzeltin: {missing} eksik, {different} farklı. Sonra yeniden karşılaştırın.',
   'par.step.fix.todoServers': 'Ad sunucularından {count} tanesi zone’u henüz sunmuyor: zone’u orada oluşturun ya da girdiğiniz adları kontrol edin.',
-  'par.unproxied': '{count} proxy’li kayıt yeni sağlayıcıda origin’iyle yanıtlanıyor: geçişte proxy’den çıkar ve sunucu adresleri herkese açık olur. Origin’leri koruyun (yalnızca yeni proxy’ye izin veren bir güvenlik duvarı) ya da proxy’yi koruyun.',
+  'par.unproxied': '{count} proxy’li kayıt yeni sağlayıcıda origin’iyle yanıtlanıyor: geçişte proxy’den çıkar ve sunucu adresleri herkese açık olur. Origin’leri koruyun (yalnızca yeni proxy’ye izin veren bir güvenlik duvarı) ya da proxy’yi açık tutun.',
   'par.step.fix.warn': 'Eksik ya da farklı bir şey yok. Kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, burada karşılaştırılmayan {unchecked} (CLI her kaydı, CAA dahil, karşılaştırır).',
   'par.step.fix.ok': 'Yeni ad sunucuları bu dosyanın karşılaştırılan her kayıt kümesini sunuyor.',
   'par.step.fix.blocked': 'Henüz hiçbir yeni ad sunucusu bu zone’u sunmuyor: zone’u yeni sağlayıcıda oluşturun (bu dosyayı oraya aktarın) ve yeniden karşılaştırın.',
@@ -318,7 +332,7 @@ registerStrings('tr', {
   'par.state.ok': 'Tamam',
   'par.state.todo': 'Yapılacak',
   'par.state.warn': 'Kontrol edin',
-  'par.state.blocked': 'Engelli',
+  'par.state.blocked': 'Engellendi',
   'par.state.info': 'Geçişten önce',
   'par.ttlUnknown': 'bilinmiyor',
   'par.step.nsUnknown': 'yeni sağlayıcının ad sunucuları',
@@ -412,10 +426,22 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
   const parsed = () => parseNameservers(P.nsText, { fileNs });
   const planFor = (list, mode = P.mode) => planParity(zone, { nameservers: list, mode, extras: P.extras, skipPrivate: P.skipPrivate });
   const running = () => !!P.controller;
+  /** What the consent dialog and the card say is sent: internal-looking names only when their skip is off. */
+  const privacyText = (probes) => t(!P.skipPrivate && internal ? 'par.privacyInternal' : 'par.privacy', { probes: formatNumber(probes), origin: zone.origin });
+  /** The control that takes over keyboard focus from `role` after a rebuild: Compare ⇄ Stop as a run starts or ends. */
+  const focusSuccessor = (role) => (role === 'par-run' && running() ? 'par-stop' : role === 'par-stop' && !running() ? 'par-run' : role);
+  /** Keyboard focus that fell to the page (never pull it away from where the user or a dialog put it). */
+  const focusDropped = () => {
+    const a = document.activeElement;
+    return !a || a === document.body || a === document.documentElement || !a.isConnected;
+  };
+  /** Set by a run started from this tab: the Compare / Stop button keeps keyboard focus through it. */
+  let pendingFocus = null;
 
   function render() {
     if (!box.isConnected && box.childElementCount) return;
-    const focusRole = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.role || document.activeElement.dataset.action : null;
+    const active = document.activeElement;
+    const focusRole = active && box.contains(active) ? active.dataset.role || active.dataset.action : null;
     clear(box);
     box.append(formCard());
     if (P.status === 'running' || P.status === 'gate') {
@@ -428,10 +454,11 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     if (P.status === 'quota') box.append(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('par.quota', { when: whenText(P.resetAt) }) }));
     if (P.result) box.append(results());
     box.append(runbookCard(), cliCard());
-    if (focusRole) {
-      const again = box.querySelector(`[data-role="${focusRole}"], [data-action="${focusRole}"]`);
-      if (again && !again.disabled) again.focus();
-    }
+    // Focus stays on its control, rebuilt; Compare hands it to Stop while a run goes and Stop back
+    // to Compare after it (a disabled or removed button would drop it to the page).
+    const want = focusRole ? focusSuccessor(focusRole) : pendingFocus && focusDropped() ? focusSuccessor(pendingFocus) : null;
+    const again = want ? box.querySelector(`[data-role="${want}"], [data-action="${want}"]`) : null;
+    if (again && !again.disabled) again.focus({ preventScroll: true });
   }
 
   function progress() {
@@ -528,8 +555,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
           needed: formatNumber(plan.needed), max: PARITY_MAX_PROBES, checked: formatNumber(plan.checked), rrsets: formatNumber(plan.rrsets)
         }) }) : null,
         h('div', { class: 'cluster par-actions' }, runBtn, stopBtn),
-        h('p', { class: 'muted text-xs par-privacy' }, Icon('lock', { size: 12 }), ' ',
-          t('par.privacy', { probes: formatNumber(plan.probes || 0), origin: zone.origin })))
+        h('p', { class: 'muted text-xs par-privacy', dataset: { role: 'par-privacy' } }, Icon('lock', { size: 12 }), ' ', privacyText(plan.probes || 0)))
     });
     return card;
   }
@@ -551,6 +577,9 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
   }
 
   /* --- the run ------------------------------------------------------------- */
+  /** The tab on screen now: a return to Zone File during a run mounts a new one (P.hook follows it). */
+  const shown = () => P.hook || { render, progress, connected: () => box.isConnected };
+
   async function start() {
     if (running() || !ctx.requireOnline()) return;
     const { list } = parsed();
@@ -558,13 +587,15 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     if (!plan.ok) return;
     const ac = new AbortController();
     const prev = { status: P.status, result: P.result, rows: P.rows, servers: P.servers };
+    // Started from this tab's controls (a click or a key): Compare hands focus to Stop and back.
+    pendingFocus = box.contains(document.activeElement) ? 'par-run' : null;
     Object.assign(P, { controller: ac, status: 'gate', error: null, done: 0, total: plan.probes });
     ctx.setBusy(true);
-    render();
+    shown().render();
     try {
       const gate = await gateProbes(ctx, {
         purpose: PARITY_PURPOSE, probes: plan.probes, signal: ac.signal, confirmAbove: PARITY_CONFIRM_ABOVE, className: 'par-confirm',
-        privacy: t('par.privacy', { probes: formatNumber(plan.probes), origin: zone.origin })
+        privacy: privacyText(plan.probes)
       });
       if (P.controller !== ac) return;
       if (gate.status === 'cancelled') {
@@ -578,7 +609,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
       }
       if (gate.status === 'unreachable') throw gate.error;
       Object.assign(P, { status: 'running', result: null, rows: [], servers: [], spent: 0 });
-      render();
+      shown().render();
       let dns = null;
       try {
         dns = await ctx.getDns();
@@ -598,7 +629,8 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         onProgress: ({ done, total, spent }) => {
           if (P.controller !== ac) return;
           Object.assign(P, { done, total, spent });
-          progress();
+          // The tab on screen, which may not be the one that started the run.
+          shown().progress();
         },
         onQuota: (q) => noteQuota(q)
       });
@@ -607,7 +639,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
       const sum = paritySummary(result);
       const count = (sum.counts.missing || 0) + (sum.counts.different || 0) + sum.badServers;
       announce(t(`par.head.${sum.verdict}`, headParams(result, sum)));
-      if (!box.isConnected) {
+      if (!shown().connected()) {
         toast(t('par.finished', { count }), { type: count ? 'warn' : 'success', action: { label: t('zone.tab.parity'), onClick: () => ctx.navigate('zone', { tab: 'parity' }) } });
       }
       if (onDone) onDone(result);
@@ -618,7 +650,8 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     } finally {
       if (P.controller === ac) P.controller = null;
       ctx.setBusy(false);
-      if (P.hook) P.hook.render();
+      shown().render();
+      pendingFocus = null;
     }
   }
 
@@ -626,7 +659,9 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     const c = sum.counts;
     return {
       missing: formatNumber(c.missing || 0), different: formatNumber(c.different || 0), extra: formatNumber(c.extra || 0),
-      unproxied: formatNumber(c.unproxied || 0), ttl: formatNumber(sum.ttl), unchecked: formatNumber(sum.unchecked), origin: result.origin,
+      unproxied: formatNumber(c.unproxied || 0), origin: result.origin,
+      // The plural of the headline: TTL differences ('check'), record sets not compared ('partial').
+      count: sum.verdict === 'check' ? sum.ttl : sum.unchecked,
       servers: sum.badServers ? t('par.head.fixServers', { count: sum.badServers }) : ''
     };
   }
@@ -644,7 +679,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     }
     if (result.serials === 'differ') out.append(Alert({ variant: 'warn', compact: true, message: t('par.serials.differ') }));
     if (sum.counts.unproxied) out.append(Alert({ variant: 'warn', compact: true, message: t('par.unproxied', { count: sum.counts.unproxied }) }));
-    out.append(h('p', { class: 'muted text-sm' }, t('par.checkedAt', { time: formatDateTime(P.finishedAt || result.finishedAt), probes: formatNumber(result.spent) })));
+    out.append(h('p', { class: 'muted text-sm' }, t('par.checkedAt', { time: formatDateTime(P.finishedAt || result.finishedAt), count: result.spent })));
     out.append(serverList(result));
     if (P.rows.length) out.append(rowTable(result));
     return out;
@@ -670,6 +705,21 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     return h('span', { class: 'zone-values' }, values.map((v) => h('span', null, v)));
   }
 
+  /**
+   * "At the new server": its values (a difference as − / + lines), and the TTL only where it
+   * differs (file → new server): a column of equal TTLs would crowd out the notes. Nothing to say
+   * is an empty span (a phone leaves that line out).
+   */
+  function liveCell(r) {
+    const diff = r.status === 'different' && (r.added.length || r.removed.length);
+    const ttl = r.reasons.includes('ttl-differs');
+    if (!diff && !r.live.length && !ttl) return h('span');
+    return h('span', { class: 'par-live' },
+      diff ? h('span', { class: 'zone-diff' }, r.removed.map((v) => h('span', { class: 'zone-diff-del' }, `− ${v}`)), r.added.map((v) => h('span', { class: 'zone-diff-add' }, `+ ${v}`)))
+        : r.live.length ? valueLines(r.live) : null,
+      ttl ? h('span', { class: 'par-ttl' }, 'TTL ', h('span', { class: 'par-ttl-differs' }, `${r.fileTtl} → ${r.liveTtl}`)) : null);
+  }
+
   function rowTable(result) {
     const counts = {};
     for (const r of P.rows) counts[r.status] = (counts[r.status] || 0) + 1;
@@ -678,21 +728,23 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     const columns = [
       { key: 'status', label: t('par.col.status'), sortable: true, exportValue: (r) => r.status,
         render: (r) => h('span', { dataset: { status: r.status } }, Badge(t(`par.status.${r.status}`), { variant: sevVariant(r.status) })) },
-      several ? { key: 'ns', label: t('par.col.ns'), sortable: true, mono: true, render: (r) => r.ns } : null,
-      { key: 'name', label: t('par.col.name'), sortable: true, render: (r) => h('strong', null, relName(r.name, result.origin)), exportValue: (r) => r.name },
+      // With several servers compared, each row names its server under the record's name (a column
+      // of its own would push the notes out of a 1280 px screen); the exports have it as a column.
+      { key: 'name', label: t('par.col.name'), sortable: true, exportValue: (r) => r.name, searchValue: (r) => `${r.name} ${r.ns}`,
+        render: (r) => h('span', { class: 'par-name' }, h('strong', null, relName(r.name, result.origin)),
+          several ? h('span', { class: 'par-name-ns mono' }, r.ns) : null) },
       { key: 'type', label: t('par.col.type'), sortable: true, render: (r) => Badge(r.type, { variant: 'neutral', mono: true }) },
       { key: 'file', label: t('par.col.file'), mono: true, wrap: true, searchValue: (r) => r.file.join(' '),
         exportValue: (r) => redact(r.file, P.includeOrigins).join(' '), render: (r) => valueLines(r.file) },
       { key: 'live', label: t('par.col.new'), mono: true, wrap: true, searchValue: (r) => r.live.join(' '),
         exportValue: (r) => redact(r.live, P.includeOrigins).join(' '),
-        render: (r) => (r.status === 'different' && (r.added.length || r.removed.length)
-          ? h('span', { class: 'zone-diff' }, r.removed.map((v) => h('span', { class: 'zone-diff-del' }, `− ${v}`)), r.added.map((v) => h('span', { class: 'zone-diff-add' }, `+ ${v}`)))
-          : valueLines(r.live)) },
-      { key: 'ttl', label: t('par.col.ttl'), mono: true, exportValue: (r) => (r.fileTtl ?? '') + (r.liveTtl !== null && r.liveTtl !== undefined ? ` ${r.liveTtl}` : ''),
-        render: (r) => (Number.isFinite(r.fileTtl) || Number.isFinite(r.liveTtl)
-          ? h('span', { class: ['par-ttl', { 'par-ttl-differs': r.reasons.includes('ttl-differs') }] }, `${r.fileTtl ?? '–'} → ${r.liveTtl ?? '–'}`) : '') },
-      { key: 'note', label: t('par.col.note'), wrap: true, exportValue: (r) => r.reasons.join(' '),
-        render: (r) => h('span', { class: 'text-sm' }, r.reasons.map((x) => t(reasonKey(x))).join(' ')) }
+        render: liveCell },
+      { key: 'note', label: t('par.col.note'), wrap: true, className: 'par-note', exportValue: (r) => r.reasons.join(' '),
+        render: (r) => h('span', { class: 'text-sm' }, r.reasons.map((x) => t(reasonKey(x))).join(' ')) },
+      // The server and both TTLs of every row, in the exports only.
+      { key: 'ns', label: t('par.col.ns'), display: false, exportValue: (r) => r.ns },
+      { key: 'fileTtl', label: t('par.col.fileTtl'), display: false, exportValue: (r) => r.fileTtl ?? '' },
+      { key: 'liveTtl', label: t('par.col.newTtl'), display: false, exportValue: (r) => r.liveTtl ?? '' }
     ].filter(Boolean);
     const table = DataTable({
       caption: t('zone.tab.parity'),
@@ -760,9 +812,10 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
 
   /* --- CLI ------------------------------------------------------------------ */
   function cliCard() {
-    const { list } = parsed();
+    // Every server typed in: the private ones a probe cannot reach too (the CLI asks from your network).
+    const { list, cliOnly } = parsed();
     const file = parityZoneFile(zone.origin);
-    const cmd = buildParityCommand({ file, nameservers: list, shell: P.shell });
+    const cmd = buildParityCommand({ file, nameservers: [...list, ...cliOnly], shell: P.shell });
     const shell = SegmentedControl({
       label: t('par.cli.shell'), size: 'sm', value: P.shell, className: 'par-shell',
       options: [{ value: 'posix', label: t('par.cli.posix') }, { value: 'powershell', label: t('par.cli.powershell') }],
@@ -787,7 +840,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     });
   }
 
-  P.hook = { render, progress };
+  P.hook = { render, progress, connected: () => box.isConnected };
   render();
   return box;
 }

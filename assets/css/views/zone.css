@@ -409,7 +409,34 @@
   color: var(--ok);
 }
 
+/* The record's name, and under it the server that answered when several were compared */
+.par-name,
+.par-live {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.par-name-ns {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* A screen of 1280 px holds the six columns with the notes whole: the values (hosts, addresses,
+   TXT data break anywhere) narrower than the notes, which are sentences. */
+@media (min-width: 641px) {
+  .par-table .dt-table td.dt-wrap {
+    min-width: 10rem;
+  }
+
+  .par-table .dt-table td.par-note {
+    min-width: 14rem;
+  }
+}
+
 .par-ttl {
+  color: var(--text-2);
+  font-size: 12px;
   white-space: nowrap;
 }
 

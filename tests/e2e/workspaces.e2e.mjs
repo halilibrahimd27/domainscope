@@ -24,9 +24,15 @@
  *     refuses a wrong password (nothing imported), then opens with the right one as a new workspace
  *     with the same servers, or replaces the workspace of the same name after a confirmation;
  *   - a workspace is deleted after a confirmation;
+ *   - the keyboard: Esc in the rename field cancels the rename and leaves the dialog open, the focus
+ *     back on Rename (as after saving with Enter); Clear the list keeps the focus in the dialog;
+ *   - a workspace whose creation could not be written (every put refused as a full storage) says
+ *     why, and is stored by its next save once storage works: it is there after a reload;
  *   - Settings › Delete all local data deletes every workspace and the IndexedDB database, and says so.
  * With storage blocked (every storage accessor throws, as with Safari's "Block all cookies") the page
  * works in memory, and Delete all local data says that nothing had been saved rather than a failure.
+ * With a database of a later version (the page cannot open it and works in memory), Delete all local
+ * data deletes it all the same and says the database went.
  * Then at 375 px (Turkish, dark) and 320 px: the switcher is in the Tools menu, the dialog fits
  * without horizontal scrolling. Fails on console errors, exceptions, CSP violations and missing
  * i18n keys.
@@ -447,6 +453,64 @@ async function desktop(browser, server, tmp) {
       assertEqual((await page.evaluate(wsInfo)).list, ['default', 'Acme', 'Globex'], 'list');
     });
 
+    await run.step('keyboard: Esc in the rename field cancels the rename, not the dialog; clearing the recent list keeps the focus inside', async () => {
+      await openWorkspaces(page);
+      const id = await rowId(page, 'Globex');
+      const renameFocused = (i) => !!document.activeElement?.matches(`dialog.ws-modal li[data-ws-id="${i}"] [data-action="ws-rename"]`);
+      await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-rename"]`);
+      await page.waitFor(() => document.activeElement?.dataset.role === 'ws-rename-input', { message: 'the rename field has the focus' });
+      await page.type('[data-role="ws-rename-input"]', 'Globex Corp');
+      await page.press('Escape');
+      await page.waitFor(renameFocused, { args: [id], message: 'Esc: the focus is back on Rename' });
+      assert(await page.evaluate(() => !!document.querySelector('dialog.ws-modal[open]')), 'the dialog stays open');
+      assertEqual((await page.evaluate(wsInfo)).list, ['default', 'Acme', 'Globex'], 'not renamed');
+      // Enter on Rename opens the field again; Enter in it saves, and the focus is back on Rename.
+      await page.press('Enter');
+      await page.waitFor(() => document.activeElement?.dataset.role === 'ws-rename-input', { message: 'the rename field again' });
+      await page.type('[data-role="ws-rename-input"]', 'Globex Corp');
+      await page.press('Enter');
+      await page.waitFor(renameFocused, { args: [id], message: 'saved: the focus is back on Rename' });
+      assertEqual((await page.evaluate(wsInfo)).list, ['default', 'Acme', 'Globex Corp'], 'renamed');
+      // Acme is active and has recent domains: Clear the list, from the keyboard.
+      await page.evaluate(() => document.querySelector('[data-action="ws-recent-clear"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => {
+        const el = document.activeElement;
+        return el?.dataset.role === 'ws-recent-empty' && !!el.closest('dialog.ws-modal[open]');
+      }, { message: 'the focus stays in the dialog, on the empty list' });
+      await closeWorkspaces(page);
+      assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.workspaceData('recent')), [], 'cleared');
+    });
+
+    await run.step('a workspace whose creation could not be written (storage full for a moment) is stored by its next save', async () => {
+      await openWorkspaces(page);
+      await page.evaluate(() => {
+        const put = IDBObjectStore.prototype.put;
+        window.__restorePut = () => {
+          IDBObjectStore.prototype.put = put;
+        };
+        IDBObjectStore.prototype.put = function full() {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        };
+      });
+      await createWorkspace(page, 'Initech');
+      await page.waitFor(() => [...document.querySelectorAll('.toast')].some((el) => /Not saved: the browser’s storage for this site is full/.test(el.textContent)),
+        { message: 'says why it was not saved' });
+      await page.evaluate(() => window.__restorePut());
+      await page.type('[data-role="ws-notes"]', 'Initech contacts');
+      const status = await page.waitFor(() => {
+        const text = document.querySelector('[data-role="ws-notes"]').closest('.ws-block').querySelector('.ws-status').textContent;
+        return text && text !== 'Saving…' ? text : false;
+      }, { message: 'notes saved' });
+      assertEqual(status, 'Saved', 'stored now, never "deleted in another tab"');
+      await closeWorkspaces(page);
+      await page.reload();
+      await waitReady(page);
+      const info = await page.evaluate(wsInfo);
+      assertEqual([info.active, info.list], ['Initech', ['default', 'Acme', 'Globex Corp', 'Initech']], 'still there after a reload');
+      assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.workspaceData('notes')), 'Initech contacts', 'with its notes');
+    });
+
     await run.step('Settings › Delete all local data deletes every workspace and the database, and says so', async () => {
       await gotoRoute(page, '#/inventory');
       await page.click('[data-control="settings"]');
@@ -509,6 +573,55 @@ async function blockedStorage(browser, server) {
 
     await run.step('storage blocked: no console errors, CSP violations or missing keys', async () => {
       await assertClean(page, 'workspaces storage blocked', server.url);
+      await assertNoMissingKeys(page);
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function unreadableDatabase(browser, server) {
+  run.group('A database this version cannot open (1024 px, offline)');
+  const page = await browser.newPage('about:blank', { width: 1024, height: 800 });
+  await networkGuard(page);
+  try {
+    await run.step('the page works in memory; Delete all local data still deletes the database, and says so', async () => {
+      await page.goto(`${server.url}#/inventory`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      await saveInventory(page, INVENTORY_A);
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.whenSaved());
+      // A later version of the app upgraded the database (then a rollback, or an older build still cached).
+      await page.evaluate(() => new Promise((resolve, reject) => {
+        const request = indexedDB.open('ssds.workspaces', 2);
+        request.onupgradeneeded = () => request.result.createObjectStore('later');
+        request.onsuccess = () => {
+          request.result.close();
+          resolve();
+        };
+        request.onerror = () => reject(request.error);
+      }));
+      await page.reload();
+      await waitReady(page);
+      const stored = await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => [state.workspacePersistence, state.workspaceDatabase]));
+      assertEqual(stored, [false, true], 'in memory, the database still there');
+      assertEqual((await page.evaluate(wsInfo)).inventory, '', 'nothing of it read');
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      await page.click('[data-control="settings"]');
+      await page.waitForSelector('dialog.modal[open] .settings-danger');
+      await page.click('dialog.modal[open] .settings-danger .btn-danger');
+      await confirmTop(page);
+      const toast = await page.waitFor(() => {
+        const el = [...document.querySelectorAll('.toast')].find((x) => /local data/i.test(x.textContent));
+        return el ? { text: el.textContent, error: el.classList.contains('toast-error') } : false;
+      }, { message: 'the toast', timeout: 10000 });
+      assert(/every workspace \(its IndexedDB database too\)/.test(toast.text) && !toast.error, toast.text);
+      assert(!/only in this tab/.test(toast.text), toast.text);
+      await page.waitFor(async () => !(await indexedDB.databases()).some((d) => d.name === 'ssds.workspaces'), { message: 'database deleted', timeout: 10000 });
+    });
+
+    await run.step('unreadable database: no console errors, CSP violations or missing keys', async () => {
+      await assertClean(page, 'workspaces unreadable database', server.url);
       await assertNoMissingKeys(page);
     });
   } finally {
@@ -584,6 +697,7 @@ async function main() {
   try {
     await desktop(browser, server, tmp);
     await blockedStorage(browser, server);
+    await unreadableDatabase(browser, server);
     await phone(browser, server);
   } finally {
     await browser.close();

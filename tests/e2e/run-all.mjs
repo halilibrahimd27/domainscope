@@ -36,7 +36,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'carry', 'workspaces', 'integration'];
+const ORDER = ['shell', 'subdomains', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'retire', 'health', 'carry', 'workspaces', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

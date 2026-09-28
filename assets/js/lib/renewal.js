@@ -1098,7 +1098,7 @@ export function renewalExport(report, { app = 'DomainScope', version = null } = 
 // A text that shows a number is a plural object picked by its `count` param (i18n.js).
 const STRINGS = [
   ['v.ready', ['Ready', 'Hazır']],
-  ['v.warnings', ['Ready, with warnings', 'Hazır, uyarılarla']],
+  ['v.warnings', ['Ready, with warnings', 'Uyarılarla hazır']],
   ['v.fail', ['Will fail', 'Başarısız olacak']],
   ['head.fail', ['At least one name will fail to renew', 'En az bir adın yenilemesi başarısız olacak']],
   ['head.warnings', ['The names should renew, but check the warnings', 'Adlar yenilenebilir, ama uyarılara bakın']],
@@ -1252,7 +1252,7 @@ const STRINGS = [
       '{zone} DNSSEC ile korunmuyor (ya da üst alanında onun için DS yok); doğrulamanın bozabileceği bir şey yok.']],
   ['f.dnssec.bogus', ['DNSSEC validation fails (bogus)', 'DNSSEC doğrulaması başarısız (bogus)'],
     ['Validating resolvers — the CA’s included — answer SERVFAIL for {name}, although the name servers answer with checking disabled: the CAA lookup and every validation method fail. {ede}',
-      'Doğrulama yapan çözümleyiciler — otoritenin kiler dahil — {name} için SERVFAIL veriyor, oysa ad sunucuları doğrulama kapalıyken yanıt veriyor: CAA sorgusu ve her doğrulama yöntemi başarısız olur. {ede}']],
+      'Doğrulama yapan çözümleyiciler — otoritenin çözümleyicileri de dahil — {name} için SERVFAIL veriyor, oysa ad sunucuları doğrulama kapalıyken yanıt veriyor: CAA sorgusu ve her doğrulama yöntemi başarısız olur. {ede}']],
   ['f.dnssec.servfail', ['Lookups of {name} fail ({rcode})', '{name} sorguları başarısız ({rcode})'],
     ['Not a DNSSEC problem: no answer comes back with checking disabled either. The name servers do not answer, so the CA’s lookups fail too.',
       'Bir DNSSEC sorunu değil: doğrulama kapalıyken de yanıt gelmiyor. Ad sunucuları yanıt vermiyor; otoritenin sorguları da başarısız olur.']],
@@ -1301,7 +1301,7 @@ const STRINGS = [
     ['Failed from {places}: {outcomes}. The CA validates from several regions (multi-perspective validation) and accepts at most one that fails (two when it uses six or more): a geo-block, a firewall rule or a regional outage can fail the renewal.',
       'Başarısız olduğu yerler: {places} ({outcomes}). Otorite birkaç bölgeden doğrular (çok noktalı doğrulama) ve en fazla birinin (altı ya da daha fazla bölge kullanıyorsa ikisinin) başarısız olmasını kabul eder: bir coğrafi engel, bir güvenlik duvarı kuralı ya da bölgesel bir kesinti yenilemeyi başarısız kılabilir.']],
   ['f.http01.failed', ['HTTP-01 path not reachable over {family}', 'HTTP-01 yoluna {family} üzerinden erişilemiyor'],
-    ['{outcomes}: the CA would get the same, so an HTTP-01 renewal fails.', '{outcomes}: otorite de aynısını alır; HTTP-01 ile yenileme başarısız olur.']],
+    ['The probes got: {outcomes}. The CA would get the same, so an HTTP-01 renewal fails.', 'Ölçüm noktalarının aldığı: {outcomes}. Otorite de aynısını alır; HTTP-01 ile yenileme başarısız olur.']],
   ['f.http01.catch-all', ['{answers} for a token that does not exist ({family})', 'Var olmayan bir değer için {answers} yanıtı ({family})'],
     ['Something answers every path under /.well-known/acme-challenge/. Make sure the file your ACME client writes wins over this catch-all (a single-page app, a rewrite rule).',
       '/.well-known/acme-challenge/ altındaki her yolu bir şey yanıtlıyor. ACME istemcinizin yazdığı dosyanın bu genel yanıta (tek sayfalı bir uygulama, bir yeniden yazma kuralı) baskın geldiğinden emin olun.']],

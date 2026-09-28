@@ -699,6 +699,8 @@ async function main() {
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
       const [dl] = await takeDownloads(page);
       assertEqual([JSON.parse(dl.text).verdict, JSON.parse(dl.text).shared], ['same', ['cert-untrusted']], 'JSON');
+      await page.evaluate(() => document.querySelector('.oc-card').scrollIntoView());
+      await shot(page, opts, 'retire-compare-shared-desktop-light-en');
       await setLangUi(page, 'tr');
       await page.waitFor(() => /İki sunucu da ölçüm noktasının güvenmediği/.test(document.querySelector('.oc-results')?.textContent || ''), { message: 'TR shared warning' });
       await setLangUi(page, 'en');

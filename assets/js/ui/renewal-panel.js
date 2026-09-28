@@ -489,6 +489,7 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
     rowKey: (u) => u.name,
     dense: true,
     search: plan.uncovered.length > 10,
+    cellLabels: true,
     className: 'rw-uncovered',
     export: { filename: 'uncovered-names', subject },
     columns: [

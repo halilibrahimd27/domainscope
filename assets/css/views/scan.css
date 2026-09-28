@@ -1514,18 +1514,23 @@
 }
 
 /* A phone: each server is a card of labelled lines (Server, Set A, Set B, Names; the column
-   headers come from data-label), a set it needs nothing from left out. */
+   headers come from data-label), a set it needs nothing from left out. The names no certificate
+   covers are cards the same way (Host name, Your servers, DNS). */
 @media (max-width: 600px) {
   .rw-matrix .dt-table,
-  .rw-matrix .dt-table tbody {
+  .rw-matrix .dt-table tbody,
+  .rw-uncovered .dt-table,
+  .rw-uncovered .dt-table tbody {
     display: block;
   }
 
-  .rw-matrix .dt-table thead {
+  .rw-matrix .dt-table thead,
+  .rw-uncovered .dt-table thead {
     display: none;
   }
 
-  .rw-matrix .dt-table tbody tr {
+  .rw-matrix .dt-table tbody tr,
+  .rw-uncovered .dt-table tbody tr {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
     gap: 4px 12px;
@@ -1533,7 +1538,8 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .rw-matrix .dt-table tbody tr:last-child {
+  .rw-matrix .dt-table tbody tr:last-child,
+  .rw-uncovered .dt-table tbody tr:last-child {
     border-bottom: 0;
   }
 
@@ -1541,7 +1547,8 @@
     box-shadow: inset 3px 0 0 var(--warn-solid);
   }
 
-  .rw-matrix .dt-table td {
+  .rw-matrix .dt-table td,
+  .rw-uncovered .dt-table td {
     display: grid;
     grid-column: 1 / -1;
     grid-template-columns: subgrid;
@@ -1555,18 +1562,27 @@
     box-shadow: none;
   }
 
-  .rw-matrix .dt-table td::before {
+  .rw-matrix .dt-table td::before,
+  .rw-uncovered .dt-table td::before {
     content: attr(data-label);
     color: var(--text-3);
+    font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
   }
 
-  .rw-matrix .dt-table td:has(> .dt-null) {
+  /* A badge keeps its own width in the value column. */
+  .rw-uncovered .dt-table td > .badge {
+    justify-self: start;
+  }
+
+  .rw-matrix .dt-table td:has(> .dt-null),
+  .rw-uncovered .dt-table td:has(> .dt-null) {
     display: none;
   }
 
-  .rw-matrix .dt-table tbody .dt-row:hover td {
+  .rw-matrix .dt-table tbody .dt-row:hover td,
+  .rw-uncovered .dt-table tbody .dt-row:hover td {
     background: none;
   }
 }

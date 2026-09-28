@@ -217,6 +217,12 @@
   color: var(--text-3);
 }
 
+/* A DNS label is shown as it is written. */
+.rnw-area[data-area="acme"] .rnw-area-title {
+  text-transform: none;
+  font-family: var(--font-mono);
+}
+
 .rnw-findings {
   margin: 0;
   padding: 0;

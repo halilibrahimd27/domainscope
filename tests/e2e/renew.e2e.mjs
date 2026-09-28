@@ -396,6 +396,8 @@ async function main() {
       await page.setViewport({ width: 1440, height: 900 });
       await shot(page, opts, 'renew-results-desktop-dark-tr');
       await setLangUi(page, 'en');
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shot(page, opts, 'renew-results-desktop-dark-en');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 

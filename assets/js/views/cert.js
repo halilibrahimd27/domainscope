@@ -468,7 +468,7 @@ registerStrings('tr', {
   'cert.warn.PKCS12_UNSUPPORTED.title': 'Bu PKCS#12 (.pfx / .p12) dosyası açılmadı',
   'cert.warn.PKCS12_UNSUPPORTED.body': 'Parolasını girmek için dosyayı yeniden yükleyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.what': 'Bu sayfanın desteklemediği {what} kullanıyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
-  'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyayı burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyanın şifresini burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused': 'Bu tarayıcının WebCrypto’su dosyayı açmak için gereken {what} işlemini reddetti. Başka bir tarayıcı deneyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.envelopedData': 'Parola yerine bir sertifikanın anahtarıyla korunmuş (açık anahtarla gizlilik kipi); bu sayfa bunu desteklemiyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',

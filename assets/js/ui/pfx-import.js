@@ -76,7 +76,7 @@ registerStrings('tr', {
   'pfx.password': 'Parola',
   'pfx.passwordHint': 'Dosyanın parolası yoksa boş bırakın.',
   'pfx.checkKey': 'Özel anahtarın sertifikayla eşleştiğini denetle',
-  'pfx.checkKeyHint': 'Anahtar yalnızca denetim için bu sekmede çözülür, sonra atılır. Hiçbir zaman gösterilmez ya da kaydedilmez.',
+  'pfx.checkKeyHint': 'Anahtarın şifresi yalnızca denetim için bu sekmede çözülür; anahtar sonra atılır, hiçbir zaman gösterilmez ya da kaydedilmez.',
   'pfx.privacy': 'Dosya ve parolası bu sekmede kalır: hiçbir şey yüklenmez, parola kaydedilmez.',
   'pfx.open': 'Aç',
   'pfx.wrong.mac': 'Parola yanlış: dosyanın bütünlük denetimiyle eşleşmiyor. Paroladan eminseniz dosya bozuktur.',
@@ -115,7 +115,7 @@ registerStrings('tr', {
   'pfx.key.unsupported': '{algorithm} anahtarı tarayıcıda denetlenemez.',
   'pfx.key.encryptionUnsupported': 'Anahtarın şifrelemesi ({what}) burada desteklenmiyor, bu yüzden anahtar denetlenemez.',
   'pfx.key.iterationsUnsupported': 'Anahtarın parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş, bu yüzden anahtar denetlenemez.',
-  'pfx.key.failed': 'Özel anahtar bu parolayla çözülemedi: kendine ait bir parolası olabilir ya da dosya bozuk.',
+  'pfx.key.failed': 'Özel anahtarın şifresi bu parolayla çözülemedi: kendine ait bir parolası olabilir ya da dosya bozuk.',
   'pfx.key.notChecked': 'Anahtar denetlenmedi. Denetlemek için dosyayı yeniden yükleyip “Özel anahtarın sertifikayla eşleştiğini denetle” kutusunu işaretleyin.',
 
   'pfx.fullchain': 'fullchain.pem indir',

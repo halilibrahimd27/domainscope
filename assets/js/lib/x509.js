@@ -19,6 +19,10 @@
  *   lengths tolerated in the container), and it
  *   recognises PKCS#12, CSRs and private keys (which are reported, never
  *   decoded or returned). It never throws.
+ * - `loadCertificates(input, { password })` is the same front door, asynchronous, that also
+ *   opens a PKCS#12 (.pfx / .p12) bundle with its password through lib/pkcs12.js: the
+ *   certificates join the result, the private keys never do (an opt-in key check says whether
+ *   the key belongs to the leaf). It never rejects.
  * - Distinguished names are rendered like `openssl x509 -nameopt RFC2253`:
  *   RDNs in reverse order, OpenSSL short attribute names, RFC 4514 escaping,
  *   unknown attributes (and non-string values) as `OID=#HEXDER`, multi-valued
@@ -27,6 +31,9 @@
  *   "Örnek A.Ş." must stay readable; `formatDN(rdns, { escapeNonAscii: true })`
  *   gives the byte-exact OpenSSL default (`\C3\96rnek A.\C5\9E.`).
  */
+
+import { sha1, sha256 } from './sha.js';
+import { openPkcs12, Pkcs12Error } from './pkcs12.js';
 
 /** Error thrown by `parseCertificate()` for malformed DER / ASN.1 input. */
 export class CertificateParseError extends Error {
@@ -1385,6 +1392,9 @@ function extractPkcs7Certificates(node) {
 // parseCertificates: input sniffing
 // ---------------------------------------------------------------------------
 
+/** The OpenSSL command a PKCS#12 bundle that was not opened points to (PKCS12_UNSUPPORTED detail). */
+const PKCS12_COMMAND = 'openssl pkcs12 -in file.pfx -nokeys -out cert.pem';
+
 /** PEM labels that are never certificates but are harmless to ignore. */
 const IGNORED_LABEL_RE = /PUBLIC KEY|PARAMETERS|CRL|PGP|SIGNATURE|MESSAGE|SESSION/;
 
@@ -1395,19 +1405,21 @@ function warn(ctx, code, detail) {
   ctx.warnings.push(detail === undefined ? { code } : { code, detail });
 }
 
+/** Parse and add one DER certificate; returns it (or the identical one read before), null when unreadable. */
 function addCertificate(bytes, ctx, where) {
   let cert;
   try {
     cert = parseCertificate(bytes);
   } catch (err) {
     warn(ctx, 'PARSE_ERROR', `${where}: ${err.message}`);
-    return;
+    return null;
   }
   const key = latin1(cert.der);
-  if (ctx.seen.has(key)) return; // exact duplicate (e.g. cert + fullchain pasted together)
-  ctx.seen.add(key);
+  if (ctx.seen.has(key)) return ctx.seen.get(key); // exact duplicate (e.g. cert + fullchain pasted together)
+  ctx.seen.set(key, cert);
   ctx.certificates.push(cert);
   for (const p of cert.parseErrors) warn(ctx, 'PARSE_ERROR', `${where}: ${p.field}: ${p.message}`);
+  return cert;
 }
 
 function handleDerStructure(blob, node, ctx, where, quiet) {
@@ -1429,7 +1441,8 @@ function handleDerStructure(blob, node, ctx, where, quiet) {
       return true;
     }
     case 'pkcs12':
-      warn(ctx, 'PKCS12_UNSUPPORTED', 'openssl pkcs12 -in file.pfx -nokeys -out cert.pem');
+      ctx.pkcs12.push(blob); // loadCertificates() opens it with a password
+      warn(ctx, 'PKCS12_UNSUPPORTED', PKCS12_COMMAND);
       return true;
     case 'csr':
       warn(ctx, 'CSR_NOT_CERT', 'CERTIFICATE REQUEST');
@@ -1516,7 +1529,9 @@ function processPemBlock(label, body, ctx, where, depth) {
     return;
   }
   if (label === 'PKCS12' || label === 'PFX') {
-    warn(ctx, 'PKCS12_UNSUPPORTED', 'openssl pkcs12 -in file.pfx -nokeys -out cert.pem');
+    const bytes = decodeBase64(cleanPemBody(body));
+    if (bytes && bytes.length) ctx.pkcs12.push(bytes);
+    warn(ctx, 'PKCS12_UNSUPPORTED', PKCS12_COMMAND);
     return;
   }
   if (IGNORED_LABEL_RE.test(label)) {
@@ -1663,13 +1678,49 @@ function pickLeaf(certs) {
   return leafCertificates(certs)[0] || certs[0];
 }
 
+/** The state one parse collects (certificates, warnings, PKCS#12 bundles found). */
+function newContext() {
+  return { certificates: [], warnings: [], warned: new Set(), seen: new Map(), ignored: new Set(), pkcs12: [] };
+}
+
+function ingestInput(input, ctx) {
+  if (typeof input === 'string') {
+    ingestText(input, ctx, 0);
+  } else if (input != null) {
+    const bytes = asBytes(input);
+    if (bytes) ingestBytes(bytes, ctx);
+    else warn(ctx, 'PARSE_ERROR', `Unsupported input type: ${Object.prototype.toString.call(input)}`);
+  }
+}
+
+/** NO_CERTIFICATE, the leaf and its validity warnings: the end of every parse. */
+function finishResult(ctx, options) {
+  if (!ctx.certificates.length) {
+    warn(ctx, 'NO_CERTIFICATE', ctx.ignored.size ? `Found only: ${[...ctx.ignored].join(', ')}` : undefined);
+  }
+  const leaf = pickLeaf(ctx.certificates);
+  if (leaf) {
+    const now = toDate(options?.now); // options may be null: never throw
+    if (now < leaf.notBefore) warn(ctx, 'NOT_YET_VALID', leaf.notBefore.toISOString());
+    else if (now > leaf.notAfter) warn(ctx, 'EXPIRED', leaf.notAfter.toISOString());
+  }
+  return leaf;
+}
+
+/** Defensive: parsing is designed not to throw, but never let the UI crash. */
+function failedResult(ctx, err) {
+  warn(ctx, 'PARSE_ERROR', `Unexpected error: ${err && err.message}`);
+  if (!ctx.certificates.length) warn(ctx, 'NO_CERTIFICATE');
+}
+
 /**
  * Extracts certificates from whatever the user dropped or pasted. Never throws.
  *
  * Accepted: PEM (one or many blocks, CRLF, indentation, surrounding text,
  * e-mail quoting, JSON escapes: newlines, `\/`, `\uXXXX`), raw DER (possibly concatenated), bare
  * base64, base64-encoded PEM, PKCS#7 (PEM "PKCS7"/"CMS" or DER SignedData),
- * UTF-16 text files. Detected and reported: PKCS#12 (PKCS12_UNSUPPORTED), CSRs
+ * UTF-16 text files. Detected and reported: PKCS#12 (PKCS12_UNSUPPORTED: this function takes no
+ * password, {@link loadCertificates} opens it), CSRs
  * (CSR_NOT_CERT), private keys (PRIVATE_KEY_PRESENT — never decoded or
  * returned). Exact duplicate certificates are returned once.
  *
@@ -1682,111 +1733,136 @@ function pickLeaf(certs) {
  * }}
  */
 export function parseCertificates(input, options = {}) {
-  const ctx = { certificates: [], warnings: [], warned: new Set(), seen: new Set(), ignored: new Set() };
+  const ctx = newContext();
   let leaf = null;
   try {
-    if (typeof input === 'string') {
-      ingestText(input, ctx, 0);
-    } else if (input != null) {
-      const bytes = asBytes(input);
-      if (bytes) ingestBytes(bytes, ctx);
-      else warn(ctx, 'PARSE_ERROR', `Unsupported input type: ${Object.prototype.toString.call(input)}`);
-    }
-    if (!ctx.certificates.length) {
-      warn(ctx, 'NO_CERTIFICATE', ctx.ignored.size ? `Found only: ${[...ctx.ignored].join(', ')}` : undefined);
-    }
-    leaf = pickLeaf(ctx.certificates);
-    if (leaf) {
-      const now = toDate(options?.now); // options may be null: never throw
-      if (now < leaf.notBefore) warn(ctx, 'NOT_YET_VALID', leaf.notBefore.toISOString());
-      else if (now > leaf.notAfter) warn(ctx, 'EXPIRED', leaf.notAfter.toISOString());
-    }
+    ingestInput(input, ctx);
+    leaf = finishResult(ctx, options);
   } catch (err) {
-    // Defensive: parsing is designed not to throw, but never let the UI crash.
-    warn(ctx, 'PARSE_ERROR', `Unexpected error: ${err && err.message}`);
-    if (!ctx.certificates.length) warn(ctx, 'NO_CERTIFICATE');
+    failedResult(ctx, err);
   }
   return { certificates: ctx.certificates, leaf, warnings: ctx.warnings };
 }
 
+/**
+ * What a PKCS#12 bundle held and how it was protected ({@link loadCertificates}); never a key.
+ * @typedef {object} Pkcs12Summary
+ * @property {number} certificates certificates in the bundle
+ * @property {number} keys private keys in it (never returned or shown)
+ * @property {number} unencryptedKeys of those, stored without encryption (plain keyBags)
+ * @property {string|null} friendlyName the leaf's friendly name in the bundle
+ * @property {{ kind: 'hmac'|'pbmac1', hash: string, iterations: number, kdf: string|null }|null} mac
+ *   the integrity check (null: the bundle has none)
+ * @property {import('./pkcs12.js').EncryptionInfo[]} encryption of the parts holding certificates
+ * @property {import('./pkcs12.js').EncryptionInfo[]} keyEncryption of the private keys (one per scheme)
+ * @property {boolean} passwordVerified the MAC matched or something decrypted with the password;
+ *   false for a bundle with neither (its certificates were readable without it)
+ * @property {null|{ status: 'match'|'mismatch'|'nokey'|'unsupported'|'failed', algorithm: string|null,
+ *   owner: Certificate|null }} keyCheck only with `checkKey`: 'match' a private key belongs to the
+ *   leaf; 'mismatch' none does (owner: a certificate of the bundle the key belongs to, if any);
+ *   'nokey' the bundle holds no key; 'unsupported' a key type the browser cannot check
+ *   (algorithm: its name); 'failed' the key did not decrypt although the certificates did
+ */
+
+/** The {@link Pkcs12Summary} of an opened bundle; `parsed[i]` is the Certificate of its certificate i. */
+function pkcs12Summary(opened, parsed, leaf, checkKey) {
+  const distinct = (list) => {
+    const seen = new Set();
+    return list.filter((e) => {
+      const key = JSON.stringify(e);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const leafIndex = leaf ? parsed.indexOf(leaf) : -1;
+  let keyCheck = null;
+  if (checkKey) {
+    const checks = opened.keys.map((k) => k.check).filter(Boolean);
+    const checked = checks.filter((c) => c.status === 'checked');
+    const match = checked.find((c) => c.certificates.includes(leafIndex));
+    if (!opened.keys.length) {
+      keyCheck = { status: 'nokey', algorithm: null, owner: null };
+    } else if (match) {
+      keyCheck = { status: 'match', algorithm: match.algorithm, owner: leaf };
+    } else if (checked.length) {
+      const owned = checked.find((c) => c.certificates.length);
+      keyCheck = { status: 'mismatch', algorithm: checked[0].algorithm, owner: owned ? parsed[owned.certificates[0]] || null : null };
+    } else if (checks.some((c) => c.status === 'failed')) {
+      keyCheck = { status: 'failed', algorithm: null, owner: null };
+    } else {
+      keyCheck = { status: 'unsupported', algorithm: (checks[0] && checks[0].algorithm) || null, owner: null };
+    }
+  }
+  const leafBag = leafIndex >= 0 ? opened.certificates[leafIndex] : null;
+  return {
+    certificates: opened.certificates.length,
+    keys: opened.keys.length,
+    unencryptedKeys: opened.keys.filter((k) => !k.encrypted).length,
+    friendlyName: (leafBag && leafBag.friendlyName) || null,
+    mac: opened.mac,
+    encryption: distinct(opened.encryption),
+    keyEncryption: distinct(opened.keys.map((k) => k.encryption).filter(Boolean)),
+    passwordVerified: opened.passwordVerified,
+    keyCheck
+  };
+}
+
+/**
+ * {@link parseCertificates} that also opens a PKCS#12 (.pfx / .p12) bundle with its password
+ * (lib/pkcs12.js). Never rejects.
+ *
+ * - Without a bundle in the input, or without a `password` (null / undefined), the result is
+ *   parseCertificates()'s: a bundle stays PKCS12_UNSUPPORTED.
+ * - With a password (a string, '' for none) the first bundle is opened: its certificates join the
+ *   result in file order and `pkcs12` ({@link Pkcs12Summary}) is added. A bundle that cannot be
+ *   opened gives PKCS12_BAD_PASSWORD (detail 'mac': the integrity check does not match; 'no-mac':
+ *   nothing decrypts and there is no integrity check to tell a damaged file apart),
+ *   PKCS12_DAMAGED (detail: what is wrong) or PKCS12_UNSUPPORTED (detail: the algorithm or mode,
+ *   e.g. 'pbeWithSHAAnd128BitRC4', 'public-key privacy', 'webcrypto') instead.
+ * - Private keys are never returned. `checkKey` decrypts them in memory only to check whether one
+ *   belongs to the leaf (`pkcs12.keyCheck`), then drops them.
+ *
+ * @param {string|ArrayBuffer|Uint8Array|ArrayBufferView} input
+ * @param {{ password?: string|null, checkKey?: boolean, now?: Date|number|string, subtle?: SubtleCrypto }} [options]
+ * @returns {Promise<{ certificates: Certificate[], leaf: Certificate|null,
+ *   warnings: Array<{ code: string, detail?: string }>, pkcs12?: Pkcs12Summary }>}
+ *   warning codes: those of parseCertificates plus PKCS12_BAD_PASSWORD and PKCS12_DAMAGED
+ */
+export async function loadCertificates(input, options = {}) {
+  const { password = null, checkKey = false, subtle } = options || {};
+  const ctx = newContext();
+  let leaf = null;
+  let opened = null;
+  let parsed = [];
+  try {
+    ingestInput(input, ctx);
+    if (ctx.pkcs12.length && typeof password === 'string') {
+      // The bundle is opened now: its "not opened" warning goes.
+      ctx.warnings = ctx.warnings.filter((w) => w.code !== 'PKCS12_UNSUPPORTED');
+      ctx.warned = new Set([...ctx.warned].filter((k) => !k.startsWith('PKCS12_UNSUPPORTED\u0000')));
+      try {
+        opened = await openPkcs12(ctx.pkcs12[0], password, subtle === undefined ? { checkKey } : { checkKey, subtle });
+      } catch (err) {
+        if (!(err instanceof Pkcs12Error)) throw err;
+        if (err.code === 'BAD_PASSWORD') warn(ctx, 'PKCS12_BAD_PASSWORD', err.detail || 'mac');
+        else if (err.code === 'UNSUPPORTED') warn(ctx, 'PKCS12_UNSUPPORTED', err.detail || err.message);
+        else warn(ctx, 'PKCS12_DAMAGED', err.message);
+      }
+      if (opened) parsed = opened.certificates.map((c, i) => addCertificate(c.der, ctx, `PKCS#12 certificate ${i + 1}`));
+    }
+    leaf = finishResult(ctx, options);
+  } catch (err) {
+    failedResult(ctx, err);
+  }
+  const result = { certificates: ctx.certificates, leaf, warnings: ctx.warnings };
+  if (opened) result.pkcs12 = pkcs12Summary(opened, parsed, leaf, checkKey);
+  return result;
+}
+
 // ---------------------------------------------------------------------------
-// Fingerprints (WebCrypto with a pure-JS fallback for insecure contexts)
+// Fingerprints (WebCrypto with a pure-JS fallback for insecure contexts, lib/sha.js)
 // ---------------------------------------------------------------------------
-
-function padMessage(bytes) {
-  const total = (Math.floor((bytes.length + 8) / 64) + 1) * 64;
-  const out = new Uint8Array(total);
-  out.set(bytes);
-  out[bytes.length] = 0x80;
-  const bitLen = bytes.length * 8;
-  const view = new DataView(out.buffer);
-  view.setUint32(total - 8, Math.floor(bitLen / 2 ** 32));
-  view.setUint32(total - 4, bitLen >>> 0);
-  return view;
-}
-
-const SHA256_K = (() => {
-  // First 32 bits of the fractional parts of the cube roots of the first 64 primes.
-  const k = new Uint32Array(64);
-  const h = new Uint32Array(8);
-  let n = 0;
-  for (let p = 2; n < 64; p++) {
-    let prime = true;
-    for (let d = 2; d * d <= p; d++) if (p % d === 0) { prime = false; break; }
-    if (!prime) continue;
-    if (n < 8) h[n] = (Math.sqrt(p) % 1) * 2 ** 32;
-    k[n++] = (Math.cbrt(p) % 1) * 2 ** 32;
-  }
-  return { k, h };
-})();
-
-function sha256Hex(bytes) {
-  const view = padMessage(bytes);
-  const H = Uint32Array.from(SHA256_K.h);
-  const K = SHA256_K.k;
-  const W = new Uint32Array(64);
-  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
-  for (let off = 0; off < view.byteLength; off += 64) {
-    for (let t = 0; t < 16; t++) W[t] = view.getUint32(off + t * 4);
-    for (let t = 16; t < 64; t++) {
-      const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);
-      const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);
-      W[t] = W[t - 16] + s0 + W[t - 7] + s1;
-    }
-    let [a, b, c, d, e, f, g, h] = H;
-    for (let t = 0; t < 64; t++) {
-      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[t] + W[t]) | 0;
-      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
-    }
-    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
-  }
-  return Array.from(H, (x) => x.toString(16).padStart(8, '0')).join('');
-}
-
-function sha1Hex(bytes) {
-  const view = padMessage(bytes);
-  const H = Uint32Array.of(0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0);
-  const W = new Uint32Array(80);
-  const rotl = (x, n) => (x << n) | (x >>> (32 - n));
-  for (let off = 0; off < view.byteLength; off += 64) {
-    for (let t = 0; t < 16; t++) W[t] = view.getUint32(off + t * 4);
-    for (let t = 16; t < 80; t++) W[t] = rotl(W[t - 3] ^ W[t - 8] ^ W[t - 14] ^ W[t - 16], 1);
-    let [a, b, c, d, e] = H;
-    for (let t = 0; t < 80; t++) {
-      let f;
-      let k;
-      if (t < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
-      else if (t < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
-      else if (t < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
-      else { f = b ^ c ^ d; k = 0xca62c1d6; }
-      const temp = (rotl(a, 5) + f + e + k + W[t]) | 0;
-      e = d; d = c; c = rotl(b, 30); b = a; a = temp;
-    }
-    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e;
-  }
-  return Array.from(H, (x) => x.toString(16).padStart(8, '0')).join('');
-}
 
 /**
  * SHA-256 and SHA-1 fingerprints of a DER certificate (lowercase hex, no
@@ -1808,7 +1884,7 @@ export async function computeFingerprints(der, { subtle = globalThis.crypto?.sub
       /* fall back to the JS implementation */
     }
   }
-  return { sha256: sha256Hex(bytes), sha1: sha1Hex(bytes) };
+  return { sha256: toHex(sha256(bytes)), sha1: toHex(sha1(bytes)) };
 }
 
 // ---------------------------------------------------------------------------

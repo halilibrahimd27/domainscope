@@ -1,0 +1,298 @@
+{
+  "passwords": {
+    "test": "pfx-test-pass",
+    "unicode": "Şifre-ğüı 🔑",
+    "oldOpenssl": "Şifre",
+    "empty": ""
+  },
+  "bundles": {
+    "p12_rsa_aes.p12": {
+      "about": "OpenSSL 3 defaults: PBES2 (PBKDF2-HMAC-SHA256, AES-256-CBC) for certificates and key, HMAC-SHA256 MAC",
+      "password": "test",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_rsa_legacy.p12": {
+      "about": "-legacy: RC2-40 certificates, 3DES key, HMAC-SHA1 MAC (what Windows and older Java write)",
+      "password": "test",
+      "mac": "MAC: sha1, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: pbeWithSHA1And40BitRC2-CBC, Iteration 2048",
+        "Shrouded Keybag: pbeWithSHA1And3-KeyTripleDES-CBC, Iteration 2048"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_rsa_rc2_128.p12": {
+      "about": "RC2-128 certificates, two-key 3DES key, HMAC-SHA1 MAC",
+      "password": "test",
+      "mac": "MAC: sha1, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: pbeWithSHA1And128BitRC2-CBC, Iteration 2048",
+        "Shrouded Keybag: pbeWithSHA1And2-KeyTripleDES-CBC, Iteration 2048"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_ec_aes128.p12": {
+      "about": "EC P-256: AES-128-CBC certificates, AES-192-CBC key, HMAC-SHA512 MAC, 10000 iterations",
+      "password": "test",
+      "mac": "MAC: sha512, Iteration 10000",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-128-CBC, Iteration 10000, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-192-CBC, Iteration 10000, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_p384_pbmac1.p12": {
+      "about": "EC P-384, PBMAC1 (RFC 9579: PBKDF2-HMAC-SHA256 key, HMAC-SHA256) in place of the PKCS#12 MAC",
+      "password": "test",
+      "mac": "MAC: PBMAC1 using PBKDF2, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "107fae64b52b3ee19d0f45eed87262eaa42a357330bcf24825557a5b5b341d36",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "107fae64b52b3ee19d0f45eed87262eaa42a357330bcf24825557a5b5b341d36",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_empty_password.p12": {
+      "about": "the empty password, leaf and key only",
+      "password": "empty",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_nomac.p12": {
+      "about": "no MAC (-nomac alone leaves the certificates unencrypted, so AES-256 is asked for): a wrong password shows only when decryption fails",
+      "password": "test",
+      "mac": null,
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_unicode.p12": {
+      "about": "a Turkish password with an emoji: BMPString (surrogate pair) for the MAC, UTF-8 for PBKDF2",
+      "password": "unicode",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_old_openssl.p12": {
+      "about": "the BMPString OpenSSL 1.0.x made of the password \"Şifre\" (each UTF-8 byte one character)",
+      "password": "oldOpenssl",
+      "mac": "MAC: sha1, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: pbeWithSHA1And40BitRC2-CBC, Iteration 2048",
+        "Shrouded Keybag: pbeWithSHA1And3-KeyTripleDES-CBC, Iteration 2048"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_plain.p12": {
+      "about": "nothing encrypted: certificates and a plain keyBag, only a MAC",
+      "password": "test",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [],
+      "bags": [
+        "PKCS7 Data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Key bag"
+      ],
+      "certificates": [
+        "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "db7985f07803edcdcc36e120e944a685df234efd1182195598f81233d47c51b6",
+      "keys": 1,
+      "keyMatchesLeaf": true
+    },
+    "p12_certs_only.p12": {
+      "about": "certificates only, no private key (a trust store)",
+      "password": "test",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "Certificate bag"
+      ],
+      "certificates": [
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+        "3129a50007c69ed911ddffff4b2aabcdc4bbfeb6fb006eef43829907a59862cc",
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 0,
+      "keyMatchesLeaf": null
+    },
+    "p12_mismatch.p12": {
+      "about": "the intermediate CA with its key, plus the RSA leaf: the key does not belong to the leaf",
+      "password": "test",
+      "mac": "MAC: sha256, Iteration 2048",
+      "encryption": [
+        "PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256",
+        "Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256"
+      ],
+      "bags": [
+        "PKCS7 Encrypted data",
+        "Certificate bag",
+        "Certificate bag",
+        "PKCS7 Data",
+        "Shrouded Keybag"
+      ],
+      "certificates": [
+        "28e01e1e9e9232ce378280245a5370716cac8f5a7f197acb987584855902f197",
+        "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58"
+      ],
+      "leaf": "2b0e7a03636c7e736110f9a01c2efc4ddb5fcf44937cbdd97559a58d6bd43a58",
+      "keys": 1,
+      "keyMatchesLeaf": false
+    }
+  }
+}

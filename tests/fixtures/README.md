@@ -24,3 +24,15 @@ downloaded 2026-09-27): public certificates, used to check that the issuer DNs a
 `//`, `;`, `=`, `:`, a control character, an IP address and an IP range
 (`tests/js/ui-dom.test.js` builds it, `tests/python/test_inventory_targets.py` reads it back with
 the CLI).
+
+PKCS#12 bundles (lib/pkcs12.js, `tests/js/pkcs12.test.js`, the `pfx` E2E suite): `gen_p12_fixtures.mjs`
+made a throwaway PKI — `p12_root.pem`, `p12_inter.pem` and the leaves `p12_rsa.pem` (RSA 2048,
+p12.example.com), `p12_ec.pem` (EC P-256, `*.p12.example.net`) and `p12_p384.pem` (EC P-384,
+p384.example.org) — and bundled them with `openssl pkcs12 -export` as `p12_*.p12`: OpenSSL 3's AES
+default, `-legacy` (RC2-40 + 3DES), RC2-128 + two-key 3DES, AES-128 / AES-192 with a SHA-512 MAC,
+PBMAC1, the empty password, no MAC, a Turkish password with an emoji, a password as OpenSSL 1.0.x
+encoded it, nothing encrypted, certificates only, and a key that belongs to another certificate
+than the leaf. The keys exist only inside the bundles. `p12_expected.json` holds the passwords and
+what OpenSSL reads back from each bundle (`openssl pkcs12 -info`, certificate hashes in file
+order, whether the key belongs to the leaf); the tests compare against it, never against the code
+under test.

@@ -589,6 +589,33 @@ describe('fixes of Domain Health checks', () => {
     assert.deepEqual(buildChange('parked', { domain: 'example.com' }).rrsets.find((r) => r.family === 'dmarc1').values.map((v) => v.join('')), ['v=DMARC1; p=reject'], 'not read: a new record');
   });
 
+  test('an inherited DMARC policy is fixed where it comes from: the organizational domain\'s record, its tags kept', () => {
+    const org = 'v=DMARC1; p=reject; sp=none';
+    const sub = (id) => healthFix({ id }, report({ domain: 'shop.example.com', dmarc: { record: org, parsed: parseDmarc(org), foundAt: 'example.com', inherited: true } }));
+    const rua = sub('dmarc.rua-missing');
+    assert.deepEqual(rua.request.rrsets.map((r) => [r.name, r.values.map((v) => v.join('')), r.before.map((v) => v.join(''))]),
+      [['_dmarc.example.com', ['v=DMARC1; p=reject; sp=none; rua=mailto:dmarc-reports@example.com'], [org]]], 'rua added, p and sp as they are');
+    assert.deepEqual(rua.advice.map((a) => a.key), ['fix.a.dmarc-inherited', 'fix.a.rua-mailbox']);
+    assert.deepEqual(rua.advice[0].params, { domain: 'shop.example.com', name: '_dmarc.example.com', org: 'example.com' });
+    assert.equal(rua.input.domain, 'example.com', 'the edit link opens the organizational domain');
+    const none = sub('dmarc.policy-none');
+    assert.deepEqual(none.request.rrsets[0].values.map((v) => v.join('')), ['v=DMARC1; p=reject; sp=quarantine'], 'the subdomain policy steps up, p stays');
+    assert.ok(none.request.notes.some((n) => n.key === 'fix.n.dmarc-sp' && n.params.from === 'none' && n.params.to === 'quarantine'));
+    assert.ok(!none.request.notes.some((n) => n.key === 'fix.n.dmarc-step'), 'no p step: it stays reject');
+    assert.ok(!none.request.rrsets.some((r) => r.name === '_dmarc.shop.example.com'), 'no record of the subdomain with fewer tags');
+  });
+
+  test('DMARC fixes keep what they are not about: rua-missing keeps pct, policy-none steps p only', () => {
+    const rec = 'v=DMARC1; p=quarantine; pct=25';
+    const r = report({ dmarc: { record: rec, parsed: parseDmarc(rec), foundAt: 'example.com', inherited: false } });
+    assert.deepEqual(healthFix({ id: 'dmarc.rua-missing' }, r).request.rrsets[0].values.map((v) => v.join('')), ['v=DMARC1; p=quarantine; pct=25; rua=mailto:dmarc-reports@example.com']);
+    assert.deepEqual(healthFix({ id: 'dmarc.pct' }, r).request.rrsets[0].values.map((v) => v.join('')), ['v=DMARC1; p=quarantine']);
+    const none = 'v=DMARC1; p=none; rua=mailto:d@example.com';
+    const f = healthFix({ id: 'dmarc.policy-none' }, report({ dmarc: { record: none, parsed: parseDmarc(none), foundAt: 'example.com', inherited: false } }));
+    assert.deepEqual(f.request.rrsets.map((x) => [x.name, x.values.map((v) => v.join(''))]), [['_dmarc.example.com', ['v=DMARC1; p=quarantine; rua=mailto:d@example.com']]]);
+    assert.deepEqual(f.advice, []);
+  });
+
   test('a report-based fix of existing records says its TTL is a default (a resolver cannot tell the zone\'s)', () => {
     const f = healthFix({ id: 'spf.all-pass' }, report());
     assert.deepEqual(f.request.notes.filter((n) => n.key === 'fix.n.report-ttl'), [{ key: 'fix.n.report-ttl', params: { ttl: 3600 } }]);

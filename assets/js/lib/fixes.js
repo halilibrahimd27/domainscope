@@ -1556,8 +1556,15 @@ const TEMPLATE_BUILDERS = {
     const parsed = parseDmarc(record);
     for (const e of parsed.errors) ctx.problems.push({ severity: 'error', key: 'fix.p.dmarc-syntax', params: { token: e.token } });
     if (!parsed.rua.length) ctx.problems.push({ severity: 'warn', key: 'fix.p.dmarc-no-rua' });
-    const before = now ? parseDmarc(now).policy : null;
-    ctx.notes.push({ key: ctx.form.policy === 'none' ? 'fix.n.dmarc-start' : 'fix.n.dmarc-step', params: { from: before || 'none', to: ctx.form.policy } });
+    const parsedNow = now ? parseDmarc(now) : null;
+    const before = parsedNow ? parsedNow.policy : null;
+    // What steps up gets a note: the policy (not when it stays), and a subdomain policy the form sets.
+    if (ctx.form.policy === 'none' || before !== ctx.form.policy) {
+      ctx.notes.push({ key: ctx.form.policy === 'none' ? 'fix.n.dmarc-start' : 'fix.n.dmarc-step', params: { from: before || 'none', to: ctx.form.policy } });
+    }
+    if (parsedNow && ctx.form.sp !== 'keep' && parsed.subdomainPolicy && parsed.subdomainPolicy !== parsedNow.subdomainPolicy) {
+      ctx.notes.push({ key: 'fix.n.dmarc-sp', params: { from: parsedNow.subdomainPolicy || 'none', to: parsed.subdomainPolicy } });
+    }
     return [{ name, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'dmarc1', values: [record] }];
   },
 
@@ -1645,8 +1652,9 @@ const TEMPLATE_BUILDERS = {
 const fix = (id, kind, { request = null, template = null, input = null, advice = [], needsCt = false } = {}) => ({ id, kind, request, template, input, advice, needsCt });
 
 /**
- * What a Domain Health report says the name holds now, as a live read would: the TXT and MX and
- * CAA of the domain and the DMARC record of `_dmarc.<domain>`, where their lookups did not fail.
+ * What a Domain Health report says the names hold now, as a live read would: the TXT, MX and CAA
+ * of the domain, the DMARC record of `_dmarc.<domain>` and, for an inherited policy, the
+ * organizational domain's record it uses — where their lookups did not fail.
  * @param {object} report a lib/health.js domainHealth report
  * @returns {Record<string, object>} {@link readCurrent} shape
  */
@@ -1654,31 +1662,55 @@ export function currentFromReport(report) {
   const d = report.domain;
   const failed = (k) => arr(report.failedLookups).includes(k);
   const out = {};
-  if (!failed('txt')) out[`${d}|TXT`] = { status: 'ok', values: arr(report.records.txt).map((s) => txtChunks(String(s))), ttl: null, cname: null };
-  if (!failed('mx')) out[`${d}|MX`] = { status: 'ok', values: arr(report.records.mx).map((m) => normalizeValue('MX', m)).filter(Boolean), ttl: null, cname: null };
+  const entry = (values) => ({ status: 'ok', values, ttl: null, cname: null });
+  if (!failed('txt')) out[`${d}|TXT`] = entry(arr(report.records.txt).map((s) => txtChunks(String(s))));
+  if (!failed('mx')) out[`${d}|MX`] = entry(arr(report.records.mx).map((m) => normalizeValue('MX', m)).filter(Boolean));
   if (!arr(report.checks).some((c) => c.id === 'caa.error')) {
-    out[`${d}|CAA`] = { status: 'ok', values: arr(report.records.caa).map((c) => normalizeValue('CAA', c)).filter(Boolean), ttl: null, cname: null };
+    out[`${d}|CAA`] = entry(arr(report.records.caa).map((c) => normalizeValue('CAA', c)).filter(Boolean));
   }
   if (!arr(report.checks).some((c) => c.id === 'dmarc.error')) {
-    const own = report.dmarc && report.dmarc.record && !report.dmarc.inherited ? [txtChunks(report.dmarc.record)] : [];
-    out[`_dmarc.${d}|TXT`] = { status: 'ok', values: own, ttl: null, cname: null };
+    const dm = report.dmarc || {};
+    out[`_dmarc.${d}|TXT`] = entry(dm.record && !dm.inherited ? [txtChunks(dm.record)] : []);
+    if (dm.record && dm.inherited && dm.foundAt) out[`_dmarc.${canon(dm.foundAt)}|TXT`] = entry([txtChunks(dm.record)]);
   }
   for (const v of Object.values(out)) if (!v.values.length) v.status = 'nodata';
   return out;
 }
 
-/** The zone of a report: its SOA zone when that holds the domain, else the registrable domain. */
-function reportZone(report) {
-  const d = report.domain;
-  return report.zone && (d === report.zone || isSubdomainOf(d, report.zone)) ? report.zone : registrableDomain(d) || d;
+/** The zone a name of a report lives in: the report's SOA zone when that holds the name, else the name's registrable domain. */
+function zoneFor(report, name) {
+  return report.zone && (name === report.zone || isSubdomainOf(name, report.zone)) ? report.zone : registrableDomain(name) || name;
 }
 
-/** A record fix built from a template over what the report read. */
+/**
+ * A record fix built from a template over what the report read, in the zone of `input.domain`
+ * (the report's domain unless a fix edits a record of a parent, e.g. an inherited DMARC policy).
+ */
 function reportFix(id, report, template, input, extra = {}) {
-  const zone = reportZone(report);
-  const full = { domain: report.domain, zone: zone === registrableDomain(report.domain) ? '' : zone, ...input };
+  const domain = input.domain || report.domain;
+  const zone = zoneFor(report, domain);
+  const full = { domain, zone: zone === registrableDomain(domain) ? '' : zone, ...input };
   const request = buildChange(template, full, { current: currentFromReport(report) });
   return fix(id, 'records', { request, template, input: full, ...extra });
+}
+
+/** The policy tags of the DMARC record a report found, for a fix that leaves them as they are. */
+function dmarcKept(report) {
+  const parsed = report.dmarc && report.dmarc.parsed;
+  return { policy: (parsed && parsed.policy) || 'none', pct: parsed && parsed.pct < 100 ? String(parsed.pct) : '' };
+}
+
+/**
+ * A DMARC fix: of the domain's own record, or — a policy inherited from the organizational domain
+ * (RFC 7489 §6.6.3) — of that record, where the policy comes from; the advice says which.
+ */
+function dmarcFix(id, report, input, advice = []) {
+  const dm = report.dmarc || {};
+  if (!(dm.inherited && dm.foundAt)) return reportFix(id, report, 'dmarc', input, { advice });
+  const org = canon(dm.foundAt);
+  return reportFix(id, report, 'dmarc', { ...input, domain: org }, {
+    advice: [{ key: 'fix.a.dmarc-inherited', params: { domain: report.domain, name: `_dmarc.${org}`, org } }, ...advice]
+  });
 }
 
 /** A record fix of one TXT family value at the domain (an SPF record rewritten), as the plain-record template. */
@@ -1715,16 +1747,16 @@ function costliestIncludes(report, max = 4) {
 const HEALTH_FIXES = {
   'dmarc.missing': (r) => reportFix('dmarc.missing', r, 'dmarc', { policy: 'none', rua: `dmarc-reports@${registrableDomain(r.domain) || r.domain}` },
     { advice: [{ key: 'fix.a.rua-mailbox', params: { address: `dmarc-reports@${registrableDomain(r.domain) || r.domain}` } }] }),
-  'dmarc.policy-none': (r) => reportFix('dmarc.policy-none', r, 'dmarc', { policy: 'quarantine' }),
-  'dmarc.pct': (r) => reportFix('dmarc.pct', r, 'dmarc', { policy: (r.dmarc && r.dmarc.parsed && r.dmarc.parsed.policy) || 'quarantine', pct: '' }),
+  // Inherited, the policy that is none is the organizational record's subdomain policy: that steps up, p stays.
+  'dmarc.policy-none': (r) => dmarcFix('dmarc.policy-none', r, r.dmarc && r.dmarc.inherited ? { ...dmarcKept(r), sp: 'quarantine' } : { ...dmarcKept(r), policy: 'quarantine' }),
+  'dmarc.pct': (r) => dmarcFix('dmarc.pct', r, { ...dmarcKept(r), pct: '' }),
   'dmarc.sp-none': (r) => {
-    const p = (r.dmarc && r.dmarc.parsed && r.dmarc.parsed.policy) || 'quarantine';
-    return reportFix('dmarc.sp-none', r, 'dmarc', { policy: p, sp: p });
+    const kept = dmarcKept(r);
+    return dmarcFix('dmarc.sp-none', r, { ...kept, sp: kept.policy });
   },
   'dmarc.rua-missing': (r) => {
     const address = `dmarc-reports@${registrableDomain(r.domain) || r.domain}`;
-    return reportFix('dmarc.rua-missing', r, 'dmarc', { policy: (r.dmarc && r.dmarc.parsed && r.dmarc.parsed.policy) || 'none', rua: address },
-      { advice: [{ key: 'fix.a.rua-mailbox', params: { address } }] });
+    return dmarcFix('dmarc.rua-missing', r, { ...dmarcKept(r), rua: address }, [{ key: 'fix.a.rua-mailbox', params: { address } }]);
   },
   'dmarc.multiple': () => fix('dmarc.multiple', 'advice', { advice: [{ key: 'fix.a.dmarc-multiple' }] }),
   'spf.missing': (r) => {
@@ -2051,6 +2083,7 @@ const STRINGS = [
   ['fix.n.spf-new', ['There is no SPF record yet: this creates one. List every service that sends mail as the domain.', 'Henüz SPF kaydı yok: bu değişiklik bir tane oluşturur. Alan adı adına e-posta gönderen her hizmeti listeleyin.']],
   ['fix.n.dmarc-start', ['p=none only asks for reports: watch them until every legitimate sender passes, then step up to quarantine and reject.', 'p=none yalnızca rapor ister: tüm meşru gönderenler geçene kadar raporları izleyin, sonra quarantine ve reject’e geçin.']],
   ['fix.n.dmarc-step', ['From p={from} to p={to}: watch the reports for a week or two after the change; a sender that fails DMARC now loses mail.', 'p={from} politikasından p={to} politikasına: değişiklikten sonra bir iki hafta raporları izleyin; DMARC’tan geçemeyen bir gönderenin e-postaları artık kaybolur.']],
+  ['fix.n.dmarc-sp', ['Names under the domain without a DMARC record of their own go from sp={from} to sp={to}: watch the reports of mail sent as them for a week or two.', 'Alan adının altında kendi DMARC kaydı olmayan adlar sp={from} politikasından sp={to} politikasına geçer: onların adına gönderilen e-postaların raporlarını bir iki hafta izleyin.']],
   ['fix.n.dmarc-kept', ['{name} already has a DMARC record; it stays as it is.', '{name} adında zaten bir DMARC kaydı var; olduğu gibi kalır.']],
   ['fix.n.caa-tree', ['CAA at {name} applies to every name below it that has no CAA record of its own.', '{name} adındaki CAA, kendi CAA kaydı olmayan altındaki her ada da uygulanır.']],
   ['fix.n.caa-wildcard-dns01', ['Without dns-01 no CA can validate a wildcard certificate here.', 'dns-01 olmadan hiçbir otorite burada joker (wildcard) sertifika doğrulayamaz.']],
@@ -2120,6 +2153,7 @@ const STRINGS = [
   ['fix.a.spf-flatten', ['No automatic record: flatten the include that costs the most into ip4: / ip6: terms (and keep them in sync with the provider), move a sender to its own subdomain, or drop includes that no longer send. Most expensive: {includes}.', 'Otomatik kayıt yok: en çok sorgu harcayan include’u ip4: / ip6: ifadelerine düzleştirin (ve sağlayıcıyla güncel tutun), bir göndereni kendi alt alan adına taşıyın ya da artık göndermeyen include’ları kaldırın. En pahalıları: {includes}.']],
   ['fix.a.no-mail', ['Only if the domain sends and receives no mail: these records say so, and receivers then reject spoofed mail at once.', 'Yalnızca alan adı e-posta almıyor ve göndermiyorsa: bu kayıtlar bunu söyler ve alıcılar sahte e-postaları hemen reddeder.']],
   ['fix.a.no-mx-sends', ['The domain sends mail: its SPF record lets servers send as it ({record}). A null MX, “v=spf1 -all” and DMARC p=reject would fail all of that mail, so no record is suggested. To get bounces and replies, add the MX records of the mail platform that sends as it.', 'Alan adı e-posta gönderiyor: SPF kaydı sunucuların onun adına göndermesine izin veriyor ({record}). Null MX, “v=spf1 -all” ve DMARC p=reject bu e-postaların tümünü başarısız kılar; bu yüzden kayıt önerilmez. Geri dönen iletileri ve yanıtları almak için onun adına gönderen e-posta platformunun MX kayıtlarını ekleyin.']],
+  ['fix.a.dmarc-inherited', ['{domain} has no DMARC record of its own and uses the one at {name}: the fix changes that record, so it applies to every name under {org} without a DMARC record of its own.', '{domain} adının kendi DMARC kaydı yok, {name} adındakini kullanıyor: düzeltme o kaydı değiştirir; bu yüzden {org} altında kendi DMARC kaydı olmayan her ada uygulanır.']],
   ['fix.a.null-mixed', ['Keep either the null MX (“0 .”, the domain receives no mail) or the real MX records, not both.', 'Ya null MX’i (“0 .”, alan adı e-posta almaz) ya da gerçek MX kayıtlarını tutun; ikisini birden değil.']]
 ];
 

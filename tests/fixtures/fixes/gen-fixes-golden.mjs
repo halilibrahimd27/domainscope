@@ -8,17 +8,18 @@
  *   node tests/fixtures/fixes/gen-fixes-golden.mjs --write    # rewrite expected/<case>.golden.txt
  *
  * One file per case, sections `## <part>`: problems and notes (key + params), the check link's
- * query, then each format with its notes, then the instructions. Names are example.com / .net /
- * .org, addresses documentation space; provider names (smtp.google.com …) are what the templates
- * publish.
+ * query, then each format with its notes, then the instructions. The Domain Health fixes are built
+ * from small reports made with lib/health.js's own parsers. Names are example.com / .net / .org,
+ * addresses documentation space; provider names (smtp.google.com …) are what the templates publish.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  buildChange, changeRequest, renderFix, formatNotes, changeInstructions, validateChange, hasErrors, FIX_FORMATS
+  buildChange, changeRequest, renderFix, formatNotes, changeInstructions, validateChange, hasErrors, healthFix, FIX_FORMATS
 } from '../../../assets/js/lib/fixes.js';
 import { checkFromRequest, encodeCheck } from '../../../assets/js/lib/changecheck.js';
+import { parseCaa, checkCaaAllows, parseDmarc } from '../../../assets/js/lib/health.js';
 
 export const FIXES_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPECTED = join(FIXES_DIR, 'expected');
@@ -48,6 +49,26 @@ export const CURRENT = Object.freeze({
   '_acme-challenge.example.net|TXT': none
 });
 
+/**
+ * A Domain Health report (lib/health.js domainHealth shape) with what the fixes read: the records,
+ * the SPF / DMARC / CAA findings of the parsers, and the CAA check of the current certificate.
+ */
+export function healthReport({ domain = 'example.com', zone = 'example.com', txt = [], mx = [], caa = [], caaAt = null, issuerDN = null,
+  dmarc = null, dmarcAt = null } = {}) {
+  const parsedCaa = parseCaa(caa);
+  const inherited = !!dmarc && !!dmarcAt && dmarcAt !== domain;
+  return {
+    domain, zone, records: { txt, mx, caa },
+    spf: { record: null, parsed: null, lookups: null },
+    dmarc: { record: dmarc, parsed: dmarc ? parseDmarc(dmarc) : null, foundAt: dmarc ? dmarcAt || domain : null, inherited },
+    caa: { name: domain, foundAt: caa.length ? caaAt || domain : null, records: caa.map((data) => ({ type: 'CAA', data })), parsed: parsedCaa },
+    caaCert: issuerDN ? checkCaaAllows(parsedCaa, issuerDN) : null,
+    failedLookups: [], checks: []
+  };
+}
+
+const healthCase = (id, report) => () => healthFix({ id, params: { issuer: "Let's Encrypt" } }, report).request;
+
 const TOKEN_A = 'gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk';
 const TOKEN_B = 'LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0';
 
@@ -76,6 +97,9 @@ export const CASES = Object.freeze([
   { id: 'record-txt-escapes', template: 'record', input: { name: 'quote.example.com', type: 'TXT', values: 'a "quoted" \\ back|slash ^ caret; semi \'single\' café' } },
   { id: 'parked', template: 'parked', input: { domain: 'example.org', dkim: true } },
   { id: 'parked-mail-only', template: 'parked', input: { domain: 'example.com', caa: false }, read: true },
+  // A subdomain that inherits "p=reject; sp=none": the organizational domain's record is the one that changes.
+  { id: 'health-dmarc-inherited-sp', request: healthCase('dmarc.policy-none', healthReport({ domain: 'shop.example.com', dmarc: 'v=DMARC1; p=reject; sp=none; pct=50', dmarcAt: 'example.com' })) },
+  { id: 'health-dmarc-inherited-rua', request: healthCase('dmarc.rua-missing', healthReport({ domain: 'shop.example.com', dmarc: 'v=DMARC1; p=reject; sp=none', dmarcAt: 'example.com' })) },
   { id: 'lint-ttl', request: () => changeRequest({ zone: 'example.com', rrsets: [{ name: 'api.example.com', type: 'A', ttl: 300, mode: 'is', values: ['192.0.2.20'], before: ['192.0.2.20'], beforeTtl: 5 }] }) }
 ]);
 

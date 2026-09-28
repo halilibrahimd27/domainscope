@@ -10,7 +10,7 @@ import { parseCertificates, leafCertificates } from '../../assets/js/lib/x509.js
 import { toCsv } from '../../assets/js/lib/export.js';
 import {
   SKIP_ISSUES, WORKLIST_COLUMNS, assignSet, certSetsJson, cliCertFiles, groupCertSets, keyTypeOf, planRenewal,
-  fileForLeaf, primaryFile, renewalBundle, setId, setOfName, withoutLeaf, workListRows, leafKey
+  fileForLeaf, primaryFile, renewalBundle, replacedLeaves, setId, setOfName, withoutLeaf, workListRows, leafKey
 } from '../../assets/js/lib/certsets.js';
 
 const read = (f) => readFileSync(new URL(`../fixtures/${f}`, import.meta.url));
@@ -177,10 +177,70 @@ describe('renewalBundle — leaves and sets', () => {
   });
 
   test('nothing loaded, nothing to group', () => {
-    assert.deepEqual(renewalBundle([]), { leaves: [], sets: [], chain: [], skipped: [], duplicates: 0, keyFiles: [] });
+    assert.deepEqual(renewalBundle([]), { leaves: [], sets: [], chain: [], skipped: [], unread: [], replaced: [], duplicates: 0, keyFiles: [] });
     assert.deepEqual(renewalBundle([load('with_key.pem'), load('ec_wildcard.key')]).keyFiles, ['with_key.pem'], 'a key file without a certificate is a skipped file instead');
     assert.deepEqual(renewalBundle(null).sets, []);
     assert.deepEqual(groupCertSets([{ names: [] }, null]), []);
+  });
+});
+
+describe('renewalBundle — what could make a verdict wrong', () => {
+  // cli_public_wild.pem (issued 2025, expires 2050) and its renewal cli_renewed_wild.pem (issued
+  // 2026, expires 2052): ECDSA P-256, *.wild.example.net and wild.example.net both.
+  const OLD = 'cli_public_wild.pem';
+  const NEW = 'cli_renewed_wild.pem';
+
+  test('last year\'s certificate next to its renewal: one set, the old one flagged and named -2 for the CLI', () => {
+    for (const files of [[load(OLD), load(NEW)], [load(NEW), load(OLD)]]) {
+      const b = renewalBundle(files);
+      assert.equal(b.sets.length, 1);
+      const [set] = b.sets;
+      assert.deepEqual(set.leaves.map((l) => l.files[0]), [NEW, OLD], 'the newest first within one key type');
+      assert.deepEqual(b.replaced.map((r) => [r.leaf.files[0], r.by.files[0], r.set, r.bySet]), [[OLD, NEW, 'A', 'A']]);
+      assert.deepEqual(cliCertFiles(b.sets).map((f) => [f.file, f.leaf.files[0]]),
+        [['new-cert-a-ecdsa.pem', NEW], ['new-cert-a-ecdsa-2.pem', OLD]]);
+    }
+    // an RSA + ECDSA pair and certificates for other names: nothing flagged
+    assert.deepEqual(three().replaced, []);
+    assert.deepEqual(renewalBundle([load(NEW), load(RSA_A), load(EC_A)]).replaced, []);
+  });
+
+  test('replacedLeaves: the same kind of key, every name in a newer leaf; the newest names it', () => {
+    const leaf = (names, keySlug, notBefore, notAfter = '2030-01-01') => ({
+      names, keySlug, files: [`${keySlug}-${notBefore}`], cert: { notBefore: new Date(notBefore), notAfter: new Date(notAfter) }
+    });
+    const flagged = (list) => replacedLeaves(list).map((r) => `${list.indexOf(r.leaf)}<${list.indexOf(r.by)}`);
+    const old = leaf(['shop.example.com'], 'rsa', '2025-01-01');
+    // another set: its names are a subset of a newer certificate's (a SAN list that grew)
+    assert.deepEqual(flagged([old, leaf(['pay.example.com', 'shop.example.com'], 'rsa', '2026-01-01')]), ['0<1']);
+    // an older certificate that names more is not replaced by one that names less
+    assert.deepEqual(flagged([leaf(['pay.example.com', 'shop.example.com'], 'rsa', '2025-01-01'), leaf(['shop.example.com'], 'rsa', '2026-01-01')]), []);
+    // another kind of key (the RSA + ECDSA pair) or a newer one issued earlier: never
+    assert.deepEqual(flagged([old, leaf(['shop.example.com'], 'ecdsa', '2026-01-01')]), []);
+    assert.deepEqual(flagged([leaf(['shop.example.com'], 'rsa', '2026-01-01'), old]), ['1<0']);
+    // names are compared as they are: a wildcard covering the name is another name
+    assert.deepEqual(flagged([leaf(['www.example.com'], 'rsa', '2025-01-01'), leaf(['*.example.com'], 'rsa', '2026-01-01')]), []);
+    // the same notBefore: the later notAfter is the newer one
+    assert.deepEqual(flagged([leaf(['a.example.com'], 'rsa', '2026-01-01', '2027-01-01'), leaf(['a.example.com'], 'rsa', '2026-01-01', '2026-06-01')]), ['1<0']);
+    // the same names and dates: the one loaded later; nested names with the same dates: neither
+    assert.deepEqual(flagged([leaf(['a.example.com'], 'rsa', '2026-01-01'), leaf(['a.example.com'], 'rsa', '2026-01-01')]), ['1<0']);
+    assert.deepEqual(flagged([leaf(['a.example.com'], 'rsa', '2026-01-01'), leaf(['a.example.com', 'b.example.com'], 'rsa', '2026-01-01')]), []);
+    // three generations: each older one names the newest
+    assert.deepEqual(flagged([old, leaf(['shop.example.com'], 'rsa', '2026-01-01'), leaf(['shop.example.com'], 'rsa', '2027-01-01')]), ['0<2', '1<2']);
+    assert.deepEqual(replacedLeaves(null), []);
+  });
+
+  test('a damaged PEM block next to good ones: the good ones load, the file is listed as read in part', () => {
+    // renew_b_rsa.pem with four lines of its base64 cut out: the third block is truncated
+    const lines = read(RSA_B).toString('utf8').trim().split('\n');
+    const damaged = [...lines.slice(0, 4), ...lines.slice(8)].join('\n');
+    const text = [read(RSA_A).toString('utf8'), read(EC_A).toString('utf8'), damaged].join('\n');
+    const b = renewalBundle([load('ec_wildcard.key', 'privkey.pem'), { name: 'Pasted text', result: parseCertificates(text) }]);
+    assert.deepEqual([b.leaves.length, b.sets.length], [2, 1]);
+    assert.deepEqual(b.unread.map((u) => [u.file, u.index, u.details.length]), [['Pasted text', 1, 1]]);
+    assert.match(b.unread[0].details[0], /^PEM block 3 \(CERTIFICATE\): /);
+    assert.deepEqual(b.skipped.map((s) => s.file), ['privkey.pem'], 'a file without a certificate is still "not used", not "read in part"');
+    assert.deepEqual(three().unread, []);
   });
 });
 

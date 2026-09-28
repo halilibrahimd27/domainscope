@@ -11,6 +11,8 @@
  *     files without a usable certificate are listed in `skipped`), grouped into sets;
  *   - {@link groupCertSets}: leaves whose name sets are equal form one set (typically an RSA +
  *     ECDSA twin pair), ids 'A', 'B', … in the order they were loaded;
+ *   - {@link replacedLeaves}: leaves another loaded leaf probably replaces (last year's
+ *     certificate picked up next to its renewal), which would otherwise count as new;
  *   - {@link assignSet}: the set a host name gets — an exact name before a wildcard, the most
  *     specific wildcard, then the set whose certificate expires last;
  *   - {@link planRenewal}: over a lib/scanner ScanResult, the server × set matrix (the names each
@@ -69,6 +71,11 @@ const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
  *   (a key, a CSR, a PKCS#12 bundle, junk; `codes` are the parser's warning codes), 'ca-only' (CA
  *   certificates only, `count` of them), 'no-names' (a leaf without a DNS name: `subject` its CN or
  *   DN, `key` its {@link leafKey}, for {@link withoutLeaf})
+ * @property {Array<{ file: string, index: number, details: string[] }>} unread files that gave
+ *   certificates but also data the parser could not read (its PARSE_ERROR warnings, `details` their
+ *   text): a certificate in them may be missing, so its names would be neither scanned nor checked
+ * @property {Array<{ leaf: RenewalLeaf, by: RenewalLeaf, set: string, bySet: string }>} replaced
+ *   {@link replacedLeaves}, with the ids of the sets the two leaves are in
  * @property {number} duplicates leaves that were already loaded from another file
  * @property {string[]} keyFiles files that also held a private key (ignored, never displayed)
  */
@@ -142,10 +149,27 @@ const keyRank = (leaf) => {
 };
 
 /**
+ * How much later leaf `a` was issued than leaf `b`: by notBefore, else (the same or unknown) by
+ * notAfter; 0 when neither tells them apart.
+ * @param {RenewalLeaf} a
+ * @param {RenewalLeaf} b
+ * @returns {number} > 0 when `a` is newer
+ */
+function newerBy(a, b) {
+  for (const k of ['notBefore', 'notAfter']) {
+    const x = time(a.cert && a.cert[k]);
+    const y = time(b.cert && b.cert[k]);
+    if (x !== null && y !== null && x !== y) return x - y;
+  }
+  return 0;
+}
+
+/**
  * Leaves whose name sets are equal form one set (an RSA + ECDSA pair for the same names is one
  * set with two key types). Sets keep the order their first leaf was loaded in; within a set the
- * certificates go by key type (RSA, ECDSA, Ed25519, Ed448, DSA), then load order, so the list and
- * the CLI's file names do not depend on the order the files came in.
+ * certificates go by key type (RSA, ECDSA, Ed25519, Ed448, DSA), then the newest first, then load
+ * order, so the list and the CLI's file names do not depend on the order the files came in (and
+ * of two certificates with one key type, the older one is the one named `-2`).
  * @param {RenewalLeaf[]} leaves
  * @returns {CertSet[]}
  */
@@ -164,7 +188,8 @@ export function groupCertSets(leaves) {
     set.leaves.push(leaf);
   }
   for (const set of sets) {
-    set.leaves = set.leaves.map((leaf, i) => ({ leaf, i })).sort((a, b) => keyRank(a.leaf) - keyRank(b.leaf) || a.i - b.i).map((x) => x.leaf);
+    set.leaves = set.leaves.map((leaf, i) => ({ leaf, i }))
+      .sort((a, b) => keyRank(a.leaf) - keyRank(b.leaf) || newerBy(b.leaf, a.leaf) || a.i - b.i).map((x) => x.leaf);
     for (const leaf of set.leaves) {
       set.certs.push(leaf.cert);
       if (!set.keyTypes.includes(leaf.keyType)) set.keyTypes.push(leaf.keyType);
@@ -180,6 +205,36 @@ export function groupCertSets(leaves) {
 }
 
 /**
+ * Leaves another loaded leaf probably replaces: last year's certificate, picked up with a folder or
+ * a paste of everything next to its renewal. Kept, it counts as new — a server still serving it
+ * would read as updated, in Verify and in the CLI — so step 1 says so. A leaf is flagged when
+ * another one with the same kind of key (RSA, ECDSA, …) names every name it names and was issued
+ * later ({@link newerBy}: notBefore, else notAfter); of two with the same names, key kind and dates
+ * the one loaded later is flagged. `by` is the newest leaf that replaces it (the first loaded of
+ * equals). Leaves with other names (a subset of a wildcard's coverage included) are never flagged:
+ * only the names themselves are compared.
+ * @param {RenewalLeaf[]} leaves in load order
+ * @returns {Array<{ leaf: RenewalLeaf, by: RenewalLeaf }>} in load order of `leaf`
+ */
+export function replacedLeaves(leaves) {
+  const list = (Array.isArray(leaves) ? leaves : []).filter((l) => l && Array.isArray(l.names) && l.names.length);
+  const out = [];
+  list.forEach((leaf, i) => {
+    let by = null;
+    list.forEach((other, j) => {
+      if (j === i || other.keySlug !== leaf.keySlug || !leaf.names.every((n) => other.names.includes(n))) return;
+      const d = newerBy(other, leaf);
+      const twin = d === 0 && j < i && other.names.length === leaf.names.length;
+      if (d > 0 || twin) {
+        if (!by || newerBy(other, by) > 0) by = other;
+      }
+    });
+    if (by) out.push({ leaf, by });
+  });
+  return out;
+}
+
+/**
  * The renewal behind the loaded files: every end-entity certificate (lib/x509 leafCertificates:
  * a chain gives one, several pasted PEM blocks give each), grouped into sets.
  * @param {CertFileInput[]} files in load order
@@ -192,6 +247,7 @@ export function renewalBundle(files) {
   const chainKeys = new Set();
   const noNames = new Set();
   const skipped = [];
+  const unread = [];
   let duplicates = 0;
   const keyFiles = [];
   (Array.isArray(files) ? files : []).forEach((f, index) => {
@@ -199,11 +255,17 @@ export function renewalBundle(files) {
     const file = String(f.name ?? '');
     const result = f.result && typeof f.result === 'object' ? f.result : f;
     const certs = Array.isArray(result.certificates) ? result.certificates.filter(Boolean) : [];
-    const codes = [...new Set((Array.isArray(result.warnings) ? result.warnings : []).map((w) => w && w.code).filter(Boolean))];
+    const warnings = (Array.isArray(result.warnings) ? result.warnings : []).filter(Boolean);
+    const codes = [...new Set(warnings.map((w) => w.code).filter(Boolean))];
     if (certs.length && codes.includes('PRIVATE_KEY_PRESENT') && !keyFiles.includes(file)) keyFiles.push(file);
     if (!certs.length) {
       skipped.push({ file, index, issue: 'no-certificate', codes });
       return;
+    }
+    // A damaged block next to good ones (a paste of several, a fullchain.pem): the good ones load,
+    // and the list says a certificate may be missing (the classic flow shows the parser's alert).
+    if (codes.includes('PARSE_ERROR')) {
+      unread.push({ file, index, details: warnings.filter((w) => w.code === 'PARSE_ERROR' && w.detail).map((w) => String(w.detail)) });
     }
     const ends = leafCertificates(certs);
     for (const c of certs) {
@@ -238,7 +300,10 @@ export function renewalBundle(files) {
       leaves.push(leaf);
     }
   });
-  return { leaves, sets: groupCertSets(leaves), chain, skipped, duplicates, keyFiles };
+  const sets = groupCertSets(leaves);
+  const setOf = new Map(sets.flatMap((s) => s.leaves.map((l) => [l, s.id])));
+  const replaced = replacedLeaves(leaves).map((r) => ({ ...r, set: setOf.get(r.leaf), bySet: setOf.get(r.by) }));
+  return { leaves, sets, chain, skipped, unread, replaced, duplicates, keyFiles };
 }
 
 const certsOfFile = (f) => {

@@ -35,7 +35,7 @@
  */
 
 import { planDrift, driftZone, DRIFT_MAX_BUDGET } from './zonedrift.js';
-import { zoneIndex, proxiedSets, privateLookingNames, wildcardCovers, servedTargets, isCloudflareIp } from './zoneorigins.js';
+import { zoneIndex, proxiedSets, privateLookingNames, wildcardCovers, servedTargets } from './zoneorigins.js';
 import { parseZone } from './zoneparse.js';
 import { dnsQueryRequest, GP_DNS_TYPES, isProbeableHost, isProbeableDnsName, probeTarget, probeSummary } from './globalping.js';
 import { normalizeHostname, sortHostnames } from './domain.js';

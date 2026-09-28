@@ -62,6 +62,8 @@ export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 export const INTEL_MAX = 25;
 /** Known sources the headline lists under "Fix first" (the table has the rest). */
 export const FIX_FIRST_MAX = 5;
+/** Files that could not be used listed by name (the rest counted: "+1,800 more"). */
+export const PROBLEMS_MAX = 200;
 
 /** Badge / tile look of each source class. */
 export const CLASS_STYLE = Object.freeze({
@@ -402,11 +404,11 @@ registerStrings('tr', {
   'rpt.verdict.enforced.title': 'p=reject yürürlükte',
   'rpt.verdict.enforced.body': 'Kullandığınız her kaynak DMARC’den geçiyor; alıcılar geçmeyenleri reddediyor.',
   'rpt.verdict.enforcedLosing.title': 'p=reject yürürlükte ve gönderdiğiniz e-postalar reddediliyor',
-  'rpt.verdict.enforcedLosing.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor: alıcılar bu e-postaları şu anda reddediyor. En çok e-posta gönderenden başlayarak önce bunları düzeltin:',
+  'rpt.verdict.enforcedLosing.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor: alıcılar geçmeyen e-postayı şu anda reddediyor. Önce düzeltin (en çok e-posta gönderen başta):',
   'rpt.verdict.ready.title': 'p=reject için hazır',
   'rpt.verdict.ready.body': 'Kullandığınız her kaynak DMARC’den geçiyor. p=reject ile alıcılar bilinmeyen göndericilerin geçmeyen {messages} e-postasını reddeder — hiçbiri sizin değilse amaç da budur.',
   'rpt.verdict.fix-first.title': 'Henüz p=reject için hazır değil',
-  'rpt.verdict.fix-first.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor. p=reject ile alıcılar bu e-postaları reddederdi. En çok e-posta gönderenden başlayarak önce bunları düzeltin:',
+  'rpt.verdict.fix-first.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor. p=reject ile alıcılar geçmeyen e-postayı reddederdi. Önce düzeltin (en çok e-posta gönderen başta):',
   'rpt.verdict.spf-broken.title': 'Henüz p=reject için hazır değil: SPF kaydı kalıcı hata veriyor',
   'rpt.verdict.spf-broken.body': 'Kullandığınız {count} kaynağın e-postası DMARC’den yalnızca SPF ile geçti (bu raporlarda {messages} e-posta). Alıcılar artık SPF kaydından kalıcı hata alıyor: SPF ile geçen e-posta bundan sonra DMARC’den geçmiyor. Kaydı onarın ya da o e-postayı DKIM ile imzalayın:',
   'rpt.verdict.enforcedSpfBroken.title': 'p=reject yürürlükte ve SPF kaydı artık kalıcı hata veriyor',
@@ -427,7 +429,7 @@ registerStrings('tr', {
   'rpt.note.testing': 't=y: politika test kipinde yayınlanmış; alıcılardan bir alt düzeyi uygulamaları isteniyor (reject yerine quarantine, quarantine yerine none).',
   'rpt.note.mixed-policy': 'Politika bu dönemde değişti ({policies}); en son olanı gösteriliyor.',
   'rpt.note.spf-unknown': 'Güncel SPF kontrol edilemedi: raporlarda SPF’ten geçen kaynaklar sizin sayılır ve sunucularınızı üçüncü taraflardan yalnızca sunucu listeniz ayırır.',
-  'rpt.note.spf-permerror': 'Alıcılar {domain} alan adının güncel SPF kaydından {count} gönderen adres için kalıcı hata alıyor: {why}. Bu adresler için kayıt ne listelerse listelesin SPF geçmiyor.',
+  'rpt.note.spf-permerror': 'Alıcılar {domain} alan adının güncel SPF kaydından {count} gönderen adres için kalıcı hata alıyor: {why}. Kayıt ne listelerse listelesin SPF geçmiyor.',
   'rpt.note.quarantine': 'p=quarantine ve kullandığınız her kaynak geçiyor: sıradaki adım p=reject.',
   'rpt.note.rejected-now': 'Alıcılar kullandığınız kaynaklardan gelen e-postaları zaten reddetti (disposition reject).',
   'rpt.note.spf-all': 'SPF kaydı her adresi geçiriyor (+all): hiçbir göndericiyi ayırt etmez ve herkes alan adı olarak SPF’ten geçebilir. Kaydı ~all ya da -all ile bitirin.',
@@ -753,7 +755,7 @@ export function mount(container, ctx) {
   let sourcesTable = null;
   let bulkBtn = null;
   const num = (n) => formatNumber(n);
-  const pct = (ratio) => formatPercent(ratio, ratio > 0.99 && ratio < 1 ? 1 : 0);
+  // Every share as the headline says it: one decimal when it has one, never all or none unless it is.
   const share = (ratio) => {
     const x = headlineShare(ratio);
     return formatPercent(x.value, x.digits);
@@ -1039,12 +1041,17 @@ export function mount(container, ctx) {
   }
 
   function problemsList() {
+    const shown = S.problems.slice(0, PROBLEMS_MAX);
+    const rest = S.problems.length - shown.length;
     return Disclosure({
       summary: `${t('rpt.problems')} (${num(S.problems.length)})`,
       className: 'rpt-problems',
-      children: h('ul', { class: 'rpt-problem-list' }, S.problems.slice(0, 200).map((p) => h('li', { dataset: { code: p.code } },
-        h('span', { class: 'mono rpt-problem-path' }, p.path), ' — ',
-        h('span', null, t(`rpt.problem.${p.code}`, { detail: p.detail || '' })))))
+      children: [
+        h('ul', { class: 'rpt-problem-list' }, shown.map((p) => h('li', { dataset: { code: p.code } },
+          h('span', { class: 'mono rpt-problem-path' }, p.path), ' — ',
+          h('span', null, t(`rpt.problem.${p.code}`, { detail: p.detail || '' }))))),
+        rest > 0 ? h('p', { class: 'text-sm muted rpt-problem-more' }, t('common.moreCount', { count: num(rest) })) : null
+      ]
     });
   }
 
@@ -1270,7 +1277,7 @@ export function mount(container, ctx) {
         value: b.messages,
         icon: style.icon,
         variant: style.tile || style.variant,
-        hint: t('rpt.clsHint', { count: b.sources, pct: b.messages ? pct(b.pass / b.messages) : '—' }),
+        hint: t('rpt.clsHint', { count: b.sources, pct: b.messages ? share(b.pass / b.messages) : '—' }),
         pressed: S.cls === cls,
         onClick: () => {
           S.cls = S.cls === cls ? null : cls;
@@ -1307,7 +1314,7 @@ export function mount(container, ctx) {
     const a = alignedState(passed, total);
     if (a.state === 'pass') return Badge(t('rpt.aligned.pass'), { variant: 'ok' });
     if (a.state === 'fail') return Badge(t('rpt.aligned.fail'), { variant: 'error' });
-    return Badge(t('rpt.aligned.part', { pct: pct(a.ratio) }), { variant: 'warn' });
+    return Badge(t('rpt.aligned.part', { pct: share(a.ratio) }), { variant: 'warn' });
   }
 
   function networkCell(r) {
@@ -1409,7 +1416,7 @@ export function mount(container, ctx) {
           } },
         { key: 'messages', label: t('rpt.col.messages'), sortable: true, defaultDir: 'desc', align: 'end' },
         { key: 'pass', label: t('rpt.col.pass'), sortable: true, defaultDir: 'desc', align: 'end', sortValue: (r) => (r.messages ? r.pass / r.messages : 0),
-          render: (r) => h('span', { class: ['rpt-pct', `rpt-pct-${alignedState(r.pass, r.messages).state}`] }, r.messages ? pct(r.pass / r.messages) : '—') },
+          render: (r) => h('span', { class: ['rpt-pct', `rpt-pct-${alignedState(r.pass, r.messages).state}`] }, r.messages ? share(r.pass / r.messages) : '—') },
         { key: 'spf', label: t('rpt.col.spf'), sortable: true, sortValue: (r) => (r.messages ? r.spfAligned / r.messages : 0), render: (r) => alignedCell(r.spfAligned, r.messages) },
         { key: 'dkim', label: t('rpt.col.dkim'), sortable: true, sortValue: (r) => (r.messages ? r.dkimAligned / r.messages : 0), render: (r) => alignedCell(r.dkimAligned, r.messages) },
         { key: 'disposition', label: t('rpt.col.disposition'), searchValue: (r) => dispositionText(r), render: (r) => h('span', { class: 'mono text-sm' }, dispositionText(r)) },
@@ -1435,7 +1442,7 @@ export function mount(container, ctx) {
         { key: 'org', label: t('rpt.rep.org'), sortable: true },
         { key: 'reports', label: t('rpt.rep.reports'), sortable: true, align: 'end' },
         { key: 'messages', label: t('rpt.rep.messages'), sortable: true, align: 'end', defaultDir: 'desc' },
-        { key: 'pass', label: t('rpt.rep.pass'), align: 'end', render: (r) => (r.messages ? pct(r.pass / r.messages) : '—') },
+        { key: 'pass', label: t('rpt.rep.pass'), align: 'end', render: (r) => (r.messages ? share(r.pass / r.messages) : '—') },
         { key: 'period', label: t('rpt.rep.period'), render: (r) => t('rpt.period', { from: day(r.begin), to: day(r.end) }) }
       ]
     });

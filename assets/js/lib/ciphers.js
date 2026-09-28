@@ -7,6 +7,10 @@
  * .pfx files with them. AES normally goes through WebCrypto; this AES is the fallback for the
  * AES-192 that Chromium's WebCrypto refuses. None of this protects anything new: it only opens
  * what the user already holds the password for. DOM-free and dependency-free.
+ *
+ * Table-driven, on 32-bit words and bytes (DES: S-boxes and P merged into one lookup per box,
+ * IP / FP by byte tables): a 5 MB file decrypts in about 150 ms, and {@link cbcDecryptInSlices}
+ * cuts that into slices with a yield between them. Key schedules are zeroed after each call.
  */
 
 /** A ciphertext that cannot be decrypted: a length that is not whole blocks, or bad padding. */
@@ -45,6 +49,51 @@ function cbcDecrypt(decryptBlock, blockSize, iv, data, padding) {
   return out.subarray(0, out.length - n);
 }
 
+/**
+ * Bytes {@link cbcDecryptInSlices} decrypts between two yields: about 5 ms of 3DES, RC2 or AES
+ * here (0.2 µs an 8-byte 3DES block), so a browser's 4 ms timer clamp adds little and a frame is
+ * never held much longer than that.
+ */
+export const SLICE_BYTES = 256 * 1024;
+
+/**
+ * One of the CBC decryptions below, run a slice at a time with a yield to the event loop
+ * (setTimeout) between slices, so a page keeps painting while a large file decrypts in JS. The
+ * result, and any CipherError, is that of one call: each slice chains from the last ciphertext
+ * block of the one before, and only the last one carries the padding.
+ * @param {(iv: Uint8Array, data: Uint8Array, options: { padding: boolean }) => Uint8Array} decrypt
+ *   e.g. `(iv, data, options) => desEde3CbcDecrypt(key, iv, data, options)`
+ * @param {number} blockSize 8 (DES, RC2) or 16 (AES)
+ * @param {Uint8Array} iv
+ * @param {Uint8Array} data whole blocks
+ * @param {{ padding?: boolean, sliceBytes?: number }} [options] sliceBytes: a multiple of blockSize
+ * @returns {Promise<Uint8Array>}
+ * @throws {CipherError}
+ */
+export async function cbcDecryptInSlices(decrypt, blockSize, iv, data, { padding = true, sliceBytes = SLICE_BYTES } = {}) {
+  if (!Number.isInteger(sliceBytes) || sliceBytes < blockSize || sliceBytes % blockSize) {
+    throw new RangeError(`cbcDecryptInSlices: a slice is a whole number of ${blockSize}-byte blocks`);
+  }
+  if (data.length <= sliceBytes) return decrypt(iv, data, { padding });
+  if (data.length % blockSize) throw new CipherError('length', `The ciphertext is not a whole number of ${blockSize}-byte blocks`);
+  const out = new Uint8Array(data.length);
+  try {
+    for (let off = 0; ; off += sliceBytes) {
+      const end = Math.min(off + sliceBytes, data.length);
+      const last = end === data.length;
+      const chain = off ? data.subarray(off - blockSize, off) : iv;
+      const part = decrypt(chain, data.subarray(off, end), { padding: last && padding });
+      out.set(part, off);
+      part.fill(0);
+      if (last) return out.subarray(0, off + part.length);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } catch (err) {
+    out.fill(0);
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DES and DES-EDE (FIPS 46-3 tables, bit positions counted from 1 at the most significant bit)
 // ---------------------------------------------------------------------------
@@ -76,58 +125,138 @@ const DES_S = [
   '13 2 8 4 6 15 11 1 10 9 3 14 5 0 12 7 1 15 13 8 10 3 7 4 12 5 6 11 0 14 9 2 7 11 4 1 9 12 14 2 0 6 10 13 15 3 5 8 2 1 14 7 4 10 8 13 15 12 9 0 3 5 6 11'
 ].map((row) => Uint8Array.from(row.split(' '), Number));
 
-const permute = (bits, table) => Uint8Array.from(table, (p) => bits[p - 1]);
-
-function toBits(bytes, offset, count) {
-  const bits = new Uint8Array(count * 8);
-  for (let i = 0; i < bits.length; i++) bits[i] = (bytes[offset + (i >> 3)] >> (7 - (i & 7))) & 1;
-  return bits;
-}
-
-/** The 16 round keys (48 bits each) of an 8-byte DES key; parity bits are ignored. */
-function desSubkeys(key, offset) {
-  const cd = permute(toBits(key, offset, 8), DES_PC1);
-  let c = cd.subarray(0, 28);
-  let d = cd.subarray(28);
-  const rotate = (half, n) => Uint8Array.from(half, (_, i) => half[(i + n) % 28]);
-  return DES_SHIFTS.map((n) => {
-    c = rotate(c, n);
-    d = rotate(d, n);
-    const joined = new Uint8Array(56);
-    joined.set(c);
-    joined.set(d, 28);
-    return permute(joined, DES_PC2);
+/**
+ * A 64-bit permutation (IP, FP) as byte tables: entry (p * 256 + v) * 2 + h is what byte p of
+ * the input, when it is v, sets in half h of the result (0: bits 1-32, 1: bits 33-64). The
+ * permuted block is then the OR of eight lookups per half.
+ */
+function byteTables(table) {
+  const out = new Int32Array(8 * 256 * 2);
+  table.forEach((from, i) => { // bit i + 1 of the result is bit `from` of the input
+    const p = (from - 1) >> 3;
+    const mask = 0x80 >> ((from - 1) & 7);
+    const at = i >> 5;
+    const bit = 1 << (31 - (i & 31));
+    for (let v = 0; v < 256; v++) if (v & mask) out[(p * 256 + v) * 2 + at] |= bit;
   });
+  return out;
+}
+const DES_IP_BYTES = byteTables(DES_IP);
+const DES_FP_BYTES = byteTables(DES_FP);
+
+/**
+ * The S-boxes and P in one step: entry box * 64 + x is P applied to box's output for the 6-bit
+ * input x, as a 32-bit word (bit 1 the most significant). A round's f is the OR of eight lookups.
+ */
+const DES_SP = (() => {
+  const sp = new Int32Array(8 * 64);
+  for (let box = 0; box < 8; box++) {
+    for (let x = 0; x < 64; x++) {
+      // Row: the outer bits of x; column: the inner four.
+      const s = DES_S[box][(((x >> 4) & 2) | (x & 1)) * 16 + ((x >> 1) & 15)] << (28 - 4 * box);
+      let word = 0;
+      DES_P.forEach((from, i) => {
+        if ((s >>> (32 - from)) & 1) word |= 1 << (31 - i);
+      });
+      sp[box * 64 + x] = word;
+    }
+  }
+  return sp;
+})();
+
+/**
+ * The 16 round keys of an 8-byte DES key (parity bits ignored), each as the eight 6-bit S-box
+ * inputs it is XORed with: entry round * 8 + box. Bit by bit, once per key.
+ */
+function desSubkeys(key, offset) {
+  const bits = Array.from({ length: 64 }, (_, i) => (key[offset + (i >> 3)] >> (7 - (i & 7))) & 1);
+  const cd = DES_PC1.map((p) => bits[p - 1]);
+  let c = cd.slice(0, 28);
+  let d = cd.slice(28);
+  const out = new Int32Array(16 * 8);
+  DES_SHIFTS.forEach((n, round) => {
+    c = [...c.slice(n), ...c.slice(0, n)];
+    d = [...d.slice(n), ...d.slice(0, n)];
+    const joined = [...c, ...d];
+    const k = DES_PC2.map((p) => joined[p - 1]);
+    for (let box = 0; box < 8; box++) {
+      let v = 0;
+      for (let j = 0; j < 6; j++) v = (v << 1) | k[box * 6 + j];
+      out[round * 8 + box] = v;
+    }
+    joined.fill(0);
+    k.fill(0);
+  });
+  bits.fill(0);
+  cd.fill(0);
+  c.fill(0);
+  d.fill(0);
+  return out;
 }
 
-/** DES on one block: the rounds with `subkeys` in the given order (reversed = decryption). */
-function desBlock(subkeys, src, srcOffset, dst, dstOffset) {
-  const block = permute(toBits(src, srcOffset, 8), DES_IP);
-  let l = block.subarray(0, 32);
-  let r = block.subarray(32);
-  for (const k of subkeys) {
-    const x = permute(r, DES_E);
-    for (let i = 0; i < 48; i++) x[i] ^= k[i];
-    const s = new Uint8Array(32);
-    for (let box = 0; box < 8; box++) {
-      const b = x.subarray(box * 6, box * 6 + 6);
-      const v = DES_S[box][((b[0] << 1) | b[5]) * 16 + ((b[1] << 3) | (b[2] << 2) | (b[3] << 1) | b[4])];
-      for (let i = 0; i < 4; i++) s[box * 4 + i] = (v >> (3 - i)) & 1;
-    }
-    const f = permute(s, DES_P);
-    const next = Uint8Array.from(l, (bit, i) => bit ^ f[i]);
+/** Round keys in the other order: decryption with the encryption schedule (and back). */
+function desReverse(k) {
+  const out = new Int32Array(16 * 8);
+  for (let round = 0; round < 16; round++) out.set(k.subarray((15 - round) * 8, (16 - round) * 8), round * 8);
+  return out;
+}
+
+/** The two 32-bit halves of the block being worked on (L, R), shared by the functions below. */
+const DES_LR = new Int32Array(2);
+
+/** IP of the 8 bytes at src[so]: the halves L0, R0 into DES_LR. */
+function desInitial(src, so) {
+  let l = 0;
+  let r = 0;
+  for (let p = 0; p < 8; p++) {
+    const i = (p * 256 + src[so + p]) * 2;
+    l |= DES_IP_BYTES[i];
+    r |= DES_IP_BYTES[i + 1];
+  }
+  DES_LR[0] = l;
+  DES_LR[1] = r;
+}
+
+/** FP of the halves in DES_LR, as 8 bytes at dst[doff]. */
+function desFinal(dst, doff) {
+  let a = 0;
+  let b = 0;
+  for (let p = 0; p < 8; p++) {
+    const word = DES_LR[p >> 2];
+    const i = (p * 256 + ((word >>> (24 - 8 * (p & 3))) & 0xff)) * 2;
+    a |= DES_FP_BYTES[i];
+    b |= DES_FP_BYTES[i + 1];
+  }
+  for (let i = 0; i < 4; i++) {
+    dst[doff + i] = a >>> (24 - 8 * i);
+    dst[doff + 4 + i] = b >>> (24 - 8 * i);
+  }
+}
+
+/**
+ * The 16 rounds on DES_LR with the round keys `k`. The halves come out swapped (R16, L16), the
+ * order FP takes, which is also the L0, R0 of a next DES on the same block (EDE): FP and IP
+ * between two DES operations cancel out.
+ */
+function desRounds(k) {
+  let l = DES_LR[0];
+  let r = DES_LR[1];
+  for (let o = 0; o < 128; o += 8) {
+    // E picks the 6-bit groups of R: bits 32,1..5 for box 1, 4..9 for box 2, …, 28..32,1 for box 8.
+    const f = DES_SP[(((r >>> 27) | (r << 5)) ^ k[o]) & 63]
+      | DES_SP[64 + ((((r >>> 23) | (r << 9)) ^ k[o + 1]) & 63)]
+      | DES_SP[128 + ((((r >>> 19) | (r << 13)) ^ k[o + 2]) & 63)]
+      | DES_SP[192 + ((((r >>> 15) | (r << 17)) ^ k[o + 3]) & 63)]
+      | DES_SP[256 + ((((r >>> 11) | (r << 21)) ^ k[o + 4]) & 63)]
+      | DES_SP[320 + ((((r >>> 7) | (r << 25)) ^ k[o + 5]) & 63)]
+      | DES_SP[384 + ((((r >>> 3) | (r << 29)) ^ k[o + 6]) & 63)]
+      | DES_SP[448 + ((((r >>> 31) | (r << 1)) ^ k[o + 7]) & 63)];
+    const next = l ^ f;
     l = r;
     r = next;
   }
-  const preout = new Uint8Array(64);
-  preout.set(r);
-  preout.set(l, 32);
-  const out = permute(preout, DES_FP);
-  for (let i = 0; i < 8; i++) {
-    let v = 0;
-    for (let j = 0; j < 8; j++) v = (v << 1) | out[i * 8 + j];
-    dst[dstOffset + i] = v;
-  }
+  DES_LR[0] = r;
+  DES_LR[1] = l;
 }
 
 /**
@@ -145,14 +274,21 @@ export function desEde3CbcDecrypt(key, iv, data, { padding = true } = {}) {
   const k1 = desSubkeys(key, 0);
   const k2 = key.length > 8 ? desSubkeys(key, 8) : k1;
   const k3 = key.length > 16 ? desSubkeys(key, 16) : k1;
-  const [d1, e2, d3] = [[...k1].reverse(), k2, [...k3].reverse()];
-  const tmp = new Uint8Array(8);
-  // EDE decryption: D(K1, E(K2, D(K3, block))).
-  return cbcDecrypt((src, so, dst, doff) => {
-    desBlock(d3, src, so, tmp, 0);
-    desBlock(e2, tmp, 0, tmp, 0);
-    desBlock(d1, tmp, 0, dst, doff);
-  }, 8, iv, data, padding);
+  const d1 = desReverse(k1);
+  const d3 = key.length > 16 ? desReverse(k3) : d1;
+  try {
+    // EDE decryption: D(K1, E(K2, D(K3, block))), with one IP and one FP around the three.
+    return cbcDecrypt((src, so, dst, doff) => {
+      desInitial(src, so);
+      desRounds(d3);
+      desRounds(k2);
+      desRounds(d1);
+      desFinal(dst, doff);
+    }, 8, iv, data, padding);
+  } finally {
+    for (const k of [k1, k2, k3, d1, d3]) k.fill(0);
+    DES_LR.fill(0);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +363,11 @@ function rc2DecryptBlock(K, src, so, dst, doff) {
  */
 export function rc2CbcDecrypt(key, effectiveBits, iv, data, { padding = true } = {}) {
   const K = rc2Expand(key, effectiveBits);
-  return cbcDecrypt((src, so, dst, doff) => rc2DecryptBlock(K, src, so, dst, doff), 8, iv, data, padding);
+  try {
+    return cbcDecrypt((src, so, dst, doff) => rc2DecryptBlock(K, src, so, dst, doff), 8, iv, data, padding);
+  } finally {
+    K.fill(0);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -286,28 +426,31 @@ function aesExpand(key) {
   return { w, rounds };
 }
 
+/** InvMixColumns' products: AES_MUL[f][x] = x · f in GF(2^8), for f = 9, 11, 13, 14. */
+const AES_MUL = Object.fromEntries([9, 11, 13, 14].map((f) => [f, Uint8Array.from({ length: 256 }, (_, x) => gmul(x, f))]));
+/** The state being worked on and a copy for InvShiftRows (column-major: s[row + 4 * col]). */
+const AES_STATE = new Uint8Array(16);
+const AES_SHIFTED = new Uint8Array(16);
+
 function aesDecryptBlock({ w, rounds }, src, so, dst, doff) {
-  const s = new Uint8Array(16); // a copy: Buffer#slice would be a view of the ciphertext
-  s.set(src.subarray(so, so + 16));
-  const addKey = (round) => {
-    for (let i = 0; i < 16; i++) s[i] ^= w[16 * round + i];
-  };
-  const invShiftSub = () => {
-    const t = s.slice();
-    // State bytes are column-major: s[row + 4 * col]; row r shifts right by r.
-    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) s[r + 4 * ((c + r) % 4)] = AES.inv[t[r + 4 * c]];
-  };
-  addKey(rounds);
+  const s = AES_STATE;
+  const t = AES_SHIFTED;
+  const { 9: m9, 11: m11, 13: m13, 14: m14 } = AES_MUL;
+  for (let i = 0; i < 16; i++) s[i] = src[so + i] ^ w[16 * rounds + i];
   for (let round = rounds - 1; round >= 0; round--) {
-    invShiftSub();
-    addKey(round);
+    // InvShiftRows (row r moves right by r) with InvSubBytes, then AddRoundKey.
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) t[r + 4 * ((c + r) & 3)] = AES.inv[s[r + 4 * c]];
+    for (let i = 0; i < 16; i++) s[i] = t[i] ^ w[16 * round + i];
     if (!round) break;
-    for (let c = 0; c < 4; c++) {
-      const [a0, a1, a2, a3] = s.subarray(4 * c, 4 * c + 4);
-      s[4 * c] = gmul(a0, 14) ^ gmul(a1, 11) ^ gmul(a2, 13) ^ gmul(a3, 9);
-      s[4 * c + 1] = gmul(a0, 9) ^ gmul(a1, 14) ^ gmul(a2, 11) ^ gmul(a3, 13);
-      s[4 * c + 2] = gmul(a0, 13) ^ gmul(a1, 9) ^ gmul(a2, 14) ^ gmul(a3, 11);
-      s[4 * c + 3] = gmul(a0, 11) ^ gmul(a1, 13) ^ gmul(a2, 9) ^ gmul(a3, 14);
+    for (let c = 0; c < 16; c += 4) {
+      const a0 = s[c];
+      const a1 = s[c + 1];
+      const a2 = s[c + 2];
+      const a3 = s[c + 3];
+      s[c] = m14[a0] ^ m11[a1] ^ m13[a2] ^ m9[a3];
+      s[c + 1] = m9[a0] ^ m14[a1] ^ m11[a2] ^ m13[a3];
+      s[c + 2] = m13[a0] ^ m9[a1] ^ m14[a2] ^ m11[a3];
+      s[c + 3] = m11[a0] ^ m13[a1] ^ m9[a2] ^ m14[a3];
     }
   }
   dst.set(s, doff);
@@ -324,5 +467,11 @@ function aesDecryptBlock({ w, rounds }, src, so, dst, doff) {
  */
 export function aesCbcDecrypt(key, iv, data, { padding = true } = {}) {
   const schedule = aesExpand(key);
-  return cbcDecrypt((src, so, dst, doff) => aesDecryptBlock(schedule, src, so, dst, doff), 16, iv, data, padding);
+  try {
+    return cbcDecrypt((src, so, dst, doff) => aesDecryptBlock(schedule, src, so, dst, doff), 16, iv, data, padding);
+  } finally {
+    schedule.w.fill(0);
+    AES_STATE.fill(0);
+    AES_SHIFTED.fill(0);
+  }
 }

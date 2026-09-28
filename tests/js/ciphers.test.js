@@ -1,14 +1,17 @@
 /**
  * Tests for assets/js/lib/ciphers.js (DES / 3DES, RC2, AES CBC decryption) and lib/sha.js.
  *
- * Ground truth: published known-answer vectors — FIPS 46-3 worked example and the SP 800-67
- * TDEA example for DES / 3DES, RFC 2268 section 5 for RC2, FIPS 197 Appendix C and SP 800-38A
- * F.2 for AES — plus node:crypto (OpenSSL) as an independent oracle for CBC chains and padding.
+ * Ground truth: published known-answer vectors — FIPS 46-3 worked example, SP 800-17 tables and
+ * the SP 800-67 TDEA example for DES / 3DES, RFC 2268 section 5 for RC2, FIPS 197 Appendix C and
+ * SP 800-38A F.2 for AES — plus node:crypto (OpenSSL) as an independent oracle for CBC chains and
+ * padding. Speed is bounded too: the page decrypts legacy bundles with these.
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash, getCiphers, randomBytes } from 'node:crypto';
-import { CipherError, aesCbcDecrypt, desEde3CbcDecrypt, rc2CbcDecrypt } from '../../assets/js/lib/ciphers.js';
+import {
+  CipherError, SLICE_BYTES, aesCbcDecrypt, cbcDecryptInSlices, desEde3CbcDecrypt, rc2CbcDecrypt
+} from '../../assets/js/lib/ciphers.js';
 import { sha1, sha256 } from '../../assets/js/lib/sha.js';
 
 const hex = (s) => Uint8Array.from(Buffer.from(s.replace(/\s+/g, ''), 'hex'));
@@ -33,6 +36,24 @@ function encrypt(name, key, iv, data, padding = true) {
 describe('DES and DES-EDE (3DES)', () => {
   test('FIPS 46-3 worked example: single DES (an 8-byte key)', () => {
     assert.equal(toHex(desEde3CbcDecrypt(hex('133457799bbcdff1'), ZERO8, hex('85e813540f0ab405'), raw)), '0123456789abcdef');
+  });
+
+  test('SP 800-17 known answers: variable plaintext, variable key and S-box tests', () => {
+    // [key, plaintext, ciphertext] — Tables 1, 2 and 4 (single DES: the key three times over).
+    const VECTORS = [
+      ['0101010101010101', '8000000000000000', '95f8a5e5dd31d900'],
+      ['0101010101010101', '4000000000000000', 'dd7f121ca5015619'],
+      ['0101010101010101', '2000000000000000', '2e8653104f3834ea'],
+      ['0101010101010101', '1000000000000000', '4bd388ff6cd81d4f'],
+      ['8001010101010101', '0000000000000000', '95a8d72813daa94d'],
+      ['4001010101010101', '0000000000000000', '0eec1487dd8c26d5'],
+      ['7ca110454a1a6e57', '01a1d6d039776742', '690f5b0d9a26939b'],
+      ['0131d9619dc1376e', '5cd54ca83def57da', '7a389d10354bd271'],
+      ['07a1133e4a0b2686', '0248d43806f67172', '868ebb51cab4599a']
+    ];
+    for (const [key, plain, cipher] of VECTORS) {
+      assert.equal(toHex(desEde3CbcDecrypt(hex(key), ZERO8, hex(cipher), raw)), plain, `key ${key}`);
+    }
   });
 
   test('SP 800-67 TDEA example: three keys, "The qufck brown fox jump"', () => {
@@ -60,6 +81,23 @@ describe('DES and DES-EDE (3DES)', () => {
       const ct = encrypt('des-ede3-cbc', key, iv, plain);
       if (!ct) return t.skip('des-ede3-cbc not in this OpenSSL build');
       assert.equal(toHex(desEde3CbcDecrypt(key, iv, ct)), toHex(plain), `${size} bytes`);
+    }
+    return undefined;
+  });
+
+  test('64 KB of 3DES and of two-key 3DES agree with OpenSSL and take milliseconds, not seconds', (t) => {
+    const plain = randomBytes(64 * 1024);
+    for (const [name, size] of [['des-ede3-cbc', 24], ['des-ede-cbc', 16]]) {
+      const key = randomBytes(size);
+      const iv = randomBytes(8);
+      const ct = encrypt(name, key, iv, plain);
+      if (!ct) return t.skip(`${name} not in this OpenSSL build`);
+      const t0 = performance.now();
+      const out = desEde3CbcDecrypt(key, iv, ct);
+      const ms = performance.now() - t0;
+      assert.ok(Buffer.from(out).equals(plain), name);
+      // About 5 ms here; a bit-per-byte DES took over two seconds, and it runs on the page's thread.
+      assert.ok(ms < 500, `${name}: ${ms.toFixed(0)} ms for 64 KB`);
     }
     return undefined;
   });
@@ -128,6 +166,58 @@ describe('AES (FIPS 197)', () => {
         assert.equal(toHex(aesCbcDecrypt(key, iv, encrypt(name, key, iv, plain))), toHex(plain), `${name}, ${len} bytes`);
       }
     }
+  });
+});
+
+describe('cbcDecryptInSlices', () => {
+  const des = (key) => (iv, data, options) => desEde3CbcDecrypt(key, iv, data, options);
+
+  test('gives what one call gives, across slice boundaries, for each cipher', async () => {
+    const cases = [
+      ['des-ede3-cbc', 24, 8, (key) => des(key)],
+      ['aes-192-cbc', 24, 16, (key) => (iv, data, options) => aesCbcDecrypt(key, iv, data, options)]
+    ];
+    for (const [name, keySize, block, make] of cases) {
+      for (const len of [0, 5, 63, 64, 65, 200]) {
+        const key = randomBytes(keySize);
+        const iv = randomBytes(block);
+        const plain = randomBytes(len);
+        const ct = encrypt(name, key, iv, plain);
+        // Slices of 2 blocks: many boundaries, one of them just before the padding block.
+        const got = await cbcDecryptInSlices(make(key), block, iv, ct, { sliceBytes: 2 * block });
+        assert.equal(toHex(got), toHex(plain), `${name}, ${len} bytes`);
+      }
+    }
+    const key = hex('88bca90e90875a7f0f79c384627bafb2');
+    const iv = randomBytes(8);
+    const ct = randomBytes(8 * 37);
+    const rc2 = (v, d, o) => rc2CbcDecrypt(key, 128, v, d, o);
+    assert.deepEqual(await cbcDecryptInSlices(rc2, 8, iv, ct, { padding: false, sliceBytes: 40 }), rc2CbcDecrypt(key, 128, iv, ct, raw));
+  });
+
+  test('errors are those of one call: bad padding, partial blocks; the inputs stay untouched', async () => {
+    const key = randomBytes(24);
+    const iv = randomBytes(8);
+    const bad = encrypt('des-ede3-cbc', key, iv, new Uint8Array(64).fill(9), false);
+    const copy = Buffer.from(bad);
+    await assert.rejects(cbcDecryptInSlices(des(key), 8, iv, bad, { sliceBytes: 16 }), (e) => e instanceof CipherError && e.code === 'padding');
+    assert.deepEqual(Buffer.from(bad), copy);
+    await assert.rejects(cbcDecryptInSlices(des(key), 8, iv, new Uint8Array(41), { sliceBytes: 16 }), (e) => e instanceof CipherError && e.code === 'length');
+    await assert.rejects(cbcDecryptInSlices(des(key), 8, iv, bad, { sliceBytes: 12 }), RangeError);
+  });
+
+  test('yields to the event loop between slices (the page keeps painting)', async () => {
+    const key = randomBytes(24);
+    const iv = randomBytes(8);
+    const plain = randomBytes(3 * SLICE_BYTES + 100);
+    const ct = encrypt('des-ede3-cbc', key, iv, plain);
+    let done = false;
+    let firedWhileRunning = null;
+    setTimeout(() => { firedWhileRunning = !done; }, 0);
+    const out = await cbcDecryptInSlices(des(key), 8, iv, ct);
+    done = true;
+    assert.equal(firedWhileRunning, true);
+    assert.ok(Buffer.from(out).equals(plain));
   });
 });
 

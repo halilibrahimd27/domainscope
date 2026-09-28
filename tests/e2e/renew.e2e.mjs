@@ -87,6 +87,8 @@ const fakeScript = () => `(() => {
   window.__dnsDelayMs = 0;
   // Non-zero: every DoH request gets this HTTP status (a rate limit on every resolver).
   window.__dnsStatus = 0;
+  // 'name|TYPE' → an rcode every resolver answers for that question (SERVFAIL: no answer for one family).
+  window.__dnsRcodeFor = {};
   // rejectPost: the number of the POST that gets a quota 429 (rate_limit_exceeded) instead of a measurement.
   const gp = window.__gp = { calls: [], n: 0, posts: 0, remaining: 250, measurements: {}, delayMs: 0, rejectPost: 0 };
   let wire = null;
@@ -146,6 +148,12 @@ const fakeScript = () => `(() => {
     window.__fakeDnsLog.push({ name, type: q.type, resolver });
     if (window.__dnsDelayMs) await new Promise((r) => setTimeout(r, window.__dnsDelayMs));
     if (window.__dnsStatus) return new Response('', { status: window.__dnsStatus });
+    const forced = window.__dnsRcodeFor[name + '|' + q.type];
+    if (forced) {
+      return new Response(wire.encodeMessage({
+        id: 0, flags: { qr: true, rd: true, ra: true }, rcode: forced, questions: [{ name: q.name, type: q.type }], answers: [], authorities: [], edns: {}
+      }), { headers: { 'content-type': 'application/dns-message' } });
+    }
     const z = { ...Z, ...(VIEWS[resolver] || {}) };
     const answers = [];
     let cur = name;
@@ -529,6 +537,21 @@ async function main() {
       await page.press('Enter', { ctrl: true });
       await page.waitFor((n) => window.__fakeDnsLog.length > n, { args: [before], message: 'Ctrl+Enter ran the check' });
       await waitDone(page, 'second check');
+    });
+
+    await run.step('the AAAA lookup gets no answer (SERVFAIL everywhere): IPv6 not checked, so the name could not be checked — never ready', async () => {
+      await page.evaluate(() => { window.__dnsRcodeFor = { 'www.example.com|AAAA': 'SERVFAIL' }; });
+      await routeTo(page, '#/renew?names=www.example.com&ca=letsencrypt&challenge=http-01');
+      await page.waitFor(() => document.querySelector('.rnw-name')?.dataset.name === 'www.example.com' && !!document.querySelector('.rnw-hero')
+        && !document.querySelector('[data-action="renew-run"]').hidden, { message: 'checked', timeout: 20000 });
+      await page.evaluate(() => { window.__dnsRcodeFor = {}; });
+      const [c] = await cards(page);
+      assertEqual(c.verdict, 'unknown', 'could not be checked');
+      assert(c.findings.includes('http.family-error:warn') && c.findings.includes('http.ok-partial:ok'), `${c.findings}`);
+      assert(!c.findings.includes('http.ok:ok') && !c.findings.some((f) => f.startsWith('http.ipv6') || f.startsWith('http.none')), `${c.findings}`);
+      const words = await text(page, '.rnw-name [data-id="http.ok-partial"]');
+      assert(/1 IPv4; the IPv6 lookup got no answer/.test(words) && !/0 IPv6/.test(words), words);
+      assert(/The IPv6 addresses of www\.example\.com could not be read/.test(await text(page, '.rnw-name [data-id="http.family-error"]')), 'the family named');
     });
 
     run.group('Phone 320 / 375 px, Turkish / English, light / dark');

@@ -137,7 +137,8 @@ export const RENEWAL_FINDINGS = Object.freeze([
   'acme.none', 'acme.leftover', 'acme.cname', 'acme.acme-dns', 'acme.dangling', 'acme.servfail', 'acme.bogus', 'acme.error',
   'provider.known', 'provider.no-api', 'provider.target-no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
   'dnssec.secure', 'dnssec.unsigned', 'dnssec.bogus', 'dnssec.servfail', 'dnssec.unknown', 'dnssec.error',
-  'http.ok', 'http.ipv6', 'http.cdn', 'http.alpn-cdn', 'http.private', 'http.private-some', 'http.none', 'http.nxdomain', 'http.dangling', 'http.error',
+  'http.ok', 'http.ok-partial', 'http.ipv6', 'http.cdn', 'http.alpn-cdn', 'http.private', 'http.private-some', 'http.none', 'http.nxdomain', 'http.dangling',
+  'http.error', 'http.family-error',
   'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.v6-fallback', 'http01.catch-all', 'http01.inconclusive',
   'http01.untested'
 ]);
@@ -576,8 +577,16 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
     if (!dnsFailed) out.push(finding('http.error', 'warn', { name, error: a.error }, { unchecked: sev === 'error' }));
     return out;
   }
+  // One family's lookup got no answer here (the other did): what it holds is not known — never
+  // "no AAAA record" —, and for HTTP-01 / TLS-ALPN-01 the CA may connect over it: not checked.
+  const unread = arr(a.failed);
+  for (const f of unread) {
+    out.push(finding('http.family-error', 'warn', { name, type: f.type, family: familyOf(f.type), error: f.error }, { unchecked: sev === 'error' }));
+  }
   const ips = [...a.ipv4, ...a.ipv6];
   if (!ips.length) {
+    // Only an NXDOMAIN answer speaks for both families; else the unread one may hold the addresses.
+    if (unread.length && a.status !== 'NXDOMAIN') return out;
     if (a.cnames.length) out.push(finding('http.dangling', sev, { name, chain: a.cnames.join(' → '), rcode: a.status }));
     else if (a.status === 'NXDOMAIN') out.push(finding('http.nxdomain', sev, { name }));
     else out.push(finding('http.none', sev, { name }));
@@ -591,7 +600,15 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
   }
   const v4 = pub.filter((ip) => ipVersion(ip) === 4);
   const v6 = pub.filter((ip) => ipVersion(ip) === 6);
-  out.push(finding('http.ok', 'ok', { name, count4: v4.length, count6: v6.length, ips: pub.slice(0, 6).join(', ') }));
+  if (unread.length) {
+    // Only the family that was read is counted: "0 IPv6" would claim what no answer said.
+    const read = unread[0].type === 'A' ? 'AAAA' : 'A';
+    out.push(finding('http.ok-partial', 'ok', {
+      name, count: read === 'A' ? v4.length : v6.length, family: familyOf(read), other: familyOf(unread[0].type), ips: pub.slice(0, 6).join(', ')
+    }));
+  } else {
+    out.push(finding('http.ok', 'ok', { name, count4: v4.length, count6: v6.length, ips: pub.slice(0, 6).join(', ') }));
+  }
   if (priv.length) out.push(finding('http.private-some', 'warn', { name, ips: priv.join(', ') }));
   if (v6.length) out.push(finding('http.ipv6', 'info', { name, ipv6: v6.slice(0, 4).join(', ') }));
   if (a.hidesOrigin && a.provider) {
@@ -772,18 +789,27 @@ async function acmeOf(base, run) {
   return { ...out, state: out.txt.length ? 'txt' : 'none' };
 }
 
+/** 'IPv4' / 'IPv6' for an A / AAAA lookup. */
+const familyOf = (type) => (type === 'AAAA' ? 'IPv6' : 'IPv4');
+
+/**
+ * The addresses of a name: `error` when neither lookup got an answer; `failed` lists the one
+ * family whose lookup did not (a transport error, a rate limit, a SERVFAIL) when the other did.
+ */
 async function addressOf(base, run) {
   const [a, aaaa] = await Promise.all([run.query(base, 'A'), run.query(base, 'AAAA')]);
   if (!answered(a) && !answered(aaaa)) {
-    return { status: a.rcode || 'ERROR', cnames: [], ipv4: [], ipv6: [], error: a.error || a.rcode || 'lookup failed' };
+    return { status: a.rcode || 'ERROR', cnames: [], ipv4: [], ipv6: [], failed: [], error: a.error || a.rcode || 'lookup failed' };
   }
+  const failed = [['A', a], ['AAAA', aaaa]].filter(([, res]) => !answered(res))
+    .map(([type, res]) => ({ type, error: (res && (res.error || res.rcode)) || 'lookup failed' }));
   const ref = answered(a) ? a : aaaa;
   const ipv4 = uniq(records(a, 'A').map((rr) => normalizeIP(rr.data)).filter((ip) => ip && ipVersion(ip) === 4));
   const ipv6 = uniq(records(aaaa, 'AAAA').map((rr) => normalizeIP(rr.data)).filter((ip) => ip && ipVersion(ip) === 6));
   const cnames = cnameChain(ref.answers, base);
   const c = classifyResolution({ status: ref.rcode, ipv4, ipv6, cnames });
   return {
-    status: ref.rcode, cnames, ipv4, ipv6, error: null, kind: c.kind,
+    status: ref.rcode, cnames, ipv4, ipv6, failed, error: null, kind: c.kind,
     provider: c.provider ? c.provider.name : null, hidesOrigin: !!c.hidesOrigin
   };
 }
@@ -1322,6 +1348,9 @@ const STRINGS = [
   ['f.http.ok', ['{name} resolves to public addresses', '{name} genel adreslere çözülüyor'],
     ['{ips} ({count4} IPv4, {count6} IPv6). The CA connects to these for HTTP-01 (port 80) and TLS-ALPN-01 (port 443).',
       '{ips} ({count4} IPv4, {count6} IPv6). Otorite HTTP-01 (80 portu) ve TLS-ALPN-01 (443 portu) için bunlara bağlanır.']],
+  ['f.http.ok-partial', ['{name} resolves to public addresses', '{name} genel adreslere çözülüyor'],
+    ['{ips} ({count} {family}; the {other} lookup got no answer). The CA connects to these for HTTP-01 (port 80) and TLS-ALPN-01 (port 443).',
+      '{ips} ({count} {family}; {other} sorgusu yanıt almadı). Otorite HTTP-01 (80 portu) ve TLS-ALPN-01 (443 portu) için bunlara bağlanır.']],
   ['f.http.ipv6', ['IPv6 too: both families must serve the challenge', 'IPv6 de var: iki adres ailesi de doğrulamayı sunmalı'],
     ['AAAA {ipv6}: CAs may validate over IPv6, and Let’s Encrypt tries it first. The server behind the AAAA record must answer /.well-known/acme-challenge/ like the IPv4 one; a stale AAAA record is a common cause of failed renewals.',
       'AAAA {ipv6}: otoriteler IPv6 üzerinden doğrulayabilir; Let’s Encrypt önce onu dener. AAAA kaydının arkasındaki sunucu /.well-known/acme-challenge/ yolunu IPv4 sunucusu gibi yanıtlamalı; güncelliğini yitirmiş bir AAAA kaydı başarısız yenilemelerin sık görülen bir nedenidir.']],
@@ -1347,6 +1376,9 @@ const STRINGS = [
       '{name} → {chain} ({rcode}): hedef çözülene kadar HTTP-01 ve TLS-ALPN-01 başarısız olur.']],
   ['f.http.error', ['The addresses of {name} could not be read', '{name} adresleri okunamadı'],
     ['{error}. Check again.', '{error}. Yeniden kontrol edin.']],
+  ['f.http.family-error', ['The {family} addresses of {name} could not be read', '{name} için {family} adresleri okunamadı'],
+    ['{type} lookup: {error}. If the name has {family} addresses the CA may connect over them, so this family was not checked. Check again.',
+      '{type} sorgusu: {error}. Adın {family} adresleri varsa otorite onlar üzerinden de bağlanabilir; bu aile kontrol edilmedi. Yeniden kontrol edin.']],
 
   ['f.http01.ok', ['HTTP-01 path reachable over {family}', 'HTTP-01 yoluna {family} üzerinden erişiliyor'],
     [{ one: '{count} probe ({places}) reached the web server: {answers}. A 404 for the made-up token is the expected answer; your ACME client serves the real one there.',

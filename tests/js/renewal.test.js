@@ -411,6 +411,33 @@ test('could not be checked: the addresses for HTTP-01 / TLS-ALPN-01, _acme-chall
   assert.deepEqual([sev(soa, 'dnssec.error'), soa.verdict], ['warn', 'warnings']);
 });
 
+test('one address family unread: never "no AAAA" or ready for HTTP-01, and never "no address" for an IPv6-only name', async () => {
+  const zone = exampleZone({ 'v6only.example.com': { AAAA: '2001:db8::60' } });
+  const noAaaa = { fail: { 'www.example.com|AAAA': 'www.example.com: HTTP 429' } };
+  const r = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' }, { fake: noAaaa })).names[0];
+  assert.deepEqual([sev(r, 'http.family-error'), r.verdict], ['warn', 'unknown'], 'IPv6 not checked: could not be checked, not ready');
+  assert.deepEqual(r.findings.find((f) => f.id === 'http.family-error').params,
+    { name: 'www.example.com', type: 'AAAA', family: 'IPv6', error: 'www.example.com: HTTP 429' });
+  assert.ok(!ids(r).includes('http.ok') && !ids(r).includes('http.ipv6'), ids(r).join(' '));
+  assert.deepEqual(r.findings.find((f) => f.id === 'http.ok-partial').params,
+    { name: 'www.example.com', count: 1, family: 'IPv4', other: 'IPv6', ips: '203.0.113.10' }, 'only the family read is counted');
+  assert.deepEqual(r.address.failed, [{ type: 'AAAA', error: 'www.example.com: HTTP 429' }]);
+  assert.deepEqual(http01Plan(r), { ok: true, families: [4] }, 'the test can plan only what was read');
+  // An IPv6-only name whose AAAA lookup failed: not known, never "has no A or AAAA record".
+  const v6 = (await run(zone, ['v6only.example.com'], { ca: 'letsencrypt', challenge: 'http-01' },
+    { fake: { fail: { 'v6only.example.com|AAAA': 'Failed to fetch' } } })).names[0];
+  assert.deepEqual([ids(v6).includes('http.none'), sev(v6, 'http.family-error'), v6.verdict], [false, 'warn', 'unknown']);
+  // DNS-01 does not connect to the addresses: a warning only. NXDOMAIN speaks for both families.
+  const dns01 = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, { fake: noAaaa })).names[0];
+  assert.ok(!ids(dns01).includes('http.family-error'), 'DNS-01 reads no addresses');
+  const gone = (await run(zone, ['gone.example.com'], { ca: 'letsencrypt', challenge: 'http-01' },
+    { fake: { fail: { 'gone.example.com|AAAA': 'Failed to fetch' } } })).names[0];
+  assert.deepEqual([sev(gone, 'http.nxdomain'), gone.verdict], ['error', 'fail']);
+  for (const lang of ['en', 'tr']) {
+    for (const id of ['http.family-error', 'http.ok-partial']) assert.ok(RENEWAL_I18N[lang][`renew.f.${id}.detail`], `${lang} ${id}`);
+  }
+});
+
 test('CAA through a CNAME: the alias target answers, the climb goes on with the name\'s parents', async () => {
   const zone = exampleZone({ 'example.net': { SOA: SOA('example.net'), CAA: CAA('issue', 'pki.goog') } });
   const r = (await run(zone, ['shop.example.com'], { ca: 'letsencrypt', challenge: 'http-01' })).names[0];

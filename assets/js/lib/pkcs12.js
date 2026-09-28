@@ -27,8 +27,11 @@
  *   certificate of the file is asked to verify, and dropped. The result names the certificates
  *   the key belongs to (RSA; EC P-256, P-384, P-521). Without `checkKey` no key is decrypted.
  *
- * The password is used inside {@link openPkcs12} only. Derived keys and decrypted private keys
- * are zeroed once used (as far as JS allows), and no error message carries the password.
+ * The password is used inside {@link openPkcs12} only, and no error message carries it. Its bytes,
+ * the KDF's working buffers (and lib/sha.js's), derived keys, key schedules and decrypted contents
+ * are zeroed once used. That is best effort: a JS string (the password as typed) cannot be
+ * cleared, and the engine may keep copies of its own (WebCrypto's buffers, garbage not yet
+ * collected).
  */
 
 import { sha1, sha256 } from './sha.js';
@@ -372,20 +375,27 @@ function needSubtle(subtle) {
   return subtle;
 }
 
-/** `hash` iterated: H(data), then H of the previous output, `count` times in all. */
+/**
+ * `hash` iterated: H(data), then H of the previous output, `count` times in all. Each
+ * intermediate output is zeroed once the next one is made (`data` is the caller's to zero).
+ */
 async function hashIterate(hash, data, count, subtle) {
   const { sync } = HASHES[hash];
   let a = data;
+  const next = (b) => {
+    if (a !== data) a.fill(0);
+    a = b;
+  };
   if (sync) {
     for (let i = 1; i <= count; i++) {
-      a = sync(a);
+      next(sync(a));
       if (i % KDF_YIELD_EVERY === 0 && i < count) await new Promise((resolve) => setTimeout(resolve, 0));
     }
     return a;
   }
   const s = needSubtle(subtle);
   return webCrypto(hash, async () => {
-    for (let i = 0; i < count; i++) a = new Uint8Array(await s.digest(hash, a));
+    for (let i = 0; i < count; i++) next(new Uint8Array(await s.digest(hash, a)));
     return a;
   });
 }
@@ -410,7 +420,13 @@ export async function pkcs12Kdf({ hash = 'SHA-1', password, salt, id, iterations
   const blocks = Math.ceil(length / u);
   const out = new Uint8Array(blocks * u);
   for (let i = 0; i < blocks; i++) {
-    const A = await hashIterate(hash, concat([D, I]), iterations, subtle);
+    const DI = concat([D, I]); // holds the stretched password: zeroed below
+    let A;
+    try {
+      A = await hashIterate(hash, DI, iterations, subtle);
+    } finally {
+      DI.fill(0);
+    }
     out.set(A, i * u);
     if (i + 1 < blocks) {
       // I_j = (I_j + B + 1) mod 2^(8v) for every v-byte block of I, B = A repeated to v bytes.

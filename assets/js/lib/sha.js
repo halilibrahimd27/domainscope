@@ -21,6 +21,15 @@ function padMessage(bytes) {
   return view;
 }
 
+/**
+ * Zero the padded copy of the message and the message schedule: the PKCS#12 KDF hashes a
+ * stretched password with these functions.
+ */
+function wipe(view, W) {
+  new Uint8Array(view.buffer).fill(0);
+  W.fill(0);
+}
+
 /** 32-bit words → big-endian bytes. */
 function wordsToBytes(words) {
   const out = new Uint8Array(words.length * 4);
@@ -71,6 +80,7 @@ export function sha256(bytes) {
     }
     H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
   }
+  wipe(view, W);
   return wordsToBytes(H);
 }
 
@@ -100,5 +110,6 @@ export function sha1(bytes) {
     }
     H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e;
   }
+  wipe(view, W);
   return wordsToBytes(H);
 }

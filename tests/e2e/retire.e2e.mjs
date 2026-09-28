@@ -430,9 +430,17 @@ async function main() {
           const btn = document.querySelector('[data-action="retire-discover"]');
           const b = btn.getBoundingClientRect();
           const cost = document.getElementById(btn.getAttribute('aria-describedby'));
-          return { inside: b.left >= box.left - 0.5 && b.right <= box.right + 0.5, cost: cost ? cost.textContent : '' };
+          // The passive lookup's button, under the chips of the head card, fits its card too.
+          const card = document.querySelector('.retire-head-card').getBoundingClientRect();
+          const passive = document.querySelector('[data-action="retire-passive"]').getBoundingClientRect();
+          return {
+            inside: b.left >= box.left - 0.5 && b.right <= box.right + 0.5,
+            passive: passive.width > 0 && passive.left >= card.left - 0.5 && passive.right <= card.right + 0.5,
+            cost: cost ? cost.textContent : ''
+          };
         });
         assert(fit.inside, `the button stays inside its box (${lang})`);
+        assert(fit.passive, `the passive lookup's button stays inside the head card (${lang})`);
         assert(/159/.test(fit.cost) && /\d+–\d+/.test(fit.cost), `the cost next to the button (${lang}): ${fit.cost}`);
         if (lang === 'tr') await shot(page, opts, 'retire-discover-320-tr');
         await page.setViewport({ width: 1440, height: 900 });

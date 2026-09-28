@@ -670,6 +670,56 @@ describe('CT issuers', () => {
     deny['example.com'].CAA = [{ flags: 0, tag: 'issue', value: ';' }];
     assert.equal(certsCard(await buildPassport('example.com', { dns: fakeDns(deny), fetchImpl: mockFetch(), now: NOW, lookups: ['caa'] }), { now: NOW }).caa.state, 'deny-all');
   });
+
+  test('the CAA state reads the set as RFC 8659 does, so it never contradicts the CT verdicts', async () => {
+    const ct = await lookupCtIssuers('example.com', {
+      fetchImpl: mockFetch({ spotter: () => json([issuance(1), issuance(2, { dn: SECTIGO, friendly: 'Sectigo', caa: ['sectigo.com'] })]) }), now: NOW, cooldown: createCtCooldown()
+    });
+    const cardOf = async (records) => {
+      const zone = zoneOf();
+      zone['example.com'].CAA = records;
+      const raw = await buildPassport('example.com', { dns: fakeDns(zone), fetchImpl: mockFetch(), now: NOW, lookups: ['caa'] });
+      return certsCard({ ...raw, ct }, { now: NOW });
+    };
+    const caa = (tag, value, flags = 0) => ({ flags, tag, value });
+    const iodef = caa('iodef', 'mailto:security@example.com');
+    const shape = (card) => [card.caa.state, card.caa.issue.map((e) => e.issuer), card.caa.wildcardOnly, card.caa.issuewild.map((e) => e.issuer)];
+    const verdicts = (card) => card.ct.issuers.map((i) => i.verdict);
+
+    // iodef only: no issue property, so CAA restricts nothing (§4.2)
+    const iodefOnly = await cardOf([iodef]);
+    assert.deepEqual(shape(iodefOnly), ['unrestricted', [], false, []]);
+    assert.deepEqual([verdicts(iodefOnly), iodefOnly.ct.notAllowed], [['allowed', 'allowed'], []]);
+    // no wildcard certificates, any CA for the name itself (§4.3)
+    const noWild = await cardOf([iodef, caa('issuewild', ';')]);
+    assert.deepEqual(shape(noWild), ['unrestricted', [], true, []]);
+    assert.deepEqual(verdicts(noWild), ['allowed', 'allowed']);
+    const wildOnly = await cardOf([caa('issuewild', 'letsencrypt.org')]);
+    assert.deepEqual(shape(wildOnly), ['unrestricted', [], true, ['letsencrypt.org']]);
+    // issue ";" with an issuewild CA: wildcard certificates only, from that CA
+    const onlyWildcards = await cardOf([caa('issue', ';'), caa('issuewild', 'letsencrypt.org')]);
+    assert.deepEqual(shape(onlyWildcards), ['present', [], true, ['letsencrypt.org']]);
+    assert.deepEqual(verdicts(onlyWildcards), ['denied', 'denied'], 'the CT verdicts are for the name itself');
+    assert.equal((await cardOf([caa('issue', ';'), caa('issuewild', ';')])).caa.state, 'deny-all');
+    assert.equal((await cardOf([caa('issue', 'letsencrypt.org'), caa('issuewild', ';')])).caa.state, 'present');
+    // a critical unknown tag: no CA may issue, whatever issue names (§4.1); a non-critical one changes nothing
+    const critical = await cardOf([caa('issue', 'letsencrypt.org'), caa('tbs', 'unknown', 128), caa('tbs', 'again', 128)]);
+    assert.deepEqual([critical.caa.state, critical.caa.criticalTags], ['critical', ['tbs']]);
+    assert.deepEqual([verdicts(critical), critical.ct.notAllowed], [['denied', 'denied'], ["Let's Encrypt", 'Sectigo']]);
+    assert.equal((await cardOf([caa('issue', 'letsencrypt.org'), caa('tbs', 'unknown')])).caa.state, 'present');
+
+    // the summary facts: the issue CAs, the issuewild CAs when there is issuewild, the critical tags
+    const zone = zoneOf();
+    const factsOf = async (records) => {
+      zone['example.com'].CAA = records;
+      const raw = await buildPassport('example.com', { dns: fakeDns(zone), fetchImpl: mockFetch(), now: NOW, lookups: ['caa'] });
+      const f = passportSummaryFacts(passportCards(raw, { now: NOW }), { domain: 'example.com' }).certs;
+      return [f.caa, f.cas, f.wildcard, f.wildCas, f.criticalTags];
+    };
+    assert.deepEqual(await factsOf([iodef, caa('issuewild', ';')]), ['unrestricted', [], true, [], []]);
+    assert.deepEqual(await factsOf([caa('issue', ';'), caa('issuewild', 'letsencrypt.org')]), ['present', [], true, ["Let's Encrypt"], []]);
+    assert.deepEqual(await factsOf([caa('issue', 'letsencrypt.org'), caa('tbs', 'unknown', 128)]), ['critical', ["Let's Encrypt"], false, [], ['tbs']]);
+  });
 });
 
 /* ------------------------------------------------------------------------ */
@@ -691,7 +741,9 @@ describe('passportSummaryFacts', () => {
     });
     assert.deepEqual(facts.web.hosts.map((x) => [x.name, x.kind, x.provider]), [['example.com', 'cloudflare', 'Cloudflare'], ['www.example.com', 'cloudflare', 'Cloudflare']]);
     assert.deepEqual([facts.web.exists, facts.web.https, facts.web.httpsFailed], [true, true, []]);
-    assert.deepEqual(facts.certs, { pending: false, failed: false, exists: true, caa: 'present', caaFailed: false, cas: ["Let's Encrypt"], ct: null, ctFailed: false });
+    assert.deepEqual(facts.certs, {
+      pending: false, failed: false, exists: true, caa: 'present', caaFailed: false, cas: ["Let's Encrypt"], wildcard: false, wildCas: [], criticalTags: [], ct: null, ctFailed: false
+    });
     assert.equal(facts.saas.exists, true);
     assert.deepEqual(facts.saas.vendors, ['Google', 'Atlassian', 'Microsoft 365', 'Stripe']);
     assert.equal(typeof facts.health.score, 'number');

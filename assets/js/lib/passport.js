@@ -885,9 +885,20 @@ function caOfIssuerDomain(domain) {
  * Certificates: which CAs CAA lets issue (with the RFC 8657 restrictions and wildcard-only
  * values), and — once {@link lookupCtIssuers} ran (`raw.ct`) — the issuers of the current
  * certificates in CT, each with health.checkCaaAllows' verdict against that CAA set.
- * `caa.state`: 'none' (any CA may issue), 'present', 'deny-all' (issue values that authorise
- * nobody), null (not known). `ct`: null until asked, else `{ state: 'ok'|'failed', … }`.
- * `exists` is false for a domain known not to exist.
+ * `caa.state`, read the way health.checkCaaAllows reads the set (RFC 8659 §4):
+ * - 'none': no CAA record, any CA may issue;
+ * - 'critical': a property with the critical flag and a tag CAs do not know (`criticalTags`):
+ *   no CA may issue at all (§4.1);
+ * - 'unrestricted': CAA records but no issue property (iodef, issuewild or other tags only): any
+ *   CA may issue for the name itself (§4.2); an issuewild property still limits wildcard
+ *   certificates (`wildcardOnly`, `issuewild`);
+ * - 'deny-all': issue values that authorise nobody, and no issuewild value that authorises
+ *   somebody: no certificate at all;
+ * - 'present': the CAs the issue values name (`issue`, empty when only issuewild names CAs:
+ *   wildcard certificates only);
+ * - null: not known.
+ * `ct`: null until asked, else `{ state: 'ok'|'failed', … }`. `exists` is false for a domain
+ * known not to exist.
  * @param {object} raw
  * @param {{ now?: Date|number }} [opts]
  * @returns {object}
@@ -904,8 +915,12 @@ export function certsCard(raw, { now } = {}) {
     const usable = (e) => e.valid && e.issuer && !e.problem;
     const issue = parsed.issue.filter(usable).map(entry);
     const wild = parsed.issuewild.filter(usable).map(entry);
-    let state = 'none';
-    if (parsed.count) state = parsed.issue.length && !issue.length && !(parsed.issuewild.length && wild.length) ? 'deny-all' : 'present';
+    let state = 'present';
+    if (!parsed.count) state = 'none';
+    else if (parsed.unknownCritical) state = 'critical';
+    else if (!parsed.issue.length) state = 'unrestricted';
+    // Without issuewild a wildcard follows issue: nobody either.
+    else if (!issue.length && !wild.length) state = 'deny-all';
     card.caa = {
       state,
       foundAt: c.foundAt || null,
@@ -913,6 +928,7 @@ export function certsCard(raw, { now } = {}) {
       issuewild: wild,
       wildcardOnly: parsed.issuewild.length > 0,
       iodef: parsed.iodef.length,
+      criticalTags: uniq(parsed.unknown.filter((u) => u.critical).map((u) => u.tag)),
       parsed
     };
   } else if (c && (c.failed || c.error) && !card.failures.length) {
@@ -1384,7 +1400,11 @@ export function passportSummaryFacts(cards, { domain, at = null, host = null }) 
       exists: certs.exists !== false,
       caa: certs.caa ? certs.caa.state : null,
       caaFailed: failedLookup(certs, 'caa'),
+      // the CAs of issue, and of issuewild when there is one (`wildcard`: it rules wildcard certificates)
       cas: certs.caa ? uniq(certs.caa.issue.map((e) => (e.ca ? e.ca.name : e.issuer))) : [],
+      wildcard: !!(certs.caa && certs.caa.wildcardOnly),
+      wildCas: certs.caa ? uniq(certs.caa.issuewild.map((e) => (e.ca ? e.ca.name : e.issuer))) : [],
+      criticalTags: certs.caa && certs.caa.state === 'critical' ? certs.caa.criticalTags : [],
       ct: certs.ct && certs.ct.state === 'ok' ? {
         issuers: certs.ct.issuers.map((i) => ({ name: i.name, count: i.count })),
         notAllowed: certs.ct.notAllowed

@@ -74,7 +74,9 @@ const ZONE = {
     NS: ['ns1.natrohost.com', 'ns2.natrohost.com'],
     A: ['203.0.113.80'],
     MX: [{ preference: 10, exchange: 'mx.yaanimail.com' }],
-    TXT: [['v=spf1 -all']]
+    TXT: [['v=spf1 -all']],
+    // no issue property: any CA for the name, none for wildcards
+    CAA: [{ flags: 0, tag: 'iodef', value: 'mailto:security@example.com' }, { flags: 0, tag: 'issuewild', value: ';' }]
   },
   'www.example-test.com.tr': { A: ['203.0.113.80'] },
   // built only by the mid-build Retry step, so none of its answers is in the resolver's cache yet
@@ -82,7 +84,9 @@ const ZONE = {
     SOA: [{ mname: 'adam.ns.cloudflare.com', rname: 'dns.cloudflare.com', serial: 2026092802, refresh: 10000, retry: 2400, expire: 604800, minimum: 1800 }],
     NS: ['adam.ns.cloudflare.com', 'bella.ns.cloudflare.com'],
     A: ['104.16.1.1'],
-    TXT: [['v=spf1 -all']]
+    TXT: [['v=spf1 -all']],
+    // a critical tag no CA knows: nobody may issue, whatever issue names
+    CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 128, tag: 'tbs', value: 'unknown' }]
   },
   'mx.yaanimail.com': { A: ['203.0.113.90'] }
 };
@@ -403,6 +407,10 @@ async function main() {
       assertEqual((await counts(page)).rdap, before.rdap, 'no RDAP request for .tr');
       assert(/Natro/.test(await text(page, '.dov-card-dns')), 'Natro');
       assert(/Yaani Mail/.test(await text(page, '.dov-card-mail')), 'Yaani');
+      // iodef and issuewild ";" only: CAA leaves the name to any CA, and no CA may issue a wildcard
+      assertEqual(await page.evaluate(() => document.querySelector('.dov-card-certs [data-caa]')?.dataset.caa), 'unrestricted', 'CAA state');
+      const certs = await text(page, '.dov-card-certs');
+      assert(/Allowed CAs\s*any CA \(CAA has no issue property\)/.test(certs) && /Wildcard certificates\s*no CA/.test(certs), certs);
       await shot(page, opts, 'domain-tr-desktop-light-en');
     });
 
@@ -432,9 +440,17 @@ async function main() {
         await page.evaluate(() => { delete window.__dnsHold['_smtp._tls.example.net|TXT']; window.__openHealth(); window.__openRdap(); });
         await waitBuilt(page, 'the build ends');
         assertEqual(await page.evaluate(() => document.querySelector('.dov-card-dns').dataset.failed), '', 'the DNS card keeps the retried answer');
+        // a critical unknown tag: no CA, Let's Encrypt named or not
+        assertEqual(await page.evaluate(() => document.querySelector('.dov-card-certs [data-caa]')?.dataset.caa), 'critical', 'CAA state');
+        assert(/unknown tag marked critical \(tbs\): CAs must refuse/.test(await text(page, '.dov-card-certs')), await text(page, '.dov-card-certs'));
         // It runs again on the retried answer.
         await page.waitFor(() => !document.querySelector('.dov-card-health .dov-updating') && !!document.querySelector('.dov-score')
           && !document.querySelector('.dov-problem[data-id="ns.error"]'), { timeout: 15000, message: 'health follows the retried NS' });
+        // Behind the critical tag even the CA that CAA names is blocked: the note says what to fix.
+        await page.click('.dov-card-certs [data-action="dov-ct"]');
+        await page.waitFor(() => document.querySelector('.dov-ct')?.dataset.ct === 'ok', { message: 'CT issuers' });
+        assertEqual(await page.evaluate(() => [...document.querySelectorAll('.dov-issuer')].map((li) => li.dataset.verdict)), ['denied', 'denied'], 'CT verdicts');
+        assert(/The critical tag blocks Let's Encrypt, Sectigo: their next renewal/.test(await text(page, '.dov-card-certs')), await text(page, '.dov-card-certs'));
       } finally {
         // the registry answers again, whatever happened above
         await page.evaluate(() => {

@@ -920,6 +920,36 @@ describe('domain (overview)', () => {
     assert.match(txt(ctDown), /- Certificates: CAA allows Let's Encrypt · CT lookup failed\n/);
   });
 
+  test('CAA as RFC 8659 reads it: no issue property, issuewild on its own, wildcards only, a critical unknown tag', () => {
+    const certs = (over) => ({ certs: { pending: false, failed: false, exists: true, caa: 'present', cas: [], wildcard: false, wildCas: [], criticalTags: [], ct: null, ...over } });
+    const line = (over, lang = 'en') => lines(md(S.domainSummary(facts(certs(over)), opts(lang, url)))).find((l) => /^- \*\*(Certificates|Sertifikalar):\*\*/.test(l));
+    // iodef only
+    assert.equal(line({ caa: 'unrestricted' }), '- **Certificates:** CAA allows any CA (no issue property)');
+    // issuewild ";" only, and issuewild naming a CA only
+    assert.equal(line({ caa: 'unrestricted', wildcard: true }), '- **Certificates:** CAA allows any CA (no issue property) · no CA for wildcard certificates');
+    assert.equal(line({ caa: 'unrestricted', wildcard: true, wildCas: ["Let's Encrypt"] }), "- **Certificates:** CAA allows any CA (no issue property) · wildcard certificates: Let's Encrypt");
+    // issue ";" + issuewild letsencrypt.org
+    assert.equal(line({ caa: 'present', wildcard: true, wildCas: ["Let's Encrypt"] }), "- **Certificates:** CAA allows wildcard certificates only, from Let's Encrypt");
+    // issue CAs with issuewild ";" or another issuewild CA
+    assert.equal(line({ caa: 'present', cas: ["Let's Encrypt"], wildcard: true }), "- **Certificates:** CAA allows Let's Encrypt · no CA for wildcard certificates");
+    assert.equal(line({ caa: 'present', cas: ["Let's Encrypt"], wildcard: true, wildCas: ['DigiCert'] }), "- **Certificates:** CAA allows Let's Encrypt · wildcard certificates: DigiCert");
+    // never "CAA allows " with nothing after it
+    assert.equal(line({ caa: 'present' }), '- **Certificates:** CAA allows no CA');
+    assert.equal(line({ caa: 'deny-all', wildcard: true }), '- **Certificates:** CAA allows no CA');
+    // a critical unknown tag: the tag as a code span, never "Let's Encrypt allowed"
+    assert.equal(line({ caa: 'critical', cas: ["Let's Encrypt"], criticalTags: ['tbs'] }), '- **Certificates:** CAA has an unknown tag marked critical (`tbs`): no CA may issue');
+    assert.equal(line({ caa: 'critical', criticalTags: ['tbs', 'x`y'] }), "- **Certificates:** CAA has unknown tags marked critical (`tbs`, `x'y`): no CA may issue");
+    // Turkish
+    assert.equal(line({ caa: 'unrestricted', wildcard: true }, 'tr'), '- **Sertifikalar:** CAA her CA’ya izin veriyor (issue özelliği yok) · joker sertifikalara hiçbir CA izinli değil');
+    assert.equal(line({ caa: 'present', wildcard: true, wildCas: ["Let's Encrypt"] }, 'tr'), "- **Sertifikalar:** CAA yalnızca joker (wildcard) sertifikalara izin veriyor: Let's Encrypt");
+    assert.equal(line({ caa: 'critical', criticalTags: ['tbs'] }, 'tr'), '- **Sertifikalar:** CAA’da kritik işaretli bilinmeyen etiket var (`tbs`): hiçbir CA sertifika veremez');
+    for (const lang of ['en', 'tr']) {
+      for (const over of [{ caa: 'unrestricted' }, { caa: 'present', wildcard: true, wildCas: ['DigiCert'] }, { caa: 'present' }]) {
+        assert.doesNotMatch(line(over, lang), /(allows|izinli:) ?(·|$)/, `${lang} ${JSON.stringify(over)}`);
+      }
+    }
+  });
+
   test('a domain that does not exist: mail, certificates and services say so instead of "no record"', () => {
     const doc = S.domainSummary(facts({
       dns: { pending: false, failed: false, exists: false, providers: [], self: false, other: [], dnssec: 'unsigned' },

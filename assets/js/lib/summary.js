@@ -859,8 +859,19 @@ export function domainSummary(facts, opts) {
     const bits = [];
     if (certs.exists === false) bits.push([t('sum.domain.nxdomain')]);
     else if (certs.caa === 'none') bits.push([t('sum.domain.caaNone')]);
-    else if (certs.caa === 'deny-all') bits.push([t('sum.domain.caaDeny')]);
-    else if (certs.caa === 'present') bits.push([t('sum.domain.caaAllows', { list: names(certs.cas) })]);
+    else if (certs.caa === 'critical') bits.push(textParts(t, 'sum.domain.caaCritical', { tags: (certs.criticalTags || []).slice(0, 3), count: (certs.criticalTags || []).length }));
+    else if (certs.caa === 'present' || certs.caa === 'unrestricted') {
+      const cas = certs.cas || [];
+      const wild = certs.wildCas || [];
+      if (certs.caa === 'unrestricted') bits.push([t('sum.domain.caaAny')]);
+      else if (cas.length) bits.push([t('sum.domain.caaAllows', { list: names(cas) })]);
+      else if (wild.length) bits.push([t('sum.domain.caaWildOnly', { list: names(wild) })]);
+      else bits.push([t('sum.domain.caaDeny')]);
+      // issuewild rules wildcard certificates on its own (a set without it: they follow issue).
+      if (certs.wildcard && (certs.caa === 'unrestricted' || cas.length)) {
+        bits.push([wild.length ? t('sum.domain.caaWild', { list: names(wild) }) : t('sum.domain.caaNoWild')]);
+      }
+    } else if (certs.caa === 'deny-all') bits.push([t('sum.domain.caaDeny')]);
     else if (certs.caaFailed || certs.failed) bits.push([t('sum.domain.caaFailed')]);
     if (certs.ct && certs.ct.issuers.length) {
       const issuers = certs.ct.issuers.slice(0, 3).flatMap((i, n) => [...(n ? [', '] : []), code(i.name), ` (${k.num(i.count)})`]);
@@ -1057,6 +1068,12 @@ const STRINGS = [
   ['sum.domain.caaNone', ['no CAA: any CA may issue', 'CAA yok: her CA sertifika verebilir']],
   ['sum.domain.caaDeny', ['CAA allows no CA', 'CAA hiçbir CA’ya izin vermiyor']],
   ['sum.domain.caaAllows', ['CAA allows {list}', 'CAA izinli: {list}']],
+  ['sum.domain.caaAny', ['CAA allows any CA (no issue property)', 'CAA her CA’ya izin veriyor (issue özelliği yok)']],
+  ['sum.domain.caaWildOnly', ['CAA allows wildcard certificates only, from {list}', 'CAA yalnızca joker (wildcard) sertifikalara izin veriyor: {list}']],
+  ['sum.domain.caaWild', ['wildcard certificates: {list}', 'joker sertifikalar: {list}']],
+  ['sum.domain.caaNoWild', ['no CA for wildcard certificates', 'joker sertifikalara hiçbir CA izinli değil']],
+  ['sum.domain.caaCritical', [{ one: 'CAA has an unknown tag marked critical ({tags}): no CA may issue', other: 'CAA has unknown tags marked critical ({tags}): no CA may issue' },
+    'CAA’da kritik işaretli bilinmeyen etiket var ({tags}): hiçbir CA sertifika veremez']],
   ['sum.domain.caaFailed', ['CAA lookup failed', 'CAA sorgusu başarısız']],
   ['sum.domain.ctIssuers', ['issuers in CT:', 'CT’deki sertifika sağlayıcıları:']],
   ['sum.domain.ctNone', ['no current certificate in CT', 'CT’de geçerli sertifika yok']],

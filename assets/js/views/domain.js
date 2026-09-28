@@ -173,6 +173,11 @@ registerStrings('en', {
   'dov.certs.caa': 'CAA',
   'dov.certs.caaNone': 'No CAA record: any CA may issue certificates for this domain.',
   'dov.certs.caaDeny': 'CAA allows no CA to issue certificates.',
+  'dov.certs.caaCritical': {
+    one: 'CAA has an unknown tag marked critical ({tags}): CAs must refuse to issue certificates for this domain.',
+    other: 'CAA has unknown tags marked critical ({tags}): CAs must refuse to issue certificates for this domain.'
+  },
+  'dov.certs.anyCa': 'any CA (CAA has no issue property)',
   'dov.certs.allowed': 'Allowed CAs',
   'dov.certs.wildcard': 'Wildcard certificates',
   'dov.certs.wildNone': 'no CA',
@@ -193,6 +198,10 @@ registerStrings('en', {
   'dov.certs.ctDeniedNote': {
     one: 'CAA does not allow {list}: its next renewal of these certificates will fail until CAA names it.',
     other: 'CAA does not allow {list}: their next renewal of these certificates will fail until CAA names them.'
+  },
+  'dov.certs.ctCriticalNote': {
+    one: 'The critical tag blocks {list}: its next renewal of these certificates will fail until the tag is removed or no longer marked critical.',
+    other: 'The critical tag blocks {list}: their next renewal of these certificates will fail until the tag is removed or no longer marked critical.'
   },
   'dov.certs.ctFirstPage': 'From Cert Spotter’s first page of current certificates ({count} read); a longer list continues on later pages.',
   'dov.certs.ctCrtsh': 'From crt.sh ({count} current certificates), because Cert Spotter could not answer.',
@@ -331,6 +340,8 @@ registerStrings('tr', {
   'dov.certs.caa': 'CAA',
   'dov.certs.caaNone': 'CAA kaydı yok: her CA bu alan adı için sertifika verebilir.',
   'dov.certs.caaDeny': 'CAA hiçbir CA’nın sertifika vermesine izin vermiyor.',
+  'dov.certs.caaCritical': 'CAA’da kritik işaretli bilinmeyen etiket var ({tags}): otoriteler bu alan adı için sertifika vermeyi reddetmelidir.',
+  'dov.certs.anyCa': 'her CA (CAA’da issue özelliği yok)',
   'dov.certs.allowed': 'İzinli CA’lar',
   'dov.certs.wildcard': 'Joker (wildcard) sertifikalar',
   'dov.certs.wildNone': 'hiçbir CA',
@@ -349,6 +360,7 @@ registerStrings('tr', {
   'dov.certs.ctDenied': 'CAA izin vermiyor',
   'dov.certs.ctUnknown': 'CA bilinmiyor',
   'dov.certs.ctDeniedNote': 'CAA {list} için izin vermiyor: CAA kaydına eklenene kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
+  'dov.certs.ctCriticalNote': 'Kritik etiket {list} için engel oluşturuyor: etiket kaldırılana ya da kritik işareti kalkana kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
   'dov.certs.ctFirstPage': 'Cert Spotter’ın geçerli sertifikalar listesinin ilk sayfasından ({count} okundu); daha uzun bir liste sonraki sayfalarda sürer.',
   'dov.certs.ctCrtsh': 'crt.sh’ten ({count} geçerli sertifika), çünkü Cert Spotter yanıt veremedi.',
   'dov.certs.ctEmpty': 'Certificate Transparency’de {domain} için geçerli sertifika yok.',
@@ -811,7 +823,11 @@ export function mount(container, ctx) {
     const source = ct.provider === 'crtsh' ? t('dov.certs.ctCrtsh', { count: formatNumber(ct.certificates) }) : t('dov.certs.ctFirstPage', { count: formatNumber(ct.certificates) });
     return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'ok', provider: ct.provider } }, head,
       rows.length ? h('ul', { class: 'dov-issuers' }, rows) : h('p', { class: 'text-sm muted' }, t('dov.certs.ctEmpty', { domain: d })),
-      ct.notAllowed.length ? Alert({ variant: 'warn', compact: true, message: t('dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', '), count: ct.notAllowed.length }) }) : null,
+      // Behind a critical unknown tag no CA may issue, the ones CAA names too: adding them fixes nothing.
+      ct.notAllowed.length ? Alert({
+        variant: 'warn', compact: true,
+        message: t(card.caa && card.caa.state === 'critical' ? 'dov.certs.ctCriticalNote' : 'dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', '), count: ct.notAllowed.length })
+      }) : null,
       h('p', { class: 'muted text-xs' }, source),
       h('div', null, run(t('dov.certs.ctAgain'), 'ghost')));
   }
@@ -825,13 +841,21 @@ export function mount(container, ctx) {
     else if (caaFailure) caaPart = kv([{ key: t('dov.certs.caa'), value: na(caaFailure) }]);
     else if (!caa) caaPart = null;
     else if (caa.state === 'none') caaPart = h('p', { class: 'text-sm', dataset: { caa: 'none' } }, t('dov.certs.caaNone'));
-    else if (caa.state === 'deny-all') caaPart = Alert({ variant: 'error', compact: true, message: t('dov.certs.caaDeny') });
     else {
-      caaPart = h('div', { class: 'stack-xs', dataset: { caa: 'present' } },
-        kv([
-          { key: t('dov.certs.allowed'), value: caa.issue.length ? chips(caa.issue.map(caEntry)) : h('span', { class: 'muted text-sm' }, t('dov.certs.wildNone')) },
-          caa.wildcardOnly ? { key: t('dov.certs.wildcard'), value: caa.issuewild.length ? chips(caa.issuewild.map(caEntry)) : h('span', { class: 'muted text-sm' }, t('dov.certs.wildNone')) } : null
-        ]),
+      const noCa = () => h('span', { class: 'muted text-sm' }, t('dov.certs.wildNone'));
+      let rows;
+      if (caa.state === 'critical') {
+        rows = Alert({ variant: 'error', compact: true, message: t('dov.certs.caaCritical', { tags: caa.criticalTags.join(', '), count: caa.criticalTags.length }) });
+      } else if (caa.state === 'deny-all') rows = Alert({ variant: 'error', compact: true, message: t('dov.certs.caaDeny') });
+      else {
+        // 'unrestricted': no issue property, so any CA for the name itself; issuewild may still limit wildcards.
+        const allowed = caa.state === 'unrestricted' ? h('span', { class: 'text-sm' }, t('dov.certs.anyCa')) : caa.issue.length ? chips(caa.issue.map(caEntry)) : noCa();
+        rows = kv([
+          { key: t('dov.certs.allowed'), value: allowed },
+          caa.wildcardOnly ? { key: t('dov.certs.wildcard'), value: caa.issuewild.length ? chips(caa.issuewild.map(caEntry)) : noCa() } : null
+        ]);
+      }
+      caaPart = h('div', { class: 'stack-xs', dataset: { caa: caa.state } }, rows,
         caa.foundAt && caa.foundAt !== current.domain ? h('p', { class: 'muted text-xs' }, t('dov.certs.inherited', { name: caa.foundAt })) : null);
     }
     return h('div', { class: 'stack-sm' }, statusLine(card.failures), caaPart, ctSection(card));

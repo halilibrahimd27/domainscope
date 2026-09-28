@@ -104,6 +104,25 @@ async function closeWorkspaces(page) {
   await page.waitFor(() => !document.querySelector('dialog.ws-modal'), { message: 'dialog closed' });
 }
 
+/**
+ * What the dialog says a click did (its line under the list, `role` 'ws-list-outcome', or under
+ * the hand-over file), once its text matches `source` (a RegExp source): the text, whether it is
+ * seen — the point at its centre is the message itself, nothing drawn over it — and whether it
+ * is inside the open dialog, where a screen reader reads it (a toast would be under the modal
+ * dialog, inert), and no toast says it behind the dialog.
+ */
+function outcomeShown(page, role, source, message) {
+  return page.waitFor((r, src) => {
+    const box = document.querySelector(`dialog.ws-modal[open] [data-role="${r}"]`);
+    const el = box && box.querySelector('.alert');
+    if (!el || !new RegExp(src).test(el.textContent)) return false;
+    const rect = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const toasts = [...document.querySelectorAll('.toast')].filter((x) => new RegExp(src).test(x.textContent)).length;
+    return { text: el.textContent, seen: !!hit && el.contains(hit), live: box.getAttribute('aria-live'), toasts };
+  }, { args: [role, source], message });
+}
+
 /** Click the confirming button of the confirmation dialog on top of the Workspaces dialog. */
 async function confirmTop(page) {
   await page.waitFor(() => [...document.querySelectorAll('dialog.modal-sm[open]')].length > 0, { message: 'confirmation' });
@@ -379,6 +398,8 @@ async function desktop(browser, server, tmp) {
       }
       const fields = await page.evaluate(() => [document.querySelector('[data-role="ws-export-password"]').value, document.querySelector('[data-role="ws-export-repeat"]').value]);
       assertEqual(fields, ['', ''], 'the password is not kept in the form');
+      const saved = await outcomeShown(page, 'ws-file-outcome', 'saved, encrypted with your password', 'the export is said');
+      assertEqual([saved.seen, saved.toasts], [true, 0], `said under the hand-over file: ${saved.text}`);
       sealed = file.text;
       // A password of spaces only is refused; no password at all is a plain file, named after its workspace.
       await page.type('[data-role="ws-export-password"]', ' '.repeat(10));
@@ -418,6 +439,8 @@ async function desktop(browser, server, tmp) {
       await shot(page, opts, 'workspaces-desktop-import');
       await page.click('[data-action="ws-import-new"]');
       await page.waitFor(wsActiveIs, { args: ['Acme (2)'], message: 'imported and active' });
+      const imported = await outcomeShown(page, 'ws-file-outcome', 'Imported as the new workspace “Acme \\(2\\)”', 'the import is said');
+      assertEqual([imported.seen, imported.toasts], [true, 0], `said under the hand-over file: ${imported.text}`);
       await closeWorkspaces(page);
       const info = await page.evaluate(wsInfo);
       assertEqual(info.list, ['default', 'Acme', 'Acme (2)', 'Globex'], 'a new workspace');
@@ -451,6 +474,9 @@ async function desktop(browser, server, tmp) {
       await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-delete"]`);
       await confirmTop(page);
       await page.waitFor((i) => !document.querySelector(`dialog.ws-modal li[data-ws-id="${i}"]`), { args: [id], message: 'row gone' });
+      // Said in the dialog, under the list: a toast would be under the modal dialog, neither seen nor read.
+      const said = await outcomeShown(page, 'ws-list-outcome', 'Workspace “Acme \\(2\\)” deleted', 'the deletion is said');
+      assertEqual([said.seen, said.live, said.toasts], [true, 'polite', 0], `said in the dialog: ${said.text}`);
       await closeWorkspaces(page);
       assertEqual((await page.evaluate(wsInfo)).list, ['default', 'Acme', 'Globex'], 'list');
     });
@@ -496,8 +522,8 @@ async function desktop(browser, server, tmp) {
         };
       });
       await createWorkspace(page, 'Initech');
-      await page.waitFor(() => [...document.querySelectorAll('.toast')].some((el) => /Not saved: the browser’s storage for this site is full/.test(el.textContent)),
-        { message: 'says why it was not saved' });
+      const why = await outcomeShown(page, 'ws-list-outcome', 'Not saved: the browser’s storage for this site is full', 'says why it was not saved');
+      assertEqual([why.seen, why.toasts], [true, 0], `the reason, in the dialog: ${why.text}`);
       await page.evaluate(() => window.__restorePut());
       await page.type('[data-role="ws-notes"]', 'Initech contacts');
       const status = await page.waitFor(() => {
@@ -696,7 +722,7 @@ async function phone(browser, server) {
       await page.evaluate(() => document.querySelector('dialog.navmenu-modal').close());
     });
 
-    await run.step('320 px: the dialog and the Servers card still fit', async () => {
+    await run.step('320 px: the dialog and the Servers card still fit; what it did is said over it', async () => {
       await page.setViewport({ width: 320, height: 700, mobile: true });
       await page.reload();
       await waitReady(page);
@@ -704,6 +730,14 @@ async function phone(browser, server) {
       await openWorkspaces(page, { phone: true });
       await assertNoHorizontalScroll(page, '320 dialog');
       await shot(page, opts, 'workspaces-phone-320');
+      // The dialog covers the whole screen: what a click did is said inside it.
+      const id = await rowId(page, 'Müşteri Anonim Şirketi — İstanbul Bölge Müdürlüğü');
+      await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-delete"]`);
+      await confirmTop(page);
+      const said = await outcomeShown(page, 'ws-list-outcome', 'çalışma alanı silindi', 'the deletion is said');
+      assertEqual([said.seen, said.toasts], [true, 0], `said at 320 px: ${said.text}`);
+      await assertNoHorizontalScroll(page, '320 dialog with its message');
+      await shot(page, opts, 'workspaces-phone-320-deleted');
       await closeWorkspaces(page);
     });
 

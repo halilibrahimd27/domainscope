@@ -13,13 +13,15 @@
  *     kept), and import one as a new workspace or over the one of the same name (after a
  *     confirmation), with a clear message for a wrong password or a changed file.
  *
- * Switching goes through the shell's `switchTo` (it asks first when a long job would stop). Every
- * string is rendered through h() / text nodes; nothing here reaches the network.
+ * Switching goes through the shell's `switchTo` (it asks first when a long job would stop). What
+ * a click did is said in the dialog, under the list or the hand-over file ({@link Outcome}): a
+ * toast would sit under the modal dialog, neither seen nor read while it is open. Every string is
+ * rendered through h() / text nodes; nothing here reaches the network.
  */
 
 import { h, clear, uid } from './dom.js';
 import {
-  Alert, Badge, Button, FileDrop, Icon, IconButton, Modal, announce, confirmDialog, setButtonBusy, textInput, textarea, toast
+  Alert, Badge, Button, FileDrop, Icon, IconButton, Modal, announce, confirmDialog, setButtonBusy, textInput, textarea
 } from './components.js';
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatRelative, formatDateTime } from '../i18n.js';
@@ -290,6 +292,26 @@ export function importSummary(ws) {
 }
 
 /**
+ * A line in the dialog that says what the last click did (a toast or a live region in <body> is
+ * under the modal dialog and inert while it is open): a result politely, a warning or a failure
+ * as an alert. The next message replaces it; it can be dismissed.
+ * @param {string} role its data-role
+ * @returns {{ el: HTMLElement, show(message: string, variant?: 'ok'|'warn'|'error'): void, clear(): void }}
+ */
+function Outcome(role) {
+  const el = h('div', { class: 'ws-outcome', dataset: { role }, attrs: { 'aria-live': 'polite', 'aria-atomic': 'true' } });
+  return {
+    el,
+    show(message, variant = 'ok') {
+      clear(el);
+      el.append(Alert({ variant, compact: true, message, dismissible: true }));
+      el.scrollIntoView({ block: 'nearest' });
+    },
+    clear: () => clear(el)
+  };
+}
+
+/**
  * The workspace an imported file would replace: Default for a file exported from a Default, else
  * the one of the same name (case-insensitive), else none.
  * @param {{ name: string|null, isDefault: boolean }} ws
@@ -327,6 +349,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
   inline(newName, createBtn);
   const current = h('section', { class: 'ws-section ws-current', dataset: { role: 'ws-current' } });
   const fileBody = h('div', { class: 'ws-file-body' });
+  const listOutcome = Outcome('ws-list-outcome');
+  const fileOutcome = Outcome('ws-file-outcome');
 
   const listId = uid('ws-list-title');
   const body = h('div', { class: 'ws-panel' },
@@ -335,12 +359,14 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     h('section', { class: 'ws-section', attrs: { 'aria-labelledby': listId } },
       h('h3', { class: 'ws-heading', id: listId }, t('ws.listTitle')),
       listEl,
+      listOutcome.el,
       h('div', { class: 'ws-new' }, newName.el)),
     current,
     h('section', { class: 'ws-section ws-file' },
       h('h3', { class: 'ws-heading' }, t('ws.fileTitle')),
       h('p', { class: 'ws-note' }, t('ws.fileIntro')),
-      fileBody));
+      fileBody,
+      fileOutcome.el));
 
   const modal = Modal({
     title: t('ws.title'),
@@ -426,19 +452,22 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
   }
 
   /**
-   * A change the browser's storage did not take: why, in a toast. A workspace deleted in another
-   * tab is said so (the list follows that tab); anything else lasts until this tab closes.
+   * A change the browser's storage did not take: why, under the list (or the hand-over file). A
+   * workspace deleted in another tab is said so (the list follows that tab); anything else lasts
+   * until this tab closes.
    * @param {unknown} err
    * @param {string} name the workspace's name as shown
+   * @param {ReturnType<typeof Outcome>} [where]
    */
-  function notSaved(err, name) {
+  function notSaved(err, name, where = listOutcome) {
     const gone = err && err.code === 'not-found';
-    toast(gone ? t('ws.gone', { name }) : t('ws.notSaved', { reason: storageErrorText(err) }), { type: 'warn', timeout: 8000 });
     if (gone) renderList();
+    where.show(gone ? t('ws.gone', { name }) : t('ws.notSaved', { reason: storageErrorText(err) }), 'warn');
   }
 
   async function create() {
     newName.setError(null);
+    listOutcome.clear();
     const name = newName.value;
     // A name Default goes by (in either language) is not free for another workspace.
     if (isDefaultWorkspaceName(name)) {
@@ -471,7 +500,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       const { meta, persisted } = await state.renameWorkspace(ws.id, field.value);
       renaming = null;
       renderList({ focusId: ws.id, focusAction: 'ws-rename' });
-      if (persisted) announce(t('ws.renamed', { name: meta.name }));
+      if (persisted) listOutcome.show(t('ws.renamed', { name: meta.name }));
       else notSaved(state.workspaceError, workspaceLabel(ws));
     } catch (err) {
       if (err && err.code === 'not-found') {
@@ -497,13 +526,13 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       }
       const { persisted } = await state.deleteWorkspace(ws.id);
       renderList({ focusId: state.workspace.id });
-      if (persisted) toast(t('ws.deleted', { name }), { type: 'success' });
-      else toast(t('ws.deleteNotSaved', { name, reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+      if (persisted) listOutcome.show(t('ws.deleted', { name }));
+      else listOutcome.show(t('ws.deleteNotSaved', { name, reason: storageErrorText(state.workspaceError) }), 'warn');
     } catch (err) {
       // Another tab deleted it while the confirmation was open: it is gone all the same.
-      if (err && err.code === 'not-found') notSaved(err, name);
-      else toast(errorMessage(err), { type: 'error' });
       renderList({ focusId: state.workspace.id });
+      if (err && err.code === 'not-found') notSaved(err, name);
+      else listOutcome.show(errorMessage(err), 'error');
     }
   }
 
@@ -684,7 +713,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         }, { password: password || null });
         const file = exportFileName(workspaceLabel(active), { encrypted: !!password });
         downloadText(file, text, 'application/json;charset=utf-8');
-        toast(t(password ? 'ws.exportedSealed' : 'ws.exportedPlain', { file }), { type: password ? 'success' : 'warn', timeout: 8000 });
+        fileOutcome.show(t(password ? 'ws.exportedSealed' : 'ws.exportedPlain', { file }), password ? 'ok' : 'warn');
       } catch (err) {
         pw.setError(errorMessage(err));
       } finally {
@@ -824,8 +853,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
           const { meta, persisted } = await state.createWorkspace(unique, ws.data);
           pending = null;
           clear(importArea);
-          if (persisted) toast(t('ws.imported', { name: meta.name }), { type: 'success' });
-          else notSaved(state.workspaceError, meta.name);
+          if (persisted) fileOutcome.show(t('ws.imported', { name: meta.name }));
+          else notSaved(state.workspaceError, meta.name, fileOutcome);
           await flushEdits();
           await switchTo(meta.id);
           renderList({ focusId: meta.id });
@@ -845,13 +874,13 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
           const { persisted } = await state.replaceWorkspace(into.id, ws.data);
           pending = null;
           clear(importArea);
-          if (persisted) toast(t('ws.replaced', { name: label }), { type: 'success' });
-          else notSaved(state.workspaceError, label);
+          if (persisted) fileOutcome.show(t('ws.replaced', { name: label }));
+          else notSaved(state.workspaceError, label, fileOutcome);
           renderCurrent();
         } catch (err) {
           // Deleted in another tab meanwhile: the file stays open, to import as a new workspace.
           if (err && err.code === 'not-found') {
-            notSaved(err, label);
+            notSaved(err, label, fileOutcome);
             if (pending) showSummary();
           } else {
             showError(err);

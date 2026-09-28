@@ -247,6 +247,11 @@
   font-size: 12px;
 }
 
+/* What the last click did, under the list or the hand-over file: no gap while there is nothing to say */
+.ws-outcome:empty {
+  display: none;
+}
+
 /* The hand-over file: export and import side by side, one under the other on narrow screens */
 .ws-file-body {
   display: grid;

@@ -6,6 +6,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 
 - **Wave 1 — shipped 2026-09-27** ([what shipped and where](#wave-1--shipped-2026-09-27)): CLI certificate kinds and per-target ports, CLI monitoring (`--baseline`, `--warn-days`, `--notify`), CAA RFC 8657 restrictions and the MTA-STS policy check, the DANE / TLSA renewal guard, the Global DNS verdict, a certificate from CT or a sample, and the SSL Targets setup form.
 - **Wave 2 — shipped 2026-09-28** ([what shipped and where](#wave-2--shipped-2026-09-28)): the Reverse DNS sweep and FCrDNS of the MX addresses, a phone Tools menu with a first-visit task picker and keyboard shortcuts, the current target carried across the tools with each tool's kept result, Subdomains results in tabs, Copy summary and printing, the installable offline app with a lighter start route, and failed sources said as "n/a" with a retry of only that source, a denser DNS Lookup and IP Intel, and long-job progress outside the view.
+- **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -27,7 +28,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) — **MVP shipped**
   - [P1.3 Real-ISP DNS propagation in Global DNS (Globalping probes)](#p13-real-isp-dns-propagation-in-global-dns-globalping-probes)
   - [P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)](#p14-delegation--authoritative-consistency-serial-drift-lame-ns-sitting-ducks-axfr)
-  - [P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode)
+  - [P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) — **TXT vendor names shipped (Domain overview)**
   - [P1.6 Mail identity: FCrDNS, generic-PTR policy, DMARC external-report authorisation (ruf)](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf) — **FCrDNS part shipped**
   - [P1.7 Takeover fingerprints and cloud-IP ownership hints](#p17-takeover-fingerprints-and-cloud-ip-ownership-hints)
   - [P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)](#p18-blacklist--filtering-resolver-reputation-over-doh-honest-about-spamhaus)
@@ -35,7 +36,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P1.10 CLI: TLS on mail, database and other non-HTTPS ports](#p110-cli-tls-on-mail-database-and-other-non-https-ports)
   - [P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency)
   - [P1.12 CLI local-certs finder + generated fleet one-liners](#p112-cli-local-certs-finder--generated-fleet-one-liners)
-  - [P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner](#p113-renewal-planning-ari-window-cab-lifetime-schedule-coveragecsr-planner)
+  - [P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner](#p113-renewal-planning-ari-window-cab-lifetime-schedule-coveragecsr-planner) — **renewal readiness shipped next to it**
   - [P1.14 In-browser DNSSEC chain-of-trust validator and graph](#p114-in-browser-dnssec-chain-of-trust-validator-and-graph)
 - **P2** — later
   - [P2.1 'Copy as command' + provenance on every row](#p21-copy-as-command--provenance-on-every-row)
@@ -43,7 +44,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P2.3 Monitoring/automation exports (web + CLI)](#p23-monitoringautomation-exports-web--cli)
   - [P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns)
   - [P2.5 Reverse-DNS sweep of a prefix or ASN](#p25-reverse-dns-sweep-of-a-prefix-or-asn) — **shipped**
-  - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each)
+  - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each) — **one domain per page shipped (Domain overview)**
   - [P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl)
   - [P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)](#p28-lookalike--typosquat-watch-locale-aware-dnstwist-lite)
   - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view)
@@ -77,6 +78,17 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | Copy summary: a result as 5–12 lines of Markdown (or plain text) for Jira / Slack with its permalink, saying what failed or was cut short; a print stylesheet with a light palette, no controls, opened sections and a header with the permalink | Every result view | the print part of [P0.14](#p014-share-snapshot-link--customer-report-printpdf--self-contained-html); the copy summary deferred in [P0.1](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe) |
 | Installable app: a service worker keeps the app's own files (and used wordlist tiers) for offline use, "Update ready — Reload" on a new deploy, network tools that say they need the network; a lighter start route (per-view stylesheets, the discovery engine loaded on the first scan) | Shell, the Pages bundle | new |
 | No silent dashes: a field a failed source left empty says "⚠ n/a" with the source and the reason, and Retry asks only that source; a denser DNS Lookup (NODATA types on one line) and IP Intel; a long job's progress in the tab title, the nav and the favicon with an opt-in notification | IP Intel, Bulk Resolve, DNS Lookup, Domain Health, Subdomains, SSL Targets | the source-status part of [P1.1](#p11-source-status-quota-meter-and-optional-user-keys), [UI upgrade spec](#ui-upgrade-spec) |
+
+## Wave 3 — shipped 2026-09-28
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| Customer workspaces in IndexedDB: servers, learned names, custom wordlist, expected CAs, notes and recent domains per customer; a header switcher that asks before it stops a job or drops unsaved edits; a JSON hand-over file, encrypted with a password (PBKDF2-SHA-256, AES-GCM); "Expected CA" / "Unexpected CA" badges on issuers and CAA values; "Delete all local data" that reaches a database the page could not open | Header, Workspaces dialog, Certificate, SSL Targets › Verify, Domain Health | new |
+| Several certificates at once: files, a folder or pasted PEM blocks grouped into sets (an RSA + ECDSA pair is one), one scan for every set, a Renewal plan tab (server × set, uncovered names, a CSV work list), one Verify queue for every set, a warning for last year's certificate loaded next to its renewal; the CLI's repeated `--cert` with the file each server serves | SSL Targets, CLI | new; the pair checking of [P1.11](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency) by fingerprint (the key-type probing is still open) |
+| Renewal readiness: per name, CAA and RFC 8657 against the CA and challenge, the same answer on four resolvers, `_acme-challenge`, DNSSEC, the DNS-01 plugin of the zone's provider and the HTTP-01 addresses, with Ready / Ready with warnings / Will fail / Could not be checked; an opt-in HTTP-01 test from three continents through Globalping | Renewal readiness (new view, Certificates), linked from Certificate and SSL Targets | new, next to [P1.13](#p113-renewal-planning-ari-window-cab-lifetime-schedule-coveragecsr-planner) |
+| Retire an IP: every A / AAAA record, CNAME chain, SPF mechanism (term order weighed), MX / NS host, HTTPS hint and imported zone record that still reaches an address or /24, checked live, as a change list worst first; passive reverse IP on a click | Retire an IP (new view, IP addresses) | new; uses the SPF include tree of [P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) |
+| Domain overview: registration, DNS hosting, mail platform, web front, certificates (CAA read as RFC 8659, CT issuers on a click), SaaS verifications (service names, never the tokens) and health on one page, each card linking to its tool | Domain overview (new view, Discover) | one domain of [P2.6](#p26-domain-portfolio-view-many-domains-one-row-each); the TXT vendor names of [P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) |
+| PFX / PKCS#12 import: a password dialog, the bundle's certificates in the chain view, fullchain.pem, an opt-in check that the key matches the certificate (the key never shown), legacy 3DES / RC2 bundles through pure-JS ciphers | Certificate, SSL Targets | new |
 
 ## P0 — next iteration
 
@@ -341,6 +353,8 @@ Behaviour: a Domain-Health sub-panel, intoDNS-style Category/Status/Test/Info ta
 
 id `record-renderers` · where: **browser** · effort: **M**
 
+**Status (2026-09-28): the TXT vendor names shipped in wave 3, in the Domain overview's SaaS verifications card** (service names only, never the tokens). The chips in DNS Lookup and Health, the SPF steps and IP evaluator, and the HTTPS / SVCB / ECH decode are still open.
+
 Behaviour in Lookup + Health: (1) TXT verification tokens → vendor chips (google-site-verification, MS=, facebook-, apple-, atlassian-, docusign=, stripe-, openai-, anthropic-, adobe-idp-, TAILSCALE-, _github-challenge, …) from a vendored static table (no external logos); stale tokens become a cleanup hint. (2) SPF as numbered plain-English steps with a collapsible include tree + per-branch lookup cost (existing spfLookupCount tree), a 'Does IP X pass?' evaluator, a flatten preview with size, warnings for strings &gt;255 / records &gt;~450 bytes. (3) SOA fields as human durations, MX 'Primary' badge, CAA grouped by tag. (4) HTTPS/SVCB cards: alpn (h3?), port, ipv4hint/ipv6hint compared with real A/AAAA (stale hints break HTTP/3); decode ech= ECHConfigList (version 0xfe0d, config_id, KEM, cipher suites, public_name) — verified with existing dnswire.js + a ~30-line parser. Extends lib/health.js: add expandSpfForIp(ip) (existing expandSpfDomain only does d/o); NEW lib/records.js (DOM-free): classifyTxt(txt)-&gt;vendor|null, decodeEch(b64)-&gt;{...}, spfSteps(tree). Vendor the nuclei txt-service-detect.yaml patterns (MIT) as assets/data/txt-vendors.json + hand-add MS=/adobe-idp/TAILSCALE/_github-challenge. Edge cases: SPF macro evaluator — expand %{i},%{ir},%{v},%{d},%{o} (Salesforce exists:%{i} is too common to skip), report %{h}/%{s}/%{l} as 'not evaluated (needs HELO/sender)'; hint order differs between resolvers → sort before compare. Test: classifyTxt table; decodeEch on crypto.cloudflare.com fixture; SPF evaluator pass/fail incl. macro; SVCB parse from dnswire fixture.
 
 **Verified endpoints / data**
@@ -419,6 +433,8 @@ Behaviour: protocol-aware handshakes in ssl_origin_scan.py — SMTP 25/587 (EHLO
 
 id `cli-tls-audit` · where: **cli** · effort: **M**
 
+**Status (2026-09-28): an RSA + ECDSA pair is checked by fingerprint since wave 3** (the CLI's repeated `--cert`: a server serving either certificate is `UPDATED`, and the reports name the file). Probing a dual-certificate server per key type, the TLS audit and the fleet consistency check are still open.
+
 Behaviour: per ip:port×name record accepted TLS versions (loop min/max 1.0-1.3), negotiated cipher, chain validity vs the system store, hostname match, key + signature algorithm. On Py3.13+ use get_unverified_chain(); on 3.10-3.12 use the private sock._sslobj.get_unverified_chain(); else compare a CERT_REQUIRED handshake with CERT_NONE to detect an incomplete chain. --both-keytypes caps at TLS1.2 and probes set_ciphers('aRSA') vs ('aECDSA') to catch dual-cert servers where one stays old. Fleet check flags the same name returning different serials on different IPs (a missed LB pool member). Verified in the local tls_lab.py prototype (not committed). Edge cases: distinguish verify code 20 (missing intermediate) from an unknown root — prefer the unverified-chain length; the Windows ROOT store is lazily populated (57 certs here) so CERT_REQUIRED can falsely say 'untrusted'; on RHEL9-style crypto policy TLS1.0 is impossible even at SECLEVEL=0 → report 'untestable' not 'disabled'; the ssl module has no sigalgs API so RSA/ECDSA split only probes at ≤TLS1.2 (TLS1.3-only servers can't be dual-probed); Py3.12 DeprecationWarning on TLSv1/1_1. Test: dual-cert SSLContext fixture (rsa_multi_san + ec_wildcard on one port); SECLEVEL=0 legacy negotiation; chain-length via unverified chain; fleet serial-mismatch.
 
 **Verified endpoints / data**
@@ -438,6 +454,8 @@ Behaviour: new subcommand ssl_origin_scan.py local-certs [--paths ...] [--match-
 ### P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner
 
 id `renewal-planning` · where: **both** · effort: **S**
+
+**Status (2026-09-28): not started; Renewal readiness shipped next to it in wave 3** (`#/renew`: CAA and RFC 8657 against the CA and challenge, resolver consistency, `_acme-challenge`, DNSSEC, the DNS-01 plugin, the HTTP-01 prerequisites and an opt-in reachability test). ARI, the cadence schedule and the coverage / CSR planner are still open.
 
 Behaviour: (1) ACME Renewal Information — compute certID = base64url(AKI keyIdentifier)+'.'+base64url(serial DER), read renewalInfo from the CA directory, show the suggested window + any explanationURL (early-renewal/revocation). (2) Cadence — from issuance dates + the CA/B schedule show renewals/year and manual effort (servers × renewals × minutes) with per-server-type ACME tool suggestions (acme.sh, certbot, lego, cert-manager, certimate). (3) Coverage planner — from discovered hosts, the minimal cert set (what *.example.com covers, which names need explicit SANs like the apex/deeper names/other registrable domains, which sit behind a CDN edge cert), exported as a SAN list + openssl req config + CSR command (key generated locally by the user). NEW lib/ari.js (DOM-free): certId(cert)-&gt; string, renewalInfo(directoryUrl, certId, {fetchImpl,signal})-&gt; {window, explanationUrl, retryAfter}. Verified: LE prod+staging directory + renewal-info are ACAO *, work for ANY LE cert with no account; expired certs still return 200 with a past window; unknown serial → 404 malformed. Edge cases: certID needs the AKI keyIdentifier (x509 authorityKeyId) and x509.serialHex strips the 00 sign byte → re-add when the high bit is set; respect Retry-After (6-8h); GTS/Sectigo/ZeroSSL/SSL.com renewalInfo have NO ACAO → those go through the CLI only; cadence math uses SC-081 dates (200d from 2026-03-15, 100d 2027-03-15, 47d 2029-03-15). Test: certId() vs known LE leaf (serial sign-byte case); renewalInfo mocked 200/404; coverage planner minimal-set logic; CSR/openssl config text.
 
@@ -501,6 +519,8 @@ Input a CIDR (cap /22) or ASN (list announced prefixes via RIPEstat, require the
 ### P2.6 Domain portfolio view: many domains, one row each
 
 id `portfolio` · where: **browser**
+
+**Status (2026-09-28): one domain per page shipped in wave 3 as the Domain overview (`#/domain`, Discover)**: registration (RDAP, transfer lock, WHOIS link where there is no RDAP), DNS hosting, mail, web, certificates, SaaS verifications and health. The many-domains table, sorting, CSV and .ics are still open.
 
 Paste many domains → one row each: RDAP expiry countdown + status flags (clientTransferProhibited missing = hijack risk; serverHold/redemptionPeriod/pendingDelete critical), registrar, delegationSigned, nameservers' own registrable-domain expiry, DNSSEC, CAA, mail posture (SPF valid ≤10 lookups, DKIM ≥1024 bits, DMARC policy, MTA-STS/TLS-RPT, null MX/-all/p=reject for parked). Sortable, CSV, .ics. RDAP: query registry servers directly from the IANA bootstrap (verified 100 domains/3.8s); rdap.org only as fallback at ≤1 req/s (429 no ACAO → TypeError); add a small ccTLD override map (io→identitydigital). PARTIAL for ccTLDs without RDAP (e.g. .de, .jp, .tr): expiry/status/registrar columns stay empty → registry whois link only (for .tr, TRABIS whois is POST+CSRF, so no prefill). DNS side (DNSSEC/CAA/SPF/DMARC/MTA-STS) works for every TLD.
 

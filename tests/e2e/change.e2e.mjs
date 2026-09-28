@@ -3,8 +3,9 @@
  * change.e2e.mjs — end-to-end test of the "DNS change request" view in a real headless Chrome/Edge.
  * OFFLINE: every DoH query is answered in the page by a fake resolver built from a table that the
  * test changes as it goes (window.__dns; the four check resolvers are told apart by their URL, so
- * one can lag behind, serve a wrong value or fail); every other https:// request is blocked, and
- * every request that leaves the page's origin is counted through CDP.
+ * one can lag behind, serve a wrong value or fail; `delay` makes every answer slow); every other
+ * https:// request is blocked, and every request that leaves the page's origin is counted through
+ * CDP.
  *
  *   node tests/e2e/change.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
@@ -18,10 +19,12 @@
  * request" opens it); the check link opened from the outputs: per-resolver verdicts (done, not yet
  * with the negative TTL waited for, no answer), the next check never before a cached answer
  * expires, Check now after the change reaches the lagging resolver, "done on every resolver that
- * answered", then done everywhere and the loop stopped; a check with the old value known (not yet
- * vs wrong value), Esc stops it, Check again; no resolver answering at all (said so after the
- * first round, stopped as failed after three); a language switch that resumes the check without
- * asking again; a link that cannot be read (nothing sent); 320 / 375 px phones light / dark in
+ * answered", then done everywhere and the loop stopped, and Check again asks every resolver once
+ * more; a check with the old value known (not yet vs wrong value), Esc stops it, Check again; Esc
+ * while a slow round runs (its answers shown, nothing scheduled after it); no resolver answering
+ * at all (said so after the first round, stopped as failed after three); a language switch that
+ * resumes the check without asking again; a link that cannot be read (nothing sent);
+ * 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
  *
@@ -67,6 +70,7 @@ const fakeScript = () => `(() => {
     const name = String(q.name).toLowerCase().replace(/[.]$/, '');
     const resolver = HOSTS[new URL(url).hostname] || new URL(url).hostname;
     dns.log.push({ name, type: q.type, resolver });
+    if (dns.delay) await new Promise((resolve) => setTimeout(resolve, dns.delay));
     const view = dns.views[resolver] || {};
     if (view._status) return new Response('', { status: view._status });
     const node = Object.prototype.hasOwnProperty.call(view, name) ? view[name] : dns.zone[name];
@@ -230,6 +234,7 @@ async function main() {
     await run.step('opened from the outputs: done, not yet (the cached NXDOMAIN waited for), no answer; nothing asked before it can change', async () => {
       await openCheck(page, checkQuery);
       assertEqual(await resolverRows(page), [['cloudflare:done', 'google:pending/missing', 'dnssb:done', 'cznic:error/http']], 'verdicts');
+      assertEqual(await text(page, '.chg-res[data-resolver="cznic"] .chg-res-verdict'), 'No answer (server error)', 'the error in words, not its code');
       const info = await checkInfo(page);
       assertEqual([info.headline, info.state], ['pending', 'waiting'], 'pending, waiting for the next round');
       // CZ.NIC failed: asked again after the backoff; Google's NXDOMAIN is cached for 300 s: not before then.
@@ -257,6 +262,15 @@ async function main() {
       assert(await page.evaluate(() => document.querySelector('[data-action="check-now"]').hidden && document.querySelector('[data-action="check-stop"]').hidden && !document.querySelector('[data-action="check-again"]').hidden), 'once done: Check again, no Check now / Stop');
     });
 
+    await run.step('Check again once done asks every resolver for every record again (a revert would show)', async () => {
+      await page.evaluate(() => { window.__dns.log.length = 0; });
+      await page.click('[data-action="check-again"]');
+      await page.waitFor(() => { const v = document.querySelector('[data-page="check"]'); return v.dataset.state === 'done' && v.dataset.round === '1'; }, { message: 'done again', timeout: 10000 });
+      assertEqual((await dnsLog(page)).map((q) => `${q.name} ${q.type} ${q.resolver}`).sort(), ['_acme-challenge.example.com TXT cloudflare', '_acme-challenge.example.com TXT cznic',
+        '_acme-challenge.example.com TXT dnssb', '_acme-challenge.example.com TXT google'], '4 resolvers × 1 record set');
+      assertEqual(await resolverRows(page), [['cloudflare:done', 'google:done', 'dnssb:done', 'cznic:done']], 'verdicts');
+    });
+
     const wrongQuery = 'z=example.com&r=is+www+A+192.0.2.10^198.51.100.5';
     await run.step('the old value known: Google not yet (still the old value), DNS.SB wrong; Esc stops, Check again runs again', async () => {
       await page.evaluate(() => { window.__dns.views.dnssb = { 'www.example.com': { A: ['203.0.113.9'] } }; window.__dns.log.length = 0; });
@@ -274,6 +288,25 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'done after Check again', timeout: 10000 });
       assert((await dnsLog(page)).length > before, 'asked again');
       await shot(page, opts, 'change-check-done-desktop-light-en');
+    });
+
+    await run.step('Esc while a slow round runs: the round\'s answers are shown, nothing is scheduled after it', async () => {
+      // Every resolver serves 192.0.2.10 for www: "not yet, another value" everywhere, so the check keeps going.
+      await openCheck(page, 'z=example.com&r=is+www+A+192.0.2.99');
+      assertEqual((await checkInfo(page)).state, 'waiting', 'scheduled');
+      await page.evaluate(() => { window.__dns.delay = 1500; });
+      await page.click('[data-action="check-now"]');
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'running', { message: 'running' });
+      await page.press('Escape');
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'user', { message: 'stopped during the round' });
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.round === '2', { message: 'the round ends', timeout: 10000 });
+      const info = await checkInfo(page);
+      assertEqual([info.state, info.nextAt, info.next], ['user', null, []], 'still stopped, nothing scheduled');
+      assert(await page.evaluate(() => document.querySelector('[data-action="check-now"]').hidden && document.querySelector('[data-action="check-stop"]').hidden
+        && !document.querySelector('[data-action="check-again"]').hidden), 'Check again, no Check now / Stop');
+      assert(/Stopped\./.test(await text(page, '.chg-stopped')), 'says stopped');
+      assertEqual(await resolverRows(page), [['cloudflare:pending/other', 'google:pending/other', 'dnssb:pending/other', 'cznic:pending/other']], 'the round\'s answers');
+      await page.evaluate(() => { window.__dns.delay = 0; });
     });
 
     await run.step('no resolver answers at all: said after the first round, stopped as failed after three; Check again recovers', async () => {

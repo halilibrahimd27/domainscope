@@ -2,7 +2,7 @@
 // and back, the field a carried domain fills. DOM-free at import; no network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeForm, subjectField } from '../../assets/js/views/change.js';
+import { routeForm, subjectField, errorLabel } from '../../assets/js/views/change.js';
 import { builderParams, checkHash, problemText } from '../../assets/js/ui/fix-panel.js';
 import { TEMPLATE_IDS, templateInput, buildChange } from '../../assets/js/lib/fixes.js';
 import { t, setLang } from '../../assets/js/i18n.js';
@@ -49,6 +49,21 @@ describe('the form in the route', () => {
     ]);
     assert.deepEqual([...FIXABLE_CHECKS].sort(), [...HEALTH_FIX_IDS]);
     assert.deepEqual([...FIXABLE_LINT].sort(), [...LINT_FIX_CODES]);
+  });
+
+  test('a resolver without an answer: the error kind in words, a DNS rcode as it is, never an internal code', () => {
+    setLang('en');
+    assert.equal(errorLabel('http', t), 'No answer (server error)');
+    assert.equal(errorLabel('unavailable', t), 'No answer (server error)');
+    assert.equal(errorLabel('rate-limit', t), 'No answer (rate limited)');
+    assert.equal(errorLabel('timeout', t), 'No answer (timed out)');
+    assert.equal(errorLabel('SERVFAIL', t), 'No answer (SERVFAIL)');
+    assert.equal(errorLabel('unknown', t), 'No answer');
+    assert.equal(errorLabel(null, t), 'No answer');
+    setLang('tr');
+    assert.equal(errorLabel('network', t), 'Yanıt yok (ağ hatası)');
+    assert.equal(errorLabel('REFUSED', t), 'Yanıt yok (REFUSED)');
+    setLang('en');
   });
 
   test('the check link and problem texts', () => {

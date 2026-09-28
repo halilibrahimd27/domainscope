@@ -17,7 +17,9 @@
  * each answer reads done, not yet or wrong value. The page asks again with a growing wait, never
  * before a resolver's cached answer can have expired, and stops when every record is done, after
  * two hours, when nothing can change before then (a long TTL), or when a record had no answer
- * from any resolver three rounds in a row (and says so). Stop / Check now / Check again.
+ * from any resolver three rounds in a row (and says so). Stop (Esc; a round already running still
+ * shows its answers, nothing more is asked) / Check now / Check again (every record on every
+ * resolver, from scratch).
  *
  * Shareable: `#/change?t=caa&domain=example.com&cas=letsencrypt` opens a form (the "Edit in DNS
  * change request" of Domain Health and Zone File); a carried target fills the domain
@@ -95,6 +97,12 @@ registerStrings('en', {
   'chg.check.v.waiting': 'Asking…',
   'chg.check.v.wrong': 'Wrong value',
   'chg.check.v.error': 'No answer ({reason})',
+  'chg.check.v.noAnswer': 'No answer',
+  'chg.check.err.timeout': 'timed out',
+  'chg.check.err.network': 'network error',
+  'chg.check.err.http': 'server error',
+  'chg.check.err.rate-limit': 'rate limited',
+  'chg.check.err.parse': 'unreadable reply',
   'chg.check.p.missing': 'Not yet: no record',
   'chg.check.p.old': 'Not yet: still the old value',
   'chg.check.p.other': 'Not yet: another value',
@@ -162,6 +170,12 @@ registerStrings('tr', {
   'chg.check.v.waiting': 'Soruluyor…',
   'chg.check.v.wrong': 'Yanlış değer',
   'chg.check.v.error': 'Yanıt yok ({reason})',
+  'chg.check.v.noAnswer': 'Yanıt yok',
+  'chg.check.err.timeout': 'zaman aşımı',
+  'chg.check.err.network': 'ağ hatası',
+  'chg.check.err.http': 'sunucu hatası',
+  'chg.check.err.rate-limit': 'hız sınırı',
+  'chg.check.err.parse': 'anlaşılamayan yanıt',
   'chg.check.p.missing': 'Henüz değil: kayıt yok',
   'chg.check.p.old': 'Henüz değil: hâlâ eski değer',
   'chg.check.p.other': 'Henüz değil: başka bir değer',
@@ -212,6 +226,23 @@ function clockTime(at) {
   const d = at instanceof Date ? at : new Date(at);
   const today = new Date().toDateString() === d.toDateString();
   return today ? new Intl.DateTimeFormat(localeTag(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(d) : formatDateTime(d);
+}
+
+/** Why a resolver gave no answer, as the page words it (lib/util.js errorKind; `unavailable` is a server error too). */
+export const CHECK_ERROR_KINDS = Object.freeze(['timeout', 'network', 'http', 'rate-limit', 'parse']);
+
+/**
+ * The badge of a resolver that gave no answer: an error kind in words, a DNS rcode (SERVFAIL,
+ * REFUSED …) as it is, anything else as a plain "No answer".
+ * @param {string|null} reason judgeAnswer's reason of an error
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function errorLabel(reason, t) {
+  const kind = reason === 'unavailable' ? 'http' : reason;
+  if (CHECK_ERROR_KINDS.includes(kind)) return t('chg.check.v.error', { reason: t(`chg.check.err.${kind}`) });
+  if (/^[A-Z][A-Z0-9]*$/.test(String(reason || ''))) return t('chg.check.v.error', { reason });
+  return t('chg.check.v.noAnswer');
 }
 
 /** The field a carried domain fills in a template: its domain, else its name. */
@@ -573,7 +604,7 @@ function mountCheck(container, ctx) {
       const v = r ? r.verdict : 'waiting';
       let label;
       if (v === 'pending') label = t(`chg.check.p.${r.reason}`);
-      else if (v === 'error') label = t('chg.check.v.error', { reason: r.reason });
+      else if (v === 'error') label = errorLabel(r.reason, t);
       else label = t(`chg.check.v.${v}`);
       const [variant, iconName] = VERDICT_BADGE[v];
       const showSeen = r && (v === 'pending' || v === 'wrong') && r.reason !== 'missing' && r.reason !== 'ttl';
@@ -679,6 +710,11 @@ function mountCheck(container, ctx) {
       renderHead();
       return;
     }
+    if (memo.stop === 'user') {
+      // Stopped while this round ran: its answers are shown, nothing more is asked.
+      if (view.isConnected) renderAll();
+      return;
+    }
     schedule();
   }
 
@@ -718,9 +754,15 @@ function mountCheck(container, ctx) {
     againBtn.focus();
   }
 
+  /** Start over: every record on every resolver (a finished change can be checked again, e.g. after a revert). */
   function again() {
+    const running = memo.running;
     Object.assign(memo, { startedAt: Date.now(), round: 0, errorRounds: 0, stop: null, cachedUntil: null });
-    runRound(openPairs());
+    // A round still running (Stop, then Check again) goes on and schedules the next one.
+    if (!running) {
+      memo.latest = new Map();
+      runRound(null);
+    } else renderHead();
     nowBtn.focus();
   }
 

@@ -75,6 +75,7 @@ registerStrings('en', {
   'vfy.scope.label': 'Check',
   'vfy.scope.all': 'Every name ({count})',
   'vfy.scope.perIp': 'One name per IP ({count})',
+  'vfy.scope.perIpSet': 'One name per IP and set ({count})',
   'vfy.privacy': 'Checks run through Globalping, a free probe network run by jsDelivr and volunteers. Each public IP, host name and port you check goes to Globalping, and one probe sends one HTTPS HEAD request to it (User-Agent “globalping probe”). Anyone who has the measurement ID can read the result, including the server’s response headers, for about six months. Private addresses are never sent; your certificate and inventory names stay in this browser. Only check servers you operate.',
   'vfy.origins': { one: 'Also check whether the origin server behind the CDN answers the internet ({count} check).', other: 'Also check whether origin servers behind the CDN answer the internet ({count} checks).' },
   'vfy.origins.hint': 'This sends each origin IP with the proxied name to Globalping; results are public by measurement ID.',
@@ -287,6 +288,7 @@ registerStrings('tr', {
   'vfy.scope.label': 'Kontrol',
   'vfy.scope.all': 'Her ad ({count})',
   'vfy.scope.perIp': 'IP başına bir ad ({count})',
+  'vfy.scope.perIpSet': 'IP ve set başına bir ad ({count})',
   'vfy.privacy': 'Kontroller Globalping üzerinden yapılır; Globalping, jsDelivr ve gönüllülerin işlettiği ücretsiz bir ölçüm ağıdır. Kontrol ettiğiniz her genel IP, host adı ve port Globalping’e gider; bir ölçüm noktası ona tek bir HTTPS HEAD isteği gönderir (User-Agent “globalping probe”). Ölçüm kimliğini bilen herkes sonucu, sunucunun yanıt başlıkları dahil, yaklaşık altı ay okuyabilir. Özel adresler asla gönderilmez; sertifikanız ve envanterdeki sunucu adları bu tarayıcıda kalır. Yalnızca yönettiğiniz sunucuları kontrol edin.',
   'vfy.origins': 'CDN arkasındaki asıl sunucuların internete yanıt verip vermediğini de kontrol et ({count} kontrol).',
   'vfy.origins.hint': 'Bu, her asıl sunucu IP’sini proxy’lenen adla birlikte Globalping’e gönderir; sonuçlar ölçüm kimliğiyle herkese açıktır.',
@@ -1680,7 +1682,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
       value: job.scope,
       options: [
         { value: 'all', label: t('vfy.scope.all', { count: all }) },
-        { value: 'perIp', label: t('vfy.scope.perIp', { count: perIp }) }
+        { value: 'perIp', label: t(showSets ? 'vfy.scope.perIpSet' : 'vfy.scope.perIp', { count: perIp }) }
       ],
       onChange: (v) => {
         if (setVerifyScope(run, v) && table) table.setRows(job.rows);

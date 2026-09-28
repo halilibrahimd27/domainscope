@@ -812,7 +812,8 @@ export function recheckRows(rows), requeueRows(rows), applyOriginOptIn(rows, on)
 export function buildVerifyPairs(result, { port, setOf }) -> { pairs, stats }   // covered, non-wildcard-suspect names × their inventory-server IPs (via dns | zone | hint)
                                                                         // and unmatched public IPs, all of them; skips: private, reserved, cdn-edge, bad-name, bad-port
 export function scopePairs(pairs, 'all'|'perIp'), createVerifyRows(pairs, { origins = false, maxRows = VERIFY_MAX_ROWS })
-  // origin pairs (hint and zone) start as not-run · optional unless `origins`; perIp keeps one DNS and one origin pair per IP;
+  // origin pairs (hint and zone) start as not-run · optional unless `origins`; perIp keeps one DNS and one origin pair per IP
+  // (per IP and `setId` with several certificate sets, so every set a server needs keeps a check; "first" in the cap likewise);
   // verdicts still treat zone like DNS. The cap applies to the scope's pairs, whatever the opt-in: skipped pairs cost nothing,
   // then the first DNS or zone pair of every server address, the other DNS pairs, the other zone pairs (so zone origins
   // held back by the opt-in cost at most one place per address), the first hint pair of every address, the other hint pairs. The rest are marked `overCap` and become skipped rows ('over-cap'), except an origin pair

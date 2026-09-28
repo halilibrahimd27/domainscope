@@ -1958,6 +1958,25 @@ describe('several certificate sets', () => {
     assert.equal(rows.find((r) => r.name === 'shop.example.com').setId, 'B');
   });
 
+  test('one name per IP is one name per IP and set: a server that needs two sets keeps a check for each', () => {
+    const result = {
+      hosts: ['www', 'api', 'shop', 'pay'].map((n) => host(`${n}.example.com`, { ips: ['1.2.3.5'] })),
+      servers: [{ server: srv('web02'), needsCert: true, maybeNeedsCert: false,
+        hosts: ['www', 'api', 'shop', 'pay'].map((n) => e(`${n}.example.com`, '1.2.3.5')) }],
+      unmatchedIps: []
+    };
+    const setOf = (n) => (n === 'shop.example.com' || n === 'pay.example.com' ? 'B' : 'A');
+    const { pairs } = V.buildVerifyPairs(result, { setOf });
+    const per = V.scopePairs(pairs, 'perIp');
+    assert.deepEqual(per.map((p) => `${p.name} ${p.setId}`), ['api.example.com A', 'pay.example.com B']);
+    assert.equal(V.checkCount(per), 2);
+    // without sets the address keeps one name, as before
+    assert.equal(V.scopePairs(V.buildVerifyPairs(result).pairs, 'perIp').length, 1);
+    // the cap reaches each set of the server before a second name of either
+    const capped = V.createVerifyRows(pairs, { maxRows: 2 });
+    assert.deepEqual(capped.filter((r) => r.state === 'pending').map((r) => r.setId).sort(), ['A', 'B']);
+  });
+
   test('exports: set / served_set after the CLI columns, certificateSets in the JSON; a single certificate exports as before', async () => {
     const m = await V.setExpectations(SETS);
     const r = row({ ip: '1.2.3.4', name: 'shop.example.com', setId: 'B' });

@@ -963,7 +963,9 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
  * Narrow the pairs: 'all' keeps every pair; 'perIp' keeps, per IP, the first
  * DNS pair and the first origin pair — zone before hint — (so the exposure
  * check on that IP survives, and an origin pair waiting for the opt-in never
- * displaces the DNS pair). Skipped pairs are always kept.
+ * displaces the DNS pair). With several certificate sets it is one name per IP
+ * and set: a server that needs two sets keeps a pair for each, so neither
+ * install goes unchecked. Skipped pairs are always kept.
  * @param {VerifyPair[]} pairs
  * @param {'all'|'perIp'} scope
  * @returns {VerifyPair[]}
@@ -974,7 +976,7 @@ export function scopePairs(pairs, scope) {
   const seen = new Set();
   return list.filter((p) => {
     if (p.skip) return true;
-    const k = `${p.ip}|${p.port}|${isOriginPair(p) ? 'origin' : 'dns'}`;
+    const k = `${p.ip}|${p.port}|${isOriginPair(p) ? 'origin' : 'dns'}|${p.setId ?? ''}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -991,7 +993,9 @@ export function scopePairs(pairs, scope) {
  * server (or another address of its own) out, whether DNS or the zone file
  * ties it to the certificate; zone origins held back by the opt-in take at
  * most one place per address ahead of a DNS name; and a hint candidate never
- * pushes out a pair the verdicts treat as authoritative.
+ * pushes out a pair the verdicts treat as authoritative. With several
+ * certificate sets "first" is per address and set, so one set's names never
+ * push out another set's install on the same server.
  * @param {VerifyPair[]} pairs
  * @param {number} maxRows
  * @returns {Set<VerifyPair>}
@@ -1003,7 +1007,7 @@ function pairsOverCap(pairs, maxRows) {
   const seen = new Set();
   const ranked = checkable.map((p, i) => {
     const hint = !isDnsLike(p.via);
-    const k = `${hint ? 'hint' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}`;
+    const k = `${hint ? 'hint' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}|${p.setId ?? ''}`;
     const first = !seen.has(k);
     seen.add(k);
     const tier = hint ? (first ? 3 : 4) : first ? 0 : p.via === 'zone' ? 2 : 1;

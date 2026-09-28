@@ -52,6 +52,15 @@
   gap: 8px;
 }
 
+/* A long choice ("One name per IP and set" in Turkish, at 320 px) wraps inside its button. */
+.vfy-scope .seg-btn {
+  height: auto;
+  min-height: 24px;
+  padding-block: 2px;
+  white-space: normal;
+  text-align: center;
+}
+
 /* Buttons (Start / Check again / Stop, CLI downloads): a wrapping cluster. */
 .vfy-actions {
   display: flex;

@@ -42,8 +42,8 @@ export const TARGET_KINDS = Object.freeze(['domain', 'host', 'ip']);
  * Where each tool takes the current target: its main input's route param and the kinds of
  * target that input accepts (`kindParams`: another input for one kind — Retire an IP takes an
  * address into its address box, a domain or host name into its domain box). Tools that are not
- * listed (Zone File, Servers, About) take none; the Zone File view never publishes one either, so
- * nothing about an imported zone reaches a URL.
+ * listed (Zone File, Certificate estate, Servers, About) take none; the Zone File view never
+ * publishes one either, so nothing about an imported zone reaches a URL.
  */
 export const TARGET_ROUTES = Object.freeze({
   subdomains: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) }),

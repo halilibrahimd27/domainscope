@@ -956,10 +956,10 @@ button.nav-status:hover {
     gap: 1px;
   }
 
-  /* 15 links and room for one more; a link stays taller than a 24 px target. */
+  /* 16 links and room for one more; a link stays taller than a 24 px target. */
   .nav-link {
-    padding-top: 3px;
-    padding-bottom: 3px;
+    padding-top: 2px;
+    padding-bottom: 2px;
   }
 
   .nav-foot {

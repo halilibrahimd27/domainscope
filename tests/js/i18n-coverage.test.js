@@ -292,6 +292,19 @@ describe('i18n coverage', () => {
     for (const l of ['ok', 'warn', 'error']) add(`dov.health.light.${l}`);
     for (const k of ['error', 'warn', 'info']) add(`dov.health.count.${k}`);
     for (const p of passport.MAIL_PLATFORMS) if (p.kind !== 'mailbox') add(`dov.mail.kind.${p.kind}`);
+    // Certificate estate (lib/estate.js through views/estate.js): every filter, flag, kind, expiry
+    // bucket, weak reason, tab and why a file is not a report.
+    const estate = await imp('assets/js/lib/estate.js');
+    for (const f of estate.ESTATE_FILTERS) add(`estate.filter.${f}`);
+    for (const f of estate.ESTATE_FLAGS) { add(`estate.flag.${f}`); add(`estate.flagTitle.${f}`); }
+    for (const k of estate.ESTATE_KINDS) add(`estate.kind.${k}`);
+    for (const b of estate.ESTATE_BUCKETS) add(`estate.bucket.${b}`);
+    for (const w of estate.ESTATE_WEAK_REASONS) { add(`estate.weak.${w}`); add(`estate.weakShort.${w}`); }
+    for (const e of estate.REPORT_ERRORS) add(`estate.error.${e}`);
+    for (const tab of views.estate.ESTATE_TABS) add(`estate.tab.${tab}`);
+    // Certificate › PEM & OpenSSL › Does this CSR match?: why a pasted text is not a CSR.
+    const x509 = await imp('assets/js/lib/x509.js');
+    for (const e of x509.CSR_ERRORS) add(`cert.csr.err.${e}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

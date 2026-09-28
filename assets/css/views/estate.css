@@ -1,0 +1,401 @@
+/*
+ * views/estate.css — "Certificate estate" view (.estate-*): the CLI's --json reports read in the
+ * browser, the numbers, the certificate list (labelled cards on a phone), name conflicts and
+ * shared keys.
+ */
+
+.estate-page {
+  margin-top: 16px;
+  min-width: 0;
+}
+
+/* ---- reports ----------------------------------------------------------------- */
+
+.estate-import .filedrop-compact {
+  padding: 10px 14px;
+}
+
+.estate-reports {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.estate-report {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px 8px 12px;
+}
+
+.estate-report + .estate-report {
+  border-top: 1px solid var(--border);
+}
+
+.estate-report-text {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.estate-report-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.estate-report-badges {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.estate-errors {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.estate-how .codeblock {
+  margin: 0;
+}
+
+/* ---- numbers ------------------------------------------------------------------- */
+
+/* Two tiles a row on a phone: the labels wrap there instead of being cut. */
+.estate-stats {
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+}
+
+.estate-stats .stat-label {
+  white-space: normal;
+}
+
+.estate-stats .stat-hint {
+  overflow-wrap: anywhere;
+}
+
+.estate-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.estate-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.estate-line-label {
+  min-width: 7.5rem;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.estate-line-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ---- certificates ---------------------------------------------------------------- */
+
+/* "Show" beside its select, in the table's toolbar */
+.estate-filter.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.estate-filter .field-label {
+  margin: 0;
+}
+
+.estate-filter .select {
+  width: auto;
+  max-width: 100%;
+}
+
+
+.estate-cert,
+.estate-expires,
+.estate-issuer,
+.estate-key,
+.estate-served {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.estate-cert-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.estate-cert {
+  max-width: 14rem;
+}
+
+.estate-issuer {
+  max-width: 11rem;
+}
+
+.estate-key {
+  max-width: 10rem;
+}
+
+.estate-served {
+  max-width: 13rem;
+}
+
+
+.estate-endpoint {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.estate-flags {
+  gap: 4px;
+  max-width: 9.5rem;
+}
+
+.estate-table .dt-row.estate-row-attention td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.estate-details {
+  padding: 4px 2px;
+}
+
+.estate-d {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.estate-d-row {
+  display: contents;
+}
+
+.estate-d-key {
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.estate-d-value {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.estate-d-endpoints {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.estate-d-endpoints li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
+/* A phone: each certificate is a card of labelled lines (the column headers come from data-label). */
+@media (max-width: 640px) {
+  .estate-table .dt-table,
+  .estate-table .dt-table tbody {
+    display: block;
+  }
+
+  .estate-table .dt-table thead {
+    display: none;
+  }
+
+  .estate-table .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .estate-table .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .estate-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* the expander of the row's details: a plain button above the card's lines */
+  .estate-table .dt-table td.dt-expander {
+    display: block;
+  }
+
+  .estate-table .dt-table td:has(> .dt-null) {
+    display: none;
+  }
+
+  .estate-table .dt-table tr.dt-details {
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .estate-table .dt-table tr.dt-details td {
+    display: block;
+    padding: 4px 12px 10px;
+  }
+
+  .estate-table .dt-table tr.dt-details td::before {
+    content: none;
+  }
+
+  .estate-table .dt-row.estate-row-attention td:first-child {
+    box-shadow: none;
+  }
+
+  .estate-table .dt-table tbody tr.dt-row.estate-row-attention {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .estate-cert,
+  .estate-issuer,
+  .estate-key,
+  .estate-served,
+  .estate-flags {
+    max-width: none;
+  }
+
+  /* a longer label (Turkish) wraps inside its badge */
+  .estate-table .badge {
+    height: auto;
+    min-height: 21px;
+    white-space: normal;
+  }
+
+  .estate-d {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .estate-d-key {
+    margin-top: 6px;
+  }
+
+}
+
+/* ---- name conflicts and shared keys ------------------------------------------------ */
+
+.estate-conflict,
+.estate-key-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.estate-conflict-name,
+.estate-key-title {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.estate-conflict-certs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.estate-conflict-cert {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.estate-conflict-cert.is-stale {
+  border-left-color: var(--error-solid);
+}
+
+.estate-conflict-head,
+.estate-key-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.estate-conflict-where {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+@media (max-width: 640px) {
+  .estate-key-group .estate-d {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Paper: the lists read in full, no drop zone. */
+@media print {
+  .estate-drop,
+  .estate-how {
+    display: none;
+  }
+
+  .estate-conflict,
+  .estate-key-group,
+  .estate-table .dt-table tr {
+    break-inside: avoid;
+  }
+}

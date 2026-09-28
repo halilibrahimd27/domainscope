@@ -26,8 +26,8 @@
 
 import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, EmptyState, Icon, SeverityIcon, announce, checkbox, checkboxGroup, select, setButtonBusy, textInput,
-  textarea
+  Alert, Badge, Button, Card, CopyButton, EmptyState, Icon, announce, checkbox, checkboxGroup, describeError, select, setButtonBusy,
+  textInput, textarea
 } from '../ui/components.js';
 import { registerStrings, hasString, localeTag, formatDateTime, formatDuration, formatNumber } from '../i18n.js';
 import { state as stateSingleton } from '../state.js';
@@ -109,7 +109,8 @@ registerStrings('en', {
   'chg.check.bad.zone': 'Its zone name is missing or invalid.',
   'chg.check.bad.empty': 'It holds no record to check.',
   'chg.check.bad.set': 'One of its records cannot be read: {detail}',
-  'chg.check.offline': 'You are offline: the check starts when you press Check now with a connection.'
+  'chg.check.offline': 'You are offline: the check starts when you press Check now with a connection.',
+  'chg.check.failed': 'The check could not run ({reason}). Check now tries again.'
 });
 
 registerStrings('tr', {
@@ -173,7 +174,8 @@ registerStrings('tr', {
   'chg.check.bad.zone': 'Zone adı eksik ya da geçersiz.',
   'chg.check.bad.empty': 'Kontrol edilecek bir kayıt taşımıyor.',
   'chg.check.bad.set': 'Kayıtlarından biri okunamıyor: {detail}',
-  'chg.check.offline': 'Çevrimdışısınız: kontrol, bağlantı varken Şimdi kontrol et’e bastığınızda başlar.'
+  'chg.check.offline': 'Çevrimdışısınız: kontrol, bağlantı varken Şimdi kontrol et’e bastığınızda başlar.',
+  'chg.check.failed': 'Kontrol çalışamadı ({reason}). Şimdi kontrol et yeniden dener.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -617,6 +619,7 @@ function mountCheck(container, ctx) {
     if (memo.running) parts.push(t('chg.check.running'));
     else if (memo.lastAt) parts.push(t('chg.check.checked', { time: clockTime(memo.lastAt) }));
     if (!memo.stop && !memo.running && memo.nextAt) parts.push(t('chg.check.next', { wait: formatDuration(Math.max(0, memo.nextAt - Date.now())) }));
+    if (memo.note && !memo.running) parts.push(memo.note);
     metaEl.textContent = parts.join(' · ');
   }
 
@@ -628,13 +631,19 @@ function mountCheck(container, ctx) {
   async function runRound(only, { quiet = false } = {}) {
     if (memo.running) return;
     if (!ctx.requireOnline({ quiet })) {
-      metaEl.textContent = t('chg.check.offline');
+      memo.note = t('chg.check.offline');
+      renderMeta();
       return;
     }
+    memo.note = null;
     clearTimeout(memo.timer);
     memo.timer = null;
     memo.nextAt = null;
     memo.running = true;
+    // A round of a page left and opened again must not end this one's: only the latest round clears the flag.
+    const token = (memo.token || 0) + 1;
+    memo.token = token;
+    let failed = null;
     renderHead();
     ctx.setBusy(true);
     try {
@@ -652,10 +661,16 @@ function mountCheck(container, ctx) {
     } catch (err) {
       if (err && err.name === 'AbortError') return;
       ctx.checkOutdated();
-      throw err;
+      failed = err;
     } finally {
-      memo.running = false;
+      if (memo.token === token) memo.running = false;
       ctx.setBusy(false);
+    }
+    if (failed) {
+      // The DoH client could not be loaded (a deploy, the connection): say so; Check now tries again.
+      memo.note = t('chg.check.failed', { reason: describeError(failed).message });
+      renderHead();
+      return;
     }
     schedule();
   }

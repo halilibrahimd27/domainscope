@@ -562,22 +562,41 @@ export function prefillDomains({ scanHosts = null, zone = null } = {}) {
 }
 
 /**
+ * The names the imported zone marks as looking internal (views/zone.js sessionZone `internalNames`,
+ * and the owners of its `records` flagged `internal`): never sent to a public resolver from here,
+ * whatever the Zone File view's hand-off toggle put in its `names`.
+ * @param {object|null} zone `state.session.zone`
+ * @returns {Set<string>}
+ */
+export function zoneInternalNames(zone) {
+  const out = new Set();
+  if (!zone) return out;
+  for (const n of Array.isArray(zone.internalNames) ? zone.internalNames : []) if (typeof n === 'string') out.add(n.toLowerCase());
+  for (const r of Array.isArray(zone.records) ? zone.records : []) if (r && r.internal && typeof r.name === 'string') out.add(r.name.toLowerCase());
+  return out;
+}
+
+/**
  * The known host names of each domain (lib/retire.knownHostsFor) from the page session: the last
  * scan's names, the imported zone's names, passive hits the user asked to check and discovered
- * names; capped at {@link RETIRE_MAX_HOSTS} together.
+ * names; capped at {@link RETIRE_MAX_HOSTS} together. A name the zone marks as looking internal
+ * ({@link zoneInternalNames}) is left out, whichever source brings it.
  * @param {string[]} domains
  * @param {{ scanHosts?: object|null, zone?: object|null, passive?: Map<string, string[]>, discovered?: Map<string, string[]> }} sources
  * @returns {{ hosts: Map<string, Array<{ name: string, source: string }>>, capped: boolean }}
  */
 export function hostsForDomains(domains, { scanHosts = null, zone = null, passive = new Map(), discovered = new Map() } = {}) {
-  const scanNames = scanHosts && Array.isArray(scanHosts.names) ? scanHosts.names : [];
-  const zoneNames = zone && Array.isArray(zone.names) ? zone.names : [];
+  const internal = zoneInternalNames(zone);
+  const keep = (list) => list.filter((n) => typeof n === 'string' && !internal.has(n.toLowerCase().replace(/\.$/, '')));
+  const scanNames = keep(scanHosts && Array.isArray(scanHosts.names) ? scanHosts.names : []);
+  const zoneNames = keep(zone && Array.isArray(zone.names) ? zone.names : []);
+  const passiveNames = keep([...passive.values()].flat());
   const hosts = new Map();
   let left = RETIRE_MAX_HOSTS;
   let capped = false;
   for (const d of domains) {
     const list = knownHostsFor(d, {
-      scan: scanNames, zone: zoneNames, passive: [...passive.values()].flat(), discovered: discovered.get(d) || []
+      scan: scanNames, zone: zoneNames, passive: passiveNames, discovered: keep(discovered.get(d) || [])
     });
     if (list.length > left) capped = true;
     hosts.set(d, list.slice(0, Math.max(0, left)));

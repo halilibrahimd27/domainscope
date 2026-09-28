@@ -322,6 +322,9 @@ describe('zone view: helpers', () => {
     assert.ok(s.proxied.every((p) => p.ips.every((ip) => ip !== '192.0.2.0')), 'no placeholder origin');
     const all = V.sessionZone(z, { skipPrivate: false });
     assert.ok(all.names.includes('intranet.example.com'));
+    // Every internal-looking name travels with it, whatever skipPrivate says (Retire an IP never sends them).
+    for (const x of [s, all]) assert.ok(x.internalNames.includes('intranet.example.com'), 'internalNames');
+    assert.ok(!all.internalNames.includes('www.example.com'));
   });
 });
 

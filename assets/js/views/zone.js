@@ -19,8 +19,9 @@
  *
  * Hand-off contracts (read by views/subdomains.js and views/scan.js):
  * - `state.session.zone` = zoneorigins.zoneScanInput(zone, { skipPrivate }) plus
- *   `{ label: string, counts: { names, origins, skipped }, records }` (`records`: zoneorigins
- *   referenceRecords, the records that can point at an address, read by Retire an IP);
+ *   `{ label: string, counts: { names, origins, skipped }, records, internalNames }` (`records`:
+ *   zoneorigins referenceRecords, the records that can point at an address; `internalNames`: every
+ *   name that looks internal, whatever `skipPrivate` says — both read by Retire an IP);
  * - `state.session.zoneScanIntent` (one-shot) = `{ v: 1, target: 'subdomains'|'scan', domain,
  *   mode: 'exact'|'discover', autostart: boolean, at: Date.now() }`; exact mode = only the zone
  *   names as seeds (no passive sources, no wordlist, no permutations: quota-free).
@@ -1018,8 +1019,10 @@ export function buildIntent({ target, domain, mode = 'exact', autostart = true, 
 
 /**
  * The scan input published as `state.session.zone`, with the records that can point at an
- * address (`records`, zoneorigins.referenceRecords: every one, internal names included — Retire an
- * IP never sends those to a public resolver). Memory only, like the rest of it.
+ * address (`records`, zoneorigins.referenceRecords: every one, internal names included) and every
+ * name that looks internal (`internalNames`, zoneorigins.privateLookingNames): Retire an IP never
+ * sends those to a public resolver, even when `skipPrivate` is off and `names` holds them for a
+ * scan. Memory only, like the rest of it.
  * @param {object} zone
  * @param {{ skipPrivate?: boolean, label?: string }} [opts]
  * @returns {object}
@@ -1030,7 +1033,8 @@ export function sessionZone(zone, { skipPrivate = true, label = '' } = {}) {
     ...input,
     label,
     counts: { names: input.names.length + input.wildcardBases.length, origins: input.proxied.length, skipped: input.skipped.length },
-    records: referenceRecords(zone)
+    records: referenceRecords(zone),
+    internalNames: [...privateLookingNames(zone)].sort()
   };
 }
 

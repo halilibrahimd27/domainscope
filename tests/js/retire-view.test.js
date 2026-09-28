@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 
 import { setLang, t, hasString } from '../../assets/js/i18n.js';
 import {
-  shareParams, linkText, prefillDomains, hostsForDomains, changeText, summaryFacts, jobGaps, gapTexts, failureList, LINK_MAX_CHARS
+  shareParams, linkText, prefillDomains, hostsForDomains, zoneInternalNames, changeText, summaryFacts, jobGaps, gapTexts, failureList, LINK_MAX_CHARS
 } from '../../assets/js/views/retire.js';
+import { sessionZone, parseFiles } from '../../assets/js/views/zone.js';
 import { buildChanges, parseRetireTargets, CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_HOSTS } from '../../assets/js/lib/retire.js';
 import { buildSummary, renderMarkdown } from '../../assets/js/lib/summary.js';
 import '../../assets/js/ui/summary-button.js'; // registers the sum.* strings
@@ -64,6 +65,37 @@ describe('Retire an IP view helpers', () => {
     assert.equal(big.capped, true);
     assert.equal(big.hosts.get('example.com').length, RETIRE_MAX_HOSTS);
     assert.deepEqual(big.hosts.get('example.net'), [], 'nothing left for the next domain');
+  });
+
+  test('hostsForDomains: a name the zone marks internal is never sent, even with the hand-off toggle off', () => {
+    const text = [
+      '$ORIGIN example.com.',
+      '@ 3600 IN SOA ns1.example.com. hostmaster.example.com. 1 7200 3600 1209600 300',
+      '@ 3600 IN NS ns1.example.com.',
+      'ns1 3600 IN A 192.0.2.53',
+      'www 3600 IN A 192.0.2.10',
+      'intranet 3600 IN A 192.0.2.10',
+      'vpn.corp 3600 IN A 192.0.2.10',
+      'db.internal 3600 IN A 192.0.2.10',
+      'app 3600 IN A 10.0.0.5',
+      ''
+    ].join('\n');
+    const zoneFile = parseFiles([{ name: 'example.com.zone', text }]);
+    // "Leave out names that look internal" unchecked: the hand-off's names hold them, the session says which they are.
+    const zone = sessionZone(zoneFile, { skipPrivate: false });
+    const internal = ['app.example.com', 'db.internal.example.com', 'intranet.example.com', 'vpn.corp.example.com'];
+    assert.ok(internal.every((n) => zone.names.includes(n)), `the scan hand-off holds them: ${zone.names}`);
+    assert.deepEqual([...zoneInternalNames(zone)].filter((n) => internal.includes(n)).sort(), internal);
+    // Whichever source brings them (the zone, the last scan, a passive hit), none is resolved.
+    const { hosts } = hostsForDomains(['example.com'], {
+      zone, scanHosts: { names: ['intranet.example.com', 'api.example.com'] }, passive: new Map([['example.com', ['vpn.corp.example.com.']]])
+    });
+    const names = hosts.get('example.com').map((x) => x.name);
+    assert.ok(names.includes('www.example.com') && names.includes('api.example.com'), names.join(' '));
+    assert.deepEqual(names.filter((n) => internal.includes(n)), [], 'no internal-looking name');
+    // An older session zone without internalNames: its records' internal flags still count.
+    assert.deepEqual([...zoneInternalNames({ records: [{ name: 'intranet.example.com', internal: true }, { name: 'www.example.com', internal: false }] })], ['intranet.example.com']);
+    assert.equal(zoneInternalNames(null).size, 0);
   });
 
   test('changeText: one text for each action and record type, every key in English and Turkish', () => {

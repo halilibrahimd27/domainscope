@@ -14,8 +14,8 @@
  * 192.0.2.10 (MX and SPF break mail, an include at a provider, an in-bailiwick name server with its
  * glue, an A record, an HTTPS hint, a CNAME chain into another zone, a zone wildcard asked through a
  * random name under it, the zone's proxied origin, a record only in the file, an internal name never
- * sent), the evidence chips, the owner from the server list, Copy summary, CSV / JSON, the passive
- * lookup (two services, unverified until checked;
+ * sent even with the Zone File hand-off toggle off), the evidence chips, the owner from the server
+ * list, Copy summary, CSV / JSON, the passive lookup (two services, unverified until checked;
  * "Check these too" adds their domains and checks again: one gone, one live), the Small-wordlist
  * discovery offered for a domain without host names (and nothing run before the click), Stop and
  * the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
@@ -298,6 +298,15 @@ async function main() {
         const { state } = await import('./assets/js/state.js');
         return !!(state.getSession('zone') && state.getSession('zone').records);
       }, { message: 'zone published', timeout: 15000 });
+      // "Leave out names that look internal" unchecked: the scan hand-off's names now hold intranet.example.com,
+      // which Retire an IP must still never send.
+      await page.waitFor(() => document.querySelector('.zone-next-scan input[type="checkbox"]'), { message: 'the hand-off toggle' });
+      await jsClick(page, '.zone-next-scan input[type="checkbox"]');
+      await page.waitFor(async () => {
+        const { state } = await import('./assets/js/state.js');
+        const z = state.getSession('zone');
+        return !!(z && z.names.includes('intranet.example.com') && z.internalNames.includes('intranet.example.com'));
+      }, { message: 'the zone republished with its internal names' });
       await page.evaluate(async () => {
         const { state } = await import('./assets/js/state.js');
         state.setSession('scanHosts', { domains: ['example.com'], names: ['www.example.com', 'api.example.com', 'www.example.org'], resolving: [], finishedAt: new Date() });
@@ -315,7 +324,7 @@ async function main() {
       }));
       assertEqual(form.domains, 'example.com', 'the scan\'s domain and the zone\'s origin, once');
       assertEqual(form.filled, 'scan', 'says where from (the zone adds no other domain)');
-      // www, api (scan) + shop, old, mail, ns1 (zone; the internal name left out).
+      // www, api (scan) + shop, old, mail, ns1 (zone; the internal name left out, though the hand-off toggle is off).
       assertEqual(form.hosts, [['example.com', '6']], 'known host names');
       assertEqual(await dnsCount(page), before, 'nothing sent');
       await shot(page, opts, 'retire-form-desktop-light-en');

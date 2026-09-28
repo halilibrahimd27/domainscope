@@ -10,22 +10,27 @@
  *   node tests/e2e/renew.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
  * Covers: the nav entry (Certificates group, after Certificate), the empty state (nothing sent),
- * names that are not host names, a check of four names against Let's Encrypt with HTTP-01 (a
- * wildcard CAA forbids and HTTP-01 cannot validate, a private address, a lagging resolver on a
- * CNAME'd name, a ready name with IPv6), the per-name cards (worst first, findings by area, the
- * resolvers' answers), the URL, Copy summary, the CSV / JSON exports, the HTTP-01 reachability test
- * (nothing sent before the click; the consent + cost dialog, Cancel sends nothing; exactly the
- * lib/renewal.js requests, IPv4 and IPv6; an IPv6 address that times out fails the name; a
- * redirect to HTTPS keeping the token passes; leaving the view mid-test reads the paid measurement
- * again on return, with no new probe), the language switch keeping report and test, the
- * certificate block (the sample: its names, a CA not in the list), the links from Certificate and
- * SSL Targets (names filled in, the CA from the shared certificate, nothing sent), a shared link
- * that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter, 320 / 375 px
- * phones light / dark in both languages without horizontal scroll, zero console errors / CSP
- * violations / missing i18n keys, nothing sent outside the page.
+ * names that are not host names, a check of four names against Let's Encrypt with HTTP-01 started
+ * from the keyboard (focus on Stop meanwhile, back on Check readiness after; a wildcard CAA forbids
+ * and HTTP-01 cannot validate, a private address, a lagging resolver on a CNAME'd name, a ready
+ * name with IPv6), the per-name cards (worst first, findings by area, the resolvers' answers), the
+ * URL, Copy summary, the CSV / JSON exports, the HTTP-01 reachability test (nothing sent before the
+ * click; the consent + cost dialog, Escape sends nothing and leaves the focus on the button, which
+ * keeps it while busy and after; exactly the lib/renewal.js requests, IPv4 and IPv6; an IPv6
+ * address that times out fails the name; a redirect to HTTPS keeping the token passes; leaving the
+ * view mid-test reads the paid measurement again on return, with no new probe; Stop, then "Read the
+ * results again" for free; the quota running out after the IPv4 measurement: IPv6 "not tested"),
+ * the language switch keeping report and test, the certificate block (the sample: its names, a CA
+ * not in the list), the links from Certificate and SSL Targets over a kept report (the same
+ * certificate leaves a CA chosen by hand; a newly shared Sectigo certificate brings its names and
+ * its CA; nothing sent), a check past the 50-name cap still replaced by a certificate's link, a
+ * shared link that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter,
+ * 320 / 375 px phones light / dark in both languages without horizontal scroll, zero console errors
+ * / CSP violations / missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net, 192.0.2.0/24, 198.51.100.0/24,
- * 203.0.113.0/24, 2001:db8::/32, 10.0.0.0/8) plus provider name servers (ns.cloudflare.com, natrohost.com).
+ * 203.0.113.0/24, 2001:db8::/32, 10.0.0.0/8) plus provider name servers (ns.cloudflare.com, natrohost.com)
+ * and the public certificate tests/fixtures/real_github.pem, whose names are only filled in, never checked.
  */
 
 import { readFileSync } from 'node:fs';
@@ -34,8 +39,8 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
-  BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
+  BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
+  gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -75,7 +80,9 @@ const fakeScript = () => `(() => {
   const SCEN = ${JSON.stringify(GP_SCENARIOS)};
   const PROBES = ${JSON.stringify(GP_PROBES)};
   window.__fakeDnsLog = [];
-  const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {}, delayMs: 0 };
+  window.__dnsDelayMs = 0;
+  // rejectPost: the number of the POST that gets a quota 429 (rate_limit_exceeded) instead of a measurement.
+  const gp = window.__gp = { calls: [], n: 0, posts: 0, remaining: 250, measurements: {}, delayMs: 0, rejectPost: 0 };
   let wire = null;
   const realFetch = window.fetch.bind(window);
   const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -90,6 +97,10 @@ const fakeScript = () => `(() => {
     gp.calls.push({ method, path: p, body });
     if (p === '/limits') return json({ rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.remaining, reset: 0 } } } });
     if (p === '/measurements' && method === 'POST') {
+      gp.posts += 1;
+      if (gp.posts === gp.rejectPost) {
+        return json({ error: { type: 'rate_limit_exceeded', message: 'API rate limit exceeded.' } }, 429, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '3600' });
+      }
       const cost = (body.locations || []).reduce((n, l) => n + (l.limit || 1), 0) || body.limit || 1;
       gp.remaining -= cost;
       gp.n += 1;
@@ -126,6 +137,7 @@ const fakeScript = () => `(() => {
     const name = String(q.name).toLowerCase().replace(/[.]$/, '');
     const resolver = HOSTS[new URL(url).hostname] || new URL(url).hostname;
     window.__fakeDnsLog.push({ name, type: q.type, resolver });
+    if (window.__dnsDelayMs) await new Promise((r) => setTimeout(r, window.__dnsDelayMs));
     const z = { ...Z, ...(VIEWS[resolver] || {}) };
     const answers = [];
     let cur = name;
@@ -153,6 +165,18 @@ const fakeScript = () => `(() => {
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent || '', sel);
 const dnsCount = (page) => page.evaluate(() => window.__fakeDnsLog.length);
 const gpCalls = (page) => page.evaluate(() => window.__gp.calls.map((c) => `${c.method} ${c.path}`));
+const postCount = (page) => page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').length);
+/** The page at 320 and 375 px without horizontal scroll (a shot at 375), then back on the desktop. */
+async function phoneCheck(page, opts, name) {
+  for (const width of [320, 375]) {
+    await page.setViewport({ width, height: 700, mobile: true });
+    await assertNoHorizontalScroll(page, `${name} ${width}`);
+  }
+  await page.evaluate(() => document.querySelector('.rnw-test-card')?.scrollIntoView({ block: 'start' }));
+  await shot(page, opts, name);
+  await page.setViewport({ width: 1440, height: 900 });
+}
+const focusedAction = (page) => page.evaluate(() => document.activeElement?.dataset?.action || document.activeElement?.tagName);
 const typeNames = (page, value) => page.evaluate((v) => {
   const ta = document.querySelector('[data-role="renew-names"]');
   ta.value = v;
@@ -219,12 +243,17 @@ async function main() {
       assertEqual(await dnsCount(page), 0, 'nothing sent');
     });
 
-    await run.step('four names against Let\'s Encrypt with HTTP-01: worst first, findings by area, the URL', async () => {
+    await run.step('four names against Let\'s Encrypt with HTTP-01 (keyboard: focus follows Check ⇄ Stop): worst first, findings by area, the URL', async () => {
       await typeNames(page, 'www.example.com\n*.example.com\napi.example.com\nshop.example.com');
       await setSelect(page, '[data-role="renew-ca"]', 'letsencrypt');
       await setSelect(page, '[data-role="renew-challenge"]', 'http-01');
-      await page.click('[data-action="renew-run"]');
+      // Slow answers keep the check running long enough to see where the focus is meanwhile.
+      await page.evaluate(() => { window.__dnsDelayMs = 150; document.querySelector('[data-action="renew-run"]').focus(); });
+      await page.press('Enter');
+      await page.waitFor(() => document.activeElement === document.querySelector('[data-action="renew-stop"]') && !document.activeElement.hidden, { message: 'focus on Stop while the check runs' });
+      await page.evaluate(() => { window.__dnsDelayMs = 0; });
       await waitDone(page);
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'renew-run', 'focus back on Check readiness');
       assertEqual(await page.evaluate(() => document.querySelector('.rnw-hero').dataset.headline), 'fail', 'headline');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['2 will fail', '1 with warnings', '1 ready'], 'counts');
       const c = await cards(page);
@@ -268,20 +297,29 @@ async function main() {
       assertEqual([json.schema, json.challenge, json.ca.id, json.names.length, json.summary.fail], ['domainscope.renewal/1', 'http-01', 'letsencrypt', 4, 2], 'JSON');
     });
 
-    await run.step('HTTP-01 test: consent dialog (Cancel sends nothing), then IPv4 + IPv6 from three continents', async () => {
+    await run.step('HTTP-01 test (keyboard): consent dialog (Escape sends nothing, focus back on the button), then IPv4 + IPv6 from three continents', async () => {
       assertEqual(await page.evaluate(() => document.querySelector('[data-action="renew-http01"]').textContent), 'Test 2 names (9 probes)', 'batch button');
-      await page.click('[data-action="renew-http01"]');
+      const focusedTestButton = () => page.evaluate(() => {
+        const el = document.activeElement;
+        return el && el.dataset.action === 'renew-http01' ? (el.getAttribute('aria-busy') ? 'busy' : 'idle') : `${el?.tagName}:${el?.dataset?.action || el?.className}`;
+      });
+      await page.evaluate(() => document.querySelector('[data-action="renew-http01"]').focus());
+      await page.press('Enter');
       await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog' });
       const dialog = await text(page, '.gp-confirm');
       assert(/www\.example\.com, shop\.example\.com/.test(dialog) && /\/\.well-known\/acme-challenge\//.test(dialog) && /Cost: 9 probes of the 250 left/.test(dialog), dialog);
       await page.press('Escape');
-      await page.waitFor(() => !document.querySelector('.gp-confirm'), { message: 'closed' });
+      await page.waitFor(() => !document.querySelector('.gp-confirm') && document.querySelector('.rnw-test')?.dataset.state === 'idle', { message: 'closed' });
+      assertEqual(await focusedTestButton(), 'idle', 'focus on the test button after Escape');
       assertEqual(await gpCalls(page), ['GET /limits'], 'only the free quota read');
-      await page.click('[data-action="renew-http01"]');
+      await page.press('Enter');
       await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog again' });
       await page.click('.gp-confirm .btn-primary');
+      await page.waitFor(() => !document.querySelector('.gp-confirm'), { message: 'dialog closed' });
+      assertEqual(await focusedTestButton(), 'busy', 'focus stays on the busy test button while the test runs');
       await waitTestDone(page);
       assertEqual(await page.evaluate(() => document.querySelector('.rnw-test').dataset.state), 'done', 'test done');
+      assertEqual(await focusedTestButton(), 'idle', 'focus on the test button after the test');
       const posts = await page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').map((c) => c.body));
       assertEqual(posts.map((b) => [b.target, b.measurementOptions.ipVersion || 4, b.measurementOptions.protocol, b.measurementOptions.port, b.locations.map((l) => l.continent).join('')]),
         [['www.example.com', 4, 'HTTP', 80, 'EUNAAS'], ['www.example.com', 6, 'HTTP', 80, 'EUNAAS'], ['shop.example.com', 4, 'HTTP', 80, 'EUNAAS']], 'requests');
@@ -328,6 +366,43 @@ async function main() {
       assert(shop.findings.includes('http01.redirect:ok'), `shop tested: ${shop.findings}`);
     });
 
+    await run.step('Stop during a test (keyboard): the paid measurements are read again for free; focus moves on to the next action', async () => {
+      await page.evaluate(() => { window.__gp.delayMs = 60000; });
+      const before = await postCount(page);
+      await page.click('.rnw-name[data-name="www.example.com"] [data-action="renew-http01-name"]');
+      await page.waitFor((n) => window.__gp.calls.filter((c) => c.method === 'POST').length === n + 2 && !!document.querySelector('[data-action="renew-http01-stop"]'),
+        { args: [before], message: 'IPv4 + IPv6 measurements created, Stop offered' });
+      await page.evaluate(() => document.querySelector('[data-action="renew-http01-stop"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.rnw-test')?.dataset.state === 'stopped', { message: 'stopped' });
+      assert(/^Stopped\. The probes were already used/.test(await text(page, '.rnw-test .alert')), `stopped note: ${await text(page, '.rnw-test .alert')}`);
+      assertEqual(await focusedAction(page), 'renew-http01-reread', 'focus on Read the results again');
+      await phoneCheck(page, opts, 'renew-stopped-mobile-light-en');
+      await page.evaluate(() => document.querySelector('[data-action="renew-http01-reread"]').focus());
+      await page.evaluate(() => { window.__gp.delayMs = 0; });
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.rnw-test')?.dataset.state === 'done', { message: 'read again', timeout: 20000 });
+      assertEqual(await postCount(page), before + 2, 'no new probe');
+      assertEqual(await focusedAction(page), 'renew-http01', 'focus on the test button');
+    });
+
+    await run.step('the quota runs out after the IPv4 measurement: read again, IPv6 reads "not tested" and the note says the test is incomplete', async () => {
+      await page.evaluate(() => { window.__gp.rejectPost = window.__gp.posts + 2; });
+      await page.click('.rnw-name[data-name="www.example.com"] [data-action="renew-http01-name"]');
+      await waitTestDone(page, 'the quota stops the test');
+      assertEqual(await page.evaluate(() => document.querySelector('.rnw-test').dataset.state), 'error', 'stopped by the quota, one measurement paid');
+      await page.click('[data-action="renew-http01-reread"]');
+      await page.waitFor(() => document.querySelector('.rnw-test')?.dataset.state === 'done', { message: 'read again', timeout: 20000 });
+      assert(/^HTTP-01 reachability tested for 1 name, but not completely/.test((await text(page, '.rnw-test-done')).trim()), await text(page, '.rnw-test-done'));
+      const www = (await cards(page)).find((x) => x.name === 'www.example.com');
+      assertEqual([www.verdict, www.findings.slice(-2)], ['ready', ['http01.ok:ok', 'http01.untested:info']], 'IPv6 not tested');
+      const families = await page.evaluate(() => [...document.querySelectorAll('.rnw-name[data-name="www.example.com"] .rnw-family')].map((f) => [f.dataset.family, f.dataset.verdict, f.querySelector('.rnw-family-head').textContent, f.querySelectorAll('.rnw-probe').length]));
+      assertEqual(families.map((f) => f.slice(0, 2)), [['4', 'ok'], ['6', 'untested']], 'families');
+      assert(/^IPv4 · tested /.test(families[0][2]) && families[0][3] === 3, `IPv4 line: ${families[0]}`);
+      assertEqual(families[1].slice(2), ['IPv6 · not tested', 0], 'IPv6 line');
+      await phoneCheck(page, opts, 'renew-partial-mobile-light-en');
+    });
+
     await run.step('the certificate block: the sample fills the names; its CA is not in the list', async () => {
       await gotoRoute(page, 'renew');
       await page.evaluate(() => { document.querySelector('.rnw-cert-block').open = true; });
@@ -338,24 +413,53 @@ async function main() {
       await shot(page, opts, 'renew-cert-desktop-light-en');
     });
 
-    await run.step('links from Certificate and SSL Targets fill the names; the CA comes from the shared certificate; nothing is sent', async () => {
+    await run.step('links from Certificate and SSL Targets fill the names and take the CA of a newly shared certificate (over a kept report with another CA); nothing is sent', async () => {
+      const box = () => page.evaluate(() => document.querySelector('[data-role="renew-names"]')?.value);
+      const caNow = () => page.evaluate(() => [document.querySelector('[data-role="renew-ca"]').value, document.querySelector('.rnw-ca .field-hint')?.textContent || document.querySelector('.rnw-ca').textContent]);
+      // A CA chosen by hand for the sample's names: the same certificate's link leaves it.
+      await setSelect(page, '[data-role="renew-ca"]', 'letsencrypt');
+      const before = await dnsCount(page);
       // The sample loaded above is the page session's certificate: the Certificate view shows it.
       await gotoRoute(page, 'cert');
       await page.waitFor(() => !!document.querySelector('.cert-actions [data-action="renew-link"]'), { message: 'Certificate link' });
-      const before = await dnsCount(page);
       const href = await page.evaluate(() => document.querySelector('.cert-actions [data-action="renew-link"]').getAttribute('href'));
       assert(/#\/renew\?names=example\.com%2C\*\.example\.com%2Cexample\.net%2Cwww\.example\.net&run=0$/.test(href), href);
       await page.click('.cert-actions [data-action="renew-link"]');
-      await page.waitFor(() => document.documentElement.dataset.view === 'renew'
-        && document.querySelector('[data-role="renew-names"]')?.value === 'example.com\n*.example.com\nexample.net\nwww.example.net', { message: 'names filled' });
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="renew-ca"]').value), '', 'a CA outside the list is not chosen');
-      assert(/not in the list/.test(await text(page, '.rnw-ca')), 'the hint says why');
+      await page.waitFor(() => document.documentElement.dataset.view === 'renew' && !!document.querySelector('.rnw-hero')
+        && document.querySelector('[data-role="renew-names"]')?.value === 'example.com\n*.example.com\nexample.net\nwww.example.net', { message: 'names kept, report kept' });
+      assertEqual((await caNow())[0], 'letsencrypt', 'the same certificate: the CA chosen since stays');
+      // Another certificate, from a CA in the list (Sectigo), shared from Certificate: its link brings its names and its CA.
+      await gotoRoute(page, 'cert');
+      await page.evaluate(() => { const d = document.querySelector('.cert-reload'); if (d) d.open = true; });
+      await page.setFileInput('.cert-reload .filedrop-input', [path.join(FIXTURES, 'real_github.pem')]);
+      await page.waitFor(() => /names=github\.com%2Cwww\.github\.com&run=0$/.test(document.querySelector('.cert-actions [data-action="renew-link"]')?.getAttribute('href') || ''), { message: 'the new certificate\'s link' });
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+      await page.click('.cert-actions [data-action="renew-link"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'renew' && document.querySelector('[data-role="renew-names"]')?.value === 'github.com\nwww.github.com', { message: 'the new names' });
+      assert(await page.evaluate(() => !!document.querySelector('.rnw-hero')), 'the kept report is still under the form');
+      const [ca, hint] = await caNow();
+      assertEqual(ca, 'sectigo', 'the CA of the new certificate');
+      assert(hint.includes('Set from the certificate’s issuer (Sectigo Limited · Sectigo Public Server Authentication CA DV E36).'), `hint: ${hint}`);
+      // SSL Targets shares the same certificate: its link changes nothing.
       await gotoRoute(page, 'scan');
       await page.waitFor(() => !!document.querySelector('.cert-summary [data-action="renew-link"]'), { message: 'SSL Targets link' });
       await page.click('.cert-summary [data-action="renew-link"]');
-      await page.waitFor(() => document.documentElement.dataset.view === 'renew', { message: 'renew from SSL Targets' });
-      await sleep(200);
+      await page.waitFor(() => document.documentElement.dataset.view === 'renew' && !!document.querySelector('[data-role="renew-ca"]'), { message: 'renew from SSL Targets' });
+      assertEqual([await box(), (await caNow())[0]], ['github.com\nwww.github.com', 'sectigo'], 'names and CA');
       assertEqual(await dnsCount(page), before, 'the links sent nothing');
+    });
+
+    await run.step('a check of more names than the cap: the box still holds what was run, so a certificate\'s link replaces it', async () => {
+      const many = Array.from({ length: 55 }, (_, i) => `h${i + 1}.example.com`).join('\n');
+      await typeNames(page, many);
+      await page.waitFor(() => /Only the first 50 names are checked; 5 more are left out/.test(document.querySelector('.rnw-names-note')?.textContent || ''), { message: 'over the cap' });
+      await page.click('[data-action="renew-run"]');
+      await page.waitFor(() => document.querySelectorAll('.rnw-name').length === 50 && !document.querySelector('[data-action="renew-run"]').hidden, { message: '50 names checked', timeout: 30000 });
+      await gotoRoute(page, 'cert');
+      await page.waitFor(() => !!document.querySelector('.cert-actions [data-action="renew-link"]'), { message: 'Certificate link' });
+      await page.click('.cert-actions [data-action="renew-link"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'renew' && document.querySelectorAll('.rnw-name').length === 50, { message: 'back with the report' });
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="renew-names"]').value), 'github.com\nwww.github.com', 'the certificate\'s names');
     });
 
     await run.step('a shared link runs on open (DNS-01: Cloudflare\'s plugins, TXT leftovers); Ctrl+Enter runs again', async () => {

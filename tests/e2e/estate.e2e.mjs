@@ -12,19 +12,23 @@
  *   - navigation: Certificate estate is the last tool of the Certificates group; the empty page
  *     offers the drop zone (focused by '/') and the command that makes a report;
  *   - a file that is not a report is listed with the reason; report-a.json gives the tiles (9
- *     certificates, 3 expiring, 5 in name conflicts, 5 with a shared key, 2 weak, 3 covering no
+ *     certificates, 3 expiring, 5 in name conflicts, 2 with a shared key, 2 weak, 3 covering no
  *     name), the expiry and kind lines and a row per certificate; a tile filters the table and
  *     keeps the focus, the select does too; a row's details show the fingerprints and where it is
  *     served; the CSV holds the CLI's --estate --csv columns, the rows of the filter only;
  *   - the conflicts tab names both names and marks the old wildcard "older", the keys tab the
- *     RSA 1024 key on three hosts in two certificates;
+ *     RSA 1024 key on two addresses in two certificates ("needs a look") and two certificates on
+ *     a web01 / web02 pair (listed only);
  *   - report-b.json joins: the overlap note (192.0.2.11:443, the newest report's answers), the
  *     report of each endpoint in the details and a `report` column in the CSV; the same report
  *     again is a duplicate; pasting a report works, a pasted non-report says why; removing one
- *     report and Forget all;
+ *     report and Forget all; "Delete all local data" forgets the reports, with the view on screen
+ *     or not, and so does a switch to another workspace;
  *   - Certificate view › PEM & OpenSSL › Does this CSR match?: the certificate's own CSR matches
  *     (Ctrl+Enter in the box), another key's does not (with the names it asked for), a pasted
- *     private key is refused and the box emptied, a certificate is named as one;
+ *     private key is refused and the box emptied at once, without Compare (and it does not come
+ *     back after another tab or tool, while a CSR does), a certificate is named as one; "Delete
+ *     all local data" empties the box;
  *   - Turkish + dark, a 375 px and a 320 px phone: no horizontal scroll, the table as cards;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
  */
@@ -125,6 +129,38 @@ const removeToasts = (page) => page.evaluate(() => document.querySelectorAll('.t
 /** Wait for the DataTable's next frame: its rows render on requestAnimationFrame. */
 const frames = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
+/** Settings › "Delete all local data", confirmed (carry.e2e.mjs's helper). */
+async function deleteAllLocalData(page) {
+  await page.click('[data-control="settings"]');
+  try {
+    await page.waitForSelector('dialog.modal[open] .settings-danger');
+    await page.click('dialog.modal[open] .settings-danger .btn-danger');
+    await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
+    await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
+    await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
+  } finally {
+    await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+  }
+  // The tool on screen opens again once every listener has forgotten.
+  await page.waitFor(() => document.querySelector('#page-body')?.childElementCount > 0
+    && !document.querySelector('#page-body .page-loading'), { message: 'the tool opened again' });
+  await frames(page);
+}
+
+/** Open the Certificate view with bundle_leaf.pem on its PEM & OpenSSL tab. */
+async function certPemTab(page) {
+  await gotoRoute(page, 'cert');
+  if (!(await page.evaluate(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com'))) {
+    await page.setFileInput('.cert-view .filedrop-input', [fixture('bundle_leaf.pem')]);
+    await page.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com', { message: 'certificate loaded' });
+  }
+  await removeToasts(page);
+  await page.click('.cert-tabs .tab[data-tab="pem"]');
+  await page.waitForSelector('[data-role="cert-csr"]');
+}
+
+const csrBox = (page) => page.evaluate(() => document.querySelector('[data-role="cert-csr"]')?.value ?? null);
+
 async function main() {
   const opts = cliOptions();
   opts.shotsDir = path.resolve(opts.value('--shots-dir', SHOTS));
@@ -194,9 +230,17 @@ async function main() {
       const info = await viewInfo(page);
       assertEqual(info.reports, ['report-a.json'], 'report list');
       assertEqual(info.errors, [], 'the error of the earlier file is gone');
-      assertEqual(info.stats, { all: '9', expiring: '3', 'name-conflict': '5', 'shared-key': '5', weak: '2', 'covers-none': '3' }, 'tiles');
+      assertEqual(info.stats, { all: '9', expiring: '3', 'name-conflict': '5', 'shared-key': '2', weak: '2', 'covers-none': '3' }, 'tiles');
       assertEqual(info.pressed, ['all'], 'All pressed');
-      assertEqual(info.tabs, ['certificates:9', 'conflicts:2', 'keys:4'], 'tab badges');
+      assertEqual(info.tabs, ['certificates:9', 'conflicts:2', 'keys:3'], 'tab badges');
+      const hints = await page.evaluate(() => Object.fromEntries(['name-conflict', 'shared-key'].map((f) => {
+        const el = document.querySelector(`.estate-stats [data-filter="${f}"]`);
+        return [f, `${el.querySelector('.stat-label')?.textContent} | ${el.querySelector('.stat-hint')?.textContent}`];
+      })));
+      assertEqual(hints, {
+        'name-conflict': 'In a name conflict | 2 names, several certificates',
+        'shared-key': 'With a shared key | 1 key in several certificates or on 5+ addresses'
+      }, 'the tiles count certificates, the hints the names and keys behind them');
       assertEqual(info.names[0], 'old.example.net', 'soonest expiry first');
       assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'all'), 'the focus on the Certificates tile, not <body>');
       const lines = await page.evaluate(() => [...document.querySelectorAll('.estate-line')].map((l) => l.textContent));
@@ -244,7 +288,7 @@ async function main() {
       await removeToasts(page);
     });
 
-    await run.step('conflicts: both names, the old wildcard older; keys: RSA 1024 on three hosts in two certificates', async () => {
+    await run.step('conflicts: both names, the old wildcard older; keys: RSA 1024 on two addresses in two certificates', async () => {
       await page.click('.estate-tabs .tab[data-tab="conflicts"]');
       const conflicts = await page.waitFor(() => {
         const s = [...document.querySelectorAll('.estate-conflict')];
@@ -255,10 +299,12 @@ async function main() {
       await page.click('.estate-tabs .tab[data-tab="keys"]');
       const keys = await page.waitFor(() => {
         const g = [...document.querySelectorAll('.estate-key-group')];
-        return g.length ? g.map((k) => k.querySelector('.estate-key-head').textContent) : false;
+        return g.length ? g.map((k) => ({ head: k.querySelector('.estate-key-head').textContent, look: k.dataset.look })) : false;
       }, { message: 'keys' });
-      assertEqual(keys.length, 4, 'four shared keys');
-      assert(keys[0].includes('RSA 1024') && keys[0].includes('3 hosts') && keys[0].includes('2 certificates'), keys[0]);
+      assertEqual(keys.map((k) => k.look), ['true', 'false', 'false'], 'three shared keys, one needs a look');
+      assert(keys[0].head.includes('RSA 1024') && keys[0].head.includes('2 addresses') && keys[0].head.includes('2 certificates')
+        && keys[0].head.includes('needs a look'), keys[0].head);
+      assert(keys[1].head.includes('2 addresses') && keys[1].head.includes('1 certificate') && !keys[1].head.includes('needs a look'), keys[1].head);
       await page.click('.estate-tabs .tab[data-tab="certificates"]');
     });
 
@@ -303,6 +349,40 @@ async function main() {
       await removeToasts(page);
     });
 
+    await run.step('"Delete all local data" forgets the reports, the view on screen or not', async () => {
+      await choose(page, [REPORT_A], () => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, 'report read');
+      await removeToasts(page);
+      await deleteAllLocalData(page);
+      await page.waitFor(() => document.querySelector('.estate-page .empty') && !document.querySelector('.estate-report'), { message: 'emptied on screen' });
+      assertEqual((await viewInfo(page)).reports, [], 'nothing open after the deletion');
+      await setLangUi(page, 'en');
+      await choose(page, [REPORT_A, REPORT_B], () => document.querySelectorAll('.estate-report').length === 2, 'two reports');
+      await removeToasts(page);
+      await gotoRoute(page, 'about');
+      await deleteAllLocalData(page);
+      await setLangUi(page, 'en');
+      await gotoRoute(page, 'estate');
+      const info = await viewInfo(page);
+      assertEqual([info.reports, info.empty], [[], true], 'forgotten while another tool was open');
+    });
+
+    await run.step('another workspace forgets the reports too', async () => {
+      await choose(page, [REPORT_A], () => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, 'report read');
+      await removeToasts(page);
+      const id = await page.evaluate(() => import('./assets/js/state.js').then(async ({ state }) => {
+        const { meta } = await state.createWorkspace('Estate e2e');
+        await state.switchWorkspace(meta.id);
+        return meta.id;
+      }));
+      await page.waitFor(() => document.querySelector('.estate-page .empty') && !document.querySelector('.estate-report'), { message: 'emptied by the switch' });
+      await page.evaluate((wsId) => import('./assets/js/state.js').then(async ({ state }) => {
+        await state.switchWorkspace(state.workspaces.find((w) => w.isDefault).id);
+        await state.deleteWorkspace(wsId);
+      }), id);
+      await page.waitFor(() => document.querySelector('.estate-page .empty'), { message: 'back in Default, still empty' });
+      assertEqual((await viewInfo(page)).reports, [], 'nothing came back with Default');
+    });
+
     run.group('Certificate › PEM & OpenSSL › Does this CSR match?');
     await run.step('its own CSR matches (Ctrl+Enter in the box), another key\'s does not', async () => {
       await gotoRoute(page, 'cert');
@@ -329,19 +409,42 @@ async function main() {
       assert(no.includes('The CSR does not match') && no.includes('shop.example.com'), no);
     });
 
-    await run.step('a pasted private key is refused and the box emptied; a certificate is named as one', async () => {
+    await run.step('a pasted private key is refused and the box emptied at once, without Compare; a certificate is named as one', async () => {
       await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.key'), 'utf8'));
-      await page.click('[data-action="cert-csr-compare"]');
       const key = await page.waitFor(() => {
         const v = document.querySelector('.cert-csr-verdict[data-error="private-key"]');
         return v ? { text: v.textContent, box: document.querySelector('[data-role="cert-csr"]').value } : false;
       }, { message: 'private key verdict' });
-      assert(key.text.startsWith('That is a private key. It was not read'), key.text);
+      assert(key.text.startsWith('That is a private key. It was not read or kept'), key.text);
       assertEqual(key.box, '', 'the box is emptied');
       assert(!(await page.evaluate(() => /PRIVATE KEY-----/.test(document.body.innerHTML))), 'no key left in the page');
       await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.pem'), 'utf8'));
       await page.click('[data-action="cert-csr-compare"]');
       await page.waitFor(() => document.querySelector('.cert-csr-verdict[data-error="certificate"]'), { message: 'certificate verdict' });
+    });
+
+    await run.step('a key pasted without Compare does not come back after another tab or tool; a CSR does', async () => {
+      await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.rsa.key'), 'utf8'));
+      await page.click('.cert-tabs .tab[data-tab="names"]');
+      await page.click('.cert-tabs .tab[data-tab="pem"]');
+      await page.waitForSelector('[data-role="cert-csr"]');
+      assertEqual(await csrBox(page), '', 'empty after another tab');
+      await gotoRoute(page, 'estate');
+      await certPemTab(page);
+      assertEqual(await csrBox(page), '', 'empty after another tool');
+      const csr = await readFile(fixture('bundle_leaf.csr'), 'utf8');
+      await page.type('[data-role="cert-csr"]', csr);
+      await gotoRoute(page, 'estate');
+      await certPemTab(page);
+      assertEqual(await csrBox(page), csr, 'a CSR stays for this page session');
+    });
+
+    await run.step('"Delete all local data" empties the CSR box', async () => {
+      await deleteAllLocalData(page);
+      await setLangUi(page, 'en');
+      await certPemTab(page);
+      assertEqual(await csrBox(page), '', 'the pasted CSR is forgotten');
+      await removeToasts(page);
     });
 
     run.group('Languages, themes, phones');

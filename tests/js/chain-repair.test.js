@@ -14,7 +14,8 @@ import { setLang } from '../../assets/js/i18n.js';
 import { createIntermediateStore, repairChain, rootTable, chainStanding } from '../../assets/js/lib/chainfix.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import {
-  CCADB_URL, chainRepairOf, lifecycleText, repairApplies, repairText, repairedFullchain, startChainRepair, storeList, trustText
+  CCADB_URL, chainRepairOf, lifecycleLinkLabel, lifecycleText, notFoundText, onChainRepairEnd, repairApplies, repairText, repairedFullchain,
+  startChainRepair, storeList, trustText
 } from '../../assets/js/ui/chain-repair.js';
 
 const FIXTURES = new URL('../fixtures/', import.meta.url);
@@ -75,6 +76,19 @@ describe('the job', () => {
     assert.notEqual(startChainRepair(loadOf('file', 'chainfix_leaf.pem'), { store }), job);
   });
 
+  test('onChainRepairEnd: called once when a running job ends, never for an ended one', async () => {
+    const load = loadOf('file', 'chainfix_leaf_deep.pem');
+    const job = startChainRepair(load, { store: diskStore(), now: NOW });
+    const seen = [];
+    onChainRepairEnd(load, (j) => seen.push([j.status, repairedFullchain(load).length]));
+    await settled(job);
+    assert.deepEqual(seen, [['done', 3]], 'the repaired fullchain is there when it runs');
+    onChainRepairEnd(load, () => seen.push('late'));
+    onChainRepairEnd(null, () => seen.push('none'));
+    onChainRepairEnd(loadOf('file', 'chainfix_leaf.pem'), () => seen.push('not started'));
+    assert.deepEqual(seen, [['done', 3]]);
+  });
+
   test('a complete chain has no repaired fullchain; a failed job starts again on the next call', async () => {
     const complete = loadOf('file', 'chainfix_leaf.pem', 'chainfix_inter.pem');
     await settled(startChainRepair(complete, { store: diskStore(), now: NOW }));
@@ -107,9 +121,12 @@ describe('sentences', () => {
     });
     ({ load, repair } = await repairOf('file', 'chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem'));
     assert.match(repairText(repair, load).message, /^The file stops at DomainScope Test Deep CA, whose issuer is not in it\./);
+    // Certificate Transparency holds the leaf only: nothing says the server lacks the intermediate.
     ({ load, repair } = await repairOf('ct', 'chainfix_leaf_deep.pem'));
-    assert.equal(repairText(repair, load).title, '2 missing intermediates found');
+    assert.equal(repairText(repair, load).title, '2 intermediates found in the CCADB list');
     assert.match(repairText(repair, load).message, /^Certificate Transparency logs hold the server certificate only\. The 2 intermediates it needs/);
+    ({ load, repair } = await repairOf('ct', 'chainfix_leaf.pem'));
+    assert.equal(repairText(repair, load).title, 'Intermediate found in the CCADB list');
     ({ load, repair } = await repairOf('file', 'chainfix_leaf.pem', 'chainfix_inter_cross.pem'));
     assert.deepEqual(repairText(repair, load), {
       title: 'A current root is reachable',
@@ -118,6 +135,22 @@ describe('sentences', () => {
     setLang('tr');
     ({ load, repair } = await repairOf('file', 'chainfix_leaf.pem'));
     assert.equal(repairText(repair, load).title, 'Eksik ara sertifika bulundu');
+    ({ load, repair } = await repairOf('ct', 'chainfix_leaf.pem'));
+    assert.equal(repairText(repair, load).title, 'Ara sertifika CCADB listesinde bulundu');
+    setLang('en');
+  });
+
+  test('not found: a private CA, a newer or a withdrawn intermediate; for an expired certificate, its issuer may be gone with it', async () => {
+    setLang('en');
+    const { repair } = await repairOf('file', 'chainfix_leaf_unknown.pem');
+    assert.equal(notFoundText(repair, NOW), 'The intermediate that issued this certificate (CN=DomainScope Test Unlisted CA,O=DomainScope Unlisted Test,C=XX) '
+      + 'is not in the CCADB list of public intermediates (Sep 28, 2026): it may belong to a private CA, be newer than this copy of the list, '
+      + 'or have expired or been withdrawn from it. Get the chain (CA bundle) from your certificate authority.');
+    const later = new Date('2036-02-01T00:00:00Z'); // the leaf expired on 2036-01-01
+    assert.match(notFoundText(repair, later), /which keeps only intermediates that are valid today\. This certificate has expired, and its issuer may have expired or been withdrawn too\./);
+    setLang('tr');
+    assert.match(notFoundText(repair, NOW), /özel bir sertifika otoritesine ait olabilir, listenin bu kopyasından yeni olabilir ya da süresi dolmuş veya listeden çıkarılmış olabilir\./);
+    assert.match(notFoundText(repair, later), /Bu sertifikanın süresi dolmuş; onu veren ara sertifikanın da süresi dolmuş ya da listeden çıkarılmış olabilir\./);
     setLang('en');
   });
 
@@ -133,6 +166,32 @@ describe('sentences', () => {
     setLang('tr');
     assert.equal(lifecycleText(repair.standing.warnings[0], repair.leaf),
       'Chrome, DomainScope Test Distrusted Root kökünün 31 Oca 2026 tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika 1 Mar 2026 tarihinde verildi.');
+    setLang('en');
+  });
+
+  test('a removed root: one store or several (Turkish: depo / depolar)', async () => {
+    const { repair } = await repairOf('file', 'chainfix_leaf.pem');
+    const root = { ...repair.root, name: 'Example Old Root' };
+    const one = { code: 'removed', severity: 'error', stores: ['chrome'], root, date: null, issued: null, url: null, source: null };
+    const two = { ...one, stores: ['chrome', 'mozilla'] };
+    setLang('en');
+    assert.equal(lifecycleText(one, repair.leaf), 'Example Old Root is no longer in the root store of Chrome: its clients reject this chain.');
+    assert.equal(lifecycleText(two, repair.leaf), 'Example Old Root is no longer in the root stores of Chrome and Mozilla (Firefox): their clients reject this chain.');
+    setLang('tr');
+    assert.equal(lifecycleText(one, repair.leaf), 'Example Old Root artık Chrome kök deposunda değil: bu depoya dayanan istemciler zinciri reddeder.');
+    assert.equal(lifecycleText(two, repair.leaf), 'Example Old Root artık Chrome ve Mozilla (Firefox) kök depolarında değil: bu depolara dayanan istemciler zinciri reddeder.');
+    assert.equal(lifecycleText({ ...two, code: 'not-included' }, repair.leaf), 'Example Old Root hiçbir zaman Chrome ve Mozilla (Firefox) kök depolarında olmadı.');
+    setLang('en');
+  });
+
+  test('a warning\'s link: the store\'s announcement, or the CCADB report a date comes from', async () => {
+    setLang('en');
+    const { repair } = await repairOf('file', 'chainfix_leaf_lifecycle.pem');
+    const [chrome, mozilla] = repair.standing.warnings;
+    assert.deepEqual([chrome.source, mozilla.source], ['announcement', 'ccadb'], 'the test dataset: Chrome hand-kept, Mozilla from CCADB');
+    assert.deepEqual([lifecycleLinkLabel(chrome), lifecycleLinkLabel(mozilla)], ['Announcement', 'Source']);
+    setLang('tr');
+    assert.deepEqual([lifecycleLinkLabel(chrome), lifecycleLinkLabel(mozilla)], ['Duyuru', 'Kaynak']);
     setLang('en');
   });
 

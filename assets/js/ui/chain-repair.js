@@ -5,14 +5,17 @@
  *
  * - {@link startChainRepair}: one job per loaded file (kept for the page session with the file,
  *   so a language switch or another tab re-renders it at once): the dataset's manifest and roots
- *   table, and only for a chain that stops short of a root, the one or two shards its issuer's
- *   key id points at — files of this site, never a request that carries the certificate.
+ *   table, and only for a chain that stops short of a root, the shards the key ids of the issuers
+ *   it looks for point at (usually one or two) — files of this site, never a request that carries
+ *   the certificate.
  * - {@link ChainRepairNotes}: "Missing intermediate found" with what was added (name, issuer,
- *   CA owner, expiry) and Download fullchain.pem; "not in the list" for a lone server certificate
- *   whose issuer the list does not hold; a Retry when the list could not be loaded (offline: the
- *   shards are not kept by the service worker); and, where asked, the root-store warnings — a
- *   store that distrusts certificates issued after a date (with the announcement), a root that was
- *   removed, one that expires before the certificate.
+ *   CA owner, expiry) and Download fullchain.pem ("Intermediate found in the CCADB list" for a
+ *   certificate from Certificate Transparency, whose served chain is unknown); "not in the list"
+ *   for a lone server certificate whose issuer the list does not hold; a Retry when the list could
+ *   not be loaded (offline: the shards are not kept by the service worker); and, where asked, the
+ *   root-store warnings — a store that distrusts certificates issued after a date (with the
+ *   announcement, or the CCADB report the date comes from), a root that was removed, one that
+ *   expires before the certificate.
  * - {@link ChainRepairChainPart}: the Chain tab's part — the added intermediates under the file's
  *   chain and where the chain ends, with the stores that trust it.
  *
@@ -30,6 +33,7 @@ export const CCADB_URL = 'https://www.ccadb.org/';
 
 registerStrings('en', {
   'chainfix.found.title': { one: 'Missing intermediate found', other: '{count} missing intermediates found' },
+  'chainfix.found.ctTitle': { one: 'Intermediate found in the CCADB list', other: '{count} intermediates found in the CCADB list' },
   'chainfix.found.leafOnly': {
     one: 'The file holds only the server certificate. The intermediate that issued it is in the CCADB list of public intermediates, so fullchain.pem below puts it after the server certificate.',
     other: 'The file holds only the server certificate. The {count} intermediates it needs are in the CCADB list of public intermediates, so fullchain.pem below puts them after the server certificate, in order.'
@@ -55,19 +59,30 @@ registerStrings('en', {
     one: 'The server certificate, then its intermediate. Not the root, and never a key.',
     other: 'The server certificate, then its {count} intermediates in order. Not the root, and never a key.'
   },
-  'chainfix.notFound': 'The intermediate that issued this certificate ({issuer}) is not in the CCADB list of public intermediates ({date}): it may belong to a private CA or be newer than this copy of the list. Get the chain (CA bundle) from your certificate authority.',
+  'chainfix.notFound': 'The intermediate that issued this certificate ({issuer}) is not in the CCADB list of public intermediates ({date}): it may belong to a private CA, be newer than this copy of the list, or have expired or been withdrawn from it. Get the chain (CA bundle) from your certificate authority.',
+  'chainfix.notFoundExpired': 'The intermediate that issued this certificate ({issuer}) is not in the CCADB list of public intermediates ({date}), which keeps only intermediates that are valid today. This certificate has expired, and its issuer may have expired or been withdrawn too. The chain of its replacement comes from your certificate authority.',
   'chainfix.failed': 'The list of intermediates could not be loaded (you may be offline), so the missing intermediate was not looked up.',
 
   'chainfix.life.title': 'Root store warnings',
   'chainfix.life.distrusted': '{stores} does not trust certificates from {root} issued after {date}. This one was issued on {issued}.',
   'chainfix.life.renewal-distrusted': '{stores} does not trust certificates from {root} issued after {date}. This one (issued on {issued}) is not affected, but its renewal has to come from another CA.',
-  'chainfix.life.removed': '{root} is no longer in the root store of {stores}: their clients reject this chain.',
-  'chainfix.life.not-for-tls': '{root} is kept for other uses only, not for websites, by {stores}: their clients reject this chain.',
+  'chainfix.life.removed': {
+    one: '{root} is no longer in the root store of {stores}: its clients reject this chain.',
+    other: '{root} is no longer in the root stores of {stores}: their clients reject this chain.'
+  },
+  'chainfix.life.not-for-tls': {
+    one: '{root} is kept for other uses only, not for websites, by {stores}: its clients reject this chain.',
+    other: '{root} is kept for other uses only, not for websites, by {stores}: their clients reject this chain.'
+  },
   'chainfix.life.cut-off': '{stores} trusts certificates from {root} only when they were issued before a cut-off date.',
-  'chainfix.life.not-included': '{root} was never in the root store of {stores}.',
+  'chainfix.life.not-included': {
+    one: '{root} was never in the root store of {stores}.',
+    other: '{root} was never in the root stores of {stores}.'
+  },
   'chainfix.life.root-expired': '{root} expired on {date}: clients no longer trust this chain.',
   'chainfix.life.root-expires': '{root} expires on {date}, before this certificate does ({notAfter}). After that date, clients that check the root’s validity reject the chain.',
   'chainfix.life.announcement': 'Announcement',
+  'chainfix.life.dataLink': 'Source',
   'chainfix.life.source': 'Root store data: CCADB and the stores’ announcements, as of {date}.',
   'chainfix.store.chrome': 'Chrome',
   'chainfix.store.mozilla': 'Mozilla (Firefox)',
@@ -86,6 +101,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'chainfix.found.title': { one: 'Eksik ara sertifika bulundu', other: '{count} eksik ara sertifika bulundu' },
+  'chainfix.found.ctTitle': { one: 'Ara sertifika CCADB listesinde bulundu', other: '{count} ara sertifika CCADB listesinde bulundu' },
   'chainfix.found.leafOnly': {
     one: 'Dosyada yalnızca sunucu sertifikası var. Onu veren ara sertifika CCADB’nin herkese açık ara sertifika listesinde bulunuyor; aşağıdaki fullchain.pem onu sunucu sertifikasının arkasına ekler.',
     other: 'Dosyada yalnızca sunucu sertifikası var. Gereken {count} ara sertifika CCADB’nin herkese açık ara sertifika listesinde bulunuyor; aşağıdaki fullchain.pem onları sunucu sertifikasının arkasına sırayla ekler.'
@@ -105,25 +121,36 @@ registerStrings('tr', {
   },
   'chainfix.added': 'Eklenen',
   'chainfix.addedMeta': 'veren: {issuer} · CA sahibi: {owner} · geçerlilik sonu: {date}',
-  'chainfix.source': 'Bu sitedeki CCADB listesi kopyasından ({date}). Sertifikanız hiçbir yere gönderilmedi.',
+  'chainfix.source': 'CCADB listesinin bu sitedeki kopyasından ({date}). Sertifikanız hiçbir yere gönderilmedi.',
   'chainfix.download': 'fullchain.pem indir',
   'chainfix.downloadHint': {
-    one: 'Sunucu sertifikası, ardından ara sertifikası. Kök sertifika yok, anahtar hiçbir zaman yok.',
-    other: 'Sunucu sertifikası, ardından sırayla {count} ara sertifikası. Kök sertifika yok, anahtar hiçbir zaman yok.'
+    one: 'Sunucu sertifikası, ardından ara sertifikası. Kök sertifika ve anahtar hiçbir zaman eklenmez.',
+    other: 'Sunucu sertifikası, ardından sırayla {count} ara sertifikası. Kök sertifika ve anahtar hiçbir zaman eklenmez.'
   },
-  'chainfix.notFound': 'Bu sertifikayı veren ara sertifika ({issuer}) CCADB’nin herkese açık ara sertifika listesinde ({date}) yok: özel bir sertifika otoritesine ait olabilir ya da listenin bu kopyasından yenidir. Zinciri (CA bundle) sertifika otoritenizden alın.',
+  'chainfix.notFound': 'Bu sertifikayı veren ara sertifika ({issuer}) CCADB’nin herkese açık ara sertifika listesinde ({date}) yok: özel bir sertifika otoritesine ait olabilir, listenin bu kopyasından yeni olabilir ya da süresi dolmuş veya listeden çıkarılmış olabilir. Zinciri (CA bundle) sertifika otoritenizden alın.',
+  'chainfix.notFoundExpired': 'Bu sertifikayı veren ara sertifika ({issuer}) CCADB’nin herkese açık ara sertifika listesinde ({date}) yok; liste yalnızca bugün geçerli olan ara sertifikaları tutar. Bu sertifikanın süresi dolmuş; onu veren ara sertifikanın da süresi dolmuş ya da listeden çıkarılmış olabilir. Yerine alınacak sertifikanın zinciri sertifika otoritenizden gelir.',
   'chainfix.failed': 'Ara sertifika listesi yüklenemedi (çevrimdışı olabilirsiniz); eksik ara sertifika aranmadı.',
 
   'chainfix.life.title': 'Kök deposu uyarıları',
   'chainfix.life.distrusted': '{stores}, {root} kökünün {date} tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika {issued} tarihinde verildi.',
   'chainfix.life.renewal-distrusted': '{stores}, {root} kökünün {date} tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika ({issued} tarihinde verildi) etkilenmiyor, ama yenilemesi başka bir sertifika otoritesinden alınmalı.',
-  'chainfix.life.removed': '{root} artık {stores} kök deposunda değil: bu depoya dayanan istemciler zinciri reddeder.',
-  'chainfix.life.not-for-tls': '{stores}, {root} kökünü web siteleri için değil yalnızca başka amaçlar için tutuyor: bu depoya dayanan istemciler zinciri reddeder.',
+  'chainfix.life.removed': {
+    one: '{root} artık {stores} kök deposunda değil: bu depoya dayanan istemciler zinciri reddeder.',
+    other: '{root} artık {stores} kök depolarında değil: bu depolara dayanan istemciler zinciri reddeder.'
+  },
+  'chainfix.life.not-for-tls': {
+    one: '{stores}, {root} kökünü web siteleri için değil yalnızca başka amaçlar için tutuyor: bu depoya dayanan istemciler zinciri reddeder.',
+    other: '{stores}, {root} kökünü web siteleri için değil yalnızca başka amaçlar için tutuyor: bu depolara dayanan istemciler zinciri reddeder.'
+  },
   'chainfix.life.cut-off': '{stores}, {root} kökünün sertifikalarına yalnızca bir kesim tarihinden önce verildiyse güveniyor.',
-  'chainfix.life.not-included': '{root} hiçbir zaman {stores} kök deposunda olmadı.',
+  'chainfix.life.not-included': {
+    one: '{root} hiçbir zaman {stores} kök deposunda olmadı.',
+    other: '{root} hiçbir zaman {stores} kök depolarında olmadı.'
+  },
   'chainfix.life.root-expired': '{root} kökünün süresi {date} tarihinde doldu: istemciler artık bu zincire güvenmiyor.',
   'chainfix.life.root-expires': '{root} kökünün süresi {date} tarihinde, yani bu sertifikadan ({notAfter}) önce doluyor. O tarihten sonra kökün geçerliliğini denetleyen istemciler zinciri reddeder.',
   'chainfix.life.announcement': 'Duyuru',
+  'chainfix.life.dataLink': 'Kaynak',
   'chainfix.life.source': 'Kök deposu verisi: CCADB ve depoların duyuruları, {date} itibarıyla.',
   'chainfix.store.chrome': 'Chrome',
   'chainfix.store.mozilla': 'Mozilla (Firefox)',
@@ -195,6 +222,17 @@ export function chainRepairOf(load) {
 }
 
 /**
+ * Run `fn` once when the repair job of a loaded file ends, if it is still running (a part of a view
+ * that shows the repaired fullchain renders again then); nothing without a running job.
+ * @param {object|null} load a CertLoad
+ * @param {(job: object) => void} fn
+ */
+export function onChainRepairEnd(load, fn) {
+  const job = load && load.result ? jobs.get(load.result) : null;
+  if (job && job.status === 'running') job.watchers.add(fn);
+}
+
+/**
  * fullchain.pem with the added intermediates, when the list completed the file's chain; else null.
  * @param {object|null} load a CertLoad
  * @returns {object[]|null}
@@ -217,7 +255,8 @@ export function storeList(stores) {
 const rootName = (root) => (root ? root.name || root.dn || '—' : '—');
 
 /**
- * The title and message of a repaired chain.
+ * The title and message of a repaired chain. A certificate from Certificate Transparency is not
+ * called "missing" anything: a log only ever holds the leaf, so nothing says the server lacks it.
  * @param {import('../lib/chainfix.js').ChainRepair} repair status 'repaired'
  * @param {{ source?: string }} load the CertLoad (a Certificate Transparency load is worded as such)
  * @returns {{ title: string, message: string }}
@@ -230,9 +269,28 @@ export function repairText(repair, load) {
       message: t('chainfix.found.untrusted', { count, root: rootName(repair.ownRoot), next: rootName(repair.root) })
     };
   }
-  const key = load && load.source === 'ct' ? 'chainfix.found.ct' : repair.chain.length > 1 ? 'chainfix.found.partial' : 'chainfix.found.leafOnly';
+  const ct = !!load && load.source === 'ct';
+  const key = ct ? 'chainfix.found.ct' : repair.chain.length > 1 ? 'chainfix.found.partial' : 'chainfix.found.leafOnly';
   const top = repair.chain[repair.chain.length - 1];
-  return { title: t('chainfix.found.title', { count }), message: t(key, { count, name: top.subjectCN || top.subjectDN }) };
+  return {
+    title: t(ct ? 'chainfix.found.ctTitle' : 'chainfix.found.title', { count }),
+    message: t(key, { count, name: top.subjectCN || top.subjectDN })
+  };
+}
+
+/**
+ * The sentence of an issuer the list does not hold. The list keeps only intermediates valid on
+ * its date, so an expired certificate is told that its issuer may have gone with it.
+ * @param {import('../lib/chainfix.js').ChainRepair} repair status 'not-found'
+ * @param {Date|number} [now]
+ * @returns {string}
+ */
+export function notFoundText(repair, now = Date.now()) {
+  const t0 = now instanceof Date ? now.getTime() : Number(now);
+  const expired = !!repair.leaf && repair.leaf.notAfter.getTime() < t0;
+  return t(expired ? 'chainfix.notFoundExpired' : 'chainfix.notFound', {
+    issuer: repair.missing ? repair.missing.issuerDN : '—', date: repair.generated ? day(repair.generated) : '—'
+  });
 }
 
 /**
@@ -243,9 +301,18 @@ export function repairText(repair, load) {
  */
 export function lifecycleText(w, leaf) {
   return t(`chainfix.life.${w.code}`, {
-    stores: storeList(w.stores), root: rootName(w.root), date: w.date ? day(w.date) : '—',
+    count: w.stores.length, stores: storeList(w.stores), root: rootName(w.root), date: w.date ? day(w.date) : '—',
     issued: w.issued ? day(w.issued) : '—', notAfter: day(leaf.notAfter)
   });
+}
+
+/**
+ * The label of a warning's link: a store's announcement, or the CCADB report a date comes from.
+ * @param {import('../lib/chainfix.js').LifecycleWarning} w
+ * @returns {string}
+ */
+export function lifecycleLinkLabel(w) {
+  return w.source === 'ccadb' ? t('chainfix.life.dataLink') : t('chainfix.life.announcement');
 }
 
 /**
@@ -312,7 +379,7 @@ function repairNote(repair, load, onDownload) {
   if (repair.status === 'not-found' && repair.chain.length === 1) {
     const note = Alert({
       variant: 'info', compact: true, icon: 'search',
-      message: t('chainfix.notFound', { issuer: repair.missing.issuerDN, date: repair.generated ? day(repair.generated) : '—' })
+      message: notFoundText(repair)
     });
     note.dataset.chainfixNote = 'not-found';
     return note;
@@ -334,7 +401,7 @@ function lifecycleNote(repair) {
       h('ul', { class: 'chainfix-life' }, warnings.map((w) => h('li', { dataset: { lifeCode: w.code, severity: w.severity } },
         Icon(w.severity === 'error' ? 'x-circle' : 'alert', { size: 14, className: `chainfix-life-icon chainfix-life-${w.severity}` }),
         h('span', null, lifecycleText(w, repair.leaf), w.url ? ' ' : null,
-          w.url ? ExternalLink(w.url, t('chainfix.life.announcement'), { className: 'text-sm' }) : null)))),
+          w.url ? ExternalLink(w.url, lifecycleLinkLabel(w), { className: 'text-sm' }) : null)))),
       sourceLine('chainfix.life.source', repair.generated))
   });
   note.dataset.lifecycle = worst;

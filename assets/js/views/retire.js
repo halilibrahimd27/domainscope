@@ -135,7 +135,10 @@ registerStrings('en', {
   'retire.chip.passiveOther': 'asked for other addresses',
 
   'retire.passive.button': 'Find other names on the address',
-  'retire.passive.title': 'Asks HackerTarget and ip.thc.org which names they saw on each address: {count} request(s) to each. HackerTarget allows about 50 free lookups a day from your address (shared with the Subdomains scan).',
+  'retire.passive.title': {
+    one: 'Asks HackerTarget and ip.thc.org which names they saw on the address: {count} request to each. HackerTarget allows about 50 free lookups a day from your address (shared with the Subdomains scan).',
+    other: 'Asks HackerTarget and ip.thc.org which names they saw on each address: {count} requests to each. HackerTarget allows about 50 free lookups a day from your address (shared with the Subdomains scan).'
+  },
   'retire.passive.tooMany': 'The passive lookup runs per address: retire at most {max} addresses to use it.',
   'retire.passive.private': 'Private addresses are never sent to a passive service.',
   'retire.passive.limited': 'daily free quota used up',
@@ -272,6 +275,7 @@ registerStrings('en', {
   'retire.ev.roles.ns': 'a name server',
   'retire.ev.roles.spf': 'named in SPF',
   'retire.ev.proxied': 'proxied',
+  'retire.chips.label': 'Evidence sources',
 
   'retire.emptyTitle': 'What still points at this address?',
   'retire.emptyBody': 'Before you switch a server off or give it a new address: DNS records, CNAME chains, SPF, MX and NS hosts and your zone file, checked live. A forgotten SPF ip4 breaks mail a week later.'
@@ -297,7 +301,7 @@ registerStrings('tr', {
   'retire.parsed': '{count} adres',
   'retire.parsedDomains': '{count} alan adı',
   'retire.issue.invalid': 'Adres ya da ağ değil, dışarıda bırakıldı: {items}',
-  'retire.issue.too-large': '{input} bir /{prefix}’ten geniş: tek seferde en fazla {max} adres emekliye ayrılabilir.',
+  'retire.issue.too-large': '{input}, izin verilen en geniş ağdan (/{prefix}) daha geniş: tek seferde en fazla {max} adres emekliye ayrılabilir.',
   'retire.issue.host-bits': '{input} içinde host bitleri var: {network} olarak okundu.',
   'retire.issue.over-cap': 'Bu {count} adres ediyor: tek seferde en fazla {max} adres emekliye ayrılabilir.',
   'retire.issue.private': 'Özel (private) adres alanı ({items}): genel çözümleyiciler iç (split-horizon) kayıtları görmez; yalnızca genel DNS ve zone dosyası kontrol edilir.',
@@ -349,7 +353,10 @@ registerStrings('tr', {
   'retire.chip.passiveOther': 'başka adresler için soruldu',
 
   'retire.passive.button': 'Adresteki diğer adları bul',
-  'retire.passive.title': 'Her adreste hangi adları gördüklerini HackerTarget ve ip.thc.org’a sorar: her birine {count} istek. HackerTarget adresinizden günde yaklaşık 50 ücretsiz sorguya izin verir (Subdomain taramasıyla ortak).',
+  'retire.passive.title': {
+    one: 'Adreste hangi adları gördüklerini HackerTarget ve ip.thc.org’a sorar: her birine {count} istek. HackerTarget adresinizden günde yaklaşık 50 ücretsiz sorguya izin verir (Subdomain taramasıyla ortak).',
+    other: 'Her adreste hangi adları gördüklerini HackerTarget ve ip.thc.org’a sorar: her birine {count} istek. HackerTarget adresinizden günde yaklaşık 50 ücretsiz sorguya izin verir (Subdomain taramasıyla ortak).'
+  },
   'retire.passive.tooMany': 'Pasif sorgu adres başına çalışır: kullanmak için en fazla {max} adres emekliye ayırın.',
   'retire.passive.private': 'Özel (private) adresler hiçbir pasif servise gönderilmez.',
   'retire.passive.limited': 'günlük ücretsiz kota doldu',
@@ -454,9 +461,9 @@ registerStrings('tr', {
   'retire.act.narrow': '{range} hâlâ {address} adresini kapsıyor: artık kapsamayacak şekilde bölün — tüm aralık sizde kalıyorsa olduğu gibi bırakın — ve yeni adresi ekleyin.',
   'retire.act.follow.spf': '{host} adreslerini izler: o kayıtları değiştirin, bu terim de izler. SPF kaydında düzenlenecek bir şey yok.',
   'retire.act.follow.cname': '{target} adresini izler: adresi tutan kaydı ({holder}) değiştirin ya da bu CNAME’i başka yere yönlendirin.',
-  'retire.act.repoint.mx': 'MX’i kalacak bir e-posta sunucusuna yönlendirin ya da önce {host} için yeni adresi verin. Gönderenler e-postayı birkaç gün kuyrukta tutar, sonra geri çevirir.',
-  'retire.act.repoint.ns': 'Kalacak ad sunucularına devredin (kayıt firmasında) ya da önce {host} için yeni adresi verin.',
-  'retire.act.repoint.other': 'Kalacak bir host’a yönlendirin ya da önce {host} için yeni adresi verin.',
+  'retire.act.repoint.mx': 'MX’i kalacak bir e-posta sunucusuna yönlendirin ya da önce {host} sunucusuna yeni adresini verin. Gönderenler e-postayı birkaç gün kuyrukta tutar, sonra geri çevirir.',
+  'retire.act.repoint.ns': 'Kalacak ad sunucularına devredin (kayıt firmasında) ya da önce {host} sunucusuna yeni adresini verin.',
+  'retire.act.repoint.other': 'Kalacak bir host’a yönlendirin ya da önce {host} sunucusuna yeni adresini verin.',
   'retire.act.glue': '{host} zone’un içinde: adresini burada ve glue kaydını kayıt firmasında değiştirin (üst zone bir kopyasını tutar).',
   'retire.act.provider': 'Kontrol edilmeyen bir alan adının ({holder}) SPF politikasında. Sizinse terimi orada değiştirin. Bir sağlayıcınınsa orada değiştirilecek bir şey yok: bu sunucunun e-postası yeni bir adrese taşınırsa o servisin (ya da kendi SPF kaydınızın) yeni adresi kapsadığından emin olun; servisi bırakırsanız include’unu kaldırın.',
   'retire.act.origin': 'Proxy’li: sunucuyu kapatmadan önce asıl sunucuyu proxy’nin DNS’inde değiştirin, yoksa ziyaretçiler 521 / 522 hatası alır.',
@@ -486,6 +493,7 @@ registerStrings('tr', {
   'retire.ev.roles.ns': 'bir ad sunucusu',
   'retire.ev.roles.spf': 'SPF’te geçiyor',
   'retire.ev.proxied': 'proxy’li',
+  'retire.chips.label': 'Kanıt kaynakları',
 
   'retire.emptyTitle': 'Bu adresi hâlâ ne gösteriyor?',
   'retire.emptyBody': 'Bir sunucuyu kapatmadan ya da ona yeni bir adres vermeden önce: DNS kayıtları, CNAME zincirleri, SPF, MX ve NS sunucuları ve zone dosyanız, canlı kontrol edilmiş. Unutulan bir SPF ip4 bir hafta sonra e-postayı bozar.'
@@ -1351,7 +1359,7 @@ function chip(idChip, name, stateName, value, action = null) {
 
 function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   const { state } = ctx;
-  const chipsEl = h('div', { class: 'src-chips retire-chips', attrs: { role: 'group', 'aria-label': t('retire.hosts.title') } });
+  const chipsEl = h('div', { class: 'src-chips retire-chips', attrs: { role: 'group', 'aria-label': t('retire.chips.label') } });
   const progress = ProgressBar({ label: t('retire.busy'), value: 0, max: 1, showCount: false });
   progress.el.classList.add('retire-progress');
   const statusEl = h('p', { class: 'muted text-sm retire-status', attrs: { 'aria-live': 'polite' } });

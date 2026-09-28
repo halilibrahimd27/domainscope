@@ -103,6 +103,9 @@ describe('the link', () => {
     assert.deepEqual([enc.ok, enc.reason, enc.length > CHECK_LIMITS.chars], [false, 'too-long', true]);
     assert.equal(encodeCheck({ zone: 'example.com', sets: [] }).reason, 'empty');
     assert.equal(encodeCheck({ zone: '192.0.2.1', sets: manySets.sets.slice(0, 1) }).reason, 'zone');
+    // A set outside the zone has no relative name: the link cannot hold it (decodeCheck refuses an absolute one).
+    const outside = { zone: 'example.com', sets: [{ name: 'www.example.net', type: 'A', mode: 'is', family: null, values: ['192.0.2.1'], old: null, maxTtl: null }] };
+    assert.deepEqual([encodeCheck(outside).ok, encodeCheck(outside).reason], [false, 'outside']);
     const err = (q) => decodeCheck(q).error;
     assert.equal(err(`z=example.com&r=${'a'.repeat(CHECK_LIMITS.chars)}`), 'too-long');
     assert.equal(err(`z=example.com${'&r=is+a+A+192.0.2.1'.repeat(21)}`), 'too-many');

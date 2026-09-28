@@ -23,13 +23,13 @@ import {
   Alert, Badge, Button, ButtonLink, CodeBlock, Icon, SegmentedControl, SeverityIcon, Tabs, describeError, setButtonBusy
 } from './components.js';
 import { downloadText, sanitizeFilename } from './download.js';
-import { t, registerStrings, getLang, hasString } from '../i18n.js';
+import { t, registerStrings, getLang, hasString, formatNumber } from '../i18n.js';
 import {
   FIX_FORMATS, FIX_FORMAT_EXT, FIX_I18N, TXT_FAMILIES, FIX_FIELDS, changeTemplate, renderFix, formatNotes, changeInstructions,
   validateChange, hasErrors, rrsetPlan, rrsetAction, valueText, healthFix, lintFix, caaFixFromIssuers, templateInput
 } from '../lib/fixes.js';
 import { LINT_I18N } from '../lib/zonelint.js';
-import { checkFromRequest, encodeCheck } from '../lib/changecheck.js';
+import { CHECK_LIMITS, checkFromRequest, encodeCheck } from '../lib/changecheck.js';
 
 // Template, field, format, note, problem and instruction texts ship with lib/fixes.js; the
 // linter's finding texts (a change is validated with it) with lib/zonelint.js.
@@ -58,6 +58,7 @@ registerStrings('en', {
   'fixp.checkNone.too-many': 'No check link: a link holds at most {sets} record sets and {values} values.',
   'fixp.checkNone.empty': 'No check link: this change has no record to check.',
   'fixp.checkNone.zone': 'No check link: the zone name is missing.',
+  'fixp.checkNone.outside': 'No check link: a record of this change lies outside the zone {zone}.',
   'fixp.problems': 'Before you send it',
   'fixp.blocked': 'Fix the errors above first: the change is not written out while it has one.',
   'fixp.edit': 'Edit in DNS change request',
@@ -90,6 +91,7 @@ registerStrings('tr', {
   'fixp.checkNone.too-many': 'Kontrol bağlantısı yok: bir bağlantı en fazla {sets} kayıt kümesi ve {values} değer taşır.',
   'fixp.checkNone.empty': 'Kontrol bağlantısı yok: bu değişiklikte kontrol edilecek kayıt yok.',
   'fixp.checkNone.zone': 'Kontrol bağlantısı yok: zone adı eksik.',
+  'fixp.checkNone.outside': 'Kontrol bağlantısı yok: bu değişikliğin bir kaydı {zone} zone’unun dışında.',
   'fixp.problems': 'Göndermeden önce',
   'fixp.blocked': 'Önce yukarıdaki hataları düzeltin: hata varken değişiklik yazılmaz.',
   'fixp.edit': 'DNS değişiklik talebinde düzenle',
@@ -252,7 +254,11 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
         h('div', { class: 'cluster fix-check-actions' },
           ButtonLink({ href: checkHash(link.query), label: t('fixp.checkOpen'), icon: 'arrow-right', size: 'sm', variant: 'primary' })),
         h('p', { class: 'muted text-sm fix-check-privacy' }, Icon('lock', { size: 14 }), ' ', t('fixp.checkPrivacy'))
-      ] : Alert({ variant: 'info', compact: true, message: t(`fixp.checkNone.${link.reason}`, { max: 4000, sets: 20, values: 40 }) }));
+      ] : Alert({
+        variant: 'info',
+        compact: true,
+        message: t(`fixp.checkNone.${link.reason}`, { max: formatNumber(CHECK_LIMITS.chars), sets: CHECK_LIMITS.rrsets, values: CHECK_LIMITS.values, zone: req.zone || '' })
+      }));
   }
 
   return h('div', { class: ['stack', 'fix-outputs', className] },

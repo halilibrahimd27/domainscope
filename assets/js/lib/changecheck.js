@@ -116,9 +116,10 @@ const impliedFamily = (type, mode, values, old) => (type === 'TXT'
   ? (familyOf('TXT', values) || (mode === 'none' && old ? familyOf('TXT', old) : null)) : null);
 
 /**
- * The link's query (after `#/change/check?`) of an expected check, or why there is none.
+ * The link's query (after `#/change/check?`) of an expected check, or why there is none (`outside`:
+ * a set's name is not in the zone, which the link cannot write — {@link decodeCheck} would refuse it).
  * @param {ExpectedCheck} check
- * @returns {{ ok: boolean, query: string, length: number, reason: 'empty'|'too-many'|'too-long'|'zone'|null }}
+ * @returns {{ ok: boolean, query: string, length: number, reason: 'empty'|'too-many'|'too-long'|'zone'|'outside'|null }}
  */
 export function encodeCheck(check) {
   const fail = (reason, query = '') => ({ ok: false, query, length: query.length, reason });
@@ -128,6 +129,7 @@ export function encodeCheck(check) {
   if (!sets.length) return fail('empty');
   const values = sets.reduce((n, s) => n + arr(s.values).length + arr(s.old).length, 0);
   if (sets.length > CHECK_LIMITS.rrsets || values > CHECK_LIMITS.values) return fail('too-many');
+  if (sets.some((s) => relativeName(s.name, zone).endsWith('.'))) return fail('outside');
   const parts = [`z=${linkEncode(zone)}`];
   for (const s of sets) {
     // The family only where the values would give another one (a deletion of every TXT record where only an SPF record was read).

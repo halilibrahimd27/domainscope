@@ -454,6 +454,9 @@ export async function readReportFiles(files, { signal, limits = {}, onProgress =
       const lead = text.replace(/^﻿/, '').trimStart();
       if (!lead) {
         out.problems.push({ path: f.path, code: 'empty', detail: '' });
+      } else if (lead[0] === '<' && !looksLikeAggregate(lead)) {
+        // Another XML document (an RSS feed, a forensic report's HTML part): not worth a full parse.
+        out.problems.push({ path: f.path, code: 'not-dmarc', detail: '' });
       } else if (lead[0] === '<') {
         const r = parseAggregateReport(text, { file: f.path });
         if (r.ok) out.dmarc.push(r.report);

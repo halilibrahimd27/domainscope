@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   domainHealth, applyRdap, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
-  spfLookupCount, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa, caaRestrictionNotes, caaRestrictionText,
+  spfLookupCount, spfEvaluate, spfMxHosts, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa,
+  caaRestrictionNotes, caaRestrictionText,
   DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX, LOOKUP_FAILED_PARAM,
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
 } from '../../assets/js/lib/health.js';
@@ -872,6 +873,91 @@ test('spfLookupCount: include errors, redirect, depth, too many MX, DNS errors, 
   assert.deepEqual(failing.errors.map((e) => e.code), ['dns-error']);
   await assert.rejects(spfLookupCount('bad domain', { dns }), TypeError);
   await assert.rejects(spfLookupCount('k.test', { dns, signal: AbortSignal.abort() }), { name: 'AbortError' });
+});
+
+test('spfEvaluate: check_host over the expanded tree — ip4 / ip6, a, mx, include, redirect, all, the first match decides', async () => {
+  const zone = {
+    'example.com': {
+      TXT: ['v=spf1 -ip4:203.0.113.66 ip4:203.0.113.64/28 a:mail.example.com/30 mx include:_spf.example.com include:spf.mailer.example.net ~all'],
+      MX: [{ preference: 10, exchange: 'mx1.example.com' }]
+    },
+    'mail.example.com': { A: ['203.0.113.4'] },
+    'mx1.example.com': { A: ['203.0.113.26'], AAAA: ['2001:db8:25::26'] },
+    '_spf.example.com': { TXT: ['v=spf1 ip6:2001:db8:25::/64 -all'] },
+    'spf.mailer.example.net': { TXT: ['v=spf1 ip4:198.51.100.0/26 ?ip4:198.51.100.64/26 -all'] },
+    'r.example.org': { TXT: ['v=spf1 redirect=_spf.example.com'] },
+    'plus.example.org': { TXT: ['v=spf1 ptr ip4:192.0.2.0/24 exists:%{i}.bl.example.org -all'] }
+  };
+  const dns = fakeDns(zone);
+  const { tree } = await spfLookupCount('example.com', { dns });
+  const mxAddresses = new Map(spfMxHosts(tree).map((h) => [h, { addresses: ['203.0.113.26', '2001:db8:25::26'] }]));
+  assert.deepEqual(spfMxHosts(tree), ['mx1.example.com']);
+  const ev = (ip, t = tree, opts = { mxAddresses }) => spfEvaluate(t, ip, opts);
+  const brief = (v) => [v.result, v.term, v.holder, v.path.join('>')];
+
+  assert.deepEqual(brief(ev('203.0.113.70')), ['pass', 'ip4:203.0.113.64/28', 'example.com', 'example.com']);
+  assert.deepEqual(brief(ev('203.0.113.66')), ['fail', '-ip4:203.0.113.66', 'example.com', 'example.com'], 'a carve-out in front decides');
+  const a = ev('203.0.113.6');
+  assert.deepEqual([a.result, a.term, a.via], ['pass', 'a:mail.example.com/30', { host: 'mail.example.com', address: '203.0.113.4' }]);
+  const mx = ev('2001:db8:25::26');
+  assert.deepEqual([mx.result, mx.term, mx.via], ['pass', 'mx', { host: 'mx1.example.com', address: '2001:db8:25::26' }]);
+  assert.deepEqual(brief(ev('2001:db8:25::10')), ['pass', 'ip6:2001:db8:25::/64', '_spf.example.com', 'example.com>_spf.example.com'], 'own include');
+  assert.deepEqual(brief(ev('198.51.100.10')), ['pass', 'ip4:198.51.100.0/26', 'spf.mailer.example.net', 'example.com>spf.mailer.example.net']);
+  // a neutral inside an include is no match: the include does not pass, so the policy's ~all decides
+  assert.deepEqual(brief(ev('198.51.100.70')), ['softfail', '~all', 'example.com', 'example.com']);
+  assert.deepEqual(brief(ev('192.0.2.200')), ['softfail', '~all', 'example.com', 'example.com']);
+  assert.equal(ev('::ffff:203.0.113.70').result, 'pass', 'a mapped address is its IPv4 address');
+
+  // mx without the hosts' addresses: cannot tell for an address nothing else matches
+  const noMx = ev('192.0.2.200', tree, {});
+  assert.deepEqual([noMx.result, noMx.reason, noMx.term], ['unknown', 'lookup-failed', 'mx']);
+  // … but a later match with the same result stands only when it agrees: 198.51.100.10 passes either way
+  assert.equal(ev('198.51.100.10', tree, {}).result, 'pass');
+
+  // redirect hands the whole result over
+  const r = await spfLookupCount('r.example.org', { dns });
+  assert.deepEqual(brief(spfEvaluate(r.tree, '2001:db8:25::1')), ['pass', 'ip6:2001:db8:25::/64', '_spf.example.com', 'r.example.org>_spf.example.com']);
+  assert.equal(spfEvaluate(r.tree, '192.0.2.1').result, 'fail');
+
+  // ptr and a sender macro cannot be told; a +ptr in front of a matching +ip4 does not change a pass
+  const p = await spfLookupCount('plus.example.org', { dns });
+  assert.equal(spfEvaluate(p.tree, '192.0.2.9').result, 'pass');
+  const other = spfEvaluate(p.tree, '198.51.100.9');
+  assert.deepEqual([other.result, other.reason, other.term], ['unknown', 'ptr', 'ptr'], 'a +ptr could have passed what -all fails');
+
+  assert.equal(spfEvaluate(null, '192.0.2.1').result, 'unknown');
+  assert.equal(spfEvaluate(tree, 'not an ip').result, 'unknown');
+  assert.deepEqual(SPF_EVAL_RESULTS, ['pass', 'fail', 'softfail', 'neutral', 'none', 'permerror', 'temperror', 'unknown']);
+  assert.ok(Object.isFrozen(SPF_UNKNOWN_REASONS));
+});
+
+test('spfEvaluate: none, permerror (syntax, an include without SPF, a loop, too many MX), a failed lookup here is unknown', async () => {
+  const mx = Array.from({ length: 11 }, (_, i) => ({ preference: i, exchange: `mx${i}.example.net` }));
+  const zone = {
+    'none.example.org': { TXT: ['hello'] },
+    'syntax.example.org': { TXT: ['v=spf1 ip4:192.0.2.0/24 bogus:x -all'] },
+    'inc.example.org': { TXT: ['v=spf1 include:none.example.org -all'] },
+    'loop.example.org': { TXT: ['v=spf1 include:loop2.example.org -all'] },
+    'loop2.example.org': { TXT: ['v=spf1 include:loop.example.org -all'] },
+    'mx.example.org': { TXT: ['v=spf1 mx:big.example.net -all'] },
+    'big.example.net': { MX: mx },
+    'down.example.org': { TXT: ['v=spf1 include:gone.example.org ip4:192.0.2.0/24 -all'] },
+    'dup.example.org': { TXT: ['v=spf1 -all', 'v=spf1 ~all'] }
+  };
+  const dns = fakeDns(zone, { fail: { 'gone.example.org|TXT': 'timeout', 'fail.example.org|TXT': 'timeout' } });
+  const res = async (d, ip = '192.0.2.1') => spfEvaluate((await spfLookupCount(d, { dns })).tree, ip);
+  assert.equal((await res('none.example.org')).result, 'none');
+  assert.deepEqual([(await res('syntax.example.org')).result, (await res('syntax.example.org')).reason], ['permerror', 'syntax']);
+  assert.deepEqual([(await res('inc.example.org')).result, (await res('inc.example.org')).reason], ['permerror', 'no-record']);
+  assert.deepEqual([(await res('loop.example.org')).result, (await res('loop.example.org')).reason], ['permerror', 'loop']);
+  assert.deepEqual([(await res('mx.example.org')).result, (await res('mx.example.org')).reason], ['permerror', 'too-many-mx']);
+  assert.deepEqual([(await res('dup.example.org')).result, (await res('dup.example.org')).reason], ['permerror', 'multiple-records']);
+  const f = await res('fail.example.org');
+  assert.deepEqual([f.result, f.reason], ['unknown', 'lookup-failed'], 'our resolver failing is not the domain\'s temperror');
+  // an include that could not be read in front of a match that passes: it could only have passed too
+  assert.equal((await res('down.example.org')).result, 'pass');
+  const d = await res('down.example.org', '198.51.100.1');
+  assert.deepEqual([d.result, d.reason, d.term], ['unknown', 'lookup-failed', 'include:gone.example.org']);
 });
 
 test('SPF checks in domainHealth: missing, multiple, +all, ?all, ~all, no all, syntax', async () => {

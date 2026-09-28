@@ -43,7 +43,7 @@
 import { throwIfAborted, errorKind, uniq, randomLabel } from './util.js';
 import { parseIP, parseCidr, formatIP, normalizeIP, isPrivateIP } from './netinfo.js';
 import { normalizeHostname, isSubdomainOf, registrableDomain, sortHostnames } from './domain.js';
-import { spfLookupCount, parseSpf } from './health.js';
+import { spfLookupCount, parseSpf, spfMxHosts } from './health.js';
 
 /* ------------------------------------------------------------------------ */
 /* Limits and vocabularies (frozen; the i18n coverage test derives keys)    */
@@ -462,19 +462,8 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
   return { matches, unknown };
 }
 
-/** The a / mx hosts an SPF tree names (to resolve before {@link spfCoverage}: mx needs their addresses). */
-export function spfMxHosts(tree) {
-  const out = [];
-  const walk = (node, depth) => {
-    if (!node || depth > 12) return;
-    for (const t of node.terms || []) {
-      if (t.mechanism === 'mx' && Array.isArray(t.hosts)) out.push(...t.hosts);
-      if (t.child) walk(t.child, depth + 1);
-    }
-  };
-  walk(tree, 0);
-  return uniq(out);
-}
+/** The mx hosts an SPF tree names (to resolve before {@link spfCoverage}): lib/health.js spfMxHosts, re-exported. */
+export { spfMxHosts };
 
 /* ------------------------------------------------------------------------ */
 /* Live evidence of one domain                                              */

@@ -18,7 +18,7 @@
 
 import { errorKind, throwIfAborted, randomLabel, uniq } from './util.js';
 import { normalizeHostname, registrableDomain, isSubdomainOf } from './domain.js';
-import { normalizeIP, ipVersion, isPrivateIP, parseIP } from './netinfo.js';
+import { normalizeIP, ipVersion, isPrivateIP, parseIP, ipInCidr } from './netinfo.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES, EDE_CODES, base64Decode, rcodeToName } from './dnswire.js';
 import { rdapDomain, registryDomain } from './rdap.js';
 import { checkFcrdns, ptrTemplate } from './ptrsweep.js';
@@ -600,6 +600,189 @@ export async function spfLookupCount(domain, { dns, signal, maxDepth = 10, recor
     exceeded: tree.count > SPF_LOOKUP_LIMIT,
     truncated: ctx.truncated
   };
+}
+
+/**
+ * The hosts every `mx` mechanism of an SPF tree names ({@link spfLookupCount} keeps the exchanges,
+ * not their addresses): what to resolve before {@link spfEvaluate} or retire.spfCoverage.
+ * @param {SpfNode|null} tree
+ * @returns {string[]} unique, in tree order
+ */
+export function spfMxHosts(tree) {
+  const out = [];
+  const walk = (node, depth) => {
+    if (!node || depth > 12) return;
+    for (const t of node.terms || []) {
+      if (t.mechanism === 'mx' && Array.isArray(t.hosts)) out.push(...t.hosts);
+      if (t.child) walk(t.child, depth + 1);
+    }
+  };
+  walk(tree, 0);
+  return uniq(out);
+}
+
+/**
+ * Results of {@link spfEvaluate}: RFC 7208 §2.6, plus `unknown` — this page cannot tell (a macro
+ * that needs the sender, a `ptr` mechanism, a lookup that failed here or the query cap stopped).
+ */
+export const SPF_EVAL_RESULTS = Object.freeze(['pass', 'fail', 'softfail', 'neutral', 'none', 'permerror', 'temperror', 'unknown']);
+/** Why {@link spfEvaluate} says `unknown`. */
+export const SPF_UNKNOWN_REASONS = Object.freeze(['macro', 'ptr', 'lookup-failed', 'skipped']);
+
+const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfail', '?': 'neutral' });
+
+/**
+ * @typedef {object} SpfVerdict
+ * @property {string} result one of {@link SPF_EVAL_RESULTS}
+ * @property {string|null} term the term that decided, as written (`ip4:198.51.100.0/26`, `mx`, `~all`); for
+ *   a match inside an include, the include's own term (`ip4:…` in `_spf.example.net`)
+ * @property {string|null} holder the domain whose record holds that term
+ * @property {string[]} path the policies from the checked domain to the holder (include / redirect chain)
+ * @property {{ host: string, address: string }|null} via an `a` / `mx` match: the host and its address
+ * @property {string|null} reason for `unknown`: one of {@link SPF_UNKNOWN_REASONS}; for `permerror`: 'syntax',
+ *   'multiple-records', 'no-record' (an include or redirect to a domain without SPF), 'loop', 'depth', 'too-many-mx'
+ */
+
+/**
+ * Does an SPF policy authorize an address? `check_host()` (RFC 7208 §4) over a tree
+ * {@link spfLookupCount} already expanded, with no new query: the terms are tried in order and
+ * the first that matches gives its qualifier's result; an `include` matches only when the included
+ * policy passes, a `redirect` hands the whole result over, and nothing matching is `neutral`.
+ * `mx` mechanisms need their hosts' addresses (`mxAddresses`, from {@link spfMxHosts}).
+ *
+ * Honest about what a browser cannot see: a term that needs the sender (`%{i}`, `%{s}` …), `ptr`,
+ * or a lookup that failed here (our resolver, not the receiver's) cannot be told. The evaluation
+ * goes on past it, and its result stands when the undecided term could only have given the same
+ * result had it matched (a `+ptr` in front of the `+ip4` that matches); otherwise it is `unknown`.
+ * @param {SpfNode|null} tree `spfLookupCount().tree`
+ * @param {string} ip
+ * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null }> }} [opts]
+ * @returns {SpfVerdict}
+ */
+export function spfEvaluate(tree, ip, { mxAddresses = new Map() } = {}) {
+  const addr = normalizeIP(ip);
+  const verdict = (result, extra = {}) => ({ result, term: null, holder: null, path: [], via: null, reason: null, ...extra });
+  if (!tree || !addr) return verdict('unknown', { reason: 'lookup-failed' });
+  const inRange = (address, v4, v6) => {
+    const v = ipVersion(address);
+    if (!v) return false;
+    const len = v === 4 ? (v4 ?? 32) : (v6 ?? 128);
+    return ipInCidr(addr, `${address}/${len}`);
+  };
+
+  /**
+   * One policy: { result, …, pending } where `pending` lists what each undecided term would have
+   * given had it matched (the caller keeps a result only when they all agree with it).
+   */
+  const evalNode = (node, path, depth) => {
+    const at = (t, result, extra = {}) => verdict(result, { term: t.term, holder: node.domain, path, ...extra });
+    const own = (code) => (node.errors || []).some((e) => e.domain === node.domain && e.code === code);
+    if (node.record === null || node.record === undefined) {
+      if (own('multiple-records')) return verdict('permerror', { holder: node.domain, path, reason: 'multiple-records' });
+      if (own('no-record')) return verdict('none', { holder: node.domain, path });
+      return verdict('unknown', { holder: node.domain, path, reason: 'lookup-failed' });
+    }
+    if (own('syntax')) return verdict('permerror', { holder: node.domain, path, reason: 'syntax' });
+    if (depth > 12) return verdict('permerror', { holder: node.domain, path, reason: 'depth' });
+    const pending = [];
+    const undecided = (t, reason, wouldGive = QUALIFIER_RESULT[t.qualifier] || 'pass') => {
+      pending.push({ result: wouldGive, verdict: at(t, 'unknown', { reason }) });
+    };
+    /** A decided result, unless an undecided term in front of it could have given another. */
+    const decide = (v) => {
+      const other = pending.find((p) => p.result !== v.result);
+      return other ? other.verdict : v;
+    };
+    for (const t of node.terms || []) {
+      const q = QUALIFIER_RESULT[t.qualifier] || 'pass';
+      switch (t.mechanism) {
+        case 'all':
+          return decide(at(t, q));
+        case 'ip4':
+        case 'ip6':
+          if (t.value && inRange(t.value, t.cidr4, t.cidr6)) return decide(at(t, q));
+          break;
+        case 'a':
+        case 'exists':
+        case 'mx': {
+          if (!t.target) {
+            undecided(t, t.macro ? 'macro' : 'lookup-failed');
+            break;
+          }
+          if (t.skipped) {
+            undecided(t, 'skipped');
+            break;
+          }
+          if (t.error === 'too-many-mx') return decide(at(t, 'permerror', { reason: 'too-many-mx' }));
+          if (t.error) {
+            undecided(t, 'lookup-failed');
+            break;
+          }
+          if (t.mechanism === 'exists') {
+            if (!t.void) return decide(at(t, q));
+            break;
+          }
+          if (t.mechanism === 'a') {
+            const hit = (t.addresses || []).find((a) => inRange(a, t.cidr4, t.cidr6));
+            if (hit) return decide(at(t, q, { via: { host: t.target, address: normalizeIP(hit) } }));
+            break;
+          }
+          let failed = false;
+          let hitVia = null;
+          for (const host of t.hosts || []) {
+            const known = mxAddresses.get(host);
+            if (!known || known.error) {
+              failed = true;
+              continue;
+            }
+            const hit = (known.addresses || []).find((a) => inRange(a, t.cidr4, t.cidr6));
+            if (hit) {
+              hitVia = { host, address: normalizeIP(hit) };
+              break;
+            }
+          }
+          if (hitVia) return decide(at(t, q, { via: hitVia }));
+          if (failed) undecided(t, 'lookup-failed');
+          break;
+        }
+        case 'ptr':
+          undecided(t, 'ptr');
+          break;
+        case 'include':
+        case 'redirect': {
+          const redirect = t.mechanism === 'redirect';
+          if (!t.target) {
+            if (redirect) return decide(at(t, 'unknown', { reason: 'macro' }));
+            undecided(t, 'macro');
+            break;
+          }
+          if (t.skipped) {
+            if (redirect) return decide(at(t, 'unknown', { reason: 'skipped' }));
+            undecided(t, 'skipped');
+            break;
+          }
+          if (t.error === 'loop' || t.error === 'depth') return decide(at(t, 'permerror', { reason: t.error }));
+          if (!t.child) {
+            if (redirect) return decide(at(t, 'unknown', { reason: 'lookup-failed' }));
+            undecided(t, 'lookup-failed');
+            break;
+          }
+          const inner = evalNode(t.child, [...path, t.child.domain], depth + 1);
+          // RFC 7208 §5.2 / §6.1: an included or redirected-to domain without SPF is a permerror.
+          const r = inner.result === 'none' ? verdict('permerror', { term: t.term, holder: node.domain, path, reason: 'no-record' }) : inner;
+          if (redirect) return decide(r);
+          if (r.result === 'pass') return decide({ ...r, result: q });
+          if (r.result === 'permerror' || r.result === 'temperror') return decide(r);
+          if (r.result === 'unknown') undecided(t, r.reason || 'lookup-failed');
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    return decide(verdict('neutral', { holder: node.domain, path }));
+  };
+  return evalNode(tree, [tree.domain], 0);
 }
 
 /* ------------------------------------------------------------------------ */

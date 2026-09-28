@@ -412,16 +412,18 @@ export async function pkcs12Kdf({ hash = 'SHA-1', password, salt, id, iterations
   for (let i = 0; i < blocks; i++) {
     const A = await hashIterate(hash, concat([D, I]), iterations, subtle);
     out.set(A, i * u);
-    if (i + 1 === blocks) break;
-    // I_j = (I_j + B + 1) mod 2^(8v) for every v-byte block of I, B = A repeated to v bytes.
-    for (let j = 0; j < I.length; j += v) {
-      let carry = 1;
-      for (let k = v - 1; k >= 0; k--) {
-        const x = I[j + k] + A[k % u] + carry;
-        I[j + k] = x & 0xff;
-        carry = x >> 8;
+    if (i + 1 < blocks) {
+      // I_j = (I_j + B + 1) mod 2^(8v) for every v-byte block of I, B = A repeated to v bytes.
+      for (let j = 0; j < I.length; j += v) {
+        let carry = 1;
+        for (let k = v - 1; k >= 0; k--) {
+          const x = I[j + k] + A[k % u] + carry;
+          I[j + k] = x & 0xff;
+          carry = x >> 8;
+        }
       }
     }
+    A.fill(0);
   }
   I.fill(0);
   P.fill(0);
@@ -938,6 +940,10 @@ async function open(bytes, password, { checkKey, subtle }) {
     };
   } finally {
     for (const plain of plains) plain.fill(0);
+    for (const form of forms) {
+      form.bmp.fill(0);
+      form.utf8.fill(0);
+    }
   }
 }
 

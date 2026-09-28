@@ -679,17 +679,18 @@ const RETIRE_MAX_RECORDS = 4;
 /**
  * Retire an IP: how many records still point at the addresses and how many of them break
  * something, what was checked, the worst records (≤ 4, then "+N more"), what the check could not
- * settle — SPF terms it cannot tell, passive hits nobody checked, failed lookups, a stop — and what
- * it never covers (internal DNS, domains not in the list). The server list only as a count, never a name.
+ * settle — SPF terms it cannot tell, passive hits nobody checked, failed lookups, domains that do not
+ * exist, a stop — and what it never covers (internal DNS, domains not in the list). The server list
+ * only as a count, never a name.
  * @param {{ label: string, domains?: string[], notChecked?: string[], zone?: string|null, passive?: boolean,
  *   counts: { total: number, breaking: number, bySeverity: Record<string, number>, byVerified?: Record<string, number> },
  *   top?: Array<{ severity: string, name: string, type: string, value: string }>, owners?: number|null,
- *   unverified?: number, failed?: number, stopped?: boolean, at?: Date }} facts lib/retire.js buildChanges counts and
+ *   unverified?: number, failed?: number, missing?: number, stopped?: boolean, at?: Date }} facts lib/retire.js buildChanges counts and
  *   changes (worst first); `domains`: the domains whose check finished, `notChecked`: the ones it did not reach
  *   (a stop) or could not check; `zone`: the imported zone's origin when its records were compared; `passive`: a
  *   passive reverse-IP lookup was made; `owners`: servers of the list that own an address (null: no list loaded);
  *   `unverified`: rows of the passive group (nobody checked them, or their lookup failed); `failed`: lookups that got
- *   no answer
+ *   no answer; `missing`: checked domains that do not exist (a typo in the list?)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -701,8 +702,8 @@ export function retireSummary(facts, opts) {
   // What cannot be told and what nobody checked is said on lines of its own, never counted as pointing here.
   const total = Math.max(0, (Number(c.total) || 0) - (Number(sev.unknown) || 0) - (Number(facts.unverified) || 0));
   const breaking = Number(c.breaking) || 0;
-  // A failed lookup or a "cannot tell" leaves the list open: never "nothing points at it" then.
-  const open = (Number(facts.failed) || 0) > 0 || (Number(sev.unknown) || 0) > 0;
+  // A failed lookup, a "cannot tell" or a domain that does not exist leaves the list open: never "nothing points at it" then.
+  const open = (Number(facts.failed) || 0) > 0 || (Number(sev.unknown) || 0) > 0 || (Number(facts.missing) || 0) > 0;
   let verdict;
   if (!total) verdict = facts.stopped ? t('sum.retire.noneStopped') : open ? t('sum.retire.noneOpen') : t('sum.retire.none');
   else verdict = `${t('sum.retire.records', { count: total })} · ${breaking ? t('sum.retire.breaking', { count: breaking }) : t('sum.retire.breakingNone')}`;
@@ -719,7 +720,8 @@ export function retireSummary(facts, opts) {
   if (top.length > RETIRE_MAX_RECORDS) topLines.push([t('sum.retire.more', { count: top.length - RETIRE_MAX_RECORDS })]);
   const owners = facts.owners;
   // What the check could not settle, on one line: the budget is 12 lines with the worst records.
-  const unsettled = k.counts([['sum.retire.unknown', sev.unknown], ['sum.retire.unverified', facts.unverified], ['sum.retire.failed', facts.failed]]);
+  const unsettled = k.counts([['sum.retire.unknown', sev.unknown], ['sum.retire.unverified', facts.unverified], ['sum.retire.failed', facts.failed],
+    ['sum.retire.missing', facts.missing]]);
   return doc('retire', k.title('retire', [code(facts.label)]), [
     [verdict],
     checked,
@@ -998,7 +1000,9 @@ const STRINGS = [
     'buradan anlaşılamayan {count} SPF terimi']],
   ['sum.retire.unverified', [{ one: '{count} passive hit not checked yet', other: '{count} passive hits not checked yet' }, 'henüz kontrol edilmemiş {count} pasif sonuç']],
   ['sum.retire.failed', [{ one: '{count} failed lookup (the list may be incomplete)', other: '{count} failed lookups (the list may be incomplete)' },
-    '{count} başarısız sorgu (liste eksik olabilir)']]
+    '{count} başarısız sorgu (liste eksik olabilir)']],
+  ['sum.retire.missing', [{ one: '{count} domain that does not exist (a typo?)', other: '{count} domains that do not exist (a typo?)' },
+    'mevcut olmayan {count} alan adı (yazım hatası mı?)']]
 ];
 
 function buildStrings(lang) {

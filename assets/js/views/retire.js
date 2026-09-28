@@ -172,6 +172,7 @@ registerStrings('en', {
   'retire.head.failed': { one: '{count} lookup failed', other: '{count} lookups failed' },
   'retire.head.unknown': { one: '{count} SPF result cannot be told from here', other: '{count} SPF results cannot be told from here' },
   'retire.head.notChecked': { one: '{count} domain not checked', other: '{count} domains not checked' },
+  'retire.head.missing': { one: '{count} domain does not exist', other: '{count} domains do not exist' },
   'retire.head.scope': 'Not covered: internal (split-horizon) DNS and domains that are not in the list. A record found only in the zone file is not live, but a restore of the file brings it back.',
   'retire.stat.breaking': 'Must change',
   'retire.stat.mail': 'Breaks mail',
@@ -195,6 +196,7 @@ registerStrings('en', {
   'retire.fail.spf': 'the SPF record',
   'retire.fail.https': 'the HTTPS record',
   'retire.group.failed': '{domain} could not be checked.',
+  'retire.group.missing': '{domain} does not exist: public DNS answers NXDOMAIN for it and it has no name servers. A typo? Correct it in the domain list and check again.',
   'retire.group.count': { one: '{count} record', other: '{count} records' },
   'retire.group.more': 'Show all {count}',
 
@@ -396,6 +398,7 @@ registerStrings('tr', {
   'retire.head.failed': '{count} sorgu başarısız oldu',
   'retire.head.unknown': 'buradan anlaşılamayan {count} SPF sonucu',
   'retire.head.notChecked': '{count} alan adı kontrol edilmedi',
+  'retire.head.missing': '{count} alan adı mevcut değil',
   'retire.head.scope': 'Kapsam dışı: iç (split-horizon) DNS ve listede olmayan alan adları. Yalnızca zone dosyasında bulunan bir kayıt canlı değildir, ama dosya geri yüklenirse geri gelir.',
   'retire.stat.breaking': 'Değişmeli',
   'retire.stat.mail': 'E-postayı bozar',
@@ -419,6 +422,7 @@ registerStrings('tr', {
   'retire.fail.spf': 'SPF kaydı',
   'retire.fail.https': 'HTTPS kaydı',
   'retire.group.failed': '{domain} kontrol edilemedi.',
+  'retire.group.missing': '{domain} mevcut değil: genel DNS onun için NXDOMAIN yanıtı veriyor ve ad sunucusu yok. Yazım hatası mı? Alan adı listesinde düzeltip yeniden kontrol edin.',
   'retire.group.count': '{count} kayıt',
   'retire.group.more': '{count} kaydın tümünü göster',
 
@@ -697,7 +701,7 @@ export function jobGaps(job, built) {
 
 /**
  * The words for what a check could not settle: failed lookups, "cannot tell" results, domains a
- * stop left unchecked (the stop itself has its own note).
+ * stop left unchecked (the stop itself has its own note), domains that do not exist.
  * @param {ReturnType<typeof retireGaps>} gaps
  * @returns {string[]}
  */
@@ -706,6 +710,7 @@ export function gapTexts(gaps) {
   if (gaps.failed) out.push(t('retire.head.failed', { count: gaps.failed }));
   if (gaps.unknown) out.push(t('retire.head.unknown', { count: gaps.unknown }));
   if (gaps.notChecked.length) out.push(t('retire.head.notChecked', { count: gaps.notChecked.length }));
+  if (gaps.missing && gaps.missing.length) out.push(t('retire.head.missing', { count: gaps.missing.length }));
   return out;
 }
 
@@ -752,6 +757,7 @@ export function summaryFacts(job, built, { owners = null, passive = false } = {}
     // Only the passive group's rows: a zone record a stop left unverified is still a record of the file.
     unverified: built.counts.passive || 0,
     failed: gaps.failed,
+    missing: gaps.missing.length,
     stopped: job.status === 'cancelled',
     at: job.finishedAt || job.startedAt
   };
@@ -1482,7 +1488,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     } else {
       const failures = [...job.checks.values()].flatMap((c) => c.failures.map((f) => ({ domain: c.domain, ...f })));
       file = downloadText(name, `${toJson(retireExportJson({
-        blocks: job.blocks, domains: job.domains, changes: built.changes, counts: built.counts, gone: built.gone,
+        blocks: job.blocks, domains: job.domains, missing: jobGaps(job, built).missing, changes: built.changes, counts: built.counts, gone: built.gone,
         owners: state.inventory.servers.length ? inventoryOwners(job.blocks, state.inventory.servers) : [],
         failures: [...failures, ...job.errors], startedAt: job.startedAt, finishedAt: job.finishedAt, aborted: job.status === 'cancelled',
         zone: job.zoneOrigin, version: ctx.version
@@ -1805,10 +1811,19 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
       a.dataset.role = 'retire-failures';
       body.push(a);
     }
+    // A domain that does not exist (a typo in the list?) is said so, never "nothing in it points here".
+    if (check && check.missing) {
+      const a = Alert({ variant: 'warn', compact: true, message: t('retire.group.missing', { domain: g.key }) });
+      a.setAttribute('role', 'note');
+      a.dataset.role = 'retire-missing';
+      body.push(a);
+    }
     if (!count && g.kind === 'domain') {
       const failedDomain = job.errors.find((e) => e.domain === g.key);
       if (failedDomain) body.push(Alert({ variant: 'error', compact: true, message: t('retire.domainFailed', { domain: g.key, error: failedDomain.error }) }));
-      else if (check && !check.failures.length) {
+      else if (check && check.missing) {
+        // said above
+      } else if (check && !check.failures.length) {
         const a = Alert({ variant: 'ok', compact: true, message: t('retire.group.empty', { domain: g.key, count: check.names.length }) });
         a.dataset.role = 'retire-clean';
         body.push(a);

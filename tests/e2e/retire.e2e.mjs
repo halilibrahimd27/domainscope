@@ -290,6 +290,17 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelectorAll('.retire-group').length), 0, 'no card for a domain never checked');
     });
 
+    await run.step('a domain that does not exist (a typo?): its card says so, never the green "nothing"', async () => {
+      await typeInto(page, 'retire-domains', 'exmaple.example.org');
+      await page.click('[data-action="retire-run"]');
+      await waitDone(page, 'the check of a domain that does not exist');
+      const v = await verdict();
+      assertEqual([v.variant, v.title, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
+      assert(/1 domain does not exist: the list may be incomplete\./.test(v.message), v.message);
+      const note = await text(page, '.retire-group[data-group="exmaple.example.org"] [data-role="retire-missing"]');
+      assert(/^exmaple\.example\.org does not exist: public DNS answers NXDOMAIN for it and it has no name servers\. A typo\?/.test(note), note);
+    });
+
     await run.step('a zone imported under Zone File and the last scan fill an empty domain box; the host names per domain', async () => {
       const before = await dnsCount(page);
       await gotoRoute(page, 'zone');

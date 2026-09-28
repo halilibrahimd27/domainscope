@@ -357,7 +357,7 @@ describe('what a check could not settle', () => {
     assert.equal(built.counts.total, 1, 'only the SPF row, which cannot be told');
     const gaps = retireGaps({ domains: ['example.org'], checks: [c], counts: built.counts });
     assert.deepEqual(gaps, {
-      failed: 5, failures: { name: 1, mx: 1, ns: 1, spf: 1, https: 1, domain: 0, zone: 0 }, unknown: 1, notChecked: [], stopped: false, settled: false
+      failed: 5, failures: { name: 1, mx: 1, ns: 1, spf: 1, https: 1, domain: 0, zone: 0 }, unknown: 1, notChecked: [], missing: [], stopped: false, settled: false
     });
     assert.deepEqual(FAILURE_KINDS.filter((k) => !(k in gaps.failures)), []);
   });
@@ -375,6 +375,22 @@ describe('what a check could not settle', () => {
     const unknown = retireGaps({ domains: ['example.net'], checks: [c], counts: { bySeverity: { unknown: 2 } } });
     assert.deepEqual([unknown.unknown, unknown.failed, unknown.settled], [2, 0, false]);
     assert.equal(retireGaps().settled, true, 'nothing asked, nothing open');
+  });
+
+  test('a domain that does not exist (a typo?) is said so, never "nothing points here"', async () => {
+    const dns = fakeDns({ 'example.net': { MX: [{ preference: 10, exchange: 'mx.example.net' }], NS: ['ns1.example.net'] }, 'mx.example.net': { A: ['198.51.100.2'] } });
+    const blocks = blocksOf('192.0.2.10');
+    const typo = await checkDomain('exmaple.example.org', { dns, blocks });
+    assert.deepEqual([typo.missing, typo.failures, typo.names[0].status, typo.ns.status], [true, [], 'NXDOMAIN', 'none']);
+    // A domain without an address of its own exists all the same.
+    const bare = await checkDomain('example.net', { dns, blocks });
+    assert.equal(bare.missing, false);
+    const built = buildChanges({ blocks, checks: [typo, bare] });
+    assert.equal(built.counts.total, 0);
+    const gaps = retireGaps({ domains: ['exmaple.example.org', 'example.net'], checks: [typo, bare], counts: built.counts });
+    assert.deepEqual([gaps.missing, gaps.failed, gaps.settled], [['exmaple.example.org'], 0, false]);
+    assert.equal(retireGaps({ domains: ['example.net'], checks: [bare], counts: built.counts }).settled, true);
+    assert.deepEqual(retireExportJson({ blocks, domains: ['exmaple.example.org', 'example.net'], missing: gaps.missing }).missingDomains, ['exmaple.example.org']);
   });
 });
 

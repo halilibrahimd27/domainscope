@@ -23,8 +23,8 @@
  *   internal (`internal`); a wildcard owner is asked through a random name under it.
  * - {@link runRetireCheck}: the whole check (every domain, then the zone's candidates), streamed
  *   as events and cancellable; what finished before an abort is kept. {@link retireGaps}: what it
- *   could not settle (failed lookups, "cannot tell", a stop) — only a check without any of it may
- *   say that nothing points at the address.
+ *   could not settle (failed lookups, "cannot tell", a stop, a domain that does not exist) — only a
+ *   check without any of it may say that nothing points at the address.
  * - Passive reverse IP (HackerTarget, ip.thc.org: lib/ipintel.js, only on a click) finds names
  *   outside the user's list; they stay `unverified` until checked like any other host name.
  * - {@link inventoryOwners}: which servers of the user's list own the addresses.
@@ -509,6 +509,9 @@ function isAbort(err) {
 /**
  * @typedef {object} DomainCheck
  * @property {string} domain
+ * @property {boolean} missing the domain does not exist: its own name is NXDOMAIN and it has no name
+ *   server (a typo in the list, most likely) — nothing in it can point at the address, and that is
+ *   no "nothing points here"
  * @property {NameCheck[]} names every name resolved, in the order asked
  * @property {{ status: 'ok'|'none'|'failed', error: string|null, hosts: Array<{ host: string, preference: number }> }} mx
  * @property {{ status: 'ok'|'none'|'failed', error: string|null, hosts: string[] }} ns
@@ -687,7 +690,8 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
   // A name a later job added (an SPF mx host) is settled too.
   await Promise.all([...names.values()].map((e) => e.promise));
   throwIfAborted(signal);
-  return { domain: d, names: [...names.values()].map((e) => e.check), mx, ns, spf, https, failures };
+  const missing = names.get(d).check.status === 'NXDOMAIN' && ns.status !== 'ok';
+  return { domain: d, missing, names: [...names.values()].map((e) => e.check), mx, ns, spf, https, failures };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1057,11 +1061,12 @@ export async function runRetireCheck({ blocks, domains, hosts = new Map(), zoneR
  * - failed lookups: each domain's names, MX, NS, SPF and HTTPS ({@link FAILURE_KINDS}), a domain
  *   that could not be checked at all (`domain`), a zone-file record whose live lookup failed (`zone`);
  * - `unknown`: rows that cannot be told (an SPF macro, a failed SPF lookup …; `counts.bySeverity.unknown`);
- * - `notChecked`: domains a stop left unchecked (a domain that failed is counted under `domain`).
+ * - `notChecked`: domains a stop left unchecked (a domain that failed is counted under `domain`);
+ * - `missing`: checked domains that do not exist (DomainCheck.missing: a typo in the list?).
  * @param {{ domains?: string[], checks?: DomainCheck[], errors?: Array<{ domain: string }>, zone?: ZoneRef[]|null,
  *   aborted?: boolean, counts?: { bySeverity?: Record<string, number> }|null }} r
- * @returns {{ failed: number, failures: Record<string, number>, unknown: number, notChecked: string[], stopped: boolean,
- *   settled: boolean }}
+ * @returns {{ failed: number, failures: Record<string, number>, unknown: number, notChecked: string[], missing: string[],
+ *   stopped: boolean, settled: boolean }}
  */
 export function retireGaps({ domains = [], checks = [], errors = [], zone = [], aborted = false, counts = null } = {}) {
   const failures = Object.fromEntries([...FAILURE_KINDS, 'domain', 'zone'].map((k) => [k, 0]));
@@ -1074,8 +1079,9 @@ export function retireGaps({ domains = [], checks = [], errors = [], zone = [], 
   const done = new Set([...(checks || []).map((c) => c.domain), ...(errors || []).map((e) => e.domain)]);
   const notChecked = (domains || []).filter((d) => !done.has(d));
   const unknown = Number(counts && counts.bySeverity && counts.bySeverity.unknown) || 0;
+  const missing = (checks || []).filter((c) => c && c.missing).map((c) => c.domain);
   const stopped = !!aborted;
-  return { failed, failures, unknown, notChecked, stopped, settled: !failed && !unknown && !notChecked.length && !stopped };
+  return { failed, failures, unknown, notChecked, missing, stopped, settled: !failed && !unknown && !notChecked.length && !missing.length && !stopped };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1462,13 +1468,13 @@ export function retireExportRows(changes) {
 
 /**
  * The JSON export (`domainscope.ip-retire/1`).
- * @param {{ blocks?: RetireBlock[], domains?: string[], changes?: Change[], counts?: object|null, gone?: object[],
+ * @param {{ blocks?: RetireBlock[], domains?: string[], missing?: string[], changes?: Change[], counts?: object|null, gone?: object[],
  *   owners?: object[], failures?: object[], startedAt?: Date|null, finishedAt?: Date|null, aborted?: boolean,
- *   zone?: string|null, app?: string, version?: string }} r
+ *   zone?: string|null, app?: string, version?: string }} r `missing`: checked domains that do not exist
  * @returns {object}
  */
 export function retireExportJson({
-  blocks = [], domains = [], changes = [], counts = null, gone = [], owners = [], failures = [], startedAt = null,
+  blocks = [], domains = [], missing = [], changes = [], counts = null, gone = [], owners = [], failures = [], startedAt = null,
   finishedAt = null, aborted = false, zone = null, app = 'DomainScope', version = ''
 } = {}) {
   const iso = (d) => (d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString() : null);
@@ -1478,6 +1484,7 @@ export function retireExportJson({
     version,
     addresses: blocks.map((b) => b.cidr),
     domains: [...domains],
+    missingDomains: [...missing],
     zone: zone || null,
     startedAt: iso(startedAt),
     finishedAt: iso(finishedAt),

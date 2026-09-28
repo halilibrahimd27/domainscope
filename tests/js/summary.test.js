@@ -792,6 +792,10 @@ describe('retire', () => {
     assert.equal(lines(md(partial))[2], '- Checked 1 domain over public DNS: `example.com` · not checked: `example.net`, `example.org`');
     const none = S.retireSummary({ label: '192.0.2.10', domains: [], notChecked: ['example.com'], counts: counts({}), top: [], stopped: true }, opts());
     assert.deepEqual(lines(md(none)).slice(1, 3), ['- Stopped before anything pointing at it was found', '- No domain checked · not checked: `example.com`']);
+    // A domain that does not exist (a typo in the list?) leaves the list open too.
+    const typo = S.retireSummary({ label: '192.0.2.10', domains: ['example.com', 'exmaple.example.org'], counts: counts({}), top: [], missing: 1 }, opts());
+    assert.equal(lines(md(typo))[1], '- Nothing found pointing at it, but not everything could be checked (below)');
+    assert.match(md(typo), /- \*\*Not settled:\*\* 1 domain that does not exist \(a typo\?\)/);
   });
 
   test('a hostile record value stays an inert code span', () => {

@@ -185,7 +185,7 @@ describe('Retire an IP view helpers', () => {
     const facts = summaryFacts(job, built, { owners: 1, passive: false });
     assert.deepEqual({ ...facts, counts: undefined }, {
       label: '192.0.2.10', domains: ['example.com'], notChecked: ['example.net'], zone: null, passive: false, counts: undefined,
-      top: [{ severity: 'live', name: 'example.com', type: 'A', value: '192.0.2.10' }], owners: 1, unverified: 0, failed: 2, stopped: true,
+      top: [{ severity: 'live', name: 'example.com', type: 'A', value: '192.0.2.10' }], owners: 1, unverified: 0, failed: 2, missing: 0, stopped: true,
       at: new Date('2026-09-28T09:01:00Z')
     });
     setLang('en');
@@ -228,5 +228,33 @@ describe('Retire an IP view helpers', () => {
     assert.match(md, /\n- Nothing found pointing at it, but not everything could be checked \(below\)\n/);
     assert.doesNotMatch(md, /Nothing in the checked domains/);
     assert.match(md, /Not settled:\*\* 1 SPF term that cannot be told from here · 7 failed lookups/);
+  });
+
+  test('a domain that does not exist: its card says so, the verdict is never "nothing", the summary names it', () => {
+    const parsed = parseRetireTargets('192.0.2.10');
+    const check = {
+      domain: 'exmaple.example.org', missing: true,
+      names: [{ name: 'exmaple.example.org', status: 'NXDOMAIN', cnames: [], ipv4: [], ipv6: [], roles: ['apex'], sources: [] }],
+      mx: { status: 'none', hosts: [] }, ns: { status: 'none', hosts: [] }, https: { status: 'none', hints: [] },
+      spf: { status: 'none', matches: [], unknown: [] }, failures: []
+    };
+    const job = {
+      label: parsed.label, blocks: parsed.blocks, domains: ['exmaple.example.org'], checks: new Map([['exmaple.example.org', check]]), errors: [],
+      zoneOrigin: null, zoneRefs: [], zoneVerified: false, status: 'done', startedAt: new Date('2026-09-28T09:00:00Z'), finishedAt: new Date('2026-09-28T09:01:00Z')
+    };
+    const built = buildChanges({ blocks: parsed.blocks, checks: [check] });
+    const gaps = jobGaps(job, built);
+    assert.deepEqual([gaps.missing, gaps.settled], [['exmaple.example.org'], false]);
+    setLang('en');
+    assert.deepEqual(gapTexts(gaps), ['1 domain does not exist']);
+    assert.equal(t('retire.group.missing', { domain: 'exmaple.example.org' }),
+      'exmaple.example.org does not exist: public DNS answers NXDOMAIN for it and it has no name servers. A typo? Correct it in the domain list and check again.');
+    const md = renderMarkdown(buildSummary('retire', summaryFacts(job, built, { owners: null }), { t, lang: 'en', url: null }));
+    assert.match(md, /\n- Nothing found pointing at it, but not everything could be checked \(below\)\n/);
+    assert.match(md, /Not settled:\*\* 1 domain that does not exist \(a typo\?\)/);
+    setLang('tr');
+    assert.deepEqual(gapTexts(gaps), ['1 alan adı mevcut değil']);
+    assert.match(renderMarkdown(buildSummary('retire', summaryFacts(job, built, { owners: null }), { t, lang: 'tr', url: null })), /mevcut olmayan 1 alan adı \(yazım hatası mı\?\)/);
+    setLang('en');
   });
 });

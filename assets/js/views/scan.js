@@ -2765,10 +2765,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     return {
       domains: run.config.domains,
       cert: cert ? { name: certDisplayName(cert), issuer: issuerDisplayName(cert), notBefore: cert.notBefore, notAfter: cert.notAfter } : null,
-      // Several certificates: each set by its first name and key types, and how many servers need it.
+      // Several certificates: each set by its first name and key types, and how many of your servers
+      // need it (addresses outside the inventory left out, as the renewal line counts them).
       sets: sets ? sets.map((s) => ({
         id: s.id, name: s.names[0], names: s.names.length, keyTypes: s.keyTypes.slice(), expires: s.expires,
-        servers: plan && plan.perSet[s.id] ? plan.perSet[s.id].rows : null
+        servers: plan && plan.perSet[s.id] ? plan.perSet[s.id].servers : null
       })) : null,
       hosts: c.total,
       covered: c.covered,

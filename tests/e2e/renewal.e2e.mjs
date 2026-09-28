@@ -483,11 +483,13 @@ async function main() {
         ['5.6.7.8', { 'Set B': ['pay.example.com'] }, true]
       ], 'matrix');
       const info = await page.evaluate(() => ({
-        sets: [...document.querySelectorAll('.rw-plan-set')].map((el) => `${el.dataset.set}:${el.dataset.hosts}:${el.dataset.servers}`),
+        sets: [...document.querySelectorAll('.rw-plan-set')].map((el) => `${el.dataset.set}:${el.dataset.hosts}:${el.dataset.servers}:${el.dataset.addresses}`),
+        setB: document.querySelector('.rw-plan-set[data-set="B"] .text-sm')?.textContent || '',
         uncovered: [...document.querySelectorAll('.rw-uncovered tbody tr.dt-row td:first-child')].map((td) => td.textContent),
         title: document.querySelector('[data-role="renewal-uncovered-title"]')?.textContent || ''
       }));
-      assertEqual(info.sets, ['A:4:3', 'B:2:2'], 'hosts and servers per set');
+      assertEqual(info.sets, ['A:4:3:0', 'B:2:1:1'], 'hosts, your servers and outside addresses per set');
+      assert(/^Hosts: 2 · servers: 1 · addresses not in your list: 1 · expires /.test(info.setB), `set B's card: ${info.setB}`);
       assertEqual(info.uncovered, ['x.dev.example.com'], 'uncovered names');
       assert(/1 host no certificate covers/.test(info.title), info.title);
       await takeDownloads(page);

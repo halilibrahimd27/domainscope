@@ -266,7 +266,8 @@ describe('planRenewal — the server × set matrix', () => {
     assert.deepEqual(w2.cells.B.map((e) => [e.name, e.via]), [['shop.example.com', 'dns']], 'the DNS match outranks the hint for the same name');
     assert.equal(w2.cells.A, undefined, 'shop is B\'s exact name, not A\'s wildcard');
     assert.deepEqual([out.server, out.ip, out.private, out.cells.A.map((e) => e.name)], [null, '198.51.100.7', false, ['api.example.com']]);
-    assert.deepEqual(plan.perSet, { A: { names: 3, rows: 2 }, B: { names: 2, rows: 2 } });
+    // an address outside the inventory is a row, not one of your servers
+    assert.deepEqual(plan.perSet, { A: { names: 3, rows: 2, servers: 1, addresses: 1 }, B: { names: 2, rows: 2, servers: 2, addresses: 0 } });
   });
 
   test('the names no certificate covers: on your servers first, then resolving ones; wildcard look-alikes left out', () => {

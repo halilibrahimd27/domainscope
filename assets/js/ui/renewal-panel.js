@@ -56,6 +56,7 @@ registerStrings('en', {
   'rw.plan.intro': 'Which certificate set each of your servers needs, from one scan of every set’s names. A name gets the set that names it exactly, else the most specific wildcard, else the one that expires last.',
   'rw.plan.setsTitle': 'Certificate sets',
   'rw.plan.setUse': 'Hosts: {hosts} · servers: {servers} · expires {date}',
+  'rw.plan.setUseOut': 'Hosts: {hosts} · servers: {servers} · addresses not in your list: {addresses} · expires {date}',
   'rw.plan.matrixTitle': 'Servers and sets',
   'rw.plan.caption': 'The names each server needs from each certificate set',
   'rw.plan.worklist': 'Work list (CSV)',
@@ -117,6 +118,7 @@ registerStrings('tr', {
   'rw.plan.intro': 'Tüm setlerin adları tek taramada kontrol edildi; sunucularınızdan her birinin hangi sertifika setine ihtiyacı olduğu burada. Bir ada onu tam adıyla içeren set, yoksa en belirgin joker, o da yoksa süresi en geç dolan set verilir.',
   'rw.plan.setsTitle': 'Sertifika setleri',
   'rw.plan.setUse': 'Host: {hosts} · sunucu: {servers} · {date} tarihinde doluyor',
+  'rw.plan.setUseOut': 'Host: {hosts} · sunucu: {servers} · listenizde olmayan adres: {addresses} · {date} tarihinde doluyor',
   'rw.plan.matrixTitle': 'Sunucular ve setler',
   'rw.plan.caption': 'Her sunucunun her sertifika setinden ihtiyaç duyduğu adlar',
   'rw.plan.worklist': 'İş listesi (CSV)',
@@ -315,13 +317,18 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
 
   const setCards = h('div', { class: 'rw-plan-sets', attrs: { role: 'list', 'aria-label': t('rw.plan.setsTitle') } },
     sets.map((set) => {
-      const use = plan.perSet[set.id] || { names: 0, rows: 0 };
-      return h('div', { class: 'rw-plan-set', dataset: { set: set.id, hosts: String(use.names), servers: String(use.rows) }, attrs: { role: 'listitem' } },
+      // Your servers and the addresses outside the inventory, apart (the summary counts servers only).
+      const use = plan.perSet[set.id] || { names: 0, rows: 0, servers: 0, addresses: 0 };
+      return h('div', {
+        class: 'rw-plan-set', attrs: { role: 'listitem' },
+        dataset: { set: set.id, hosts: String(use.names), servers: String(use.servers), addresses: String(use.addresses) }
+      },
         h('div', { class: 'rw-plan-set-head' }, SetBadge(set.id),
           set.keyTypes.map((k) => Badge(k, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }))),
         TruncatedList(set.names, { max: 4, inline: true }),
-        h('div', { class: 'text-sm muted' }, t('rw.plan.setUse', {
-          hosts: formatNumber(use.names), servers: formatNumber(use.rows), date: set.expires ? formatDate(set.expires) : '—'
+        h('div', { class: 'text-sm muted' }, t(use.addresses ? 'rw.plan.setUseOut' : 'rw.plan.setUse', {
+          hosts: formatNumber(use.names), servers: formatNumber(use.servers), addresses: formatNumber(use.addresses),
+          date: set.expires ? formatDate(set.expires) : '—'
         })),
         h('div', { class: 'text-xs muted mono rw-plan-set-files' }, fileLabel(set.files)));
     }));

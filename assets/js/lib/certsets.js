@@ -388,7 +388,9 @@ const resolves = (host) => !!host && !!host.resolution
  * @property {Array<{ name: string, servers: Array<{ name: string, ip: string }>, resolving: boolean }>} uncovered
  *   scanned hosts no certificate covers: those on your servers first, then the resolving ones
  * @property {PlanRow[]} rows your servers that need a set (scan order), then addresses outside the inventory
- * @property {Record<string, { names: number, rows: number }>} perSet names assigned and matrix rows per set
+ * @property {Record<string, { names: number, rows: number, servers: number, addresses: number }>} perSet per set:
+ *   the names assigned to it and the matrix rows needing it — `servers` of your inventory, `addresses`
+ *   outside it (`rows` = both)
  */
 
 /**
@@ -471,7 +473,9 @@ export function planRenewal(result, sets) {
   for (const s of list) {
     let names = 0;
     for (const a of assigned.values()) if (a.set === s.id) names += 1;
-    perSet[s.id] = { names, rows: rows.filter((row) => row.cells[s.id]).length };
+    const needing = rows.filter((row) => row.cells[s.id]);
+    const servers = needing.filter((row) => row.server).length;
+    perSet[s.id] = { names, rows: needing.length, servers, addresses: needing.length - servers };
   }
   return { sets: list, assigned, uncovered, rows, perSet };
 }

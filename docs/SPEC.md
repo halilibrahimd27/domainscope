@@ -1494,10 +1494,10 @@ CertSet = { id, names, leaves, certs, keyTypes, files, notAfter /* latest */, ex
 export function assignSet(name, sets) -> { set, by, exact }|null   // of the sets covering the name (domain.certCovers): exact before wildcard, the most specific
                                                                    // wildcard, the latest notAfter, the set loaded first
 export function setOfName(sets) -> (name) => setId|null            // memoised assignSet (verify.buildVerifyPairs setOf)
-export function planRenewal(scanResult, sets) -> { sets, assigned: Map<name, { set, by, exact }>, uncovered: [{ name, servers, resolving }], rows: PlanRow[], perSet: { [id]: { names, rows } } }
+export function planRenewal(scanResult, sets) -> { sets, assigned: Map<name, { set, by, exact }>, uncovered: [{ name, servers, resolving }], rows: PlanRow[], perSet: { [id]: { names, rows, servers, addresses } } }
   // rows: each ServerGroup with a covered name (scan order), then each unmatched address; cells[setId] = [{ name, ips, via }] (dns over zone over hint, the
   // strongest kept); needsCert: a DNS or zone name, maybe: hints only. uncovered: scanned hosts no set covers (wildcard suspects left out), those on your servers
-  // first, then resolving ones
+  // first, then resolving ones; perSet: the names assigned and the rows needing the set, `servers` of the inventory and `addresses` outside it
 export const WORKLIST_COLUMNS; export function workListRows(plan) -> rows   // one per server (or address) × set: server, ip, names, candidates (origin hints),
                                                                            // set, setNames, keyTypes, expires, files (toCsv joins names and IPs with spaces;
                                                                            // key types, which hold spaces, with ' + ' and file names with '; ')

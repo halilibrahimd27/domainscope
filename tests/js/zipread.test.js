@@ -1,7 +1,8 @@
 /**
  * lib/zipread.js — the containers mail reports arrive in: gzip and zip read in the platform's
  * DecompressionStream, the zip central directory (ZIP64, data descriptors, stored and deflated
- * entries, UTF-8 names), CRC-32 and size checks, the caps that stop a zip bomb, and a dropped
+ * entries, UTF-8 names), CRC-32 and size checks, the caps that stop a zip bomb (overlapping entries,
+ * a size that lies, failed parts paid for, entries counted across nested archives), and a dropped
  * file unpacked into its plain files with a reason for every part that could not be read.
  * The positive cases read archives Python's zipfile and gzip wrote (tests/fixtures/mailreports,
  * gen_mailreports.py); the broken ones are built here byte by byte. No network.
@@ -153,6 +154,17 @@ describe('gzip and deflate streams', () => {
     await assert.rejects(inflate(deflateRawSync(data), 'deflate-raw', { signal: ac.signal }), (err) => err.name === 'AbortError');
     await rejectsCode(inflate(deflateRawSync(data), 'deflate-raw', { DecompressionStreamImpl: null }), 'unsupported');
   });
+
+  test('an abort ends a read that waits on the stream, never a partial result', async () => {
+    // A stream that takes its input and never gives anything back: the read waits until the abort.
+    const Stuck = function Stuck() {
+      return new TransformStream({ transform: () => new Promise(() => {}) });
+    };
+    const ac = new AbortController();
+    const pending = inflate(deflateRawSync(enc.encode('x'.repeat(1000))), 'deflate-raw', { signal: ac.signal, DecompressionStreamImpl: Stuck });
+    setTimeout(() => ac.abort(), 20);
+    await assert.rejects(pending, (err) => err.name === 'AbortError');
+  });
 });
 
 /* ---- zip ---------------------------------------------------------------------------------- */
@@ -271,7 +283,7 @@ describe('unpackFile — a dropped file into its plain files', () => {
     assert.deepEqual(m.problems.map((p) => [p.path, p.code]), [['mixed.zip › secret.xml', 'encrypted'], ['mixed.zip › bad.xml', 'crc']]);
   });
 
-  test('caps: bytes per entry, bytes per file, entries per archive', async () => {
+  test('caps: bytes per entry, bytes per file, entries per file', async () => {
     const zip = buildZip([{ name: 'a.xml', data: 'a'.repeat(3000) }, { name: 'b.xml', data: 'b'.repeat(3000) }, { name: 'c.xml', data: 'c' }]);
     const perEntry = await unpackFile({ name: 'x.zip', bytes: zip }, { maxEntryBytes: 1000 });
     assert.deepEqual(perEntry.files.map((f) => f.name), ['c.xml']);
@@ -282,6 +294,74 @@ describe('unpackFile — a dropped file into its plain files', () => {
     const many = await unpackFile({ name: 'x.zip', bytes: zip }, { maxEntries: 2 });
     assert.deepEqual(many.files.map((f) => f.name), ['a.xml', 'b.xml']);
     assert.deepEqual(many.problems.map((p) => [p.code, p.detail]), [['too-many', '3 > 2']]);
+  });
+
+  test('entries that share their bytes are refused at once, however many point at one stream', async () => {
+    // One 40 MB deflate stream, and 1,000 central directory entries that all name its local header:
+    // unpacked one by one, each would inflate the whole stream again.
+    const payload = new Uint8Array(40 * 1024 * 1024).fill(0x20);
+    const kernel = deflateRawSync(payload, { level: 9 });
+    const one = buildZip([{ name: 'a.xml', data: kernel, method: 0 }]);
+    const localLen = 30 + 'a.xml'.length + kernel.length;
+    const central = one.subarray(localLen, one.length - 22);
+    central[10] = 8; // the entry is deflated
+    central[24] = 100; // and claims 100 bytes
+    central[25] = 0;
+    central[26] = 0;
+    central[27] = 0;
+    const n = 1000;
+    const parts = [one.subarray(0, localLen), ...Array.from({ length: n }, () => central)];
+    const cdSize = central.length * n;
+    parts.push(Uint8Array.from([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(n), ...u16(n), ...u32(cdSize), ...u32(localLen), ...u16(0)]));
+    const bomb = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      bomb.set(p, at);
+      at += p.length;
+    }
+    const t0 = Date.now();
+    const r = await unpackFile({ name: 'bomb.zip', bytes: bomb });
+    assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+    assert.equal(r.files.length, 0);
+    assert.equal(r.problems.length, n);
+    assert.ok(r.problems.every((p) => p.code === 'overlap'));
+    // Two entries of a real archive side by side never overlap; the stored mailbox export reads as before.
+    assert.deepEqual((await unpackFile({ name: 'x.zip', bytes: fixture('reports-2026-09.zip') })).problems, []);
+  });
+
+  test('a stream longer than its declared size is corrupt at the first byte past it; what failed was paid for', async () => {
+    const big = new Uint8Array(8 * 1024 * 1024).fill(0x61);
+    // A size that lies small: inflating stops at once.
+    const lying = buildZip([{ name: 'a.xml', data: big, size: 100, crc: 0 }]);
+    const entry = readZipDirectory(lying).entries[0];
+    const t0 = Date.now();
+    await assert.rejects(extractZipEntry(lying, entry), (err) => err.code === 'corrupt' && err.inflated < 1024 * 1024);
+    assert.ok(Date.now() - t0 < 500, `${Date.now() - t0} ms`);
+    // The true size and a wrong CRC: 8 MB inflated, then refused, and charged to the file.
+    const entries = Array.from({ length: 6 }, (_, i) => ({ name: `r${i}.xml`, data: big, crc: 1 }));
+    const r = await unpackFile({ name: 'x.zip', bytes: buildZip(entries) }, { maxTotalBytes: 20 * 1024 * 1024 });
+    assert.deepEqual(r.problems.map((p) => p.code), ['crc', 'crc', 'too-large', 'too-large', 'too-large', 'too-large'], 'two paid 16 MB of 20');
+    const inflated = await extractZipEntry(buildZip([{ name: 'a.xml', data: 'x'.repeat(50), crc: 5 }]),
+      readZipDirectory(buildZip([{ name: 'a.xml', data: 'x'.repeat(50), crc: 5 }])).entries[0]).catch((err) => err);
+    assert.deepEqual([inflated.code, inflated.inflated], ['crc', 50]);
+    // A gzip that fails after inflating pays for it too.
+    const gz = new Uint8Array(gzipSync(big));
+    gz[gz.length - 5] ^= 0xff; // a broken trailer CRC: found only at the end
+    const g = await unpackFile({ name: 'x.zip', bytes: buildZip([{ name: 'a.xml.gz', data: gz, method: 0 }, { name: 'b.xml.gz', data: gz.slice(), method: 0 }, { name: 'c.xml', data: 'ok' }]) },
+      { maxTotalBytes: 10 * 1024 * 1024 });
+    // The first paid its 8 MB of 10, the second stopped at the 2 MB left, and nothing is left for c.xml.
+    assert.deepEqual(g.problems.map((p) => p.code), ['corrupt', 'too-large', 'too-large']);
+    assert.deepEqual(g.files, []);
+  });
+
+  test('maxEntries holds for the dropped file, the archives inside it included', async () => {
+    const inner = buildZip(Array.from({ length: 4 }, (_, i) => ({ name: `r${i}.xml`, data: `<feedback>${i}</feedback>` })));
+    const outer = buildZip(Array.from({ length: 3 }, (_, i) => ({ name: `z${i}.zip`, data: inner, method: 0 })));
+    const r = await unpackFile({ name: 'outer.zip', bytes: outer }, { maxEntries: 9 });
+    // 3 outer entries, then 4 + 2 inner ones: the third inner archive gets none.
+    assert.equal(r.files.length, 6);
+    assert.deepEqual(r.problems.map((p) => [p.path, p.code, p.detail]), [['outer.zip › z1.zip', 'too-many', '4 > 2'], ['outer.zip › z2.zip', 'too-many', '4 > 0']]);
+    assert.equal(ZIP_LIMITS.maxEntries, 2000);
   });
 
   test('a damaged archive is one problem; an abort rejects', async () => {

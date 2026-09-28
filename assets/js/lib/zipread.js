@@ -12,43 +12,51 @@
  * - {@link unpackFile}: a dropped file → the plain files inside it, a zip holding `.xml.gz`
  *   files included (one level of nesting), with a reason for every part that could not be read.
  *
- * Bounded, so a hostile archive cannot hang or fill the tab: at most {@link ZIP_LIMITS}`.maxEntryBytes`
- * out of one entry or gzip stream (decompression stops as soon as it passes the cap), at most
- * `maxTotalBytes` out of one dropped file and `maxEntries` entries per archive. Not supported,
- * and named, never guessed: encrypted entries, compression other than stored / deflate (deflate64,
- * bzip2, LZMA, zstd …) and archives split over several disks.
+ * Bounded, so a hostile archive cannot hang or fill the tab: an entry inflates no further than the
+ * size the directory declares for it (a longer stream is corrupt at the first byte past it), at
+ * most {@link ZIP_LIMITS}`.maxEntryBytes` out of one entry or gzip stream, at most `maxTotalBytes`
+ * inflated for one dropped file — every byte counts, whether its part then unpacks or fails — and
+ * `maxEntries` entries in it, the archives inside included. Entries whose bytes overlap (the
+ * trick of a small zip that unpacks to terabytes) are refused. Not supported, and named, never
+ * guessed: encrypted entries, compression other than stored / deflate (deflate64, bzip2, LZMA,
+ * zstd …) and archives split over several disks.
  */
 
 import { throwIfAborted } from './util.js';
 
 /** Reasons a part of a file could not be read (`ZipError.code`, the view's `rpt.zip.<code>`). */
 export const ZIP_ERRORS = Object.freeze([
-  'not-zip', 'truncated', 'multi-disk', 'encrypted', 'method', 'crc', 'too-large', 'too-many', 'corrupt', 'nested', 'unsupported'
+  'not-zip', 'truncated', 'multi-disk', 'encrypted', 'method', 'crc', 'too-large', 'too-many', 'corrupt', 'overlap', 'nested', 'unsupported'
 ]);
 
 /** Default bounds of one {@link unpackFile} call. */
 export const ZIP_LIMITS = Object.freeze({
   /** Most bytes out of one zip entry or gzip stream. */
   maxEntryBytes: 32 * 1024 * 1024,
-  /** Most bytes out of one dropped file, every entry together. */
+  /** Most bytes inflated for one dropped file, every entry together, those that fail included. */
   maxTotalBytes: 128 * 1024 * 1024,
-  /** Most entries read from one archive. */
-  maxEntries: 1000,
+  /** Most entries read from one dropped file, the archives inside it included. */
+  maxEntries: 2000,
   /** Containers inside containers: a zip of `.xml.gz` files is depth 2. */
   maxDepth: 2
 });
 
-/** A part of a file that could not be read. `code` is one of {@link ZIP_ERRORS}. */
+/**
+ * A part of a file that could not be read. `code` is one of {@link ZIP_ERRORS}; `inflated`, the
+ * bytes decompressed before it failed (what it cost: {@link unpackFile} charges them).
+ */
 export class ZipError extends Error {
   /**
    * @param {string} code
    * @param {string} [detail]
+   * @param {number} [inflated]
    */
-  constructor(code, detail = '') {
+  constructor(code, detail = '', inflated = 0) {
     super(detail ? `${code}: ${detail}` : code);
     this.name = 'ZipError';
     this.code = code;
     this.detail = String(detail || '');
+    this.inflated = inflated;
   }
 }
 
@@ -244,27 +252,50 @@ export function readZipDirectory(input, { maxEntries = ZIP_LIMITS.maxEntries } =
 }
 
 /**
- * One entry's uncompressed bytes, checked against its size and CRC-32.
+ * Where an entry's bytes lie in the archive, from its local header to the end of its data.
+ * @param {Uint8Array} bytes the whole archive
+ * @param {ZipEntry} entry
+ * @returns {{ start: number, data: number, end: number }} `data`: where its (compressed) data starts
+ * @throws {ZipError} truncated
+ */
+function entrySpan(bytes, entry) {
+  const at = entry.localOffset;
+  if (at + 30 > bytes.length || (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)) >>> 0 !== SIG_LOCAL) {
+    throw new ZipError('truncated', 'local header');
+  }
+  const data = at + 30 + (bytes[at + 26] | (bytes[at + 27] << 8)) + (bytes[at + 28] | (bytes[at + 29] << 8));
+  if (data + entry.compressedSize > bytes.length) throw new ZipError('truncated', 'entry data');
+  return { start: at, data, end: data + entry.compressedSize };
+}
+
+/**
+ * One entry's uncompressed bytes, checked against its size and CRC-32. A deflate stream is cut at
+ * the size the directory declares: one byte more is `corrupt`, found without inflating the rest.
  * @param {Uint8Array|ArrayBuffer} input the whole archive
  * @param {ZipEntry} entry from {@link readZipDirectory}
  * @param {{ maxBytes?: number, signal?: AbortSignal }} [opts]
  * @returns {Promise<Uint8Array>}
- * @throws {ZipError} encrypted, method, too-large, truncated, corrupt, crc
+ * @throws {ZipError} encrypted, method, too-large, truncated, corrupt, crc (with `inflated`: what was decompressed)
  */
 export async function extractZipEntry(input, entry, { maxBytes = ZIP_LIMITS.maxEntryBytes, signal } = {}) {
   const bytes = toBytes(input);
   if (entry.encrypted) throw new ZipError('encrypted');
   if (entry.method !== 0 && entry.method !== 8) throw new ZipError('method', METHOD_NAMES[entry.method] || `method ${entry.method}`);
   if (entry.size > maxBytes) throw new ZipError('too-large', String(entry.size));
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const at = entry.localOffset;
-  if (at + 30 > bytes.length || view.getUint32(at, true) !== SIG_LOCAL) throw new ZipError('truncated', 'local header');
-  const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
-  if (start + entry.compressedSize > bytes.length) throw new ZipError('truncated', 'entry data');
-  const data = bytes.subarray(start, start + entry.compressedSize);
-  const out = entry.method === 0 ? data : await inflate(data, 'deflate-raw', { maxBytes, signal });
-  if (out.length !== entry.size) throw new ZipError('corrupt', `size ${out.length} ≠ ${entry.size}`);
-  if (crc32(out) !== entry.crc) throw new ZipError('crc');
+  const span = entrySpan(bytes, entry);
+  const data = bytes.subarray(span.data, span.end);
+  let out = data;
+  if (entry.method === 8) {
+    try {
+      out = await inflate(data, 'deflate-raw', { maxBytes: entry.size, signal });
+    } catch (err) {
+      // Past the declared size: the entry lies about it (or the stream is another one's).
+      if (err instanceof ZipError && err.code === 'too-large') throw new ZipError('corrupt', `longer than its size ${entry.size}`, err.inflated);
+      throw err;
+    }
+  }
+  if (out.length !== entry.size) throw new ZipError('corrupt', `size ${out.length} ≠ ${entry.size}`, entry.method === 8 ? out.length : 0);
+  if (crc32(out) !== entry.crc) throw new ZipError('crc', '', entry.method === 8 ? out.length : 0);
   return out;
 }
 
@@ -279,7 +310,8 @@ export async function extractZipEntry(input, entry, { maxBytes = ZIP_LIMITS.maxE
  * @param {'gzip'|'deflate-raw'|'deflate'} format
  * @param {{ maxBytes?: number, signal?: AbortSignal, DecompressionStreamImpl?: Function }} [opts]
  * @returns {Promise<Uint8Array>}
- * @throws {ZipError} unsupported (no DecompressionStream), too-large, corrupt; an AbortError from `signal`
+ * @throws {ZipError} unsupported (no DecompressionStream), too-large, corrupt (with `inflated`: the bytes out so
+ *   far); an AbortError from `signal`
  */
 export async function inflate(input, format, { maxBytes = ZIP_LIMITS.maxEntryBytes, signal, DecompressionStreamImpl = globalThis.DecompressionStream } = {}) {
   const bytes = toBytes(input);
@@ -294,6 +326,11 @@ export async function inflate(input, format, { maxBytes = ZIP_LIMITS.maxEntryByt
   const reader = stream.getReader();
   const chunks = [];
   let total = 0;
+  // An abort cancels the stream at once, even while a read waits on it (the read then ends empty).
+  const onAbort = () => {
+    reader.cancel().catch(() => {});
+  };
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
   try {
     for (;;) {
       throwIfAborted(signal);
@@ -301,16 +338,20 @@ export async function inflate(input, format, { maxBytes = ZIP_LIMITS.maxEntryByt
       try {
         step = await reader.read();
       } catch (err) {
-        throw new ZipError('corrupt', err && err.message ? err.message : String(err));
+        throwIfAborted(signal);
+        throw new ZipError('corrupt', err && err.message ? err.message : String(err), total);
       }
+      throwIfAborted(signal);
       if (step.done) break;
       total += step.value.length;
-      if (total > maxBytes) throw new ZipError('too-large', `over ${maxBytes}`);
+      if (total > maxBytes) throw new ZipError('too-large', `over ${maxBytes}`, total);
       chunks.push(step.value);
     }
   } catch (err) {
     reader.cancel().catch(() => {});
     throw err;
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
   }
   if (chunks.length === 1) return chunks[0];
   const out = new Uint8Array(total);
@@ -360,27 +401,59 @@ const baseName = (p) => String(p).split('/').filter(Boolean).pop() || String(p);
 const ungz = (name) => (/\.(?:gz|gzip)$/i.test(name) ? name.replace(/\.(?:gz|gzip)$/i, '') : name);
 
 /**
+ * The entries whose bytes (local header and data) share a byte with another entry's. A zip
+ * writer never makes one; a zip bomb points many entries at one stream.
+ * @param {Uint8Array} bytes
+ * @param {ZipEntry[]} entries
+ * @returns {Set<ZipEntry>}
+ */
+function overlapping(bytes, entries) {
+  const spans = [];
+  for (const entry of entries) {
+    try {
+      spans.push({ entry, ...entrySpan(bytes, entry) });
+    } catch {
+      // cut short: extracting it says so
+    }
+  }
+  spans.sort((a, b) => a.start - b.start || a.end - b.end);
+  const out = new Set();
+  let reach = null;
+  for (const s of spans) {
+    if (reach && s.start < reach.end) {
+      out.add(s.entry);
+      out.add(reach.entry);
+    }
+    if (!reach || s.end > reach.end) reach = s;
+  }
+  return out;
+}
+
+/**
  * Every plain file inside a dropped file: itself when it is no container, the content of a gzip
  * file, the entries of a zip archive (directories and the `__MACOSX/` resource forks macOS adds
  * are skipped), and one more level inside those (a zip of `.xml.gz` files). What cannot be read
- * is listed with its reason and never stops the rest.
+ * is listed with its reason and never stops the rest. The bounds ({@link ZIP_LIMITS}) hold for
+ * the dropped file as a whole: every byte inflated is charged, also for a part that then fails
+ * (a CRC or a size that lies), and every entry counts, the nested archives' included.
  * @param {{ name: string, bytes: Uint8Array|ArrayBuffer }} file
  * @param {{ maxEntryBytes?: number, maxTotalBytes?: number, maxEntries?: number, maxDepth?: number, signal?: AbortSignal }} [opts]
  * @returns {Promise<{ files: UnpackedFile[], problems: UnpackProblem[] }>} rejects only with an AbortError
  */
 export async function unpackFile(file, opts = {}) {
-  const limits = { ...ZIP_LIMITS, ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => k in ZIP_LIMITS && Number.isFinite(v))) };
+  const limits = { ...ZIP_LIMITS, ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => Object.hasOwn(ZIP_LIMITS, k) && Number.isFinite(v))) };
   const { signal } = opts;
   const out = { files: [], problems: [] };
   let budget = limits.maxTotalBytes;
+  let entriesLeft = limits.maxEntries;
+  const spend = (n) => {
+    budget -= Math.min(budget, Math.max(0, Number(n) || 0));
+  };
   const fail = (path, err) => {
     if (err && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err;
+    if (err instanceof ZipError) spend(err.inflated);
     const code = err instanceof ZipError ? err.code : 'corrupt';
     out.problems.push({ path, code, detail: err instanceof ZipError ? err.detail : String((err && err.message) || err) });
-  };
-  const take = (n) => {
-    if (n > budget) throw new ZipError('too-large', 'the file as a whole');
-    budget -= n;
   };
 
   async function visit(name, path, bytes, via) {
@@ -397,34 +470,40 @@ export async function unpackFile(file, opts = {}) {
     if (kind === 'gzip') {
       let inner;
       try {
+        if (!budget) throw new ZipError('too-large', 'the file as a whole');
         inner = await gunzip(bytes, { maxBytes: Math.min(limits.maxEntryBytes, budget), signal });
-        take(inner.length);
       } catch (err) {
         fail(path, err);
         return;
       }
+      spend(inner.length);
       await visit(ungz(name), path, inner, [...via, 'gzip']);
       return;
     }
     let dir;
     try {
-      dir = readZipDirectory(bytes, { maxEntries: limits.maxEntries });
+      dir = readZipDirectory(bytes, { maxEntries: entriesLeft });
     } catch (err) {
       fail(path, err);
       return;
     }
-    if (dir.total > dir.entries.length) out.problems.push({ path, code: 'too-many', detail: `${dir.total} > ${limits.maxEntries}` });
-    for (const entry of dir.entries) {
-      if (entry.directory || /(^|\/)__MACOSX\//.test(entry.name) || /(^|\/)\.DS_Store$/.test(entry.name)) continue;
+    if (dir.total > dir.entries.length) out.problems.push({ path, code: 'too-many', detail: `${dir.total} > ${entriesLeft}` });
+    entriesLeft -= dir.entries.length;
+    const wanted = dir.entries.filter((e) => !e.directory && !/(^|\/)__MACOSX\//.test(e.name) && !/(^|\/)\.DS_Store$/.test(e.name));
+    const overlaps = overlapping(bytes, wanted);
+    for (const entry of wanted) {
       const entryPath = `${path} › ${entry.name}`;
       let data;
       try {
-        data = await extractZipEntry(bytes, entry, { maxBytes: Math.min(limits.maxEntryBytes, budget), signal });
-        take(data.length);
+        if (overlaps.has(entry)) throw new ZipError('overlap');
+        // Stored or inflated, an entry costs its size; the cap stops a lying one at the budget too.
+        if (entry.size > budget) throw new ZipError('too-large', 'the file as a whole');
+        data = await extractZipEntry(bytes, entry, { maxBytes: limits.maxEntryBytes, signal });
       } catch (err) {
         fail(entryPath, err);
         continue;
       }
+      spend(data.length);
       await visit(baseName(entry.name), entryPath, data, [...via, 'zip']);
     }
   }

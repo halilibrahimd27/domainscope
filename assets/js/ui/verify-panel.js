@@ -203,6 +203,8 @@ registerStrings('en', {
   'vfy.warn.mixed.title': 'The probes did not get the same result; the row shows the worst one.',
   'vfy.warn.origin-ca': 'Cloudflare Origin CA',
   'vfy.warn.origin-ca.title': 'Only Cloudflare trusts this certificate. Keep it while the name stays proxied, or install the new public certificate.',
+  'vfy.warn.other-set': 'Another set',
+  'vfy.warn.other-set.title': 'A new certificate of another loaded set covers this name here, not the set planned for it. Nothing old is served; install the planned set when convenient.',
 
   'vfy.exp.exposed': 'Origin open to the internet',
   'vfy.exp.exposed.title': '{name} is behind {provider}, but this server answers for it directly, so the proxy can be bypassed.',
@@ -409,6 +411,8 @@ registerStrings('tr', {
   'vfy.warn.mixed.title': 'Ölçüm noktaları aynı sonucu almadı; satırda en kötüsü gösteriliyor.',
   'vfy.warn.origin-ca': 'Cloudflare Origin CA',
   'vfy.warn.origin-ca.title': 'Bu sertifikaya yalnızca Cloudflare güvenir. Ad proxy arkasında kaldıkça tutabilirsiniz ya da yeni genel sertifikayı kurun.',
+  'vfy.warn.other-set': 'Başka set',
+  'vfy.warn.other-set.title': 'Bu adı burada planlanan set değil, yüklediğiniz başka bir setin yeni sertifikası kapsıyor. Eski sertifika sunulmuyor; planlanan seti uygun bir zamanda kurun.',
 
   'vfy.exp.exposed': 'Asıl sunucu internete açık',
   'vfy.exp.exposed.title': '{name}, {provider} arkasında ama bu sunucu ona doğrudan yanıt veriyor; proxy atlanabilir.',
@@ -507,7 +511,8 @@ const WARN_STYLE = Object.freeze({
   'same-key': ['info', 'key'],
   'http-421': ['warn', 'alert'],
   mixed: ['info', 'help'],
-  'origin-ca': ['info', 'cloud']
+  'origin-ca': ['info', 'cloud'],
+  'other-set': ['info', 'layers']
 });
 const EXP_STYLE = Object.freeze({
   exposed: ['warn', 'unlock'],

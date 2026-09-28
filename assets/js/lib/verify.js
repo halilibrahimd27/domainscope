@@ -55,9 +55,12 @@ export const VERIFY_REASONS = Object.freeze(['new-cert', 'old-cert', 'no-new-cer
 /** `row.error.code` of a row in state 'error' — never a server verdict. */
 export const VERIFY_ERRORS = Object.freeze(['dns', 'private', 'probe', 'offline', 'no-probes', 'validation', 'deadline',
   'server', 'network', 'bad-response', 'poll-rate', 'unknown']);
-/** Per-row warnings (`vfy.warn.<code>`). */
+/**
+ * Per-row warnings (`vfy.warn.<code>`). 'other-set' (several certificate sets, lib/certsets.js):
+ * the server serves a new certificate of another set than the one planned for the name.
+ */
 export const VERIFY_WARNINGS = Object.freeze(['chain-incomplete', 'expired', 'not-yet-valid', 'self-signed',
-  'untrusted-root', 'untrusted', 'name-mismatch', 'same-key', 'http-421', 'mixed', 'origin-ca']);
+  'untrusted-root', 'untrusted', 'name-mismatch', 'same-key', 'http-421', 'mixed', 'origin-ca', 'other-set']);
 /** Row life cycle. */
 export const VERIFY_STATES = Object.freeze(['skipped', 'pending', 'running', 'done', 'error', 'not-run']);
 /** Why a pair is listed but never sent. */
@@ -113,7 +116,9 @@ const DAY_MS = 86400000;
 
 /**
  * @typedef {{ sha256: string[], spkiHex: string[], hostnames: string[], subjectCN: string|null, notAfter: Date|null,
- *   kinds?: string[] }} Expectation  kinds: the {@link CERT_KINDS} of the new certificate(s)
+ *   kinds?: string[], setId?: string, others?: Array<{ setId: string, sha256: string[] }> }} Expectation
+ *   kinds: the {@link CERT_KINDS} of the new certificate(s); setId / others: a certificate set's
+ *   expectation ({@link setExpectations}) and the fingerprints of the renewal's other sets
  * @typedef {{ sha256: string, serialHex: string, subjectCN: string|null, dnsNames: string[], ipAddresses: string[],
  *   hostnames: string[], issuerCN: string|null, issuerO: string|null, notBefore: Date|null, notAfter: Date|null,
  *   keyType: string|null, keyBits: number|null, protocol: string|null, cipher: string|null, authorized: boolean,
@@ -123,13 +128,16 @@ const DAY_MS = 86400000;
  *   tls: object|null, publicKeyHex: string|null, rawOutput: string|null }} TrimmedTest
  * @typedef {{ status: string|null, reason: string|null, error: string|null, served: ServedCert|null,
  *   coveredBy: string|null, sameKey: boolean|null, warnings: string[], httpStatus: number|null,
- *   tlsError: string|null, alert: number|null, detail: string|null, probe: object, resolvedAddress: string|null }} ProbeVerdict
+ *   tlsError: string|null, alert: number|null, detail: string|null, probe: object, resolvedAddress: string|null,
+ *   matchedSet?: string|null }} ProbeVerdict  matchedSet: only with a set's expectation — the set whose
+ *   certificate is served (null when none is)
  * @typedef {ProbeVerdict & { agreement: 'all'|'mixed', probes: ProbeVerdict[] }} Verdict
  * @typedef {{ key: string, ip: string, port: number, name: string, server: { id: string, name: string }|null,
  *   alsoServers: Array<{ id: string, name: string }>, via: 'dns'|'zone'|'hint', proxied: boolean,
  *   provider: string|null, needsCert: boolean, newCertCovers: boolean|null, skip: string|null,
- *   cliTargets: string[]|null }} VerifyPair `cliTargets`: the CLI `-t` tokens of the address when an
- *   inventory server wrote it with its own port (`['10.0.0.13:8443']`), else null; see {@link cliPlan}.
+ *   cliTargets: string[]|null, setId?: string|null }} VerifyPair `cliTargets`: the CLI `-t` tokens of the
+ *   address when an inventory server wrote it with its own port (`['10.0.0.13:8443']`), else null; see
+ *   {@link cliPlan}. `setId`: only with several certificate sets — the set planned for the name.
  * @typedef {VerifyPair & { state: string, notRun: string|null, verdict: Verdict|null, status: string|null,
  *   reason: string|null, warnings: string[], exposure: string|null, served: ServedCert|null, httpStatus: number|null,
  *   tests: TrimmedTest[], measurementId: string|null, measurementDone: boolean, measurementAt: number|null,
@@ -396,6 +404,27 @@ export async function expectationFor(certs, { subtle } = {}) {
   };
 }
 
+/**
+ * One {@link Expectation} per certificate set of a renewal (lib/certsets.js): the set's own
+ * certificates (a served certificate matching any of them is UPDATED for a name planned for that
+ * set), plus `setId` and the fingerprints of every other set (`others`), so a new certificate of
+ * another set is recognised too ({@link classifyTest}: UPDATED with the 'other-set' warning).
+ * @param {Array<{ id: string, certs: object[] }>} sets
+ * @param {{ subtle?: SubtleCrypto|null }} [opts] forwarded to computeFingerprints
+ * @returns {Promise<Map<string, Expectation>>} set id → expectation
+ */
+export async function setExpectations(sets, { subtle } = {}) {
+  const list = (Array.isArray(sets) ? sets : []).filter((s) => s && s.id && Array.isArray(s.certs) && s.certs.length);
+  const opts = subtle === undefined ? {} : { subtle };
+  const own = await Promise.all(list.map((s) => expectationFor(s.certs, opts)));
+  const out = new Map();
+  list.forEach((s, i) => {
+    const others = list.map((o, j) => (j === i ? null : { setId: String(o.id), sha256: [...own[j].sha256] })).filter(Boolean);
+    out.set(String(s.id), { ...own[i], setId: String(s.id), others });
+  });
+  return out;
+}
+
 /* Certificate kinds: the CLI's ORIGIN_CERT / PRIVATE_CERT */
 
 // The Cloudflare Origin CA roots (developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem and
@@ -521,8 +550,13 @@ export function classifyTest(test, { name, expect = null, now = Date.now() } = {
       v.sameKey = !!pk && pk.length >= 64
         && (Array.isArray(expect.spkiHex) ? expect.spkiHex : []).some((s) => hexKey(s).endsWith(pk));
     }
+    // A certificate set's expectation (setExpectations): which set's certificate is served.
+    const withSets = !!expect && typeof expect.setId === 'string';
+    const other = withSets && cov.covered && !sha.includes(served.sha256)
+      ? (Array.isArray(expect.others) ? expect.others : []).find((o) => (o.sha256 || []).some((x) => hexKey(x) === served.sha256)) : null;
+    if (withSets) v.matchedSet = sha.includes(served.sha256) ? expect.setId : other ? String(other.setId) : null;
     if (!cov.covered) [v.status, v.reason] = ['NOT_HOSTED', 'not-covered'];
-    else if (expect && sha.includes(served.sha256)) [v.status, v.reason] = ['UPDATED', 'new-cert'];
+    else if ((expect && sha.includes(served.sha256)) || other) [v.status, v.reason] = ['UPDATED', 'new-cert'];
     else {
       v.status = hostedStatus(served, expect);
       v.reason = v.status === 'ORIGIN_CERT' ? 'origin-ca' : v.status === 'PRIVATE_CERT' ? 'self-signed'
@@ -530,6 +564,7 @@ export function classifyTest(test, { name, expect = null, now = Date.now() } = {
     }
     const w = certWarnings(served, { covered: cov.covered, statusCode: t.statusCode, nowTime: nowMs(now) });
     if (v.status === 'NEEDS_UPDATE' && v.sameKey) w.add('same-key');
+    if (other) w.add('other-set');
     v.warnings = orderWarnings(w);
     return v;
   }
@@ -840,10 +875,11 @@ function skipReason(ip, name, port) {
  * carries the CLI targets for it in `cliTargets` (inventory.addressTargets), so
  * the CLI card scans it where the CLI reading the inventory would.
  * @param {object} result ScanResult
- * @param {{ port?: number }} [opts]
+ * @param {{ port?: number, setOf?: ((name: string) => string|null)|null }} [opts] `setOf` (several
+ *   certificate sets, lib/certsets.js setOfName): every pair gets the `setId` planned for its name
  * @returns {{ pairs: VerifyPair[], stats: object }}
  */
-export function buildVerifyPairs(result, { port = VERIFY_PORT } = {}) {
+export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = {}) {
   const r = result && typeof result === 'object' ? result : {};
   const hostList = Array.isArray(r.hosts) ? r.hosts : [];
   const byName = new Map(hostList.map((x) => [x.name, x]));
@@ -867,13 +903,15 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT } = {}) {
     const ip = normalizeIP(rawIp) ?? String(rawIp);
     const cls = host?.classification ?? {};
     const targets = inventoryServer ? addressTargets(inventoryServer, ip) : [];
-    return {
+    const pair = {
       key: `${ip}|${port}|${name}`, ip, port, name, server, alsoServers: [], via,
       proxied: !!cls.hidesOrigin, provider: cls.provider?.name ?? null,
       needsCert: !!needsCert, newCertCovers: covered === true ? true : covered === false ? false : null,
       skip: skipReason(ip, name, port),
       cliTargets: targets.length && (targets.length > 1 || targets[0] !== ip) ? targets : null
     };
+    if (typeof setOf === 'function') pair.setId = setOf(name) ?? null;
+    return pair;
   };
 
   for (const g of Array.isArray(r.servers) ? r.servers : []) {
@@ -1051,6 +1089,9 @@ const mapErrorCode = (code) => (VERIFY_ERRORS.includes(code) ? code : 'unknown')
  * @param {object} opts
  * @param {object} opts.client createGlobalping() instance (create, poll, quota)
  * @param {Expectation|null} opts.expect
+ * @param {((row: VerifyRow) => Expectation|null)|null} [opts.expectFor] the expectation of one row
+ *   (several certificate sets: the one of the row's `setId`, {@link setExpectations}); a null answer
+ *   falls back to `expect`
  * @param {AbortSignal} [opts.signal]
  * @param {number} [opts.concurrency=4]
  * @param {number} [opts.timeoutS=10]
@@ -1064,7 +1105,7 @@ const mapErrorCode = (code) => (VERIFY_ERRORS.includes(code) ? code : 'unknown')
  * @returns {Promise<{ spent: number, retries: number, stoppedBy: null|'quota'|'budget'|'abort'|'unreachable' }>}
  */
 export async function runVerify(rows, {
-  client, expect = null, signal = null, concurrency = VERIFY_CONCURRENCY, timeoutS = VERIFY_TIMEOUT_S,
+  client, expect = null, expectFor = null, signal = null, concurrency = VERIFY_CONCURRENCY, timeoutS = VERIFY_TIMEOUT_S,
   probesPerCheck = 1, locationsFor = null, maxProbes = Infinity, maxRetries = VERIFY_MAX_RETRIES,
   onRow = () => {}, onQuota = () => {}, now = () => Date.now()
 } = {}) {
@@ -1178,7 +1219,8 @@ export async function runVerify(rows, {
       }
       row.measurementDone = true;
       const results = Array.isArray(measurement?.results) ? measurement.results : [];
-      const verdicts = results.map((t) => classifyTest(t, { name: row.name, expect, now: now() }));
+      const rowExpect = (typeof expectFor === 'function' ? expectFor(row) : null) ?? expect;
+      const verdicts = results.map((t) => classifyTest(t, { name: row.name, expect: rowExpect, now: now() }));
       if (!verdicts.length || verdicts.every((v) => !v.status && PROBE_FAULTS.has(v.error))) {
         if (retries < maxRetries) {
           retries += 1;
@@ -1563,7 +1605,16 @@ export const VERIFY_CSV_COLUMNS = Object.freeze([
 ].map((key) => Object.freeze({ key, header: key })));
 
 /**
- * Flat CSV rows (keys = {@link VERIFY_CSV_COLUMNS}). `status` is CLI
+ * Columns a renewal of several certificate sets adds after {@link VERIFY_CSV_COLUMNS}: the set
+ * planned for the name and the set whose certificate is served ({@link verifyExportRows} fills
+ * them for rows with a `setId`).
+ * @type {ReadonlyArray<{ key: string, header: string }>}
+ */
+export const VERIFY_SET_COLUMNS = Object.freeze(['set', 'served_set'].map((key) => Object.freeze({ key, header: key })));
+
+/**
+ * Flat CSV rows (keys = {@link VERIFY_CSV_COLUMNS}, plus {@link VERIFY_SET_COLUMNS} for rows of a
+ * renewal with several certificate sets). `status` is CLI
  * vocabulary only: empty for rows without a verdict (skipped, never checked,
  * error, not-run); `state` explains those. A stale row (re-check pending,
  * failed or not run) keeps its last verdict and says `stale: yes`.
@@ -1605,7 +1656,8 @@ export function verifyExportRows(rows, { now = Date.now() } = {}) {
       http_status: Number.isFinite(r.httpStatus) ? r.httpStatus : '',
       vantage: probesOf(r).map(vantageText).filter(Boolean).join('; '),
       measurement_id: r.measurementId ?? '',
-      checked_at: isoOrNull(r.checkedAt) ?? ''
+      checked_at: isoOrNull(r.checkedAt) ?? '',
+      ...('setId' in r ? { set: r.setId ?? '', served_set: (hasVerdict(r) && r.verdict.matchedSet) || '' } : {})
     };
   });
 }
@@ -1624,11 +1676,14 @@ function vantageOf(p) {
  * `_row_dict` keys in CLI order (`newCertCovers` a boolean or null, as the
  * CLI), then the web extras. Never contains a public key, headers, raw output
  * beyond the 300-char `error`, or DER.
+ * With several certificate sets (`sets`, from {@link setExpectations}), `certificateSets` lists
+ * each set's fingerprints and names, and each row with a `setId` carries `set` and `servedSet`.
  * @param {VerifyRow[]} rows
- * @param {{ expect?: Expectation|null, summary?: object|null, app?: string, version?: string|null, now?: Date|number }} [opts]
+ * @param {{ expect?: Expectation|null, summary?: object|null, app?: string, version?: string|null, now?: Date|number,
+ *   sets?: Map<string, Expectation>|null }} [opts]
  * @returns {object}
  */
-export function verifyExportJson(rows, { expect = null, summary = null, app = 'DomainScope', version = null, now = new Date() } = {}) {
+export function verifyExportJson(rows, { expect = null, summary = null, app = 'DomainScope', version = null, now = new Date(), sets = null } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const time = nowMs(now);
   const sum = summary ?? summarizeVerify(list);
@@ -1642,6 +1697,11 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
       sha256: [...(expect.sha256 || [])], subjectCN: expect.subjectCN ?? null,
       notAfter: isoOrNull(expect.notAfter), hostnames: [...(expect.hostnames || [])], kinds: [...(expect.kinds || [])]
     } : null,
+    ...(sets instanceof Map && sets.size ? {
+      certificateSets: [...sets.values()].map((x) => ({
+        id: x.setId, sha256: [...(x.sha256 || [])], hostnames: [...(x.hostnames || [])], notAfter: isoOrNull(x.notAfter), kinds: [...(x.kinds || [])]
+      }))
+    } : {}),
     summary: {
       servers: {
         total: s.total ?? 0, checked: s.checked ?? 0, live: s.live ?? 0, old: s.old ?? 0, other: s.other ?? 0,
@@ -1688,7 +1748,8 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
         alsoServers: (r.alsoServers || []).map((x) => x.name),
         vantage: probesOf(r).map(vantageOf).filter(Boolean),
         measurementId: r.measurementId ?? null,
-        checkedAt: isoOrNull(r.checkedAt)
+        checkedAt: isoOrNull(r.checkedAt),
+        ...('setId' in r ? { set: r.setId ?? null, servedSet: (hasVerdict(r) && r.verdict.matchedSet) || null } : {})
       };
     })
   };

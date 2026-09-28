@@ -110,7 +110,8 @@ describe('vocabularies', () => {
     assert.ok(V.NOT_RUN_REASONS.includes('optional'));
     assert.ok(V.EXPOSURES.includes('no-answer'));
     assert.ok(V.HEADLINE_KEYS.includes('incomplete'));
-    assert.equal(V.VERIFY_WARNINGS.length, 11);
+    assert.equal(V.VERIFY_WARNINGS.length, 12);
+    assert.equal(V.VERIFY_WARNINGS.at(-1), 'other-set');
   });
 });
 
@@ -1872,5 +1873,108 @@ describe('expectationFor', () => {
   test('real_github.pem is the m01 certificate: same-key suffix matches', () => {
     const pk = V.hexKey(tlsOf('m01-github-valid').publicKey);
     assert.ok(NEW_GH.spkiHex[0].endsWith(pk));
+  });
+});
+
+/* ---- several certificate sets (renewal week, lib/certsets.js) ------------------------ */
+
+describe('several certificate sets', () => {
+  // renew_a_*: an RSA + ECDSA pair for example.com and *.example.com (set A); renew_b_rsa:
+  // shop.example.com and pay.example.com (set B, whose exact names win over A's wildcard).
+  const RSA_A = leafOf('renew_a_rsa.pem');
+  const EC_A = leafOf('renew_a_ecdsa.pem');
+  const RSA_B = leafOf('renew_b_rsa.pem');
+  const colon = (hex) => hex.toUpperCase().match(/../g).join(':');
+  const fpOf = async (cert) => (await V.expectationFor(cert)).sha256[0];
+  /** A probe test serving `cert` (its fingerprint and names, as Globalping reports them). */
+  const serving = async (cert) => withTls(synthTls({
+    subject: { CN: cert.subjectCN, alt: cert.dnsNames.map((n) => `DNS:${n}`).join(', ') },
+    fingerprint256: colon(await fpOf(cert)), keyType: cert.keyAlgorithm === 'RSA' ? 'RSA' : 'EC'
+  }));
+  const oldShop = () => withTls(synthTls({ subject: { CN: 'shop.example.com', alt: 'DNS:shop.example.com' } }));
+  const SETS = [{ id: 'A', certs: [RSA_A, EC_A] }, { id: 'B', certs: [RSA_B] }];
+
+  test('setExpectations: one expectation per set, with the other sets\' fingerprints', async () => {
+    const m = await V.setExpectations([...SETS, { id: 'C', certs: [] }, null]);
+    assert.deepEqual([...m.keys()], ['A', 'B']);
+    const [fpRsaA, fpEcA, fpB] = await Promise.all([RSA_A, EC_A, RSA_B].map(fpOf));
+    assert.deepEqual(m.get('A').sha256, [fpRsaA, fpEcA]);
+    assert.equal(m.get('A').setId, 'A');
+    assert.deepEqual(m.get('A').others, [{ setId: 'B', sha256: [fpB] }]);
+    assert.deepEqual(m.get('B').others, [{ setId: 'A', sha256: [fpRsaA, fpEcA] }]);
+    assert.deepEqual(m.get('B').hostnames.slice().sort(), ['pay.example.com', 'shop.example.com']);
+    assert.deepEqual(m.get('A').kinds, ['other']);
+    assert.equal((await V.setExpectations(null)).size, 0);
+  });
+
+  test('classifyTest: either certificate of the planned set is UPDATED, another set\'s new one too (other-set), an old one NEEDS_UPDATE', async () => {
+    const m = await V.setExpectations(SETS);
+    const at = (test, name, set) => V.classifyTest(test, { name, expect: m.get(set), now: NOW });
+    const twin = at(await serving(EC_A), 'www.example.com', 'A');
+    assert.deepEqual([twin.status, twin.reason, twin.matchedSet, twin.warnings], ['UPDATED', 'new-cert', 'A', []]);
+    const planned = at(await serving(RSA_B), 'shop.example.com', 'B');
+    assert.deepEqual([planned.status, planned.matchedSet, planned.warnings], ['UPDATED', 'B', []]);
+    const other = at(await serving(EC_A), 'shop.example.com', 'B');
+    assert.deepEqual([other.status, other.reason, other.matchedSet, other.warnings], ['UPDATED', 'new-cert', 'A', ['other-set']]);
+    const old = at(oldShop(), 'shop.example.com', 'B');
+    assert.deepEqual([old.status, old.reason, old.matchedSet], ['NEEDS_UPDATE', 'old-cert', null]);
+    // B's certificate does not cover www: not hosted, never "another set"
+    const wrong = at(await serving(RSA_B), 'www.example.com', 'A');
+    assert.deepEqual([wrong.status, wrong.matchedSet, wrong.warnings], ['NOT_HOSTED', null, []]);
+    // a plain expectation (one certificate, no sets) carries no matchedSet at all
+    assert.ok(!('matchedSet' in V.classifyTest(oldShop(), { name: 'shop.example.com', expect: NEW_AB, now: NOW })));
+  });
+
+  test('runVerify: expectFor gives each row the expectation of its set; null falls back to `expect`', async () => {
+    const m = await V.setExpectations(SETS);
+    const rows = [
+      row({ ip: '1.2.3.4', name: 'www.example.com', setId: 'A' }),
+      row({ ip: '1.2.3.4', name: 'shop.example.com', setId: 'B' }),
+      row({ ip: '5.6.7.8', name: 'pay.example.com', setId: 'B' }),
+      row({ ip: '5.6.7.9', name: 'shop.example.com', setId: null })
+    ];
+    const client = fakeClient({
+      '1.2.3.4|www.example.com': [{ tests: [await serving(EC_A)] }],
+      '1.2.3.4|shop.example.com': [{ tests: [await serving(EC_A)] }],
+      '5.6.7.8|pay.example.com': [{ tests: [oldShop()] }],
+      '5.6.7.9|shop.example.com': [{ tests: [await serving(RSA_B)] }]
+    });
+    await V.runVerify(rows, { client, expect: NEW_AB, expectFor: (r) => m.get(r.setId) ?? null, now: () => NOW });
+    assert.deepEqual(rows.map((r) => [r.name, r.status, r.verdict.matchedSet ?? '-', r.warnings.join()]), [
+      ['www.example.com', 'UPDATED', 'A', ''],
+      ['shop.example.com', 'UPDATED', 'A', 'other-set'],
+      ['pay.example.com', 'NOT_HOSTED', '-', ''],
+      ['shop.example.com', 'NEEDS_UPDATE', '-', '']
+    ]);
+  });
+
+  test('buildVerifyPairs: setOf gives every pair its planned set; without it the pairs are unchanged', () => {
+    const plain = V.buildVerifyPairs(scanResult());
+    assert.ok(plain.pairs.every((p) => !('setId' in p)));
+    const withSets = V.buildVerifyPairs(scanResult(), { setOf: (n) => (n === 'shop.example.com' ? 'B' : n.endsWith('.example.com') ? 'A' : null) });
+    assert.deepEqual(withSets.pairs.map((p) => p.setId), plain.pairs.map((p) => (p.name === 'shop.example.com' ? 'B' : 'A')));
+    assert.deepEqual(withSets.stats, plain.stats);
+    const rows = V.createVerifyRows(withSets.pairs);
+    assert.equal(rows.find((r) => r.name === 'shop.example.com').setId, 'B');
+  });
+
+  test('exports: set / served_set after the CLI columns, certificateSets in the JSON; a single certificate exports as before', async () => {
+    const m = await V.setExpectations(SETS);
+    const r = row({ ip: '1.2.3.4', name: 'shop.example.com', setId: 'B' });
+    settle([check(r, [await serving(EC_A)], m.get('B'))]);
+    const [flat] = V.verifyExportRows([r], { now: NOW });
+    assert.deepEqual([flat.set, flat.served_set, flat.warnings], ['B', 'A', 'other-set']);
+    const csv = toCsv(V.verifyExportRows([r], { now: NOW }), [...V.VERIFY_CSV_COLUMNS, ...V.VERIFY_SET_COLUMNS], { bom: false });
+    assert.match(csv.split('\r\n')[0], /,checked_at,set,served_set$/);
+    assert.match(csv.split('\r\n')[1], /,B,A$/);
+    const json = V.verifyExportJson([r], { expect: m.get('A'), sets: m, now: new Date(NOW) });
+    assert.deepEqual(json.certificateSets.map((x) => [x.id, x.sha256.length]), [['A', 2], ['B', 1]]);
+    assert.deepEqual([json.rows[0].set, json.rows[0].servedSet], ['B', 'A']);
+    // a plain row and a plain export keep their keys
+    const plain = row({ name: 'github.com' });
+    settle([done(plain, [V_UPDATED()])]);
+    assert.ok(!('set' in V.verifyExportRows([plain], { now: NOW })[0]));
+    const pj = V.verifyExportJson([plain], { expect: NEW_GH, now: new Date(NOW) });
+    assert.ok(!('certificateSets' in pj) && !('set' in pj.rows[0]));
   });
 });

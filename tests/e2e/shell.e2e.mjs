@@ -1780,7 +1780,7 @@ async function main() {
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
         ['Discover', ['subdomains', 'zone']], ['Certificates', ['scan', 'cert']], ['DNS tools', ['global', 'lookup', 'bulk']],
-        ['IP addresses', ['ip', 'ptr']], ['Mail & domain', ['health']], ['Workspace', ['inventory', 'about']]
+        ['IP addresses', ['ip', 'ptr']], ['Mail & domain', ['health']], ['Setup & info', ['inventory', 'about']]
       ], 'groups');
       assertEqual(menu.current, ['lookup'], 'current tool marked');
       assertEqual(menu.focused, 'lookup', 'focus starts on the current tool');

@@ -14,9 +14,13 @@
  *   a common name under another domain). A certificate only crt.sh reported therefore adds at
  *   most its common name, and one both sources reported is counted once (same validity, crt.sh's
  *   names a subset of Cert Spotter's).
- * A certificate with names under more than {@link SHARED_CERT_DOMAINS} registrable domains is a
- * shared one — a CDN's or a host's multi-customer certificate — and says nothing about ownership:
- * a domain seen only in such certificates is marked `sharedOnly` and listed after the others.
+ * A certificate with names under more than {@link SHARED_CERT_DOMAINS} registrable domains is
+ * taken for a shared one — usually a CDN's or a host's certificate for many customers, which says
+ * nothing about ownership — unless most of its other domains carry the label of a scanned domain
+ * (example.de, example.fr … on a certificate of example.com: one company's multi-brand
+ * certificate). A domain seen only in shared certificates is marked `sharedOnly` and listed after
+ * the others; the UI still offers to scan it, since a company's certificate for its many brands
+ * under other names looks the same.
  *
  * DOM-free, no I/O.
  */
@@ -24,7 +28,10 @@
 import { registrableDomain, isSubdomainOf, stripWildcard, sortHostnames } from './domain.js';
 import { matchProviderByCname } from './netinfo.js';
 
-/** More registrable domains than this in one certificate: a shared (multi-customer) certificate. */
+/**
+ * More registrable domains than this in one certificate: a shared (multi-customer) certificate,
+ * unless most of its other domains carry a scanned domain's label.
+ */
 export const SHARED_CERT_DOMAINS = 12;
 /** Host names kept per related domain (the rest are counted). */
 export const RELATED_NAME_CAP = 12;
@@ -43,7 +50,8 @@ export const RELATED_MAX = 200;
  * @property {string|null} url crt.sh page (by id, or by SHA-256 for a Cert Spotter issuance)
  * @property {string[]} ownNames names under the scanned domains it carries
  * @property {number} domains registrable domains it names (the scanned ones included)
- * @property {boolean} shared more than {@link SHARED_CERT_DOMAINS} of them
+ * @property {boolean} shared more than {@link SHARED_CERT_DOMAINS} of them, most of the others under
+ *   labels the scanned domains do not have
  * @property {boolean} partial only crt.sh reported it: its name list is not complete
  */
 
@@ -59,6 +67,9 @@ export const RELATED_MAX = 200;
  * @property {boolean} sharedOnly every certificate is a shared one
  * @property {string|null} platform a hosting / CDN platform's domain (lib/netinfo.js provider name), not a brand
  */
+
+/** The name of a registrable domain, its first label (`example` of example.co.uk), or null. */
+const labelOf = (reg) => (reg ? reg.split('.')[0] : null);
 
 /** A certificate's validity as a key: the same moments (or both unknown) give the same key. */
 const validityKey = (c) => `${c.notBefore instanceof Date ? c.notBefore.getTime() : ''}|${c.notAfter instanceof Date ? c.notAfter.getTime() : ''}`;
@@ -125,17 +136,23 @@ function certUrl(c) {
  * @returns {{ related: RelatedDomain[], more: number, certs: number, withOthers: number, partial: number,
  *   shared: number }} certs: certificates read; withOthers: those naming another registrable domain;
  *   partial: certificates only crt.sh reported (their other names may be missing); shared: shared ones
+ *   (more than {@link SHARED_CERT_DOMAINS} registrable domains, at most half of the others under a
+ *   scanned domain's label)
  */
 export function relatedDomains(certs, { domains = [], now = Date.now() } = {}) {
   const at = now instanceof Date ? now.getTime() : Number(now);
   const own = new Set();
+  const ownLabels = new Set();
   const scopes = [];
   for (const d of Array.isArray(domains) ? domains : []) {
     const base = stripWildcard(String(d || '').toLowerCase()).base;
     if (!base) continue;
     scopes.push(base);
     const reg = registrableDomain(base);
-    if (reg) own.add(reg);
+    if (reg) {
+      own.add(reg);
+      ownLabels.add(labelOf(reg));
+    }
   }
   // The same names come back in many certificates (every renewal): each is read once.
   const names = new Map();
@@ -169,7 +186,10 @@ export function relatedDomains(certs, { domains = [], now = Date.now() } = {}) {
     const foreign = [...regs.keys()].filter((r) => !own.has(r));
     if (!foreign.length) continue;
     withOthers += 1;
-    const isShared = regs.size > SHARED_CERT_DOMAINS;
+    // Many domains, most of them under other names: a CDN's or a host's certificate. Most of them
+    // under a scanned domain's name (example.de, example.fr …): one company's brands.
+    const brandTwins = foreign.filter((r) => ownLabels.has(labelOf(r))).length;
+    const isShared = regs.size > SHARED_CERT_DOMAINS && brandTwins * 2 <= foreign.length;
     if (isShared) shared += 1;
     const entry = {
       key: c.key,

@@ -115,7 +115,7 @@ describe('relatedDomains', () => {
     assert.deepEqual(relatedDomains(certs, { domains: [], now: NOW }).related, []);
   });
 
-  test(`a certificate of more than ${SHARED_CERT_DOMAINS} registrable domains is a shared one: its domains come last, flagged`, () => {
+  test(`a certificate of more than ${SHARED_CERT_DOMAINS} registrable domains under other names is a shared one: its domains come last, flagged`, () => {
     const crowd = Array.from({ length: SHARED_CERT_DOMAINS + 1 }, (_, i) => `customer${i + 1}.example`);
     const certs = [
       spotter(1, ['www.example.com', ...crowd]),
@@ -134,6 +134,29 @@ describe('relatedDomains', () => {
     const c5 = again.related.find((d) => d.domain === 'customer5.example');
     assert.equal(c5.sharedOnly, false);
     assert.equal(c5.certs, 2);
+  });
+
+  test('a company\'s certificate for its brands under other endings is never a shared one, however many they are', () => {
+    // example.com and 14 of its country-code twins: the multi-domain certificate the card is for
+    const twins = ['de', 'fr', 'it', 'es', 'nl', 'be', 'at', 'ch', 'se', 'dk', 'pl', 'pt', 'co.uk', 'com.tr'].map((tld) => `example.${tld}`);
+    assert.ok(twins.length + 1 > SHARED_CERT_DOMAINS, 'more registrable domains than a shared certificate has');
+    const brand = spotter(1, ['example.com', 'www.example.com', ...twins.flatMap((d) => [d, `www.${d}`])]);
+    const out = relatedDomains([brand], { domains: ['example.com'], now: NOW });
+    assert.equal(out.shared, 0);
+    assert.equal(out.related.length, twins.length);
+    assert.deepEqual(out.related.filter((d) => d.sharedOnly), [], 'every twin is a brand domain the card lists');
+    assert.deepEqual(out.related.map((d) => d.domain).sort(), [...twins].sort());
+    const c = out.related.find((d) => d.domain === 'example.co.uk');
+    assert.deepEqual([c.names, c.certificates[0].shared, c.certificates[0].domains], [['example.co.uk', 'www.example.co.uk'], false, twins.length + 1]);
+    // the label of a scope under a multi-label suffix is its registrable domain's
+    assert.equal(relatedDomains([brand], { domains: ['shop.example.com.tr'], now: NOW }).shared, 0);
+    // half of the other domains under the scanned label is not most: a host's certificate that also names a few twins
+    const crowd = Array.from({ length: 7 }, (_, i) => `customer${i + 1}.example`);
+    const mixed = relatedDomains([spotter(2, ['example.com', ...twins.slice(0, 7), ...crowd])], { domains: ['example.com'], now: NOW });
+    assert.equal(mixed.shared, 1);
+    assert.equal(mixed.related.filter((d) => d.sharedOnly).length, 14);
+    const most = relatedDomains([spotter(3, ['example.com', ...twins.slice(0, 8), ...crowd.slice(0, 6)])], { domains: ['example.com'], now: NOW });
+    assert.equal(most.shared, 0, '8 of 14 under the scanned label');
   });
 
   test('names and certificates are capped per domain, with the rest counted', () => {

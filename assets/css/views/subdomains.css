@@ -1872,8 +1872,35 @@
 }
 
 .sub-rel-shared-list {
-  gap: 4px;
+  gap: 0;
   font-size: 12.5px;
+}
+
+/* The domain and its count on the left (wrapping there), its "Scan too" on the right. */
+.sub-rel-shared-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.sub-rel-shared-item:first-child {
+  border-top: 0;
+}
+
+.sub-rel-shared-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sub-rel-shared-domain {
+  font-weight: 550;
+}
+
+.sub-rel-shared-count {
+  white-space: nowrap;
 }
 
 /* A long Turkish badge wraps inside itself on a phone. */

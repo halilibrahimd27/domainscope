@@ -54,7 +54,11 @@ EXTRA = 'EXTRA'          # a record at a name of the file that the file does not
 SKIPPED = 'SKIPPED'      # not compared (a DNSSEC type, an alias, below a delegation ...)
 ERROR = 'ERROR'          # no usable answer (timeout, SERVFAIL, REFUSED ...)
 STATUSES = (SAME, DIFFERENT, MISSING, UNPROXIED, EXTRA, SKIPPED, ERROR)
+# What --fail-on-diff exits 1 for (with a server that does not serve the zone).
 PROBLEMS = (DIFFERENT, MISSING, UNPROXIED, EXTRA)
+# What must be fixed at the new provider before the switch (the verdict 'fix', as in the web app);
+# UNPROXIED and EXTRA rows are 'check': a decision to make, not a copy error.
+TO_FIX = (DIFFERENT, MISSING)
 
 # --- name server states (its SOA answer) ---------------------------------------------------
 NS_OK = 'OK'
@@ -877,19 +881,28 @@ class ParityReport:
     rrsets: int = 0
 
     def problems(self) -> List[Row]:
+        """The rows --fail-on-diff exits 1 for: missing, different, unproxied, extra."""
         return [row for row in self.rows if row.status in PROBLEMS]
 
     def ttl_rows(self) -> List[Row]:
         return [row for row in self.rows if 'ttl' in row.notes]
 
+    def serials_differ(self) -> bool:
+        return len({ns.serial for ns in self.nameservers if ns.state == NS_OK}) > 1
+
     def verdict(self) -> str:
-        """'ready', 'fix' (a problem, or a server that does not serve the zone), 'check'
-        (errors or TTL differences only) or 'blocked' (no server could be compared)."""
+        """The web app's verdicts (lib/nsparity.js paritySummary): 'blocked' (no server could
+        be compared), 'fix' (something missing or different, or a server that does not serve the
+        zone), 'check' (only unproxied or extra records, TTL differences, serials out of step or
+        questions without an answer) or 'ready'. The web app's 'partial' (a stop, the probe cap,
+        types a probe cannot ask) has no counterpart here: this script asks every record set,
+        so a question without an answer is 'check'."""
         if not any(ns.state == NS_OK for ns in self.nameservers):
             return 'blocked'
-        if self.problems() or any(ns.state != NS_OK for ns in self.nameservers):
+        if any(row.status in TO_FIX for row in self.rows) or any(ns.state != NS_OK for ns in self.nameservers):
             return 'fix'
-        if any(row.status == ERROR for row in self.rows) or self.ttl_rows():
+        if (any(row.status in (UNPROXIED, EXTRA, ERROR) for row in self.rows) or self.ttl_rows()
+                or self.serials_differ()):
             return 'check'
         return 'ready'
 
@@ -1125,6 +1138,11 @@ def compare_rrset(asker: Asker, rrset: RRset, zone: Zone, ns_names: Sequence[str
         row.notes.append('routing')
     elif rrset.rtype in ('TXT', 'SPF') and sorted(b''.join(k) for k in live) == sorted(b''.join(k) for k in file_keys):
         row.notes.append('txt-chunking')
+    elif (rrset.rtype in ('A', 'AAAA') and all(r.proxied is False for r in rrset.records)
+          and all(is_cloudflare(ip) for ip in live)):
+        # DNS-only in a Cloudflare export, Cloudflare's addresses there: the proxy is on at the new provider.
+        row.status, row.added, row.removed = DIFFERENT, added, removed
+        row.notes.append('proxy-on')
     else:
         row.status, row.added, row.removed = DIFFERENT, added, removed
         row.notes.append('values')
@@ -1233,6 +1251,7 @@ NOTE_TEXT = {
     'cname': 'a CNAME is served instead',
     'values': 'other values',
     'proxy-off': 'served without the proxy: the origin address becomes public at the switch',
+    'proxy-on': 'DNS-only in the file, Cloudflare addresses there: the proxy is on at the new provider',
     'not-cloudflare': 'proxied in the file, other addresses there',
     'proxied': 'proxied (Cloudflare addresses)',
     'flattened': 'flattened (addresses; the target is not compared)',
@@ -1308,8 +1327,7 @@ def render_summary(report: ParityReport, show_all: bool = False) -> str:
         else:
             state = '%s: %s' % (ns.state, ns.detail)
         lines.append('  %s (%s)  %s' % (_plain(ns.label), where, _plain(state)))
-    serials = {ns.serial for ns in report.nameservers if ns.state == NS_OK}
-    if len(serials) > 1:
+    if report.serials_differ():
         lines.append('  The servers serve different serials: they are not in sync yet.')
     width = min(48, max([len('%s %s' % (r.name, r.rtype)) for r in report.rows] or [10]))
     first_sig = None
@@ -1357,11 +1375,13 @@ def render_summary(report: ParityReport, show_all: bool = False) -> str:
         lines.append('No name server serves %s yet: create the zone at the new provider (or check '
                      'the names you gave), then run this again.' % zone.origin)
     elif verdict == 'fix':
-        lines.append('Fix the new provider\'s zone (the records above, and every server that does not '
-                     'serve it), then run this again before you switch.')
+        lines.append('Fix the new provider\'s zone (what is missing or different above, and every server '
+                     'that does not serve it), then run this again before you switch.')
     elif verdict == 'check':
-        lines.append('Nothing is missing or different; check the TTLs and the questions that got no '
-                     'answer.')
+        counts = {st: sum(1 for r in report.rows if r.status == st) for st in (EXTRA, UNPROXIED, ERROR)}
+        lines.append('Nothing is missing or different. Check the rest before you switch: %d extra, %d '
+                     'unproxied, %d TTL differences, %d not answered.' % (
+                         counts[EXTRA], counts[UNPROXIED], len(report.ttl_rows()), counts[ERROR]))
     else:
         lines.append('The new name servers serve every compared record set of the file.')
     lines.append('The move: lower the TTLs at the current provider (the NS records at the apex too) '
@@ -1437,9 +1457,14 @@ statuses (per name server and record set):
   The apex NS set is compared with the --ns host names: the new provider names itself there.
   A TTL that differs from the file's is listed apart.
 
+verdict (the web app's): FIX while something is MISSING or DIFFERENT or a server does not
+  serve the zone; CHECK for UNPROXIED or EXTRA records, TTL differences, serials out of step
+  or questions without an answer; READY otherwise. The web app's PARTIAL (a stopped run, its
+  probe cap, types a probe cannot ask) does not occur: this script asks every record set.
+
 exit codes: 0 done, 1 something missing, different, extra or unproxied, or a server that
-  does not serve the zone (only with --fail-on-diff), 2 usage error, 3 a report file could
-  not be written, 130 interrupted.
+  does not serve the zone (only with --fail-on-diff: stricter than the verdict, UNPROXIED and
+  EXTRA fail it too), 2 usage error, 3 a report file could not be written, 130 interrupted.
 
 Türkçe: DNS sağlayıcısını değiştirmeden önce yeni ad sunucularının zone dosyasındaki her
   kaydı sunup sunmadığını kontrol eder (eksik, farklı, fazladan kayıtlar, TTL farkları).
@@ -1571,7 +1596,7 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
     if failed:
         return EXIT_OUTPUT_ERROR
-    if args.fail_on_diff and report.verdict() in ('fix', 'blocked'):
+    if args.fail_on_diff and (report.verdict() in ('fix', 'blocked') or report.problems()):
         return EXIT_DIFFERENCES
     return EXIT_OK
 

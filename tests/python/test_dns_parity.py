@@ -566,6 +566,45 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code3, 0)
         self.assertEqual(json.loads(out3)['zone'], 'example.com', 'only the JSON on stdout')
 
+    def test_unproxied_and_extra_are_check_as_in_the_web_app_and_still_fail_the_check(self):
+        # A proxied record answered with its origin and a parking address at the apex: nothing
+        # missing or different, so the verdict is 'check' (the web app's); --fail-on-diff fails.
+        path = os.path.join(self.tmp.name, 'check.zone')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('$ORIGIN example.com.\n@ 3600 IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                         '@ 3600 IN NS ns1.example.net.\n'
+                         'api 1 IN A 192.0.2.14 ; cf_tags=cf-proxied:true\n')
+        records = {('example.com', 'NS'): [(3600, 'ns1.example.net')], ('api.example.com', 'A'): [(300, '192.0.2.14')],
+                   ('example.com', 'A'): [(300, '198.51.100.80')]}
+        server = FakeAuthority('example.com', records)
+        out_json = os.path.join(self.tmp.name, 'check.json')
+        try:
+            code, out, _ = run_main(path, '--ns', server.ns(), '--json', out_json, '-q')
+            failed, _, _ = run_main(path, '--ns', server.ns(), '--fail-on-diff', '-q')
+        finally:
+            server.close()
+        doc = json.loads(Path(out_json).read_text(encoding='utf-8'))
+        self.assertEqual(sorted(r['status'] for r in doc['rows']), ['EXTRA', 'SAME', 'UNPROXIED'])
+        self.assertEqual([code, doc['summary']['verdict']], [0, 'check'])
+        self.assertIn('Nothing is missing or different. Check the rest before you switch: 1 extra, 1 unproxied', out)
+        self.assertEqual(failed, dp.EXIT_DIFFERENCES, 'stricter than the verdict: unproxied and extra fail it')
+
+    def test_a_dns_only_record_answered_with_cloudflare_addresses_says_the_proxy_is_on(self):
+        text = ('$ORIGIN example.com.\n@ 3600 IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                'direct 300 IN A 192.0.2.16 ; cf_tags=cf-proxied:false\n'
+                'plain 300 IN A 192.0.2.17\n')
+        server = FakeAuthority('example.com', {('direct.example.com', 'A'): [(300, '104.16.0.3')],
+                                               ('plain.example.com', 'A'): [(300, '104.16.0.4')]})
+        try:
+            zone = dp.parse_zone(text)
+            report = dp.run_parity(zone, [dp.parse_nameserver(server.ns())], timeout=1.0, extras=False)
+        finally:
+            server.close()
+        rows = {r.name: r for r in report.rows}
+        self.assertEqual([rows['direct.example.com'].status, rows['direct.example.com'].notes], ['DIFFERENT', ['proxy-on']])
+        self.assertEqual(rows['plain.example.com'].notes, ['values'], 'no proxy flag in the file: other values')
+        self.assertIn('the proxy is on at the new provider', dp.render_summary(report))
+
     def test_usage_errors(self):
         for args in ([self.zone], [self.zone, '--ns', 'bad..name'], [os.path.join(self.tmp.name, 'none.zone'), '--ns', '192.0.2.1'],
                      [self.zone, '--ns', '192.0.2.1', '--timeout', '0'], [self.zone, '--ns', '192.0.2.1', '--json', '-', '--csv', '-'],

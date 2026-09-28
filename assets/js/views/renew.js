@@ -122,7 +122,8 @@ registerStrings('en', {
     other: 'HTTP-01 reachability tested for {count} names, but not completely: the test stopped before all its measurements were created. Test again for what is missing.'
   },
   'rnw.h01.untested': '{family} · not tested',
-  'rnw.h01.stopped': 'Stopped. The probes were already used: reading the results again uses the same measurements and costs nothing.'
+  'rnw.h01.stopped': 'Stopped. The probes were already used: reading the results again uses the same measurements and costs nothing.',
+  'rnw.h01.lost': 'The HTTP-01 test was stopped by the new check, and the probes it had used were not read. Test again.'
 });
 
 registerStrings('tr', {
@@ -185,7 +186,8 @@ registerStrings('tr', {
   'rnw.h01.done': 'HTTP-01 erişilebilirliği {count} ad için test edildi.',
   'rnw.h01.donePartial': 'HTTP-01 erişilebilirliği {count} ad için test edildi, ama eksik: test, tüm ölçümleri oluşturulmadan durdu. Eksik kalanlar için yeniden test edin.',
   'rnw.h01.untested': '{family} · test edilmedi',
-  'rnw.h01.stopped': 'Durduruldu. Ölçümler zaten harcandı: sonuçları yeniden okumak aynı ölçümleri kullanır ve ek maliyeti yoktur.'
+  'rnw.h01.stopped': 'Durduruldu. Ölçümler zaten harcandı: sonuçları yeniden okumak aynı ölçümleri kullanır ve ek maliyeti yoktur.',
+  'rnw.h01.lost': 'HTTP-01 testi yeni kontrolle durduruldu ve kullandığı ölçümler okunmadı. Yeniden test edin.'
 });
 
 /** Verdict → Badge variant and icon. */
@@ -578,6 +580,8 @@ export function mount(container, ctx) {
       body.append(banner);
     } else if (job && job.status === 'stopped') {
       body.append(Alert({ variant: 'info', compact: true, message: t('rnw.h01.stopped') }));
+    } else if (!job && current.lostTest) {
+      body.append(Alert({ variant: 'info', compact: true, message: t('rnw.h01.lost') }));
     } else if (job && job.status === 'done' && job.names.length) {
       const count = Number.isInteger(job.tested) ? job.tested : job.names.length;
       body.append(h('p', { class: ['text-sm', 'rnw-test-done', { 'rnw-test-partial': !!job.partial }], attrs: { role: 'status' } },
@@ -610,6 +614,7 @@ export function mount(container, ctx) {
     const job = { status: 'running', phase: 'gate', names: sent.map((x) => x.r.name), controller: new AbortController(), pending: [], error: null, resetAt: null };
     testFocus = focusKeyOf(globalThis.document && globalThis.document.activeElement);
     s.test = job;
+    s.lostTest = false;
     renderReport();
     ctx.setBusy(true);
     const signal = mergeSignals(ctx.signal, job.controller.signal);
@@ -976,7 +981,6 @@ export function mount(container, ctx) {
       namesField.focus();
       return;
     }
-    if (testRunning() && current.test.controller) current.test.controller.abort();
     const ca = caField.value || null;
     const challenge = RENEWAL_CHALLENGES.includes(challengeField.value) ? challengeField.value : 'unknown';
     if (!ctx.requireOnline({ quiet: auto })) return;
@@ -992,8 +996,12 @@ export function mount(container, ctx) {
 
   async function run(check) {
     if (current && current.controller) current.controller.abort();
+    // A new check ends a running test: the measurements it paid for belong to the report it replaces.
+    const job = current && current.test && current.test.status === 'running' ? current.test : null;
+    if (job && job.controller) job.controller.abort();
+    const lostTest = !!job && job.pending.some((e) => e.families.length);
     const controller = new AbortController();
-    const s = { ...check, controller, report: current ? current.report : null, finishedAt: null, test: null };
+    const s = { ...check, controller, report: current ? current.report : null, finishedAt: null, test: null, lostTest };
     current = s;
     clear(errorEl);
     progress.el.hidden = false;
@@ -1002,6 +1010,10 @@ export function mount(container, ctx) {
     progress.set(0, check.names.length);
     emptyEl.hidden = true;
     setRunning(true);
+    // The report on screen stays until this check ends, its test buttons off and the test card without
+    // a test that no longer runs.
+    if (s.report) renderReport();
+    if (lostTest) announce(t('rnw.h01.lost'));
     const startedAt = performance.now();
     try {
       const dns = await ctx.getDns();
@@ -1054,6 +1066,7 @@ export function mount(container, ctx) {
       names: restored.report.names.map((r) => ({ name: r.name, base: r.base, wildcard: r.wildcard })),
       ca: restored.report.ca, challenge: restored.report.challenge, controller: null,
       report: restored.report, finishedAt: restored.report.finishedAt, text: typeof restored.ranText === 'string' ? restored.ranText : null,
+      lostTest: !!restored.lostTest && !test,
       test: test ? { ...test, controller: null, ...(interrupted ? { status: 'error', error: new DOMException('Interrupted', 'AbortError') } : {}) } : null
     };
     renderReport();
@@ -1096,6 +1109,7 @@ export function mount(container, ctx) {
         report,
         ranText: report && typeof current.text === 'string' ? current.text : null,
         test,
+        lostTest: !!report && !!current.lostTest,
         open: [...openState]
       };
     },

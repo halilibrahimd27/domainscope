@@ -18,15 +18,20 @@
  *     chain download). A legacy bundle (RC2-40 + 3DES) marks its encryption weak / legacy and says
  *     the key was not checked; Cancel loads nothing, keeps the certificate shown and says so; the
  *     browser's own WebCrypto opens an AES-192 key (Chromium refuses the key size: the JS
- *     cipher), a PBMAC1 bundle and a Turkish password with an emoji;
+ *     cipher), a PBMAC1 bundle and a Turkish password with an emoji; a bundle whose certificates
+ *     use RC4 closes the dialog on the reason (the OpenSSL command with -legacy) and the focus
+ *     lands on that warning; a key under RC4 is named "not supported here" in the note, and the
+ *     key check says it cannot check it (both crafted here, in a temporary directory);
  *   - SSL Targets step 1: a bundle whose key belongs to its intermediate says the key does not
  *     match the leaf and names the owner, step 2 gets the leaf's domain, fullchain.pem downloads
- *     from the step; the empty password opens a passwordless bundle; no scan starts;
+ *     from the step; the empty password opens a passwordless bundle; a SHA-224 MAC is not
+ *     supported and the focus goes to the warning; no scan starts;
  *   - Turkish + dark, a 375 px phone (the dialog and both notes fit without horizontal scroll);
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
  */
 
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
@@ -42,6 +47,54 @@ const PASS = PASSWORDS.test;
 const fixture = (name) => path.join(FIXTURES, name);
 /** The DER of a PEM fixture's first certificate, as base64 (to find it in a download). */
 const derB64 = async (file) => Buffer.from(parseCertificates(await readFile(fixture(file))).leaf.der).toString('base64');
+
+// ---------------------------------------------------------------------------
+// Crafted bundles (DER by hand: what OpenSSL 3 will no longer write)
+// ---------------------------------------------------------------------------
+const tlv = (tag, ...parts) => {
+  const body = Buffer.concat(parts.map((x) => Buffer.from(x)));
+  const n = body.length;
+  const len = n < 0x80 ? [n] : n < 0x100 ? [0x81, n] : [0x82, n >> 8, n & 0xff];
+  return Buffer.concat([Buffer.from([tag, ...len]), body]);
+};
+const seq = (...x) => tlv(0x30, ...x);
+const ctx0 = (...x) => tlv(0xa0, ...x);
+const octet = (b) => tlv(0x04, b);
+const int = (n) => tlv(0x02, Buffer.from(n < 0x80 ? [n] : [n >> 8, n & 0xff]));
+const oid = (s) => {
+  const [a, b, ...rest] = s.split('.').map(Number);
+  const out = [a * 40 + b];
+  for (const v of rest) {
+    const bytes = [v & 0x7f];
+    for (let x = Math.floor(v / 128); x > 0; x = Math.floor(x / 128)) bytes.unshift((x & 0x7f) | 0x80);
+    out.push(...bytes);
+  }
+  return tlv(0x06, Buffer.from(out));
+};
+const DATA = '1.2.840.113549.1.7.1';
+const RC4 = seq(oid('1.2.840.113549.1.12.1.1'), seq(octet(Buffer.alloc(8, 7)), int(2048))); // pbeWithSHAAnd128BitRC4
+/** PFX around AuthenticatedSafe ContentInfos, with an optional raw MacData. */
+const pfxOf = (infos, mac = null) => seq(int(3), seq(oid(DATA), ctx0(octet(seq(...infos)))), ...(mac ? [mac] : []));
+const dataInfo = (...bags) => seq(oid(DATA), ctx0(octet(seq(...bags))));
+const certBag = (der) => seq(oid('1.2.840.113549.1.12.10.1.3'), ctx0(seq(oid('1.2.840.113549.1.9.22.1'), ctx0(octet(der)))));
+
+/**
+ * The crafted files, written to `dir`: certificates under RC4 (EncryptedData), a readable
+ * certificate with its key under RC4 (no MAC), and a SHA-224 MAC.
+ */
+async function craftBundles(dir) {
+  const leaf = Buffer.from(parseCertificates(await readFile(fixture('p12_rsa.pem'))).leaf.der);
+  const encrypted = seq(oid('1.2.840.113549.1.7.6'), ctx0(seq(int(0), seq(oid(DATA), RC4, tlv(0x80, Buffer.alloc(64, 1))))));
+  const shrouded = seq(oid('1.2.840.113549.1.12.10.1.2'), ctx0(seq(RC4, octet(Buffer.alloc(64, 2)))));
+  const sha224Mac = seq(seq(seq(oid('2.16.840.1.101.3.4.2.4'), Buffer.from([5, 0])), octet(Buffer.alloc(28, 3))), octet(Buffer.alloc(8, 4)), int(2048));
+  const files = {
+    'rc4-certs.p12': pfxOf([encrypted]),
+    'rc4-key.p12': pfxOf([dataInfo(certBag(leaf), shrouded)]),
+    'sha224-mac.p12': pfxOf([dataInfo(certBag(leaf))], sha224Mac)
+  };
+  for (const [name, bytes] of Object.entries(files)) await writeFile(path.join(dir, name), bytes);
+  return (name) => path.join(dir, name);
+}
 
 /** Fail every https request that reaches the network; returns the list it records. */
 async function networkGuard(page) {
@@ -101,13 +154,13 @@ const focusedRole = (page) => page.evaluate(() => {
   return a.dataset.role || a.dataset.action || (a.classList.contains('pfx-note') ? 'pfx-note' : a.tagName);
 });
 
-/** Choose a bundle in the loader under `root` and wait for its password dialog. */
+/** Choose a bundle (a fixture name or a path) in the loader under `root` and wait for its password dialog. */
 async function choose(page, root, file) {
   await page.evaluate((r) => {
     const more = document.querySelector(`${r} details.cert-reload, ${r} details.scan-cert-another`);
     if (more) more.open = true;
   }, root);
-  await page.setFileInput(`${root} .filedrop-input`, [fixture(file)]);
+  await page.setFileInput(`${root} .filedrop-input`, [path.isAbsolute(file) ? file : fixture(file)]);
   await page.waitFor(() => document.activeElement && document.activeElement.dataset.role === 'pfx-password', { message: `password dialog for ${file}` });
 }
 
@@ -145,6 +198,8 @@ async function main() {
   const LEAF = await derB64('p12_rsa.pem');
   const INTER = await derB64('p12_inter.pem');
   const ROOT_CA = await derB64('p12_root.pem');
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'ds-pfx-e2e-'));
+  const crafted = await craftBundles(tmp);
 
   run.group('Node: harness');
   await run.step('run-all orders the pfx suite right after dane', () => {
@@ -282,6 +337,36 @@ async function main() {
       await removeToasts(page);
     });
 
+    await run.step('certificates under RC4: the dialog closes on the reason, the focus lands on the warning', async () => {
+      await choose(page, CERT, crafted('rc4-certs.p12'));
+      await page.type('[data-role="pfx-password"]', 'x');
+      await page.press('Enter');
+      const info = await page.waitFor(() => {
+        const w = document.querySelector('.cert-content [data-warning="PKCS12_UNSUPPORTED"]');
+        return !document.querySelector('.pfx-dialog') && w ? {
+          text: w.textContent,
+          focused: document.activeElement === w,
+          overview: !!document.querySelector('.cert-overview')
+        } : false;
+      }, { message: 'unsupported warning' });
+      assert(info.text.includes('It uses pbeWithSHAAnd128BitRC4, which this page does not support.'), info.text);
+      assert(info.text.includes('openssl pkcs12 -legacy -in rc4-certs.p12 -nokeys -out cert.pem'), 'the -legacy command');
+      assert(info.focused, `focus on the warning, not ${await focusedRole(page)}`);
+      assert(!info.overview, 'no certificate shown');
+      await removeToasts(page);
+    });
+
+    await run.step('a key under RC4: "not supported here" in the note, the key check says it cannot check it', async () => {
+      await choose(page, CERT, crafted('rc4-key.p12'));
+      await unlock(page, CERT, 'x', { checkKey: true });
+      const note = await noteInfo(page, CERT);
+      assertEqual(note.keyCheck, 'unsupported-encryption', 'key check');
+      assert(note.text.includes('pbeWithSHAAnd128BitRC4 · not supported here'), `Private key row: ${note.text}`);
+      assert(note.text.includes('The key’s encryption (pbeWithSHAAnd128BitRC4) is not supported here, so the key cannot be checked.'), 'verdict');
+      assertEqual(await page.evaluate(() => document.querySelector('.cert-overview-cn')?.textContent), 'p12.example.com', 'the certificate loads');
+      assertEqual(await focusedRole(page), 'pfx-note', 'focus on the note');
+    });
+
     await run.step('in the browser WebCrypto: an AES-192 key (Chromium refuses it: the JS cipher), PBMAC1, a password with an emoji', async () => {
       const cases = [
         ['p12_ec_aes128.p12', PASS, 'AES-192-CBC', 'EC P-256'],
@@ -372,6 +457,18 @@ async function main() {
       assert(note.text.includes('The file holds 1 certificate and 1 private key.'), note.text);
     });
 
+    await run.step('a SHA-224 MAC is not supported: the dialog closes, the focus lands on the warning', async () => {
+      await choose(page, STEP, crafted('sha224-mac.p12'));
+      await page.press('Enter');
+      const info = await page.waitFor((s) => {
+        const w = document.querySelector(`${s} [data-warning="PKCS12_UNSUPPORTED"]`);
+        return !document.querySelector('.pfx-dialog') && w ? { text: w.textContent, focused: document.activeElement === w } : false;
+      }, { args: [STEP], message: 'unsupported warning in step 1' });
+      assert(info.text.includes('It uses SHA-224, which this page does not support.'), info.text);
+      assert(info.focused, `focus on the warning, not ${await focusedRole(page)}`);
+      await removeToasts(page);
+    });
+
     await run.step('phone 375: step 1 with the mismatch note fits (TR dark)', async () => {
       await choose(page, STEP, 'p12_mismatch.p12');
       await unlock(page, STEP, PASS, { checkKey: true });
@@ -395,6 +492,7 @@ async function main() {
     if (page) await page.close().catch(() => {});
     await browser.close();
     await server.close();
+    await rm(tmp, { recursive: true, force: true });
   }
   run.finish();
 }

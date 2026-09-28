@@ -468,8 +468,15 @@ async function main() {
       });
       assertEqual([offer.inChip, offer.visible], [false, true], 'the passive button and its cost');
       assert(/1 request to each\. HackerTarget allows about 50 free lookups a day/.test(offer.cost), offer.cost);
-      await jsClick(page, '[data-action="retire-passive"]');
+      // From the keyboard: the button goes while the lookup runs, and the focus goes with Stop (then back to Check), never to <body>.
+      await page.evaluate(() => document.querySelector('[data-action="retire-passive"]').focus());
+      await page.press('Enter');
       await page.waitFor(() => document.querySelector('.retire-group[data-kind="passive"]'), { message: 'passive group' });
+      const focused = await page.waitFor(() => {
+        const a = document.activeElement;
+        return a && ['retire-run', 'retire-stop'].includes(a.dataset.action) ? a.dataset.action : false;
+      }, { message: 'the focus on Stop or Check, not <body>' });
+      assert(['retire-run', 'retire-stop'].includes(focused), focused);
       assertEqual(await text(page, '.retire-passive-note[data-address="192.0.2.10"]'),
         ' ip.thc.org lists 250 names for 192.0.2.10; only the first 100 were fetched, so the passive list is incomplete.', 'a cut-off list is said');
       assert(!(await page.evaluate(() => document.querySelector('[data-action="retire-passive"]'))), 'no second lookup offered');

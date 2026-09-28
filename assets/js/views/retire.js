@@ -1259,9 +1259,13 @@ export function mount(container, ctx) {
     if (!intel) intel = createIpIntel();
     const controller = new AbortController();
     const p = { key: addresses.join(','), status: 'running', results: [], controller };
+    // The button goes while the lookup runs: its keyboard focus moves to Stop, never to <body>.
+    const doc = globalThis.document;
+    const fromButton = !!(doc && doc.activeElement && doc.activeElement.dataset && doc.activeElement.dataset.action === 'retire-passive');
     session.passive = p;
     syncControls();
     if (ui) ui.render();
+    if (fromButton && !stopBtn.hidden) stopBtn.focus({ preventScroll: true });
     try {
       for (const address of addresses) {
         const [hackertarget, thc] = await Promise.all([

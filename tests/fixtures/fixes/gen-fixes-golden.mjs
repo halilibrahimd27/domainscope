@@ -88,7 +88,11 @@ export const CASES = Object.freeze([
   { id: 'spf-add', template: 'spf', input: { domain: 'example.com', spfAction: 'add', includes: '_spf.google.com', all: '-all' }, read: true },
   { id: 'spf-remove', template: 'spf', input: { domain: 'example.com', spfAction: 'remove', includes: 'spf.protection.outlook.com' }, read: true },
   { id: 'spf-unread', template: 'spf', input: { domain: 'example.com', spfAction: 'add', includes: 'mailgun.org' } },
+  // An include cannot be removed from a record that was not read: no output at all.
+  { id: 'spf-remove-unread', template: 'spf', input: { domain: 'example.com', spfAction: 'remove', includes: 'mailgun.org' } },
   { id: 'dmarc-step', template: 'dmarc', input: { domain: 'example.com', policy: 'quarantine', pct: '25' }, read: true },
+  // Not read: the instructions say which tags the value leaves out, and name no policy it comes from.
+  { id: 'dmarc-unread', template: 'dmarc', input: { domain: 'example.com', policy: 'reject' } },
   { id: 'ttl', template: 'ttl', input: { domain: 'example.com', records: 'www A\n@ MX', ttl: '300' }, read: true },
   { id: 'ttl-unread', template: 'ttl', input: { domain: 'example.com', records: 'www A' } },
   { id: 'record-a', template: 'record', input: { name: 'www', zone: 'example.com', type: 'A', values: '192.0.2.10\n192.0.2.11', ttl: '600' }, read: true },

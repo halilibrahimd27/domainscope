@@ -26,7 +26,7 @@ import { downloadText, sanitizeFilename } from './download.js';
 import { t, registerStrings, getLang, hasString, formatNumber } from '../i18n.js';
 import {
   FIX_FORMATS, FIX_FORMAT_EXT, FIX_I18N, TXT_FAMILIES, FIX_FIELDS, changeTemplate, renderFix, formatNotes, changeInstructions,
-  validateChange, hasErrors, rrsetPlan, rrsetAction, valueText, healthFix, lintFix, caaFixFromIssuers, templateInput
+  validateChange, hasErrors, rrsetPlan, rrsetAction, valueText, healthFix, lintFix, caaFixFromIssuers, templateInput, unreadEdits
 } from '../lib/fixes.js';
 import { LINT_I18N } from '../lib/zonelint.js';
 import { CHECK_LIMITS, checkFromRequest, encodeCheck } from '../lib/changecheck.js';
@@ -161,12 +161,15 @@ export function ProblemList(problems) {
   }));
 }
 
-const ACTION_BADGE = Object.freeze({ add: 'ok', replace: 'info', delete: 'error', ttl: 'warn', rewrite: 'info', unchanged: 'neutral' });
+const ACTION_BADGE = Object.freeze({ add: 'ok', replace: 'info', set: 'warn', delete: 'error', ttl: 'warn', rewrite: 'info', unchanged: 'neutral' });
 
-/** One record set as it changes: its action, name, type and TTL, then each value added, kept or removed. */
-function SetItem(r) {
+/**
+ * One record set as it changes: its action, name, type and TTL, then each value added, kept or
+ * removed. `edit`: a family set a template edits without a read ("add or change", lib/fixes.js unreadEdits).
+ */
+function SetItem(r, edit = false) {
   const plan = rrsetPlan(r);
-  const action = rrsetAction(r, plan);
+  const action = edit ? 'set' : rrsetAction(r, plan);
   const key = (v) => valueText(r.type, v);
   const addKeys = new Set(plan.add.map(key));
   const rows = [];
@@ -203,6 +206,7 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
   const url = link && link.ok ? checkUrl(link.query) : null;
   const stem = sanitizeFilename(fileStem || `dns-change-${req.zone || 'zone'}`);
   let lang = getLang();
+  const unread = unreadEdits(req);
 
   const adminHost = h('div', { class: 'fix-admin-text' });
   const renderAdmin = () => {
@@ -264,7 +268,7 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
   return h('div', { class: ['stack', 'fix-outputs', className] },
     h('section', { class: 'fix-sets-section' },
       h('h3', { class: 'fix-sets-title' }, t('fixp.sets')),
-      h('ul', { class: 'fix-sets' }, req.rrsets.map(SetItem))),
+      h('ul', { class: 'fix-sets' }, req.rrsets.map((r) => SetItem(r, unread.includes(r))))),
     tabs.el,
     checkEl);
 }

@@ -1,0 +1,4 @@
+# case: spf-remove-unread
+## problems
+error fix.p.spf-remove-read {"name":"example.com"}
+## notes

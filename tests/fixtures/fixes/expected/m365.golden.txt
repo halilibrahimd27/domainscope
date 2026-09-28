@@ -2,8 +2,9 @@
 ## problems
 ## notes
 fix.n.m365-mx {"host":"example-com.mail.protection.outlook.com"}
-fix.n.spf-unread {"include":"spf.protection.outlook.com"}
+fix.n.spf-unread {"include":"spf.protection.outlook.com","name":"example.com"}
 fix.n.m365-dkim {}
+fix.n.dmarc-first-unread {"name":"_dmarc.example.com"}
 fix.n.dmarc-start {}
 ## check
 z=example.com&r=is+@+MX+0+example-com.mail.protection.outlook.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+-all%22&r=is+autodiscover+CNAME+autodiscover.outlook.com.&r=is+selector1._domainkey+CNAME+selector1-example-com._domainkey.example.onmicrosoft.com.&r=is+selector2._domainkey+CNAME+selector2-example-com._domainkey.example.onmicrosoft.com.&r=is+_dmarc+TXT+%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
@@ -36,6 +37,9 @@ selector2._domainkey 3600 IN CNAME selector2-example-com._domainkey.example.onmi
 ; _dmarc.example.com TXT (DMARC); the other TXT records of _dmarc stay
 ; replaces the DMARC record of _dmarc
 _dmarc 3600 IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+## bind notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 ## route53
 {
   "Comment": "DNS change request for example.com (DomainScope)",
@@ -121,6 +125,8 @@ _dmarc 3600 IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
   ]
 }
 ## route53 notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
 ## cloudflare
@@ -186,6 +192,8 @@ curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TO
 curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
   --data '{"type":"TXT","name":"_dmarc.example.com","content":"\"v=DMARC1; p=none; rua=mailto:dmarc@example.com\"","ttl":3600}'
 ## cloudflare notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 fix.fn.cloudflare-ids {}
 ## octodns
 # DNS change request for example.com (DomainScope)
@@ -221,6 +229,8 @@ _dmarc:
     values:
       - 'v=DMARC1\; p=none\; rua=mailto:dmarc@example.com'
 ## octodns notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
 ## terraform-cloudflare
@@ -291,6 +301,9 @@ resource "cloudflare_record" "txt_dmarc" {
   content  = "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
   ttl      = 3600
 }
+## terraform-cloudflare notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 ## terraform-route53
 # DNS change request for example.com (DomainScope)
 # aws_route53_record manages a whole record set: every value of the name and type is listed.
@@ -351,6 +364,8 @@ resource "aws_route53_record" "txt_dmarc" {
   records = ["v=DMARC1; p=none; rua=mailto:dmarc@example.com"]
 }
 ## terraform-route53 notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
+fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
 ## en
@@ -364,12 +379,12 @@ Please make the following changes in the DNS zone example.com. Records not liste
      0 example-com.mail.protection.outlook.com.
    TTL: 3600
    Replace every MX record of the name with the values above.
-2. Replace: SPF record (TXT)
+2. Add or change: SPF record (TXT)
    Name: example.com
    Value:
      "v=spf1 include:spf.protection.outlook.com -all"
    TTL: 3600
-   Replace the name’s SPF record with the value above.
+   If the name has no SPF record yet, add the value above; if it has one, the notes below say what to do with it.
    The other TXT records of the name stay as they are.
 3. Replace: CNAME records
    Name: autodiscover.example.com
@@ -389,18 +404,19 @@ Please make the following changes in the DNS zone example.com. Records not liste
      selector2-example-com._domainkey.example.onmicrosoft.com.
    TTL: 3600
    Replace every CNAME record of the name with the values above.
-6. Replace: DMARC record (TXT)
+6. Add or change: DMARC record (TXT)
    Name: _dmarc.example.com
    Value:
      "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
    TTL: 3600
-   Replace the name’s DMARC record with the value above.
+   If the name has no DMARC record yet, add the value above; if it has one, the notes below say what to do with it.
    The other TXT records of the name stay as they are.
 
 Notes:
 - The MX host example-com.mail.protection.outlook.com is the usual form; the admin center shows the one of your tenant (newer tenants may get one under mx.microsoft).
-- The current records were not read: if the domain already has an SPF record, add include:spf.protection.outlook.com to it instead of publishing a second one (two SPF records fail SPF for all mail).
+- The current records were not read: if the name already has an SPF record, add include:spf.protection.outlook.com to that record (before its all term) instead of replacing it with the value above, which would drop the senders it lists; a second SPF record would fail SPF for all mail.
 - Turn DKIM on in Microsoft Defender (Email authentication settings) once the CNAMEs resolve; compare the two values with the ones it shows.
+- The current records were not read: if _dmarc.example.com already has a DMARC record, leave it as it is and skip this record.
 - p=none only asks for reports: watch them until every legitimate sender passes, then step up to quarantine and reject.
 
 Once the change is made, this link shows whether public DNS resolvers see it:
@@ -416,12 +432,12 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
      0 example-com.mail.protection.outlook.com.
    TTL: 3600
    Adın tüm MX kayıtlarını yukarıdaki değerlerle değiştirin.
-2. Değiştir: SPF kaydı (TXT)
+2. Ekle ya da değiştir: SPF kaydı (TXT)
    Ad: example.com
    Değer:
      "v=spf1 include:spf.protection.outlook.com -all"
    TTL: 3600
-   Adın SPF kaydını yukarıdaki değerle değiştirin.
+   Adın henüz bir SPF kaydı yoksa yukarıdaki değeri ekleyin; varsa onunla ne yapılacağını aşağıdaki notlar söyler.
    Adın diğer TXT kayıtları olduğu gibi kalır.
 3. Değiştir: CNAME kayıtları
    Ad: autodiscover.example.com
@@ -441,18 +457,19 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
      selector2-example-com._domainkey.example.onmicrosoft.com.
    TTL: 3600
    Adın tüm CNAME kayıtlarını yukarıdaki değerlerle değiştirin.
-6. Değiştir: DMARC kaydı (TXT)
+6. Ekle ya da değiştir: DMARC kaydı (TXT)
    Ad: _dmarc.example.com
    Değer:
      "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
    TTL: 3600
-   Adın DMARC kaydını yukarıdaki değerle değiştirin.
+   Adın henüz bir DMARC kaydı yoksa yukarıdaki değeri ekleyin; varsa onunla ne yapılacağını aşağıdaki notlar söyler.
    Adın diğer TXT kayıtları olduğu gibi kalır.
 
 Notlar:
 - MX sunucusu example-com.mail.protection.outlook.com bilinen biçimdir; kiracınızınkini yönetim merkezi gösterir (yeni kiracılar mx.microsoft altında bir ad alabilir).
-- Mevcut kayıtlar okunmadı: alan adının zaten bir SPF kaydı varsa ikinci bir kayıt yayınlamak yerine include:spf.protection.outlook.com ifadesini ona ekleyin (iki SPF kaydı tüm e-postalarda SPF’i başarısız kılar).
+- Mevcut kayıtlar okunmadı: adın zaten bir SPF kaydı varsa onu yukarıdaki değerle değiştirmek yerine include:spf.protection.outlook.com ifadesini o kayda (all teriminden önce) ekleyin; değiştirmek kayıtta listelenen gönderenleri düşürür, ikinci bir SPF kaydı ise tüm e-postalarda SPF’i başarısız kılar.
 - CNAME kayıtları çözümlendikten sonra DKIM’i Microsoft Defender’da (E-posta kimlik doğrulama ayarları) açın; iki değeri orada gösterilenlerle karşılaştırın.
+- Mevcut kayıtlar okunmadı: _dmarc.example.com adında zaten bir DMARC kaydı varsa olduğu gibi bırakın ve bu kaydı atlayın.
 - p=none yalnızca rapor ister: tüm meşru gönderenler geçene kadar raporları izleyin, sonra quarantine ve reject’e geçin.
 
 Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:

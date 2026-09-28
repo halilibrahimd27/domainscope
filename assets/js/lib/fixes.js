@@ -667,8 +667,25 @@ export function renderFix(req, format) {
   }
 }
 
+/** Notes of a template that edits a TXT family set it did not read (`params.name`: the set's name). */
+const UNREAD_EDIT_NOTES = Object.freeze({ 'fix.n.spf-unread': 'spf1', 'fix.n.dmarc-unread': 'dmarc1', 'fix.n.dmarc-first-unread': 'dmarc1' });
+
 /**
- * What the admin must know about one format's output: a set whose current values were not read
+ * The TXT family sets a template edits without having read them (an include added to the SPF
+ * record, DMARC tags changed, a first DMARC record): whether the name has such a record is not
+ * known, so no output may read as "replace it with this value" — its note says what to do with one.
+ * @param {ChangeRequest} req
+ * @returns {RRsetChange[]}
+ */
+export function unreadEdits(req) {
+  const keys = new Set(arr(req && req.notes).filter((n) => UNREAD_EDIT_NOTES[n.key] && n.params && n.params.name)
+    .map((n) => `${n.params.name}|${UNREAD_EDIT_NOTES[n.key]}`));
+  return arr(req && req.rrsets).filter((r) => r.family && r.mode === 'is' && r.before === null && keys.has(`${r.name}|${r.family}`));
+}
+
+/**
+ * What the admin must know about one format's output: a family set a template edits without a
+ * read (every format replaces the record it has), a set whose current values were not read
  * (Route 53, aws_route53_record and octoDNS replace whole sets), a Route 53 DELETE that must name
  * the set exactly, Cloudflare's TTL range and record ids.
  * @param {ChangeRequest} req
@@ -676,7 +693,7 @@ export function renderFix(req, format) {
  * @returns {FixText[]}
  */
 export function formatNotes(req, format) {
-  const notes = [];
+  const notes = unreadEdits(req).map((r) => ({ key: 'fix.fn.unread-edit', params: { name: r.name, family: TXT_FAMILIES[r.family] } }));
   const plans = req.rrsets.map((r) => ({ r, plan: rrsetPlan(r) }));
   if (format === 'route53' || format === 'octodns' || format === 'terraform-route53') {
     for (const { r, plan } of plans) if (r.mode !== 'none' && !plan.complete) notes.push({ key: 'fix.fn.incomplete', params: { name: r.name, type: r.type } });
@@ -1021,6 +1038,7 @@ export function changeInstructions(req, { lang = 'en', checkUrl = null } = {}) {
   const L = FIX_LANGS.includes(lang) ? lang : 'en';
   const tx = (key, params) => textIn(L, key, params);
   const out = [tx('fix.ins.title', { zone: req.zone }), '', tx('fix.ins.intro', { zone: req.zone }), ''];
+  const unread = unreadEdits(req);
   let step = 0;
   for (const r of req.rrsets) {
     const plan = rrsetPlan(r);
@@ -1029,7 +1047,9 @@ export function changeInstructions(req, { lang = 'en', checkUrl = null } = {}) {
     const kind = r.family ? tx('fix.ins.family', { family: TXT_FAMILIES[r.family] }) : tx('fix.ins.records', { type: r.type });
     const vals = (list) => list.map((v) => `     ${valueText(r.type, v)}`);
     const action = rrsetAction(r, plan);
-    out.push(`${step}. ${tx(`fix.ins.action.${action}`)}: ${kind}`);
+    // Not read, and a record there would be edited, not replaced: "add or change", the notes say how.
+    const edit = unread.includes(r);
+    out.push(`${step}. ${tx(`fix.ins.action.${edit ? 'set' : action}`)}: ${kind}`);
     out.push(`   ${tx('fix.ins.name')}: ${r.name}`);
     if (action === 'ttl') {
       out.push(`   ${tx('fix.ins.ttlChange', { to: r.ttl })}`);
@@ -1045,7 +1065,10 @@ export function changeInstructions(req, { lang = 'en', checkUrl = null } = {}) {
       if (r.mode === 'has' && (!r.before || r.before.length)) out.push(`   ${tx('fix.ins.keepOthers', { type: r.type })}`);
       if (action === 'replace') {
         if (plan.remove && plan.remove.length) out.push(`   ${tx('fix.ins.removes')}:`, ...vals(plan.remove));
-        else if (plan.remove === null) out.push(`   ${tx(r.family ? 'fix.ins.replaceFamily' : 'fix.ins.replaceAll', { type: r.type, family: r.family ? TXT_FAMILIES[r.family] : '' })}`);
+        else if (plan.remove === null) {
+          const key = edit ? 'fix.ins.editFamily' : r.family ? 'fix.ins.replaceFamily' : 'fix.ins.replaceAll';
+          out.push(`   ${tx(key, { type: r.type, family: r.family ? TXT_FAMILIES[r.family] : '' })}`);
+        }
         if (r.family) out.push(`   ${tx('fix.ins.familyOthers')}`);
       }
     }
@@ -1363,7 +1386,7 @@ function spfWithInclude(ctx, include, all) {
     if (edit.present.length) ctx.notes.push({ key: 'fix.n.spf-present', params: { include } });
     return { name: ctx.domain, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'spf1', values: [edit.record] };
   }
-  if (!current) ctx.notes.push({ key: 'fix.n.spf-unread', params: { include } });
+  if (!current) ctx.notes.push({ key: 'fix.n.spf-unread', params: { include, name: ctx.domain } });
   return { name: ctx.domain, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'spf1', values: [`v=spf1 include:${include} ${all}`] };
 }
 
@@ -1385,6 +1408,8 @@ function dmarcStart(ctx) {
     return null;
   }
   const rua = ruaOf(ctx);
+  // Not read: a DMARC record there (a stricter policy, its report addresses) must stay.
+  if (!existing) ctx.notes.push({ key: 'fix.n.dmarc-first-unread', params: { name } });
   ctx.notes.push({ key: 'fix.n.dmarc-start' });
   return { name, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'dmarc1', values: [editDmarc(null, { p: 'none', rua })] };
 }
@@ -1540,6 +1565,11 @@ const TEMPLATE_BUILDERS = {
     }
     const all = ctx.form.all === 'keep' ? null : ctx.form.all;
     const current = currentFamily(ctx, ctx.domain, 'spf1');
+    // An include is removed from the record there now: written without it, the record would drop every other sender.
+    if (!current && ctx.form.spfAction === 'remove') {
+      ctx.problems.push({ severity: 'error', key: 'fix.p.spf-remove-read', params: { name: ctx.domain } });
+      return [];
+    }
     if (!current) ctx.problems.push({ severity: 'warn', key: 'fix.p.read-first' });
     if (current && current.length > 1) {
       ctx.problems.push({ severity: 'error', key: 'fix.p.spf-multiple', params: { name: ctx.domain, count: current.length } });
@@ -1555,7 +1585,9 @@ const TEMPLATE_BUILDERS = {
       : editSpf(now || `v=spf1 ${all || '~all'}`, { add: includes, all });
     if (edit.missing.length && now) ctx.problems.push({ severity: 'warn', key: 'fix.p.include-absent', params: { values: edit.missing.join(', ') } });
     if (edit.present.length) ctx.notes.push({ key: 'fix.n.spf-present', params: { include: edit.present.join(', ') } });
-    if (!now && ctx.form.spfAction === 'add') ctx.notes.push({ key: 'fix.n.spf-new' });
+    // Not read: whether there is a record to add to is not known, and the instructions say so.
+    if (!current && includes.length) ctx.notes.push({ key: 'fix.n.spf-unread', params: { include: includes.join(' include:'), name: ctx.domain } });
+    else if (current && !now) ctx.notes.push({ key: 'fix.n.spf-new' });
     const parsed = parseSpf(edit.record);
     for (const e of parsed.errors) ctx.problems.push({ severity: 'error', key: 'fix.p.spf-syntax', params: { token: e.token } });
     return [{ name: ctx.domain, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'spf1', values: [edit.record] }];
@@ -1570,15 +1602,15 @@ const TEMPLATE_BUILDERS = {
       return [];
     }
     const now = current && current.length ? current[0] : null;
+    // pct: empty keeps the record's own (none: all of it), 100 removes it.
     const pctRaw = String(ctx.form.pct ?? '').trim();
-    let pct = null;
+    const set = { p: ctx.form.policy };
     if (pctRaw) {
       const n = Number(pctRaw);
       if (!Number.isInteger(n) || n < 1 || n > 100) ctx.problems.push({ severity: 'error', key: 'fix.p.pct', params: { value: pctRaw } });
-      else if (n < 100) pct = String(n);
+      else set.pct = n < 100 ? String(n) : null;
     }
     const rua = ruaOf(ctx);
-    const set = { p: ctx.form.policy, pct };
     if (rua) set.rua = rua;
     if (ctx.form.sp !== 'keep') set.sp = ctx.form.sp === ctx.form.policy ? null : ctx.form.sp;
     const record = editDmarc(now, set);
@@ -1587,10 +1619,12 @@ const TEMPLATE_BUILDERS = {
     if (!parsed.rua.length) ctx.problems.push({ severity: 'warn', key: 'fix.p.dmarc-no-rua' });
     const parsedNow = now ? parseDmarc(now) : null;
     const before = parsedNow ? parsedNow.policy : null;
+    // Not read: the value holds only what the form sets, and the policy it replaces is not known.
+    if (!current) ctx.notes.push({ key: 'fix.n.dmarc-unread', params: { name } });
     // What steps up gets a note: the policy (not when it stays), and a subdomain policy the form sets.
-    if (ctx.form.policy === 'none' || before !== ctx.form.policy) {
-      ctx.notes.push({ key: ctx.form.policy === 'none' ? 'fix.n.dmarc-start' : 'fix.n.dmarc-step', params: { from: before || 'none', to: ctx.form.policy } });
-    }
+    if (ctx.form.policy === 'none') ctx.notes.push({ key: 'fix.n.dmarc-start' });
+    else if (!current) ctx.notes.push({ key: 'fix.n.dmarc-to', params: { to: ctx.form.policy } });
+    else if (before !== ctx.form.policy) ctx.notes.push({ key: 'fix.n.dmarc-step', params: { from: before || 'none', to: ctx.form.policy } });
     if (parsedNow && ctx.form.sp !== 'keep' && parsed.subdomainPolicy && parsed.subdomainPolicy !== parsedNow.subdomainPolicy) {
       ctx.notes.push({ key: 'fix.n.dmarc-sp', params: { from: parsedNow.subdomainPolicy || 'none', to: parsed.subdomainPolicy } });
     }
@@ -1784,7 +1818,7 @@ const HEALTH_FIXES = {
     { advice: [{ key: 'fix.a.rua-mailbox', params: { address: `dmarc-reports@${registrableDomain(r.domain) || r.domain}` } }] }),
   // Inherited, the policy that is none is the organizational record's subdomain policy: that steps up, p stays.
   'dmarc.policy-none': (r) => dmarcFix('dmarc.policy-none', r, r.dmarc && r.dmarc.inherited ? { ...dmarcKept(r), sp: 'quarantine' } : { ...dmarcKept(r), policy: 'quarantine' }),
-  'dmarc.pct': (r) => dmarcFix('dmarc.pct', r, { ...dmarcKept(r), pct: '' }),
+  'dmarc.pct': (r) => dmarcFix('dmarc.pct', r, { ...dmarcKept(r), pct: '100' }),
   'dmarc.sp-none': (r) => {
     const kept = dmarcKept(r);
     return dmarcFix('dmarc.sp-none', r, { ...kept, sp: kept.policy });
@@ -2063,7 +2097,7 @@ const STRINGS = [
   ['fix.field.all', ['Other senders (all)', 'Diğer gönderenler (all)']],
   ['fix.field.policy', ['Policy (p)', 'Politika (p)']],
   ['fix.field.pct', ['Share of failing mail the policy covers (pct)', 'Politikanın kapsadığı başarısız e-posta oranı (pct)']],
-  ['fix.field.pct.hint', ['1–100; empty for all of it. A step-up can start at 10 and grow.', '1–100; tamamı için boş bırakın. Sıkılaştırma 10 ile başlayıp büyüyebilir.']],
+  ['fix.field.pct.hint', ['1–100; empty keeps the record’s own (all of it when it has none), 100 removes it. A step-up can start at 10 and grow.', '1–100; boş bırakılırsa kaydın kendi değeri kalır (yoksa tamamı), 100 onu kaldırır. Sıkılaştırma 10 ile başlayıp büyüyebilir.']],
   ['fix.field.sp', ['Subdomain policy (sp)', 'Alt alan adı politikası (sp)']],
   ['fix.field.records', ['Records to lower', 'TTL’i düşürülecek kayıtlar']],
   ['fix.field.records.hint', ['One “name TYPE” per line, e.g. “www A” or “@ MX”. Read the current records: their values stay, only the TTL changes.', 'Her satıra bir “ad TÜR”, ör. “www A” ya da “@ MX”. Mevcut kayıtları okuyun: değerleri kalır, yalnızca TTL değişir.']],
@@ -2109,6 +2143,7 @@ const STRINGS = [
   ['fix.fmt.terraform-cloudflare.how', ['terraform-provider-cloudflare v4 resources; the zone ID is a variable.', 'terraform-provider-cloudflare v4 kaynakları; zone ID bir değişkendir.']],
   ['fix.fmt.terraform-route53.how', ['AWS provider resources; the hosted zone ID is a variable.', 'AWS sağlayıcısı kaynakları; hosted zone ID bir değişkendir.']],
   ['fix.fn.incomplete', ['The {type} values {name} has now were not read, and this format replaces the whole set: read the current records, or add them yourself.', '{name} adının şu anki {type} değerleri okunmadı ve bu biçim kümenin tamamını değiştirir: mevcut kayıtları okuyun ya da onları kendiniz ekleyin.']],
+  ['fix.fn.unread-edit', ['Built without reading the current records: if {name} already has a {family} record, this output replaces it. Read the current records first, or edit that record as the instructions say.', 'Mevcut kayıtlar okunmadan oluşturuldu: {name} adında zaten bir {family} kaydı varsa bu çıktı onu değiştirir. Önce mevcut kayıtları okuyun ya da o kaydı talimatlarda yazıldığı gibi düzenleyin.']],
   ['fix.fn.route53-delete', ['A DELETE must name the set exactly as it is, its TTL included: check the TTL in the Route 53 console (a resolver reports only what is left of its cached copy).', 'DELETE, kümeyi TTL’i dahil tam olarak olduğu gibi belirtmelidir: TTL’i Route 53 konsolunda kontrol edin (bir çözümleyici yalnızca önbellekteki kopyasının kalan süresini bildirir).']],
   ['fix.fn.cloudflare-ttl', ['Cloudflare accepts TTLs from 60 to 86400 seconds (below 60 only on Enterprise plans), or 1 for automatic.', 'Cloudflare 60 ile 86400 saniye arasındaki TTL’leri (60 altını yalnızca Enterprise planlarında) ya da otomatik için 1’i kabul eder.']],
   ['fix.fn.cloudflare-ids', ['Deleting or changing a record needs its id: the list call before that step shows it; put it in place of RECORD_ID.', 'Bir kaydı silmek ya da değiştirmek için kimliği gerekir: o adımdan önceki listeleme çağrısı onu gösterir; RECORD_ID yerine yazın.']],
@@ -2123,6 +2158,7 @@ const STRINGS = [
   ['fix.ins.action.ttl', ['Change the TTL', 'TTL’i değiştir']],
   ['fix.ins.action.rewrite', ['Rewrite', 'Yeniden yaz']],
   ['fix.ins.action.unchanged', ['No change', 'Değişiklik yok']],
+  ['fix.ins.action.set', ['Add or change', 'Ekle ya da değiştir']],
   ['fix.ins.rewrite', ['The same text, split into strings of at most 255 bytes:', 'Aynı metin, en fazla 255 baytlık dizelere bölünmüş olarak:']],
   ['fix.ins.name', ['Name', 'Ad']],
   ['fix.ins.value', ['Value', 'Değer']],
@@ -2131,6 +2167,7 @@ const STRINGS = [
   ['fix.ins.keepOthers', ['Keep the {type} records the name already has.', 'Adın mevcut {type} kayıtları kalsın.']],
   ['fix.ins.replaceAll', ['Replace every {type} record of the name with the values above.', 'Adın tüm {type} kayıtlarını yukarıdaki değerlerle değiştirin.']],
   ['fix.ins.replaceFamily', ['Replace the name’s {family} record with the value above.', 'Adın {family} kaydını yukarıdaki değerle değiştirin.']],
+  ['fix.ins.editFamily', ['If the name has no {family} record yet, add the value above; if it has one, the notes below say what to do with it.', 'Adın henüz bir {family} kaydı yoksa yukarıdaki değeri ekleyin; varsa onunla ne yapılacağını aşağıdaki notlar söyler.']],
   ['fix.ins.familyOthers', ['The other TXT records of the name stay as they are.', 'Adın diğer TXT kayıtları olduğu gibi kalır.']],
   ['fix.ins.deleteAll', ['Delete every {type} record of the name.', 'Adın tüm {type} kayıtlarını silin.']],
   ['fix.ins.deleteFamily', ['Delete the {family} record of the name; its other TXT records stay.', 'Adın {family} kaydını silin; diğer TXT kayıtları kalır.']],
@@ -2146,13 +2183,16 @@ const STRINGS = [
   ['fix.n.m365-dkim', ['Turn DKIM on in Microsoft Defender (Email authentication settings) once the CNAMEs resolve; compare the two values with the ones it shows.', 'CNAME kayıtları çözümlendikten sonra DKIM’i Microsoft Defender’da (E-posta kimlik doğrulama ayarları) açın; iki değeri orada gösterilenlerle karşılaştırın.']],
   ['fix.n.google-mx', ['smtp.google.com with priority 1 is Google’s current single MX; the older five aspmx records keep working.', 'Öncelik 1 ile smtp.google.com, Google’ın güncel tek MX kaydıdır; eski beş aspmx kaydı da çalışmaya devam eder.']],
   ['fix.n.google-dkim', ['No DKIM key given: generate one in the Google Admin console and publish it as a TXT record at google._domainkey.', 'DKIM anahtarı girilmedi: Google Yönetici konsolunda oluşturup google._domainkey adında TXT kaydı olarak yayınlayın.']],
-  ['fix.n.spf-unread', ['The current records were not read: if the domain already has an SPF record, add include:{include} to it instead of publishing a second one (two SPF records fail SPF for all mail).', 'Mevcut kayıtlar okunmadı: alan adının zaten bir SPF kaydı varsa ikinci bir kayıt yayınlamak yerine include:{include} ifadesini ona ekleyin (iki SPF kaydı tüm e-postalarda SPF’i başarısız kılar).']],
+  ['fix.n.spf-unread', ['The current records were not read: if the name already has an SPF record, add include:{include} to that record (before its all term) instead of replacing it with the value above, which would drop the senders it lists; a second SPF record would fail SPF for all mail.', 'Mevcut kayıtlar okunmadı: adın zaten bir SPF kaydı varsa onu yukarıdaki değerle değiştirmek yerine include:{include} ifadesini o kayda (all teriminden önce) ekleyin; değiştirmek kayıtta listelenen gönderenleri düşürür, ikinci bir SPF kaydı ise tüm e-postalarda SPF’i başarısız kılar.']],
   ['fix.n.spf-present', ['The SPF record already includes {include}.', 'SPF kaydında {include} zaten var.']],
   ['fix.n.spf-new', ['There is no SPF record yet: this creates one. List every service that sends mail as the domain.', 'Henüz SPF kaydı yok: bu değişiklik bir tane oluşturur. Alan adı adına e-posta gönderen her hizmeti listeleyin.']],
   ['fix.n.dmarc-start', ['p=none only asks for reports: watch them until every legitimate sender passes, then step up to quarantine and reject.', 'p=none yalnızca rapor ister: tüm meşru gönderenler geçene kadar raporları izleyin, sonra quarantine ve reject’e geçin.']],
   ['fix.n.dmarc-step', ['From p={from} to p={to}: watch the reports for a week or two after the change; a sender that fails DMARC now loses mail.', 'p={from} politikasından p={to} politikasına: değişiklikten sonra bir iki hafta raporları izleyin; DMARC’tan geçemeyen bir gönderenin e-postaları artık kaybolur.']],
+  ['fix.n.dmarc-to', ['To p={to}: watch the reports for a week or two after the change; a sender that fails DMARC then loses mail.', 'p={to} politikasına geçiş: değişiklikten sonra bir iki hafta raporları izleyin; DMARC’tan geçemeyen bir gönderenin e-postaları artık kaybolur.']],
+  ['fix.n.dmarc-unread', ['The current DMARC record of {name} was not read: the value above holds only what this request sets. If there is a record, change only those tags in it and keep the others (rua, ruf, sp, pct …): replacing it with the value above would drop them.', '{name} adının mevcut DMARC kaydı okunmadı: yukarıdaki değer yalnızca bu talebin belirlediği etiketleri taşır. Bir kayıt varsa onda yalnızca bu etiketleri değiştirin ve diğerlerini (rua, ruf, sp, pct …) koruyun: kaydı yukarıdaki değerle değiştirmek onları düşürür.']],
   ['fix.n.dmarc-sp', ['Names under the domain without a DMARC record of their own go from sp={from} to sp={to}: watch the reports of mail sent as them for a week or two.', 'Alan adının altında kendi DMARC kaydı olmayan adlar sp={from} politikasından sp={to} politikasına geçer: onların adına gönderilen e-postaların raporlarını bir iki hafta izleyin.']],
   ['fix.n.dmarc-kept', ['{name} already has a DMARC record; it stays as it is.', '{name} adında zaten bir DMARC kaydı var; olduğu gibi kalır.']],
+  ['fix.n.dmarc-first-unread', ['The current records were not read: if {name} already has a DMARC record, leave it as it is and skip this record.', 'Mevcut kayıtlar okunmadı: {name} adında zaten bir DMARC kaydı varsa olduğu gibi bırakın ve bu kaydı atlayın.']],
   ['fix.n.caa-tree', ['CAA at {name} applies to every name below it that has no CAA record of its own.', '{name} adındaki CAA, kendi CAA kaydı olmayan altındaki her ada da uygulanır.']],
   ['fix.n.caa-wildcard-dns01', ['Without dns-01 no CA can validate a wildcard certificate here.', 'dns-01 olmadan hiçbir otorite burada joker (wildcard) sertifika doğrulayamaz.']],
   ['fix.n.ttl-wait', ['Wait at least the old TTL after this change before the migration: until then resolvers may keep the longer-lived copies. A resolver still had one for {ttl} s; the zone’s own value can be higher.', 'Bu değişiklikten sonra taşımadan önce en az eski TTL kadar bekleyin: o zamana kadar çözümleyiciler uzun ömürlü kopyaları tutabilir. Bir çözümleyicide {ttl} sn kalmış bir kopya vardı; zone’daki asıl değer daha yüksek olabilir.']],
@@ -2188,6 +2228,7 @@ const STRINGS = [
   ['fix.p.read-first', ['Read the current records first: the change is built from the record the name holds now.', 'Önce mevcut kayıtları okuyun: değişiklik adın şu anki kaydından oluşturulur.']],
   ['fix.p.spf-multiple', ['{name} has {count} SPF records: merge them into one first (the “Show the fix” of Domain Health does it).', '{name} adında {count} SPF kaydı var: önce tek kayıtta birleştirin (Alan Adı Sağlığı’ndaki “Düzeltmeyi göster” bunu yapar).']],
   ['fix.p.spf-none', ['{name} has no SPF record to remove an include from.', '{name} adında include kaldırılacak bir SPF kaydı yok.']],
+  ['fix.p.spf-remove-read', ['Read the current records first: an include is removed from the SPF record {name} holds now, and a record written without that read would drop every other sender.', 'Önce mevcut kayıtları okuyun: include, {name} adının şu anki SPF kaydından kaldırılır; bu okuma olmadan yazılan bir kayıt diğer tüm gönderenleri düşürür.']],
   ['fix.p.include-absent', ['The SPF record has no include of {values}.', 'SPF kaydında {values} için include yok.']],
   ['fix.p.spf-syntax', ['The new SPF record has an invalid term: {token}', 'Yeni SPF kaydında geçersiz bir ifade var: {token}']],
   ['fix.p.spf-terms', ['The SPF record of {name} has {count} lookup terms of its own, over the limit of {limit} before any include is expanded.', '{name} SPF kaydının kendi {count} sorgu ifadesi var; include’lar açılmadan önce bile {limit} sınırını aşıyor.']],

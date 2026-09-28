@@ -2,7 +2,7 @@
 ## problems
 warn fix.p.read-first {}
 ## notes
-fix.n.spf-new {}
+fix.n.spf-unread {"include":"mailgun.org","name":"example.com"}
 ## check
 z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22
 ## bind
@@ -14,6 +14,8 @@ $ORIGIN example.com.
 ; example.com TXT (SPF); the other TXT records of @ stay
 ; replaces the SPF record of @
 @ 3600 IN TXT "v=spf1 include:mailgun.org ~all"
+## bind notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 ## route53
 {
   "Comment": "DNS change request for example.com (DomainScope)",
@@ -34,6 +36,7 @@ $ORIGIN example.com.
   ]
 }
 ## route53 notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 ## cloudflare
 #!/bin/sh
@@ -53,6 +56,7 @@ curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TO
 curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
   --data '{"type":"TXT","name":"example.com","content":"\"v=spf1 include:mailgun.org ~all\"","ttl":3600}'
 ## cloudflare notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 fix.fn.cloudflare-ids {}
 ## octodns
 # DNS change request for example.com (DomainScope)
@@ -65,6 +69,7 @@ fix.fn.cloudflare-ids {}
     values:
       - 'v=spf1 include:mailgun.org ~all'
 ## octodns notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 ## terraform-cloudflare
 # DNS change request for example.com (DomainScope)
@@ -83,6 +88,8 @@ resource "cloudflare_record" "txt_apex" {
   content  = "v=spf1 include:mailgun.org ~all"
   ttl      = 3600
 }
+## terraform-cloudflare notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 ## terraform-route53
 # DNS change request for example.com (DomainScope)
 # aws_route53_record manages a whole record set: every value of the name and type is listed.
@@ -101,22 +108,23 @@ resource "aws_route53_record" "txt_apex" {
   records = ["v=spf1 include:mailgun.org ~all"]
 }
 ## terraform-route53 notes
+fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 fix.fn.incomplete {"name":"example.com","type":"TXT"}
 ## en
 DNS change request: example.com
 
 Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
 
-1. Replace: SPF record (TXT)
+1. Add or change: SPF record (TXT)
    Name: example.com
    Value:
      "v=spf1 include:mailgun.org ~all"
    TTL: 3600
-   Replace the name’s SPF record with the value above.
+   If the name has no SPF record yet, add the value above; if it has one, the notes below say what to do with it.
    The other TXT records of the name stay as they are.
 
 Notes:
-- There is no SPF record yet: this creates one. List every service that sends mail as the domain.
+- The current records were not read: if the name already has an SPF record, add include:mailgun.org to that record (before its all term) instead of replacing it with the value above, which would drop the senders it lists; a second SPF record would fail SPF for all mail.
 
 Once the change is made, this link shows whether public DNS resolvers see it:
 https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22
@@ -125,16 +133,16 @@ DNS değişiklik talebi: example.com
 
 Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
 
-1. Değiştir: SPF kaydı (TXT)
+1. Ekle ya da değiştir: SPF kaydı (TXT)
    Ad: example.com
    Değer:
      "v=spf1 include:mailgun.org ~all"
    TTL: 3600
-   Adın SPF kaydını yukarıdaki değerle değiştirin.
+   Adın henüz bir SPF kaydı yoksa yukarıdaki değeri ekleyin; varsa onunla ne yapılacağını aşağıdaki notlar söyler.
    Adın diğer TXT kayıtları olduğu gibi kalır.
 
 Notlar:
-- Henüz SPF kaydı yok: bu değişiklik bir tane oluşturur. Alan adı adına e-posta gönderen her hizmeti listeleyin.
+- Mevcut kayıtlar okunmadı: adın zaten bir SPF kaydı varsa onu yukarıdaki değerle değiştirmek yerine include:mailgun.org ifadesini o kayda (all teriminden önce) ekleyin; değiştirmek kayıtta listelenen gönderenleri düşürür, ikinci bir SPF kaydı ise tüm e-postalarda SPF’i başarısız kılar.
 
 Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
 https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22

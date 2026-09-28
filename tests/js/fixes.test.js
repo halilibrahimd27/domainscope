@@ -12,7 +12,7 @@ import {
   absoluteName, relativeName, zoneName, txtChunks, normalizeValue, valueKey, valueText, parseValueText, txtFamily, familyOf,
   rrset, rrsetPlan, changeRequest, readPlan, readCurrent, currentEntry, applyCurrent, validateChange, afterZoneText, countSpfLookups,
   renderFix, formatNotes, changeInstructions, editSpf, mergeSpf, editDmarc, buildChange, templateInput, changeTemplate, mailtoUri,
-  m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors
+  m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors, unreadEdits, rrsetAction
 } from '../../assets/js/lib/fixes.js';
 import { LINT_I18N } from '../../assets/js/lib/zonelint.js';
 import { HEALTH_CHECK_IDS, parseSpf, parseDmarc, parseCaa, checkCaaAllows } from '../../assets/js/lib/health.js';
@@ -467,6 +467,46 @@ describe('templates', () => {
     }
   });
 
+  test('an SPF include is never removed from a record that was not read; an add says what it cannot know', () => {
+    const rm = buildChange('spf', { domain: 'example.com', spfAction: 'remove', includes: 'mailgun.org' });
+    assert.deepEqual([rm.rrsets, rm.problems], [[], [{ severity: 'error', key: 'fix.p.spf-remove-read', params: { name: 'example.com' } }]]);
+    assert.ok(hasErrors(rm));
+    const add = buildChange('spf', { domain: 'example.com', includes: 'mailgun.org\n_spf.example.net' });
+    assert.deepEqual(add.notes, [{ key: 'fix.n.spf-unread', params: { include: 'mailgun.org include:_spf.example.net', name: 'example.com' } }]);
+    assert.ok(!add.notes.some((n) => n.key === 'fix.n.spf-new'), 'nothing was read: no word about there being no record');
+    // Read, and no SPF record there: this one is new.
+    const none = { 'example.com|TXT': { status: 'ok', values: [['site-verification=1']], ttl: 300, cname: null } };
+    assert.deepEqual(buildChange('spf', { domain: 'example.com', includes: 'mailgun.org' }, { current: none }).notes.map((n) => n.key), ['fix.n.spf-new']);
+    // The instructions and every format say it: "add or change", never "replace the SPF record".
+    assert.deepEqual(unreadEdits(add).map((r) => `${r.name} ${r.family}`), ['example.com spf1']);
+    const en = changeInstructions(add, { lang: 'en' });
+    assert.match(en, /^1\. Add or change: SPF record \(TXT\)$/m);
+    assert.doesNotMatch(en, /Replace the name’s SPF record/);
+    assert.match(changeInstructions(add, { lang: 'tr' }), /^1\. Ekle ya da değiştir: SPF kaydı \(TXT\)$/m);
+    for (const f of FIX_FORMATS) assert.equal(formatNotes(add, f)[0].key, 'fix.fn.unread-edit', f);
+    assert.deepEqual(unreadEdits(buildChange('spf', { domain: 'example.com', includes: 'mailgun.org' }, { current: none })), [], 'read: exact');
+    assert.equal(rrsetAction(add.rrsets[0]), 'replace', 'the plan itself is unchanged');
+  });
+
+  test('a DMARC step-up without a read: the tags it leaves out are named, and no policy it comes from', () => {
+    const req = buildChange('dmarc', { domain: 'example.com', policy: 'reject' });
+    assert.deepEqual(req.notes, [{ key: 'fix.n.dmarc-unread', params: { name: '_dmarc.example.com' } }, { key: 'fix.n.dmarc-to', params: { to: 'reject' } }]);
+    assert.doesNotMatch(changeInstructions(req), /From p=none/);
+    assert.match(changeInstructions(req), /keep the others \(rua, ruf, sp, pct …\)/);
+    // A first DMARC record of a mail template, not read: one that is there stays.
+    const m365 = buildChange('m365', { domain: 'example.com' });
+    assert.ok(m365.notes.some((n) => n.key === 'fix.n.dmarc-first-unread' && n.params.name === '_dmarc.example.com'));
+    assert.deepEqual(unreadEdits(m365).map((r) => r.family), ['spf1', 'dmarc1']);
+  });
+
+  test('the DMARC pct field: empty keeps the record\'s own, 100 removes it, a number sets it', () => {
+    const cur = { '_dmarc.example.com|TXT': { status: 'ok', values: [['v=DMARC1; p=quarantine; pct=25; rua=mailto:d@example.com']], ttl: 300, cname: null } };
+    const value = (pct) => buildChange('dmarc', { domain: 'example.com', policy: 'reject', pct }, { current: cur }).rrsets[0].values[0].join('');
+    assert.equal(value(''), 'v=DMARC1; p=reject; pct=25; rua=mailto:d@example.com');
+    assert.equal(value('100'), 'v=DMARC1; p=reject; rua=mailto:d@example.com');
+    assert.equal(value('50'), 'v=DMARC1; p=reject; pct=50; rua=mailto:d@example.com');
+  });
+
   test('the ACME templates take the record name a client prints for the certificate name: the label is never doubled', () => {
     for (const name of ['_acme-challenge.example.com', '_ACME-Challenge.example.com.']) {
       const txt = buildChange('acme-txt', { name, tokens: TOKEN });
@@ -758,7 +798,8 @@ describe('i18n', () => {
     for (const k of literal) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
     // Built keys: formats, templates, actions.
     for (const f of FIX_FORMATS) for (const k of [`fix.fmt.${f}`, `fix.fmt.${f}.how`]) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
-    for (const a of ['add', 'replace', 'delete', 'ttl', 'rewrite', 'unchanged']) assert.ok(FIX_I18N.tr[`fix.ins.action.${a}`], a);
+    for (const a of ['add', 'replace', 'delete', 'ttl', 'rewrite', 'unchanged', 'set']) assert.ok(FIX_I18N.tr[`fix.ins.action.${a}`], a);
+    for (const k of ['fix.ins.editFamily', 'fix.ins.replaceFamily', 'fix.ins.replaceAll']) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
   });
 
   test('English and Turkish have the same keys and placeholders', () => {

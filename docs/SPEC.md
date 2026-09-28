@@ -1499,7 +1499,8 @@ export function planRenewal(scanResult, sets) -> { sets, assigned: Map<name, { s
   // strongest kept); needsCert: a DNS or zone name, maybe: hints only. uncovered: scanned hosts no set covers (wildcard suspects left out), those on your servers
   // first, then resolving ones
 export const WORKLIST_COLUMNS; export function workListRows(plan) -> rows   // one per server (or address) × set: server, ip, names, candidates (origin hints),
-                                                                           // set, setNames, keyTypes, expires, files (toCsv joins lists with spaces)
+                                                                           // set, setNames, keyTypes, expires, files (toCsv joins names and IPs with spaces;
+                                                                           // key types, which hold spaces, with ' + ' and file names with '; ')
 export function cliCertFiles(sets) -> [{ file /* new-cert-<set>-<key>.pem, -2 … on a clash */, set, leaf }]   // one --cert file per certificate
 export function certSetsJson(sets) -> object[]   // ids, names, key types and each certificate's identity and files, never the DER
 export function leafKey(cert), withoutLeaf(files, key) /* every file loses it; a file left without a leaf goes */, primaryFile(files) /* the first with a leaf */,

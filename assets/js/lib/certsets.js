@@ -476,9 +476,15 @@ export function planRenewal(result, sets) {
   return { sets: list, assigned, uncovered, rows, perSet };
 }
 
+/** A list joined with `sep` for a CSV cell (not an array: toCsv would join it with spaces). */
+const joined = (key, sep) => (row) => (Array.isArray(row && row[key]) ? row[key].join(sep) : '');
+
 /**
  * Columns of {@link workListRows} for lib/export toCsv (English headers, like HOST_COLUMNS).
- * @type {ReadonlyArray<{ key: string, header: string }>}
+ * Names, candidates and addresses never hold a space, so toCsv joins them with spaces as the
+ * other exports do; key types ("RSA 2048") and file names ("cert (1).pem") can, so they are
+ * joined with " + " and "; ".
+ * @type {ReadonlyArray<{ key: string, header: string, get?: (row: object) => string }>}
  */
 export const WORKLIST_COLUMNS = Object.freeze([
   { key: 'server', header: 'Server' },
@@ -486,16 +492,16 @@ export const WORKLIST_COLUMNS = Object.freeze([
   { key: 'names', header: 'Names' },
   { key: 'candidates', header: 'Possible origin names' },
   { key: 'set', header: 'Certificate set' },
-  { key: 'keyTypes', header: 'Key types' },
+  { key: 'keyTypes', header: 'Key types', get: joined('keyTypes', ' + ') },
   { key: 'expires', header: 'Expires' },
-  { key: 'files', header: 'Files' }
+  { key: 'files', header: 'Files', get: joined('files', '; ') }
 ].map((c) => Object.freeze(c)));
 
 /**
  * The per-server work list: one row per server (or address) and set it needs, in matrix order.
  * `names` are the names DNS or the zone file ties to it, `candidates` those only an origin hint
  * points at (confirm them with the CLI first); `ip` the addresses serving them. List fields stay
- * arrays (toCsv joins them with spaces).
+ * arrays ({@link WORKLIST_COLUMNS} says how each is joined in the CSV).
  * @param {RenewalPlan} plan
  * @returns {Array<{ server: string, ip: string[], names: string[], candidates: string[], set: string,
  *   setNames: string[], keyTypes: string[], expires: Date|null, files: string[] }>}

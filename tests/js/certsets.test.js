@@ -308,7 +308,10 @@ describe('workListRows — the CSV work list', () => {
     const csv = toCsv(rows, WORKLIST_COLUMNS, { bom: false });
     const [header, first] = csv.split('\r\n');
     assert.equal(header, 'Server,IP,Names,Possible origin names,Certificate set,Key types,Expires,Files');
-    assert.equal(first, 'web01,203.0.113.10,example.com www.example.com,,A,RSA 2048 ECDSA P-256,2036-09-01T00:00:00.000Z,renew_a_rsa.pem renew_a_ecdsa.pem');
+    // key types and file names hold spaces: joined with " + " and "; ", so each stays whole
+    assert.equal(first, 'web01,203.0.113.10,example.com www.example.com,,A,RSA 2048 + ECDSA P-256,2036-09-01T00:00:00.000Z,renew_a_rsa.pem; renew_a_ecdsa.pem');
+    const spaced = toCsv([{ ...rows[0], files: ['example.com RSA.pem', 'cert (1).pem'] }], WORKLIST_COLUMNS, { bom: false });
+    assert.match(spaced.split('\r\n')[1], /,example\.com RSA\.pem; cert \(1\)\.pem$/);
     assert.deepEqual(workListRows(null), []);
   });
 });

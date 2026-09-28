@@ -162,6 +162,7 @@ export function KeyContinuityCard({ cert, ctx, cache, cacheKey, onOpenDane = nul
         caption: t('key.title'),
         rows: r.certs,
         dense: true,
+        cellLabels: true,
         rowKey: (c) => c.ids.join(',') || c.serialHex || '',
         className: 'cert-key-table',
         rowClass: (c) => (c.isThis ? 'cert-key-row-this' : null),

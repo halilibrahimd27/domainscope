@@ -813,6 +813,58 @@
   gap: 6px;
 }
 
+/* A phone: each certificate with the key is a card of labelled lines (id, issuer, validity). */
+@media (max-width: 600px) {
+  .cert-key-table .dt-table,
+  .cert-key-table .dt-table tbody {
+    display: block;
+  }
+
+  .cert-key-table .dt-table thead {
+    display: none;
+  }
+
+  .cert-key-table .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cert-key-table .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .cert-key-table .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .cert-key-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .cert-key-table .dt-table tbody tr.cert-key-row-this {
+    background: var(--accent-soft);
+  }
+
+  .cert-key-table .dt-table tbody .cert-key-row-this td {
+    background: none;
+  }
+}
+
 @media (max-width: 600px) {
   .cert-overview-main {
     padding: 14px;

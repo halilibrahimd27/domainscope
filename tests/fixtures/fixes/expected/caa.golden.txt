@@ -201,7 +201,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
      0 issuewild ";"
      0 iodef "mailto:security@example.com"
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      0 issue "pki.goog"
 
 Notlar:

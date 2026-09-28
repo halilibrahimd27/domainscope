@@ -2098,7 +2098,7 @@ const STRINGS = [
   ['fix.ins.name', ['Name', 'Ad']],
   ['fix.ins.value', ['Value', 'Değer']],
   ['fix.ins.values', ['Values', 'Değerler']],
-  ['fix.ins.removes', ['This removes', 'Bu değişiklikle kalkanlar']],
+  ['fix.ins.removes', ['This removes', 'Bu değişiklikle kaldırılanlar']],
   ['fix.ins.keepOthers', ['Keep the {type} records the name already has.', 'Adın mevcut {type} kayıtları kalsın.']],
   ['fix.ins.replaceAll', ['Replace every {type} record of the name with the values above.', 'Adın tüm {type} kayıtlarını yukarıdaki değerlerle değiştirin.']],
   ['fix.ins.replaceFamily', ['Replace the name’s {family} record with the value above.', 'Adın {family} kaydını yukarıdaki değerle değiştirin.']],
@@ -2195,7 +2195,7 @@ const STRINGS = [
   ['fix.a.dmarc-inherited', ['{domain} has no DMARC record of its own and uses the one at {name}: the fix changes that record, which also holds the policy of {org} and of every name under it without a DMARC record of its own.', '{domain} adının kendi DMARC kaydı yok, {name} adındakini kullanıyor: düzeltme o kaydı değiştirir; bu kayıt {org} alan adının ve altında kendi DMARC kaydı olmayan her adın politikasını da taşır.']],
   ['fix.a.caa-at', ['The CAA records that apply to {domain} are at {name}: the fix changes them there, so it applies to every name under {name} without CAA records of its own.', '{domain} için geçerli CAA kayıtları {name} adında: düzeltme onları orada değiştirir; bu yüzden {name} altında kendi CAA kaydı olmayan her ada uygulanır.']],
   ['fix.a.caa-cert', ['The certificate’s CA ({issuer}) joins the {property} values as “{value}”; the CAs already listed stay.', 'Sertifikanın otoritesi ({issuer}) {property} değerlerine “{value}” olarak eklenir; listedeki otoriteler kalır.']],
-  ['fix.a.caa-critical', ['The critical flag goes from {tags}: a CA that does not know the tag then ignores it instead of refusing every certificate. If the tag was meant to restrict issuance, ask your CA what it supports instead.', 'Kritik bayrağı {tags} etiketinden kalkar: etiketi tanımayan bir otorite her sertifikayı reddetmek yerine onu yok sayar. Etiket sertifika verilmesini kısıtlamak içinse otoritenize neyi desteklediğini sorun.']],
+  ['fix.a.caa-critical', ['The critical flag goes from {tags}: a CA that does not know the tag then ignores it instead of refusing every certificate. If the tag was meant to restrict issuance, ask your CA what it supports instead.', 'Kritik bayrak {tags} etiketinden kaldırılır: etiketi tanımayan bir otorite her sertifikayı reddetmek yerine onu yok sayar. Etiket sertifika verilmesini kısıtlamak içinse otoritenize neyi desteklediğini sorun.']],
   ['fix.a.null-mixed', ['Keep either the null MX (“0 .”, the domain receives no mail) or the real MX records, not both.', 'Ya null MX’i (“0 .”, alan adı e-posta almaz) ya da gerçek MX kayıtlarını tutun; ikisini birden değil.']]
 ];
 

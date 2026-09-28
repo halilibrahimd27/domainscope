@@ -118,7 +118,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
    Değer:
      "v=spf1 ~all"
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      "v=spf1 include:spf.protection.outlook.com ~all"
    Adın diğer TXT kayıtları olduğu gibi kalır.
 

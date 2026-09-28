@@ -243,14 +243,14 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
    Değer:
      1 smtp.google.com.
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      10 mail.example.com.
 2. Değiştir: SPF kaydı (TXT)
    Ad: example.com
    Değer:
      "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      "v=spf1 include:spf.protection.outlook.com ~all"
    Adın diğer TXT kayıtları olduğu gibi kalır.
 3. Değiştir: DKIM kaydı (TXT)

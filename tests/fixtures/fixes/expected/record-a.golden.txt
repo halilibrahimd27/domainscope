@@ -135,7 +135,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
      192.0.2.10
      192.0.2.11
    TTL: 600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      198.51.100.5
 
 Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:

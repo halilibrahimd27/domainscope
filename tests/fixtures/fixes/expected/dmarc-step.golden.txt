@@ -118,7 +118,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
    Değer:
      "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com; pct=25"
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
    Adın diğer TXT kayıtları olduğu gibi kalır.
 

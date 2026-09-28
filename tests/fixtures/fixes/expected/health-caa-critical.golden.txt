@@ -145,7 +145,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
      0 tbs "unknown"
      0 issue "letsencrypt.org"
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      128 tbs "unknown"
 
 Notlar:

@@ -299,7 +299,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
    Değer:
      0 example-com.mail.protection.outlook.com.
    TTL: 3600
-   Bu değişiklikle kalkanlar:
+   Bu değişiklikle kaldırılanlar:
      10 mail.example.com.
 2. Ekle: CNAME kayıtları
    Ad: autodiscover.example.com

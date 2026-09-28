@@ -337,8 +337,9 @@ describe('i18n coverage', () => {
     for (const n of egress.NEVER_SENT) add(`egress.never.${n}`);
     // Subdomains › Related domains (ui/related-domains.js): every Certificate Transparency state it words.
     for (const st of ['waiting', 'failed', 'none', 'sharedOnlyNone']) add(`rel.${st}`);
-    // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key.
-    for (const w of ['reused', 'single']) { add(`key.tlsa.${w}`); add(`key.pin.${w}`); }
+    // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key,
+    // a leaf's and a CA certificate's.
+    for (const w of ['reused', 'single']) for (const suffix of ['', 'Ca']) { add(`key.tlsa.${w}${suffix}`); add(`key.pin.${w}${suffix}`); }
     assert.deepEqual(missingIn(keys), []);
   });
 

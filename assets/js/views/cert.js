@@ -2841,8 +2841,10 @@ export function mount(container, ctx) {
           ctx,
           cache: keyCache,
           cacheKey: key,
-          // a certificate crt.sh lacks was still logged when a public CA issued it
-          publicCa: isPublic,
+          // a server certificate crt.sh lacks was still logged when a public CA issued it; a CA
+          // certificate is worded for its own key (TLSA 2 1 1, CA pins), and its issuer promises no log
+          publicCa: isPublic && !cert.isCA,
+          ca: !!cert.isCA,
           onOpenDane: () => {
             if (tabs) tabs.select('dane', { focus: true });
           }

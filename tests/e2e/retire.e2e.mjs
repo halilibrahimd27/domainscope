@@ -85,12 +85,16 @@ export const ZONE = [
   ''
 ].join('\n');
 
-/** In-page stubs: DoH from the table (CNAMEs chased, NXDOMAIN outside it), HackerTarget and ip.thc.org. */
+/**
+ * In-page stubs: DoH from the table (CNAMEs chased, NXDOMAIN outside it), HackerTarget and ip.thc.org.
+ * `window.__fakeDnsRcodes` forces an answer's rcode: keyed 'name|TYPE', 'name' or '*' (every query).
+ */
 export const fakeScript = (table) => `(() => {
   const T = ${JSON.stringify(table)};
   window.__fakeDnsLog = [];
   window.__passiveLog = [];
   window.__fakeDnsDelay = 0;
+  window.__fakeDnsRcodes = {};
   let wire = null;
   const realFetch = window.fetch.bind(window);
   const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
@@ -118,8 +122,9 @@ export const fakeScript = (table) => `(() => {
     }
     const answers = [];
     let cur = name;
-    let rcode = 'NOERROR';
-    for (let hop = 0; hop < 8; hop += 1) {
+    const forced = window.__fakeDnsRcodes;
+    let rcode = forced[name + '|' + q.type] || forced[name] || forced['*'] || 'NOERROR';
+    for (let hop = 0; hop < 8 && rcode === 'NOERROR'; hop += 1) {
       const node = T[cur];
       if (!node) { rcode = 'NXDOMAIN'; break; }
       if (node.CNAME && q.type !== 'CNAME') {
@@ -230,7 +235,57 @@ async function main() {
       assertEqual(await dnsCount(page), 0, 'nothing sent');
     });
 
+    /** The verdict and what the head card says around it. */
+    const verdict = () => page.evaluate(() => {
+      const v = document.querySelector('[data-role="retire-verdict"]');
+      return {
+        variant: [...v.classList].find((c) => /^alert-(ok|info|warn|error)$/.test(c)),
+        title: v.querySelector('.alert-title')?.textContent || '',
+        message: v.querySelector('.alert-message')?.textContent || '',
+        stopped: /Stopped/.test(document.querySelector('.retire-head').textContent),
+        clean: !!document.querySelector('[data-role="retire-clean"]')
+      };
+    });
+    const chipValues = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.retire-chips .src-chip')]
+      .map((c) => [c.dataset.source, [c.dataset.state, c.querySelector('.src-chip-value').textContent]])));
+
+    await run.step('every lookup failing (SERVFAIL): never the green "nothing"; the card names what failed; the SPF record "cannot tell"', async () => {
+      await page.evaluate(() => { window.__fakeDnsRcodes = { '*': 'SERVFAIL' }; });
+      await typeInto(page, 'retire-domains', 'servfail.example.org');
+      await page.click('[data-action="retire-run"]');
+      await waitDone(page, 'the SERVFAIL check');
+      await page.evaluate(() => { window.__fakeDnsRcodes = {}; });
+      const v = await verdict();
+      assertEqual([v.variant, v.title, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
+      assert(/lookups failed · 1 SPF result cannot be told from here: the list may be incomplete\./.test(v.message), v.message);
+      const failures = await text(page, '.retire-group[data-group="servfail.example.org"] [data-role="retire-failures"]');
+      assert(/^Lookups that failed for servfail\.example\.org: MX, NS, the SPF record, the HTTPS record, 1 host name \(servfail\.example\.org\)\./.test(failures), failures);
+      assertEqual(await rows(page), [['servfail.example.org', 'unknown', 'servfail.example.org', 'TXT', '—', 'unknown']], 'the SPF row');
+      const c = await chipValues();
+      assertEqual([c.dns[0], c.spf], ['failed', ['failed', '1 could not be read']], 'chips');
+      assert(await page.evaluate(() => document.querySelector('.retire-stats [data-stat="unknown"]') !== null), 'a "Cannot tell" stat');
+      await shot(page, opts, 'retire-servfail-desktop-light-en');
+    });
+
+    await run.step('Stop before the first domain finishes: never "nothing"; public DNS and SPF read "not checked"', async () => {
+      // Every answer waits 5 s: the stop comes long before the first domain can finish.
+      await page.evaluate(() => { window.__fakeDnsDelay = 5000; });
+      await typeInto(page, 'retire-domains', 'slow.example.org');
+      await page.click('[data-action="retire-run"]');
+      await page.waitFor(() => document.querySelector('.retire-job')?.dataset.status === 'running' && !document.querySelector('[data-action="retire-stop"]').hidden, { message: 'running' });
+      await jsClick(page, '[data-action="retire-stop"]');
+      await waitDone(page, 'stopped at once', 'cancelled');
+      await page.evaluate(() => { window.__fakeDnsDelay = 0; });
+      const v = await verdict();
+      assertEqual([v.variant, v.title, v.stopped, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', true, false], 'verdict');
+      assert(/1 domain not checked/.test(v.message), v.message);
+      const c = await chipValues();
+      assertEqual([c.dns, c.spf], [['idle', 'not checked'], ['idle', 'not checked']], 'chips');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.retire-group').length), 0, 'no card for a domain never checked');
+    });
+
     await run.step('a zone imported under Zone File and the last scan fill an empty domain box; the host names per domain', async () => {
+      const before = await dnsCount(page);
       await gotoRoute(page, 'zone');
       await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
       await page.type('[data-role="zone-paste"]', ZONE);
@@ -258,7 +313,7 @@ async function main() {
       assertEqual(form.filled, 'scan', 'says where from (the zone adds no other domain)');
       // www, api (scan) + shop, old, mail, ns1 (zone; the internal name left out).
       assertEqual(form.hosts, [['example.com', '6']], 'known host names');
-      assertEqual(await dnsCount(page), 0, 'nothing sent');
+      assertEqual(await dnsCount(page), before, 'nothing sent');
       await shot(page, opts, 'retire-form-desktop-light-en');
     });
 

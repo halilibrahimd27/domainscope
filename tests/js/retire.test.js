@@ -13,7 +13,7 @@ import {
   parseRetireTargets, parseDomainList, retireTokens, rangeOf, rangeRelation, blockOf, effectiveQualifier, spfCoverage,
   spfMxHosts, checkDomain, zoneCandidates, verifyZoneRefs, knownHostsFor, runRetireCheck, inventoryOwners, buildChanges,
   breakingChanges, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, SEVERITIES, VERIFIED_STATES,
-  CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_ADDRESSES
+  CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_ADDRESSES, FAILURE_KINDS, retireGaps
 } from '../../assets/js/lib/retire.js';
 import { spfLookupCount } from '../../assets/js/lib/health.js';
 import { hostResolutionFrom } from '../../assets/js/lib/doh.js';
@@ -327,6 +327,53 @@ describe('one domain over DoH', () => {
     assert.deepEqual([net.mx.status, net.ns.status, net.spf.status, net.https.status], ['none', 'none', 'none', 'none']);
     await assert.rejects(checkDomain('not a domain', { dns, blocks }), TypeError);
     await assert.rejects(checkDomain('example.net', { dns, blocks, signal: AbortSignal.abort() }), { name: 'AbortError' });
+  });
+
+  test('an SPF record that could not be read is a "cannot tell" row, never "no SPF"', async () => {
+    const dns = fakeDns({ 'example.org': { A: ['198.51.100.1'], TXT: ['v=spf1 ip4:192.0.2.10 -all'] } }, { rcodes: { 'example.org|TXT': 'SERVFAIL' } });
+    const blocks = blocksOf('192.0.2.10');
+    const c = await checkDomain('example.org', { dns, blocks });
+    assert.equal(c.spf.status, 'failed');
+    assert.deepEqual(c.spf.unknown.map((u) => [u.holder, u.mechanism, u.reason, u.term]), [['example.org', 'record', 'lookup-failed', '']]);
+    assert.deepEqual(c.failures.map((f) => f.what), ['spf']);
+    const built = buildChanges({ blocks, checks: [c] });
+    assert.deepEqual(built.changes.map((x) => [x.group, x.name, x.type, x.severity, x.action, x.verified, x.reason]), [
+      ['example.org', 'example.org', 'TXT', 'unknown', 'check', 'unknown', 'lookup-failed']
+    ]);
+    assert.equal(built.counts.bySeverity.unknown, 1);
+    assert.equal(built.counts.breaking, 0);
+  });
+});
+
+describe('what a check could not settle', () => {
+  const blocks = () => blocksOf('192.0.2.10');
+
+  test('every lookup failing: each kind counted, the SPF row "cannot tell", never settled', async () => {
+    const dns = fakeDns({ 'example.org': { A: ['192.0.2.10'] } }, { rcodes: { 'example.org': 'SERVFAIL' } });
+    const c = await checkDomain('example.org', { dns, blocks: blocks() });
+    assert.deepEqual(c.failures.map((f) => f.what).sort(), ['https', 'mx', 'name', 'ns', 'spf']);
+    const built = buildChanges({ blocks: blocks(), checks: [c] });
+    assert.equal(built.counts.total, 1, 'only the SPF row, which cannot be told');
+    const gaps = retireGaps({ domains: ['example.org'], checks: [c], counts: built.counts });
+    assert.deepEqual(gaps, {
+      failed: 5, failures: { name: 1, mx: 1, ns: 1, spf: 1, https: 1, domain: 0, zone: 0 }, unknown: 1, notChecked: [], stopped: false, settled: false
+    });
+    assert.deepEqual(FAILURE_KINDS.filter((k) => !(k in gaps.failures)), []);
+  });
+
+  test('a clean check is settled; a stop, an unchecked domain, a failed domain, a failed zone lookup or a "cannot tell" is not', async () => {
+    const dns = fakeDns({ 'example.net': { A: ['198.51.100.2'] } });
+    const c = await checkDomain('example.net', { dns, blocks: blocks() });
+    const built = buildChanges({ blocks: blocks(), checks: [c] });
+    assert.equal(built.counts.total, 0);
+    assert.equal(retireGaps({ domains: ['example.net'], checks: [c], counts: built.counts }).settled, true);
+    const stopped = retireGaps({ domains: ['example.net', 'example.org', 'example.com'], checks: [c], errors: [{ domain: 'example.com', error: 'x' }], aborted: true });
+    assert.deepEqual([stopped.notChecked, stopped.stopped, stopped.failures.domain, stopped.failed, stopped.settled], [['example.org'], true, 1, 1, false]);
+    const zone = retireGaps({ domains: ['example.net'], checks: [c], zone: [{ live: null }, { live: true }, {}] });
+    assert.deepEqual([zone.failures.zone, zone.settled], [1, false]);
+    const unknown = retireGaps({ domains: ['example.net'], checks: [c], counts: { bySeverity: { unknown: 2 } } });
+    assert.deepEqual([unknown.unknown, unknown.failed, unknown.settled], [2, 0, false]);
+    assert.equal(retireGaps().settled, true, 'nothing asked, nothing open');
   });
 });
 

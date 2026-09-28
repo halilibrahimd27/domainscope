@@ -21,7 +21,9 @@
  *   the file (`file`), hidden behind the proxy (`hidden`) or not asked because the name looks
  *   internal (`internal`).
  * - {@link runRetireCheck}: the whole check (every domain, then the zone's candidates), streamed
- *   as events and cancellable; what finished before an abort is kept.
+ *   as events and cancellable; what finished before an abort is kept. {@link retireGaps}: what it
+ *   could not settle (failed lookups, "cannot tell", a stop) — only a check without any of it may
+ *   say that nothing points at the address.
  * - Passive reverse IP (HackerTarget, ip.thc.org: lib/ipintel.js, only on a click) finds names
  *   outside the user's list; they stay `unverified` until checked like any other host name.
  * - {@link inventoryOwners}: which servers of the user's list own the addresses.
@@ -57,6 +59,8 @@ export const RETIRE_MAX_HOSTS = 1000;
 /** MX / NS hosts followed per domain (more is a misconfiguration; RFC 7208 stops at 10 MX). */
 export const RETIRE_MAX_MX = 10;
 export const RETIRE_MAX_NS = 13;
+/** Zone-file records verified live in one check (1–3 queries each); the rest stay unverified. */
+export const RETIRE_MAX_ZONE_REFS = 1000;
 /**
  * Addresses one passive lookup asks about: each costs one HackerTarget request (about 50 free a day
  * from the user's address, shared with the Subdomains source) and one ip.thc.org request.
@@ -76,8 +80,10 @@ export const VERIFIED_STATES = Object.freeze(['live', 'file', 'hidden', 'interna
  * setting, or look at it by hand (cannot tell).
  */
 export const CHANGE_ACTIONS = Object.freeze(['remove', 'repoint', 'narrow', 'follow', 'glue', 'provider', 'origin', 'check']);
-/** Why an SPF term's coverage cannot be told (`retire.why.<id>`). */
+/** Why an SPF term's coverage cannot be told (`retire.act.check.<id>`). */
 export const UNKNOWN_REASONS = Object.freeze(['macro', 'ptr', 'lookup-failed', 'skipped', 'include-failed', 'multiple']);
+/** What a failed lookup of one domain was for (DomainCheck.failures `what`; `retire.fail.<id>`). */
+export const FAILURE_KINDS = Object.freeze(['name', 'mx', 'ns', 'spf', 'https']);
 /** Where a known host name came from (`retire.src.<id>`). */
 export const HOST_SOURCES = Object.freeze(['scan', 'zone', 'passive', 'discovered']);
 /** Issues of {@link parseRetireTargets} (`retire.issue.<code>`). */
@@ -613,6 +619,9 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
     return { status: records(res, 'HTTPS').length ? 'ok' : 'none', error: null, hints };
   });
 
+  // The domain's own SPF record could not be read: whether it authorizes the address cannot be
+  // told, so it is a "cannot tell" row of its own — never an empty SPF result.
+  const recordFailed = [{ path: [d], holder: d, record: null, term: '', mechanism: 'record', reason: 'lookup-failed', target: d }];
   const spfJob = (async () => {
     let r;
     try {
@@ -621,7 +630,7 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
       if (isAbort(err)) throw err;
       tick();
       failures.push({ what: 'spf', name: d, error: String((err && err.message) || err), errorKind: errorKind(err) });
-      return { status: 'failed', record: null, error: String((err && err.message) || err), lookups: 0, matches: [], unknown: [] };
+      return { status: 'failed', record: null, error: String((err && err.message) || err), lookups: 0, matches: [], unknown: recordFailed };
     }
     tick();
     const rootErrors = (r.errors || []).filter((e) => e.domain === d);
@@ -629,7 +638,7 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
     if (rootErrors.some((e) => e.code === 'dns-error') && (!r.tree || r.tree.record === null)) {
       const e = rootErrors.find((x) => x.code === 'dns-error');
       failures.push({ what: 'spf', name: d, error: e.detail || 'SPF lookup failed', errorKind: null });
-      return { ...base, status: 'failed', error: e.detail || null, matches: [], unknown: [] };
+      return { ...base, status: 'failed', error: e.detail || null, matches: [], unknown: recordFailed };
     }
     if (rootErrors.some((e) => e.code === 'no-record')) return { ...base, status: 'none', error: null, matches: [], unknown: [] };
     if (rootErrors.some((e) => e.code === 'multiple-records')) {
@@ -966,6 +975,33 @@ export async function runRetireCheck({ blocks, domains, hosts = new Map(), zoneR
   return { checks: (domains || []).filter((d) => results.has(d)).map((d) => results.get(d)), errors, zone, aborted };
 }
 
+/**
+ * What a check could not settle. Only a check with none of it may say "nothing points at the
+ * address"; otherwise that is "nothing found, but the list may be incomplete".
+ * - failed lookups: each domain's names, MX, NS, SPF and HTTPS ({@link FAILURE_KINDS}), a domain
+ *   that could not be checked at all (`domain`), a zone-file record whose live lookup failed (`zone`);
+ * - `unknown`: rows that cannot be told (an SPF macro, a failed SPF lookup …; `counts.bySeverity.unknown`);
+ * - `notChecked`: domains a stop left unchecked (a domain that failed is counted under `domain`).
+ * @param {{ domains?: string[], checks?: DomainCheck[], errors?: Array<{ domain: string }>, zone?: ZoneRef[]|null,
+ *   aborted?: boolean, counts?: { bySeverity?: Record<string, number> }|null }} r
+ * @returns {{ failed: number, failures: Record<string, number>, unknown: number, notChecked: string[], stopped: boolean,
+ *   settled: boolean }}
+ */
+export function retireGaps({ domains = [], checks = [], errors = [], zone = [], aborted = false, counts = null } = {}) {
+  const failures = Object.fromEntries([...FAILURE_KINDS, 'domain', 'zone'].map((k) => [k, 0]));
+  for (const c of checks || []) {
+    for (const f of c.failures || []) failures[f.what] = (failures[f.what] || 0) + 1;
+  }
+  failures.domain = (errors || []).length;
+  failures.zone = (zone || []).filter((z) => z.live === null).length;
+  const failed = Object.values(failures).reduce((n, v) => n + v, 0);
+  const done = new Set([...(checks || []).map((c) => c.domain), ...(errors || []).map((e) => e.domain)]);
+  const notChecked = (domains || []).filter((d) => !done.has(d));
+  const unknown = Number(counts && counts.bySeverity && counts.bySeverity.unknown) || 0;
+  const stopped = !!aborted;
+  return { failed, failures, unknown, notChecked, stopped, settled: !failed && !unknown && !notChecked.length && !stopped };
+}
+
 /* ------------------------------------------------------------------------ */
 /* Inventory                                                                */
 /* ------------------------------------------------------------------------ */
@@ -1049,7 +1085,7 @@ function compareNames(a, b) {
  *   passive?: Array<{ address: string, names: string[] }>|null }} input `zone.refs` as
  *   {@link verifyZoneRefs} returns them
  * @returns {{ changes: Change[], groups: Array<{ key: string, kind: string, changes: Change[] }>,
- *   counts: { total: number, breaking: number, bySeverity: Record<string, number>, byVerified: Record<string, number> },
+ *   counts: { total: number, breaking: number, passive: number, bySeverity: Record<string, number>, byVerified: Record<string, number> },
  *   gone: Array<{ name: string, address: string, now: string[] }> }}
  *   `gone`: passive hits that were checked and no longer point at the address
  */
@@ -1234,10 +1270,11 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
   })).filter((g) => g.changes.length || domains.includes(g.key));
   const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, changes.filter((c) => c.severity === s).length]));
   const byVerified = Object.fromEntries(VERIFIED_STATES.map((s) => [s, changes.filter((c) => c.verified === s).length]));
+  const passiveRows = changes.filter((c) => c.groupKind === 'passive').length;
   return {
     changes,
     groups,
-    counts: { total: changes.length, breaking: breakingChanges(changes).length, bySeverity, byVerified },
+    counts: { total: changes.length, breaking: breakingChanges(changes).length, passive: passiveRows, bySeverity, byVerified },
     gone: gone.sort((a, b) => compareNames(a.name, b.name))
   };
 }

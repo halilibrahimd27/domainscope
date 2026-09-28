@@ -30,9 +30,9 @@ import {
 } from '../ui/components.js';
 import { t, registerStrings, formatNumber, formatDateTime, getLang } from '../i18n.js';
 import {
-  parseRetireTargets, parseDomainList, retireTokens, knownHostsFor, zoneCandidates, runRetireCheck, buildChanges, breakingChanges,
+  parseRetireTargets, parseDomainList, retireTokens, knownHostsFor, zoneCandidates, runRetireCheck, retireGaps, buildChanges, breakingChanges,
   inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_DOMAINS,
-  RETIRE_MAX_HOSTS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES
+  RETIRE_MAX_HOSTS, RETIRE_MAX_ZONE_REFS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES, FAILURE_KINDS
 } from '../lib/retire.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { estimateQueries } from '../lib/scanplan.js';
@@ -115,6 +115,7 @@ registerStrings('en', {
   'retire.chip.servers': 'Your servers',
   'retire.chip.passive': 'Passive reverse IP',
   'retire.chip.pending': 'asking…',
+  'retire.chip.notChecked': 'not checked',
   'retire.chip.dnsOk': { one: '{count} name checked', other: '{count} names checked' },
   'retire.chip.dnsFailed': { one: '{count} lookup failed', other: '{count} lookups failed' },
   'retire.chip.spfOk': { one: '{count} policy walked', other: '{count} policies walked' },
@@ -122,6 +123,8 @@ registerStrings('en', {
   'retire.chip.spfFailed': { one: '{count} could not be read', other: '{count} could not be read' },
   'retire.chip.zoneNone': 'none imported',
   'retire.chip.zoneOk': { zero: 'nothing in {zone} reaches it', one: '{count} record in {zone} reaches it', other: '{count} records in {zone} reach it' },
+  'retire.chip.zoneStopped': 'not verified live (stopped)',
+  'retire.chip.zoneCapped': { one: '{count} not verified live (over {max})', other: '{count} not verified live (over {max})' },
   'retire.chip.serversNone': 'no list saved',
   'retire.chip.serversOwner': { one: '{names} owns it', other: '{names} own it' },
   'retire.chip.serversNot': 'not in your list',
@@ -159,6 +162,11 @@ registerStrings('en', {
   'retire.head.breaking': { one: '{count} record breaks something once {label} is gone', other: '{count} records break something once {label} is gone' },
   'retire.head.cleanup': { one: 'Nothing breaks: {count} record to clean up', other: 'Nothing breaks: {count} records to clean up' },
   'retire.head.none': 'Nothing in the checked domains points at {label}',
+  'retire.head.open': 'Nothing found pointing at {label}, but not everything could be checked',
+  'retire.head.incomplete': '{list}: the list may be incomplete.',
+  'retire.head.failed': { one: '{count} lookup failed', other: '{count} lookups failed' },
+  'retire.head.unknown': { one: '{count} SPF result cannot be told from here', other: '{count} SPF results cannot be told from here' },
+  'retire.head.notChecked': { one: '{count} domain not checked', other: '{count} domains not checked' },
   'retire.head.scope': 'Not covered: internal (split-horizon) DNS and domains that are not in the list. A record found only in the zone file is not live, but a restore of the file brings it back.',
   'retire.stat.breaking': 'Must change',
   'retire.stat.mail': 'Breaks mail',
@@ -175,7 +183,13 @@ registerStrings('en', {
   'retire.group.otherHint': 'Records outside the checked domains that they lead to: a CNAME target, a provider’s SPF include.',
   'retire.group.passive': 'Passive reverse IP — unverified until checked',
   'retire.group.passiveHint': 'Names a passive service saw on the address at some point. Nothing here was checked: they may point elsewhere by now.',
-  'retire.group.empty': 'Nothing in {domain} points at the address ({count} names checked).',
+  'retire.group.empty': { one: 'Nothing in {domain} points at the address ({count} name checked).', other: 'Nothing in {domain} points at the address ({count} names checked).' },
+  'retire.group.failures': 'Lookups that failed for {domain}: {list}. What they would show is not listed.',
+  'retire.fail.name': { one: '{count} host name ({list})', other: '{count} host names ({list})' },
+  'retire.fail.mx': 'MX',
+  'retire.fail.ns': 'NS',
+  'retire.fail.spf': 'the SPF record',
+  'retire.fail.https': 'the HTTPS record',
   'retire.group.failed': '{domain} could not be checked.',
   'retire.group.count': { one: '{count} record', other: '{count} records' },
   'retire.group.more': 'Show all {count}',
@@ -234,6 +248,7 @@ registerStrings('en', {
   'retire.act.check.macro': 'Depends on the sending server (a macro such as %{i}): cannot be told from here. Check {term} by hand.',
   'retire.act.check.ptr': 'The ptr mechanism depends on the reverse DNS of the sending server: check it by hand (RFC 7208 discourages ptr).',
   'retire.act.check.lookup-failed': 'A lookup failed: check again.',
+  'retire.act.check.record-failed': 'The SPF record of {domain} could not be read: check again. Until then nobody can tell whether it lets the address send mail.',
   'retire.act.check.include-failed': 'The included policy could not be read: check again later.',
   'retire.act.check.skipped': 'Not evaluated: the SPF tree needs more lookups than the check makes.',
   'retire.act.check.multiple': 'The domain publishes several SPF records (receivers treat that as an error): merge them first.',
@@ -311,6 +326,7 @@ registerStrings('tr', {
   'retire.chip.servers': 'Sunucularınız',
   'retire.chip.passive': 'Pasif ters IP',
   'retire.chip.pending': 'soruluyor…',
+  'retire.chip.notChecked': 'kontrol edilmedi',
   'retire.chip.dnsOk': '{count} ad kontrol edildi',
   'retire.chip.dnsFailed': '{count} sorgu başarısız',
   'retire.chip.spfOk': '{count} politika izlendi',
@@ -318,6 +334,8 @@ registerStrings('tr', {
   'retire.chip.spfFailed': '{count} tanesi okunamadı',
   'retire.chip.zoneNone': 'içe aktarılmadı',
   'retire.chip.zoneOk': { zero: '{zone} içinde ona ulaşan kayıt yok', other: '{zone} içinde {count} kayıt ona ulaşıyor' },
+  'retire.chip.zoneStopped': 'canlı doğrulanmadı (durduruldu)',
+  'retire.chip.zoneCapped': '{count} tanesi canlı doğrulanmadı ({max} üstü)',
   'retire.chip.serversNone': 'kayıtlı liste yok',
   'retire.chip.serversOwner': 'sahibi: {names}',
   'retire.chip.serversNot': 'listenizde yok',
@@ -355,6 +373,11 @@ registerStrings('tr', {
   'retire.head.breaking': '{label} kalkınca {count} kayıt bir şeyi bozar',
   'retire.head.cleanup': 'Hiçbir şey bozulmaz: temizlenecek {count} kayıt',
   'retire.head.none': 'Kontrol edilen alan adlarında {label} adresini gösteren bir şey yok',
+  'retire.head.open': '{label} adresini gösteren bir şey bulunmadı, ama her şey kontrol edilemedi',
+  'retire.head.incomplete': '{list}: liste eksik olabilir.',
+  'retire.head.failed': '{count} sorgu başarısız oldu',
+  'retire.head.unknown': 'buradan anlaşılamayan {count} SPF sonucu',
+  'retire.head.notChecked': '{count} alan adı kontrol edilmedi',
   'retire.head.scope': 'Kapsam dışı: iç (split-horizon) DNS ve listede olmayan alan adları. Yalnızca zone dosyasında bulunan bir kayıt canlı değildir, ama dosya geri yüklenirse geri gelir.',
   'retire.stat.breaking': 'Değişmeli',
   'retire.stat.mail': 'E-postayı bozar',
@@ -372,6 +395,12 @@ registerStrings('tr', {
   'retire.group.passive': 'Pasif ters IP — kontrol edilene kadar doğrulanmamış',
   'retire.group.passiveHint': 'Bir pasif servisin bir zamanlar bu adreste gördüğü adlar. Hiçbiri kontrol edilmedi: şimdiye kadar başka bir yeri gösteriyor olabilirler.',
   'retire.group.empty': '{domain} içinde bu adresi gösteren bir şey yok ({count} ad kontrol edildi).',
+  'retire.group.failures': '{domain} için başarısız olan sorgular: {list}. Gösterecekleri kayıtlar listede yok.',
+  'retire.fail.name': '{count} host adı ({list})',
+  'retire.fail.mx': 'MX',
+  'retire.fail.ns': 'NS',
+  'retire.fail.spf': 'SPF kaydı',
+  'retire.fail.https': 'HTTPS kaydı',
   'retire.group.failed': '{domain} kontrol edilemedi.',
   'retire.group.count': '{count} kayıt',
   'retire.group.more': '{count} kaydın tümünü göster',
@@ -430,6 +459,7 @@ registerStrings('tr', {
   'retire.act.check.macro': 'Gönderen sunucuya bağlı (%{i} gibi bir makro): buradan anlaşılamaz. {term} terimini elle kontrol edin.',
   'retire.act.check.ptr': 'ptr mekanizması gönderen sunucunun ters DNS’ine bağlı: elle kontrol edin (RFC 7208 ptr kullanılmamasını önerir).',
   'retire.act.check.lookup-failed': 'Bir sorgu başarısız oldu: yeniden kontrol edin.',
+  'retire.act.check.record-failed': '{domain} alan adının SPF kaydı okunamadı: yeniden kontrol edin. O zamana kadar adrese e-posta gönderme izni verip vermediği anlaşılamaz.',
   'retire.act.check.include-failed': 'Dahil edilen politika okunamadı: daha sonra yeniden kontrol edin.',
   'retire.act.check.skipped': 'Değerlendirilmedi: SPF ağacı, kontrolün yaptığından fazla sorgu gerektiriyor.',
   'retire.act.check.multiple': 'Alan adı birden fazla SPF kaydı yayınlıyor (alıcılar bunu hata sayar): önce birleştirin.',
@@ -564,29 +594,82 @@ export function changeText(c) {
     case 'check':
     default:
       if (c.sources.includes('passive') && !c.reason) return { key: 'retire.act.check.passive', params: { sources: '' } };
+      // The domain's own SPF record could not be read (lib/retire.js checkDomain): said as such.
+      if (c.reason === 'lookup-failed' && spf.mechanism === 'record') return { key: 'retire.act.check.record-failed', params: { domain: c.name } };
       return { key: `retire.act.check.${c.reason || 'lookup-failed'}`, params: { term: c.value } };
   }
 }
 
 /**
- * The facts of Copy summary (lib/summary.js retireSummary) for a finished or stopped job.
+ * What a job could not settle (lib/retire.retireGaps over its finished domains, errors and zone).
+ * @param {object} job
+ * @param {object} built lib/retire.buildChanges output
+ * @returns {ReturnType<typeof retireGaps>}
+ */
+export function jobGaps(job, built) {
+  return retireGaps({
+    domains: job.domains, checks: [...job.checks.values()], errors: job.errors, zone: job.zoneVerified ? job.zoneRefs : [],
+    aborted: job.status === 'cancelled', counts: built.counts
+  });
+}
+
+/**
+ * The words for what a check could not settle: failed lookups, "cannot tell" results, domains a
+ * stop left unchecked (the stop itself has its own note).
+ * @param {ReturnType<typeof retireGaps>} gaps
+ * @returns {string[]}
+ */
+export function gapTexts(gaps) {
+  const out = [];
+  if (gaps.failed) out.push(t('retire.head.failed', { count: gaps.failed }));
+  if (gaps.unknown) out.push(t('retire.head.unknown', { count: gaps.unknown }));
+  if (gaps.notChecked.length) out.push(t('retire.head.notChecked', { count: gaps.notChecked.length }));
+  return out;
+}
+
+/**
+ * What failed in one domain's check, in words: MX, NS, the SPF record, the HTTPS record, then the
+ * host names (the first three named).
+ * @param {import('../lib/retire.js').DomainCheck} check
+ * @returns {string}
+ */
+export function failureList(check) {
+  const parts = [];
+  // The host names last: they are the longest part.
+  for (const what of [...FAILURE_KINDS.filter((w) => w !== 'name'), 'name']) {
+    const list = check.failures.filter((f) => f.what === what);
+    if (!list.length) continue;
+    if (what !== 'name') parts.push(t(`retire.fail.${what}`));
+    else {
+      const names = list.map((f) => f.name);
+      parts.push(t('retire.fail.name', { count: names.length, list: names.slice(0, 3).join(', ') + (names.length > 3 ? ' …' : '') }));
+    }
+  }
+  return parts.join(', ');
+}
+
+/**
+ * The facts of Copy summary (lib/summary.js retireSummary) for a finished or stopped job: the
+ * domains whose check finished, and the others as not checked (a stop, a domain that failed).
  * @param {object} job
  * @param {object} built lib/retire.buildChanges output
  * @param {{ owners: number|null, passive: boolean }} extra
  * @returns {object}
  */
 export function summaryFacts(job, built, { owners = null, passive = false } = {}) {
-  const failed = [...job.checks.values()].reduce((n, c) => n + c.failures.length, 0) + job.errors.length;
+  const gaps = jobGaps(job, built);
   return {
     label: job.label,
-    domains: [...job.domains],
+    domains: job.domains.filter((d) => job.checks.has(d)),
+    notChecked: job.domains.filter((d) => !job.checks.has(d)),
     zone: job.zoneOrigin && job.zoneRefs.length ? job.zoneOrigin : null,
     passive,
     counts: built.counts,
     top: breakingChanges(built.changes).map((c) => ({ severity: c.severity, name: c.name, type: c.type === 'TXT' && c.spf ? 'SPF' : c.type, value: c.value })),
     owners,
-    unverified: built.counts.byVerified.unverified || 0,
-    failed,
+    // Only the passive group's rows: a zone record a stop left unverified is still a record of the file.
+    unverified: built.counts.passive || 0,
+    failed: gaps.failed,
     stopped: job.status === 'cancelled',
     at: job.finishedAt || job.startedAt
   };
@@ -1309,19 +1392,37 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     const checks = [...job.checks.values()];
     const names = checks.reduce((n, c) => n + c.names.length, 0);
     const failed = checks.reduce((n, c) => n + c.failures.filter((f) => f.what !== 'spf').length, 0) + job.errors.length;
-    chipsEl.append(chip('dns', t('retire.chip.dns'), running ? 'pending' : failed ? 'failed' : 'ok',
-      running ? t('retire.chip.pending') : `${t('retire.chip.dnsOk', { count: names })}${failed ? ` · ${t('retire.chip.dnsFailed', { count: failed })}` : ''}`));
+    const notChecked = job.domains.filter((d) => !job.checks.has(d) && !job.errors.some((e) => e.domain === d)).length;
+    // A stop before any domain finished checked nothing: "not checked", never "0 names checked ✓".
+    if (running) chipsEl.append(chip('dns', t('retire.chip.dns'), 'pending', t('retire.chip.pending')));
+    else {
+      const parts = [checks.length ? t('retire.chip.dnsOk', { count: names }) : t('retire.chip.notChecked')];
+      if (failed) parts.push(t('retire.chip.dnsFailed', { count: failed }));
+      if (checks.length && notChecked) parts.push(t('retire.head.notChecked', { count: notChecked }));
+      chipsEl.append(chip('dns', t('retire.chip.dns'), failed ? 'failed' : checks.length ? 'ok' : 'idle', parts.join(' · ')));
+    }
     const spfOk = checks.filter((c) => c.spf.status === 'ok' || c.spf.status === 'multiple').length;
     const spfFailed = checks.filter((c) => c.spf.status === 'failed').length;
     let spfValue;
     if (running && !checks.length) spfValue = t('retire.chip.pending');
+    else if (!checks.length) spfValue = t('retire.chip.notChecked');
     else if (!spfOk && !spfFailed) spfValue = t('retire.chip.spfNone');
     else spfValue = `${spfOk ? t('retire.chip.spfOk', { count: spfOk }) : ''}${spfOk && spfFailed ? ' · ' : ''}${spfFailed ? t('retire.chip.spfFailed', { count: spfFailed }) : ''}`;
     chipsEl.append(chip('spf', t('retire.chip.spf'), running && !checks.length ? 'pending' : spfFailed ? 'failed' : spfOk ? 'ok' : 'idle', spfValue));
     if (job.zoneOrigin) {
       const reached = built.changes.filter((c) => c.sources.includes('zone')).length;
-      chipsEl.append(chip('zone', t('retire.chip.zone'), running && !job.zoneVerified ? 'pending' : 'ok',
-        running && !job.zoneVerified ? t('retire.chip.pending') : t('retire.chip.zoneOk', { count: reached, zone: job.zoneOrigin })));
+      if (running && !job.zoneVerified) chipsEl.append(chip('zone', t('retire.chip.zone'), 'pending', t('retire.chip.pending')));
+      else {
+        // Stopped before the zone's records were verified, over the cap, or a failed lookup: said so.
+        const stoppedFirst = !job.zoneVerified && job.zoneRefs.length > 0;
+        const capped = job.zoneRefs.filter((r) => r.capped).length;
+        const zoneFailed = job.zoneVerified ? job.zoneRefs.filter((r) => r.live === null).length : 0;
+        const parts = [t('retire.chip.zoneOk', { count: reached, zone: job.zoneOrigin })];
+        if (stoppedFirst) parts.push(t('retire.chip.zoneStopped'));
+        if (capped) parts.push(t('retire.chip.zoneCapped', { count: capped, max: formatNumber(RETIRE_MAX_ZONE_REFS) }));
+        if (zoneFailed) parts.push(t('retire.chip.dnsFailed', { count: zoneFailed }));
+        chipsEl.append(chip('zone', t('retire.chip.zone'), zoneFailed ? 'failed' : stoppedFirst ? 'idle' : 'ok', parts.join(' · ')));
+      }
     } else {
       chipsEl.append(chip('zone', t('retire.chip.zone'), 'idle', t('retire.chip.zoneNone')));
     }
@@ -1371,8 +1472,9 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   /* the headline, the stat cards and the owners */
   let headKey = null;
   function renderHead(built) {
+    const gaps = job.status === 'running' ? null : jobGaps(job, built);
     // Drawn again only when what it says changes: its verdict is an alert a screen reader announces.
-    const key = JSON.stringify([job.status, job.finishedAt && job.finishedAt.getTime(), built.counts, getLang()]);
+    const key = JSON.stringify([job.status, job.finishedAt && job.finishedAt.getTime(), built.counts, gaps, getLang()]);
     if (key === headKey) return;
     headKey = key;
     clear(headEl);
@@ -1381,14 +1483,24 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     headEl.append(h('div', { class: 'retire-head-row' }, title, when));
     if (job.status === 'running') return;
     const { breaking, total } = built.counts;
-    const listed = total - (built.counts.byVerified.unverified || 0) - (built.counts.bySeverity.unknown || 0);
+    // Passive hits nobody checked and "cannot tell" rows are said apart, never counted as pointing here.
+    const listed = total - (built.counts.passive || 0) - (built.counts.bySeverity.unknown || 0);
+    const open = gapTexts(gaps);
+    const incomplete = open.length ? t('retire.head.incomplete', { list: open.join(' · ') }) : null;
     let alert;
     if (job.status === 'error') alert = ErrorBanner(job.error, { title: t('retire.failed') });
     else if (breaking) alert = Alert({ variant: built.counts.bySeverity.mail || built.counts.bySeverity.ns ? 'error' : 'warn', title: t('retire.head.breaking', { count: breaking, label: job.label }), message: t('retire.head.scope') });
     else if (listed > 0) alert = Alert({ variant: 'info', title: t('retire.head.cleanup', { count: listed }), message: t('retire.head.scope') });
+    // A failed lookup, a "cannot tell" or a stop leaves the list open: never the green "nothing".
+    else if (!gaps.settled) alert = Alert({ variant: 'warn', title: t('retire.head.open', { label: job.label }), message: [incomplete, t('retire.head.scope')].filter(Boolean).join(' ') });
     else alert = Alert({ variant: 'ok', title: t('retire.head.none', { label: job.label }), message: t('retire.head.scope') });
     alert.dataset.role = 'retire-verdict';
     headEl.append(alert);
+    if (incomplete && job.status !== 'error' && (breaking || listed > 0)) {
+      const note = Alert({ variant: 'warn', compact: true, message: incomplete });
+      note.dataset.role = 'retire-incomplete';
+      headEl.append(note);
+    }
     if (job.status === 'cancelled') headEl.append(Alert({ variant: 'warn', compact: true, message: t('retire.stopped') }));
   }
 
@@ -1396,8 +1508,10 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     clear(statsEl);
     if (job.status === 'running' && !job.checks.size) return;
     const c = built.counts;
+    // "Must change: 0" is green only when the check settled everything (no failed lookup, no stop).
+    const settled = job.status !== 'running' && jobGaps(job, built).settled;
     const cards = [
-      ['breaking', c.breaking, c.breaking ? 'error' : 'ok', 'alert'],
+      ['breaking', c.breaking, c.breaking ? 'error' : settled ? 'ok' : 'default', 'alert'],
       ['mail', c.bySeverity.mail || 0, c.bySeverity.mail ? 'error' : 'ok', 'mail'],
       ['file', c.bySeverity.file || 0, 'info', 'file-text'],
       ['unknown', c.bySeverity.unknown || 0, c.bySeverity.unknown ? 'warn' : 'default', 'help'],
@@ -1480,7 +1594,8 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   }
 
   function valueCell(c) {
-    const reach = c.addresses.filter((a) => !c.value.includes(a));
+    // A "cannot tell" row lists every retiring address: it is not known to reach any of them.
+    const reach = c.severity === 'unknown' ? [] : c.addresses.filter((a) => !c.value.includes(a));
     return h('div', { class: 'retire-value' },
       h('span', { class: 'mono' }, c.value || '—'),
       reach.length ? h('div', { class: 'muted text-xs' }, t('retire.reaches', { list: reach.join(', ') })) : null);
@@ -1534,15 +1649,23 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
       }
     } else title = h('span', { class: 'mono' }, g.key);
     const body = [checkToo];
+    const check = g.kind === 'domain' ? job.checks.get(g.key) : null;
+    // What could not be looked up is named, above the records or instead of "nothing points here".
+    if (check && check.failures.length) {
+      const a = Alert({ variant: 'warn', compact: true, message: t('retire.group.failures', { domain: g.key, list: failureList(check) }) });
+      // The verdict above is the announcement; a card drawn again is not read out again.
+      a.setAttribute('role', 'note');
+      a.dataset.role = 'retire-failures';
+      body.push(a);
+    }
     if (!count && g.kind === 'domain') {
-      const check = job.checks.get(g.key);
       const failedDomain = job.errors.find((e) => e.domain === g.key);
       if (failedDomain) body.push(Alert({ variant: 'error', compact: true, message: t('retire.domainFailed', { domain: g.key, error: failedDomain.error }) }));
-      else if (check) {
+      else if (check && !check.failures.length) {
         const a = Alert({ variant: 'ok', compact: true, message: t('retire.group.empty', { domain: g.key, count: check.names.length }) });
         a.dataset.role = 'retire-clean';
         body.push(a);
-      } else body.push(h('p', { class: 'muted text-sm' }, t('retire.progress', { domain: g.key, done: job.checks.size, total: job.domains.length })));
+      } else if (!check) body.push(h('p', { class: 'muted text-sm' }, t('retire.progress', { domain: g.key, done: job.checks.size, total: job.domains.length })));
     } else body.push(changeTable(g.changes, g.key));
     const card = Card({
       className: ['retire-group', `retire-group-${g.kind}`].join(' '),

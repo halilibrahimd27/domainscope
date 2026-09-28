@@ -781,6 +781,19 @@ describe('retire', () => {
     assert.equal(lines(md(tr))[3], '- **Adres kaydı:** `www.example.com` A `192.0.2.10`');
   });
 
+  test('a failed lookup or a "cannot tell" never reads as nothing; the domains a stop did not reach are named', () => {
+    const open = S.retireSummary({ label: '192.0.2.10', domains: ['example.com'], counts: counts({ unknown: 1 }), top: [], failed: 2 }, opts());
+    assertShape(open);
+    assert.equal(lines(md(open))[1], '- Nothing found pointing at it, but not everything could be checked (below)');
+    assert.match(md(open), /- \*\*Not settled:\*\* 1 SPF term that cannot be told from here · 2 failed lookups/);
+    const tr = S.retireSummary({ label: '192.0.2.10', domains: ['example.com'], counts: counts({}), top: [], failed: 1 }, opts('tr'));
+    assert.equal(lines(md(tr))[1], '- Bu adresi gösteren bir şey bulunmadı, ama her şey kontrol edilemedi (aşağıda)');
+    const partial = S.retireSummary({ label: '192.0.2.10', domains: ['example.com'], notChecked: ['example.net', 'example.org'], counts: counts({}), top: [], stopped: true }, opts());
+    assert.equal(lines(md(partial))[2], '- Checked 1 domain over public DNS: `example.com` · not checked: `example.net`, `example.org`');
+    const none = S.retireSummary({ label: '192.0.2.10', domains: [], notChecked: ['example.com'], counts: counts({}), top: [], stopped: true }, opts());
+    assert.deepEqual(lines(md(none)).slice(1, 3), ['- Stopped before anything pointing at it was found', '- No domain checked · not checked: `example.com`']);
+  });
+
   test('a hostile record value stays an inert code span', () => {
     const doc = S.retireSummary({
       label: '192.0.2.10', domains: ['example.com'], counts: counts({ live: 1 }),

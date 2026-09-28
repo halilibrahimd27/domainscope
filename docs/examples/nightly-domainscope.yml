@@ -17,10 +17,14 @@
 # - No secret is needed. The job uses the workflow's own GITHUB_TOKEN (contents: write to commit
 #   the results, issues: write for the issue); the checks ask keyless public services only (DNS
 #   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources). Nothing goes to
-#   Globalping: the checks that need a probe stay in the web app, behind a click.
+#   Globalping: the checks that need a probe stay in the web app, behind a click. The checkout
+#   keeps no token while the checks run (persist-credentials: false): only the commit step and
+#   the issue step are given it.
 # - GitHub's hosted runners share their IP addresses, and the anonymous quotas of the passive
 #   sources are per address: a source may answer "rate limited" on some night. The report says
-#   so, and nothing it could not read counts as a change. Cert Spotter answers about 10
+#   so, nothing a source could not read counts as a change, and the next night compares with the
+#   last read that worked (a new certificate authority issued during a crt.sh outage still comes
+#   out as a new issuer once crt.sh answers). Cert Spotter answers about 10
 #   full-domain queries an hour: after its first "rate limited" of a night the runner stops
 #   asking it, so with more than about 10 domains most of them are read from crt.sh alone. Add
 #   --sources crtsh to the ct line to leave Cert Spotter out altogether.
@@ -28,7 +32,8 @@
 #   the checks"), well inside the job's timeout-minutes: on a slow night (crt.sh down, a big
 #   discovery) a check fails, and the results and the issue still get their turn. Raise the
 #   three together when you switch more checks on.
-# - Pin the DomainScope version: `ref:` below takes a release tag or a commit SHA.
+# - Pin the DomainScope version: set `ref:` below to a commit SHA of DomainScope (or to a release
+#   tag once there is one). On `main` every night runs whatever was pushed last.
 name: DomainScope nightly
 
 on:
@@ -51,12 +56,14 @@ jobs:
     steps:
       - name: Check out this repository (domains.txt and last night's results)
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false   # no token in .git/config while the checks run
 
       - name: Check out DomainScope
         uses: actions/checkout@v7
         with:
           repository: halilibrahimd27/domainscope
-          ref: main   # pin a release tag or a commit SHA
+          ref: main   # pin a commit SHA (or a release tag once there is one)
           path: .domainscope
           persist-credentials: false
 
@@ -107,14 +114,18 @@ jobs:
       - name: Commit the results
         id: commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add results
           if ! git diff --cached --quiet; then
             git commit -q -m "domainscope: nightly results $(date -u +%F)"
-            git pull -q --rebase
-            git push -q
+            # The checkout kept no token: it is handed to these two commands only, never written to disk.
+            auth="http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            git -c "$auth" pull -q --rebase
+            git -c "$auth" push -q
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 

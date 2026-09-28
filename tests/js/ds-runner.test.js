@@ -1447,6 +1447,17 @@ describe('the documented commands', () => {
     assert.match(yml, /repository: halilibrahimd27\/domainscope\n\s+ref: /);
     for (const cmd of ['gh issue list --label "\\$label" --state open', 'gh issue create', 'gh issue edit', 'gh issue comment', 'gh issue close']) assert.match(yml, new RegExp(cmd), cmd);
     assert.match(yml, /git add results\n/);
+    // No token in the checkout while DomainScope's code runs: only the commit and issue steps get it.
+    const steps = yml.split(/\n(?= {6}- (?:name|uses): )/);
+    const own = steps.find((s) => s.includes("Check out this repository (domains.txt and last night's results)"));
+    assert.match(own, /\n {8}with:\n {10}persist-credentials: false/);
+    assert.match(steps.find((s) => s.includes('- name: Check out DomainScope')), /persist-credentials: false/);
+    const withToken = steps.filter((s) => s.includes('github.token')).map((s) => /- name: ([^\n]+)/.exec(s)[1]);
+    assert.deepEqual(withToken, ['Commit the results', 'Open, update or close the issue']);
+    assert.ok(!steps.find((s) => s.includes('- name: Run the checks')).includes('TOKEN'));
+    const commit = steps.find((s) => s.includes('- name: Commit the results'));
+    assert.match(commit, /auth="http\.\$GITHUB_SERVER_URL\/\.extraheader=AUTHORIZATION: basic \$\(printf 'x-access-token:%s' "\$GH_TOKEN" \| base64 -w0\)"\n\s+git -c "\$auth" pull -q --rebase\n\s+git -c "\$auth" push -q/);
+    assert.match(yml, /ref: main {3}# pin a commit SHA \(or a release tag once there is one\)/);
     const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
     for (const rule of ['Use it in a private repository', 'Never commit inventories or zone files unless you mean to', 'No secret is needed']) assert.ok(readme.includes(rule), rule);
   });

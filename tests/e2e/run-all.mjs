@@ -8,14 +8,15 @@
  * - Suites run sequentially (never in parallel): most of them hit live third-party APIs with
  *   small free quotas (HackerTarget ≈ 50/day, Cert Spotter ≈ 10/hour), and each one starts
  *   its own browser and static server.
- * - Order: shell first (offline, fastest), then the views in navigation order (verify, the
- *   offline suite of SSL Targets › Verify, right after scan, then renewal, SSL Targets with several
- *   certificates at once, offline too; dane, the offline DANE / TLSA suite
- *   of the Certificate view and SSL Targets, right after cert, and pfx, the offline PKCS#12 suite
- *   of the same two views, after it), then carry (offline: the target
- *   and kept results carried across views) and workspaces (offline: the customer workspaces in
- *   IndexedDB and their hand-over file), then the cross-view integration suite, then any other
- *   *.e2e.mjs file alphabetically.
+ * - Order: shell first (offline, fastest), then the views in navigation order (domain, the
+ *   offline suite of the Domain overview, right after subdomains; verify, the offline suite of SSL
+ *   Targets › Verify, right after scan, then renewal, SSL Targets with several certificates at
+ *   once, offline too; dane, the offline DANE / TLSA suite of the Certificate view and SSL Targets,
+ *   right after cert, then pfx, the offline PKCS#12 suite of the same two views, and renew, the
+ *   offline Renewal readiness suite; retire, the offline suite of Retire an IP, right after ptr),
+ *   then carry (offline: the target and kept results carried across views) and workspaces
+ *   (offline: the customer workspaces in IndexedDB and their hand-over file), then the cross-view
+ *   integration suite, then any other *.e2e.mjs file alphabetically.
  * - --only / --skip take suite names without the `.e2e.mjs` suffix (e.g. `--only shell,cert`).
  * - Every other argument is passed through to each suite (they share --browser, --headed and
  *   --no-shots; unknown flags are ignored by suites that do not use them).

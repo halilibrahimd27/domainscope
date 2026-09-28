@@ -10,23 +10,27 @@
  *   node tests/e2e/renew.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
  * Covers: the nav entry (Certificates group, after Certificate), the empty state (nothing sent),
- * names that are not host names, a check of four names against Let's Encrypt with HTTP-01 started
+ * names that are not host names and a wildcard under a public suffix, a check of four names against Let's Encrypt with HTTP-01 started
  * from the keyboard (focus on Stop meanwhile, back on Check readiness after; a wildcard CAA forbids
  * and HTTP-01 cannot validate, a private address, a lagging resolver on a CNAME'd name, a ready
  * name with IPv6), the per-name cards (worst first, findings by area, the resolvers' answers), the
  * URL, Copy summary, the CSV / JSON exports, the HTTP-01 reachability test (nothing sent before the
  * click; the consent + cost dialog, Escape sends nothing and leaves the focus on the button, which
  * keeps it while busy and after; exactly the lib/renewal.js requests, IPv4 and IPv6; an IPv6
- * address that times out fails the name; a redirect to HTTPS keeping the token passes; leaving the
+ * server that answers 503 fails the name; a redirect to HTTPS keeping the token passes; leaving the
  * view mid-test reads the paid measurement again on return, with no new probe; Stop, then "Read the
- * results again" for free; the quota running out after the IPv4 measurement: IPv6 "not tested"),
+ * results again" for free; the quota running out after the IPv4 measurement: IPv6 keeps the earlier
+ * failure and its time, the name still fails; a new check stops a running test and the card says so
+ * at once),
  * the language switch keeping report and test, the certificate block (the sample: its names, a CA
  * not in the list), the links from Certificate and SSL Targets over a kept report (the same
  * certificate leaves a CA chosen by hand; a newly shared Sectigo certificate brings its names and
- * its CA; nothing sent), a check past the 50-name cap still replaced by a certificate's link, a
- * shared link that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter,
- * 320 / 375 px phones light / dark in both languages without horizontal scroll, zero console errors
- * / CSP violations / missing i18n keys, nothing sent outside the page.
+ * its CA; other carried names drop that CA's hint; a link never sets its CA or challenge next to a
+ * draft it left alone; nothing sent), a check past the 50-name cap still replaced by a certificate's
+ * link, a shared link that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter,
+ * 320 / 375 px phones light / dark in both languages without horizontal scroll, every resolver
+ * answering 429 ("could not be checked", never "ready"), zero console errors / CSP violations /
+ * missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net, 192.0.2.0/24, 198.51.100.0/24,
  * 203.0.113.0/24, 2001:db8::/32, 10.0.0.0/8) plus provider name servers (ns.cloudflare.com, natrohost.com)
@@ -68,7 +72,7 @@ const SIGNED = ['example.com'];
 const HOSTS = { 'cloudflare-dns.com': 'cloudflare', 'dns.google': 'google', 'doh.dns.sb': 'dnssb', 'odvr.nic.cz': 'cznic' };
 
 /** Globalping scenario per target and IP version (the probes answer the made-up token like this). */
-const GP_SCENARIOS = { 'www.example.com|4': 'not-found', 'www.example.com|6': 'timeout', 'shop.example.com|4': 'redirect' };
+const GP_SCENARIOS = { 'www.example.com|4': 'not-found', 'www.example.com|6': 'server-error', 'shop.example.com|4': 'redirect' };
 const GP_PROBES = M28.final.body.results.map((r) => r.probe);
 
 /** In-page stubs: DoH from the table (per resolver), a fake Globalping, the RDAP bootstrap. */
@@ -81,6 +85,8 @@ const fakeScript = () => `(() => {
   const PROBES = ${JSON.stringify(GP_PROBES)};
   window.__fakeDnsLog = [];
   window.__dnsDelayMs = 0;
+  // Non-zero: every DoH request gets this HTTP status (a rate limit on every resolver).
+  window.__dnsStatus = 0;
   // rejectPost: the number of the POST that gets a quota 429 (rate_limit_exceeded) instead of a measurement.
   const gp = window.__gp = { calls: [], n: 0, posts: 0, remaining: 250, measurements: {}, delayMs: 0, rejectPost: 0 };
   let wire = null;
@@ -120,6 +126,7 @@ const fakeScript = () => `(() => {
       const result = () => {
         if (scen === 'timeout') return { status: 'failed', failureSource: 'target', resolvedAddress: null, rawOutput: 'Request timed out while establishing the TCP connection.', statusCode: null, tls: null };
         if (scen === 'redirect') return { status: 'finished', resolvedAddress: address, statusCode: 301, headers: { location: 'https://' + meas.body.target + path }, tls: null };
+        if (scen === 'server-error') return { status: 'finished', resolvedAddress: address, statusCode: 503, headers: {}, tls: null };
         return { status: 'finished', resolvedAddress: address, statusCode: 404, headers: {}, tls: null };
       };
       return json({ ...base, status: 'finished', results: PROBES.map((probe) => ({ probe, result: result() })) });
@@ -138,6 +145,7 @@ const fakeScript = () => `(() => {
     const resolver = HOSTS[new URL(url).hostname] || new URL(url).hostname;
     window.__fakeDnsLog.push({ name, type: q.type, resolver });
     if (window.__dnsDelayMs) await new Promise((r) => setTimeout(r, window.__dnsDelayMs));
+    if (window.__dnsStatus) return new Response('', { status: window.__dnsStatus });
     const z = { ...Z, ...(VIEWS[resolver] || {}) };
     const answers = [];
     let cur = name;
@@ -194,6 +202,11 @@ const cards = (page) => page.evaluate(() => [...document.querySelectorAll('.rnw-
 })));
 const waitDone = (page, message = 'check done') => page.waitFor(() => !!document.querySelector('.rnw-hero')
   && !document.querySelector('[data-action="renew-run"]').hidden && document.querySelector('[data-action="renew-stop"]').hidden, { timeout: 20000, message });
+/** Open a route on the view already shown; resolves once the app has handled its hashchange (its listener came first). */
+const routeTo = (page, hash) => page.evaluate((to) => new Promise((resolve) => {
+  window.addEventListener('hashchange', () => resolve(), { once: true });
+  location.hash = to;
+}), hash);
 const waitTestDone = (page, message = 'test done') => page.waitFor(() => ['done', 'error', 'quota'].includes(document.querySelector('.rnw-test')?.dataset.state), { timeout: 20000, message });
 
 async function main() {
@@ -234,9 +247,10 @@ async function main() {
       await shot(page, opts, 'renew-empty-desktop-light-en');
     });
 
-    await run.step('names that are not host names are left out and said; an empty box asks for a name', async () => {
-      await typeNames(page, 'www.example.com 192.0.2.1 _acme-challenge.example.com');
+    await run.step('names that are not host names, and a wildcard no CA issues, are left out and said; an empty box asks for a name', async () => {
+      await typeNames(page, 'www.example.com 192.0.2.1 _acme-challenge.example.com *.co.uk');
       await page.waitFor(() => /Not host names, left out: 192\.0\.2\.1, _acme-challenge\.example\.com/.test(document.querySelector('.rnw-names-note')?.textContent || ''), { message: 'invalid note' });
+      assert(/No CA issues a wildcard directly under a public suffix, left out: \*\.co\.uk/.test(await text(page, '.rnw-names-note')), `suffix note: ${await text(page, '.rnw-names-note')}`);
       await typeNames(page, '');
       await page.click('[data-action="renew-run"]');
       await page.waitFor(() => /at least one host name/.test(document.querySelector('.rnw-form-card')?.textContent || ''), { message: 'no names' });
@@ -327,11 +341,11 @@ async function main() {
       assertEqual(posts[0].measurementOptions.request.path, posts[1].measurementOptions.request.path, 'one token per name');
       const c = await cards(page);
       const www = c.find((x) => x.name === 'www.example.com');
-      assertEqual([www.verdict, www.findings.slice(-2)], ['fail', ['http01.ok:ok', 'http01.failed:error']], 'IPv6 times out');
+      assertEqual([www.verdict, www.findings.slice(-2)], ['fail', ['http01.ok:ok', 'http01.failed:error']], 'the IPv6 server answers 503');
       assert(c.find((x) => x.name === 'shop.example.com').findings.includes('http01.redirect:ok'), 'a redirect to HTTPS keeping the token passes');
       assertEqual(c.map((x) => x.name), ['www.example.com', '*.example.com', 'api.example.com', 'shop.example.com'], 'worst first, then as entered');
       const probes = await page.evaluate(() => [...document.querySelectorAll('.rnw-name[data-name="www.example.com"] .rnw-family')].map((f) => `${f.dataset.family}:${f.dataset.verdict}:${[...f.querySelectorAll('.rnw-probe')].map((p) => p.dataset.outcome).join(',')}`));
-      assertEqual(probes, ['4:ok:not-found,not-found,not-found', '6:failed:timeout,timeout,timeout'], 'probe lines');
+      assertEqual(probes, ['4:ok:not-found,not-found,not-found', '6:failed:server-error,server-error,server-error'], 'probe lines');
       assert(/Helsinki, FI \(Hetzner Online\)/.test(await text(page, '.rnw-name[data-name="www.example.com"] .rnw-probe')), 'probe place');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['3 will fail', '1 with warnings'], 'counts after the test');
       await shot(page, opts, 'renew-tested-desktop-light-en');
@@ -386,7 +400,31 @@ async function main() {
       assertEqual(await focusedAction(page), 'renew-http01', 'focus on the test button');
     });
 
-    await run.step('the quota runs out after the IPv4 measurement: read again, IPv6 reads "not tested" and the note says the test is incomplete', async () => {
+    await run.step('a new check stops a running test: the card drops it at once and says the probes were not read', async () => {
+      await page.evaluate(() => { window.__gp.delayMs = 60000; });
+      const before = await postCount(page);
+      await page.click('.rnw-name[data-name="www.example.com"] [data-action="renew-http01-name"]');
+      await page.waitFor((n) => window.__gp.calls.filter((c) => c.method === 'POST').length === n + 2 && !!document.querySelector('[data-action="renew-http01-stop"]'),
+        { args: [before], message: 'the test is reading its measurements' });
+      await page.evaluate(() => { window.__dnsDelayMs = 150; });
+      await page.click('[data-action="renew-run"]');
+      await page.waitFor(() => !document.querySelector('[data-action="renew-stop"]').hidden && document.querySelector('.rnw-test')?.dataset.state === 'idle'
+        && !document.querySelector('[data-action="renew-http01-stop"]') && !document.querySelector('.rnw-results [aria-busy="true"]')
+        && [...document.querySelectorAll('.rnw-results [data-action^="renew-http01"]')].every((b) => b.disabled), { message: 'the test card while the check runs' });
+      assert(/^The HTTP-01 test was stopped by the new check/.test(await text(page, '.rnw-test .alert')), `note: ${await text(page, '.rnw-test .alert')}`);
+      await page.evaluate(() => { window.__dnsDelayMs = 0; window.__gp.delayMs = 0; });
+      await waitDone(page, 'the new check');
+      assert(/^The HTTP-01 test was stopped by the new check/.test(await text(page, '.rnw-test .alert')), 'the note stays with the new report');
+      const www = (await cards(page)).find((x) => x.name === 'www.example.com');
+      assert(!www.findings.some((f) => f.startsWith('http01.')), `a new report, untested: ${www.findings}`);
+      assertEqual(await postCount(page), before + 2, 'no new probe');
+    });
+
+    await run.step('the quota runs out after the IPv4 measurement: read again, IPv6 keeps the earlier failure (and its time), the name still fails, the note says the test is incomplete', async () => {
+      // A full test of the new report first: IPv4 passes, the IPv6 server answers 503.
+      await page.click('.rnw-name[data-name="www.example.com"] [data-action="renew-http01-name"]');
+      await page.waitFor(() => document.querySelector('.rnw-test')?.dataset.state === 'done', { message: 'full test', timeout: 20000 });
+      assertEqual((await cards(page)).find((x) => x.name === 'www.example.com').verdict, 'fail', 'IPv6 fails');
       await page.evaluate(() => { window.__gp.rejectPost = window.__gp.posts + 2; });
       await page.click('.rnw-name[data-name="www.example.com"] [data-action="renew-http01-name"]');
       await waitTestDone(page, 'the quota stops the test');
@@ -395,11 +433,17 @@ async function main() {
       await page.waitFor(() => document.querySelector('.rnw-test')?.dataset.state === 'done', { message: 'read again', timeout: 20000 });
       assert(/^HTTP-01 reachability tested for 1 name, but not completely/.test((await text(page, '.rnw-test-done')).trim()), await text(page, '.rnw-test-done'));
       const www = (await cards(page)).find((x) => x.name === 'www.example.com');
-      assertEqual([www.verdict, www.findings.slice(-2)], ['ready', ['http01.ok:ok', 'http01.untested:info']], 'IPv6 not tested');
+      assertEqual([www.verdict, www.findings.slice(-2)], ['fail', ['http01.ok:ok', 'http01.failed:error']], 'less evidence never improves the verdict');
       const families = await page.evaluate(() => [...document.querySelectorAll('.rnw-name[data-name="www.example.com"] .rnw-family')].map((f) => [f.dataset.family, f.dataset.verdict, f.querySelector('.rnw-family-head').textContent, f.querySelectorAll('.rnw-probe').length]));
-      assertEqual(families.map((f) => f.slice(0, 2)), [['4', 'ok'], ['6', 'untested']], 'families');
+      assertEqual(families.map((f) => f.slice(0, 2)), [['4', 'ok'], ['6', 'failed']], 'families');
       assert(/^IPv4 · tested /.test(families[0][2]) && families[0][3] === 3, `IPv4 line: ${families[0]}`);
-      assertEqual(families[1].slice(2), ['IPv6 · not tested', 0], 'IPv6 line');
+      assert(/^IPv6 · tested /.test(families[1][2]) && families[1][3] === 3, `IPv6 line: ${families[1]}`);
+      // Each family carries the time it was measured: IPv6's is the earlier test's.
+      await page.click('[data-action="renew-json"]');
+      const [file] = await takeDownloads(page);
+      const tested = JSON.parse(file.text).names.find((n) => n.name === 'www.example.com').http01;
+      const [v4At, v6At] = tested.families.map((f) => Date.parse(f.at));
+      assert(v6At < v4At && v4At === Date.parse(tested.at), `family times: ${tested.families.map((f) => f.at)} (test ${tested.at})`);
       await phoneCheck(page, opts, 'renew-partial-mobile-light-en');
     });
 
@@ -446,6 +490,16 @@ async function main() {
       await page.click('.cert-summary [data-action="renew-link"]');
       await page.waitFor(() => document.documentElement.dataset.view === 'renew' && !!document.querySelector('[data-role="renew-ca"]'), { message: 'renew from SSL Targets' });
       assertEqual([await box(), (await caNow())[0]], ['github.com\nwww.github.com', 'sectigo'], 'names and CA');
+      // Other names carried in: the hint about that certificate's issuer goes (the CA stays).
+      await routeTo(page, '#/renew?names=www.example.org&run=0');
+      assertEqual([await box(), ...(await caNow())], ['www.example.org', 'sectigo', 'Checked against the CAA records. A certificate you load sets it from its issuer.'], 'hint dropped');
+      // A draft of the user's stays, and so do the CA and challenge next to it.
+      const challenge = await page.evaluate(() => document.querySelector('[data-role="renew-challenge"]').value);
+      await typeNames(page, 'draft.example.com');
+      await routeTo(page, '#/renew?names=www.example.net&run=0&ca=google&challenge=dns-01');
+      assertEqual([await box(), (await caNow())[0], await page.evaluate(() => document.querySelector('[data-role="renew-challenge"]').value)],
+        ['draft.example.com', 'sectigo', challenge], 'the draft, its CA and challenge');
+      assert(challenge !== 'dns-01', `challenge before: ${challenge}`);
       assertEqual(await dnsCount(page), before, 'the links sent nothing');
     });
 
@@ -502,6 +556,26 @@ async function main() {
       await setLangUi(page, 'en');
       await page.evaluate(() => window.scrollTo(0, 0));
       await shot(page, opts, 'renew-results-desktop-dark-en');
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    // Last of the checks: the rate-limited resolvers stay in the DoH client's circuit breaker for a while.
+    run.group('No resolver answers');
+    await run.step('every DoH request answered 429: each name could not be checked, never "ready" or "with warnings"', async () => {
+      await page.evaluate(() => { window.__dnsStatus = 429; location.hash = '#/renew?names=www.example.com,api.example.com&ca=letsencrypt&challenge=http-01'; });
+      await page.waitFor(() => document.querySelector('.rnw-hero')?.dataset.headline === 'incomplete' && !document.querySelector('[data-action="renew-run"]').hidden,
+        { message: 'check done', timeout: 30000 });
+      await page.evaluate(() => { window.__dnsStatus = 0; });
+      assertEqual(await text(page, '.rnw-hero .alert'), 'At least one name could not be checked — check again', 'headline');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['2 could not be checked'], 'counts');
+      const c = await cards(page);
+      assertEqual(c.map((x) => [x.name, x.verdict, x.open]), [['www.example.com', 'unknown', true], ['api.example.com', 'unknown', true]], 'verdicts');
+      for (const x of c) {
+        assert(x.findings.includes('caa.error:warn') && x.findings.includes('http.error:warn') && !x.findings.some((f) => f.endsWith(':ok')), `${x.name}: ${x.findings}`);
+      }
+      assertEqual(await text(page, '.rnw-name[data-name="www.example.com"] .rnw-verdict'), 'Could not be checked', 'badge');
+      await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await phoneCheck(page, opts, 'renew-unknown-mobile-dark-en');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     });
 

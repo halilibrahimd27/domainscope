@@ -1977,6 +1977,21 @@ describe('several certificate sets', () => {
     assert.deepEqual(capped.filter((r) => r.state === 'pending').map((r) => r.setId).sort(), ['A', 'B']);
   });
 
+  test('the cap keeps the first name of every set on each address before a second name of any; without sets as before', () => {
+    // two addresses, each needing two sets, in execution order A A B and B B A
+    const pairs = [
+      ['192.0.2.5', 'a1', 'A'], ['192.0.2.5', 'a2', 'A'], ['192.0.2.5', 'b1', 'B'],
+      ['192.0.2.6', 'b2', 'B'], ['192.0.2.6', 'b3', 'B'], ['192.0.2.6', 'a3', 'A']
+    ].map(([ip, n, setId]) => pair({ ip, name: `${n}.example.com`, setId }));
+    const pending = (list, maxRows) => V.createVerifyRows(list, { maxRows }).filter((r) => r.state === 'pending').map((r) => r.name.split('.')[0]);
+    assert.deepEqual(pending(pairs, 4), ['a1', 'b1', 'b2', 'a3'], 'each set keeps its first name per address');
+    assert.deepEqual(pending(pairs, 5), ['a1', 'a2', 'b1', 'b2', 'a3'], 'then the other names in execution order');
+    // the same pairs without sets: one first name per address, as with one certificate
+    const plain = pairs.map(({ setId, ...p }) => p);
+    assert.deepEqual(pending(plain, 4), ['a1', 'a2', 'b1', 'b2']);
+    assert.deepEqual(pending(plain, 2), ['a1', 'b2']);
+  });
+
   test('exports: set / served_set after the CLI columns, certificateSets in the JSON; a single certificate exports as before', async () => {
     const m = await V.setExpectations(SETS);
     const r = row({ ip: '1.2.3.4', name: 'shop.example.com', setId: 'B' });

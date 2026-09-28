@@ -519,7 +519,7 @@ async function main() {
       assert(await page.evaluate(() => !!document.querySelector('.zone-problem[data-code="OWNER_MISSING_TRAILING_DOT"]')), 'OWNER_MISSING_TRAILING_DOT');
     });
 
-    await run.step('"Show the fix" of the cPanel localhost record: delete it, exactly as the file has it (BIND, Route 53); only fixable findings offer one', async () => {
+    await run.step('"Show the fix" of the cPanel localhost record: delete it, exactly as the file has it (BIND, Route 53), no check link; only fixable findings offer one', async () => {
       const offered = await page.evaluate(() => [...document.querySelectorAll('.zone-problems-all [data-action="zone-fix"]')].map((b) => b.dataset.code));
       assertEqual(offered, ['LOCALHOST_RECORD'], 'only the fixable finding offers a fix (never the duplicate or the missing dot)');
       const toggle = '.zone-problems-all [data-action="zone-fix"]';
@@ -529,10 +529,12 @@ async function main() {
         const host = document.querySelector('.zone-problems-all .zone-fix .fix-host');
         return {
           sets: [...host.querySelectorAll('.fix-set')].map((li) => `${li.dataset.action} ${li.dataset.type} ${li.dataset.name}: ${[...li.querySelectorAll('.fix-value-text')].map((v) => v.textContent).join(' | ')}`),
-          expanded: document.querySelector('.zone-problems-all [data-action="zone-fix"]').getAttribute('aria-expanded')
+          expanded: document.querySelector('.zone-problems-all [data-action="zone-fix"]').getAttribute('aria-expanded'),
+          // nothing about an imported zone reaches a URL: no check link, and the instructions name none
+          checkLink: !!host.querySelector('.fix-check') || /change\/check/.test(host.textContent)
         };
       });
-      assertEqual(panel, { sets: ['delete A localhost.example.com: 127.0.0.1'], expanded: 'true' }, 'the fix');
+      assertEqual(panel, { sets: ['delete A localhost.example.com: 127.0.0.1'], expanded: 'true', checkLink: false }, 'the fix, without a check link');
       const code = (tab) => page.evaluate((t) => {
         document.querySelector(`.zone-problems-all .zone-fix .tab[data-tab="${t}"]`).click();
         return document.querySelector(`.zone-problems-all .zone-fix .tabpanel[data-tab="${t}"] .codeblock-pre`).textContent;

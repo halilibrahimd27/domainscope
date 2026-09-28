@@ -267,10 +267,11 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
  * A fix's body: its advice, then (records) the change's problems and outputs, and the link that
  * opens it in the DNS change request.
  * @param {import('../lib/fixes.js').Fix|null} fix
- * @param {{ ctx: object, domain?: string|null }} opts
+ * @param {{ ctx: object, domain?: string|null, check?: boolean }} opts `check`: offer the check link
+ *   (a Zone File fix never does: nothing about an imported zone reaches a URL)
  * @returns {HTMLElement}
  */
-export function FixPanel(fix, { ctx, domain = null } = {}) {
+export function FixPanel(fix, { ctx, domain = null, check = true } = {}) {
   const el = h('div', { class: 'stack-sm fix-panel', dataset: { fix: fix ? fix.id : 'none', kind: fix ? fix.kind : 'none' } });
   const render = (f) => {
     clear(el);
@@ -289,7 +290,7 @@ export function FixPanel(fix, { ctx, domain = null } = {}) {
       const problems = validateChange(f.request);
       if (problems.length) el.append(h('div', { class: 'fix-problems-wrap' }, h('h3', { class: 'fix-sets-title' }, t('fixp.problems')), ProblemList(problems)));
       if (hasErrors({ problems })) el.append(h('p', { class: 'text-sm' }, t('fixp.blocked')));
-      else el.append(ChangeOutputs(f.request, { fileStem: `dns-fix-${f.id}-${f.request.zone || ''}` }));
+      else el.append(ChangeOutputs(f.request, { fileStem: `dns-fix-${f.id}-${f.request.zone || ''}`, check }));
     }
     if (edit) el.append(h('div', { class: 'cluster fix-edit' }, edit));
   };
@@ -347,12 +348,13 @@ export function HealthFixPanel(check, report, { ctx }) {
 }
 
 /**
- * "Show the fix" of a Zone File finding.
+ * "Show the fix" of a Zone File finding: without a check link, since the imported zone never
+ * reaches a URL (or the current target, which opening the check would set).
  * @param {{ code: string, name: string, type: string, params?: object }} finding
  * @param {object} zone the parsed zone
  * @param {{ ctx: object }} opts
  * @returns {HTMLElement}
  */
 export function LintFixPanel(finding, zone, { ctx }) {
-  return FixPanel(lintFix(finding, zone), { ctx });
+  return FixPanel(lintFix(finding, zone), { ctx, check: false });
 }

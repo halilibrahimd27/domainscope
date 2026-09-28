@@ -391,6 +391,9 @@ async function main() {
       await waitDone(page, 'the check after the discovery');
       const hosts = await page.evaluate(() => document.querySelector('.retire-hosts-list li[data-domain="example.net"]')?.dataset.hosts);
       assert(Number(hosts) >= 1, `example.net has discovered host names now: ${hosts}`);
+      // The central SPF policy example.com includes is under a checked domain now: the user's to narrow.
+      const central = await page.evaluate(() => document.querySelector('.retire-group[data-group="example.net"] tr[data-key="_spf.example.net|TXT|ip4:192.0.2.0/24"] .retire-change')?.dataset.action);
+      assertEqual(central, 'narrow', 'the central SPF policy');
       await shot(page, opts, 'retire-discovered-desktop-light-en');
     });
 

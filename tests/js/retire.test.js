@@ -409,6 +409,23 @@ describe('the change list', () => {
     }
   });
 
+  test('an SPF policy under a checked domain is the user\'s to change, even when another domain includes it', async () => {
+    const table = { ...exampleTable(), 'example.net': { A: ['198.51.100.20'], TXT: ['v=spf1 include:_spf.example.net -all'] } };
+    const dns = fakeDns(table);
+    const blocks = blocksOf('192.0.2.10');
+    const com = await checkDomain('example.com', { dns, blocks });
+    const net = await checkDomain('example.net', { dns, blocks });
+    const both = buildChanges({ blocks, checks: [com, net] });
+    const central = both.changes.find((c) => c.name === '_spf.example.net');
+    assert.deepEqual([central.group, central.groupKind, central.action, central.severity, central.foundFor], ['example.net', 'domain', 'narrow', 'mail', ['example.com', 'example.net']]);
+    // Found only through example.com, it stays a policy the check cannot call the user's.
+    const one = buildChanges({ blocks, checks: [com] });
+    assert.equal(one.changes.find((c) => c.name === '_spf.example.net').action, 'provider');
+    // The zone's origin counts as the user's too.
+    const zoned = buildChanges({ blocks, checks: [com], zone: { origin: 'example.net', refs: [] } });
+    assert.equal(zoned.changes.find((c) => c.name === '_spf.example.net').action, 'narrow');
+  });
+
   test('an SPF term that does not authorize is stale; a range wider than the block is narrowed; cannot tell is its own row', () => {
     const blocks = blocksOf('192.0.2.10');
     const check = {

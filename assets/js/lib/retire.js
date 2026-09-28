@@ -1179,7 +1179,10 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     }
     const own = registrableDomain(c.domain) || c.domain;
     for (const m of c.spf.matches) {
-      const ownRecord = (registrableDomain(m.holder) || m.holder) === own;
+      // A policy under any checked domain (or the zone's origin) is the user's to change — the
+      // central `_spf` policy several company domains include is exactly the record to edit.
+      // Only one outside all of them may be a provider's.
+      const ownRecord = (registrableDomain(m.holder) || m.holder) === own || groupFor(m.holder, homes) !== null;
       let action;
       if (!ownRecord) action = 'provider';
       else if (m.mechanism === 'a' || m.mechanism === 'mx') action = 'follow';

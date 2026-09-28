@@ -130,11 +130,16 @@ export const EGRESS_SERVICES = Object.freeze([
   }),
   service({
     id: 'ripestat', name: 'RIPEstat', role: 'ip', hosts: ['stat.ripe.net'],
+    // Each data call by name (lib/ipintel.js, lib/ptrsweep.js), never a catch-all: a new call is an
+    // unknown endpoint (listed as everything RIPEstat can get) until it has a line here.
     endpoints: [
       ep('prefixes', ['asNumbers'], { path: '/data/announced-prefixes/*' }),
-      ep('address', ['ipAddresses'], { path: '/data/**' })
+      ep('prefix-overview', ['ipAddresses'], { path: '/data/prefix-overview/*' }),
+      ep('geo', ['ipAddresses'], { path: '/data/maxmind-geo-lite/*' }),
+      ep('reverse-dns', ['ipAddresses'], { path: '/data/reverse-dns-ip/*' })
     ]
   }),
+  // One API, /<address>, with one caller (lib/ipintel.js; the code scan holds it to that).
   service({ id: 'ipwhois', name: 'ipwho.is', role: 'ip', hosts: ['ipwho.is'], endpoints: [ep('address', ['ipAddresses'], { path: '/*' })] }),
   service({ id: 'rdap-bootstrap', name: 'IANA', role: 'registration', hosts: ['data.iana.org'], endpoints: [ep('bootstrap', ['nothing'], { path: '/rdap/*' })] }),
   service({

@@ -269,8 +269,12 @@ describe('the registry', () => {
       ['https://ip.thc.org/api/v1/lookup/subdomains', 'thc', 'subdomains', ['domains']],
       [THC_REVERSE_IP, 'thc', 'reverseip', ['ipAddresses']],
       // IP data
-      [`${RIPESTAT_BASE}/prefix-overview/data.json?resource=192.0.2.1&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'address', ['ipAddresses']],
-      [`${RIPESTAT_BASE}/maxmind-geo-lite/data.json?resource=2001:db8::1&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'address', ['ipAddresses']],
+      [`${RIPESTAT_BASE}/prefix-overview/data.json?resource=192.0.2.1&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'prefix-overview', ['ipAddresses']],
+      [`${RIPESTAT_BASE}/prefix-overview/data.json?resource=192.0.2.0/24&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'prefix-overview', ['ipAddresses']],
+      [`${RIPESTAT_BASE}/maxmind-geo-lite/data.json?resource=2001:db8::1&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'geo', ['ipAddresses']],
+      [`${RIPESTAT_BASE}/reverse-dns-ip/data.json?resource=198.51.100.7&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'reverse-dns', ['ipAddresses']],
+      // a data call the registry does not name (one could take a domain): everything RIPEstat can get, never "IP addresses" alone
+      [`${RIPESTAT_BASE}/dns-chain/data.json?resource=example.com&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', null, ['ipAddresses', 'asNumbers']],
       [announcedPrefixesUrl(64496), 'ripestat', 'prefixes', ['asNumbers']],
       [`${IPWHOIS_BASE}/192.0.2.1`, 'ipwhois', 'address', ['ipAddresses']],
       // registration: the bootstrap is a public list; a registry server lib/rdap.js noted (the
@@ -820,6 +824,38 @@ describe('the code scan', () => {
       'assets/js/lib/sourceinfo.js: https://api.${}/ has a host built from data: say why in BUILT_HOSTS',
       'assets/js/lib/sources.js: https://${}/api sends to a host built from data, which the registry cannot name'
     ]);
+  });
+
+  test('every RIPEstat data call the code builds is one the registry names, and ipwho.is has its one request', () => {
+    // RIPEstat's calls differ in what `resource` carries (an address, an AS number, a domain …): each
+    // is its own endpoint. A call is a literal path segment after RIPESTAT_BASE, or the literal first
+    // argument of lib/ipintel.js ripeUrl(), the one template that takes the call from a variable.
+    const calls = new Map();
+    const fromVariable = [];
+    for (const [file, { code, literals }] of lexed) {
+      if (!/\bRIPESTAT_BASE\b/.test(code)) continue;
+      for (const lit of literals) {
+        const m = /^\$\{\}\/([^/?#]*)\/data\.json/.exec(lit);
+        if (!m) continue;
+        if (m[1].includes(HOLE)) fromVariable.push(file);
+        else calls.set(m[1], file);
+      }
+      for (const m of code.matchAll(/\bripeUrl\(\s*(?:'([^']*)'|(\S))/g)) {
+        assert.ok(m[1] !== undefined, `${file}: a ripeUrl() call whose data call is not a string literal`);
+        calls.set(m[1], file);
+      }
+    }
+    assert.deepEqual(fromVariable, ['assets/js/lib/ipintel.js'], 'one template takes the call from a variable (ripeUrl)');
+    const ripestat = getEgressService('ripestat');
+    for (const call of calls.keys()) {
+      const c = classifyUrl(`${RIPESTAT_BASE}/${call}/data.json?resource=192.0.2.1&sourceapp=${RIPESTAT_SOURCEAPP}`);
+      assert.ok(c.endpoint, `RIPEstat's ${call} (${calls.get(call)}) has no endpoint in lib/egress.js`);
+    }
+    assert.deepEqual(ripestat.endpoints.map((e) => e.path.split('/')[2]).filter((call) => !calls.has(call)), [], 'a registry endpoint no code calls');
+    assert.ok(!ripestat.endpoints.some((e) => e.path.includes('**')), 'no catch-all: a new call must be named');
+    // ipwho.is has one API, /<address>: its one caller builds it once.
+    assert.deepEqual([...lexed].filter(([, l]) => /\bIPWHOIS_BASE\b/.test(l.code)).map(([f]) => f), ['assets/js/lib/ipintel.js']);
+    assert.equal((lexed.get('assets/js/lib/ipintel.js').code.match(/`IPWHOIS_BASE`/g) || []).length, 1, 'one ipwho.is request built');
   });
 
   test('the declared links and data-built hosts are still there, and no link host is a service the page calls', () => {

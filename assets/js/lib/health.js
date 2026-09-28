@@ -437,7 +437,13 @@ function parseSpfTerm(term, rest) {
  * @property {number} voidCount void lookups in this subtree (NXDOMAIN / empty answers)
  * @property {boolean} void the TXT lookup for this (included) domain itself was void
  * @property {Array<{ term: string, mechanism: string, qualifier: string, target: string|null, lookup: boolean,
- *   void: boolean, macro: boolean, error: string|null, child: SpfNode|null }>} terms
+ *   void: boolean, macro: boolean, error: string|null, child: SpfNode|null, value: string|null, cidr4: number|null,
+ *   cidr6: number|null, addresses?: string[], hosts?: string[], skipped?: boolean }>} terms
+ *   Extensions (what lib/retire.js reads to tell whether an address is covered): `value`, `cidr4`, `cidr6` as
+ *   parseSpf gives them (an ip4 / ip6 term's canonical address and prefix length; the domain-spec and dual CIDR
+ *   length of an a / mx term); `addresses` of an `a` term whose lookup answered (IPv4, then IPv6; [] when void);
+ *   `hosts` of an `mx` term whose lookup answered (the exchanges in preference order, the null MX left out);
+ *   `skipped` when the query cap stopped the term before its lookup.
  * @property {Array<{ code: string, domain: string, target: string|null, detail: string }>} errors
  */
 
@@ -498,7 +504,8 @@ async function evalSpfNode(domain, ctx, depth, path, knownRecord) {
 async function evalSpfTerm(term, node, ctx, depth, path) {
   const t = {
     term: term.raw, mechanism: term.mechanism, qualifier: term.qualifier, target: null,
-    lookup: false, void: false, macro: false, error: null, child: null
+    lookup: false, void: false, macro: false, error: null, child: null,
+    value: term.value ?? null, cidr4: term.cidr4 ?? null, cidr6: term.cidr6 ?? null
   };
   const recursive = term.mechanism === 'include' || term.mechanism === 'redirect';
   if (!recursive && !SPF_LOOKUP_MECHANISMS.has(term.mechanism)) return t;
@@ -510,6 +517,7 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
   if (term.mechanism === 'ptr') return t; // needs the client IP; counted only
   if (ctx.queries >= SPF_MAX_QUERIES) {
     ctx.truncated = true;
+    t.skipped = true;
     return t;
   }
   if (recursive) {
@@ -528,8 +536,12 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
   if (term.mechanism === 'a') {
     ctx.queries += 2;
     const h = await ctx.d.resolveHost(t.target);
-    if (h.status !== 'NOERROR' && h.status !== 'NXDOMAIN') t.error = spfError(ctx, node, 'dns-error', t.target, h.error || h.status);
-    else if (!h.ipv4.length && !h.ipv6.length) t.void = true;
+    if (h.status !== 'NOERROR' && h.status !== 'NXDOMAIN') {
+      t.error = spfError(ctx, node, 'dns-error', t.target, h.error || h.status);
+    } else {
+      t.addresses = [...h.ipv4, ...h.ipv6];
+      if (!t.addresses.length) t.void = true;
+    }
     return t;
   }
   if (term.mechanism === 'mx') {
@@ -539,6 +551,7 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
       t.error = spfError(ctx, node, 'dns-error', t.target, errText(res));
     } else {
       const mx = records(res, 'MX').filter((rr) => rr.data && rr.data.exchange !== '.');
+      t.hosts = uniq([...mx].sort((a, b) => (a.data.preference ?? 0) - (b.data.preference ?? 0)).map((rr) => canonName(rr.data.exchange)).filter(Boolean));
       if (!mx.length) t.void = true;
       if (mx.length > SPF_LOOKUP_LIMIT) t.error = spfError(ctx, node, 'too-many-mx', t.target, String(mx.length));
     }

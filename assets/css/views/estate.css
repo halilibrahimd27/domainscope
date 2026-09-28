@@ -126,8 +126,15 @@
   margin: 0;
 }
 
+/* a long option (Linux fonts, Turkish) never makes the toolbar wider than the page */
+.estate-table .dt-tools {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .estate-filter .select {
   width: auto;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -227,6 +234,15 @@
 
 /* A phone: each certificate is a card of labelled lines (the column headers come from data-label). */
 @media (max-width: 640px) {
+  .estate-table .dt-tools,
+  .estate-filter.field {
+    flex: 1 1 100%;
+  }
+
+  .estate-filter .select {
+    flex: 1 1 0;
+  }
+
   .estate-table .dt-table,
   .estate-table .dt-table tbody {
     display: block;

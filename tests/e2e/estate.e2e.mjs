@@ -377,6 +377,7 @@ async function main() {
       await page.setViewport({ width: 320, height: 720, mobile: true });
       await page.waitFor(() => document.documentElement.clientWidth === 320 && document.querySelector('.estate-stats'), { message: '320 px' });
       await frames(page);
+      await removeToasts(page);
       await assertNoHorizontalScroll(page, 'estate 320 light EN');
       assertEqual(await overflowingIn(page, PAGE), [], 'the page inside 320 px');
       await shotPage(page, opts, 'estate-report-phone-light-en');
@@ -384,6 +385,7 @@ async function main() {
     });
 
     await run.step('desktop dark, Turkish: the report and the CSR check', async () => {
+      await page.setViewport({ width: 1440, height: 900 }); // also after a failed phone step
       await setLangUi(page, 'tr');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await page.waitFor(() => document.querySelector('.estate-stats'), { message: 'stats' });

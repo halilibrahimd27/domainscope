@@ -958,21 +958,59 @@ export function mount(container, ctx) {
     return field.el;
   }
 
+  /**
+   * Run `fn`, which redraws part of `scope`, and put the keyboard focus back on the control it was
+   * on (the redrawn copy: a button by its action, a class tile, the domain picker).
+   */
+  function keepFocus(scope, fn) {
+    const a = document.activeElement;
+    const inside = a && a !== scope && scope.contains(a) ? a : null;
+    let key = null;
+    if (inside && inside.dataset.action) key = `[data-action="${inside.dataset.action}"]${inside.dataset.ip ? `[data-ip="${inside.dataset.ip}"]` : ''}`;
+    else if (inside && inside.dataset.cls) key = `.stat-button[data-cls="${inside.dataset.cls}"]`;
+    else if (inside && inside.matches('.rpt-domain select')) key = '.rpt-domain select';
+    fn();
+    if (key && !inside.isConnected) {
+      const again = scope.querySelector(key);
+      if (again) again.focus({ preventScroll: true });
+    }
+  }
+
   /* --- DMARC ------------------------------------------------------------------------- */
+  let dmarcParts = null;
+
+  /**
+   * The DMARC panel of the domain on screen. `keepTable`: the same domain with new classes (the SPF
+   * landed, the server list changed): the head and the tiles are drawn again, the table's rows
+   * replaced in place, so its search, sort, open details and the keyboard focus stay.
+   */
   function fillDmarc({ keepTable = false } = {}) {
     const m = dmarcModel();
     if (!m) return;
     const { agg, rows, overview } = m;
-    const tableState = keepTable && sourcesTable ? { search: sourcesTable.getSearch(), sort: sourcesTable.getSort() } : null;
+    if (keepTable && sourcesTable && dmarcParts && dmarcParts.domain === agg.domain) {
+      keepFocus(dmarcPanel, () => {
+        const head = dmarcHead(m);
+        const tiles = classTiles(overview);
+        dmarcParts.head.replaceWith(head);
+        dmarcParts.tiles.replaceWith(tiles);
+        dmarcParts = { domain: agg.domain, head, tiles };
+        for (const r of rows) sourcesTable.updateRow(r);
+      });
+      return;
+    }
     clear(dmarcPanel);
     const picker = domainPicker(S.dmarc.domains, agg.domain, (v) => {
       S.domain = v;
       S.cls = null;
-      fillDmarc();
+      keepFocus(dmarcPanel, () => fillDmarc());
       checkSpf();
     }, (d) => d.messages, 'rpt.domainOption');
     if (picker) dmarcPanel.append(picker);
-    dmarcPanel.append(dmarcHead(m), classTiles(overview), sourcesSection(agg, rows, tableState), reportersSection(agg));
+    const head = dmarcHead(m);
+    const tiles = classTiles(overview);
+    dmarcParts = { domain: agg.domain, head, tiles };
+    dmarcPanel.append(head, tiles, sourcesSection(agg, rows), reportersSection(agg));
   }
 
   function dmarcHead({ agg, overview: o, line }) {
@@ -1044,7 +1082,13 @@ export function mount(container, ctx) {
     else if (line === 'none' || line === 'multiple') text = t(`rpt.spf.${line}`);
     else if (line === 'failed') text = t('rpt.spf.failed', { error: (c && c.error) || '' });
     else text = t('rpt.det.notChecked');
-    const retry = line !== 'loading' ? Button({ label: t('rpt.spf.retry'), icon: 'refresh', size: 'sm', variant: 'ghost', dataset: { action: 'rpt-spf-retry' }, onClick: () => checkSpf({ force: true, loud: true }) }) : null;
+    // Busy, never disabled, while the lookup runs: the keyboard focus stays on it across the redraws.
+    const loading = line === 'loading';
+    const retry = Button({
+      label: t('rpt.spf.retry'), icon: 'refresh', size: 'sm', variant: 'ghost', dataset: { action: 'rpt-spf-retry' },
+      attrs: { 'aria-disabled': loading ? 'true' : null, 'aria-busy': loading ? 'true' : null },
+      onClick: () => { if (!loading) checkSpf({ force: true, loud: true }); }
+    });
     return h('div', { class: 'rpt-spf text-sm', dataset: { state: line || 'none-yet' } },
       h('span', { class: 'rpt-spf-label' }, Icon(line === 'ok' ? 'check-circle' : line === 'loading' ? 'clock' : 'alert', { size: 14 }), ' ', `${t('rpt.spf.label', { domain: agg.domain })}: `),
       h('span', null, text),
@@ -1158,7 +1202,7 @@ export function mount(container, ctx) {
       r.private ? null : h('a', { class: 'text-sm', href: ctx.href('ip', { ips: r.ip, run: '0' }) }, Icon('network', { size: 14 }), ' ', t('rpt.det.openIp')));
   }
 
-  function sourcesSection(agg, rows, tableState) {
+  function sourcesSection(agg, rows) {
     bulkBtn = Button({
       label: t('rpt.intel.bulk', { count: 0 }), size: 'sm', variant: 'secondary', icon: 'search',
       title: t('rpt.intel.bulkTitle', { max: INTEL_MAX }),
@@ -1170,8 +1214,8 @@ export function mount(container, ctx) {
       className: 'rpt-sources',
       rowKey: (r) => r.ip,
       rows,
-      search: { value: tableState ? tableState.search : '' },
-      sort: tableState && tableState.sort ? tableState.sort : { key: 'messages', dir: 'desc' },
+      search: true,
+      sort: { key: 'messages', dir: 'desc' },
       filter: S.cls ? (r) => r.cls === S.cls : null,
       dense: true,
       cellLabels: true,
@@ -1241,7 +1285,7 @@ export function mount(container, ctx) {
       if (!s) return;
       const picker = domainPicker(S.tls.domains, s.domain, (v) => {
         S.tlsDomain = v;
-        fill();
+        keepFocus(panel, fill);
       }, (d) => d.success + d.failure, 'rpt.tls.domainOption');
       if (picker) panel.append(picker);
       panel.append(tlsHead(s));

@@ -77,9 +77,10 @@ export const SEVERITY_ORDER = Object.freeze(['error', 'warn', 'info', 'ok']);
  * The checks with a "Show the fix" (lib/fixes.js HEALTH_FIX_IDS; a unit test keeps the two equal):
  * the panel and its libraries load on the first click, so the list lives here.
  */
-export const FIXABLE_CHECKS = Object.freeze(['caa.missing', 'dmarc.missing', 'dmarc.multiple', 'dmarc.pct', 'dmarc.policy-none', 'dmarc.rua-missing',
-  'dmarc.sp-none', 'mx.none', 'mx.null-mixed', 'spf.after-all', 'spf.all-missing', 'spf.all-neutral', 'spf.all-pass', 'spf.lookups-exceeded',
-  'spf.lookups-high', 'spf.missing', 'spf.multiple', 'spf.null-mx', 'spf.ptr', 'spf.redirect-ignored', 'tls-rpt.missing']);
+export const FIXABLE_CHECKS = Object.freeze(['caa.cert-denied', 'caa.critical-unknown', 'caa.missing', 'dmarc.missing', 'dmarc.multiple', 'dmarc.pct',
+  'dmarc.policy-none', 'dmarc.rua-missing', 'dmarc.sp-none', 'mx.none', 'mx.null-mixed', 'spf.after-all', 'spf.all-missing', 'spf.all-neutral',
+  'spf.all-pass', 'spf.lookups-exceeded', 'spf.lookups-high', 'spf.missing', 'spf.multiple', 'spf.null-mx', 'spf.ptr', 'spf.redirect-ignored',
+  'tls-rpt.missing']);
 
 /** ui/fix-panel.js with lib/fixes.js (the zone parser and linter come along), on the first "Show the fix". */
 const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));

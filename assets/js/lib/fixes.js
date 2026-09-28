@@ -1652,8 +1652,9 @@ const TEMPLATE_BUILDERS = {
 const fix = (id, kind, { request = null, template = null, input = null, advice = [], needsCt = false } = {}) => ({ id, kind, request, template, input, advice, needsCt });
 
 /**
- * What a Domain Health report says the names hold now, as a live read would: the TXT, MX and CAA
- * of the domain, the DMARC record of `_dmarc.<domain>` and, for an inherited policy, the
+ * What a Domain Health report says the names hold now, as a live read would: the TXT and MX of
+ * the domain, the CAA set that applies to it (where the climb up the tree found it; none at the
+ * names in between), the DMARC record of `_dmarc.<domain>` and, for an inherited policy, the
  * organizational domain's record it uses — where their lookups did not fail.
  * @param {object} report a lib/health.js domainHealth report
  * @returns {Record<string, object>} {@link readCurrent} shape
@@ -1666,7 +1667,9 @@ export function currentFromReport(report) {
   if (!failed('txt')) out[`${d}|TXT`] = entry(arr(report.records.txt).map((s) => txtChunks(String(s))));
   if (!failed('mx')) out[`${d}|MX`] = entry(arr(report.records.mx).map((m) => normalizeValue('MX', m)).filter(Boolean));
   if (!arr(report.checks).some((c) => c.id === 'caa.error')) {
-    out[`${d}|CAA`] = entry(arr(report.records.caa).map((c) => normalizeValue('CAA', c)).filter(Boolean));
+    const at = caaAt(report) || d;
+    out[`${at}|CAA`] = entry(arr(report.records.caa).map((c) => normalizeValue('CAA', c)).filter(Boolean));
+    if (at !== d) out[`${d}|CAA`] = entry([]);
   }
   if (!arr(report.checks).some((c) => c.id === 'dmarc.error')) {
     const dm = report.dmarc || {};
@@ -1676,6 +1679,9 @@ export function currentFromReport(report) {
   for (const v of Object.values(out)) if (!v.values.length) v.status = 'nodata';
   return out;
 }
+
+/** The name whose CAA set applies to a report's domain (RFC 8659 §3: the domain or a parent), or null. */
+const caaAt = (report) => (report.caa && report.caa.foundAt ? canon(report.caa.foundAt) : null);
 
 /** The zone a name of a report lives in: the report's SOA zone when that holds the name, else the name's registrable domain. */
 function zoneFor(report, name) {
@@ -1795,6 +1801,23 @@ const HEALTH_FIXES = {
   },
   'mx.null-mixed': () => fix('mx.null-mixed', 'advice', { advice: [{ key: 'fix.a.null-mixed' }] }),
   'caa.missing': (r) => reportFix('caa.missing', r, 'caa', { cas: [] }, { needsCt: true }),
+  'caa.cert-denied': (r, check) => {
+    // The current certificate's CA joins the property that decided (issuewild for a wildcard when there is one); the listed CAs stay.
+    const cert = r.caaCert || {};
+    const ids = arr(cert.issuerDomains).map(canon).filter(Boolean);
+    if (!ids.length) return null;
+    const known = FIX_CAS.find((c) => ids.includes(c.caa));
+    const add = { flags: 0, tag: cert.property === 'issuewild' ? 'issuewild' : 'issue', value: known ? known.caa : ids[0] };
+    const issuer = (check && check.params && check.params.issuer) || add.value;
+    return caaSetFix('caa.cert-denied', r, (values) => [...values, add], [{ key: 'fix.a.caa-cert', params: { issuer, value: add.value, property: add.tag } }]);
+  },
+  'caa.critical-unknown': (r) => {
+    const tags = uniqBy(arr(r.caa && r.caa.parsed && r.caa.parsed.unknown).filter((u) => u && u.critical).map((u) => String(u.tag).toLowerCase()), (x) => x);
+    if (!tags.length) return null;
+    // Only the critical flag goes (as the Zone File's CAA_FLAGS fix): the tag stays, a CA that does not know it ignores it.
+    return caaSetFix('caa.critical-unknown', r, (values) => values.map((v) => (tags.includes(v.tag) && v.flags & 128 ? { ...v, flags: 0 } : v)),
+      [{ key: 'fix.a.caa-critical', params: { tags: tags.join(', ') } }]);
+  },
   'tls-rpt.missing': (r) => {
     const address = `tls-reports@${registrableDomain(r.domain) || r.domain}`;
     return fix('tls-rpt.missing', 'records', {
@@ -1803,6 +1826,22 @@ const HEALTH_FIXES = {
     });
   }
 };
+
+/**
+ * A fix of the CAA set that applies to the report's domain, at the name it was found (the domain
+ * or a parent): exact, since the report read the whole set; the plain-record template edits it.
+ */
+function caaSetFix(id, r, edit, advice) {
+  const at = caaAt(r);
+  const before = arr(r.records.caa).map((c) => normalizeValue('CAA', c)).filter(Boolean);
+  if (!at || !before.length) return null;
+  const values = edit(before);
+  const zone = zoneFor(r, at);
+  const request = changeRequest({ zone, rrsets: [{ name: at, type: 'CAA', ttl: DEFAULT_TTL, mode: 'is', values, before }] });
+  const input = { name: at, type: 'CAA', action: 'set', values: values.map((v) => valueText('CAA', v)).join('\n'), zone: zone === registrableDomain(at) ? '' : zone };
+  const where = at === r.domain ? [] : [{ key: 'fix.a.caa-at', params: { domain: r.domain, name: at } }];
+  return fix(id, 'records', { request, template: 'record', input, advice: [...where, ...advice] });
+}
 
 function spfAllFix(id, r) {
   const rec = r.spf && r.spf.record;
@@ -2154,6 +2193,9 @@ const STRINGS = [
   ['fix.a.no-mail', ['Only if the domain sends and receives no mail: these records say so, and receivers then reject spoofed mail at once.', 'Yalnızca alan adı e-posta almıyor ve göndermiyorsa: bu kayıtlar bunu söyler ve alıcılar sahte e-postaları hemen reddeder.']],
   ['fix.a.no-mx-sends', ['The domain sends mail: its SPF record lets servers send as it ({record}). A null MX, “v=spf1 -all” and DMARC p=reject would fail all of that mail, so no record is suggested. To get bounces and replies, add the MX records of the mail platform that sends as it.', 'Alan adı e-posta gönderiyor: SPF kaydı sunucuların onun adına göndermesine izin veriyor ({record}). Null MX, “v=spf1 -all” ve DMARC p=reject bu e-postaların tümünü başarısız kılar; bu yüzden kayıt önerilmez. Geri dönen iletileri ve yanıtları almak için onun adına gönderen e-posta platformunun MX kayıtlarını ekleyin.']],
   ['fix.a.dmarc-inherited', ['{domain} has no DMARC record of its own and uses the one at {name}: the fix changes that record, so it applies to every name under {org} without a DMARC record of its own.', '{domain} adının kendi DMARC kaydı yok, {name} adındakini kullanıyor: düzeltme o kaydı değiştirir; bu yüzden {org} altında kendi DMARC kaydı olmayan her ada uygulanır.']],
+  ['fix.a.caa-at', ['The CAA records that apply to {domain} are at {name}: the fix changes them there, so it applies to every name under {name} without CAA records of its own.', '{domain} için geçerli CAA kayıtları {name} adında: düzeltme onları orada değiştirir; bu yüzden {name} altında kendi CAA kaydı olmayan her ada uygulanır.']],
+  ['fix.a.caa-cert', ['The certificate’s CA ({issuer}) joins the {property} values as “{value}”; the CAs already listed stay.', 'Sertifikanın otoritesi ({issuer}) {property} değerlerine “{value}” olarak eklenir; listedeki otoriteler kalır.']],
+  ['fix.a.caa-critical', ['The critical flag goes from {tags}: a CA that does not know the tag then ignores it instead of refusing every certificate. If the tag was meant to restrict issuance, ask your CA what it supports instead.', 'Kritik bayrağı {tags} etiketinden kalkar: etiketi tanımayan bir otorite her sertifikayı reddetmek yerine onu yok sayar. Etiket sertifika verilmesini kısıtlamak içinse otoritenize neyi desteklediğini sorun.']],
   ['fix.a.null-mixed', ['Keep either the null MX (“0 .”, the domain receives no mail) or the real MX records, not both.', 'Ya null MX’i (“0 .”, alan adı e-posta almaz) ya da gerçek MX kayıtlarını tutun; ikisini birden değil.']]
 ];
 

@@ -67,6 +67,7 @@ export function healthReport({ domain = 'example.com', zone = 'example.com', txt
   };
 }
 
+const LE = "CN=R11,O=Let's Encrypt,C=US";
 const healthCase = (id, report) => () => healthFix({ id, params: { issuer: "Let's Encrypt" } }, report).request;
 
 const TOKEN_A = 'gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk';
@@ -97,6 +98,9 @@ export const CASES = Object.freeze([
   { id: 'record-txt-escapes', template: 'record', input: { name: 'quote.example.com', type: 'TXT', values: 'a "quoted" \\ back|slash ^ caret; semi \'single\' café' } },
   { id: 'parked', template: 'parked', input: { domain: 'example.org', dkim: true } },
   { id: 'parked-mail-only', template: 'parked', input: { domain: 'example.com', caa: false }, read: true },
+  // Domain Health fixes: the CA of the current certificate added where the CAA set of a subdomain lives (the parent).
+  { id: 'health-caa-cert-denied', request: healthCase('caa.cert-denied', healthReport({ domain: 'www.example.com', caa: [{ flags: 0, tag: 'issue', value: 'pki.goog' }, { flags: 0, tag: 'iodef', value: 'mailto:security@example.com' }], caaAt: 'example.com', issuerDN: LE })) },
+  { id: 'health-caa-critical', request: healthCase('caa.critical-unknown', healthReport({ caa: [{ flags: 128, tag: 'tbs', value: 'unknown' }, { flags: 0, tag: 'issue', value: 'letsencrypt.org' }] })) },
   // A subdomain that inherits "p=reject; sp=none": the organizational domain's record is the one that changes.
   { id: 'health-dmarc-inherited-sp', request: healthCase('dmarc.policy-none', healthReport({ domain: 'shop.example.com', dmarc: 'v=DMARC1; p=reject; sp=none; pct=50', dmarcAt: 'example.com' })) },
   { id: 'health-dmarc-inherited-rua', request: healthCase('dmarc.rua-missing', healthReport({ domain: 'shop.example.com', dmarc: 'v=DMARC1; p=reject; sp=none', dmarcAt: 'example.com' })) },

@@ -15,7 +15,7 @@ import {
   m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors
 } from '../../assets/js/lib/fixes.js';
 import { LINT_I18N } from '../../assets/js/lib/zonelint.js';
-import { HEALTH_CHECK_IDS, parseSpf, parseDmarc } from '../../assets/js/lib/health.js';
+import { HEALTH_CHECK_IDS, parseSpf, parseDmarc, parseCaa, checkCaaAllows } from '../../assets/js/lib/health.js';
 import { parseZone } from '../../assets/js/lib/zoneparse.js';
 import { lintZone } from '../../assets/js/lib/zonelint.js';
 import { CASES, caseGolden, goldenPath, FIXES_DIR } from '../fixtures/fixes/gen-fixes-golden.mjs';
@@ -616,6 +616,37 @@ describe('fixes of Domain Health checks', () => {
     assert.deepEqual(f.advice, []);
   });
 
+  test('caa.cert-denied: the certificate\'s CA joins the CAA set where it was found (a parent), the listed CAs stay', () => {
+    const caa = [{ flags: 0, tag: 'issue', value: 'pki.goog' }];
+    const r = report({
+      domain: 'www.example.com', records: { txt: [], mx: [], caa },
+      caa: { foundAt: 'example.com', parsed: parseCaa(caa) }, caaCert: checkCaaAllows(parseCaa(caa), "CN=R11,O=Let's Encrypt,C=US")
+    });
+    assert.equal(r.caaCert.reason, 'not-listed');
+    const f = healthFix({ id: 'caa.cert-denied', params: { issuer: 'Let\'s Encrypt' } }, r);
+    const set = f.request.rrsets[0];
+    assert.deepEqual([f.request.zone, set.name, set.values.map((v) => `${v.tag} ${v.value}`), set.before.length], ['example.com', 'example.com', ['issue pki.goog', 'issue letsencrypt.org'], 1]);
+    assert.deepEqual(f.advice.map((a) => a.key), ['fix.a.caa-at', 'fix.a.caa-cert']);
+    assert.deepEqual(f.advice[1].params, { issuer: 'Let\'s Encrypt', value: 'letsencrypt.org', property: 'issue' });
+    assert.deepEqual([f.template, f.input.name, f.input.values], ['record', 'example.com', '0 issue "pki.goog"\n0 issue "letsencrypt.org"']);
+    assert.deepEqual(buildChange('record', f.input).rrsets[0].values, set.values, 'the edit link builds the same set');
+    // A wildcard certificate with an issuewild set: the CA joins issuewild.
+    const wild = [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'issuewild', value: 'pki.goog' }];
+    const w = healthFix({ id: 'caa.cert-denied' }, report({ records: { txt: [], mx: [], caa: wild }, caa: { foundAt: 'example.com', parsed: parseCaa(wild) },
+      caaCert: checkCaaAllows(parseCaa(wild), "CN=R11,O=Let's Encrypt,C=US", { wildcard: true }) }));
+    assert.deepEqual(w.request.rrsets[0].values.map((v) => `${v.tag} ${v.value}`), ['issue letsencrypt.org', 'issuewild pki.goog', 'issuewild letsencrypt.org']);
+    assert.deepEqual(w.advice.map((a) => a.key), ['fix.a.caa-cert'], 'at the domain itself: no word about a parent');
+    assert.equal(healthFix({ id: 'caa.cert-denied' }, report({ caaCert: { issuerDomains: [] } })), null, 'an unknown CA: no record');
+  });
+
+  test('caa.critical-unknown: the critical flag cleared on the unknown tags, as the Zone File fix does', () => {
+    const caa = [{ flags: 128, tag: 'tbs', value: 'x' }, { flags: 128, tag: 'issue', value: 'letsencrypt.org' }];
+    const f = healthFix({ id: 'caa.critical-unknown' }, report({ records: { txt: [], mx: [], caa }, caa: { foundAt: 'example.com', parsed: parseCaa(caa) } }));
+    assert.deepEqual(f.request.rrsets[0].values.map((v) => `${v.flags} ${v.tag}`), ['0 tbs', '128 issue'], 'only the unknown tag loses it');
+    assert.deepEqual(f.advice, [{ key: 'fix.a.caa-critical', params: { tags: 'tbs' } }]);
+    assert.equal(rrsetPlan(f.request.rrsets[0]).remove.length, 1);
+  });
+
   test('a report-based fix of existing records says its TTL is a default (a resolver cannot tell the zone\'s)', () => {
     const f = healthFix({ id: 'spf.all-pass' }, report());
     assert.deepEqual(f.request.notes.filter((n) => n.key === 'fix.n.report-ttl'), [{ key: 'fix.n.report-ttl', params: { ttl: 3600 } }]);
@@ -636,6 +667,15 @@ describe('fixes of Domain Health checks', () => {
     const cur = currentFromReport(report({ failedLookups: ['mx'] }));
     assert.deepEqual(Object.keys(cur).sort(), ['_dmarc.example.com|TXT', 'example.com|CAA', 'example.com|TXT']);
     assert.equal(cur['example.com|CAA'].status, 'nodata');
+  });
+
+  test('currentFromReport: a CAA set found at a parent is there (none at the domain); an inherited DMARC record at the organizational domain', () => {
+    const caa = [{ flags: 0, tag: 'issue', value: 'pki.goog' }];
+    const org = 'v=DMARC1; p=reject';
+    const cur = currentFromReport(report({ domain: 'www.example.com', records: { txt: [], mx: [], caa }, caa: { foundAt: 'example.com', parsed: parseCaa(caa) },
+      dmarc: { record: org, parsed: parseDmarc(org), foundAt: 'example.com', inherited: true } }));
+    assert.deepEqual([cur['example.com|CAA'].values, cur['www.example.com|CAA'].status], [caa, 'nodata']);
+    assert.deepEqual([cur['_dmarc.example.com|TXT'].values.map((v) => v.join('')), cur['_dmarc.www.example.com|TXT'].status], [[org], 'nodata']);
   });
 });
 

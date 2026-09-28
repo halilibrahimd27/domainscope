@@ -453,6 +453,34 @@ class BundleCliTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.tmp.name), [])
         self.assertEqual(self.run_check('bundle_other.key', 'bundle_leaf.csr')[0], 1)
 
+    def test_a_file_given_twice_is_read_once(self):
+        code, out, err = self.run_check('bundle_leaf.pem', 'bundle_inter.pem', 'bundle_leaf.key',
+                                        'bundle_leaf.pem', 'bundle_leaf.key')
+        self.assertEqual(code, 0, err)
+        self.assertIn('Bundle check: 3 files', out)
+        self.assertEqual(out.count('private key: RSA 2048'), 1, out)
+        self.assertEqual(out.count('belongs to the certificate'), 1, out)
+        text = ' '.join(out.split())
+        self.assertEqual(text.count('was given twice: read once.'), 2, out)
+        self.assertIn('bundle_leaf.key was given twice: read once.', text)
+
+    def test_options_before_the_word(self):
+        # an alias that adds --no-color: moved after the word
+        code, out, err = run_main('--no-color', 'bundle-check', str(FIXTURES / 'bundle_leaf.pem'),
+                                  str(FIXTURES / 'bundle_inter.pem'))
+        self.assertEqual(code, 0, err)
+        self.assertIn('Bundle check: 2 files', out)
+        self.assertNotIn('\x1b[', out)
+        # an option of the scan before it: the usage error says where the word goes
+        code, out, err = run_main('-p', '443', 'bundle-check', str(FIXTURES / 'bundle_leaf.pem'))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, '')
+        self.assertIn('bundle-check must be the first argument', err)
+        # the word as the value of an option is the scan's
+        code, _out, err = run_main('--timeout', '1', '-n', 'bundle-check')
+        self.assertEqual(code, 2)
+        self.assertIn('-t/--targets', err)
+
     def test_nothing_is_written_for_an_incomplete_chain(self):
         code, out, _err = self.run_check('bundle_leaf.pem', 'bundle_leaf.key', '-o', self.tmp.name)
         self.assertEqual(code, 1)

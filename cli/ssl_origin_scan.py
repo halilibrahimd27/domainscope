@@ -6728,6 +6728,8 @@ checks:
   names    a server certificate without subjectAltName (WARN: browsers refuse it)
   expiry   an expired certificate (the leaf: FAIL) or one not valid yet
 
+bundle-check comes first: python3 ssl_origin_scan.py bundle-check [options] FILE...
+
 output (--out-dir DIR): fullchain.pem (leaf + intermediates, leaf first, no root) and
   chain.pem (the intermediates), written only when the chain is complete; with
   --write-haproxy also haproxy.pem (fullchain.pem + the private key, owner-only on
@@ -6775,7 +6777,14 @@ def _run_bundle(args: argparse.Namespace) -> int:
     if args.out_dir and not os.path.isdir(args.out_dir):
         raise UsageError('--out-dir: directory does not exist: %s' % args.out_dir)
     items = []  # type: List[BundleItem]
+    notes = []  # type: List[str]
+    seen = set()  # type: Set[str]
     for path in args.files:
+        same = os.path.normcase(os.path.realpath(path))
+        if same in seen:
+            notes.append('%s was given twice: read once.' % path)
+            continue
+        seen.add(same)
         try:
             with open(path, 'rb') as handle:
                 data = handle.read(CERT_FILE_MAX_BYTES + 1)
@@ -6787,7 +6796,6 @@ def _run_bundle(args: argparse.Namespace) -> int:
         items.extend(bundle_items(data, path))
     now = _utcnow()
     result = check_bundle(items, now)
-    notes = []  # type: List[str]
     written, failed = [], []  # type: List[Tuple[str, str]], List[str]
     exit_code = EXIT_NEEDS_UPDATE if result.failed else EXIT_OK
     if args.write_haproxy and result.key is None:
@@ -7750,20 +7758,32 @@ def _notify_settings(args: argparse.Namespace, warnings: List[str]
     return url, fmt
 
 
+# Options of bundle-check that take no value and may come before the word (an alias such as
+# `ssl_origin_scan.py --no-color`): moved after it. Any other option before it is a scan's.
+BUNDLE_LEADING_FLAGS = ('--no-color', '--write-haproxy')
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5 or 130).
 
-    ``bundle-check FILE...`` as the first argument runs :func:`bundle_main` instead (the scan
-    always starts with an option, so the word cannot be anything else)."""
+    ``bundle-check FILE...`` as the first argument - or after
+    :data:`BUNDLE_LEADING_FLAGS` only - runs :func:`bundle_main` instead (the scan always
+    starts with an option, so the word cannot be anything else). A scan usage error with the
+    word elsewhere says that it must come first."""
     _configure_streams()
     args_list = list(sys.argv[1:] if argv is None else argv)
-    if args_list[:1] == ['bundle-check']:
-        return bundle_main(args_list[1:])
+    if 'bundle-check' in args_list:
+        at = args_list.index('bundle-check')
+        if all(token in BUNDLE_LEADING_FLAGS for token in args_list[:at]):
+            return bundle_main(args_list[:at] + args_list[at + 1:])
     parser = build_parser()
     try:
         args = parser.parse_args(args_list)
     except SystemExit as exc:  # --help / --version (0) or usage errors (2)
         code = exc.code
+        if code == EXIT_USAGE and 'bundle-check' in args_list:
+            print('%s: bundle-check must be the first argument: %s bundle-check [options] '
+                  'FILE...' % (PROG, PROG), file=sys.stderr)
         return code if isinstance(code, int) else EXIT_USAGE
     try:
         return _run(args)

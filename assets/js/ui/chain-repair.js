@@ -65,7 +65,7 @@ registerStrings('en', {
 
   'chainfix.life.title': 'Root store warnings',
   'chainfix.life.distrusted': '{stores} does not trust certificates from {root} issued after {date}. This one was issued on {issued}.',
-  'chainfix.life.renewal-distrusted': '{stores} does not trust certificates from {root} issued after {date}. This one (issued on {issued}) is not affected, but its renewal has to come from another CA.',
+  'chainfix.life.renewal-distrusted': '{stores} does not trust certificates from {root} issued after {date}. This one (issued on {issued}) is not affected, but its renewal has to chain to another root.',
   'chainfix.life.removed': {
     one: '{root} is no longer in the root store of {stores}: its clients reject this chain.',
     other: '{root} is no longer in the root stores of {stores}: their clients reject this chain.'
@@ -133,7 +133,7 @@ registerStrings('tr', {
 
   'chainfix.life.title': 'Kök deposu uyarıları',
   'chainfix.life.distrusted': '{stores}, {root} kökünün {date} tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika {issued} tarihinde verildi.',
-  'chainfix.life.renewal-distrusted': '{stores}, {root} kökünün {date} tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika ({issued} tarihinde verildi) etkilenmiyor, ama yenilemesi başka bir sertifika otoritesinden alınmalı.',
+  'chainfix.life.renewal-distrusted': '{stores}, {root} kökünün {date} tarihinden sonra verdiği sertifikalara güvenmiyor. Bu sertifika ({issued} tarihinde verildi) etkilenmiyor, ama yenilemesi başka bir köke bağlanmalı.',
   'chainfix.life.removed': {
     one: '{root} artık {stores} kök deposunda değil: bu depoya dayanan istemciler zinciri reddeder.',
     other: '{root} artık {stores} kök depolarında değil: bu depolara dayanan istemciler zinciri reddeder.'

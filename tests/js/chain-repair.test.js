@@ -160,7 +160,7 @@ describe('sentences', () => {
     const texts = repair.standing.warnings.map((w) => lifecycleText(w, repair.leaf));
     assert.deepEqual(texts, [
       'Chrome does not trust certificates from DomainScope Test Distrusted Root issued after Jan 31, 2026. This one was issued on Mar 1, 2026.',
-      'Mozilla (Firefox) does not trust certificates from DomainScope Test Distrusted Root issued after Jun 30, 2026. This one (issued on Mar 1, 2026) is not affected, but its renewal has to come from another CA.',
+      'Mozilla (Firefox) does not trust certificates from DomainScope Test Distrusted Root issued after Jun 30, 2026. This one (issued on Mar 1, 2026) is not affected, but its renewal has to chain to another root.',
       'DomainScope Test Distrusted Root expires on Mar 1, 2040, before this certificate does (Jun 1, 2040). After that date, clients that check the root’s validity reject the chain.'
     ]);
     setLang('tr');

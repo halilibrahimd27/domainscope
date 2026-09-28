@@ -302,7 +302,7 @@ async function main() {
       assertEqual(n.life.title, 'Root store warnings', 'title');
       assertEqual(n.life.codes, ['distrusted', 'renewal-distrusted', 'root-expires'], 'warnings, worst first');
       assert(n.life.text.includes('Chrome does not trust certificates from DomainScope Test Distrusted Root issued after Jan 31, 2026. This one was issued on Mar 1, 2026.'), n.life.text);
-      assert(n.life.text.includes('its renewal has to come from another CA'), 'Mozilla: the renewal');
+      assert(n.life.text.includes('its renewal has to chain to another root'), 'Mozilla: the renewal');
       assert(n.life.text.includes('expires on Mar 1, 2040, before this certificate does (Jun 1, 2040)'), 'expiry');
       assertEqual(n.life.links, ['Announcement https://example.com/announcements/chrome-distrust', 'Source https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReport'],
         'Chrome: the announcement; Mozilla: the CCADB report its date comes from');

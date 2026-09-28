@@ -214,9 +214,10 @@ export async function askPfxPassword({ name, open }) {
 }
 
 /**
- * "AES-256-CBC · PBKDF2-HMAC-SHA256 · 2,048 iterations" plus a weak / legacy badge; an encryption
- * this page cannot undo ends in "not supported here", and is only its name when that is all
- * that is known ("pbeWithSHAAnd128BitRC4 · not supported here").
+ * "AES-256-CBC · PBKDF2-HMAC-SHA256 · 2,048 iterations" plus a weak / legacy badge with what it
+ * means written under it (a tooltip alone reaches neither the keyboard nor a touch screen); an
+ * encryption this page cannot undo ends in "not supported here", and is only its name when that
+ * is all that is known ("pbeWithSHAAnd128BitRC4 · not supported here").
  */
 function schemeText(e) {
   if (!e.cipher) return `${e.unsupported} · ${t('pfx.note.notSupported')}`;
@@ -225,7 +226,7 @@ function schemeText(e) {
   if (e.strength === 'weak' || e.strength === 'legacy') {
     return h('span', null, text, ' ', Badge(t(`pfx.strength.${e.strength}`), {
       variant: e.strength === 'weak' ? 'warn' : 'neutral', title: t(`pfx.strength.${e.strength}Title`), className: 'pfx-strength'
-    }));
+    }), h('span', { class: 'muted text-xs pfx-strength-why' }, t(`pfx.strength.${e.strength}Title`)));
   }
   return text;
 }

@@ -316,6 +316,8 @@ async function main() {
       assert(note.text.includes('3DES-CBC · PKCS#12 KDF (SHA-1)'), '3DES');
       assert(note.text.includes('HMAC-SHA1'), 'SHA-1 MAC');
       assertEqual(note.badges, ['weak', 'legacy'], 'strength badges');
+      // What they mean is written out, not only in a tooltip (keyboard, touch).
+      assert(note.text.includes('a private key under it is not protected') && note.text.includes('Export with AES-256 when you can'), 'the badges explained');
       assert(note.text.includes('The key was not checked.'), 'not checked');
     });
 

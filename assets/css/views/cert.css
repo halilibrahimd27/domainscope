@@ -148,6 +148,11 @@
   vertical-align: 1px;
 }
 
+.pfx-strength-why {
+  display: block;
+  margin-top: 2px;
+}
+
 .pfx-warning {
   display: flex;
   align-items: flex-start;

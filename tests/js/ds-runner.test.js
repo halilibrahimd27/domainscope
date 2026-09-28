@@ -1,0 +1,907 @@
+/**
+ * tools/ds.mjs — the headless runner: its command line (tools/ds/args.mjs), "Changes since the
+ * baseline" (tools/ds/diff.mjs), the summary and Markdown (tools/ds/render.mjs), and offline
+ * runs of the program itself: in-process with an injected fetch, and one spawned process whose
+ * fetch is the fake DoH of tests/js/ds-fake-doh.mjs (the Zone File e2e suite's fake live zone).
+ * No network: every DoH query is answered by the fake, every other request is a 404.
+ */
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  parseCommandLine, parseListText, parseTargets, resolverChain, samePath, UsageError, COMMANDS, COMMAND_SPECS,
+  NODE_CHAIN, NODE_UNREADABLE, DS_TOOL, DS_VERSION, DS_DEFAULT_LEVEL, EXIT, USAGE
+} from '../../tools/ds/args.mjs';
+import { baselineProblem, baselineInfo, baselineNotes, diffReports, orderChanges, notableChanges } from '../../tools/ds/diff.mjs';
+import { setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, painter, changeText, CHANGE_TAGS, MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES } from '../../tools/ds/render.mjs';
+import { ctCertId, ctTarget, hostRow, baselineSeeds } from '../../tools/ds/commands.mjs';
+import { main, decodeText } from '../../tools/ds.mjs';
+import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
+import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
+import { issuerName, dnPart } from '../../assets/js/lib/passport.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const DS = join(ROOT, 'tools', 'ds.mjs');
+const NOW = new Date('2026-09-28T03:00:00Z');
+const t = await setupStrings();
+
+/** A report envelope of `command` with these targets. */
+const report = (command, targets, extra = {}) => ({
+  tool: DS_TOOL, version: DS_VERSION, command, startedAt: '2026-09-27T03:00:00.000Z', finishedAt: '2026-09-27T03:02:00.000Z',
+  options: {}, targets, ...extra
+});
+const tags = (changes) => changes.map((c) => `${c.tag}${c.counts ? '' : '?'} ${c.target}${c.item ? ` ${c.item}` : ''}`);
+const tmp = () => mkdtempSync(join(tmpdir(), 'ds-runner-'));
+/** A writable stream stand-in that keeps what it is given. */
+function sink({ isTTY = false } = {}) {
+  return { text: '', isTTY, write(s) { this.text += s; return true; } };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Command line                                                             */
+/* ------------------------------------------------------------------------ */
+
+describe('command line', () => {
+  test('the default chain is the app\'s, without the resolvers Node\'s fetch cannot read', () => {
+    assert.deepEqual([...NODE_CHAIN], DEFAULT_CHAIN.filter((id) => !NODE_UNREADABLE[id]));
+    assert.ok(!NODE_CHAIN.includes('cznic') && NODE_CHAIN.includes('cloudflare'));
+    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane']);
+    for (const c of COMMANDS) assert.match(USAGE, new RegExp(`\\n  ${c} `), c);
+  });
+
+  test('health: domains normalized (a URL gives its host), duplicates dropped, the defaults', () => {
+    const cl = parseCommandLine(['health', 'Example.COM', 'https://www.example.org/x', 'example.com.']);
+    assert.equal(cl.command, 'health');
+    assert.deepEqual(cl.targets, ['example.com', 'www.example.org']);
+    assert.deepEqual(cl.options.chain, [...NODE_CHAIN]);
+    assert.equal(cl.options.concurrency, 12);
+    assert.equal(cl.options.json, null);
+    assert.equal(cl.options.failOnChange, false);
+  });
+
+  test('help, version and a missing or unknown command', () => {
+    assert.equal(parseCommandLine(['--help']).help, true);
+    assert.equal(parseCommandLine(['-h']).help, true);
+    assert.equal(parseCommandLine(['health', '--help']).help, true);
+    assert.equal(parseCommandLine(['--version']).version, true);
+    assert.throws(() => parseCommandLine([]), /a command is needed: health, subdomains/);
+    assert.throws(() => parseCommandLine(['scan', 'example.com']), /unknown command "scan"/);
+    assert.throws(() => parseCommandLine(['health']), /health needs at least one domain \(or --list FILE\)/);
+    assert.doesNotThrow(() => parseCommandLine(['health', '--list', 'domains.txt']));
+  });
+
+  test('parse errors are short usage errors naming the option', () => {
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--nope']), (e) => e instanceof UsageError && /unknown option --nope/.test(e.message));
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--json']), /--json needs a value/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--json', '--md', 'x.md']), /--json needs a value/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--quiet=yes']), /--quiet takes no value/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--json', '-']), /--json takes a file, not "-"/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--baseline', '-']), /--baseline takes a file/);
+  });
+
+  test('an option of another subcommand is refused, naming where it belongs', () => {
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--level', 'small']), /--level applies to subdomains only, not to health/);
+    assert.throws(() => parseCommandLine(['renew', 'example.com', '--sources', 'crtsh']), /--sources applies to subdomains and ct only/);
+    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct and renew only, not to dane/);
+  });
+
+  test('--resolver: a known chain in the given order; HTTP/2-only resolvers and unknown ids refused', () => {
+    assert.deepEqual(resolverChain('google, Cloudflare,google'), ['google', 'cloudflare']);
+    assert.deepEqual(parseCommandLine(['health', 'example.com', '--resolver', 'dnssb']).options.chain, ['dnssb']);
+    assert.equal(parseCommandLine(['health', 'example.com', '--resolver', 'dnssb']).options.chainGiven, true);
+    for (const id of Object.keys(NODE_UNREADABLE)) assert.throws(() => resolverChain(id), /HTTP\/2 only/, id);
+    assert.throws(() => resolverChain('opendns'), /unknown resolver "opendns" \(one of cloudflare/);
+    assert.throws(() => resolverChain(' , '), /needs a resolver id/);
+  });
+
+  test('--concurrency: the app\'s Settings range', () => {
+    assert.equal(parseCommandLine(['health', 'example.com', '--concurrency', '4']).options.concurrency, 4);
+    for (const bad of ['0', '33', '1.5', 'x', '-1']) {
+      assert.throws(() => parseCommandLine(['health', 'example.com', `--concurrency=${bad}`]), /--concurrency takes a whole number from 1 to 32/, bad);
+    }
+  });
+
+  test('--fail-on-change needs --baseline; report files must differ where they would overwrite each other', () => {
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--fail-on-change']), /--fail-on-change needs --baseline/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--json', 'a.json', '--md', './a.json']), /--json and --md name the same file/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--baseline', 'r.md', '--md', 'r.md']), /--baseline and --md name the same file/);
+    const cl = parseCommandLine(['health', 'example.com', '--baseline', 'r.json', '--json', 'r.json', '--fail-on-change']);
+    assert.equal(cl.options.failOnChange, true);
+    assert.ok(samePath('r.json', './r.json'));
+    assert.ok(samePath('C:\\X\\r.json', 'c:\\x\\R.JSON', { platform: 'win32' }));
+    assert.ok(!samePath('/x/r.json', '/x/R.json', { platform: 'linux' }));
+  });
+
+  test('subdomains: level, sources, exact', () => {
+    const cl = parseCommandLine(['subdomains', 'example.com']);
+    assert.equal(cl.options.level, DS_DEFAULT_LEVEL);
+    assert.equal(DS_DEFAULT_LEVEL, 'small');
+    assert.equal(cl.options.sources, null);
+    assert.equal(parseCommandLine(['subdomains', 'example.com', '--level', 'SMART']).options.level, 'smart');
+    assert.throws(() => parseCommandLine(['subdomains', 'example.com', '--level', 'huge']), /--level takes off, small, smart, not "huge"/);
+    assert.deepEqual(parseCommandLine(['subdomains', 'example.com', '--sources', 'crtsh,thc']).options.sources, ['crtsh', 'thc']);
+    assert.throws(() => parseCommandLine(['subdomains', 'example.com', '--sources', 'crtsh,urlscan']), /unknown source "urlscan"/);
+    const exact = parseCommandLine(['subdomains', 'example.com', '--exact', 'names.txt']);
+    assert.equal(exact.options.exact, 'names.txt');
+    assert.equal(exact.options.level, 'off');
+    assert.throws(() => parseCommandLine(['subdomains', 'example.com', '--exact', 'n.txt', '--level', 'small']), /takes no --level/);
+    assert.throws(() => parseCommandLine(['subdomains', 'example.com', '--exact', 'n.txt', '--sources', 'crtsh']), /asks no passive source/);
+  });
+
+  test('ct: days and the certificate sources', () => {
+    assert.equal(parseCommandLine(['ct', 'example.com']).options.days, 30);
+    assert.equal(parseCommandLine(['ct', 'example.com', '--days', '7']).options.days, 7);
+    assert.throws(() => parseCommandLine(['ct', 'example.com', '--days', '0']), /--days takes a whole number from 1 to 3650/);
+    assert.deepEqual(parseCommandLine(['ct', 'example.com', '--sources', 'certspotter']).options.sources, ['certspotter']);
+    assert.throws(() => parseCommandLine(['ct', 'example.com', '--sources', 'hackertarget']), /unknown source "hackertarget" \(one of crtsh, certspotter\)/);
+  });
+
+  test('drift and dane take exactly one file; drift\'s origin and budget', () => {
+    assert.deepEqual(parseCommandLine(['drift', 'zone.txt']).targets, ['zone.txt']);
+    assert.throws(() => parseCommandLine(['drift']), /drift takes one file/);
+    assert.throws(() => parseCommandLine(['dane', 'a.pem', 'b.pem']), /dane takes one file, not 2/);
+    const cl = parseCommandLine(['drift', 'zone.txt', '--origin', 'Example.COM.', '--max-queries', '500', '--include-origins']);
+    assert.equal(cl.options.origin, 'example.com');
+    assert.equal(cl.options.maxQueries, 500);
+    assert.equal(cl.options.includeOrigins, true);
+    assert.equal(parseCommandLine(['drift', 'zone.txt']).options.maxQueries, 2000);
+    assert.throws(() => parseCommandLine(['drift', 'z.txt', '--max-queries', '10001']), /from 1 to 10000/);
+    assert.throws(() => parseCommandLine(['drift', 'z.txt', '--origin', '192.0.2.1']), /--origin: not a zone name/);
+  });
+
+  test('renew: wildcards, the CA and the challenge; names a certificate cannot carry refused', () => {
+    const cl = parseCommandLine(['renew', 'example.com', '*.example.com', '--ca', 'LetsEncrypt', '--challenge', 'DNS-01']);
+    assert.deepEqual(cl.targets, ['example.com', '*.example.com']);
+    assert.equal(cl.options.ca, 'letsencrypt');
+    assert.equal(cl.options.challenge, 'dns-01');
+    assert.equal(parseCommandLine(['renew', 'example.com']).options.challenge, 'unknown');
+    assert.throws(() => parseCommandLine(['renew', '192.0.2.1']), /not a name a certificate can carry: "192.0.2.1"/);
+    assert.throws(() => parseCommandLine(['renew', '*.com.tr']), /not a name a certificate can carry/);
+    assert.throws(() => parseCommandLine(['renew', 'example.com', '--ca', 'acme']), /unknown CA "acme"/);
+    assert.throws(() => parseCommandLine(['renew', 'example.com', '--challenge', 'email']), /--challenge takes http-01, dns-01, tls-alpn-01, unknown/);
+  });
+
+  test('--list text: several per line, comments; invalid entries are returned, not thrown', () => {
+    const text = '# the watch list\nexample.com, example.org ; www.example.net  # inline\n\nnot_a_host!\n192.0.2.1\nexample.com\n';
+    assert.deepEqual(parseListText('health', text), { targets: ['example.com', 'example.org', 'www.example.net'], invalid: ['not_a_host!', '192.0.2.1'] });
+    assert.deepEqual(parseListText('renew', '*.example.com\nexample.com\n*.co.uk').targets, ['*.example.com', 'example.com']);
+    assert.deepEqual(parseListText('renew', '*.co.uk').invalid, ['*.co.uk']);
+    assert.deepEqual(parseTargets('dane', ['cert.pem']), { targets: ['cert.pem'], invalid: [] });
+    for (const c of COMMANDS) assert.ok(COMMAND_SPECS[c], c);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Baseline                                                                 */
+/* ------------------------------------------------------------------------ */
+
+describe('baseline', () => {
+  test('a report of another tool, version or command, or a damaged list, cannot be a baseline', () => {
+    assert.match(baselineProblem([], 'health'), /not a --json report of domainscope-ds/);
+    assert.match(baselineProblem({ tool: 'ssl_origin_scan' }, 'health'), /not a --json report/);
+    assert.match(baselineProblem({ ...report('health', []), version: '2.0.0' }, 'health'), /written by version "2.0.0", which this version \(1\.0\.0\) cannot compare/);
+    assert.match(baselineProblem(report('ct', []), 'health'), /a report of "ct", not of "health"/);
+    assert.match(baselineProblem({ ...report('health', []), targets: {} }, 'health'), /no "targets" list/);
+    assert.match(baselineProblem(report('health', [{ target: 'example.com', checks: [{ id: 'a' }] }]), 'health'), /targets\[0\] checks\[0\] has no "severity"/);
+    assert.match(baselineProblem(report('subdomains', [{ target: 'example.com', mode: 'discover', hosts: [{ name: 'a.example.com', ipv4: '192.0.2.1' }] }]), 'subdomains'), /hosts\[0\] has addresses that are not lists/);
+    assert.match(baselineProblem(report('drift', [{ target: 'example.com', rows: [{ key: 'x|A' }] }]), 'drift'), /rows\[0\] has no "status"/);
+    assert.match(baselineProblem(report('renew', [{ target: 'example.com' }]), 'renew'), /has no "verdict"/);
+    assert.match(baselineProblem(report('dane', [{ target: 'x', endpoints: [{ key: 'k' }] }]), 'dane'), /endpoints\[0\] has no "status"/);
+    assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y' }] }]), 'ct'), /certificates\[0\] has no "names" list/);
+    assert.match(baselineProblem(report('health', [{ checks: [] }]), 'health'), /targets\[0\] has no "target"/);
+    assert.equal(baselineProblem({ ...report('health', [{ target: 'example.com', score: 90, checks: [] }]), version: '1.4.2' }, 'health'), null);
+  });
+
+  test('the baseline block names the file by its base name', () => {
+    assert.deepEqual(baselineInfo(report('health', []), 'results/nightly/health.json'), {
+      file: 'health.json', missing: false, version: DS_VERSION, startedAt: '2026-09-27T03:00:00.000Z', finishedAt: '2026-09-27T03:02:00.000Z'
+    });
+    assert.equal(baselineInfo(report('health', []), 'C:\\jobs\\health.json').file, 'health.json');
+  });
+
+  test('notes say what the two runs did differently', () => {
+    const sub = (o) => report('subdomains', [], { options: o });
+    assert.match(baselineNotes('subdomains', sub({ mode: 'discover', level: 'small', sources: null }), sub({ mode: 'discover', level: 'smart', sources: null }))[0], /wordlist level or the sources differ .*small \/ default → smart \/ default/);
+    assert.match(baselineNotes('subdomains', sub({ mode: 'exact' }), sub({ mode: 'discover' }))[0], /The mode differs/);
+    const rn = (o) => report('renew', [], { options: o });
+    assert.match(baselineNotes('renew', rn({ ca: 'letsencrypt', challenge: 'http-01' }), rn({ ca: 'letsencrypt', challenge: 'dns-01' }))[0], /The CA or the challenge differs/);
+    const dn = (o) => report('dane', [], { options: o });
+    assert.match(baselineNotes('dane', dn({ serialHex: '01' }), dn({ serialHex: '02' }))[0], /The certificate differs from the baseline's \(serial 01 → 02\)/);
+    const h = (r) => report('health', [], { options: { resolvers: r } });
+    assert.match(baselineNotes('health', h(['cloudflare']), h(['google']))[0], /The resolvers differ/);
+    assert.deepEqual(baselineNotes('health', h(['cloudflare']), h(['cloudflare'])), []);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Diffs                                                                    */
+/* ------------------------------------------------------------------------ */
+
+const check = (id, severity, params = {}) => ({ id, severity, titleKey: `health.${id}.title`, params });
+
+describe('diff: health', () => {
+  const before = report('health', [
+    { target: 'example.com', score: 88, failedLookups: [], checks: [check('spf.present', 'ok'), check('dmarc.policy-none', 'warn'), check('caa.missing', 'info'), check('mx.unresolvable', 'error', { hosts: 'mx2.example.net' })] },
+    { target: 'example.net', score: 100, failedLookups: [], checks: [check('spf.present', 'ok')] }
+  ]);
+
+  test('new, worse, better and gone findings, the score, and targets that come and go', () => {
+    const after = report('health', [
+      { target: 'example.com', score: 74, failedLookups: [], checks: [check('spf.present', 'ok'), check('dmarc.policy-none', 'error'), check('caa.missing', 'warn'), check('dkim.none', 'warn'), check('ns.single-provider', 'info')] },
+      { target: 'example.org', score: 100, failedLookups: [], checks: [] }
+    ]);
+    const changes = diffReports('health', before, after, { t });
+    assert.deepEqual(tags(changes), [
+      'SCORE example.com', 'WORSE example.com dmarc.policy-none', 'WORSE example.com caa.missing', 'NEW example.com dkim.none',
+      'GONE example.com mx.unresolvable', 'NEW example.org', 'GONE example.net'
+    ]);
+    const score = changes[0];
+    assert.equal(score.tone, 'bad');
+    assert.equal(changeText(score), 'example.com: health score 88 → 74');
+    assert.equal(changes.find((c) => c.item === 'mx.unresolvable').tone, 'good');
+    assert.match(changeText(changes.find((c) => c.item === 'dkim.none')), /^example\.com: warn dkim\.none — /);
+    assert.ok(changes.every((c) => c.counts));
+  });
+
+  test('a finding gone while a lookup failed is listed, not counted', () => {
+    const after = report('health', [
+      { target: 'example.com', score: 88, failedLookups: ['mx'], checks: [check('spf.present', 'ok'), check('dmarc.policy-none', 'warn'), check('caa.missing', 'info'), check('mx.error', 'warn', { error: 'timeout' })] },
+      { target: 'example.net', score: 100, failedLookups: [], checks: [check('spf.present', 'ok')] }
+    ]);
+    const changes = diffReports('health', before, after, { t });
+    assert.deepEqual(tags(changes), ['NEW example.com mx.error', 'GONE? example.com mx.unresolvable']);
+    assert.match(changeText(changes[1]), /a lookup failed this run: it may still be there/);
+    assert.deepEqual(tags(notableChanges(changes)), ['NEW example.com mx.error']);
+  });
+
+  test('a broken SPF include is a finding, not a failed lookup: what goes next to it counts', () => {
+    const b = report('health', [{ target: 'example.com', score: 54, checks: [check('spf.include-error', 'error'), check('dmarc.policy-none', 'warn')] }]);
+    const a = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('rdap.expiry-ok', 'ok')] }]);
+    assert.deepEqual(tags(diffReports('health', b, a, { t })), ['SCORE example.com', 'GONE example.com dmarc.policy-none']);
+    const failed = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('rdap.error', 'info')] }]);
+    assert.deepEqual(tags(diffReports('health', b, failed, { t })), ['SCORE? example.com', 'GONE? example.com dmarc.policy-none']);
+  });
+
+  test('moves among ok and info are no change; a repeated id counts by its worst severity', () => {
+    const b = report('health', [{ target: 'example.com', score: 100, checks: [check('caa.missing', 'info'), check('x.y', 'ok')] }]);
+    const a = report('health', [{ target: 'example.com', score: 100, checks: [check('caa.missing', 'ok'), check('x.y', 'info'), check('x.y', 'ok')] }]);
+    assert.deepEqual(diffReports('health', b, a, { t }), []);
+    const a2 = report('health', [{ target: 'example.com', score: 94, checks: [check('caa.missing', 'info'), check('x.y', 'ok'), check('x.y', 'warn')] }]);
+    assert.deepEqual(tags(diffReports('health', b, a2, { t })), ['SCORE example.com', 'WORSE example.com x.y']);
+  });
+
+  test('a string param of a title is a code part (Markdown code span), numbers stay text', () => {
+    const b = report('health', [{ target: 'example.com', score: 100, checks: [] }]);
+    const a = report('health', [{ target: 'example.com', score: 80, checks: [check('dmarc.inherited', 'warn', { org: '@team example.com' })] }]);
+    const [, c] = diffReports('health', b, a, { t });
+    assert.ok(c.parts.some((p) => p && p.code === '@team example.com'), JSON.stringify(c.parts));
+    assert.match(renderChangesMarkdown({ command: 'health', baseline: baselineInfo(b, 'h.json'), changes: [c] }), /DMARC inherited from `@team example\.com`/);
+  });
+});
+
+const host = (name, extra = {}) => ({
+  name, status: 'NOERROR', kind: 'direct', provider: null, providerId: null, hidesOrigin: false, dangling: false,
+  ipv4: [], ipv6: [], cnames: [], origins: ['crtsh'], wildcardSuspect: false, error: null, ...extra
+});
+
+describe('diff: subdomains', () => {
+  const cf = { kind: 'cloudflare', provider: 'Cloudflare', providerId: 'cloudflare', hidesOrigin: true };
+  const before = report('subdomains', [{
+    target: 'example.com', mode: 'discover', hosts: [
+      host('www.example.com', { ...cf, ipv4: ['104.16.1.1'] }),
+      host('api.example.com', { ipv4: ['192.0.2.10'] }),
+      host('old.example.com', { ipv4: ['192.0.2.20'] }),
+      host('db.example.com', { ipv4: ['192.0.2.30'] }),
+      host('flaky.example.com', { status: 'SERVFAIL', error: 'SERVFAIL' }),
+      host('shop.example.com', { ...cf, ipv4: ['104.16.1.2'] }),
+      host('cdn.example.com', { kind: 'cdn', provider: 'Fastly', providerId: 'fastly', ipv4: ['198.51.100.71'] }),
+      host('gone-from-result.example.com', { ipv4: ['192.0.2.40'] }),
+      host('ghost.example.com', { ipv4: ['192.0.2.50'], wildcardSuspect: true })
+    ]
+  }]);
+
+  test('new, dangling, gone, failed, failing, exposed, moved and renumbered hosts', () => {
+    const after = report('subdomains', [{
+      target: 'example.com', mode: 'discover', hosts: [
+        host('www.example.com', { ipv4: ['192.0.2.9'] }),
+        host('api.example.com', { ipv4: ['192.0.2.11'] }),
+        host('old.example.com', { status: 'NXDOMAIN', kind: 'nxdomain' }),
+        host('db.example.com', { status: 'SERVFAIL', error: 'SERVFAIL' }),
+        host('flaky.example.com', { status: 'REFUSED', error: 'REFUSED' }),
+        host('shop.example.com', { ...cf, ipv4: ['104.16.1.3'] }),
+        host('cdn.example.com', { kind: 'cdn', provider: 'Akamai', providerId: 'akamai', ipv4: ['198.51.100.72'] }),
+        host('new.example.com', { ipv4: ['192.0.2.60'] }),
+        host('blog.example.com', { status: 'NXDOMAIN', kind: 'nxdomain', dangling: true, cnames: ['gone.example.net'] }),
+        host('nothing.example.com', { status: 'NXDOMAIN', kind: 'nxdomain' }),
+        host('ghost2.example.com', { ipv4: ['192.0.2.51'], wildcardSuspect: true })
+      ]
+    }]);
+    const changes = diffReports('subdomains', before, after, { t });
+    assert.deepEqual(tags(changes), [
+      'EXPOSED example.com www.example.com', 'CHANGED example.com api.example.com', 'GONE example.com old.example.com',
+      'FAILED example.com db.example.com', 'CHANGED example.com cdn.example.com', 'NEW example.com new.example.com',
+      'DANGLING example.com blog.example.com', 'FAILING? example.com flaky.example.com', 'GONE? example.com gone-from-result.example.com'
+    ]);
+    assert.match(changeText(changes[0]), /www\.example\.com — no longer behind Cloudflare: now direct 192\.0\.2\.9/);
+    assert.match(changeText(changes[1]), /addresses direct 192\.0\.2\.10 → direct 192\.0\.2\.11/);
+    assert.match(changeText(changes.find((c) => c.tag === 'DANGLING')), /dangling CNAME to gone\.example\.net/);
+    assert.match(changeText(changes.at(-1)), /not in this run's result/);
+  });
+
+  test('exact mode: a name taken out of the file is gone and counts', () => {
+    const b = report('subdomains', [{ target: 'example.com', mode: 'exact', hosts: [host('a.example.com', { ipv4: ['192.0.2.1'] }), host('b.example.com', { ipv4: ['192.0.2.2'] })] }]);
+    const a = report('subdomains', [{ target: 'example.com', mode: 'exact', hosts: [host('a.example.com', { ipv4: ['192.0.2.1'] })] }]);
+    assert.deepEqual(tags(diffReports('subdomains', b, a, { t })), ['GONE example.com b.example.com']);
+  });
+
+  test('the previous run\'s resolving hosts seed the next discovery (never wildcard suspects or dead names)', () => {
+    assert.deepEqual(baselineSeeds(before, 'example.com'), ['www.example.com', 'api.example.com', 'old.example.com', 'db.example.com',
+      'shop.example.com', 'cdn.example.com', 'gone-from-result.example.com']);
+    assert.deepEqual(baselineSeeds(before, 'example.org'), []);
+    assert.deepEqual(baselineSeeds(report('subdomains', [{ target: 'example.com', mode: 'exact', hosts: [host('a.example.com', { ipv4: ['192.0.2.1'] })] }]), 'example.com'), []);
+    assert.deepEqual(baselineSeeds(null, 'example.com'), []);
+    const row = hostRow({ name: 'x.example.com', status: 'NOERROR', kind: 'cdn', provider: 'Fastly', providerId: 'fastly', hidesOrigin: false, dangling: false,
+      ipv4: ['151.101.2.1', '151.101.1.1', '151.101.1.1'], ipv6: [], cnames: [], origins: ['input', 'crtsh'], wildcardSuspect: false, error: null, ttl: 30, resolver: 'google' }, new Set(['x.example.com']));
+    assert.deepEqual(row.ipv4, ['151.101.1.1', '151.101.2.1']);
+    assert.deepEqual(row.origins, ['baseline', 'crtsh']);
+    assert.ok(!('ttl' in row) && !('resolver' in row));
+  });
+});
+
+const cert = (ca, intermediate, notBefore, names, extra = {}) => {
+  const c = { ca, intermediate, issuer: `C=US, O=${ca}, CN=${intermediate}`, notBefore, notAfter: '2026-12-01T00:00:00.000Z', names, sha256: null, sources: ['crtsh'], ...extra };
+  return { id: ctCertId(c), ...c };
+};
+const ctT = (certificates, extra = {}) => ({
+  target: 'example.com', days: 30, sources: [{ source: 'crtsh', ok: true, state: 'ok' }, { source: 'certspotter', ok: true, state: 'ok' }],
+  complete: true, answered: true, recent: 0, issuers: [...new Set(certificates.map((c) => c.ca))].map((name) => ({ name, count: certificates.filter((c) => c.ca === name).length, intermediates: [], newest: certificates.find((c) => c.ca === name).notBefore })),
+  names: [...new Set(certificates.flatMap((c) => c.names))], certificates, ...extra
+});
+
+describe('diff: ct', () => {
+  const le1 = cert("Let's Encrypt", 'R11', '2026-09-01T00:00:00.000Z', ['example.com', 'www.example.com']);
+  const before = report('ct', [ctT([le1])]);
+
+  test('a new issuer and a first certificate for a name count; a renewal from a known issuer is listed only', () => {
+    const le2 = cert("Let's Encrypt", 'R10', '2026-09-27T00:00:00.000Z', ['example.com', 'www.example.com']);
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com']);
+    const api = cert("Let's Encrypt", 'R11', '2026-09-25T00:00:00.000Z', ['api.example.com']);
+    const changes = diffReports('ct', before, report('ct', [ctT([le2, gts, api, le1])]), { t });
+    assert.deepEqual(tags(changes), ['ISSUER example.com Google Trust Services', 'NAME example.com api.example.com', `CERT? example.com ${le2.id}`]);
+    assert.equal(changes[0].tone, 'bad');
+    assert.match(changeText(changes[0]), /new issuer Google Trust Services: 1 current certificate, newest 2026-09-26/);
+    assert.match(changeText(changes[1]), /first certificate for api\.example\.com \(Let's Encrypt, 2026-09-25\)/);
+    assert.match(changeText(changes[2]), /new certificate from Let's Encrypt \(R10\), 2026-09-27: example\.com, www\.example\.com/);
+  });
+
+  test('against a baseline that missed a source, new issuers and names are listed only', () => {
+    const b = report('ct', [ctT([le1], { complete: false, sources: [{ source: 'crtsh', ok: false, state: 'timeout' }, { source: 'certspotter', ok: true, state: 'ok' }] })]);
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com']);
+    const changes = diffReports('ct', b, report('ct', [ctT([gts, le1])]), { t });
+    assert.deepEqual(tags(changes), ['ISSUER? example.com Google Trust Services']);
+    assert.match(changeText(changes[0]), /the baseline run did not read every source/);
+  });
+
+  test('CT unreadable: FAILED once, nothing compared; read again: RECOVERED; an issuer gone only after a complete read', () => {
+    const down = ctT([], { answered: false, complete: false, sources: [{ source: 'crtsh', ok: false, state: 'timeout' }, { source: 'certspotter', ok: false, state: 'rate-limited' }] });
+    assert.deepEqual(tags(diffReports('ct', before, report('ct', [down]), { t })), ['FAILED example.com']);
+    assert.deepEqual(diffReports('ct', report('ct', [down]), report('ct', [down]), { t }), []);
+    assert.deepEqual(tags(diffReports('ct', report('ct', [down]), before, { t })), ['RECOVERED example.com']);
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com']);
+    assert.deepEqual(tags(diffReports('ct', before, report('ct', [ctT([gts], { names: ['example.com', 'www.example.com'] })]), { t })),
+      ['ISSUER example.com Google Trust Services', "GONE? example.com Let's Encrypt"]);
+    assert.deepEqual(tags(diffReports('ct', before, report('ct', [ctT([gts], { names: ['example.com', 'www.example.com'], complete: false })]), { t })),
+      ['ISSUER example.com Google Trust Services']);
+  });
+
+  test('one certificate from crt.sh and Cert Spotter is one id; names of other domains are left out', () => {
+    const fetched = {
+      certs: [
+        { source: 'crtsh', sources: ['crtsh'], issuer: "C=US, O=Let's Encrypt, CN=R11", notBefore: new Date('2026-09-20T00:00:00Z'), notAfter: new Date('2026-12-19T00:00:00Z'), names: ['example.com', 'www.example.com'], sha256: null },
+        { source: 'certspotter', sources: ['certspotter'], issuer: "C=US, O=Let's Encrypt, CN=R11", notBefore: new Date('2026-09-20T00:00:00Z'), notAfter: new Date('2026-12-19T00:00:00Z'), names: ['www.example.com', 'example.com', 'example.org'], sha256: 'ab'.repeat(32) }
+      ],
+      health: [{ source: 'crtsh', state: 'ok', ok: true }, { source: 'certspotter', state: 'ok', ok: true }]
+    };
+    const x = ctTarget('example.com', fetched, { issuerName, dnPart, days: 30, now: NOW, sources: ['crtsh', 'certspotter'] });
+    assert.equal(x.certificates.length, 1);
+    assert.deepEqual(x.certificates[0].sources, ['certspotter', 'crtsh']);
+    assert.equal(x.certificates[0].sha256, 'ab'.repeat(32));
+    assert.deepEqual(x.certificates[0].names, ['example.com', 'www.example.com']);
+    assert.equal(x.certificates[0].ca, "Let's Encrypt");
+    assert.deepEqual(x.issuers, [{ name: "Let's Encrypt", count: 1, intermediates: ['R11'], newest: '2026-09-20T00:00:00.000Z' }]);
+    assert.equal(x.recent, 1);
+    assert.equal(x.complete, true);
+  });
+});
+
+describe('diff: drift, renew, dane', () => {
+  const row = (key, status, extra = {}) => ({ key, name: key.split('|')[0], type: key.split('|')[1], status, reasons: [], ...extra });
+
+  test('drift: status moves by severity, failures, skipped rows, rows new and gone in the file, the name servers', () => {
+    const b = report('drift', [{
+      target: 'example.com', preflight: { nsMatch: 'same' }, rows: [
+        row('www.example.com|A', 'proxied-ok'), row('api.example.com|A', 'origin-exposed'), row('mail.example.com|A', 'match'),
+        row('vpn.example.com|A', 'error'), row('ftp.example.com|A', 'differs', { added: ['192.0.2.7'] }), row('old.example.com|A', 'missing-live'),
+        row('big.example.com|TXT', 'match'), row('x.example.com|A', 'error')
+      ]
+    }]);
+    const a = report('drift', [{
+      target: 'example.com', preflight: { nsMatch: 'disjoint' }, rows: [
+        row('www.example.com|A', 'origin-exposed'), row('api.example.com|A', 'proxied-ok'), row('mail.example.com|A', 'error'),
+        row('vpn.example.com|A', 'match'), row('ftp.example.com|A', 'differs', { added: ['192.0.2.8'] }), row('big.example.com|TXT', 'skipped', { reasons: ['budget'] }),
+        row('x.example.com|A', 'error'), row('new.example.com|A', 'missing-live'), row('ok.example.com|A', 'match')
+      ]
+    }]);
+    const changes = diffReports('drift', b, a, { t });
+    assert.deepEqual(tags(changes), [
+      'WORSE example.com NS', 'WORSE example.com www.example.com|A', 'BETTER example.com api.example.com|A', 'FAILED example.com mail.example.com|A',
+      'RECOVERED example.com vpn.example.com|A', 'CHANGED example.com ftp.example.com|A', 'NEW example.com new.example.com|A',
+      'CHANGED? example.com big.example.com|TXT', 'GONE? example.com old.example.com|A'
+    ]);
+    assert.match(changeText(changes[1]), /www\.example\.com A — Proxied, origin hidden → Origin exposed: proxy is off/);
+    assert.match(changeText(changes[5]), /live values changed: now also 192\.0\.2\.8/);
+  });
+
+  test('renew: verdicts worse, better, failed, recovered; findings within a verdict; unknown to unknown is listed only', () => {
+    const f = (id, severity, extra = {}) => ({ id, severity, params: {}, ...extra });
+    const b = report('renew', [
+      { target: 'a.example.com', verdict: 'ready', findings: [] },
+      { target: 'b.example.com', verdict: 'fail', findings: [f('caa.denied', 'error')] },
+      { target: 'c.example.com', verdict: 'warnings', findings: [f('http.ipv6', 'warn')] },
+      { target: 'd.example.com', verdict: 'unknown', findings: [f('caa.error', 'warn', { unchecked: true })] },
+      { target: 'e.example.com', verdict: 'warnings', findings: [f('resolvers.differ', 'warn')] },
+      { target: 'f.example.com', verdict: 'unknown', findings: [f('caa.error', 'warn', { unchecked: true })] },
+      { target: 'g.example.com', verdict: 'ready', findings: [] }
+    ]);
+    const a = report('renew', [
+      { target: 'a.example.com', verdict: 'fail', findings: [f('caa.denied', 'error')] },
+      { target: 'b.example.com', verdict: 'ready', findings: [] },
+      { target: 'c.example.com', verdict: 'unknown', findings: [f('http.error', 'warn', { unchecked: true })] },
+      { target: 'd.example.com', verdict: 'ready', findings: [] },
+      { target: 'e.example.com', verdict: 'warnings', findings: [f('provider.unknown', 'warn')] },
+      { target: 'f.example.com', verdict: 'unknown', findings: [f('acme.error', 'warn'), f('caa.error', 'warn', { unchecked: true })] },
+      { target: 'h.example.com', verdict: 'ready', findings: [] }
+    ]);
+    const changes = diffReports('renew', b, a, { t });
+    assert.deepEqual(tags(changes), ['WORSE a.example.com', 'BETTER b.example.com', 'FAILED c.example.com', 'RECOVERED d.example.com',
+      'CHANGED e.example.com', 'NEW h.example.com', 'GONE g.example.com', 'FAILING? f.example.com']);
+    assert.match(changeText(changes[0]), /^a\.example\.com: Ready → Will fail; new: /);
+    assert.match(changeText(changes[4]), /Ready, with warnings; new: .*; gone: /);
+  });
+
+  test('dane: endpoints compared by service and host, whatever the certificate\'s name', () => {
+    const ep = (key, status) => ({ key, qname: `_${key.startsWith('smtp') ? 25 : 443}._tcp.${key.split('|')[1]}`, status });
+    const b = report('dane', [{ target: 'example.com', serialHex: '01', endpoints: [ep('smtp|mail.example.com', 'safe'), ep('https|example.com', 'none'), ep('https|www.example.com', 'error'), ep('smtp|mx2.example.net', 'none')] }]);
+    const a = report('dane', [{ target: 'www.example.com', serialHex: '02', endpoints: [ep('smtp|mail.example.com', 'danger'), ep('https|example.com', 'insecure'), ep('https|www.example.com', 'safe'), ep('smtp|mx3.example.net', 'none')] }]);
+    const changes = diffReports('dane', b, a, { t });
+    assert.deepEqual(tags(changes), ['WORSE www.example.com smtp|mail.example.com', 'WORSE www.example.com https|example.com', 'RECOVERED www.example.com https|www.example.com',
+      'NEW www.example.com smtp|mx3.example.net', 'GONE www.example.com smtp|mx2.example.net']);
+    assert.match(changeText(changes[0]), /_25\._tcp\.mail\.example\.com — Safe → Will break/);
+  });
+
+  test('changes that count come first; an unknown command or a missing translator is refused', () => {
+    const list = [{ counts: false, n: 1 }, { counts: true, n: 2 }, { counts: false, n: 3 }, { counts: true, n: 4 }];
+    assert.deepEqual(orderChanges(list).map((c) => c.n), [2, 4, 1, 3]);
+    assert.throws(() => diffReports('scan', report('scan', []), report('scan', []), { t }), RangeError);
+    assert.throws(() => diffReports('health', report('health', []), report('health', []), {}), TypeError);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Rendering                                                                */
+/* ------------------------------------------------------------------------ */
+
+describe('render', () => {
+  const b = report('health', [{ target: 'example.com', score: 100, checks: [] }]);
+  const a = report('health', [{ target: 'example.com', score: 80, checks: [check('dkim.none', 'warn'), check('dmarc.none', 'warn')] }]);
+  const run = { command: 'health', baseline: baselineInfo(b, 'out/health.json'), changes: diffReports('health', b, a, { t }), notes: ['The resolvers differ from the baseline\'s (cloudflare → google).'] };
+
+  test('the summary block in the CLI\'s words, without colours unless asked', () => {
+    const lines = renderChangesText(run, { paint: painter(false) });
+    assert.equal(lines[0], 'Changes since the baseline (health.json, run of 2026-09-27 03:02 UTC): 3');
+    assert.match(lines[1], /^ {2}SCORE {6}example\.com: health score 100 → 80$/);
+    assert.ok(lines.includes('  The resolvers differ from the baseline\'s (cloudflare → google).'));
+    assert.equal(lines.at(-1), '');
+    assert.ok(!lines.join('\n').includes('\u001b['));
+    assert.ok(renderChangesText(run, { paint: painter(true) }).join('\n').includes('\u001b[31;1m'), 'red for a bad change');
+    assert.ok(CHANGE_TAGS.every((tag) => tag.length <= 9));
+  });
+
+  test('a first run says so; nothing changed says none; the cap and the not-counted note', () => {
+    assert.match(renderChangesText({ command: 'health', baseline: { file: 'h.json', missing: true }, changes: [] }, { paint: painter(false) })[0],
+      /^Baseline h\.json does not exist yet: nothing to compare \(first run\)\. This run's --json report is the next run's baseline\.$/);
+    assert.match(renderChangesText({ command: 'health', baseline: run.baseline, changes: [] }, { paint: painter(false) })[0], /: none$/);
+    const many = Array.from({ length: MAX_SUMMARY_CHANGES + 3 }, (_, i) => ({ tag: 'NEW', tone: 'info', counts: i % 2 === 0, parts: [`n${i}`] }));
+    const lines = renderChangesText({ command: 'ct', baseline: run.baseline, changes: many }, { paint: painter(false) });
+    assert.ok(lines.includes('  ... and 3 more - use --show-all or the --json report to list them.'));
+    assert.ok(lines.some((l) => /Not counted: 26 /.test(l)));
+    assert.equal(renderChangesText({ command: 'ct', baseline: run.baseline, changes: many }, { paint: painter(false), showAll: true }).filter((l) => /^ {2}NEW/.test(l)).length, many.length);
+  });
+
+  test('Markdown: the command, bold tags, code spans for values, the not-counted mark', () => {
+    const md = renderChangesMarkdown(run);
+    assert.match(md, /^\*\*health: changes since the baseline \(run of 2026-09-27 03:02 UTC\): 3\*\*\n\n- \*\*SCORE\*\* `example\.com`: health score 100 → 80\n/);
+    assert.match(md, /- \*\*NEW\*\* `example\.com`: warn `dkim\.none` — /);
+    assert.match(renderChangesMarkdown({ command: 'health', baseline: { missing: true }, changes: [] }), /^\*\*health: first run\*\*/);
+    const quiet = renderChangesMarkdown({ command: 'ct', baseline: run.baseline, changes: [{ tag: 'CERT', counts: false, parts: [{ code: 'example.com' }, ': x'] }] });
+    assert.match(quiet, /- \*\*CERT\*\* \(not counted\) `example\.com`: x\n- 1 listed only/);
+    const many = Array.from({ length: MAX_MARKDOWN_CHANGES + 5 }, (_, i) => ({ tag: 'NEW', counts: true, parts: [{ code: `h${i}.example.com` }] }));
+    const capped = renderChangesMarkdown({ command: 'subdomains', baseline: run.baseline, changes: many });
+    assert.equal(capped.split('\n').filter((l) => l.startsWith('- **NEW**')).length, MAX_MARKDOWN_CHANGES);
+    assert.match(capped, /- … and 5 more: the JSON report lists them all\n$/);
+  });
+
+  test('the stdout summary puts the changes first, then each target\'s summary', () => {
+    const doc = { kind: 'ct', title: ['Certificate Transparency · ', { code: 'example.com' }], lines: [['1 current certificate']], inline: false, footer: { when: 'checked 2026-09-28 03:00 UTC', url: null } };
+    const text = renderRunText(run, [doc, doc]);
+    assert.match(text, /^Changes since the baseline .*\n[\s\S]*\nCertificate Transparency · example\.com\n- 1 current certificate\nDomainScope · checked 2026-09-28 03:00 UTC\n\nCertificate Transparency/);
+    assert.equal(renderRunText({ command: 'ct', baseline: null }, [doc]), 'Certificate Transparency · example.com\n- 1 current certificate\nDomainScope · checked 2026-09-28 03:00 UTC\n');
+  });
+
+  test('files in UTF-8 (with or without a BOM) and UTF-16 (with a BOM, or PowerShell\'s little-endian without one)', () => {
+    const text = 'örnek.example.com\n# yorum\n';
+    const utf16 = (s, bom) => {
+      const body = Buffer.from(s, 'utf16le');
+      return new Uint8Array(bom ? Buffer.concat([Buffer.from([0xff, 0xfe]), body]) : body);
+    };
+    assert.equal(decodeText(new Uint8Array(Buffer.from(text))), text);
+    assert.equal(decodeText(new Uint8Array(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text)]))), text);
+    assert.equal(decodeText(utf16(text, true)), text);
+    assert.equal(decodeText(utf16(text, false)), text);
+    const be = Buffer.from(text, 'utf16le').swap16();
+    assert.equal(decodeText(new Uint8Array(Buffer.concat([Buffer.from([0xfe, 0xff]), be]))), text);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Offline runs of the program                                              */
+/* ------------------------------------------------------------------------ */
+
+/** main() with streams captured, the fake fetch and a fixed clock. */
+async function runMain(argv, { fetchImpl, now = NOW } = {}) {
+  const stdout = sink();
+  const stderr = sink();
+  const code = await main(argv, { stdout, stderr, fetchImpl, env: {}, now: () => now });
+  return { code, out: stdout.text, err: stderr.text };
+}
+
+const HIDDEN_ORIGINS = ['192.0.2.14', '192.0.2.40', '2001:db8::10', 'origin-lb.example.net'];
+
+describe('offline runs (fake DoH)', () => {
+  test('drift: the Zone File e2e zone, origins hidden, nothing internal sent, then a baseline with changes and --fail-on-change', async () => {
+    const dir = tmp();
+    try {
+      const log = [];
+      const table = zoneTable();
+      const json = join(dir, 'drift.json');
+      const md = join(dir, 'drift.md');
+      const first = await runMain(['drift', CF_EXPORT, '--baseline', json, '--json', json, '--md', md], { fetchImpl: createFakeFetch(table, { log }) });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.match(first.out, /^Baseline drift\.json does not exist yet: nothing to compare \(first run\)/);
+      assert.match(first.out, /Zone File · example\.com\n- Live check: \d+ record sets, \d+ DNS queries\n/);
+      assert.match(first.out, /Origin exposed: proxy is off: www\.example\.com A/);
+      assert.match(first.out, /newer than the file/);
+      for (const name of ['origin-lb.example.net', 'intranet.example.com', 'old.dev.example.com']) {
+        assert.ok(!log.some((q) => q.name === name), `${name} never queried`);
+      }
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.equal(doc.tool, DS_TOOL);
+      assert.equal(doc.command, 'drift');
+      assert.deepEqual(doc.baseline, { file: 'drift.json', missing: true });
+      const [z] = doc.targets;
+      const statuses = new Set(z.rows.map((r) => r.status));
+      for (const s of ['proxied-ok', 'origin-exposed', 'match']) assert.ok(statuses.has(s), `${s} in ${[...statuses]}`);
+      assert.equal(z.preflight.serial, 'newer');
+      assert.ok(z.rows.filter((r) => r.status === 'match').every((r) => !('file' in r)), 'matching rows keep no values');
+      const saved = readFileSync(json, 'utf8') + readFileSync(md, 'utf8');
+      for (const ip of HIDDEN_ORIGINS) assert.ok(!saved.includes(ip), `${ip} redacted`);
+      assert.ok(saved.includes('[origin hidden]'));
+      assert.match(readFileSync(md, 'utf8'), /^\*\*drift: first run\*\*[\s\S]*\*\*Zone File · `example\.com`\*\*\n- Live check/);
+
+      // www's proxy is back on; mail's address changed: the next run compares with the report above.
+      table['www.example.com'].A = ['104.16.1.1'];
+      table['mail.example.com'].A = ['198.51.100.26'];
+      const second = await runMain(['drift', CF_EXPORT, '--baseline', json, '--json', json, '--fail-on-change', '-q'], { fetchImpl: createFakeFetch(table) });
+      assert.equal(second.code, EXIT.CHANGED);
+      assert.equal(second.out, '', 'quiet');
+      const doc2 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc2.changes.map((c) => `${c.tag} ${c.item}`), ['BETTER www.example.com|A', 'WORSE mail.example.com|A']);
+      assert.match(doc2.changes[0].text, /Origin exposed: proxy is off → Proxied, origin hidden/);
+      assert.equal(doc2.baseline.missing, false);
+
+      // Nothing moved since: exit 0 even with --fail-on-change.
+      const third = await runMain(['drift', CF_EXPORT, '--baseline', json, '--json', json, '--fail-on-change', '--include-origins'], { fetchImpl: createFakeFetch(table) });
+      assert.equal(third.code, EXIT.OK, third.err);
+      assert.match(third.out, /Changes since the baseline \(drift\.json, run of 2026-09-28 03:00 UTC\): none/);
+      assert.match(third.out, /Origin addresses were hidden in one run and kept in the other/);
+      assert.ok(readFileSync(json, 'utf8').includes('198.51.100.26'), 'origins kept on opt-in');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('health: a first run, then a lookup that fails and a finding that goes', async () => {
+    const dir = tmp();
+    try {
+      const table = zoneTable();
+      const json = join(dir, 'health.json');
+      const first = await runMain(['health', 'example.com', '--json', json, '--baseline', json], { fetchImpl: createFakeFetch(table) });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.match(first.out, /Domain Health · example\.com\n- .* · score \d+\/100\n/);
+      const before = JSON.parse(readFileSync(json, 'utf8')).targets[0];
+      assert.ok(before.checks.some((c) => c.id === 'mx.unresolvable' && c.severity === 'error'), before.checks.map((c) => c.id).join(','));
+      assert.ok(before.report && before.report.records, 'the report itself is kept');
+
+      // example.com's TXT lookup fails: the SPF error it found goes, the score rises.
+      const second = await runMain(['health', 'example.com', '--json', json, '--baseline', json, '--fail-on-change'], {
+        fetchImpl: createFakeFetch(table, { rcodes: { 'example.com|TXT': 'SERVFAIL' } })
+      });
+      assert.equal(second.code, EXIT.CHANGED, second.err);
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc.changes.map((c) => `${c.tag}${c.counts ? '' : '?'} ${c.item || ''}`),
+        ['NEW spf.error', 'SCORE? ', 'GONE? spf.include-error']);
+      assert.match(doc.changes[1].text, /health score \d+ → \d+ \(a lookup failed this run\)/);
+      assert.match(second.out, /GONE {7}example\.com: error spf\.include-error no longer reported — Broken include\/redirect in SPF \(a lookup failed this run: it may still be there\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('subdomains --exact: the listed names only, no source asked, and a host behind the proxy that comes out', async () => {
+    const dir = tmp();
+    try {
+      const names = join(dir, 'names.txt');
+      writeFileSync(names, '# ours\nwww.example.com\napi.example.com, mail.example.com\nnope.example.com\nwww.example.org\nbad host!\n');
+      const table = zoneTable();
+      table['www.example.com'].A = ['104.16.1.1'];
+      const log = [];
+      const other = [];
+      const json = join(dir, 'subs.json');
+      const first = await runMain(['subdomains', 'example.com', '--exact', names, '--json', json, '--baseline', json], {
+        fetchImpl: createFakeFetch(table, { log, other: (url) => { other.push(url); return new Response('', { status: 404 }); } })
+      });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.match(first.err, /--exact .*names\.txt: skipped "host!": not a host name/);
+      assert.deepEqual(other, [], 'no passive source, no RDAP');
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.equal(doc.targets[0].mode, 'exact');
+      const hosts = Object.fromEntries(doc.targets[0].hosts.map((h) => [h.name, h]));
+      assert.deepEqual(Object.keys(hosts).sort(), ['api.example.com', 'example.com', 'mail.example.com', 'nope.example.com', 'www.example.com']);
+      assert.equal(hosts['www.example.com'].kind, 'cloudflare');
+      assert.equal(hosts['mail.example.com'].kind, 'direct');
+      assert.ok(!log.some((q) => q.name.endsWith('example.org')), 'a name outside the domain is not sent');
+      assert.match(first.err, /1 name of names\.txt under none of the domains left out \(never sent\)/);
+      assert.deepEqual(doc.warnings.slice(-1), ['1 name of names.txt under none of the domains left out (never sent)']);
+      assert.match(first.out, /Subdomains · example\.com\n- \d+ subdomains found/);
+
+      table['www.example.com'].A = ['192.0.2.10'];
+      table['www.example.com'].AAAA = ['2001:db8::10'];
+      const second = await runMain(['subdomains', 'example.com', '--exact', names, '--json', json, '--baseline', json, '--fail-on-change'], { fetchImpl: createFakeFetch(table) });
+      assert.equal(second.code, EXIT.CHANGED, second.err);
+      const changes = JSON.parse(readFileSync(json, 'utf8')).changes;
+      assert.equal(changes[0].tag, 'EXPOSED');
+      assert.match(changes[0].text, /www\.example\.com — no longer behind Cloudflare: now direct 192\.0\.2\.10/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ct: crt.sh and Cert Spotter answered in the test, a new issuer the next night', async () => {
+    const dir = tmp();
+    try {
+      const crtshRow = (id, issuer, nb, names) => ({ issuer_ca_id: id, issuer_name: issuer, common_name: names[0], name_value: names.join('\n'), id: id * 10, entry_timestamp: nb, not_before: nb, not_after: '2026-12-20T00:00:00', serial_number: `0${id}ab` });
+      let rows = [crtshRow(1, "C=US, O=Let's Encrypt, CN=R11", '2026-09-20T00:00:00', ['example.com', 'www.example.com'])];
+      const fetchImpl = async (url) => {
+        const u = String(url);
+        if (u.startsWith('https://crt.sh/')) return Response.json(rows);
+        if (u.startsWith('https://api.certspotter.com/')) return new Response('{"code":"rate_limited","message":"rate limit"}', { status: 429, headers: { 'retry-after': '3600' } });
+        return new Response('', { status: 404 });
+      };
+      const json = join(dir, 'ct.json');
+      const md = join(dir, 'ct.md');
+      const first = await runMain(['ct', 'example.com', '--json', json, '--md', md], { fetchImpl });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.match(first.out, /Certificate Transparency · example\.com\n- 1 current certificate · 1 issued in the last 30 days\n- Issuers: Let's Encrypt 1\n/);
+      assert.match(first.out, /Not read: Cert Spotter \(rate limited\): the list may be incomplete/);
+      assert.match(readFileSync(md, 'utf8'), /- Issuers: `Let's Encrypt` 1/);
+      rows = [...rows, crtshRow(2, 'C=US, O=Google Trust Services, CN=WR1', '2026-09-27T00:00:00', ['example.com'])];
+      const second = await runMain(['ct', 'example.com', '--baseline', json, '--json', join(dir, 'ct2.json'), '--fail-on-change'], { fetchImpl });
+      // The baseline missed Cert Spotter: the new issuer is listed, not counted.
+      assert.equal(second.code, EXIT.OK, second.err);
+      assert.match(second.out, /ISSUER {5}example\.com: new issuer Google Trust Services \(WR1\): 1 current certificate, newest 2026-09-27 \(the baseline run did not read every source/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('renew and dane on the fake zone', async () => {
+    const table = zoneTable();
+    const renew = await runMain(['renew', 'example.com', '*.example.com', '--ca', 'letsencrypt', '--challenge', 'dns-01'], { fetchImpl: createFakeFetch(table) });
+    assert.equal(renew.code, EXIT.OK, renew.err);
+    assert.match(renew.out, /^Renewal readiness · example\.com, \*\.example\.com\n/);
+    assert.match(renew.out, /CA: Let's Encrypt · challenge: DNS-01/);
+    const dane = await runMain(['dane', join(ROOT, 'tests', 'fixtures', 'renew_a_rsa.pem')], { fetchImpl: createFakeFetch(table) });
+    assert.equal(dane.code, EXIT.OK, dane.err);
+    assert.match(dane.out, /^DANE \/ TLSA · example\.com\n- No TLSA records: DANE is not used/);
+    const key = await runMain(['dane', join(ROOT, 'tests', 'fixtures', 'with_key.pem')], { fetchImpl: createFakeFetch(table) });
+    assert.match(key.err, /with_key\.pem also holds a private key: it was ignored, never read or sent/);
+    assert.ok(!/PRIVATE KEY|MII/.test(key.out + key.err), 'no key material printed');
+    const pfx = await runMain(['dane', join(ROOT, 'tests', 'fixtures', 'test.pfx')], { fetchImpl: createFakeFetch(table) });
+    assert.equal(pfx.code, EXIT.USAGE);
+    assert.match(pfx.err, /a PKCS#12 bundle: give the certificates as PEM/);
+  });
+
+  test('Ctrl-C (the signal) stops the run: exit 130, nothing written, the baseline kept', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'health.json');
+      writeFileSync(json, JSON.stringify(report('health', [{ target: 'example.com', score: 90, checks: [] }])));
+      const before = readFileSync(json, 'utf8');
+      const controller = new AbortController();
+      let asked = 0;
+      // Every DoH request waits until the run is stopped; the first one stops it.
+      const fetchImpl = (url, init = {}) => new Promise((resolve, reject) => {
+        asked += 1;
+        const stop = () => reject(init.signal.reason);
+        if (init.signal.aborted) stop();
+        else init.signal.addEventListener('abort', stop, { once: true });
+        setTimeout(() => controller.abort(), 5);
+      });
+      const stdout = sink();
+      const stderr = sink();
+      const code = await main(['health', 'example.com', '--baseline', json, '--json', json, '--md', join(dir, 'h.md')], { stdout, stderr, fetchImpl, env: {}, now: () => NOW, signal: controller.signal });
+      assert.equal(code, EXIT.INTERRUPTED);
+      assert.ok(asked > 0);
+      assert.match(stderr.text, /ds: interrupted: nothing written\n$/);
+      assert.equal(stdout.text, '');
+      assert.equal(readFileSync(json, 'utf8'), before);
+      assert.ok(!existsSync(join(dir, 'h.md')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refused before anything is sent: a report file that cannot be written, a baseline of another command, a missing one', async () => {
+    const dir = tmp();
+    try {
+      const log = [];
+      const fetchImpl = createFakeFetch(zoneTable(), { log });
+      const noDir = await runMain(['health', 'example.com', '--json', join(dir, 'missing', 'h.json')], { fetchImpl });
+      assert.equal(noDir.code, EXIT.USAGE);
+      assert.match(noDir.err, /--json: directory does not exist/);
+      mkdirSync(join(dir, 'adir'));
+      assert.match((await runMain(['health', 'example.com', '--md', join(dir, 'adir')], { fetchImpl })).err, /--md: .* is a directory/);
+      const ct = join(dir, 'ct.json');
+      writeFileSync(ct, JSON.stringify(report('ct', [])));
+      const other = await runMain(['health', 'example.com', '--baseline', ct], { fetchImpl });
+      assert.equal(other.code, EXIT.USAGE);
+      assert.match(other.err, /--baseline: cannot compare with .*ct\.json: it is a report of "ct", not of "health"/);
+      const missing = await runMain(['health', 'example.com', '--baseline', join(dir, 'none.json')], { fetchImpl });
+      assert.match(missing.err, /--baseline: .*none\.json does not exist \(give a report written with --json\)/);
+      writeFileSync(join(dir, 'bad.json'), '{ not json');
+      assert.match((await runMain(['health', 'example.com', '--baseline', join(dir, 'bad.json')], { fetchImpl })).err, /is not JSON/);
+      writeFileSync(join(dir, 'empty.txt'), '# nothing yet\n');
+      assert.match((await runMain(['health', '--list', join(dir, 'empty.txt')], { fetchImpl })).err, /health: no target: --list .*empty\.txt names none/);
+      assert.match((await runMain(['drift', join(dir, 'nope.zone')], { fetchImpl })).err, /cannot read .*nope\.zone: no such file/);
+      assert.deepEqual(log, [], 'no DNS query');
+      assert.ok(!existsSync(join(dir, 'none.json')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a zone whose name is only a guess needs --origin', async () => {
+    const dir = tmp();
+    try {
+      const file = join(dir, 'db.example.com');
+      writeFileSync(file, 'www 300 IN A 192.0.2.1\n');
+      const guess = await runMain(['drift', file], { fetchImpl: createFakeFetch(zoneTable()) });
+      assert.equal(guess.code, EXIT.USAGE);
+      assert.match(guess.err, /the zone name example\.com is a guess .*: confirm it with --origin example\.com/);
+      const ok = await runMain(['drift', file, '--origin', 'example.com'], { fetchImpl: createFakeFetch(zoneTable()) });
+      assert.equal(ok.code, EXIT.OK, ok.err);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The documented commands                                                  */
+/* ------------------------------------------------------------------------ */
+
+describe('the documented commands', () => {
+  const unquote = (s) => s.replace(/^'(.*)'$/, '$1');
+
+  test('every ds line of the nightly template, commented ones too, is a command line the runner takes', () => {
+    const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
+    const lines = [...yml.matchAll(/^ *#? *ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
+    assert.equal(lines.length, 6, `${lines.length} ds lines`);
+    for (const [, name, command, rest] of lines) {
+      assert.ok(COMMANDS.includes(command), command);
+      const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,
+        '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--fail-on-change', '--no-color'];
+      assert.doesNotThrow(() => parseCommandLine(argv), argv.join(' '));
+    }
+    assert.match(yml, /node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --no-color/);
+    assert.match(yml, /if \[ "\$code" -eq 4 \]; then changed\+=/);
+  });
+
+  test('the template says the three rules, runs nightly with only the token\'s write scopes it needs, and keeps one issue', () => {
+    const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
+    assert.match(yml, /Use it in a PRIVATE repository/);
+    assert.match(yml, /Never commit inventories or zone files unless you mean to/);
+    assert.match(yml, /No secret is needed/);
+    assert.match(yml, /^ {4}- cron: '\d+ \d+ \* \* \*'/m);
+    assert.match(yml, /^permissions:\n {2}contents: write[^\n]*\n {2}issues: write[^\n]*\n\n/m);
+    assert.doesNotMatch(yml, /secrets\./, 'no secret');
+    assert.match(yml, /repository: halilibrahimd27\/domainscope\n\s+ref: /);
+    for (const cmd of ['gh issue list --label "\\$label" --state open', 'gh issue create', 'gh issue edit', 'gh issue comment', 'gh issue close']) assert.match(yml, new RegExp(cmd), cmd);
+    assert.match(yml, /git add results\n/);
+    const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
+    for (const rule of ['Use it in a private repository', 'Never commit inventories or zone files unless you mean to', 'No secret is needed']) assert.ok(readme.includes(rule), rule);
+  });
+
+  test('the examples of the README and of --help parse', () => {
+    const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
+    const lines = [...`${readme}\n${USAGE}`.matchAll(/^ *node tools\/ds\.mjs (.+)$/gm)].map((m) => m[1]);
+    assert.ok(lines.length >= 12, `${lines.length} examples`);
+    for (const line of lines) {
+      const argv = line.trim().split(/\s+/).map(unquote);
+      if (argv[0] === 'COMMAND') continue;
+      assert.doesNotThrow(() => parseCommandLine(argv), line);
+    }
+  });
+});
+
+test('the program itself: a spawned runner whose fetch is the fake DoH (node --import)', () => {
+  const dir = tmp();
+  try {
+    const json = join(dir, 'drift.json');
+    const md = join(dir, 'drift.md');
+    const logFile = join(dir, 'queries.json');
+    const res = spawnSync(process.execPath, ['--import', pathToFileURL(join(ROOT, 'tests', 'js', 'ds-fake-doh.mjs')).href, DS, 'drift', CF_EXPORT, '--json', json, '--md', md, '--no-color'], {
+      cwd: ROOT, encoding: 'utf8', env: { ...process.env, DS_FAKE_DOH: '1', DS_FAKE_DOH_LOG: logFile, NO_COLOR: '1' }, timeout: 60000
+    });
+    assert.equal(res.status, EXIT.OK, res.stderr);
+    assert.match(res.stdout, /^Zone File · example\.com\n- Live check: /);
+    assert.match(res.stderr, /ds: JSON report written to /);
+    assert.equal(JSON.parse(readFileSync(json, 'utf8')).command, 'drift');
+    assert.match(readFileSync(md, 'utf8'), /\*\*Zone File · `example\.com`\*\*/);
+    const queries = JSON.parse(readFileSync(logFile, 'utf8'));
+    assert.ok(queries.length > 10);
+    assert.ok(queries.every((q) => /^https:\/\/(cloudflare-dns\.com|dns\.google|doh\.dns\.sb)\//.test(q.url)), 'the default chain only');
+    const usage = spawnSync(process.execPath, [DS, 'health'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
+    assert.equal(usage.status, EXIT.USAGE);
+    assert.equal(usage.stderr, 'ds: error: health needs at least one domain (or --list FILE)\n');
+    const help = spawnSync(process.execPath, [DS, '--help'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
+    assert.equal(help.status, 0);
+    assert.equal(help.stdout, `${USAGE}${USAGE.endsWith('\n') ? '' : '\n'}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the program runs through a symlinked checkout too', (t2) => {
+  const dir = tmp();
+  const link = join(dir, 'domainscope');
+  try {
+    try {
+      symlinkSync(ROOT, link, 'junction');
+    } catch (err) {
+      t2.skip(`no symlink here (${err.code})`);
+      return;
+    }
+    const res = spawnSync(process.execPath, [join(link, 'tools', 'ds.mjs'), '--version'], { cwd: dir, encoding: 'utf8', timeout: 60000 });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout, `${DS_TOOL} ${DS_VERSION}\n`);
+  } finally {
+    // The link first, on its own: never walk into the checkout it points at.
+    if (lstatSync(link, { throwIfNoEntry: false })) unlinkSync(link);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

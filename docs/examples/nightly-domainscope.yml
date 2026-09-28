@@ -1,0 +1,144 @@
+# DomainScope nightly checks: a GitHub Actions template for the headless runner (tools/ds.mjs).
+#
+# Copy this file to .github/workflows/ of a PRIVATE repository of yours, next to a domains.txt
+# (one domain per line, # comments). Every night it runs Domain Health and the Certificate
+# Transparency watch for those domains (subdomain discovery, zone drift and renewal readiness
+# are there to switch on), commits the JSON reports and Markdown summaries under results/, and
+# keeps ONE issue: opened or updated when something changed since the night before, closed on
+# a night with no change. The results/*.json of one night are the next night's baseline; git
+# history keeps every night.
+#
+# Read this before you switch it on:
+# - Use it in a PRIVATE repository. The results name your hosts, their addresses and your DNS
+#   records; in a public repository anyone can read them, and forks keep them.
+# - Never commit inventories or zone files unless you mean to. The drift step below reads a zone
+#   export from this repository: leave it commented out unless that file belongs here. Origin
+#   addresses behind proxied names stay hidden in the results unless you add --include-origins.
+# - No secret is needed. The job uses the workflow's own GITHUB_TOKEN (contents: write to commit
+#   the results, issues: write for the issue); the checks ask keyless public services only (DNS
+#   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources). Nothing goes to
+#   Globalping: the checks that need a probe stay in the web app, behind a click.
+# - GitHub's hosted runners share their IP addresses, and the anonymous quotas of the passive
+#   sources and of Cert Spotter (10 full-domain queries an hour) are per address: a source may
+#   answer "rate limited" on some night. The report says so, and nothing it could not read
+#   counts as a change.
+# - Pin the DomainScope version: `ref:` below takes a release tag or a commit SHA.
+name: DomainScope nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC every night (off the full hour, when Actions is busiest)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit results/
+  issues: write     # open, update or close the one issue
+
+concurrency:
+  group: domainscope-nightly
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out this repository (domains.txt and last night's results)
+        uses: actions/checkout@v7
+
+      - name: Check out DomainScope
+        uses: actions/checkout@v7
+        with:
+          repository: halilibrahimd27/domainscope
+          ref: main   # pin a release tag or a commit SHA
+          path: .domainscope
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Run the checks
+        id: ds
+        shell: bash
+        run: |
+          mkdir -p results
+          changed=()
+          failed=()
+          # ds NAME COMMAND ARGS...: results/NAME.json is both last night's baseline and tonight's
+          # report. Exit 4 means "changed since last night"; anything but 0 or 4 is a failure.
+          ds() {
+            local name=$1
+            shift
+            local code=0
+            node .domainscope/tools/ds.mjs "$@" --baseline "results/$name.json" --json "results/$name.json" \
+              --md "results/$name.md" --fail-on-change --no-color || code=$?
+            if [ "$code" -eq 4 ]; then changed+=("$name"); elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi
+          }
+          ds health health --list domains.txt
+          ds ct ct --list domains.txt
+          # Subdomain discovery (slower, and heavier on the passive sources' quotas):
+          # ds subdomains subdomains --list domains.txt --level small
+          # Only the names you list, no source and no guess (quota-free):
+          # ds hosts subdomains --list domains.txt --exact hosts.txt
+          # Zone drift: only if the zone export belongs in this repository (see above).
+          # ds drift-example drift zones/example.com.zone --origin example.com
+          # Renewal readiness of the names you renew (a wildcard too):
+          # ds renew renew --list renew-names.txt --ca letsencrypt --challenge dns-01
+          echo "changed=${changed[*]}" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the results
+        id: commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results
+          if ! git diff --cached --quiet; then
+            git commit -q -m "domainscope: nightly results $(date -u +%F)"
+            git pull -q --rebase
+            git push -q
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open, update or close the issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGED: ${{ steps.ds.outputs.changed }}
+          RESULTS: ${{ github.server_url }}/${{ github.repository }}/tree/${{ steps.commit.outputs.sha }}/results
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          label=domainscope
+          gh label create "$label" --force --color 1d76db --description 'DomainScope nightly checks' > /dev/null
+          issue=$(gh issue list --label "$label" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$CHANGED" ]; then
+            {
+              echo "Changed since the previous nightly run: $CHANGED. Results: $RESULTS · run: $RUN"
+              echo
+              for name in $CHANGED; do
+                cat "results/$name.md"
+                echo
+              done
+            } > "$RUNNER_TEMP/body.md"
+            # An issue body holds 65,536 characters: cut there, never inside a UTF-8 character.
+            head -c 60000 "$RUNNER_TEMP/body.md" | iconv -c -f UTF-8 -t UTF-8 > "$RUNNER_TEMP/issue.md"
+            if [ -n "$issue" ]; then
+              gh issue edit "$issue" --body-file "$RUNNER_TEMP/issue.md"
+              gh issue comment "$issue" --body "Changed again: $CHANGED ($RUN)."
+            else
+              gh issue create --label "$label" --title 'DomainScope: changes since the last nightly run' --body-file "$RUNNER_TEMP/issue.md"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "No change since the previous nightly run ($RUN)."
+          fi
+
+      - name: Fail when a check did not complete
+        if: steps.ds.outputs.failed != ''
+        shell: bash
+        env:
+          FAILED: ${{ steps.ds.outputs.failed }}
+        run: |
+          echo "::error::These checks did not complete (name:exit code): $FAILED. See the log of 'Run the checks'."
+          exit 1

@@ -1,0 +1,359 @@
+/*
+ * views/retire.css — "Retire an IP" view (.retire-*). The form (addresses | domains) with the
+ * known host names and the discovery offer, then the results: the head card (verdict, Copy
+ * summary, exports, progress, evidence chips), stat cards, the owners and one card per group
+ * of the change list. Uses the design tokens from style.css only.
+ */
+
+/* Form: the addresses next to the domains on wide screens, stacked on phones. */
+.retire-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 14px 24px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .retire-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.retire-ips .textarea,
+.retire-domains .textarea {
+  min-height: 84px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.retire-parsed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--text-2);
+}
+
+.retire-parsed:empty,
+.retire-issues:empty,
+.retire-hosts:empty {
+  display: none;
+}
+
+.retire-filled {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+/* Which host names each domain gets, and the discovery offer. */
+.retire-hosts-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.retire-discover {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.retire-discover p {
+  flex: 1 1 18rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.retire-discover .icon {
+  vertical-align: -2px;
+}
+
+.retire-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.retire-privacy {
+  display: flex;
+  flex: 1 1 20rem;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.retire-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.retire-run {
+  margin-left: auto;
+}
+
+@media (max-width: 600px) {
+  .retire-run {
+    width: 100%;
+  }
+
+  .retire-run .btn {
+    flex: 1;
+  }
+}
+
+/* Results: the head card */
+.retire-head {
+  display: grid;
+  gap: 10px;
+}
+
+.retire-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.retire-head-title {
+  min-width: 0;
+  margin: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.retire-tools {
+  flex-wrap: wrap;
+}
+
+.retire-progress[hidden],
+.retire-status:empty {
+  display: none;
+}
+
+.retire-status {
+  margin: 0;
+}
+
+.retire-chips .src-chip-value {
+  overflow-wrap: anywhere;
+}
+
+.retire-stats {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
+.retire-stats:empty {
+  display: none;
+}
+
+/* The servers of the list that own the addresses: one line in the head card. */
+.retire-owners {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--text-2);
+}
+
+.retire-owners:empty {
+  display: none;
+}
+
+.retire-owners > .icon {
+  flex: none;
+  align-self: center;
+}
+
+.retire-owners-title {
+  font-weight: 650;
+}
+
+.retire-owner-list {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.retire-owner-name {
+  color: var(--text);
+  font-weight: 650;
+}
+
+/* The change list: one card per group. On a narrow card the count goes under the title
+   rather than squeezing it into a column. */
+.retire-group .card-head {
+  flex-wrap: wrap;
+}
+
+.retire-group .card-titles {
+  flex: 1 1 14rem;
+}
+
+.retire-group .card-title .mono {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.retire-check-too {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 600px) {
+  .retire-check-too .btn {
+    flex: 1;
+  }
+}
+
+.retire-table .dt-table td {
+  white-space: normal;
+}
+
+.retire-table .dt-table td:first-child {
+  white-space: nowrap;
+}
+
+.retire-record {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 9rem;
+}
+
+.retire-name,
+.retire-value .mono {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.retire-value {
+  min-width: 8rem;
+  max-width: 22rem;
+}
+
+.retire-change {
+  display: block;
+  min-width: 14rem;
+  max-width: 30rem;
+  line-height: 1.45;
+}
+
+.retire-evidence {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  min-width: 10rem;
+}
+
+.retire-ev {
+  overflow-wrap: anywhere;
+}
+
+.retire-gone-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* A phone: each record is a card of labelled lines (severity, record, value, change, evidence).
+   Five columns never fit a phone; the badges cannot break, and with wider fonts (DejaVu on
+   Linux) they need even more room. */
+@media (max-width: 640px) {
+  .retire-table .dt-table,
+  .retire-table .dt-table tbody {
+    display: block;
+  }
+
+  .retire-table .dt-table thead {
+    display: none;
+  }
+
+  .retire-table .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .retire-table .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  /* the label in the card's first column, the value in the second (every value may break) */
+  .retire-table .dt-table td,
+  .retire-table .dt-table td:first-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .retire-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .retire-table .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+
+  .retire-record,
+  .retire-value,
+  .retire-change,
+  .retire-evidence {
+    min-width: 0;
+    max-width: none;
+  }
+
+  /* a longer label (Turkish "Yalnızca zone dosyasında") wraps inside its badge */
+  .retire-table .badge {
+    height: auto;
+    min-height: 21px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    white-space: normal;
+  }
+}
+
+/* Paper: the evidence and the change text read in full, rows never split. */
+@media print {
+  .retire-table .dt-table tr {
+    break-inside: avoid;
+  }
+
+  .retire-discover,
+  .retire-actions {
+    display: none;
+  }
+}

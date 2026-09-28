@@ -65,17 +65,17 @@ describe('groupViews — the tool groups', () => {
     const groups = groupViews(VIEWS);
     assert.deepEqual(ids(groups), ['discover', 'ssl', 'dns', 'ip', 'mail', 'data']);
     assert.deepEqual(groups.map((g) => ids(g.views)), [
-      ['subdomains', 'zone'], ['scan', 'cert', 'renew'], ['global', 'lookup', 'bulk'], ['ip', 'ptr'], ['health'], ['inventory', 'about']
+      ['subdomains', 'zone'], ['scan', 'cert', 'renew'], ['global', 'lookup', 'bulk'], ['ip', 'ptr', 'retire'], ['health'], ['inventory', 'about']
     ]);
     assert.deepEqual(groups.flatMap((g) => ids(g.views)).sort(), ids(VIEWS).sort());
     assert.equal(groups[0].labelKey, 'nav.groupDiscover');
   });
 
   test('a view added to the registry appears on its own (e.g. another tool in the IP group)', () => {
-    const at = VIEWS.findIndex((v) => v.id === 'ptr') + 1;
+    const at = VIEWS.findIndex((v) => v.id === 'retire') + 1;
     const views = [...VIEWS.slice(0, at), { id: 'whois', group: 'ip', icon: 'network' }, ...VIEWS.slice(at)];
     const ip = groupViews(views).find((g) => g.id === 'ip');
-    assert.deepEqual(ids(ip.views), ['ip', 'ptr', 'whois']);
+    assert.deepEqual(ids(ip.views), ['ip', 'ptr', 'retire', 'whois']);
   });
 
   test('a missing or unknown group lands in a trailing "More tools" group, never dropped', () => {

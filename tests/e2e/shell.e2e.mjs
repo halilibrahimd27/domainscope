@@ -47,7 +47,7 @@ import { zoneHandoffScript } from './scan.e2e.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'inventory', 'about'];
+const ROUTES = ['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'retire', 'health', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);
@@ -1780,7 +1780,7 @@ async function main() {
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
         ['Discover', ['subdomains', 'zone']], ['Certificates', ['scan', 'cert', 'renew']], ['DNS tools', ['global', 'lookup', 'bulk']],
-        ['IP addresses', ['ip', 'ptr']], ['Mail & domain', ['health']], ['Setup & info', ['inventory', 'about']]
+        ['IP addresses', ['ip', 'ptr', 'retire']], ['Mail & domain', ['health']], ['Setup & info', ['inventory', 'about']]
       ], 'groups');
       assertEqual(menu.current, ['lookup'], 'current tool marked');
       assertEqual(menu.focused, 'lookup', 'focus starts on the current tool');

@@ -90,7 +90,7 @@ const WORKSPACE_WAIT_MS = 8000;
  */
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/subdomains.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/renew.css',
-  'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/health.css',
+  'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css', 'views/health.css',
   'views/inventory.css', 'views/about.css'
 ]);
 
@@ -127,6 +127,7 @@ export const VIEWS = Object.freeze([
   { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
   { id: 'ip', group: 'ip', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
   { id: 'ptr', group: 'ip', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
+  { id: 'retire', group: 'ip', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },
   { id: 'health', group: 'mail', icon: 'activity', css: ['views/health.css'], load: () => import('./views/health.js') },
   { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css'], offline: true, load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }

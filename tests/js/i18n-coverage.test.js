@@ -153,6 +153,22 @@ describe('i18n coverage', () => {
     for (const f of ptrsweep.SWEEP_FILTERS) add(`ptr.filter.${f}`);
     for (const k of ['embedded', 'generic']) add(`ptr.pattern.${k}`);
     for (const p of netinfo.PROVIDERS) add(`ptr.op.${p.id === 'cloudflare' ? 'cloudflare' : p.category}`);
+    // Retire an IP (lib/retire.js): every severity and verification (with its tooltip), every
+    // address-box issue, every reason an SPF term cannot be told, every passive service, and
+    // every "what to change" text views/retire.changeText can pick.
+    const retire = await imp('assets/js/lib/retire.js');
+    for (const s of retire.SEVERITIES) { add(`retire.sev.${s}`); add(`retire.sevTitle.${s}`); }
+    for (const v of retire.VERIFIED_STATES) { add(`retire.ver.${v}`); add(`retire.verTitle.${v}`); }
+    for (const c of retire.TARGET_ISSUES) add(`retire.issue.${c}`);
+    for (const r of retire.UNKNOWN_REASONS) add(`retire.act.check.${r}`);
+    for (const p of retire.PASSIVE_SOURCES) add(`retire.passive.src.${p}`);
+    for (const s of retire.HOST_SOURCES) add(`retire.hosts.${s}`);
+    for (const s of ['dns', 'spf', 'zone', 'passive', 'scan', 'discovered']) add(`retire.ev.src.${s}`);
+    for (const r of ['mx', 'ns', 'spf']) add(`retire.ev.roles.${r}`);
+    for (const s of ['scan', 'zone', 'target']) add(`retire.filled.${s}`);
+    for (const k of ['remove.a', 'remove.https', 'remove.spf', 'remove.spfStale', 'narrow', 'follow.spf', 'follow.cname', 'repoint.mx',
+      'repoint.ns', 'repoint.other', 'glue', 'provider', 'origin', 'check.passive']) add(`retire.act.${k}`);
+    for (const a of retire.CHANGE_ACTIONS) assert.ok([...keys].some((k) => k.startsWith(`retire.act.${a}`)), `retire.act.${a}*`);
     // Subdomains: the zone chip and the Reverse DNS names chip (one key per mode), the result banners.
     for (const m of views.subdomains.ZONE_MODES) {
       for (const k of ['zone', 'handoff']) { add(`sub.${k}.mode.${m}`); add(`sub.${k}.mode.${m}Title`); add(`sub.${k}.note.${m}`); }

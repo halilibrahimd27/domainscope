@@ -19,7 +19,7 @@
  *   included; {@link verifyZoneRefs} asks public DNS whether each is still served, and
  *   {@link buildChanges} lists them with the live findings: seen over DoH (`live`), found only in
  *   the file (`file`), hidden behind the proxy (`hidden`) or not asked because the name looks
- *   internal (`internal`).
+ *   internal (`internal`); a wildcard owner is asked through a random name under it.
  * - {@link runRetireCheck}: the whole check (every domain, then the zone's candidates), streamed
  *   as events and cancellable; what finished before an abort is kept. {@link retireGaps}: what it
  *   could not settle (failed lookups, "cannot tell", a stop) — only a check without any of it may
@@ -39,7 +39,7 @@
  * resolvers of the client it is given; the addresses themselves are only compared here.
  */
 
-import { throwIfAborted, errorKind, uniq } from './util.js';
+import { throwIfAborted, errorKind, uniq, randomLabel } from './util.js';
 import { parseIP, parseCidr, formatIP, normalizeIP, isPrivateIP } from './netinfo.js';
 import { normalizeHostname, isSubdomainOf, registrableDomain, sortHostnames } from './domain.js';
 import { spfLookupCount, parseSpf } from './health.js';
@@ -687,7 +687,9 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
  * @property {number|null} preference
  * @property {{ term: string, qualifier: string, relation: string, range: string }|null} spf an SPF ip4 / ip6 term
  * @property {boolean|null} [live] set by {@link verifyZoneRefs}: true / false, null when the lookup failed;
- *   undefined when it was not asked (proxied, internal, wildcard, over the cap)
+ *   undefined when it was not asked (proxied, internal, over the cap)
+ * @property {string} [probe] set by {@link verifyZoneRefs} for a wildcard owner (`*.x`): the random name
+ *   under it (`<label>.x`) that was asked instead
  * @property {boolean} [capped] not asked: more records than {@link RETIRE_MAX_ZONE_REFS} would have been
  */
 
@@ -836,19 +838,38 @@ function answerHas(res, ref) {
  * - MX / NS / SRV / HTTPS / SVCB: the owner's record set holds the target, and the target resolves
  *   to the address (an address hint: the record set holds the hint);
  * - an SPF term: the owner's SPF policy holds the term.
- * A proxied record's origin (the proxy answers with its own edges), a name that looks internal
- * (never sent to a public resolver) and a wildcard owner are not asked (`live` stays undefined).
- * A served MX / NS / SRV / HTTPS record whose target looks internal is `live` without asking the
- * target. Only the first `max` records that would be asked are; the rest keep `live` undefined and
- * get `capped: true`. The DohClient caches, so a name the domain checks resolved costs nothing more.
+ * A wildcard owner (`*.x`) is asked through a random name under it (`<label>.x`, the same one for
+ * every record of that owner; as the Zone File view's live check does): public DNS serves the
+ * wildcard there, and nowhere else. A proxied record's origin (the proxy answers with its own
+ * edges) and a name that looks internal (never sent to a public resolver) are not asked (`live`
+ * stays undefined). A served MX / NS / SRV / HTTPS record whose target looks internal is `live`
+ * without asking the target. Only the first `max` records that would be asked are; the rest keep
+ * `live` undefined and get `capped: true`. The DohClient caches, so a name the domain checks
+ * resolved costs nothing more.
  * @param {ZoneRef[]} refs
- * @param {{ dns: object, signal?: AbortSignal, max?: number }} opts
- * @returns {Promise<ZoneRef[]>} copies with `live` (and `capped`)
+ * @param {{ dns: object, signal?: AbortSignal, max?: number, labelFn?: () => string }} opts `labelFn`: the
+ *   wildcard probe label (lib/util.js randomLabel; a label that is not a valid DNS label is replaced)
+ * @returns {Promise<ZoneRef[]>} copies with `live` (and `capped`, `probe`)
  */
-export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_REFS } = {}) {
+export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_REFS, labelFn = () => randomLabel(12) } = {}) {
   if (!dns || typeof dns.query !== 'function' || typeof dns.resolveHost !== 'function') {
     throw new TypeError('verifyZoneRefs: a DNS client with query() and resolveHost() is required');
   }
+  // One random name per wildcard owner: every record of `*.x` is asked at the same `<label>.x`.
+  const probes = new Map();
+  const probeOf = (owner) => {
+    if (!probes.has(owner)) {
+      let label = '';
+      try {
+        label = String(labelFn()).toLowerCase();
+      } catch {
+        label = '';
+      }
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) label = randomLabel(12);
+      probes.set(owner, `${label}.${owner.slice(2)}`);
+    }
+    return probes.get(owner);
+  };
   const host = async (name) => {
     try {
       return await dns.resolveHost(name, { signal });
@@ -871,19 +892,22 @@ export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_
   const out = await Promise.all((refs || []).map(async (ref) => {
     const copy = { ...ref, via: [...ref.via] };
     const aliasOrAddress = ref.type === 'A' || ref.type === 'AAAA' || ref.type === 'CNAME';
-    if ((ref.proxied === true && aliasOrAddress) || ref.internal || ref.name.startsWith('*.')) return copy;
+    if ((ref.proxied === true && aliasOrAddress) || ref.internal) return copy;
     if (left <= 0) {
       copy.capped = true;
       return copy;
     }
     left -= 1;
+    // A wildcard answers for any name under its base that has no records of its own.
+    const asked = ref.name.startsWith('*.') ? probeOf(ref.name) : ref.name;
+    if (asked !== ref.name) copy.probe = asked;
     if (aliasOrAddress) {
-      const h = await host(ref.name);
+      const h = await host(asked);
       if (!usable(h)) copy.live = null;
       else copy.live = reaches(h, ref.address) && (ref.type !== 'CNAME' || canon((h.cnames || [])[0]) === canon(ref.value));
       return copy;
     }
-    const res = await ask(ref.name, ref.type === 'SPF' ? 'TXT' : ref.type);
+    const res = await ask(asked, ref.type === 'SPF' ? 'TXT' : ref.type);
     if (failedResponse(res)) {
       copy.live = null;
       return copy;
@@ -1068,6 +1092,7 @@ export function inventoryOwners(blocks, servers) {
  * @property {boolean|null} proxied
  * @property {object|null} spf `{ term, qualifier, effective, relation, range, holder, record, mechanism, host }`
  * @property {string|null} reason an unknown row's reason ({@link UNKNOWN_REASONS})
+ * @property {string|null} probe a wildcard zone record: the random name under it that was asked
  * @property {string[]} foundFor the checked domains whose check found it
  */
 
@@ -1130,7 +1155,7 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
         groupKind: passiveRow ? 'passive' : !home ? 'other' : home === zoneOrigin && !domains.includes(home) ? 'zone' : 'domain',
         severity: row.severity, name: row.name, type: row.type, value: row.value, addresses: [], blocks: [],
         action: row.action, verified: row.verified, via: row.via || [], roles: [], sources: [], line: row.line ?? null,
-        proxied: row.proxied ?? null, spf: row.spf || null, reason: row.reason || null, foundFor: []
+        proxied: row.proxied ?? null, spf: row.spf || null, reason: row.reason || null, probe: row.probe || null, foundFor: []
       };
       rows.set(key, cur);
     } else {
@@ -1144,6 +1169,7 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
       if (cur.line === null && Number.isFinite(row.line)) cur.line = row.line;
       if (cur.proxied === null && typeof row.proxied === 'boolean') cur.proxied = row.proxied;
       if (!cur.spf && row.spf) cur.spf = row.spf;
+      if (!cur.probe && row.probe) cur.probe = row.probe;
     }
     for (const a of row.addresses || []) if (!cur.addresses.includes(a)) cur.addresses.push(a);
     for (const b of row.blocks || []) if (!cur.blocks.includes(b)) cur.blocks.push(b);
@@ -1239,11 +1265,11 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     } else if (z.live === true) {
       verified = 'live';
       severity = typeSeverity(type, { effective: z.spf ? z.spf.qualifier : null });
-    } else if (z.live === false || z.name.startsWith('*.')) {
+    } else if (z.live === false) {
       verified = 'file';
       severity = 'file';
     } else {
-      // The lookup failed (or was never made): not known either way.
+      // The lookup failed (or was never made: over the cap, a stop): not known either way.
       verified = z.live === null ? 'unknown' : 'unverified';
       severity = typeSeverity(type, { effective: z.spf ? z.spf.qualifier : null });
     }
@@ -1255,7 +1281,7 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     else if (z.spf && z.spf.relation === 'contains') action = 'narrow';
     add({
       name: z.name, type, value, addresses: [z.address], blocks: [z.block], severity, action, verified,
-      via: z.via.length ? [z.name, ...z.via] : [], line: z.line, proxied: z.proxied, sources: ['zone'],
+      via: z.via.length ? [z.name, ...z.via] : [], line: z.line, proxied: z.proxied, sources: ['zone'], probe: z.probe || null,
       spf: z.spf ? { term: z.spf.term, qualifier: z.spf.qualifier, effective: z.spf.qualifier, relation: z.spf.relation, range: z.spf.range, holder: z.name, record: z.value, mechanism: z.spf.term.replace(/^[-+~?]/, '').split(/[:/]/)[0], host: null } : null
     }, groupFor(z.name, homes) || zoneOrigin);
   }
@@ -1391,7 +1417,7 @@ export function retireExportJson({
     changes: changes.map((c) => ({
       group: c.group, severity: c.severity, name: c.name, type: c.type, value: c.value, addresses: [...c.addresses], blocks: [...c.blocks],
       action: c.action, verified: c.verified, via: [...c.via], roles: [...c.roles], sources: [...c.sources], line: c.line,
-      proxied: c.proxied, reason: c.reason, spf: c.spf ? { ...c.spf } : null, foundFor: [...c.foundFor]
+      proxied: c.proxied, reason: c.reason, probe: c.probe ?? null, spf: c.spf ? { ...c.spf } : null, foundFor: [...c.foundFor]
     })),
     passiveGone: gone.map((g) => ({ ...g, now: [...g.now] })),
     failures: failures.map((f) => ({ ...f }))

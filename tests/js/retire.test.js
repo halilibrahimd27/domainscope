@@ -25,8 +25,9 @@ import { throwIfAborted } from '../../assets/js/lib/util.js';
 
 /**
  * table: name → { A, AAAA, CNAME (target), MX [{ preference, exchange }], NS [...], TXT [...], HTTPS [...] };
- * a name missing from the table is NXDOMAIN; `rcodes` / `fail` force an rcode or a transport failure
- * ('name|TYPE' or 'name'). A CNAME is followed like a recursive resolver does.
+ * a name missing from the table is answered by a `*.` entry one label up (a wildcard), else NXDOMAIN;
+ * `rcodes` / `fail` force an rcode or a transport failure ('name|TYPE' or 'name'). A CNAME is followed
+ * like a recursive resolver does.
  */
 function fakeDns(table, { rcodes = {}, fail = {}, delayMs = 0 } = {}) {
   const calls = [];
@@ -51,8 +52,8 @@ function fakeDns(table, { rcodes = {}, fail = {}, delayMs = 0 } = {}) {
     const answers = [];
     let cur = name;
     for (let hop = 0; hop < 8; hop += 1) {
-      const node = table[cur];
-      if (!node) return response(name, type, { rcode: hop ? 'NXDOMAIN' : 'NXDOMAIN', answers });
+      const node = table[cur] || table[`*.${cur.split('.').slice(1).join('.')}`];
+      if (!node) return response(name, type, { rcode: 'NXDOMAIN', answers });
       if (node.CNAME && type !== 'CNAME') {
         answers.push({ name: cur, type: 'CNAME', ttl: 300, data: node.CNAME });
         cur = node.CNAME;
@@ -497,15 +498,16 @@ describe('the imported zone', () => {
     assert.deepEqual(zoneCandidates(null, []), []);
   });
 
-  test('verified live: served, gone from DNS, a failed lookup; proxied, internal and wildcard names are never asked', async () => {
+  test('verified live: served, gone from DNS, a failed lookup; a wildcard through a random name under it; proxied and internal names never asked', async () => {
     const dns = fakeDns({
       'example.com': { A: ['192.0.2.10'], MX: [{ preference: 10, exchange: 'mail.example.com' }], TXT: ['v=spf1 ip4:192.0.2.0/24 -all'], HTTPS: [{ priority: 1, target: '.', params: { ipv4hint: ['198.51.100.1'] } }] },
       'mail.example.com': { A: ['192.0.2.10'] },
       'old.example.com': { A: ['198.51.100.44'] },
-      '_sip._tcp.example.com': { SRV: [{ priority: 10, weight: 5, port: 5060, target: 'mail.example.com' }] }
+      '_sip._tcp.example.com': { SRV: [{ priority: 10, weight: 5, port: 5060, target: 'mail.example.com' }] },
+      '*.dev.example.com': { A: ['192.0.2.10'] }
     }, { rcodes: { 'www.example.com': 'SERVFAIL' } });
     const refs = zoneCandidates(zoneRecords(), blocksOf('192.0.2.10'));
-    const verified = await verifyZoneRefs(refs, { dns });
+    const verified = await verifyZoneRefs(refs, { dns, labelFn: () => 'Probe1' });
     assert.deepEqual(verified.map((r) => [r.name, r.type, r.live]), [
       ['example.com', 'A', true],
       ['www.example.com', 'A', undefined],
@@ -517,9 +519,16 @@ describe('the imported zone', () => {
       ['example.com', 'HTTPS', false],
       ['example.com', 'TXT', true],
       ['intranet.example.com', 'A', undefined],
-      ['*.dev.example.com', 'A', undefined]
+      ['*.dev.example.com', 'A', true]
     ]);
-    assert.ok(!dns.calls.some((c) => c.startsWith('intranet.') || c.startsWith('*.') || c.startsWith('www.') || c.startsWith('blog.')), 'nothing sent for them');
+    assert.equal(verified.find((r) => r.name === '*.dev.example.com').probe, 'probe1.dev.example.com');
+    assert.ok(dns.calls.includes('probe1.dev.example.com|A'), 'the wildcard is asked through a name under it');
+    assert.ok(!dns.calls.some((c) => c.startsWith('intranet.') || c.startsWith('*.') || c.startsWith('www.') || c.startsWith('blog.')), 'nothing sent for the others');
+    // A label that is not a DNS label is replaced by a random one; each wildcard owner gets one name for all its records.
+    const two = zoneCandidates([rec('*.dev.example.com', 'A', '192.0.2.10'), rec('*.dev.example.com', 'AAAA', '2001:db8::10')], blocksOf('192.0.2.10 2001:db8::10'));
+    const probed = await verifyZoneRefs(two, { dns, labelFn: () => 'not a label' });
+    assert.equal(probed[0].probe, probed[1].probe);
+    assert.match(probed[0].probe, /^[a-z0-9]{12}\.dev\.example\.com$/);
     await assert.rejects(verifyZoneRefs(refs, {}), TypeError);
   });
 
@@ -564,7 +573,8 @@ describe('the imported zone', () => {
       'example.com': { A: ['192.0.2.10'], MX: [{ preference: 10, exchange: 'mail.example.com' }], TXT: ['v=spf1 ip4:192.0.2.0/24 -all'] },
       'mail.example.com': { A: ['192.0.2.10'] },
       'old.example.com': { A: ['198.51.100.44'] },
-      '_sip._tcp.example.com': { SRV: [{ priority: 10, weight: 5, port: 5060, target: 'mail.example.com' }] }
+      '_sip._tcp.example.com': { SRV: [{ priority: 10, weight: 5, port: 5060, target: 'mail.example.com' }] },
+      '*.dev.example.com': { A: ['192.0.2.10'] }
     };
     const dns = fakeDns(table);
     const blocks = blocksOf('192.0.2.10');
@@ -577,7 +587,9 @@ describe('the imported zone', () => {
     assert.deepEqual(rows['blog.example.com CNAME'], ['origin', 'hidden', 'origin']);
     assert.deepEqual(rows['old.example.com A'], ['file', 'file', 'remove']);
     assert.deepEqual(rows['intranet.example.com A'], ['live', 'internal', 'remove']);
-    assert.deepEqual(rows['*.dev.example.com A'], ['file', 'file', 'remove']);
+    // The wildcard answers every name under dev.example.com: a live address record, never "zone file only".
+    assert.deepEqual(rows['*.dev.example.com A'], ['live', 'live', 'remove']);
+    assert.match(only.changes.find((c) => c.name === '*.dev.example.com').probe, /\.dev\.example\.com$/);
     assert.deepEqual(rows['example.com MX'], ['mail', 'live', 'repoint']);
     assert.deepEqual(rows['_sip._tcp.example.com SRV'], ['live', 'live', 'repoint']);
     assert.deepEqual(rows['example.com HTTPS'], ['file', 'file', 'remove']);
@@ -597,6 +609,19 @@ describe('the imported zone', () => {
     assert.equal(apex[0].line, 3);
     const spf = both.changes.filter((c) => c.type === 'TXT');
     assert.deepEqual(spf.map((c) => [c.value, c.sources.join(' '), c.verified]), [['ip4:192.0.2.0/24', 'spf zone', 'live']]);
+  });
+
+  test('a wildcard that public DNS does not serve is zone file only; one never asked keeps its type\'s severity', async () => {
+    const blocks = blocksOf('192.0.2.10');
+    const refs = zoneCandidates([rec('*.dev.example.com', 'A', '192.0.2.10'), rec('*.old.example.com', 'CNAME', 'www.example.com'), rec('www.example.com', 'A', '192.0.2.10')], blocks);
+    const gone = await verifyZoneRefs(refs, { dns: fakeDns({ 'www.example.com': { A: ['192.0.2.10'] } }) });
+    const rows = (verified) => buildChanges({ blocks, zone: { origin: 'example.com', refs: verified } }).changes
+      .filter((c) => c.name.startsWith('*.')).map((c) => [c.name, c.severity, c.verified]);
+    assert.deepEqual(rows(gone), [['*.dev.example.com', 'file', 'file'], ['*.old.example.com', 'file', 'file']]);
+    const capped = await verifyZoneRefs(refs, { dns: fakeDns({}), max: 0 });
+    assert.deepEqual(rows(capped), [['*.dev.example.com', 'live', 'unverified'], ['*.old.example.com', 'chain', 'unverified']]);
+    const built = buildChanges({ blocks, zone: { origin: 'example.com', refs: capped } });
+    assert.equal(built.counts.breaking, 3, 'a wildcard nobody asked is still a record to change');
   });
 });
 

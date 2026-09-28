@@ -275,6 +275,7 @@ registerStrings('en', {
   'retire.ev.roles.ns': 'a name server',
   'retire.ev.roles.spf': 'named in SPF',
   'retire.ev.proxied': 'proxied',
+  'retire.ev.wildcard': 'a wildcard: checked through the random name {name}',
   'retire.chips.label': 'Evidence sources',
 
   'retire.emptyTitle': 'What still points at this address?',
@@ -493,6 +494,7 @@ registerStrings('tr', {
   'retire.ev.roles.ns': 'bir ad sunucusu',
   'retire.ev.roles.spf': 'SPF’te geçiyor',
   'retire.ev.proxied': 'proxy’li',
+  'retire.ev.wildcard': 'joker kayıt: rastgele {name} adıyla kontrol edildi',
   'retire.chips.label': 'Kanıt kaynakları',
 
   'retire.emptyTitle': 'Bu adresi hâlâ ne gösteriyor?',
@@ -1587,6 +1589,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     } else if (c.via.length > 1) {
       add(t('retire.ev.via', { chain: c.via.join(' → ') }));
     }
+    if (c.probe) add(t('retire.ev.wildcard', { name: c.probe }));
     const roles = c.roles.map((r) => t(`retire.ev.roles.${r}`));
     if (c.proxied === true) roles.push(t('retire.ev.proxied'));
     if (roles.length) add(roles.join(' · '));

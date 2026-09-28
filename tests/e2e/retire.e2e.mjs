@@ -12,9 +12,10 @@
  * issues (too wide, junk, private space), the domain box filled in from the page session (a zone
  * imported under Zone File, the last scan), the known host names per domain, a check of
  * 192.0.2.10 (MX and SPF break mail, an include at a provider, an in-bailiwick name server with its
- * glue, an A record, an HTTPS hint, a CNAME chain into another zone, the zone's proxied origin, a
- * record only in the file, an internal name never sent), the evidence chips, the owner from the
- * server list, Copy summary, CSV / JSON, the passive lookup (two services, unverified until checked;
+ * glue, an A record, an HTTPS hint, a CNAME chain into another zone, a zone wildcard asked through a
+ * random name under it, the zone's proxied origin, a record only in the file, an internal name never
+ * sent), the evidence chips, the owner from the server list, Copy summary, CSV / JSON, the passive
+ * lookup (two services, unverified until checked;
  * "Check these too" adds their domains and checks again: one gone, one live), the Small-wordlist
  * discovery offered for a domain without host names (and nothing run before the click), Stop and
  * the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
@@ -36,7 +37,7 @@ import {
 
 const CF_EDGE = '104.16.1.1';
 
-/** The fake DNS: name → { TYPE: [data…], CNAME: target }; a name missing is NXDOMAIN. */
+/** The fake DNS: name → { TYPE: [data…], CNAME: target }; a name missing is answered by a `*.` entry one label up, else NXDOMAIN. */
 export function fakeTable() {
   const T = {};
   const add = (name, type, ...data) => {
@@ -65,6 +66,8 @@ export function fakeTable() {
   add('example.org', 'A', '198.51.100.30');
   add('blog.example.org', 'A', '192.0.2.10');
   add('shop.example.net', 'A', '198.51.100.77');
+  // The zone's wildcard: every name under dev.example.com answers with the address.
+  add('*.dev.example.com', 'A', '192.0.2.10');
   return T;
 }
 
@@ -78,6 +81,7 @@ export const ZONE = [
   'shop.example.com.\t1\tIN\tA\t192.0.2.10 ; cf_tags=cf-proxied:true',
   'old.example.com.\t1\tIN\tA\t192.0.2.10 ; cf_tags=cf-proxied:false',
   'intranet.example.com.\t1\tIN\tA\t192.0.2.10 ; cf_tags=cf-proxied:false',
+  '*.dev.example.com.\t1\tIN\tA\t192.0.2.10 ; cf_tags=cf-proxied:false',
   'mail.example.com.\t1\tIN\tA\t192.0.2.10 ; cf_tags=cf-proxied:false',
   'www.example.com.\t1\tIN\tCNAME\tlb.example.net. ; cf_tags=cf-proxied:false',
   'example.com.\t1\tIN\tMX\t10 mail.example.com.',
@@ -86,7 +90,7 @@ export const ZONE = [
 ].join('\n');
 
 /**
- * In-page stubs: DoH from the table (CNAMEs chased, NXDOMAIN outside it), HackerTarget and ip.thc.org.
+ * In-page stubs: DoH from the table (CNAMEs chased, a wildcard one label up, NXDOMAIN outside it), HackerTarget and ip.thc.org.
  * `window.__fakeDnsRcodes` forces an answer's rcode: keyed 'name|TYPE', 'name' or '*' (every query).
  */
 export const fakeScript = (table) => `(() => {
@@ -125,7 +129,7 @@ export const fakeScript = (table) => `(() => {
     const forced = window.__fakeDnsRcodes;
     let rcode = forced[name + '|' + q.type] || forced[name] || forced['*'] || 'NOERROR';
     for (let hop = 0; hop < 8 && rcode === 'NOERROR'; hop += 1) {
-      const node = T[cur];
+      const node = T[cur] || T['*.' + cur.split('.').slice(1).join('.')];
       if (!node) { rcode = 'NXDOMAIN'; break; }
       if (node.CNAME && q.type !== 'CNAME') {
         answers.push({ name: cur, type: 'CNAME', ttl: 300, data: node.CNAME });
@@ -332,6 +336,7 @@ async function main() {
         ['example.com', 'ns', 'ns1.example.com', 'A', '192.0.2.10', 'live'],
         ['example.com', 'live', 'example.com', 'A', '192.0.2.10', 'live'],
         ['example.com', 'live', 'example.com', 'HTTPS', '192.0.2.10', 'live'],
+        ['example.com', 'live', '*.dev.example.com', 'A', '192.0.2.10', 'live'],
         ['example.com', 'live', 'intranet.example.com', 'A', '192.0.2.10', 'internal'],
         ['example.com', 'origin', 'shop.example.com', 'A', '192.0.2.10', 'hidden'],
         ['example.com', 'chain', 'www.example.com', 'CNAME', 'lb.example.net', 'live'],
@@ -342,6 +347,11 @@ async function main() {
       assertEqual(got, want, 'rows');
       const log = await page.evaluate(() => window.__fakeDnsLog.map((q) => q.name));
       assert(!log.some((n) => n.startsWith('intranet.')), 'the internal zone name is never sent');
+      // The wildcard is asked through a random name under it, never as "*.": a live address record.
+      const probe = log.find((n) => n.endsWith('.dev.example.com'));
+      assert(/^[a-z0-9]{12}\.dev\.example\.com$/.test(probe || '') && !log.some((n) => n.startsWith('*')), `the wildcard probe: ${probe}`);
+      const wildcard = await text(page, '.retire-group tr[data-key="*.dev.example.com|A|192.0.2.10"] .retire-evidence');
+      assert(wildcard.includes(`a wildcard: checked through the random name ${probe}`), wildcard);
       assertEqual(await chips(page), [['dns', 'ok'], ['spf', 'ok'], ['zone', 'ok'], ['servers', 'ok'], ['passive', 'idle']], 'chips');
       const head = await page.evaluate(() => ({
         verdict: document.querySelector('[data-role="retire-verdict"] .alert-title')?.textContent,
@@ -351,8 +361,8 @@ async function main() {
         chip: document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent || null
       }));
       assertEqual(head, {
-        verdict: '12 records break something once 192.0.2.10 is gone', owner: 'web01',
-        stats: { breaking: '12', mail: '4', file: '1' }, glue: 'glue', chip: '192.0.2.10'
+        verdict: '13 records break something once 192.0.2.10 is gone', owner: 'web01',
+        stats: { breaking: '13', mail: '4', file: '1' }, glue: 'glue', chip: '192.0.2.10'
       }, 'head');
       await shot(page, opts, 'retire-results-desktop-light-en');
     });
@@ -361,7 +371,7 @@ async function main() {
       await stubClipboard(page);
       await jsClick(page, '[data-action="copy-summary"]');
       const [md] = await takeClipboard(page);
-      assert(md.startsWith('**Retire an IP · `192.0.2.10`**\n- 13 records still point at it · 12 break something once it is gone\n'), md);
+      assert(md.startsWith('**Retire an IP · `192.0.2.10`**\n- 14 records still point at it · 13 break something once it is gone\n'), md);
       assert(md.includes('- Owned by 1 server in your list'), 'a count of servers');
       assert(!md.includes('web01'), 'never a server name');
       assert(/#\/retire\?domains=example\.com$/m.test(md), `the link leaves out the inventory address: ${md}`);
@@ -373,7 +383,7 @@ async function main() {
       assert(csv.text.includes('example.com,mail,example.com,TXT (SPF),ip4:192.0.2.10,192.0.2.10,remove,live'), 'SPF row');
       const doc = JSON.parse(json.text);
       assertEqual([doc.schema, doc.addresses, doc.domains, doc.changes.length, doc.owners.map((o) => o.name)],
-        ['domainscope.ip-retire/1', ['192.0.2.10/32'], ['example.com'], 13, ['web01']], 'JSON');
+        ['domainscope.ip-retire/1', ['192.0.2.10/32'], ['example.com'], 14, ['web01']], 'JSON');
     });
 
     await run.step('a domain without host names gets the Small-wordlist discovery offered, never run before the click', async () => {

@@ -13,7 +13,8 @@
  *     fingerprints and public-key SHA-256 (compared with Node's crypto), chain order,
  *     certificate picker, PEM tab, downloads (captured in the page)
  *   - chain_reversed.pem (wrong order), real_google_chain.pem (ends at a cross-signed root),
- *     with_key.pem (private key ignored and never displayed), test.pfx (PKCS#12 instructions),
+ *     with_key.pem (private key ignored and never displayed), test.pfx (the password dialog:
+ *     Cancel loads nothing, "test" reads the leaf and its CA; tests/e2e/pfx.e2e.mjs has the rest),
  *     test.csr (CSR), a pasted PEM (ec_wildcard.pem)
  *   - "No file?" (offline: Cert Spotter and crt.sh are answered inside the page): Try a sample
  *     (same-origin file only), a host name refused before any request, nothing logged, a lookup
@@ -755,16 +756,20 @@ async function main() {
       await shot(page, opts, 'cert-desktop-light-en-with-key');
     });
 
-    await run.step('test.pfx: PKCS#12 explained with the OpenSSL command; test.csr: CSR explained', async () => {
+    await run.step('test.pfx: the password dialog (Cancel keeps the certificate shown, "test" opens it); test.csr: CSR explained', async () => {
+      const before = await page.evaluate(() => document.querySelector('.cert-overview-cn')?.textContent || '');
       await uploadFile(page, 'test.pfx');
-      await page.waitForSelector('[data-warning="PKCS12_UNSUPPORTED"]');
-      const pfx = await page.evaluate(() => ({
-        cmd: document.querySelector('[data-warning="PKCS12_UNSUPPORTED"] code').textContent,
-        overview: !!document.querySelector('.cert-overview'),
-        noCert: !!document.querySelector('[data-warning="NO_CERTIFICATE"]')
-      }));
-      assertEqual(pfx.cmd, 'openssl pkcs12 -in test.pfx -nokeys -out cert.pem', 'command with the file name');
-      assert(!pfx.overview && !pfx.noCert, 'no overview, no redundant "no certificate" alert');
+      await page.waitForSelector('[data-role="pfx-password"]');
+      await page.click('[data-action="pfx-cancel"]');
+      const toast = await page.waitFor(() => !document.querySelector('.pfx-dialog') && document.querySelector('.toast')?.textContent, { message: 'dialog closed, toast' });
+      assert(/test\.pfx was not opened/.test(toast), `toast: ${toast}`);
+      assertEqual(await page.evaluate(() => [document.querySelector('.cert-overview-cn')?.textContent || '', !!document.querySelector('.pfx-note')]), [before, false], 'the shown certificate stays');
+      await uploadFile(page, 'test.pfx');
+      await page.waitForSelector('[data-role="pfx-password"]');
+      await page.type('[data-role="pfx-password"]', 'test');
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.pfx-note') && document.querySelector('.cert-overview-cn')?.textContent === 'www.example-test.com.tr', { message: 'PKCS#12 opened' });
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
       await uploadFile(page, 'test.csr');
       await page.waitForSelector('[data-warning="CSR_NOT_CERT"]');
     });

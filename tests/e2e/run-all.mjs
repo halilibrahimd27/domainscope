@@ -11,7 +11,8 @@
  * - Order: shell first (offline, fastest), then the views in navigation order (verify, the
  *   offline suite of SSL Targets › Verify, right after scan, then renewal, SSL Targets with several
  *   certificates at once, offline too; dane, the offline DANE / TLSA suite
- *   of the Certificate view and SSL Targets, right after cert), then carry (offline: the target
+ *   of the Certificate view and SSL Targets, right after cert, and pfx, the offline PKCS#12 suite
+ *   of the same two views, after it), then carry (offline: the target
  *   and kept results carried across views) and workspaces (offline: the customer workspaces in
  *   IndexedDB and their hand-over file), then the cross-view integration suite, then any other
  *   *.e2e.mjs file alphabetically.
@@ -36,7 +37,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'domain', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'retire', 'health', 'carry', 'workspaces', 'integration'];
+const ORDER = ['shell', 'subdomains', 'domain', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'renew', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'retire', 'health', 'carry', 'workspaces', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

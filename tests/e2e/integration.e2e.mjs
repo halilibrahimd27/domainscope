@@ -18,7 +18,7 @@
  *                  certificate (fetched with node:tls) is loaded and the domain is scanned:
  *                  Cloudflare hosts, certificate coverage, the inventory server, CLI command
  *   3. Certificate — the scan's certificate is shared; chain.pem, with_key.pem (key never shown)
- *                  and test.pfx (PKCS#12 instructions)
+ *                  and test.pfx (the PKCS#12 password dialog, then its certificates)
  *   4. Global DNS  — www.netflix.com A over every resolver + ECS location, worldwide IP table
  *   5. DNS Lookup  — cloudflare.com, type=ALL ("All common"), DNSSEC on
  *   6. Bulk Resolve — 40 names
@@ -494,11 +494,12 @@ async function main() {
       await checkPage('cert with_key');
       await shot(page, opts, 'integration-cert-with-key-desktop-light-en');
     });
-    await run.step('test.pfx: PKCS#12 → OpenSSL command', async () => {
+    await run.step('test.pfx: the PKCS#12 password dialog, then its certificates', async () => {
       await upload('test.pfx');
-      await page.waitForSelector('[data-warning="PKCS12_UNSUPPORTED"]');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-warning="PKCS12_UNSUPPORTED"] code').textContent),
-        'openssl pkcs12 -in test.pfx -nokeys -out cert.pem', 'command');
+      await page.waitForSelector('[data-role="pfx-password"]');
+      await page.type('[data-role="pfx-password"]', 'test');
+      await page.click('[data-action="pfx-open"]');
+      await page.waitFor(() => document.querySelector('.pfx-note') && document.querySelector('.cert-overview-cn')?.textContent === 'www.example-test.com.tr', { message: 'PKCS#12 opened' });
       await checkPage('cert pfx');
       await shot(page, opts, 'integration-cert-pfx-desktop-light-en');
     });

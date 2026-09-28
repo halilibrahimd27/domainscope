@@ -44,8 +44,10 @@ with an AIA "CA Issuers" URL) with its key as PKCS#8 (`bundle_leaf.key`), PKCS#1
 (`bundle_leaf.rsa.key`) and encrypted PKCS#8 (`bundle_leaf.enc.key`, password `bundle-test`) and its
 CSR (`bundle_leaf.csr`), `bundle_ec_leaf.pem` (EC P-256, `api.example.net`) with its SEC1 key with
 and without the public point (`bundle_ec_leaf.key`, `bundle_ec_leaf.nopub.key`) and its CSR, another
-RSA key and a CSR made with it (`bundle_other.key`, `bundle_other.csr`), and `bundle_ca_reversed.pem`
-(the root before the intermediate, as some CAs ship their bundle).
+RSA key and a CSR made with it (`bundle_other.key`, `bundle_other.csr`), `bundle_ca_reversed.pem`
+(the root before the intermediate, as some CAs ship their bundle), and `bundle_selfsigned_ca.pem`
+(P-256, `CN=www.example.com`, what `openssl req -x509` makes with OpenSSL's default configuration:
+self-signed and CA:TRUE, without keyUsage or subjectAltName; its key was not kept).
 
 `estate/report-a.json` and `estate/report-b.json` are `--estate --json` reports of the CLI over a
 made-up network (two sites a week apart; documentation addresses only), written by

@@ -3,7 +3,8 @@
 The fixtures come from tests/fixtures/gen_bundle_fixtures.sh: a throwaway root and intermediate
 CA, an RSA leaf for www.example.com / example.com (its key as PKCS#8, PKCS#1 and encrypted
 PKCS#8, its CSR) and an EC leaf for api.example.net (its SEC1 key with and without the public
-point, its CSR), plus another key and CSR that belong to neither.
+point, its CSR), plus another key and CSR that belong to neither, and the self-signed CA:TRUE
+certificate without subjectAltName that `openssl req -x509` makes by default.
 
 Run from the repository root:
     python -m unittest discover -s tests/python -v
@@ -12,6 +13,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import os
 import re
 import stat
@@ -26,6 +28,7 @@ LEAF = fixture_cert('bundle_leaf.pem')
 INTER = fixture_cert('bundle_inter.pem')
 ROOT_CA = fixture_cert('bundle_root.pem')
 EC_LEAF = fixture_cert('bundle_ec_leaf.pem')
+SELF_CA = fixture_cert('bundle_selfsigned_ca.pem')
 
 
 def items(*names: str) -> List:
@@ -134,6 +137,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertRegex(LEAF.spki_sha256, r'^[0-9a-f]{64}$')
         self.assertEqual(LEAF.to_dict()['spkiSha256'], LEAF.spki_sha256)
 
+    def test_key_usage_says_who_may_sign_certificates(self):
+        self.assertEqual([c.key_cert_sign for c in (ROOT_CA, INTER, LEAF, SELF_CA)],
+                         [True, True, False, None])  # None: no keyUsage extension at all
+        self.assertEqual((SELF_CA.is_ca, SELF_CA.self_signed, SELF_CA.dns_names),
+                         (True, True, []))
+
 
 class CheckTests(unittest.TestCase):
 
@@ -178,8 +187,13 @@ class CheckTests(unittest.TestCase):
 
     def test_a_self_signed_certificate_has_no_chain(self):
         result = sos.check_bundle(items('cn_only.pem', 'cn_only.key'))
-        self.assertEqual(statuses(result), [('OK', 'key'), ('OK', 'chain')])
+        self.assertEqual(statuses(result), [('OK', 'key'), ('OK', 'chain'), ('WARN', 'names')])
         self.assertIn('is self-signed: there is no chain to send', texts(result))
+        # no subjectAltName: browsers look only there
+        self.assertIn('legacy.example.org has no subjectAltName: browsers ignore the subject CN',
+                      texts(result))
+        self.assertIn('-addext "subjectAltName=DNS:legacy.example.org"', texts(result))
+        self.assertFalse(result.failed)
         self.assertEqual([name for name, _t, _w in sos.bundle_outputs(result, haproxy=True)],
                          ['fullchain.pem', 'haproxy.pem'])
 
@@ -267,6 +281,30 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.leaf, ROOT_CA)
         self.assertEqual(result.key, root_key)
 
+    def test_what_openssl_req_x509_makes_by_default_is_the_leaf(self):
+        # CA:TRUE, a host name as CN, no keyUsage and no subjectAltName, checked alone
+        result = sos.check_bundle(items('bundle_selfsigned_ca.pem'))
+        self.assertEqual(result.leaf, SELF_CA)
+        self.assertEqual(statuses(result), [('OK', 'chain'), ('WARN', 'chain'), ('WARN', 'names')])
+        text = texts(result)
+        self.assertIn('MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY', text)
+        self.assertIn('www.example.com has no subjectAltName', text)
+        self.assertNotIn('only CA certificates', text)
+        self.assertEqual([name for name, _t, _w in sos.bundle_outputs(result)], ['fullchain.pem'])
+        # a CA with a host name as CN that may sign certificates stays a CA: no leaf
+        signing = dataclasses.replace(ROOT_CA, subject_cn='ca.example.com')
+        self.assertEqual((signing.hostnames, signing.key_cert_sign), (['ca.example.com'], True))
+        result = sos.check_bundle([sos.BundleItem('ca.pem', 'certificate', cert=signing)])
+        self.assertIsNone(result.leaf)
+        self.assertIn('only CA certificates (ca.example.com)', texts(result))
+        # without keyUsage (or without keyCertSign in it) it is the server's own certificate
+        for usage in (None, False):
+            plain = dataclasses.replace(signing, key_cert_sign=usage)
+            result = sos.check_bundle([sos.BundleItem('ca.pem', 'certificate', cert=plain)])
+            self.assertEqual(result.leaf, plain, usage)
+        # a root whose CN is no host name is never the leaf alone
+        self.assertIsNone(sos.check_bundle(items('bundle_root.pem')).leaf)
+
     def test_a_p7b_file_holds_no_order(self):
         p7b = items('cli_chain_p7b.pem')
         self.assertEqual([i.cert.subject_cn for i in p7b], ['Subdomain Scanner Test Root CA',
@@ -334,6 +372,13 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(lines[at + 1].startswith('    certificate (root): Example Test Bundle Root CA'))
         # a short name keeps its column
         self.assertTrue(any(line.startswith('  bundle_leaf.key  private key:') for line in lines), text)
+
+    def test_a_self_signed_leaf_is_labelled_so_not_as_a_root(self):
+        text = sos.render_bundle(sos.check_bundle(items('bundle_selfsigned_ca.pem')), width=120)
+        self.assertIn('bundle_selfsigned_ca.pem  certificate (self-signed): www.example.com', text)
+        self.assertNotIn('(root)', text)
+        text = sos.render_bundle(sos.check_bundle(items('bundle_ca_reversed.pem')), width=120)
+        self.assertIn('certificate (root): Example Test Bundle Root CA', text)
 
 
 class BundleCliTests(unittest.TestCase):

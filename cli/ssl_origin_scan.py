@@ -324,6 +324,7 @@ _OID_ED25519 = '1.3.101.112'
 _OID_ED448 = '1.3.101.113'
 _OID_SAN = '2.5.29.17'
 _OID_BASIC_CONSTRAINTS = '2.5.29.19'
+_OID_KEY_USAGE = '2.5.29.15'
 _OID_SKI = '2.5.29.14'
 _OID_AKI = '2.5.29.35'
 _OID_AIA = '1.3.6.1.5.5.7.1.1'
@@ -625,6 +626,7 @@ class CertInfo:
     spki_der: bytes = field(default=b'', repr=False)  # SubjectPublicKeyInfo DER
     spki_sha256: Optional[str] = None        # lowercase hex SHA-256 of spki_der (key pinning)
     ca_issuers: List[str] = field(default_factory=list)  # AIA "CA Issuers" URLs
+    key_cert_sign: Optional[bool] = None     # keyUsage keyCertSign (None: no keyUsage extension)
 
     def public_key(self) -> Optional[PublicKey]:
         """The certificate's :class:`PublicKey`, or None when its key cannot be read."""
@@ -767,6 +769,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     subject_key_id = None  # type: Optional[str]
     authority_key_id = None  # type: Optional[str]
     ca_issuers = []  # type: List[str]
+    key_cert_sign = None  # type: Optional[bool]
     for extra in fields[index + 6:]:
         if extra[0] != 0xA3:
             continue  # issuerUniqueID [1] / subjectUniqueID [2]
@@ -797,6 +800,11 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
                 items = _children(buf, constraints[2], constraints[3])
                 if items and items[0][0] == 0x01:
                     is_ca = any(_content(buf, items[0]))
+            elif ext_oid == _OID_KEY_USAGE:
+                # KeyUsage BIT STRING: keyCertSign is bit 5 (0x04 of the first byte after the
+                # unused-bits count). `openssl req -x509` leaves the extension out by default.
+                bits = _content(buf, _expect(_read_tlv(buf, value[2], value[3]), 0x03, 'KeyUsage'))
+                key_cert_sign = len(bits) > 1 and bool(bits[1] & 0x04)
             elif ext_oid == _OID_SKI:
                 key_id = _expect(_read_tlv(buf, value[2], value[3]), 0x04, 'SubjectKeyIdentifier')
                 subject_key_id = _content(buf, key_id).hex()
@@ -851,6 +859,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
         spki_der=spki_der,
         spki_sha256=hashlib.sha256(spki_der).hexdigest(),
         ca_issuers=ca_issuers,
+        key_cert_sign=key_cert_sign,
     )
 
 
@@ -6077,7 +6086,7 @@ class BundleCheck:
     """One verdict line: :data:`BUNDLE_STATUSES` status, a topic and what it means."""
 
     status: str
-    topic: str                       # key | csr | chain | order | root | expiry | other | haproxy
+    topic: str  # key | csr | chain | names | order | root | expiry | other | haproxy
     text: str
 
 
@@ -6375,18 +6384,21 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
 
     The leaf is the end-entity certificate a private key of the files belongs to, else the
     first one (not a CA, issuing no other certificate of the files). With none, a
-    self-signed CA certificate that names hosts or whose key is in the files is the leaf
-    (``openssl req -x509`` marks what it makes CA:TRUE; a WARN says clients may refuse it);
-    files of CA certificates only have no leaf (FAIL: the server certificate is missing,
-    nothing is written). Files with no certificate at all but a CSR compared with a private
-    key SKIP the chain (a key and CSR checked before ordering); with neither it is a FAIL.
-    Its chain follows :func:`issued_by` (issuer / subject names and key
-    identifiers; signatures are not verified) through the other certificates. A leaf
-    nothing issued is a missing intermediate (FAIL) unless it is self-signed; a chain that
-    ends at an intermediate whose issuer is not in the files is fine (a root clients
-    trust); a root in the files is an extra root (WARN: servers need not send it). Files
-    that list chain certificates in another order than servers send them get a WARN (not a
-    PKCS#7 file, which holds no order); fullchain.pem is written in the right order anyway.
+    self-signed CA certificate is the leaf when it names hosts in subjectAltName, its key is
+    in the files, or its subject CN is a host name and it may not sign certificates (no
+    keyUsage keyCertSign - ``openssl req -x509 -subj /CN=www.example.com`` makes such a
+    CA:TRUE certificate; a WARN says clients may refuse it); files of CA certificates only
+    have no leaf (FAIL: the server certificate is missing, nothing is written). Files with
+    no certificate at all but a CSR compared with a private key SKIP the chain (a key and
+    CSR checked before ordering); with neither it is a FAIL. A leaf without a
+    subjectAltName gets a WARN (browsers refuse it). Its chain follows :func:`issued_by`
+    (issuer / subject names and key identifiers; signatures are not verified) through the
+    other certificates. A leaf nothing issued is a missing intermediate (FAIL) unless it is
+    self-signed; a chain that ends at an intermediate whose issuer is not in the files is
+    fine (a root clients trust); a root in the files is an extra root (WARN: servers need
+    not send it). Files that list chain certificates in another order than servers send
+    them get a WARN (not a PKCS#7 file, which holds no order); fullchain.pem is written in
+    the right order anyway.
     """
     now = now or _utcnow()
     checks = []  # type: List[BundleCheck]
@@ -6411,7 +6423,8 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
               and not any(other is not cert and issued_by(other, cert) for other in certs)]
     if not leaves:
         leaves = [cert for cert in certs if cert.is_ca and cert.self_signed
-                  and (cert.dns_names or cert.ip_addresses or has_key(cert))]
+                  and (cert.dns_names or cert.ip_addresses or has_key(cert)
+                       or (cert.hostnames and not cert.key_cert_sign))]
     leaf = next((cert for cert in leaves if has_key(cert)), leaves[0] if leaves else None)
     leaf_key = leaf.public_key() if leaf is not None else None
     leaf_name = _cert_label(leaf) if leaf is not None else ''
@@ -6500,6 +6513,13 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
                                       'CA:TRUE) but serves as the server certificate: Firefox '
                                       'refuses that (MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY)'
                                       '; make it again without CA:TRUE' % leaf_name))
+        if not leaf.dns_names and not leaf.ip_addresses:
+            hint = (' (openssl req: -addext "subjectAltName=DNS:%s")' % display_text(
+                leaf.hostnames[0]) if leaf.hostnames else '')
+            checks.append(BundleCheck(BUNDLE_WARN, 'names', '%s has no subjectAltName: browsers '
+                                      'ignore the subject CN and refuse it for every name; make '
+                                      'it again with its names in subjectAltName%s' % (
+                                          leaf_name, hint)))
         complete = chain[-1].self_signed or len(chain) > 1
         checks.extend(_order_checks([cert for cert in chain if cert.sha256 not in unordered],
                                     where))
@@ -6606,11 +6626,16 @@ def bundle_outputs(result: BundleResult, haproxy: bool = False) -> List[Tuple[st
     return out
 
 
-def _item_text(item: BundleItem, now: datetime, style: Style) -> str:
-    """One line about one item: what it is (never key material)."""
+def _item_text(item: BundleItem, now: datetime, style: Style,
+               leaf: Optional[CertInfo] = None) -> str:
+    """One line about one item: what it is (never key material). A self-signed ``leaf`` is
+    labelled so, not as a root, even when it is marked CA:TRUE."""
     if item.cert is not None:
         cert = item.cert
-        role = 'root' if cert.self_signed and cert.is_ca else 'CA' if cert.is_ca else ''
+        if leaf is not None and cert.sha256 == leaf.sha256:
+            role = 'self-signed' if cert.self_signed else ''
+        else:
+            role = 'root' if cert.self_signed and cert.is_ca else 'CA' if cert.is_ca else ''
         return 'certificate%s: %s' % (' (%s)' % role if role else '', cert_line(cert, now, style))
     if item.key is not None:
         key = item.key
@@ -6662,7 +6687,8 @@ def render_bundle(result: BundleResult, written: Sequence[Tuple[str, str]] = (),
         for index, item in enumerate(item for item in result.items if item.file == file):
             prefix = ('    ' if own_line else
                       '  %s  ' % (label.ljust(pad) if index == 0 else ' ' * pad))
-            lines.extend(_wrap(prefix, len(prefix), _item_text(item, now, style), width))
+            lines.extend(_wrap(prefix, len(prefix), _item_text(item, now, style, result.leaf),
+                               width))
     lines.append('')
     lines.append(style.paint('Checks', 'bold'))
     label_width = max(len(status) for status in BUNDLE_STATUSES)
@@ -6699,6 +6725,7 @@ checks:
            certificates without the server certificate a FAIL, a root in the files an
            extra root (WARN), a file in another order a WARN (not a .p7b, which keeps
            no order), a certificate of another chain is left out
+  names    a server certificate without subjectAltName (WARN: browsers refuse it)
   expiry   an expired certificate (the leaf: FAIL) or one not valid yet
 
 output (--out-dir DIR): fullchain.pem (leaf + intermediates, leaf first, no root) and

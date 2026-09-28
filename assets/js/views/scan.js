@@ -69,7 +69,7 @@ import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
-  CertAlternatives, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
+  CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
 } from './cert.js';
 // Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
@@ -1732,6 +1732,8 @@ export function mount(container, ctx) {
       if (note) certBody.append(note);
       const pfxNote = CertPfxNote(certLoad);
       if (pfxNote) certBody.append(pfxNote);
+      // A lone server certificate: its intermediate from the bundled CCADB list, with fullchain.pem.
+      certBody.append(CertChainNotes(certLoad, { lifecycle: false }));
       certBody.append(Disclosure({
         summary: t('scan.cert.another'),
         className: 'scan-cert-another',

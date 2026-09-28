@@ -182,6 +182,108 @@
   min-width: 0;
 }
 
+/* The missing intermediate from the CCADB list and the root-store warnings (ui/chain-repair.js).
+   The containers fill in once the lookup ends: empty, they take no gap in the stack. */
+.chainfix:empty,
+.chainfix-chain:empty {
+  display: none;
+}
+
+/* Focused after Retry (tabindex -1): no ring for the pointer, one for the keyboard */
+.chainfix:focus {
+  outline: none;
+}
+
+.chainfix:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.chainfix .alert-message,
+.chainfix-added,
+.chainfix-life,
+.chainfix-trust {
+  overflow-wrap: anywhere;
+}
+
+.chainfix-added,
+.chainfix-life {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chainfix-added li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.chainfix-added-name {
+  font-weight: 650;
+}
+
+/* Muted text on the callouts: a step toward --text-2, so small labels keep 4.5:1 in light mode */
+.chainfix .muted {
+  color: color-mix(in srgb, var(--text-3) 70%, var(--text-2));
+}
+
+.chainfix-source,
+.chainfix-trust,
+.chainfix-chain-title {
+  margin: 0;
+}
+
+.chainfix .alert-actions {
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.chainfix-hint {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.chainfix-life li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chainfix-life li > span {
+  min-width: 0;
+}
+
+.chainfix-life-icon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.chainfix-life-error {
+  color: var(--error);
+}
+
+.chainfix-life-warn {
+  color: var(--warn);
+}
+
+.chainfix-chain-title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.cert-chain-added .cert-chain-node {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
 .cert-summary {
   display: flex;
   flex-direction: column;

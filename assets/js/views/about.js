@@ -25,7 +25,7 @@ export const icon = 'info';
 export const CLI_PATH = 'cli/ssl_origin_scan.py';
 
 /**
- * The wordlist licence texts, resolved from this module: the Pages bundle serves assets/ under
+ * The wordlist and data licence texts, resolved from this module: the Pages bundle serves assets/ under
  * v/<version>/ (tools/assemble-site.mjs), so a page-relative 'assets/…' link would miss it.
  */
 export const LICENSES_URL = new URL('../../data/THIRD_PARTY_LICENSES.txt', import.meta.url).href;
@@ -131,6 +131,7 @@ registerStrings('en', {
   'about.privacyDesc': 'Designed so sensitive data never leaves your machine, except what you choose to check from the internet: the public IP / host name pairs in Verify and a domain’s MTA-STS policy host in Domain Health.',
   'about.priv1': 'No backend, no analytics, no cookies, no tracking.',
   'about.priv2': 'Certificates are parsed in your browser. Private keys are never needed; if a file contains one it is ignored and never displayed.',
+  'about.privChain': 'A missing intermediate is looked up in this site’s own copy of the CCADB list of public intermediates: the page reads one small file of the site, chosen by the first two hex digits of the issuer’s key identifier, and never sends the certificate anywhere. Those files are not kept for offline use, so a lookup needs a connection.',
   'about.priv3': 'Workspaces: each keeps its own server inventory, learned subdomain names (only if you switch them on: bare labels such as “api”, never full hostnames or IP addresses), custom wordlist, expected CAs, notes and the domains you worked on in it. They live in this browser’s IndexedDB (the database “ssds.workspaces”); only a pointer to the workspace you use, the settings and remembered options are in its local storage (keys starting with “ssds.”). Both belong to the site’s origin: on a GitHub Pages project site (<user>.github.io/<repo>/) every other Pages project of the same account shares that origin and could read them, so a copy that keeps customer data should have an origin of its own. A workspace leaves this browser only as a hand-over file you export yourself, encrypted if you give it a password (never stored; the file name then leaves the workspace’s name out too). Learned and custom names are tried as DNS lookups under the domains you scan in their workspace (label.domain), so the DNS resolvers and those domains’ nameservers see them. All of it can be deleted at any time.',
   'about.priv4': 'What third parties see: domain names you scan go to the CT / passive-DNS services and DoH resolvers, and a host name whose certificate you load (Certificate, SSL Targets) or a domain whose certificate issuers you look up (Domain overview) to Cert Spotter and crt.sh; IP addresses you inspect go to RIPEstat and ipwho.is, the network addresses whose owner you look up and the AS numbers whose prefixes you list go to RIPEstat, and a reverse DNS sweep sends the reverse names of the addresses and the names found to the DoH resolvers. As with any website, they also see your IP address.',
   'about.priv5': 'Requests carry no referrer, so services do not learn which page you used.',
@@ -172,7 +173,8 @@ registerStrings('en', {
   'about.thanks': 'Thanks to the operators of the free services listed above, which make a backend-free tool like this possible.',
   'about.version': 'Version {version}',
   'about.wordlistCredits': 'The bundled subdomain wordlists are built from SecLists, bitquark and dnsgen (MIT) and commonspeak2 and altdns (Apache-2.0).',
-  'about.wordlistLicenses': 'Wordlist licences'
+  'about.ccadbCredits': 'The intermediate certificates and root store data behind the Certificate view’s missing-intermediate repair come from the Common CA Database (CCADB), under the Community Data License Agreement – Permissive 2.0.',
+  'about.wordlistLicenses': 'Wordlist and data licences'
 });
 
 registerStrings('tr', {
@@ -257,6 +259,7 @@ registerStrings('tr', {
   'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı; istisna, internetten kontrol etmeyi seçtiklerinizdir: Doğrula’daki genel IP / host adı çiftleri ve Alan Adı Sağlığı’nda bir alan adının MTA-STS politika sunucusu.',
   'about.priv1': 'Sunucu yok, analitik yok, çerez yok, izleme yok.',
   'about.priv2': 'Sertifikalar tarayıcınızda ayrıştırılır. Özel anahtar hiçbir zaman gerekmez; dosyada varsa yok sayılır ve asla gösterilmez.',
+  'about.privChain': 'Eksik bir ara sertifika, bu sitenin CCADB herkese açık ara sertifika listesi kopyasında aranır: sayfa, sitenin veren anahtar kimliğinin ilk iki onaltılık basamağına göre seçilen küçük bir dosyasını okur ve sertifikayı hiçbir yere göndermez. Bu dosyalar çevrimdışı kullanım için saklanmaz; arama bağlantı gerektirir.',
   'about.priv3': 'Çalışma alanları: her biri kendi sunucu envanterini, öğrenilen subdomain adlarını (yalnızca açarsanız: “api” gibi yalın etiketler; asla tam host adları ya da IP adresleri değil), özel kelime listesini, beklenen CA’larını, notlarını ve içinde çalıştığınız alan adlarını tutar. Bunlar bu tarayıcının IndexedDB deposunda (“ssds.workspaces” veritabanı) durur; yerel depolamada (“ssds.” ile başlayan anahtarlar) yalnızca kullandığınız çalışma alanına bir işaret, ayarlar ve hatırlanan seçenekler bulunur. İkisi de sitenin kaynağına (origin) aittir: bir GitHub Pages proje sitesinde (<kullanıcı>.github.io/<depo>/) aynı hesabın diğer tüm Pages projeleri bu kaynağı paylaşır ve bunları okuyabilir; müşteri verisi tutacak bir kopyanın kendine ait bir kaynağı olmalıdır. Bir çalışma alanı bu tarayıcıdan yalnızca sizin dışa aktardığınız devir dosyası olarak çıkar; parola verirseniz (asla saklanmaz) şifrelenir ve dosya adında da çalışma alanının adı yer almaz. Öğrenilen ve özel adlar, kendi çalışma alanında taradığınız alan adlarının altında DNS sorgusu olarak denenir (etiket.alanadı); yani DNS çözümleyicileri ve o alan adlarının ad sunucuları bunları görür. Hepsi istediğiniz an silinebilir.',
   'about.priv4': 'Üçüncü tarafların gördükleri: taradığınız alan adları CT / pasif DNS hizmetlerine ve DoH çözümleyicilerine, sertifikasını yüklediğiniz host adı (Sertifika, SSL Hedefleri) ya da sertifika sağlayıcılarını sorguladığınız alan adı (Alan adı özeti) Cert Spotter ve crt.sh’e; incelediğiniz IP adresleri RIPEstat ve ipwho.is’e, sahibini sorguladığınız ağ adresleri ve öneklerini listelediğiniz AS numaraları RIPEstat’a gider; bir ters DNS taraması ise adreslerin ters adlarını ve bulunan adları DoH çözümleyicilerine gönderir. Her web sitesinde olduğu gibi IP adresinizi de görürler.',
   'about.priv5': 'İstekler referrer bilgisi taşımaz; hizmetler hangi sayfayı kullandığınızı öğrenmez.',
@@ -298,7 +301,8 @@ registerStrings('tr', {
   'about.thanks': 'Böyle sunucusuz bir aracı mümkün kılan, yukarıda listelenen ücretsiz hizmetlerin işletmecilerine teşekkürler.',
   'about.version': 'Sürüm {version}',
   'about.wordlistCredits': 'Paketteki subdomain kelime listeleri SecLists, bitquark ve dnsgen (MIT) ile commonspeak2 ve altdns (Apache-2.0) listelerinden üretilir.',
-  'about.wordlistLicenses': 'Kelime listesi lisansları'
+  'about.ccadbCredits': 'Sertifika görünümünün eksik ara sertifika onarımının kullandığı ara sertifikalar ve kök deposu verileri, Community Data License Agreement – Permissive 2.0 ile Common CA Database’den (CCADB) gelir.',
+  'about.wordlistLicenses': 'Kelime listesi ve veri lisansları'
 });
 
 /** Data sources table rows (static; mirrors spec §3). */
@@ -495,6 +499,7 @@ export function mount(container, ctx) {
   const privacyItems = [
     ['x-circle', 'about.priv1'],
     ['file-text', 'about.priv2'],
+    ['git-branch', 'about.privChain'],
     ['server', 'about.priv3'],
     ['eye', 'about.priv4'],
     ['link', 'about.priv5'],
@@ -559,7 +564,7 @@ export function mount(container, ctx) {
     children: h('div', { class: 'stack-sm' },
       h('p', null, t('about.licenseBody')),
       h('p', { class: 'muted' }, t('about.thanks')),
-      h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ',
+      h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ', t('about.ccadbCredits'), ' ',
         h('a', { href: LICENSES_URL, target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
       h('div', { class: 'cluster' },
         Badge('MIT', { variant: 'accent', icon: 'book' }),

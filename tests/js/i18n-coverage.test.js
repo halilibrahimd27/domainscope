@@ -171,6 +171,11 @@ describe('i18n coverage', () => {
       'check.record-failed']) add(`retire.act.${k}`);
     for (const w of retire.FAILURE_KINDS) add(`retire.fail.${w}`);
     for (const a of retire.CHANGE_ACTIONS) assert.ok([...keys].some((k) => k.startsWith(`retire.act.${a}`)), `retire.act.${a}*`);
+    // The missing intermediate and the root-store warnings (lib/chainfix.js, ui/chain-repair.js):
+    // every store name and every warning a chain can get.
+    const chainfix = await imp('assets/js/lib/chainfix.js');
+    for (const s of chainfix.STORES) add(`chainfix.store.${s}`);
+    for (const c of chainfix.LIFECYCLE_CODES) add(`chainfix.life.${c}`);
     // Subdomains: the zone chip and the Reverse DNS names chip (one key per mode), the result banners.
     for (const m of views.subdomains.ZONE_MODES) {
       for (const k of ['zone', 'handoff']) { add(`sub.${k}.mode.${m}`); add(`sub.${k}.mode.${m}Title`); add(`sub.${k}.note.${m}`); }

@@ -11,8 +11,12 @@
  * Targets view (state.session.pendingCert). A PKCS#12 (.pfx / .p12) file asks for its password
  * (ui/pfx-import.js over lib/x509.js loadCertificates and lib/pkcs12.js); its certificates load
  * like any other file's, its private key is never shown, and the note about the bundle offers
- * fullchain.pem and the result of the opt-in key check. "Does this CSR match?" (PEM & OpenSSL tab)
- * compares a pasted CSR's public key with the certificate's (lib/x509.js parseCertificateRequest,
+ * fullchain.pem and the result of the opt-in key check. A server certificate whose chain stops
+ * short of a root gets the missing intermediates from this site's copy of the CCADB list
+ * (ui/chain-repair.js over lib/chainfix.js: "Missing intermediate found", Download fullchain.pem,
+ * the added certificates in the Chain tab), and a chain that ends at a root a store distrusts,
+ * removed or lets expire first gets the root-store warnings with the announcement. "Does this CSR
+ * match?" (PEM & OpenSSL tab) compares a pasted CSR's public key with the certificate's (lib/x509.js parseCertificateRequest,
  * csrMatchesCertificate); a private key pasted there is recognised the moment it lands (looksLikePrivateKey),
  * never read or kept, and the box emptied.
  *
@@ -60,6 +64,8 @@ import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/uti
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 // The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
 import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
+// The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
+import { ChainRepairNotes, ChainRepairChainPart, repairedFullchain } from '../ui/chain-repair.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
@@ -1804,11 +1810,32 @@ export function CertPfxNote(load) {
     actions: leaf ? [
       Button({
         label: t('pfx.fullchain'), icon: 'download', size: 'sm', dataset: { action: 'pfx-fullchain' },
-        onClick: () => downloadText(pemFileName(leaf, '-fullchain'), pemBundle(full), 'application/x-pem-file')
+        onClick: () => downloadFullchain(leaf, full)
       }),
       h('span', { class: 'muted text-sm pfx-fullchain-hint' }, t('pfx.fullchainHint'))
     ] : []
   });
+}
+
+/**
+ * Save `certs` as the leaf's fullchain.pem (`<cn>-fullchain.pem`).
+ * @param {object} leaf the certificate that names the file
+ * @param {object[]} certs leaf first, then the intermediates in chain order (never the root)
+ */
+export function downloadFullchain(leaf, certs) {
+  downloadText(pemFileName(leaf, '-fullchain'), pemBundle(certs), 'application/x-pem-file');
+}
+
+/**
+ * The notes of a loaded file's chain (ui/chain-repair.js ChainRepairNotes): the missing
+ * intermediates found in the bundled CCADB list with Download fullchain.pem and, with
+ * `lifecycle`, the root-store warnings. Filled when the lookup ends; empty for a complete chain.
+ * @param {CertLoad} load
+ * @param {{ lifecycle?: boolean }} [opts]
+ * @returns {HTMLElement}
+ */
+export function CertChainNotes(load, { lifecycle = true } = {}) {
+  return ChainRepairNotes(load, { lifecycle, onDownload: (certs) => downloadFullchain(load.result.leaf, certs) });
 }
 
 /**
@@ -2186,6 +2213,7 @@ export function mount(container, ctx) {
     if (sourceNote) content.append(sourceNote);
     const pfxNote = CertPfxNote(load);
     if (pfxNote) content.append(pfxNote);
+    content.append(CertChainNotes(load));
     content.append(overviewCard(result.leaf, analysis));
     if (result.certificates.length > 1) {
       const sel = select({
@@ -2266,7 +2294,8 @@ export function mount(container, ctx) {
         // A PKCS#12 bundle's note offers fullchain.pem already.
         full.length > 1 && !load.result.pkcs12 ? Button({
           label: t('cert.downloadChain'), icon: 'download', dataset: { action: 'download-chain' }, title: t('cert.chain.fullchainHint'),
-          onClick: () => downloadText(pemFileName(leaf, '-fullchain'), pemBundle(full), 'application/x-pem-file')
+          // with the intermediates the CCADB list added, once found
+          onClick: () => downloadFullchain(leaf, repairedFullchain(load) || full)
         }) : null,
         CopyButton(() => pemEncode(leaf.der), { label: t('cert.copyPem'), variant: 'ghost', size: 'md' }),
         SummaryButton({ kind: 'cert', size: 'md', facts: () => certSummaryFacts(load), url: () => ctx.shareUrl(permalinkParams('cert', ctx.params)) }),
@@ -2555,10 +2584,12 @@ export function mount(container, ctx) {
         h('div', { class: 'stack-sm' }, alerts),
         list,
         unrelated,
+        // What the CCADB list adds under the file's chain, and where the chain ends.
+        ChainRepairChainPart(load),
         h('div', { class: 'cluster' },
           Button({
             label: t('cert.downloadChain'), icon: 'download', dataset: { action: 'download-chain-tab' },
-            onClick: () => downloadText(pemFileName(full[0], '-fullchain'), pemBundle(full), 'application/x-pem-file')
+            onClick: () => downloadFullchain(full[0], repairedFullchain(load) || full)
           }),
           h('span', { class: 'muted text-sm' }, t('cert.chain.fullchainHint'))));
     }
@@ -2875,7 +2906,8 @@ export function mount(container, ctx) {
       } else {
         spkiOut.textContent = '—';
       }
-      const full = fullchainCerts(chain);
+      // With the intermediates the CCADB list added, when the lookup has found them.
+      const full = repairedFullchain(load) || fullchainCerts(chain);
       return h('div', { class: 'stack' },
         CodeBlock(pemEncode(cert.der), { label: t('cert.pem.this'), maxHeight: '320px' }),
         full.length > 1 && cert === chain.ordered[0] ? Disclosure({

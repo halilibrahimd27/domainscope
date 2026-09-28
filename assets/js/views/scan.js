@@ -69,7 +69,7 @@ import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
-  CertAlternatives, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
+  CertAlternatives, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
 } from './cert.js';
 // Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
@@ -1652,9 +1652,9 @@ export function mount(container, ctx) {
   // Step 1's loaders take several files at once (and a folder where the browser can pick one):
   // several certificates make a renewal of certificate sets. "Add certificates" next to a single
   // certificate opens this picker (kept hidden: the button is its way in). After a PKCS#12 file's
-  // password dialog the focus goes to the note about the bundle.
+  // password dialog the focus goes to the note about the bundle, or to why it did not open.
   const loader = (opts = {}) => CertLoader({
-    onLoad: onCertLoad, onLoads: setLoads, multiple: true, folder: true, focusTarget: () => certBody.querySelector('.pfx-note'), ...opts
+    onLoad: onCertLoad, onLoads: setLoads, multiple: true, folder: true, focusTarget: () => pfxFocusTarget(certBody), ...opts
   }).el;
   const addPicker = FileDrop({
     accept: CERT_ACCEPT, maxBytes: CERT_MAX_BYTES, multiple: true, paste: false, compact: true,

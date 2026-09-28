@@ -1271,8 +1271,9 @@ export function certFileInputs(files) {
  * can pick one) and hands them to `onLoads` together, one {@link CertLoad} per file; pasted text
  * is one load, whatever the number of PEM blocks in it.
  * A PKCS#12 bundle asks for its password first ({@link openCertInputs}): Open loads its certificates
- * (and moves the keyboard focus to `focusTarget()`, the note about the bundle, rather than let it
- * fall to <body>), Cancel loads nothing and says so.
+ * (and moves the keyboard focus to `focusTarget()` — {@link pfxFocusTarget}: the note about the
+ * bundle, or why it did not open — rather than let it fall to <body>), Cancel loads nothing and
+ * says so.
  * @param {{ onLoad: (load: CertLoad) => void, onLoads?: ((loads: CertLoad[]) => void)|null, multiple?: boolean,
  *   folder?: boolean, compact?: boolean, title?: string, hint?: string,
  *   focusTarget?: () => (HTMLElement|null) }} opts `onLoads` takes every load
@@ -1668,6 +1669,21 @@ export function focusLoadedCert(target) {
 }
 
 /**
+ * Where the keyboard focus goes in `root` once a PKCS#12 file's password dialog has closed on a
+ * result and the view has re-rendered ({@link CertLoader} focusTarget): the note about the bundle,
+ * else the first warning (why it did not open: unsupported, damaged), else a drop zone on screen
+ * to try another file. null when there is none of these.
+ * @param {HTMLElement|null} root
+ * @returns {HTMLElement|null}
+ */
+export function pfxFocusTarget(root) {
+  if (!root) return null;
+  const shown = (el) => el.getClientRects().length > 0; // not inside a closed disclosure
+  return root.querySelector('.pfx-note') || root.querySelector('[data-warning]')
+    || [...root.querySelectorAll('.filedrop')].find(shown) || null;
+}
+
+/**
  * "From Certificate Transparency" / "Sample" badge of a {@link CertLoad}; null for a file.
  * @param {CertLoad|null} load
  * @returns {HTMLSpanElement|null}
@@ -2044,7 +2060,7 @@ export function mount(container, ctx) {
 
   function renderLoader() {
     clear(loaderHost);
-    const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load, focusTarget: () => content.querySelector('.pfx-note') });
+    const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load, focusTarget: () => pfxFocusTarget(content) || pfxFocusTarget(loaderHost) });
     // '/' lands on the drop zone, which also takes a pasted certificate (Ctrl+V).
     loader.drop.el.dataset.shortcut = 'focus';
     alternatives = CertAlternatives({

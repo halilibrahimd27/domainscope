@@ -483,6 +483,8 @@ function sanitizeMeta(value) {
  * @property {() => Promise<{ active: WorkspaceMeta, list: WorkspaceMeta[], migrated: string[], persistent: boolean }>} open
  *   read the store once (later calls share the first); runs the first-run migration
  * @property {boolean} persistent  false: memory only (no IndexedDB, or it failed to open)
+ * @property {boolean} database  there is persistent storage: `persistent`, or one that failed to
+ *   open, which destroy() deletes all the same
  * @property {Error|null} lastError  the last failed read or write (null after a successful write)
  * @property {WorkspaceMeta} active
  * @property {ReturnType<typeof emptyWorkspaceData>} data  the active workspace's parts (treat as read-only)
@@ -496,6 +498,7 @@ function sanitizeMeta(value) {
  * @property {(id: string, data: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} replace
  * @property {(id: string) => Promise<ReturnType<typeof emptyWorkspaceData>>} load  a workspace's parts (a copy)
  * @property {() => Promise<boolean>} destroy  delete everything; memory is reset at once
+ *   (`lastError` null once it succeeded)
  * @property {() => Promise<void>} idle  every write started so far has settled (before a reload, an export)
  * @property {(fn: (e: { type: 'data'|'list'|'switch'|'destroyed', parts?: string[] }) => void) => () => void} subscribe
  *   changes made by ANOTHER tab (local changes are the caller's own)
@@ -537,6 +540,15 @@ export function createWorkspaceStore({
   let generation = 0;
   /** The parts (slot keys) whose last write failed: saving the same value again retries it. */
   const unwritten = new Set();
+  /**
+   * Workspaces created in this tab whose first write failed (a full disk for a moment, an open
+   * that timed out): id → every part saved to it since, newest values. The next write to one of
+   * them stores its meta as this tab has it, with these parts, so it is not lost once storage
+   * works again (a missing meta means "deleted in another tab" only for a workspace that was stored).
+   */
+  const uncreated = new Map();
+  /** The persistent backend this store fell back from ({@link degrade}): destroy() deletes it all the same. */
+  let fallenBack = null;
 
   /** Default before anything is written to it: no dates (it was neither created nor changed yet). */
   const defaultMeta = () => ({ id: DEFAULT_WORKSPACE_ID, name: null, createdAt: null, updatedAt: null });
@@ -554,8 +566,8 @@ export function createWorkspaceStore({
     }
   }
 
-  function post(message) {
-    if (!channel || !persistent) return;
+  function post(message, force = false) {
+    if (!channel || !(persistent || force)) return;
     try {
       channel.postMessage(message);
     } catch {
@@ -580,7 +592,10 @@ export function createWorkspaceStore({
     }
   }
 
-  /** The metas of the backend, checked; Default always there (in memory until something is written). */
+  /**
+   * The metas of the backend, checked; Default always there (in memory until something is
+   * written), and so are the workspaces of this tab not stored yet ({@link uncreated}).
+   */
   async function readMetas() {
     const next = new Map();
     for (const [, value] of await db.list(META_PREFIX)) {
@@ -588,14 +603,16 @@ export function createWorkspaceStore({
       if (meta) next.set(meta.id, meta);
     }
     if (!next.has(DEFAULT_WORKSPACE_ID)) next.set(DEFAULT_WORKSPACE_ID, metas.get(DEFAULT_WORKSPACE_ID) || defaultMeta());
+    for (const id of uncreated.keys()) if (!next.has(id) && metas.has(id)) next.set(id, metas.get(id));
     return next;
   }
 
-  /** Default's legacy data that could not be written yet, over what was read. */
+  /** What could not be written yet, over what was read: Default's legacy data, an {@link uncreated} workspace's parts. */
   function withPending(id, out) {
     if (id === DEFAULT_WORKSPACE_ID && pendingLegacy) {
       for (const [part, value] of Object.entries(pendingLegacy)) if (isEmptyPart(out[part])) out[part] = copy(value);
     }
+    for (const [part, value] of Object.entries(uncreated.get(id) || {})) out[part] = copy(value);
     return out;
   }
 
@@ -628,13 +645,20 @@ export function createWorkspaceStore({
    * The meta is read and written back inside that transaction ({@link WriteGuard}), never from
    * this tab's memory: a write never undoes a rename another tab made meanwhile, and a workspace
    * another tab deleted is not written at all (it would come back; `lastError` 'not-found').
-   * `create`: a new workspace, whose meta is written as this tab has it; `name`: a rename.
+   * `create`: a new workspace, whose meta is written as this tab has it (so is the meta of an
+   * {@link uncreated} one, with every part saved to it so far); `name`: a rename.
    * @returns {Promise<boolean>} written
    */
   function persist(id, parts, { list = false, create = false, name = null } = {}) {
     const at = isoOrNull(now());
     const mine = metas.get(id);
     if (mine) metas.set(id, { ...mine, createdAt: mine.createdAt || at, updatedAt: at });
+    if (uncreated.has(id)) {
+      parts = { ...uncreated.get(id), ...parts };
+      uncreated.set(id, parts);
+      create = true;
+      list = true;
+    }
     const puts = create ? [[metaKey(id), metas.get(id)]] : [];
     const deletes = [];
     for (const [part, value] of Object.entries(parts)) {
@@ -659,6 +683,7 @@ export function createWorkspaceStore({
         }
         initialised = true;
         lastError = null;
+        if (uncreated.get(id) === parts) uncreated.delete(id);
         for (const key of written) unwritten.delete(key);
         if (id === DEFAULT_WORKSPACE_ID && pendingLegacy) pendingLegacy = null;
         post(list ? { type: 'list' } : { type: 'data', id, parts: Object.keys(parts) });
@@ -666,6 +691,8 @@ export function createWorkspaceStore({
       } catch (err) {
         lastError = err;
         for (const key of written) unwritten.add(key);
+        // Its creation is not stored: the next write to it stores the workspace (not 'not-found').
+        if (create && metas.has(id) && !uncreated.has(id)) uncreated.set(id, parts);
         return false;
       }
     })());
@@ -698,9 +725,14 @@ export function createWorkspaceStore({
     return slot.pending;
   }
 
-  /** Fall back to memory for the rest of the page (the backend could not be read). */
+  /**
+   * Fall back to memory for the rest of the page (the backend could not be read: a database of a
+   * later schema version, a broken one, an open that timed out). The backend is kept for
+   * "Delete all local data", which must still delete what it holds.
+   */
   function degrade(err) {
     lastError = err;
+    if (db.persistent) fallenBack = db;
     db = createMemoryBackend();
     persistent = false;
   }
@@ -799,6 +831,7 @@ export function createWorkspaceStore({
     generation += 1;
     slots.clear();
     unwritten.clear();
+    uncreated.clear();
   }
 
   function requireNamed(id) {
@@ -824,6 +857,10 @@ export function createWorkspaceStore({
 
     get persistent() {
       return persistent;
+    },
+
+    get database() {
+      return persistent || !!fallenBack;
     },
 
     get lastError() {
@@ -904,6 +941,7 @@ export function createWorkspaceStore({
         slots.delete(slotKey(id, part));
         unwritten.delete(slotKey(id, part));
       }
+      uncreated.delete(id);
       let persisted = true;
       try {
         await track(db.write([], [metaKey(id), ...WORKSPACE_PARTS.map((part) => dataKey(id, part))]));
@@ -942,7 +980,12 @@ export function createWorkspaceStore({
       return (async () => {
         try {
           await db.destroy();
-          post({ type: 'destroyed' });
+          // Storage this page could not read (it works in memory) is deleted all the same: the
+          // other customers' data must not stay behind in it. IndexedDB deletes a database of
+          // any version without opening it.
+          if (fallenBack) await fallenBack.destroy();
+          lastError = null;
+          post({ type: 'destroyed' }, !!fallenBack);
           return true;
         } catch (err) {
           lastError = err;

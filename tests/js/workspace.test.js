@@ -626,6 +626,68 @@ describe('degraded storage', () => {
     assert.equal(store.lastError, null);
   });
 
+  test('a workspace whose creation could not be written is stored by its next write once storage works', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    backend.fail.add('write');
+    const acme = await store.create('Acme', { notes: 'imported', expectedCas: ['DigiCert'] });
+    const globex = await store.create('Globex');
+    assert.deepEqual([acme.persisted, globex.persisted], [false, false]);
+    await store.switchTo(acme.meta.id);
+    assert.equal(store.data.notes, 'imported', 'the imported parts are kept in this tab');
+    // Still failing: the next write fails for the storage's reason, never "deleted in another tab".
+    assert.equal(await store.save('notes', 'typed'), false);
+    assert.equal(store.lastError.name, 'QuotaExceededError');
+
+    backend.fail.delete('write');
+    assert.equal(await store.save('notes', 'typed again'), true);
+    assert.equal(store.lastError, null);
+    const stored = () => new Map(backend.entries());
+    assert.equal(stored().get(`wsmeta/${acme.meta.id}`).name, 'Acme');
+    assert.equal(stored().get(`wsdata/${acme.meta.id}/notes`), 'typed again');
+    assert.deepEqual(stored().get(`wsdata/${acme.meta.id}/expectedCas`), ['DigiCert'], 'with what it was created with');
+    // A rename stores the other one, under its new name.
+    assert.equal((await store.rename(globex.meta.id, 'Globex Corp')).persisted, true);
+    assert.equal(stored().get(`wsmeta/${globex.meta.id}`).name, 'Globex Corp');
+    // Stored now: a next page lists both, with their data.
+    const next = makeStore({ backend });
+    const opened = await next.open();
+    assert.deepEqual(opened.list.map((m) => m.name), [null, 'Acme', 'Globex Corp']);
+    assert.equal((await next.load(acme.meta.id)).notes, 'typed again');
+    // And a workspace stored before and deleted since is still refused ('not-found').
+    await next.remove(globex.meta.id);
+    assert.equal((await store.rename(globex.meta.id, 'Globex Again')).persisted, false);
+    assert.equal(store.lastError.code, 'not-found');
+    assert.equal(stored().get(`wsmeta/${globex.meta.id}`), undefined);
+  });
+
+  test('a workspace not stored yet is replaced or deleted like any other; another tab\'s list keeps it', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const { a, b, flush } = channelPair();
+    const tab1 = makeStore({ backend, channel: a });
+    const tab2 = makeStore({ backend, channel: b });
+    await tab1.open();
+    await tab2.open();
+    backend.fail.add('write');
+    const { meta } = await tab1.create('Acme');
+    backend.fail.delete('write');
+    await tab2.create('Globex');
+    await flush();
+    assert.deepEqual(tab1.list().map((m) => m.name), [null, 'Acme', 'Globex'], 'Acme is still listed here');
+    assert.equal((await tab1.replace(meta.id, { inventory: { text: INVENTORY_A } })).persisted, true);
+    assert.equal(new Map(backend.entries()).get(`wsmeta/${meta.id}`).name, 'Acme');
+    await flush();
+    assert.ok(tab2.list().some((m) => m.name === 'Acme'), 'the other tab hears of it once stored');
+
+    backend.fail.add('write');
+    const later = await tab1.create('Initech');
+    backend.fail.delete('write');
+    await tab1.remove(later.meta.id);
+    await tab1.save('notes', 'Default');
+    assert.equal(new Map(backend.entries()).get(`wsmeta/${later.meta.id}`), undefined, 'a deleted one is not stored afterwards');
+  });
+
   test('a failed read of one workspace opens it empty rather than failing the switch', async () => {
     const backend = createMemoryBackend([], { persistent: true });
     const store = makeStore({ backend });
@@ -669,6 +731,41 @@ describe('"Delete all local data"', () => {
     assert.equal(await store.destroy(), false);
     assert.equal(store.data.notes, '');
     assert.ok(store.lastError);
+    // A deletion that works clears the error: it is no reason of anything any more.
+    backend.fail.delete('destroy');
+    assert.equal(await store.destroy(), true);
+    assert.equal(store.lastError, null);
+  });
+
+  test('storage the page could not read at open (it works in memory) is deleted all the same', async () => {
+    // A database of a later schema version, a broken one, an open that timed out: the page
+    // worked around it in memory, but every customer's data is still in it.
+    const entries = [
+      ['meta', { v: STORE_VERSION, createdAt: '2026-09-01T00:00:00Z', migrated: [] }],
+      ['wsmeta/ws-acme', { id: 'ws-acme', name: 'Acme', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' }],
+      ['wsdata/ws-acme/notes', 'Acme contacts']
+    ];
+    const backend = createMemoryBackend(entries, { persistent: true });
+    backend.fail.add('list');
+    const store = makeStore({ backend });
+    const opened = await store.open();
+    assert.deepEqual([opened.persistent, store.persistent, store.database], [false, false, true]);
+    assert.deepEqual(store.list().map((m) => m.id), [DEFAULT_WORKSPACE_ID]);
+    assert.equal(await store.destroy(), true);
+    assert.deepEqual(backend.entries(), [], 'nothing stays behind');
+    assert.equal(store.lastError, null);
+    // Its deletion failing is reported, never passed over.
+    const stuck = createMemoryBackend(entries, { persistent: true });
+    stuck.fail.add('list');
+    const other = makeStore({ backend: stuck });
+    await other.open();
+    stuck.fail.add('destroy');
+    assert.equal(await other.destroy(), false);
+    assert.equal(stuck.entries().length, entries.length);
+    // A store that never had persistent storage has no database to speak of.
+    const memory = makeStore({ backend: createMemoryBackend() });
+    await memory.open();
+    assert.equal(memory.database, false);
   });
 });
 
@@ -727,6 +824,25 @@ describe('several tabs', () => {
     await tab1.destroy();
     await flush();
     assert.equal(events.at(-1).type, 'destroyed');
+    assert.equal(tab2.data.notes, '');
+  });
+
+  test('a tab that could not read the database still tells the others it deleted it', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const { a, b, flush } = channelPair();
+    const tab2 = makeStore({ backend, channel: b });
+    await tab2.open();
+    await tab2.save('notes', 'stored');
+    backend.fail.add('list');
+    const tab1 = makeStore({ backend, channel: a });
+    await tab1.open();
+    backend.fail.delete('list');
+    assert.equal(tab1.persistent, false);
+    const events = [];
+    tab2.subscribe((e) => events.push(e.type));
+    assert.equal(await tab1.destroy(), true);
+    await flush();
+    assert.deepEqual(events, ['destroyed']);
     assert.equal(tab2.data.notes, '');
   });
 

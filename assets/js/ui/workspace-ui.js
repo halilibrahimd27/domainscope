@@ -160,23 +160,24 @@ export function WorkspaceSwitch({ workspace, onOpen }) {
 
 /**
  * What "Delete all local data" says once state.clearAll() settled: what went — every workspace
- * with its IndexedDB database, the settings and the remembered options; without an IndexedDB the
- * workspaces of this tab only; with storage blocked altogether, that nothing had been saved — or
- * why not all of it could go.
- * @param {{ persistence: boolean, workspacePersistence: boolean, workspaceError: Error|null, lastPersistError: Error|null }} state
+ * with its IndexedDB database (also one the page could not open and worked around in memory), the
+ * settings and the remembered options; without an IndexedDB the workspaces of this tab only; with
+ * storage blocked altogether, that nothing had been saved — or why not all of it could go (the
+ * error of the step that failed: clearAll() leaves no other).
+ * @param {{ persistence: boolean, workspaceDatabase: boolean, workspaceError: Error|null, lastPersistError: Error|null }} state
  * @param {boolean} ok what clearAll() resolved to
  * @returns {{ type: 'success'|'error', text: string }}
  */
 export function clearedMessage(state, ok) {
   if (!ok) return { type: 'error', text: t('ws.clearFailed', { reason: storageErrorText(state.workspaceError || state.lastPersistError) }) };
-  if (state.workspacePersistence) return { type: 'success', text: t('ws.cleared') };
+  if (state.workspaceDatabase) return { type: 'success', text: t('ws.cleared') };
   return { type: 'success', text: t(state.persistence ? 'ws.clearedNoDb' : 'ws.clearedMemory') };
 }
 
 /**
  * "Delete all local data" (Settings, About): state.clearAll(), then a toast with
  * {@link clearedMessage}.
- * @param {{ clearAll(): Promise<boolean>, persistence: boolean, workspacePersistence: boolean,
+ * @param {{ clearAll(): Promise<boolean>, persistence: boolean, workspaceDatabase: boolean,
  *   workspaceError: Error|null, lastPersistError: Error|null }} state
  * @returns {Promise<boolean>}
  */

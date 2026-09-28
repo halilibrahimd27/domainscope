@@ -638,6 +638,69 @@ describe('state', () => {
     assert.equal(failed.text, i18n.t('ws.clearFailed', { reason: i18n.t('ws.why.denied') }));
   });
 
+  test('clearAll deletes a database the page could not open (it worked in memory), and says the database went', async () => {
+    // A database of a later version (a rollback, an old cached build), a broken one, a slow open.
+    const backend = createMemoryBackend([
+      ['meta', { v: 1, createdAt: '2026-09-01T00:00:00Z', migrated: [] }],
+      ['wsmeta/ws-acme', { id: 'ws-acme', name: 'Acme', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' }],
+      ['wsdata/ws-acme/inventory', { text: 'web01 192.0.2.10', updatedAt: '2026-09-01T00:00:00Z' }]
+    ], { persistent: true });
+    backend.fail.add('list');
+    const s = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    assert.deepEqual([s.workspacePersistence, s.workspaceDatabase], [false, true]);
+    const ok = await s.clearAll();
+    assert.equal(ok, true);
+    assert.deepEqual(backend.entries(), [], 'nothing of Acme stays behind');
+    const said = clearedMessage(s, ok);
+    assert.deepEqual(said, { type: 'success', text: i18n.t('ws.cleared') });
+    assert.ok(!/only in this tab/.test(said.text), said.text);
+    // Its deletion failing is an error, with its reason.
+    const stuck = createMemoryBackend([['wsmeta/ws-acme', { id: 'ws-acme', name: 'Acme' }]], { persistent: true });
+    stuck.fail.add('list');
+    const t2 = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: stuck }) });
+    await t2.ready;
+    stuck.fail.add('destroy');
+    const failed = clearedMessage(t2, await t2.clearAll());
+    assert.equal(failed.type, 'error');
+    assert.equal(stuck.entries().length, 1);
+  });
+
+  test('clearAll\'s message gives the reason of the step that failed, not an older write\'s', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const stuck = new MemoryStorage({ 'ssds.settings': '{}' });
+    const s = createState({ storage: stuck, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    // An earlier workspace write failed: the storage was full then.
+    backend.fail.add('write');
+    await s.setWorkspaceData('notes', 'x');
+    assert.equal(s.workspaceError.name, 'QuotaExceededError');
+    backend.fail.delete('write');
+    // Now only localStorage's removal fails; the database is deleted.
+    stuck.removeItem = () => {
+      throw Object.assign(new Error('The operation is insecure.'), { name: 'SecurityError' });
+    };
+    const ok = await s.clearAll();
+    assert.equal(ok, false);
+    assert.equal(s.workspaceError, null, 'the deletion worked: no workspace error left');
+    assert.equal(clearedMessage(s, ok).text, i18n.t('ws.clearFailed', { reason: i18n.t('ws.why.denied') }));
+    // And the other way round: localStorage is emptied, the database's deletion fails.
+    const other = createMemoryBackend([], { persistent: true });
+    const storage = new MemoryStorage();
+    const t2 = createState({ storage, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: other }) });
+    await t2.ready;
+    storage.setItem = () => {
+      throw Object.assign(new Error('full'), { name: 'QuotaExceededError' });
+    };
+    t2.updateSettings({ theme: 'dark' });
+    assert.equal(t2.lastPersistError.name, 'QuotaExceededError');
+    other.fail.add('destroy');
+    const ok2 = await t2.clearAll();
+    assert.equal(ok2, false);
+    assert.equal(t2.lastPersistError, null, 'localStorage was emptied');
+    assert.equal(clearedMessage(t2, ok2).text, i18n.t('ws.clearFailed', { reason: i18n.t('ws.why.other', { detail: 'memory backend: destroy refused' }) }));
+  });
+
   test('handleExternalChange re-reads the settings another tab wrote (workspaces tell each other themselves)', async () => {
     const storage = new MemoryStorage();
     const s = make(storage);

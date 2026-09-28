@@ -38,7 +38,9 @@ const JS = join(ASSETS, 'js');
  * dialog, the hand-over file and its encryption load on first use. A failed workspace write or
  * "Delete all local data" then said why in both languages (a full or blocked storage, another
  * tab holding the database — the browser's own message is English), and a write reads the
- * stored meta in its own transaction: ≈ 358 KB (366,942 bytes).
+ * stored meta in its own transaction: ≈ 358 KB (366,942 bytes). A workspace whose creation could
+ * not be written is stored by its next write, and "Delete all local data" also deletes a database
+ * the page could not open: ≈ 359 KB (367,785 bytes).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 360 * 1024;

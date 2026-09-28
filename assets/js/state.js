@@ -388,6 +388,15 @@ export function createState({
       return store.persistent;
     },
 
+    /**
+     * True when this browser has a database for the workspaces: the one in use, or one the page
+     * could not open (a later version's, a broken one; the workspaces then live in this tab only),
+     * which "Delete all local data" deletes all the same.
+     */
+    get workspaceDatabase() {
+      return store.database;
+    },
+
     /** Error from the last failed settings write (e.g. QuotaExceededError), or null. */
     get lastPersistError() {
       return lastPersistError;
@@ -661,8 +670,9 @@ export function createState({
      * pointer) and from this tab's session storage, reset all slices (session too) and notify:
      * 'inventory', 'settings', 'workspaces', then 'cleared'. Memory is reset at once; the promise
      * says whether the storage was really emptied. A storage the browser blocks held nothing:
-     * there is nothing left behind in it (`persistence` / `workspacePersistence` tell the
-     * message which storage there was).
+     * there is nothing left behind in it (`persistence` / `workspaceDatabase` tell the message
+     * which storage there was). Once it settles, `workspaceError` / `lastPersistError` hold only
+     * the error of the step that failed (the database's deletion / localStorage's).
      * @returns {Promise<boolean>} false only when something stored could not be removed (a
      *   localStorage that throws on removal, a database whose deletion failed)
      */
@@ -671,6 +681,7 @@ export function createState({
       if (storage) {
         try {
           removePrefixed(storage);
+          lastPersistError = null;
         } catch (err) {
           lastPersistError = err instanceof Error ? err : new Error(String(err));
           ok = false;

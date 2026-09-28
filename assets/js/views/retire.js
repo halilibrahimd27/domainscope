@@ -31,7 +31,7 @@ import {
 import { t, registerStrings, formatNumber, formatDateTime, getLang } from '../i18n.js';
 import {
   parseRetireTargets, parseDomainList, retireTokens, knownHostsFor, zoneCandidates, runRetireCheck, buildChanges, breakingChanges,
-  inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_ADDRESSES, RETIRE_MAX_DOMAINS,
+  inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_DOMAINS,
   RETIRE_MAX_HOSTS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES
 } from '../lib/retire.js';
 import { createIpIntel } from '../lib/ipintel.js';
@@ -478,12 +478,13 @@ export function linkText(raw) {
 }
 
 /**
- * What an empty domain box is filled in with: the carried target's registrable domain, the last
- * scan's domains, the imported zone's origin — de-duplicated, in that order.
- * @param {{ target?: string|null, scanHosts?: { domains?: string[] }|null, zone?: { origin?: string|null }|null }} ctx
- * @returns {{ domains: string[], sources: Array<'target'|'scan'|'zone'> }}
+ * What an empty domain box is filled in with: the last scan's domains, then the imported zone's
+ * origin — de-duplicated; `sources` names only the ones that added a domain. (A target carried
+ * over from another tool goes into its box through the route, lib/session.js.)
+ * @param {{ scanHosts?: { domains?: string[] }|null, zone?: { origin?: string|null }|null }} ctx
+ * @returns {{ domains: string[], sources: Array<'scan'|'zone'> }}
  */
-export function prefillDomains({ target = null, scanHosts = null, zone = null } = {}) {
+export function prefillDomains({ scanHosts = null, zone = null } = {}) {
   const domains = [];
   const sources = [];
   const add = (list, source) => {
@@ -497,7 +498,6 @@ export function prefillDomains({ target = null, scanHosts = null, zone = null } 
     }
     if (added) sources.push(source);
   };
-  if (target) add([registrableDomain(target) || target], 'target');
   if (scanHosts && Array.isArray(scanHosts.domains)) add(scanHosts.domains, 'scan');
   if (zone && zone.origin) add([zone.origin], 'zone');
   return { domains: domains.slice(0, RETIRE_MAX_DOMAINS), sources };
@@ -754,7 +754,7 @@ export function mount(container, ctx) {
   applyRoute(ctx.params, { fromMount: true });
   if (session.ips === null) session.ips = '';
   if (session.domains === null) session.domains = '';
-  if (!session.domains.trim() && !checkRunning()) prefill(null);
+  if (!session.domains.trim() && !checkRunning()) prefill();
 
   /* --- form ---------------------------------------------------------------- */
   const ipsField = textarea({
@@ -1113,13 +1113,9 @@ export function mount(container, ctx) {
     ctx.setActions(CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
-  /**
-   * Fill an empty domain box from what the page session knows (the carried target, the last scan,
-   * the imported zone); a box the user typed in is never touched.
-   * @param {string|null} target
-   */
-  function prefill(target) {
-    const p = prefillDomains({ target, scanHosts: state.getSession('scanHosts') || null, zone: state.getSession('zone') || null });
+  /** Fill an empty domain box from what the page session knows (the last scan, the imported zone). */
+  function prefill() {
+    const p = prefillDomains({ scanHosts: state.getSession('scanHosts') || null, zone: state.getSession('zone') || null });
     if (!p.domains.length) return;
     session.domains = p.domains.join('\n');
     session.filled = p.sources;

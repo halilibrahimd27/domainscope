@@ -145,8 +145,8 @@ async function nodeChecks(run) {
     assertEqual(V.shareParams('', 'example.com'), null, 'no address, no link');
     assertEqual(V.shareParams('192.0.2.10', Array.from({ length: 30 }, (_, i) => `host-${i}.example.com`).join('\n')), null, 'too long for a link');
     assertEqual(V.linkText('192.0.2.10,192.0.2.0/28'), '192.0.2.10\n192.0.2.0/28', 'link text');
-    assertEqual(V.prefillDomains({ target: 'www.example.com', scanHosts: { domains: ['example.com', 'example.net'] }, zone: { origin: 'example.org' } }),
-      { domains: ['example.com', 'example.net', 'example.org'], sources: ['target', 'scan', 'zone'] }, 'prefill');
+    assertEqual(V.prefillDomains({ scanHosts: { domains: ['example.com', 'example.net'] }, zone: { origin: 'example.org' } }),
+      { domains: ['example.com', 'example.net', 'example.org'], sources: ['scan', 'zone'] }, 'prefill');
     assertEqual(V.prefillDomains({}), { domains: [], sources: [] }, 'nothing known');
     const base = { key: 'k', group: 'example.com', groupKind: 'domain', name: 'example.com', type: 'TXT', value: 'ip4:192.0.2.10', addresses: ['192.0.2.10'], blocks: ['192.0.2.10/32'], via: ['example.com'], roles: [], sources: ['spf'], foundFor: ['example.com'], spf: { holder: 'example.com', range: '192.0.2.10/32' } };
     assertEqual(V.changeText({ ...base, severity: 'mail', action: 'remove' }).key, 'retire.act.remove.spf', 'SPF remove');

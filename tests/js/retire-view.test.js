@@ -37,9 +37,9 @@ describe('Retire an IP view helpers', () => {
     assert.equal(linkText(undefined), '');
   });
 
-  test('prefillDomains: the carried target\'s registrable domain, the last scan, the zone — each once, with where from', () => {
-    assert.deepEqual(prefillDomains({ target: 'www.example.com', scanHosts: { domains: ['example.com', 'example.net'] }, zone: { origin: 'example.org' } }),
-      { domains: ['example.com', 'example.net', 'example.org'], sources: ['target', 'scan', 'zone'] });
+  test('prefillDomains: the last scan, then the zone — each domain once, with where from', () => {
+    assert.deepEqual(prefillDomains({ scanHosts: { domains: ['example.com', 'www.example.net'] }, zone: { origin: 'example.org' } }),
+      { domains: ['example.com', 'www.example.net', 'example.org'], sources: ['scan', 'zone'] });
     assert.deepEqual(prefillDomains({ scanHosts: { domains: ['example.com'] }, zone: { origin: 'example.com' } }), { domains: ['example.com'], sources: ['scan'] },
       'a source that adds nothing new is not named');
     assert.deepEqual(prefillDomains({ scanHosts: { domains: 'nope' }, zone: {} }), { domains: [], sources: [] });

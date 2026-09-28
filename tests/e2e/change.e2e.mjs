@@ -12,7 +12,8 @@
  * Covers: the nav entry (DNS tools, after Bulk Resolve) and the empty form (nothing sent); an ACME
  * DNS-01 TXT request typed in (the change as it is built, a token of the wrong shape flagged, the
  * admin's instructions in English and Turkish, BIND with its download, the route that reopens the
- * form); an SPF include with "Read the current records" from the keyboard (only names and types
+ * form; the format tab and the instructions' language picked stay while the form is edited; the
+ * record name an ACME client prints taken for the certificate name); an SPF include with "Read the current records" from the keyboard (only names and types
  * asked; the include merged into the record there, the site verification kept by the Route 53
  * change batch, the lookups counted, then "read again" once the form changes the record); a CNAME
  * next to an A record found by the read (a lint error, no outputs); a form opened from its route
@@ -21,10 +22,11 @@
  * with the negative TTL waited for, no answer), the next check never before a cached answer
  * expires, Check now after the change reaches the lagging resolver, "done on every resolver that
  * answered", then done everywhere and the loop stopped, and Check again asks every resolver once
- * more; a check with the old value known (not yet vs wrong value), Esc stops it, Check again; Esc
+ * more (from the keyboard: the focus moves to Stop while a round runs, then to Check again); a check with the old value known (not yet vs wrong value), Esc stops it, Check again; Esc
  * while a slow round runs (its answers shown, nothing scheduled after it); no resolver answering
  * at all (said so after the first round, stopped as failed after three); a language switch that
- * resumes the check without asking again; a link that cannot be read (nothing sent); a builder
+ * resumes the check without asking again; a check opened offline (it says so, schedules nothing and
+ * asks once the connection is back); a link that cannot be read (nothing sent); a builder
  * link near the length limit opens; 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
@@ -191,6 +193,30 @@ async function main() {
       await shot(page, opts, 'change-acme-desktop-light-en');
     });
 
+    await run.step('the format being watched and the instructions\' language stay while the form is edited', async () => {
+      await page.click('.fix-tabs .tab[data-tab="route53"]');
+      await page.evaluate(() => { document.querySelector('.chg-outputs .fix-outputs').dataset.stale = '1'; });
+      await fill(page, 'tokens', TOKEN_A);
+      await page.waitFor(() => !!document.querySelector('.chg-outputs .fix-outputs:not([data-stale])'), { message: 'rebuilt' });
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.fix-tabs .tab[aria-selected="true"]')].map((b) => b.dataset.tab)), ['route53'], 'the Route 53 tab stays selected');
+      const r53 = await page.evaluate(() => document.querySelector('.fix-tabs .tabpanel[data-tab="route53"]:not([hidden]) .codeblock-pre')?.textContent || '');
+      assert(r53.includes(TOKEN_A) && !r53.includes(TOKEN_B), `the edited change on screen: ${r53.slice(0, 200)}`);
+      assert(/^DNS değişiklik talebi: example\.com/.test(await tabText(page, 'admin')), 'the instructions stay in Turkish');
+      await page.click('[data-control="fix-lang"] [data-value="en"]');
+      await fill(page, 'tokens', `${TOKEN_A}\n${TOKEN_B}`);
+      await page.waitFor((t) => (document.querySelector('.fix-admin-text .codeblock-pre')?.textContent || '').includes(t), { args: [TOKEN_B], message: 'both tokens again' });
+    });
+
+    await run.step('the record name an ACME client prints, pasted as the certificate name: the label is not doubled, and it is said', async () => {
+      await fill(page, 'name', '_acme-challenge.example.com');
+      await page.waitFor(() => !!document.querySelector('.fix-problem[data-key="fix.p.acme-name"]'), { message: 'the note' });
+      assertEqual(await page.evaluate(() => document.querySelector('.fix-problem[data-key="fix.p.acme-name"]').dataset.severity), 'info', 'info, not an error');
+      await waitOutputs(page, 'outputs');
+      assertEqual(await sets(page), [`add TXT _acme-challenge.example.com: +"${TOKEN_A}" +"${TOKEN_B}"`], 'one _acme-challenge label');
+      await fill(page, 'name', '*.example.com');
+      await page.waitFor(() => !document.querySelector('.fix-problem'), { message: 'note gone' });
+    });
+
     await run.step('SPF include: "Read the current records" with Ctrl+Enter asks only names and types; the include joins the record there', async () => {
       await pickTemplate(page, 'spf');
       await fill(page, 'domain', 'example.com');
@@ -255,23 +281,36 @@ async function main() {
     });
 
     await run.step('Check now after the change reaches Google: done on every resolver that answered; CZ.NIC fixed: done, and the loop stops', async () => {
-      await page.evaluate(() => { delete window.__dns.views.google['_acme-challenge.example.com']; window.__dns.log.length = 0; });
-      await page.click('[data-action="check-now"]');
+      await page.evaluate(() => { delete window.__dns.views.google['_acme-challenge.example.com']; window.__dns.log.length = 0; window.__dns.delay = 600; });
+      // From the keyboard: Check now is off while its round runs, so the focus moves to Stop, never to the page.
+      await page.evaluate(() => document.querySelector('[data-action="check-now"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'running', { message: 'running' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action || document.activeElement?.tagName), 'check-stop', 'focus during the round');
       await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.headline === 'done-partial', { message: 'done-partial', timeout: 10000 });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action || document.activeElement?.tagName), 'check-stop', 'focus after the round');
+      await page.evaluate(() => { window.__dns.delay = 0; });
       assertEqual((await dnsLog(page)).map((q) => q.resolver).sort(), ['cznic', 'google'], 'only the resolvers not done yet are asked again');
       assert(/1 resolver did not answer/.test(await text(page, '.chg-check-head-wrap')), 'says which part is missing');
       await page.evaluate(() => { delete window.__dns.views.cznic; });
-      await page.click('[data-action="check-now"]');
+      await page.evaluate(() => document.querySelector('[data-action="check-now"]').focus());
+      await page.press('Enter');
       await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'stopped: done', timeout: 10000 });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action || document.activeElement?.tagName), 'check-again', 'focus once done: Check again');
       const info = await checkInfo(page);
       assertEqual([info.headline, info.nextAt], ['done', null], 'done, nothing scheduled');
       assert(await page.evaluate(() => document.querySelector('[data-action="check-now"]').hidden && document.querySelector('[data-action="check-stop"]').hidden && !document.querySelector('[data-action="check-again"]').hidden), 'once done: Check again, no Check now / Stop');
     });
 
     await run.step('Check again once done asks every resolver for every record again (a revert would show)', async () => {
-      await page.evaluate(() => { window.__dns.log.length = 0; });
-      await page.click('[data-action="check-again"]');
+      await page.evaluate(() => { window.__dns.log.length = 0; window.__dns.delay = 600; });
+      await page.evaluate(() => document.querySelector('[data-action="check-again"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'running', { message: 'running' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action || document.activeElement?.tagName), 'check-stop', 'focus during the round');
       await page.waitFor(() => { const v = document.querySelector('[data-page="check"]'); return v.dataset.state === 'done' && v.dataset.round === '1'; }, { message: 'done again', timeout: 10000 });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action || document.activeElement?.tagName), 'check-again', 'focus once done again');
+      await page.evaluate(() => { window.__dns.delay = 0; });
       assertEqual((await dnsLog(page)).map((q) => `${q.name} ${q.type} ${q.resolver}`).sort(), ['_acme-challenge.example.com TXT cloudflare', '_acme-challenge.example.com TXT cznic',
         '_acme-challenge.example.com TXT dnssb', '_acme-challenge.example.com TXT google'], '4 resolvers × 1 record set');
       assertEqual(await resolverRows(page), [['cloudflare:done', 'google:done', 'dnssb:done', 'cznic:done']], 'verdicts');
@@ -364,6 +403,28 @@ async function main() {
       await page.waitFor(() => /Tamam: tüm çözümleyiciler/.test(document.querySelector('.chg-check-head-wrap')?.textContent || ''), { message: 'Turkish headline' });
       assertEqual((await dnsLog(page)).length, before, 'no new query');
       await setLangUi(page, 'en');
+    });
+
+    await run.step('opened offline: the check says so and schedules nothing; back online it asks by itself', async () => {
+      const setOnline = async (on) => {
+        await page.send('Network.emulateNetworkConditions', { offline: !on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        await page.waitFor((o) => navigator.onLine === o, { args: [on], message: `navigator.onLine ${on}` });
+      };
+      await page.evaluate(() => { window.__dns.views = {}; window.__dns.log.length = 0; });
+      await setOnline(false);
+      try {
+        await page.evaluate(() => { window.location.hash = '#/change/check?z=example.com&r=is+www+A+192.0.2.10'; });
+        await page.waitFor(() => /You are offline/.test(document.querySelector('.chg-check-meta')?.textContent || ''), { message: 'offline note' });
+        const info = await checkInfo(page);
+        assertEqual([info.round, info.nextAt, info.state], [0, null, 'waiting'], 'no round, nothing scheduled');
+        assert(!/Next check in/.test(await text(page, '.chg-check-meta')), `no countdown: ${await text(page, '.chg-check-meta')}`);
+        assert(await page.evaluate(() => document.querySelector('#page-offline').hidden), 'no shell note: the form works offline, the page says what waits');
+        assertEqual(await dnsLog(page), [], 'nothing asked');
+      } finally {
+        await setOnline(true);
+      }
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'asked once back online', timeout: 10000 });
+      assertEqual((await dnsLog(page)).length, 4, 'one round, 4 resolvers');
     });
 
     await run.step('a link that cannot be read says why and sends nothing', async () => {

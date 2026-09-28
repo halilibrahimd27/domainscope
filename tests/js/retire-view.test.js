@@ -9,10 +9,11 @@ import assert from 'node:assert/strict';
 
 import { setLang, t, hasString } from '../../assets/js/i18n.js';
 import {
-  shareParams, linkText, prefillDomains, hostsForDomains, zoneInternalNames, changeText, summaryFacts, jobGaps, gapTexts, failureList, LINK_MAX_CHARS
+  shareParams, linkText, prefillDomains, hostsForDomains, zoneInternalNames, checkTooPlan, changeText, summaryFacts, jobGaps, gapTexts, failureList,
+  LINK_MAX_CHARS
 } from '../../assets/js/views/retire.js';
 import { sessionZone, parseFiles } from '../../assets/js/views/zone.js';
-import { buildChanges, parseRetireTargets, CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_HOSTS } from '../../assets/js/lib/retire.js';
+import { buildChanges, parseRetireTargets, passiveNewNames, CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_HOSTS, RETIRE_MAX_DOMAINS } from '../../assets/js/lib/retire.js';
 import { buildSummary, renderMarkdown } from '../../assets/js/lib/summary.js';
 import '../../assets/js/ui/summary-button.js'; // registers the sum.* strings
 
@@ -96,6 +97,28 @@ describe('Retire an IP view helpers', () => {
     // An older session zone without internalNames: its records' internal flags still count.
     assert.deepEqual([...zoneInternalNames({ records: [{ name: 'intranet.example.com', internal: true }, { name: 'www.example.com', internal: false }] })], ['intranet.example.com']);
     assert.equal(zoneInternalNames(null).size, 0);
+  });
+
+  test('checkTooPlan: the passive domains that fit in the list, the names checked then, and the ones that cannot be added', () => {
+    const passive = [{ address: '192.0.2.10', names: ['blog.example.org', 'shop.example.net', 'cdn.example.com'] }];
+    const fresh = passiveNewNames(passive, { checked: ['example.com'], resolved: [] });
+    assert.deepEqual(checkTooPlan(fresh, ['example.com']), {
+      add: ['example.net', 'example.org'], names: ['cdn.example.com', 'shop.example.net', 'blog.example.org'],
+      checked: ['example.com', 'example.net', 'example.org'], left: []
+    });
+    // One place left: the first domain fits, the other is named as left out; its name is not offered for checking.
+    const box = Array.from({ length: RETIRE_MAX_DOMAINS - 1 }, (_, i) => `d${i}.example.com`);
+    const one = checkTooPlan(fresh, ['example.com', ...box.slice(1)]);
+    assert.deepEqual([one.add, one.left], [['example.net'], ['example.org']]);
+    assert.ok(!one.names.includes('blog.example.org'));
+    // The box already over the cap (every domain counted, not only the first ones a check takes): nothing fits, a
+    // name under a checked domain is still checked; a domain typed past the cap is no domain that gets checked.
+    const full = checkTooPlan(fresh, ['example.com', ...Array.from({ length: RETIRE_MAX_DOMAINS }, (_, i) => `e${i}.example.com`), 'example.org']);
+    assert.deepEqual([full.add, full.names, full.left], [[], ['cdn.example.com'], ['example.net', 'example.org']]);
+    // Nothing that makes progress: no button (no name), only the note.
+    const stuck = checkTooPlan(passiveNewNames([{ address: '192.0.2.10', names: ['blog.example.org'] }], { checked: ['example.com'] }),
+      Array.from({ length: RETIRE_MAX_DOMAINS }, (_, i) => `e${i}.example.com`));
+    assert.deepEqual([stuck.add, stuck.names, stuck.left], [[], [], ['example.org']]);
   });
 
   test('changeText: one text for each action and record type, every key in English and Turkish', () => {

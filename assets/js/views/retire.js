@@ -34,7 +34,7 @@ import {
   inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_DOMAINS,
   RETIRE_MAX_HOSTS, RETIRE_MAX_ZONE_REFS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES, FAILURE_KINDS
 } from '../lib/retire.js';
-import { createIpIntel } from '../lib/ipintel.js';
+import { createIpIntel, THC_REVERSE_LIMIT } from '../lib/ipintel.js';
 import { estimateQueries } from '../lib/scanplan.js';
 import { WORDLIST_SMALL } from '../lib/wordlist.js';
 import { isPrivateIP } from '../lib/netinfo.js';
@@ -132,22 +132,23 @@ registerStrings('en', {
   'retire.chip.passiveIdle': 'not asked',
   'retire.chip.passiveOk': { zero: 'no names', one: '{count} name', other: '{count} names' },
   'retire.chip.passiveFailed': 'failed: {reason}',
-  'retire.chip.passiveOther': 'asked for other addresses',
 
   'retire.passive.button': 'Find other names on the address',
-  'retire.passive.title': {
+  'retire.passive.cost': {
     one: 'Asks HackerTarget and ip.thc.org which names they saw on the address: {count} request to each. HackerTarget allows about 50 free lookups a day from your address (shared with the Subdomains scan).',
     other: 'Asks HackerTarget and ip.thc.org which names they saw on each address: {count} requests to each. HackerTarget allows about 50 free lookups a day from your address (shared with the Subdomains scan).'
   },
   'retire.passive.tooMany': 'The passive lookup runs per address: retire at most {max} addresses to use it.',
   'retire.passive.private': 'Private addresses are never sent to a passive service.',
   'retire.passive.limited': 'daily free quota used up',
-  'retire.passive.truncated': 'ip.thc.org lists {total} names for {address}; the first {count} are shown.',
+  'retire.passive.truncated': 'ip.thc.org lists {total} names for {address}; only the first {count} were fetched, so the passive list is incomplete.',
+  'retire.passive.truncatedMore': 'ip.thc.org has more names for {address} than the first {count} fetched: the passive list is incomplete.',
   'retire.passive.src.hackertarget': 'HackerTarget',
   'retire.passive.src.thc': 'ip.thc.org',
   'retire.passive.checkToo': 'Check these too',
   'retire.passive.checkTooTitle': 'Adds {domains} to the domains and checks every passive name over DNS.',
   'retire.passive.checkNames': 'Check these names',
+  'retire.passive.full': 'The domain list is full ({max}): {domains} cannot be added to this check.',
   'retire.passive.gone': { one: '{count} passive name no longer points here', other: '{count} passive names no longer point here' },
   'retire.passive.now': 'now {list}',
   'retire.passive.nowNone': 'no address now',
@@ -181,7 +182,6 @@ registerStrings('en', {
   'retire.owners.others': 'also {list}',
   'retire.owners.hint': 'From your server list. Its other addresses are where a renumbered service may already live.',
 
-  'retire.group.domain': '{domain}',
   'retire.group.zone': 'Zone file · {origin}',
   'retire.group.other': 'Other zones',
   'retire.group.otherHint': 'Records outside the checked domains that they lead to: a CNAME target, a provider’s SPF include.',
@@ -356,22 +356,23 @@ registerStrings('tr', {
   'retire.chip.passiveIdle': 'sorulmadı',
   'retire.chip.passiveOk': { zero: 'ad yok', other: '{count} ad' },
   'retire.chip.passiveFailed': 'başarısız: {reason}',
-  'retire.chip.passiveOther': 'başka adresler için soruldu',
 
   'retire.passive.button': 'Adresteki diğer adları bul',
-  'retire.passive.title': {
+  'retire.passive.cost': {
     one: 'Adreste hangi adları gördüklerini HackerTarget ve ip.thc.org’a sorar: her birine {count} istek. HackerTarget adresinizden günde yaklaşık 50 ücretsiz sorguya izin verir (Subdomain taramasıyla ortak).',
     other: 'Her adreste hangi adları gördüklerini HackerTarget ve ip.thc.org’a sorar: her birine {count} istek. HackerTarget adresinizden günde yaklaşık 50 ücretsiz sorguya izin verir (Subdomain taramasıyla ortak).'
   },
   'retire.passive.tooMany': 'Pasif sorgu adres başına çalışır: kullanmak için en fazla {max} adres emekliye ayırın.',
   'retire.passive.private': 'Özel (private) adresler hiçbir pasif servise gönderilmez.',
   'retire.passive.limited': 'günlük ücretsiz kota doldu',
-  'retire.passive.truncated': 'ip.thc.org {address} için {total} ad listeliyor; ilk {count} tanesi gösteriliyor.',
+  'retire.passive.truncated': 'ip.thc.org {address} için {total} ad listeliyor; yalnızca ilk {count} tanesi alındı, bu yüzden pasif liste eksik.',
+  'retire.passive.truncatedMore': 'ip.thc.org’da {address} için alınan ilk {count} addan fazlası var: pasif liste eksik.',
   'retire.passive.src.hackertarget': 'HackerTarget',
   'retire.passive.src.thc': 'ip.thc.org',
   'retire.passive.checkToo': 'Bunları da kontrol et',
   'retire.passive.checkTooTitle': '{domains} alan adlarını listeye ekler ve her pasif adı DNS üzerinden kontrol eder.',
   'retire.passive.checkNames': 'Bu adları kontrol et',
+  'retire.passive.full': 'Alan adı listesi dolu ({max}): {domains} bu kontrole eklenemez.',
   'retire.passive.gone': '{count} pasif ad artık bu adresi göstermiyor',
   'retire.passive.now': 'şimdi {list}',
   'retire.passive.nowNone': 'şimdi adresi yok',
@@ -405,7 +406,6 @@ registerStrings('tr', {
   'retire.owners.others': 'ayrıca {list}',
   'retire.owners.hint': 'Sunucu listenizden. Diğer adresleri, adresi değişen bir servisin zaten bulunabileceği yerlerdir.',
 
-  'retire.group.domain': '{domain}',
   'retire.group.zone': 'Zone dosyası · {origin}',
   'retire.group.other': 'Diğer zone’lar',
   'retire.group.otherHint': 'Kontrol edilen alan adlarının dışında kalıp onların yönlendirdiği kayıtlar: bir CNAME hedefi, bir sağlayıcının SPF include’u.',
@@ -606,6 +606,30 @@ export function hostsForDomains(domains, { scanHosts = null, zone = null, passiv
 }
 
 /**
+ * What "Check these too" can do: the passive names' domains that still fit in the domain list (a
+ * check takes the first {@link RETIRE_MAX_DOMAINS}, every domain already in the box counted), the
+ * names that will be resolved then (under a domain that is checked, or added now), and the domains
+ * that cannot be added. Nothing to add and no name to check: the button would make no progress.
+ * @param {{ names: string[], domains: string[] }} fresh lib/retire.passiveNewNames
+ * @param {string[]} boxDomains every domain in the box, in order (untruncated)
+ * @param {{ max?: number }} [opts]
+ * @returns {{ add: string[], names: string[], checked: string[], left: string[] }}
+ */
+export function checkTooPlan(fresh, boxDomains, { max = RETIRE_MAX_DOMAINS } = {}) {
+  const box = [...(boxDomains || [])];
+  const room = Math.max(0, max - box.length);
+  const add = (fresh.domains || []).filter((d) => !box.includes(d)).slice(0, room);
+  const checked = [...box.slice(0, max), ...add];
+  const under = (n) => checked.some((d) => isSubdomainOf(n, d));
+  return {
+    add,
+    names: (fresh.names || []).filter(under),
+    checked,
+    left: (fresh.domains || []).filter((d) => !under(d))
+  };
+}
+
+/**
  * The "what to change" text of a change: an i18n key and its params.
  * @param {import('../lib/retire.js').Change} c
  * @returns {{ key: string, params: object }}
@@ -751,8 +775,9 @@ const session = {
   job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
 };
 let jobCounter = 0;
-/** Ids of the discovery offer's cost text (aria-describedby of its button). */
+/** Ids of the discovery offer's and the passive lookup's cost texts (aria-describedby of their buttons). */
 let discoverSeq = 0;
+let passiveSeq = 0;
 let active = null;
 let intel = null;
 
@@ -870,6 +895,11 @@ function passiveNames(results) {
     address: r.address,
     names: [...new Set([...(r.hackertarget && r.hackertarget.ok ? r.hackertarget.domains : []), ...(r.thc && r.thc.ok ? r.thc.domains : [])])]
   }));
+}
+
+/** Every domain in the domain box, in order: not only the first {@link RETIRE_MAX_DOMAINS} a check takes. */
+function allBoxDomains() {
+  return parseDomainList(session.domains || '', { max: Infinity }).domains;
 }
 
 /** The names a job's check got an answer (or NXDOMAIN) for; a failed lookup is asked again by "Check these names". */
@@ -1222,23 +1252,26 @@ export function mount(container, ctx) {
     if (active) active.afterPassive();
   }
 
-  /** "Check these too": the passive names' domains join the list, the names become known hosts, and the check runs again. */
+  /**
+   * "Check these too": the passive names' domains join the list while it has room (checkTooPlan:
+   * every domain in the box counts, not only the first ones a check takes), the names under a
+   * checked domain become known hosts, and the check runs again.
+   */
   function checkPassiveToo() {
     const job = session.job;
     if (!job || checkRunning()) return;
-    const resolved = settledNames(job);
-    const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved });
-    if (!fresh.names.length) return;
-    for (const name of fresh.names) {
-      const home = job.domains.find((d) => isSubdomainOf(name, d)) || registrableDomain(name) || name;
+    const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved: settledNames(job) });
+    const plan = checkTooPlan(fresh, allBoxDomains());
+    if (!plan.names.length) return;
+    for (const name of plan.names) {
+      const home = plan.checked.find((d) => isSubdomainOf(name, d)) || registrableDomain(name) || name;
       const list = session.extraHosts.get(home) || [];
       if (!list.includes(name)) list.push(name);
       session.extraHosts.set(home, list);
     }
-    if (fresh.domains.length) {
-      const add = fresh.domains.filter((d) => !domainList.domains.includes(d));
+    if (plan.add.length) {
       const text = domainsField.value.replace(/\s+$/, '');
-      domainsField.value = `${text}${text ? '\n' : ''}${add.join('\n')}`;
+      domainsField.value = `${text}${text ? '\n' : ''}${plan.add.join('\n')}`;
       session.domains = domainsField.value;
     }
     renderParsed();
@@ -1406,6 +1439,8 @@ function chip(idChip, name, stateName, value, action = null) {
 function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   const { state } = ctx;
   const chipsEl = h('div', { class: 'src-chips retire-chips', attrs: { role: 'group', 'aria-label': t('retire.chips.label') } });
+  // Under the chips: the passive lookup's button with its cost written out, and what a service left out.
+  const passiveEl = h('div', { class: 'retire-passive stack-sm' });
   const progress = ProgressBar({ label: t('retire.busy'), value: 0, max: 1, showCount: false });
   progress.el.classList.add('retire-progress');
   const statusEl = h('p', { class: 'muted text-sm retire-status', attrs: { 'aria-live': 'polite' } });
@@ -1428,7 +1463,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   const el = h('div', { class: 'stack retire-job', dataset: { job: String(job.id) } },
     Card({
       className: 'retire-head-card',
-      children: h('div', { class: 'stack-sm' }, headEl, h('div', { class: 'retire-tools cluster' }, summary.el, exportCsv, exportJson), progress.el, statusEl, chipsEl, ownersEl)
+      children: h('div', { class: 'stack-sm' }, headEl, h('div', { class: 'retire-tools cluster' }, summary.el, exportCsv, exportJson), progress.el, statusEl, chipsEl, passiveEl, ownersEl)
     }),
     statsEl, groupsEl, goneEl);
 
@@ -1506,6 +1541,45 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
         : t('retire.chip.serversNot')));
     }
     chipsEl.append(passiveChip());
+    renderPassive();
+  }
+
+  /** Whether the passive lookup can be offered for this job's addresses (few and public, not asked yet). */
+  function passiveOffer() {
+    const p = session.passive;
+    const publicAddresses = job.addresses.filter((a) => !isPrivateIP(a));
+    if (passiveFor(job) || job.addresses.length > PASSIVE_MAX_ADDRESSES || !publicAddresses.length) return null;
+    if (p && p.status === 'running' && p.key === publicAddresses.join(',')) return null;
+    return publicAddresses;
+  }
+
+  /**
+   * The passive lookup's button with its cost as visible text (not a tooltip: touch and keyboard
+   * users read it too; aria-describedby links them), and a note per address whose ip.thc.org list
+   * was cut off (one page of {@link THC_REVERSE_LIMIT} names).
+   */
+  function renderPassive() {
+    clear(passiveEl);
+    const offer = passiveOffer();
+    if (offer) {
+      const costId = `retire-passive-cost-${++passiveSeq}`;
+      passiveEl.append(h('div', { class: 'retire-discover-go retire-passive-go' },
+        Button({
+          label: t('retire.passive.button'), icon: 'search', size: 'sm', variant: 'secondary', dataset: { action: 'retire-passive' },
+          attrs: { 'aria-describedby': costId }, disabled: job.status === 'running' || passiveRunning(), onClick: onPassive
+        }),
+        h('span', { class: 'muted text-xs retire-passive-cost', id: costId }, t('retire.passive.cost', { count: offer.length }))));
+    }
+    for (const r of passiveFor(job) || []) {
+      const thc = r.thc;
+      if (!thc || !thc.ok || !thc.truncated) continue;
+      const params = { address: r.address, count: formatNumber(THC_REVERSE_LIMIT) };
+      const note = h('p', { class: 'muted text-xs retire-passive-note', dataset: { address: r.address } }, Icon('info', { size: 12 }), ' ',
+        Number.isFinite(thc.total) && thc.total > 0
+          ? t('retire.passive.truncated', { ...params, total: formatNumber(thc.total) })
+          : t('retire.passive.truncatedMore', params));
+      passiveEl.append(note);
+    }
   }
 
   function passiveChip() {
@@ -1513,13 +1587,6 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     const mine = passiveFor(job);
     const publicAddresses = job.addresses.filter((a) => !isPrivateIP(a));
     const tooMany = job.addresses.length > PASSIVE_MAX_ADDRESSES;
-    const button = () => {
-      const btn = Button({
-        label: t('retire.passive.button'), icon: 'search', size: 'sm', variant: 'ghost', dataset: { action: 'retire-passive' },
-        title: t('retire.passive.title', { count: publicAddresses.length }), disabled: job.status === 'running' || passiveRunning(), onClick: onPassive
-      });
-      return btn;
-    };
     if (p && p.status === 'running' && p.key === publicAddresses.join(',')) {
       return chip('passive', t('retire.chip.passive'), 'pending', t('retire.chip.pending'));
     }
@@ -1537,7 +1604,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     }
     if (tooMany) return chip('passive', t('retire.chip.passive'), 'idle', t('retire.passive.tooMany', { max: PASSIVE_MAX_ADDRESSES }));
     if (!publicAddresses.length) return chip('passive', t('retire.chip.passive'), 'idle', t('retire.passive.private'));
-    return chip('passive', t('retire.chip.passive'), 'idle', t('retire.chip.passiveIdle'), button());
+    return chip('passive', t('retire.chip.passive'), 'idle', t('retire.chip.passiveIdle'));
   }
 
   /* the headline, the stat cards and the owners */
@@ -1709,16 +1776,24 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     } else if (g.kind === 'passive') {
       title = t('retire.group.passive');
       subtitle = t('retire.group.passiveHint');
-      const resolved = settledNames(job);
-      const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved });
-      if (fresh.names.length) {
+      const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved: settledNames(job) });
+      const plan = checkTooPlan(fresh, allBoxDomains());
+      const parts = [];
+      // Offered only when it makes progress: a domain that fits in the list, or a name under a checked one.
+      if (plan.names.length) {
         // In the body, not the card head: on a phone the head keeps its width for the title.
-        checkToo = h('div', { class: 'retire-check-too' }, Button({
-          label: fresh.domains.length ? t('retire.passive.checkToo') : t('retire.passive.checkNames'), icon: 'search', size: 'sm', variant: 'primary',
-          title: fresh.domains.length ? t('retire.passive.checkTooTitle', { domains: fresh.domains.join(', ') }) : null,
+        parts.push(h('div', { class: 'retire-check-too' }, Button({
+          label: plan.add.length ? t('retire.passive.checkToo') : t('retire.passive.checkNames'), icon: 'search', size: 'sm', variant: 'primary',
+          title: plan.add.length ? t('retire.passive.checkTooTitle', { domains: plan.add.join(', ') }) : null,
           disabled: job.status === 'running', dataset: { action: 'retire-check-too' }, onClick: onCheckToo
-        }));
+        })));
       }
+      if (plan.left.length) {
+        const more = plan.left.length > 3 ? ` ${t('common.moreCount', { count: plan.left.length - 3 })}` : '';
+        parts.push(h('p', { class: 'muted text-sm', dataset: { role: 'retire-list-full' } },
+          t('retire.passive.full', { max: formatNumber(RETIRE_MAX_DOMAINS), domains: plan.left.slice(0, 3).join(', ') + more })));
+      }
+      checkToo = parts.length ? h('div', { class: 'stack-sm' }, parts) : null;
     } else title = h('span', { class: 'mono' }, g.key);
     const body = [checkToo];
     const check = g.kind === 'domain' ? job.checks.get(g.key) : null;

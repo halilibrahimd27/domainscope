@@ -15,8 +15,9 @@
  * glue, an A record, an HTTPS hint, a CNAME chain into another zone, a zone wildcard asked through a
  * random name under it, the zone's proxied origin, a record only in the file, an internal name never
  * sent even with the Zone File hand-off toggle off), the evidence chips, the owner from the server
- * list, Copy summary, CSV / JSON, the passive lookup (two services, unverified until checked;
- * "Check these too" adds their domains and checks again: one gone, one live), the Small-wordlist
+ * list, Copy summary, CSV / JSON, the passive lookup (its cost written next to the button, two
+ * services, a cut-off ip.thc.org list said, unverified until checked; "Check these too" adds their
+ * domains and checks again: one gone, one live), the Small-wordlist
  * discovery offered for a domain without host names (and nothing run before the click), Stop and
  * the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
  * draft), the 375 px layout in TR / EN × light / dark, zero console errors / CSP violations /
@@ -110,7 +111,8 @@ export const fakeScript = (table) => `(() => {
     }
     if (url.startsWith('https://ip.thc.org/api/v1/lookup')) {
       window.__passiveLog.push(url + ' ' + (init && init.body));
-      return json({ matching_records: 1, domains: [{ domain: 'blog.example.org', apex_domain: 'example.org' }], next_page_state: '' });
+      // One page of a longer list: the view says the passive list is incomplete.
+      return json({ matching_records: 250, domains: [{ domain: 'blog.example.org', apex_domain: 'example.org' }], next_page_state: 'page2' });
     }
     const m = /[?&]dns=([^&]+)/.exec(url);
     if (!m) return realFetch(input, init);
@@ -438,8 +440,19 @@ async function main() {
 
     await run.step('the passive lookup: two services on a click, unverified until checked; "Check these too" adds their domains', async () => {
       assertEqual(await page.evaluate(() => window.__passiveLog.length), 0, 'nothing asked before the click');
+      // The cost and the quota are written next to the button (not a tooltip), and linked to it.
+      const offer = await page.evaluate(() => {
+        const btn = document.querySelector('[data-action="retire-passive"]');
+        const cost = document.getElementById(btn.getAttribute('aria-describedby'));
+        return { inChip: !!btn.closest('.src-chip'), cost: cost ? cost.textContent : '', visible: !!cost && cost.getBoundingClientRect().height > 0 };
+      });
+      assertEqual([offer.inChip, offer.visible], [false, true], 'the passive button and its cost');
+      assert(/1 request to each\. HackerTarget allows about 50 free lookups a day/.test(offer.cost), offer.cost);
       await jsClick(page, '[data-action="retire-passive"]');
       await page.waitFor(() => document.querySelector('.retire-group[data-kind="passive"]'), { message: 'passive group' });
+      assertEqual(await text(page, '.retire-passive-note[data-address="192.0.2.10"]'),
+        ' ip.thc.org lists 250 names for 192.0.2.10; only the first 100 were fetched, so the passive list is incomplete.', 'a cut-off list is said');
+      assert(!(await page.evaluate(() => document.querySelector('[data-action="retire-passive"]'))), 'no second lookup offered');
       const log = await page.evaluate(() => window.__passiveLog);
       assertEqual(log.length, 2, 'one request to each service');
       assert(log[1].includes('"ip_address":"192.0.2.10"'), log[1]);

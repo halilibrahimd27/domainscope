@@ -6893,6 +6893,7 @@ examples:
   fullchain.pem / chain.pem written in the order servers send them:
     python3 ssl_origin_scan.py bundle-check cert.pem ca-bundle.crt private.key -o out/
     (python3 ssl_origin_scan.py bundle-check --help for every check)
+
   Cron - compare every run with the previous one, warn 21 days before a served
   certificate expires, post to a chat webhook only when there is something to say
   (the summary goes to a file, so cron mails only errors):

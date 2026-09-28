@@ -54,6 +54,8 @@ before(async () => {
   await imp('assets/js/app.js');
   // The Workspaces dialog: the shell loads it on first use, not with a view.
   await imp('assets/js/ui/workspace-panel.js');
+  // Subdomains › Sources › Related domains: loaded with a run that reads Certificate Transparency.
+  await imp('assets/js/ui/related-domains.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -326,6 +328,8 @@ describe('i18n coverage', () => {
     const [pp, oc, zd] = await Promise.all([imp('assets/js/ui/parity-panel.js'), imp('assets/js/ui/origin-compare.js'), imp('assets/js/lib/zonedrift.js')]);
     for (const k of [...pp.generatedKeys(), ...oc.generatedKeys()]) add(k);
     for (const r of zd.DRIFT_REASONS) add(pp.reasonKey(r));
+    // Subdomains › Related domains (ui/related-domains.js): every Certificate Transparency state it words.
+    for (const st of ['off', 'waiting', 'failed', 'none', 'sharedOnlyNone']) add(`rel.${st}`);
     // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key.
     for (const w of ['reused', 'single']) { add(`key.tlsa.${w}`); add(`key.pin.${w}`); }
     assert.deepEqual(missingIn(keys), []);

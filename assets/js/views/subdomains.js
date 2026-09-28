@@ -29,7 +29,9 @@
  *   proxied (orange-cloud) hosts: origin networks (/24), resolver-leak and history candidates
  *   (structured reason fields) and a ready-to-copy CLI sweep command for POSIX shells or
  *   PowerShell (lib/cmdline quotes every token); Sources — the stage pills, per-source chips,
- *   status lines and free limits. Hosts is the automatic tab once a host is listed (Sources
+ *   status lines and free limits, and the other registrable domains named in the same
+ *   certificates as the hosts (ui/related-domains.js, loaded with a run that reads Certificate
+ *   Transparency; "Scan too" scans them together). Hosts is the automatic tab once a host is listed (Sources
  *   before that while the run is live, Overview when it ended empty); a tab the user picks stays.
  *
  * Like the SSL Targets scan, a running scan belongs to this module, not to the mounted view:
@@ -3942,6 +3944,13 @@ export function mount(container, ctx) {
       onFinish: () => {
         setRunning(false);
         startWaitingZoneScan();
+      },
+      // Sources › Related domains: "Scan too" scans the run's domains together with another one.
+      onScanWith: (domains) => {
+        if (isRunning()) return;
+        domainField.value = domains.join(', ');
+        session.text = domainField.value;
+        start();
       }
     });
     resultsHost.append(ui.el);
@@ -4067,7 +4076,7 @@ export default { id, titleKey, icon, mount, unmount, update, result };
  * Build the progress panel and the results for one run, replay what the run already has
  * and follow it live. Returns `{ el, dispose }`.
  */
-function buildRunUI(run, ctx, { onFinish }) {
+function buildRunUI(run, ctx, { onFinish, onScanWith }) {
   const domainsLabel = run.config.domains.join(', ');
   const inventory = run.config.inventoryServers > 0;
   const subject = run.config.domains[0] || '';
@@ -5040,6 +5049,21 @@ function buildRunUI(run, ctx, { onFinish }) {
   const sourcesNone = h('p', { class: 'sub-src-none', hidden: true }, t('sub.sources.none'));
   const quotaList = h('ul', { class: 'sub-src-list sub-src-quotas' });
   const quotaBox = h('div', { class: 'sub-src-quota-box' }, h('div', { class: 'sub-src-notes-title' }, t('sub.sources.quotas')), quotaList);
+  // Related domains in the same certificates (ui/related-domains.js over lib/ctrelated.js): read
+  // from the CT results this run already has, loaded only for a run that asks crt.sh or Cert Spotter.
+  const relatedHost = h('div', { class: 'sub-rel-host' });
+  let related = null;
+  const renderRelated = () => {
+    if (related) related.update(run, { busy: run.status === 'running' });
+  };
+  if ((run.config.sources || []).some((s) => s === 'crtsh' || s === 'certspotter')) {
+    loadOnFirstUse(() => import('../ui/related-domains.js'), ctx.checkOutdated).then((m) => {
+      if (ctx.signal.aborted) return;
+      related = m.RelatedDomains({ onScanWith: (domains) => onScanWith && onScanWith(domains) });
+      relatedHost.append(related.el);
+      renderRelated();
+    }, () => {});
+  }
   const sourcesPanel = h('div', { class: 'stack sub-tab-sources' },
     h('section', { class: 'sub-src-section card', dataset: { part: 'stages' }, attrs: { 'aria-labelledby': stagesId } },
       h('h3', { class: 'sub-src-heading', id: stagesId }, t('sub.stages.title')),
@@ -5047,7 +5071,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     h('section', { class: 'sub-src-section card', dataset: { part: 'sources' }, attrs: { 'aria-labelledby': sourcesId } },
       h('h3', { class: 'sub-src-heading', id: sourcesId }, t('sub.opt.sources')),
       h('p', { class: 'sub-src-hint' }, t('sub.opt.sourcesHint')),
-      sourcesNone, sourceWaitNote, chips, sourceNotes, quotaBox));
+      sourcesNone, sourceWaitNote, chips, sourceNotes, quotaBox),
+    relatedHost);
 
   /* --- tabs ----------------------------------------------------------------------------------- */
   // Overview: counts and alerts; Hosts: the table (the automatic tab once there is a host);
@@ -5199,6 +5224,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderStatsNow();
     renderTechniques();
     renderSummary();
+    renderRelated();
     summary.setDisabled(!summaryFacts());
     stopTicker();
     onFinish();
@@ -5236,6 +5262,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       case 'source':
         renderChips();
         renderSourceWait();
+        renderRelated();
         break;
       case 'found':
         // A streamed probe hit (before the resolve stage): show it live, replaced by the full

@@ -1778,6 +1778,111 @@
   }
 }
 
+/* Sources › Related domains in the same certificates (ui/related-domains.js) */
+.sub-rel-summary {
+  margin: 0;
+  font-weight: 550;
+}
+
+.sub-rel-list,
+.sub-rel-cert-list,
+.sub-rel-shared-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sub-rel-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.sub-rel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.sub-rel-domain {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.sub-rel-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+
+.sub-rel-names {
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.sub-rel-cert {
+  display: grid;
+  gap: 3px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.sub-rel-cert:first-child {
+  border-top: 0;
+}
+
+.sub-rel-cert-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.sub-rel-issuer {
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.sub-rel-valid {
+  color: var(--text-3);
+}
+
+.sub-rel-with {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sub-rel-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sub-rel-shared-list {
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+/* A long Turkish badge wraps inside itself on a phone. */
+.sub-rel .badge {
+  height: auto;
+  min-height: 21px;
+  white-space: normal;
+}
+
 /* Four tabs with their live counts on a phone: one equal column each, the count under the label
    (an empty count keeps its place, so the labels line up) — every tab stays in view instead of
    the last one scrolling off at 375 px, in Turkish too. */

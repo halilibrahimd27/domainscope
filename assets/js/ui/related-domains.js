@@ -1,0 +1,206 @@
+/**
+ * ui/related-domains.js — Subdomains › Sources › "Related domains in the same certificates".
+ *
+ * Other registrable domains named in the certificates of the scanned hosts, from the Certificate
+ * Transparency results the scan already has (lib/ctrelated.js; nothing is sent again): each with
+ * how many certificates it shares, its host names there, the certificates themselves (issuer,
+ * validity, the scanned names they carry, a crt.sh link) and "Scan too", which starts a new scan
+ * of the scanned domains together with it. Domains seen only in shared certificates (a CDN's or a
+ * host's, for many customers) fold into one list at the end, without a scan button: sharing such a
+ * certificate says nothing about who owns a domain.
+ *
+ * Loaded by views/subdomains.js when a scan's first Certificate Transparency result arrives.
+ */
+
+import { h, clear, uid } from './dom.js';
+import { Alert, Badge, Button, Disclosure, ExternalLink, TruncatedList } from './components.js';
+import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
+import { relatedDomains } from '../lib/ctrelated.js';
+
+registerStrings('en', {
+  'rel.title': 'Related domains in the same certificates',
+  'rel.hint': 'Other registrable domains named in the certificates of these hosts, read from the Certificate Transparency data this scan already fetched — nothing is sent again. A forgotten brand or campaign domain often shows up here.',
+  'rel.scanHint': '“Scan too” starts a new scan of {domains} together with that domain; it asks the passive sources again for each (Cert Spotter allows about 10 domain searches an hour).',
+  'rel.off': 'Certificate Transparency (crt.sh, Cert Spotter) is not among this scan’s sources, so no certificate names other domains here.',
+  'rel.waiting': 'Waiting for Certificate Transparency…',
+  'rel.failed': 'Certificate Transparency did not answer, so there are no certificates to read.',
+  'rel.none': { one: 'No other registrable domain shares a certificate with these hosts ({count} certificate read).', other: 'No other registrable domain shares a certificate with these hosts ({count} certificates read).' },
+  'rel.sharedOnlyNone': { one: 'Only shared certificates name other domains ({count} certificate read).', other: 'Only shared certificates name other domains ({count} certificates read).' },
+  'rel.found': {
+    one: '{count} other domain shares certificates with these hosts ({certs} certificates read).',
+    other: '{count} other domains share certificates with these hosts ({certs} certificates read).'
+  },
+  'rel.partial': {
+    one: 'crt.sh returns only the names that matched the search and a certificate’s common name: {count} certificate only crt.sh reported may name more domains.',
+    other: 'crt.sh returns only the names that matched the search and a certificate’s common name: {count} certificates only crt.sh reported may name more domains.'
+  },
+  'rel.more': { one: '{count} more domain is not listed.', other: '{count} more domains are not listed.' },
+  'rel.certs': { one: '{count} certificate', other: '{count} certificates' },
+  'rel.current': 'Current',
+  'rel.currentTitle': 'A certificate naming this domain is valid today',
+  'rel.expired': 'Expired',
+  'rel.expiredTitle': 'Every certificate naming it has expired',
+  'rel.platform': 'Platform: {name}',
+  'rel.platformTitle': 'A hosting or CDN platform’s domain, not a brand of these hosts',
+  'rel.scan': 'Scan too',
+  'rel.scanTitle': 'Scan {domains} together with {domain}',
+  'rel.scanBusy': 'Available when this scan has ended',
+  'rel.certList': 'The certificates',
+  'rel.cert.valid': '{from} – {to}',
+  'rel.cert.with': 'With',
+  'rel.cert.shared': 'shared: {count} domains',
+  'rel.cert.partial': 'crt.sh only: names may be missing',
+  'rel.cert.open': 'crt.sh',
+  'rel.moreNames': { one: '+{count} name', other: '+{count} names' },
+  'rel.sharedOnly': {
+    one: '{count} domain appears only in shared certificates (a CDN’s or a host’s certificate for many customers): that says nothing about who owns it.',
+    other: '{count} domains appear only in shared certificates (a CDN’s or a host’s certificate for many customers): that says nothing about who owns them.'
+  }
+});
+
+registerStrings('tr', {
+  'rel.title': 'Aynı sertifikalardaki ilişkili alan adları',
+  'rel.hint': 'Bu host’ların sertifikalarında geçen diğer kayıtlı alan adları; bu taramanın zaten aldığı Certificate Transparency verisinden okunur, yeniden hiçbir şey gönderilmez. Unutulmuş bir marka ya da kampanya alan adı çoğu zaman burada çıkar.',
+  'rel.scanHint': '“Bunu da tara”, {domains} ile o alan adını birlikte tarayan yeni bir tarama başlatır; pasif kaynaklara her biri için yeniden sorulur (Cert Spotter saatte yaklaşık 10 alan adı aramasına izin verir).',
+  'rel.off': 'Certificate Transparency (crt.sh, Cert Spotter) bu taramanın kaynakları arasında değil; bu yüzden burada diğer alan adlarını gösteren bir sertifika yok.',
+  'rel.waiting': 'Certificate Transparency bekleniyor…',
+  'rel.failed': 'Certificate Transparency yanıt vermedi; okunacak sertifika yok.',
+  'rel.none': { other: 'Başka hiçbir kayıtlı alan adı bu host’larla sertifika paylaşmıyor ({count} sertifika okundu).' },
+  'rel.sharedOnlyNone': { other: 'Diğer alan adlarını yalnızca paylaşımlı sertifikalar içeriyor ({count} sertifika okundu).' },
+  'rel.found': { other: '{count} başka alan adı bu host’larla sertifika paylaşıyor ({certs} sertifika okundu).' },
+  'rel.partial': { other: 'crt.sh yalnızca aramayla eşleşen adları ve sertifikanın ortak adını (CN) döndürür: yalnızca crt.sh’in bildirdiği {count} sertifikada başka alan adları da olabilir.' },
+  'rel.more': { other: '{count} alan adı daha listelenmedi.' },
+  'rel.certs': { other: '{count} sertifika' },
+  'rel.current': 'Geçerli',
+  'rel.currentTitle': 'Bu alan adını içeren bir sertifika bugün geçerli',
+  'rel.expired': 'Süresi dolmuş',
+  'rel.expiredTitle': 'Onu içeren her sertifikanın süresi dolmuş',
+  'rel.platform': 'Platform: {name}',
+  'rel.platformTitle': 'Bu host’ların bir markası değil, bir barındırma ya da CDN platformunun alan adı',
+  'rel.scan': 'Bunu da tara',
+  'rel.scanTitle': '{domains} ile {domain} alan adını birlikte tara',
+  'rel.scanBusy': 'Bu tarama bitince kullanılabilir',
+  'rel.certList': 'Sertifikalar',
+  'rel.cert.valid': '{from} – {to}',
+  'rel.cert.with': 'Birlikte',
+  'rel.cert.shared': 'paylaşımlı: {count} alan adı',
+  'rel.cert.partial': 'yalnızca crt.sh: adlar eksik olabilir',
+  'rel.cert.open': 'crt.sh',
+  'rel.moreNames': { other: '+{count} ad' },
+  'rel.sharedOnly': { other: '{count} alan adı yalnızca paylaşımlı sertifikalarda geçiyor (bir CDN’in ya da barındırma firmasının birçok müşteri için aldığı sertifika): bu, sahibinin kim olduğu hakkında bir şey söylemez.' }
+});
+
+/** Passive sources that read Certificate Transparency. */
+const CT_SOURCES = Object.freeze(['crtsh', 'certspotter']);
+
+/**
+ * Where the scan's Certificate Transparency stands: 'off' (not among its sources), 'waiting' (none
+ * answered yet while the scan runs), 'failed' (none answered and none will) or 'ready'.
+ * @param {{ status: string, config: { sources?: string[] }, sourceResults: object[] }} run
+ * @returns {'off'|'waiting'|'failed'|'ready'}
+ */
+export function ctState(run) {
+  const asked = (run.config.sources || []).filter((s) => CT_SOURCES.includes(s));
+  if (!asked.length) return 'off';
+  const results = run.sourceResults.filter((r) => r && CT_SOURCES.includes(r.source));
+  if (results.some((r) => r.ok || (Array.isArray(r.certs) && r.certs.length))) return 'ready';
+  return run.status === 'running' ? 'waiting' : 'failed';
+}
+
+/**
+ * The card.
+ * @param {{ onScanWith: (domains: string[]) => void }} opts onScanWith: start a new scan of these domains
+ * @returns {{ el: HTMLElement, update: (run: object, opts: { busy: boolean }) => void }}
+ */
+export function RelatedDomains({ onScanWith }) {
+  const headingId = uid('sub-rel');
+  const body = h('div', { class: 'stack-sm sub-rel-body' });
+  const el = h('section', { class: 'sub-src-section card sub-rel', dataset: { part: 'related' }, attrs: { 'aria-labelledby': headingId } },
+    h('h3', { class: 'sub-src-heading', id: headingId }, t('rel.title')),
+    h('p', { class: 'sub-src-hint' }, t('rel.hint')),
+    body);
+
+  function certLine(c) {
+    return h('li', { class: 'sub-rel-cert', dataset: { cert: c.key } },
+      h('div', { class: 'sub-rel-cert-head' },
+        h('span', { class: 'sub-rel-issuer' }, c.issuer || '—'),
+        h('span', { class: 'sub-rel-valid num' }, t('rel.cert.valid', { from: formatDate(c.notBefore), to: formatDate(c.notAfter) })),
+        c.url ? ExternalLink(c.url, t('rel.cert.open'), { className: 'sub-rel-link' }) : null),
+      h('div', { class: 'sub-rel-with' }, h('span', { class: 'muted' }, `${t('rel.cert.with')}: `),
+        TruncatedList(c.ownNames, { max: 3, inline: true })),
+      c.shared || c.partial ? h('div', { class: 'sub-rel-flags' },
+        c.shared ? Badge(t('rel.cert.shared', { count: c.domains }), { variant: 'neutral' }) : null,
+        c.partial ? Badge(t('rel.cert.partial'), { variant: 'neutral' }) : null) : null);
+  }
+
+  function domainItem(d, run, busy) {
+    const domains = run.config.domains;
+    const scan = Button({
+      label: t('rel.scan'),
+      icon: 'search',
+      size: 'sm',
+      variant: 'secondary',
+      disabled: busy,
+      title: busy ? t('rel.scanBusy') : t('rel.scanTitle', { domains: domains.join(', '), domain: d.domain }),
+      dataset: { action: 'rel-scan', domain: d.domain },
+      onClick: () => onScanWith([...domains, d.domain])
+    });
+    return h('li', { class: 'sub-rel-item', dataset: { domain: d.domain, certs: String(d.certs) } },
+      h('div', { class: 'sub-rel-head' },
+        h('span', { class: 'sub-rel-domain mono' }, d.domain),
+        h('span', { class: 'sub-rel-badges' },
+          Badge(t('rel.certs', { count: d.certs }), { variant: 'accent', icon: 'certificate' }),
+          d.current ? Badge(t('rel.current'), { variant: 'ok', title: t('rel.currentTitle') })
+            : Badge(t('rel.expired'), { variant: 'neutral', title: t('rel.expiredTitle') }),
+          d.platform ? Badge(t('rel.platform', { name: d.platform }), { variant: 'info', title: t('rel.platformTitle') }) : null),
+        d.platform ? null : scan),
+      h('div', { class: 'sub-rel-names' },
+        TruncatedList(d.names, { max: 4, inline: true }),
+        d.moreNames ? h('span', { class: 'muted text-sm' }, ` ${t('rel.moreNames', { count: d.moreNames })}`) : null),
+      Disclosure({
+        summary: `${t('rel.certList')} (${formatNumber(d.certs)})`,
+        className: 'sub-rel-certs',
+        children: h('ul', { class: 'sub-rel-cert-list' }, d.certificates.map(certLine))
+      }));
+  }
+
+  /**
+   * Draw the card for a run (on each source result and when it ends).
+   * @param {object} run a Subdomains run (views/subdomains.js createRun)
+   * @param {{ busy?: boolean }} [opts] busy: a scan is running (no new one can start)
+   */
+  function update(run, { busy = false } = {}) {
+    clear(body);
+    const state = ctState(run);
+    el.dataset.state = state;
+    if (state !== 'ready') {
+      body.append(h('p', { class: 'sub-src-none' }, t(`rel.${state}`)));
+      return;
+    }
+    const certs = run.sourceResults.filter((r) => r && CT_SOURCES.includes(r.source)).flatMap((r) => r.certs || []);
+    const out = relatedDomains(certs, { domains: run.config.domains });
+    el.dataset.related = String(out.related.length);
+    const brands = out.related.filter((d) => !d.sharedOnly);
+    const sharedOnly = out.related.filter((d) => d.sharedOnly);
+    // The brands a scan can go on with; the shared-only domains say so in their own list below.
+    body.append(h('p', { class: 'sub-rel-summary', dataset: { role: 'rel-summary' } }, brands.length
+      ? t('rel.found', { count: brands.length, certs: formatNumber(out.certs) })
+      : t(sharedOnly.length ? 'rel.sharedOnlyNone' : 'rel.none', { count: out.certs })));
+    if (brands.length) {
+      body.append(h('ul', { class: 'sub-rel-list' }, brands.map((d) => domainItem(d, run, busy))));
+      body.append(h('p', { class: 'sub-src-hint' }, t('rel.scanHint', { domains: run.config.domains.join(', ') })));
+    }
+    if (sharedOnly.length) {
+      body.append(Disclosure({
+        summary: t('rel.sharedOnly', { count: sharedOnly.length }),
+        className: 'sub-rel-shared',
+        children: h('ul', { class: 'sub-rel-shared-list' }, sharedOnly.map((d) => h('li', { dataset: { domain: d.domain } },
+          h('span', { class: 'mono' }, d.domain), ' ', h('span', { class: 'muted' }, t('rel.certs', { count: d.certs })))))
+      }));
+    }
+    if (out.more) body.append(h('p', { class: 'muted text-sm' }, t('rel.more', { count: out.more })));
+    if (out.partial) body.append(Alert({ variant: 'info', compact: true, message: t('rel.partial', { count: out.partial }) }));
+  }
+
+  return { el, update };
+}

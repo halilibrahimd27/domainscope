@@ -132,7 +132,7 @@ export const DNS_PROVIDERS = Object.freeze([
 export const RENEWAL_FINDINGS = Object.freeze([
   'caa.none', 'caa.open', 'caa.allowed', 'caa.restricted', 'caa.no-ca', 'caa.denied', 'caa.deny-all', 'caa.critical', 'caa.unusable',
   'caa.method-blocked', 'caa.method-check', 'caa.account', 'caa.cname', 'caa.servfail', 'caa.error',
-  'resolvers.agree', 'resolvers.differ', 'resolvers.servfail', 'resolvers.unreachable',
+  'resolvers.agree', 'resolvers.differ', 'resolvers.servfail', 'resolvers.unreachable', 'resolvers.unchecked',
   'wildcard.dns01', 'wildcard.unknown', 'wildcard.method',
   'acme.none', 'acme.leftover', 'acme.cname', 'acme.acme-dns', 'acme.dangling', 'acme.servfail', 'acme.bogus', 'acme.error',
   'provider.known', 'provider.no-api', 'provider.target-no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
@@ -295,6 +295,14 @@ export function parseRenewalNames(input, { max = RENEWAL_LIMITS.names } = {}) {
   const seen = new Set();
   let overCap = 0;
   for (const token of tokens) {
+    // A wildcard over a single label (*.com, *.tr) is no host name either, but for the same reason
+    // as *.co.uk: a suffix no CA issues a wildcard under.
+    const single = /^\*\.([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.?$/i.exec(token);
+    if (single && isPublicSuffix(single[1].toLowerCase(), { includePrivate: false })) {
+      const name = `*.${single[1].toLowerCase()}`;
+      if (!suffixWildcards.includes(name)) suffixWildcards.push(name);
+      continue;
+    }
     // A certificate names no IP address here and no label with '_' (Baseline Requirements §7.1.2.7.12).
     const host = normalizeIP(token.replace(/^\[|\]$/g, '')) ? null : normalizeHostname(token, { allowWildcard: true });
     const name = host && !host.includes('_') ? host : null;
@@ -483,7 +491,9 @@ function resolverFindings(list, { ca, wildcard }) {
   } else if (ok.length >= 2 && !servfail.length) {
     out.push(finding('resolvers.agree', 'ok', { count: ok.length, resolvers: names(ok) }));
   }
-  if (failed.length) out.push(finding('resolvers.unreachable', 'info', { resolvers: names(failed), count: failed.length }));
+  // Fewer than two answers (a SERVFAIL is one): nothing was compared, so nothing says they agree.
+  if (failed.length && ok.length + servfail.length < 2) out.push(finding('resolvers.unchecked', 'warn', { resolvers: names(failed), count: failed.length }));
+  else if (failed.length) out.push(finding('resolvers.unreachable', 'info', { resolvers: names(failed), count: failed.length }));
   return out;
 }
 
@@ -625,19 +635,22 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
  * a warning, but an error for HTTP-01 once more than one probe could not reach the server — the
  * CA's multi-perspective validation tolerates one failing remote perspective, two only with six or
  * more (Baseline Requirements §3.2.2.9). IPv6 whose every failure is the connection itself (a
- * connect timeout, a refusal, an unreachable network) while IPv4 passes is a warning: Let's Encrypt
- * then retries over IPv4, other CAs may not. An IPv6 server that answers wrongly stays an error.
+ * connect timeout, a refusal, an unreachable network) while IPv4 passes is a warning when the CA is
+ * Let's Encrypt or not chosen: Let's Encrypt then retries over IPv4, other CAs may not, so for
+ * another chosen CA it stays a failure. An IPv6 server that answers wrongly stays an error.
  * @param {{ families: Array<{ ipVersion: 4|6, verdict: string, probes: object[] }> }|null} test
- * @param {{ challenge: string, name: string }} ctx
+ * @param {{ challenge: string, name: string, ca?: { id: string }|null }} ctx
  * @returns {Array<{ id: string, area: string, severity: string, params: object }>}
  */
-export function http01Findings(test, { challenge, name }) {
+export function http01Findings(test, { challenge, name, ca = null }) {
   if (!test || !arr(test.families).length) return [];
   const out = [];
   const sev = methodSeverity(challenge === 'http-01' ? 'http-01' : 'unknown');
   const places = (fam, pred) => fam.probes.filter(pred).map((p) => p.place).filter(Boolean).join('; ');
   const v4 = test.families.find((f) => f.ipVersion !== 6);
   const v4ok = !!v4 && v4.verdict === 'ok';
+  // Only Let's Encrypt is known to retry over IPv4 when the IPv6 connection fails.
+  const retries = !ca || ca.id === 'letsencrypt';
   for (const fam of test.families) {
     const family = fam.ipVersion === 6 ? 'IPv6' : 'IPv4';
     const answers = uniq(fam.probes.map((p) => (p.status ? String(p.status) : p.outcome))).join(', ');
@@ -645,7 +658,7 @@ export function http01Findings(test, { challenge, name }) {
     const bad = (p) => !GOOD_OUTCOMES.has(p.outcome) && p.outcome !== 'probe';
     const failures = fam.probes.filter(bad);
     const outcomes = uniq(failures.map((p) => p.outcome)).join(', ');
-    const fallback = fam.ipVersion === 6 && v4ok && failures.length > 0 && failures.every((p) => CONNECT_FAILURES.has(p.outcome));
+    const fallback = retries && fam.ipVersion === 6 && v4ok && failures.length > 0 && failures.every((p) => CONNECT_FAILURES.has(p.outcome));
     switch (fam.verdict) {
       case 'ok': {
         const redirect = fam.probes.find((p) => p.outcome === 'redirect');
@@ -697,7 +710,7 @@ export function nameFindings(r, { ca, challenge }) {
     ...providerFindings(r.dnsHost, { ...effective, delegated: !!r.acme && r.acme.state === 'cname' }),
     ...dnssecFindings(r.dnssec, ctx),
     ...addressFindings(r.address, { ...ctx, name: r.base, dnsFailed }),
-    ...http01Findings(r.http01, { challenge, name: r.base })
+    ...http01Findings(r.http01, { challenge, name: r.base, ca })
   ];
   // The method not known and neither the addresses nor `_acme-challenge` read: no method was checked.
   const unread = list.filter((f) => f.id === 'http.error' || f.id === 'acme.error');
@@ -1035,7 +1048,9 @@ export function interpretHttp01(measurement, { host, path, ipVersion: family = 4
  * (`at`): each one read now ({@link interpretHttp01}, at `at`); a family planned but not measured
  * this time — the test stopped before its measurement was created (the quota ran out, the view was
  * left) — keeps what the name's earlier test measured for it, at that test's time, or reads
- * 'untested', so the report neither passes it over nor improves on less evidence.
+ * 'untested', so the report neither passes it over nor improves on less evidence. For the same
+ * reason a family read now as 'inconclusive' (every probe failed on its own side) keeps an earlier
+ * conclusive result.
  * @param {Array<4|6>} planned
  * @param {object[]} read the families read
  * @param {{ path: string, at?: Date|null, earlier?: { at?: Date, families: object[] }|null }} ctx
@@ -1048,8 +1063,9 @@ export function http01Families(planned, read, { path, at = null, earlier = null 
   const order = uniq([...arr(planned), ...got.map((f) => f.ipVersion)]);
   return order.map((v) => {
     const now = got.find((f) => f.ipVersion === v);
-    if (now) return at && !now.at ? { ...now, at } : now;
     const kept = before.find((f) => f.ipVersion === v && f.verdict !== 'untested');
+    const conclusive = !!kept && kept.verdict !== 'inconclusive';
+    if (now && !(now.verdict === 'inconclusive' && conclusive)) return at && !now.at ? { ...now, at } : now;
     if (kept) return kept.at ? kept : { ...kept, at: (earlier && earlier.at) || null };
     return { ipVersion: v === 6 ? 6 : 4, measurementId: null, path, verdict: 'untested', probes: [], at: null };
   });
@@ -1118,7 +1134,8 @@ export function renewalRows(report) {
       caa_at: r.caa ? (r.caa.error ? `error: ${r.caa.error}` : r.caa.foundAt || 'none') : '',
       caa_records: r.caa ? r.caa.records.join(' | ') : '',
       resolvers: r.findings.find((f) => f.id === 'resolvers.differ') ? 'differ'
-        : r.findings.find((f) => f.id === 'resolvers.servfail') ? 'servfail' : agree.length ? `agree (${agree.length})` : '',
+        : r.findings.find((f) => f.id === 'resolvers.servfail') ? 'servfail' : agree.length >= 2 ? `agree (${agree.length})`
+          : r.findings.find((f) => f.id === 'resolvers.unchecked') ? 'not compared' : '',
       acme_challenge: acme,
       dnssec: r.dnssec ? r.dnssec.state : '',
       dns_provider: r.dnsHost ? (r.dnsHost.providers.map((p) => p.name).join(', ') || r.dnsHost.ns.join(' ')) : '',
@@ -1264,7 +1281,7 @@ const STRINGS = [
       '{error}. CAA sorgusu başarısız olduğunda otorite sertifika vermemeli; ad sunucuları yanıt verene kadar yenileme başarısız olur.']],
   ['f.caa.error', ['CAA could not be checked', 'CAA kontrol edilemedi'],
     ['{error}. This was the lookup from this browser; the CA’s own lookup may work. Check again.',
-      '{error}. Bu, bu tarayıcıdan yapılan sorguydu; otoritenin kendi sorgusu çalışıyor olabilir. Yeniden kontrol edin.']],
+      '{error}. Bu sorgu bu tarayıcıdan yapıldı; otoritenin kendi sorgusu çalışıyor olabilir. Yeniden kontrol edin.']],
 
   ['f.resolvers.agree', ['{count} resolvers see the same CAA records', '{count} çözümleyici aynı CAA kayıtlarını görüyor'],
     ['{resolvers} give the same answer, so the CA’s lookups from its other network perspectives should too.',
@@ -1277,6 +1294,9 @@ const STRINGS = [
       '{rcode}: en az bir yetkili ad sunucusu CAA sorgusunda hata veriyor (bazı eski sunucular ve cihazlar 257 türünü doğru işlemez). Ona ulaşan bir otorite noktası CAA kontrolünü bitiremez.']],
   ['f.resolvers.unreachable', ['{resolvers} could not be asked', 'Şu çözümleyiciler sorgulanamadı: {resolvers}'],
     ['No answer reached this browser; the comparison uses the other resolvers.', 'Bu tarayıcıya yanıt ulaşmadı; karşılaştırma diğer çözümleyicilerle yapıldı.']],
+  ['f.resolvers.unchecked', ['CAA answers could not be compared', 'CAA yanıtları karşılaştırılamadı'],
+    ['No answer from {resolvers} reached this browser, so whether every name server gives the same CAA records was not checked. Check again.',
+      'Şu çözümleyicilerden bu tarayıcıya yanıt ulaşmadı: {resolvers}. Bu yüzden tüm ad sunucularının aynı CAA kayıtlarını verip vermediği kontrol edilmedi. Yeniden kontrol edin.']],
 
   ['f.wildcard.dns01', ['Wildcard: validated with DNS-01', 'Joker: DNS-01 ile doğrulanır'],
     ['*.{base} can only be validated with DNS-01, which is what this renewal uses.', '*.{base} yalnızca DNS-01 ile doğrulanabilir; bu yenileme de onu kullanıyor.']],

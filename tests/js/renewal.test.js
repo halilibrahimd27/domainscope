@@ -152,10 +152,11 @@ test('parseRenewalNames: host names and wildcards, URLs, duplicates, comments; I
   assert.deepEqual(r.suffixWildcards, []);
   assert.equal(r.overCap, 0);
   // No CA issues a wildcard directly under a public suffix (BR §3.2.2.6, the ICANN section).
-  const suffix = parseRenewalNames('*.co.uk *.com.tr *.CO.UK *.example.co.uk *.github.io *.com');
-  assert.deepEqual(suffix.suffixWildcards, ['*.co.uk', '*.com.tr']);
+  // A single label (*.com, *.tr) is the same case, said the same way, never "not a host name".
+  const suffix = parseRenewalNames('*.co.uk *.com.tr *.CO.UK *.example.co.uk *.github.io *.com *.TR.');
+  assert.deepEqual(suffix.suffixWildcards, ['*.co.uk', '*.com.tr', '*.com', '*.tr']);
   assert.deepEqual(suffix.names.map((n) => n.name), ['*.example.co.uk', '*.github.io'], 'a private suffix is not what CAs read');
-  assert.deepEqual(suffix.invalid, ['*.com']);
+  assert.deepEqual(suffix.invalid, []);
   const many = parseRenewalNames(Array.from({ length: 55 }, (_, i) => `h${i}.example.com`));
   assert.equal(many.names.length, 50);
   assert.equal(many.overCap, 5);
@@ -338,6 +339,14 @@ test('resolvers: a lagging server that denies the CA is an error; SERVFAIL on on
     [['resolvers.servfail', 'warn', 'DNS.SB'], ['resolvers.unreachable', 'info', 'Google Public DNS']]);
   assert.equal(r.verdict, 'warnings');
   assert.deepEqual(r.resolvers.map((x) => x.state), ['ok', 'error', 'servfail', 'ok']);
+  // One answer only: nothing was compared — never "agree", never ready on it.
+  r = (await run(exampleZone(), ['www.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, {
+    fake: { down: { google: 'HTTP 429', dnssb: 'HTTP 429', cznic: 'HTTP 429' } }
+  })).names[0];
+  assert.deepEqual(r.findings.filter((f) => f.area === 'resolvers').map((f) => [f.id, f.severity, f.params.resolvers]),
+    [['resolvers.unchecked', 'warn', 'Google Public DNS, DNS.SB, CZ.NIC ODVR']]);
+  assert.equal(r.verdict, 'warnings');
+  assert.equal(renewalRows({ names: [r] })[0].resolvers, 'not compared', 'the CSV never says "agree (1)"');
 });
 
 test('the effective CAA lookup: SERVFAIL is an error (the CA must refuse), a transport failure only "not checked"', async () => {
@@ -765,6 +774,12 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
   assert.deepEqual(find([fam('not-found', 'timeout'), v6('connect-timeout', 'connect-timeout')]), [['http01.partial', 'warn'], ['http01.failed', 'error']], 'IPv4 does not pass');
   assert.deepEqual(find([v6('connect-timeout', 'connect-timeout')]), [['http01.failed', 'error']], 'no IPv4 to fall back to');
   assert.deepEqual(find([fam('not-found'), v6('reset', 'reset')]), [['http01.ok', 'ok'], ['http01.failed', 'error']], 'a reset comes once connected');
+  // Another CA chosen: no fallback to count on.
+  const findFor = (families, ca) => http01Findings({ families }, { challenge: 'http-01', name: 'www.example.com', ca }).map((x) => [x.id, x.severity]);
+  const dialFails = [fam('not-found', 'not-found'), v6('connect-timeout', 'refused', 'unreachable')];
+  assert.deepEqual(findFor(dialFails, renewalCa('sectigo')), [['http01.ok', 'ok'], ['http01.failed', 'error']]);
+  assert.deepEqual(findFor([fam('not-found', 'not-found'), v6('not-found', 'connect-timeout', 'refused')], renewalCa('digicert')), [['http01.ok', 'ok'], ['http01.partial', 'error']]);
+  assert.deepEqual(findFor(dialFails, renewalCa('letsencrypt')), [['http01.ok', 'ok'], ['http01.v6-fallback', 'warn']]);
   assert.equal(http01Findings({ families: [fam('not-found', 'timeout')] }, { challenge: 'http-01', name: 'x' })[0].params.places, 'P1');
   assert.deepEqual(http01Findings(null, { challenge: 'http-01', name: 'x' }), []);
 });
@@ -810,6 +825,12 @@ test('http01Families: a test that stops partway keeps what the earlier test meas
   next = applyHttp01(next, 'www.example.com', { at: second, families });
   assert.deepEqual(next.names[0].findings.filter((f) => f.area === 'http01').map((f) => `${f.id}:${f.severity}`), ['http01.ok:ok', 'http01.failed:error']);
   assert.equal(next.names[0].verdict, 'fail', 'less evidence never improves the verdict');
+  // A retest whose IPv6 probes all failed on their own side says less than the earlier 503: it stands.
+  const v6probe = { ipVersion: 6, measurementId: 'y2345678', path: path2, verdict: 'inconclusive', probes: [] };
+  const again = http01Families([4, 6], [v4again, v6probe], { path: path2, at: second, earlier: next.names[0].http01 });
+  assert.deepEqual(again.map((f) => [f.ipVersion, f.verdict, f.at]), [[4, 'ok', second], [6, 'failed', first]]);
+  // With nothing conclusive before it, the inconclusive retest is what there is.
+  assert.deepEqual(http01Families([6], [v6probe], { path: path2, at: second }).map((f) => [f.verdict, f.at]), [['inconclusive', second]]);
   // An earlier family with no time of its own takes its test's; an earlier "not tested" stays so.
   const legacy = { at: first, families: [{ ...v4, at: undefined }, { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] }] };
   delete legacy.families[0].at;

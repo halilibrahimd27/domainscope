@@ -659,6 +659,10 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  * @param {object} config
  * @param {string[]|string} [config.domains] target domains (default: registrable domains of the cert / extra names)
  * @param {object|null} [config.cert] x509 Certificate (uses `hostnames`, `serialHex`)
+ * @param {object[]|null} [config.certs] extension (SSL Targets with several certificates,
+ *   lib/certsets.js): every certificate of the renewal. Their names seed the scan like `cert`'s,
+ *   a host is covered when any of them covers it, and a CT certificate matches when its serial is
+ *   any of theirs. `cert` stays the first of them; without `certs` a run is unchanged.
  * @param {string[]|string} [config.extraNames] additional hostnames ('*.x' allowed)
  * @param {string[]} [config.sources] source ids (default: every defaultEnabled source; [] = none)
  * @param {boolean} [config.includeExpired=false]
@@ -716,7 +720,7 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  */
 export async function runScan(config = {}, hooks = {}) {
   const {
-    domains = [], cert = null, extraNames = [], sources, includeExpired = false,
+    domains = [], cert = null, certs = null, extraNames = [], sources, includeExpired = false,
     bruteforce = 'smart', mine = true, permutationBudget = DEFAULT_PERMUTATION_BUDGET, recursive = true,
     inventory = [], originHints = true, dns, fetchImpl = globalThis.fetch, signal,
     wordlist = null, customWordlist = null, learnedLabels = null, locales,
@@ -826,7 +830,10 @@ export async function runScan(config = {}, hooks = {}) {
     return true;
   };
 
-  const certHostnames = cert && Array.isArray(cert.hostnames) ? cert.hostnames : [];
+  // Every certificate of a renewal (`certs`); a plain run has `cert` alone.
+  const certList = [...new Set([cert, ...(Array.isArray(certs) ? certs : [])].filter(Boolean))];
+  const hasCert = certList.length > 0;
+  const certHostnames = [...new Set(certList.flatMap((c) => (Array.isArray(c.hostnames) ? c.hostnames : [])))];
   for (const name of certHostnames) seed(name, 'cert');
   const extras = Array.isArray(extraNames) ? extraNames : splitList(extraNames);
   for (const name of extras) {
@@ -1597,7 +1604,7 @@ export async function runScan(config = {}, hooks = {}) {
       origins: orderOrigins(nameOrigins),
       resolution,
       classification,
-      cert: cert ? certCovers(certHostnames, name) : null,
+      cert: hasCert ? certCovers(certHostnames, name) : null,
       servers: matches.map(({ server, ip }) => ({ serverId: server.id, name: server.name, ip })),
       wildcardSuspect,
       ipHints: hintsByName.get(name) || [],
@@ -2022,10 +2029,10 @@ export async function runScan(config = {}, hooks = {}) {
     .sort((a, b) => compareIp(a.ip, b.ip));
 
   /* ---- CT certificates -------------------------------------------------- */
-  const certSerial = cert ? normalizeSerial(cert.serialHex) : null;
+  const certSerials = new Set(certList.map((c) => normalizeSerial(c.serialHex)).filter(Boolean));
   const ctCerts = mergeCerts(certsAll).map((c) => ({
     ...c,
-    matchesCert: !!certSerial && normalizeSerial(c.serialHex) === certSerial
+    matchesCert: certSerials.has(normalizeSerial(c.serialHex))
   }));
 
   /* ---- stats ------------------------------------------------------------ */
@@ -2195,7 +2202,7 @@ export async function runScan(config = {}, hooks = {}) {
       bruteforce: levelUsed,
       mine: mineEnabled, permutationBudget: permBudget, recursive: recursiveEnabled,
       resolverLeak: resolverLeak !== false,
-      originHints: hintsEnabled, cert: !!cert, inventoryServers: servers.length,
+      originHints: hintsEnabled, cert: hasCert, inventoryServers: servers.length,
       wordlist: wordlistUsage,
       exact: exactMode,
       zone: zoneSummary && {

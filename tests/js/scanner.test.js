@@ -296,6 +296,29 @@ describe('runScan end-to-end', () => {
     assert.deepEqual(scan.servers, []);
   });
 
+  test('several certificates (certs): every name seeds the scan, coverage is the union, a CT match is any serial', async () => {
+    // A second certificate of the renewal (lib/certsets.js): only hostnames and serialHex are read.
+    const other = { hostnames: [`shop.${D}`, `old.${D}`], serialHex: '0BADC0DE' };
+    const { fetchImpl, dns } = world();
+    const base = { sources: ['crtsh'], bruteforce: 'off', mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, originHints: false };
+    const scan = await runScan({ ...base, cert: CERT, certs: [CERT, other] });
+    assert.deepEqual(scan.domains, [D]);
+    const hosts = byName(scan);
+    for (const n of [`shop.${D}`, `old.${D}`]) assert.ok(hosts.get(n).origins.includes('cert'), n);
+    assert.deepEqual(hosts.get(`shop.${D}`).cert, { covered: true, by: `shop.${D}` });
+    assert.deepEqual(hosts.get(`api.${D}`).cert, { covered: true, by: `api.${D}` });
+    assert.equal(scan.stats.covered, 6);
+    assert.equal(scan.options.cert, true);
+    assert.deepEqual(scan.ctCerts.filter((c) => c.matchesCert).map((c) => c.serialHex).sort(), ['0badc0de', 'f1e2d3c4b5a69788']);
+    // `certs` alone (no `cert`) works the same; without it a run is unchanged
+    const alone = await runScan({ ...base, certs: [other] });
+    assert.equal(byName(alone).get(`shop.${D}`).cert.covered, true);
+    assert.equal(byName(alone).get(`www.${D}`).cert.covered, false);
+    const single = await runScan({ ...base, cert: CERT });
+    assert.equal(byName(single).get(`www.${D}`).cert.covered, true);
+    assert.equal(single.ctCerts.filter((c) => c.matchesCert).length, 1);
+  });
+
   test('sources disabled, no cert: coverage is null and every DNS-matched server "needs" the cert', async () => {
     const { fetchImpl, dns, log } = world();
     const stages = [];

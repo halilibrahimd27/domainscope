@@ -1422,10 +1422,13 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   function applyFilter() {
     appliedSearch = table.getSearch();
     const terms = searchTerms();
+    // Pattern rows first: their "N of M match" note depends on the filter, and setFilter
+    // renders at once, so a cached row would otherwise show the old note for a frame (longer
+    // on a table of 1,000+ rows, whose next render is deferred).
+    for (const row of table.getRows()) if (row.type === 'pattern') table.updateRow(row);
     table.setFilter(narrowed()
       ? (row) => (row.type === 'pattern' ? rowResults(row, terms).length > 0 : sweepRowMatches(row, session.filter))
       : null);
-    for (const row of table.getRows()) if (row.type === 'pattern') table.updateRow(row);
   }
   applyFilter();
 

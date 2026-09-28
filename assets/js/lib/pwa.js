@@ -117,6 +117,44 @@ export function bundleInfo(moduleUrl) {
   };
 }
 
+/** The deploy's version file, written by tools/assemble-site.mjs into v/<version>/assets/ (the repository has none). */
+export const VERSION_FILE = 'version.json';
+
+/**
+ * What a deploy says about itself (About › What this page sent): its version, the full commit it
+ * was built from when the deploy knew it, and its content digest.
+ * @param {{ version: string, commit?: string|null, digest: string }} input
+ * @returns {{ version: string, commit: string|null, digest: string }}
+ * @throws on an invalid version, commit (40 hex digits) or digest
+ */
+export function buildVersionFile({ version, commit = null, digest }) {
+  cacheNames('/', { version, digest }); // validates both
+  if (commit !== null && !/^[0-9a-f]{40}$/.test(String(commit))) throw new Error(`Invalid commit ${JSON.stringify(commit)}`);
+  return { version, commit, digest };
+}
+
+/**
+ * The version file of the bundle a module runs from, or null in the repository (no file to ask for).
+ * @param {string} moduleUrl import.meta.url of a module under assets/js/
+ * @returns {string|null}
+ */
+export function versionFileUrl(moduleUrl) {
+  const info = bundleInfo(moduleUrl);
+  return info ? `${info.assets}${VERSION_FILE}` : null;
+}
+
+/**
+ * A version file as served, checked: anything malformed is null (the page then shows only the
+ * version its URL names).
+ * @param {unknown} json
+ * @returns {{ version: string, commit: string|null, digest: string|null }|null}
+ */
+export function parseVersionFile(json) {
+  if (!json || typeof json !== 'object' || !isVersion(json.version)) return null;
+  const commit = typeof json.commit === 'string' && /^[0-9a-f]{40}$/.test(json.commit) ? json.commit : null;
+  return { version: json.version, commit, digest: isDigest(json.digest) ? json.digest : null };
+}
+
 /**
  * The cache key (relative to the service worker's scope) of a wordlist file with this content.
  * A tier keeps its key across deploys until its bytes change, so it is downloaded once.

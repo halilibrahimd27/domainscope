@@ -105,8 +105,25 @@ describe('assembleSite', () => {
     // a checkout may hold gitignored clutter (.DS_Store, __pycache__) the bundle leaves out
     const assetFiles = walk(ASSETS).map((f) => relative(ASSETS, f).split(sep))
       .filter((parts) => !parts.some(isLocalClutter)).map((parts) => parts.join('/')).sort();
-    assert.deepEqual(files.filter((f) => f.startsWith('v/abc123/assets/')).map((f) => f.slice('v/abc123/assets/'.length)).sort(), assetFiles);
+    assert.deepEqual(files.filter((f) => f.startsWith('v/abc123/assets/')).map((f) => f.slice('v/abc123/assets/'.length)).sort(),
+      [...assetFiles, 'version.json'].sort(), 'assets/ as it is, and the version file');
     assert.deepEqual(readFileSync(join(out, 'v', 'abc123', 'assets', 'js', 'app.js')), readFileSync(join(ASSETS, 'js', 'app.js')), 'copied as is');
+  });
+
+  test('version.json names the deploy next to its assets, is precached, and carries the commit only when given', async () => {
+    const file = JSON.parse(readFileSync(join(out, 'v', 'abc123', 'assets', 'version.json'), 'utf8'));
+    assert.deepEqual(file, { version: 'abc123', commit: null, digest: result.digest });
+    assert.deepEqual(result.versionFile, file);
+    assert.ok(workerBuild(out).precache.includes('v/abc123/assets/version.json'), 'the installed app names its version offline');
+    const sha = '0123456789abcdef0123456789abcdef01234567';
+    const other = join(tmp, 'with-commit');
+    const r = await assembleSite({ out: other, version: sha.slice(0, 12), commit: sha });
+    assert.deepEqual(JSON.parse(readFileSync(join(other, 'v', sha.slice(0, 12), 'assets', 'version.json'), 'utf8')),
+      { version: sha.slice(0, 12), commit: sha, digest: r.digest });
+    for (const bad of ['0123456789ab', sha.toUpperCase(), `${sha}0`, 'x'.repeat(40)]) {
+      await assert.rejects(assembleSite({ out: join(tmp, 'bad-commit'), version: 'x', commit: bad }), /Invalid commit/, bad);
+    }
+    assert.ok(!existsSync(join(tmp, 'bad-commit')), 'refused before anything is written');
   });
 
   test('a second deploy replaces the previous version directory', async () => {

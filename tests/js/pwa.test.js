@@ -11,7 +11,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CACHE_PREFIX, MANIFEST_FILES, PRECACHE_SKIP, PRECACHE_SKIP_DIRS, UPDATE_CHECK_MS,
-  bundleInfo, buildSwManifest, cacheNames, manifestFor, scopeTag, updateCheckDue, wordlistCacheKey, wordlistFiles
+  VERSION_FILE, bundleInfo, buildSwManifest, buildVersionFile, cacheNames, manifestFor, parseVersionFile, scopeTag, updateCheckDue,
+  versionFileUrl, wordlistCacheKey, wordlistFiles
 } from '../../assets/js/lib/pwa.js';
 import { listFiles, SHELL_ROOT_FILES } from '../../tools/assemble-site.mjs';
 import { VIEWS } from '../../assets/js/app.js';
@@ -315,4 +316,28 @@ test('updateCheckDue: at most once per interval', () => {
   assert.equal(updateCheckDue(1000, 1000 + UPDATE_CHECK_MS), true);
   assert.equal(updateCheckDue(NaN, 5), true);
   assert.equal(updateCheckDue(0, 10, 5), true);
+});
+
+describe('the version file (About › What this page sent)', () => {
+  const SHA = '0123456789abcdef0123456789abcdef01234567';
+
+  test('lives next to the bundle assets; the repository asks for none', () => {
+    assert.equal(VERSION_FILE, 'version.json');
+    assert.equal(versionFileUrl('https://example.com/domainscope/v/0123456789ab/assets/js/views/about.js'),
+      'https://example.com/domainscope/v/0123456789ab/assets/version.json');
+    assert.equal(versionFileUrl('http://127.0.0.1:8080/assets/js/views/about.js'), null);
+    assert.equal(versionFileUrl('file:///repo/v/abc/assets/js/app.js'), null);
+    assert.ok(!existsSync(join(ROOT, 'assets', VERSION_FILE)), 'written by tools/assemble-site.mjs only');
+  });
+
+  test('buildVersionFile validates what it writes; parseVersionFile keeps only well-formed fields', () => {
+    assert.deepEqual(buildVersionFile({ version: '0123456789ab', commit: SHA, digest: DIGEST }), { version: '0123456789ab', commit: SHA, digest: DIGEST });
+    assert.deepEqual(buildVersionFile({ version: 'dev-abc', digest: DIGEST }), { version: 'dev-abc', commit: null, digest: DIGEST });
+    assert.throws(() => buildVersionFile({ version: 'a/b', digest: DIGEST }), /Invalid version/);
+    assert.throws(() => buildVersionFile({ version: 'v', digest: 'x' }), /Invalid content digest/);
+    assert.throws(() => buildVersionFile({ version: 'v', commit: 'abc', digest: DIGEST }), /Invalid commit/);
+    assert.deepEqual(parseVersionFile({ version: '0123456789ab', commit: SHA, digest: DIGEST }), { version: '0123456789ab', commit: SHA, digest: DIGEST });
+    assert.deepEqual(parseVersionFile({ version: 'v1', commit: '<script>', digest: 'nope' }), { version: 'v1', commit: null, digest: null });
+    for (const bad of [null, 'v1', [], {}, { version: '../x' }, { version: 42 }]) assert.equal(parseVersionFile(bad), null, JSON.stringify(bad));
+  });
 });

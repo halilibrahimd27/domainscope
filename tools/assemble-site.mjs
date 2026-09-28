@@ -8,7 +8,8 @@
  *   <out>/sw.js                   the service worker, with this deploy's manifest written into it
  *   <out>/favicon.svg, manifest.webmanifest, manifest.tr.webmanifest, icons/, .nojekyll
  *   <out>/cli/                    the CLI, at the URL the README tells people to `curl -O`
- *   <out>/v/<version>/assets/     assets/ as it is
+ *   <out>/v/<version>/assets/     assets/ as it is, plus version.json: { version, commit, digest } (About › What this
+ *                                 page sent names the deploy and links its commit; the page asks for it only in a bundle)
  *
  * Why a version directory: GitHub Pages serves every file with `Cache-Control: max-age=600` and
  * the views are imported lazily, so with fixed URLs a browser can link a module of the new deploy
@@ -36,7 +37,8 @@
  *
  * Usage:
  *   node tools/assemble-site.mjs <out> [version]   # version: [A-Za-z0-9._-]{1,64};
- *                                                  # default: $GITHUB_SHA (12 chars), else dev-<digest>
+ *                                                  # default: $GITHUB_SHA (12 chars), else dev-<digest>;
+ *                                                  # version.json's commit: $GITHUB_SHA when set (40 hex digits)
  *   node tests/e2e/serve.mjs --root <out>          # preview the bundle
  *
  * <out> is deleted first; it must not be the repository or contain it, and an existing <out> must
@@ -48,7 +50,7 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSwManifest, wordlistFiles } from '../assets/js/lib/pwa.js';
+import { buildSwManifest, buildVersionFile, wordlistFiles, VERSION_FILE } from '../assets/js/lib/pwa.js';
 
 /** Repository root (one level above tools/). */
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -237,7 +239,9 @@ export function contentVersion(digest) {
  */
 export async function serviceWorkerFor(src, version, digest) {
   const assets = path.join(src, VERSIONED_DIR);
-  const assetFiles = await listFiles(assets);
+  // version.json is written into the bundle's assets/ (assembleSite): precached with the shell, so
+  // the installed app names its version offline too.
+  const assetFiles = [...await listFiles(assets), VERSION_FILE].sort();
   const wordlistManifest = JSON.parse(await readFile(path.join(assets, 'data', 'wordlist-manifest.json'), 'utf8'));
   for (const { file, sha256 } of wordlistFiles(wordlistManifest)) {
     const actual = createHash('sha256').update(await readFile(path.join(assets, 'data', ...file.split('/')))).digest('hex');
@@ -249,16 +253,19 @@ export async function serviceWorkerFor(src, version, digest) {
 
 /**
  * Assemble the Pages bundle into `out` (deleted first).
- * @param {{ out: string, version?: string, root?: string }} opts version: default
- *   {@link contentVersion} (`dev-<digest>`)
- * @returns {Promise<{ out: string, version: string, digest: string, assetsPath: string, rewritten: number, precached: number }>}
+ * @param {{ out: string, version?: string, root?: string, commit?: string|null }} opts version: default
+ *   {@link contentVersion} (`dev-<digest>`); commit: the full commit (40 hex digits) the bundle is built
+ *   from, written into version.json (null: not known)
+ * @returns {Promise<{ out: string, version: string, digest: string, assetsPath: string, rewritten: number, precached: number,
+ *   versionFile: { version: string, commit: string|null, digest: string } }>}
  * @throws when `out` is the repository, contains it, lies inside a copied directory or holds
  *   anything an earlier bundle does not; when index.html references no assets/ URL, or one the
  *   rewrite does not cover (srcset); when a local URL of the new index.html is missing; when
  *   wordlist-manifest.json does not match the wordlist files
  */
-export async function assembleSite({ out, version: given, root = REPO_ROOT }) {
+export async function assembleSite({ out, version: given, root = REPO_ROOT, commit = null }) {
   if (given !== undefined) versionedAssetsPath(given); // a bad version is refused before anything is read
+  if (commit !== null && !/^[0-9a-f]{40}$/.test(String(commit))) throw new Error(`Invalid commit ${JSON.stringify(commit)} (40 lower-case hex digits)`);
   const target = path.resolve(out);
   const src = path.resolve(root);
   if (isInside(src, target)) throw new Error(`Refusing to assemble into ${target}: it contains the repository`);
@@ -273,6 +280,8 @@ export async function assembleSite({ out, version: given, root = REPO_ROOT }) {
   if (!index.count) throw new Error('index.html references no assets/ URL; nothing to version');
   const unversioned = UNVERSIONED_RE.exec(index.html)?.[0].trim() ?? unversionedSrcset(index.html);
   if (unversioned) throw new Error(`index.html has an assets/ URL this tool does not rewrite: ${unversioned}`);
+  if (existsSync(path.join(src, VERSIONED_DIR, VERSION_FILE))) throw new Error(`${VERSIONED_DIR}/${VERSION_FILE} is written by this tool; remove it from the repository`);
+  const versionFile = buildVersionFile({ version, commit, digest });
   const sw = await serviceWorkerFor(src, version, digest);
   // A typo such as `docs` must not wipe a directory that is not an earlier bundle.
   const existing = await stat(target).catch(() => null);
@@ -291,17 +300,25 @@ export async function assembleSite({ out, version: given, root = REPO_ROOT }) {
   }
   for (const dir of ROOT_DIRS) await cp(path.join(src, dir), path.join(target, dir), { recursive: true, filter });
   await cp(path.join(src, VERSIONED_DIR), path.join(target, ...assetsPath.split('/').filter(Boolean)), { recursive: true, filter });
+  await writeFile(path.join(target, ...assetsPath.split('/').filter(Boolean), VERSION_FILE), `${JSON.stringify(versionFile, null, 2)}
+`);
 
   const missing = [...localUrls(index.html), ...sw.build.precache.map((p) => (p === './' ? 'index.html' : p))]
     .filter((u) => !existsSync(path.join(target, ...u.split('/'))));
   if (missing.length) throw new Error(`index.html or sw.js reference files that are not in the bundle: ${missing.join(', ')}`);
-  return { out: target, version, digest, assetsPath, rewritten: index.count, precached: sw.build.precache.length };
+  return { out: target, version, digest, assetsPath, rewritten: index.count, precached: sw.build.precache.length, versionFile };
 }
 
 /** Default version: the commit being deployed, else none (assembleSite names it by its content). */
 function defaultVersion() {
   const sha = String(process.env.GITHUB_SHA || '').trim();
   return /^[0-9a-f]{12,}$/i.test(sha) ? sha.slice(0, 12).toLowerCase() : undefined;
+}
+
+/** The full commit being deployed (GitHub Actions' GITHUB_SHA), else null. */
+function defaultCommit() {
+  const sha = String(process.env.GITHUB_SHA || '').trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
 }
 
 async function main(argv) {
@@ -311,7 +328,7 @@ async function main(argv) {
     process.exitCode = out ? 0 : 2;
     return;
   }
-  const r = await assembleSite({ out, version });
+  const r = await assembleSite({ out, version, commit: defaultCommit() });
   process.stdout.write(`Assembled ${r.out}: assets under ${r.assetsPath} (${r.rewritten} URLs in index.html, ${r.precached} files precached by sw.js)\n`);
 }
 

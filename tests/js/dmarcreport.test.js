@@ -356,6 +356,11 @@ describe('loadSpfContext — the domain\'s SPF, expanded once', () => {
     assert.equal(m.status, 'ok');
     assert.equal(m.mxAddresses.get('down.example.org').addresses.length, 0);
     assert.ok(m.mxAddresses.get('down.example.org').error);
+    // "Check again": every query past the client's cache
+    const seen = [];
+    const spy = { query: (n, type, o) => { seen.push(o.noCache === true); return dns.query(n, type, o); }, resolveHost: (n, o) => { seen.push(o.noCache === true); return dns.resolveHost(n, o); } };
+    assert.equal((await loadSpfContext('mx.example.org', { dns: spy, noCache: true })).status, 'ok');
+    assert.ok(seen.length >= 3 && seen.every(Boolean), JSON.stringify(seen));
     await assert.rejects(loadSpfContext('bad name', { dns }), TypeError);
     await assert.rejects(loadSpfContext('example.com', { dns, signal: AbortSignal.abort() }), (err) => err.name === 'AbortError');
   });

@@ -659,12 +659,17 @@ export function spfDomainsFor(agg) {
  * spfLookupCount) and the addresses of every host an `mx` mechanism names. Sends names and types to
  * the resolvers of `dns` only. A lookup that gets no answer is `failed`, never "no SPF".
  * @param {string} domain
- * @param {{ dns: object, signal?: AbortSignal, now?: () => Date }} opts `dns`: a DohClient (query, resolveHost)
+ * @param {{ dns: object, signal?: AbortSignal, noCache?: boolean, now?: () => Date }} opts `dns`: a DohClient (query,
+ *   resolveHost); `noCache`: every query past the client's cache (a "Check again")
  * @returns {Promise<SpfContext>} rejects only with an AbortError
  */
-export async function loadSpfContext(domain, { dns, signal, now = () => new Date() } = {}) {
+export async function loadSpfContext(domain, { dns: client, signal, noCache = false, now = () => new Date() } = {}) {
   const name = normalizeHostname(String(domain ?? ''));
   if (!name) throw new TypeError(`Invalid domain: ${String(domain)}`);
+  const dns = noCache && client ? {
+    query: (n, type, o = {}) => client.query(n, type, { ...o, noCache: true }),
+    resolveHost: typeof client.resolveHost === 'function' ? (n, o = {}) => client.resolveHost(n, { ...o, noCache: true }) : undefined
+  } : client;
   const base = { domain: name, status: 'failed', record: null, tree: null, mxAddresses: new Map(), error: null, at: now() };
   let r;
   try {

@@ -512,6 +512,17 @@ describe('x509 loadCertificates', () => {
     assert.equal(plain.pkcs12.keyCheck.status, 'match');
   });
 
+  test('a bundle with a plain key and no certificate: NO_CERTIFICATE, the key counted, nothing to check it against', async () => {
+    const pkcs8 = read('ec_wildcard.pkcs8.key.der');
+    const keyBag = seq(oid('1.2.840.113549.1.12.10.1.1'), explicit0(pkcs8));
+    const bundle = await pfx(seq(contentInfo('data', octet(seq(keyBag)))), { password: 'k' });
+    const opened = await openPkcs12(bundle, 'k', { checkKey: true });
+    assert.deepEqual(opened.keys.map((k) => [k.encrypted, k.check.status, k.check.algorithm, k.check.certificates]), [[false, 'checked', 'EC P-256', []]]);
+    const r = await loadCertificates(bundle, { password: 'k', checkKey: true });
+    assert.deepEqual(r.warnings.map((w) => w.code), ['NO_CERTIFICATE']);
+    assert.deepEqual([r.pkcs12.certificates, r.pkcs12.keys, r.pkcs12.unencryptedKeys, r.pkcs12.keyCheck], [0, 1, 1, null]);
+  });
+
   test('a key type the browser cannot check is "unsupported", not a mismatch', async () => {
     // WebCrypto without EC: the P-256 key cannot be imported.
     const subtle = new Proxy(globalThis.crypto.subtle, {

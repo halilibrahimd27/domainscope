@@ -253,7 +253,7 @@ Pkcs12Summary = {
   mac: { kind: 'hmac'|'pbmac1', hash: 'SHA-1'|'SHA-256'|'SHA-384'|'SHA-512', iterations, kdf: 'PBKDF2-HMAC-SHA256'|null } | null,
   encryption: EncryptionInfo[] /* of the parts holding certificates */, keyEncryption: EncryptionInfo[] /* of the keys, one per scheme */,
   passwordVerified: boolean       // false: no MAC and no encrypted certificates — read without the password, which nothing checked
-  keyCheck: null /* not asked */ | { status: 'match'|'mismatch'|'nokey'|'unsupported'|'failed', algorithm: 'RSA'|'EC P-256'|…|null, owner: Certificate|null }
+  keyCheck: null /* not asked, or no certificate to check against */ | { status: 'match'|'mismatch'|'nokey'|'unsupported'|'failed', algorithm: 'RSA'|'EC P-256'|…|null, owner: Certificate|null }
 }   // match: a key of the bundle belongs to the leaf; mismatch: none does (owner: the certificate of the bundle it belongs to, if any); failed: the key did not decrypt although the rest did
 export function parseCertificate(der: Uint8Array) -> Certificate           // throws CertificateParseError
 export function leafCertificates(certs) -> Certificate[]                   // every end-entity certificate of one input, in order: not a CA and not the issuer of another

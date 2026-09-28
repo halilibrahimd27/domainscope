@@ -1758,7 +1758,7 @@ export function parseCertificates(input, options = {}) {
  * @property {boolean} passwordVerified the MAC matched or something decrypted with the password;
  *   false for a bundle with neither (its certificates were readable without it)
  * @property {null|{ status: 'match'|'mismatch'|'nokey'|'unsupported'|'failed', algorithm: string|null,
- *   owner: Certificate|null }} keyCheck only with `checkKey`: 'match' a private key belongs to the
+ *   owner: Certificate|null }} keyCheck only with `checkKey` and a leaf: 'match' a private key belongs to the
  *   leaf; 'mismatch' none does (owner: a certificate of the bundle the key belongs to, if any);
  *   'nokey' the bundle holds no key; 'unsupported' a key type the browser cannot check
  *   (algorithm: its name); 'failed' the key did not decrypt although the certificates did
@@ -1777,7 +1777,8 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
   };
   const leafIndex = leaf ? parsed.indexOf(leaf) : -1;
   let keyCheck = null;
-  if (checkKey) {
+  // Without a certificate there is nothing to check a key against.
+  if (checkKey && leaf) {
     const checks = opened.keys.map((k) => k.check).filter(Boolean);
     const checked = checks.filter((c) => c.status === 'checked');
     const match = checked.find((c) => c.certificates.includes(leafIndex));

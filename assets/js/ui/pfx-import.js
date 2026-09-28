@@ -255,7 +255,7 @@ export function PfxNote(summary, { actions = [], certName = (c) => c.subjectCN |
   let verdict = null;
   const extra = [];
   if (!kc) {
-    if (summary.keys) verdict = h('p', { class: 'muted text-sm pfx-key-verdict' }, t('pfx.key.notChecked'));
+    if (summary.keys && summary.certificates) verdict = h('p', { class: 'muted text-sm pfx-key-verdict' }, t('pfx.key.notChecked'));
   } else if (kc.status === 'match') {
     verdict = h('div', { class: 'pfx-key-verdict cluster' },
       Badge(t('pfx.key.match'), { variant: 'ok', icon: 'check-circle' }),

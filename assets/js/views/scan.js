@@ -1738,6 +1738,9 @@ export function mount(container, ctx) {
         children: h('div', { class: 'stack-sm' }, loader({ compact: true }), certAlternatives())
       }));
     } else {
+      // A PKCS#12 bundle without a certificate still says what it held.
+      const pfxNote = CertPfxNote(certLoad);
+      if (pfxNote) certBody.append(pfxNote);
       certBody.append(loader({ compact: true }), certAlternatives());
     }
   }

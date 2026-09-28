@@ -2088,6 +2088,9 @@ export function mount(container, ctx) {
     const { result } = load;
     content.append(...certWarningAlerts(result, { name: load.name }));
     if (!result.leaf) {
+      // A bundle without a certificate still says what it held (a key, say).
+      const heldOnly = CertPfxNote(load);
+      if (heldOnly) content.append(heldOnly);
       content.append(Button({
         label: t('cert.remove'), icon: 'trash', variant: 'ghost', dataset: { action: 'cert-remove' },
         onClick: () => setLoad(null)

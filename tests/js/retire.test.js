@@ -385,6 +385,9 @@ describe('what a check could not settle', () => {
     // A domain without an address of its own exists all the same.
     const bare = await checkDomain('example.net', { dns, blocks });
     assert.equal(bare.missing, false);
+    // So does a dangling alias: NXDOMAIN comes with its CNAME (RFC 6604), and NS is empty.
+    const alias = await checkDomain('shop.example.com', { dns: fakeDns({ 'shop.example.com': { CNAME: 'gone.example.net' } }), blocks });
+    assert.deepEqual([alias.names[0].status, alias.names[0].cnames, alias.missing], ['NXDOMAIN', ['gone.example.net'], false]);
     const built = buildChanges({ blocks, checks: [typo, bare] });
     assert.equal(built.counts.total, 0);
     const gaps = retireGaps({ domains: ['exmaple.example.org', 'example.net'], checks: [typo, bare], counts: built.counts });

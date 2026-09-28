@@ -509,9 +509,9 @@ function isAbort(err) {
 /**
  * @typedef {object} DomainCheck
  * @property {string} domain
- * @property {boolean} missing the domain does not exist: its own name is NXDOMAIN and it has no name
- *   server (a typo in the list, most likely) — nothing in it can point at the address, and that is
- *   no "nothing points here"
+ * @property {boolean} missing the domain does not exist: its own name is NXDOMAIN without a CNAME
+ *   (a dangling alias is a name that exists) and it has no name server (a typo in the list, most
+ *   likely) — nothing in it can point at the address, and that is no "nothing points here"
  * @property {NameCheck[]} names every name resolved, in the order asked
  * @property {{ status: 'ok'|'none'|'failed', error: string|null, hosts: Array<{ host: string, preference: number }> }} mx
  * @property {{ status: 'ok'|'none'|'failed', error: string|null, hosts: string[] }} ns
@@ -690,7 +690,9 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
   // A name a later job added (an SPF mx host) is settled too.
   await Promise.all([...names.values()].map((e) => e.promise));
   throwIfAborted(signal);
-  const missing = names.get(d).check.status === 'NXDOMAIN' && ns.status !== 'ok';
+  // NXDOMAIN with a CNAME (RFC 6604) is a dangling alias: the name exists, its target does not.
+  const own = names.get(d).check;
+  const missing = own.status === 'NXDOMAIN' && !(own.cnames && own.cnames.length) && ns.status !== 'ok';
   return { domain: d, missing, names: [...names.values()].map((e) => e.check), mx, ns, spf, https, failures };
 }
 

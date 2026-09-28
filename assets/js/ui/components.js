@@ -108,6 +108,7 @@ const ICONS = {
   download: [['path', { d: 'M12 4v11M7 10.5l5 5 5-5M5 20h14' }]],
   upload: [['path', { d: 'M12 16V5M7 9.5l5-5 5 5M5 20h14' }]],
   file: [['path', { d: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z' }], ['path', { d: 'M14 3v5h5' }]],
+  folder: [['path', { d: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }]],
   'file-text': [['path', { d: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z' }], ['path', { d: 'M14 3v5h5M9 13h6M9 17h6' }]],
   trash: [['path', { d: 'M4 7h16M9.5 7V4.5h5V7M6 7l1 13h10l1-13M10 11v5.5M14 11v5.5' }]],
   edit: [['path', { d: 'M4 20h4L19.5 8.5a2.1 2.1 0 0 0-4-4L4 16z' }], ['path', { d: 'M13.5 6.5l4 4' }]],
@@ -1213,7 +1214,7 @@ export function decodeText(buffer) {
  * @returns {{ el: HTMLElement, input: HTMLInputElement, setStatus(text: string|null): void, open(): void }}
  */
 export function FileDrop({
-  onFiles, accept = '', multiple = false, maxBytes = 10 * 1024 * 1024, title = null, hint = null,
+  onFiles, accept = '', multiple = false, directory = false, maxBytes = 10 * 1024 * 1024, title = null, hint = null,
   icon = 'upload', compact = false, paste = true, onError = null, className = ''
 }) {
   const hintId = uid('filedrop-hint');
@@ -1223,6 +1224,13 @@ export function FileDrop({
     tabindex: -1,
     attrs: { accept: accept || null, multiple: multiple || null, 'aria-hidden': 'true' }
   });
+  // `directory` (with `multiple`): a folder picker where the browser has one (webkitdirectory). Only
+  // the files whose extension `accept` lists are read, as a picker filtered by `accept` would offer.
+  let folderInput = directory && multiple ? h('input', { type: 'file', class: 'filedrop-input', tabindex: -1, attrs: { multiple: '', 'aria-hidden': 'true' } }) : null;
+  if (folderInput && 'webkitdirectory' in folderInput) folderInput.webkitdirectory = true;
+  else folderInput = null;
+  const acceptExts = accept.split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.startsWith('.'));
+  const accepted = (file) => !acceptExts.length || acceptExts.some((ext) => String(file.name || '').toLowerCase().endsWith(ext));
   const status = h('div', { class: 'filedrop-status', attrs: { 'aria-live': 'polite' } });
   const titleEl = h('div', { class: 'filedrop-title' }, title ?? t('file.dropTitle'));
   const el = h('div', {
@@ -1234,7 +1242,7 @@ export function FileDrop({
     titleEl,
     h('div', { class: 'filedrop-hint', id: hintId }, hint ?? t('file.dropHint'),
       accept ? h('span', { class: 'filedrop-accept' }, ` · ${accept.split(',').map((s) => s.trim()).filter(Boolean).join(' ')}`) : null)),
-  status, input);
+  status, input, folderInput);
 
   const fail = (msg) => {
     status.textContent = msg;
@@ -1283,6 +1291,15 @@ export function FileDrop({
   });
   input.addEventListener('click', (event) => event.stopPropagation());
   input.addEventListener('change', () => readFiles(input.files, 'pick'));
+  if (folderInput) {
+    folderInput.addEventListener('click', (event) => event.stopPropagation());
+    folderInput.addEventListener('change', () => {
+      const all = [...(folderInput.files || [])];
+      const files = all.filter(accepted);
+      if (all.length && !files.length) fail(t('file.folderNone'));
+      else readFiles(files, 'folder');
+    });
+  }
 
   let depth = 0;
   const setOver = (on) => {
@@ -1343,6 +1360,11 @@ export function FileDrop({
     el,
     input,
     open: openPicker,
+    /** Opens the folder picker; null without `directory` or where the browser has none. */
+    openFolder: folderInput ? () => {
+      folderInput.value = '';
+      folderInput.click();
+    } : null,
     setStatus(text) {
       status.classList.remove('is-error');
       status.textContent = text ?? '';
@@ -1807,8 +1829,10 @@ export function rowsToCsv(rows, columns, { bom = true } = {}) {
  *   onRowClick?: (row: any, e: Event) => void, details?: (row: any) => Node|null, toolbar?: Node|Node[],
  *   export?: false|{ filename?: string, subject?: string, formats?: Array<'csv'|'json'>, json?: (rows: any[]) => any,
  *     onExport?: (format: 'csv'|'json', rows: any[]) => void },
- *   caption?: string, maxHeight?: string|null, dense?: boolean, className?: string,
+ *   caption?: string, maxHeight?: string|null, dense?: boolean, className?: string, cellLabels?: boolean,
  *   onChange?: (info: { total: number, matched: number, shown: number }) => void }} opts
+ *   `cellLabels`: every cell carries its column's label as `data-label`, for a stylesheet that turns
+ *   the rows into labelled cards on a phone (`td::before { content: attr(data-label) }`)
  */
 export function DataTable(opts) {
   const {
@@ -1829,6 +1853,7 @@ export function DataTable(opts) {
     maxHeight = undefined,
     dense = false,
     className = '',
+    cellLabels = false,
     onChange = null
   } = opts || {};
   const exportOpts = opts && (opts.export ?? opts.exportOptions);
@@ -1981,6 +2006,7 @@ export function DataTable(opts) {
     const td = h('td', {
       class: [col.className, col.align ? `dt-align-${col.align}` : null, { mono: col.mono, nowrap: col.nowrap, 'dt-wrap': col.wrap }]
     });
+    if (cellLabels && typeof col.label === 'string') td.dataset.label = col.label;
     let content;
     try {
       content = col.render ? col.render(row) : (row == null ? null : row[col.key]);

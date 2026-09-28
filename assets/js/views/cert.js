@@ -97,6 +97,8 @@ registerStrings('en', {
   'cert.pastePlaceholder': '-----BEGIN CERTIFICATE-----\nMIIF…\n-----END CERTIFICATE-----',
   'cert.pasteApply': 'Read certificate',
   'cert.pasteEmpty': 'Paste a PEM block first.',
+  'cert.folder': 'Choose a folder',
+  'cert.folderTitle': 'Load every certificate file in a folder. A private key or CSR in it is listed, never used.',
   'cert.privacy': 'The file is read locally and never uploaded. The private key is not needed — if the file contains one it is ignored and never shown.',
   'cert.loaderTitle': 'Certificate file',
   'cert.loaderSubtitle': 'The certificate your customer or CA sent — with or without the chain',
@@ -388,6 +390,8 @@ registerStrings('tr', {
   'cert.pastePlaceholder': '-----BEGIN CERTIFICATE-----\nMIIF…\n-----END CERTIFICATE-----',
   'cert.pasteApply': 'Sertifikayı oku',
   'cert.pasteEmpty': 'Önce bir PEM bloğu yapıştırın.',
+  'cert.folder': 'Klasör seç',
+  'cert.folderTitle': 'Bir klasördeki tüm sertifika dosyalarını yükler. İçindeki özel anahtar ya da CSR listelenir, hiç kullanılmaz.',
   'cert.privacy': 'Dosya yerel olarak okunur, hiçbir yere yüklenmez. Özel anahtar gerekmez — dosyada varsa yok sayılır ve asla gösterilmez.',
   'cert.loaderTitle': 'Sertifika dosyası',
   'cert.loaderSubtitle': 'Müşterinizin veya sertifika otoritesinin gönderdiği sertifika — zincirli ya da zincirsiz',
@@ -1178,25 +1182,43 @@ function pemFileName(cert, suffix = '') {
 /* ------------------------------------------------------------------------ */
 
 /**
+ * {@link CertLoad}s of files a FileDrop read ({ name, size, buffer, source }), in order.
+ * @param {Array<{ name: string, size: number, buffer: ArrayBuffer, source?: string }>} files
+ * @returns {CertLoad[]}
+ */
+export function certLoadsFromFiles(files) {
+  return (files || []).filter(Boolean)
+    .map((f) => loadCertificateData(new Uint8Array(f.buffer), { name: f.name, size: f.size, source: f.source }));
+}
+
+/**
  * Certificate picker: drop zone (click / drag & drop / Ctrl+V) plus a "paste as text" box.
  * Pasted text is cleared from the box once read, so a pasted private key does not stay on screen.
- * @param {{ onLoad: (load: CertLoad) => void, compact?: boolean, title?: string, hint?: string }} opts
+ * With `multiple` it takes several files at once (and, with `folder`, a folder where the browser
+ * can pick one) and hands them to `onLoads` together, one {@link CertLoad} per file; pasted text
+ * is one load, whatever the number of PEM blocks in it.
+ * @param {{ onLoad: (load: CertLoad) => void, onLoads?: ((loads: CertLoad[]) => void)|null, multiple?: boolean,
+ *   folder?: boolean, compact?: boolean, title?: string, hint?: string }} opts `onLoads` takes every load
+ *   (one file too) when given, else `onLoad` gets the first
  * @returns {{ el: HTMLElement, drop: object, input: HTMLInputElement, paste: object }}
  */
-export function CertLoader({ onLoad, compact = false, title = null, hint = null }) {
+export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = false, compact = false, title = null, hint = null }) {
+  const deliver = (loads) => {
+    if (!loads.length) return;
+    if (onLoads) onLoads(loads);
+    else onLoad(loads[0]);
+  };
   const drop = FileDrop({
     accept: CERT_ACCEPT,
     maxBytes: CERT_MAX_BYTES,
+    multiple,
+    directory: folder,
     compact,
     icon: 'certificate',
     title: title ?? t('cert.dropTitle'),
     hint: hint ?? t('cert.dropHint'),
     className: 'cert-drop',
-    onFiles: (files) => {
-      const f = files[0];
-      if (!f) return;
-      onLoad(loadCertificateData(new Uint8Array(f.buffer), { name: f.name, size: f.size, source: f.source }));
-    }
+    onFiles: (files) => deliver(certLoadsFromFiles(multiple ? files : files.slice(0, 1)))
   });
   const area = textarea({
     label: t('cert.pasteLabel'),
@@ -1212,7 +1234,7 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
     }
     area.setError(null);
     area.value = '';
-    onLoad(loadCertificateData(text, { name: t('file.pasted'), source: 'paste' }));
+    deliver([loadCertificateData(text, { name: t('file.pasted'), source: 'paste' })]);
   };
   // A complete PEM block is read automatically (debounced) — no extra click needed.
   const auto = debounce(() => {
@@ -1227,7 +1249,12 @@ export function CertLoader({ onLoad, compact = false, title = null, hint = null 
   });
   // A form of its own for the shell's Ctrl/Cmd+Enter: Read answers the paste box, never a field of the page around it.
   paste.dataset.shortcutScope = 'cert-paste';
-  const el = h('div', { class: 'cert-loader stack-sm' }, drop, paste);
+  // A folder (webkitdirectory): every certificate file in it; a key or CSR there is reported, never used.
+  const folderBtn = drop.openFolder ? Button({
+    label: t('cert.folder'), icon: 'folder', size: 'sm', variant: 'ghost', title: t('cert.folderTitle'),
+    dataset: { action: 'cert-folder' }, onClick: drop.openFolder
+  }) : null;
+  const el = h('div', { class: 'cert-loader stack-sm' }, drop, folderBtn ? h('div', { class: 'cert-loader-more' }, folderBtn) : null, paste);
   return { el, drop, input: drop.input, paste: area };
 }
 

@@ -685,6 +685,7 @@ registerStrings('en', {
   'file.capped': 'Only the first {max} of {count} files were read.',
   'file.pasted': 'Pasted text',
   'file.loaded': '{name} loaded ({size})',
+  'file.loadedMany': { one: '{count} file loaded ({size})', other: '{count} files loaded ({size})' },
   'file.accepts': 'Accepted: {types}',
 
   'error.title': 'Something went wrong',
@@ -1001,6 +1002,7 @@ registerStrings('tr', {
   'file.capped': '{count} dosyanın yalnızca ilk {max} tanesi okundu.',
   'file.pasted': 'Yapıştırılan metin',
   'file.loaded': '{name} yüklendi ({size})',
+  'file.loadedMany': '{count} dosya yüklendi ({size})',
   'file.accepts': 'Kabul edilenler: {types}',
 
   'error.title': 'Bir sorun oluştu',

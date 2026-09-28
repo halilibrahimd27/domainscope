@@ -1202,12 +1202,14 @@ export function decodeText(buffer) {
  * @property {number} size bytes
  * @property {string} type MIME type reported by the browser ('' when unknown)
  * @property {ArrayBuffer} buffer raw bytes (give this to lib/x509.parseCertificates)
- * @property {string} text decoded text (BOM-aware)
+ * @property {string|null} text decoded text (BOM-aware); null from a FileDrop with `text: false`
  * @property {'drop'|'pick'|'paste'|'folder'} source
  */
 
-/** Most files one drop, pick or folder (with its subfolders) of a `multiple` FileDrop reads. */
+/** Most files one drop, pick or folder (with its subfolders) of a `multiple` FileDrop reads, unless it says `maxFiles`. */
 export const FILE_DROP_MAX_FILES = 100;
+/** Up to this many files, the drop zone's status line names them; past it, it counts them. */
+const FILE_DROP_NAMED = 5;
 
 /**
  * A folder's files by their path in the folder. Browsers list a folder in the file system's
@@ -1224,17 +1226,18 @@ export function folderOrder(files) {
 
 /**
  * Drag & drop + click-to-choose + paste zone. Files are read in the browser only.
- * Pasted text arrives as a LoadedFile named t('file.pasted'). With `multiple`, at most
- * {@link FILE_DROP_MAX_FILES} files are read at once; the status line and a toast (the caller
- * may redraw the zone) say how many were left out.
- * @param {{ onFiles: (files: LoadedFile[]) => void, accept?: string, multiple?: boolean, maxBytes?: number,
- *   title?: string, hint?: string, icon?: string, compact?: boolean, paste?: boolean,
+ * Pasted text arrives as a LoadedFile named t('file.pasted'). With `multiple`, at most `maxFiles`
+ * ({@link FILE_DROP_MAX_FILES} by default) files are read at once; the status line and a toast
+ * (the caller may redraw the zone) say how many were left out. `text: false` hands over the bytes
+ * only (archives, binary reports: no text decoded that nobody reads).
+ * @param {{ onFiles: (files: LoadedFile[]) => void, accept?: string, multiple?: boolean, directory?: boolean, maxBytes?: number,
+ *   maxFiles?: number, text?: boolean, title?: string, hint?: string, icon?: string, compact?: boolean, paste?: boolean,
  *   onError?: (message: string) => void, className?: string }} opts
- * @returns {{ el: HTMLElement, input: HTMLInputElement, setStatus(text: string|null): void, open(): void }}
+ * @returns {{ el: HTMLElement, input: HTMLInputElement, setStatus(text: string|null): void, open(): void, openFolder: (() => void)|null }}
  */
 export function FileDrop({
-  onFiles, accept = '', multiple = false, directory = false, maxBytes = 10 * 1024 * 1024, title = null, hint = null,
-  icon = 'upload', compact = false, paste = true, onError = null, className = ''
+  onFiles, accept = '', multiple = false, directory = false, maxBytes = 10 * 1024 * 1024, maxFiles = FILE_DROP_MAX_FILES, text = true,
+  title = null, hint = null, icon = 'upload', compact = false, paste = true, onError = null, className = ''
 }) {
   const hintId = uid('filedrop-hint');
   const input = h('input', {
@@ -1272,7 +1275,7 @@ export function FileDrop({
 
   async function readFiles(fileList, source) {
     const all = [...(fileList || [])];
-    const files = all.slice(0, multiple ? FILE_DROP_MAX_FILES : 1);
+    const files = all.slice(0, multiple ? Math.max(1, Math.floor(Number(maxFiles)) || FILE_DROP_MAX_FILES) : 1);
     if (!files.length) return;
     const capped = multiple && all.length > files.length
       ? t('file.capped', { max: formatNumber(files.length), count: formatNumber(all.length) }) : null;
@@ -1284,16 +1287,17 @@ export function FileDrop({
       }
       try {
         const buffer = await file.arrayBuffer();
-        out.push({ name: file.name, size: file.size, type: file.type || '', buffer, text: decodeText(buffer), source });
+        out.push({ name: file.name, size: file.size, type: file.type || '', buffer, text: text ? decodeText(buffer) : null, source });
       } catch {
         fail(t('file.readError', { name: file.name }));
       }
     }
     if (!out.length) return;
     status.classList.remove('is-error');
-    status.textContent = [out.length === 1
-      ? t('file.loaded', { name: out[0].name, size: formatBytes(out[0].size) })
-      : out.map((f) => f.name).join(', '), capped].filter(Boolean).join(' · ');
+    const named = out.length === 1 ? t('file.loaded', { name: out[0].name, size: formatBytes(out[0].size) })
+      : out.length <= FILE_DROP_NAMED ? out.map((f) => f.name).join(', ')
+        : t('file.loadedMany', { count: out.length, size: formatBytes(out.reduce((n, f) => n + f.size, 0)) });
+    status.textContent = [named, capped].filter(Boolean).join(' · ');
     if (capped) toast(capped, { type: 'warn' });
     onFiles(out);
   }

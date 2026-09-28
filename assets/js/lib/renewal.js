@@ -605,7 +605,8 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
   const priv = ips.filter(isPrivateIP);
   const pub = ips.filter((ip) => !isPrivateIP(ip));
   if (!pub.length) {
-    out.push(finding('http.private', sev, { name, ips: priv.join(', ') }));
+    // "Only private addresses" only when both families were read: the unread one may be public.
+    if (!unread.length) out.push(finding('http.private', sev, { name, ips: priv.join(', ') }));
     return out;
   }
   const v4 = pub.filter((ip) => ipVersion(ip) === 4);

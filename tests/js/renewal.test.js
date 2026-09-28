@@ -436,6 +436,10 @@ test('one address family unread: never "no AAAA" or ready for HTTP-01, and never
   const v6 = (await run(zone, ['v6only.example.com'], { ca: 'letsencrypt', challenge: 'http-01' },
     { fake: { fail: { 'v6only.example.com|AAAA': 'Failed to fetch' } } })).names[0];
   assert.deepEqual([ids(v6).includes('http.none'), sev(v6, 'http.family-error'), v6.verdict], [false, 'warn', 'unknown']);
+  // A private IPv4 address next to an AAAA lookup that got no answer: never "only private addresses".
+  const split = (await run(exampleZone({ 'split.example.com': { A: '10.0.0.5', AAAA: '2001:db8::5' } }), ['split.example.com'], { ca: 'letsencrypt', challenge: 'http-01' },
+    { fake: { fail: { 'split.example.com|AAAA': 'Failed to fetch' } } })).names[0];
+  assert.deepEqual([ids(split).includes('http.private'), sev(split, 'http.family-error'), split.verdict], [false, 'warn', 'unknown']);
   // DNS-01 does not connect to the addresses: a warning only. NXDOMAIN speaks for both families.
   const dns01 = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, { fake: noAaaa })).names[0];
   assert.ok(!ids(dns01).includes('http.family-error'), 'DNS-01 reads no addresses');

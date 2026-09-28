@@ -15,7 +15,7 @@
  * hidden targets / internal names never queried, statuses, redacted export, cancel, kept for the
  * page session with "Live check from" and Run again; the note gone with the Live tab's own Run,
  * a new import and Forget), the exact-mode hand-off contract, Route 53 (incomplete export) and
- * cPanel imports, a certificate
+ * cPanel imports ("Show the fix" of the cPanel localhost record: exact BIND and Route 53), a certificate
  * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
  * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
  * CSP violations / missing i18n keys.
@@ -517,6 +517,32 @@ async function main() {
       await page.waitFor(() => /cPanel/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'cpanel' });
       await clickTab(page, 'problems');
       assert(await page.evaluate(() => !!document.querySelector('.zone-problem[data-code="OWNER_MISSING_TRAILING_DOT"]')), 'OWNER_MISSING_TRAILING_DOT');
+    });
+
+    await run.step('"Show the fix" of the cPanel localhost record: delete it, exactly as the file has it (BIND, Route 53); only fixable findings offer one', async () => {
+      const offered = await page.evaluate(() => [...document.querySelectorAll('.zone-problems-all [data-action="zone-fix"]')].map((b) => b.dataset.code));
+      assertEqual(offered, ['LOCALHOST_RECORD'], 'only the fixable finding offers a fix (never the duplicate or the missing dot)');
+      const toggle = '.zone-problems-all [data-action="zone-fix"]';
+      await page.click(toggle);
+      await page.waitFor(() => !!document.querySelector('.zone-problems-all .zone-fix .fix-outputs'), { message: 'fix panel', timeout: 10000 });
+      const panel = await page.evaluate(() => {
+        const host = document.querySelector('.zone-problems-all .zone-fix .fix-host');
+        return {
+          sets: [...host.querySelectorAll('.fix-set')].map((li) => `${li.dataset.action} ${li.dataset.type} ${li.dataset.name}: ${[...li.querySelectorAll('.fix-value-text')].map((v) => v.textContent).join(' | ')}`),
+          expanded: document.querySelector('.zone-problems-all [data-action="zone-fix"]').getAttribute('aria-expanded')
+        };
+      });
+      assertEqual(panel, { sets: ['delete A localhost.example.com: 127.0.0.1'], expanded: 'true' }, 'the fix');
+      const code = (tab) => page.evaluate((t) => {
+        document.querySelector(`.zone-problems-all .zone-fix .tab[data-tab="${t}"]`).click();
+        return document.querySelector(`.zone-problems-all .zone-fix .tabpanel[data-tab="${t}"] .codeblock-pre`).textContent;
+      }, tab);
+      assert((await code('bind')).includes('; delete: localhost 14400 IN A 127.0.0.1'), 'BIND names the line to delete, with its TTL from the file');
+      const r53 = JSON.parse(await code('route53'));
+      assertEqual(r53.Changes, [{ Action: 'DELETE', ResourceRecordSet: { Name: 'localhost.example.com.', Type: 'A', TTL: 14400, ResourceRecords: [{ Value: '127.0.0.1' }] } }], 'Route 53 DELETE, exact');
+      await shot(page, opts, 'zone-fix-desktop-light-en');
+      await page.click(toggle);
+      assertEqual(await page.evaluate(() => document.querySelector('.zone-problems-all .zone-fix .fix-host').hidden), true, 'Hide the fix');
     });
 
     await run.step('an internal zone: the Live card and the pinned alert give the same address counts', async () => {

@@ -25,7 +25,9 @@
  * resolve; mode none ("off", never "every MX host matches"); a policy served as
  * application/octet-stream (strict senders ignore it: an error headline, never "works"); a failed
  * MX and AAAA lookup (mxfail.example.com: "lookup failed" in the DNS card, never a dash or "no
- * IPv6"; the policy check "not compared", never "no MX"); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
+ * IPv6"; the policy check "not compared", never "no MX"); "Show the fix" of an SPF "+all" (the
+ * record with ~all, the other TXT record kept by the Route 53 change batch, the link that opens it
+ * in the DNS change request, nothing sent); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
  * It also clicks Copy summary (a clipboard recorder, scan.e2e.mjs stubClipboard): the Markdown and
  * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
  * refused clipboard gets; then a second check that is stopped: the button is off while it runs,
@@ -212,7 +214,12 @@ const MAIL_ZONE = {
   '_mta-sts.mxfail.example.com': { TXT: [['v=STSv1; id=20260927T1300']] },
   // Two v=STSv1 records: senders assume no policy (RFC 8461 §3.1), however valid the file is.
   'twosts.example.com': { A: ['192.0.2.82'], MX: [{ preference: 10, exchange: 'mx.example.com' }, { preference: 20, exchange: 'alt1.mx.example.com' }] },
-  '_mta-sts.twosts.example.com': { TXT: [['v=STSv1; id=20260927T1400'], ['v=STSv1; id=20260927T1401']] }
+  '_mta-sts.twosts.example.com': { TXT: [['v=STSv1; id=20260927T1400'], ['v=STSv1; id=20260927T1401']] },
+  // A zone of its own whose SPF lets every server send ("+all") next to a site verification: "Show the fix".
+  'fix.example.com': {
+    A: ['192.0.2.83'], SOA: [{ ...MAIL_SOA, mname: 'ns1.example.com' }], NS: ['ns1.example.com', 'ns2.example.com'],
+    MX: [{ preference: 10, exchange: 'mx.example.com' }], TXT: [['v=spf1 mx +all'], ['site-verification=fix123']]
+  }
 };
 const MTASTS_CARD = '[data-mtasts="card"]';
 const GP_DIALOG = 'dialog.gp-confirm[open]';
@@ -804,6 +811,37 @@ async function mtaStsGroup(browser, server) {
       await page.setViewport({ width: 1440, height: 900 });
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
+    });
+
+    await step('"Show the fix" of SPF +all: the record with ~all, the other TXT record kept by Route 53, the edit link; nothing sent', async () => {
+      await gotoHash(page, `#/health?domain=fix.${MAIL_APEX}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [`fix.${MAIL_APEX}`], timeout: 30000, message: 'fix.example.com report' });
+      const fixable = await page.evaluate(() => [...document.querySelectorAll('[data-action="health-fix"]')].map((b) => b.dataset.check));
+      assert(fixable.includes('spf.all-pass') && !fixable.includes('spf.present'), `fix buttons: ${fixable}`);
+      const queries = await page.evaluate(() => window.__zoneDnsQueries);
+      const toggle = '[data-action="health-fix"][data-check="spf.all-pass"]';
+      await page.click(toggle);
+      await page.waitFor(() => !!document.querySelector('[data-fix-for="spf.all-pass"] .fix-outputs'), { message: 'fix panel', timeout: 10000 });
+      const panel = await page.evaluate((sel) => {
+        const host = document.querySelector('[data-fix-for="spf.all-pass"]');
+        return {
+          expanded: document.querySelector(sel).getAttribute('aria-expanded'),
+          controls: document.querySelector(sel).getAttribute('aria-controls') === host.id,
+          sets: [...host.querySelectorAll('.fix-set')].map((li) => `${li.dataset.action} ${li.dataset.name}: ${[...li.querySelectorAll('.fix-value-text')].map((v) => v.textContent).join(' | ')}`),
+          edit: host.querySelector('a[href*="#/change?"]')?.getAttribute('href') || ''
+        };
+      }, toggle);
+      assertEqual([panel.expanded, panel.controls], ['true', true], 'toggle state');
+      assertEqual(panel.sets, ['replace fix.example.com: "v=spf1 mx ~all" | "v=spf1 mx +all"'], 'the fix');
+      assert(panel.edit.startsWith('#/change?t=record&name=fix.example.com&type=TXT') && panel.edit.includes('zone=fix.example.com'), `edit link: ${panel.edit}`);
+      await page.evaluate(() => document.querySelector('[data-fix-for="spf.all-pass"] .tab[data-tab="route53"]').click());
+      const r53 = JSON.parse(await page.evaluate(() => document.querySelector('[data-fix-for="spf.all-pass"] .tabpanel[data-tab="route53"] .codeblock-pre').textContent));
+      assertEqual(r53.Changes[0].ResourceRecordSet.ResourceRecords.map((r) => r.Value), ['"site-verification=fix123"', '"v=spf1 mx ~all"'], 'the UPSERT keeps the other TXT record');
+      assertEqual(await page.evaluate(() => window.__zoneDnsQueries), queries, 'the panel sends nothing');
+      await shotSelector(page, 'health-fix-desktop-light-en', '[data-id="spf.all-pass"]');
+      await page.click(toggle);
+      assert(await page.evaluate(() => document.querySelector('[data-fix-for="spf.all-pass"]').hidden), 'Hide the fix');
     });
 
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {

@@ -227,6 +227,20 @@ Targets can be IPs, CIDRs, ranges, hostnames or inventory files, in the same for
 
 The origin panel (Subdomains › Origins) and the Behind CDN tab (SSL Targets) write the sweep command for you, for **Linux / macOS** (`python3 …`) or **Windows PowerShell** (`python …`). IPv4 networks go in as the /24 when several origins or one of your inventory servers sit in it. Otherwise they go in as the exact addresses, and so does a /24 in shared cloud / hosting / CDN space that holds none of your servers. IPv6 always goes in as exact addresses (a /48 is far too large to sweep). Addresses you enter under **Exclude addresses** become `--exclude`; a network they cover entirely drops out. They are kept for that scan while you move between pages, and the JSON export's `origin.cliSuggestion` carries the same `--exclude` (POSIX form). A target list too long for one command line is read from `proxied-targets.txt` instead (Verify's CLI card: `verify-targets.txt`), offered as a download next to `names.txt`. The Zone File view uses only the exact origins from the file: addresses and host names, never a /24, with `*.x` names quoted. Every target must be an IP address or network and every name a valid hostname: anything else — for example a hostile name taken from a CT log — is left out and counted, never pasted into the command, and the remaining tokens are quoted for the chosen shell. The Certificate view's `openssl s_client` line follows the same rule: it uses a certificate name only when it passes (a wildcard as `www.<base>`), else `example.com`. Each IPv4 origin network in Subdomains › Origins also links to a [Reverse DNS sweep](#reverse-dns-sweep) of it, which can name hosts the scan did not find.
 
+## Nightly checks without a browser tab: the headless runner
+
+A closed browser tab monitors nothing. [`tools/ds.mjs`](tools/ds.mjs) runs six of the app's checks under Node 22+ with the app's own libraries (no dependency, no build step): `health` (Domain Health), `subdomains` (discovery, or `--exact` for the names you list), `drift` (a zone export against live DNS), `ct` (current certificates and their issuers in Certificate Transparency), `renew` (renewal readiness) and `dane` (the TLSA check of a certificate). Each prints a short summary and writes a JSON report (`--json`) and a Markdown summary (`--md`). With `--baseline` it compares the run with the previous report of the same command and opens with "Changes since the baseline": hosts that appear or go, health findings and the score, new certificate issuers or names, zone record sets whose live state moved, renewal verdicts.
+
+```bash
+node tools/ds.mjs health example.com example.org --json health.json --md health.md
+node tools/ds.mjs ct --list domains.txt --baseline ct.json --json ct.json --fail-on-change
+node tools/ds.mjs --help
+```
+
+Exit codes: 0 done, 1 the run failed, 2 usage error (report files and the baseline are checked before anything is sent), 3 a report could not be written after the run, 4 something changed since `--baseline` (only with `--fail-on-change`), 130 interrupted (nothing written). DNS goes through the app's DoH resolvers with the app's limits (Quad9 and CZ.NIC answer over HTTP/2 only, which Node's fetch does not speak), and nothing goes to Globalping.
+
+[`docs/examples/nightly-domainscope.yml`](docs/examples/nightly-domainscope.yml) runs it every night on GitHub Actions: it commits the reports and keeps one issue open while something changed ([setting it up](docs/examples/README.md)). **Use it in a private repository**, since the results name your hosts, their addresses and your DNS records. **Never commit inventories or zone files unless you mean to.** **No secret is needed**: the workflow's own token commits the results and writes the issue.
+
 ## A typical SSL rollout
 
 0. **Subdomains (optional):** see everything first — every name, which are proxied, and the origin networks with a sweep command for your shell, e.g. `python3 ssl_origin_scan.py -t 203.0.113.0/24 -n api.example.com shop.example.com`. If you can export the zone, drop it in **Zone File** instead: you get every name and the exact origin of each proxied record, then **Find certificate targets** or copy the exact sweep command.
@@ -272,13 +286,15 @@ assets/data/             bundled wordlists (Smart plain text, Large + Huge gzip)
 tools/build-wordlists.mjs  rebuilds assets/data from pinned upstream lists (maintainers only)
 tools/assemble-site.mjs  the GitHub Pages bundle: copies the site, assets/ under v/<commit>/, writes the precache list into sw.js (deploy only)
 tools/build-icons.mjs    renders icons/*.png from favicon.svg with headless Chrome (maintainers only)
+tools/ds.mjs             the headless runner (Node 22+): health, subdomains, drift, ct, renew and dane over the libraries, for cron and CI
+tools/ds/                its command line, the six checks, "Changes since the baseline" and the summaries (not in the Pages bundle)
 cli/ssl_origin_scan.py   companion CLI (stdlib only)
 tests/js/                node:test unit tests (no network), incl. a repo-hygiene check for real IPs
 tests/python/            CLI tests, including local TLS servers with SNI
 tests/e2e/               headless Chrome E2E via the DevTools protocol (no dependencies)
 .github/workflows/       CI (unit, CLI and offline E2E tests) and the Pages deploy, which runs CI first
 tests/live/              live smoke tests and the discovery benchmark (network; never run in CI; the Globalping smoke never sends your own targets)
-docs/                    SPEC (module contracts), ROADMAP, RESEARCH
+docs/                    SPEC (module contracts), ROADMAP, RESEARCH; examples/: the nightly GitHub Actions template for the runner
 ```
 
 ```bash
@@ -287,6 +303,7 @@ npm run test:py          # CLI tests
 npm run test:e2e:offline # the offline E2E suites (shell, zone, verify, renewal, dane, pfx, renew, ptr, retire, carry, workspaces, domain, and the offline steps of subdomains, global, ip, lookup and health; needs Chrome or Edge), as CI runs them
 node tests/e2e/run-all.mjs   # every E2E suite, most against live APIs; verify, renewal, dane, pfx, renew, ptr, retire, carry, workspaces and domain are offline (verify: 0 Globalping probes; renew: a fake DoH and a fake Globalping)
 node tools/assemble-site.mjs _site && node tests/e2e/serve.mjs --root _site   # preview the Pages bundle (installs its service worker on 127.0.0.1:8080)
+node tools/ds.mjs --help     # the headless runner: its commands, options and exit codes (tests: tests/js/ds-runner.test.js, offline)
 ```
 
 The bundle preview installs the site's service worker on http://127.0.0.1:8080/. Without a version argument the bundle is named after its content (`v/dev-<hash>/`), so assembling again after an edit brings "Update ready"; `npm run serve` on the same port replaces the worker and deletes its caches. To start from scratch, clear the site data for 127.0.0.1:8080. `tests/js/start-route.test.js` keeps what the start page downloads under a 370 KB gzip budget (the workspace store opens before the first view).

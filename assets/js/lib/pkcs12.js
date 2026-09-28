@@ -49,13 +49,14 @@ export class Pkcs12Error extends Error {
   /**
    * @param {'NOT_PKCS12'|'BAD_PASSWORD'|'DAMAGED'|'UNSUPPORTED'} code
    * @param {string} message
-   * @param {{ detail?: string|null, cause?: unknown }} [options]
+   * @param {{ detail?: string|null, encryption?: EncryptionInfo|null, cause?: unknown }} [options]
    */
-  constructor(code, message, { detail = null, cause } = {}) {
+  constructor(code, message, { detail = null, encryption = null, cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = 'Pkcs12Error';
     this.code = code;
     this.detail = detail;
+    this.encryption = encryption;
   }
 }
 
@@ -358,9 +359,13 @@ function algorithm(node) {
   return { id: oid(idNode), params: params && params.id !== 0x05 ? params : null };
 }
 
-function checkIterations(n, max, what) {
+/**
+ * An iteration count: DAMAGED below 1, UNSUPPORTED ('iterations') above `max` — refused at once,
+ * never run. `encryption`: the EncryptionInfo the count belongs to, carried by the error.
+ */
+function checkIterations(n, max, what, encryption = null) {
   if (!Number.isSafeInteger(n) || n < 1) damaged(`Bad ${what} iteration count`);
-  if (n > max) throw new Pkcs12Error('UNSUPPORTED', `${what}: ${n} iterations is more than this page runs`, { detail: 'iterations' });
+  if (n > max) throw new Pkcs12Error('UNSUPPORTED', `${what}: ${n} iterations is more than this page runs`, { detail: 'iterations', encryption });
   return n;
 }
 
@@ -475,13 +480,13 @@ async function hmac(subtle, hash, key, data) {
 
 /**
  * PBKDF2-params ::= SEQUENCE { salt OCTET STRING, iterationCount INTEGER, keyLength INTEGER
- * OPTIONAL, prf AlgorithmIdentifier DEFAULT hmacWithSHA1 }.
+ * OPTIONAL, prf AlgorithmIdentifier DEFAULT hmacWithSHA1 }. The caller caps the iterations.
  */
 function pbkdf2Params(node) {
   const kids = children(expect(node, 0x30, 'PBKDF2 parameters'));
   if (kids[0] && kids[0].id === 0x30) throw new Pkcs12Error('UNSUPPORTED', 'PBKDF2 with another salt source', { detail: 'PBKDF2 salt source' });
   const salt = octetString(kids[0], 'PBKDF2 salt');
-  const iterations = checkIterations(smallInt(kids[1], 'PBKDF2 iteration count'), MAX_PBKDF2_ITERATIONS, 'PBKDF2');
+  const iterations = checkIterations(smallInt(kids[1], 'PBKDF2 iteration count'), Infinity, 'PBKDF2');
   let i = 2;
   const keyLength = kids[i] && kids[i].id === 0x02 ? smallInt(kids[i++], 'PBKDF2 key length') : null;
   let hash = 'SHA-1';
@@ -514,9 +519,11 @@ function encryptionScheme(node) {
   if (pbe) {
     const [saltNode, iterNode] = children(expect(alg.params, 0x30, 'PBE parameters'));
     const salt = octetString(saltNode, 'PBE salt');
-    const iterations = checkIterations(smallInt(iterNode, 'PBE iteration count'), MAX_KDF_ITERATIONS, 'PKCS#12 KDF');
+    const iterations = checkIterations(smallInt(iterNode, 'PBE iteration count'), Infinity, 'PKCS#12 KDF');
+    const info = { scheme: 'PKCS#12', cipher: pbe.cipher, kdf: 'PKCS#12 KDF (SHA-1)', iterations, strength: pbe.strength };
+    checkIterations(iterations, MAX_KDF_ITERATIONS, 'PKCS#12 KDF', info);
     return {
-      info: { scheme: 'PKCS#12', cipher: pbe.cipher, kdf: 'PKCS#12 KDF (SHA-1)', iterations, strength: pbe.strength },
+      info,
       async decrypt(data, form, subtle) {
         const derive = (id, length) => pkcs12Kdf({ hash: 'SHA-1', password: form.bmp, salt, id, iterations, length, subtle });
         const key = await derive(1, pbe.keyLength);
@@ -553,11 +560,13 @@ function encryptionScheme(node) {
     if (cipher.kind !== 'rc2' && params.keyLength !== null && params.keyLength !== cipher.keyLength) damaged(`PBKDF2 key length does not fit ${cipher.cipher}`);
     const keyLength = params.keyLength ?? cipher.keyLength;
     const name = cipher.kind === 'rc2' ? `RC2-${rc2Bits}-CBC` : cipher.cipher;
+    const info = {
+      scheme: 'PBES2', cipher: name, kdf: `PBKDF2-HMAC-${params.hash.replace('-', '')}`, iterations: params.iterations,
+      strength: cipher.kind === 'rc2' && rc2Bits <= 56 ? 'weak' : cipher.strength
+    };
+    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBKDF2', info);
     return {
-      info: {
-        scheme: 'PBES2', cipher: name, kdf: `PBKDF2-HMAC-${params.hash.replace('-', '')}`, iterations: params.iterations,
-        strength: cipher.kind === 'rc2' && rc2Bits <= 56 ? 'weak' : cipher.strength
-      },
+      info,
       async decrypt(data, form, subtle) {
         const key = await pbkdf2(subtle, { password: form.utf8, salt: params.salt, iterations: params.iterations, hash: params.hash, length: keyLength });
         try {
@@ -649,6 +658,7 @@ function readMac(node) {
     const kdf = algorithm(kdfNode);
     if (kdf.id !== OID.PBKDF2) throw new Pkcs12Error('UNSUPPORTED', `PBMAC1 with the key derivation ${kdf.id}`, { detail: kdf.id });
     const params = pbkdf2Params(kdf.params);
+    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBMAC1');
     const scheme = algorithm(schemeNode);
     const hash = HMACS[scheme.id];
     if (!hash || !HASHES[hash]) throw new Pkcs12Error('UNSUPPORTED', `PBMAC1 with ${scheme.id}`, { detail: hash ? `HMAC-${hash}` : scheme.id });
@@ -747,7 +757,7 @@ function readSafeContents(bytes, acc, depth = 0) {
       }
       acc.certificates.push({ der: octets(children(expect(certWrap, 0xa0, 'certificate value'))[0]).slice(), ...attributes });
     } else if (type === OID.KEY_BAG) {
-      acc.keys.push({ encrypted: false, encryption: null, value: expect(value, 0x30, 'PrivateKeyInfo'), ...attributes });
+      acc.keys.push({ encrypted: false, encryption: null, unsupported: null, value: expect(value, 0x30, 'PrivateKeyInfo'), ...attributes });
     } else if (type === OID.SHROUDED_KEY_BAG) {
       // EncryptedPrivateKeyInfo ::= SEQUENCE { encryptionAlgorithm, encryptedData OCTET STRING }
       const [algNode, dataNode] = children(expect(value, 0x30, 'EncryptedPrivateKeyInfo'));
@@ -759,7 +769,9 @@ function readSafeContents(bytes, acc, depth = 0) {
         if (!(err instanceof Pkcs12Error) || err.code !== 'UNSUPPORTED') throw err;
         unsupported = err; // the certificates can still be read
       }
-      acc.keys.push({ encrypted: true, encryption: scheme && scheme.info, scheme, unsupported, ciphertext: octets(dataNode), ...attributes });
+      acc.keys.push({
+        encrypted: true, encryption: scheme ? scheme.info : unsupported.encryption, scheme, unsupported, ciphertext: octets(dataNode), ...attributes
+      });
     } else if (type === OID.SAFE_CONTENTS_BAG) {
       readSafeContents(tlvOf(value), acc, depth + 1);
     } else if (type === OID.CRL_BAG) {
@@ -843,11 +855,15 @@ async function checkKey(pkcs8, certificates, subtle) {
  * @typedef {object} Pkcs12Contents
  * @property {Array<{ der: Uint8Array, friendlyName: string|null, localKeyId: string|null }>} certificates
  *   in file order (localKeyId: lowercase hex)
- * @property {Array<{ encrypted: boolean, encryption: EncryptionInfo|null, friendlyName: string|null,
- *   localKeyId: string|null, check: null|{ status: 'checked'|'unsupported'|'failed', algorithm: string|null,
- *   certificates: number[] } }>} keys never the key itself; `check` only with `checkKey`:
- *   'checked' (certificates: the indexes the key belongs to), 'unsupported' (a key type this page
- *   cannot check), 'failed' (the key did not decrypt although the rest of the file did)
+ * @property {Array<{ encrypted: boolean, encryption: EncryptionInfo|null, unsupported: string|null,
+ *   friendlyName: string|null, localKeyId: string|null, check: null|{ status: 'checked'|'unsupported'|
+ *   'unsupported-encryption'|'failed', algorithm: string|null, certificates: number[] } }>} keys
+ *   never the key itself. `unsupported`: why this page cannot decrypt a shrouded key — its
+ *   encryption's name or OID ('pbeWithSHAAnd128BitRC4', …; `encryption` is then null) or
+ *   'iterations' (`encryption` says which). `check` only with `checkKey`: 'checked' (certificates:
+ *   the indexes the key belongs to), 'unsupported' (a key type this page cannot check; algorithm:
+ *   its name), 'unsupported-encryption' (the key could not be decrypted here, see `unsupported`),
+ *   'failed' (the key did not decrypt although the rest of the file did)
  * @property {{ kind: 'hmac'|'pbmac1', hash: string, iterations: number, kdf: string|null }|null} mac
  * @property {EncryptionInfo[]} encryption one per encrypted part holding certificates (usually one)
  * @property {boolean} passwordVerified the MAC matched, or a part decrypted with the password
@@ -944,7 +960,10 @@ async function open(bytes, password, { checkKey, subtle }) {
         check = checked.check;
         form = form || checked.form;
       }
-      keys.push({ encrypted: key.encrypted, encryption: key.encryption, friendlyName: key.friendlyName, localKeyId: key.localKeyId, check });
+      keys.push({
+        encrypted: key.encrypted, encryption: key.encryption, unsupported: key.unsupported ? key.unsupported.detail : null,
+        friendlyName: key.friendlyName, localKeyId: key.localKeyId, check
+      });
     }
 
     const mac = pfx.mac ? {
@@ -977,7 +996,8 @@ async function open(bytes, password, { checkKey, subtle }) {
  * @returns {Promise<{ check: object, form: object|null }|null>}
  */
 async function checkOneKey(key, forms, verified, certificates, subtle) {
-  if (key.unsupported) return { check: { status: 'unsupported', algorithm: key.unsupported.detail, certificates: [] }, form: null };
+  // An encryption this page cannot undo: no key to check, and nothing wrong with the password.
+  if (key.unsupported) return { check: { status: 'unsupported-encryption', algorithm: null, certificates: [] }, form: null };
   if (!key.encrypted) return { check: await checkKey(tlvOf(key.value), certificates, subtle), form: null };
   for (const f of forms) {
     let pkcs8 = null;

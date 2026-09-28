@@ -1754,15 +1754,19 @@ export function parseCertificates(input, options = {}) {
  * @property {{ kind: 'hmac'|'pbmac1', hash: string, iterations: number, kdf: string|null }|null} mac
  *   the integrity check (null: the bundle has none)
  * @property {import('./pkcs12.js').EncryptionInfo[]} encryption of the parts holding certificates
- * @property {import('./pkcs12.js').EncryptionInfo[]} keyEncryption of the private keys (one per scheme)
+ * @property {Array<import('./pkcs12.js').EncryptionInfo|{ unsupported: string }>} keyEncryption of the
+ *   encrypted private keys (one per scheme). One this page cannot decrypt has `unsupported`: its
+ *   name or OID alone ('pbeWithSHAAnd128BitRC4'), or 'iterations' on the EncryptionInfo
  * @property {boolean} passwordVerified the MAC matched or something decrypted with the password;
  *   false for a bundle with neither (its certificates were readable without it)
- * @property {null|{ status: 'match'|'mismatch'|'nokey'|'nocert'|'unsupported'|'failed', algorithm: string|null,
- *   owner: Certificate|null }} keyCheck only with `checkKey`: 'match' a private key belongs to the
- *   leaf; 'mismatch' none does (owner: a certificate of the bundle the key belongs to, if any);
- *   'nokey' the bundle holds no key; 'nocert' no certificate was read to check one against;
- *   'unsupported' a key type the browser cannot check (algorithm: its name); 'failed' the key
- *   did not decrypt although the certificates did
+ * @property {null|{ status: 'match'|'mismatch'|'nokey'|'nocert'|'unsupported'|'unsupported-encryption'|'failed',
+ *   algorithm: string|null, encryption: string|null, owner: Certificate|null }} keyCheck only with
+ *   `checkKey`: 'match' a private key belongs to the leaf; 'mismatch' none does (owner: a
+ *   certificate of the bundle the key belongs to, if any); 'nokey' the bundle holds no key;
+ *   'nocert' no certificate was read to check one against; 'unsupported' a key type the browser
+ *   cannot check (algorithm: its name); 'unsupported-encryption' the key is encrypted in a way this
+ *   page cannot undo (encryption: its name or OID, or 'iterations'); 'failed' the key did not
+ *   decrypt although the certificates did
  */
 
 /** The {@link Pkcs12Summary} of an opened bundle; `parsed[i]` is the Certificate of its certificate i. */
@@ -1777,24 +1781,30 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
     });
   };
   const leafIndex = leaf ? parsed.indexOf(leaf) : -1;
+  const verdict = (status, { algorithm = null, encryption = null, owner = null } = {}) => ({ status, algorithm, encryption, owner });
   let keyCheck = null;
   if (checkKey && !leaf) {
-    keyCheck = { status: 'nocert', algorithm: null, owner: null }; // nothing to check a key against
+    keyCheck = verdict('nocert'); // nothing to check a key against
   } else if (checkKey) {
     const checks = opened.keys.map((k) => k.check).filter(Boolean);
     const checked = checks.filter((c) => c.status === 'checked');
     const match = checked.find((c) => c.certificates.includes(leafIndex));
     if (!opened.keys.length) {
-      keyCheck = { status: 'nokey', algorithm: null, owner: null };
+      keyCheck = verdict('nokey');
     } else if (match) {
-      keyCheck = { status: 'match', algorithm: match.algorithm, owner: leaf };
+      keyCheck = verdict('match', { algorithm: match.algorithm, owner: leaf });
     } else if (checked.length) {
       const owned = checked.find((c) => c.certificates.length);
-      keyCheck = { status: 'mismatch', algorithm: checked[0].algorithm, owner: owned ? parsed[owned.certificates[0]] || null : null };
+      keyCheck = verdict('mismatch', { algorithm: checked[0].algorithm, owner: owned ? parsed[owned.certificates[0]] || null : null });
     } else if (checks.some((c) => c.status === 'failed')) {
-      keyCheck = { status: 'failed', algorithm: null, owner: null };
+      keyCheck = verdict('failed');
     } else {
-      keyCheck = { status: 'unsupported', algorithm: (checks[0] && checks[0].algorithm) || null, owner: null };
+      // Nothing checked: a key type the browser cannot use, else a key it could not decrypt.
+      const typed = checks.find((c) => c.status === 'unsupported');
+      const locked = opened.keys.find((k) => k.unsupported);
+      keyCheck = typed || !locked
+        ? verdict('unsupported', { algorithm: typed ? typed.algorithm : null })
+        : verdict('unsupported-encryption', { encryption: locked.unsupported });
     }
   }
   const leafBag = leafIndex >= 0 ? opened.certificates[leafIndex] : null;
@@ -1805,7 +1815,8 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
     friendlyName: (leafBag && leafBag.friendlyName) || null,
     mac: opened.mac,
     encryption: distinct(opened.encryption),
-    keyEncryption: distinct(opened.keys.map((k) => k.encryption).filter(Boolean)),
+    keyEncryption: distinct(opened.keys.filter((k) => k.encrypted)
+      .map((k) => (k.unsupported ? { ...k.encryption, unsupported: k.unsupported } : k.encryption))),
     passwordVerified: opened.passwordVerified,
     keyCheck
   };

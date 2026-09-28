@@ -44,6 +44,7 @@ registerStrings('en', {
   'pfx.note.notEncrypted': 'not encrypted',
   'pfx.note.noMac': 'none',
   'pfx.note.iterations': { one: '{count} iteration', other: '{count} iterations' },
+  'pfx.note.notSupported': 'not supported here',
   'pfx.note.unverified': 'This file has no integrity check and its certificates are not encrypted: they were read without the password, which was not checked.',
   'pfx.note.plainKey': {
     one: 'The private key is stored without encryption: anyone with the file has the key.',
@@ -60,6 +61,8 @@ registerStrings('en', {
   'pfx.key.owner': 'The key belongs to {name}.',
   'pfx.key.nokey': 'The file holds no private key: the server needs the key from elsewhere.',
   'pfx.key.unsupported': 'The browser cannot check this {algorithm} key.',
+  'pfx.key.encryptionUnsupported': 'The key’s encryption ({what}) is not supported here, so the key cannot be checked.',
+  'pfx.key.iterationsUnsupported': 'The key’s password is stretched with more iterations than this page runs, so the key cannot be checked.',
   'pfx.key.failed': 'The private key could not be decrypted with this password: it may have a password of its own, or the file is damaged.',
   'pfx.key.notChecked': 'The key was not checked. To check it, load the file again and tick “Check that the private key matches the certificate”.',
 
@@ -93,6 +96,7 @@ registerStrings('tr', {
   'pfx.note.notEncrypted': 'şifrelenmemiş',
   'pfx.note.noMac': 'yok',
   'pfx.note.iterations': '{count} yineleme',
+  'pfx.note.notSupported': 'burada desteklenmiyor',
   'pfx.note.unverified': 'Bu dosyada bütünlük denetimi yok ve sertifikaları şifrelenmemiş: parolaya gerek kalmadan okundular, parola denetlenmedi.',
   'pfx.note.plainKey': {
     one: 'Özel anahtar şifrelenmeden saklanmış: dosyaya sahip olan herkes anahtara da sahip.',
@@ -109,6 +113,8 @@ registerStrings('tr', {
   'pfx.key.owner': 'Anahtar {name} sertifikasına ait.',
   'pfx.key.nokey': 'Dosyada özel anahtar yok: sunucunun anahtarı başka bir yerden alması gerekir.',
   'pfx.key.unsupported': '{algorithm} anahtarı tarayıcıda denetlenemez.',
+  'pfx.key.encryptionUnsupported': 'Anahtarın şifrelemesi ({what}) burada desteklenmiyor, bu yüzden anahtar denetlenemez.',
+  'pfx.key.iterationsUnsupported': 'Anahtarın parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş, bu yüzden anahtar denetlenemez.',
   'pfx.key.failed': 'Özel anahtar bu parolayla çözülemedi: kendine ait bir parolası olabilir ya da dosya bozuk.',
   'pfx.key.notChecked': 'Anahtar denetlenmedi. Denetlemek için dosyayı yeniden yükleyip “Özel anahtarın sertifikayla eşleştiğini denetle” kutusunu işaretleyin.',
 
@@ -207,9 +213,15 @@ export async function askPfxPassword({ name, open }) {
   return value === 'open' ? opened : null;
 }
 
-/** "AES-256-CBC · PBKDF2-HMAC-SHA256 · 2,048 iterations" plus a weak / legacy badge. */
+/**
+ * "AES-256-CBC · PBKDF2-HMAC-SHA256 · 2,048 iterations" plus a weak / legacy badge; an encryption
+ * this page cannot undo ends in "not supported here", and is only its name when that is all
+ * that is known ("pbeWithSHAAnd128BitRC4 · not supported here").
+ */
 function schemeText(e) {
-  const text = `${e.cipher} · ${e.kdf} · ${t('pfx.note.iterations', { count: e.iterations })}`;
+  if (!e.cipher) return `${e.unsupported} · ${t('pfx.note.notSupported')}`;
+  let text = `${e.cipher} · ${e.kdf} · ${t('pfx.note.iterations', { count: e.iterations })}`;
+  if (e.unsupported) text += ` · ${t('pfx.note.notSupported')}`;
   if (e.strength === 'weak' || e.strength === 'legacy') {
     return h('span', null, text, ' ', Badge(t(`pfx.strength.${e.strength}`), {
       variant: e.strength === 'weak' ? 'warn' : 'neutral', title: t(`pfx.strength.${e.strength}Title`), className: 'pfx-strength'
@@ -252,10 +264,14 @@ export function PfxNote(summary, { actions = [], certName = (c) => c.subjectCN |
   facts.push({ key: t('pfx.note.integrity'), value: macText(summary.mac) });
 
   const kc = summary.keyCheck;
+  const muted = (text) => h('p', { class: 'muted text-sm pfx-key-verdict' }, text);
+  // The key is encrypted in a way this page cannot undo: ticking the key check would not help.
+  const locked = (what) => t(what === 'iterations' ? 'pfx.key.iterationsUnsupported' : 'pfx.key.encryptionUnsupported', { what });
+  const allLocked = !summary.unencryptedKeys && summary.keyEncryption.length && summary.keyEncryption.every((e) => e.unsupported);
   let verdict = null;
   const extra = [];
   if (!kc) {
-    if (summary.keys && summary.certificates) verdict = h('p', { class: 'muted text-sm pfx-key-verdict' }, t('pfx.key.notChecked'));
+    if (summary.keys && summary.certificates) verdict = muted(allLocked ? locked(summary.keyEncryption[0].unsupported) : t('pfx.key.notChecked'));
   } else if (kc.status === 'nocert') {
     // No certificate was read: the alerts above say why; a key check has nothing to say.
   } else if (kc.status === 'match') {
@@ -270,9 +286,10 @@ export function PfxNote(summary, { actions = [], certName = (c) => c.subjectCN |
     extra.push(a);
   } else if (kc.status === 'failed') {
     extra.push(Alert({ variant: 'warn', compact: true, icon: 'key', message: t('pfx.key.failed') }));
+  } else if (kc.status === 'unsupported-encryption') {
+    verdict = muted(locked(kc.encryption || '?'));
   } else {
-    verdict = h('p', { class: 'muted text-sm pfx-key-verdict' },
-      kc.status === 'nokey' ? t('pfx.key.nokey') : t('pfx.key.unsupported', { algorithm: kc.algorithm || '?' }));
+    verdict = muted(kc.status === 'nokey' ? t('pfx.key.nokey') : t('pfx.key.unsupported', { algorithm: kc.algorithm || '?' }));
   }
   const warnings = [
     !summary.passwordVerified ? t('pfx.note.unverified') : null,

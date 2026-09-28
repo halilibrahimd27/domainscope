@@ -82,15 +82,21 @@ const OIDS = {
   encryptedData: '1.2.840.113549.1.7.6', certBag: '1.2.840.113549.1.12.10.1.3', x509: '1.2.840.113549.1.9.22.1',
   sha256: '2.16.840.1.101.3.4.2.1', sha512: '2.16.840.1.101.3.4.2.3', sha224: '2.16.840.1.101.3.4.2.4', rc4: '1.2.840.113549.1.12.1.1',
   pbes2: '1.2.840.113549.1.5.13', pbkdf2: '1.2.840.113549.1.5.12', hmacSha256: '1.2.840.113549.2.9',
-  aes256: '2.16.840.1.101.3.4.1.42', pbe3des: '1.2.840.113549.1.12.1.3'
+  aes256: '2.16.840.1.101.3.4.1.42', keyBag: '1.2.840.113549.1.12.10.1.1', shroudedKeyBag: '1.2.840.113549.1.12.10.1.2',
+  localKeyId: '1.2.840.113549.1.9.21', pbe3des: '1.2.840.113549.1.12.1.3'
 };
 const contentInfo = (type, inner) => seq(oid(OIDS[type]), explicit0(inner));
-const certBag = (der) => seq(oid(OIDS.certBag), explicit0(seq(oid(OIDS.x509), explicit0(octet(der)))));
+/** bagAttributes with a localKeyId, or nothing. */
+const keyIdAttr = (id) => (id ? tlv(0x31, seq(oid(OIDS.localKeyId), tlv(0x31, octet(id)))) : Buffer.alloc(0));
+const certBag = (der, keyId = null) => seq(oid(OIDS.certBag), explicit0(seq(oid(OIDS.x509), explicit0(octet(der)))), keyIdAttr(keyId));
+const keyBag = (pkcs8, keyId = null) => seq(oid(OIDS.keyBag), explicit0(pkcs8), keyIdAttr(keyId));
+/** A pkcs8ShroudedKeyBag: EncryptedPrivateKeyInfo with the given AlgorithmIdentifier. */
+const shroudedKeyBag = (alg, ciphertext, keyId = null) => seq(oid(OIDS.shroudedKeyBag), explicit0(seq(alg, octet(ciphertext))), keyIdAttr(keyId));
 /** EncryptedData with the given AlgorithmIdentifier and ciphertext. */
 const encryptedData = (alg, ciphertext) => contentInfo('encryptedData',
   seq(int(0), seq(oid(OIDS.data), alg, tlv(0x80, ciphertext))));
-const pbes2Aes256 = (salt, iv) => seq(oid(OIDS.pbes2), seq(
-  seq(oid(OIDS.pbkdf2), seq(octet(salt), int(2048), seq(oid(OIDS.hmacSha256), Buffer.from([5, 0])))),
+const pbes2Aes256 = (salt, iv, iterations = 2048) => seq(oid(OIDS.pbes2), seq(
+  seq(oid(OIDS.pbkdf2), seq(octet(salt), int(iterations), seq(oid(OIDS.hmacSha256), Buffer.from([5, 0])))),
   seq(oid(OIDS.aes256), octet(iv))));
 const pbe3des = (salt, iterations) => seq(oid(OIDS.pbe3des), seq(octet(salt), int(iterations)));
 
@@ -274,7 +280,7 @@ describe('openPkcs12: the OpenSSL-made bundles', () => {
     };
     walk(got, 'result');
     assert.deepEqual(arrays, got.certificates.map((_, i) => `result.certificates.${i}.der`));
-    assert.deepEqual(Object.keys(got.keys[0]).sort(), ['check', 'encrypted', 'encryption', 'friendlyName', 'localKeyId']);
+    assert.deepEqual(Object.keys(got.keys[0]).sort(), ['check', 'encrypted', 'encryption', 'friendlyName', 'localKeyId', 'unsupported']);
     assert.doesNotMatch(JSON.stringify(got, (k, v) => (v instanceof Uint8Array ? toHex(v) : v)), new RegExp(Buffer.from(PASS).toString('hex')));
   });
 
@@ -409,6 +415,27 @@ describe('openPkcs12: damaged and unsupported bundles', () => {
       const err = await rejection(openPkcs12(input, 'x'));
       assert.deepEqual([err.code, err.detail], ['UNSUPPORTED', detail]);
     }
+  });
+
+  test('a key this page cannot decrypt is described, and the certificates still open', async () => {
+    const rc4 = seq(oid(OIDS.rc4), seq(octet(randomBytes(8)), int(2048)));
+    const slow = pbes2Aes256(randomBytes(8), randomBytes(16), 20000000);
+    for (const [alg, unsupported, encryption] of [
+      [rc4, 'pbeWithSHAAnd128BitRC4', null],
+      [slow, 'iterations', { scheme: 'PBES2', cipher: 'AES-256-CBC', kdf: 'PBKDF2-HMAC-SHA256', iterations: 20000000, strength: 'ok' }]
+    ]) {
+      const bundle = await pfx(seq(contentInfo('data', octet(seq(certBag(leaf, 'k1'), shroudedKeyBag(alg, randomBytes(32), 'k1'))))), { password: 'x' });
+      const got = await openPkcs12(bundle, 'x', { checkKey: true });
+      assert.equal(got.certificates.length, 1);
+      assert.deepEqual([got.keys[0].unsupported, got.keys[0].encryption, got.keys[0].check.status], [unsupported, encryption, 'unsupported-encryption']);
+    }
+  });
+
+  test('an iteration count above the cap names the encryption it belongs to', async () => {
+    const part = encryptedData(pbe3des(randomBytes(8), 5000000), randomBytes(64));
+    const err = await rejection(openPkcs12(await pfx(seq(part), { password: 'x' }), 'x'));
+    assert.deepEqual([err.code, err.detail, err.encryption && err.encryption.cipher, err.encryption && err.encryption.iterations],
+      ['UNSUPPORTED', 'iterations', '3DES-CBC', 5000000]);
   });
 
   test('a large 3DES bundle (as Windows writes them) opens without holding the event loop', async () => {
@@ -550,6 +577,16 @@ describe('x509 loadCertificates', () => {
     assert.equal((await loadCertificates(bundle, { password: 'k' })).pkcs12.keyCheck, null, 'not asked');
   });
 
+  test('a key this page cannot decrypt: its encryption in the summary, its own verdict', async () => {
+    const [rsa] = parseCertificates(read('p12_rsa.pem')).certificates.map((c) => c.der);
+    const rc4 = seq(oid(OIDS.rc4), seq(octet(randomBytes(8)), int(2048)));
+    const bundle = await pfx(seq(contentInfo('data', octet(seq(certBag(rsa, 'k1'), shroudedKeyBag(rc4, randomBytes(32), 'k1'))))), { password: 'k' });
+    const checked = await loadCertificates(bundle, { password: 'k', checkKey: true });
+    assert.deepEqual(checked.pkcs12.keyEncryption, [{ unsupported: 'pbeWithSHAAnd128BitRC4' }]);
+    assert.deepEqual(checked.pkcs12.keyCheck, { status: 'unsupported-encryption', algorithm: null, encryption: 'pbeWithSHAAnd128BitRC4', owner: null });
+    assert.equal((await loadCertificates(bundle, { password: 'k' })).pkcs12.keyCheck, null, 'not asked');
+  });
+
   test('two bundles in one input: the first opens, the second is said to be skipped', async () => {
     const der = read('p12_rsa_aes.p12');
     const r = await loadCertificates(pemEncode(der, 'PKCS12') + pemEncode(read('p12_ec_aes128.p12'), 'PKCS12'), { password: PASS });
@@ -567,7 +604,7 @@ describe('x509 loadCertificates', () => {
     });
     const r = await loadCertificates(read('p12_ec_aes128.p12'), { password: PASS, checkKey: true, subtle });
     assert.equal(r.certificates.length, 3);
-    assert.deepEqual(r.pkcs12.keyCheck, { status: 'unsupported', algorithm: 'EC P-256', owner: null });
+    assert.deepEqual(r.pkcs12.keyCheck, { status: 'unsupported', algorithm: 'EC P-256', encryption: null, owner: null });
   });
 
   test('a key type the browser cannot check is "unsupported", not a mismatch', async () => {
@@ -581,6 +618,6 @@ describe('x509 loadCertificates', () => {
       }
     });
     const r = await loadCertificates(read('p12_unicode.p12'), { password: PASSWORDS.unicode, checkKey: true, subtle });
-    assert.deepEqual(r.pkcs12.keyCheck, { status: 'unsupported', algorithm: 'EC P-256', owner: null });
+    assert.deepEqual(r.pkcs12.keyCheck, { status: 'unsupported', algorithm: 'EC P-256', encryption: null, owner: null });
   });
 });

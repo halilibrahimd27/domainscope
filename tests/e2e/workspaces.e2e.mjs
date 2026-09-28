@@ -13,6 +13,8 @@
  *   - two workspaces are created in the dialog, each with its own servers: the same address in
  *     both is no DUPLICATE_IP, a switch shows the other inventory and a reload keeps the active
  *     workspace;
+ *   - a switch asks first when it would drop unsaved Servers edits (Cancel keeps them) or stop a
+ *     running Bulk Resolve job (confirmed: the job stops);
  *   - another tab working in the same workspace follows a save (BroadcastChannel);
  *   - expected CAs: a fixture certificate in the Certificate view is flagged "Unexpected CA", then "Expected CA"
  *     once its CA is listed; the certificate's name joins the recent domains, and switching back
@@ -101,6 +103,40 @@ async function confirmTop(page) {
   });
   await page.waitFor(() => !document.querySelector('dialog.modal-sm[open]'), { message: 'confirmation closed' });
 }
+
+/** The confirmation dialog on top: its message, then Cancel (the first button). */
+async function cancelTop(page) {
+  await page.waitFor(() => [...document.querySelectorAll('dialog.modal-sm[open]')].length > 0, { message: 'confirmation' });
+  const message = await page.evaluate(() => {
+    const d = [...document.querySelectorAll('dialog.modal-sm[open]')].pop();
+    const text = d.querySelector('.modal-message').textContent;
+    d.querySelector('.modal-foot .btn').click();
+    return text;
+  });
+  await page.waitFor(() => !document.querySelector('dialog.modal-sm[open]'), { message: 'confirmation closed' });
+  return message;
+}
+
+/** The message of the confirmation dialog on top. */
+const topMessage = (page) => page.waitFor(() => {
+  const d = [...document.querySelectorAll('dialog.modal-sm[open]')].pop();
+  return d ? d.querySelector('.modal-message').textContent : false;
+}, { message: 'confirmation' });
+
+/** Hold every fetch of the page (nothing is answered offline): a job started now stays running. */
+const holdFetches = (page) => page.evaluate(() => {
+  window.__realFetch = window.__realFetch || window.fetch;
+  window.__heldFetches = 0;
+  window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
+    window.__heldFetches += 1;
+    const signal = init.signal || (input && input.signal);
+    if (signal) signal.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
+  });
+});
+
+const releaseFetches = (page) => page.evaluate(() => {
+  if (window.__realFetch) window.fetch = window.__realFetch;
+});
 
 /** The id of a workspace row in the dialog, by its name. */
 const rowId = (page, name) => page.evaluate((n) => {
@@ -211,6 +247,40 @@ async function desktop(browser, server, tmp) {
       await waitReady(page);
       await page.waitFor((t) => document.querySelector('[data-role="inventory-text"]')?.value === t, { args: [INVENTORY_A], message: 'Acme after reload' });
       assertEqual((await page.evaluate(wsInfo)).header, 'Acme', 'header');
+    });
+
+    await run.step('a switch asks first when it would drop unsaved server edits or stop a running job', async () => {
+      // Unsaved edits in the Servers editor belong to Acme: Cancel keeps them, and Acme.
+      await page.type('[data-role="inventory-text"]', `${INVENTORY_A}\nweb09 192.0.2.19`);
+      await openWorkspaces(page);
+      let id = await rowId(page, 'Globex');
+      await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-switch"]`);
+      const unsaved = await cancelTop(page);
+      assert(/changes that are not saved/.test(unsaved) && /“Globex”/.test(unsaved), unsaved);
+      await closeWorkspaces(page);
+      assertEqual([(await page.evaluate(wsInfo)).active, (await editorText(page)).includes('web09')], ['Acme', true], 'still Acme, edits kept');
+      await page.type('[data-role="inventory-text"]', INVENTORY_A);
+      // A running Bulk Resolve job (its lookups held back) stops with the switch, after a confirmation.
+      await gotoRoute(page, '#/bulk');
+      await holdFetches(page);
+      await page.type('[data-role="bulk-input"]', 'www.example.com');
+      await page.press('Enter', { ctrl: true });
+      await page.waitFor(() => document.getElementById('app-header').classList.contains('is-busy') && window.__heldFetches > 0, { message: 'Bulk Resolve at work' });
+      await openWorkspaces(page);
+      id = await rowId(page, 'Globex');
+      await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-switch"]`);
+      assert(/Still running here: Bulk Resolve/.test(await topMessage(page)), 'names the job');
+      await confirmTop(page);
+      await page.waitFor(wsActiveIs, { args: ['Globex'], message: 'switched' });
+      await closeWorkspaces(page);
+      await page.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy') && !document.querySelector('.bulk-results'),
+        { message: 'the job stopped, Bulk Resolve opened again empty' });
+      await releaseFetches(page);
+      await openWorkspaces(page);
+      await switchTo(page, 'Acme');
+      await closeWorkspaces(page);
+      await gotoRoute(page, '#/inventory');
+      assertEqual(await editorText(page), INVENTORY_A, 'Acme as saved');
     });
 
     await run.step('another tab working in the same workspace follows a save', async () => {

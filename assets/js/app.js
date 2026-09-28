@@ -42,9 +42,10 @@
  * Workspaces (state.js, lib/workspace.js): the first view mounts once `state.ready` has opened the
  * workspace store. The header's switcher (inside the Tools menu below 720 px) opens the
  * Workspaces dialog (ui/workspace-panel.js, loaded on first use). A switch asks first when a long
- * job runs (it stops), forgets the page session, makes the new workspace's most recent domain the
- * current target and opens the tool on screen again with it filled in. Every target a tool runs on
- * goes to the top of the active workspace's recent list.
+ * job runs (it stops) or the view on screen has edits it would drop (an optional `unsaved()`
+ * export: Servers), forgets the page session, makes the new workspace's most recent domain the
+ * current target and opens the tool on screen again with it filled in. Every target a tool runs
+ * on goes to the top of the active workspace's recent list.
  */
 
 import {
@@ -1276,9 +1277,12 @@ function updateNavHrefs() {
   });
 }
 
+/** The workspace store has opened: the switcher names the real active workspace (never a flash of Default). */
+let workspacesReady = false;
+
 /** The header's workspace switcher (CSS hides it below 720 px, where the Tools menu has it). */
 function renderWorkspaceSwitch() {
-  if (!dom.workspaceHost) return;
+  if (!dom.workspaceHost || !workspacesReady) return;
   const doc = globalThis.document;
   const hadFocus = !!doc && dom.workspaceHost.contains(doc.activeElement);
   clear(dom.workspaceHost);
@@ -1330,8 +1334,9 @@ async function openWorkspaces() {
 }
 
 /**
- * Work in another workspace. A long job still running (Subdomains, SSL Targets, Bulk Resolve)
- * belongs to this one and stops: the user confirms that first.
+ * Work in another workspace. What belongs to this one and would be lost — a long job still
+ * running (Subdomains, SSL Targets, Bulk Resolve), which stops, or Servers edits not saved yet
+ * (the view's `unsaved()`, or its draft kept in the session) — the user confirms first.
  * @param {string} id
  * @returns {Promise<boolean>} switched
  */
@@ -1339,12 +1344,23 @@ async function switchWorkspace(id) {
   if (id === state.workspace.id) return true;
   const next = state.workspaces.find((w) => w.id === id);
   if (!next) return false;
+  const name = workspaceLabel(next);
   const jobs = runningJobs();
-  if (jobs.length) {
+  let unsaved = !!state.getSession('inventoryDraft');
+  try {
+    if (current && current.view && typeof current.view.unsaved === 'function' && current.view.unsaved()) unsaved = true;
+  } catch (err) {
+    reportError(err);
+  }
+  if (jobs.length || unsaved) {
+    const lost = [
+      jobs.length ? t('ws.switchJobs', { jobs: jobs.map((v) => t(`nav.${v}`)).join(', '), name }) : null,
+      unsaved ? t('ws.switchUnsaved', { name }) : null
+    ].filter(Boolean);
     const ok = await confirmDialog({
       title: t('ws.switchTitle'),
-      message: t('ws.switchJobs', { jobs: jobs.map((v) => t(`nav.${v}`)).join(', '), name: workspaceLabel(next) }),
-      confirmLabel: t('ws.switchStop'),
+      message: lost.join(' '),
+      confirmLabel: t(jobs.length ? 'ws.switchStop' : 'ws.switchAnyway'),
       danger: true
     });
     if (!ok) return false;
@@ -2138,6 +2154,7 @@ function boot() {
     routed = true;
     if (state.settings.startTasks && state.migrated.length) noteRun();
     if (!state.persistence || !state.workspacePersistence) toast(t('shell.storageUnavailable'), { type: 'warn', timeout: 9000 });
+    workspacesReady = true;
     renderWorkspaceSwitch();
     handleRoute();
   };

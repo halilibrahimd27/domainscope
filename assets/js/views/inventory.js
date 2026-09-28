@@ -575,15 +575,27 @@ export function mount(container, ctx) {
     if (isDirty()) state.setSession('inventoryDraft', editor.value);
   };
   snapshotFn = () => ({ text: editor.value });
+  dirtyFn = isDirty;
 }
 
 let snapshotFn = null;
+let dirtyFn = null;
 
 /** Clean up listeners; keep unsaved edits as a session draft. */
 export function unmount() {
   if (teardown) teardown();
   teardown = null;
   snapshotFn = null;
+  dirtyFn = null;
+}
+
+/**
+ * Does the editor hold changes that are not saved? (The shell asks before a switch to another
+ * workspace, which would drop them: they belong to this one.)
+ * @returns {boolean}
+ */
+export function unsaved() {
+  return dirtyFn ? dirtyFn() : false;
 }
 
 /**
@@ -594,4 +606,4 @@ export function snapshot() {
   return snapshotFn ? snapshotFn() : null;
 }
 
-export default { id, titleKey, icon, mount, unmount, snapshot };
+export default { id, titleKey, icon, mount, unmount, snapshot, unsaved };

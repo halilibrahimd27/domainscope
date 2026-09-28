@@ -1792,6 +1792,23 @@ button.nav-status:hover {
   }
 }
 
+/* Up to 860 px a current target keeps the room: the workspace switcher shows its icon only (its
+   name is the button's label and title). Below 720 px the Tools menu holds the switcher. */
+@media (max-width: 860px) {
+  .app-header.has-target .header-workspace {
+    flex: none;
+  }
+
+  .app-header.has-target .ws-switch-name {
+    display: none;
+  }
+
+  .app-header.has-target .ws-switch {
+    gap: 3px;
+    padding: 0 5px 0 7px;
+  }
+}
+
 /* Small tablets: a current target takes the brand's subtitle place. */
 @media (max-width: 760px) {
   .app-header.has-target .brand-sub {

@@ -200,6 +200,25 @@ function rankOrigin(o) {
   return 1000;
 }
 
+/** Passive sources that read certificates (CT logs): a certificate was issued for their names. */
+const CT_ORIGINS = new Set(['crtsh', 'certspotter']);
+
+/**
+ * Which names a scan over `maxHosts` keeps first (lower first): 0 requested (input, certificate,
+ * zone file), 1 shown by DNS (a probe hit, a mined record), 2 in a certificate (CT), 3 the rest.
+ * @param {Set<string>} origins a name's origin tags
+ * @returns {number}
+ */
+function truncationRank(origins) {
+  let rank = 3;
+  for (const o of origins) {
+    if (o === 'input' || o === 'cert' || o === 'zone') return 0;
+    if (PROBE_ORIGINS.has(o) || o === 'bruteforce' || o.startsWith('dns-mine:')) rank = Math.min(rank, 1);
+    else if (CT_ORIGINS.has(o)) rank = Math.min(rank, 2);
+  }
+  return rank;
+}
+
 function toAbortError(reason) {
   const err = abortReasonToError(reason);
   return err instanceof AbortError ? err : new AbortError(err.message, { cause: err });
@@ -1521,11 +1540,13 @@ export async function runScan(config = {}, hooks = {}) {
   let names = sortHostnames([...origins.keys()]);
   let truncated = false;
   if (names.length > maxHosts) {
-    // keep explicitly requested names (input / certificate / zone file) first
-    const isPriority = (n) => origins.get(n).has('input') || origins.get(n).has('cert') || origins.get(n).has('zone');
-    const priority = names.filter(isPriority);
-    const rest = names.filter((n) => !isPriority(n));
-    names = sortHostnames([...priority, ...rest].slice(0, maxHosts));
+    // Keep what most likely exists: explicitly requested names (input / certificate / zone
+    // file), then names DNS itself showed (a wordlist, variation or deeper-round hit, a name
+    // mined from the zone's records), then names certificates were issued for (CT logs), then
+    // the other passive sources' names — name order within each group, so a flood of dead names
+    // from one source cannot push out hosts that resolve.
+    names = sortHostnames(names.map((n) => [n, truncationRank(origins.get(n))])
+      .sort((a, b) => a[1] - b[1]).slice(0, maxHosts).map(([n]) => n));
     truncated = true;
     warnings.push({ code: 'TRUNCATED', detail: `${origins.size} > ${maxHosts}` });
   }

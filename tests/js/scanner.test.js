@@ -398,6 +398,22 @@ describe('runScan end-to-end', () => {
     assert.equal(scan.warnings.find((w) => w.code === 'TRUNCATED').detail, '35 > 8');
   });
 
+  test('maxHosts then keeps what DNS showed and names from CT before the other sources\' names', async () => {
+    // Thirty names one passive source knows sort before the wordlist hit and the CT name: a cut
+    // in name order alone would resolve only those.
+    const dead = Array.from({ length: 30 }, (_, i) => `a${String(i).padStart(2, '0')}.${D}`);
+    const { fetchImpl, dns } = world({
+      sources: {
+        'https://anubisdb.com/': () => dead,
+        'https://crt.sh/': () => [{ issuer_ca_id: 2, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: `vpn.${D}`, name_value: `vpn.${D}`, id: 7, not_before: '2026-08-01T00:00:00', not_after: '2026-10-30T00:00:00', serial_number: '07' }]
+      }
+    });
+    const scan = await runScan({ domains: [D], sources: ['anubis', 'crtsh'], bruteforce: 'small', wordlist: ['shop'], mine: false, permutationBudget: 0, recursive: false, dns, fetchImpl, maxHosts: 4, originHints: false });
+    assert.deepEqual(scan.hosts.map((h) => h.name).sort(), [`a00.${D}`, D, `shop.${D}`, `vpn.${D}`].sort());
+    assert.equal(byName(scan).get(`shop.${D}`).resolution.ipv4[0], '172.67.2.2');
+    assert.equal(scan.warnings.find((w) => w.code === 'TRUNCATED').detail, '33 > 4');
+  });
+
   test('SPF include loops and lookup limits are bounded', async () => {
     const zone = {
       'loop.example': { A: ['192.0.2.9'], TXT: [['v=spf1 include:a.loop.example ip4:192.0.2.200 -all']] },

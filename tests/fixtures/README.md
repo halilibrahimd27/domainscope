@@ -62,10 +62,13 @@ are never written — `chainfix_root.pem` (a current root every store includes),
 current root) and `chainfix_inter_cross.pem` (the same name and key cross-signed by the old root),
 `chainfix_old_root_cross.pem` (the old root's key under the current root), `chainfix_policy.pem`
 → `chainfix_deep_ca.pem` (two levels), `chainfix_bad_root.pem` / `chainfix_bad_ca.pem` (a root
-Chrome distrusts after 2026-01-31 and Mozilla after 2026-06-30, expiring 2040-03-01) — and the
-leaves `chainfix_leaf.pem`, `chainfix_leaf_noaki.pem` (no authority key id),
-`chainfix_leaf_unknown.pem` (an issuer no list holds), `chainfix_leaf_deep.pem` and
+Chrome distrusts after 2026-01-31 and Mozilla after 2026-06-30, expiring 2040-03-01),
+`chainfix_mail_ca.pem` / `chainfix_expired_ca.pem` (e-mail only, and expired in 2025: the build
+leaves both out) — and the leaves `chainfix_leaf.pem`, `chainfix_leaf_noaki.pem` (no authority
+key id), `chainfix_leaf_unknown.pem` (an issuer no list holds), `chainfix_leaf_deep.pem` and
 `chainfix_leaf_lifecycle.pem`. From CCADB-shaped report rows, `tools/build-intermediates.mjs`
 built the test dataset `intermediates/` (the format of `assets/data/intermediates/`, the shard
-files that would be empty left out: the tests answer `{}` for them). The shared DER encoder of
-both generators is `der-builder.mjs`.
+files that would be empty left out: the tests answer `{}` for them); as in the real list, the
+Deep CA comes from the certificate records and a PEM report row, the others from "Mozilla's
+report". `--dataset` rebuilds only the test dataset from the PEM files (after a change to the
+builder's output). The shared DER encoder of both generators is `der-builder.mjs`.

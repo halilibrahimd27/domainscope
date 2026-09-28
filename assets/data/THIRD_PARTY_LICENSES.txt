@@ -251,7 +251,8 @@ Common CA Database (CCADB) data
 The intermediate certificate list and root store data in intermediates/ are built by
 tools/build-intermediates.mjs from reports of the Common CA Database (CCADB,
 https://www.ccadb.org/): Mozilla's public intermediate certificates and included CA
-certificates, and CCADB's certificate records. Source: Common CA Database (CCADB).
+certificates, and CCADB's certificate records and certificate PEMs. Source: Common CA
+Database (CCADB).
 CCADB data is made available under the Community Data License Agreement – Permissive,
 Version 2.0 (CCADB Data Usage Terms, https://www.ccadb.org/rootstores/usage), whose text
 follows. The names and trademarks of the CCADB and its contributors are not used to endorse

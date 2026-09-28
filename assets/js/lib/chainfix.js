@@ -5,11 +5,12 @@
  * The most common installation error is a server that sends its certificate without the
  * intermediate. Browsers often hide it (they cache intermediates or fetch them), while Android,
  * curl, Java and most API clients fail. The browser cannot fetch the certificate's AIA
- * caIssuers URL (plain http, no CORS), so the app ships its own list instead: every public
- * TLS intermediate of the Common CA Database (CCADB), built by tools/build-intermediates.mjs
- * into assets/data/intermediates/ — sharded by subject key identifier, so a lookup reads one
- * file of about 15 KB — plus a table of the roots (which root stores include each one for
- * TLS) and the announced lifecycle events of the roots (distrust dates, expiry).
+ * caIssuers URL (plain http, no CORS), so the app ships its own list instead: every current
+ * public TLS intermediate of the Common CA Database (CCADB) that a root store trusts, built by
+ * tools/build-intermediates.mjs into assets/data/intermediates/ — sharded by subject key
+ * identifier, so each issuer looked up reads one file of about 16 KB — plus a table of the roots
+ * (which root stores include each one for TLS) and the announced lifecycle events of the roots
+ * (distrust dates, expiry).
  *
  * - {@link repairChain}: the file's chain from the leaf; when it stops at an intermediate whose
  *   issuer is neither in the file nor a known root, the issuers are looked up by the authority
@@ -120,7 +121,8 @@ function fromBase64(b64) {
  * @property {string|null} store the store a distrust applies to; null for an expiry
  * @property {Date} date distrust-after: certificates issued after it; expiry: the root's end
  * @property {'sct'|'notBefore'|null} basis what "issued" means: the earliest embedded SCT (Chrome) or notBefore
- * @property {string|null} url the announcement
+ * @property {string|null} url the announcement, or the CCADB report the date was taken from
+ * @property {'announcement'|'ccadb'|null} source what `url` is (null without a url)
  */
 
 /**
@@ -137,13 +139,15 @@ export function rootTable(json) {
     const date = datasetDate(e.date);
     if (!date) continue;
     const key = e.root.toLowerCase();
+    const url = typeof e.url === 'string' && /^https:\/\//.test(e.url) ? e.url : null;
     const list = events.get(key) || [];
     list.push({
       type: e.type,
       store: e.type === 'expiry' ? null : (STORES.includes(e.store) ? e.store : null),
       date,
       basis: e.basis === 'sct' ? 'sct' : e.type === 'expiry' ? null : 'notBefore',
-      url: typeof e.url === 'string' && /^https:\/\//.test(e.url) ? e.url : null
+      url,
+      source: url ? (e.source === 'ccadb' ? 'ccadb' : 'announcement') : null
     });
     events.set(key, list);
   }
@@ -257,7 +261,8 @@ function storeStatus(root, store, leaf, t) {
  * @property {RootInfo} root the root it is about
  * @property {Date|null} date the cut-off (distrusted, renewal-distrusted) or the root's expiry
  * @property {Date|null} issued distrusted / renewal-distrusted: when the certificate counts as issued
- * @property {string|null} url the announcement
+ * @property {string|null} url the announcement, or the CCADB report the date was taken from
+ * @property {'announcement'|'ccadb'|null} source what `url` is (null without a url)
  */
 
 /**
@@ -304,17 +309,17 @@ export function chainStanding(anchors, leaf, now = Date.now()) {
       g.push(s);
       byRoot.set(stores[s].root, g);
     }
-    for (const [root, group] of byRoot) warnings.push({ code, severity, stores: group, root, date: status === 'expired' ? root.notAfter : null, issued: null, url: null });
+    for (const [root, group] of byRoot) warnings.push({ code, severity, stores: group, root, date: status === 'expired' ? root.notAfter : null, issued: null, url: null, source: null });
   };
   for (const s of STORES) {
     const { status, root } = stores[s];
     if (status === 'distrusted') {
       const e = events[s];
-      warnings.push({ code: 'distrusted', severity: 'error', stores: [s], root, date: e.date, issued: issuedAt(leaf, e.basis), url: e.url });
+      warnings.push({ code: 'distrusted', severity: 'error', stores: [s], root, date: e.date, issued: issuedAt(leaf, e.basis), url: e.url, source: e.source });
     } else if (status === 'tls') {
       for (const e of root.events) {
         if (e.type !== 'distrust-after' || e.store !== s) continue;
-        warnings.push({ code: 'renewal-distrusted', severity: 'warn', stores: [s], root, date: e.date, issued: issuedAt(leaf, e.basis), url: e.url });
+        warnings.push({ code: 'renewal-distrusted', severity: 'warn', stores: [s], root, date: e.date, issued: issuedAt(leaf, e.basis), url: e.url, source: e.source });
       }
     }
   }
@@ -328,7 +333,7 @@ export function chainStanding(anchors, leaf, now = Date.now()) {
   for (const [root, group] of trustedVia) {
     for (const e of root.events) {
       if (e.type === 'expiry' && e.date.getTime() >= t && e.date.getTime() < leaf.notAfter.getTime()) {
-        warnings.push({ code: 'root-expires', severity: 'warn', stores: group, root, date: e.date, issued: null, url: e.url });
+        warnings.push({ code: 'root-expires', severity: 'warn', stores: group, root, date: e.date, issued: null, url: e.url, source: e.source });
       }
     }
   }

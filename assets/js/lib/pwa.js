@@ -27,8 +27,8 @@ export const UPDATE_CHECK_MS = 60 * 60 * 1000;
 export const PRECACHE_SKIP = Object.freeze(['data/README.md', 'data/wordlist-manifest.json']);
 /**
  * Directories under assets/ left out of the precache: the intermediate certificate shards of
- * lib/chainfix.js (256 + 16 files, about 3.5 MB; a repair reads the one or two it needs over the
- * network). The dataset's manifest and roots table are precached, so the lifecycle warnings of a
+ * lib/chainfix.js (256 + 16 files, about 4.2 MB; a repair reads the few it needs, usually one or
+ * two, over the network). The dataset's manifest and roots table are precached, so the lifecycle warnings of a
  * complete chain work offline.
  */
 export const PRECACHE_SKIP_DIRS = Object.freeze(['data/intermediates/ski/', 'data/intermediates/dn/']);

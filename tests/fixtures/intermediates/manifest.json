@@ -1,7 +1,7 @@
 {
   "format": 1,
   "generated": "2026-09-28",
-  "digest": "9302916c20730e26dca1aced0a2a3c223eb579ff12ea3edeba3bd46a7a4f989c",
+  "digest": "18e7749b3dfc83b46bada5d504d35ef01b0a956d08c1c7a022672dcf22392b3a",
   "sources": [
     {
       "id": "intermediates",
@@ -15,8 +15,13 @@
     },
     {
       "id": "records",
-      "name": "Test: root records",
+      "name": "Test: certificate records",
       "url": "https://example.com/ccadb/records.csv"
+    },
+    {
+      "id": "pems",
+      "name": "Test: certificate PEMs",
+      "url": "https://example.com/ccadb/pems.csv"
     }
   ],
   "lifecycleInput": "tools/root-lifecycle.json",
@@ -44,15 +49,7 @@
     "roots": 3,
     "events": 3,
     "distrustEvents": 2,
-    "expiryEvents": 1,
-    "skipped": {
-      "unreadable": 0,
-      "notTls": 1,
-      "noKeyId": 0,
-      "expired": 1,
-      "notYetValid": 0,
-      "duplicate": 0
-    }
+    "expiryEvents": 1
   },
   "lifecycleWindow": {
     "from": "2025-01-01",

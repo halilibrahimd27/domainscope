@@ -1,18 +1,21 @@
 // Unit tests for tools/build-intermediates.mjs (the maintainers' builder of assets/data/intermediates)
 // and checks of the dataset it wrote: the CSV reader, the store statuses, the filtering, the
-// lifecycle table (hand-kept events, Mozilla's dates from CCADB, the expiry window), the files'
-// shape and determinism; then every shard, index and root of the checked-in dataset — the page
-// reads it with lib/chainfix.js, which must find each certificate where the index says.
+// intermediates only the CCADB certificate records list (their PEM from the PEM reports), the
+// canaries, the lifecycle table (hand-kept events, Mozilla's dates from CCADB, the expiry window),
+// the files' shape and determinism; then every shard, index and root of the checked-in dataset —
+// the page reads it with lib/chainfix.js, which must find each certificate where the index says —
+// and, on the site's dataset, a Let's Encrypt YE leaf repaired up to ISRG Root X2.
 // No network: report rows are built here from the chainfix_*.pem fixtures.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { parseCertificates, parseCertificate } from '../../assets/js/lib/x509.js';
-import { dnHash, STORES, STORE_STATUSES } from '../../assets/js/lib/chainfix.js';
+import { fileURLToPath } from 'node:url';
+import { dnHash, STORES, STORE_STATUSES, createIntermediateStore, repairChain } from '../../assets/js/lib/chainfix.js';
 import {
-  DN_DIGITS, FORMAT, MIN_INTERMEDIATES, MIN_ROOTS, MOZILLA_REPORT_URL, SKI_DIGITS, SOURCES,
-  buildDataset, csvObjects, parseCsv, storeStatuses, tlsCapable
+  CANARIES, DN_DIGITS, FORMAT, MIN_INTERMEDIATES, MIN_ROOTS, MOZILLA_REPORT_URL, SKI_DIGITS, SOURCES,
+  buildDataset, csvObjects, datasetDigest, extraIntermediateRecords, parseCsv, pemSource, pemYears, storeStatuses, tlsCapable
 } from '../../tools/build-intermediates.mjs';
 
 const fixture = (f) => readFileSync(new URL(`../fixtures/${f}`, import.meta.url), 'utf8');
@@ -24,9 +27,17 @@ const interRow = (f, owner = 'DomainScope Test') => ({ 'CA Owner': owner, 'SHA-2
 const record = (f, statuses, { tls = true, validTo = '2045.12.31', certName = certOf(f).subjectCN } = {}) => ({
   'CA Owner': 'DomainScope Test', 'Certificate Name': certName, 'Certificate Record Type': 'Root Certificate',
   'Apple Status': statuses, 'Chrome Status': statuses, 'Microsoft Status': statuses, 'Mozilla Status': statuses,
-  'SHA-256 Fingerprint': fp(f), 'Valid To (GMT)': validTo,
+  'Revocation Status': '', 'SHA-256 Fingerprint': fp(f), 'Valid From (GMT)': '2025.01.01', 'Valid To (GMT)': validTo,
   'Subject Key Identifier': Buffer.from(certOf(f).subjectKeyId, 'hex').toString('base64'), 'TLS Capable': tls ? 'True' : 'False'
 });
+/** The certificate records row of an intermediate (CCADB writes 'Trusted' / 'Not Trusted' for them). */
+const interRecord = (f, { owner = 'DomainScope Records Test', statuses = ['Trusted', 'Not Trusted', 'Trusted', 'Not Trusted'], revocation = 'Not Revoked',
+  tls = true, validFrom = '2025.06.01', validTo = '2038.06.01' } = {}) => ({
+  ...record(f, 'Not Trusted', { tls, validTo }),
+  'CA Owner': owner, 'Certificate Record Type': 'Intermediate Certificate', 'Revocation Status': revocation, 'Valid From (GMT)': validFrom,
+  'Apple Status': statuses[0], 'Chrome Status': statuses[1], 'Microsoft Status': statuses[2], 'Mozilla Status': statuses[3]
+});
+const pemRow = (f) => ({ 'SHA-256 Fingerprint': fp(f), 'X.509 Certificate (PEM)': fixture(f) });
 const included = (f, distrust = '', bits = 'Websites;Email') => ({
   Owner: 'DomainScope Test', 'SHA-256 Fingerprint': fp(f), 'Trust Bits': bits, 'Distrust for TLS After Date': distrust, 'PEM Info': `'${fixture(f)}`
 });
@@ -109,17 +120,84 @@ describe('buildDataset', () => {
     const input = baseInput();
     input.intermediates.push(interRow('chainfix_inter.pem'));
     const leafAsRow = interRow('chainfix_leaf.pem'); // not a CA: unreadable as an intermediate
-    input.intermediates.push(leafAsRow);
-    const { manifest } = buildDataset(input);
-    assert.deepEqual(manifest.counts.skipped, { unreadable: 1, notTls: 0, noKeyId: 0, expired: 0, notYetValid: 0, duplicate: 1 });
-    const later = buildDataset({ ...baseInput(), now: new Date('2035-07-01T00:00:00Z') }).manifest.counts;
+    input.intermediates.push(leafAsRow, interRow('chainfix_mail_ca.pem'), interRow('chainfix_expired_ca.pem'));
+    const { manifest, report } = buildDataset(input);
+    assert.deepEqual(report.skipped, { unreadable: 1, notTls: 1, noKeyId: 0, expired: 1, notYetValid: 0, duplicate: 1, noPem: 0 });
+    assert.equal(manifest.counts.skipped, undefined, 'the build log has them, not the manifest');
+    const later = buildDataset({ ...baseInput(), now: new Date('2035-07-01T00:00:00Z') }).report;
     assert.equal(later.skipped.expired, 2, 'the issuing CA and its cross-signed copy expire on 2035-06-01');
-    const earlier = buildDataset({ ...baseInput(), now: new Date('2025-01-01T00:00:00Z') }).manifest.counts;
+    const earlier = buildDataset({ ...baseInput(), now: new Date('2025-01-01T00:00:00Z') }).report;
     assert.equal(earlier.skipped.notYetValid, 3);
-    // The test dataset was built from a "Mail CA" (emailProtection only) and a CA that expired in 2025 too.
-    const testSet = JSON.parse(fixture('intermediates/manifest.json'));
-    assert.equal(testSet.counts.skipped.notTls, 1);
-    assert.equal(testSet.counts.skipped.expired, 1);
+    // The test dataset was built from the Mail CA (emailProtection only) and a CA that expired in 2025 too.
+    const skis = readdirSync(new URL('../fixtures/intermediates/ski/', import.meta.url))
+      .flatMap((f) => Object.keys(JSON.parse(fixture(`intermediates/ski/${f}`))));
+    for (const f of ['chainfix_mail_ca.pem', 'chainfix_expired_ca.pem']) assert.ok(!skis.includes(certOf(f).subjectKeyId), f);
+  });
+
+  test('the intermediates only the certificate records list: which records, which PEM reports', () => {
+    const deep = interRecord('chainfix_deep_ca.pem');
+    const rows = [
+      deep,
+      interRecord('chainfix_policy.pem', { statuses: ['Not Trusted', 'Not Trusted', 'Not Trusted', 'Not Trusted'] }),
+      interRecord('chainfix_bad_ca.pem', { revocation: 'Revoked' }),
+      interRecord('chainfix_mail_ca.pem', { revocation: 'Parent Cert Revoked' }),
+      interRecord('chainfix_expired_ca.pem', { validFrom: '2025.01.01', validTo: '2025.12.31' }),
+      interRecord('chainfix_old_root_cross.pem', { tls: false }),
+      interRecord('chainfix_inter.pem'), // in Mozilla's report already
+      record('chainfix_root.pem', 'Included')
+    ];
+    const picked = extraIntermediateRecords(rows, baseInput().intermediates, NOW);
+    assert.deepEqual(picked, [deep], 'TLS capable, trusted somewhere, not revoked, unexpired, not in Mozilla\'s report');
+    assert.deepEqual(pemYears([deep, { 'Valid From (GMT)': '2019.03.04' }, { 'Valid From (GMT)': '2025.12.31' }, { 'Valid From (GMT)': '' }]), ['2019', '2025']);
+    assert.deepEqual(pemSource('2025'), {
+      name: SOURCES.pems.name, url: 'https://ccadb.my.salesforce-sites.com/ccadb/AllCertificatePEMsCSVFormat?NotBeforeYear=2025', file: 'AllCertificatePEMs-2025.csv'
+    });
+  });
+
+  test('an intermediate only the certificate records list is added with its PEM and the record\'s owner', () => {
+    const deep = certOf('chainfix_deep_ca.pem');
+    const input = { ...baseInput(), records: [...baseInput().records, interRecord('chainfix_deep_ca.pem')], pems: [pemRow('chainfix_deep_ca.pem')] };
+    const { files, manifest, report } = buildDataset(input);
+    const shard = json(files, `ski/${deep.subjectKeyId.slice(0, SKI_DIGITS)}.json`);
+    assert.deepEqual(shard[deep.subjectKeyId].map((e) => e.owner), ['DomainScope Records Test']);
+    assert.equal(parseCertificate(Buffer.from(shard[deep.subjectKeyId][0].der, 'base64')).subjectCN, 'DomainScope Test Deep CA');
+    assert.deepEqual(json(files, `dn/${dnHash(deep.subjectDN).slice(0, DN_DIGITS)}.json`)[dnHash(deep.subjectDN)], [deep.subjectKeyId]);
+    assert.equal(manifest.counts.intermediates, 4);
+    assert.equal(report.fromRecords, 1);
+    // No PEM for it in the reports read: counted and named in the log, nothing added.
+    const noPem = buildDataset({ ...input, pems: [] });
+    assert.equal(noPem.manifest.counts.intermediates, 3);
+    assert.equal(noPem.report.skipped.noPem, 1);
+    assert.ok(noPem.report.notes.some((n) => /no PEM in the reports read for 1 record\(s\): DomainScope Test Deep CA/.test(n)), noPem.report.notes.join('\n'));
+    // A PEM row whose certificate is not the record's fingerprint is never taken.
+    const wrong = buildDataset({ ...input, pems: [{ ...pemRow('chainfix_policy.pem'), 'SHA-256 Fingerprint': fp('chainfix_deep_ca.pem') }] });
+    assert.equal(wrong.manifest.counts.intermediates, 3);
+    assert.equal(wrong.report.skipped.unreadable, 1);
+    // One certificate in both places is kept once, with Mozilla's report's row.
+    const both = buildDataset({ ...input, intermediates: [...input.intermediates, interRow('chainfix_deep_ca.pem')] });
+    assert.equal(both.manifest.counts.intermediates, 4);
+    assert.equal(both.report.fromRecords, 0);
+    assert.deepEqual(json(both.files, `ski/${deep.subjectKeyId.slice(0, SKI_DIGITS)}.json`)[deep.subjectKeyId].map((e) => e.owner), ['DomainScope Test']);
+  });
+
+  test('canaries: a well-known issuer missing is reported until its own expiry', () => {
+    const canaries = [
+      { cn: 'DomainScope Test Deep CA', owner: 'DomainScope Records Test', until: '2038-06-01' },
+      { cn: 'DomainScope Test Issuing CA', owner: 'DomainScope Test', until: '2035-06-01' },
+      { cn: 'DomainScope Test Gone CA', owner: 'DomainScope Test', until: '2026-01-01' }
+    ];
+    const input = { ...baseInput(), records: [...baseInput().records, interRecord('chainfix_deep_ca.pem')], pems: [pemRow('chainfix_deep_ca.pem')], canaries };
+    assert.deepEqual(buildDataset(input).report.missingCanaries, [], 'both there; the third one\'s date has passed');
+    assert.deepEqual(buildDataset({ ...input, pems: [] }).report.missingCanaries, ['DomainScope Test Deep CA (DomainScope Records Test)']);
+    assert.deepEqual(buildDataset({ ...input, canaries: [{ ...canaries[1], owner: 'Someone Else' }] }).report.missingCanaries,
+      ['DomainScope Test Issuing CA (Someone Else)'], 'the owner must match too');
+    // The real list: YE1 and YR1 come from the certificate records, the others from Mozilla's report.
+    assert.ok(CANARIES.length >= 5);
+    for (const c of CANARIES) {
+      assert.ok(c.cn && c.owner, JSON.stringify(c));
+      assert.match(c.until, /^\d{4}-\d{2}-\d{2}$/);
+    }
+    assert.ok(CANARIES.some((c) => c.cn === 'YE1') && CANARIES.some((c) => c.cn === 'YR1'));
   });
 
   test('the lifecycle table: hand-kept events, Mozilla\'s date from CCADB (it wins), its other dates, expiries in the window', () => {
@@ -134,18 +212,20 @@ describe('buildDataset', () => {
     };
     const { files, report } = buildDataset({ ...baseInput(), lifecycle, window: { from: '2025-01-01', to: '2040-12-31' } });
     const { events } = json(files, 'roots.json');
-    assert.deepEqual(events.map((e) => [e.type, e.store, e.date, e.basis, e.url]), [
-      ['distrust-after', 'chrome', '2026-01-31', 'sct', 'https://example.com/chrome'],
-      ['distrust-after', 'mozilla', '2026-06-30', 'notBefore', 'https://example.com/mozilla'],
-      ['expiry', null, '2040-03-01T23:59:59Z', null, null]
+    assert.deepEqual(events.map((e) => [e.type, e.store, e.date, e.basis, e.url, e.source]), [
+      ['distrust-after', 'chrome', '2026-01-31', 'sct', 'https://example.com/chrome', 'announcement'],
+      ['distrust-after', 'mozilla', '2026-06-30', 'notBefore', 'https://example.com/mozilla', 'announcement'],
+      ['expiry', null, '2040-03-01T23:59:59Z', null, null, null]
     ]);
     assert.ok(events.every((e) => e.root === bad));
     assert.ok(report.notes.some((n) => /Mozilla's date in CCADB is 2026-06-30 \(root-lifecycle\.json: 2026-07-15\)/.test(n)));
     assert.ok(report.notes.some((n) => /skipped an entry \(opera/.test(n)));
     assert.ok(report.notes.some((n) => /names a root CCADB does not list: 0{64}/.test(n)));
-    // Without a hand-kept Mozilla entry, CCADB's date comes with the report's page as its link.
+    // Without a hand-kept Mozilla entry, CCADB's date comes with the report's page as its link,
+    // marked as data (the page calls it a source, not an announcement).
     const auto = json(buildDataset(baseInput()).files, 'roots.json').events;
-    assert.deepEqual(auto.map((e) => [e.store, e.date, e.url]), [['mozilla', '2026-06-30', MOZILLA_REPORT_URL]], 'the 2040 expiry is outside the default window');
+    assert.deepEqual(auto.map((e) => [e.store, e.date, e.url, e.source]), [['mozilla', '2026-06-30', MOZILLA_REPORT_URL, 'ccadb']],
+      'the 2040 expiry is outside the default window');
   });
 
   test('the default expiry window is January 1 of last year to December 31 of next year', () => {
@@ -162,6 +242,19 @@ describe('buildDataset', () => {
     assert.equal(b.manifest.digest, a.manifest.digest);
     const c = buildDataset({ ...baseInput(), intermediates: baseInput().intermediates.slice(0, 1), now: new Date('2026-10-05T00:00:00Z'), previous: a.manifest });
     assert.equal(c.manifest.generated, '2026-10-05');
+    // Only a skipped count changes (CCADB added an e-mail-only CA): manifest.json stays byte for byte.
+    const quiet = buildDataset({
+      ...baseInput(), intermediates: [...baseInput().intermediates, interRow('chainfix_mail_ca.pem')], now: new Date('2026-10-05T00:00:00Z'), previous: a.manifest
+    });
+    assert.equal(quiet.report.skipped.notTls, 1);
+    assert.equal(quiet.files.get('manifest.json'), a.files.get('manifest.json'));
+    // What the manifest says is part of the digest: another source moves the date.
+    const moved = buildDataset({ ...baseInput(), sources: { ...SOURCES, extra: { name: 'x', url: 'https://example.com/x.csv' } }, now: new Date('2026-10-05T00:00:00Z'), previous: a.manifest });
+    assert.notEqual(moved.manifest.digest, a.manifest.digest);
+    assert.equal(moved.manifest.generated, '2026-10-05');
+    const { generated, digest, ...body } = a.manifest;
+    assert.equal(datasetDigest(a.files, body), digest, 'datasetDigest leaves manifest.json itself out');
+    assert.equal(generated, '2026-09-28');
     const small = buildDataset({ ...baseInput(), emptyShards: false });
     assert.ok(small.files.size < a.files.size);
     assert.ok([...small.files.keys()].filter((f) => f.startsWith('ski/')).every((f) => Object.keys(json(small.files, f)).length));
@@ -185,10 +278,15 @@ describe('the checked-in datasets', () => {
         assert.equal(ski.length, 16 ** SKI_DIGITS);
         assert.ok(manifest.counts.intermediates >= MIN_INTERMEDIATES && manifest.counts.roots >= MIN_ROOTS, JSON.stringify(manifest.counts));
       }
+      // The data files in name order, then the manifest without its date and digest.
       const digest = createHash('sha256');
       const files = [...ski.map((f) => `ski/${f}`), ...dn.map((f) => `dn/${f}`), 'roots.json'].sort();
       for (const f of files) digest.update(`${f}\n${readFileSync(new URL(f, base), 'utf8').replace(/\r\n/g, '\n')}\n`);
-      assert.equal(digest.digest('hex'), manifest.digest, 'a hand edit, or a rebuild that did not update the manifest');
+      const { generated, digest: listed, ...body } = manifest;
+      digest.update(`manifest.json\n${JSON.stringify(body)}\n`);
+      assert.equal(digest.digest('hex'), listed, 'a hand edit, or a rebuild that did not update the manifest');
+      assert.match(generated, /^\d{4}-\d{2}-\d{2}$/);
+      assert.equal(manifest.counts.skipped, undefined, 'the skipped counts stay in the build log');
     });
 
     test(`${label}: every certificate sits under its key id, the DN index points at it, and it is a TLS CA`, () => {
@@ -252,6 +350,35 @@ describe('the checked-in datasets', () => {
       }
     });
   }
+
+  test('assets/data/intermediates: the well-known current issuers, and a Let\'s Encrypt YE leaf repaired up to ISRG Root X2', async () => {
+    const base = new URL('../../assets/data/intermediates/', import.meta.url);
+    const manifest = JSON.parse(readFileSync(new URL('manifest.json', base), 'utf8'));
+    const all = readdirSync(new URL('ski/', base))
+      .flatMap((f) => Object.values(JSON.parse(readFileSync(new URL(`ski/${f}`, base), 'utf8'))).flat())
+      .map((e) => ({ owner: e.owner, cert: parseCertificate(Buffer.from(e.der, 'base64')) }));
+    for (const c of CANARIES.filter((x) => x.until >= manifest.generated)) {
+      assert.ok(all.some((e) => e.cert.subjectCN === c.cn && e.owner === c.owner), `${c.cn} (${c.owner})`);
+    }
+    // YE1–YE3 are only in the certificate records (Root YE is in no store; browsers reach it
+    // through its ISRG Root X2 cross-sign, which Mozilla's report lists).
+    const ye = all.find((e) => e.owner === 'Internet Security Research Group' && /^YE\d$/.test(e.cert.subjectCN));
+    assert.ok(ye, 'a Let\'s Encrypt YE issuer');
+    const now = new Date(`${manifest.generated}T12:00:00Z`);
+    const leaf = {
+      subjectDN: 'CN=www.example.com', subjectCN: 'www.example.com', issuerDN: ye.cert.subjectDN, issuerCN: ye.cert.subjectCN,
+      authorityKeyId: ye.cert.subjectKeyId, subjectKeyId: '00', serialHex: '01', selfSigned: false, isCA: false,
+      notBefore: new Date(now.getTime() - 86400000), notAfter: new Date(now.getTime() + 60 * 86400000), scts: []
+    };
+    const store = createIntermediateStore({ url: new URL('manifest.json', base).href, fetchImpl: async (url) => new Response(readFileSync(fileURLToPath(url))) });
+    const r = await repairChain({ certificates: [leaf], leaf }, { store, now });
+    assert.equal(r.status, 'repaired');
+    assert.deepEqual(r.added.map((a) => `${a.cert.subjectCN} ← ${a.cert.issuerCN}`), [`${ye.cert.subjectCN} ← Root YE`, 'Root YE ← ISRG Root X2'],
+      'Let\'s Encrypt\'s hierarchy changed? Check the path and update this test');
+    assert.equal(r.root.name, 'ISRG Root X2');
+    assert.deepEqual(r.standing.trusted, STORES);
+    assert.deepEqual(r.standing.warnings, []);
+  });
 
   test('the hand-kept lifecycle input names its sources', () => {
     const input = JSON.parse(readFileSync(new URL('../../tools/root-lifecycle.json', import.meta.url), 'utf8'));

@@ -1,7 +1,7 @@
 {
   "format": 1,
   "generated": "2026-09-28",
-  "digest": "e8f87225820fb5aadeb5dcf32dda0c23a08195068f6af4ea66fa9c27915ab231",
+  "digest": "43f9acdd602059cdfde14b29f9f0f29ccf1deff0bdfe7487f4d9cb627ba0a74e",
   "sources": [
     {
       "id": "intermediates",
@@ -17,6 +17,11 @@
       "id": "records",
       "name": "CCADB: all certificate records, v4",
       "url": "https://ccadb.my.salesforce-sites.com/ccadb/AllCertificateRecordsCSVFormatv4"
+    },
+    {
+      "id": "pems",
+      "name": "CCADB: all certificate PEMs, one report per notBefore year",
+      "url": "https://ccadb.my.salesforce-sites.com/ccadb/AllCertificatePEMsCSVFormat?NotBeforeYear={year}"
     }
   ],
   "lifecycleInput": "tools/root-lifecycle.json",
@@ -39,20 +44,12 @@
     }
   },
   "counts": {
-    "intermediates": 1999,
-    "keys": 1898,
-    "roots": 223,
+    "intermediates": 2273,
+    "keys": 2120,
+    "roots": 242,
     "events": 35,
     "distrustEvents": 31,
-    "expiryEvents": 4,
-    "skipped": {
-      "unreadable": 0,
-      "notTls": 557,
-      "noKeyId": 0,
-      "expired": 0,
-      "notYetValid": 0,
-      "duplicate": 0
-    }
+    "expiryEvents": 4
   },
   "lifecycleWindow": {
     "from": "2025-01-01",

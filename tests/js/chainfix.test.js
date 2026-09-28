@@ -103,6 +103,7 @@ describe('rootTable', () => {
     assert.deepEqual(bad.events.map((e) => `${e.type}:${e.store}`), ['distrust-after:chrome', 'distrust-after:mozilla', 'expiry:null']);
     assert.equal(bad.events[0].basis, 'sct');
     assert.equal(bad.events[0].url, 'https://example.com/announcements/chrome-distrust');
+    assert.deepEqual(bad.events.map((e) => e.source), ['announcement', 'ccadb', null], 'a hand-kept announcement, Mozilla\'s date from CCADB, the expiry');
     assert.equal(table.bySki.get(bad.ski)[0], bad);
     assert.equal(table.byDn.get(bad.dn)[0], bad);
   });
@@ -122,6 +123,7 @@ describe('rootTable', () => {
     assert.equal(r.ski, null);
     assert.equal(r.events.length, 1);
     assert.equal(r.events[0].url, null);
+    assert.equal(r.events[0].source, null, 'no link, nothing to name');
     assert.deepEqual(rootTable(null).roots, []);
   });
 
@@ -254,6 +256,7 @@ describe('repairChain', () => {
     const deep = await repairChain(load('chainfix_leaf_deep.pem'), { store, now: NOW });
     assert.equal(deep.status, 'repaired');
     assert.deepEqual(names(deep.fullchain), ['deep.example.org', 'DomainScope Test Deep CA', 'DomainScope Test Policy CA']);
+    assert.deepEqual(deep.added.map((a) => a.owner), ['DomainScope Test', 'DomainScope Test'], 'the Deep CA comes from the certificate records only');
     const half = await repairChain(load('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem'), { store, now: NOW });
     assert.equal(half.status, 'repaired');
     assert.deepEqual(half.added.map((a) => a.cert.subjectCN), ['DomainScope Test Policy CA']);

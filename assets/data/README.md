@@ -27,7 +27,7 @@ never tuned to any single organisation's DNS zone.
 | `wordlist-manifest.json` | —       | —       | counts / bytes / sources / licences |
 | `THIRD_PARTY_LICENSES.txt` | —     | —       | full MIT + Apache-2.0 texts for the vendored sources (linked from the About page) |
 | `sample-cert.pem`        | —       | 1.6 KiB | the "Try a sample" certificate (not a wordlist; see above) |
-| `intermediates/`         | ≈ 2,000 certificates | ≈ 3.5 MiB | the CCADB intermediate list and root lifecycle table (not a wordlist; see below) |
+| `intermediates/`         | ≈ 2,270 certificates | ≈ 4.2 MiB | the CCADB intermediate list and root lifecycle table (not a wordlist; see below) |
 
 In the UI the levels are **Small** (the 159-label core built into `wordlist.js`, no file), **Smart** (default), **Large** and **Huge**; each scanned domain gets its own list, ordered custom wordlist → learned names → small core → locale packs → tier. A user's custom wordlist and learned names never live here: they stay in the viewer's browser (session / local storage).
 The tiers are **strict prefixes of one master ranking**, so
@@ -105,26 +105,40 @@ edit by hand.
 
 | File | What |
 |------|------|
-| `manifest.json` | format, date of the data, sources, licence, shard layout, counts, the lifecycle window, a digest of the files (the date moves only when the data does) |
-| `ski/<xx>.json` (256) | subject key identifier (hex) → `[{ owner, der }]`: the CCADB CA owner and the base64 DER, sharded by the first two hex digits; a lookup reads one ≈ 15 KB file |
+| `manifest.json` | format, date of the data, sources, licence, shard layout, counts, the lifecycle window, a digest of the files and of the manifest itself (the date moves only when one of them does; the skipped counts are in the build log, not here) |
+| `ski/<xx>.json` (256) | subject key identifier (hex) → `[{ owner, der }]`: the CCADB CA owner and the base64 DER, sharded by the first two hex digits; each issuer looked up reads one ≈ 16 KB file |
 | `dn/<x>.json` (16) | the first 16 hex digits of SHA-256 over a subject DN (as `lib/x509.js` writes it) → subject key identifiers, for a certificate that names no authority key identifier |
 | `roots.json` | the roots (SHA-256, CCADB name — made unique with the DN's OU where several share a CN —, owner, key identifier, DN, expiry, status in the Chrome, Mozilla, Apple and Microsoft stores) and the lifecycle table: distrust-after dates and the roots that expire from January 1 of last year to December 31 of next year |
 
+The intermediates come from two CCADB sources. Mozilla's report lists the ones whose parent in
+CCADB is a root Mozilla includes for websites. It misses the hierarchies browsers reach through a
+cross-signed root — Let's Encrypt's YE1–YE3 / YR1–YR3 (under Root YE / Root YR, which no store
+includes; their ISRG Root X2 / X1 cross-signs are in Mozilla's report), Microsoft's TLS G2 CAs —
+and the ones under a root that only other stores keep. So the certificate records add every
+intermediate that is TLS capable, trusted by at least one of the Apple, Chrome, Microsoft and
+Mozilla stores, not revoked, not expired and not in Mozilla's report (≈ 275 of them), with its PEM
+from the PEM report of its notBefore year; the two are de-duplicated by fingerprint.
+
 Kept: CA certificates with a subject key identifier, valid on the build date, whose extended
 key usage allows TLS server authentication (serverAuth, anyExtendedKeyUsage or none) — about
-2,000 of the ≈ 2,550 in Mozilla's report. The service worker precaches `manifest.json` and
-`roots.json` only; the shards are read on use (the lookup needs a connection).
+2,270 in all. The build writes nothing when a download looks wrong: under 500 intermediates or
+100 roots, or one of the well-known current issuers in `CANARIES` (YE1, YR1, R12, Microsoft TLS
+G2 RSA CA OCSP 02, WR1, Amazon RSA 2048 M02, Sectigo DV R36; each until its own expiry) missing.
+The service worker precaches `manifest.json` and `roots.json` only; the shards are read on use
+(the lookup needs a connection).
 
 ### Sources and licence (verified 2026-09-28)
 
 | Report | URL | Used for |
 |--------|-----|----------|
-| Mozilla: public intermediate certificates with PEM | `https://ccadb.my.salesforce-sites.com/mozilla/PublicAllIntermediateCertsWithPEMCSV` | the intermediates (every non-revoked intermediate chaining to a root in Mozilla's program) |
+| Mozilla: public intermediate certificates with PEM | `https://ccadb.my.salesforce-sites.com/mozilla/PublicAllIntermediateCertsWithPEMCSV` | most intermediates: the non-revoked ones whose CCADB parent is a root Mozilla includes for websites |
 | Mozilla: included CA certificates with PEM | `https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV` | root DNs and exact dates, Mozilla's trust bits (websites or not) and its "Distrust for TLS After Date" |
-| CCADB: all certificate records, v4 | `https://ccadb.my.salesforce-sites.com/ccadb/AllCertificateRecordsCSVFormatv4` | every root's status in the Apple, Chrome, Microsoft and Mozilla stores, key identifiers |
+| CCADB: all certificate records, v4 | `https://ccadb.my.salesforce-sites.com/ccadb/AllCertificateRecordsCSVFormatv4` | every root's status in the Apple, Chrome, Microsoft and Mozilla stores, key identifiers; the intermediates Mozilla's report leaves out (TLS capable, `Trusted` in a store, `Not Revoked`) and the CA owner of each |
+| CCADB: all certificate PEMs, by notBefore year | `https://ccadb.my.salesforce-sites.com/ccadb/AllCertificatePEMsCSVFormat?NotBeforeYear=<year>` | the PEM of each of those intermediates (only the years they need are downloaded; the 2025 report holds YE2, for example) |
 | `tools/root-lifecycle.json` (hand-kept) | each entry names its announcement | the cut-off dates CCADB does not carry: Chrome's distrust of Entrust / AffirmTrust (SCTs after 2024-11-11) and of Chunghwa Telecom / Netlock (after 2025-07-31), Apple's of Entrust (after 2024-11-15), and the link to Mozilla's Entrust announcement (its dates come from CCADB) |
 
-None of the reports is readable from a browser (no CORS), so they are read at build time only.
+None of the reports is readable from a browser (no `Access-Control-Allow-Origin`), so they are
+read at build time only.
 CCADB data is licensed under the **Community Data License Agreement – Permissive, Version 2.0**
 (CDLA-Permissive-2.0; CCADB Data Usage Terms, `https://www.ccadb.org/rootstores/usage`), which
 asks that its text travel with the data — it is in

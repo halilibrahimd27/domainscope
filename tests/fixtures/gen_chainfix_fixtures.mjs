@@ -5,8 +5,9 @@
  * dataset in the format of assets/data/intermediates/, built by tools/build-intermediates.mjs
  * from CCADB-shaped report rows. Dev tool — no OpenSSL needed.
  *
- *   node tests/fixtures/gen_chainfix_fixtures.mjs           # create when missing
- *   node tests/fixtures/gen_chainfix_fixtures.mjs --force   # new keys, every file rewritten
+ *   node tests/fixtures/gen_chainfix_fixtures.mjs             # create when missing
+ *   node tests/fixtures/gen_chainfix_fixtures.mjs --force     # new keys, every file rewritten
+ *   node tests/fixtures/gen_chainfix_fixtures.mjs --dataset   # only the test dataset, from the PEM files
  *
  * The PKI (EC P-256, names under "DomainScope Test"):
  *   chainfix_root.pem        DomainScope Test Root CA — the current root: every store includes it
@@ -25,19 +26,25 @@
  *   chainfix_leaf_unknown.pem   issued by "DomainScope Test Unlisted CA", which no list holds
  *   chainfix_leaf_deep.pem      issued by the Deep CA (two intermediates to add)
  *   chainfix_leaf_lifecycle.pem issued by the Distrusted CA on 2026-03-01, valid until 2040-06-01
- * The dataset (tests/fixtures/intermediates/) holds the intermediates above plus two the build
- * leaves out (one for e-mail only, one expired), the three roots and the lifecycle table; shard
- * files that would be empty are left out (the tests' fetch answers `{}` for them).
+ *   chainfix_mail_ca.pem / chainfix_expired_ca.pem  a CA for e-mail only and one that expired in 2025:
+ *                            the build leaves both out
+ * The dataset (tests/fixtures/intermediates/) is built from CCADB-shaped rows as the real one is:
+ * Mozilla's report holds the intermediates above except the Deep CA, which only the certificate
+ * records list (its PEM from a PEM report row, as for Let's Encrypt's YE / YR issuers), plus the
+ * three roots and the lifecycle table; shard files that would be empty are left out (the tests'
+ * fetch answers `{}` for them).
  */
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seq, ctx, oid, bool, octet, bits, utf8, printable, utc, gen, name, ext, ALG, A, buildCert, pem, spkiOf, signWith } from './der-builder.mjs';
+import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { buildDataset } from '../../tools/build-intermediates.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const FORCE = process.argv.includes('--force');
+const DATASET_ONLY = process.argv.includes('--dataset');
 const DATASET = join(DIR, 'intermediates');
 const fx = (file) => join(DIR, file);
 
@@ -45,12 +52,13 @@ const FILES = {
   root: 'chainfix_root.pem', oldRoot: 'chainfix_old_root.pem', badRoot: 'chainfix_bad_root.pem',
   inter: 'chainfix_inter.pem', interCross: 'chainfix_inter_cross.pem', oldRootCross: 'chainfix_old_root_cross.pem',
   policy: 'chainfix_policy.pem', deep: 'chainfix_deep_ca.pem', bad: 'chainfix_bad_ca.pem',
+  mail: 'chainfix_mail_ca.pem', expired: 'chainfix_expired_ca.pem',
   leaf: 'chainfix_leaf.pem', leafNoAki: 'chainfix_leaf_noaki.pem', leafUnknown: 'chainfix_leaf_unknown.pem',
   leafDeep: 'chainfix_leaf_deep.pem', leafLifecycle: 'chainfix_leaf_lifecycle.pem'
 };
 
-if (!FORCE && Object.values(FILES).every((f) => existsSync(fx(f))) && existsSync(join(DATASET, 'manifest.json'))) {
-  console.log('chainfix fixtures exist (use --force to regenerate)');
+if (!FORCE && !DATASET_ONLY && Object.values(FILES).every((f) => existsSync(fx(f))) && existsSync(join(DATASET, 'manifest.json'))) {
+  console.log('chainfix fixtures exist (use --force to regenerate, --dataset for the test dataset only)');
   process.exit(0);
 }
 
@@ -120,7 +128,8 @@ const N = {
 };
 const selfSigned = (id, from, to) => caCert({ subjectName: N[id], subjectKey: id, issuerName: N[id], issuerKey: id, from, to });
 
-const der = {
+/** The throwaway PKI with new keys: each certificate's DER by id. */
+const craft = () => ({
   root: selfSigned('root', '2025-01-01', '2045-12-31'),
   oldRoot: selfSigned('oldRoot', '2015-01-01', '2045-12-31'),
   badRoot: selfSigned('badRoot', '2020-01-01', '2040-03-01'),
@@ -137,11 +146,17 @@ const der = {
   leafUnknown: leafCert({ names: ['internal.example.net'], issuerName: N.unlisted, issuerKey: 'unlisted' }),
   leafDeep: leafCert({ names: ['deep.example.org'], issuerName: N.deep, issuerKey: 'deep' }),
   leafLifecycle: leafCert({ names: ['shop.example.com'], issuerName: N.bad, issuerKey: 'bad', from: '2026-03-01', to: '2040-06-01' })
-};
+});
 
-for (const [id, file] of Object.entries(FILES)) {
-  writeFileSync(fx(file), pem(der[id]));
-  console.log('crafted', file);
+/** The DER of a PEM fixture on disk. */
+const derOf = (file) => Buffer.from(parseCertificates(readFileSync(fx(file), 'utf8')).certificates[0].der);
+
+const der = DATASET_ONLY ? Object.fromEntries(Object.entries(FILES).map(([id, file]) => [id, derOf(file)])) : craft();
+if (!DATASET_ONLY) {
+  for (const [id, file] of Object.entries(FILES)) {
+    writeFileSync(fx(file), pem(der[id]));
+    console.log('crafted', file);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +164,7 @@ for (const [id, file] of Object.entries(FILES)) {
 // ---------------------------------------------------------------------------
 const fp = (d) => createHash('sha256').update(d).digest('hex').toUpperCase();
 const ccadbDate = (d) => d.replace(/-/g, '.');
+const keyIdB64 = (id) => Buffer.from(parseCertificates(pem(der[id])).certificates[0].subjectKeyId, 'hex').toString('base64');
 const interRow = (id, owner = 'DomainScope Test') => ({ 'CA Owner': owner, 'SHA-256 Fingerprint': fp(der[id]), 'PEM Info': `'${pem(der[id])}` });
 const included = (id, owner, distrust = '') => ({
   Owner: owner, 'SHA-256 Fingerprint': fp(der[id]), 'Trust Bits': 'Websites;Email', 'Distrust for TLS After Date': distrust, 'PEM Info': `'${pem(der[id])}`
@@ -156,21 +172,28 @@ const included = (id, owner, distrust = '') => ({
 const record = (id, { owner, certName, statuses, validTo, tls }) => ({
   'CA Owner': owner, 'Certificate Name': certName, 'Certificate Record Type': 'Root Certificate',
   'Apple Status': statuses, 'Chrome Status': statuses, 'Microsoft Status': statuses, 'Mozilla Status': statuses,
-  'SHA-256 Fingerprint': fp(der[id]), 'Valid To (GMT)': ccadbDate(validTo),
-  'Subject Key Identifier': keyIdOf(key(id).publicKey).toString('base64'), 'TLS Capable': tls ? 'True' : 'False'
+  'Revocation Status': '', 'SHA-256 Fingerprint': fp(der[id]), 'Valid From (GMT)': '', 'Valid To (GMT)': ccadbDate(validTo),
+  'Subject Key Identifier': keyIdB64(id), 'TLS Capable': tls ? 'True' : 'False'
+});
+/** The record of an intermediate every store trusts (the Deep CA: not in "Mozilla's report"). */
+const interRecord = (id, { owner, certName, validFrom, validTo }) => ({
+  ...record(id, { owner, certName, statuses: 'Trusted', validTo, tls: true }),
+  'Certificate Record Type': 'Intermediate Certificate', 'Revocation Status': 'Not Revoked', 'Valid From (GMT)': ccadbDate(validFrom)
 });
 
 const { files, manifest } = buildDataset({
   intermediates: [
-    interRow('inter'), interRow('interCross'), interRow('oldRootCross'), interRow('policy'), interRow('deep'),
+    interRow('inter'), interRow('interCross'), interRow('oldRootCross'), interRow('policy'),
     interRow('bad', 'DomainScope Distrust Test'), interRow('mail'), interRow('expired')
   ],
   included: [included('root', 'DomainScope Test'), included('badRoot', 'DomainScope Distrust Test', '2026.06.30')],
   records: [
     record('root', { owner: 'DomainScope Test', certName: 'DomainScope Test Root CA', statuses: 'Included', validTo: '2045-12-31', tls: true }),
     record('oldRoot', { owner: 'DomainScope Old Test', certName: 'DomainScope Test Old Root', statuses: 'Removed', validTo: '2045-12-31', tls: false }),
-    record('badRoot', { owner: 'DomainScope Distrust Test', certName: 'DomainScope Test Distrusted Root', statuses: 'Included', validTo: '2040-03-01', tls: true })
+    record('badRoot', { owner: 'DomainScope Distrust Test', certName: 'DomainScope Test Distrusted Root', statuses: 'Included', validTo: '2040-03-01', tls: true }),
+    interRecord('deep', { owner: 'DomainScope Test', certName: 'DomainScope Test Deep CA', validFrom: '2025-06-01', validTo: '2038-06-01' })
   ],
+  pems: [{ 'SHA-256 Fingerprint': fp(der.deep), 'X.509 Certificate (PEM)': pem(der.deep) }],
   lifecycle: {
     events: [{
       store: 'chrome', type: 'distrust-after', date: '2026-01-31', basis: 'sct',
@@ -180,10 +203,12 @@ const { files, manifest } = buildDataset({
   now: new Date('2026-09-28T00:00:00Z'),
   window: { from: '2025-01-01', to: '2040-12-31' },
   emptyShards: false,
+  canaries: [],
   sources: {
     intermediates: { name: 'Test: intermediates (gen_chainfix_fixtures.mjs)', url: 'https://example.com/ccadb/intermediates.csv' },
     included: { name: 'Test: included roots', url: 'https://example.com/ccadb/included.csv' },
-    records: { name: 'Test: root records', url: 'https://example.com/ccadb/records.csv' }
+    records: { name: 'Test: certificate records', url: 'https://example.com/ccadb/records.csv' },
+    pems: { name: 'Test: certificate PEMs', url: 'https://example.com/ccadb/pems.csv' }
   }
 });
 rmSync(DATASET, { recursive: true, force: true });

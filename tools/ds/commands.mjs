@@ -95,6 +95,24 @@ export function hostResolves(host) {
   return !!host && ((host.ipv4 && host.ipv4.length > 0) || (host.ipv6 && host.ipv6.length > 0));
 }
 
+/** A lookup that got no usable answer (the host may exist). */
+const LOOKUP_FAILED = new Set(['SERVFAIL', 'REFUSED', 'ERROR']);
+
+/**
+ * The hosts a report lists. An exact run lists every name of its file. A discovery run lists the
+ * hosts that resolve, dangling aliases, failed lookups and the names the previous run seeded
+ * (so one that stopped resolving is compared); the rest — names the passive sources know that
+ * resolve to nothing, wildcard look-alikes — are only counted (`counts`), or a busy domain's
+ * nightly report would carry tens of thousands of dead names.
+ * @param {object[]} rows {@link hostRow} rows
+ * @param {{ exact: boolean, seeded: Set<string> }} opts
+ * @returns {object[]}
+ */
+export function reportHosts(rows, { exact, seeded }) {
+  if (exact) return rows;
+  return rows.filter((h) => !h.wildcardSuspect && (hostResolves(h) || h.dangling || LOOKUP_FAILED.has(h.status) || seeded.has(h.name)));
+}
+
 /**
  * The names of the previous run of a domain to resolve again this run (discovery only): its
  * resolving hosts and dangling aliases, so a host is never "gone" only because a passive
@@ -161,7 +179,7 @@ async function runSubdomains(targets, options, env) {
       counts: countHosts(result.hosts),
       warnings: [...new Set((result.warnings || []).map((w) => w.code))],
       seeded: seeds.length,
-      hosts: scanHostRows(result).map((row) => hostRow(row, seeded))
+      hosts: reportHosts(scanHostRows(result).map((row) => hostRow(row, seeded)), { exact, seeded })
     });
     const run = { status: 'done', config: { domains: [domain] }, result, hosts: result.hosts, found: new Map(), sourceResults: result.sources, finishedAt: result.finishedAt };
     docs.push(subdomainsSummary(subdomainsSummaryFacts(run), { t: env.t, now: env.now() }));

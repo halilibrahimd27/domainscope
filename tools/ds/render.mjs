@@ -117,7 +117,8 @@ export function changeText(change) {
 
 /** When the baseline run ended, as the CLI says it ('2026-09-27 03:02 UTC', or 'an unknown time'). */
 function baselineWhen(info) {
-  return utcStamp(info && info.finishedAt) || 'an unknown time';
+  const at = info && typeof info.finishedAt === 'string' ? info.finishedAt : null;
+  return (at && utcStamp(at)) || 'an unknown time';
 }
 
 /** The base name of a path (the report says which file, never where it lives). */

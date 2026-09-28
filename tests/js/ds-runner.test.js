@@ -18,7 +18,7 @@ import {
 } from '../../tools/ds/args.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, orderChanges, notableChanges } from '../../tools/ds/diff.mjs';
 import { setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, painter, changeText, CHANGE_TAGS, MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES } from '../../tools/ds/render.mjs';
-import { ctCertId, ctTarget, hostRow, baselineSeeds } from '../../tools/ds/commands.mjs';
+import { ctCertId, ctTarget, hostRow, baselineSeeds, reportHosts } from '../../tools/ds/commands.mjs';
 import { main, decodeText } from '../../tools/ds.mjs';
 import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
@@ -329,6 +329,10 @@ describe('diff: subdomains', () => {
     assert.match(changeText(changes[0]), /www\.example\.com — no longer behind Cloudflare: now direct 192\.0\.2\.9/);
     assert.match(changeText(changes[1]), /addresses direct 192\.0\.2\.10 → direct 192\.0\.2\.11/);
     assert.match(changeText(changes.find((c) => c.tag === 'DANGLING')), /dangling CNAME to gone\.example\.net/);
+    assert.match(changeText(changes[2]), /old\.example\.com — no longer resolves: NXDOMAIN$/);
+    const nodata = diffReports('subdomains', before, report('subdomains', [{ target: 'example.com', mode: 'discover', hosts: [
+      ...after.targets[0].hosts.filter((h) => h.name !== 'old.example.com'), host('old.example.com', { kind: 'unresolved' })] }]), { t });
+    assert.match(changeText(nodata.find((c) => c.item === 'old.example.com')), /no longer resolves: no address \(NODATA\)$/);
     assert.match(changeText(changes.at(-1)), /not in this run's result/);
   });
 
@@ -349,6 +353,18 @@ describe('diff: subdomains', () => {
     assert.deepEqual(row.ipv4, ['151.101.1.1', '151.101.2.1']);
     assert.deepEqual(row.origins, ['baseline', 'crtsh']);
     assert.ok(!('ttl' in row) && !('resolver' in row));
+  });
+
+  test('a discovery report lists what resolves, dangles, failed or was seeded; an exact one lists every name', () => {
+    const rows = [
+      host('a.example.com', { ipv4: ['192.0.2.1'] }), host('dead.example.com', { status: 'NXDOMAIN', kind: 'nxdomain' }),
+      host('nodata.example.com', { kind: 'unresolved' }), host('blog.example.com', { status: 'NXDOMAIN', dangling: true, cnames: ['x.example.net'] }),
+      host('flaky.example.com', { status: 'SERVFAIL' }), host('seeded.example.com', { status: 'NXDOMAIN', kind: 'nxdomain' }),
+      host('w1.example.com', { ipv4: ['192.0.2.9'], wildcardSuspect: true })
+    ];
+    assert.deepEqual(reportHosts(rows, { exact: false, seeded: new Set(['seeded.example.com']) }).map((h) => h.name),
+      ['a.example.com', 'blog.example.com', 'flaky.example.com', 'seeded.example.com']);
+    assert.equal(reportHosts(rows, { exact: true, seeded: new Set() }).length, rows.length);
   });
 });
 
@@ -685,6 +701,46 @@ describe('offline runs (fake DoH)', () => {
       const changes = JSON.parse(readFileSync(json, 'utf8')).changes;
       assert.equal(changes[0].tag, 'EXPOSED');
       assert.match(changes[0].text, /www\.example\.com — no longer behind Cloudflare: now direct 192\.0\.2\.10/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('subdomains discovery: last night\'s hosts are looked up again, so one that went is GONE; a new one from crt.sh is NEW', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'subs.json');
+      const base = report('subdomains', [{ target: 'example.com', mode: 'discover', hosts: [
+        host('mail.example.com', { ipv4: ['198.51.100.25'] }), host('retired.example.com', { ipv4: ['192.0.2.77'] })
+      ] }], { options: { mode: 'discover', level: 'off', sources: ['crtsh'] } });
+      delete base.finishedAt;
+      writeFileSync(json, JSON.stringify(base));
+      const other = [];
+      const fetchImpl = createFakeFetch(zoneTable(), {
+        other: (url) => {
+          other.push(url);
+          if (url.startsWith('https://crt.sh/')) {
+            return Response.json([{ issuer_ca_id: 1, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: 'vpn.example.com', name_value: 'vpn.example.com', id: 5, not_before: '2026-09-20T00:00:00', not_after: '2026-12-19T00:00:00', serial_number: '05' }]);
+          }
+          return new Response('', { status: 404 });
+        }
+      });
+      const res = await runMain(['subdomains', 'example.com', '--level', 'off', '--sources', 'crtsh', '--baseline', json, '--json', json, '--fail-on-change'], { fetchImpl });
+      assert.equal(res.code, EXIT.CHANGED, res.err);
+      assert.ok(other.every((u) => u.startsWith('https://crt.sh/')), other.join(' '));
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      const t0 = doc.targets[0];
+      assert.equal(t0.seeded, 2);
+      const byName = Object.fromEntries(t0.hosts.map((h) => [h.name, h]));
+      assert.deepEqual(byName['retired.example.com'].origins, ['baseline']);
+      assert.equal(byName['retired.example.com'].status, 'NXDOMAIN');
+      assert.ok(t0.hosts.every((h) => h.ipv4.length || h.ipv6.length || h.dangling || h.name === 'retired.example.com'), 'only what resolves, and the seeded name');
+      const counted = doc.changes.filter((c) => c.counts).map((c) => `${c.tag} ${c.item}`);
+      assert.ok(counted.includes('GONE retired.example.com') && counted.includes('NEW vpn.example.com'), counted.join(', '));
+      assert.ok(!doc.changes.some((c) => c.item === 'mail.example.com'), 'an unchanged host is no change');
+      assert.match(doc.changes.find((c) => c.item === 'retired.example.com').text, /no longer resolves: NXDOMAIN/);
+      assert.match(doc.changes.find((c) => c.item === 'vpn.example.com').text, /new host vpn\.example\.com — direct 203\.0\.113\.5/);
+      assert.match(res.out, /Changes since the baseline \(subs\.json, run of an unknown time\)/, 'a baseline without a time');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

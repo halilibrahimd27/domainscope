@@ -229,7 +229,7 @@ const DIRECT = new Set(['direct', 'private']);
 function hostState(h) {
   if (FAILED_STATUSES.has(h.status)) return [`lookup failed (${h.status}${h.error ? `: ${h.error}` : ''})`];
   if (h.dangling) return ['dangling CNAME to ', code((h.cnames || []).slice(-1)[0] || '?')];
-  if (!resolves(h)) return [String(h.status || 'no address')];
+  if (!resolves(h)) return [h.status && h.status !== 'NOERROR' ? String(h.status) : 'no address (NODATA)'];
   const who = h.provider ? [code(h.provider)] : [String(h.kind || 'resolves')];
   const ips = addresses(h);
   return DIRECT.has(h.kind) || !h.provider

@@ -55,7 +55,7 @@ registerStrings('en', {
     other: 'Part of these could not be read (damaged or in an unsupported format): {files}. A certificate in them may be missing: its names would be neither scanned nor checked.'
   },
   'rw.replaced.title': 'The certificate being replaced may be loaded too',
-  'rw.replaced.same': 'Set {set} holds two {key} certificates for the same names: {old} (expires {oldDate}) and {new} (expires {newDate}).',
+  'rw.replaced.same': 'Set {set} has {old} (expires {oldDate}) and a newer {key} certificate for the same names, {new} (expires {newDate}).',
   'rw.replaced.other': 'Every name of the {oldKey} certificate {old} in set {set} (expires {oldDate}) is also in a newer {newKey} certificate, {new} in set {bySet} (expires {newDate}).',
   'rw.replaced.body': 'If one of them is the certificate being replaced, remove it: a server still serving it would count as updated.',
   'rw.replaced.badge': 'maybe the old one',
@@ -133,12 +133,12 @@ registerStrings('tr', {
   'rw.skip.noNames': 'DNS adı olmayan bir sertifika ({subject})',
   'rw.keyIgnored': '{files} içindeki özel anahtar yok sayıldı. Hiç gerekmez; gizli tutun.',
   'rw.unread': {
-    one: 'Şunun bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçindeki bir sertifika eksik olabilir: onun adları ne taranır ne de kontrol edilir.',
-    other: 'Şunların bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçlerindeki bir sertifika eksik olabilir: onun adları ne taranır ne de kontrol edilir.'
+    one: 'Şunun bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçindeki bir sertifika eksik olabilir: adları ne taranır ne de kontrol edilir.',
+    other: 'Şunların bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçlerindeki bir sertifika eksik olabilir: adları ne taranır ne de kontrol edilir.'
   },
   'rw.replaced.title': 'Değiştirilen eski sertifika da yüklenmiş olabilir',
-  'rw.replaced.same': '{set} seti aynı adlar için iki {key} sertifikası içeriyor: {old} ({oldDate} tarihinde doluyor) ve {new} ({newDate} tarihinde doluyor).',
-  'rw.replaced.other': '{set} setindeki {oldKey} sertifikası {old} ({oldDate} tarihinde doluyor) için geçen her ad, {bySet} setindeki daha yeni {newKey} sertifikası {new} içinde de var ({newDate} tarihinde doluyor).',
+  'rw.replaced.same': '{set} setinde {old} ({oldDate} tarihinde doluyor) ve aynı adlar için daha yeni bir {key} sertifikası ({new}, {newDate} tarihinde doluyor) var.',
+  'rw.replaced.other': '{set} setindeki {oldKey} sertifikasının ({old}, {oldDate} tarihinde doluyor) tüm adları, {bySet} setindeki daha yeni {newKey} sertifikasında da var ({new}, {newDate} tarihinde doluyor).',
   'rw.replaced.body': 'Bunlardan biri değiştirilen sertifikaysa onu kaldırın: onu hâlâ sunan bir sunucu güncellenmiş sayılır.',
   'rw.replaced.badge': 'eski olan olabilir',
   'rw.replaced.badgeTitle': 'Aynı türde anahtarı olan daha yeni bir sertifika tüm adlarını içeriyor: {file}',

@@ -514,7 +514,7 @@ async function main() {
         marked: [...document.querySelectorAll(`${st} .rw-leaf.is-replaced .rw-leaf-files`)].map((el) => el.textContent),
         badge: document.querySelector(`${st} .rw-leaf.is-replaced .rw-replaced-badge`)?.textContent || ''
       }), STEP1);
-      assert(/^Set C holds two ECDSA P-256 certificates for the same names: cli_public_wild\.pem \(expires .+\) and cli_renewed_wild\.pem \(expires .+\)\.$/.test(info.text), `warning: ${info.text}`);
+      assert(/^Set C has cli_public_wild\.pem \(expires .+\) and a newer ECDSA P-256 certificate for the same names, cli_renewed_wild\.pem \(expires .+\)\.$/.test(info.text), `warning: ${info.text}`);
       assertEqual([info.marked, info.badge], [['cli_public_wild.pem'], 'maybe the old one'], 'the old one is marked');
       await shotEl(page, opts, 'renewal-step1-replaced-en-light', STEP1);
       await page.click(`${STEP1} .rw-leaf.is-replaced [data-action="rw-remove-leaf"]`);

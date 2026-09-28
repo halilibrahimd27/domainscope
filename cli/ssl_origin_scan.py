@@ -5452,7 +5452,9 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni-sertifika.pem
   Birden çok sertifika (RSA + ECDSA ikilisi ya da aynı hafta yenilenenler) için --cert
   tekrarlanır: herhangi birini sunan sunucu UPDATED olur, raporlar hangisi olduğunu
-  yazar ("matches DOSYA", JSON'da newCertFile, CSV'de new_cert sütunu).
+  yazar ("matches DOSYA", JSON'da newCertFile, CSV'de new_cert sütunu). Adlarının
+  tümü aynı anahtar türündeki daha yeni bir --cert içinde de olan bir --cert için
+  (geçen yılın sertifikası) uyarı verilir: değiştirilen sertifikaysa onu çıkarın.
   Dokunulmaması gereken adresleri --exclude ile çıkarın: IP, CIDR ya da aralık,
   boşlukla ayrılmış ya da satır başına bir adres içeren bir dosya. Bu adreslere
   hiç bağlanılmaz; alan adı kabul edilmez. Örnek:

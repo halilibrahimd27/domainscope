@@ -140,9 +140,17 @@ test('constants: modes, limits, statuses, severities and reasons are frozen and 
 
 describe('parseNameservers', () => {
   test('host names (trailing dot, case, commas, lines, comments), public addresses; duplicates dropped', () => {
-    const { list, cliOnly, issues } = parseNameservers('NS1.Example.NET.\nns2.example.net, ns1.example.net # old one\n  1.1.1.1;2606:4700:4700::1111');
-    assert.deepEqual(list, [NS1, NS2, '1.1.1.1', '2606:4700:4700::1111']);
+    const { list, cliOnly, issues } = parseNameservers('NS1.Example.NET.\nns2.example.net, ns1.example.net # old one\n  1.1.1.1;1.1.1.1');
+    assert.deepEqual(list, [NS1, NS2, '1.1.1.1']);
     assert.deepEqual([cliOnly, issues], [[], []]);
+  });
+
+  test('a public IPv6 address goes to the CLI: a probe asks a name server over IPv4', () => {
+    const { list, cliOnly, issues } = parseNameservers(`${NS1} 2606:4700:4700::1111 [2606:4700:4700:0::1111]`);
+    assert.deepEqual([list, cliOnly], [[NS1], ['2606:4700:4700::1111']], 'normalized, a duplicate dropped');
+    assert.deepEqual(issues, [{ code: 'ipv6', value: '2606:4700:4700::1111' }]);
+    assert.equal(buildParityCommand({ file: 'example.com.parity.zone', nameservers: [...list, ...cliOnly] }).command,
+      `python3 dns_parity.py example.com.parity.zone --ns ${NS1} 2606:4700:4700::1111`);
   });
 
   test('private and documentation addresses go to the CLI only; bad tokens, more than eight, and the file\'s own servers are issues', () => {
@@ -468,6 +476,37 @@ describe('runParity', () => {
     assert.equal(result.counts.different, 0, 'nothing different: the only blocker left is the missing record');
   });
 
+  test('an address typed for the CLI only still makes the apex NS set "by address" (the CLI\'s rule)', async () => {
+    // ns1 is asked; 10.0.0.53 only by the CLI: the set cannot be judged against ns1 alone.
+    const { row } = await run(z, { [NS1]: { records: good } }, { nameservers: [NS1], cliOnly: ['10.0.0.53'] });
+    assert.equal(status(row(`${NS1}|example.com|NS`)), 'skipped ns-by-address', 'no false ns-mismatch');
+    const names = await run(z, { [NS1]: { records: good } }, { nameservers: [NS1], cliOnly: [] });
+    assert.equal(status(names.row(`${NS1}|example.com|NS`)), 'different ns-mismatch', 'ns2 was not typed: the set names a server not entered');
+  });
+
+  test('a stop after unproxied rows is partial, never a clean "check"; the switch waits for a finished comparison', async () => {
+    // The proxied apex and www are answered with the origin at the new provider; the quota runs out part way.
+    const records = { ...good, 'example.com|A': [[300, '192.0.2.10']], 'www.example.com|CNAME': [[300, 'example.com.']], 'old.example.com|A': [[3600, '198.51.100.30']] };
+    const servers = { [NS1]: { records }, [NS2]: { records } };
+    const all = await run(z, servers, { nameservers: [NS1, NS2], extras: false });
+    const order = all.client.calls.map((b) => `${b.target}|${b.measurementOptions.query.type}`);
+    const after = Math.max(order.indexOf('example.com|A'), order.indexOf('www.example.com|CNAME')) + 1;
+    const { result } = await run(z, servers, { nameservers: [NS1, NS2], extras: false }, { quotaAfter: after });
+    assert.equal(result.stoppedBy, 'quota');
+    assert.ok(result.counts.unproxied >= 1 && !result.counts.missing && !result.counts.different, JSON.stringify(result.counts));
+    assert.ok(result.notReached > 0, `left out: ${result.notReached}`);
+    const sum = paritySummary(result);
+    assert.deepEqual([sum.verdict, sum.stopped], ['partial', true], 'what the stop left out could hold anything');
+    assert.ok(sum.unchecked >= result.notReached);
+    const low = zone([SOA_ROW, ['@', 'NS', 'ns1.example.org.', { ttl: 3600 }], ['@', 'A', '192.0.2.10', { ttl: 300 }]]);
+    const steps = Object.fromEntries(parityRunbook(low, result, { nameservers: [NS1] }).map((s) => [s.id, s]));
+    assert.deepEqual([steps.fix.state, steps.switch.state, steps.switch.params.unchecked, steps.switch.params.stopped], ['warn', 'warn', sum.unchecked, true]);
+    // The same zone, finished: 'check' (CAA is left to the CLI, so the switch still says to run it).
+    const finished = paritySummary(all.result);
+    assert.deepEqual([finished.verdict, finished.stopped], ['check', false]);
+    assert.equal(parityRunbook(low, all.result).find((s) => s.id === 'switch').state, 'warn', 'CAA not compared here');
+  });
+
   test('a stop counts the record sets it kept from being compared', async () => {
     const ac = new AbortController();
     const client = fakeGp({ [NS1]: { records: good } }, { delayMs: 15 });
@@ -581,6 +620,36 @@ describe('summary and runbook', () => {
     assert.equal(paritySummary({ ...clean, capped: true }).verdict, 'partial');
     assert.equal(paritySummary({ ...clean, rows: [{ status: 'skipped', reasons: ['not-queryable'] }] }).verdict, 'partial');
     assert.equal(paritySummary({ ...clean, stoppedBy: 'quota' }).verdict, 'partial');
+    // A stop wins over 'check': 3 unproxied rows so far, 26 record sets never asked.
+    const stopped = paritySummary({ ...clean, counts: { same: 2, unproxied: 3 }, stoppedBy: 'quota', notReached: 26 });
+    assert.deepEqual([stopped.verdict, stopped.unchecked, stopped.stopped], ['partial', 26, true]);
+    assert.equal(paritySummary({ ...clean, counts: { same: 2, extra: 1 }, notReached: 4 }).verdict, 'partial', 'record sets a stop left out');
+    assert.equal(paritySummary({ ...clean, counts: { same: 2, missing: 1 }, stoppedBy: 'quota', notReached: 26 }).verdict, 'fix', 'a missing record still says fix');
+  });
+
+  test('the toast of a run that ends away from its tab: "nothing to fix" only for a finished clean run', async () => {
+    const { finishedToast } = await import('../../assets/js/ui/parity-panel.js');
+    const note = (result) => finishedToast(paritySummary(result));
+    assert.deepEqual(note(clean), { text: 'New name servers: ready, nothing to fix', type: 'success' });
+    assert.deepEqual(note({ ...clean, counts: { same: 2, unproxied: 3 }, stoppedBy: 'quota', notReached: 26 }),
+      { text: 'New name servers: stopped, 26 record sets not compared', type: 'warn' });
+    assert.deepEqual(note({ ...clean, stoppedBy: 'abort' }), { text: 'New name servers: the comparison stopped before it finished', type: 'warn' });
+    assert.deepEqual(note({ ...clean, counts: { same: 2, extra: 1 } }).type, 'warn', 'check');
+    assert.deepEqual(note({ ...clean, rows: [{ status: 'skipped', reasons: ['not-queryable'] }] }),
+      { text: 'New name servers: nothing missing or different so far, 1 record set not compared', type: 'info' });
+    assert.deepEqual(note({ ...clean, counts: { missing: 2 }, stoppedBy: 'quota' }), { text: 'New name servers: 2 problems to fix', type: 'warn' });
+    assert.equal(note({ ...clean, nameservers: [{ ns: NS1, role: 'full', state: 'refused' }] }).type, 'error', 'blocked');
+  });
+
+  test('runbook: the switch waits for a finished comparison', () => {
+    const low = zone([SOA_ROW, ['@', 'NS', 'ns1.example.org.', { ttl: 3600 }], ['@', 'A', '192.0.2.10', { ttl: 300 }]]);
+    const sw = (result) => parityRunbook(low, result, { nameservers: [NS1] }).find((s) => s.id === 'switch');
+    assert.deepEqual([sw(null).state, sw(clean).state], ['todo', 'todo']);
+    const stopped = sw({ ...clean, counts: { same: 2, unproxied: 3 }, stoppedBy: 'quota', notReached: 26 });
+    assert.deepEqual([stopped.state, stopped.params], ['warn', { nameservers: NS1, unchecked: 26, stopped: true }]);
+    assert.equal(sw({ ...clean, stoppedBy: 'abort' }).state, 'warn', 'stopped before anything was left out: still not finished');
+    assert.equal(sw({ ...clean, capped: true, rows: [{ status: 'skipped', reasons: ['budget'] }] }).state, 'warn', 'past the probe cap');
+    assert.equal(sw({ ...clean, counts: { missing: 1 }, stoppedBy: 'quota' }).state, 'blocked');
   });
 
   test('runbook: TTLs from the file, DNSSEC from the file or the DS, switch blocked while records are missing', () => {

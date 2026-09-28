@@ -63,6 +63,7 @@ registerStrings('en', {
   'par.ns.hint': 'The host names the new provider gave you (their addresses work too), one per line or separated by spaces. Up to {max}.',
   'par.nsIssue.invalid': 'Not a name server: {value}',
   'par.nsIssue.private': '{value} is a private or documentation address: a probe cannot reach it. The CLI command below asks it from your network.',
+  'par.nsIssue.ipv6': '{value} is an IPv6 address: a probe asks name servers over IPv4, so the CLI command below asks this one.',
   'par.nsIssue.too-many': 'Only {max} name servers are compared; {value} is left out.',
   'par.nsIssue.in-file': '{value} is one of this file’s own name servers: that is the current provider, whose answers the Live check compares.',
   'par.nsNeeded': 'Enter the new provider’s name servers first.',
@@ -95,7 +96,20 @@ registerStrings('en', {
   'par.stopped.quota': 'The hourly Globalping quota ran out: the comparison stopped. What was answered is shown; compare again {when}, or use the CLI.',
   'par.stopped.unreachable': 'Globalping could not be reached: the comparison stopped. What was answered is shown.',
   'par.stopped.abort': 'Stopped: what was answered is shown.',
-  'par.finished': { zero: 'New name servers: nothing to fix', one: 'New name servers: {count} problem to fix', other: 'New name servers: {count} problems to fix' },
+  'par.finished.ready': 'New name servers: ready, nothing to fix',
+  'par.finished.fix': { one: 'New name servers: {count} problem to fix', other: 'New name servers: {count} problems to fix' },
+  'par.finished.check': 'New name servers: nothing missing or different, but some records need a look',
+  'par.finished.partial': {
+    zero: 'New name servers: nothing missing or different so far, but not everything was compared',
+    one: 'New name servers: nothing missing or different so far, {count} record set not compared',
+    other: 'New name servers: nothing missing or different so far, {count} record sets not compared'
+  },
+  'par.finished.blocked': 'New name servers: none of them serves the zone yet',
+  'par.finished.stopped': {
+    zero: 'New name servers: the comparison stopped before it finished',
+    one: 'New name servers: stopped, {count} record set not compared',
+    other: 'New name servers: stopped, {count} record sets not compared'
+  },
   'par.checkedAt': { one: 'Compared {time} · {count} probe', other: 'Compared {time} · {count} probes' },
 
   'par.head.ready': 'The new name servers serve every compared record set of this file.',
@@ -104,6 +118,10 @@ registerStrings('en', {
   'par.head.check': {
     one: 'Nothing is missing or different. Check the rest before you switch: {extra} extra, {unproxied} not proxied, {count} TTL difference.',
     other: 'Nothing is missing or different. Check the rest before you switch: {extra} extra, {unproxied} not proxied, {count} TTL differences.'
+  },
+  'par.head.uncompared': {
+    one: '{count} record set was not compared here (the CLI compares every record).',
+    other: '{count} record sets were not compared here (the CLI compares every record).'
   },
   'par.head.partial': {
     zero: 'Nothing is missing or different so far, but the comparison did not finish (the CLI compares every record).',
@@ -188,6 +206,11 @@ registerStrings('en', {
   'par.step.dnssec.info': 'If the registrar has a DS record for the zone, remove it (and wait for its TTL) or pre-publish the new provider’s DNSKEY before the switch. The comparison looks the DS up.',
   'par.step.switch.todo': 'Switch the NS records at the registrar to {nameservers}. Change nothing at the current provider meanwhile.',
   'par.step.switch.blocked': 'Do not switch yet: fix the differences above first.',
+  'par.step.switch.warn': {
+    zero: 'The comparison did not finish. Compare again, or run the CLI below, before you switch the NS records at the registrar to {nameservers}.',
+    one: 'Not everything was compared: {count} record set was not. Compare again, or run the CLI below, before you switch the NS records at the registrar to {nameservers}.',
+    other: 'Not everything was compared: {count} record sets were not. Compare again, or run the CLI below, before you switch the NS records at the registrar to {nameservers}.'
+  },
   'par.step.wait.todo': 'Keep the old provider’s zone answering, unchanged, for at least {hours} hours: resolvers that cached the old delegation keep asking the old servers until it runs out. A record you change in that time must change at both providers.',
   'par.step.after.todo': 'Then check from outside: the Live check of this page and Global DNS should show the new servers’ answers everywhere. Restore the TTLs you lowered.',
   'par.state.ok': 'Done',
@@ -218,6 +241,7 @@ registerStrings('tr', {
   'par.ns.hint': 'Yeni sağlayıcının verdiği host adları (adresleri de olur), her satıra bir tane ya da boşlukla ayrılmış. En fazla {max}.',
   'par.nsIssue.invalid': 'Bir ad sunucusu değil: {value}',
   'par.nsIssue.private': '{value} özel ya da dokümantasyon adresi: ölçüm noktası ona ulaşamaz. Aşağıdaki CLI komutu onu sizin ağınızdan sorar.',
+  'par.nsIssue.ipv6': '{value} bir IPv6 adresi: ölçüm noktası ad sunucularına IPv4 üzerinden sorar, bu yüzden bunu aşağıdaki CLI komutu sorar.',
   'par.nsIssue.too-many': 'Yalnızca {max} ad sunucusu karşılaştırılır; {value} dışarıda kaldı.',
   'par.nsIssue.in-file': '{value} bu dosyanın kendi ad sunucularından biri: bu, mevcut sağlayıcı; onun yanıtlarını Canlı kontrol karşılaştırır.',
   'par.nsNeeded': 'Önce yeni sağlayıcının ad sunucularını girin.',
@@ -244,13 +268,25 @@ registerStrings('tr', {
   'par.stopped.quota': 'Saatlik Globalping kotası doldu: karşılaştırma durdu. Yanıtlananlar gösteriliyor; {when} yeniden karşılaştırın ya da CLI’ı kullanın.',
   'par.stopped.unreachable': 'Globalping’e ulaşılamadı: karşılaştırma durdu. Yanıtlananlar gösteriliyor.',
   'par.stopped.abort': 'Durduruldu: yanıtlananlar gösteriliyor.',
-  'par.finished': { zero: 'Yeni ad sunucuları: düzeltilecek bir şey yok', other: 'Yeni ad sunucuları: düzeltilecek {count} sorun' },
+  'par.finished.ready': 'Yeni ad sunucuları: hazır, düzeltilecek bir şey yok',
+  'par.finished.fix': 'Yeni ad sunucuları: düzeltilecek {count} sorun',
+  'par.finished.check': 'Yeni ad sunucuları: eksik ya da farklı bir şey yok, ama bakılması gereken kayıtlar var',
+  'par.finished.partial': {
+    zero: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı',
+    other: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, {count} kayıt kümesi karşılaştırılmadı'
+  },
+  'par.finished.blocked': 'Yeni ad sunucuları: henüz hiçbiri zone’u sunmuyor',
+  'par.finished.stopped': {
+    zero: 'Yeni ad sunucuları: karşılaştırma tamamlanmadan durdu',
+    other: 'Yeni ad sunucuları: durdu, {count} kayıt kümesi karşılaştırılmadı'
+  },
   'par.checkedAt': '{time} karşılaştırıldı · {count} ölçüm',
 
   'par.head.ready': 'Yeni ad sunucuları bu dosyanın karşılaştırılan her kayıt kümesini sunuyor.',
   'par.head.fix': 'Geçişten önce yeni sağlayıcıdaki zone’u düzeltin: {missing} eksik, {different} farklı{servers}.',
   'par.head.fixServers': ', zone’u sunmayan {count} ad sunucusu',
   'par.head.check': 'Eksik ya da farklı bir şey yok. Geçişten önce kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, {count} TTL farkı.',
+  'par.head.uncompared': '{count} kayıt kümesi burada karşılaştırılmadı (CLI her kaydı karşılaştırır).',
   'par.head.partial': {
     zero: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama karşılaştırma tamamlanmadı (CLI her kaydı karşılaştırır).',
     other: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı: {count} kayıt kümesi karşılaştırılmadı (CLI her kaydı karşılaştırır).'
@@ -327,6 +363,10 @@ registerStrings('tr', {
   'par.step.dnssec.info': 'Kayıt kuruluşunda zone için bir DS kaydı varsa, geçişten önce silin (ve TTL’ini bekleyin) ya da yeni sağlayıcının DNSKEY’ini önceden yayımlayın. Karşılaştırma DS kaydına bakar.',
   'par.step.switch.todo': 'Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirin. Bu sırada mevcut sağlayıcıda hiçbir şeyi değiştirmeyin.',
   'par.step.switch.blocked': 'Henüz geçiş yapmayın: önce yukarıdaki farkları düzeltin.',
+  'par.step.switch.warn': {
+    zero: 'Karşılaştırma tamamlanmadı. Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirmeden önce yeniden karşılaştırın ya da aşağıdaki CLI’ı çalıştırın.',
+    other: 'Her şey karşılaştırılmadı: {count} kayıt kümesi karşılaştırılmadı. Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirmeden önce yeniden karşılaştırın ya da aşağıdaki CLI’ı çalıştırın.'
+  },
   'par.step.wait.todo': 'Eski sağlayıcıdaki zone’u en az {hours} saat değiştirmeden yanıt verir durumda tutun: eski yetki devrini önbelleğe alan çözümleyiciler, süresi dolana kadar eski sunuculara sormaya devam eder. Bu sürede değiştirdiğiniz bir kaydı iki sağlayıcıda da değiştirin.',
   'par.step.after.todo': 'Sonra dışarıdan kontrol edin: bu sayfanın Canlı kontrolü ve Global DNS her yerde yeni sunucuların yanıtlarını göstermeli. Düşürdüğünüz TTL’leri geri yükseltin.',
   'par.state.ok': 'Tamam',
@@ -338,7 +378,7 @@ registerStrings('tr', {
   'par.step.nsUnknown': 'yeni sağlayıcının ad sunucuları',
 
   'par.cli.title': 'Her kayıt, kendi makinenizden (CLI)',
-  'par.cli.lead': 'dns_parity.py dosyadaki her kayıt kümesini (CAA ve TLSA dahil) her yeni ad sunucusuna doğrudan sorar (UDP / TCP 53. port): ölçüm yok, sınır yok. Python 3.8+, ek paket gerekmez.',
+  'par.cli.lead': 'dns_parity.py dosyadaki her kayıt kümesini (CAA ve TLSA dahil) her yeni ad sunucusuna doğrudan sorar (UDP / TCP, 53 numaralı port): ölçüm yok, sınır yok. Python 3.8+, ek paket gerekmez.',
   'par.cli.zone': 'Zone’u indir (BIND)',
   'par.cli.script': 'dns_parity.py',
   'par.cli.shell': 'Kabuk',
@@ -364,15 +404,34 @@ export function generatedKeys() {
   for (const st of RUNBOOK_STATES) keys.push(`par.state.${st}`);
   for (const v of ['ready', 'fix', 'check', 'partial', 'blocked']) keys.push(`par.head.${v}`);
   for (const s of ['quota', 'unreachable', 'abort']) keys.push(`par.stopped.${s}`);
+  for (const f of [...FINISHED, 'stopped']) keys.push(`par.finished.${f}`);
   return keys;
 }
 
 /** The runbook states each step can be in (lib/nsparity.js parityRunbook). */
 const STEP_STATES = Object.freeze({
-  ttl: ['todo', 'ok'], fix: ['info', 'todo', 'warn', 'ok', 'blocked'], dnssec: ['todo', 'ok', 'info'], switch: ['todo', 'blocked'],
+  ttl: ['todo', 'ok'], fix: ['info', 'todo', 'warn', 'ok', 'blocked'], dnssec: ['todo', 'ok', 'info'], switch: ['todo', 'warn', 'blocked'],
   wait: ['todo'], after: ['todo']
 });
 const stepKeyExists = (step, state) => (STEP_STATES[step] || []).includes(state);
+/** The verdicts a finished run's toast words (`par.finished.<v>`; a stop is `par.finished.stopped`). */
+const FINISHED = Object.freeze(['ready', 'fix', 'check', 'partial', 'blocked']);
+
+/**
+ * The toast of a run that ended while its tab was not on screen: its verdict, and a stop said as
+ * such ("stopped, N record sets not compared"); only a finished, clean run says "nothing to fix".
+ * @param {object} sum lib/nsparity.js paritySummary of the run
+ * @returns {{ text: string, type: 'success'|'warn'|'error'|'info' }}
+ */
+export function finishedToast(sum) {
+  const c = sum.counts;
+  if (sum.verdict === 'fix') return { text: t('par.finished.fix', { count: (c.missing || 0) + (c.different || 0) + sum.badServers }), type: 'warn' };
+  if (sum.verdict === 'blocked') return { text: t('par.finished.blocked'), type: 'error' };
+  if (sum.stopped) return { text: t('par.finished.stopped', { count: sum.unchecked }), type: 'warn' };
+  if (sum.verdict === 'check') return { text: t('par.finished.check'), type: 'warn' };
+  if (sum.verdict === 'partial') return { text: t('par.finished.partial', { count: sum.unchecked }), type: 'info' };
+  return { text: t('par.finished.ready'), type: 'success' };
+}
 
 /** The text key of a row's reason: worded for the new name servers, else the live check's. */
 export function reasonKey(r) {
@@ -391,16 +450,20 @@ export function freshParity() {
   return {
     nsText: '', mode: 'first', extras: true, skipPrivate: true, status: 'idle', result: null, rows: [], servers: [],
     done: 0, total: 0, spent: 0, error: null, resetAt: null, controller: null, filter: 'all', shell: 'posix',
-    includeOrigins: false, finishedAt: null, hook: null
+    includeOrigins: false, finishedAt: null, hook: null, dropped: false
   };
 }
 
 /**
- * Stop a running comparison (a new import, Forget, another workspace): nothing more is sent.
+ * Drop a holder with its zone (a new import, Forget, another workspace): a running comparison
+ * stops, nothing more is sent, and its end is neither shown, announced nor toasted (the tab it
+ * would link to holds another zone, or none). The tab's own Stop button only aborts the run.
  * @param {object|null} P
  */
 export function stopParity(P) {
-  if (P && P.controller) P.controller.abort();
+  if (!P) return;
+  P.dropped = true;
+  if (P.controller) P.controller.abort();
 }
 
 const ttlText = (v) => (Number.isFinite(v) ? `${formatNumber(v)} s` : t('par.ttlUnknown'));
@@ -538,7 +601,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
       dataset: { action: 'par-run', shortcut: 'submit' },
       onClick: () => start()
     });
-    const stopBtn = running() ? Button({ label: t('par.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'par-stop', shortcut: 'cancel' }, onClick: () => stopParity(P) }) : null;
+    const stopBtn = running() ? Button({ label: t('par.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'par-stop', shortcut: 'cancel' }, onClick: () => P.controller && P.controller.abort() }) : null;
     const card = Card({
       title: t('par.title'),
       icon: 'server',
@@ -581,8 +644,8 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
   const shown = () => P.hook || { render, progress, connected: () => box.isConnected };
 
   async function start() {
-    if (running() || !ctx.requireOnline()) return;
-    const { list } = parsed();
+    if (running() || P.dropped || !ctx.requireOnline()) return;
+    const { list, cliOnly } = parsed();
     const plan = planFor(list);
     if (!plan.ok) return;
     const ac = new AbortController();
@@ -597,7 +660,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         purpose: PARITY_PURPOSE, probes: plan.probes, signal: ac.signal, confirmAbove: PARITY_CONFIRM_ABOVE, className: 'par-confirm',
         privacy: privacyText(plan.probes)
       });
-      if (P.controller !== ac) return;
+      if (P.controller !== ac || P.dropped) return;
       if (gate.status === 'cancelled') {
         Object.assign(P, prev);
         return;
@@ -619,6 +682,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
       const result = await runParity(zone, {
         client: gate.client,
         nameservers: list,
+        cliOnly,
         mode: P.mode,
         extras: P.extras,
         skipPrivate: P.skipPrivate,
@@ -634,25 +698,32 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         },
         onQuota: (q) => noteQuota(q)
       });
-      if (P.controller !== ac) return;
+      // Dropped with its zone (Forget, a new import, another workspace): nothing to show or say.
+      if (P.controller !== ac || P.dropped) return;
       Object.assign(P, { status: 'done', result, rows: result.rows, servers: result.nameservers, spent: result.spent, resetAt: result.resetAt, finishedAt: new Date(), filter: 'all' });
       const sum = paritySummary(result);
-      const count = (sum.counts.missing || 0) + (sum.counts.different || 0) + sum.badServers;
-      announce(t(`par.head.${sum.verdict}`, headParams(result, sum)));
+      announce(headline(result, sum));
       if (!shown().connected()) {
-        toast(t('par.finished', { count }), { type: count ? 'warn' : 'success', action: { label: t('zone.tab.parity'), onClick: () => ctx.navigate('zone', { tab: 'parity' }) } });
+        const note = finishedToast(sum);
+        toast(note.text, { type: note.type, action: { label: t('zone.tab.parity'), onClick: () => ctx.navigate('zone', { tab: 'parity' }) } });
       }
       if (onDone) onDone(result);
     } catch (err) {
-      if (P.controller !== ac) return;
+      if (P.controller !== ac || P.dropped) return;
       if (errorKind(err) === 'abort' || ac.signal.aborted) Object.assign(P, prev);
       else Object.assign(P, { status: 'failed', error: err });
     } finally {
       if (P.controller === ac) P.controller = null;
       ctx.setBusy(false);
-      shown().render();
+      if (!P.dropped) shown().render();
       pendingFocus = null;
     }
+  }
+
+  /** The verdict line; a finished 'check' also says what it left for the CLI. */
+  function headline(result, sum) {
+    const head = t(`par.head.${sum.verdict}`, headParams(result, sum));
+    return sum.verdict === 'check' && sum.unchecked ? `${head} ${t('par.head.uncompared', { count: sum.unchecked })}` : head;
   }
 
   function headParams(result, sum) {
@@ -672,7 +743,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     const sum = paritySummary(result);
     const out = h('div', { class: 'stack-sm par-results', dataset: { status: P.status, verdict: sum.verdict } });
     const variant = { ready: 'ok', fix: 'error', check: 'warn', partial: 'info', blocked: 'error' }[sum.verdict];
-    out.append(Alert({ variant, message: t(`par.head.${sum.verdict}`, headParams(result, sum)) }));
+    out.append(Alert({ variant, message: headline(result, sum) }));
     if (result.stoppedBy) {
       out.append(Alert({ variant: result.stoppedBy === 'abort' ? 'info' : 'warn', compact: true,
         message: t(`par.stopped.${result.stoppedBy}`, { when: whenText(result.resetAt) }) }));
@@ -793,7 +864,9 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         nsTtl: ttlText(p.nsTtl), maxTtl: ttlText(p.maxTtl), low: ttlText(p.low), hours: p.hours,
         missing: formatNumber(p.missing || 0), different: formatNumber(p.different || 0), extra: formatNumber(p.extra || 0),
         unproxied: formatNumber(p.unproxied || 0), unchecked: formatNumber(p.unchecked || 0), servers: formatNumber(p.servers || 0),
-        nameservers: p.nameservers || t('par.step.nsUnknown')
+        nameservers: p.nameservers || t('par.step.nsUnknown'),
+        // The plural of the switch step after a stop or a capped run: the record sets not compared.
+        count: s.id === 'switch' ? Number(p.unchecked) || 0 : undefined
       };
       return h('li', { class: 'par-step', dataset: { step: s.id, state: s.state } },
         h('span', { class: 'par-step-icon' }, SeverityIcon(STATE_ICON[s.state] || 'info')),

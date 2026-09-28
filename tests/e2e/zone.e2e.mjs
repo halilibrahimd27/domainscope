@@ -169,12 +169,14 @@ async function newProviderTable() {
  * authoritative server would (the dig flags line with aa, CNAME chains inside the zone, a
  * wildcard, NXDOMAIN, a referral for the delegation). Every call is logged in window.__gp.
  * `window.__gp.allowUpTo`: measurements numbered above it stay in progress (a test holds a run
- * part way, then lets it go on).
+ * part way, then lets it go on); `window.__gp.quotaAfter`: a POST past that many measurements gets
+ * the quota 429 (rate_limit_exceeded) and creates nothing, its window ending `quotaResetS` seconds
+ * later (`quotaResetAt`: when).
  */
 const fakeGlobalpingScript = (table, servers) => `(() => {
   const T = ${JSON.stringify(table)};
   const SERVERS = ${JSON.stringify(servers)};
-  const gp = window.__gp = { calls: [], remaining: 250, n: 0, measurements: {}, allowUpTo: Infinity };
+  const gp = window.__gp = { calls: [], remaining: 250, n: 0, measurements: {}, allowUpTo: Infinity, quotaAfter: Infinity, quotaResetS: 3600, quotaResetAt: 0 };
   const prevFetch = window.fetch;
   const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
   const probe = { continent: 'EU', region: 'Western Europe', country: 'DE', city: 'Frankfurt', asn: 24940, network: 'Hetzner Online', tags: ['datacenter-network'] };
@@ -225,6 +227,10 @@ const fakeGlobalpingScript = (table, servers) => `(() => {
     gp.calls.push({ method, path: p, body });
     if (p === '/limits') return json({ rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.remaining, reset: 0 } } } });
     if (p === '/measurements' && method === 'POST') {
+      if (gp.n >= gp.quotaAfter) {
+        gp.quotaResetAt = Date.now() + gp.quotaResetS * 1000;
+        return json({ error: { type: 'rate_limit_exceeded', message: 'API rate limit exceeded.' } }, 429, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(gp.quotaResetS) });
+      }
       gp.remaining -= 1;
       gp.n += 1;
       const id = 'fakeParity' + String(gp.n).padStart(6, '0');
@@ -736,6 +742,38 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.par-results').dataset.verdict), 'fix', 'the whole comparison');
     });
 
+    await run.step('A quota stop while another view is shown: a warning toast says what was not compared; the headline and the switch wait', async () => {
+      // Five measurements (the SOA and four record sets), then the quota 429, while About is shown.
+      // The quota window ends a second after the 429, so the later steps can send again.
+      const base = await page.evaluate(() => Object.assign(window.__gp, { allowUpTo: window.__gp.n, quotaAfter: window.__gp.n + 5, quotaResetS: 1 }).n);
+      await page.click('[data-action="par-run"]');
+      await page.waitFor((b) => !!document.querySelector('[data-action="par-stop"]') && window.__gp.n > b, { args: [base], message: 'running' });
+      await gotoRoute(page, 'about');
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+      const parityToast = () => page.evaluate(() => {
+        const el = [...document.querySelectorAll('.toast')].find((x) => /New name servers:/.test(x.textContent));
+        return el ? { text: el.textContent, warn: el.classList.contains('toast-warn') } : null;
+      });
+      await page.waitFor(() => [...document.querySelectorAll('.toast')].some((x) => /New name servers:/.test(x.textContent)), { timeout: 30000, message: 'the toast' });
+      const note = await parityToast();
+      assert(/New name servers: stopped, \d+ record sets not compared/.test(note.text) && note.warn, `a warning that names the stop: ${JSON.stringify(note)}`);
+      assert(!/nothing to fix/.test(note.text), 'never "nothing to fix" after a stop');
+      await gotoRoute(page, 'zone');
+      await clickTab(page, 'parity');
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.status === 'done', { message: 'the result on the tab' });
+      assertEqual(await page.evaluate(() => document.querySelector('.par-results').dataset.verdict), 'partial', 'what the stop left out could hold anything');
+      const head = await text(page, '.par-results > .alert');
+      assert(/so far, but not everything was compared: \d+ record sets were not/.test(head), `the headline says the comparison did not finish: ${head}`);
+      assert(/The hourly Globalping quota ran out/.test(await text(page, '.par-results')), 'the quota alert');
+      assertEqual(await page.evaluate(() => document.querySelector('.par-step[data-step="switch"]').dataset.state), 'warn', 'the switch waits');
+      assert(/Compare again, or run the CLI below, before you switch/.test(await text(page, '.par-step[data-step="switch"]')), 'the switch step says why');
+      await page.evaluate(() => { window.__gp.quotaAfter = Infinity; });
+      await page.waitFor(() => Date.now() > window.__gp.quotaResetAt + 250, { message: 'the quota window is over' });
+      await page.click('[data-action="par-run"]');
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.verdict === 'fix' && !document.querySelector('[data-action="par-stop"]'), { timeout: 30000, message: 'compared again' });
+      assertEqual(await page.evaluate(() => document.querySelector('.par-step[data-step="switch"]').dataset.state), 'blocked', 'the whole comparison: fix first');
+    });
+
     await run.step('The comparison table fits its card at 1280 and 1440 px: no inner horizontal scroll, the notes whole', async () => {
       for (const width of [1280, 1440]) {
         await page.setViewport({ width, height: 900 });
@@ -899,6 +937,32 @@ async function main() {
       assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.getSession('zone')), undefined, 'session cleared');
       assertEqual(await noZoneStorage(page), [], 'no zone key in storage');
       assert(/^#\/zone(\?tab=\w+)?$/.test(await page.evaluate(() => location.hash)), 'hash');
+    });
+
+    await run.step('Forget during a comparison: the run stops and drops out quietly (no toast, no result for a zone that is gone)', async () => {
+      await page.click('[data-sample="cloudflare"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample' });
+      await clickTab(page, 'parity');
+      await typeNs(NEW_NS.join('\n'));
+      await page.waitFor(() => Number(document.querySelector('[data-role="par-plan"]')?.dataset.probes) > 0, { message: 'plan' });
+      const base = await page.evaluate(() => { window.__gp.allowUpTo = window.__gp.n; return window.__gp.n; });
+      await page.click('[data-action="par-run"]');
+      await page.waitFor(() => !!document.querySelector('.gp-confirm') || !!document.querySelector('[data-action="par-stop"]'), { message: 'dialog or run' });
+      if (await page.evaluate(() => !!document.querySelector('.gp-confirm'))) await page.click('.gp-confirm .btn-primary');
+      await page.waitFor((b) => !!document.querySelector('[data-action="par-stop"]') && window.__gp.n > b, { args: [base], message: 'running' });
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary') && document.getElementById('main')?.getAttribute('aria-busy') === 'false', { message: 'forgotten, the run ended' });
+      assert(!await page.evaluate(() => [...document.querySelectorAll('.toast')].some((x) => /New name servers:/.test(x.textContent))), 'no toast for the dropped run');
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+      const posted = await page.evaluate(() => window.__gp.n);
+      await page.click('[data-sample="cloudflare"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'the sample again' });
+      await clickTab(page, 'parity');
+      assert(!await page.evaluate(() => !!document.querySelector('.par-results')), 'no result of the dropped run');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="par-ns"]').value), '', 'Forget drops the servers typed in too');
+      assertEqual(await page.evaluate(() => window.__gp.n), posted, 'nothing sent after Forget');
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
     });
 
     await run.step('"Delete all local data" drops a loaded zone; a reload forgets it', async () => {

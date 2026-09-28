@@ -70,7 +70,7 @@ export const PARITY_REASONS = Object.freeze(['ttl-differs', 'ns-new', 'ns-mismat
 /** What the SOA question to one name server found (closed set, `par.ns.<state>`). */
 export const NS_STATES = Object.freeze(['ok', 'refused', 'not-authoritative', 'no-zone', 'servfail', 'unreachable', 'failed', 'not-run']);
 /** Problems of the name-server list as typed (`par.nsIssue.<code>`). */
-export const NS_ISSUES = Object.freeze(['invalid', 'private', 'too-many', 'in-file']);
+export const NS_ISSUES = Object.freeze(['invalid', 'private', 'ipv6', 'too-many', 'in-file']);
 /** Why a run stopped before its plan was done. */
 export const PARITY_STOPS = Object.freeze(['quota', 'unreachable', 'abort']);
 /** The runbook, in order (`par.step.<id>`), and the states a step can be in. */
@@ -104,15 +104,18 @@ const canon = (v) => String(v ?? '').trim().toLowerCase().replace(/\.$/, '');
 
 /**
  * The new name servers from a text box: host names (a trailing dot is dropped, IDN → punycode)
- * or public addresses, separated by spaces, commas, semicolons or lines; `#` starts a comment.
- * A private or documentation address cannot be asked through Globalping: it goes to `cliOnly`
- * (the CLI asks it from your own network) with a `private` issue. A duplicate is dropped, and
- * past {@link PARITY_MAX_NAMESERVERS} (both lists together, the CLI's limit) the rest is cut off.
+ * or public IPv4 addresses, separated by spaces, commas, semicolons or lines; `#` starts a
+ * comment. A private or documentation address cannot be asked through Globalping: it goes to
+ * `cliOnly` (the CLI asks it from your own network) with a `private` issue. So does a public
+ * IPv6 address, with an `ipv6` issue: a probe asks a name server over IPv4 (Globalping's DNS
+ * `ipVersion` defaults to 4, and an IPv6 resolver is experimental there), so it would be a paid
+ * test that fails. A duplicate is dropped, and past {@link PARITY_MAX_NAMESERVERS} (both lists
+ * together, the CLI's limit) the rest is cut off.
  * @param {string} text
  * @param {{ fileNs?: string[] }} [opts] the zone file's own apex NS (a server in it is an issue:
  *   that is the current provider)
  * @returns {{ list: string[], cliOnly: string[], issues: Array<{ code: string, value: string }> }}
- *   `list`: what Globalping asks; `cliOnly`: private addresses only the CLI command carries
+ *   `list`: what Globalping asks; `cliOnly`: addresses only the CLI command carries (private, IPv6)
  */
 export function parseNameservers(text, { fileNs = [] } = {}) {
   const list = [];
@@ -123,15 +126,17 @@ export function parseNameservers(text, { fileNs = [] } = {}) {
   for (const raw of tokens) {
     const token = raw.trim();
     let value = null;
-    let privateIp = false;
+    /** Why a probe cannot ask this server ('private' | 'ipv6'), or null. */
+    let cliWhy = null;
     if (ipVersion(token) || /^\[.*\]$/.test(token)) {
       const ip = normalizeIP(token.replace(/^\[|\]$/g, ''));
       if (!ip) {
         issues.push({ code: 'invalid', value: token });
         continue;
       }
-      privateIp = !isGloballyRoutable(ip);
-      value = privateIp ? ip : probeTarget(ip);
+      if (!isGloballyRoutable(ip)) cliWhy = 'private';
+      else if (ipVersion(ip) === 6) cliWhy = 'ipv6';
+      value = cliWhy ? ip : probeTarget(ip);
     } else {
       const host = normalizeHostname(token);
       if (host && isProbeableHost(host)) value = host;
@@ -145,8 +150,8 @@ export function parseNameservers(text, { fileNs = [] } = {}) {
       issues.push({ code: 'too-many', value });
       continue;
     }
-    if (privateIp) {
-      issues.push({ code: 'private', value });
+    if (cliWhy) {
+      issues.push({ code: cliWhy, value });
       cliOnly.push(value);
       continue;
     }
@@ -652,6 +657,8 @@ function safeCall(fn, arg) {
  * @param {object} opts
  * @param {object} opts.client lib/globalping.js client (`measure`)
  * @param {string[]} opts.nameservers {@link parseNameservers} list
+ * @param {string[]} [opts.cliOnly] {@link parseNameservers} cliOnly: servers typed that a probe
+ *   cannot ask; never asked, but an address among them makes the apex NS set `ns-by-address`
  * @param {'first'|'all'} [opts.mode='first']
  * @param {boolean} [opts.extras=true]
  * @param {boolean} [opts.skipPrivate=true]
@@ -674,7 +681,7 @@ function safeCall(fn, arg) {
  */
 export async function runParity(zone, opts = {}) {
   const {
-    client, nameservers = [], mode = 'first', extras = true, skipPrivate = true, wildcardProbes = true, maxProbes = PARITY_MAX_PROBES,
+    client, nameservers = [], cliOnly = [], mode = 'first', extras = true, skipPrivate = true, wildcardProbes = true, maxProbes = PARITY_MAX_PROBES,
     dns = null, signal, onRow, onProgress, onQuota, onServer, labelFn = randomLabel, now = () => new Date()
   } = opts || {};
   if (!client || typeof client.measure !== 'function') throw new TypeError('runParity: a Globalping client is required');
@@ -683,9 +690,10 @@ export async function runParity(zone, opts = {}) {
   const idx = zoneIndex(zone);
   const origin = idx.origin;
   // The apex NS set is judged against the servers entered only when every one is a host name:
-  // with one given by address, which names the set should hold is not known (the CLI's rule).
+  // with one given by address (asked here or only by the CLI), which names the set should hold
+  // is not known (the CLI's rule).
   const entered = [...plan.full, ...plan.serial];
-  const hosts = entered.some((n) => ipVersion(n)) ? [] : entered;
+  const hosts = [...entered, ...(Array.isArray(cliOnly) ? cliOnly : [])].some((n) => ipVersion(String(n))) ? [] : entered;
   const autoTtl = new Set(idx.unique.filter((r) => r.ttlAuto).map((r) => `${r.name}|${r.type}`));
   const startedAt = now();
 
@@ -860,14 +868,16 @@ export function signedInFile(zone) {
 /**
  * The headline of a finished run: `verdict` 'ready' (every compared record set is the same, and
  * every server serves the zone), 'fix' (missing or different records, or a server that does not
- * serve it), 'check' (only extra / unproxied records, TTL differences or serials out of step),
- * 'partial' (clean so far, but the run stopped or record sets were not compared) or 'blocked'
- * (every server was asked, and none could be compared). `unchecked` counts the record sets left
- * for the CLI (a type Globalping cannot ask, past the probe cap), those without an answer, and
- * those a stop kept from being asked (`result.notReached`).
+ * serve it), 'partial' (nothing to fix so far, but the run stopped or a server was not asked:
+ * what it left out could hold anything, so it is never judged 'check' or 'ready'), 'check' (a
+ * finished run with only extra / unproxied records, TTL differences or serials out of step),
+ * 'partial' again for a finished run that left record sets out (a type Globalping cannot ask,
+ * past the probe cap, no answer), or 'blocked' (every server was asked, and none could be
+ * compared). `unchecked` counts the record sets left for the CLI, those without an answer, and
+ * those a stop kept from being asked (`result.notReached`); `stopped` says the run did not finish.
  * @param {object} result {@link runParity}
  * @returns {{ verdict: 'ready'|'fix'|'check'|'partial'|'blocked', counts: Object<string, number>, ttl: number,
- *   unchecked: number, badServers: number, compared: number }}
+ *   unchecked: number, badServers: number, compared: number, stopped: boolean }}
  */
 export function paritySummary(result) {
   const counts = { ...(result && result.counts) };
@@ -879,22 +889,26 @@ export function paritySummary(result) {
   const badServers = servers.filter((s) => s.state !== 'ok' && s.state !== 'not-run').length;
   const compared = servers.filter((s) => s.role === 'full' && s.state === 'ok').length;
   const notRun = servers.some((s) => s.state === 'not-run');
+  const stopped = !!(result && (result.stoppedBy || result.notReached > 0));
   let verdict;
   // Blocked only when every server was asked and none serves the zone; a stop before a server
   // was asked says nothing about it.
   if (!compared && !notRun) verdict = 'blocked';
   else if ((counts.missing || 0) + (counts.different || 0) > 0 || badServers) verdict = 'fix';
+  else if (stopped || notRun) verdict = 'partial';
   else if ((counts.extra || 0) + (counts.unproxied || 0) > 0 || ttl || result.serials === 'differ') verdict = 'check';
-  else if (result.stoppedBy || unchecked || result.capped || notRun) verdict = 'partial';
+  else if (unchecked || result.capped) verdict = 'partial';
   else verdict = 'ready';
-  return { verdict, counts, ttl, unchecked, badServers, compared };
+  return { verdict, counts, ttl, unchecked, badServers, compared, stopped };
 }
 
 /**
  * The move, step by step, with the facts of this zone and this run: lower the TTLs (the apex NS
  * TTL and the longest record TTL of the file), fix and compare again, DNSSEC before the switch
- * (the DS at the registrar decides the order), switch the NS at the registrar, keep the old zone
- * answering for {@link PARITY_KEEP_OLD_HOURS} hours, then check from outside and restore the TTLs.
+ * (the DS at the registrar decides the order), switch the NS at the registrar (blocked while
+ * there is something to fix; 'warn' after a run that stopped or left record sets out: compare
+ * again or run the CLI first), keep the old zone answering for {@link PARITY_KEEP_OLD_HOURS}
+ * hours, then check from outside and restore the TTLs.
  * Each step: `{ id, state, params }` ({@link RUNBOOK_STEPS}, {@link RUNBOOK_STATES}); the view
  * words them (`par.step.<id>.<state>`).
  * @param {object} zone
@@ -934,7 +948,10 @@ export function parityRunbook(zone, result, { nameservers = [] } = {}) {
   else dnssec = 'info';
   steps.push({ id: 'dnssec', state: dnssec, params: { signed, ds } });
   const list = (nameservers && nameservers.length ? nameservers : (result ? result.nameservers.map((s) => s.ns) : [])).join(', ');
-  steps.push({ id: 'switch', state: sum && (sum.verdict === 'fix' || sum.verdict === 'blocked') ? 'blocked' : 'todo', params: { nameservers: list } });
+  let switchState = 'todo';
+  if (sum && (sum.verdict === 'fix' || sum.verdict === 'blocked')) switchState = 'blocked';
+  else if (sum && (sum.stopped || sum.unchecked > 0)) switchState = 'warn';
+  steps.push({ id: 'switch', state: switchState, params: { nameservers: list, unchecked: sum ? sum.unchecked : 0, stopped: !!(sum && sum.stopped) } });
   steps.push({ id: 'wait', state: 'todo', params: { hours: PARITY_KEEP_OLD_HOURS } });
   steps.push({ id: 'after', state: 'todo', params: {} });
   return steps;

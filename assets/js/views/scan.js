@@ -1253,6 +1253,7 @@ stateSingleton.subscribe(({ key }) => {
     cancelAllDane(run);
   }
   Object.assign(session, { certLoads: [], domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
+  Object.assign(bundleCache, { loads: null, bundle: null }); // the parsed certificates go too
 });
 
 /** lib/certsets renewalBundle() of the last list of files asked for (the list is replaced, never changed). */

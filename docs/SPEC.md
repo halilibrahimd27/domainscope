@@ -232,7 +232,9 @@ export function parseCertificates(input /* string | ArrayBuffer | Uint8Array */)
 }   // never throws. Accepts: PEM (one or many blocks, CRLF, surrounding text), raw DER, bare base64 (no headers), PKCS#7/.p7b (PEM "PKCS7" or DER SignedData → extract certificates), detects PKCS#12 (.pfx) → PKCS12_UNSUPPORTED (UI shows `openssl pkcs12 -in file.pfx -nokeys -out cert.pem`), CSR ("CERTIFICATE REQUEST") → CSR_NOT_CERT.
 export function parseCertificate(der: Uint8Array) -> Certificate           // throws CertificateParseError
 export function leafCertificates(certs) -> Certificate[]                   // every end-entity certificate of one input, in order: not a CA and not the issuer of another
-                                                                           // (the rule `leaf` is picked by); a chain gives one, several pasted PEM blocks each (§5.39)
+                                                                           // (the rule `leaf` is picked by); a chain gives one, several pasted PEM blocks each (§5.39);
+                                                                           // a self-issued certificate names itself as its issuer unless its AKI names another's SKI,
+                                                                           // so self-signed twins with one subject (RSA + ECDSA) are both leaves
 export async function computeFingerprints(der, { subtle = globalThis.crypto?.subtle } = {}) -> { sha256, sha1 }   // lowercase hex
 export function pemEncode(der, label = 'CERTIFICATE') -> string
 export function formatFingerprint(hex) -> 'AB:CD:...'

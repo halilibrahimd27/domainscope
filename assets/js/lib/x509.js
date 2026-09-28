@@ -1644,13 +1644,17 @@ function issuedBy(child, parent) {
  * Every end-entity certificate of one input, in input order: not a CA and not the issuer of
  * another certificate in it (the rule {@link parseCertificates} picks its `leaf` by). A chain
  * gives one; several PEM blocks pasted together (an RSA + ECDSA pair) give each of them; a file
- * of CA certificates only gives none.
+ * of CA certificates only gives none. A self-issued certificate (issuer = subject) names
+ * itself as its issuer unless its key ids point at another certificate's key, so two
+ * self-signed twins with the same subject (RSA + ECDSA) are both leaves, not each other's CA.
  * @param {Certificate[]} certs
  * @returns {Certificate[]}
  */
 export function leafCertificates(certs) {
   const list = Array.isArray(certs) ? certs.filter(Boolean) : [];
-  const issuesAnother = (c) => list.some((o) => o !== c && issuedBy(o, c));
+  const signedBy = (child, parent) => issuedBy(child, parent) && (child.issuerDN !== child.subjectDN
+    || (!!child.authorityKeyId && child.authorityKeyId === parent.subjectKeyId && child.authorityKeyId !== child.subjectKeyId));
+  const issuesAnother = (c) => list.some((o) => o !== c && signedBy(o, c));
   return list.filter((c) => !c.isCA && !issuesAnother(c));
 }
 

@@ -34,6 +34,24 @@ describe('lib/x509 leafCertificates', () => {
     assert.equal(r.leaf, r.certificates[0], 'parseCertificates still picks the first leaf');
     assert.deepEqual(leafCertificates(null), []);
   });
+
+  test('self-signed twins with the same subject and no key ids are both leaves, neither the CA of the other', () => {
+    const selfSigned = (keyAlgorithm) => ({ subjectDN: 'CN=example.com', issuerDN: 'CN=example.com', isCA: false, keyAlgorithm,
+      subjectKeyId: null, authorityKeyId: null });
+    const twins = [selfSigned('RSA'), selfSigned('EC')];
+    assert.deepEqual(leafCertificates(twins).map((c) => c.keyAlgorithm), ['RSA', 'EC']);
+    // a CA still issues: a v1-style root (no basic constraints, so not isCA) keeps out of the leaves
+    const root = { subjectDN: 'CN=Test Root', issuerDN: 'CN=Test Root', isCA: false, subjectKeyId: null, authorityKeyId: null };
+    const leaf = { subjectDN: 'CN=www.example.com', issuerDN: 'CN=Test Root', isCA: false, subjectKeyId: null, authorityKeyId: null };
+    assert.deepEqual(leafCertificates([root, leaf]), [leaf]);
+    const ca = { subjectDN: 'CN=example.com', issuerDN: 'CN=example.com', isCA: true, subjectKeyId: null, authorityKeyId: null };
+    assert.deepEqual(leafCertificates([ca, twins[0]]), [twins[0]], 'a self-signed CA with the same name is no leaf');
+    // twins whose key ids name their own keys; a self-issued certificate whose key id names the other's key was issued by it
+    const own = (keyAlgorithm, id) => ({ ...selfSigned(keyAlgorithm), subjectKeyId: id, authorityKeyId: id });
+    assert.equal(leafCertificates([own('RSA', 'aa'), own('EC', 'bb')]).length, 2);
+    const rolled = { ...own('RSA', 'cc'), authorityKeyId: 'aa' };
+    assert.deepEqual(leafCertificates([own('RSA', 'aa'), rolled]), [rolled]);
+  });
 });
 
 describe('keyTypeOf / setId', () => {

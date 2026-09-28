@@ -43,6 +43,7 @@ import { fillReplaces, isFillOnly, commonTarget } from '../lib/session.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { registerRunning } from '../ui/jobs.js';
 import { CertLoader, CertAlternatives, CertSummary, CertSourceNote, certWarningAlerts, getCurrentCert, setCurrentCert } from './cert.js';
 
 /** Route id (`#/renew`). */
@@ -248,6 +249,8 @@ export function localParams(f, t) {
 }
 
 let active = null;
+// A switch to another workspace ends a running HTTP-01 test with the report it belongs to: the shell names it first.
+registerRunning('nav.renew', () => !!(active && active.testRunning()));
 
 /**
  * Mount the Renewal readiness view.
@@ -1104,6 +1107,8 @@ export function mount(container, ctx) {
       if (current && current.controller) current.controller.abort();
       if (current && current.test && current.test.controller) current.test.controller.abort();
     },
+    /** An HTTP-01 test runs: its probes are paid, and a switch to another workspace drops them. */
+    testRunning,
     snapshot() {
       const report = current && !current.controller ? current.report : null;
       const job = report && current.test ? current.test : null;

@@ -1,0 +1,108 @@
+{
+  "name": "h02-get-at-same-probe",
+  "capturedAt": "2026-09-28T06:32:43.167Z",
+  "shows": "the same GET at 140.82.121.4 with locations = h01's id: the same probe",
+  "trimmed": "rawBody cut to its first 1,200 characters (both captures were equal over all 10,000), rawHeaders / rawOutput and headers other than content-type, strict-transport-security, server and location dropped, publicKey dropped",
+  "request": {
+    "type": "http",
+    "target": "140.82.121.4",
+    "locations": "2KAGNSsYFUtUmmdMv00021DVw",
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTPS",
+      "port": 443,
+      "request": {
+        "method": "GET",
+        "host": "github.com",
+        "path": "/"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2zWR1Z3MnGIoL85Pa00021DVw",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2zWR1Z3MnGIoL85Pa00021DVw",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:32:43.167Z",
+      "updatedAt": "2026-09-28T06:32:43.846Z",
+      "target": "140.82.121.4",
+      "timeout": 10,
+      "probesCount": 1,
+      "measurementOptions": {
+        "port": 443,
+        "request": {
+          "method": "GET",
+          "host": "github.com"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Los Angeles",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "140.82.121.4",
+            "truncated": true,
+            "statusCode": 200,
+            "statusCodeName": "OK",
+            "timings": {
+              "total": 480,
+              "dns": null,
+              "tcp": 157,
+              "tls": 164,
+              "firstByte": 158,
+              "download": 1
+            },
+            "headers": {
+              "content-type": "text/html; charset=utf-8",
+              "strict-transport-security": "max-age=31536000; includeSubdomains; preload",
+              "server": "github.com"
+            },
+            "rawBody": "\n\n\n\n\n\n\n\n<!DOCTYPE html>\n<html\n  lang=\"en\"\n  data-color-mode=\"dark\" data-dark-theme=\"dark\"\n  data-color-mode=\"light\" data-light-theme=\"light\" data-dark-theme=\"dark\"\n  data-a11y-animated-images=\"system\" data-a11y-link-underlines=\"true\"\n  \n  >\n\n\n\n\n  <head>\n    <meta charset=\"utf-8\">\n  <link rel=\"dns-prefetch\" href=\"https://github.githubassets.com\">\n  <link rel=\"dns-prefetch\" href=\"https://avatars.githubusercontent.com\">\n  <link rel=\"dns-prefetch\" href=\"https://github-cloud.s3.amazonaws.com\">\n  <link rel=\"dns-prefetch\" href=\"https://user-images.githubusercontent.com/\">\n  <link rel=\"preconnect\" href=\"https://github.githubassets.com\" crossorigin>\n  <link rel=\"preconnect\" href=\"https://avatars.githubusercontent.com\">\n\n<script type=\"importmap\">{\"imports\":{\"react\":\"https://github.githubassets.com/assets/react-e27d1b3e03961e68.js\",\"react-dom\":\"https://github.githubassets.com/assets/react-dom-e5fd46a22d5c4058.js\",\"react-dom/client\":\"https://github.githubassets.com/assets/react-dom-client-1b4a3ee065998cea.js\",\"react-is\":\"https://github.githubassets.com/assets/react-is-e0b593954b4706d8.js\",\"react-reconciler\":\"https://github.githubassets.com/assets/react-reconciler-8e99e505c4429605.js\",\"react/co",
+            "tls": {
+              "authorized": true,
+              "protocol": "TLSv1.3",
+              "cipherName": "TLS_AES_128_GCM_SHA256",
+              "createdAt": "2026-09-01T00:00:00.000Z",
+              "expiresAt": "2026-11-29T23:59:59.000Z",
+              "issuer": {
+                "C": "GB",
+                "O": "Sectigo Limited",
+                "CN": "Sectigo Public Server Authentication CA DV E36"
+              },
+              "subject": {
+                "CN": "github.com",
+                "alt": "DNS:github.com, DNS:www.github.com"
+              },
+              "keyType": "EC",
+              "keyBits": 256,
+              "serialNumber": "A5:9E:BD:B5:96:75:1D:B7:F5:C0:95:07:96:13:95:3C",
+              "fingerprint256": "46:B6:01:EE:08:B4:18:CF:8A:3A:1E:BF:E6:70:BA:5C:E4:3B:B0:5A:91:7F:A8:B2:DD:08:7A:30:47:1C:FC:63"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

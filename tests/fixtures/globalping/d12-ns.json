@@ -1,0 +1,87 @@
+{
+  "name": "d12-ns",
+  "capturedAt": "2026-09-28T06:26:37.789Z",
+  "shows": "the apex NS record set",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "NS"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2KSxy1aEfbeYXzCJx00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2KSxy1aEfbeYXzCJx00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:37.789Z",
+      "updatedAt": "2026-09-28T06:26:38.030Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "NS"
+        },
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Buffalo",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.44-1~deb12u1-Debian <<>> -t NS example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 63325\n;; flags: qr aa rd; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 4096\n;; QUESTION SECTION:\n;example.com.\t\t\tIN\tNS\n\n;; ANSWER SECTION:\nexample.com.\t\t86400\tIN\tNS\tns1.example.net.\nexample.com.\t\t86400\tIN\tNS\tns2.example.net.\n\n;; Query time: 20 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (UDP)\n;; WHEN: Mon Sep 28 06:26:37 UTC 2026\n;; MSG SIZE  rcvd: 118\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "example.com.",
+                "type": "NS",
+                "ttl": 86400,
+                "class": "IN",
+                "value": "ns1.example.net."
+              },
+              {
+                "name": "example.com.",
+                "type": "NS",
+                "ttl": 86400,
+                "class": "IN",
+                "value": "ns2.example.net."
+              }
+            ],
+            "timings": {
+              "total": 20
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,7 +1,8 @@
 /**
  * globalping.js — DOM-free client for the Globalping v1 API (https://globalping.io, run by
  * jsDelivr and volunteers): one HTTPS HEAD request from a probe on the public internet to a server,
- * reporting the TLS certificate it was served (or one HTTPS GET of a path, for the MTA-STS policy).
+ * reporting the TLS certificate it was served (or one HTTPS GET of a path, for the MTA-STS policy
+ * and the old-versus-new server comparison, or one DNS query sent to a chosen name server).
  * This module is the transport only — create, get, poll, measure, limits, quota tracking, the
  * request builders and the target prefilters. It knows nothing about certificates or policies
  * (lib/verify.js and lib/mtasts.js interpret results). Runs in browsers and Node 22.
@@ -325,6 +326,108 @@ export function httpGetRequest({ host, path = '/', port = 80, timeoutS = 10, pro
   body.measurementOptions = { protocol: 'HTTP', port };
   if (ipVersion !== null) body.measurementOptions.ipVersion = ipVersion;
   body.measurementOptions.request = { method: 'GET', path };
+  return body;
+}
+
+/**
+ * Body for one HTTPS GET of `path` on an address, with `host` as the SNI and the Host header
+ * (Retire an IP's old-versus-new server comparison, lib/origincompare.js). The result carries
+ * `statusCode`, `headers` (lowercase names), `rawBody` (decoded, cut at 10,000 characters with
+ * `truncated`) and `tls`, like the host-name GET (verified live 2026-09-28 on two GitHub
+ * addresses). `locations` as in {@link httpsCheckRequest}: a measurement id sends the same probe
+ * again, so the second address is asked from where the first one was.
+ * @param {{ ip: string, host: string, path?: string, port?: number, timeoutS?: number, probes?: number,
+ *   locations?: null|string|object[] }} opts
+ * @returns {{ type: 'http', target: string, limit?: number, locations?: string|object[], timeout: number,
+ *   measurementOptions: { protocol: 'HTTPS', port: number, request: { method: 'GET', host: string, path: string } } }}
+ * @throws {TypeError} for an unprobeable address, host or port, a path outside {@link GET_PATH_RE},
+ *   a bad probe count, timeout or location list, or any unknown option
+ */
+export function httpsGetAtRequest({ ip, host, path = '/', port = 443, timeoutS = 10, probes = 1, locations = null, ...rest } = {}) {
+  const unknown = Object.keys(rest);
+  if (unknown.length) throw new TypeError(`Unknown option: ${unknown[0]}`);
+  const target = probeTarget(ip);
+  if (!target) throw new TypeError(`Not a globally routable address: ${String(ip)}`);
+  if (!isProbeableHost(host)) throw new TypeError(`Globalping does not accept this host name: ${String(host)}`);
+  if (typeof path !== 'string' || !GET_PATH_RE.test(path)) throw new TypeError(`Not a plain request path: ${String(path)}`);
+  if (!isProbeablePort(port)) throw new TypeError(`Port cannot be checked through Globalping: ${String(port)}`);
+  if (!Number.isInteger(probes) || probes < 1 || probes > GP_LIMITS.maxProbesPerMeasurement) {
+    throw new TypeError(`probes must be an integer 1–${GP_LIMITS.maxProbesPerMeasurement}`);
+  }
+  if (typeof timeoutS !== 'number' || !Number.isFinite(timeoutS)) throw new TypeError('timeoutS must be a finite number');
+  const timeout = Math.min(GP_LIMITS.maxTimeoutS, Math.max(GP_LIMITS.minTimeoutS, Math.round(timeoutS)));
+  const body = { type: 'http', target };
+  applyLocations(body, locations, probes);
+  body.timeout = timeout;
+  body.measurementOptions = { protocol: 'HTTPS', port, request: { method: 'GET', host, path } };
+  return body;
+}
+
+/**
+ * The query types a Globalping DNS measurement accepts (the API's enum, 2026-09-28). Anything
+ * else — CAA, TLSA, NAPTR, SSHFP … — is refused with a free 400.
+ */
+export const GP_DNS_TYPES = Object.freeze(['A', 'AAAA', 'ANY', 'CNAME', 'DNSKEY', 'DS', 'HTTPS', 'MX', 'NS', 'NSEC',
+  'PTR', 'RRSIG', 'SOA', 'TXT', 'SRV', 'SVCB']);
+
+const DNS_LABEL_RE = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
+
+/**
+ * A name a DNS measurement can query (`target`): lowercase ASCII (punycode), no trailing dot,
+ * at least two labels of letters, digits, '-' and '_' (`_dmarc.example.com`, SRV owners), never a
+ * wildcard ('*' is a free 400) or an IP literal, ≤ 253 characters.
+ * @param {unknown} name
+ * @returns {boolean}
+ */
+export function isProbeableDnsName(name) {
+  if (typeof name !== 'string' || !name || name.length > 253) return false;
+  const labels = name.split('.');
+  if (labels.length < 2 || !labels.every((l) => DNS_LABEL_RE.test(l))) return false;
+  return ipVersion(name) === 0;
+}
+
+/**
+ * A resolver a DNS measurement can ask (`measurementOptions.resolver`): a host name as
+ * {@link isProbeableHost} (the probe resolves it itself; a trailing dot is a free 400) or a
+ * globally routable address (private and documentation addresses are a free 400).
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isProbeableResolver(value) {
+  return typeof value === 'string' && (isProbeableHost(value) || (ipVersion(value) !== 0 && isProbeableIP(value)));
+}
+
+/**
+ * Body for one DNS query of `name` / `type` sent by a probe to `resolver` — an authoritative name
+ * server when the caller wants that server's own answer (verified live 2026-09-28: `dig` runs on
+ * the probe with `+timeout=5 +tries=2 +nsid`, over IPv4, and the result carries `statusCodeName`,
+ * `answers[] { name, type, ttl, class, value }` in presentation format and the dig text in
+ * `rawOutput`, whose flags line says whether the answer was authoritative). One probe, one
+ * query, one credit; a resolver the probe cannot resolve fails the test (charged).
+ * @param {{ name: string, type: string, resolver: string, protocol?: 'UDP'|'TCP', port?: number,
+ *   timeoutS?: number, probes?: number, locations?: null|string|object[] }} opts
+ * @returns {{ type: 'dns', target: string, limit?: number, locations?: string|object[], timeout: number,
+ *   measurementOptions: { query: { type: string }, resolver: string, protocol: 'UDP'|'TCP', port: number } }}
+ * @throws {TypeError} for a name, type, resolver, protocol or port Globalping refuses, a bad probe
+ *   count, timeout or location list, or any unknown option
+ */
+export function dnsQueryRequest({ name, type, resolver, protocol = 'UDP', port = 53, timeoutS = 15, probes = 1, locations = null, ...rest } = {}) {
+  const unknown = Object.keys(rest);
+  if (unknown.length) throw new TypeError(`Unknown option: ${unknown[0]}`);
+  if (!isProbeableDnsName(name)) throw new TypeError(`Globalping cannot query this name: ${String(name)}`);
+  if (!GP_DNS_TYPES.includes(type)) throw new TypeError(`Globalping cannot query this record type: ${String(type)}`);
+  if (!isProbeableResolver(resolver)) throw new TypeError(`Globalping cannot ask this resolver: ${String(resolver)}`);
+  if (protocol !== 'UDP' && protocol !== 'TCP') throw new TypeError('protocol must be UDP or TCP');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError(`Not a DNS port: ${String(port)}`);
+  if (!Number.isInteger(probes) || probes < 1 || probes > GP_LIMITS.maxProbesPerMeasurement) {
+    throw new TypeError(`probes must be an integer 1–${GP_LIMITS.maxProbesPerMeasurement}`);
+  }
+  if (typeof timeoutS !== 'number' || !Number.isFinite(timeoutS)) throw new TypeError('timeoutS must be a finite number');
+  const timeout = Math.min(GP_LIMITS.maxTimeoutS, Math.max(GP_LIMITS.minTimeoutS, Math.round(timeoutS)));
+  const body = { type: 'dns', target: name };
+  applyLocations(body, locations, probes);
+  body.timeout = timeout;
+  body.measurementOptions = { query: { type }, resolver: ipVersion(resolver) ? probeTarget(resolver) : resolver, protocol, port };
   return body;
 }
 

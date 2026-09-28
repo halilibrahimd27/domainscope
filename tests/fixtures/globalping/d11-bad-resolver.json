@@ -1,0 +1,69 @@
+{
+  "name": "d11-bad-resolver",
+  "capturedAt": "2026-09-28T06:26:39.186Z",
+  "shows": "a resolver host name the probe cannot resolve: a failed test, charged",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "A"
+      },
+      "resolver": "ns1.gp-parity-nonexistent-7q2z.example.com"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2733zojGFBHriLenZ00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2733zojGFBHriLenZ00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:39.186Z",
+      "updatedAt": "2026-09-28T06:26:39.520Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "resolver": "ns1.gp-parity-nonexistent-7q2z.example.com"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "failed",
+            "failureSource": "resolver",
+            "rawOutput": "dig: couldn't get address for 'ns1.gp-parity-nonexistent-7q2z.example.com': not found",
+            "statusCodeName": null,
+            "statusCode": null,
+            "answers": [],
+            "timings": {
+              "total": 0
+            },
+            "resolver": null
+          }
+        }
+      ]
+    }
+  }
+}

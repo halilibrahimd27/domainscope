@@ -1,0 +1,79 @@
+{
+  "name": "d06-srv",
+  "capturedAt": "2026-09-28T06:26:39.889Z",
+  "shows": "one SRV record at an underscore name",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "_xmpp-server._tcp.example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "SRV"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2I1rCbOCk1DeYtBdS00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2I1rCbOCk1DeYtBdS00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:39.889Z",
+      "updatedAt": "2026-09-28T06:26:40.441Z",
+      "target": "_xmpp-server._tcp.example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "SRV"
+        },
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Buffalo",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.41-1~deb12u1-Debian <<>> -t SRV _xmpp-server._tcp.example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 18526\n;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 3\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 1232\n;; QUESTION SECTION:\n;_xmpp-server._tcp.example.com.\tIN\tSRV\n\n;; ANSWER SECTION:\n_xmpp-server._tcp.example.com. 60 IN\tSRV\t30 30 5269 xmpp.example.com.\n\n;; ADDITIONAL SECTION:\nxmpp.example.com.\t900\tIN\tA\t54.39.46.213\nxmpp.example.com.\t900\tIN\tAAAA\t2607:5300:203:755b:5269::5222\n\n;; Query time: 20 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (UDP)\n;; WHEN: Mon Sep 28 06:26:40 UTC 2026\n;; MSG SIZE  rcvd: 149\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "_xmpp-server._tcp.example.com.",
+                "type": "SRV",
+                "ttl": 60,
+                "class": "IN",
+                "value": "30 30 5269 xmpp.example.com."
+              }
+            ],
+            "timings": {
+              "total": 20
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

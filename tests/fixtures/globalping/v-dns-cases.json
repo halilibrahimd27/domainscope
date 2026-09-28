@@ -1,0 +1,176 @@
+{
+  "name": "v-dns-cases",
+  "capturedAt": "2026-09-28T06:25:50.000Z",
+  "note": "Free 400s of DNS measurements (no probe spent), resolver names scrubbed to example.net. Accepted in the same run (only a port error was left): an underscore target (_dmarc.example.com), a trailing-dot target, a one-label target (com) and an underscore in a resolver name.",
+  "cases": [
+    {
+      "name": "caa-type",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "CAA"
+          },
+          "resolver": "ns1.example.net"
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.query.type": "\"measurementOptions.query.type\" must be one of [A, AAAA, ANY, CNAME, DNSKEY, DS, HTTPS, MX, NS, NSEC, PTR, RRSIG, SOA, TXT, SRV, SVCB]"
+          }
+        }
+      }
+    },
+    {
+      "name": "tlsa-type",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "TLSA"
+          },
+          "resolver": "ns1.example.net"
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.query.type": "\"measurementOptions.query.type\" must be one of [A, AAAA, ANY, CNAME, DNSKEY, DS, HTTPS, MX, NS, NSEC, PTR, RRSIG, SOA, TXT, SRV, SVCB]"
+          }
+        }
+      }
+    },
+    {
+      "name": "private-resolver",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "A"
+          },
+          "resolver": "10.0.0.1"
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.resolver": "\"measurementOptions.resolver\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "documentation-resolver",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "A"
+          },
+          "resolver": "192.0.2.53"
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.resolver": "\"measurementOptions.resolver\" must not be a private hostname"
+          }
+        }
+      }
+    },
+    {
+      "name": "trailing-dot-resolver",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "A"
+          },
+          "resolver": "ns1.example.net."
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.resolver": "\"measurementOptions.resolver\" does not match any of the allowed types"
+          }
+        }
+      }
+    },
+    {
+      "name": "wildcard-target",
+      "request": {
+        "type": "dns",
+        "target": "*.example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "TXT"
+          },
+          "resolver": "ns1.example.net"
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "target": "\"target\" must be a valid domain name"
+          }
+        }
+      }
+    },
+    {
+      "name": "unknown-option",
+      "request": {
+        "type": "dns",
+        "target": "example.com",
+        "limit": 1,
+        "measurementOptions": {
+          "query": {
+            "type": "A"
+          },
+          "resolver": "ns1.example.net",
+          "recursion": false
+        }
+      },
+      "status": 400,
+      "body": {
+        "error": {
+          "type": "validation_error",
+          "message": "Parameter validation failed.",
+          "params": {
+            "measurementOptions.recursion": "\"measurementOptions.recursion\" is not allowed"
+          }
+        }
+      }
+    }
+  ]
+}

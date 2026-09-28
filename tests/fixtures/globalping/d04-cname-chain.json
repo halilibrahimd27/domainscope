@@ -1,0 +1,84 @@
+{
+  "name": "d04-cname-chain",
+  "capturedAt": "2026-09-28T06:27:14.002Z",
+  "shows": "A asked of a CNAME name: the CNAME and the in-zone target A",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "www.example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "A"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2n2mXUDi2T7oHcEym00021DVr",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2n2mXUDi2T7oHcEym00021DVr",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:27:14.002Z",
+      "updatedAt": "2026-09-28T06:27:14.421Z",
+      "target": "www.example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.49-1~deb12u2-Debian <<>> -t A www.example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 41863\n;; flags: qr aa rd; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 1232\n;; QUESTION SECTION:\n;www.example.com.\t\t\tIN\tA\n\n;; ANSWER SECTION:\nwww.example.com.\t\t3600\tIN\tCNAME\texample.com.\nexample.com.\t\t60\tIN\tA\t192.0.2.10\n\n;; Query time: 7 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (UDP)\n;; WHEN: Mon Sep 28 06:27:14 UTC 2026\n;; MSG SIZE  rcvd: 133\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "www.example.com.",
+                "type": "CNAME",
+                "ttl": 3600,
+                "class": "IN",
+                "value": "example.com."
+              },
+              {
+                "name": "example.com.",
+                "type": "A",
+                "ttl": 60,
+                "class": "IN",
+                "value": "192.0.2.10"
+              }
+            ],
+            "timings": {
+              "total": 7
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

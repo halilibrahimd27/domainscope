@@ -1,0 +1,79 @@
+{
+  "name": "d03-txt-split",
+  "capturedAt": "2026-09-28T06:27:14.715Z",
+  "shows": "one TXT record of two character-strings (a 2048-bit DKIM key; key material replaced)",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "google._domainkey.example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "TXT"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2O1a2DCXm84xwqYdC00021DVr",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2O1a2DCXm84xwqYdC00021DVr",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:27:14.715Z",
+      "updatedAt": "2026-09-28T06:27:14.926Z",
+      "target": "google._domainkey.example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "TXT"
+        },
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Buffalo",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.49-1~deb12u2-Debian <<>> -t TXT google._domainkey.example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 42511\n;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 1232\n;; QUESTION SECTION:\n;google._domainkey.example.com.\tIN\tTXT\n\n;; ANSWER SECTION:\ngoogle._domainkey.example.com. 3600 IN\tTXT\t\"v=DKIM1; k=rsa; p=x0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat\" \"x0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx\"\n\n;; Query time: 11 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (UDP)\n;; WHEN: Mon Sep 28 06:27:14 UTC 2026\n;; MSG SIZE  rcvd: 508\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "google._domainkey.example.com.",
+                "type": "TXT",
+                "ttl": 3600,
+                "class": "IN",
+                "value": "\"v=DKIM1; k=rsa; p=x0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat\" \"x0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx\""
+              }
+            ],
+            "timings": {
+              "total": 11
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

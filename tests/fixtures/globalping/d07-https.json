@@ -1,0 +1,80 @@
+{
+  "name": "d07-https",
+  "capturedAt": "2026-09-28T06:26:34.413Z",
+  "shows": "an HTTPS record (alpn, ipv4hint, ipv6hint) of a proxied name",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "HTTPS"
+      },
+      "resolver": "ns3.example.com"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2jjg6V5KdHVuRBWfq00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2jjg6V5KdHVuRBWfq00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:34.413Z",
+      "updatedAt": "2026-09-28T06:26:34.699Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "HTTPS"
+        },
+        "resolver": "ns3.example.com"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "eyeball-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.44-1~deb12u1-Debian <<>> -t HTTPS example.com @ns3.example.com -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 43262\n;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 1232\n;; QUESTION SECTION:\n;example.com.\t\t\tIN\tHTTPS\n\n;; ANSWER SECTION:\nexample.com.\t\t300\tIN\tHTTPS\t1 . alpn=\"h3,h2\" ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5,2606:4700::6810:85e5\n\n;; Query time: 1 msec\n;; SERVER: 192.0.2.53#53(ns3.example.com) (UDP)\n;; WHEN: Mon Sep 28 06:26:34 UTC 2026\n;; MSG SIZE  rcvd: 127\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "example.com.",
+                "type": "HTTPS",
+                "ttl": 300,
+                "class": "IN",
+                "value": "1 . alpn=\"h3,h2\" ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5,2606:4700::6810:85e5"
+              }
+            ],
+            "timings": {
+              "total": 1
+            },
+            "resolver": "ns3.example.com"
+          }
+        }
+      ]
+    }
+  }
+}

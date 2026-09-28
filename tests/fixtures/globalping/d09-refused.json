@@ -1,0 +1,69 @@
+{
+  "name": "d09-refused",
+  "capturedAt": "2026-09-28T06:26:35.794Z",
+  "shows": "REFUSED: the server does not serve this zone (no aa)",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "A"
+      },
+      "resolver": "ns9.example.org"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "27jPBSwHEet5AFjvn00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "27jPBSwHEet5AFjvn00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:35.794Z",
+      "updatedAt": "2026-09-28T06:26:36.125Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "resolver": "ns9.example.org"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.49-1~deb12u2-Debian <<>> -t A example.com @ns9.example.org -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 22229\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 512\n;; QUESTION SECTION:\n;example.com.\t\t\tIN\tA\n\n;; Query time: 4 msec\n;; SERVER: 192.0.2.53#53(ns9.example.org) (UDP)\n;; WHEN: Mon Sep 28 06:26:35 UTC 2026\n;; MSG SIZE  rcvd: 40\n",
+            "statusCodeName": "REFUSED",
+            "statusCode": 5,
+            "answers": [],
+            "timings": {
+              "total": 4
+            },
+            "resolver": "ns9.example.org"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -57,6 +57,21 @@ test('the first send of a purpose asks (privacy + cost); the next one does not; 
   assert.equal(asked.length, 2);
 });
 
+test('confirmAbove: a batch larger than it asks again after the consent; a smaller one does not', async () => {
+  state.clearAll();
+  const asked = [];
+  const confirm = async (o) => { asked.push(o.probes); return true; };
+  const client = fakeClient(q(200));
+  const gate = (probes) => gateProbes(ctxFor(client), { purpose: 'ns-parity', probes, privacy: 'P', confirm, confirmAbove: 50 });
+  assert.equal((await gate(10)).status, 'go');
+  assert.equal((await gate(10)).status, 'go');
+  assert.equal((await gate(80)).status, 'go');
+  assert.deepEqual(asked, [10, 80], 'the first send, then the batch above 50');
+  const declined = await gateProbes(ctxFor(client), { purpose: 'ns-parity', probes: 90, privacy: 'P', confirm: async () => false, confirmAbove: 50 });
+  assert.equal(declined.status, 'cancelled');
+  assert.equal(hasConsent('ns-parity'), true, 'a declined large batch keeps the consent for small ones');
+});
+
 test('cancel sends nothing and grants nothing; "Delete all local data" resets consent and the shared quota', async () => {
   state.clearAll();
   assert.equal(sharedQuota(), null);

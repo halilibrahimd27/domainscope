@@ -1,15 +1,17 @@
 /**
  * ui/globalping-gate.js — the page-session gate every Globalping send of the app goes through
- * (SSL Targets › Verify, Domain Health › MTA-STS policy).
+ * (SSL Targets › Verify, Domain Health › MTA-STS policy, Renewal readiness › HTTP-01 test, Zone File ›
+ * New name servers, Retire an IP › Compare the old and the new server).
  *
  * - Consent is kept per purpose ('verify', 'mta-sts'): each feature's first send in a page
  *   session shows a dialog with that feature's own privacy text, because each sends different
  *   data. Consent is never stored; "Delete all local data" resets it.
  * - The latest quota reading is shared ({@link sharedQuota} / {@link noteQuota}): the anonymous
  *   quota is per IP address, so a probe spent in one view shows in the other.
- * - {@link gateProbes} is the flow of a one-click feature with a known, small cost: the shared
- *   client (ctx.getGlobalping), one free /limits read, nothing sent when the quota cannot cover
- *   the probes, the consent + cost dialog when needed; the caller then sends. SSL Targets ›
+ * - {@link gateProbes} is the flow of a one-click feature with a known cost: the shared client
+ *   (ctx.getGlobalping), one free /limits read, nothing sent when the quota cannot cover the
+ *   probes, the consent + cost dialog when needed (and again for a batch above `confirmAbove`
+ *   probes, whatever the consent); the caller then sends. SSL Targets ›
  *   Verify keeps its own batch flow (ui/verify-panel.js) on the same consent and quota.
  *
  * Every string is rendered through h() / text nodes.
@@ -163,12 +165,13 @@ export async function confirmProbes({ privacy, probes, remaining, limit, resetAt
  *
  * @param {{ getGlobalping: () => Promise<object> }} ctx
  * @param {{ purpose: string, probes?: number, privacy: string|Node, signal?: AbortSignal,
- *   confirm?: (opts: object) => Promise<boolean>, now?: () => number, className?: string }} opts
- *   `confirm` replaces the dialog (tests)
+ *   confirm?: (opts: object) => Promise<boolean>, now?: () => number, className?: string, confirmAbove?: number }} opts
+ *   `confirm` replaces the dialog (tests); `confirmAbove`: a batch of more probes than this asks
+ *   again even after the purpose's consent (default: never)
  * @returns {Promise<{ status: 'go', client: object, quota: object|null }|{ status: 'quota', resetAt: Date|null }
  *   |{ status: 'cancelled' }|{ status: 'unreachable', error: unknown }>}
  */
-export async function gateProbes(ctx, { purpose, probes = 1, privacy, signal = undefined, confirm = confirmProbes, now = () => Date.now(), className = '' }) {
+export async function gateProbes(ctx, { purpose, probes = 1, privacy, signal = undefined, confirm = confirmProbes, now = () => Date.now(), className = '', confirmAbove = Infinity }) {
   const cancelled = { status: 'cancelled' };
   let client;
   try {
@@ -191,7 +194,7 @@ export async function gateProbes(ctx, { purpose, probes = 1, privacy, signal = u
   const limit = q && Number.isFinite(q.limit) ? q.limit : GP_LIMITS.anonymousPerHour;
   const remaining = q && Number.isFinite(q.remaining) ? Math.max(0, q.remaining) : limit;
   if (remaining < probes) return { status: 'quota', resetAt: q ? q.resetAt : null };
-  if (!consents.has(purpose)) {
+  if (!consents.has(purpose) || probes > confirmAbove) {
     const ok = await confirm({ privacy, probes, remaining, limit, resetAt: q ? q.resetAt : null, unknown, signal, className });
     if (!ok || (signal && signal.aborted)) return cancelled;
     consents.add(purpose);

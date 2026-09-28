@@ -1,0 +1,116 @@
+{
+  "name": "d13-tcp-aaaa",
+  "capturedAt": "2026-09-28T06:26:40.590Z",
+  "shows": "AAAA over TCP (measurementOptions.protocol)",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "AAAA"
+      },
+      "resolver": "ns1.example.net",
+      "protocol": "TCP"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2BHC0YNDafcVSxNet00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2BHC0YNDafcVSxNet00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:40.590Z",
+      "updatedAt": "2026-09-28T06:26:40.902Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "AAAA"
+        },
+        "resolver": "ns1.example.net",
+        "protocol": "TCP"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Northern Europe",
+            "country": "FI",
+            "city": "Helsinki",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.49-1~deb12u2-Debian <<>> -t AAAA example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid +tcp\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 12296\n;; flags: qr aa rd; QUERY: 1, ANSWER: 6, AUTHORITY: 0, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 4096\n;; QUESTION SECTION:\n;example.com.\t\t\tIN\tAAAA\n\n;; ANSWER SECTION:\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::bc12\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::bc1b\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::94c8\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::94ce\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::7f24\nexample.com.\t\t300\tIN\tAAAA\t2001:db8::7f31\n\n;; Query time: 110 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (TCP)\n;; WHEN: Mon Sep 28 06:26:40 UTC 2026\n;; MSG SIZE  rcvd: 238\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::bc12"
+              },
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::bc1b"
+              },
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::94c8"
+              },
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::94ce"
+              },
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::7f24"
+              },
+              {
+                "name": "example.com.",
+                "type": "AAAA",
+                "ttl": 300,
+                "class": "IN",
+                "value": "2001:db8::7f31"
+              }
+            ],
+            "timings": {
+              "total": 110
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

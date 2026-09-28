@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   GLOBALPING_API, GP_LIMITS, NON_HTTP_TLS_PORTS, GP_ERROR_CODES, GlobalpingError,
   isMeasurementId, isProbeableIP, probeTarget, isProbeableHost, isProbeablePort, httpsCheckRequest, httpsGetRequest, httpGetRequest,
+  httpsGetAtRequest, isProbeableDnsName, isProbeableResolver, dnsQueryRequest, GP_DNS_TYPES,
   probeSummary, quotaFromHeaders, quotaFromLimits, mergeQuota, createGlobalping
 } from '../../assets/js/lib/globalping.js';
 import { errorKind, throwIfAborted } from '../../assets/js/lib/util.js';
@@ -294,6 +295,75 @@ test('httpGetRequest: refuses bad hosts, paths, ports, IP versions, location lis
   assert.throws(() => httpGetRequest({ host: 'example.com', locations: [{ planet: 'Mars' }] }), /unknown key: planet/);
   assert.throws(() => httpGetRequest({ host: 'example.com', locations: [{ continent: 'EU', limit: 51 }] }), TypeError);
   assert.throws(() => httpGetRequest({ host: 'example.com', method: 'HEAD' }), /Unknown option: method/);
+});
+
+test('httpsGetAtRequest: a GET at an address with the name as SNI / Host, as sent live (h01), and the same probe again (h02)', () => {
+  assert.deepEqual(httpsGetAtRequest({ ip: '140.82.121.3', host: 'github.com' }), fx('h01-get-at-first').request);
+  const id = fx('h01-get-at-first').final.body.id;
+  assert.deepEqual(httpsGetAtRequest({ ip: '140.82.121.4', host: 'github.com', locations: id }), fx('h02-get-at-same-probe').request);
+  const v6 = httpsGetAtRequest({ ip: '2606:4700::6810:7c60', host: 'www.example.com', path: '/healthz', port: 8443, timeoutS: 99 });
+  assert.deepEqual([v6.target, v6.timeout, v6.measurementOptions.port, v6.measurementOptions.request], ['2606:4700::6810:7c60', 30, 8443, { method: 'GET', host: 'www.example.com', path: '/healthz' }]);
+  assert.equal(httpsGetAtRequest({ ip: '::ffff:140.82.121.3', host: 'github.com' }).target, '140.82.121.3');
+});
+
+test('httpsGetAtRequest: refuses private / documentation addresses, bad hosts, paths, ports and unknown options', () => {
+  for (const ip of ['10.0.0.1', '192.0.2.10', '2001:db8::1', 'example.com', '', null]) {
+    assert.throws(() => httpsGetAtRequest({ ip, host: 'www.example.com' }), TypeError, String(ip));
+  }
+  for (const host of ['192.0.2.1', '_x.example.com', '*.example.com', 'www.example.com.', 'localhost']) {
+    assert.throws(() => httpsGetAtRequest({ ip: '140.82.121.3', host }), TypeError, host);
+  }
+  assert.throws(() => httpsGetAtRequest({ ip: '140.82.121.3', host: 'github.com', path: '/a?b=1' }), TypeError);
+  assert.throws(() => httpsGetAtRequest({ ip: '140.82.121.3', host: 'github.com', port: 25 }), TypeError);
+  assert.throws(() => httpsGetAtRequest({ ip: '140.82.121.3', host: 'github.com', method: 'HEAD' }), /Unknown option: method/);
+});
+
+test('measure: an HTTPS GET at an address returns status, headers, the cut body and tls; the second one ran on the same probe (h01, h02)', async () => {
+  const { gp } = client([postOf('h01-get-at-first'), finalOf('h01-get-at-first'), postOf('h02-get-at-same-probe'), finalOf('h02-get-at-same-probe')]);
+  const a = await gp.measure(fx('h01-get-at-first').request);
+  const b = await gp.measure(fx('h02-get-at-same-probe').request);
+  const [ra, rb] = [a.measurement.results[0], b.measurement.results[0]];
+  assert.deepEqual([ra.result.statusCode, ra.result.truncated, ra.result.headers['strict-transport-security']], [200, true, 'max-age=31536000; includeSubdomains; preload']);
+  assert.equal(ra.result.tls.fingerprint256, rb.result.tls.fingerprint256);
+  assert.equal(ra.result.rawBody, rb.result.rawBody);
+  assert.deepEqual(ra.probe, rb.probe, 'locations: <id> sends the same probe');
+});
+
+test('DNS measurements: isProbeableDnsName / isProbeableResolver / dnsQueryRequest', () => {
+  for (const name of ['example.com', '_dmarc.example.com', '_sip._tcp.example.com', 'xn--mnchen-3ya.example.com', 'a-b.example.com']) {
+    assert.equal(isProbeableDnsName(name), true, name);
+  }
+  for (const name of ['*.example.com', 'example.com.', 'com', 'Example.com', '192.0.2.1', 'a..example.com', '-a.example.com', `${'a'.repeat(64)}.example.com`, '', null, 7]) {
+    assert.equal(isProbeableDnsName(name), false, String(name));
+  }
+  for (const r of ['ns1.example.net', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isProbeableResolver(r), true, r);
+  for (const r of ['ns1.example.net.', '10.0.0.1', '192.0.2.53', '2001:db8::53', 'localhost', '', null]) assert.equal(isProbeableResolver(r), false, String(r));
+  assert.deepEqual(dnsQueryRequest({ name: 'example.com', type: 'SOA', resolver: 'ns1.example.net' }), {
+    type: 'dns', target: 'example.com', limit: 1, timeout: 15, measurementOptions: { query: { type: 'SOA' }, resolver: 'ns1.example.net', protocol: 'UDP', port: 53 }
+  });
+  const tcp = dnsQueryRequest({ name: '_dmarc.example.com', type: 'TXT', resolver: '::ffff:1.1.1.1', protocol: 'TCP', timeoutS: 1, locations: '2fMBxbOuE4PyivQYo00021DVq' });
+  assert.deepEqual([tcp.measurementOptions.resolver, tcp.measurementOptions.protocol, tcp.timeout, tcp.locations, 'limit' in tcp], ['1.1.1.1', 'TCP', 5, '2fMBxbOuE4PyivQYo00021DVq', false]);
+  assert.ok(Object.isFrozen(GP_DNS_TYPES) && GP_DNS_TYPES.includes('SVCB') && !GP_DNS_TYPES.includes('CAA'));
+  for (const bad of [{ type: 'CAA' }, { type: 'a' }, { name: '*.example.com' }, { resolver: 'ns1.example.net.' }, { resolver: '10.0.0.1' }, { protocol: 'DOH' },
+    { port: 0 }, { probes: 0 }, { timeoutS: NaN }, { recursion: false }]) {
+    assert.throws(() => dnsQueryRequest({ name: 'example.com', type: 'A', resolver: 'ns1.example.net', ...bad }), TypeError, JSON.stringify(bad));
+  }
+});
+
+test('DNS prefilter vs the live API: every refused DNS request of v-dns-cases.json is refused locally (free 400s never sent)', () => {
+  for (const c of fx('v-dns-cases').cases) {
+    const o = c.request.measurementOptions;
+    assert.throws(() => dnsQueryRequest({ name: c.request.target, type: o.query.type, resolver: o.resolver, ...(o.recursion !== undefined ? { recursion: o.recursion } : {}) }), TypeError, c.name);
+  }
+});
+
+test('measure: a DNS measurement of an authoritative server replays d01 at a cost of one probe', async () => {
+  const { gp } = client([postOf('d01-soa'), finalOf('d01-soa')]);
+  const res = await gp.measure(fx('d01-soa').request);
+  assert.equal(res.cost, 1);
+  const r = res.measurement.results[0].result;
+  assert.deepEqual([r.status, r.statusCodeName, r.answers[0].type, r.resolver], ['finished', 'NOERROR', 'SOA', 'ns1.example.net']);
+  assert.match(r.rawOutput, /;; flags: qr aa rd;/);
 });
 
 test('measure: an HTTP GET is not redirected by the probe — a 301 carries its Location (m29)', async () => {

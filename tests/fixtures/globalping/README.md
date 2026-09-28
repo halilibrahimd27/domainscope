@@ -109,6 +109,41 @@ results are public by id on Globalping anyway (retained for about six months).
 | `validation-cases.json` | – | every refused POST (28 saved + 7 from the review) | data for the prefilter tests |
 | `create-parallel-quota.json` | 6 ids | six concurrent POSTs | remaining 220, 216, 215, 219, 217, 218 |
 
+**DNS at a chosen name server** (Zone File › New name servers, captured 2026-09-28, one probe
+each): `d01`–`d14` are DNS measurements with `measurementOptions.resolver` set to an authoritative
+name server, for `lib/nsparity.js`. They keep the whole test result — `answers` (the answer section
+in presentation format), `statusCodeName`, `resolver` and the dig text in `rawOutput`, whose flags
+line (`aa`) and authority section the module reads — with the NSID lines dropped. Every name was
+scrubbed to example.com / example.net / example.org (the resolvers to `ns1.example.net`,
+`ns2.example.net`, `ns9.example.org`) and every address to 192.0.2.0/24 and 2001:db8::/32; the
+Cloudflare edge addresses of `d07` / `d14` are kept, and the DKIM key of `d03` is replaced by
+filler of the same lengths (the split into a 255-character string and the rest is as captured).
+`v-dns-cases.json` collects the free 400s of DNS measurements: CAA and TLSA are no query type
+Globalping knows, a private or documentation resolver and a resolver with a trailing dot are
+refused, a wildcard target too.
+
+| File | Shows |
+|---|---|
+| `d01-soa.json` | SOA of the zone asked of its own server: NOERROR, `aa`, the serial |
+| `d02-a.json` | six A records at TTL 300 |
+| `d03-txt-split.json` | one TXT record of two character-strings |
+| `d04-cname-chain.json` | A asked of a CNAME name: the CNAME and the in-zone target's A |
+| `d05-mx.json` / `d06-srv.json` / `d12-ns.json` | one MX, one SRV at an underscore name, the apex NS set |
+| `d07-https.json` | an HTTPS record (alpn, ipv4hint, ipv6hint) |
+| `d08-nxdomain.json` | NXDOMAIN, authoritative (the `resolver` field reads the address) |
+| `d09-refused.json` | REFUSED without `aa`: the server does not serve the zone |
+| `d10-nodata.json` | NOERROR without records of the type |
+| `d11-bad-resolver.json` | a resolver name the probe cannot resolve: a failed test, charged |
+| `d13-tcp-aaaa.json` | AAAA over TCP (`protocol: 'TCP'`) |
+| `d14-proxied-a.json` | A of a proxied name at Cloudflare: edge addresses, no CNAME |
+
+**HTTPS GET at an address** (Retire an IP › old and new server, captured 2026-09-28, 2 probes):
+`h01` is a GET of `/` at 140.82.121.3 with `request.host` github.com, `h02` the same at
+140.82.121.4 with `locations` = h01's id: the same probe answered both (GitHub's addresses and
+names are kept, like `m01`). `rawBody` is cut to its first 1,200 characters (both bodies were equal
+over all 10,000 the probe returned); `rawHeaders`, `rawOutput`, the headers other than
+content-type, strict-transport-security, server and location, and `tls.publicKey` are dropped.
+
 **HTTP-01 reachability** (Renewal readiness, captured 2026-09-28, 9 probes): `m28`–`m30` keep
 `headers.location` (a redirect's target, the one header `lib/renewal.js` reads); `rawHeaders`,
 `rawBody`, the other headers and a finished test's `rawOutput` (which repeats the response head

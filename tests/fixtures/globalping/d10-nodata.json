@@ -1,0 +1,71 @@
+{
+  "name": "d10-nodata",
+  "capturedAt": "2026-09-28T06:26:38.479Z",
+  "shows": "NOERROR without records of the type (NODATA)",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "example.com",
+    "limit": 1,
+    "measurementOptions": {
+      "query": {
+        "type": "SRV"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2VWGG6IDlYjZgJZJM00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2VWGG6IDlYjZgJZJM00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:38.479Z",
+      "updatedAt": "2026-09-28T06:26:38.898Z",
+      "target": "example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "query": {
+          "type": "SRV"
+        },
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "SA",
+            "region": "South America",
+            "country": "BR",
+            "city": "Sao Paulo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.49-1~deb12u2-Debian <<>> -t SRV example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 40735\n;; flags: qr aa rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 4096\n;; QUESTION SECTION:\n;example.com.\t\t\tIN\tSRV\n\n;; AUTHORITY SECTION:\nexample.com.\t\t3600\tIN\tSOA\tns1.example.net. hostmaster.example.com. 2026092401 7200 3600 1209600 3600\n\n;; Query time: 124 msec\n;; SERVER: 192.0.2.53#53(ns1.example.net) (UDP)\n;; WHEN: Mon Sep 28 06:26:38 UTC 2026\n;; MSG SIZE  rcvd: 126\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [],
+            "timings": {
+              "total": 124
+            },
+            "resolver": "ns1.example.net"
+          }
+        }
+      ]
+    }
+  }
+}

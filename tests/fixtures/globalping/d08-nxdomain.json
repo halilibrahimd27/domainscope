@@ -1,0 +1,69 @@
+{
+  "name": "d08-nxdomain",
+  "capturedAt": "2026-09-28T06:26:35.094Z",
+  "shows": "NXDOMAIN (aa; the resolver field reads the address)",
+  "scrubbed": "names → example.com / example.net / example.org, addresses → 192.0.2.0/24 and 2001:db8::/32 (Cloudflare edges kept); NSID lines dropped",
+  "request": {
+    "type": "dns",
+    "target": "gp-parity-nonexistent-7q2z.example.com",
+    "limit": 1,
+    "timeout": 10,
+    "measurementOptions": {
+      "query": {
+        "type": "A"
+      },
+      "resolver": "ns1.example.net"
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-request-cost": "1"
+    },
+    "body": {
+      "id": "2kXabNzfcxKQhBypR00021DVq",
+      "probesCount": 1
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2kXabNzfcxKQhBypR00021DVq",
+      "type": "dns",
+      "status": "finished",
+      "createdAt": "2026-09-28T06:26:35.094Z",
+      "updatedAt": "2026-09-28T06:26:35.646Z",
+      "target": "gp-parity-nonexistent-7q2z.example.com",
+      "probesCount": 1,
+      "measurementOptions": {
+        "resolver": "ns1.example.net"
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.16.50-Debian <<>> -t A gp-parity-nonexistent-7q2z.example.com @ns1.example.net -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 57903\n;; flags: qr aa rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1\n;; WARNING: recursion requested but not available\n\n;; OPT PSEUDOSECTION:\n; EDNS: version: 0, flags:; udp: 4096\n;; QUESTION SECTION:\n;gp-parity-nonexistent-7q2z.example.com.\tIN A\n\n;; AUTHORITY SECTION:\nexample.com.\t\t3600\tIN\tSOA\tns1.example.net. hostmaster.example.com. 2026092401 7200 3600 1209600 3600\n\n;; Query time: 104 msec\n;; SERVER: 192.0.2.53#53(192.0.2.53)\n;; WHEN: Mon Sep 28 06:26:35 UTC 2026\n;; MSG SIZE  rcvd: 153\n",
+            "statusCodeName": "NXDOMAIN",
+            "statusCode": 3,
+            "answers": [],
+            "timings": {
+              "total": 104
+            },
+            "resolver": "192.0.2.53"
+          }
+        }
+      ]
+    }
+  }
+}

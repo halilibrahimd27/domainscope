@@ -812,6 +812,11 @@ function passiveNames(results) {
   }));
 }
 
+/** The names a job's check got an answer (or NXDOMAIN) for; a failed lookup is asked again by "Check these names". */
+function settledNames(job) {
+  return [...job.checks.values()].flatMap((c) => c.names.filter((n) => n.status === 'NOERROR' || n.status === 'NXDOMAIN').map((n) => n.name));
+}
+
 /** The change list of a job, with the zone and the passive hits that belong to it. */
 function buildFor(job) {
   return buildChanges({
@@ -1155,7 +1160,7 @@ export function mount(container, ctx) {
   function checkPassiveToo() {
     const job = session.job;
     if (!job || checkRunning()) return;
-    const resolved = [...job.checks.values()].flatMap((c) => c.names.map((n) => n.name));
+    const resolved = settledNames(job);
     const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved });
     if (!fresh.names.length) return;
     for (const name of fresh.names) {
@@ -1637,7 +1642,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     } else if (g.kind === 'passive') {
       title = t('retire.group.passive');
       subtitle = t('retire.group.passiveHint');
-      const resolved = [...job.checks.values()].flatMap((c) => c.names.map((n) => n.name));
+      const resolved = settledNames(job);
       const fresh = passiveNewNames(passiveNames(passiveFor(job)), { checked: job.domains, resolved });
       if (fresh.names.length) {
         // In the body, not the card head: on a phone the head keeps its width for the title.

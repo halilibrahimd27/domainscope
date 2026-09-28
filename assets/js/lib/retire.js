@@ -1087,7 +1087,8 @@ function compareNames(a, b) {
  * @returns {{ changes: Change[], groups: Array<{ key: string, kind: string, changes: Change[] }>,
  *   counts: { total: number, breaking: number, passive: number, bySeverity: Record<string, number>, byVerified: Record<string, number> },
  *   gone: Array<{ name: string, address: string, now: string[] }> }}
- *   `gone`: passive hits that were checked and no longer point at the address
+ *   `counts.passive`: rows of the passive group (not checked, or their lookup failed); `gone`: passive
+ *   hits whose lookup settled (an answer or NXDOMAIN) and that no longer point at the address
  */
 export function buildChanges({ blocks = [], checks = [], zone = null, passive = null } = {}) {
   const domains = (checks || []).map((c) => c.domain);
@@ -1238,24 +1239,26 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     }, groupFor(z.name, homes) || zoneOrigin);
   }
 
-  // Passive reverse-IP hits: a name already resolved joins its live row (or is gone); the rest stay unverified.
+  // Passive reverse-IP hits: a name already resolved joins its live row (or is gone); the rest stay
+  // unverified. A name whose lookup failed is neither: it stays a passive row that cannot be told.
   const gone = [];
   for (const p of passive || []) {
     const address = normalizeIP(p.address);
     const b = blockOf(address, blocks);
     if (!b) continue;
+    const type = address.includes(':') ? 'AAAA' : 'A';
     for (const name of p.names || []) {
       const n = resolved.get(name);
-      if (n) {
+      if (n && (n.status === 'NOERROR' || n.status === 'NXDOMAIN')) {
         const holder = n.cnames.length ? n.cnames[n.cnames.length - 1] : n.name;
-        const row = rows.get(`${holder}|${address.includes(':') ? 'AAAA' : 'A'}|${address}`);
+        const row = rows.get(`${holder}|${type}|${address}`);
         if (row && !row.sources.includes('passive')) row.sources.push('passive');
         if (!row && !gone.some((g) => g.name === name && g.address === address)) gone.push({ name, address, now: [...n.ipv4, ...n.ipv6] });
         continue;
       }
       add({
-        name, type: address.includes(':') ? 'AAAA' : 'A', value: address, addresses: [address], blocks: [b.cidr],
-        severity: 'stale', action: 'check', verified: 'unverified', sources: ['passive'], groupKind: 'passive'
+        name, type, value: address, addresses: [address], blocks: [b.cidr], severity: 'stale', action: 'check',
+        verified: n ? 'unknown' : 'unverified', reason: n ? 'lookup-failed' : null, sources: ['passive'], groupKind: 'passive'
       }, null);
     }
   }

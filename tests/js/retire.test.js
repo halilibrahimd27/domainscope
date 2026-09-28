@@ -627,6 +627,20 @@ describe('owners, passive hits and exports', () => {
     assert.deepEqual(after.changes.filter((c) => c.group === 'passive').map((c) => c.name), ['forum.example.net']);
     assert.deepEqual(passiveNewNames(passive, { checked: ['example.com', 'example.org'], resolved: com.names.map((n) => n.name).concat(org.names.map((n) => n.name)) }),
       { names: ['forum.example.net'], domains: ['example.net'] });
+    assert.equal(after.counts.passive, 1);
+  });
+
+  test('a passive name whose lookup failed is never "gone": it stays a passive row that cannot be told', async () => {
+    const dns = fakeDns({ ...exampleTable(), 'shop.example.com': { A: ['198.51.100.77'] } }, { rcodes: { 'shop.example.com': 'SERVFAIL' } });
+    const blocks = blocksOf('192.0.2.10');
+    const passive = [{ address: '192.0.2.10', names: ['shop.example.com'] }];
+    const com = await checkDomain('example.com', { dns, blocks, hosts: [{ name: 'shop.example.com', source: 'passive' }] });
+    assert.equal(com.names.find((n) => n.name === 'shop.example.com').status, 'SERVFAIL');
+    const built = buildChanges({ blocks, checks: [com], passive });
+    assert.deepEqual(built.gone, []);
+    const row = built.changes.find((c) => c.name === 'shop.example.com');
+    assert.deepEqual([row.group, row.groupKind, row.severity, row.action, row.verified, row.reason], ['passive', 'passive', 'stale', 'check', 'unknown', 'lookup-failed']);
+    assert.equal(built.counts.passive, 1);
   });
 
   test('CSV rows (codes, one per record) and the JSON document', async () => {

@@ -30,7 +30,7 @@
  * kept for the page session (`result()` / `snapshot()`): coming back shows it without a new check.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, uid } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
   ProgressBar, SegmentedControl, SeverityIcon, announce, describeError, setButtonBusy, textInput
@@ -58,7 +58,7 @@ import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalpin
 import { SummaryButton } from '../ui/summary-button.js';
 import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../lib/summary.js';
-import { errorKind, mergeSignals, splitList } from '../lib/util.js';
+import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 
 /** Route id (`#/health`). */
@@ -72,6 +72,17 @@ export const icon = 'activity';
 export const HEALTH_GROUPS = Object.freeze(['dns', 'email', 'security', 'registration']);
 /** Severity order, worst first. */
 export const SEVERITY_ORDER = Object.freeze(['error', 'warn', 'info', 'ok']);
+
+/**
+ * The checks with a "Show the fix" (lib/fixes.js HEALTH_FIX_IDS; a unit test keeps the two equal):
+ * the panel and its libraries load on the first click, so the list lives here.
+ */
+export const FIXABLE_CHECKS = Object.freeze(['caa.missing', 'dmarc.missing', 'dmarc.multiple', 'dmarc.pct', 'dmarc.policy-none', 'dmarc.rua-missing',
+  'dmarc.sp-none', 'mx.none', 'mx.null-mixed', 'spf.after-all', 'spf.all-missing', 'spf.all-neutral', 'spf.all-pass', 'spf.lookups-exceeded',
+  'spf.lookups-high', 'spf.missing', 'spf.multiple', 'spf.null-mx', 'spf.ptr', 'spf.redirect-ignored', 'tls-rpt.missing']);
+
+/** ui/fix-panel.js with lib/fixes.js (the zone parser and linter come along), on the first "Show the fix". */
+const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));
 
 // Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js, every
 // mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js.
@@ -124,6 +135,8 @@ registerStrings('en', {
   'hlt.filter.all': 'All checks',
   'hlt.filter.problems': 'Warnings & errors',
   'hlt.noProblems': 'No warnings or errors in this group.',
+  'hlt.fix.show': 'Show the fix',
+  'hlt.fix.hide': 'Hide the fix',
   'hlt.checksTitle': 'Checks',
   'hlt.detailsTitle': 'Details',
   'hlt.links': 'More about this domain:',
@@ -329,6 +342,8 @@ registerStrings('tr', {
   'hlt.filter.all': 'Tüm kontroller',
   'hlt.filter.problems': 'Uyarılar ve hatalar',
   'hlt.noProblems': 'Bu grupta uyarı ya da hata yok.',
+  'hlt.fix.show': 'Düzeltmeyi göster',
+  'hlt.fix.hide': 'Düzeltmeyi gizle',
   'hlt.checksTitle': 'Kontroller',
   'hlt.detailsTitle': 'Ayrıntılar',
   'hlt.links': 'Bu alan adı hakkında daha fazlası:',
@@ -734,12 +749,43 @@ export function mount(container, ctx) {
   }
 
   /* --- checks ----------------------------------------------------------------------------- */
-  function renderCheck(c) {
+  function renderCheck(c, report) {
+    const fixable = c.severity !== 'ok' && FIXABLE_CHECKS.includes(c.id);
     return h('li', { class: ['hlt-check', `hlt-sev-${c.severity}`], dataset: { id: c.id, severity: c.severity } },
       h('span', { class: 'hlt-check-icon' }, SeverityIcon(c.severity, { size: 18 })),
       h('div', { class: 'hlt-check-body' },
         h('div', { class: 'hlt-check-title' }, checkTitle(c)),
-        h('div', { class: 'hlt-check-detail' }, checkDetail(c))));
+        h('div', { class: 'hlt-check-detail' }, checkDetail(c)),
+        fixable ? fixToggle(c, report) : null));
+  }
+
+  /**
+   * "Show the fix" of a check: the records (or the advice) that fix it, in every format, with the
+   * check link. Nothing is sent: the panel is built from the report; only a missing CAA record
+   * offers a Certificate Transparency lookup, on its own click.
+   */
+  function fixToggle(c, report) {
+    const hostId = uid('hlt-fix');
+    const host = h('div', { class: 'fix-host', id: hostId, hidden: true, dataset: { fixFor: c.id } });
+    const btn = Button({
+      label: t('hlt.fix.show'), icon: 'chevron-right', size: 'sm', variant: 'ghost', className: 'fix-toggle',
+      attrs: { 'aria-expanded': 'false', 'aria-controls': hostId }, dataset: { action: 'health-fix', check: c.id },
+      onClick: async () => {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        btn.querySelector('.btn-label').textContent = t(open ? 'hlt.fix.hide' : 'hlt.fix.show');
+        host.hidden = !open;
+        if (!open || host.firstChild) return;
+        try {
+          const { HealthFixPanel } = await loadFixPanel();
+          if (!host.firstChild) host.append(HealthFixPanel(c, report, { ctx }));
+        } catch (err) {
+          ctx.checkOutdated();
+          host.append(ErrorBanner(err, { compact: true }));
+        }
+      }
+    });
+    return h('div', { class: 'hlt-fix' }, btn, host);
   }
 
   function renderChecks(report) {
@@ -758,7 +804,7 @@ export function mount(container, ctx) {
         actions: counts.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
         padded: false,
         children: shown.length
-          ? h('ul', { class: 'hlt-check-list' }, shown.map(renderCheck))
+          ? h('ul', { class: 'hlt-check-list' }, shown.map((c) => renderCheck(c, report)))
           : h('p', { class: 'hlt-none muted text-sm' }, t('hlt.noProblems'))
       }));
       checksEl.lastChild.dataset.group = group;

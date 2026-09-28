@@ -226,12 +226,101 @@ class CheckTests(unittest.TestCase):
         self.assertIn('bundle_other.csr was not made with the private key bundle_leaf.key', texts(result))
         self.assertIn('no certificate in these files', texts(result))
 
+    def test_ca_certificates_without_the_server_certificate(self):
+        for names in (('bundle_ca_reversed.pem',), ('bundle_inter.pem', 'bundle_root.pem'),
+                      ('bundle_inter.pem', 'bundle_root.pem', 'bundle_leaf.key')):
+            with self.subTest(files=names):
+                result = sos.check_bundle(items(*names))
+                self.assertIsNone(result.leaf)
+                self.assertIn(('FAIL', 'chain'), statuses(result))
+                self.assertIn('no server certificate in these files, only CA certificates', texts(result))
+                self.assertTrue(result.failed)
+                self.assertFalse(result.complete)
+                self.assertEqual(sos.bundle_outputs(result, haproxy=True), [])
+        result = sos.check_bundle(items('bundle_inter.pem', 'bundle_root.pem', 'bundle_leaf.key'))
+        self.assertIn('bundle_leaf.key: no server certificate to compare it with', texts(result))
+
+    def test_a_self_signed_ca_certificate_that_names_hosts_is_the_leaf(self):
+        # `openssl req -x509` marks what it makes CA:TRUE: a server certificate all the same
+        result = sos.check_bundle(items('many_sans.pem'))
+        self.assertEqual(result.leaf.subject_cn, 'bulk.example.com')
+        self.assertEqual(statuses(result), [('OK', 'chain'), ('WARN', 'chain')])
+        self.assertIn('MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY', texts(result))
+        self.assertEqual([name for name, _t, _w in sos.bundle_outputs(result)], ['fullchain.pem'])
+        # a root with its key in the files: the server's own CA-marked certificate
+        root_key = sos.BundleItem('root.key', 'private-key', key=sos.PrivateKeyInfo(
+            'SEC1', 'EC', ROOT_CA.public_key()))
+        result = sos.check_bundle(items('bundle_root.pem') + [root_key])
+        self.assertEqual(result.leaf, ROOT_CA)
+        self.assertEqual(result.key, root_key)
+
+    def test_a_p7b_file_holds_no_order(self):
+        p7b = items('cli_chain_p7b.pem')
+        self.assertEqual([i.cert.subject_cn for i in p7b], ['Subdomain Scanner Test Root CA',
+                                                            'www.example-test.com.tr'])
+        self.assertTrue(all(i.pkcs7 for i in p7b))
+        result = sos.check_bundle(p7b)
+        self.assertEqual(statuses(result, 'order'), [])
+        # the same certificates in that order in a PEM file: an order the file chose
+        pem = ''.join(sos.pem_encode(i.cert.der) for i in p7b)
+        result = sos.check_bundle(sos.bundle_items(pem, 'bundle.pem'))
+        self.assertEqual(statuses(result, 'order'), [('WARN', 'order')])
+
+    def test_openssl_ecparam_output_and_other_blocks(self):
+        params = '-----BEGIN EC PARAMETERS-----\nBggqhkjOPQMBBw==\n-----END EC PARAMETERS-----\n'
+        found = sos.bundle_items(params + fixture_bytes('bundle_ec_leaf.key').decode('ascii'), 'ec.key')
+        self.assertEqual([i.kind for i in found], ['private-key'])
+        dh = sos.bundle_items('-----BEGIN DH PARAMETERS-----\nMAA=\n-----END DH PARAMETERS-----\n', 'dh.pem')
+        self.assertEqual([(i.kind, i.detail) for i in dh], [('unknown', 'a PEM block labelled DH PARAMETERS')])
+
+    def test_an_ed25519_key_without_its_public_key(self):
+        # PKCS#8 as `openssl genpkey -algorithm ed25519` writes it: no public key (a made-up seed)
+        der = bytes.fromhex('302e020100300506032b657004220420') + bytes(range(32))
+        key = sos.bundle_items(der, 'ed.key')[0].key
+        self.assertEqual((key.algorithm, key.public_key), ('Ed25519', None))
+        self.assertIn('Ed25519 key files usually do not hold the public key', key.note)
+        self.assertNotIn('usually do)', key.note)
+        self.assertIn('EC keys usually do', items('bundle_ec_leaf.nopub.key')[0].key.note)
+
     def test_expired_certificates(self):
         later = datetime(2051, 1, 1, tzinfo=timezone.utc)
         result = sos.check_bundle(items('bundle_leaf.pem', 'bundle_inter.pem'), now=later)
         expiry = [c for c in result.checks if c.topic == 'expiry']
         self.assertEqual([c.status for c in expiry], ['FAIL', 'WARN'])
         self.assertIn('www.example.com expired on 2050-01-01', expiry[0].text)
+
+
+class RenderTests(unittest.TestCase):
+
+    def test_hostile_certificate_and_file_text_is_escaped(self):
+        # the AIA URL of the leaf patched in place (same length: the DER stays well formed)
+        url = b'http://ca.example.com/bundle-inter.crt'
+        evil = b'http://\x1b[2J\x1b]0;PWN\x07\x1b[31m.example.com/'
+        evil += b'x' * (len(url) - len(evil))
+        der = LEAF.der.replace(url, evil)
+        self.assertEqual(len(der), len(LEAF.der))
+        result = sos.check_bundle(sos.bundle_items(der, 'aia\x1b[2J.der') + items('bundle_leaf.key'))
+        self.assertIn(('FAIL', 'chain'), statuses(result))  # the missing intermediate and its hint
+        text = sos.render_bundle(result, written=[('out\x07/fullchain.pem', 'the certificate')],
+                                 notes=['Nothing written to out\x1b[0m.'])
+        self.assertNotIn('\x1b', text)
+        self.assertNotIn('\x07', text)
+        self.assertIn('aia\\x1b[2J.der', text)
+        self.assertIn('http://\\x1b[2J\\x1b]0;PWN\\x07\\x1b[31m.example.com/', ' '.join(text.split()))
+
+    def test_a_long_file_name_gets_a_line_of_its_own(self):
+        long_dir = '/etc/letsencrypt/live/www.example.com-0001/archive'
+        found = (sos.bundle_items(fixture_bytes('bundle_leaf.pem'), long_dir + '/cert1.pem')
+                 + sos.bundle_items(fixture_bytes('bundle_ca_reversed.pem'), long_dir + '/chain1.pem')
+                 + items('bundle_leaf.key'))
+        text = sos.render_bundle(sos.check_bundle(found), width=80)
+        lines = text.splitlines()
+        self.assertEqual([len(line) for line in lines if len(line) > 80], [])
+        self.assertIn('  %s/chain1.pem' % long_dir, lines)
+        at = lines.index('  %s/chain1.pem' % long_dir)
+        self.assertTrue(lines[at + 1].startswith('    certificate (root): Example Test Bundle Root CA'))
+        # a short name keeps its column
+        self.assertTrue(any(line.startswith('  bundle_leaf.key  private key:') for line in lines), text)
 
 
 class BundleCliTests(unittest.TestCase):
@@ -300,6 +389,16 @@ class BundleCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(os.listdir(self.tmp.name), [])
         self.assertIn('Nothing written', out)
+
+    def test_ca_certificates_alone_write_nothing(self):
+        for names in (('bundle_ca_reversed.pem',), ('bundle_inter.pem', 'bundle_root.pem')):
+            with self.subTest(files=names):
+                code, out, _err = self.run_check(*names, '-o', self.tmp.name, '--write-haproxy')
+                self.assertEqual(code, 1)
+                self.assertEqual(os.listdir(self.tmp.name), [])
+                text = ' '.join(out.split())
+                self.assertIn('no server certificate in these files', text)
+                self.assertIn('no server certificate.', text)
 
     def test_usage_errors_and_a_file_that_cannot_be_written(self):
         self.assertEqual(self.run_check('bundle_leaf.pem', '--write-haproxy')[0], 2)

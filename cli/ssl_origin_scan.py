@@ -5998,8 +5998,10 @@ BUNDLE_FAIL = 'FAIL'
 BUNDLE_SKIPPED = 'SKIPPED'
 BUNDLE_STATUSES = (BUNDLE_OK, BUNDLE_WARN, BUNDLE_FAIL, BUNDLE_SKIPPED)
 ENCRYPTED_KEY_NOTE = 'encrypted key: cannot check without a password - skipped'
-NO_PUBLIC_KEY_NOTE = ('the key file does not hold its public key (%s keys usually do): it '
+NO_PUBLIC_KEY_NOTE = ('the key file does not hold its public key (EC keys usually do): it '
                       'cannot be compared - skipped')
+EDDSA_NO_PUBLIC_KEY_NOTE = ('%s key files usually do not hold the public key, and this tool does '
+                            'not derive it: not compared - skipped')
 _OID_EXTENSION_REQUEST = '1.2.840.113549.1.9.14'
 _KEY_PEM_LABELS = {'PKCS#8': 'PRIVATE KEY', 'PKCS#1': 'RSA PRIVATE KEY', 'SEC1': 'EC PRIVATE KEY'}
 CERT_FILE_MAX_BYTES = 10 << 20  # a bundle-check file larger than this is no certificate or key
@@ -6040,6 +6042,7 @@ class BundleItem:
     csr: Optional[CsrInfo] = None
     public_key: Optional[PublicKey] = None
     detail: str = ''
+    pkcs7: bool = False              # a certificate of a PKCS#7 (.p7b) file: its place says nothing
 
 
 @dataclass
@@ -6120,7 +6123,7 @@ def _sec1_private(der: bytes, fmt: str, curve_oid: Optional[str] = None) -> Priv
         elif item[0] == 0xA1 and inner and inner[0][0] == 0x03:
             point = _bit_string_bytes(der, inner[0])
     if point is None:
-        return PrivateKeyInfo(fmt, 'EC', note=NO_PUBLIC_KEY_NOTE % 'EC')
+        return PrivateKeyInfo(fmt, 'EC', note=NO_PUBLIC_KEY_NOTE)
     return PrivateKeyInfo(fmt, 'EC', ec_public_key(curve_oid, point))
 
 
@@ -6159,7 +6162,7 @@ def parse_private_key(der: Union[bytes, bytearray, memoryview]) -> PrivateKeyInf
             return PrivateKeyInfo('PKCS#8', family,
                                   PublicKey(family, 256 if family == 'Ed25519' else 456, None,
                                             (oid, key)))
-        return PrivateKeyInfo('PKCS#8', family, note=NO_PUBLIC_KEY_NOTE % family
+        return PrivateKeyInfo('PKCS#8', family, note=EDDSA_NO_PUBLIC_KEY_NOTE % family
                               if family in ('Ed25519', 'Ed448') else
                               'a %s key: not compared by this tool - skipped' % family)
     if len(fields) >= 9 and all(tag == 0x02 for tag in tags[:9]):
@@ -6264,7 +6267,10 @@ def _der_items(name: str, der: bytes) -> List[BundleItem]:
     if shape[:1] == [0x06] or shape == [0x30, 0x30, 0x03]:
         certs, warnings = [], []  # type: List[CertInfo], List[CertWarning]
         _load_der(der, certs, warnings)
-        return ([BundleItem(name, 'certificate', cert=cert) for cert in certs]
+        # A PKCS#7 file keeps its certificates in a DER SET OF, sorted by their encoding: it
+        # cannot say in which order they go.
+        pkcs7 = shape[:1] == [0x06]
+        return ([BundleItem(name, 'certificate', cert=cert, pkcs7=pkcs7) for cert in certs]
                 + [BundleItem(name, 'unknown', detail=detail) for _code, detail in warnings])
     return [_key_item(name, der)] if shape else [
         BundleItem(name, 'unknown', detail='not PEM or DER')]
@@ -6301,7 +6307,9 @@ def _pem_items(name: str, label: str, body: str, block: str) -> List[BundleItem]
             return [BundleItem(name, 'unknown', detail='unreadable RSA public key (%s)' % exc)]
     if label in _CERT_LABELS + ('PKCS7', 'CMS', 'PUBLIC KEY', 'PKCS12', 'PFX'):
         return _der_items(name, der)
-    return [BundleItem(name, 'unknown', detail='a %s block (not used)' % label)]
+    if label == 'EC PARAMETERS':
+        return []  # the curve, written before its key by `openssl ecparam -genkey`
+    return [BundleItem(name, 'unknown', detail='a PEM block labelled %s' % label)]
 
 
 def bundle_items(data: Union[bytes, str], name: str) -> List[BundleItem]:
@@ -6339,37 +6347,43 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
     """Classify the leaf, order the chain and check key, CSR and chain together.
 
     The leaf is the end-entity certificate a private key of the files belongs to, else the
-    first one (not a CA, issuing no other certificate of the files). Its chain follows
-    :func:`issued_by` (issuer / subject names and key identifiers; signatures are not
-    verified) through the other certificates. A leaf nothing issued is a missing
-    intermediate (FAIL) unless it is self-signed; a chain that ends at an intermediate whose
-    issuer is not in the files is fine (a root clients trust); a root in the files is an
-    extra root (WARN: servers need not send it). Files that list chain certificates in
-    another order than servers send them get a WARN; fullchain.pem is written in the right
-    order anyway.
+    first one (not a CA, issuing no other certificate of the files). With none, a
+    self-signed CA certificate that names hosts or whose key is in the files is the leaf
+    (``openssl req -x509`` marks what it makes CA:TRUE; a WARN says clients may refuse it);
+    files of CA certificates only have no leaf (FAIL: the server certificate is missing,
+    nothing is written). Its chain follows :func:`issued_by` (issuer / subject names and key
+    identifiers; signatures are not verified) through the other certificates. A leaf
+    nothing issued is a missing intermediate (FAIL) unless it is self-signed; a chain that
+    ends at an intermediate whose issuer is not in the files is fine (a root clients
+    trust); a root in the files is an extra root (WARN: servers need not send it). Files
+    that list chain certificates in another order than servers send them get a WARN (not a
+    PKCS#7 file, which holds no order); fullchain.pem is written in the right order anyway.
     """
     now = now or _utcnow()
     checks = []  # type: List[BundleCheck]
     certs = []  # type: List[CertInfo]
     where = {}  # type: Dict[str, Tuple[str, int]]  sha256 -> (file, position in all items)
+    unordered = set()  # type: Set[str]  sha256 of certificates first found in a PKCS#7 file
     for position, item in enumerate(items):
         if item.cert is not None and item.cert.sha256 not in where:
             where[item.cert.sha256] = (item.file, position)
             certs.append(item.cert)
+            if item.pkcs7:
+                unordered.add(item.cert.sha256)
     keys = [item for item in items if item.kind == 'private-key']
     csrs = [item for item in items if item.kind == 'csr']
 
+    def has_key(cert: CertInfo) -> bool:
+        pk = cert.public_key()
+        return pk is not None and any(item.key is not None and item.key.public_key is not None
+                                      and item.key.public_key.ident == pk.ident for item in keys)
+
     leaves = [cert for cert in certs if not cert.is_ca
               and not any(other is not cert and issued_by(other, cert) for other in certs)]
-    leaf = None  # type: Optional[CertInfo]
-    for cert in leaves:
-        pk = cert.public_key()
-        if pk is not None and any(item.key is not None and item.key.public_key is not None
-                                  and item.key.public_key.ident == pk.ident for item in keys):
-            leaf = cert
-            break
-    if leaf is None:
-        leaf = leaves[0] if leaves else (certs[0] if certs else None)
+    if not leaves:
+        leaves = [cert for cert in certs if cert.is_ca and cert.self_signed
+                  and (cert.dns_names or cert.ip_addresses or has_key(cert))]
+    leaf = next((cert for cert in leaves if has_key(cert)), leaves[0] if leaves else None)
     leaf_key = leaf.public_key() if leaf is not None else None
     leaf_name = _cert_label(leaf) if leaf is not None else ''
 
@@ -6380,7 +6394,9 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
         if problem:
             checks.append(BundleCheck(BUNDLE_SKIPPED, 'key', '%s: %s' % (item.file, problem)))
         elif leaf is None:
-            pass  # compared with the CSR below
+            if not csrs:  # else compared with the CSR below
+                checks.append(BundleCheck(BUNDLE_SKIPPED, 'key', '%s: no server certificate to '
+                                          'compare it with' % item.file))
         elif leaf_key is not None and item.key.public_key.ident == leaf_key.ident:
             matching = matching or item
             checks.append(BundleCheck(BUNDLE_OK, 'key', '%s belongs to the certificate %s (%s)' % (
@@ -6428,7 +6444,10 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
     chain = []  # type: List[CertInfo]
     complete = False
     if leaf is None:
-        checks.append(BundleCheck(BUNDLE_FAIL, 'chain', 'no certificate in these files'))
+        checks.append(BundleCheck(BUNDLE_FAIL, 'chain', 'no server certificate in these files, '
+                                  'only CA certificates (%s): add the certificate issued for '
+                                  'your names' % ', '.join(_cert_label(cert) for cert in certs)
+                                  if certs else 'no certificate in these files'))
     else:
         chain = [leaf]
         in_chain = {leaf.sha256}
@@ -6442,8 +6461,14 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
             in_chain.add(issuer.sha256)
             current = issuer
         checks.extend(_chain_checks(leaf, chain, now))
+        if leaf.is_ca:
+            checks.append(BundleCheck(BUNDLE_WARN, 'chain', '%s is marked as a CA (basicConstraints '
+                                      'CA:TRUE) but serves as the server certificate: Firefox '
+                                      'refuses that (MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY)'
+                                      '; make it again without CA:TRUE' % leaf_name))
         complete = chain[-1].self_signed or len(chain) > 1
-        checks.extend(_order_checks(chain, where))
+        checks.extend(_order_checks([cert for cert in chain if cert.sha256 not in unordered],
+                                    where))
         for cert in certs:
             if cert.sha256 not in in_chain:
                 checks.append(BundleCheck(BUNDLE_WARN, 'other', '%s (%s) is not part of the '
@@ -6470,7 +6495,8 @@ def _chain_checks(leaf: CertInfo, chain: Sequence[CertInfo], now: datetime) -> L
         out.append(BundleCheck(BUNDLE_OK, 'chain', '%s is self-signed: there is no chain to send'
                                % _cert_label(leaf)))
     elif len(chain) == 1:
-        hint = ' (the CA publishes it at %s)' % ', '.join(leaf.ca_issuers) if leaf.ca_issuers else ''
+        hint = (' (the CA publishes it at %s)' % display_text(', '.join(leaf.ca_issuers))
+                if leaf.ca_issuers else '')
         out.append(BundleCheck(BUNDLE_FAIL, 'chain', 'missing intermediate: no file holds %s, the '
                                'issuer of %s%s; servers must send it with the certificate - unless '
                                'it is a root your clients already trust (a private CA)' % (
@@ -6576,21 +6602,32 @@ def _item_text(item: BundleItem, now: datetime, style: Style) -> str:
 
 _BUNDLE_STYLES = {BUNDLE_OK: ('green', 'bold'), BUNDLE_WARN: ('yellow', 'bold'),
                   BUNDLE_FAIL: ('red', 'bold'), BUNDLE_SKIPPED: ('dim',)}
+BUNDLE_FILE_COLUMN = 32  # file names up to this long share a column with their items
 
 
 def render_bundle(result: BundleResult, written: Sequence[Tuple[str, str]] = (),
                   color: bool = False, width: int = 100, now: Optional[datetime] = None,
                   notes: Sequence[str] = ()) -> str:
-    """The bundle-check report: each file's items, the checks, what was written."""
+    """The bundle-check report: each file's items, the checks, what was written.
+
+    File names and check texts go through :func:`display_text` (a path or a certificate's
+    URL could hold terminal escapes). A file name longer than :data:`BUNDLE_FILE_COLUMN`
+    gets a line of its own with its items indented under it."""
     style = Style(color)
     now = now or _utcnow()
     files = list(dict.fromkeys(item.file for item in result.items))
     lines = [style.paint('Bundle check: %s' % _count_text(len(files), 'file'), 'bold')]
-    pad = min(32, max(len(display_text(f)) for f in files)) if files else 0
+    labels = {file: display_text(file) for file in files}
+    pad = max((len(label) for label in labels.values() if len(label) <= BUNDLE_FILE_COLUMN),
+              default=0)
     for file in files:
-        label = display_text(file)
-        for index, item in enumerate(i for i in result.items if i.file == file):
-            prefix = '  %s  ' % (label.ljust(pad) if index == 0 else ' ' * max(pad, len(label)))
+        label = labels[file]
+        own_line = len(label) > BUNDLE_FILE_COLUMN
+        if own_line:
+            lines.append('  ' + label)
+        for index, item in enumerate(item for item in result.items if item.file == file):
+            prefix = ('    ' if own_line else
+                      '  %s  ' % (label.ljust(pad) if index == 0 else ' ' * pad))
             lines.extend(_wrap(prefix, len(prefix), _item_text(item, now, style), width))
     lines.append('')
     lines.append(style.paint('Checks', 'bold'))
@@ -6598,12 +6635,14 @@ def render_bundle(result: BundleResult, written: Sequence[Tuple[str, str]] = (),
     for check in result.checks:
         prefix = '  %s  ' % style.paint(check.status.ljust(label_width),
                                         *_BUNDLE_STYLES[check.status])
-        lines.extend(_wrap(prefix, 4 + label_width, check.text, width))
+        lines.extend(_wrap(prefix, 4 + label_width, display_text(check.text), width))
     for note in notes:
-        lines.extend(_wrap('  ', 2, note, width))
+        lines.extend(_wrap('  ', 2, display_text(note), width))
     if written:
         lines.append('')
-        lines.append('Written: %s' % ', '.join('%s (%s)' % (path, what) for path, what in written))
+        lines.append('Written:')
+        for path, what in written:
+            lines.extend(_wrap('  ', 2, display_text('%s (%s)' % (path, what)), width))
     return '\n'.join(lines) + '\n'
 
 
@@ -6621,9 +6660,10 @@ checks:
            without a certificate: the CSR was made with the private key
   chain    the leaf, then each issuer (subject / issuer names and key identifiers, as
            servers are expected to send them; signatures are not verified): a leaf
-           that nothing in the files issued is a missing intermediate (FAIL), a root in
-           the files an extra root (WARN), a file in another order a WARN, a
-           certificate of another chain is left out
+           that nothing in the files issued is a missing intermediate (FAIL), CA
+           certificates without the server certificate a FAIL, a root in the files an
+           extra root (WARN), a file in another order a WARN (not a .p7b, which keeps
+           no order), a certificate of another chain is left out
   expiry   an expired certificate (the leaf: FAIL) or one not valid yet
 
 output (--out-dir DIR): fullchain.pem (leaf + intermediates, leaf first, no root) and
@@ -6697,8 +6737,9 @@ def _run_bundle(args: argparse.Namespace) -> int:
         outputs = bundle_outputs(result, haproxy=args.write_haproxy)
         if not outputs:
             notes.append('Nothing written to %s: %s.' % (
-                args.out_dir, 'no certificate' if result.leaf is None else
-                'the chain is incomplete (a missing intermediate)'))
+                args.out_dir, 'the chain is incomplete (a missing intermediate)'
+                if result.leaf is not None else 'no server certificate'
+                if any(item.cert is not None for item in result.items) else 'no certificate'))
         for name, text, what in outputs:
             path = os.path.join(args.out_dir, name)
             try:

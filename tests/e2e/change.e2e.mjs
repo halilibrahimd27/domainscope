@@ -375,7 +375,8 @@ async function main() {
 
     run.group('Phones 320 / 375 px, light / dark, English / Turkish');
     await run.step('the form with its outputs and the check page fit without horizontal scroll', async () => {
-      await page.evaluate(() => { window.__dns.views = {}; });
+      // CZ.NIC fails: the check page carries the longest verdict badge ("No answer (server error)").
+      await page.evaluate(() => { window.__dns.views = { cznic: { _status: 500 } }; });
       for (const [lang, theme] of [['en', 'light'], ['tr', 'dark']]) {
         await setLangUi(page, lang);
         await page.emulateMedia({ 'prefers-color-scheme': theme });

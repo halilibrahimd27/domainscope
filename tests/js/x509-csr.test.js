@@ -78,6 +78,24 @@ describe('looksLikePrivateKey (the CSR box drops a key as it lands)', () => {
     }
   });
 
+  test('the first lines of a key’s bare base64 (a partial paste)', () => {
+    const base64 = (f) => text(f).replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+    for (const f of ['bundle_leaf.key', 'bundle_leaf.rsa.key', 'bundle_ec_leaf.key', 'bundle_ec_leaf.nopub.key', 'bundle_leaf.enc.key', 'bundle_other.key']) {
+      const b64 = base64(f);
+      assert.ok(b64.length > 64, f);
+      assert.equal(looksLikePrivateKey(b64.slice(0, 64)), true, `${f}: its first line`);
+      const cut = b64.slice(0, -3);
+      assert.equal(looksLikePrivateKey(`${cut.slice(0, 64)}\r\n${cut.slice(64)}`), true, `${f}: all but its last characters`);
+    }
+    // what is not a key stays: the first lines of a CSR, a certificate, a public key, a PKCS#12 file
+    for (const f of ['bundle_leaf.csr', 'bundle_ec_leaf.csr', 'bundle_leaf.pem', 'bundle_root.pem', 'bundle_selfsigned_ca.pem']) {
+      assert.equal(looksLikePrivateKey(`${base64(f).slice(0, 64)}\n${base64(f).slice(64, 128)}`), false, `${f}: two lines`);
+    }
+    const spki = parseCertificates(read('bundle_leaf.pem')).leaf.spkiDer;
+    assert.equal(looksLikePrivateKey(Buffer.from(spki).toString('base64').slice(0, 64)), false, 'a public key’s first line');
+    assert.equal(looksLikePrivateKey(read('p12_plain.p12').toString('base64').slice(0, 64)), false, 'a PKCS#12 file’s first line');
+  });
+
   test('a CSR, a certificate, a public key or text is none', () => {
     for (const f of ['bundle_leaf.csr', 'bundle_ec_leaf.csr', 'bundle_leaf.pem']) assert.equal(looksLikePrivateKey(text(f)), false, f);
     assert.equal(looksLikePrivateKey(read('test_csr.der').toString('base64')), false, 'a CSR’s bare base64');

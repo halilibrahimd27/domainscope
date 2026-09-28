@@ -2094,11 +2094,48 @@ export function parseCertificateRequest(input) {
   }
 }
 
+// PKCS#5 (PBES1 / PBES2) and PKCS#12 PBE algorithm OIDs, DER contents: an encrypted PKCS#8 key's first bytes.
+const PBE_OID_PREFIXES = Object.freeze([
+  Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05), // 1.2.840.113549.1.5
+  Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x01) // 1.2.840.113549.1.12.1
+]);
+
+/** Where the contents of the DER TLV at `at` start (lenient: the contents need not be there); -1 when unreadable. */
+function contentsStart(bytes, at) {
+  if (at + 1 >= bytes.length) return -1;
+  const first = bytes[at + 1];
+  if (first < 0x80) return at + 2;
+  const size = first & 0x7f;
+  return size >= 1 && size <= 4 ? at + 2 + size : -1;
+}
+
+/**
+ * Do these bytes start the way a private key does, whether or not the rest is there (the first
+ * lines of a key's base64)? PKCS#1, PKCS#8, SEC1 and DSA: SEQUENCE { INTEGER 0 or 1, then a
+ * SEQUENCE, OCTET STRING or INTEGER }; encrypted PKCS#8: SEQUENCE { SEQUENCE { a PBE OID … } }.
+ * A certificate, CSR or CRL (a SEQUENCE first, holding no OID first), a public key (not a PBE
+ * OID) and PKCS#12 (version 3) do not.
+ */
+function startsLikePrivateKey(bytes) {
+  if (!bytes || bytes[0] !== 0x30) return false;
+  const at = contentsStart(bytes, 0);
+  if (at < 0 || at + 3 >= bytes.length) return false;
+  if (bytes[at] === 0x02 && bytes[at + 1] === 0x01 && bytes[at + 2] <= 1) {
+    return bytes[at + 3] === 0x30 || bytes[at + 3] === 0x04 || bytes[at + 3] === 0x02;
+  }
+  if (bytes[at] !== 0x30) return false;
+  const oid = contentsStart(bytes, at);
+  if (oid < 0 || bytes[oid] !== 0x06 || oid + 1 >= bytes.length) return false;
+  const value = bytes.subarray(oid + 2, oid + 2 + bytes[oid + 1]);
+  return PBE_OID_PREFIXES.some((prefix) => value.length >= prefix.length && prefix.every((b, i) => value[i] === b));
+}
+
 /**
  * Does a pasted text hold a private key: a `… PRIVATE KEY` PEM line (encrypted, OpenSSH and a
- * lone END line too), or bare base64 whose DER has a private key's shape? Only the outline is
- * looked at, never a key's numbers. For fields that must drop a key the moment it lands in them
- * (the Certificate view's CSR box), before anything else reads or keeps the text.
+ * lone END line too), or bare base64 whose DER has a private key's shape — the first lines of
+ * one too (a partial paste)? Only the outline is looked at, never a key's numbers. For fields
+ * that must drop a key the moment it lands in them (the Certificate view's CSR box), before
+ * anything else reads or keeps the text.
  * @param {string} text
  * @returns {boolean}
  */
@@ -2108,12 +2145,16 @@ export function looksLikePrivateKey(text) {
   if (PRIVATE_KEY_PEM_RE.test(trimmed)) return true;
   if (trimmed.includes('-----') || !BARE_BASE64_RE.test(trimmed)) return false;
   const der = decodeBase64(trimmed);
-  if (!der || der.length < 2 || der[0] !== 0x30) return false;
-  try {
-    return classifyDer(readNode(der, 0, der.length)).kind === 'privateKey';
-  } catch {
-    return false;
+  if (der && der.length >= 2 && der[0] === 0x30) {
+    try {
+      if (classifyDer(readNode(der, 0, der.length)).kind === 'privateKey') return true;
+    } catch {
+      /* cut short or not DER: its first bytes below */
+    }
   }
+  const compact = trimmed.replace(/\s+/g, '');
+  const head = compact.slice(0, Math.min(64, compact.length - (compact.length % 4)));
+  return startsLikePrivateKey(head ? decodeBase64(head) : null);
 }
 
 /**

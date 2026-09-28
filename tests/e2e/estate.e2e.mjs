@@ -27,9 +27,9 @@
  *     certificate says so in the keys tab (not "an older CLI");
  *   - Certificate view › PEM & OpenSSL › Does this CSR match?: the certificate's own CSR matches
  *     (Ctrl+Enter in the box), another key's does not (with the names it asked for), a pasted
- *     private key is refused and the box emptied at once, without Compare (and it does not come
- *     back after another tab or tool, while a CSR does), a certificate is named as one; "Delete
- *     all local data" empties the box;
+ *     private key is refused and the box emptied at once, without Compare (the first line of its
+ *     base64 alone too; it does not come back after another tab or tool, while a CSR does), a
+ *     certificate is named as one; "Delete all local data" empties the box;
  *   - Turkish + dark, a 375 px and a 320 px phone: no horizontal scroll, the table as cards;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
  */
@@ -443,6 +443,11 @@ async function main() {
       await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.pem'), 'utf8'));
       await page.click('[data-action="cert-csr-compare"]');
       await page.waitFor(() => document.querySelector('.cert-csr-verdict[data-error="certificate"]'), { message: 'certificate verdict' });
+      // only the first line of a key's base64: refused all the same
+      const firstLine = (await readFile(fixture('bundle_leaf.key'), 'utf8')).replace(/-----[^-]+-----/g, '').trim().split(/\r?\n/)[0];
+      await page.type('[data-role="cert-csr"]', firstLine);
+      await page.waitFor(() => document.querySelector('.cert-csr-verdict[data-error="private-key"]')
+        && document.querySelector('[data-role="cert-csr"]').value === '', { message: 'a partial key refused' });
     });
 
     await run.step('a key pasted without Compare does not come back after another tab or tool; a CSR does', async () => {

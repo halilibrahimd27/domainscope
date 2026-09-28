@@ -156,8 +156,10 @@ const NEW_IP = '93.184.216.34';
  * In-page fake Globalping for the old / new server comparison: an HTTPS GET at an address answers
  * like a web server of www.example.com. `window.__compareScenario`: 'differs' (the new server has
  * its own certificate, no HSTS header and another Server header), 'broken' (its certificate names
- * another host), 'down' (neither address answers). `window.__gp.allowUpTo`: measurements numbered
- * above it stay in progress. Every call is logged in window.__gp.
+ * another host), 'down' (neither address answers), 'origin-ca' (both serve the same answer and the
+ * same certificate, which the probe does not trust: an origin CA behind a CDN).
+ * `window.__gp.allowUpTo`: measurements numbered above it stay in progress. Every call is logged
+ * in window.__gp.
  */
 const fakeCompareScript = () => `(() => {
   const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {}, allowUpTo: Infinity };
@@ -173,13 +175,16 @@ const fakeCompareScript = () => `(() => {
   });
   function result(ip, host, path) {
     if (window.__compareScenario === 'down') return { status: 'failed', rawOutput: 'connect ECONNREFUSED ' + ip + ':443', timings: {} };
-    const old = ip === '${OLD_IP}';
+    const twin = window.__compareScenario === 'origin-ca';
+    const old = ip === '${OLD_IP}' || twin;
     const broken = !old && window.__compareScenario === 'broken';
     const headers = { 'content-type': 'text/html; charset=utf-8', server: old ? 'nginx' : 'caddy' };
     if (old) headers['strict-transport-security'] = 'max-age=31536000; includeSubDomains';
+    const tls = cert(old ? 'AA' : 'BB', broken ? ['www.example.net'] : [host, 'example.com']);
+    if (twin) Object.assign(tls, { authorized: false, error: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', issuer: { C: 'US', O: 'Example Origin CA', CN: 'Example Origin CA' } });
     return {
       status: 'finished', resolvedAddress: ip, statusCode: 200, statusCodeName: 'OK', headers, rawBody: body, truncated: false,
-      tls: cert(old ? 'AA' : 'BB', broken ? ['www.example.net'] : [host, 'example.com']), timings: { total: 120 }
+      tls, timings: { total: 120 }
     };
   }
   window.fetch = async (input, init) => {
@@ -679,6 +684,27 @@ async function main() {
       await page.evaluate(() => { window.__compareScenario = 'differs'; });
     });
 
+    await run.step('the same untrusted certificate on both (an origin CA behind a CDN): the same answer, the shared warning said apart', async () => {
+      await page.evaluate(() => { window.__compareScenario = 'origin-ca'; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'same', { timeout: 20000, message: 'same' });
+      const rows = await ocRows();
+      assertEqual(rows.certTrusted, 'warn', 'a warning both share, no difference');
+      assertEqual(Object.entries(rows).filter(([, v]) => v !== 'ok').map(([k]) => k), ['certTrusted'], 'nothing else marked');
+      const results = await page.evaluate(() => document.querySelector('.oc-results').textContent);
+      assert(/answers like the old one/.test(results) && !/answers differently/.test(results), 'the verdict: the same');
+      assert(/Both servers serve a certificate the probe does not trust/.test(results), 'the shared warning');
+      await takeDownloads(page);
+      await page.click('[data-action="oc-json"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
+      const [dl] = await takeDownloads(page);
+      assertEqual([JSON.parse(dl.text).verdict, JSON.parse(dl.text).shared], ['same', ['cert-untrusted']], 'JSON');
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => /İki sunucu da ölçüm noktasının güvenmediği/.test(document.querySelector('.oc-results')?.textContent || ''), { message: 'TR shared warning' });
+      await setLangUi(page, 'en');
+      await page.evaluate(() => { window.__compareScenario = 'differs'; });
+    });
+
     await run.step('Compare from the keyboard: focus goes to Stop and back; a stop after the old server keeps its answer on screen', async () => {
       // The old address answers; the new one stays in progress until the stop.
       const base = await page.evaluate(() => { window.__gp.allowUpTo = window.__gp.n + 1; return window.__gp.n; });
@@ -696,6 +722,23 @@ async function main() {
       await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
       await page.click('[data-action="oc-run"]');
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs' && !document.querySelector('.oc-partial'), { timeout: 20000, message: 'compared again' });
+    });
+
+    await run.step('leaving Retire an IP during a run and coming back: the card on screen gets the result and its Compare button back', async () => {
+      // The old address answers; the new one is held while the view is left and opened again.
+      const base = await page.evaluate(() => { window.__compareScenario = 'broken'; window.__gp.allowUpTo = window.__gp.n + 1; return window.__gp.n; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor((b) => window.__gp.n >= b + 2 && !!document.querySelector('[data-action="oc-stop"]'), { args: [base], message: 'the new address asked' });
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'retire');
+      await page.waitFor(() => !!document.querySelector('[data-action="oc-stop"]'), { message: 'the run shown on the new card' });
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'broken' && !document.querySelector('[data-action="oc-stop"]'),
+        { timeout: 20000, message: 'the result on the card shown, no Stop' });
+      assert(await page.evaluate(() => !document.querySelector('[data-action="oc-run"]').disabled), 'Compare enabled again');
+      await page.evaluate(() => { window.__compareScenario = 'differs'; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs', { timeout: 20000, message: 'compared again' });
     });
 
     await run.step('the comparison at 320 and 375 px, TR / EN × light / dark: labelled cards, no horizontal scroll', async () => {

@@ -32,6 +32,8 @@ export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'inc
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
   'body-cut', 'hsts-lost', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-expiring', 'new-cert', 'same-cert']);
+/** Certificate problems both servers can share (`oc.shared.<n>`): no difference, so said apart from the verdict. */
+export const COMPARE_SHARED = Object.freeze(['cert-untrusted', 'cert-name', 'cert-expiring']);
 /** Problems of the form (`oc.issue.<code>`). */
 export const COMPARE_ISSUES = Object.freeze(['host', 'old-ip', 'new-ip', 'same-ip', 'path', 'port']);
 /** A new certificate that expires within this many days is a warning. */
@@ -232,12 +234,15 @@ export function readSide(measurement, { ip, host, now = Date.now() }) {
 /* ------------------------------------------------------------------------ */
 
 const SEVERITY_RANK = { ok: 0, info: 1, warn: 2, error: 3 };
-/** Notes about the new server itself: they keep their severity even when both servers agree. */
-const ABSOLUTE_NOTES = new Set(['cert-name', 'cert-untrusted', 'cert-expiring']);
+const SHARED_NOTES = new Set(COMPARE_SHARED);
 
-/** One compared field; a field both servers agree on is 'ok' unless its note is about the new server itself. */
-function field(key, oldValue, newValue, same, severity, note = null) {
-  return { key, old: oldValue, new: newValue, same, severity: same && !ABSOLUTE_NOTES.has(note) ? 'ok' : severity, note };
+/**
+ * One compared field. A field both servers agree on is 'ok', unless its note is a problem of the
+ * certificate both serve: then it is `shared`, a 'warn' that says nothing about the move. The
+ * caller can say `shared` itself (two certificates that both expire soon, the new one no sooner).
+ */
+function field(key, oldValue, newValue, same, severity, note = null, shared = same && SHARED_NOTES.has(note)) {
+  return { key, old: oldValue, new: newValue, same, severity: shared ? 'warn' : same ? 'ok' : severity, note, shared };
 }
 
 const dateKey = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : null);
@@ -258,14 +263,22 @@ const hstsText = (h) => (h ? h.raw : null);
  *   information: a page with a token or a time in it differs on every request, and a new server
  *   usually has its own certificate.
  *
- * `verdict`: 'unreachable' (neither server answered: the probe's network may be the cause as
- * much as the servers, so nothing is judged), 'broken' (an error), 'differs' (a warning), 'same'
- * (information only), or 'incomplete' (the old server did not answer, so there is nothing to
- * compare with).
+ * A certificate problem both servers share is no difference: the same untrusted certificate (an
+ * origin CA certificate behind a CDN is one), a certificate that does not cover the name on both,
+ * or both expiring within {@link COMPARE_EXPIRY_WARN_DAYS} days with the new one no sooner. The
+ * field is `shared` (severity 'warn'), its note is listed in `shared`, and the verdict leaves it
+ * out: two identical servers are 'same'.
+ *
+ * `verdict`, from the fields that count: 'unreachable' (neither server answered: the probe's
+ * network may be the cause as much as the servers, so nothing is judged), 'broken' (an error),
+ * 'differs' (a warning), 'same' (information only), or 'incomplete' (the old server did not
+ * answer, so there is nothing to compare with).
  * @param {CompareSide} a the old server
  * @param {CompareSide} b the new server
  * @param {{ now?: number }} [opts]
- * @returns {{ verdict: string, fields: object[], differences: number, worst: string }}
+ * @returns {{ verdict: string, fields: object[], differences: number, worst: string, shared: string[] }}
+ *   `worst`: the highest severity of the fields that count (not the shared ones); `shared`: the
+ *   notes ({@link COMPARE_SHARED}) of the problems both servers share
  */
 export function compareSides(a, b, { now = Date.now() } = {}) {
   const fields = [];
@@ -312,21 +325,26 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
     const untrusted = cb && !cb.authorized;
     fields.push(field('certTrusted', trusted(ca), trusted(cb), trusted(ca) === trusted(cb), untrusted ? (ca && ca.authorized ? 'error' : 'warn') : 'info', untrusted ? 'cert-untrusted' : null));
     fields.push(field('certIssuer', ca ? ca.issuer : null, cb ? cb.issuer : null, (ca && ca.issuer) === (cb && cb.issuer), 'info'));
-    const soon = cb && cb.notAfter && cb.notAfter.getTime() - now < COMPARE_EXPIRY_WARN_DAYS * DAY_MS;
+    const soon = (c) => !!(c && c.notAfter && c.notAfter.getTime() - now < COMPARE_EXPIRY_WARN_DAYS * DAY_MS);
+    const sameDay = (ca && dateKey(ca.notAfter)) === (cb && dateKey(cb.notAfter));
+    // Both expire soon, the new one no sooner: renew both, but the move changes nothing there.
+    const bothSoon = soon(cb) && (sameDay || (soon(ca) && cb.notAfter.getTime() >= ca.notAfter.getTime()));
     fields.push(field('certExpires', ca ? dateKey(ca.notAfter) : null, cb ? dateKey(cb.notAfter) : null,
-      (ca && dateKey(ca.notAfter)) === (cb && dateKey(cb.notAfter)), soon ? 'warn' : 'info', soon ? 'cert-expiring' : null));
+      sameDay, soon(cb) ? 'warn' : 'info', soon(cb) ? 'cert-expiring' : null, bothSoon));
     const same = !!(ca && cb && ca.sha256 === cb.sha256);
     fields.push(field('certFingerprint', ca ? ca.sha256 : null, cb ? cb.sha256 : null, same, 'info', same ? 'same-cert' : (ca && cb ? 'new-cert' : null)));
   }
 
-  const worst = fields.reduce((w, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), 'ok');
+  // The verdict comes from what differs; a problem both servers share is said apart.
+  const worst = fields.filter((f) => !f.shared).reduce((w, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), 'ok');
   let verdict;
   if (!a.ok && !b.ok) verdict = 'unreachable';
   else if (worst === 'error') verdict = 'broken';
   else if (!a.ok) verdict = 'incomplete';
   else if (worst === 'warn') verdict = 'differs';
   else verdict = 'same';
-  return { verdict, fields, differences: fields.filter((f) => !f.same).length, worst };
+  const shared = fields.filter((f) => f.shared).map((f) => f.note);
+  return { verdict, fields, differences: fields.filter((f) => !f.same).length, worst, shared };
 }
 
 /**

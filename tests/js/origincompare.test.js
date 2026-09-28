@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   checkCompare, compareRequest, pageTitle, parseHsts, readSide, compareSides, runCompare, buildCompareCommand, certNames, sideFields,
-  COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES, COMPARE_PROBES, COMPARE_EXPIRY_WARN_DAYS
+  COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_SHARED, COMPARE_ISSUES, COMPARE_PROBES, COMPARE_EXPIRY_WARN_DAYS
 } from '../../assets/js/lib/origincompare.js';
 import { GlobalpingError } from '../../assets/js/lib/globalping.js';
 
@@ -23,6 +23,7 @@ const NEW = '140.82.121.4';
 const HOST = 'github.com';
 const seenNotes = new Set();
 const seenVerdicts = new Set();
+const seenShared = new Set();
 
 /** h02's measurement with its result edited. */
 function edited(fn, base = H2) {
@@ -35,12 +36,14 @@ function compare(a, b, now = NOW) {
   const out = compareSides(a, b, { now });
   seenVerdicts.add(out.verdict);
   for (const f of out.fields) if (f.note) seenNotes.add(f.note);
+  for (const n of out.shared) seenShared.add(n);
   return out;
 }
 const byKey = (out) => Object.fromEntries(out.fields.map((f) => [f.key, f]));
 
 test('vocabularies are frozen; two probes per comparison', () => {
-  for (const v of [COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES]) assert.ok(Object.isFrozen(v));
+  for (const v of [COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_SHARED, COMPARE_ISSUES]) assert.ok(Object.isFrozen(v));
+  assert.ok(COMPARE_SHARED.every((n) => COMPARE_NOTES.includes(n)), 'a shared problem is a note of its field too');
   assert.equal(COMPARE_PROBES, 2);
   assert.equal(COMPARE_EXPIRY_WARN_DAYS, 14);
 });
@@ -116,6 +119,7 @@ describe('the comparison', () => {
     assert.ok(out.fields.every((f) => f.same && f.severity === 'ok'), JSON.stringify(out.fields.filter((f) => !f.same)));
     assert.deepEqual([byKey(out).body.note, byKey(out).certFingerprint.note], ['body-cut', 'same-cert']);
     assert.equal(out.differences, 0);
+    assert.deepEqual(out.shared, []);
   });
 
   test('another certificate, issuer and body: information only (a new server has its own)', () => {
@@ -159,11 +163,44 @@ describe('the comparison', () => {
     const untrusted = compare(old, sideOf(edited((r) => { r.tls.authorized = false; r.tls.error = 'DEPTH_ZERO_SELF_SIGNED_CERT'; })));
     assert.deepEqual([untrusted.verdict, byKey(untrusted).certTrusted.note], ['broken', 'cert-untrusted']);
     const later = Date.parse('2026-11-20T00:00:00Z');
-    const expiring = compare(sideOf(H1.final.body, OLD, later), sideOf(H2.final.body, NEW, later), later);
-    assert.deepEqual([expiring.verdict, byKey(expiring).certExpires.note, byKey(expiring).certExpires.severity], ['differs', 'cert-expiring', 'warn']);
+    const renewed = sideOf(edited((r) => { r.tls.fingerprint256 = 'BB:'.repeat(31) + 'BB'; r.tls.expiresAt = '2026-11-25T00:00:00.000Z'; }), NEW, later);
+    const expiring = compare(sideOf(H1.final.body, OLD, later), renewed, later);
+    assert.deepEqual([expiring.verdict, byKey(expiring).certExpires.note, byKey(expiring).certExpires.severity, byKey(expiring).certExpires.shared],
+      ['differs', 'cert-expiring', 'warn', false], 'the new certificate expires sooner than the old one');
+    assert.deepEqual(expiring.shared, []);
     const down = compare(old, sideOf(edited((r) => Object.assign(r, { status: 'failed', statusCode: null, tls: null, rawOutput: 'connect ECONNREFUSED' }))));
     assert.deepEqual([down.verdict, byKey(down).reach.note, byKey(down).reach.new], ['broken', 'new-unreachable', 'refused']);
     assert.deepEqual(down.fields.map((f) => f.key), ['reach'], 'a server that does not answer is compared no further');
+  });
+
+  test('a certificate problem both servers share is no difference: same, and said apart', () => {
+    // The same untrusted certificate on both (an origin CA certificate behind a CDN), everything else equal.
+    const untrusted = (m) => { m.tls.authorized = false; m.tls.error = 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'; };
+    const oldCa = sideOf(edited(untrusted, H1), OLD);
+    const both = compare(oldCa, sideOf(edited(untrusted)));
+    assert.deepEqual([both.verdict, both.shared, both.worst], ['same', ['cert-untrusted'], 'ok']);
+    const f = byKey(both).certTrusted;
+    assert.deepEqual([f.same, f.shared, f.severity, f.note], [true, true, 'warn', 'cert-untrusted']);
+    assert.equal(both.fields.filter((x) => x.shared).length, 1, 'only the shared field is marked');
+    // The same certificate expiring within 14 days on both.
+    const later = Date.parse('2026-11-20T00:00:00Z');
+    const soon = compare(sideOf(H1.final.body, OLD, later), sideOf(H2.final.body, NEW, later), later);
+    assert.deepEqual([soon.verdict, soon.shared, byKey(soon).certExpires.severity], ['same', ['cert-expiring'], 'warn']);
+    // Two certificates that both expire soon, the new one later: renew both, still no difference.
+    const newer = sideOf(edited((r) => { r.tls.fingerprint256 = 'CC:'.repeat(31) + 'CC'; r.tls.expiresAt = '2026-12-01T00:00:00.000Z'; }), NEW, later);
+    const both2 = compare(sideOf(H1.final.body, OLD, later), newer, later);
+    assert.deepEqual([both2.verdict, both2.shared, byKey(both2).certExpires.same], ['same', ['cert-expiring'], false]);
+    // A default certificate that covers the name on neither server.
+    const other = (r) => { r.tls.subject = { CN: 'default.example.net', alt: 'DNS:default.example.net' }; };
+    const noName = compare(sideOf(edited(other, H1), OLD), sideOf(edited(other)));
+    assert.deepEqual([noName.verdict, noName.shared, byKey(noName).certCovers.severity], ['same', ['cert-name'], 'warn']);
+    // Worse on the new side is a difference again; better is information.
+    assert.equal(compare(old, sideOf(edited(untrusted))).verdict, 'broken', 'trusted → untrusted');
+    const fixed = compare(oldCa, sideOf(H2.final.body));
+    assert.deepEqual([fixed.verdict, fixed.shared, byKey(fixed).certTrusted.severity], ['same', [], 'info'], 'untrusted → trusted');
+    // A shared problem next to a real difference: the verdict follows the difference.
+    const moved = compare(oldCa, sideOf(edited((r) => { untrusted(r); r.statusCode = 301; r.headers.location = 'https://www.example.com/'; })));
+    assert.deepEqual([moved.verdict, moved.shared], ['differs', ['cert-untrusted']]);
   });
 
   test('the old server does not answer: incomplete; neither answers: unreachable, never "not ready"', () => {
@@ -244,4 +281,5 @@ describe('runCompare', () => {
 test('every verdict and note was produced by this suite', () => {
   assert.deepEqual([...COMPARE_VERDICTS].filter((v) => !seenVerdicts.has(v)), []);
   assert.deepEqual([...COMPARE_NOTES].filter((n) => !seenNotes.has(n)), []);
+  assert.deepEqual([...COMPARE_SHARED].filter((n) => !seenShared.has(n)), []);
 });

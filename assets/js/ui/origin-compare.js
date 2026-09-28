@@ -13,7 +13,8 @@
  * - Private, documentation and reserved addresses are never sent: the card gives the CLI's
  *   `ssl_origin_scan.py --compare` command instead, which does the same from inside the network.
  * - The form and the last comparison live in this module (the page session): leaving the view
- *   or switching the language keeps them; "Delete all local data" and another workspace drop them.
+ *   or switching the language keeps them (a run goes on, and ends on the card shown when it
+ *   ends); "Delete all local data" and another workspace drop them.
  * - Every string is rendered through h() / text nodes: status lines, titles, header values and
  *   certificate names come from the servers.
  *
@@ -28,7 +29,8 @@ import { downloadJson, timestampedName } from './download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from './globalping-gate.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
-  checkCompare, runCompare, buildCompareCommand, sideFields, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES, COMPARE_PROBES
+  checkCompare, runCompare, buildCompareCommand, sideFields, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_SHARED, COMPARE_ISSUES,
+  COMPARE_PROBES
 } from '../lib/origincompare.js';
 import { FAILURE_KINDS } from '../lib/verify.js';
 import { errorKind } from '../lib/util.js';
@@ -113,6 +115,9 @@ registerStrings('en', {
   'oc.note.cert-expiring': 'The certificate expires within 14 days.',
   'oc.note.new-cert': 'Another certificate: usual on a new server.',
   'oc.note.same-cert': 'The same certificate.',
+  'oc.shared.cert-untrusted': 'Both servers serve a certificate the probe does not trust. That is no difference between them (an origin CA certificate behind a CDN is trusted by the CDN only), but a browser that reaches either server directly refuses it.',
+  'oc.shared.cert-name': 'Neither server’s certificate covers the name. That is no difference between them (behind a CDN that does not check it, it goes unnoticed), but a browser that reaches either server directly refuses it.',
+  'oc.shared.cert-expiring': 'Both servers serve a certificate that expires within 14 days: no difference between them, but renew it on both.',
   'oc.yes': 'yes',
   'oc.no': 'no',
   'oc.none': '—',
@@ -167,7 +172,7 @@ registerStrings('tr', {
   'oc.quotaAfter': 'Eski sunucu sorulduktan sonra saatlik Globalping kotası doldu: yenisi sorulmadı. Eskisinin yanıtı aşağıda; {when} yeniden karşılaştırın.',
   'oc.failedAfter': 'Eski sunucu soruldu, yenisi sorulamadı: eskisinin yanıtı aşağıda.',
   'oc.stopped': 'Eski sunucu sorulduktan sonra durduruldu: yenisi sorulmadı. Eskisinin yanıtı aşağıda.',
-  'oc.at': '{time} karşılaştırıldı, {where} üzerinden · {count} ölçüm',
+  'oc.at': '{where} üzerinden {time} tarihinde karşılaştırıldı · {count} ölçüm',
   'oc.oldAt': 'Eski sunucu, {time} tarihinde {where} üzerinden soruldu',
   'oc.measurement': 'ölçüm {n}',
   'oc.json': 'JSON indir',
@@ -206,6 +211,9 @@ registerStrings('tr', {
   'oc.note.cert-expiring': 'Sertifikanın süresi 14 gün içinde doluyor.',
   'oc.note.new-cert': 'Başka bir sertifika: yeni bir sunucuda olağan.',
   'oc.note.same-cert': 'Aynı sertifika.',
+  'oc.shared.cert-untrusted': 'İki sunucu da ölçüm noktasının güvenmediği bir sertifika sunuyor. Bu, ikisi arasında bir fark değil (CDN arkasındaki bir origin CA sertifikasına yalnızca CDN güvenir), ama sunuculardan birine doğrudan ulaşan bir tarayıcı onu reddeder.',
+  'oc.shared.cert-name': 'İki sunucunun da sertifikası adı kapsamıyor. Bu, ikisi arasında bir fark değil (bunu denetlemeyen bir CDN arkasında fark edilmez), ama sunuculardan birine doğrudan ulaşan bir tarayıcı onu reddeder.',
+  'oc.shared.cert-expiring': 'İki sunucu da süresi 14 gün içinde dolan bir sertifika sunuyor: ikisi arasında bir fark değil, ama ikisinde de yenileyin.',
   'oc.yes': 'evet',
   'oc.no': 'hayır',
   'oc.none': '—',
@@ -236,6 +244,7 @@ export function generatedKeys() {
     ...COMPARE_FIELDS.map((f) => `oc.field.${f}`),
     ...COMPARE_VERDICTS.map((v) => `oc.verdict.${v}`),
     ...COMPARE_NOTES.map((n) => `oc.note.${n}`),
+    ...COMPARE_SHARED.map((n) => `oc.shared.${n}`),
     ...COMPARE_ISSUES.map((i) => `oc.issue.${i}`),
     ...FAILURE_KINDS.map((k) => `oc.fail.${k}`)
   ];
@@ -250,6 +259,8 @@ const fresh = () => ({
   partial: null, controller: null, touched: false
 });
 let S = fresh();
+/** The card on screen: a return to Retire an IP (or a language switch) during a run mounts a new one, and the run renders there. */
+let shown = null;
 
 state.subscribe(({ key }) => {
   // A comparison of one customer's servers is not another's.
@@ -434,7 +445,7 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     const prev = { status: S.status, result: S.result, partial: S.partial, error: S.error };
     Object.assign(S, { controller: ac, status: 'running', error: null, partial: null });
     ctx.setBusy(true);
-    render();
+    shown.render();
     try {
       const gate = await gateProbes(ctx, {
         purpose: COMPARE_PURPOSE, probes: COMPARE_PROBES, signal: ac.signal, className: 'oc-confirm',
@@ -470,7 +481,8 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     } finally {
       if (S.controller === ac) S.controller = null;
       ctx.setBusy(false);
-      if (el.isConnected || !el.childElementCount) render();
+      // The card on screen now, which may not be the one that started the run.
+      if (shown && shown.connected()) shown.render();
     }
   }
 
@@ -506,6 +518,10 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     const c = r.comparison;
     const out = h('div', { class: 'stack-sm oc-results', dataset: { verdict: c.verdict } });
     out.append(Alert({ variant: VERDICT_VARIANT[c.verdict], message: t(`oc.verdict.${c.verdict}`) }));
+    // A certificate problem both servers share: no difference, but worth knowing before the move.
+    for (const note of c.shared || []) {
+      out.append(Alert({ variant: 'warn', compact: true, message: t(`oc.shared.${note}`), icon: 'lock' }));
+    }
     out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.at', { time: formatDateTime(r.at), where: probeWhere(r.old.probe || r.new.probe), count: r.spent }),
       measurementLinks(r.ids)));
     const table = h('table', { class: 'oc-table', dataset: { role: 'oc-table' } },
@@ -527,13 +543,14 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     out.append(h('div', { class: 'cluster' }, Button({
       label: t('oc.json'), icon: 'download', size: 'sm', variant: 'secondary', dataset: { action: 'oc-json' },
       onClick: () => downloadJson(timestampedName('compare', 'json', r.host), {
-        schema: 'domainscope.compare/1', name: r.host, path: r.path, port: r.port, at: r.at, verdict: c.verdict, fields: c.fields,
+        schema: 'domainscope.compare/1', name: r.host, path: r.path, port: r.port, at: r.at, verdict: c.verdict, shared: c.shared || [], fields: c.fields,
         old: sideJson(r.old), new: sideJson(r.new), measurements: r.ids
       })
     })));
     return out;
   }
 
+  shown = { render, connected: () => el.isConnected };
   render();
   return { el, render };
 }

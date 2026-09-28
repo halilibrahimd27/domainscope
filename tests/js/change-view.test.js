@@ -43,6 +43,14 @@ describe('the form in the route', () => {
     assert.equal(subjectField('nope'), null);
   });
 
+  test('the views that load the fix panel on first use list exactly the fixable checks and findings', async () => {
+    const [{ FIXABLE_CHECKS }, { FIXABLE_LINT }, { HEALTH_FIX_IDS, LINT_FIX_CODES }] = await Promise.all([
+      import('../../assets/js/views/health.js'), import('../../assets/js/views/zone.js'), import('../../assets/js/lib/fixes.js')
+    ]);
+    assert.deepEqual([...FIXABLE_CHECKS].sort(), [...HEALTH_FIX_IDS]);
+    assert.deepEqual([...FIXABLE_LINT].sort(), [...LINT_FIX_CODES]);
+  });
+
   test('the check link and problem texts', () => {
     assert.equal(checkHash('z=example.com&r=is+www+A+192.0.2.1'), '#/change/check?z=example.com&r=is+www+A+192.0.2.1');
     setLang('en');

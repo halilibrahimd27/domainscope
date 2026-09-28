@@ -33,9 +33,9 @@
  * DOM-free at import time.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, Icon, ProgressBar,
+  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, FileDrop, Icon, ProgressBar,
   SegmentedControl, SeverityIcon, Spinner, StatCard, Tabs, announce, checkbox, copyText, radioGroup, select,
   textInput, textarea, toast
 } from '../ui/components.js';
@@ -56,6 +56,7 @@ import { getResolver } from '../lib/resolvers.js';
 import { normalizeIP } from '../lib/netinfo.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { onceAsync } from '../lib/util.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -66,6 +67,15 @@ export const icon = 'file-text';
 
 /** Tabs of a parsed zone (the route carries only `tab=`). */
 export const ZONE_TABS = Object.freeze(['overview', 'records', 'origins', 'problems', 'live']);
+/**
+ * Lint codes with a "Show the fix" (lib/fixes.js LINT_FIX_CODES; a unit test keeps the two equal):
+ * the panel and lib/fixes.js load on the first click, so the list lives here.
+ */
+export const FIXABLE_LINT = Object.freeze(['CAA_FLAGS', 'LOCALHOST_RECORD', 'MULTIPLE_SPF', 'TTL_TOO_LOW', 'TXT_STRING_TOO_LONG']);
+
+/** ui/fix-panel.js with lib/fixes.js, on the first "Show the fix". */
+const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));
+
 /** Record type filter groups of the Records tab. */
 export const TYPE_GROUPS = Object.freeze(['all', 'addr', 'CNAME', 'MX', 'TXT', 'NS', 'other']);
 /** Files accepted by the importer. */
@@ -329,6 +339,8 @@ const EN = {
   'zone.problems.info': 'Info',
   'zone.problems.line': 'line {line}',
   'zone.problems.show': 'Show in Records',
+  'zone.problems.fix': 'Show the fix',
+  'zone.problems.fixHide': 'Hide the fix',
   'zone.live.title': 'Compare with live DNS',
   'zone.live.lead': '{rrsets} record sets → {queries} DNS queries through {resolvers}.',
   'zone.live.sent': 'Only names and record types go to these resolvers. The values in the file and the origin addresses stay here; the hidden targets of proxied, flattened and alias records are never queried.',
@@ -590,6 +602,8 @@ const TR = {
   'zone.problems.info': 'Bilgi',
   'zone.problems.line': 'satır {line}',
   'zone.problems.show': 'Kayıtlarda göster',
+  'zone.problems.fix': 'Düzeltmeyi göster',
+  'zone.problems.fixHide': 'Düzeltmeyi gizle',
   'zone.live.title': 'Canlı DNS ile karşılaştırın',
   'zone.live.lead': '{rrsets} kayıt kümesi → {resolvers} üzerinden {queries} DNS sorgusu.',
   'zone.live.sent': 'Bu çözümleyicilere yalnızca adlar ve kayıt türleri gider. Dosyadaki değerler ve origin adresleri burada kalır; proxy’li, düzleştirilmiş ve alias kayıtların gizli hedefleri hiç sorgulanmaz.',
@@ -1859,7 +1873,35 @@ export function mount(container, ctx) {
               goTab('records');
             }
           }
-        }, [p.name, p.type, p.line ? t('zone.problems.line', { line: p.line }) : ''].filter(Boolean).join(' · ')) : null));
+        }, [p.name, p.type, p.line ? t('zone.problems.line', { line: p.line }) : ''].filter(Boolean).join(' · ')) : null,
+        p.source === 'lint' && FIXABLE_LINT.includes(p.code) && S.zone ? fixToggle(p, S.zone) : null));
+  }
+
+  /**
+   * "Show the fix" of a finding: the records that fix it, from the file itself (so the outputs are
+   * exact), in every format. Built in the browser; nothing is sent.
+   */
+  function fixToggle(p, zone) {
+    const hostId = uid('zone-fix');
+    const host = h('div', { class: 'fix-host', id: hostId, hidden: true, dataset: { fixFor: p.code } });
+    const btn = Button({
+      label: t('zone.problems.fix'), icon: 'chevron-right', size: 'sm', variant: 'ghost', className: 'fix-toggle',
+      attrs: { 'aria-expanded': 'false', 'aria-controls': hostId }, dataset: { action: 'zone-fix', code: p.code },
+      onClick: async () => {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        btn.querySelector('.btn-label').textContent = t(open ? 'zone.problems.fixHide' : 'zone.problems.fix');
+        host.hidden = !open;
+        if (!open || host.firstChild) return;
+        try {
+          const { LintFixPanel } = await loadFixPanel();
+          if (!host.firstChild) host.append(LintFixPanel(p, zone, { ctx }));
+        } catch (err) {
+          host.append(ErrorBanner(err, { compact: true }));
+        }
+      }
+    });
+    return h('div', { class: 'zone-fix' }, btn, host);
   }
 
   function problemsTab() {

@@ -18,9 +18,15 @@
  *     under the file's chain, says where the chain ends and which stores trust it, and its own
  *     download adds the intermediate too;
  *   - a chain under a distrusted root: the root-store warnings (Chrome distrusts it after the
- *     cut-off, Mozilla only the renewal, the root expires first) with the announcement link;
+ *     cut-off, Mozilla only the renewal, the root expires first) with the announcement link, and
+ *     "Source" for Mozilla's date from the CCADB report;
  *   - an issuer the list does not hold: said plainly, no download; a complete chain: no note;
- *   - the list cannot be loaded (the shard request fails): the note says so, Retry reads it;
+ *   - the list cannot be loaded (the shard request fails): the note says so, Retry reads it (the
+ *     Deep CA it adds is one only the certificate records list, as Let's Encrypt's YE issuers);
+ *   - a PKCS#12 bundle holding only the server certificate: the bundle's Download fullchain.pem
+ *     and the note's both add the intermediate;
+ *   - the PEM tab opened while the lookup is still running (the shard request held back): its
+ *     fullchain.pem appears once the lookup ends;
  *   - SSL Targets step 1: the same note and download for a lone server certificate, no root-store
  *     warnings there, no scan started;
  *   - Turkish + dark, a 375 px and a 320 px phone (the notes fit without horizontal scroll);
@@ -34,6 +40,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { orderSuites } from './run-all.mjs';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
+import { seq, ctx, oid, octet, int } from '../fixtures/der-builder.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
   createRunner, gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady
@@ -48,25 +55,22 @@ const pemBodies = (text) => (text.match(/-----BEGIN CERTIFICATE-----\n([\s\S]*?)
 /**
  * Answer the page's requests for the bundled list from the test dataset, and fail (and record)
  * every https request. `served` lists the dataset files read; `offline.shards` fails the shard
- * requests as a lost connection would.
+ * requests as a lost connection would; `offline.hold` keeps them waiting until
+ * `offline.release()` (a slow connection: the lookup is still running meanwhile).
  */
 async function interceptDataset(page) {
   const served = [];
   const hits = [];
-  const offline = { shards: false };
-  page.conn.on('Fetch.requestPaused', async (p) => {
-    const url = p.request.url;
-    const m = /\/assets\/data\/intermediates\/(.+)$/.exec(url.split('?')[0]);
-    if (!m) {
-      hits.push(url);
-      page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }).catch(() => {});
-      return;
+  const held = [];
+  const offline = {
+    shards: false,
+    hold: false,
+    release() {
+      offline.hold = false;
+      for (const answer of held.splice(0)) answer();
     }
-    const rel = m[1];
-    if (offline.shards && /^(?:ski|dn)\//.test(rel)) {
-      page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'InternetDisconnected' }).catch(() => {});
-      return;
-    }
+  };
+  const fulfill = async (p, rel) => {
     served.push(rel);
     let body = null;
     try {
@@ -79,9 +83,42 @@ async function interceptDataset(page) {
       ? { requestId: p.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: body.toString('base64') }
       : { requestId: p.requestId, responseCode: 404, responseHeaders: [{ name: 'Content-Type', value: 'text/plain' }], body: Buffer.from('not found').toString('base64') };
     page.send('Fetch.fulfillRequest', answer).catch(() => {});
+  };
+  page.conn.on('Fetch.requestPaused', async (p) => {
+    const url = p.request.url;
+    const m = /\/assets\/data\/intermediates\/(.+)$/.exec(url.split('?')[0]);
+    if (!m) {
+      hits.push(url);
+      page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }).catch(() => {});
+      return;
+    }
+    const rel = m[1];
+    const shard = /^(?:ski|dn)\//.test(rel);
+    if (offline.shards && shard) {
+      page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'InternetDisconnected' }).catch(() => {});
+      return;
+    }
+    if (offline.hold && shard) {
+      held.push(() => fulfill(p, rel));
+      return;
+    }
+    await fulfill(p, rel);
   }, page.sessionId);
   await page.send('Fetch.enable', { patterns: [{ urlPattern: 'https://*' }, { urlPattern: '*/assets/data/intermediates/*' }] });
-  return { served, hits, offline };
+  return { served, hits, offline, held };
+}
+
+/**
+ * A PKCS#12 file holding one certificate and nothing else — no key, no MAC, nothing encrypted
+ * (what `openssl pkcs12 -export -nokeys` of a lone cert.pem gives, less the MAC).
+ * @param {Uint8Array} der
+ * @returns {Buffer}
+ */
+function certOnlyPfx(der) {
+  const DATA = '1.2.840.113549.1.7.1';
+  const certBag = seq(oid('1.2.840.113549.1.12.10.1.3'), ctx(0, true, seq(oid('1.2.840.113549.1.9.22.1'), ctx(0, true, octet(Buffer.from(der))))));
+  const safe = seq(oid(DATA), ctx(0, true, octet(seq(certBag))));
+  return seq(int('03'), seq(oid(DATA), ctx(0, true, octet(seq(safe)))));
 }
 
 /** Element screenshot (beyond the viewport if needed); no-op with --no-shots. */
@@ -118,8 +155,12 @@ const overflowingIn = (page, selector) => page.evaluate((sel) => {
 
 const removeToasts = (page) => page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
 
-/** Load a file into the loader under `root` and wait until its chain lookup has ended. */
-async function loadFile(page, root, file) {
+/**
+ * Load a file into the loader under `root` and wait until its chain lookup has ended (`until:
+ * 'running'`: until it has started). `pfx`: a PKCS#12 file — its password dialog is answered with
+ * Enter (no password).
+ */
+async function loadFile(page, root, file, { until = 'ended', pfx = false } = {}) {
   // The notes on screen are marked, so only the ones the new file brings count.
   await page.evaluate((r) => {
     document.querySelectorAll(`${r} .chainfix`).forEach((el) => { el.dataset.e2eOld = '1'; });
@@ -128,10 +169,15 @@ async function loadFile(page, root, file) {
   }, root);
   const name = path.basename(file);
   await page.setFileInput(`${root} .filedrop-input`, [path.isAbsolute(file) ? file : fixture(file)]);
-  await page.waitFor((r) => {
+  if (pfx) {
+    await page.waitFor(() => document.activeElement && document.activeElement.dataset.role === 'pfx-password', { message: `password dialog for ${name}` });
+    await page.press('Enter');
+  }
+  const states = until === 'running' ? ['running'] : ['done', 'error', 'none'];
+  await page.waitFor((r, s) => {
     const box = document.querySelector(`${r} .chainfix:not([data-e2e-old])`);
-    return !!box && ['done', 'error', 'none'].includes(box.dataset.chainfix);
-  }, { args: [root], message: `chain lookup of ${name}`, timeout: 15000 });
+    return !!box && s.includes(box.dataset.chainfix);
+  }, { args: [root, states], message: `chain lookup of ${name} (${until})`, timeout: 15000 });
   await removeToasts(page);
 }
 
@@ -152,7 +198,7 @@ const notes = (page, root) => page.evaluate((r) => {
       title: life.querySelector('.alert-title')?.textContent,
       codes: [...life.querySelectorAll('[data-life-code]')].map((li) => li.dataset.lifeCode),
       text: life.textContent,
-      links: [...life.querySelectorAll('a')].map((a) => a.href)
+      links: [...life.querySelectorAll('.chainfix-life a')].map((a) => `${a.textContent.replace('(opens in a new tab)', '').trim()} ${a.href}`)
     } : null
   };
 }, root);
@@ -164,9 +210,12 @@ async function main() {
   const LEAF = await derB64('chainfix_leaf.pem');
   const INTER = await derB64('chainfix_inter.pem');
   const INTER_CROSS = await derB64('chainfix_inter_cross.pem');
+  const NOAKI = await derB64('chainfix_leaf_noaki.pem');
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'ds-chainfix-e2e-'));
   const complete = path.join(tmp, 'complete-chain.pem');
   await writeFile(complete, `${await readFile(fixture('chainfix_inter.pem'), 'utf8')}${await readFile(fixture('chainfix_leaf.pem'), 'utf8')}`);
+  const leafOnlyPfx = path.join(tmp, 'leaf-only.p12');
+  await writeFile(leafOnlyPfx, certOnlyPfx(Buffer.from(LEAF, 'base64')));
 
   run.group('Node: harness');
   await run.step('run-all orders the chainfix suite right after pfx', () => {
@@ -255,7 +304,8 @@ async function main() {
       assert(n.life.text.includes('Chrome does not trust certificates from DomainScope Test Distrusted Root issued after Jan 31, 2026. This one was issued on Mar 1, 2026.'), n.life.text);
       assert(n.life.text.includes('its renewal has to come from another CA'), 'Mozilla: the renewal');
       assert(n.life.text.includes('expires on Mar 1, 2040, before this certificate does (Jun 1, 2040)'), 'expiry');
-      assert(n.life.links.includes('https://example.com/announcements/chrome-distrust'), `links: ${n.life.links.join(', ')}`);
+      assertEqual(n.life.links, ['Announcement https://example.com/announcements/chrome-distrust', 'Source https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReport'],
+        'Chrome: the announcement; Mozilla: the CCADB report its date comes from');
       await shotEl(page, opts, 'chainfix-lifecycle-desktop-light-en', '.cert-content');
     });
 
@@ -300,6 +350,39 @@ async function main() {
       const other = p.logErrors.filter((e) => !String(e.url || e.text).includes('/assets/data/intermediates/'));
       assertEqual([other.length, p.exceptions.length, p.consoleErrors.length], [0, 0, 0], 'no other problem');
       await page.resetProblems();
+    });
+
+    await run.step('a PKCS#12 bundle with the server certificate only: both Download fullchain.pem buttons add the intermediate', async () => {
+      await loadFile(page, CERT, leafOnlyPfx, { pfx: true });
+      const n = await notes(page, CERT);
+      assertEqual(n.kind, 'repaired', 'repaired');
+      assert(await page.evaluate(() => !!document.querySelector('.cert-view .pfx-note [data-action="pfx-fullchain"]')), 'the bundle\'s note and its download');
+      for (const action of ['pfx-fullchain', 'chainfix-fullchain']) {
+        await takeDownloads(page);
+        await page.click(`${CERT} [data-action="${action}"]`);
+        const [file] = await takeDownloads(page);
+        assertEqual(file && file.name, 'www.example.com-fullchain.pem', `${action}: file name`);
+        assertEqual(pemBodies(file.text), [LEAF, INTER], `${action}: leaf then intermediate`);
+      }
+    });
+
+    await run.step('the PEM tab opened while the lookup runs: fullchain.pem appears when it ends', async () => {
+      net.offline.hold = true;
+      await loadFile(page, CERT, 'chainfix_leaf_noaki.pem', { until: 'running' });
+      await page.click('.cert-tabs .tab[data-tab="pem"]');
+      const before = await page.waitFor(() => {
+        const part = document.querySelector('.cert-tabs .cert-pem-fullchain');
+        return part ? { tag: part.tagName.toLowerCase(), hidden: part.hidden } : false;
+      }, { message: 'PEM tab' });
+      assertEqual(before, { tag: 'div', hidden: true }, 'a lone server certificate: no fullchain.pem yet');
+      assert(net.held.length > 0, 'the shard request is waiting');
+      net.offline.release();
+      const after = await page.waitFor(() => {
+        const part = document.querySelector('.cert-tabs details.cert-pem-fullchain');
+        return part ? part.textContent : false;
+      }, { message: 'fullchain.pem in the PEM tab' });
+      assertEqual(pemBodies(after), [NOAKI, INTER], 'the leaf, then the intermediate the list added');
+      assertEqual((await notes(page, CERT)).kind, 'repaired', 'the note too');
     });
 
     run.group('Languages, themes, phone (Certificate view)');

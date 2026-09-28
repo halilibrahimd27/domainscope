@@ -65,7 +65,7 @@ import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 // The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
 import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 // The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
-import { ChainRepairNotes, ChainRepairChainPart, repairedFullchain } from '../ui/chain-repair.js';
+import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain } from '../ui/chain-repair.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
@@ -1810,7 +1810,8 @@ export function CertPfxNote(load) {
     actions: leaf ? [
       Button({
         label: t('pfx.fullchain'), icon: 'download', size: 'sm', dataset: { action: 'pfx-fullchain' },
-        onClick: () => downloadFullchain(leaf, full)
+        // with the intermediates the CCADB list added, once found (a bundle may hold the leaf only)
+        onClick: () => downloadFullchain(leaf, repairedFullchain(load) || full)
       }),
       h('span', { class: 'muted text-sm pfx-fullchain-hint' }, t('pfx.fullchainHint'))
     ] : []
@@ -2906,14 +2907,27 @@ export function mount(container, ctx) {
       } else {
         spkiOut.textContent = '—';
       }
-      // With the intermediates the CCADB list added, when the lookup has found them.
-      const full = repairedFullchain(load) || fullchainCerts(chain);
+      // fullchain.pem with the intermediates the CCADB list added, once the lookup has found them:
+      // a tab opened before it ends shows the file's chain, then this part again.
+      const fullchainPart = () => {
+        const full = repairedFullchain(load) || fullchainCerts(chain);
+        return full.length > 1 && cert === chain.ordered[0] ? Disclosure({
+          summary: t('cert.pem.fullchain'),
+          children: CodeBlock(pemBundle(full), { label: 'fullchain.pem', maxHeight: '320px' }),
+          className: 'cert-pem-fullchain'
+        }) : h('div', { class: 'cert-pem-fullchain', hidden: true });
+      };
+      let fullEl = fullchainPart();
+      onChainRepairEnd(load, () => {
+        if (!fullEl.isConnected) return;
+        const next = fullchainPart();
+        if (fullEl.open && next.tagName === 'DETAILS') next.open = true;
+        fullEl.replaceWith(next);
+        fullEl = next;
+      });
       return h('div', { class: 'stack' },
         CodeBlock(pemEncode(cert.der), { label: t('cert.pem.this'), maxHeight: '320px' }),
-        full.length > 1 && cert === chain.ordered[0] ? Disclosure({
-          summary: t('cert.pem.fullchain'),
-          children: CodeBlock(pemBundle(full), { label: 'fullchain.pem', maxHeight: '320px' })
-        }) : null,
+        fullEl,
         Card({
           title: t('cert.pem.keyMatchTitle'),
           icon: 'key',

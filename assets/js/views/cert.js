@@ -53,6 +53,7 @@ import { backToLastRun, fillReplaces } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { ExpectedCaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 
 /** Route id. */
 export const id = 'cert';
@@ -1123,6 +1124,16 @@ export function certDisplayName(cert) {
   return cert.subjectCN || (cert.hostnames && cert.hostnames[0]) || cert.subjectDN || '—';
 }
 
+/**
+ * The issuer to match against CAs (CAA, expected CAs): the parsed name, or the DN when the
+ * certificate has no parsed attributes.
+ * @param {{ issuer?: object, issuerDN?: string }} cert
+ * @returns {object|string}
+ */
+export function issuerOf(cert) {
+  return cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN;
+}
+
 /** Issuer display name: O (CN) when both exist. */
 export function issuerDisplayName(cert) {
   const o = cert.issuer && cert.issuer.O;
@@ -1693,7 +1704,7 @@ export function CertSummary(load, { actions = null, maxNames = 8 } = {}) {
       h('div', { class: 'cert-summary-titles' },
         h('div', { class: 'cert-summary-cn mono' }, certDisplayName(cert)),
         h('div', { class: 'cert-summary-meta' },
-          h('span', null, t('cert.issuedBy', { issuer: issuerDisplayName(cert) })),
+          h('span', { class: 'cert-issuer-line' }, t('cert.issuedBy', { issuer: issuerDisplayName(cert) }), ExpectedCaBadge(issuerOf(cert))),
           h('span', { class: 'cert-summary-file' }, t('cert.fileInfo', { name: load.name || '—', count: t('cert.count', { count }) })))),
       actions ? h('div', { class: 'cert-summary-actions' }, actions) : null),
     h('div', { class: 'cluster cert-summary-badges' },
@@ -1742,11 +1753,12 @@ const ctFieldHosts = (text) => {
   return host ? [host] : [];
 };
 
-// "Delete all local data" (About, or Settings on any view) forgets the "No file?" field, its last
-// outcome and what was checked per certificate (the certificate itself goes with state.session),
-// stopping what runs; the shell opens the view again when it is on screen.
+// "Delete all local data" (About, or Settings on any view) and a switch to another workspace
+// forget the "No file?" field, its last outcome and what was checked per certificate (the
+// certificate itself goes with state.session), stopping what runs; the shell opens the view again
+// when it is on screen.
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   stopCtLookup();
   ctForm.text = '';
   ctForm.carried = null;
@@ -2026,7 +2038,7 @@ export function mount(container, ctx) {
             h('span', { class: 'cert-overview-icon' }, Icon('certificate', { size: 26 })),
             h('div', { class: 'cert-overview-titles' },
               h('h2', { class: 'cert-overview-cn mono' }, certDisplayName(leaf)),
-              h('div', { class: 'cert-overview-issuer' }, t('cert.issuedBy', { issuer: issuerDisplayName(leaf) })),
+              h('div', { class: 'cert-overview-issuer cert-issuer-line' }, t('cert.issuedBy', { issuer: issuerDisplayName(leaf) }), ExpectedCaBadge(issuerOf(leaf))),
               h('div', { class: 'cluster cert-overview-badges' },
                 certSourceBadge(load),
                 Badge(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
@@ -2309,14 +2321,15 @@ export function mount(container, ctx) {
     /* --- CAA ------------------------------------------------------------ */
     function caaPanel(cert) {
       const key = certKey(cert);
-      const infos = caaIssuerInfo(cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN);
+      const infos = caaIssuerInfo(issuerOf(cert));
       const body = h('div', { class: 'stack' });
       const header = h('div', { class: 'stack-sm' },
         h('p', { class: 'muted text-sm' }, t('cert.caa.intro')),
         infos.length
           ? h('div', { class: 'cluster' }, Icon('info', { size: 14 }),
-            h('span', { class: 'text-sm' }, t('cert.caa.issuerKnown', { ca: infos.map((i) => i.name).join(', '), ids: infos.flatMap((i) => i.domains).join(', ') })))
-          : Alert({ variant: 'info', compact: true, message: t('cert.caa.issuerUnknown', { issuer: issuerDisplayName(cert) }) }),
+            h('span', { class: 'text-sm' }, t('cert.caa.issuerKnown', { ca: infos.map((i) => i.name).join(', '), ids: infos.flatMap((i) => i.domains).join(', ') })),
+            ExpectedCaBadge(issuerOf(cert)))
+          : Alert({ variant: 'info', compact: true, message: t('cert.caa.issuerUnknown', { issuer: issuerDisplayName(cert) }), children: ExpectedCaBadge(issuerOf(cert)) }),
         ...infos.filter((i) => i.distrusted).map((i) => Alert({ variant: 'error', compact: true, message: t('cert.caa.distrusted', { ca: i.name, year: i.distrusted }) })));
       const runBtn = Button({ label: t('cert.caa.run'), icon: 'play', size: 'sm', dataset: { action: 'caa-run' }, onClick: () => run(true) });
       const panel = h('div', { class: 'stack cert-caa' }, header, h('div', { class: 'cluster' }, runBtn), body);
@@ -2462,7 +2475,7 @@ export function mount(container, ctx) {
           }
           return;
         }
-        const issuer = cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN;
+        const issuer = issuerOf(cert);
         const list = names.slice(0, CAA_MAX_NAMES);
         show(startTask(caaCache, key, async () => {
           const dns = await ctx.getDns();
@@ -2526,7 +2539,7 @@ export function mount(container, ctx) {
     /* --- Certificate Transparency ----------------------------------------- */
     function ctPanel(cert) {
       const key = certKey(cert);
-      const isPublic = caaIssuerInfo(cert.issuer && Object.keys(cert.issuer).length ? cert.issuer : cert.issuerDN).length > 0;
+      const isPublic = caaIssuerInfo(issuerOf(cert)).length > 0;
       const body = h('div', { class: 'stack' });
       const runBtn = Button({ label: t('cert.ct.run'), icon: 'search', size: 'sm', dataset: { action: 'ct-run' }, onClick: () => run(true) });
       const serialUrl = `${CRTSH_SERIAL_URL}${encodeURIComponent(cert.serialHex)}`;
@@ -2644,8 +2657,14 @@ export function mount(container, ctx) {
 
   render();
 
-  // Another view (SSL Targets) may replace or clear the shared certificate.
-  const off = state.subscribe(({ key, value }) => {
+  // Another view (SSL Targets) may replace or clear the shared certificate; the workspace's
+  // expected CAs decide the issuer badges.
+  const off = state.subscribe((change) => {
+    const { key, value } = change;
+    if (key === 'workspaceData' && expectedCasChanged(change)) {
+      if (load) render();
+      return;
+    }
     if (key !== 'session' || !value || value.name !== CURRENT_CERT) return;
     const next = normalizeCertLoad(value.value);
     if (next === load) return;

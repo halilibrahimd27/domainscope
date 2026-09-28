@@ -56,6 +56,7 @@ import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../lib/summary.js';
 import { errorKind, mergeSignals, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
@@ -1251,7 +1252,9 @@ export function mount(container, ctx) {
         return [
           h('span', { class: 'hlt-ca-name' }, ca ? ca.name : issuer),
           ca ? h('span', { class: 'muted mono text-xs' }, issuer) : null,
-          ca && ca.distrusted ? Badge(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null
+          ca && ca.distrusted ? Badge(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null,
+          // Against the workspace's expected CAs: a CAA value that lets another CA issue is flagged.
+          ExpectedCaaBadge(issuer)
         ];
       };
       // One entry per issue / issuewild value: usable (optionally restricted by RFC 8657
@@ -1499,6 +1502,13 @@ export function mount(container, ctx) {
     Promise.resolve().then(() => start({ auto: true }));
   }
   if (restored && restored.report) setShareAction();
+
+  // The CAA card's expected / unexpected CA badges follow the workspace's expected CAs.
+  ctx.onCleanup(ctx.state.subscribe((change) => {
+    if (change.key === 'workspaceData' && expectedCasChanged(change) && current && current.report && !current.controller) {
+      renderReport(current.report, current.selectors);
+    }
+  }));
 
   active = {
     teardown() {

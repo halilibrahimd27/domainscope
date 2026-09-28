@@ -67,6 +67,7 @@ import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
+import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   certDisplayName, issuerDisplayName, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
@@ -1220,10 +1221,11 @@ function backToLastScan() {
   return true;
 }
 
-// "Delete all local data" (About, or Settings on any view) forgets step 2 and the last scan with
-// its checks, stopping what runs; the shell opens the view again when it is on screen.
+// "Delete all local data" (About, or Settings on any view) and a switch to another workspace
+// forget step 2 and the last scan with its checks, stopping what runs; the shell opens the view
+// again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   const run = session.run;
   if (run) {
     if (run.status === 'running') run.controller.abort();
@@ -1349,8 +1351,9 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       finishedAt: run.finishedAt
     });
     // Learn the naming vocabulary like Subdomains does (opt-in; bare labels of in-scope names only,
-    // stored in this browser — later scans send them as DNS lookups).
-    if (rememberLearned(result, run.config && run.config.learned) && active && active.refreshVocab) active.refreshVocab();
+    // stored in the workspace the scan ran in — later scans there send them as DNS lookups).
+    const sameWorkspace = !run.config || !run.config.workspace || run.config.workspace === appState.workspace.id;
+    if (sameWorkspace && rememberLearned(result, run.config && run.config.learned) && active && active.refreshVocab) active.refreshVocab();
     emit(run, 'done', result);
     if (!active) {
       toast(t('scan.doneToast', { count: result.hosts.length }), {
@@ -2121,8 +2124,11 @@ export function mount(container, ctx) {
   renderRunSummary();
 
   /* --- state subscriptions ---------------------------------------------------- */
-  cleanups.push(state.subscribe(({ key, value }) => {
+  cleanups.push(state.subscribe((change) => {
+    const { key, value } = change;
     if (key === 'inventory') renderInventoryStep();
+    // The issuer badge of the loaded certificate follows the workspace's expected CAs.
+    if (key === 'workspaceData' && expectedCasChanged(change)) renderCertStep();
     if (key === 'settings') {
       renderDoh();
       renderBfOptions(); // a concurrency change moves the per-domain time estimate
@@ -2130,7 +2136,7 @@ export function mount(container, ctx) {
     }
     // A zone imported, replaced or forgotten (Zone File view / "Delete all local data"): the chip,
     // and the run bar's plan and summary (exact mode changes both; the vocabulary line follows too).
-    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') {
+    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared' || key === 'workspace') {
       renderZoneChip();
       renderRunSummary();
     }
@@ -2223,8 +2229,10 @@ export function mount(container, ctx) {
       zoneMode: zoneCfg.zone ? zoneMode : null,
       includeExpired: options.includeExpired,
       originHints: options.originHints,
-      // The finished scan records its labels into the learned store only when that switch is on.
+      // The finished scan records its labels into the learned store only when that switch is on,
+      // and only into the workspace it started in.
       learned: vocab.learnedOn,
+      workspace: state.workspace.id,
       cert: v.cert,
       // The other certificates of the file: DANE-TA records are compared with them (DANE tab).
       certChain: certLoad && v.cert ? certLoad.result.certificates.filter((c) => c !== v.cert) : [],

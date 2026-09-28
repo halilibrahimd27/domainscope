@@ -38,6 +38,7 @@ import { buildFittedSweepCommand } from '../lib/cmdline.js';
 import { pemEncode, formatFingerprint } from '../lib/x509.js';
 import { errorKind } from '../lib/util.js';
 import { GP_LIMITS } from '../lib/globalping.js';
+import { ExpectedCaBadge } from './expected-ca.js';
 import { hasConsent, grantConsent, sharedQuota, noteQuota, liveQuota, whenText, measurementUrl } from './globalping-gate.js';
 import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
@@ -536,8 +537,10 @@ const liveJobs = new Set();
 const launchingJobs = new Set();
 
 state.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
-  originsConsented = false; // the gate resets the consent and the shared quota itself
+  if (key !== 'cleared' && key !== 'workspace') return;
+  // The origin check sends a server of the inventory: another workspace's servers ask again. (On
+  // 'cleared' the gate also resets the consent and the shared quota itself.)
+  originsConsented = false;
   for (const job of [...liveJobs, ...launchingJobs]) {
     if (job.controller) job.controller.abort();
     if (job.launch) job.launch.abort();
@@ -1029,9 +1032,12 @@ function servedCell(row) {
   const exp = s.notAfter ? h('span', { class: band ? `vfy-exp-${band}` : null },
     t(days !== null && days < 0 ? 'vfy.expired' : 'vfy.expires', { date: formatDate(s.notAfter), rel: formatRelative(s.notAfter) })) : null;
   const issuer = s.issuerO || s.issuerCN || null;
+  // A server serving another CA's certificate than the workspace expects is flagged in the row.
+  const unexpected = issuer ? ExpectedCaBadge({ CN: s.issuerCN, O: s.issuerO }, { onlyUnexpected: true }) : null;
   return h('div', { class: ['vfy-cell-2', { 'is-stale': !!row.stale && row.state !== 'done' }] },
     h('span', { class: 'mono vfy-served-cn', title: (s.dnsNames || []).join(', ') || null }, primary),
-    issuer || exp ? h('span', { class: 'vfy-sub' }, issuer, issuer && exp ? ' · ' : null, exp) : null);
+    issuer || exp ? h('span', { class: 'vfy-sub' }, issuer, issuer && exp ? ' · ' : null, exp) : null,
+    unexpected);
 }
 
 function fromCell(row) {
@@ -1068,7 +1074,10 @@ export function verifyDetails(row) {
     if (s.serialHex) items.push({ key: t('vfy.det.serial'), value: formatFingerprint(s.serialHex), mono: true });
     if (s.sha256) items.push({ key: t('vfy.det.sha256'), value: formatFingerprint(s.sha256), mono: true, copy: s.sha256 });
     const issuer = [s.issuerCN, s.issuerO && s.issuerO !== s.issuerCN ? `(${s.issuerO})` : null].filter(Boolean).join(' ');
-    if (issuer) items.push({ key: t('vfy.det.issuer'), value: issuer });
+    if (issuer) {
+      const badge = ExpectedCaBadge({ CN: s.issuerCN, O: s.issuerO });
+      items.push({ key: t('vfy.det.issuer'), value: badge ? h('span', { class: 'vfy-issuer' }, issuer, ' ', badge) : issuer });
+    }
     if (s.notBefore || s.notAfter) items.push({ key: t('vfy.det.validity'), value: `${formatDate(s.notBefore)} → ${formatDate(s.notAfter)}` });
     const key = [s.keyType, s.keyBits].filter(Boolean).join(' ');
     if (key) items.push({ key: t('vfy.det.key'), value: key });

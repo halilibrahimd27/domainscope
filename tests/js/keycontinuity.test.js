@@ -1,7 +1,8 @@
 /**
  * Key continuity (lib/keycontinuity.js): the SHA-256 of a certificate's SubjectPublicKeyInfo, the
- * crt.sh search by it, the rows folded into certificates, and what they say — a key carried over
- * renewals, a key new with this certificate, or none logged. The rows follow the shape crt.sh
+ * crt.sh search by it, the rows folded into certificates, and what they say of crt.sh — a key
+ * carried over renewals, no earlier certificate with it there, a logged certificate crt.sh has not
+ * indexed (SCTs, a public CA) or nothing that says it was logged. The rows follow the shape crt.sh
  * answered on 2026-09-28 (`name_value` is the hash, the precertificate and the certificate share a
  * serial). No network: fetch is a fake.
  */
@@ -96,6 +97,8 @@ describe('keyContinuity', () => {
     const k = keyContinuity(certs, { cert: GITHUB, now: NOW });
     assert.deepEqual({ ...k, firstSeen: k.firstSeen.toISOString(), lastUntil: k.lastUntil.toISOString() }, {
       status: 'reused',
+      sctCount: 2,
+      expectLogged: true,
       total: 4,
       others: 3,
       thisLogged: true,
@@ -109,14 +112,25 @@ describe('keyContinuity', () => {
     });
   });
 
-  test('only this certificate: a key new with it; nothing: not logged; others without this one: still reused', () => {
+  test('only this certificate: none earlier on crt.sh; others without this one: still reused', () => {
     const self = certs.filter((c) => c.isThis);
     assert.equal(keyContinuity(self, { cert: GITHUB, now: NOW }).status, 'single');
-    const none = keyContinuity([], { cert: GITHUB, now: NOW });
-    assert.deepEqual([none.status, none.total, none.days, none.firstSeen], ['not-logged', 0, null, null]);
     const others = keyContinuity(certs.filter((c) => !c.isThis), { cert: GITHUB, now: NOW });
     assert.deepEqual([others.status, others.thisLogged, others.before, others.after], ['reused', false, 2, 1], 'dated from the certificate itself');
-    assert.deepEqual([...KEY_STATUSES], ['reused', 'single', 'not-logged']);
+    assert.deepEqual([...KEY_STATUSES], ['reused', 'single', 'not-indexed', 'not-found']);
+  });
+
+  test('nothing on crt.sh: a certificate with SCTs or from a public CA was logged, just not indexed; without either, not found', () => {
+    assert.equal(GITHUB.sctCount, 2, 'the fixture carries two embedded SCTs');
+    const scts = keyContinuity([], { cert: GITHUB, now: NOW });
+    assert.deepEqual([scts.status, scts.sctCount, scts.expectLogged, scts.total, scts.days, scts.firstSeen], ['not-indexed', 2, true, 0, null, null]);
+    const privateCa = leafOf('rsa_multi_san.pem');
+    assert.equal(privateCa.sctCount, null);
+    const none = keyContinuity([], { cert: privateCa, now: NOW });
+    assert.deepEqual([none.status, none.sctCount, none.expectLogged], ['not-found', null, false]);
+    const publicCa = keyContinuity([], { cert: privateCa, now: NOW, publicCa: true });
+    assert.deepEqual([publicCa.status, publicCa.expectLogged], ['not-indexed', true], 'a public CA logs what it issues');
+    assert.equal(keyContinuity([], { cert: { ...privateCa, sctCount: 0 }, now: NOW }).status, 'not-found', 'an empty SCT list says nothing');
   });
 
   test('a key whose certificates all expired counts its days up to the last one', () => {
@@ -147,6 +161,15 @@ describe('lookupKeyContinuity', () => {
     assert.equal(r.checkedAt.getTime(), NOW);
   });
 
+  test('a certificate with SCTs that crt.sh answers nothing for is logged but not indexed, never "not logged"', async () => {
+    const empty = async () => json([]);
+    const r = await lookupKeyContinuity(GITHUB, { fetchImpl: empty, now: NOW });
+    assert.deepEqual([r.status, r.sctCount, r.expectLogged, r.total, r.thisLogged], ['not-indexed', 2, true, 0, false]);
+    const privateCa = leafOf('rsa_multi_san.pem');
+    assert.equal((await lookupKeyContinuity(privateCa, { fetchImpl: empty, now: NOW })).status, 'not-found');
+    assert.equal((await lookupKeyContinuity(privateCa, { fetchImpl: empty, now: NOW, publicCa: true })).status, 'not-indexed');
+  });
+
   test('retries once after a server error or a CORS-less error page, never after a timeout, and passes an abort on', async () => {
     let calls = 0;
     const flaky = async () => {
@@ -154,7 +177,7 @@ describe('lookupKeyContinuity', () => {
       if (calls === 1) throw new TypeError('Failed to fetch');
       return json([]);
     };
-    assert.equal((await lookupKeyContinuity(GITHUB, { fetchImpl: flaky, retryDelayMs: 0, now: NOW })).status, 'not-logged');
+    assert.equal((await lookupKeyContinuity(GITHUB, { fetchImpl: flaky, retryDelayMs: 0, now: NOW })).status, 'not-indexed');
     assert.equal(calls, 2);
 
     calls = 0;

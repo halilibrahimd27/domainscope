@@ -4,9 +4,15 @@
  *
  * The public key's SHA-256 is computed in the browser and shown at once; crt.sh is asked for the
  * other certificates with that key only when the user presses the button (only the hash is sent).
- * The answer says whether the key was reused and for how long, or rotated, and what that means
- * for TLSA `3 1 1` records (a button opens the DANE / TLSA tab) and for HPKP-style pins. The
- * result is kept per certificate in the cache the view passes in, for the page session only.
+ * The answer is worded as what crt.sh has, since its coverage is incomplete: the key reused and
+ * for how long, no earlier certificate with it on crt.sh, or none at all — "not indexed yet" when
+ * the certificate carries SCTs or comes from a public CA —, with what a reused or a changing key
+ * means for TLSA `3 1 1` records (a button opens the DANE / TLSA tab) and for HPKP-style pins.
+ *
+ * The lookup runs on a controller of its own, kept with the result in the cache the view passes
+ * in (page session only): leaving the view — to watch the request in About › What this page sent
+ * — or switching the language does not stop it, and the card that is mounted when it ends shows
+ * the answer. Loading another certificate stops it ({@link cancelKeyLookups}).
  */
 
 import { h, clear } from './dom.js';
@@ -17,7 +23,7 @@ import { errorKind } from '../lib/util.js';
 
 registerStrings('en', {
   'key.title': 'Key continuity',
-  'key.intro': 'Is this certificate’s public key in other logged certificates? A key carried over renewals keeps TLSA 3 1 1 records and key pins matching; a new key breaks them at the renewal.',
+  'key.intro': 'Is this certificate’s public key in other certificates crt.sh has indexed? A key carried over renewals keeps TLSA 3 1 1 records and key pins matching; a new key breaks them at the renewal.',
   'key.spki': 'Public key SHA-256',
   'key.computing': 'Computing…',
   'key.run': 'Look this key up in CT',
@@ -26,19 +32,27 @@ registerStrings('en', {
   'key.searching': 'Searching crt.sh for certificates with this key… this can take up to a minute.',
   'key.failed': 'crt.sh did not answer',
   'key.failedHint': 'crt.sh is often busy; try again in a minute.',
-  'key.offline': 'You are offline: nothing was sent.',
   'key.reused.title': 'Key reused across renewals',
-  'key.reused.body': { one: 'This key is in {count} other logged certificate: in use since {since} ({days}), {before} issued before this one and {after} after it.', other: 'This key is in {count} other logged certificates: in use since {since} ({days}), {before} issued before this one and {after} after it.' },
-  'key.single.title': 'New key with this certificate',
-  'key.single.body': 'No other logged certificate has this key: it was rotated when this certificate was issued (or this is the first certificate for it).',
-  'key.notLogged.title': 'No logged certificate has this key',
-  'key.notLogged.body': 'Certificates of a private CA are never logged, and a new public certificate can take a few hours to appear on crt.sh.',
-  'key.notThis': 'This certificate itself is not among them yet (logs can lag a few hours).',
+  'key.reused.body': {
+    one: 'crt.sh lists this key in {count} other certificate: in use since at least {since} ({days}), {before} issued before this one and {after} after it.',
+    other: 'crt.sh lists this key in {count} other certificates: in use since at least {since} ({days}), {before} issued before this one and {after} after it.'
+  },
+  'key.single.title': 'No earlier certificate with this key on crt.sh',
+  'key.single.body': 'crt.sh lists no other certificate with this key. The key may be new with this certificate (changed at the renewal, or its first certificate), or crt.sh lacks the earlier ones: its coverage is incomplete.',
+  'key.notIndexed.title': 'Logged, but not on crt.sh yet',
+  'key.notIndexed.scts': {
+    one: 'This certificate carries {count} SCT, a log’s promise to publish it, so it was logged; crt.sh has no certificate with this key. crt.sh’s coverage is incomplete and can lag by days or weeks: look again later.',
+    other: 'This certificate carries {count} SCTs, logs’ promises to publish it, so it was logged; crt.sh has no certificate with this key. crt.sh’s coverage is incomplete and can lag by days or weeks: look again later.'
+  },
+  'key.notIndexed.public': 'Its issuer is a public CA, which logs what it issues; crt.sh has no certificate with this key. crt.sh’s coverage is incomplete and can lag by days or weeks: look again later.',
+  'key.notFound.title': 'crt.sh has no certificate with this key',
+  'key.notFound.body': 'The certificate carries no SCTs and its issuer is not a known public CA: certificates of a private CA are never logged. A public certificate can be missing from crt.sh too, since its coverage is incomplete.',
+  'key.notThis': 'crt.sh does not list this certificate itself: its coverage is incomplete and can lag by days or weeks.',
   'key.days': { one: '{count} day', other: '{count} days' },
   'key.tlsa.reused': 'TLSA 3 1 1: a record for this key keeps matching as long as the next certificate reuses the key. A renewal with a new key breaks it unless the new record is published 2 × TTL before the new certificate is installed.',
-  'key.tlsa.single': 'TLSA 3 1 1: the key changes with each renewal like this one, so the record must change too — publish the next key’s record 2 × TTL before installing, or pin the issuing CA (2 1 1) instead.',
+  'key.tlsa.single': 'TLSA 3 1 1: if the key did change with this certificate, expect the next renewal to change it too — publish the next key’s record 2 × TTL before installing it, or pin the issuing CA (2 1 1) instead.',
   'key.pin.reused': 'Key pinning (HPKP-style, e.g. in a mobile app): a pin of this key survives renewals only while the key is reused; rotating it later breaks the pin unless the app also pins a backup key or the CA. A key that never changes stays useful to anyone who copied it for as long as it is in use.',
-  'key.pin.single': 'Key pinning (HPKP-style, e.g. in a mobile app): a pin of the leaf key breaks at each rotation like this one; pin a backup key or the issuing CA instead.',
+  'key.pin.single': 'Key pinning (HPKP-style, e.g. in a mobile app): if the leaf key changes at renewals, a pin of it breaks at each one; pin a backup key or the issuing CA instead.',
   'key.openDane': 'Open the DANE / TLSA tab',
   'key.truncated': { one: 'crt.sh listed more than {count} entry; the first {count} were read.', other: 'crt.sh listed more than {count} entries; the first {count} were read.' },
   'key.col.id': 'crt.sh ID',
@@ -50,7 +64,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'key.title': 'Anahtar sürekliliği',
-  'key.intro': 'Bu sertifikanın açık anahtarı kayıtlı başka sertifikalarda da var mı? Yenilemelerde korunan bir anahtar TLSA 3 1 1 kayıtlarını ve anahtar sabitlemelerini (pin) eşleşir tutar; yeni bir anahtar ise yenilemede bunları bozar.',
+  'key.intro': 'Bu sertifikanın açık anahtarı crt.sh’in dizine eklediği başka sertifikalarda da var mı? Yenilemelerde korunan bir anahtar TLSA 3 1 1 kayıtlarını ve anahtar sabitlemelerini (pin) eşleşir tutar; yeni bir anahtar ise yenilemede bunları bozar.',
   'key.spki': 'Açık anahtar SHA-256',
   'key.computing': 'Hesaplanıyor…',
   'key.run': 'Bu anahtarı CT’de ara',
@@ -59,19 +73,21 @@ registerStrings('tr', {
   'key.searching': 'crt.sh’te bu anahtarı taşıyan sertifikalar aranıyor… bir dakikayı bulabilir.',
   'key.failed': 'crt.sh yanıt vermedi',
   'key.failedHint': 'crt.sh çoğu zaman yoğundur; bir dakika sonra yeniden deneyin.',
-  'key.offline': 'Çevrimdışısınız: hiçbir şey gönderilmedi.',
   'key.reused.title': 'Anahtar yenilemelerde yeniden kullanılmış',
-  'key.reused.body': { other: 'Bu anahtar kayıtlı {count} başka sertifikada daha var: {since} tarihinden beri kullanılıyor ({days}); {before} tanesi bundan önce, {after} tanesi sonra verilmiş.' },
-  'key.single.title': 'Bu sertifikayla gelen yeni anahtar',
-  'key.single.body': 'Bu anahtar kayıtlı başka hiçbir sertifikada yok: bu sertifika verilirken anahtar değiştirilmiş (ya da bu, anahtarın ilk sertifikası).',
-  'key.notLogged.title': 'Bu anahtarı taşıyan kayıtlı sertifika yok',
-  'key.notLogged.body': 'Özel bir CA’nın sertifikaları hiçbir zaman kayda geçmez; yeni bir genel sertifikanın crt.sh’te görünmesi de birkaç saat sürebilir.',
-  'key.notThis': 'Bu sertifikanın kendisi henüz aralarında değil (kayıtlar birkaç saat geriden gelebilir).',
+  'key.reused.body': { other: 'crt.sh bu anahtarı {count} başka sertifikada daha listeliyor: en az {since} tarihinden beri kullanılıyor ({days}); {before} tanesi bundan önce, {after} tanesi sonra verilmiş.' },
+  'key.single.title': 'crt.sh’te bu anahtarla daha eski bir sertifika yok',
+  'key.single.body': 'crt.sh bu anahtarı başka hiçbir sertifikada listelemiyor. Anahtar bu sertifikayla gelmiş olabilir (yenilemede değiştirilmiş ya da ilk sertifikası bu) ya da önceki sertifikalar crt.sh’te eksiktir: crt.sh’in kapsamı tam değildir.',
+  'key.notIndexed.title': 'Kayda geçmiş, ama henüz crt.sh’te yok',
+  'key.notIndexed.scts': { other: 'Bu sertifika {count} SCT taşıyor (bir kaydın onu yayımlama sözü), yani kayda geçmiş; crt.sh’te ise bu anahtarı taşıyan hiçbir sertifika yok. crt.sh’in kapsamı tam değildir ve günler, hatta haftalar geriden gelebilir: daha sonra yeniden bakın.' },
+  'key.notIndexed.public': 'Sertifikayı veren, verdiklerini kayda geçiren genel bir CA; crt.sh’te ise bu anahtarı taşıyan hiçbir sertifika yok. crt.sh’in kapsamı tam değildir ve günler, hatta haftalar geriden gelebilir: daha sonra yeniden bakın.',
+  'key.notFound.title': 'crt.sh’te bu anahtarı taşıyan sertifika yok',
+  'key.notFound.body': 'Sertifika SCT taşımıyor ve vereni bilinen bir genel CA değil: özel bir CA’nın sertifikaları hiçbir zaman kayda geçmez. Kapsamı tam olmadığı için genel bir sertifika da crt.sh’te eksik olabilir.',
+  'key.notThis': 'crt.sh bu sertifikanın kendisini listelemiyor: kapsamı tam değildir ve günler, hatta haftalar geriden gelebilir.',
   'key.days': { other: '{count} gün' },
-  'key.tlsa.reused': 'TLSA 3 1 1: bu anahtarın kaydı, sonraki sertifika da aynı anahtarı kullandıkça eşleşmeye devam eder. Yeni anahtarlı bir yenileme, yeni kayıt yeni sertifika kurulmadan 2 × TTL önce yayımlanmadıysa onu bozar.',
-  'key.tlsa.single': 'TLSA 3 1 1: bunun gibi her yenilemede anahtar değişir, kayıt da onunla değişmelidir — sonraki anahtarın kaydını kurulumdan 2 × TTL önce yayımlayın ya da bunun yerine sertifikayı veren CA’yı sabitleyin (2 1 1).',
+  'key.tlsa.reused': 'TLSA 3 1 1: bu anahtarın kaydı, sonraki sertifika da aynı anahtarı kullandıkça eşleşmeye devam eder. Anahtarı değişen bir yenileme, yeni kayıt sertifikadan en az 2 × TTL önce yayımlanmadıysa onu bozar.',
+  'key.tlsa.single': 'TLSA 3 1 1: anahtar bu sertifikayla gerçekten değiştiyse sonraki yenilemede de değişmesini bekleyin — sonraki anahtarın kaydını kurulumdan 2 × TTL önce yayımlayın ya da bunun yerine sertifikayı veren CA’yı sabitleyin (2 1 1).',
   'key.pin.reused': 'Anahtar sabitleme (HPKP tarzı, ör. bir mobil uygulamada): bu anahtarın sabitlemesi, anahtar yeniden kullanıldıkça yenilemelerden sağ çıkar; anahtar sonradan değişirse uygulama yedek bir anahtarı ya da CA’yı da sabitlemediyse bozulur. Hiç değişmeyen bir anahtar, onu kopyalayan biri için kullanımda kaldığı sürece işe yarar.',
-  'key.pin.single': 'Anahtar sabitleme (HPKP tarzı, ör. bir mobil uygulamada): uç sertifika anahtarının sabitlemesi bunun gibi her değişimde bozulur; bunun yerine yedek bir anahtarı ya da sertifikayı veren CA’yı sabitleyin.',
+  'key.pin.single': 'Anahtar sabitleme (HPKP tarzı, ör. bir mobil uygulamada): uç sertifika anahtarı yenilemelerde değişiyorsa onun sabitlemesi her değişimde bozulur; bunun yerine yedek bir anahtarı ya da sertifikayı veren CA’yı sabitleyin.',
   'key.openDane': 'DANE / TLSA sekmesini aç',
   'key.truncated': { other: 'crt.sh {count} kayıttan fazlasını listeledi; ilk {count} tanesi okundu.' },
   'key.col.id': 'crt.sh kimliği',
@@ -82,13 +98,22 @@ registerStrings('tr', {
 });
 
 /**
+ * Stop every lookup of a cache that is still running (the view loads another certificate).
+ * @param {Map<string, object>} cache the view's key continuity cache
+ */
+export function cancelKeyLookups(cache) {
+  for (const entry of cache.values()) if (entry.status === 'running' && entry.controller) entry.controller.abort();
+}
+
+/**
  * The key continuity card of one certificate.
  * @param {{ cert: object, ctx: import('../app.js').ViewContext, cache: Map<string, object>, cacheKey: string,
- *   onOpenDane?: (() => void)|null }} opts cert: a lib/x509.js Certificate; cache / cacheKey: where the
- *   lookup of this certificate is kept (`{ status: 'running'|'done'|'error', result?, error?, watchers }`)
+ *   publicCa?: boolean, onOpenDane?: (() => void)|null }} opts cert: a lib/x509.js Certificate; cache / cacheKey:
+ *   where the lookup of this certificate is kept (`{ status: 'running'|'done'|'error', controller, result?, error?,
+ *   watchers }`); publicCa: its issuer is a known public CA (a certificate crt.sh lacks was still logged)
  * @returns {HTMLElement}
  */
-export function KeyContinuityCard({ cert, ctx, cache, cacheKey, onOpenDane = null }) {
+export function KeyContinuityCard({ cert, ctx, cache, cacheKey, publicCa = false, onOpenDane = null }) {
   const spkiOut = h('code', { class: 'mono cert-key-spki-value', dataset: { role: 'key-spki' } }, t('key.computing'));
   spkiSha256(cert).then((hex) => { spkiOut.textContent = hex; }, () => { spkiOut.textContent = '—'; });
   const body = h('div', { class: 'stack-sm cert-key-body' });
@@ -129,11 +154,10 @@ export function KeyContinuityCard({ cert, ctx, cache, cacheKey, onOpenDane = nul
     body.append(...resultNodes(entry.result));
   }
 
-  function resultNodes(r) {
-    card.dataset.status = r.status;
-    const nodes = [];
+  /** The headline of a result: what crt.sh has, never more. */
+  function headline(r) {
     if (r.status === 'reused') {
-      nodes.push(Alert({
+      return Alert({
         variant: 'info',
         icon: 'refresh',
         title: t('key.reused.title'),
@@ -141,20 +165,29 @@ export function KeyContinuityCard({ cert, ctx, cache, cacheKey, onOpenDane = nul
           count: r.others, since: formatDate(r.firstSeen), days: t('key.days', { count: r.days ?? 0 }),
           before: formatNumber(r.before), after: formatNumber(r.after)
         })
-      }));
-    } else if (r.status === 'single') {
-      nodes.push(Alert({ variant: 'info', icon: 'key', title: t('key.single.title'), message: t('key.single.body') }));
-    } else {
-      nodes.push(Alert({ variant: 'info', title: t('key.notLogged.title'), message: t('key.notLogged.body') }));
+      });
     }
-    const alert = nodes[0];
+    if (r.status === 'single') return Alert({ variant: 'info', icon: 'key', title: t('key.single.title'), message: t('key.single.body') });
+    if (r.status === 'not-indexed') {
+      return Alert({
+        variant: 'info',
+        title: t('key.notIndexed.title'),
+        message: r.sctCount ? t('key.notIndexed.scts', { count: r.sctCount }) : t('key.notIndexed.public')
+      });
+    }
+    return Alert({ variant: 'info', title: t('key.notFound.title'), message: t('key.notFound.body') });
+  }
+
+  function resultNodes(r) {
+    card.dataset.status = r.status;
+    const alert = headline(r);
     alert.dataset.keyStatus = r.status;
-    if (r.status !== 'not-logged') {
+    const nodes = [alert];
+    if (r.status === 'reused' || r.status === 'single') {
       if (!r.thisLogged) nodes.push(h('p', { class: 'muted text-sm' }, t('key.notThis')));
-      const which = r.status === 'reused' ? 'reused' : 'single';
       nodes.push(h('ul', { class: 'cert-key-effects' },
-        h('li', { dataset: { effect: 'tlsa' } }, t(`key.tlsa.${which}`)),
-        h('li', { dataset: { effect: 'pin' } }, t(`key.pin.${which}`))));
+        h('li', { dataset: { effect: 'tlsa' } }, t(`key.tlsa.${r.status}`)),
+        h('li', { dataset: { effect: 'pin' } }, t(`key.pin.${r.status}`))));
       if (onOpenDane) {
         nodes.push(h('div', null, Button({ label: t('key.openDane'), icon: 'key', size: 'sm', variant: 'secondary', dataset: { action: 'key-dane' }, onClick: onOpenDane })));
       }
@@ -190,10 +223,11 @@ export function KeyContinuityCard({ cert, ctx, cache, cacheKey, onOpenDane = nul
       return;
     }
     if (!ctx.requireOnline()) return;
-    const entry = { status: 'running', watchers: new Set() };
+    // Its own controller, not the view's signal: a re-mount (language, navigation) keeps it running.
+    const entry = { status: 'running', watchers: new Set(), controller: new AbortController() };
     cache.set(cacheKey, entry);
     show(entry);
-    lookupKeyContinuity(cert, { signal: ctx.signal }).then((result) => {
+    lookupKeyContinuity(cert, { signal: entry.controller.signal, publicCa }).then((result) => {
       Object.assign(entry, { status: 'done', result });
     }, (err) => {
       if (errorKind(err) === 'abort') {

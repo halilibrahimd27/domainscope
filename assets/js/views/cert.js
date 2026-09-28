@@ -68,7 +68,7 @@ import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 // The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
 import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain } from '../ui/chain-repair.js';
 // CT logs › Key continuity: other certificates with this public key (lib/keycontinuity.js).
-import { KeyContinuityCard } from '../ui/key-continuity.js';
+import { KeyContinuityCard, cancelKeyLookups } from '../ui/key-continuity.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
@@ -2035,6 +2035,7 @@ stateSingleton.subscribe(({ key }) => {
   ctForm.last = null;
   caaCache.clear();
   ctCache.clear();
+  cancelKeyLookups(keyCache);
   keyCache.clear();
   for (const holder of daneHolders.values()) cancelDane(holder);
   daneHolders.clear();
@@ -2840,6 +2841,8 @@ export function mount(container, ctx) {
           ctx,
           cache: keyCache,
           cacheKey: key,
+          // a certificate crt.sh lacks was still logged when a public CA issued it
+          publicCa: isPublic,
           onOpenDane: () => {
             if (tabs) tabs.select('dane', { focus: true });
           }

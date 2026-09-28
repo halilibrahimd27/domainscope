@@ -3,10 +3,14 @@
  * view › CT logs › Key continuity)
  *
  * The SHA-256 of the certificate's SubjectPublicKeyInfo — the data of a TLSA `3 1 1` record and
- * of an HPKP-style pin — is looked up in Certificate Transparency: every logged certificate with
- * the same public key. Other certificates with it mean the key was carried over renewals (a `3 1 1`
- * record keeps matching while it is); only this one means the key is new with this certificate
- * (every renewal like this one needs a new record first).
+ * of an HPKP-style pin — is looked up on crt.sh: the certificates it has indexed with the same
+ * public key. Other certificates with it mean the key was carried over renewals (a `3 1 1` record
+ * keeps matching while it is). Everything else is said of crt.sh, not of CT: its coverage is
+ * incomplete and can lag by days or weeks (on 2026-09-28 a leaf issued 24 days earlier with
+ * embedded SCTs, which Cert Spotter listed with the same key hash, was missing from crt.sh by key
+ * and by serial). So only this certificate on crt.sh is "no earlier certificate with this key on
+ * crt.sh", not proof of a rotation; and none at all, for a certificate that carries SCTs or comes
+ * from a known public CA, is "logged but not indexed by crt.sh" ('not-indexed'), never "not logged".
  *
  * Verified live on 2026-09-28 with `Origin: https://halilibrahimd27.github.io`:
  *   - crt.sh `GET /?spkisha256=<64 hex>&output=json` answers with ACAO `*` (a simple request, no
@@ -34,8 +38,13 @@ export const KEY_TIMEOUT_MS = 60000;
 export const KEY_RETRY_DELAY_MS = 4000;
 /** At most this many rows are read (a key shared by thousands of certificates is reported as more). */
 export const KEY_MAX_ROWS = 2000;
-/** What the lookup says about the key. */
-export const KEY_STATUSES = Object.freeze(['reused', 'single', 'not-logged']);
+/**
+ * What the lookup says about the key: 'reused' (crt.sh has other certificates with it), 'single'
+ * (crt.sh has only this one), 'not-indexed' (crt.sh has none, but the certificate carries SCTs or
+ * comes from a known public CA, so it was logged) or 'not-found' (crt.sh has none, and nothing says
+ * the certificate was logged — a private CA's never is).
+ */
+export const KEY_STATUSES = Object.freeze(['reused', 'single', 'not-indexed', 'not-found']);
 
 const DAY_MS = 86400000;
 const HEX64_RE = /^[0-9a-f]{64}$/;
@@ -143,8 +152,10 @@ export function parseKeyRows(rows, { cert = null, maxRows = KEY_MAX_ROWS } = {})
 
 /**
  * @typedef {object} KeyContinuity
- * @property {'reused'|'single'|'not-logged'} status reused: other certificates carry the key;
- *   single: only this certificate does (a key new with it); not-logged: no logged certificate does
+ * @property {'reused'|'single'|'not-indexed'|'not-found'} status {@link KEY_STATUSES}
+ * @property {number|null} sctCount SCTs embedded in the certificate (lib/x509.js; null: no SCT extension)
+ * @property {boolean} expectLogged the certificate carries SCTs or its issuer is a known public CA:
+ *   it was (or will soon be) in public logs, whatever crt.sh says
  * @property {number} total certificates with the key
  * @property {number} others certificates with the key other than this one
  * @property {boolean} thisLogged this certificate is among them
@@ -158,12 +169,13 @@ export function parseKeyRows(rows, { cert = null, maxRows = KEY_MAX_ROWS } = {})
  */
 
 /**
- * What the certificates with a key say about it.
+ * What the certificates crt.sh has with a key say about it.
  * @param {KeyCert[]} certs {@link parseKeyRows}
- * @param {{ cert?: { notBefore?: Date|null }|null, now?: Date|number }} [opts]
+ * @param {{ cert?: { notBefore?: Date|null, sctCount?: number|null }|null, now?: Date|number, publicCa?: boolean }} [opts]
+ *   publicCa: the certificate's issuer is a known public CA (views/cert.js: lib/health.js caaIssuerInfo)
  * @returns {KeyContinuity}
  */
-export function keyContinuity(certs, { cert = null, now = Date.now() } = {}) {
+export function keyContinuity(certs, { cert = null, now = Date.now(), publicCa = false } = {}) {
   const list = Array.isArray(certs) ? certs : [];
   const at = now instanceof Date ? now.getTime() : Number(now);
   const self = list.find((c) => c.isThis) || null;
@@ -176,8 +188,12 @@ export function keyContinuity(certs, { cert = null, now = Date.now() } = {}) {
   const firstSeen = starts.length ? new Date(Math.min(...starts)) : null;
   const lastUntil = ends.length ? new Date(Math.max(...ends)) : null;
   const until = lastUntil && lastUntil.getTime() < at ? lastUntil.getTime() : at;
+  const sctCount = cert && Number.isInteger(cert.sctCount) ? cert.sctCount : null;
+  const expectLogged = (sctCount ?? 0) > 0 || !!publicCa;
   return {
-    status: others.length ? 'reused' : list.length ? 'single' : 'not-logged',
+    status: others.length ? 'reused' : list.length ? 'single' : expectLogged ? 'not-indexed' : 'not-found',
+    sctCount,
+    expectLogged,
     total: list.length,
     others: others.length,
     thisLogged: !!self,
@@ -195,16 +211,18 @@ export function keyContinuity(certs, { cert = null, now = Date.now() } = {}) {
 const crtshShouldRetry = (err) => errorKind(err) !== 'timeout' && defaultShouldRetry(err);
 
 /**
- * Look a certificate's public key up in Certificate Transparency (one crt.sh search, retried once
- * on a server or network error). Sends only the SHA-256 of the key.
- * @param {{ spkiDer: Uint8Array, serialHex?: string, notBefore?: Date|null }} cert a lib/x509.js Certificate
+ * Look a certificate's public key up on crt.sh (one search, retried once on a server or network
+ * error). Sends only the SHA-256 of the key.
+ * @param {{ spkiDer: Uint8Array, serialHex?: string, notBefore?: Date|null, sctCount?: number|null }} cert a lib/x509.js Certificate
  * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number, retryDelayMs?: number, now?: Date|number,
- *   subtle?: SubtleCrypto|null }} [opts] retryDelayMs: base of the one retry (tests pass 0)
+ *   subtle?: SubtleCrypto|null, publicCa?: boolean }} [opts] retryDelayMs: base of the one retry (tests pass 0);
+ *   publicCa: see {@link keyContinuity}
  * @returns {Promise<KeyContinuity & { spki: string, url: string, certs: KeyCert[], rows: number, truncated: boolean, checkedAt: Date }>}
  * @throws the crt.sh failure (HttpError, a network TypeError, TimeoutError, ParseError) or AbortError
  */
 export async function lookupKeyContinuity(cert, {
-  fetchImpl, signal, timeoutMs = KEY_TIMEOUT_MS, retryDelayMs = KEY_RETRY_DELAY_MS, now = Date.now(), subtle = globalThis.crypto?.subtle
+  fetchImpl, signal, timeoutMs = KEY_TIMEOUT_MS, retryDelayMs = KEY_RETRY_DELAY_MS, now = Date.now(), subtle = globalThis.crypto?.subtle,
+  publicCa = false
 } = {}) {
   throwIfAborted(signal);
   const spki = await spkiSha256(cert, { subtle });
@@ -214,6 +232,6 @@ export async function lookupKeyContinuity(cert, {
   }), { retries: 1, baseDelayMs: retryDelayMs, maxDelayMs: 2 * retryDelayMs, signal, shouldRetry: crtshShouldRetry });
   const parsed = parseKeyRows(rows, { cert });
   return {
-    spki, url, ...parsed, ...keyContinuity(parsed.certs, { cert, now }), checkedAt: new Date(now instanceof Date ? now.getTime() : Number(now))
+    spki, url, ...parsed, ...keyContinuity(parsed.certs, { cert, now, publicCa }), checkedAt: new Date(now instanceof Date ? now.getTime() : Number(now))
   };
 }

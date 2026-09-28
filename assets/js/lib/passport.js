@@ -512,26 +512,38 @@ export function registryWhois(tld, domain = '') {
   return { name: null, url: `https://www.iana.org/domains/root/db/${t}.html`, iana: true };
 }
 
-/** Registry status → what it means for the domain ('lock': a *Prohibited flag, 'hold', 'pending', 'ok', 'other'). */
+/**
+ * Registry status → what it means for the domain ('lock': a *Prohibited flag, 'hold', 'pending',
+ * 'ok', 'other'), in RFC 8056 wording ('client hold') or EPP's ('clientHold') alike.
+ */
 function statusKind(status) {
   const s = canon(status);
   if (/prohibited/.test(s)) return 'lock';
-  if (/\bhold\b/.test(s)) return 'hold';
+  if (/hold\b/.test(s)) return 'hold';
   if (/pending|redemption/.test(s)) return 'pending';
   if (s === 'ok' || s === 'active' || s === 'associated') return 'ok';
   return 'other';
 }
 
 /**
- * RDAP status values (RFC 8056 wording, lower case) with their kind, locks first.
+ * RDAP status values with their kind: holds and pending deletes first, then locks. `code` is
+ * spelled as the registry sent it (RFC 8056's 'client transfer prohibited' or EPP's
+ * 'clientTransferProhibited'); a value repeated in another case counts once.
  * @param {string[]} statuses
  * @returns {Array<{ code: string, kind: 'lock'|'hold'|'pending'|'ok'|'other' }>}
  */
 export function rdapStatusFlags(statuses) {
   const order = { hold: 0, pending: 1, lock: 2, ok: 3, other: 4 };
-  return uniq((statuses || []).map(canon).filter(Boolean))
-    .map((code) => ({ code, kind: statusKind(code) }))
-    .sort((a, b) => order[a.kind] - order[b.kind] || a.code.localeCompare(b.code, 'en'));
+  const seen = new Set();
+  const flags = [];
+  for (const status of statuses || []) {
+    const code = String(status ?? '').trim();
+    const key = canon(code);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    flags.push({ code, kind: statusKind(key) });
+  }
+  return flags.sort((a, b) => order[a.kind] - order[b.kind] || canon(a.code).localeCompare(canon(b.code), 'en'));
 }
 
 /** Whole days from `now` until `date` (negative when past), like Domain Health's countdown. */
@@ -841,7 +853,8 @@ function httpsRecords(res) {
 /**
  * Web: the apex and www — what each resolves to and who serves it (lib/netinfo.js
  * classifyResolution: Cloudflare, another CDN, a platform, direct, private), whether www is an
- * alias of the apex, and whether each publishes an HTTPS (SVCB) record.
+ * alias of the apex, and whether each publishes an HTTPS (SVCB) record. `exists` is false for a
+ * domain known not to exist (as on the DNS, mail and SaaS cards).
  * @param {object} raw
  * @param {{ now?: Date|number }} [opts]
  * @returns {object}
@@ -849,6 +862,7 @@ function httpsRecords(res) {
 export function webCard(raw, { now } = {}) {
   const t = clock(now);
   const card = frame('web', raw, null, { now: t });
+  card.exists = !nonexistent(raw);
   const domain = raw.domain || '';
   const apex = webHost(domain, raw.apex, { now: t.getTime() });
   const www = webHost(domain ? `www.${domain}` : 'www', raw.www, { now: t.getTime() });
@@ -873,6 +887,7 @@ function caOfIssuerDomain(domain) {
  * certificates in CT, each with health.checkCaaAllows' verdict against that CAA set.
  * `caa.state`: 'none' (any CA may issue), 'present', 'deny-all' (issue values that authorise
  * nobody), null (not known). `ct`: null until asked, else `{ state: 'ok'|'failed', … }`.
+ * `exists` is false for a domain known not to exist.
  * @param {object} raw
  * @param {{ now?: Date|number }} [opts]
  * @returns {object}
@@ -880,6 +895,7 @@ function caOfIssuerDomain(domain) {
 export function certsCard(raw, { now } = {}) {
   const t = clock(now);
   const card = frame('certs', raw, null, { now: t });
+  card.exists = !nonexistent(raw);
   const c = raw.caa;
   card.caa = null;
   if (c && !c.failed && !c.error) {
@@ -989,9 +1005,13 @@ export function passportCards(raw, { now } = {}) {
   return Object.fromEntries(PASSPORT_CARDS.map((id) => [id, BUILDERS[id](r, { now })]));
 }
 
+/** The cards that say when the domain does not exist, which they read from the NS and SOA lookups. */
+const EXISTS_CARDS = Object.freeze(['mail', 'web', 'certs', 'saas']);
+
 /** The cards a lookup feeds (for a partial re-render when it lands). */
 export function cardsOfLookup(lookup) {
-  return PASSPORT_CARDS.filter((id) => CARD_LOOKUPS[id].includes(lookup) || (id === 'dns' && lookup === 'rdap'));
+  return PASSPORT_CARDS.filter((id) => CARD_LOOKUPS[id].includes(lookup) || (id === 'dns' && lookup === 'rdap')
+    || (EXISTS_CARDS.includes(id) && (lookup === 'ns' || lookup === 'soa')));
 }
 
 /* ------------------------------------------------------------------------ */

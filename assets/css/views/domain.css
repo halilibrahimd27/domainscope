@@ -316,6 +316,10 @@
   gap: 4px;
 }
 
+.dov-count-icon {
+  display: inline-flex;
+}
+
 .dov-problem {
   display: flex;
   align-items: flex-start;

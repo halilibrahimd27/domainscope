@@ -190,7 +190,10 @@ registerStrings('en', {
   'dov.certs.ctRestricted': 'allowed by CAA, with restrictions',
   'dov.certs.ctDenied': 'not allowed by CAA',
   'dov.certs.ctUnknown': 'CA not known',
-  'dov.certs.ctDeniedNote': 'CAA does not allow {list}: its next renewal of these certificates will fail until CAA names it.',
+  'dov.certs.ctDeniedNote': {
+    one: 'CAA does not allow {list}: its next renewal of these certificates will fail until CAA names it.',
+    other: 'CAA does not allow {list}: their next renewal of these certificates will fail until CAA names them.'
+  },
   'dov.certs.ctFirstPage': 'From Cert Spotter’s first page of current certificates ({count} read); a longer list continues on later pages.',
   'dov.certs.ctCrtsh': 'From crt.sh ({count} current certificates), because Cert Spotter could not answer.',
   'dov.certs.ctEmpty': 'No current certificate for {domain} in Certificate Transparency.',
@@ -223,7 +226,7 @@ registerStrings('tr', {
   'dov.emptyTitle': 'Bir alan adına dair her şey tek sayfada',
   'dov.emptyBody': 'Kayıt ve bitiş tarihi, DNS’ini ve e-postasını kimin barındırdığı, web sitesini neyin sunduğu, hangi CA’ların sertifika verebileceği, TXT kayıtlarının doğruladığı hizmetler ve sağlık puanı — taşıma ya da devralma için, daha ayrıntılı araca bağlantılarla.',
   'dov.progress': '{domain} özeti oluşturuluyor',
-  'dov.progressCount': '{total} sorgunun {done} tanesi',
+  'dov.progressCount': '{done}/{total} sorgu',
   'dov.builtAt': 'Oluşturuldu: {time}',
   'dov.stoppedAt': 'Durduruldu: {time} — bazı bölümler sorgulanmadı',
   'dov.reduced': '{host} adının kayıtlı alan adı olan {domain} özeti.',
@@ -247,7 +250,7 @@ registerStrings('tr', {
   'dov.card.saas': 'SaaS doğrulamaları',
   'dov.card.health': 'Sağlık',
 
-  'dov.reg.registrar': 'Kayıt şirketi',
+  'dov.reg.registrar': 'Kayıt firması',
   'dov.reg.ianaId': 'IANA kimliği {id}',
   'dov.reg.created': 'Kayıt tarihi',
   'dov.reg.expires': 'Bitiş',
@@ -255,16 +258,16 @@ registerStrings('tr', {
   'dov.reg.daysAgo': '{count} gün önce sona erdi',
   'dov.reg.status': 'Durum',
   'dov.reg.lock': 'Transfer kilidi',
-  'dov.reg.lockOn': 'Açık',
-  'dov.reg.lockOff': 'Kapalı',
-  'dov.reg.lockOffNote': 'clientTransferProhibited olmadan, transfer kodunu bilen herkes alan adını başka bir kayıt şirketine taşıyabilir. Planlı bir transfer dışında açık tutun.',
+  'dov.reg.lockOn': 'Etkin',
+  'dov.reg.lockOff': 'Yok',
+  'dov.reg.lockOffNote': 'clientTransferProhibited olmadan, transfer kodunu bilen herkes alan adını başka bir kayıt firmasına taşıyabilir. Planlı bir transfer dışında etkin tutun.',
   'dov.reg.lockUnknown': 'kayıt kuruluşu durum bildirmiyor',
   'dov.reg.dnssec': 'DNSSEC yetkilendirmesi',
   'dov.reg.signed': 'İmzalı',
   'dov.reg.unsigned': 'İmzasız',
   'dov.reg.nameservers': 'Ad sunucuları (kayıt kuruluşu)',
   'dov.reg.registryDomain': 'Kayıtlı ad',
-  'dov.reg.unsupported': '.{tld} kayıt kuruluşu RDAP hizmeti sunmuyor; kayıt şirketi ve tarihler tarayıcıdan okunamıyor.',
+  'dov.reg.unsupported': '.{tld} kayıt kuruluşu RDAP hizmeti sunmuyor; kayıt firması ve tarihler tarayıcıdan okunamıyor.',
   'dov.reg.whois': 'Kayıt kuruluşunun WHOIS hizmetine bakın: {registry}',
   'dov.reg.iana': '.{tld} kayıt kuruluşu ve WHOIS sunucusu (IANA)',
   'dov.reg.notFound': 'Kayıtlı değil: kayıt kuruluşunda {domain} için kayıt yok.',
@@ -307,13 +310,13 @@ registerStrings('tr', {
   'dov.mail.spf.none': 'SPF kaydı yok.',
   'dov.mail.spf.many': '{count} SPF kaydı: alıcılar bunu hata (permerror) sayar.',
   'dov.mail.spf.invalid': 'SPF kaydı geçerli değil.',
-  'dov.mail.senders': 'Gönderdiği hizmetler',
+  'dov.mail.senders': 'Gönderim hizmetleri',
   'dov.mail.dmarc': 'DMARC',
   'dov.mail.dmarc.reject': 'Reddet (p=reject)',
   'dov.mail.dmarc.quarantine': 'Karantina (p=quarantine)',
   'dov.mail.dmarc.none': 'Yalnızca izleme (p=none)',
   'dov.mail.dmarc.pct': 'başarısız postanın %{pct} kadarı',
-  'dov.mail.dmarc.reports': 'raporlar {count} adrese',
+  'dov.mail.dmarc.reports': 'raporlar {count} adrese gidiyor',
   'dov.mail.dmarc.missing': 'DMARC kaydı yok.',
   'dov.mail.dmarc.many': '{count} DMARC kaydı: alıcılar hepsini yok sayar.',
   'dov.mail.dmarc.invalid': 'DMARC kaydı geçerli değil.',
@@ -345,7 +348,7 @@ registerStrings('tr', {
   'dov.certs.ctRestricted': 'CAA kısıtlarla izin veriyor',
   'dov.certs.ctDenied': 'CAA izin vermiyor',
   'dov.certs.ctUnknown': 'CA bilinmiyor',
-  'dov.certs.ctDeniedNote': 'CAA {list} için izin vermiyor: CAA onu adlandırana kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
+  'dov.certs.ctDeniedNote': 'CAA {list} için izin vermiyor: CAA kaydına eklenene kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
   'dov.certs.ctFirstPage': 'Cert Spotter’ın geçerli sertifikalar listesinin ilk sayfasından ({count} okundu); daha uzun bir liste sonraki sayfalarda sürer.',
   'dov.certs.ctCrtsh': 'crt.sh’ten ({count} geçerli sertifika), çünkü Cert Spotter yanıt veremedi.',
   'dov.certs.ctEmpty': 'Certificate Transparency’de {domain} için geçerli sertifika yok.',
@@ -457,7 +460,7 @@ export function mount(container, ctx) {
       promptEl));
 
   /* --- results skeleton ------------------------------------------------------------------ */
-  const progress = ProgressBar({ label: t('dov.progress', { domain: '' }), format: (v, max) => t('dov.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
+  const progress = ProgressBar({ format: (v, max) => t('dov.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
   progress.el.hidden = true;
   const emptyEl = h('div', { class: 'card dov-empty' }, EmptyState({ icon: 'id-card', title: t('dov.emptyTitle'), message: t('dov.emptyBody') }));
   const headEl = h('div', { class: 'dov-head-wrap' });
@@ -490,7 +493,9 @@ export function mount(container, ctx) {
         current.stopped ? t('dov.stoppedAt', { time: formatRelative(current.at) }) : t('dov.builtAt', { time: formatRelative(current.at) }));
     headEl.append(h('div', { class: 'card dov-head', dataset: { domain } },
       h('div', { class: 'dov-head-main' },
-        h('h2', { class: 'dov-head-title' }, h('span', { class: 'sr-only' }, t('dov.resultsTitle', { domain: '' })), h('span', { class: 'mono dov-break' }, domain)),
+        // Read as the whole sentence ("example.com özeti" in Turkish), shown as the name alone.
+        h('h2', { class: 'dov-head-title' }, h('span', { class: 'sr-only' }, t('dov.resultsTitle', { domain })),
+          h('span', { class: 'mono dov-break', attrs: { 'aria-hidden': 'true' } }, domain)),
         host ? h('p', { class: 'text-sm muted dov-reduced' }, t('dov.reduced', { domain, host })) : null,
         meta),
       h('div', { class: 'dov-head-actions' }, summary)));
@@ -747,6 +752,7 @@ export function mount(container, ctx) {
   }
 
   function webBody(card) {
+    if (!card.exists) return Alert({ variant: 'error', compact: true, message: t('dov.nxdomain') });
     const httpsText = (x, failure) => {
       if (failure) return na(failure);
       if (!x) return null;
@@ -787,7 +793,8 @@ export function mount(container, ctx) {
     if (ct.state === 'failed') {
       const sources = ct.failures.map((f) => f.source);
       return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'failed' } }, head,
-        h('p', { class: 'text-sm dov-status' }, NaMark(ct.failures), ' ', ct.failures.map((f) => statusText(f)).join(' · ')),
+        h('p', { class: 'text-sm dov-status', dataset: { reason: ct.failures[0] ? ct.failures[0].reason : '' } },
+          Icon('alert', { size: 14 }), h('span', null, ct.failures.map((f) => statusText(f)).join(' · '))),
         h('div', null, RetryButton({ sources, target: t('dov.certs.ct'), dataset: { action: 'dov-ct-retry' }, onClick: (e) => lookupCt(e.currentTarget) })));
     }
     const verdictBadge = (v) => {
@@ -804,7 +811,7 @@ export function mount(container, ctx) {
     const source = ct.provider === 'crtsh' ? t('dov.certs.ctCrtsh', { count: formatNumber(ct.certificates) }) : t('dov.certs.ctFirstPage', { count: formatNumber(ct.certificates) });
     return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'ok', provider: ct.provider } }, head,
       rows.length ? h('ul', { class: 'dov-issuers' }, rows) : h('p', { class: 'text-sm muted' }, t('dov.certs.ctEmpty', { domain: d })),
-      ct.notAllowed.length ? Alert({ variant: 'warn', compact: true, message: t('dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', ') }) }) : null,
+      ct.notAllowed.length ? Alert({ variant: 'warn', compact: true, message: t('dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', '), count: ct.notAllowed.length }) }) : null,
       h('p', { class: 'muted text-xs' }, source),
       h('div', null, run(t('dov.certs.ctAgain'), 'ghost')));
   }
@@ -813,7 +820,9 @@ export function mount(container, ctx) {
     const caa = card.caa;
     const caaFailure = failureFor(card, 'caa');
     let caaPart;
-    if (caaFailure) caaPart = kv([{ key: t('dov.certs.caa'), value: na(caaFailure) }]);
+    // A domain that does not exist has no CAA to read; CT may still list certificates issued for it.
+    if (!card.exists) caaPart = Alert({ variant: 'error', compact: true, message: t('dov.nxdomain') });
+    else if (caaFailure) caaPart = kv([{ key: t('dov.certs.caa'), value: na(caaFailure) }]);
     else if (!caa) caaPart = null;
     else if (caa.state === 'none') caaPart = h('p', { class: 'text-sm', dataset: { caa: 'none' } }, t('dov.certs.caaNone'));
     else if (caa.state === 'deny-all') caaPart = Alert({ variant: 'error', compact: true, message: t('dov.certs.caaDeny') });
@@ -846,7 +855,9 @@ export function mount(container, ctx) {
   function healthBody(card) {
     if (card.failures.length) return h('div', { class: 'stack-sm' }, Alert({ variant: 'error', compact: true, title: t('dov.health.failed') }), statusLine(card.failures));
     const s = card.summary;
-    const counts = ['error', 'warn', 'info'].filter((k) => s[k]).map((k) => h('span', { class: ['dov-count', `dov-count-${k}`] }, SeverityIcon(k, { size: 14 }), ' ', t(`dov.health.count.${k}`, { count: s[k] })));
+    // The count says the severity itself ("5 errors"): its icon is not read out.
+    const counts = ['error', 'warn', 'info'].filter((k) => s[k]).map((k) => h('span', { class: ['dov-count', `dov-count-${k}`] },
+      h('span', { class: 'dov-count-icon', attrs: { 'aria-hidden': 'true' } }, SeverityIcon(k, { size: 14 })), ' ', t(`dov.health.count.${k}`, { count: s[k] })));
     return h('div', { class: 'stack-sm' },
       h('div', { class: ['dov-score', `dov-score-${card.light}`], dataset: { light: card.light, score: card.score } },
         h('span', { class: ['dov-lamp', `dov-lamp-${card.light}`], attrs: { 'aria-hidden': 'true' } }),

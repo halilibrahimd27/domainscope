@@ -311,6 +311,10 @@ describe('names and tables', () => {
     assert.deepEqual(rdapStatusFlags(['client transfer prohibited', 'active', 'client hold', 'pending delete', 'client transfer prohibited', 'renew period']),
       [{ code: 'client hold', kind: 'hold' }, { code: 'pending delete', kind: 'pending' }, { code: 'client transfer prohibited', kind: 'lock' },
         { code: 'active', kind: 'ok' }, { code: 'renew period', kind: 'other' }]);
+    // EPP spelling (camelCase) is kept for display, matched like RFC 8056's, and counted once
+    assert.deepEqual(rdapStatusFlags(['clientTransferProhibited', 'serverHold', 'ok', 'client transfer prohibited', 'CLIENTTRANSFERPROHIBITED', 'pendingDelete']),
+      [{ code: 'serverHold', kind: 'hold' }, { code: 'pendingDelete', kind: 'pending' }, { code: 'client transfer prohibited', kind: 'lock' },
+        { code: 'clientTransferProhibited', kind: 'lock' }, { code: 'ok', kind: 'ok' }]);
     assert.equal(serialDate(2026092801), '2026-09-28');
     assert.equal(serialDate('1999123199'), '1999-12-31');
     for (const bad of [1, 2350000000, 2026023101, 2026130101, 1989010101, '20260928', null, 'x']) assert.equal(serialDate(bad), null, String(bad));
@@ -335,6 +339,9 @@ describe('names and tables', () => {
     assert.deepEqual(cardsOfLookup('txt'), ['mail', 'saas']);
     assert.deepEqual(cardsOfLookup('health'), ['health']);
     assert.deepEqual(cardsOfLookup('wwwHttps'), ['web']);
+    // NS and SOA say whether the domain exists, which every card that shows NXDOMAIN reads
+    assert.deepEqual(cardsOfLookup('ns'), ['dns', 'mail', 'web', 'certs', 'saas']);
+    assert.deepEqual(cardsOfLookup('soa'), ['dns', 'mail', 'web', 'certs', 'saas']);
   });
 });
 
@@ -479,7 +486,7 @@ describe('buildPassport', () => {
 
   test('a domain that does not exist; a null MX; no SPF or DMARC; DNSSEC unsigned and failing', async () => {
     const none = passportCards(await buildPassport('example.org', { dns: fakeDns({}), fetchImpl: mockFetch(), now: NOW }), { now: NOW });
-    assert.deepEqual([none.dns.exists, none.mail.exists, none.saas.exists], [false, false, false]);
+    assert.deepEqual([none.dns.exists, none.mail.exists, none.saas.exists, none.web.exists, none.certs.exists], [false, false, false, false, false]);
     assert.deepEqual(none.web.hosts.map((x) => x.state), ['nxdomain', 'nxdomain']);
     assert.equal(none.dns.dnssec, 'unsigned');
     const zone = zoneOf('example.net');

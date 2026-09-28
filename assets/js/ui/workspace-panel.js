@@ -334,6 +334,7 @@ export function replaceTarget(ws, list) {
 export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null, appVersion = '' }) {
   const cleanups = [];
   let renaming = null; // id of the workspace whose name is being edited
+  let renamingName = ''; // its name as shown when the edit began (said if another tab deletes it)
   let pending = null; // an import in progress: { text, fileName, encrypted, ws } (ws once it is open)
 
   const memoryNote = h('div', { class: 'ws-memory' });
@@ -429,7 +430,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         }));
       }
       if (!ws.isDefault) {
-        const rename = IconButton({ icon: 'edit', label: t('ws.rename', { name }), size: 'sm', onClick: () => { renaming = ws.id; renderList(); } });
+        const rename = IconButton({ icon: 'edit', label: t('ws.rename', { name }), size: 'sm', onClick: () => { renaming = ws.id; renamingName = name; renderList(); } });
         rename.dataset.action = 'ws-rename';
         const del = IconButton({ icon: 'trash', label: t('ws.delete', { name }), size: 'sm', onClick: () => remove(ws) });
         del.dataset.action = 'ws-delete';
@@ -902,7 +903,18 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       renderCurrent();
       renderFile();
     } else if (key === 'workspaces') {
-      renderList();
+      // Another tab changed the list while a name is being edited here: the draft stays; a
+      // workspace deleted there is said so, with the focus on the active row.
+      const draft = renaming ? listEl.querySelector('[data-role="ws-rename-input"]') : null;
+      if (renaming && !state.workspaces.some((w) => w.id === renaming)) {
+        renaming = null;
+        renderList({ focusId: state.workspace.id });
+        listOutcome.show(t('ws.gone', { name: renamingName }), 'warn');
+      } else {
+        renderList();
+        const field = draft ? listEl.querySelector('[data-role="ws-rename-input"]') : null;
+        if (field) field.value = draft.value;
+      }
       if (current.dataset.wsId === state.workspace.id) {
         // A rename of the current workspace: its headings follow.
         const heading = current.querySelector('.ws-heading');

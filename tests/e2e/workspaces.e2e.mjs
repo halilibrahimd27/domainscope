@@ -15,7 +15,9 @@
  *     workspace;
  *   - a switch asks first when it would drop unsaved Servers edits (Cancel keeps them) or stop a
  *     running Bulk Resolve job (confirmed: the job stops);
- *   - another tab working in the same workspace follows a save (BroadcastChannel);
+ *   - another tab working in the same workspace follows a save (BroadcastChannel); one that changes
+ *     the list while a name is being edited here leaves the draft alone, and one that deletes that
+ *     workspace is said so in the dialog, the focus on the active row;
  *   - expected CAs: a fixture certificate in the Certificate view is flagged "Unexpected CA", then "Expected CA"
  *     once its CA is listed; the certificate's name joins the recent domains, and switching back
  *     to the workspace makes it the current target again;
@@ -330,6 +332,44 @@ async function desktop(browser, server, tmp) {
       await tab2.waitFor(() => document.querySelector('[data-role="inventory-text"]').value.includes('web03'), { message: 'tab 2 followed', timeout: 10000 });
       await tab2.close();
       tab2 = null;
+    });
+
+    await run.step('another tab changes the list while a name is edited here: the draft stays; a deletion there is said, the focus in the dialog', async () => {
+      tab2 = await browser.newPage('about:blank', { width: 1200, height: 800 });
+      await tab2.goto(`${server.url}#/inventory`);
+      await waitReady(tab2);
+      const inTab2 = (fn, name) => tab2.evaluate(async (f, n) => {
+        const { state } = await import('./assets/js/state.js');
+        const ws = state.workspaces.find((w) => w.name === n);
+        if (f === 'create') await state.createWorkspace(n);
+        else await state.deleteWorkspace(ws.id);
+        await state.whenSaved();
+      }, fn, name);
+      const listed = (names) => page.waitFor((n) => {
+        const rows = [...document.querySelectorAll('dialog.ws-modal .ws-list li')];
+        return rows.length === n.length + 1 && n.every((x) => rows.some((li) => li.textContent.includes(x) || li.querySelector('input')?.value.includes(x)));
+      }, { args: [names], message: `the list follows: ${names}`, timeout: 10000 });
+      await page.send('Page.bringToFront');
+      await openWorkspaces(page);
+      await inTab2('create', 'Hooli');
+      await listed(['Acme', 'Globex', 'Hooli']);
+      const id = await rowId(page, 'Hooli');
+      await page.click(`dialog.ws-modal li[data-ws-id="${id}"] [data-action="ws-rename"]`);
+      await page.waitFor(() => document.activeElement?.dataset.role === 'ws-rename-input', { message: 'the rename field' });
+      await page.type('[data-role="ws-rename-input"]', 'Hooli Draft');
+      await inTab2('create', 'Temp');
+      await listed(['Acme', 'Globex', 'Hooli', 'Temp']);
+      await inTab2('delete', 'Temp');
+      await listed(['Acme', 'Globex', 'Hooli']);
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="ws-rename-input"]')?.value), 'Hooli Draft', 'the draft survives');
+      await inTab2('delete', 'Hooli');
+      const gone = await outcomeShown(page, 'ws-list-outcome', '“Hooli” was deleted in another tab', 'the deletion is said');
+      assert(gone.seen, gone.text);
+      assert(await page.evaluate(() => !!document.activeElement?.closest('dialog.ws-modal[open] li.is-active')), 'the focus on the active row, not <body>');
+      await closeWorkspaces(page);
+      await tab2.close();
+      tab2 = null;
+      assertEqual((await page.evaluate(wsInfo)).list, ['default', 'Acme', 'Globex'], 'as before');
     });
 
     await run.step('expected CAs flag the issuer; the certificate\'s name joins the recent domains', async () => {

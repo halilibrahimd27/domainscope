@@ -18,6 +18,10 @@
  *   or the zone; a domain without any gets a quick Small-wordlist discovery OFFERED, never run by itself.
  * - Output: one card per domain (the zone's origin, other zones reached, passive hits), each record
  *   with its severity, current value, what to change and the evidence; CSV / JSON and Copy summary.
+ * - Below it, "Compare the old and the new server" (ui/origin-compare.js): before the names move to
+ *   a new address, one HTTPS GET of a name from one Globalping probe to the old and the new address,
+ *   side by side (status, redirect, title, body hash, HSTS, certificate); only on its own click,
+ *   behind the consent dialog, and for private addresses the CLI's `--compare` command instead.
  *
  * The job belongs to this module (like Reverse DNS): it keeps running while another tool is open,
  * and a language switch keeps it. Shareable: `#/retire?ips=192.0.2.10&domains=example.com` fills the
@@ -46,6 +50,7 @@ import { permalinkParams } from '../lib/summary.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerRunning } from '../ui/jobs.js';
+import { OriginCompareCard } from '../ui/origin-compare.js';
 import { state as stateSingleton } from '../state.js';
 
 /** Route id (`#/retire`). */
@@ -1018,7 +1023,15 @@ export function mount(container, ctx) {
     className: 'retire-empty',
     children: EmptyState({ icon: 'unlink', title: t('retire.emptyTitle'), message: t('retire.emptyBody') })
   });
-  container.append(h('div', { class: 'stack-lg retire-view' }, formCard, emptyEl, resultsHost));
+  // Before the names move: does the new server answer like the old one? (ui/origin-compare.js)
+  const compare = OriginCompareCard({
+    ctx,
+    defaults: () => {
+      const single = parseRetireTargets(session.ips || '').blocks.filter((b) => b.single);
+      return { ip: single.length === 1 ? single[0].first : null, host: parseDomainList(session.domains || '').domains[0] || null };
+    }
+  });
+  container.append(h('div', { class: 'stack-lg retire-view' }, formCard, emptyEl, resultsHost, compare.el));
 
   /* --- parsing ------------------------------------------------------------- */
   let parsed = parseRetireTargets(ipsField.value);
@@ -1063,6 +1076,7 @@ export function mount(container, ctx) {
       issuesEl.append(Alert({ variant: 'warn', compact: true, message: t('retire.domainsTruncated', { max: formatNumber(RETIRE_MAX_DOMAINS), count: domainList.truncated }) }));
     }
     renderHosts();
+    compare.render();
   }
   const renderParsedSoon = debounce(renderParsed, 150);
 

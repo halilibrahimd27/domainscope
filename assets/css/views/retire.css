@@ -393,10 +393,171 @@
   }
 }
 
+/* Compare the old and the new server (ui/origin-compare.js) */
+.oc-card p {
+  margin: 0;
+}
+
+.oc-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.6fr);
+  gap: 10px 14px;
+  align-items: start;
+}
+
+.oc-issues {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.oc-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.oc-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.oc-actions {
+  align-items: center;
+}
+
+.oc-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.oc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.oc-table th,
+.oc-table td {
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.oc-table thead th {
+  border-top: 0;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oc-table tbody th {
+  width: 30%;
+  font-weight: 500;
+}
+
+.oc-field-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oc-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.oc-sev-error > td.oc-new-differs,
+.oc-sev-error > th {
+  background: var(--error-bg);
+}
+
+.oc-sev-warn > td.oc-new-differs {
+  background: var(--warn-bg);
+}
+
+.oc-sev-info > td.oc-new-differs {
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .oc-form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .oc-field-host {
+    grid-column: 1 / -1;
+  }
+}
+
+/* A phone: each field is a small card, the old and the new value labelled under its name. */
+@media (max-width: 600px) {
+  .oc-table thead {
+    display: none;
+  }
+
+  .oc-table,
+  .oc-table tbody,
+  .oc-table tr,
+  .oc-table th,
+  .oc-table td {
+    display: block;
+    width: auto;
+  }
+
+  .oc-table tr {
+    border-top: 1px solid var(--border);
+  }
+
+  .oc-table tr:first-child {
+    border-top: 0;
+  }
+
+  .oc-table th,
+  .oc-table td {
+    border-top: 0;
+    padding: 4px 10px;
+  }
+
+  .oc-table tbody th {
+    width: auto;
+    padding-top: 8px;
+  }
+
+  .oc-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .oc-table td:last-child {
+    padding-bottom: 8px;
+  }
+}
+
 /* Paper: the evidence and the change text read in full, rows never split. */
 @media print {
   .retire-table .dt-table tr {
     break-inside: avoid;
+  }
+
+  .oc-form,
+  .oc-actions,
+  .oc-privacy {
+    display: none;
   }
 
   .retire-discover,

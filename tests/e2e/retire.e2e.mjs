@@ -148,6 +148,64 @@ export const fakeScript = (table) => `(() => {
   };
 })();`;
 
+/** The two public addresses of the comparison: example.com's (IANA, well-known), as an old and a new server. */
+const OLD_IP = '93.184.215.14';
+const NEW_IP = '93.184.216.34';
+
+/**
+ * In-page fake Globalping for the old / new server comparison: an HTTPS GET at an address answers
+ * like a web server of www.example.com. `window.__compareScenario`: 'differs' (the new server has
+ * its own certificate, no HSTS header and another Server header), 'broken' (its certificate names
+ * another host). Every call is logged in window.__gp.
+ */
+const fakeCompareScript = () => `(() => {
+  const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {} };
+  window.__compareScenario = 'differs';
+  const prevFetch = window.fetch;
+  const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const probe = { continent: 'EU', region: 'Western Europe', country: 'DE', city: 'Frankfurt', asn: 24940, network: 'Hetzner Online', tags: ['datacenter-network'] };
+  const body = '<!doctype html><html><head><title>Example Domain</title></head><body><h1>Example Domain</h1></body></html>';
+  const cert = (fp, names) => ({
+    authorized: true, protocol: 'TLSv1.3', cipherName: 'TLS_AES_128_GCM_SHA256', createdAt: '2026-09-01T00:00:00.000Z', expiresAt: '2026-12-30T23:59:59.000Z',
+    issuer: { C: 'US', O: 'Example Test CA', CN: 'Example Test CA R1' }, subject: { CN: names[0], alt: names.map((n) => 'DNS:' + n).join(', ') },
+    keyType: 'EC', keyBits: 256, serialNumber: '0A:0B', fingerprint256: Array.from({ length: 32 }, () => fp).join(':')
+  });
+  function result(ip, host, path) {
+    const old = ip === '${OLD_IP}';
+    const broken = !old && window.__compareScenario === 'broken';
+    const headers = { 'content-type': 'text/html; charset=utf-8', server: old ? 'nginx' : 'caddy' };
+    if (old) headers['strict-transport-security'] = 'max-age=31536000; includeSubDomains';
+    return {
+      status: 'finished', resolvedAddress: ip, statusCode: 200, statusCodeName: 'OK', headers, rawBody: body, truncated: false,
+      tls: cert(old ? 'AA' : 'BB', broken ? ['www.example.net'] : [host, 'example.com']), timings: { total: 120 }
+    };
+  }
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!url.startsWith('https://api.globalping.io/')) return prevFetch(input, init);
+    const p = url.slice('https://api.globalping.io/v1'.length);
+    const method = String((init && init.method) || 'GET').toUpperCase();
+    let b = null;
+    try { b = init && typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch { b = null; }
+    gp.calls.push({ method, path: p, body: b });
+    if (p === '/limits') return json({ rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.remaining, reset: 0 } } } });
+    if (p === '/measurements' && method === 'POST') {
+      gp.remaining -= 1;
+      gp.n += 1;
+      const id = 'fakeCompare' + String(gp.n).padStart(6, '0');
+      gp.measurements[id] = { id, body: b };
+      return json({ id, probesCount: 1 }, 202, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': String(gp.remaining), 'x-ratelimit-reset': '3600', 'x-request-cost': '1' });
+    }
+    const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
+    if (m && gp.measurements[m[1]]) {
+      const { id, body: q } = gp.measurements[m[1]];
+      return json({ id, type: 'http', status: 'finished', target: q.target, probesCount: 1,
+        results: [{ probe, result: result(q.target, q.measurementOptions.request.host, q.measurementOptions.request.path) }] });
+    }
+    return json({ error: { type: 'not_found', message: 'Not Found.' } }, 404);
+  };
+})();`;
+
 async function nodeChecks(run) {
   const V = await import('../../assets/js/views/retire.js');
   run.group('Node: views/retire.js helpers');
@@ -205,6 +263,7 @@ async function main() {
     await page.send('Network.enable');
     await page.send('Network.setBlockedURLs', { urls: ['https://*'] });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeScript(fakeTable()) });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeCompareScript() });
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
@@ -541,6 +600,84 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-role="retire-ips"]').value === '192.0.2.45', { message: 'carried address' });
       await typeInto(page, 'retire-ips', '192.0.2.10');
       await typeInto(page, 'retire-domains', 'example.com\nexample.net\nexample.org');
+    });
+
+    run.group('Compare the old and the new server');
+    const ocRows = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.oc-table tbody tr')]
+      .map((tr) => [tr.dataset.field, `${tr.dataset.severity}${tr.dataset.same === 'true' ? '' : ' differs'}`])));
+    await run.step('the card takes the retired address and the first domain; nothing sent; a private address gets the CLI command', async () => {
+      await page.evaluate(() => document.querySelector('.oc-card')?.scrollIntoView());
+      // The boxes follow the form (debounced) while nobody has typed in them.
+      await page.waitFor(() => document.querySelector('[data-role="oc-oldIp"]')?.value === '192.0.2.10'
+        && document.querySelector('[data-role="oc-host"]')?.value === 'example.com', { message: 'filled from the form' });
+      await typeInto(page, 'oc-newIp', '10.0.0.20');
+      await page.waitFor(() => !!document.querySelector('[data-role="oc-cli"] code'), { message: 'CLI block' });
+      assertEqual((await page.evaluate(() => document.querySelector('[data-role="oc-cli"] code').textContent)).trim(),
+        'python3 ssl_origin_scan.py --compare 192.0.2.10 10.0.0.20 -n example.com', 'CLI command');
+      assert(!await page.evaluate(() => !!document.querySelector('[data-action="oc-run"]')), 'no Compare button for addresses a probe cannot reach');
+      assertEqual(await page.evaluate(() => window.__gp.calls.length), 0, 'no Globalping');
+    });
+
+    await run.step('two public addresses: the consent dialog, two probes (the second from the first one\'s probe), side by side', async () => {
+      await typeInto(page, 'oc-host', 'www.example.com');
+      await typeInto(page, 'oc-oldIp', OLD_IP);
+      await typeInto(page, 'oc-newIp', NEW_IP);
+      await page.waitFor(() => !!document.querySelector('[data-action="oc-run"]') && !document.querySelector('[data-action="oc-run"]').disabled, { message: 'Compare button' });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog' });
+      assert(/Cost: 2 probes/.test(await page.evaluate(() => document.querySelector('.gp-confirm').textContent)), 'cost in the dialog');
+      await page.click('.gp-confirm .btn-primary');
+      await page.waitFor(() => !!document.querySelector('.oc-results'), { timeout: 20000, message: 'results' });
+      const posts = await page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').map((c) => c.body));
+      assertEqual(posts.length, 2, 'two probes');
+      assertEqual([posts[0].target, posts[0].limit, posts[1].target, posts[1].locations], [OLD_IP, 1, NEW_IP, 'fakeCompare000001'], 'the old address first, then the same probe at the new one');
+      assert(posts.every((b) => b.type === 'http' && b.measurementOptions.request.method === 'GET' && b.measurementOptions.request.host === 'www.example.com'
+        && b.measurementOptions.request.path === '/' && b.measurementOptions.protocol === 'HTTPS'), 'GET / with the name as SNI and Host');
+      assertEqual(await page.evaluate(() => document.querySelector('.oc-results').dataset.verdict), 'differs', 'verdict');
+      const rows = await ocRows();
+      assertEqual([rows.status, rows.title, rows.body, rows.hsts, rows.server, rows.certCovers, rows.certFingerprint],
+        ['ok', 'ok', 'ok', 'warn differs', 'info differs', 'ok', 'info differs'], 'fields');
+      assert(/visitors whose browsers never saw it/.test(await page.evaluate(() => document.querySelector('.oc-row[data-field="hsts"]').textContent)), 'the HSTS note');
+      await takeDownloads(page);
+      await page.click('[data-action="oc-json"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
+      const [dl] = await takeDownloads(page);
+      const doc = JSON.parse(dl.text);
+      assertEqual([doc.schema, doc.verdict, doc.old.ip, doc.new.ip, doc.measurements.length], ['domainscope.compare/1', 'differs', OLD_IP, NEW_IP, 2], 'JSON');
+      assertEqual(external, [], 'no external request');
+      await page.evaluate(() => document.querySelector('.oc-card').scrollIntoView());
+      await shot(page, opts, 'retire-compare-desktop-light-en');
+    });
+
+    await run.step('a new server whose certificate names another host: broken, no second dialog', async () => {
+      await page.evaluate(() => { window.__compareScenario = 'broken'; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'broken', { timeout: 20000, message: 'broken' });
+      assert(!await page.evaluate(() => !!document.querySelector('.gp-confirm')), 'consent kept for the page session');
+      assertEqual((await ocRows()).certCovers, 'error differs', 'the certificate covers another name');
+      await page.evaluate(() => { window.__compareScenario = 'differs'; });
+    });
+
+    await run.step('the comparison at 320 and 375 px, TR / EN × light / dark: labelled cards, no horizontal scroll', async () => {
+      for (const lang of ['tr', 'en']) {
+        await setLangUi(page, lang);
+        await page.waitFor(() => !!document.querySelector('.oc-results'), { message: 'kept after the language switch' });
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          for (const width of [320, 375]) {
+            await page.setViewport({ width, height: 700, mobile: true });
+            await assertNoHorizontalScroll(page, `compare ${width} ${scheme} ${lang}`);
+          }
+          const label = await page.evaluate(() => getComputedStyle(document.querySelector('.oc-table td'), '::before').content);
+          assert(/·/.test(label), `a labelled value: ${label}`);
+          await page.evaluate(() => document.querySelector('.oc-card').scrollIntoView());
+          await shot(page, opts, `retire-compare-mobile-${scheme}-${lang}`);
+        }
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+      await page.evaluate(() => window.scrollTo(0, 0));
     });
 
     run.group('Phone 375×667, Turkish / English, light / dark');

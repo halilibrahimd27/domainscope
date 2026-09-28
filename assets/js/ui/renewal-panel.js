@@ -219,11 +219,12 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
     class: 'rw-sets stack-sm',
     dataset: { role: 'renewal-sets', sets: String(bundle.sets.length), certs: String(bundle.leaves.length) }
   },
-  h('p', { class: 'rw-sets-head' }, Icon('layers', { size: 15 }),
+  // Files without a usable certificate only (a key, a CSR): just the list of what is not used.
+  bundle.leaves.length ? h('p', { class: 'rw-sets-head' }, Icon('layers', { size: 15 }),
     h('span', null, [
       t('rw.certs', { count: bundle.leaves.length }), t('rw.sets', { count: bundle.sets.length }), t('rw.names', { count: names.size })
-    ].join(' · '))),
-  h('p', { class: 'muted text-xs rw-sets-intro' }, t('rw.intro')));
+    ].join(' · '))) : null,
+  bundle.leaves.length ? h('p', { class: 'muted text-xs rw-sets-intro' }, t('rw.intro')) : null);
 
   for (const set of bundle.sets) {
     el.append(h('section', { class: 'rw-set', dataset: { set: set.id }, attrs: { 'aria-label': t('rw.set', { id: set.id }) } },

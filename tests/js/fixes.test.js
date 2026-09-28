@@ -259,7 +259,8 @@ describe('change requests, reads and validation', () => {
       { name: 'example.com', type: 'TXT', values: [`v=spf1 ${Array.from({ length: 11 }, (_, i) => `include:s${i}.example.net`).join(' ')} -all`], ttl: 100000 },
       { name: '_dmarc.example.com', type: 'TXT', values: ['v=DMARC1; p=maybe'] }
     ] });
-    const keys = validateChange(req, { spf: { 'example.com': { count: 14, exceeded: true } } }).map((p) => p.key);
+    const spfRecord = req.rrsets.find((r) => r.family === 'spf1').values[0].join('');
+    const keys = validateChange(req, { spf: { 'example.com': { record: spfRecord, count: 14, exceeded: true } } }).map((p) => p.key);
     for (const k of ['zone.lint.PRIVATE_IP', 'zone.lint.CAA_FLAGS', 'zone.lint.CAA_UNKNOWN_TAG', 'zone.lint.DMARC_INVALID', 'fix.p.caa-malformed',
       'fix.p.spf-terms', 'fix.p.spf-lookups-over', 'fix.p.ttl-low', 'fix.p.ttl-high']) assert.ok(keys.includes(k), k);
     assert.ok(keys.indexOf('fix.p.ttl-low') > keys.indexOf('fix.p.spf-terms'), 'errors before info');
@@ -272,7 +273,22 @@ describe('change requests, reads and validation', () => {
       'a.example.net|TXT': { answers: [{ name: 'a.example.net', type: 'TXT', ttl: 300, data: ['v=spf1 ip4:192.0.2.0/24 ~all'] }] },
       'b.example.net|TXT': { answers: [{ name: 'b.example.net', type: 'TXT', ttl: 300, data: ['v=spf1 ip4:198.51.100.0/24 ~all'] }] } });
     const out = await countSpfLookups(req, { dns });
-    assert.deepEqual(out, { 'example.com': { count: 3, exceeded: false, error: null } });
+    assert.deepEqual(out, { 'example.com': { record: 'v=spf1 include:_spf.example.net -all', count: 3, exceeded: false, error: null } });
+    assert.deepEqual(validateChange(req, { spf: out }).map((p) => [p.severity, p.key, p.params.count]), [['info', 'fix.p.spf-lookups-ok', 3]]);
+  });
+
+  test('a lookup count belongs to the record it counted: the form changed after the read asks to read again', async () => {
+    const cur = { 'example.com|TXT': { status: 'ok', values: [['v=spf1 ~all']], ttl: 300, cname: null } };
+    const dns = fakeDns({ '_spf.google.com|TXT': { answers: [{ name: '_spf.google.com', type: 'TXT', ttl: 300, data: ['v=spf1 include:a.example.net ~all'] }] } });
+    const at = buildChange('spf', { domain: 'example.com', includes: '_spf.google.com' }, { current: cur });
+    const spf = await countSpfLookups(at, { dns });
+    assert.equal(spf['example.com'].count, 2);
+    assert.ok(validateChange(at, { current: cur, spf }).some((p) => p.key === 'fix.p.spf-lookups-ok'), 'the record it counted');
+    // Edited without a new read: an include that costs ten lookups more.
+    const edited = buildChange('spf', { domain: 'example.com', includes: '_spf.google.com\nmany.example.net' }, { current: cur });
+    const probs = validateChange(edited, { current: cur, spf });
+    assert.ok(!probs.some((p) => p.key.startsWith('fix.p.spf-lookups-')), 'no count of another record');
+    assert.deepEqual(probs.filter((p) => p.key === 'fix.p.spf-recount').map((p) => [p.severity, p.params]), [['info', { name: 'example.com' }]]);
   });
 });
 

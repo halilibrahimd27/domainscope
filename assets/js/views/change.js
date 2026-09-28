@@ -63,6 +63,7 @@ registerStrings('en', {
   'chg.readStale': 'The form names records that were not read: read again to include them.',
   'chg.readError': 'The current records could not be read ({reason}).',
   'chg.spfCounting': 'SPF lookups counted with the includes as they are published now.',
+  'chg.spfStale': 'The SPF record changed after its lookups were counted: read again to count them.',
   'chg.problems': 'Before you send it',
   'chg.blocked': 'Fix the errors above: the change is written out once it has none.',
   'chg.emptyTitle': 'A DNS change, written once for everyone',
@@ -136,6 +137,7 @@ registerStrings('tr', {
   'chg.readStale': 'Formda okunmamış kayıtlar var: onları da almak için yeniden okuyun.',
   'chg.readError': 'Mevcut kayıtlar okunamadı ({reason}).',
   'chg.spfCounting': 'SPF sorguları include’ların şu anki hâliyle sayıldı.',
+  'chg.spfStale': 'SPF kaydı, sorguları sayıldıktan sonra değişti: saymak için yeniden okuyun.',
   'chg.problems': 'Göndermeden önce',
   'chg.blocked': 'Yukarıdaki hataları düzeltin: hata kalmayınca değişiklik yazılır.',
   'chg.emptyTitle': 'Bir DNS değişikliği, herkes için bir kez yazılır',
@@ -450,7 +452,7 @@ function mountBuilder(container, ctx) {
     const problems = validateChange(req, read ? { current: read.current, spf: read.spf } : {});
     const params = builderParams(draft.template, form);
     if (JSON.stringify(params) !== JSON.stringify(ctx.params)) ctx.setParams(params);
-    renderReadNote(read);
+    renderReadNote(read, problems.some((p) => p.key === 'fix.p.spf-recount'));
     clear(problemsEl);
     clear(outputsEl);
     const tpl = changeTemplate(draft.template);
@@ -473,14 +475,15 @@ function mountBuilder(container, ctx) {
     outputsEl.append(ChangeOutputs(req, { fileStem: `dns-change-${req.zone}` }));
   }
 
-  function renderReadNote(read) {
+  function renderReadNote(read, spfStale = false) {
     clear(readNote);
     readBtn.querySelector('.btn-label').textContent = read ? t('chg.readAgain') : t('chg.read');
     if (!read) return;
     const lines = [t('chg.readDone', { time: clockTime(read.at), count: read.count })];
     if (read.failed) lines.push(t('chg.readFailed', { count: read.failed }));
     if (req && req.reads.some((q) => !Object.hasOwn(read.current, `${q.name}|${q.type}`))) lines.push(t('chg.readStale'));
-    if (read.spf && Object.keys(read.spf).length) lines.push(t('chg.spfCounting'));
+    if (spfStale) lines.push(t('chg.spfStale'));
+    else if (read.spf && Object.keys(read.spf).length) lines.push(t('chg.spfCounting'));
     readNote.append(h('p', { class: 'muted', title: formatDateTime(read.at) }, Icon('check', { size: 14 }), ' ', lines.join(' ')));
   }
 

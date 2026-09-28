@@ -557,10 +557,11 @@ export function afterZoneText(req, current = null) {
  * Check a change request before anyone applies it: its own problems, the Zone File lint rules
  * that apply to its records ({@link CHANGE_LINT_CODES}; with what a live read found at its names,
  * a CNAME next to other data is seen), the SPF lookup budget (the record's own lookup terms, and
- * the recursive count when {@link countSpfLookups} ran) and the RFC 8659 / 8657 grammar of each
- * CAA issue value.
+ * the recursive count when {@link countSpfLookups} ran — for the record it counted: a record the form
+ * has changed since gets a "read again" instead) and the RFC 8659 / 8657 grammar of each CAA issue
+ * value.
  * @param {ChangeRequest} req
- * @param {{ current?: Record<string, object>|null, spf?: Record<string, { count: number, exceeded: boolean, error?: string }>|null }} [opts]
+ * @param {{ current?: Record<string, object>|null, spf?: Record<string, { record: string, count: number|null, exceeded: boolean, error?: string|null }>|null }} [opts]
  * @returns {FixProblem[]} errors first
  */
 export function validateChange(req, { current = null, spf = null } = {}) {
@@ -584,7 +585,10 @@ export function validateChange(req, { current = null, spf = null } = {}) {
         }
       }
       const counted = spf && spf[r.name];
-      if (counted && Number.isFinite(counted.count)) {
+      if (counted && (r.values.length !== 1 || counted.record !== txtText(r.values[0]))) {
+        // Counted for the record the form held at the read, not this one: the count says nothing about it.
+        problems.push({ severity: 'info', key: 'fix.p.spf-recount', params: { name: r.name }, name: r.name, type: 'TXT' });
+      } else if (counted && Number.isFinite(counted.count)) {
         const severity = counted.count > SPF_LOOKUP_LIMIT ? 'error' : counted.count >= SPF_LOOKUP_LIMIT - 1 ? 'warn' : 'info';
         problems.push({ severity, key: `fix.p.spf-lookups-${severity === 'info' ? 'ok' : severity === 'warn' ? 'high' : 'over'}`,
           params: { name: r.name, count: counted.count, limit: SPF_LOOKUP_LIMIT }, name: r.name, type: 'TXT' });
@@ -618,18 +622,20 @@ function sortProblems(list) {
  * a DohClient: the record as it will be, its includes as they are published now.
  * @param {ChangeRequest} req
  * @param {{ dns: object, signal?: AbortSignal }} opts
- * @returns {Promise<Record<string, { count: number|null, exceeded: boolean, error: string|null }>>} keyed by owner name
+ * @returns {Promise<Record<string, { record: string, count: number|null, exceeded: boolean, error: string|null }>>} keyed by owner
+ *   name; `record` is the text counted ({@link validateChange} uses the count only while the set still holds it)
  */
 export async function countSpfLookups(req, { dns, signal } = {}) {
   const out = {};
   for (const r of req.rrsets) {
     if (r.family !== 'spf1' || r.values.length !== 1) continue;
+    const record = txtText(r.values[0]);
     try {
-      const res = await spfLookupCount(r.name, { dns, signal, record: txtText(r.values[0]) });
-      out[r.name] = { count: res.count, exceeded: res.exceeded, error: null };
+      const res = await spfLookupCount(r.name, { dns, signal, record });
+      out[r.name] = { record, count: res.count, exceeded: res.exceeded, error: null };
     } catch (err) {
       if (err && err.name === 'AbortError') throw err;
-      out[r.name] = { count: null, exceeded: false, error: err && err.message ? err.message : String(err) };
+      out[r.name] = { record, count: null, exceeded: false, error: err && err.message ? err.message : String(err) };
     }
   }
   return out;
@@ -2053,6 +2059,7 @@ const STRINGS = [
   ['fix.p.spf-terms', ['The SPF record of {name} has {count} lookup terms of its own, over the limit of {limit} before any include is expanded.', '{name} SPF kaydının kendi {count} sorgu ifadesi var; include’lar açılmadan önce bile {limit} sınırını aşıyor.']],
   ['fix.p.spf-lookups-over', ['With its includes as published now, the SPF record of {name} needs {count} DNS lookups (limit {limit}): SPF would fail for all mail.', 'include’ların şu anki hâliyle {name} SPF kaydı {count} DNS sorgusu gerektiriyor (sınır {limit}): SPF tüm e-postalarda başarısız olur.']],
   ['fix.p.spf-lookups-high', ['With its includes as published now, the SPF record of {name} needs {count} of {limit} DNS lookups: one more include breaks it.', 'include’ların şu anki hâliyle {name} SPF kaydı {limit} DNS sorgusunun {count} tanesini kullanıyor: bir include daha onu bozar.']],
+  ['fix.p.spf-recount', ['The SPF record of {name} changed after its DNS lookups were counted: read the current records again to count them.', '{name} SPF kaydı DNS sorguları sayıldıktan sonra değişti: saymak için mevcut kayıtları yeniden okuyun.']],
   ['fix.p.spf-lookups-ok', ['With its includes as published now, the SPF record of {name} needs {count} of {limit} DNS lookups.', 'include’ların şu anki hâliyle {name} SPF kaydı {limit} DNS sorgusunun {count} tanesini kullanıyor.']],
   ['fix.p.dmarc-multiple', ['{name} has {count} DMARC records: keep exactly one.', '{name} adında {count} DMARC kaydı var: yalnızca birini bırakın.']],
   ['fix.p.pct', ['pct must be a whole number from 1 to 100, not “{value}”.', 'pct 1 ile 100 arasında bir tam sayı olmalı; “{value}” değil.']],

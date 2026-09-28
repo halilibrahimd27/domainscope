@@ -140,23 +140,33 @@ test('constants: modes, limits, statuses, severities and reasons are frozen and 
 
 describe('parseNameservers', () => {
   test('host names (trailing dot, case, commas, lines, comments), public addresses; duplicates dropped', () => {
-    const { list, issues } = parseNameservers('NS1.Example.NET.\nns2.example.net, ns1.example.net # old one\n  1.1.1.1;2606:4700:4700::1111');
+    const { list, cliOnly, issues } = parseNameservers('NS1.Example.NET.\nns2.example.net, ns1.example.net # old one\n  1.1.1.1;2606:4700:4700::1111');
     assert.deepEqual(list, [NS1, NS2, '1.1.1.1', '2606:4700:4700::1111']);
-    assert.deepEqual(issues, []);
+    assert.deepEqual([cliOnly, issues], [[], []]);
   });
 
-  test('private and documentation addresses, bad tokens, more than eight, and the file\'s own servers are issues', () => {
-    const { list, issues } = parseNameservers('10.0.0.53 192.0.2.53 ns_1.example.net -x a1 ns1.example.org', { fileNs: ['ns1.example.org'] });
+  test('private and documentation addresses go to the CLI only; bad tokens, more than eight, and the file\'s own servers are issues', () => {
+    const { list, cliOnly, issues } = parseNameservers('10.0.0.53 192.0.2.53 [2001:DB8::53] 10.0.0.53 ns_1.example.net -x a1 ns1.example.org', { fileNs: ['ns1.example.org'] });
     assert.deepEqual(list, ['ns1.example.org']);
+    assert.deepEqual(cliOnly, ['10.0.0.53', '192.0.2.53', '2001:db8::53'], 'normalized, a duplicate dropped');
     assert.deepEqual(issues, [
-      { code: 'private', value: '10.0.0.53' }, { code: 'private', value: '192.0.2.53' }, { code: 'invalid', value: 'ns_1.example.net' },
-      { code: 'invalid', value: '-x' }, { code: 'invalid', value: 'a1' }, { code: 'in-file', value: 'ns1.example.org' }
+      { code: 'private', value: '10.0.0.53' }, { code: 'private', value: '192.0.2.53' }, { code: 'private', value: '2001:db8::53' },
+      { code: 'invalid', value: 'ns_1.example.net' }, { code: 'invalid', value: '-x' }, { code: 'invalid', value: 'a1' }, { code: 'in-file', value: 'ns1.example.org' }
     ]);
     const many = parseNameservers(Array.from({ length: 10 }, (_, i) => `ns${i}.example.net`).join(' '));
     assert.equal(many.list.length, PARITY_MAX_NAMESERVERS);
     assert.deepEqual(many.issues.map((i) => i.code), ['too-many', 'too-many']);
-    assert.deepEqual(parseNameservers(''), { list: [], issues: [] });
-    assert.deepEqual(parseNameservers(null), { list: [], issues: [] });
+    const mixed = parseNameservers(['10.0.0.53', ...Array.from({ length: 8 }, (_, i) => `ns${i}.example.net`)].join(' '));
+    assert.deepEqual([mixed.list.length + mixed.cliOnly.length, mixed.issues.at(-1)], [PARITY_MAX_NAMESERVERS, { code: 'too-many', value: 'ns7.example.net' }],
+      'the CLI\'s limit counts both');
+    assert.deepEqual(parseNameservers(''), { list: [], cliOnly: [], issues: [] });
+    assert.deepEqual(parseNameservers(null), { list: [], cliOnly: [], issues: [] });
+  });
+
+  test('the CLI command carries the private servers a probe cannot reach', () => {
+    const { list, cliOnly } = parseNameservers(`${NS1} 10.0.0.53 2001:db8::53`);
+    assert.deepEqual(buildParityCommand({ file: 'example.com.parity.zone', nameservers: [...list, ...cliOnly] }),
+      { command: `python3 dns_parity.py example.com.parity.zone --ns ${NS1} 10.0.0.53 2001:db8::53`, dropped: 0 });
   });
 
   test('fileNameservers: the apex NS of the export', () => {
@@ -448,6 +458,37 @@ describe('runParity', () => {
     const records = { ...good, 'example.com|NS': [[86400, `${NS1}.`]] };
     const { row } = await run(z, { '1.1.1.1': { records } }, { nameservers: ['1.1.1.1'] });
     assert.equal(status(row('1.1.1.1|example.com|NS')), 'skipped ns-by-address');
+  });
+
+  test('host names and an address together: the apex NS set is not judged against the names alone (the CLI\'s rule)', async () => {
+    // The new provider's real set is {ns1, ns2}; the user typed ns1 and ns2's address.
+    const { result, row } = await run(z, { [NS1]: { records: good }, '1.1.1.1': { records: good } }, { nameservers: [NS1, '1.1.1.1'], mode: 'all' });
+    assert.equal(status(row(`${NS1}|example.com|NS`)), 'skipped ns-by-address', 'no false ns-mismatch');
+    assert.equal(status(row('1.1.1.1|example.com|NS')), 'skipped ns-by-address');
+    assert.equal(result.counts.different, 0, 'nothing different: the only blocker left is the missing record');
+  });
+
+  test('a stop counts the record sets it kept from being compared', async () => {
+    const ac = new AbortController();
+    const client = fakeGp({ [NS1]: { records: good } }, { delayMs: 15 });
+    const p = runParity(z, { client, nameservers: [NS1], extras: false, signal: ac.signal, labelFn: () => 'zzprobe' });
+    setTimeout(() => ac.abort(), 25);
+    const stopped = await p;
+    const plan = planParity(z, { nameservers: [NS1], extras: false });
+    const own = stopped.rows.filter((r) => r.ns === NS1).length;
+    assert.equal(stopped.stoppedBy, 'abort');
+    assert.ok(own < plan.rrsets, `stopped part way: ${own} of ${plan.rrsets}`);
+    assert.equal(stopped.notReached, plan.rrsets - own);
+    const sum = paritySummary(stopped);
+    assert.ok(sum.unchecked >= stopped.notReached && sum.unchecked > 0, `unchecked ${sum.unchecked}`);
+    // Stopped at the first SOA question (the first POST is a 429): every record set to compare,
+    // and those left for the CLI, count; the server was never asked, so nothing says it is blocked.
+    const early = await run(z, { [NS1]: { records: good } }, { nameservers: [NS1], extras: false }, { quotaAfter: 0.5 });
+    assert.equal(early.result.stoppedBy, 'quota');
+    assert.equal(early.result.notReached, plan.checked + plan.skipped.type + plan.skipped.budget);
+    assert.deepEqual([paritySummary(early.result).verdict, paritySummary(early.result).unchecked], ['partial', early.result.notReached]);
+    const done = await run(z, { [NS1]: { records: good } }, { nameservers: [NS1], extras: false });
+    assert.equal(done.result.notReached, 0);
   });
 
   test('the quota runs out mid-run: stopped, the reset time kept, the rows so far kept, nothing more sent', async () => {

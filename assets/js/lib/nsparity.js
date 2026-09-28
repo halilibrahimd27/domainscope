@@ -105,28 +105,33 @@ const canon = (v) => String(v ?? '').trim().toLowerCase().replace(/\.$/, '');
 /**
  * The new name servers from a text box: host names (a trailing dot is dropped, IDN → punycode)
  * or public addresses, separated by spaces, commas, semicolons or lines; `#` starts a comment.
- * A private or documentation address cannot be asked through Globalping (the CLI can), a
- * duplicate is dropped, and more than {@link PARITY_MAX_NAMESERVERS} are cut off.
+ * A private or documentation address cannot be asked through Globalping: it goes to `cliOnly`
+ * (the CLI asks it from your own network) with a `private` issue. A duplicate is dropped, and
+ * past {@link PARITY_MAX_NAMESERVERS} (both lists together, the CLI's limit) the rest is cut off.
  * @param {string} text
  * @param {{ fileNs?: string[] }} [opts] the zone file's own apex NS (a server in it is an issue:
  *   that is the current provider)
- * @returns {{ list: string[], issues: Array<{ code: string, value: string }> }}
+ * @returns {{ list: string[], cliOnly: string[], issues: Array<{ code: string, value: string }> }}
+ *   `list`: what Globalping asks; `cliOnly`: private addresses only the CLI command carries
  */
 export function parseNameservers(text, { fileNs = [] } = {}) {
   const list = [];
+  const cliOnly = [];
   const issues = [];
   const own = new Set((fileNs || []).map(canon));
   const tokens = String(text ?? '').split('\n').map((l) => l.replace(/#.*/, '')).join(' ').split(/[\s,;]+/).filter(Boolean);
   for (const raw of tokens) {
     const token = raw.trim();
     let value = null;
+    let privateIp = false;
     if (ipVersion(token) || /^\[.*\]$/.test(token)) {
       const ip = normalizeIP(token.replace(/^\[|\]$/g, ''));
-      if (ip && isGloballyRoutable(ip)) value = probeTarget(ip);
-      else {
-        issues.push({ code: ip ? 'private' : 'invalid', value: token });
+      if (!ip) {
+        issues.push({ code: 'invalid', value: token });
         continue;
       }
+      privateIp = !isGloballyRoutable(ip);
+      value = privateIp ? ip : probeTarget(ip);
     } else {
       const host = normalizeHostname(token);
       if (host && isProbeableHost(host)) value = host;
@@ -135,15 +140,20 @@ export function parseNameservers(text, { fileNs = [] } = {}) {
         continue;
       }
     }
-    if (list.includes(value)) continue;
-    if (list.length >= PARITY_MAX_NAMESERVERS) {
+    if (list.includes(value) || cliOnly.includes(value)) continue;
+    if (list.length + cliOnly.length >= PARITY_MAX_NAMESERVERS) {
       issues.push({ code: 'too-many', value });
+      continue;
+    }
+    if (privateIp) {
+      issues.push({ code: 'private', value });
+      cliOnly.push(value);
       continue;
     }
     if (own.has(value)) issues.push({ code: 'in-file', value });
     list.push(value);
   }
-  return { list, issues };
+  return { list, cliOnly, issues };
 }
 
 /**
@@ -656,8 +666,10 @@ function safeCall(fn, arg) {
  * @param {() => string} [opts.labelFn] the wildcard probe label (tests)
  * @param {() => Date} [opts.now]
  * @returns {Promise<{ origin: string, mode: string, startedAt: Date, finishedAt: Date, nameservers: NsResult[], rows: ParityRow[],
- *   counts: Object<string, number>, spent: number, planned: number, stoppedBy: string|null, resetAt: Date|null, serials: 'same'|'differ'|'unknown',
- *   dnssec: { signedInFile: boolean, ds: 'present'|'absent'|'unknown'|null }, capped: boolean, measurementIds: string[] }>}
+ *   counts: Object<string, number>, spent: number, planned: number, notReached: number, stoppedBy: string|null, resetAt: Date|null,
+ *   serials: 'same'|'differ'|'unknown', dnssec: { signedInFile: boolean, ds: 'present'|'absent'|'unknown'|null }, capped: boolean,
+ *   measurementIds: string[] }>}
+ *   `notReached`: record sets a stop kept from a server to compare (0 without a stop)
  * @throws {TypeError} without a client, a name server or a zone name (see {@link planParity})
  */
 export async function runParity(zone, opts = {}) {
@@ -670,7 +682,10 @@ export async function runParity(zone, opts = {}) {
   if (!plan.ok) throw new TypeError(`runParity: nothing to run (${plan.why})`);
   const idx = zoneIndex(zone);
   const origin = idx.origin;
-  const hosts = [...plan.full, ...plan.serial].filter((n) => !ipVersion(n));
+  // The apex NS set is judged against the servers entered only when every one is a host name:
+  // with one given by address, which names the set should hold is not known (the CLI's rule).
+  const entered = [...plan.full, ...plan.serial];
+  const hosts = entered.some((n) => ipVersion(n)) ? [] : entered;
   const autoTtl = new Set(idx.unique.filter((r) => r.ttlAuto).map((r) => `${r.name}|${r.type}`));
   const startedAt = now();
 
@@ -712,6 +727,8 @@ export async function runParity(zone, opts = {}) {
   const servers = [...plan.full.map((ns) => ({ ns, role: 'full' })), ...plan.serial.map((ns) => ({ ns, role: 'serial' }))]
     .map((s) => ({ ...s, state: 'not-run', serial: null, aa: null, rcode: null, measurementId: null, probe: null }));
   const rows = [];
+  /** Record-set rows each fully compared server got (extras not counted): what a stop left out. */
+  const driftRows = new Map();
   const emit = (row) => {
     rows.push(row);
     safeCall(onRow, row);
@@ -749,7 +766,10 @@ export async function runParity(zone, opts = {}) {
         queryTypes: PARITY_QUERY_TYPES,
         labelFn,
         now,
-        onRow: (row) => emit(parityRow(row, { ns: server.ns, origin, hosts, autoTtl }))
+        onRow: (row) => {
+          driftRows.set(server.ns, (driftRows.get(server.ns) || 0) + 1);
+          emit(parityRow(row, { ns: server.ns, origin, hosts, autoTtl }));
+        }
       });
       if (report.aborted || aborted()) break;
       if (extras) {
@@ -789,6 +809,17 @@ export async function runParity(zone, opts = {}) {
   const serials = known.length < 2 ? 'unknown' : known.every((s) => s === known[0]) ? 'same' : 'differ';
   const counts = Object.fromEntries(PARITY_STATUSES.map((s) => [s, 0]));
   for (const row of rows) counts[row.status] += 1;
+  // After a stop: the record sets a server to compare never got to. The free rows (skipped for
+  // their name, type or the budget) come first in a drift run, so a server with rows lacks only
+  // record sets to compare; one without any lacks what it would have compared or left unchecked.
+  let notReached = 0;
+  if (stoppedBy) {
+    for (const s of servers) {
+      if (s.role !== 'full' || (s.state !== 'ok' && s.state !== 'not-run')) continue;
+      const got = driftRows.get(s.ns) || 0;
+      notReached += got ? Math.max(0, plan.rrsets - got) : plan.checked + plan.skipped.type + plan.skipped.budget;
+    }
+  }
   return {
     origin,
     mode: plan.mode,
@@ -799,6 +830,7 @@ export async function runParity(zone, opts = {}) {
     counts,
     spent,
     planned: plan.probes,
+    notReached,
     stoppedBy,
     resetAt,
     serials,
@@ -830,7 +862,9 @@ export function signedInFile(zone) {
  * every server serves the zone), 'fix' (missing or different records, or a server that does not
  * serve it), 'check' (only extra / unproxied records, TTL differences or serials out of step),
  * 'partial' (clean so far, but the run stopped or record sets were not compared) or 'blocked'
- * (no server could be compared).
+ * (every server was asked, and none could be compared). `unchecked` counts the record sets left
+ * for the CLI (a type Globalping cannot ask, past the probe cap), those without an answer, and
+ * those a stop kept from being asked (`result.notReached`).
  * @param {object} result {@link runParity}
  * @returns {{ verdict: 'ready'|'fix'|'check'|'partial'|'blocked', counts: Object<string, number>, ttl: number,
  *   unchecked: number, badServers: number, compared: number }}
@@ -841,14 +875,17 @@ export function paritySummary(result) {
   const servers = (result && result.nameservers) || [];
   const ttl = rows.filter((r) => r.reasons.includes('ttl-differs')).length;
   const unchecked = rows.filter((r) => r.status === 'skipped' && (r.reasons.includes('not-queryable') || r.reasons.includes('budget'))).length
-    + rows.filter((r) => r.status === 'error').length;
+    + rows.filter((r) => r.status === 'error').length + (Number.isFinite(result && result.notReached) ? result.notReached : 0);
   const badServers = servers.filter((s) => s.state !== 'ok' && s.state !== 'not-run').length;
   const compared = servers.filter((s) => s.role === 'full' && s.state === 'ok').length;
+  const notRun = servers.some((s) => s.state === 'not-run');
   let verdict;
-  if (!compared) verdict = 'blocked';
+  // Blocked only when every server was asked and none serves the zone; a stop before a server
+  // was asked says nothing about it.
+  if (!compared && !notRun) verdict = 'blocked';
   else if ((counts.missing || 0) + (counts.different || 0) > 0 || badServers) verdict = 'fix';
   else if ((counts.extra || 0) + (counts.unproxied || 0) > 0 || ttl || result.serials === 'differ') verdict = 'check';
-  else if (result.stoppedBy || unchecked || result.capped || servers.some((s) => s.state === 'not-run')) verdict = 'partial';
+  else if (result.stoppedBy || unchecked || result.capped || notRun) verdict = 'partial';
   else verdict = 'ready';
   return { verdict, counts, ttl, unchecked, badServers, compared };
 }

@@ -8,9 +8,12 @@
  *   SCORE, ISSUER, NAME, CERT, EXPOSED, DANGLING); `tone`: 'bad' | 'good' | 'info' | 'quiet';
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
- *   way), what a failed lookup may hide (a finding "gone" while that lookup failed), a CT issuer
- *   or name that may only have been missed the night before (see surelyNew), and a renewed
- *   certificate from a known issuer for known names (CERT);
+ *   way), CT sources that could not be read (FAILED / RECOVERED: the source's outage, not the
+ *   domain's change), what a failed lookup may hide (a finding "gone" while its lookup failed, a
+ *   finding "new" in an area no earlier run read, a score moved by a failed lookup), a CT issuer
+ *   or name that may only have been missed before (see surelyNew), and a renewed certificate
+ *   from a known issuer for known names (CERT). What a run could not read, its report carries
+ *   from the last run that read it (tools/ds/carry.mjs): the run after is compared with that;
  * - `target` / `item`: the domain, name, zone or certificate, and what inside it moved (a
  *   finding id, a host, an RRset key, an issuer, an endpoint), null for the target itself;
  * - `parts`: the line as lib/summary.js parts, its untrusted values as code parts.
@@ -18,7 +21,8 @@
  */
 
 import { DS_TOOL, DS_VERSION } from './args.mjs';
-import { code, isoDay, localYesNo } from './render.mjs';
+import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
+import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
 import { DRIFT_SEVERITY } from '../../assets/js/lib/zonedrift.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
@@ -43,26 +47,56 @@ function itemsProblem(list, name, check) {
   return null;
 }
 
+const checkProblem = (c) => (!isStr(c.id) ? 'has no "id"' : !isStr(c.severity) ? 'has no "severity"' : null);
+
+/** Why a host (or the answer it carried, `lastGood`) is not what the comparison reads, or null. */
+function answerProblem(h) {
+  if (!isStrList(h.ipv4 || []) || !isStrList(h.ipv6 || [])) return 'has addresses that are not lists of text';
+  if (!isStrList(h.cnames || [])) return 'has "cnames" that are not a list of text';
+  if (!isStrOrNull(h.status) || !isStrOrNull(h.kind) || !isStrOrNull(h.provider)) return 'has a "status", "kind" or "provider" that is not text';
+  return null;
+}
+
 const TARGET_CHECKS = Object.freeze({
   health: (x) => {
     if (x.score !== undefined && !Number.isFinite(x.score)) return 'has a "score" that is not a number';
     if (x.failedLookups !== undefined && !isStrList(x.failedLookups)) return 'has a "failedLookups" that is not a list of text';
-    return itemsProblem(x.checks, 'checks', (c) => (!isStr(c.id) ? 'has no "id"' : !isStr(c.severity) ? 'has no "severity"' : null));
+    if (x.carried !== undefined) {
+      const p = itemsProblem(x.carried, 'carried', (c) => (!isStr(c.area) ? 'has no "area"' : !isStrOrNull(c.from) ? 'has a "from" that is not text'
+        : itemsProblem(c.checks, 'checks', checkProblem)));
+      if (p) return p;
+    }
+    return itemsProblem(x.checks, 'checks', checkProblem);
   },
   subdomains: (x) => {
     if (!isStr(x.mode)) return 'has no "mode"';
     return itemsProblem(x.hosts, 'hosts', (h) => {
       if (!isStr(h.name)) return 'has no "name"';
-      if (!isStrList(h.ipv4 || []) || !isStrList(h.ipv6 || [])) return 'has addresses that are not lists of text';
-      if (!isStrOrNull(h.status) || !isStrOrNull(h.kind) || !isStrOrNull(h.provider)) return 'has a "status", "kind" or "provider" that is not text';
-      return null;
+      const p = answerProblem(h);
+      if (p) return p;
+      if (h.lastGood === undefined) return null;
+      if (!isObj(h.lastGood) || !isStrOrNull(h.lastGood.at)) return 'has a "lastGood" that is not an answer';
+      const q = answerProblem(h.lastGood);
+      return q ? `lastGood ${q}` : null;
     });
   },
   ct: (x) => {
     if (!isStrList(x.names)) return 'has no "names" list';
+    if (!isStrOrNull(x.readAt)) return 'has a "readAt" that is not text';
+    if (x.sources !== undefined) {
+      const p = itemsProblem(x.sources, 'sources', (s) => (!isStr(s.source) ? 'has no "source"' : !isStrOrNull(s.lastFullAt) ? 'has a "lastFullAt" that is not text' : null));
+      if (p) return p;
+    }
     const p = itemsProblem(x.issuers, 'issuers', (g) => (isStr(g.name) ? null : 'has no "name"'));
     if (p) return p;
-    return itemsProblem(x.certificates, 'certificates', (c) => (!isStr(c.id) ? 'has no "id"' : !isStr(c.ca) ? 'has no "ca"' : !isStrList(c.names) ? 'has no "names" list' : null));
+    return itemsProblem(x.certificates, 'certificates', (c) => {
+      if (!isStr(c.id)) return 'has no "id"';
+      if (!isStr(c.ca)) return 'has no "ca"';
+      if (!isStrList(c.names)) return 'has no "names" list';
+      if (c.sources !== undefined && !isStrList(c.sources)) return 'has a "sources" that is not a list of text';
+      if (c.carried !== undefined && !(isObj(c.carried) && isStrOrNull(c.carried.from))) return 'has a "carried" without a "from"';
+      return null;
+    });
   },
   drift: (x) => {
     if (x.preflight !== undefined && x.preflight !== null && !isObj(x.preflight)) return 'has a "preflight" that is not an object';
@@ -164,13 +198,6 @@ function checksById(checks) {
   return out;
 }
 
-/**
- * A check that says a lookup failed: `<area>.error` (soa, ns, mx, spf, dmarc, dkim, caa, dnssec,
- * wildcard, rdap), `spf.dns-error`, `mail-identity.fcrdns-error` — not `spf.include-error`, which
- * is a broken SPF record that was read.
- */
-const isLookupError = (id) => /^[a-z-]+\.(?:error|dns-error|fcrdns-error)$/.test(id);
-
 function healthTitle(t, c) {
   return textParts(t, c.titleKey || `health.${c.id}.title`, localYesNo(t, c.params));
 }
@@ -185,19 +212,28 @@ function diffHealth(before, after, { t }) {
       out.push(change('NEW', domain, null, [`now checked: score ${a.score}`], { kind: 'appeared', after: { score: a.score } }));
       continue;
     }
-    // A lookup that failed this run hides what it would have found: the score and the findings
-    // gone with it are listed, not counted (the failed lookup is a finding of its own, and counts).
-    const failed = (a.failedLookups || []).length > 0 || (a.checks || []).some((c) => isLookupError(c.id));
+    // A lookup that failed hides what it would have found, by area (carry.mjs failedAreas). This
+    // run's failure: the findings of that area gone are listed, not counted, and the report
+    // carries them to the next run. The baseline's: it carried the area as last read, and this
+    // run is compared with that; an area no earlier run read makes its findings "new" listed
+    // only. The failed lookup is a finding of its own, and counts. A score moved by a failed
+    // lookup in either run is listed only: its findings say what moved.
+    const failedNow = failedAreas(a);
+    const unreadBefore = new Set([...carriedFrom(b)].filter(([, from]) => from === null).map(([area]) => area));
+    const failedWhen = failedNow.size ? ' (a lookup failed this run)' : failedAreas(b).size ? ' (a lookup failed in the baseline run)' : '';
     if (Number.isFinite(b.score) && Number.isFinite(a.score) && b.score !== a.score) {
-      out.push(change('SCORE', domain, null, [`health score ${b.score} → ${a.score}`, ...(failed ? [' (a lookup failed this run)'] : [])],
-        { tone: failed ? 'quiet' : a.score < b.score ? 'bad' : 'good', counts: !failed, before: b.score, after: a.score }));
+      out.push(change('SCORE', domain, null, [`health score ${b.score} → ${a.score}`, ...(failedWhen ? [failedWhen] : [])],
+        { tone: failedWhen ? 'quiet' : a.score < b.score ? 'bad' : 'good', counts: !failedWhen, before: b.score, after: a.score }));
     }
-    const bc = checksById(b.checks);
+    const bc = checksById(knownChecks(b));
     const ac = checksById(a.checks);
     for (const [id, x] of ac) {
       const y = bc.get(id);
       if (!y) {
-        if (notable(x.severity)) out.push(change('NEW', domain, id, [`${x.severity} `, code(id), ' — ', ...healthTitle(t, x)], { tone: 'bad', kind: 'appeared', after: x.severity }));
+        if (!notable(x.severity)) continue;
+        const unsure = checkAreas(id).some((area) => unreadBefore.has(area));
+        out.push(change('NEW', domain, id, [`${x.severity} `, code(id), ' — ', ...healthTitle(t, x), ...(unsure ? [' (its lookup failed in the baseline run: it may not be new)'] : [])],
+          { tone: unsure ? 'quiet' : 'bad', counts: !unsure, kind: 'appeared', after: x.severity }));
         continue;
       }
       if (y.severity === x.severity || !(notable(x.severity) || notable(y.severity))) continue;
@@ -205,10 +241,14 @@ function diffHealth(before, after, { t }) {
       out.push(change(worse ? 'WORSE' : 'BETTER', domain, id, [code(id), `: ${y.severity} → ${x.severity} — `, ...healthTitle(t, x)],
         { tone: worse ? 'bad' : 'good', before: y.severity, after: x.severity }));
     }
+    const readBefore = new Set((b.checks || []).map((c) => c.id));
     for (const [id, y] of bc) {
       if (ac.has(id) || !notable(y.severity)) continue;
+      const hidden = !isLookupError(id) && checkAreas(id).some((area) => failedNow.has(area));
+      // Carried by the baseline and carried again: nothing was read either night.
+      if (hidden && !readBefore.has(id)) continue;
       out.push(change('GONE', domain, id, [`${y.severity} `, code(id), ' no longer reported — ', ...healthTitle(t, y),
-        ...(failed ? [' (a lookup failed this run: it may still be there)'] : [])], { tone: failed ? 'quiet' : 'good', counts: !failed, kind: 'disappeared', before: y.severity }));
+        ...(hidden ? [' (its lookup failed this run: it may still be there)'] : [])], { tone: hidden ? 'quiet' : 'good', counts: !hidden, kind: 'disappeared', before: y.severity }));
     }
   }
   for (const [domain, b] of old) {
@@ -221,14 +261,13 @@ function diffHealth(before, after, { t }) {
 /* subdomains                                                               */
 /* ------------------------------------------------------------------------ */
 
-const FAILED_STATUSES = new Set(['SERVFAIL', 'REFUSED', 'ERROR']);
 const resolves = (h) => (h.ipv4 || []).length > 0 || (h.ipv6 || []).length > 0;
 const addresses = (h) => [...(h.ipv4 || []), ...(h.ipv6 || [])];
 const DIRECT = new Set(['direct', 'private']);
 
 /** "Cloudflare", "direct 192.0.2.10", "NXDOMAIN" … for a host line. */
 function hostState(h) {
-  if (FAILED_STATUSES.has(h.status)) return [`lookup failed (${h.status}${h.error ? `: ${h.error}` : ''})`];
+  if (lookupFailed(h)) return [`lookup failed (${h.status}${h.error ? `: ${h.error}` : ''})`];
   if (h.dangling) return ['dangling CNAME to ', code((h.cnames || []).slice(-1)[0] || '?')];
   if (!resolves(h)) return [h.status && h.status !== 'NOERROR' ? String(h.status) : 'no address (NODATA)'];
   const who = h.provider ? [code(h.provider)] : [String(h.kind || 'resolves')];
@@ -236,6 +275,38 @@ function hostState(h) {
   return DIRECT.has(h.kind) || !h.provider
     ? [...who, ' ', ...ips.slice(0, 3).flatMap((ip, i) => (i ? [', ', code(ip)] : [code(ip)])), ...(ips.length > 3 ? [` +${ips.length - 3}`] : [])]
     : who;
+}
+
+/**
+ * The change from one answer of a host to another, neither a failed lookup, or null.
+ * @param {string} domain
+ * @param {string} name
+ * @param {object} y the earlier answer (a host, or the `lastGood` a failed one carried)
+ * @param {object} x this run's
+ * @param {Array} [note] parts after the line
+ */
+function hostMove(domain, name, y, x, note = []) {
+  const where = [code(name), ' — '];
+  if (!y.dangling && x.dangling) {
+    return change('DANGLING', domain, name, [...where, ...hostState(x), '; was ', ...hostState(y), ...note], { tone: 'bad', before: y.status, after: x.status });
+  }
+  if (resolves(y) && !resolves(x)) {
+    return change('GONE', domain, name, [...where, 'no longer resolves: ', ...hostState(x), ...note], { tone: 'bad', kind: 'disappeared', before: addresses(y), after: x.status });
+  }
+  if (!resolves(y) && resolves(x)) return change('NEW', domain, name, [...where, 'now resolves: ', ...hostState(x), ...note], { kind: 'appeared', before: y.status, after: addresses(x) });
+  if (y.dangling && !x.dangling) {
+    return change('BETTER', domain, name, [...where, 'no longer a dangling CNAME: ', ...hostState(x), ...note], { tone: 'good', before: y.status, after: x.status });
+  }
+  if (!resolves(x)) return null;
+  const moved = y.kind !== x.kind || (y.providerId || y.provider) !== (x.providerId || x.provider);
+  if (moved && y.hidesOrigin && !x.hidesOrigin && DIRECT.has(x.kind)) {
+    return change('EXPOSED', domain, name, [...where, 'no longer behind ', code(y.provider || y.kind), ': now ', ...hostState(x), ...note], { tone: 'bad', before: y.kind, after: x.kind });
+  }
+  if (moved) return change('CHANGED', domain, name, [...where, ...hostState(y), ' → ', ...hostState(x), ...note], { before: y.kind, after: x.kind });
+  if (DIRECT.has(x.kind) && addresses(x).join(',') !== addresses(y).join(',')) {
+    return change('CHANGED', domain, name, [...where, 'addresses ', ...hostState(y), ' → ', ...hostState(x), ...note], { before: addresses(y), after: addresses(x) });
+  }
+  return null;
 }
 
 function diffHosts(domain, b, a) {
@@ -251,8 +322,8 @@ function diffHosts(domain, b, a) {
       else if (resolves(x)) out.push(change('NEW', domain, name, ['new host ', ...where, ...hostState(x)], { kind: 'appeared', after: x.status }));
       continue;
     }
-    const yFail = FAILED_STATUSES.has(y.status);
-    const xFail = FAILED_STATUSES.has(x.status);
+    const yFail = lookupFailed(y);
+    const xFail = lookupFailed(x);
     if (xFail && yFail) {
       if (x.status !== y.status) out.push(change('FAILING', domain, name, [...where, `${y.status} → ${x.status}`], { tone: 'quiet', counts: false, before: y.status, after: x.status }));
       continue;
@@ -262,30 +333,19 @@ function diffHosts(domain, b, a) {
       continue;
     }
     if (yFail) {
-      out.push(change('RECOVERED', domain, name, [...where, ...hostState(x)], { tone: 'good', before: y.status, after: x.status }));
+      // Answered again: compared with its last answer before the failed lookup (carry.mjs
+      // carryHosts), so a host that left its proxy or moved meanwhile says so.
+      const last = isObj(y.lastGood) ? y.lastGood : null;
+      const moved = last && hostMove(domain, name, last, x, [` (compared with its answer ${last.at ? `of ${isoDay(last.at)}` : 'of an earlier run'}, before the lookup failed)`]);
+      out.push(moved || change('RECOVERED', domain, name, [...where, `answers again${last ? ' as before' : ''}: `, ...hostState(x)],
+        { tone: last || (resolves(x) && !x.dangling) ? 'good' : 'bad', before: y.status, after: x.status }));
       continue;
     }
-    if (!y.dangling && x.dangling) {
-      out.push(change('DANGLING', domain, name, [...where, ...hostState(x), '; was ', ...hostState(y)], { tone: 'bad', before: y.status, after: x.status }));
-    } else if (resolves(y) && !resolves(x)) {
-      out.push(change('GONE', domain, name, [...where, 'no longer resolves: ', ...hostState(x)], { tone: 'bad', kind: 'disappeared', before: addresses(y), after: x.status }));
-    } else if (!resolves(y) && resolves(x)) {
-      out.push(change('NEW', domain, name, [...where, 'now resolves: ', ...hostState(x)], { kind: 'appeared', before: y.status, after: addresses(x) }));
-    } else if (y.dangling && !x.dangling) {
-      out.push(change('BETTER', domain, name, [...where, 'no longer a dangling CNAME: ', ...hostState(x)], { tone: 'good', before: y.status, after: x.status }));
-    } else if (resolves(x)) {
-      const moved = y.kind !== x.kind || (y.providerId || y.provider) !== (x.providerId || x.provider);
-      if (moved && y.hidesOrigin && !x.hidesOrigin && DIRECT.has(x.kind)) {
-        out.push(change('EXPOSED', domain, name, [...where, 'no longer behind ', code(y.provider || y.kind), ': now ', ...hostState(x)], { tone: 'bad', before: y.kind, after: x.kind }));
-      } else if (moved) {
-        out.push(change('CHANGED', domain, name, [...where, ...hostState(y), ' → ', ...hostState(x)], { before: y.kind, after: x.kind }));
-      } else if (DIRECT.has(x.kind) && addresses(x).join(',') !== addresses(y).join(',')) {
-        out.push(change('CHANGED', domain, name, [...where, 'addresses ', ...hostState(y), ' → ', ...hostState(x)], { before: addresses(y), after: addresses(x) }));
-      }
-    }
+    const moved = hostMove(domain, name, y, x);
+    if (moved) out.push(moved);
   }
   for (const [name, y] of old) {
-    if (now.has(name) || !(resolves(y) || y.dangling)) continue;
+    if (now.has(name) || !(resolves(y) || y.dangling || lookupFailed(y))) continue;
     // A discovery run seeds the previous run's names (commands.mjs baselineSeeds), so a host
     // missing entirely was cut (a host cap, out of scope), not found gone: listed, not counted.
     out.push(exact
@@ -312,55 +372,66 @@ function diffSubdomains(before, after) {
 /* ct                                                                       */
 /* ------------------------------------------------------------------------ */
 
-/** The CT sources that read a domain in full in a report: answered, not in part, not cut at a page cap. */
-function fullSources(x) {
-  return new Set((x.sources || []).filter((s) => s && s.ok && s.state !== 'partial' && !s.truncated).map((s) => s.source));
-}
-
 /**
- * Is a certificate of this run surely absent from the baseline `b` (run at `since`), so an issuer
- * or a name it brings is new? Per source, as the sources answer on different nights (Cert
- * Spotter's hourly quota runs out on a list of domains; crt.sh is often down): yes when a source
- * that lists it now read the domain in full in the baseline too, or when it was issued after the
- * baseline run started while the baseline read at least one source in full (a certificate that
- * did not exist yet cannot have been missed). A baseline without per-source states (never written
- * by this version) falls back to its `complete`.
+ * Is a certificate of this run surely absent from what the baseline `b` knew, so an issuer or a
+ * name it brings is new? Per source, as the sources answer on different nights (Cert Spotter's
+ * hourly quota runs out on a list of domains; crt.sh is often down), and with each source's last
+ * full read (carry.mjs lastFullTimes: a night a source could not read carried that read on): yes
+ * when a source that lists it now has read the domain in full before (it was not listed then, and
+ * what it listed then is still known), or when it was issued after the earliest of those full
+ * reads (a certificate that did not exist yet cannot have been missed). A baseline without
+ * per-source states (never written by this version) falls back to its `complete`.
  * @param {object} b the baseline's target
- * @param {number} since the baseline run's start (ms), NaN when unknown
+ * @param {Map<string, string|null>} full source → the time of its last full read
  * @returns {(c: object) => boolean}
  */
-function surelyNew(b, since) {
+function surelyNew(b, full) {
   if (!Array.isArray(b.sources)) return () => b.complete !== false;
-  const full = fullSources(b);
-  return (c) => (c.sources || []).some((s) => full.has(s)) || (full.size > 0 && Number.isFinite(since) && Date.parse(c.notBefore) > since);
+  const times = [...full.values()].map((at) => Date.parse(at)).filter(Number.isFinite);
+  const first = times.length ? Math.min(...times) : NaN;
+  return (c) => (c.sources || []).some((s) => full.has(s)) || (Number.isFinite(first) && Date.parse(c.notBefore) > first);
 }
 
 function diffCt(before, after) {
   const out = [];
   const old = byTarget(before);
   const now = byTarget(after);
-  const since = Date.parse(before.startedAt);
+  // A source that could not be read is the source's outage, not the domain's change: FAILED and
+  // RECOVERED are listed only. The report of a night that could not read carried the last read
+  // (carry.mjs carryCt), so the night after is compared with that.
+  const failedText = (x) => (x.sources || []).filter((s) => !s.ok)
+    .map((s) => `${sourceName(s.source)} ${String(s.state || 'error').replace('-', ' ')}${s.skipped ? ' (not asked)' : ''}`).join(', ');
   for (const [domain, a] of now) {
     const b = old.get(domain);
+    const read = (a.certificates || []).filter((c) => !c.carried).length;
     if (!b) {
-      out.push(change('NEW', domain, null, [`now watched: ${(a.certificates || []).length} current certificates`], { kind: 'appeared' }));
+      out.push(change('NEW', domain, null, [a.answered === false ? 'now watched (Certificate Transparency could not be read this run)' : `now watched: ${certCount(read)}`], { kind: 'appeared' }));
       continue;
     }
-    const failedText = (x) => (x.sources || []).filter((s) => !s.ok).map((s) => `${s.source} ${s.state || 'error'}${s.skipped ? ' (not asked)' : ''}`).join(', ');
-    if (!a.answered && !b.answered) continue;
+    const full = lastFullTimes(b, before.startedAt);
+    const known = b.answered || full.size > 0 || (b.certificates || []).length > 0;
     if (!a.answered) {
-      out.push(change('FAILED', domain, null, [`Certificate Transparency could not be read this run (${failedText(a)}): nothing compared`], { tone: 'bad' }));
+      // Said once: a second night without a read has nothing new to say.
+      if (b.answered) {
+        out.push(change('FAILED', domain, null, [`Certificate Transparency could not be read this run (${failedText(a)}): nothing compared; the next run compares with the last read`],
+          { tone: 'quiet', counts: false }));
+      }
       continue;
     }
     if (!b.answered) {
-      out.push(change('RECOVERED', domain, null, [`Certificate Transparency read again: ${(a.certificates || []).length} current certificates (not compared: the baseline has none)`], { tone: 'good' }));
-      continue;
+      if (!known) {
+        out.push(change('RECOVERED', domain, null, [`Certificate Transparency read again: ${certCount(read)} (not compared: no earlier run read it)`], { tone: 'quiet', counts: false }));
+        continue;
+      }
+      const last = [...full.values()].filter(Boolean).sort().at(-1);
+      out.push(change('RECOVERED', domain, null, [`Certificate Transparency read again: ${certCount(read)}, compared with the last read${last ? ` (${isoDay(last)})` : ''}`],
+        { tone: 'quiet', counts: false }));
     }
     // A new issuer or name counts only when one of its certificates is surely new (surelyNew):
-    // one a source missed in the baseline may have been there all along.
-    const isNew = surelyNew(b, since);
-    const unsure = [' (listed only by a source the baseline run did not read in full: it may not be new)'];
-    const certs = a.certificates || [];
+    // one a source missed before may have been there all along.
+    const isNew = surelyNew(b, full);
+    const unsure = [' (listed only by a source no earlier run read in full: it may not be new)'];
+    const certs = (a.certificates || []).filter((c) => !c.carried);
     const oldIssuers = new Set((b.issuers || []).map((g) => g.name));
     const newIssuers = new Set();
     for (const g of a.issuers || []) {
@@ -369,7 +440,7 @@ function diffCt(before, after) {
       const sure = certs.some((c) => c.ca === g.name && isNew(c));
       out.push(change('ISSUER', domain, g.name, ['new issuer ', code(g.name),
         ...(g.intermediates && g.intermediates.length ? [' (', ...g.intermediates.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ')'] : []),
-        `: ${g.count} current certificate${g.count === 1 ? '' : 's'}, newest ${isoDay(g.newest)}`, ...(sure ? [] : unsure)],
+        `: ${certCount(g.count)}, newest ${isoDay(g.newest)}`, ...(sure ? [] : unsure)],
       { tone: sure ? 'bad' : 'quiet', counts: sure, kind: 'appeared', after: g.count }));
     }
     const oldNames = new Set(b.names || []);
@@ -382,7 +453,7 @@ function diffCt(before, after) {
         { tone: sure ? 'info' : 'quiet', counts: sure, kind: 'appeared' }));
     }
     const oldIds = new Set((b.certificates || []).map((c) => c.id));
-    for (const c of a.certificates || []) {
+    for (const c of certs) {
       if (oldIds.has(c.id) || newIssuers.has(c.ca) || c.names.every((n) => newNames.has(n))) continue;
       out.push(change('CERT', domain, c.id, ['new certificate from ', code(c.ca), ...(c.intermediate ? [' (', code(c.intermediate), ')'] : []),
         `, ${isoDay(c.notBefore)}: `, ...c.names.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ...(c.names.length > 3 ? [` +${c.names.length - 3}`] : [])],

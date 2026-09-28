@@ -412,7 +412,9 @@ options:
   --baseline FILE      compare with a previous --json report of the same command: the changes
                        open the summary ("Changes since the baseline"); the same file may be
                        given to --json (read before the run, replaced after it). While it does
-                       not exist (the first run) there is nothing to compare.
+                       not exist (the first run) there is nothing to compare. What a run could
+                       not read (a failed lookup, a source that was down), its report carries
+                       from the last run that read it: the next run compares with that read.
   --fail-on-change     exit 4 when anything that counts changed since --baseline
   --resolver ID[,ID]   DoH resolvers in failover order (default ${NODE_CHAIN.join(',')}; ${Object.keys(NODE_UNREADABLE).join(', ')}
                        answer over HTTP/2 only, which Node's fetch does not speak)

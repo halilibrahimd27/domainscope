@@ -18,7 +18,8 @@ import {
 } from '../../tools/ds/args.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, orderChanges, notableChanges } from '../../tools/ds/diff.mjs';
 import { setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, painter, changeText, CHANGE_TAGS, MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES } from '../../tools/ds/render.mjs';
-import { ctCertId, ctTarget, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts } from '../../tools/ds/commands.mjs';
+import { ctCertId, ctTarget, ctDoc, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts } from '../../tools/ds/commands.mjs';
+import { failedAreas, checkAreas, carryHealth, carryCt, carryHosts, lastFullTimes } from '../../tools/ds/carry.mjs';
 import { main, decodeText, skippedWarnings } from '../../tools/ds.mjs';
 import { renderParts } from '../../assets/js/lib/summary.js';
 import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
@@ -212,6 +213,9 @@ describe('baseline', () => {
     assert.match(baselineProblem(report('renew', [{ target: 'example.com' }]), 'renew'), /has no "verdict"/);
     assert.match(baselineProblem(report('dane', [{ target: 'x', endpoints: [{ key: 'k' }] }]), 'dane'), /endpoints\[0\] has no "status"/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y' }] }]), 'ct'), /certificates\[0\] has no "names" list/);
+    assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y', names: [], carried: true }] }]), 'ct'), /certificates\[0\] has a "carried" without a "from"/);
+    assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], sources: [{ source: 'crtsh', lastFullAt: 5 }], certificates: [] }]), 'ct'), /sources\[0\] has a "lastFullAt" that is not text/);
+    assert.match(baselineProblem(report('health', [{ target: 'example.com', checks: [], carried: [{ area: 'dmarc', from: null, checks: [{ id: 'x' }] }] }]), 'health'), /carried\[0\] checks\[0\] has no "severity"/);
     assert.match(baselineProblem(report('health', [{ checks: [] }]), 'health'), /targets\[0\] has no "target"/);
     assert.equal(baselineProblem({ ...report('health', [{ target: 'example.com', score: 90, checks: [] }]), version: '1.4.2' }, 'health'), null);
   });
@@ -274,16 +278,19 @@ describe('diff: health', () => {
     ]);
     const changes = diffReports('health', before, after, { t });
     assert.deepEqual(tags(changes), ['NEW example.com mx.error', 'GONE? example.com mx.unresolvable']);
-    assert.match(changeText(changes[1]), /a lookup failed this run: it may still be there/);
+    assert.match(changeText(changes[1]), /\(its lookup failed this run: it may still be there\)$/);
     assert.deepEqual(tags(notableChanges(changes)), ['NEW example.com mx.error']);
   });
 
-  test('a broken SPF include is a finding, not a failed lookup: what goes next to it counts', () => {
+  test('a broken SPF include is a finding, not a failed lookup; a failed lookup hides its own area only', () => {
     const b = report('health', [{ target: 'example.com', score: 54, checks: [check('spf.include-error', 'error'), check('dmarc.policy-none', 'warn')] }]);
     const a = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('rdap.expiry-ok', 'ok')] }]);
     assert.deepEqual(tags(diffReports('health', b, a, { t })), ['SCORE example.com', 'GONE example.com dmarc.policy-none']);
-    const failed = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('rdap.error', 'info')] }]);
-    assert.deepEqual(tags(diffReports('health', b, failed, { t })), ['SCORE? example.com', 'GONE? example.com dmarc.policy-none']);
+    // RDAP failed: the score it moved is listed only, but DMARC was read and its finding is gone.
+    const rdap = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('rdap.error', 'info')] }]);
+    assert.deepEqual(tags(diffReports('health', b, rdap, { t })), ['GONE example.com dmarc.policy-none', 'SCORE? example.com']);
+    const dmarc = report('health', [{ target: 'example.com', score: 60, checks: [check('spf.include-error', 'error'), check('dmarc.error', 'info')] }]);
+    assert.deepEqual(tags(diffReports('health', b, dmarc, { t })), ['SCORE? example.com', 'GONE? example.com dmarc.policy-none']);
   });
 
   test('moves among ok and info are no change; a repeated id counts by its worst severity', () => {
@@ -292,6 +299,61 @@ describe('diff: health', () => {
     assert.deepEqual(diffReports('health', b, a, { t }), []);
     const a2 = report('health', [{ target: 'example.com', score: 94, checks: [check('caa.missing', 'info'), check('x.y', 'ok'), check('x.y', 'warn')] }]);
     assert.deepEqual(tags(diffReports('health', b, a2, { t })), ['SCORE example.com', 'WORSE example.com x.y']);
+  });
+
+  test('the areas a failed lookup hides: its own, what it feeds, and the checks that need it', () => {
+    assert.deepEqual([...failedAreas({ checks: [check('mx.error', 'warn'), check('spf.include-error', 'error')] })].sort(), ['mail-identity', 'mx']);
+    assert.deepEqual([...failedAreas({ checks: [check('dmarc.error', 'warn')], failedLookups: ['txt', 'aaaa'] })].sort(), ['apex', 'bimi', 'dmarc', 'ipv6', 'spf']);
+    assert.deepEqual([...failedAreas({ checks: [check('mail-identity.fcrdns-error', 'info'), check('rdap.error', 'info')] })].sort(), ['mail-identity', 'rdap']);
+    assert.equal(failedAreas({ checks: [check('spf.present', 'ok')], failedLookups: [] }).size, 0);
+    assert.deepEqual(checkAreas('ns.rdap-mismatch'), ['ns', 'rdap']);
+    assert.deepEqual(checkAreas('dmarc.policy-none'), ['dmarc']);
+  });
+
+  /** A health target of one night, carrying what its failed lookups hid from `prev` (commands.mjs healthTarget). */
+  const night = (at, score, checks, prev = null, failedLookups = []) => {
+    const x = { target: 'example.com', checkedAt: at, score, failedLookups, checks };
+    const carried = carryHealth(x, prev);
+    return carried.length ? { ...x, carried } : x;
+  };
+
+  test('a failed lookup carries its area as last read: the night after compares with that, never with the gap', () => {
+    const n1 = night('2026-09-26T03:00:00.000Z', 94, [check('dmarc.policy-none', 'warn'), check('dmarc.present', 'ok'), check('spf.present', 'ok')]);
+    const n2 = night('2026-09-27T03:00:00.000Z', 80, [check('dmarc.error', 'warn', { error: 'SERVFAIL' }), check('spf.present', 'ok')], n1);
+    assert.deepEqual(n2.carried, [
+      { area: 'bimi', from: '2026-09-26T03:00:00.000Z', checks: [] },
+      { area: 'dmarc', from: '2026-09-26T03:00:00.000Z', checks: [check('dmarc.policy-none', 'warn'), check('dmarc.present', 'ok')] }
+    ]);
+    assert.deepEqual(tags(diffReports('health', report('health', [n1]), report('health', [n2]), { t })),
+      ['NEW example.com dmarc.error', 'SCORE? example.com', 'GONE? example.com dmarc.policy-none']);
+    // DMARC answers again with the warning of months: nothing new; the failed lookup is gone.
+    const n3 = night('2026-09-28T03:00:00.000Z', 94, n1.checks, n2);
+    const back = diffReports('health', report('health', [n2]), report('health', [n3]), { t });
+    assert.deepEqual(tags(back), ['GONE example.com dmarc.error', 'SCORE? example.com']);
+    assert.equal(changeText(back[1]), 'example.com: health score 80 → 94 (a lookup failed in the baseline run)');
+    // A finding that did appear meanwhile is new, and counts.
+    const moved = night('2026-09-28T03:00:00.000Z', 88, [check('dmarc.policy-none', 'warn'), check('dmarc.rua-missing', 'warn'), check('spf.present', 'ok')], n2);
+    assert.deepEqual(tags(diffReports('health', report('health', [n2]), report('health', [moved]), { t })),
+      ['NEW example.com dmarc.rua-missing', 'GONE example.com dmarc.error', 'SCORE? example.com']);
+  });
+
+  test('two nights of failed lookups carry the last read on; an area no run read makes its findings "new" listed only', () => {
+    const n1 = night('2026-09-25T03:00:00.000Z', 94, [check('dmarc.policy-none', 'warn')]);
+    const n2 = night('2026-09-26T03:00:00.000Z', 80, [check('dmarc.error', 'warn')], n1);
+    const n3 = night('2026-09-27T03:00:00.000Z', 80, [check('dmarc.error', 'warn')], n2);
+    assert.deepEqual(n3.carried.find((c) => c.area === 'dmarc'), { area: 'dmarc', from: '2026-09-25T03:00:00.000Z', checks: [check('dmarc.policy-none', 'warn')] });
+    assert.deepEqual(diffReports('health', report('health', [n2]), report('health', [n3]), { t }), []);
+    // The first run of a domain whose DMARC lookup failed: no run read DMARC yet.
+    const first = night('2026-09-26T03:00:00.000Z', 80, [check('dmarc.error', 'warn')]);
+    assert.deepEqual(first.carried.find((c) => c.area === 'dmarc'), { area: 'dmarc', from: null, checks: [] });
+    const read = night('2026-09-27T03:00:00.000Z', 94, [check('dmarc.policy-none', 'warn')], first);
+    const changes = diffReports('health', report('health', [first]), report('health', [read]), { t });
+    assert.deepEqual(tags(changes), ['GONE example.com dmarc.error', 'SCORE? example.com', 'NEW? example.com dmarc.policy-none']);
+    assert.match(changeText(changes[2]), /\(its lookup failed in the baseline run: it may not be new\)$/);
+    // An SPF record read while its includes failed keeps what it read; the area goes on carried.
+    const spf1 = night('2026-09-26T03:00:00.000Z', 90, [check('spf.all-missing', 'warn'), check('spf.lookups-exceeded', 'error')]);
+    const spf2 = night('2026-09-27T03:00:00.000Z', 85, [check('spf.all-missing', 'warn'), check('spf.dns-error', 'warn')], spf1);
+    assert.deepEqual(spf2.carried, [{ area: 'spf', from: '2026-09-26T03:00:00.000Z', checks: [check('spf.lookups-exceeded', 'error')] }]);
   });
 
   test('a string param of a title is a code part (Markdown code span), numbers stay text', () => {
@@ -362,9 +424,9 @@ describe('diff: subdomains', () => {
     assert.deepEqual(tags(diffReports('subdomains', b, a, { t })), ['GONE example.com b.example.com']);
   });
 
-  test('the previous run\'s resolving hosts seed the next discovery (never wildcard suspects or dead names)', () => {
+  test('the previous run\'s resolving hosts and failed lookups seed the next discovery (never wildcard suspects or dead names)', () => {
     assert.deepEqual(baselineSeeds(before, 'example.com'), ['www.example.com', 'api.example.com', 'old.example.com', 'db.example.com',
-      'shop.example.com', 'cdn.example.com', 'gone-from-result.example.com']);
+      'flaky.example.com', 'shop.example.com', 'cdn.example.com', 'gone-from-result.example.com']);
     assert.deepEqual(baselineSeeds(before, 'example.org'), []);
     assert.deepEqual(baselineSeeds(report('subdomains', [{ target: 'example.com', mode: 'exact', hosts: [host('a.example.com', { ipv4: ['192.0.2.1'] })] }]), 'example.com'), []);
     assert.deepEqual(baselineSeeds(null, 'example.com'), []);
@@ -385,6 +447,36 @@ describe('diff: subdomains', () => {
     assert.deepEqual(reportHosts(rows, { exact: false, seeded: new Set(['seeded.example.com']) }).map((h) => h.name),
       ['a.example.com', 'blog.example.com', 'flaky.example.com', 'seeded.example.com']);
     assert.equal(reportHosts(rows, { exact: true, seeded: new Set() }).length, rows.length);
+  });
+
+  test('a host whose lookup failed keeps its last answer; answering again, it is compared with that', () => {
+    const sub = (hosts, finishedAt) => ({ target: 'example.com', mode: 'discover', finishedAt, hosts });
+    const n1 = sub([host('shop.example.com', { ...cf, ipv4: ['104.16.1.2'] }), host('api.example.com', { ipv4: ['192.0.2.10'] })], '2026-09-26T03:05:00.000Z');
+    const failing = [host('shop.example.com', { status: 'SERVFAIL', kind: 'error', error: 'SERVFAIL' }), host('api.example.com', { status: 'SERVFAIL', kind: 'error', error: 'SERVFAIL' })];
+    const n2 = sub(carryHosts(failing, n1), '2026-09-27T03:05:00.000Z');
+    assert.deepEqual(n2.hosts[0].lastGood, {
+      at: '2026-09-26T03:05:00.000Z', status: 'NOERROR', kind: 'cloudflare', provider: 'Cloudflare', providerId: 'cloudflare', hidesOrigin: true,
+      dangling: false, ipv4: ['104.16.1.2'], ipv6: [], cnames: []
+    });
+    // A second night of SERVFAIL keeps the answer of the first night.
+    const n3 = sub(carryHosts(failing, n2), '2026-09-28T03:05:00.000Z');
+    assert.equal(n3.hosts[0].lastGood.at, '2026-09-26T03:05:00.000Z');
+    assert.equal(baselineSeeds(report('subdomains', [n3]), 'example.com').length, 2, 'failed lookups are looked up again');
+    // shop comes back without its proxy, api as it was.
+    const n4 = sub([host('shop.example.com', { ipv4: ['192.0.2.44'] }), host('api.example.com', { ipv4: ['192.0.2.10'] })]);
+    const changes = diffReports('subdomains', report('subdomains', [n3]), report('subdomains', [n4]), { t });
+    assert.deepEqual(tags(changes), ['EXPOSED example.com shop.example.com', 'RECOVERED example.com api.example.com']);
+    assert.equal(changeText(changes[0]), 'example.com: shop.example.com — no longer behind Cloudflare: now direct 192.0.2.44 (compared with its answer of 2026-09-26, before the lookup failed)');
+    assert.equal(changeText(changes[1]), 'example.com: api.example.com — answers again as before: direct 192.0.2.10');
+    assert.equal(changes[1].tone, 'good');
+    // Without a last answer (the report of a run that never read it), the move is said as it is.
+    const bare = sub([host('api.example.com', { status: 'SERVFAIL', error: 'SERVFAIL' })]);
+    const nx = diffReports('subdomains', report('subdomains', [bare]), report('subdomains', [sub([host('api.example.com', { status: 'NXDOMAIN', kind: 'nxdomain' })])]), { t });
+    assert.deepEqual(tags(nx), ['RECOVERED example.com api.example.com']);
+    assert.equal(changeText(nx[0]), 'example.com: api.example.com — answers again: NXDOMAIN');
+    assert.equal(nx[0].tone, 'bad');
+    assert.match(baselineProblem(report('subdomains', [sub([host('a.example.com', { status: 'SERVFAIL', lastGood: { at: null, ipv4: '192.0.2.1' } })])]), 'subdomains'),
+      /hosts\[0\] lastGood has addresses that are not lists of text/);
   });
 });
 
@@ -419,7 +511,7 @@ describe('diff: ct', () => {
     const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com', 'mail.example.com']);
     const changes = diffReports('ct', b, report('ct', [ctT([gts, le1])]), { t });
     assert.deepEqual(tags(changes), ['ISSUER? example.com Google Trust Services', 'NAME? example.com mail.example.com']);
-    assert.match(changeText(changes[0]), /listed only by a source the baseline run did not read in full: it may not be new\)$/);
+    assert.match(changeText(changes[0]), /listed only by a source no earlier run read in full: it may not be new\)$/);
     // Cert Spotter read the domain in full on both nights and lists it now: it is new.
     const both = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com', 'mail.example.com'], { sources: ['certspotter', 'crtsh'] });
     const counted = diffReports('ct', b, report('ct', [ctT([both, le1])]), { t });
@@ -441,6 +533,69 @@ describe('diff: ct', () => {
     assert.deepEqual(tags(diffReports('ct', partial, report('ct', [ctT([late, le1], { complete: false, sources: tonight })]), { t })), ['ISSUER? example.com Google Trust Services']);
   });
 
+  test('a night CT could not be read carries the last read on: the night after, a new CA counts', () => {
+    const at = (day) => `2026-09-${day}T03:00:00.000Z`;
+    const both = [{ source: 'crtsh', ok: true, state: 'ok' }, { source: 'certspotter', ok: true, state: 'ok' }];
+    const n1 = carryCt(ctT([le1], { readAt: at(26), sources: both }), null, { now: new Date(at(26)) });
+    assert.deepEqual(n1.sources.map((s) => s.lastFullAt), [at(26), at(26)]);
+    const down = [{ source: 'crtsh', ok: false, state: 'unavailable' }, { source: 'certspotter', ok: false, state: 'rate-limited', skipped: true }];
+    const n2 = carryCt(ctT([], { readAt: at(27), answered: false, complete: false, sources: down }), n1, { now: new Date(at(27)) });
+    assert.deepEqual(n2.certificates, [{ ...le1, carried: { from: at(26) } }]);
+    assert.deepEqual(n2.issuers.map((g) => g.name), ["Let's Encrypt"]);
+    assert.deepEqual(n2.names, ['example.com', 'www.example.com']);
+    assert.deepEqual(n2.sources.map((s) => s.lastFullAt), [at(26), at(26)]);
+    assert.deepEqual(tags(diffReports('ct', report('ct', [n1]), report('ct', [n2]), { t })), ['FAILED? example.com']);
+    // A second night down: the certificate stays carried from the first read.
+    const n2b = carryCt(ctT([], { readAt: at(28), answered: false, complete: false, sources: down }), n2, { now: new Date(at(28)) });
+    assert.deepEqual(n2b.certificates[0].carried, { from: at(26) });
+    assert.deepEqual(diffReports('ct', report('ct', [n2]), report('ct', [n2b]), { t }), []);
+    // crt.sh is back and lists a certificate from a new CA, issued while it was down.
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-27T12:00:00.000Z', ['example.com', 'mail.example.com']);
+    const crtshOnly = [{ source: 'crtsh', ok: true, state: 'ok' }, { source: 'certspotter', ok: false, state: 'rate-limited' }];
+    const n3 = carryCt(ctT([gts, le1], { readAt: at(29), complete: false, sources: crtshOnly }), n2b, { now: new Date(at(29)) });
+    const changes = diffReports('ct', report('ct', [n2b]), report('ct', [n3]), { t });
+    assert.deepEqual(tags(changes), ['ISSUER example.com Google Trust Services', 'NAME example.com mail.example.com', 'RECOVERED? example.com']);
+    assert.equal(changeText(changes[2]), 'example.com: Certificate Transparency read again: 2 current certificates, compared with the last read (2026-09-26)');
+    assert.deepEqual(n3.sources.map((s) => `${s.source} ${s.lastFullAt}`), [`crtsh ${at(29)}`, `certspotter ${at(26)}`]);
+  });
+
+  test('what a source not read in full listed stays known until every source that listed it read the domain in full without it, or it expires', () => {
+    const now = new Date('2026-09-28T03:00:00.000Z');
+    const spotter = cert('Sectigo', 'E46', '2026-08-01T00:00:00.000Z', ['shop.example.com'], { sources: ['certspotter'] });
+    const shared = cert('DigiCert', 'G2', '2026-07-01T00:00:00.000Z', ['api.example.com'], { sources: ['certspotter', 'crtsh'] });
+    const gone = cert('Buypass', 'CA2', '2026-06-01T00:00:00.000Z', ['old.example.com'], { sources: ['crtsh'] });
+    const expired = cert('ZeroSSL', 'ECC', '2026-06-01T00:00:00.000Z', ['x.example.com'], { sources: ['certspotter'], notAfter: '2026-09-01T00:00:00.000Z' });
+    const prev = ctT([le1, spotter, shared, gone, expired], { readAt: '2026-09-27T03:00:00.000Z' });
+    // Tonight crt.sh reads in full, Cert Spotter is cut at its page cap.
+    const tonight = ctT([le1], { readAt: now.toISOString(), complete: false, sources: [{ source: 'crtsh', ok: true, state: 'ok' }, { source: 'certspotter', ok: true, state: 'ok', truncated: true }] });
+    const x = carryCt(tonight, prev, { now });
+    assert.deepEqual(x.certificates.map((c) => `${c.ca}${c.carried ? ` carried from ${c.carried.from}` : ''}`),
+      ["Let's Encrypt", 'Sectigo carried from 2026-09-27T03:00:00.000Z', 'DigiCert carried from 2026-09-27T03:00:00.000Z']);
+    assert.deepEqual(x.issuers.map((g) => g.name), ['DigiCert', "Let's Encrypt", 'Sectigo']);
+    assert.equal(x.recent, tonight.recent, 'recent counts this read');
+    assert.deepEqual(diffReports('ct', report('ct', [prev]), report('ct', [x]), { t }), [], 'nothing new, and a read that is not complete says no issuer gone');
+    // The summary counts this read, and says what is kept.
+    const doc = ctDoc(x, { t, now });
+    assert.equal(renderParts(doc.lines[0], 'text'), '1 current certificate · 0 issued in the last 30 days');
+    assert.equal(renderParts(doc.lines.at(-1), 'text'), 'The 2 certificates last read on 2026-09-27 are kept for the next comparison (listed by a source not read in full this run)');
+    const failed = carryCt(ctT([], { readAt: now.toISOString(), answered: false, complete: false, sources: [{ source: 'crtsh', ok: false, state: 'unavailable' }] }),
+      ctT([le1], { readAt: '2026-09-27T03:00:00.000Z', sources: [{ source: 'crtsh', ok: true, state: 'ok' }] }), { now });
+    assert.match(renderParts(ctDoc(failed, { t, now }).lines[0], 'text'), /^Certificate Transparency could not be read: crt\.sh \(unavailable\)\. The certificate last read on 2026-09-27 is kept for the next comparison\.$/);
+  });
+
+  test('a baseline that read nothing in full compares with the last full read before it', () => {
+    // Night 1 read crt.sh in full; night 2 crt.sh answered only in part and Cert Spotter was cut at its cap.
+    const n1 = carryCt(ctT([le1], { readAt: '2026-09-26T03:00:00.000Z', sources: [{ source: 'crtsh', ok: true, state: 'ok' }] }), null, { now: NOW });
+    const n2 = carryCt(ctT([le1], { readAt: '2026-09-27T03:00:00.000Z', complete: false, sources: [{ source: 'crtsh', ok: true, state: 'partial' }] }), n1, { now: NOW });
+    assert.deepEqual([...lastFullTimes(n2)], [['crtsh', '2026-09-26T03:00:00.000Z']]);
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-20T00:00:00.000Z', ['example.com']);
+    const n3 = carryCt(ctT([gts, le1], { readAt: '2026-09-28T03:00:00.000Z', sources: [{ source: 'crtsh', ok: true, state: 'ok' }] }), n2, { now: NOW });
+    assert.deepEqual(tags(diffReports('ct', report('ct', [n2]), report('ct', [n3]), { t })), ['ISSUER example.com Google Trust Services']);
+    // Without that earlier full read, the same issuer is listed only.
+    const partial = ctT([le1], { complete: false, sources: [{ source: 'crtsh', ok: true, state: 'partial' }] });
+    assert.deepEqual(tags(diffReports('ct', report('ct', [partial]), report('ct', [n3]), { t })), ['ISSUER? example.com Google Trust Services']);
+  });
+
   test('a night with Cert Spotter alone names the issuers as a night with both: from the DN, never Cert Spotter\'s operator name', () => {
     const dn = 'C=TR, O=Example Kamu SM, CN=Example Kamu SM SSL';
     const at = { notBefore: new Date('2026-09-20T00:00:00Z'), notAfter: new Date('2026-12-19T00:00:00Z') };
@@ -456,11 +611,20 @@ describe('diff: ct', () => {
     assert.deepEqual(diffReports('ct', report('ct', [night2]), report('ct', [night1]), { t }), []);
   });
 
-  test('CT unreadable: FAILED once, nothing compared; read again: RECOVERED; an issuer gone only after a complete read', () => {
-    const down = ctT([], { answered: false, complete: false, sources: [{ source: 'crtsh', ok: false, state: 'timeout' }, { source: 'certspotter', ok: false, state: 'rate-limited' }] });
-    assert.deepEqual(tags(diffReports('ct', before, report('ct', [down]), { t })), ['FAILED example.com']);
+  test('CT unreadable: FAILED, and read again: RECOVERED, both listed only (the source\'s outage); an issuer gone only after a complete read', () => {
+    const down = ctT([], { answered: false, complete: false, sources: [{ source: 'crtsh', ok: false, state: 'timeout' }, { source: 'certspotter', ok: false, state: 'rate-limited', skipped: true }] });
+    const failed = diffReports('ct', before, report('ct', [down]), { t });
+    assert.deepEqual(tags(failed), ['FAILED? example.com']);
+    assert.equal(failed[0].tone, 'quiet');
+    assert.equal(changeText(failed[0]), 'example.com: Certificate Transparency could not be read this run (crt.sh timeout, Cert Spotter rate limited (not asked)): '
+      + 'nothing compared; the next run compares with the last read');
     assert.deepEqual(diffReports('ct', report('ct', [down]), report('ct', [down]), { t }), []);
-    assert.deepEqual(tags(diffReports('ct', report('ct', [down]), before, { t })), ['RECOVERED example.com']);
+    const back = diffReports('ct', report('ct', [down]), before, { t });
+    assert.deepEqual(tags(back), ['RECOVERED? example.com']);
+    assert.equal(changeText(back[0]), 'example.com: Certificate Transparency read again: 1 current certificate (not compared: no earlier run read it)');
+    const added = (a) => changeText(diffReports('ct', report('ct', []), report('ct', [a]), { t })[0]);
+    assert.equal(added(down), 'example.com: now watched (Certificate Transparency could not be read this run)');
+    assert.equal(added(before.targets[0]), 'example.com: now watched: 1 current certificate');
     const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com']);
     assert.deepEqual(tags(diffReports('ct', before, report('ct', [ctT([gts], { names: ['example.com', 'www.example.com'] })]), { t })),
       ['ISSUER example.com Google Trust Services', "GONE? example.com Let's Encrypt"]);
@@ -779,7 +943,21 @@ describe('offline runs (fake DoH)', () => {
       assert.deepEqual(doc.changes.map((c) => `${c.tag}${c.counts ? '' : '?'} ${c.item || ''}`),
         ['NEW spf.error', 'SCORE? ', 'GONE? spf.include-error']);
       assert.match(doc.changes[1].text, /health score \d+ → \d+ \(a lookup failed this run\)/);
-      assert.match(second.out, /GONE {7}example\.com: error spf\.include-error no longer reported — Broken include\/redirect in SPF \(a lookup failed this run: it may still be there\)/);
+      assert.match(second.out, /GONE {7}example\.com: error spf\.include-error no longer reported — Broken include\/redirect in SPF \(its lookup failed this run: it may still be there\)/);
+      const carried = doc.targets[0].carried.find((c) => c.area === 'spf');
+      assert.equal(carried.from, before.checkedAt);
+      assert.ok(carried.checks.some((c) => c.id === 'spf.include-error'), 'the SPF area as last read is carried');
+
+      // TXT answers again: compared with the SPF area as the first run read it, so the broken
+      // include is no "new" finding; the failed lookup is gone, and the score it moved is listed only.
+      const third = await runMain(['health', 'example.com', '--json', json, '--baseline', json, '--fail-on-change'], { fetchImpl: createFakeFetch(table) });
+      assert.equal(third.code, EXIT.CHANGED, third.err);
+      const doc3 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc3.changes.map((c) => `${c.tag}${c.counts ? '' : '?'} ${c.item || ''}`), ['GONE spf.error', 'SCORE? ']);
+      assert.match(doc3.changes[1].text, /\(a lookup failed in the baseline run\)$/);
+      assert.equal(doc3.targets[0].carried, undefined, 'nothing to carry');
+      const fourth = await runMain(['health', 'example.com', '--json', json, '--baseline', json, '--fail-on-change'], { fetchImpl: createFakeFetch(table) });
+      assert.equal(fourth.code, EXIT.OK, fourth.out);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -974,6 +1152,102 @@ describe('offline runs (fake DoH)', () => {
       }
       assert.equal(doc.warnings.length, 2);
       assert.match(res.out, /Certificate Transparency · example\.org\n- Certificate Transparency could not be read: crt\.sh \(unavailable earlier in this run: not asked\), Cert Spotter \(rate limited earlier in this run: not asked\)\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ct over a list, four nights: an outage is listed only, and a new CA issued during it counts the night crt.sh is back', async () => {
+    const dir = tmp();
+    try {
+      const list = join(dir, 'domains.txt');
+      writeFileSync(list, 'example.com\nexample.net\nexample.org\n');
+      const json = join(dir, 'ct.json');
+      const md = join(dir, 'ct.md');
+      let crtshDown = false;
+      let gts = false;
+      const row = (d) => ({ issuer_ca_id: 1, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: d, name_value: `${d}\nwww.${d}`, id: d.length, not_before: '2026-09-01T00:00:00', not_after: '2026-11-30T00:00:00', serial_number: `0${d.length}` });
+      const gtsRow = { issuer_ca_id: 2, issuer_name: 'C=US, O=Google Trust Services, CN=WR1', common_name: 'example.com', name_value: 'example.com\nmail.example.com', id: 99, not_before: '2026-09-28T12:00:00', not_after: '2026-12-27T00:00:00', serial_number: '99' };
+      const fetchImpl = async (url) => {
+        const u = String(url);
+        if (u.startsWith('https://crt.sh/')) {
+          if (crtshDown) return new Response('busy', { status: 503, headers: { 'retry-after': '0' } });
+          const d = decodeURIComponent(/[?&]q=([^&]+)/.exec(u)[1]).replace(/^%\./, '');
+          return Response.json([row(d), ...(gts && d === 'example.com' ? [gtsRow] : [])]);
+        }
+        if (u.startsWith('https://api.certspotter.com/')) return new Response('{"code":"rate_limited"}', { status: 429, headers: { 'retry-after': '3600' } });
+        return new Response('', { status: 404 });
+      };
+      const nightly = (day) => runMain(['ct', '--list', list, '--baseline', json, '--json', json, '--md', md, '--fail-on-change'], { fetchImpl, now: new Date(`2026-09-${day}T03:00:00Z`) });
+      const first = await nightly(27);
+      assert.equal(first.code, EXIT.OK, first.err);
+
+      crtshDown = true;
+      const outage = await nightly(28);
+      assert.equal(outage.code, EXIT.OK, 'the source\'s outage is no change of the domains');
+      const doc2 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc2.changes.map((c) => `${c.tag}${c.counts ? '' : '?'} ${c.target}`), ['FAILED? example.com', 'FAILED? example.net', 'FAILED? example.org']);
+      assert.deepEqual(doc2.targets[0].issuers.map((g) => g.name), ["Let's Encrypt"], 'the last read is carried');
+      assert.deepEqual(doc2.targets[0].certificates[0].carried, { from: '2026-09-27T03:00:00.000Z' });
+      assert.match(outage.out, /Certificate Transparency · example\.com\n- Certificate Transparency could not be read: crt\.sh \(unavailable\), Cert Spotter \(rate limited\)\. The certificate last read on 2026-09-27 is kept for the next comparison\.\n/);
+
+      crtshDown = false;
+      gts = true;
+      const back = await nightly(29);
+      assert.equal(back.code, EXIT.CHANGED, back.err);
+      const doc3 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc3.changes.filter((c) => c.counts).map((c) => `${c.tag} ${c.target} ${c.item}`),
+        ['ISSUER example.com Google Trust Services', 'NAME example.com mail.example.com']);
+      assert.ok(doc3.changes.filter((c) => !c.counts).every((c) => c.tag === 'RECOVERED'));
+      assert.match(back.out, /ISSUER {5}example\.com: new issuer Google Trust Services \(WR1\): 1 current certificate, newest 2026-09-28\n/);
+      assert.match(readFileSync(md, 'utf8'), /- \*\*ISSUER\*\* `example\.com`: new issuer `Google Trust Services`/);
+
+      const quiet = await nightly(30);
+      assert.equal(quiet.code, EXIT.OK, quiet.out);
+      assert.match(quiet.out, /Changes since the baseline \(ct\.json, run of 2026-09-29 03:00 UTC\): none/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('subdomains discovery: a seeded host through a night of SERVFAIL stays watched, and answering at a new address is a change', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'subs.json');
+      const table = zoneTable();
+      table['legacy.example.com'] = { A: ['203.0.113.77'] };
+      let listed = ['legacy.example.com'];
+      let rcodes = {};
+      const fetchImpl = (...args) => createFakeFetch(table, {
+        rcodes,
+        other: (url) => (url.startsWith('https://crt.sh/')
+          ? Response.json(listed.map((n, i) => ({ issuer_ca_id: 1, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: n, name_value: n, id: 5 + i, not_before: '2026-09-20T00:00:00', not_after: '2026-12-19T00:00:00', serial_number: `0${5 + i}` })))
+          : new Response('', { status: 404 }))
+      })(...args);
+      const nightly = async (day) => {
+        const res = await runMain(['subdomains', 'example.com', '--level', 'off', '--sources', 'crtsh', '--baseline', json, '--json', json, '--fail-on-change', '-q'],
+          { fetchImpl, now: new Date(`2026-09-${day}T03:00:00Z`) });
+        const doc = JSON.parse(readFileSync(json, 'utf8'));
+        return { ...res, doc, legacy: doc.targets[0].hosts.find((h) => h.name === 'legacy.example.com') };
+      };
+      assert.equal((await nightly(26)).legacy.ipv4[0], '203.0.113.77');
+      listed = [];
+      const seeded = await nightly(27);
+      assert.deepEqual(seeded.legacy.origins, ['baseline'], 'crt.sh no longer lists it: looked up again as last night\'s host');
+      rcodes = { 'legacy.example.com|A': 'SERVFAIL', 'legacy.example.com|AAAA': 'SERVFAIL' };
+      const failed = await nightly(28);
+      assert.equal(failed.code, EXIT.CHANGED);
+      assert.equal(failed.legacy.status, 'SERVFAIL');
+      assert.deepEqual(failed.legacy.lastGood.ipv4, ['203.0.113.77']);
+      assert.deepEqual(failed.doc.changes.map((c) => `${c.tag} ${c.item}`), ['FAILED legacy.example.com']);
+      rcodes = {};
+      table['legacy.example.com'] = { A: ['198.51.100.200'] };
+      const moved = await nightly(29);
+      assert.equal(moved.code, EXIT.CHANGED, 'still watched after the failed lookup');
+      assert.equal(moved.legacy.ipv4[0], '198.51.100.200');
+      assert.deepEqual(moved.doc.changes.map((c) => `${c.tag} ${c.item}`), ['CHANGED legacy.example.com']);
+      assert.match(moved.doc.changes[0].text, /legacy\.example\.com — addresses direct 203\.0\.113\.77 → direct 198\.51\.100\.200 \(compared with its answer of \d{4}-\d\d-\d\d, before the lookup failed\)$/);
+      assert.equal((await nightly(30)).code, EXIT.OK);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

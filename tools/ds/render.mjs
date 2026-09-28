@@ -19,6 +19,13 @@ export const code = (value) => ({ code: String(value ?? '') });
 /** A bold label part. */
 export const strong = (value) => ({ strong: String(value ?? '') });
 
+/** Source names for a sentence ('crt.sh', 'Cert Spotter'). */
+const SOURCE_NAMES = Object.freeze({ crtsh: 'crt.sh', certspotter: 'Cert Spotter' });
+/** A passive source's name for a sentence: 'crt.sh', 'Cert Spotter', else its id. */
+export const sourceName = (id) => SOURCE_NAMES[id] || id;
+/** "1 current certificate", "3 current certificates". */
+export const certCount = (n) => `${n} current certificate${n === 1 ? '' : 's'}`;
+
 /** 'YYYY-MM-DD' in UTC, or '' for an invalid date. */
 export function isoDay(value) {
   const d = value instanceof Date ? value : new Date(value);
@@ -87,6 +94,9 @@ export function valueParts(tr, list, max = 3) {
 /* Changes since the baseline                                               */
 /* ------------------------------------------------------------------------ */
 
+/** What is listed but never counted (diff.mjs `counts: false`), for the note under the changes. */
+const NOT_COUNTED = 'sources that could not be read, moves between failure states, what a failed lookup or source may hide, renewed certificates';
+
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
 export const MAX_SUMMARY_CHANGES = 50;
 /** Every tag a change can carry, widest first for the column. */
@@ -152,7 +162,7 @@ export function renderChangesText(run, { paint, showAll = false }) {
   }
   const quiet = changes.length - counted.length;
   if (quiet) {
-    lines.push(paint(`  Not counted: ${quiet} (moves between failure states, what a failed lookup or source may hide, renewed certificates) - listed only, never counted by --fail-on-change.`, 'dim'));
+    lines.push(paint(`  Not counted: ${quiet} (${NOT_COUNTED}) - listed only, never counted by --fail-on-change.`, 'dim'));
   }
   for (const note of run.notes || []) lines.push(paint(`  ${note}`, 'dim'));
   lines.push('');
@@ -177,7 +187,7 @@ export function renderChangesMarkdown(run) {
   const lines = changes.slice(0, MAX_MARKDOWN_CHANGES).map((c) => `- **${c.tag}**${c.counts ? '' : ' (not counted)'} ${renderParts(c.parts, 'markdown')}`);
   if (changes.length > MAX_MARKDOWN_CHANGES) lines.push(`- … and ${changes.length - MAX_MARKDOWN_CHANGES} more: the JSON report lists them all`);
   if (changes.length > counted) {
-    lines.push(`- ${changes.length - counted} listed only (moves between failure states, what a failed lookup or source may hide, renewed certificates): never counted by --fail-on-change`);
+    lines.push(`- ${changes.length - counted} listed only (${NOT_COUNTED}): never counted by --fail-on-change`);
   }
   for (const note of run.notes || []) lines.push(`- ${renderParts([note], 'markdown')}`);
   return `${[head, ...(lines.length ? ['', ...lines] : [])].join('\n')}\n`;

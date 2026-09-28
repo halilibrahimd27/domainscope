@@ -16,7 +16,8 @@
 
 import { createHash } from 'node:crypto';
 import { NODE_UNREADABLE, CT_SOURCES, DS_VERSION, UsageError } from './args.mjs';
-import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo } from './render.mjs';
+import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo, sourceName, certCount } from './render.mjs';
+import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed } from './carry.mjs';
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
 import { textParts, renderParts } from '../../assets/js/lib/summary.js';
@@ -26,9 +27,6 @@ const APP = 'DomainScope';
 const DAY_MS = 86400000;
 /** Lines of problems / rows / issuances a summary lists before "+N more" (lib/summary.js SUMMARY_MAX_PROBLEMS). */
 const MAX_LINES = 5;
-/** Source names for a sentence ('crt.sh', 'Cert Spotter'). */
-const SOURCE_NAMES = Object.freeze({ crtsh: 'crt.sh', certspotter: 'Cert Spotter' });
-const sourceName = (id) => SOURCE_NAMES[id] || id;
 
 /* ------------------------------------------------------------------------ */
 /* Sources a run stops asking                                               */
@@ -115,14 +113,17 @@ async function defaultSourceIds() {
 /**
  * The compared part of one Domain Health report: the score, the counts, every check (its
  * title key and language-neutral params, so a change quotes their values as code spans, and
- * the English title to read the file by), the lookups that failed; `report` is the report
- * itself (the view's "Report (JSON)").
+ * the English title to read the file by), the lookups that failed and, for each area whose
+ * lookup failed, the checks the last run that read it found (`carried`, carry.mjs carryHealth);
+ * `report` is the report itself (the view's "Report (JSON)").
  * @param {object} report lib/health.js domainHealth() result
  * @param {{ t: Function, healthScore: Function, trafficLight: Function }} kit
+ * @param {{ prev?: object|null, prevAt?: string|null }} [baseline] the baseline's target of the
+ *   domain and the baseline run's start
  * @returns {object}
  */
-export function healthTarget(report, { t, healthScore, trafficLight }) {
-  return {
+export function healthTarget(report, { t, healthScore, trafficLight }, { prev = null, prevAt = null } = {}) {
+  const x = {
     target: report.domain,
     checkedAt: isoTime(report.checkedAt),
     score: healthScore(report.summary),
@@ -131,9 +132,10 @@ export function healthTarget(report, { t, healthScore, trafficLight }) {
     failedLookups: [...(report.failedLookups || [])],
     checks: (report.checks || []).map((c) => ({
       id: c.id, severity: c.severity, titleKey: c.titleKey, params: { ...c.params }, title: t(c.titleKey, localYesNo(t, c.params))
-    })),
-    report
+    }))
   };
+  const carried = carryHealth(x, prev, { prevAt });
+  return { ...x, ...(carried.length ? { carried } : {}), report };
 }
 
 async function runHealth(targets, options, env) {
@@ -141,10 +143,11 @@ async function runHealth(targets, options, env) {
   const { healthSummary, healthScore, trafficLight } = await import('../../assets/js/lib/summary.js');
   const out = [];
   const docs = [];
+  const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   for (const [i, domain] of targets.entries()) {
     env.progress(`health ${domain} (${i + 1}/${targets.length})`);
     const report = await domainHealth(domain, { dns: env.dns, fetchImpl: env.fetchImpl, signal: env.signal });
-    out.push(healthTarget(report, { t: env.t, healthScore, trafficLight }));
+    out.push(healthTarget(report, { t: env.t, healthScore, trafficLight }, { prev: targetOf(env.baseline, domain), prevAt }));
     docs.push(healthSummary({ report }, { t: env.t, now: env.now() }));
   }
   return { options: { resolvers: [...options.chain] }, targets: out, docs, warnings: [] };
@@ -178,9 +181,6 @@ export function hostResolves(host) {
   return !!host && ((host.ipv4 && host.ipv4.length > 0) || (host.ipv6 && host.ipv6.length > 0));
 }
 
-/** A lookup that got no usable answer (the host may exist). */
-const LOOKUP_FAILED = new Set(['SERVFAIL', 'REFUSED', 'ERROR']);
-
 /**
  * The hosts a report lists. An exact run lists every name of its file. A discovery run lists the
  * hosts that resolve, dangling aliases, failed lookups and the names the previous run seeded
@@ -193,21 +193,22 @@ const LOOKUP_FAILED = new Set(['SERVFAIL', 'REFUSED', 'ERROR']);
  */
 export function reportHosts(rows, { exact, seeded }) {
   if (exact) return rows;
-  return rows.filter((h) => !h.wildcardSuspect && (hostResolves(h) || h.dangling || LOOKUP_FAILED.has(h.status) || seeded.has(h.name)));
+  return rows.filter((h) => !h.wildcardSuspect && (hostResolves(h) || h.dangling || lookupFailed(h) || seeded.has(h.name)));
 }
 
 /**
  * The names of the previous run of a domain to resolve again this run (discovery only): its
- * resolving hosts and dangling aliases, so a host is never "gone" only because a passive
- * source was down or a guess was not tried this time.
+ * resolving hosts, dangling aliases and hosts whose lookup failed, so a host is never "gone"
+ * (nor dropped from the watch) only because a passive source was down, a guess was not tried
+ * this time or one lookup failed.
  * @param {object|null} baseline a validated `subdomains` report
  * @param {string} domain
  * @returns {string[]}
  */
 export function baselineSeeds(baseline, domain) {
-  const prev = baseline && Array.isArray(baseline.targets) ? baseline.targets.find((x) => x && x.target === domain) : null;
+  const prev = targetOf(baseline, domain);
   if (!prev || prev.mode !== 'discover' || !Array.isArray(prev.hosts)) return [];
-  return prev.hosts.filter((h) => h && !h.wildcardSuspect && (hostResolves(h) || h.dangling) && h.name !== domain
+  return prev.hosts.filter((h) => h && !h.wildcardSuspect && (hostResolves(h) || h.dangling || lookupFailed(h)) && h.name !== domain
     && isSubdomainOf(h.name, domain)).map((h) => h.name);
 }
 
@@ -322,7 +323,9 @@ async function runSubdomains(targets, options, env) {
       counts: countHosts(result.hosts),
       warnings: [...new Set(scanWarnings.map((w) => w.code))],
       seeded: seeds.length,
-      hosts: reportHosts(scanHostRows(result).map((row) => hostRow(row, seeded)), { exact, seeded })
+      // A host whose lookup failed keeps its last answer (carry.mjs): the next run compares with it.
+      hosts: carryHosts(reportHosts(scanHostRows(result).map((row) => hostRow(row, seeded)), { exact, seeded }),
+        targetOf(env.baseline, domain), { prevAt: env.baseline ? env.baseline.startedAt ?? null : null })
     });
     const run = { status: 'done', config: { domains: [domain] }, result, hosts: result.hosts, found: new Map(), sourceResults: result.sources, finishedAt: result.finishedAt };
     const doc = subdomainsSummary(subdomainsSummaryFacts(run), { t: env.t, now: env.now() });
@@ -361,19 +364,21 @@ export function ctCertId(cert) {
 }
 
 /**
- * The compared part of one domain's certificates in CT: every current certificate (id, CA,
- * intermediate, validity, names, the sources that list it), the issuers with their counts, the
- * names, and how each source answered (`complete`: every source answered in full; `skipped`: not
- * asked, {@link createSourceBreaker}). The CA is named from the issuer DN alone (the known CA,
- * else its O, else its CN), never from Cert Spotter's friendly name, so a certificate reads the
- * same whichever source answered: a night without crt.sh is no "new issuer".
+ * The compared part of one domain's certificates in CT: when it was read, every current
+ * certificate (id, CA, intermediate, validity, names, the sources that list it), the issuers with
+ * their counts, the names, and how each source answered (`complete`: every source answered in
+ * full; `skipped`: not asked, {@link createSourceBreaker}). The CA is named from the issuer DN
+ * alone (the known CA, else its O, else its CN), never from Cert Spotter's friendly name, so a
+ * certificate reads the same whichever source answered: a night without crt.sh is no "new
+ * issuer". What a source not read in full listed before is added by carry.mjs carryCt.
  * @param {string} domain
  * @param {{ certs: object[], health: object[] }} fetched lib/sources.js fetchAllSources() result
  *   (`health` may add the sources not asked)
- * @param {{ issuerName: Function, dnPart: Function, days: number, now: Date, sources: string[] }} opts
+ * @param {{ issuerName: Function, dnPart: Function, days: number, now: Date, sources: string[], readAt?: Date }} opts
+ *   `readAt`: when the read began (default `now`)
  * @returns {object}
  */
-export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sources }) {
+export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sources, readAt = now }) {
   const certificates = [];
   const byId = new Map();
   // The names under the domain only: crt.sh rows carry the searched names, Cert Spotter every
@@ -404,20 +409,13 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
     byId.set(cert.id, cert);
     certificates.push(cert);
   }
-  certificates.sort((a, b) => String(b.notBefore).localeCompare(String(a.notBefore)) || a.id.localeCompare(b.id));
-  const issuers = new Map();
-  for (const c of certificates) {
-    const g = issuers.get(c.ca) || { name: c.ca, count: 0, intermediates: [], newest: null };
-    g.count += 1;
-    if (c.intermediate && !g.intermediates.includes(c.intermediate)) g.intermediates.push(c.intermediate);
-    if (!g.newest || String(c.notBefore) > g.newest) g.newest = c.notBefore;
-    issuers.set(c.ca, g);
-  }
+  certificates.sort(ctCertOrder);
   const health = (fetched.health || []).filter((h) => sources.includes(h.source));
   const since = now.getTime() - days * DAY_MS;
   return {
     target: domain,
     days,
+    readAt: isoTime(readAt),
     sources: health.map((h) => ({
       source: h.source, state: h.state, ok: h.ok, truncated: !!h.truncated, errorKind: h.errorKind || null, error: h.error || null,
       ...(h.skipped ? { skipped: true } : {})
@@ -425,44 +423,63 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
     complete: sources.every((id) => health.some((h) => h.source === id && h.ok && h.state !== 'partial' && !h.truncated)),
     answered: health.some((h) => h.ok),
     recent: certificates.filter((c) => Date.parse(c.notBefore) >= since).length,
-    issuers: [...issuers.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'en')).map((g) => ({ ...g, intermediates: g.intermediates.sort() })),
+    issuers: ctIssuers(certificates),
     names: sortHostnames([...new Set(certificates.flatMap((c) => c.names))]),
     certificates
   };
 }
 
 /**
- * The summary of one domain's CT result.
- * @param {object} target {@link ctTarget}
+ * "on 2026-09-27", "between 2026-09-25 and 2026-09-27", or "by an earlier run": when a
+ * domain's carried certificates were last read.
+ * @param {Array<string|null>} times ISO times (null: unknown)
+ */
+function readWhen(times) {
+  const days = [...new Set(times.map((at) => (at ? isoDay(at) : '')))].sort();
+  if (!days.length || days.includes('')) return 'by an earlier run';
+  return days.length === 1 ? `on ${days[0]}` : `between ${days[0]} and ${days.at(-1)}`;
+}
+
+/**
+ * The summary of one domain's CT result: this run's read (the certificates carried from an
+ * earlier read are counted apart, as kept for the next comparison).
+ * @param {object} target {@link ctTarget}, carried (carry.mjs carryCt)
  * @param {{ t: Function, now: Date }} opts
  */
 export function ctDoc(target, { t, now }) {
   const lines = [];
   const failed = target.sources.filter((s) => !s.ok);
   const why = (s) => `${sourceName(s.source)} (${String(s.state || 'error').replace('-', ' ')}${s.skipped ? ' earlier in this run: not asked' : ''})`;
+  const read = target.certificates.filter((c) => !c.carried);
+  const kept = target.certificates.filter((c) => c.carried);
+  const keptText = `${kept.length === 1 ? 'The certificate' : `The ${kept.length} certificates`} last read ${readWhen(kept.map((c) => c.carried.from))} `
+    + `${kept.length === 1 ? 'is' : 'are'} kept for the next comparison`;
   if (!target.answered) {
-    lines.push([`Certificate Transparency could not be read: ${failed.map(why).join(', ')}. Nothing is known about this domain's certificates.`]);
+    const lastFull = target.sources.map((s) => s.lastFullAt).filter(Boolean);
+    lines.push([`Certificate Transparency could not be read: ${failed.map(why).join(', ')}. `
+      + `${kept.length ? `${keptText}.` : lastFull.length ? `The next run compares with the last full read ${readWhen(lastFull)} (no current certificate then).` : 'Nothing is known about this domain\'s certificates.'}`]);
   } else {
-    const n = target.certificates.length;
-    lines.push([n ? `${n} current certificate${n === 1 ? '' : 's'} · ${target.recent} issued in the last ${target.days} days`
-      : 'No current certificate is logged for it']);
-    if (target.issuers.length) {
+    const n = read.length;
+    lines.push([n ? `${certCount(n)} · ${target.recent} issued in the last ${target.days} days` : 'No current certificate is logged for it']);
+    const issuers = ctIssuers(read);
+    if (issuers.length) {
       const parts = ['Issuers: '];
-      target.issuers.slice(0, MAX_LINES).forEach((g, i) => {
+      issuers.slice(0, MAX_LINES).forEach((g, i) => {
         if (i) parts.push(', ');
         parts.push(code(g.name), ` ${g.count}`);
       });
-      if (target.issuers.length > MAX_LINES) parts.push(` ${t('common.moreCount', { count: target.issuers.length - MAX_LINES })}`);
+      if (issuers.length > MAX_LINES) parts.push(` ${t('common.moreCount', { count: issuers.length - MAX_LINES })}`);
       lines.push(parts);
     }
     const since = now.getTime() - target.days * DAY_MS;
-    const recent = target.certificates.filter((c) => Date.parse(c.notBefore) >= since);
+    const recent = read.filter((c) => Date.parse(c.notBefore) >= since);
     for (const c of recent.slice(0, MAX_LINES)) {
       lines.push([`${isoDay(c.notBefore)} `, code(c.ca), ...(c.intermediate ? [' (', code(c.intermediate), ')'] : []), ': ', ...valueParts(t, c.names)]);
     }
     if (recent.length > MAX_LINES) lines.push([`${recent.length - MAX_LINES} more issued in the last ${target.days} days (see the JSON report)`]);
     if (failed.length) lines.push([`Not read: ${failed.map(why).join(', ')}: the list may be incomplete`]);
     else if (!target.complete) lines.push(['A source returned only part of its list: the list may be incomplete']);
+    if (kept.length) lines.push([`${keptText} (listed by a source not read in full this run)`]);
   }
   return summaryDoc('ct', ['Certificate Transparency · ', code(target.target)], lines, { t, now });
 }
@@ -472,19 +489,24 @@ async function runCt(targets, options, env) {
   const { issuerName, dnPart } = await import('../../assets/js/lib/passport.js');
   const sources = options.sources || [...CT_SOURCES];
   const breaker = createSourceBreaker({ now: env.now, spotterHint: sources.includes('crtsh') ? '--sources crtsh leaves it out' : '' });
+  const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   const out = [];
   const docs = [];
   const warnings = [];
   for (const [i, domain] of targets.entries()) {
     const ask = breaker.ask(sources);
     env.progress(`ct ${domain} (${i + 1}/${targets.length})${ask.length < sources.length ? `, not asking ${sources.filter((s) => !ask.includes(s)).map(sourceName).join(' or ')}` : ''}`);
+    const readAt = env.now();
     const fetched = ask.length
       ? await fetchAllSources(domain, { sources: ask, fetchImpl: env.fetchImpl, signal: env.signal })
       : { results: [], certs: [], health: [] };
     warnings.push(...breaker.note(domain, fetched.results));
     const now = env.now();
     const health = [...(fetched.health || []), ...breaker.skipped(sources.filter((s) => !ask.includes(s)))];
-    const target = ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources });
+    // What a source not read in full listed before is carried from the baseline (carry.mjs): the
+    // next run compares with the last read of each source, not with tonight's gap.
+    const target = carryCt(ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources, readAt }),
+      targetOf(env.baseline, domain), { now, prevAt });
     out.push(target);
     docs.push(ctDoc(target, { t: env.t, now }));
   }

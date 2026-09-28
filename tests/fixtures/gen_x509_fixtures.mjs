@@ -12,7 +12,7 @@
  * issued by a made-up "DomainScope Sample" CA whose keys are never written anywhere.
  *
  * Crafted certificates are built with an independent, minimal DER encoder
- * (below) and signed with node:crypto, so they exercise corner cases OpenSSL's
+ * (der-builder.mjs) and signed with node:crypto, so they exercise corner cases OpenSSL's
  * CLI cannot produce (string types, escaping, odd SAN entries, SCT lists, ...).
  * (OpenSSL 3.5 refuses names holding VisibleString, GeneralString,
  * VideotexString, GraphicString, OCTET STRING, ... values, so those are
@@ -22,11 +22,16 @@
  * never modified.
  */
 import { execFileSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, sign as cryptoSign, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The DER encoder, independent of the parser under test (shared with gen_chainfix_fixtures.mjs).
+import {
+  tlv, seq, ctx, oid, int, bool, nul, octet, bits, utf8, printable, ia5, t61, numeric, bmp, universal, utc, gen, name, ext,
+  ALG, A, buildCert, pem, spkiOf, signWith
+} from './der-builder.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const FORCE = process.argv.includes('--force');
@@ -39,99 +44,8 @@ function openssl(args, { input, encoding = 'utf8' } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal DER encoder (independent of the parser under test)
-// ---------------------------------------------------------------------------
-const buf = (x) => (Buffer.isBuffer(x) ? x : Buffer.from(x));
-const encLen = (n) => {
-  if (n < 0x80) return Buffer.from([n]);
-  const b = [];
-  for (let v = n; v > 0; v = Math.floor(v / 256)) b.unshift(v & 0xff);
-  return Buffer.from([0x80 | b.length, ...b]);
-};
-const tlv = (tag, ...parts) => {
-  const body = Buffer.concat(parts.map(buf));
-  return Buffer.concat([Buffer.from([tag]), encLen(body.length), body]);
-};
-const seq = (...p) => tlv(0x30, ...p);
-const set = (...p) => tlv(0x31, ...[...p].map(buf).sort(Buffer.compare)); // DER SET OF ordering
-const ctx = (n, constructed, ...p) => tlv(0x80 | (constructed ? 0x20 : 0) | n, ...p);
-const oid = (s) => {
-  const arcs = s.split('.').map(BigInt);
-  const out = [];
-  const push = (v) => {
-    const bytes = [Number(v & 0x7fn)];
-    for (let x = v >> 7n; x > 0n; x >>= 7n) bytes.unshift(Number(x & 0x7fn) | 0x80);
-    out.push(...bytes);
-  };
-  push(arcs[0] * 40n + arcs[1]);
-  arcs.slice(2).forEach(push);
-  return tlv(0x06, Buffer.from(out));
-};
-const int = (hex) => {
-  let b = Buffer.from(hex.length % 2 ? `0${hex}` : hex, 'hex');
-  if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]);
-  return tlv(0x02, b);
-};
-const bool = (v) => tlv(0x01, Buffer.from([v ? 0xff : 0]));
-const nul = () => Buffer.from([0x05, 0x00]);
-const octet = (b) => tlv(0x04, b);
-const bits = (b, unused = 0) => tlv(0x03, Buffer.concat([Buffer.from([unused]), buf(b)]));
-const utf8 = (s) => tlv(0x0c, Buffer.from(s, 'utf8'));
-const printable = (s) => tlv(0x13, Buffer.from(s, 'latin1'));
-const ia5 = (s) => tlv(0x16, Buffer.from(s, 'latin1'));
-const t61 = (s) => tlv(0x14, Buffer.from(s, 'latin1'));
-const numeric = (s) => tlv(0x12, Buffer.from(s, 'latin1'));
-const bmp = (s) => tlv(0x1e, Buffer.from(s, 'utf16le').swap16());
-const universal = (s) => tlv(0x1c, Buffer.concat(Array.from(s, (ch) => {
-  const b = Buffer.alloc(4);
-  b.writeUInt32BE(ch.codePointAt(0));
-  return b;
-})));
-const utc = (s) => tlv(0x17, Buffer.from(s, 'latin1'));
-const gen = (s) => tlv(0x18, Buffer.from(s, 'latin1'));
-/** rdns: Array<Array<[oid, valueDer]>> in DER order */
-const name = (rdns) => seq(...rdns.map((rdn) => set(...rdn.map(([o, v]) => seq(oid(o), v)))));
-const ext = (o, value, critical = false) => seq(oid(o), ...(critical ? [bool(true)] : []), octet(value));
-
-const ALG = {
-  sha256Rsa: seq(oid('1.2.840.113549.1.1.11'), nul()),
-  ecdsa256: seq(oid('1.2.840.10045.4.3.2')),
-  ecdsa384: seq(oid('1.2.840.10045.4.3.3')),
-  ecdsa512: seq(oid('1.2.840.10045.4.3.4')),
-  ed25519: seq(oid('1.3.101.112')),
-  ed448: seq(oid('1.3.101.113')),
-  dsa256: seq(oid('2.16.840.1.101.3.4.3.2'))
-};
-
-function buildCert({ version = 3, serial, sigAlg, issuer, notBefore, notAfter, subject, spki, issuerUid, subjectUid, extensions, signer }) {
-  const tbs = seq(
-    ...(version > 1 ? [ctx(0, true, int((version - 1).toString(16)))] : []),
-    int(serial),
-    sigAlg,
-    issuer,
-    seq(notBefore, notAfter),
-    subject,
-    spki,
-    ...(issuerUid ? [ctx(1, false, Buffer.concat([Buffer.from([0]), issuerUid]))] : []),
-    ...(subjectUid ? [ctx(2, false, Buffer.concat([Buffer.from([0]), subjectUid]))] : []),
-    ...(extensions && extensions.length ? [ctx(3, true, seq(...extensions))] : [])
-  );
-  return seq(tbs, sigAlg, bits(signer(tbs)));
-}
-
-const pem = (der) => `-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`;
-const spkiOf = (key) => key.export({ type: 'spki', format: 'der' });
-const signWith = (privateKey, hash) => (tbs) => cryptoSign(hash, tbs, privateKey);
-
-// ---------------------------------------------------------------------------
 // Crafted certificates
 // ---------------------------------------------------------------------------
-const A = {
-  C: '2.5.4.6', ST: '2.5.4.8', L: '2.5.4.7', O: '2.5.4.10', OU: '2.5.4.11', CN: '2.5.4.3',
-  title: '2.5.4.12', description: '2.5.4.13', pseudonym: '2.5.4.65', name: '2.5.4.41', DC: '0.9.2342.19200300.100.1.25',
-  email: '1.2.840.113549.1.9.1', UID: '0.9.2342.19200300.100.1.1', serialNumber: '2.5.4.5',
-  x121: '2.5.4.24', postalAddress: '2.5.4.16', initials: '2.5.4.43'
-};
 
 function craftDnTorture() {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });

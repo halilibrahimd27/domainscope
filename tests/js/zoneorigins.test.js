@@ -9,7 +9,7 @@ import {
   ORIGIN_KINDS, PLACEHOLDERS, CF_HOSTED_SUFFIXES, TUNNEL_SUFFIX, SEED_EXCLUSIONS, MAX_CNAME_CHAIN,
   zoneIndex, wildcardCovers, deriveSeeds, handoffNames, proxiedOriginMap, addressMap, cliHandoff, zoneSweep,
   handoffFiles, zoneScanInput, privateLookingNames, isInetAtonNumeric, validateHostTargets, validateSweepNames,
-  classifyExternalTarget, isCloudflareIp, sortIps, zoneConstants, effectiveTargets
+  classifyExternalTarget, isCloudflareIp, sortIps, zoneConstants, effectiveTargets, referenceRecords
 } from '../../assets/js/lib/zoneorigins.js';
 import { parseInventory, buildIpIndex } from '../../assets/js/lib/inventory.js';
 import { buildSweepCommand } from '../../assets/js/lib/cmdline.js';
@@ -342,6 +342,37 @@ describe('privacy helpers', () => {
     assert.ok(!zoneScanInput(CF, { skip: ['www.example.com'] }).proxied.some((p) => p.name === 'www.example.com'));
     const ph = zoneScanInput(loadFixture('placeholder-cf'), { skipPrivate: false });
     for (const p of ph.proxied) assert.ok(p.host || p.ips.every((ip) => !PLACEHOLDERS.includes(ip) && !isCloudflareIp(ip)), p.name);
+  });
+});
+
+describe('referenceRecords (Retire an IP)', () => {
+  test('the records that can point at an address, with the proxy status of the name, internal and occluded flags', () => {
+    const refs = referenceRecords(CF);
+    const find = (name, type) => refs.filter((r) => r.name === name && r.type === type);
+    assert.deepEqual(find('example.com', 'A').map((r) => [r.value, r.proxied, r.line]), [['192.0.2.10', true, 34]]);
+    // One proxied A makes every A of the name proxied (Cloudflare's rule).
+    assert.deepEqual(find('mixed.example.com', 'A').map((r) => [r.value, r.proxied]), [['192.0.2.30', true], ['192.0.2.31', true]]);
+    assert.deepEqual(find('ftp.example.com', 'A').map((r) => r.proxied), [false]);
+    assert.deepEqual(find('docs.example.com', 'CNAME').map((r) => [r.value, r.proxied]), [['www.example.com', false]]);
+    assert.deepEqual(find('example.com', 'MX').map((r) => [r.value, r.preference]), [['mail.example.com', 10], ['mx2.example.net', 20]]);
+    assert.deepEqual(find('_autodiscover._tcp.example.com', 'SRV').map((r) => r.value), ['mail.example.com']);
+    assert.deepEqual(find('example.com', 'TXT').map((r) => r.value), ['v=spf1 ip4:198.51.100.25 ip4:192.0.2.8/29 include:_spf.example.net ~all'],
+      'only the SPF policy of the TXT records');
+    assert.deepEqual(find('intranet.example.com', 'A').map((r) => r.internal), [true]);
+    assert.deepEqual(find('old.dev.example.com', 'A').map((r) => r.occluded), [true], 'below the dev.example.com delegation');
+    assert.ok(!refs.some((r) => r.type === 'CAA' || r.type === 'DS' || r.type === 'SOA'));
+    assert.ok(refs.every((r) => Array.isArray(r.hints) && typeof r.value === 'string'));
+    assert.doesNotThrow(() => JSON.stringify(refs));
+  });
+
+  test('HTTPS / SVCB address hints; Route 53 aliases and invalid records are left out', () => {
+    const z = zone([
+      ['@', 'HTTPS', { priority: 1, target: '.', params: { alpn: ['h2'], ipv4hint: ['192.0.2.10'], ipv6hint: ['2001:db8::10'] } }],
+      ['www', 'A', null, { alias: { target: 'd111.cloudfront.net', zoneId: 'Z2FDTNDATAQYW2' } }],
+      ['bad', 'A', '999.1.1.1', { invalid: true }]
+    ]);
+    const refs = referenceRecords(z);
+    assert.deepEqual(refs.map((r) => [r.name, r.type, r.hints]), [['example.com', 'HTTPS', ['192.0.2.10', '2001:db8::10']]]);
   });
 });
 

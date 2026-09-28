@@ -1239,6 +1239,70 @@ export function zoneScanInput(zone, { skip = null, skipPrivate = true } = {}) {
   };
 }
 
+/** Record types whose data can name an address, directly or through a host name (referenceRecords). */
+const REFERENCE_TYPES = new Set(['A', 'AAAA', 'CNAME', 'MX', 'NS', 'SRV', 'HTTPS', 'SVCB', 'TXT', 'SPF']);
+
+/**
+ * @typedef {object} ReferenceRecord
+ * @property {string} name the served owner (lowercase, no trailing dot, `*` kept)
+ * @property {'A'|'AAAA'|'CNAME'|'MX'|'NS'|'SRV'|'HTTPS'|'SVCB'|'TXT'|'SPF'} type
+ * @property {string} value A / AAAA: the canonical address; CNAME / MX / NS / SRV / HTTPS / SVCB: the effective
+ *   target ({@link effectiveTargets}; `''` = the root); TXT / SPF: the SPF policy text (character-strings joined)
+ * @property {number|null} preference MX preference, else null
+ * @property {string[]} hints HTTPS / SVCB `ipv4hint` and `ipv6hint` addresses (canonical), else []
+ * @property {boolean|null} proxied the name's proxy status: a proxied A / AAAA makes every A / AAAA of the name
+ *   proxied (Cloudflare's rule, {@link proxiedSets}); a record's own flag otherwise (null = not a proxied zone)
+ * @property {boolean} internal the owner looks internal ({@link privateLookingNames}): never sent to a public resolver
+ * @property {boolean} occluded hidden by a delegation or a DNAME (not served)
+ * @property {number|null} ttl
+ * @property {number|null} line
+ */
+
+/**
+ * The records of a zone that can point at an address (IP retirement, lib/retire.js): A / AAAA,
+ * the host-name targets of CNAME / MX / NS / SRV / HTTPS / SVCB (and HTTPS / SVCB address hints),
+ * and SPF policies. Unique records only (no `duplicateOf`), in file order; invalid ones and Route 53
+ * aliases (their target is an AWS resource, not an address) are left out. Compact, plain data:
+ * the Zone File view publishes it with the scan input (`state.session.zone.records`, memory only).
+ * @param {object} zone
+ * @returns {ReferenceRecord[]}
+ */
+export function referenceRecords(zone) {
+  const idx = zoneIndex(zone);
+  const { proxiedAddressNames } = proxiedSets(idx);
+  const internal = privateLookingNames(zone);
+  const out = [];
+  for (const r of idx.unique) {
+    if (!REFERENCE_TYPES.has(r.type) || r.invalid || r.alias) continue;
+    let value = null;
+    let hints = [];
+    if (ADDRESS_TYPES.has(r.type)) value = addressOf(r);
+    else if (r.type === 'TXT' || r.type === 'SPF') value = isSpfRecord(r) ? joinedText(r) : null;
+    else value = effectiveTargets(r)[0] ?? null;
+    if ((r.type === 'HTTPS' || r.type === 'SVCB') && r.data && r.data.params) {
+      const p = r.data.params;
+      hints = [...(Array.isArray(p.ipv4hint) ? p.ipv4hint : []), ...(Array.isArray(p.ipv6hint) ? p.ipv6hint : [])]
+        .map((ip) => normalizeIP(String(ip))).filter(Boolean);
+    }
+    if (value === null) continue;
+    const proxied = ADDRESS_TYPES.has(r.type) && proxiedAddressNames.has(r.name) ? true
+      : r.proxied === true ? true : r.proxied === false ? false : null;
+    out.push({
+      name: r.name,
+      type: r.type,
+      value,
+      preference: r.type === 'MX' && r.data && Number.isFinite(r.data.preference) ? r.data.preference : null,
+      hints,
+      proxied,
+      internal: internal.has(r.name),
+      occluded: idx.occludedRecords.has(r),
+      ttl: Number.isFinite(r.ttl) ? r.ttl : null,
+      line: Number.isFinite(r.line) ? r.line : null
+    });
+  }
+  return out;
+}
+
 /**
  * The constants the CLI port must mirror (`tests/fixtures/zones-analysis/zone-constants.json`).
  * @returns {object}

@@ -19,7 +19,8 @@
  *
  * Hand-off contracts (read by views/subdomains.js and views/scan.js):
  * - `state.session.zone` = zoneorigins.zoneScanInput(zone, { skipPrivate }) plus
- *   `{ label: string, counts: { names, origins, skipped } }`;
+ *   `{ label: string, counts: { names, origins, skipped }, records }` (`records`: zoneorigins
+ *   referenceRecords, the records that can point at an address, read by Retire an IP);
  * - `state.session.zoneScanIntent` (one-shot) = `{ v: 1, target: 'subdomains'|'scan', domain,
  *   mode: 'exact'|'discover', autostart: boolean, at: Date.now() }`; exact mode = only the zone
  *   names as seeds (no passive sources, no wordlist, no permutations: quota-free).
@@ -45,7 +46,7 @@ import {
 } from '../lib/zoneparse.js';
 import { lintZone, LINT_RULES } from '../lib/zonelint.js';
 import {
-  proxiedOriginMap, addressMap, zoneSweep, handoffFiles, zoneScanInput, privateLookingNames, ORIGIN_KINDS,
+  proxiedOriginMap, addressMap, zoneSweep, handoffFiles, zoneScanInput, privateLookingNames, referenceRecords, ORIGIN_KINDS,
   ZONE_NAMES_FILE, ZONE_TARGETS_FILE
 } from '../lib/zoneorigins.js';
 import { planDrift, driftZone, DRIFT_STATUSES, DRIFT_REASONS, DRIFT_SEVERITY } from '../lib/zonedrift.js';
@@ -1016,7 +1017,9 @@ export function buildIntent({ target, domain, mode = 'exact', autostart = true, 
 }
 
 /**
- * The scan input published as `state.session.zone`.
+ * The scan input published as `state.session.zone`, with the records that can point at an
+ * address (`records`, zoneorigins.referenceRecords: every one, internal names included — Retire an
+ * IP never sends those to a public resolver). Memory only, like the rest of it.
  * @param {object} zone
  * @param {{ skipPrivate?: boolean, label?: string }} [opts]
  * @returns {object}
@@ -1026,7 +1029,8 @@ export function sessionZone(zone, { skipPrivate = true, label = '' } = {}) {
   return {
     ...input,
     label,
-    counts: { names: input.names.length + input.wildcardBases.length, origins: input.proxied.length, skipped: input.skipped.length }
+    counts: { names: input.names.length + input.wildcardBases.length, origins: input.proxied.length, skipped: input.skipped.length },
+    records: referenceRecords(zone)
   };
 }
 

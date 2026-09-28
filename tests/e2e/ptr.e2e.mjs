@@ -217,7 +217,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/ip"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [];
       });
-      assertEqual(nav, ['ip', 'ptr'], 'IP addresses group');
+      assertEqual(nav, ['ip', 'ptr', 'retire'], 'IP addresses group');
       assertEqual(await text(page, 'h1'), 'Reverse DNS', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.ptr-empty .empty')), 'empty state');
       assertEqual(await dnsCount(page), 0, 'no DNS query');

@@ -981,7 +981,7 @@ const STRINGS = [
   ['sum.retire.ownersNone', ['Not in your server list', 'Sunucu listenizde yok']],
   ['sum.retire.sev.mail', ['Mail', 'E-posta']],
   ['sum.retire.sev.ns', ['Name server', 'Ad sunucusu']],
-  ['sum.retire.sev.live', ['Live record', 'Canlı kayıt']],
+  ['sum.retire.sev.live', ['Address record', 'Adres kaydı']],
   ['sum.retire.sev.origin', ['Proxy origin', 'Proxy asıl sunucusu']],
   ['sum.retire.sev.chain', ['CNAME chain', 'CNAME zinciri']],
   ['sum.retire.more', [{ one: '+{count} more record to change', other: '+{count} more records to change' }, 'değiştirilecek +{count} kayıt daha']],

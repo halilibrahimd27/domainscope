@@ -756,7 +756,7 @@ describe('retire', () => {
       '- **Mail:** `example.com` TXT `ip4:192.0.2.10`',
       '- **Mail:** `example.com` MX `10 mail.example.com`',
       '- **Name server:** `example.com` NS `ns1.example.com`',
-      '- **Live record:** `www.example.com` A `192.0.2.10`',
+      '- **Address record:** `www.example.com` A `192.0.2.10`',
       '- +2 more records to change',
       '- **Not settled:** 1 SPF term that cannot be told from here · 2 passive hits not checked yet · 1 failed lookup (the list may be incomplete)',
       '- Not covered: internal (split-horizon) DNS and domains that are not in the list',
@@ -778,7 +778,7 @@ describe('retire', () => {
     assertShape(tr);
     assert.equal(lines(md(tr))[0], '**IP emekliye ayırma · `192.0.2.10`**');
     assert.equal(lines(md(tr))[1], '- 1 kayıt hâlâ bu adresi gösteriyor · adres kalkınca 1 tanesi bir şeyi bozar (erken durduruldu: her alan adı kontrol edilmedi)');
-    assert.equal(lines(md(tr))[3], '- **Canlı kayıt:** `www.example.com` A `192.0.2.10`');
+    assert.equal(lines(md(tr))[3], '- **Adres kaydı:** `www.example.com` A `192.0.2.10`');
   });
 
   test('a hostile record value stays an inert code span', () => {
@@ -786,7 +786,7 @@ describe('retire', () => {
       label: '192.0.2.10', domains: ['example.com'], counts: counts({ live: 1 }),
       top: [{ severity: 'live', name: '<!channel>.example.com', type: 'A', value: '@here *x*' }]
     }, opts());
-    assert.match(md(doc), /- \*\*Live record:\*\* `<!channel>\.example\.com` A `@here \*x\*`/);
+    assert.match(md(doc), /- \*\*Address record:\*\* `<!channel>\.example\.com` A `@here \*x\*`/);
   });
 });
 

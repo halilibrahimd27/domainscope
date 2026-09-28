@@ -28,7 +28,7 @@ import { h, clear, debounce } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CopyButton, Disclosure, EmptyState, ErrorBanner, Icon, ProgressBar, StatCard, announce, textarea, toast
 } from '../ui/components.js';
-import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
+import { t, registerStrings, formatNumber, formatDateTime, getLang } from '../i18n.js';
 import {
   parseRetireTargets, parseDomainList, retireTokens, knownHostsFor, zoneCandidates, runRetireCheck, buildChanges, breakingChanges,
   inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_ADDRESSES, RETIRE_MAX_DOMAINS,
@@ -188,7 +188,7 @@ registerStrings('en', {
 
   'retire.sev.mail': 'Breaks mail',
   'retire.sev.ns': 'Breaks DNS',
-  'retire.sev.live': 'Live record',
+  'retire.sev.live': 'Address record',
   'retire.sev.origin': 'Proxy origin',
   'retire.sev.chain': 'CNAME chain',
   'retire.sev.file': 'Zone file only',
@@ -196,7 +196,7 @@ registerStrings('en', {
   'retire.sev.unknown': 'Cannot tell',
   'retire.sevTitle.mail': 'An SPF mechanism that lets the address send mail as the domain, or an MX host on it: mail breaks — and whoever gets the address next can send as you.',
   'retire.sevTitle.ns': 'A name server of the domain answers from the address: the zone stops resolving for resolvers that ask it.',
-  'retire.sevTitle.live': 'A record in public DNS answers with the address.',
+  'retire.sevTitle.live': 'An A / AAAA record or an HTTPS address hint that answers with the address (the Evidence column says whether public DNS served it).',
   'retire.sevTitle.origin': 'A proxied record’s origin: visitors never see the address, the proxy connects to it.',
   'retire.sevTitle.chain': 'A CNAME whose chain ends at the address.',
   'retire.sevTitle.file': 'Only in the imported zone file: public DNS no longer serves it.',
@@ -383,7 +383,7 @@ registerStrings('tr', {
 
   'retire.sev.mail': 'E-postayı bozar',
   'retire.sev.ns': 'DNS’i bozar',
-  'retire.sev.live': 'Canlı kayıt',
+  'retire.sev.live': 'Adres kaydı',
   'retire.sev.origin': 'Proxy asıl sunucusu',
   'retire.sev.chain': 'CNAME zinciri',
   'retire.sev.file': 'Yalnızca zone dosyasında',
@@ -391,7 +391,7 @@ registerStrings('tr', {
   'retire.sev.unknown': 'Anlaşılamıyor',
   'retire.sevTitle.mail': 'Adresin alan adı adına e-posta göndermesine izin veren bir SPF mekanizması ya da adresteki bir MX sunucusu: e-posta bozulur — ve adresi sonra kim alırsa sizin adınıza gönderebilir.',
   'retire.sevTitle.ns': 'Alan adının bir ad sunucusu bu adresten yanıt veriyor: ona soran çözümleyiciler için zone çözümlenmez olur.',
-  'retire.sevTitle.live': 'Genel DNS’teki bir kayıt bu adresle yanıt veriyor.',
+  'retire.sevTitle.live': 'Bu adresle yanıt veren bir A / AAAA kaydı ya da HTTPS adres ipucu (genel DNS’in onu sunup sunmadığını Kanıt sütunu söyler).',
   'retire.sevTitle.origin': 'Proxy’li bir kaydın asıl sunucusu: ziyaretçiler adresi görmez, proxy ona bağlanır.',
   'retire.sevTitle.chain': 'Zinciri bu adreste biten bir CNAME.',
   'retire.sevTitle.file': 'Yalnızca içe aktarılan zone dosyasında: genel DNS artık onu sunmuyor.',
@@ -598,10 +598,11 @@ export function summaryFacts(job, built, { owners = null, passive = false } = {}
  * from; `prompt`: a link filled the form and waits for a click; `job`: the last check;
  * `discovery`: a running / finished discovery; `discovered`: names found per domain;
  * `passive`: the passive lookup ({ key, status, results }); `extraHosts`: passive names to check;
- * `route`: the `ips` / `domains` params this page wrote for its last check (its own URL is no new link).
+ * `route`: the `ips` / `domains` params this page wrote for its last check (its own URL is no new link);
+ * `hostsOpen`: the host-names disclosure as the user left it (null: open while a domain has none).
  */
 const session = {
-  ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null,
+  ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null, hostsOpen: null,
   job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
 };
 let jobCounter = 0;
@@ -620,7 +621,7 @@ stateSingleton.subscribe(({ key }) => {
   if (discoveryRunning()) session.discovery.controller.abort();
   if (passiveRunning()) session.passive.controller.abort();
   Object.assign(session, {
-    ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null,
+    ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null, hostsOpen: null,
     job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
   });
   if (intel) intel.clearCache();
@@ -889,7 +890,12 @@ export function mount(container, ctx) {
     if (session.discovery && session.discovery.status === 'error') {
       children.push(ErrorBanner(session.discovery.error, { title: t('retire.discover.failed'), compact: true }));
     }
-    hostsEl.append(Disclosure({ summary: t('retire.hosts.title'), open: bare.length > 0, className: 'retire-hosts-box', children: h('div', { class: 'stack-sm' }, children) }));
+    // Open while a domain has no host names (the discovery offer is in it), unless the user closed it.
+    const box = Disclosure({
+      summary: t('retire.hosts.title'), open: session.hostsOpen ?? bare.length > 0, className: 'retire-hosts-box', children: h('div', { class: 'stack-sm' }, children)
+    });
+    box.addEventListener('toggle', () => { session.hostsOpen = box.open; });
+    hostsEl.append(box);
   }
 
   function currentHosts(domains) {
@@ -1363,7 +1369,12 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   }
 
   /* the headline, the stat cards and the owners */
+  let headKey = null;
   function renderHead(built) {
+    // Drawn again only when what it says changes: its verdict is an alert a screen reader announces.
+    const key = JSON.stringify([job.status, job.finishedAt && job.finishedAt.getTime(), built.counts, getLang()]);
+    if (key === headKey) return;
+    headKey = key;
     clear(headEl);
     const title = h('h2', { class: 'retire-head-title' }, t('retire.head.title', { label: job.label }));
     const when = job.finishedAt ? h('span', { class: 'muted text-sm' }, t('retire.head.checked', { time: formatDateTime(job.finishedAt) })) : null;

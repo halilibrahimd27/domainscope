@@ -540,6 +540,54 @@ describe('cert', () => {
   });
 });
 
+describe('renew (Renewal readiness)', () => {
+  before(async () => {
+    // The finding titles and challenge labels come with lib/renewal.js (the view registers them).
+    const { RENEWAL_I18N } = await imp('assets/js/lib/renewal.js');
+    for (const lang of ['en', 'tr']) i18n.registerStrings(lang, RENEWAL_I18N[lang]);
+  });
+  const problem = (severity, id, params) => ({ severity, key: `renew.f.${id}.title`, params });
+  const facts = {
+    names: [
+      { name: 'www.example.com', verdict: 'fail', problems: [problem('error', 'caa.denied', { ca: "Let's Encrypt" }), problem('warn', 'resolvers.servfail', { resolvers: 'DNS.SB' })] },
+      { name: '*.example.com', verdict: 'warnings', problems: [problem('warn', 'wildcard.unknown', { base: 'example.com' })] },
+      { name: 'example.com', verdict: 'ready', problems: [] }
+    ],
+    ca: "Let's Encrypt", challenge: 'http-01', tested: 1, at: new Date('2026-09-27T13:59:00Z')
+  };
+
+  test('verdict counts, CA and challenge, errors before warnings with the name, the Globalping test, the check time', () => {
+    const doc = S.buildSummary('renew', facts, opts('en', `${URL_BASE}#/renew?names=www.example.com`));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Renewal readiness · `www.example.com`, `*.example.com`, `example.com`**',
+      '- 1 will fail · 1 with warnings · 1 ready',
+      "- CA: Let's Encrypt · challenge: HTTP-01",
+      "- **Error:** `www.example.com` — CAA does not allow `Let's Encrypt`",
+      '- **Warning:** `www.example.com` — CAA lookup fails on `DNS.SB`',
+      '- **Warning:** `*.example.com` — A wildcard needs DNS-01',
+      '- HTTP-01 reachability tested for 1 name from three continents (Globalping)',
+      '',
+      `DomainScope · checked 2026-09-27 13:59 UTC · ${URL_BASE}#/renew?names=www.example.com`
+    ]);
+  });
+
+  test('nothing wrong, no CA chosen, the method not known; at most five problems; Turkish', () => {
+    const clean = S.renewSummary({ names: [{ name: 'www.example.com', verdict: 'ready', problems: [] }], ca: null, challenge: 'unknown' }, opts());
+    assertShape(clean, { min: 4 });
+    assert.deepEqual(lines(md(clean)).slice(1, 4), ['- 1 ready', '- CA not chosen · challenge: Not sure', '- No errors or warnings']);
+    const many = S.renewSummary({ names: Array.from({ length: 7 }, (_, i) => ({ name: `h${i}.example.com`, verdict: 'fail', problems: [problem('error', 'http.none', { name: `h${i}.example.com` })] })), challenge: 'http-01', ca: "Let's Encrypt" }, opts());
+    assertShape(many);
+    assert.ok(md(many).includes('- +2 more warnings and errors'), md(many));
+    assert.ok(md(many).includes('`h2.example.com` +4 more**'), 'the title lists three names');
+    const tr = md(S.renewSummary(facts, opts('tr')));
+    for (const s of ['**Yenileme hazırlığı · `www.example.com`', '- 1 tanesi başarısız olacak · 1 tanesi uyarılı · 1 tanesi hazır', "- Otorite: Let's Encrypt · doğrulama: HTTP-01",
+      "- **Hata:** `www.example.com` — CAA, `Let's Encrypt` otoritesine izin vermiyor", 'HTTP-01 erişilebilirliği 1 ad için üç kıtadan test edildi (Globalping)']) assert.ok(tr.includes(s), `${s}\n${tr}`);
+    assert.deepEqual(S.permalinkParams('renew', { names: 'www.example.com,*.example.com', ca: 'letsencrypt', challenge: 'http-01', run: '0', tab: 'x' }),
+      { names: 'www.example.com,*.example.com', ca: 'letsencrypt', challenge: 'http-01' });
+  });
+});
+
 describe('lookup (one line)', () => {
   const resp = (type, answers, extra = {}) => ({ ok: true, rcode: 'NOERROR', type, flags: { ad: true }, answers: answers.map((data) => ({ type, data })), ...extra });
 

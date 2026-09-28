@@ -101,6 +101,8 @@ describe('routes', () => {
     assert.deepEqual(fillRoute('cert', domain), { host: 'example.com', run: '0' });
     assert.deepEqual(fillRoute('subdomains', domain), { domain: 'example.com', run: '0' });
     assert.deepEqual(fillRoute('scan', domain), { domain: 'example.com', run: '0' });
+    assert.deepEqual(fillRoute('renew', host), { names: 'www.example.com', run: '0' });
+    assert.equal(fillRoute('renew', ip), null, 'a renewal names host names only');
   });
 
   test('a tool whose input does not take the kind gets nothing', () => {

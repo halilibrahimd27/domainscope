@@ -4,7 +4,7 @@
  *
  * - Each builder takes the facts a view already shows ({@link healthSummary}, {@link globalSummary},
  *   {@link subdomainsSummary}, {@link scanSummary}, {@link zoneSummary}, {@link certSummary},
- *   {@link lookupSummary}, {@link ipSummary}; {@link buildSummary} dispatches by view id) and
+ *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}; {@link buildSummary} dispatches by view id) and
  *   returns a {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP
  *   Intel) and a footer with the view's permalink and a UTC timestamp.
  * - {@link renderMarkdown} / {@link renderPlainText} turn a doc into text. Untrusted values
@@ -29,7 +29,7 @@
 import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'zone', 'scan', 'cert', 'global', 'lookup', 'ip', 'health']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'health']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -48,6 +48,7 @@ export const PERMALINK_PARAMS = Object.freeze({
   zone: Object.freeze([]),
   scan: Object.freeze(['domain', 'run']),
   cert: Object.freeze([]),
+  renew: Object.freeze(['names', 'ca', 'challenge']),
   global: Object.freeze(['name', 'type', 'geo']),
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
   ip: Object.freeze(['ips']),
@@ -516,6 +517,38 @@ export function certSummary(facts, opts) {
   ], { when: whenText(t, 'sum.at.asOf', null, now), url: opts.url });
 }
 
+/**
+ * Renewal readiness: how many names are ready, have warnings or will fail, the CA and challenge
+ * checked against, then the worst problems as "Error: `name` — title" (lib/renewal.js finding
+ * titles, `renew.f.<id>.title`, which the view registers), and whether HTTP-01 reachability was
+ * tested from Globalping.
+ * @param {{ names: Array<{ name: string, verdict: 'ready'|'warnings'|'fail',
+ *   problems?: Array<{ severity: string, key: string, params?: object }> }>, ca?: string|null, challenge?: string,
+ *   tested?: number, at?: Date }} facts `ca`: the CA's name (null: not chosen); `at`: when the check ended
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function renewSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const list = (facts.names || []).filter((n) => n && n.name);
+  const tally = k.counts([['sum.renew.fail', list.filter((n) => n.verdict === 'fail').length],
+    ['sum.renew.warnings', list.filter((n) => n.verdict === 'warnings').length], ['sum.renew.ready', list.filter((n) => n.verdict === 'ready').length]]);
+  const rank = { error: 0, warn: 1 };
+  const problems = list.flatMap((n) => (n.problems || []).filter((p) => p && rank[p.severity] !== undefined).map((p) => ({ n, p })))
+    .map((x, i) => ({ ...x, i })).sort((a, b) => rank[a.p.severity] - rank[b.p.severity] || a.i - b.i);
+  const lines = problems.slice(0, SUMMARY_MAX_PROBLEMS)
+    .map(({ n, p }) => [strong(`${t(`severity.${p.severity}`)}:`), ' ', code(n.name), ' — ', ...textParts(t, p.key, p.params)]);
+  if (problems.length > SUMMARY_MAX_PROBLEMS) lines.push([t('sum.moreProblems', { count: problems.length - SUMMARY_MAX_PROBLEMS })]);
+  const challenge = t(`renew.ch.${facts.challenge || 'unknown'}`);
+  return doc('renew', k.title('renew', k.domains(list.map((n) => n.name))), [
+    tally ? [tally] : [t('sum.renew.none')],
+    facts.ca ? [t('sum.renew.setup', { ca: cleanText(facts.ca), challenge })] : [t('sum.renew.setupNoCa', { challenge })],
+    ...(lines.length ? lines : list.length ? [[t('sum.renew.noProblems')]] : []),
+    facts.tested ? [t('sum.renew.tested', { count: Number(facts.tested) })] : null
+  ], { when: whenText(t, 'sum.at.checked', facts.at, opts.now || new Date()), url: opts.url });
+}
+
 /** Presentation text of a record's data, or null when it has no short form. */
 function recordValue(rr) {
   const d = rr && rr.data;
@@ -635,6 +668,7 @@ const BUILDERS = {
   zone: zoneSummary,
   scan: scanSummary,
   cert: certSummary,
+  renew: renewSummary,
   global: globalSummary,
   lookup: lookupSummary,
   ip: ipSummary,
@@ -838,6 +872,16 @@ const STRINGS = [
   ['sum.cert.fromCt', ['Loaded from Certificate Transparency: a server may serve a different one', 'Certificate Transparency kayıtlarından yüklendi: bir sunucu farklı bir sertifika sunuyor olabilir']],
   ['sum.cert.sample', ['This is the built-in sample certificate', 'Bu, uygulamadaki örnek sertifika']],
   ['sum.cert.private', ['The certificate file stays in this browser: the link opens the Certificate tool without it', 'Sertifika dosyası bu tarayıcıda kalır: bağlantı Sertifika aracını dosya olmadan açar']],
+
+  ['sum.renew.fail', ['{count} will fail', '{count} tanesi başarısız olacak']],
+  ['sum.renew.warnings', ['{count} with warnings', '{count} tanesi uyarılı']],
+  ['sum.renew.ready', ['{count} ready', '{count} tanesi hazır']],
+  ['sum.renew.none', ['No names checked', 'Hiçbir ad kontrol edilmedi']],
+  ['sum.renew.setup', ['CA: {ca} · challenge: {challenge}', 'Otorite: {ca} · doğrulama: {challenge}']],
+  ['sum.renew.setupNoCa', ['CA not chosen · challenge: {challenge}', 'Otorite seçilmedi · doğrulama: {challenge}']],
+  ['sum.renew.noProblems', ['No errors or warnings', 'Hata ya da uyarı yok']],
+  ['sum.renew.tested', [{ one: 'HTTP-01 reachability tested for {count} name from three continents (Globalping)', other: 'HTTP-01 reachability tested for {count} names from three continents (Globalping)' },
+    'HTTP-01 erişilebilirliği {count} ad için üç kıtadan test edildi (Globalping)']],
 
   ['sum.lookup.records', [{ one: '{count} record', other: '{count} records' }, '{count} kayıt']],
   ['sum.lookup.noRecords', ['none', 'yok']],

@@ -293,8 +293,8 @@ export function mount(container, ctx) {
   });
   challengeField.input.dataset.role = 'renew-challenge';
   /**
-   * How the CA was set — `{ key, issuer }` when a certificate's issuer set it, null for the plain
-   * hint — kept over a re-mount and worded in the language on screen.
+   * How the CA was set — `{ key, issuer, names }` when a certificate's issuer set it (`names`: that
+   * certificate's), null for the plain hint — kept over a re-mount and worded in the language on screen.
    */
   let caHint = restored && restored.caHint ? restored.caHint : null;
   const setCaHint = (spec) => {
@@ -392,8 +392,13 @@ export function mount(container, ctx) {
     const issuerName = leaf.issuer && (leaf.issuer.O || leaf.issuer.CN) ? [leaf.issuer.O, leaf.issuer.CN].filter(Boolean).join(' · ') : leaf.issuerDN;
     // A CA outside the list leaves "Not known": the choice made for another certificate would not apply.
     caField.value = ca || '';
-    setCaHint({ key: ca ? 'rnw.caDetected' : 'rnw.caNotDetected', issuer: issuerName || '—' });
+    setCaHint({ key: ca ? 'rnw.caDetected' : 'rnw.caNotDetected', issuer: issuerName || '—', names: boxNames(certHostnames(leaf).join('\n')) });
     caCert = certKey(leaf);
+  }
+
+  /** The box took other names than those of the certificate the CA hint is about: the hint goes. */
+  function dropStaleCaHint() {
+    if (caHint && !sameNames(Array.isArray(caHint.names) ? caHint.names : [], boxNames(namesField.value))) setCaHint(null);
   }
 
   /**
@@ -944,32 +949,40 @@ export function mount(container, ctx) {
   /**
    * A name list carried over from another tool (`run=0`) goes into the box while it is empty or
    * still holds the report's names (all of them, past the cap too) or the names carried before —
-   * never over a draft — and nothing runs; the report stays.
+   * never over a draft — and nothing runs; the report stays. A CA hint about a certificate whose
+   * names these are not goes.
    * @param {string} text
-   * @returns {boolean} whether the box now holds other names than before
+   * @returns {{ took: boolean, changed: boolean }} `took`: the box took the names; `changed`: it now
+   *   holds other names than before
    */
   function takeCarried(text) {
     const last = current && current.report ? boxNames(typeof current.text === 'string' ? current.text : current.report.names.map((r) => r.name).join('\n')) : null;
-    if (!fillReplaces(namesField.value, last, boxNames, carried)) return false;
+    if (!fillReplaces(namesField.value, last, boxNames, carried)) return { took: false, changed: false };
     const changed = !sameNames(boxNames(namesField.value), boxNames(text));
     namesField.value = text;
     namesField.setError(null);
     carried = text;
+    dropStaleCaHint();
     renderNamesNote();
-    return changed;
+    return { took: true, changed };
   }
 
   /**
-   * Names carried from another tool (`run=0`), with the CA the link names, else the CA of the
-   * shared certificate that names them.
+   * Names carried from another tool (`run=0`), with the CA and challenge the link names once the box
+   * took them (never next to a draft the box kept), else the CA of the shared certificate that
+   * names them.
    * @param {string} text
-   * @param {{ ca?: string|null, keepCa?: boolean }} [opts] `ca`: a valid CA id to set; `keepCa`: the
-   *   form keeps its own CA (a link back to the kept report names the report's)
+   * @param {{ ca?: string|null, challenge?: string|null, keepCa?: boolean }} [opts] `ca`: a valid CA id
+   *   to set; `challenge`: a valid challenge to set; `keepCa`: the form keeps its own CA (a link back
+   *   to the kept report names the report's)
+   * @returns {boolean} whether the box took the names
    */
-  function takeCarriedTarget(text, { ca = null, keepCa = false } = {}) {
-    const boxChanged = takeCarried(text);
-    if (ca) setCa(ca);
-    else if (!keepCa) takeSharedCa(boxChanged);
+  function takeCarriedTarget(text, { ca = null, challenge = null, keepCa = false } = {}) {
+    const { took, changed } = takeCarried(text);
+    if (took && ca) setCa(ca);
+    else if (!keepCa) takeSharedCa(changed);
+    if (took && challenge) challengeField.value = challenge;
+    return took;
   }
 
   /** Run the checks. `auto`: a shared link's run on arrival (offline: no toast). */
@@ -1121,6 +1134,7 @@ export function mount(container, ctx) {
     rerun() {
       if (current && current.report) {
         namesField.value = current.report.names.map((r) => r.name).join('\n');
+        dropStaleCaHint();
         setCa(current.report.ca ? current.report.ca.id : '');
         challengeField.value = current.report.challenge;
         renderNamesNote();
@@ -1131,13 +1145,13 @@ export function mount(container, ctx) {
       const text = namesText(params.names ?? params.name ?? '');
       if (!text) return false;
       if (isFillOnly(params)) {
-        takeCarriedTarget(text, { ca: renewalCa(params.ca) ? params.ca : null });
-        if (RENEWAL_CHALLENGES.includes(params.challenge)) challengeField.value = params.challenge;
+        takeCarriedTarget(text, { ca: renewalCa(params.ca) ? params.ca : null, challenge: RENEWAL_CHALLENGES.includes(params.challenge) ? params.challenge : null });
         return true;
       }
       // A shared link runs what it says, as on arrival: without a CA in it, none is chosen (unless
       // the shared certificate names exactly these names); without a challenge, "Not sure".
       namesField.value = text;
+      dropStaleCaHint();
       setCa(renewalCa(params.ca) ? params.ca : '');
       if (!renewalCa(params.ca)) takeSharedCa(true);
       challengeField.value = RENEWAL_CHALLENGES.includes(params.challenge) ? params.challenge : 'unknown';

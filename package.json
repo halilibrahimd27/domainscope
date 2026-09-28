@@ -8,7 +8,7 @@
   "scripts": {
     "test": "node --test \"tests/js/*.test.js\"",
     "test:py": "python -m unittest discover -s tests/python -v",
-    "test:e2e:offline": "node tests/e2e/run-all.mjs --only shell,subdomains,zone,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,domain,change,privacy --offline --no-shots",
+    "test:e2e:offline": "node tests/e2e/run-all.mjs --only shell,subdomains,zone,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,domain,change,privacy,reports --offline --no-shots",
     "serve": "node tests/e2e/serve.mjs 8080"
   },
   "engines": {

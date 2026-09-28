@@ -15,7 +15,8 @@
  *   right after cert, then pfx, the offline PKCS#12 suite of the same two views, chainfix, their
  *   offline missing-intermediate suite, renew, the offline Renewal readiness suite, and estate,
  *   the offline Certificate estate suite; change, the offline DNS change request suite, right after
- *   bulk; retire, the offline suite of Retire an IP, right after ptr),
+ *   bulk; retire, the offline suite of Retire an IP, right after ptr; reports, the offline suite of
+ *   DMARC & TLS reports, right after health),
  *   then carry (offline: the target and kept results carried across views), workspaces
  *   (offline: the customer workspaces in IndexedDB and their hand-over file) and privacy (offline:
  *   About's ledger of what the page sent, related domains from CT and key continuity), then the
@@ -41,7 +42,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'domain', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'carry', 'workspaces', 'privacy', 'integration'];
+const ORDER = ['shell', 'subdomains', 'domain', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'carry', 'workspaces', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

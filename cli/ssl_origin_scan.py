@@ -6862,13 +6862,14 @@ def bundle_main(argv: Sequence[str]) -> int:
 COMPARE_BODY_LIMIT = 1024 * 1024     # body bytes read and hashed per side
 COMPARE_EXPIRY_WARN_DAYS = 14        # a new certificate expiring sooner is a warning
 COMPARE_FIELDS = ('reach', 'status', 'location', 'content_type', 'title', 'body', 'hsts', 'server',
-                  'cert_covers', 'cert_trusted', 'cert_issuer', 'cert_expires', 'cert_sha256')
+                  'cert_subject', 'cert_covers', 'cert_trusted', 'cert_issuer', 'cert_expires', 'cert_sha256')
 COMPARE_LABELS = {
     'reach': 'reached', 'status': 'HTTP status', 'location': 'Location', 'content_type': 'Content-Type',
     'title': '<title>', 'body': 'body SHA-256', 'hsts': 'HSTS', 'server': 'Server',
-    'cert_covers': 'cert covers name', 'cert_trusted': 'cert trusted', 'cert_issuer': 'cert issuer',
-    'cert_expires': 'cert expires', 'cert_sha256': 'cert SHA-256',
+    'cert_subject': 'cert names', 'cert_covers': 'cert covers name', 'cert_trusted': 'cert trusted',
+    'cert_issuer': 'cert issuer', 'cert_expires': 'cert expires', 'cert_sha256': 'cert SHA-256',
 }
+COMPARE_CERT_NAMES = 3               # names of a certificate shown before "+N"
 COMPARE_NOTES = {
     'new-unreachable': 'the new server did not answer',
     'old-unreachable': 'the old server did not answer: nothing to compare with',
@@ -6952,6 +6953,23 @@ def page_title(body: bytes, charset: Optional[str] = None) -> Optional[str]:
         text = text.replace(entity, char)
     text = ' '.join(text.split())
     return text[:200] or None
+
+
+def cert_names_text(cert: CertInfo, limit: int = COMPARE_CERT_NAMES) -> str:
+    """The names a certificate carries, for a side-by-side line: the subject CN first, then the
+    SAN host names not already listed (case-insensitive), the first ``limit`` and ``+N`` for the
+    rest (the web app's certNames)."""
+    names = []  # type: List[str]
+    seen = set()
+    for name in [cert.subject_cn or ''] + list(cert.hostnames):
+        name = name.strip().rstrip('.')
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+    if not names:
+        return cert.short_label()
+    more = len(names) - limit
+    return ', '.join(names[:limit]) + (' +%d' % more if more > 0 else '')
 
 
 def _charset(content_type: Optional[str]) -> Optional[str]:
@@ -7046,15 +7064,17 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     server not answering, answering 4xx / 5xx where the old one did not, or a certificate
     that does not cover the name or is not trusted (while the old one was) is an error;
     another status, redirect, content type or title, a lost HSTS header or a certificate
-    expiring within 14 days a warning; another body, Server header or certificate is
-    information. Verdict: broken, incomplete (the old server did not answer), differs, same."""
+    expiring within 14 days a warning; another body, Server header or certificate (its names,
+    issuer, expiry, fingerprint) is information. Verdict: unreachable (neither server answered:
+    this machine's network may be the cause as much as the servers), broken, incomplete (the
+    old server did not answer), differs, same."""
     now = now or _utcnow()
     fields = []  # type: List[Dict[str, Any]]
     note, severity = None, 'ok'  # type: Optional[str], str
     if not b.ok and a.ok:
         note, severity = 'new-unreachable', 'error'
     elif not b.ok and not a.ok:
-        note, severity = 'both-unreachable', 'error'
+        note, severity = 'both-unreachable', 'warn'
     elif b.ok and not a.ok:
         note, severity = 'old-unreachable', 'info'
     fields.append({'key': 'reach', 'old': 'yes' if a.ok else (a.failure or 'no'),
@@ -7086,6 +7106,7 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
         fields.append(_compare_field('server', a.server, b.server, 'info'))
     ca, cb = a.cert, b.cert
     if cb is not None:  # the certificate fields come with a certificate from the new server
+        fields.append(_compare_field('cert_subject', cert_names_text(ca) if ca else None, cert_names_text(cb), 'info'))
         wrong_name = not b.covers
         fields.append(_compare_field('cert_covers', a.covers, b.covers, 'error' if wrong_name else 'info',
                                      'cert-name' if wrong_name else None))
@@ -7106,7 +7127,9 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     for item in fields:
         if _SEVERITY_RANK[item['severity']] > _SEVERITY_RANK[worst]:
             worst = item['severity']
-    if worst == 'error':
+    if not a.ok and not b.ok:
+        verdict = 'unreachable'
+    elif worst == 'error':
         verdict = 'broken'
     elif not a.ok:
         verdict = 'incomplete'
@@ -7149,14 +7172,17 @@ def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result:
     lines = ['Comparing %s on %s (old) and %s (new), port %d, GET %s' % (
         display_text(name), a.ip, b.ip, a.port, display_text(path)), '']
     lines.append('  %-18s %s %s' % ('', fit('old ' + a.ip).ljust(col), fit('new ' + b.ip)))
-    marks = {'error': ('ERROR', ('red', 'bold')), 'warn': ('DIFFERS', ('yellow', 'bold')),
-             'info': ('differs', ('gray',))}
+    # A difference is DIFFERS (warning) or differs (information); a warning about what both
+    # servers share (a certificate that expires soon on both, neither answering) is WARNING.
+    marks = {('error', False): ('ERROR', ('red', 'bold')), ('error', True): ('ERROR', ('red', 'bold')),
+             ('warn', False): ('DIFFERS', ('yellow', 'bold')), ('warn', True): ('WARNING', ('yellow', 'bold')),
+             ('info', False): ('differs', ('gray',))}
     for item in result['fields']:
         old = fit(display_text(_compare_value(item['key'], item['old'], a, now)))
         new = fit(display_text(_compare_value(item['key'], item['new'], b, now)))
         mark = ''
-        if not (item['same'] and item['severity'] == 'ok') and item['severity'] in marks:
-            label, styles = marks[item['severity']]
+        if (item['severity'], bool(item['same'])) in marks:
+            label, styles = marks[(item['severity'], bool(item['same']))]
             mark = style.paint(label, *styles)
         lines.append(('  %-18s %s %s  %s' % (COMPARE_LABELS[item['key']], old.ljust(col), new.ljust(col), mark)).rstrip())
         if item['note'] and item['note'] not in ('same-cert', 'body-cut'):
@@ -7167,8 +7193,11 @@ def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result:
         'differs': 'The new server answers differently: check the fields marked DIFFERS before you move the name.',
         'broken': 'The new server is not ready: fix the fields marked ERROR before you move the name.',
         'incomplete': 'The old server did not answer, so there is nothing to compare with; the new one is shown.',
+        'unreachable': 'Neither server answered: this machine\'s network (a firewall, a VPN, a route) may be the '
+                       'cause as much as the servers. Check the addresses and the port, then compare again.',
     }[verdict]
-    verdict_style = {'same': ('green', 'bold'), 'differs': ('yellow', 'bold'), 'broken': ('red', 'bold')}.get(verdict, ('bold',))
+    verdict_style = {'same': ('green', 'bold'), 'differs': ('yellow', 'bold'), 'broken': ('red', 'bold'),
+                     'unreachable': ('yellow', 'bold')}.get(verdict, ('bold',))
     lines.append('')
     lines.append('%s: %s' % (style.paint(verdict.upper(), *verdict_style), text))
     return '\n'.join(lines) + '\n'
@@ -7236,7 +7265,7 @@ def _run_compare(args: argparse.Namespace) -> int:
                                           color=use_color(args.no_color, sys.stdout), width=width, now=now))
     if failed:
         return EXIT_OUTPUT_ERROR
-    if args.fail_on_change and result['verdict'] in ('differs', 'broken'):
+    if args.fail_on_change and result['verdict'] in ('differs', 'broken', 'unreachable'):
         return EXIT_CHANGED
     return EXIT_OK
 
@@ -7432,15 +7461,17 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   reads up to 1 MiB of the body; then one verifying handshake per address (this machine's
   trust store and the name; a certificate issued by a --private-ca counts as trusted).
   Prints both answers side by side - reached, HTTP status, Location, Content-Type,
-  <title>, body SHA-256, HSTS, Server, and the certificate: covers the name, trusted,
-  issuer, expiry, SHA-256 fingerprint - with ERROR (the new server does not answer, answers
-  4xx / 5xx where the old one did not, or its certificate does not cover the name or is not
-  trusted), DIFFERS (another status, redirect, type or title, a lost HSTS header, a
-  certificate expiring within 14 days) and differs (information: another body, Server header
-  or certificate; a page with a token or a time in it differs on every request). Private
-  addresses are fine: this is the counterpart of the web app's check from the internet
-  (Retire an IP > Compare the old and the new server). --json FILE writes both answers
-  (schema domainscope.compare/1); --fail-on-change exits with code 4 on ERROR or DIFFERS.
+  <title>, body SHA-256, HSTS, Server, and the certificate: its names (subject CN and SANs),
+  covers the name, trusted, issuer, expiry, SHA-256 fingerprint - with ERROR (the new server
+  does not answer, answers 4xx / 5xx where the old one did not, or its certificate does not
+  cover the name or is not trusted), DIFFERS (another status, redirect, type or title, a lost
+  HSTS header), WARNING (a certificate expiring within 14 days) and differs (information:
+  another body, Server header or certificate; a page with a token or a time in it differs on
+  every request). When neither server answers, the verdict is UNREACHABLE: this machine's
+  network may be the cause as much as the servers. Private addresses are fine: this is the
+  counterpart of the web app's check from the internet (Retire an IP > Compare the old and
+  the new server). --json FILE writes both answers (schema domainscope.compare/1);
+  --fail-on-change exits with code 4 on ERROR, DIFFERS or UNREACHABLE.
 
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
             and PRIVATE_CERT only with --strict-public),
@@ -7584,7 +7615,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help='before DNS moves a name: GET --path over TLS (SNI and Host = the one -n '
                           'name) from both addresses and show the answers side by side (status, '
                           'Location, title, body SHA-256, HSTS, certificate); with -p (one port), '
-                          '--timeout, --json, --private-ca, --fail-on-change (exit 4 when they differ)')
+                          '--timeout, --json, --private-ca, --fail-on-change (exit 4 when they differ '
+                          'or neither answers)')
     cmp.add_argument('--path', default='/', help='the path --compare requests (default: /)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser

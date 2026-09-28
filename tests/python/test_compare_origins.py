@@ -103,6 +103,8 @@ class CompareIntegrationTests(unittest.TestCase):
         self.assertEqual(doc['old']['body']['bytes'], len(PAGE))
         self.assertEqual([doc['new']['certTrusted'], doc['new']['trustDetail']], [True, 'issued by a --private-ca'])
         self.assertTrue(all(f['same'] for f in doc['fields']))
+        names = next(f for f in doc['fields'] if f['key'] == 'cert_subject')
+        self.assertEqual([names['old'], names['new']], ['*.wild.example.net, wild.example.net'] * 2)
         for server in (old, new):
             self.assertEqual(server.sni, [NAME, NAME], 'the GET connection and the verifying handshake')
             self.assertEqual(len(server.requests), 1, 'one GET, over the first TLS connection')
@@ -142,6 +144,16 @@ class CompareIntegrationTests(unittest.TestCase):
         self.assertIn('CLOSED', out)
         self.assertNotIn('HTTP status', out, 'nothing else is compared')
 
+    def test_neither_server_answering_fails_the_check(self):
+        probe = socket.socket()
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        code, out, _ = self.compare(port, '--fail-on-change')
+        self.assertEqual(code, sos.EXIT_CHANGED, 'nothing could be confirmed')
+        self.assertIn('UNREACHABLE', out)
+        self.assertNotIn('BROKEN', out)
+
 
 class CompareUnitTests(unittest.TestCase):
 
@@ -168,6 +180,44 @@ class CompareUnitTests(unittest.TestCase):
         self.assertIn('cert-expiring', [f['note'] for f in expiring['fields']])
         untrusted = sos.compare_sides(self.side(cert=cert, covers=True, trusted=True), self.side(cert=cert, covers=True, trusted=False), now)
         self.assertEqual(untrusted['verdict'], 'broken')
+
+    def test_certificate_names_side_by_side(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        wild, multi = fixture_cert('cli_private_wild.pem'), fixture_cert('rsa_multi_san.pem')
+        self.assertEqual(sos.cert_names_text(wild), '*.wild.example.net, wild.example.net')
+        many = sos.cert_names_text(multi)
+        self.assertEqual(many, '%s +2' % ', '.join([multi.subject_cn] + [n for n in multi.hostnames if n != multi.subject_cn][:2]),
+                         'the CN first, three names, then +N')
+        result = sos.compare_sides(self.side(cert=wild, covers=True, trusted=True), self.side(cert=multi, covers=False, trusted=True), now)
+        names = next(f for f in result['fields'] if f['key'] == 'cert_subject')
+        self.assertEqual([names['old'], names['new'], names['same'], names['severity']], [sos.cert_names_text(wild), many, False, 'info'])
+        self.assertEqual([f['key'] for f in result['fields']][8:], ['cert_subject', 'cert_covers', 'cert_trusted', 'cert_issuer',
+                                                                     'cert_expires', 'cert_sha256'])
+        text = sos.render_compare(NAME, '/', self.side(cert=wild, covers=True, trusted=True),
+                                  self.side(ip='192.0.2.2', cert=multi, covers=False, trusted=True), result, width=200, now=now)
+        line = next(l for l in text.splitlines() if l.strip().startswith('cert names'))
+        self.assertIn('*.wild.example.net, wild.example.net', line)
+        self.assertIn(many, line)
+        self.assertTrue(line.rstrip().endswith('differs'), line)
+
+    def test_neither_server_answering_is_unreachable_not_broken(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        down = dict(status=None, failure='TIMEOUT', detail='no answer in 3s')
+        result = sos.compare_sides(self.side(**down), self.side(ip='192.0.2.2', **down), now)
+        self.assertEqual(result['verdict'], 'unreachable')
+        self.assertEqual([(f['key'], f['severity'], f['note']) for f in result['fields']], [('reach', 'warn', 'both-unreachable')])
+        text = sos.render_compare(NAME, '/', self.side(**down), self.side(ip='192.0.2.2', **down), result, width=160, now=now)
+        self.assertIn('UNREACHABLE: Neither server answered', text)
+        self.assertNotIn('BROKEN', text)
+        line = next(l for l in text.splitlines() if l.strip().startswith('reached'))
+        self.assertTrue(line.rstrip().endswith('WARNING'), 'the same on both: a warning, never "differs"')
+        cert = fixture_cert('cli_private_wild.pem')
+        expiring = sos.compare_sides(self.side(cert=cert, covers=True, trusted=True), self.side(cert=cert, covers=True, trusted=True),
+                                     cert.not_after.replace(tzinfo=timezone.utc) if cert.not_after.tzinfo is None else cert.not_after)
+        text = sos.render_compare(NAME, '/', self.side(cert=cert, covers=True, trusted=True), self.side(cert=cert, covers=True, trusted=True),
+                                  expiring, width=160, now=now)
+        line = next(l for l in text.splitlines() if l.strip().startswith('cert expires'))
+        self.assertTrue(line.rstrip().endswith('WARNING'), line)
 
     def test_page_title(self):
         self.assertEqual(sos.page_title(b'<TITLE lang=en>\n A &#8212; B &amp; C </title>'), 'A — B & C')

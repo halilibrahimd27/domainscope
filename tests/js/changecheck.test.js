@@ -138,6 +138,12 @@ describe('verdicts', () => {
     assert.equal(j(exp({ maxTtl: 300 }), res([ans('www.example.com', 'A', '192.0.2.10', 3600)])), 'pending:ttl');
     assert.equal(j(exp({ maxTtl: 300 }), res([ans('www.example.com', 'A', '192.0.2.10', 280)])), 'done:null');
     assert.equal(j(exp({ mode: 'none', values: [] }), res([ans('www.example.com', 'A', '192.0.2.1')])), 'pending:present');
+    // A read that found nothing (old = []): an empty answer is "no record yet", never "still the old value".
+    assert.equal(j(exp({ old: [] }), res([], { rcode: 'NXDOMAIN' })), 'pending:missing');
+    assert.equal(j(exp({ old: [] }), res([])), 'pending:missing');
+    assert.equal(j(exp({ mode: 'has', type: 'TXT', values: [['tok']], old: [] }), res([])), 'pending:missing');
+    assert.equal(j(exp({ type: 'CNAME', values: ['x.auth.example.net'], old: [] }), res([], { rcode: 'NXDOMAIN' })), 'pending:missing');
+    assert.equal(j(exp({ old: [] }), res([ans('www.example.com', 'A', '203.0.113.9')])), 'wrong:null', 'a value where there was none, and not the new one');
     for (const r of ['missing', 'old', 'other', 'partial', 'ttl', 'present']) assert.ok(PENDING_REASONS.includes(r));
   });
 

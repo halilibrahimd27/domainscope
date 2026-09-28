@@ -254,7 +254,8 @@ export function judgeAnswer(exp, res) {
     if (exp.maxTtl !== null && exp.maxTtl !== undefined && ttl !== null && ttl > exp.maxTtl) return pending('ttl');
     return { verdict: 'done', reason: null, seen, ttl };
   }
-  if (O && sameKeys(S, O)) return pending('old');
+  // Still the old values — an empty answer where nothing was before is "no record", never "the old value".
+  if (O && O.size && sameKeys(S, O)) return pending('old');
   if (exp.mode === 'none') return O ? { verdict: 'wrong', reason: null, seen, ttl } : pending('present');
   if (!S.size) return pending('missing');
   if (exp.mode === 'has') return pending('partial');

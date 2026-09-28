@@ -7,6 +7,11 @@ Self-signed / test-CA certificates generated with OpenSSL for the unit and integ
 The `*.key` files are **throwaway private keys that exist only for tests** (the CLI tests start
 local TLS servers with them). They protect nothing and must never be used anywhere else.
 
+A renewal week (several certificates at once, `assets/js/lib/certsets.js`): `gen_x509_fixtures.mjs`
+crafted `renew_a_rsa.pem` and `renew_a_ecdsa.pem` (an RSA 2048 + ECDSA P-256 pair for `example.com`
+and `*.example.com`) and `renew_b_rsa.pem` (`shop.example.com`, `pay.example.com`), all issued by a
+made-up "DomainScope Test Renewal CA" whose key, like the leaves' keys, is never written.
+
 Certificate kinds (the CLI's `ORIGIN_CERT` / `PRIVATE_CERT`, lib/verify.js): `gen_cli_kind_fixtures.sh`
 made `cli_public_wild` (issued by a CA nobody lists, like a public one), `cli_origin_wild` (the
 Cloudflare Origin CA's issuer DN on a **test key**, not Cloudflare's), `cli_private_wild` issued by

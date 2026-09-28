@@ -154,6 +154,7 @@ registerStrings('en', {
   'scan.cert.none': 'Without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
   'scan.cert.isCA': 'This is a CA certificate, not a server certificate. Load the certificate issued for your domain.',
   'scan.cert.taken': 'Certificate taken over from the Certificate view.',
+  'scan.cert.takenRenewal': 'This certificate is one of the renewal below: the scan covers every certificate listed. Remove the others to scan it alone.',
   'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves. It compares each server with this exact certificate, so a server with another valid certificate for the name (such as the RSA twin of an ECDSA certificate) shows as Old certificate. Load the twin too (Add certificates) to accept either.',
   'scan.cert.sampleNext': 'Loading it starts nothing: a scan runs only when you press Start scan.',
   'scan.cert.several': 'Renewing several certificates (an RSA + ECDSA pair, or a whole renewal week)? Drop or choose them all at once, choose a folder, or paste several PEM blocks: one scan plans them per server.',
@@ -544,6 +545,7 @@ registerStrings('tr', {
   'scan.cert.none': 'Sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
   'scan.cert.isCA': 'Bu bir CA sertifikası, sunucu sertifikası değil. Alan adınız için verilen sertifikayı yükleyin.',
   'scan.cert.taken': 'Sertifika, Sertifika görünümünden aktarıldı.',
+  'scan.cert.takenRenewal': 'Bu sertifika aşağıdaki yenilemenin bir parçası: tarama listelenen tüm sertifikaları kapsar. Yalnızca onu taramak için diğerlerini kaldırın.',
   'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder. Her sunucuyu tam olarak bu sertifikayla karşılaştırır; bu yüzden ad için geçerli başka bir sertifika sunan bir sunucu (örneğin bir ECDSA sertifikasının RSA ikizi) Eski sertifika olarak görünür. İkisini de kabul etmek için ikizini de yükleyin (Sertifika ekle).',
   'scan.cert.sampleNext': 'Yüklemek hiçbir şey başlatmaz: tarama yalnızca Taramayı başlat’a bastığınızda çalışır.',
   'scan.cert.several': 'Birden çok sertifikayı mı yeniliyorsunuz (bir RSA + ECDSA ikilisi ya da bütün bir yenileme haftası)? Hepsini birden bırakın ya da seçin, bir klasör seçin veya birkaç PEM bloğunu yapıştırın: tek tarama hepsini sunucu sunucu planlar.',
@@ -1491,6 +1493,7 @@ export function mount(container, ctx) {
 
   /* --- certificate hand-over / shared certificate ------------------------ */
   const pending = normalizeCertLoad(state.takeSession(PENDING_CERT));
+  /** @type {boolean|'renewal'} the hand-over's note ('renewal': one of step 1's renewal came back) */
   let takenOver = false;
   if (pending) {
     setCurrentCert(state, pending);
@@ -1513,7 +1516,11 @@ export function mount(container, ctx) {
     const leaf = load.result && load.result.leaf;
     return !!rw && !!leaf && rw.leaves.some((l) => l.key === leafKey(leaf));
   }
-  if (!inRenewal(certLoad)) session.certLoads = certLoad ? [certLoad] : [];
+  const keepFiles = inRenewal(certLoad);
+  if (!keepFiles) session.certLoads = certLoad ? [certLoad] : [];
+  // "Find servers for this certificate" on one certificate of step 1's renewal (its Details) comes
+  // back to the whole renewal, which is what the scan covers: the note says so, not "taken over".
+  if (takenOver && keepFiles && renewalOf(session.certLoads)) takenOver = 'renewal';
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeDomains(ctx.searchParams, ctx.params);
@@ -1666,7 +1673,10 @@ export function mount(container, ctx) {
     extra: certLoad && certLoad.source === 'ct' ? t('scan.cert.ctVerify') : t('scan.cert.sampleNext')
   });
 
-  const takenAlert = () => Alert({ variant: 'info', compact: true, icon: 'arrow-right', message: t('scan.cert.taken'), dismissible: true, onDismiss: () => { takenOver = false; } });
+  const takenAlert = () => Alert({
+    variant: 'info', compact: true, icon: 'arrow-right', message: t(takenOver === 'renewal' ? 'scan.cert.takenRenewal' : 'scan.cert.taken'),
+    dismissible: true, onDismiss: () => { takenOver = false; }
+  });
 
   function renderCertStep() {
     clear(certBody);

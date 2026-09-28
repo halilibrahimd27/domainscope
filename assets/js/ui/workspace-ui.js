@@ -133,7 +133,8 @@ export function storageReason(err) {
 export function storageErrorText(err) {
   const reason = storageReason(err);
   if (reason !== 'other') return t(`ws.why.${reason}`);
-  const detail = (err && typeof err === 'object' ? err.message || err.name : String(err)) || '';
+  // One final period goes: the sentence around the quote ends with its own.
+  const detail = ((err && typeof err === 'object' ? err.message || err.name : String(err)) || '').replace(/\.$/, '');
   return detail ? t('ws.why.other', { detail }) : t('ws.why.unknown');
 }
 

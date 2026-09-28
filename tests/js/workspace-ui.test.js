@@ -101,6 +101,11 @@ describe('storage errors in words', () => {
       // Anything else keeps its own text, quoted inside a Turkish sentence.
       assert.equal(storageErrorText(new TypeError('odd failure')), 'tarayıcı “odd failure” bildirdi');
       assert.equal(storageErrorText(null), t('ws.why.unknown'));
+      // A message ending with a period does not end the sentence twice.
+      setLang('en');
+      assert.equal(t('ws.clearFailed', { reason: storageErrorText(domError('UnknownError', 'The user denied permission to access the database.')) }),
+        'Not all local data could be deleted: the browser reported “The user denied permission to access the database”.');
+      setLang('tr');
       assert.equal(t('ws.clearFailed', { reason: storageErrorText(domError('QuotaExceededError')) }),
         'Yerel verilerin tümü silinemedi: tarayıcının bu site için ayırdığı depolama dolu.');
     } finally {

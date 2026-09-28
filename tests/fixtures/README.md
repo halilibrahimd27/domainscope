@@ -54,3 +54,18 @@ made-up network (two sites a week apart; documentation addresses only), written 
 `python tests/python/test_estate.py --write-fixtures`: `tests/python/test_estate.py` checks that they
 are exactly what the CLI writes, `tests/js/estate.test.js` that lib/estate.js computes the same
 `estate` from them, and the `estate` E2E suite imports them in the Certificate estate view.
+
+Missing intermediates and root lifecycle (lib/chainfix.js, `tests/js/chainfix.test.js`, the
+`chainfix` E2E suite): `gen_chainfix_fixtures.mjs` (no OpenSSL) made a throwaway PKI whose keys
+are never written — `chainfix_root.pem` (a current root every store includes),
+`chainfix_old_root.pem` (removed from every store), `chainfix_inter.pem` (the Issuing CA under the
+current root) and `chainfix_inter_cross.pem` (the same name and key cross-signed by the old root),
+`chainfix_old_root_cross.pem` (the old root's key under the current root), `chainfix_policy.pem`
+→ `chainfix_deep_ca.pem` (two levels), `chainfix_bad_root.pem` / `chainfix_bad_ca.pem` (a root
+Chrome distrusts after 2026-01-31 and Mozilla after 2026-06-30, expiring 2040-03-01) — and the
+leaves `chainfix_leaf.pem`, `chainfix_leaf_noaki.pem` (no authority key id),
+`chainfix_leaf_unknown.pem` (an issuer no list holds), `chainfix_leaf_deep.pem` and
+`chainfix_leaf_lifecycle.pem`. From CCADB-shaped report rows, `tools/build-intermediates.mjs`
+built the test dataset `intermediates/` (the format of `assets/data/intermediates/`, the shard
+files that would be empty left out: the tests answer `{}` for them). The shared DER encoder of
+both generators is `der-builder.mjs`.

@@ -1649,8 +1649,14 @@ function toDate(value) {
   return new Date();
 }
 
-/** True when `child` names `parent` as its issuer (DN match; key ids must agree when both exist). */
-function issuedBy(child, parent) {
+/**
+ * True when `child` names `parent` as its issuer: the DNs match, and the key ids agree when both
+ * exist (the child's authority key id is the parent's subject key id). No signature is checked.
+ * @param {Certificate} child
+ * @param {Certificate} parent
+ * @returns {boolean}
+ */
+export function issuedBy(child, parent) {
   if (child.issuerDN !== parent.subjectDN) return false;
   return !child.authorityKeyId || !parent.subjectKeyId || child.authorityKeyId === parent.subjectKeyId;
 }

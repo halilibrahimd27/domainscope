@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "roots": [
+    {"sha256":"f6419abe0b490fdfcd930f4d2b7a4168677a8cd99b64958e095e047084c6828a","name":"DomainScope Test Distrusted Root","owner":"DomainScope Distrust Test","ski":"9f317c5ba62014a4c54e18fd8ecf85bf51cc1d7d","dn":"CN=DomainScope Test Distrusted Root,O=DomainScope Distrust Test,C=XX","notAfter":"2040-03-01T23:59:59Z","stores":{"chrome":"tls","mozilla":"tls","apple":"tls","microsoft":"tls"}},
+    {"sha256":"bc309cc08d269d133bc69562d3ca6b4d72855b4bb22e54f5e45f80599bd497f8","name":"DomainScope Test Old Root","owner":"DomainScope Old Test","ski":"ee55ca08ae57b85fce30e38adb8d9afb2b81a21a","dn":"CN=DomainScope Test Old Root,O=DomainScope Old Test,C=XX","notAfter":"2045-12-31","stores":{"chrome":"removed","mozilla":"removed","apple":"removed","microsoft":"removed"}},
+    {"sha256":"f8efbbf70b25a819a284813bb987b86c7ca708df1e19a5e122f47c1e96c28947","name":"DomainScope Test Root CA","owner":"DomainScope Test","ski":"3fd7eeed5b390abc2a2b11ced94148323df82f6b","dn":"CN=DomainScope Test Root CA,O=DomainScope Test,C=XX","notAfter":"2045-12-31T23:59:59Z","stores":{"chrome":"tls","mozilla":"tls","apple":"tls","microsoft":"tls"}}
+  ],
+  "events": [
+    {"root":"f6419abe0b490fdfcd930f4d2b7a4168677a8cd99b64958e095e047084c6828a","type":"distrust-after","store":"chrome","date":"2026-01-31","basis":"sct","url":"https://example.com/announcements/chrome-distrust"},
+    {"root":"f6419abe0b490fdfcd930f4d2b7a4168677a8cd99b64958e095e047084c6828a","type":"distrust-after","store":"mozilla","date":"2026-06-30","basis":"notBefore","url":"https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReport"},
+    {"root":"f6419abe0b490fdfcd930f4d2b7a4168677a8cd99b64958e095e047084c6828a","type":"expiry","store":null,"date":"2040-03-01T23:59:59Z","basis":null,"url":null}
+  ]
+}

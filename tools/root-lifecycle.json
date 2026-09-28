@@ -1,0 +1,75 @@
+{
+  "about": "Announced root distrust events for tools/build-intermediates.mjs, one entry per announcement. CCADB lists which stores include a root, but not the cut-off dates of Chrome's and Apple's partial distrusts, so they are kept here by hand. Mozilla's distrust-after dates come from CCADB (its Included CA Certificate Report); a Mozilla entry here adds the announcement link, and the build takes each root's date from CCADB where it lists one. Every entry names its source; roots are SHA-256 fingerprints of the root certificates. A date means: certificates issued after the end of that day (UTC); basis 'sct' is Chrome's earliest embedded SCT, 'notBefore' the certificate's own date.",
+  "events": [
+    {
+      "store": "chrome",
+      "type": "distrust-after",
+      "date": "2024-11-11",
+      "basis": "sct",
+      "title": "Chrome 131 and later: Entrust and AffirmTrust roots",
+      "url": "https://security.googleblog.com/2024/06/sustaining-digital-certificate-security.html",
+      "roots": [
+        "02ED0EB28C14DA45165C566791700D6451D7FB56F0B2AB1D3B8EB070E56EDFF5",
+        "43DF5774B03E7FEF5FE40D931A7BEDF1BB2E6B42738C4E6D3841103D3AA7F339",
+        "6DC47172E01CBCB0BF62580D895FE2B8AC9AD4F873801E0C10B9C837D21EB177",
+        "73C176434F1BC6D5ADF45B0E76E727287C8DE57616C1E6E6141A2B2CBC7D8E4C",
+        "DB3517D1F6732A2D5AB97C533EC70779EE3270A62FB4AC4238372460E6F01E88",
+        "0376AB1D54C5F9803CE4B2E201A0EE7EEF7B57B636E8A93C9B8D4860C96F5FA7",
+        "0A81EC5A929777F145904AF38D5D509F66B5E2C58FCDB531058B0E17F3F0B41B",
+        "70A73F7F376B60074248904534B11482D5BF0E698ECC498DF52577EBF2E93B9A",
+        "BD71FDF6DA97E4CF62D1647ADD2581B07D79ADF8397EB4ECBA9C5E8488821423"
+      ]
+    },
+    {
+      "store": "mozilla",
+      "type": "distrust-after",
+      "date": "2024-11-30",
+      "basis": "notBefore",
+      "title": "Mozilla: Entrust and AffirmTrust roots",
+      "url": "https://groups.google.com/a/mozilla.org/g/dev-security-policy/c/jCvkhBjg9Yw",
+      "roots": [
+        "02ED0EB28C14DA45165C566791700D6451D7FB56F0B2AB1D3B8EB070E56EDFF5",
+        "43DF5774B03E7FEF5FE40D931A7BEDF1BB2E6B42738C4E6D3841103D3AA7F339",
+        "6DC47172E01CBCB0BF62580D895FE2B8AC9AD4F873801E0C10B9C837D21EB177",
+        "73C176434F1BC6D5ADF45B0E76E727287C8DE57616C1E6E6141A2B2CBC7D8E4C",
+        "DB3517D1F6732A2D5AB97C533EC70779EE3270A62FB4AC4238372460E6F01E88",
+        "0376AB1D54C5F9803CE4B2E201A0EE7EEF7B57B636E8A93C9B8D4860C96F5FA7",
+        "0A81EC5A929777F145904AF38D5D509F66B5E2C58FCDB531058B0E17F3F0B41B",
+        "70A73F7F376B60074248904534B11482D5BF0E698ECC498DF52577EBF2E93B9A",
+        "BD71FDF6DA97E4CF62D1647ADD2581B07D79ADF8397EB4ECBA9C5E8488821423"
+      ]
+    },
+    {
+      "store": "apple",
+      "type": "distrust-after",
+      "date": "2024-11-15",
+      "basis": "notBefore",
+      "title": "Apple: Entrust and AffirmTrust roots",
+      "url": "https://support.apple.com/en-us/121668",
+      "roots": [
+        "02ED0EB28C14DA45165C566791700D6451D7FB56F0B2AB1D3B8EB070E56EDFF5",
+        "43DF5774B03E7FEF5FE40D931A7BEDF1BB2E6B42738C4E6D3841103D3AA7F339",
+        "6DC47172E01CBCB0BF62580D895FE2B8AC9AD4F873801E0C10B9C837D21EB177",
+        "73C176434F1BC6D5ADF45B0E76E727287C8DE57616C1E6E6141A2B2CBC7D8E4C",
+        "DB3517D1F6732A2D5AB97C533EC70779EE3270A62FB4AC4238372460E6F01E88",
+        "0376AB1D54C5F9803CE4B2E201A0EE7EEF7B57B636E8A93C9B8D4860C96F5FA7",
+        "0A81EC5A929777F145904AF38D5D509F66B5E2C58FCDB531058B0E17F3F0B41B",
+        "70A73F7F376B60074248904534B11482D5BF0E698ECC498DF52577EBF2E93B9A",
+        "BD71FDF6DA97E4CF62D1647ADD2581B07D79ADF8397EB4ECBA9C5E8488821423"
+      ]
+    },
+    {
+      "store": "chrome",
+      "type": "distrust-after",
+      "date": "2025-07-31",
+      "basis": "sct",
+      "title": "Chrome 139 and later: Chunghwa Telecom and Netlock roots",
+      "url": "https://blog.google/security/sustaining-digital-certificate-security-chrome-root-store-changes/",
+      "roots": [
+        "C0A6F4DC63A24BFDCF54EF2A6A082A0A72DE35803E2FF5FF527AE5D87206DFD5",
+        "F015CE3CC239BFEF064BE9F1D2C417E1A0264A0A94BE1F0C8D121864EB6949CC",
+        "6C61DAC3A2DEF031506BE036D2A6FE401994FBD13DF9C8D466599274C446EC98"
+      ]
+    }
+  ]
+}

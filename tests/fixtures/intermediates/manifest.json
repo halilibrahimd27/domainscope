@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "generated": "2026-09-28",
+  "digest": "9302916c20730e26dca1aced0a2a3c223eb579ff12ea3edeba3bd46a7a4f989c",
+  "sources": [
+    {
+      "id": "intermediates",
+      "name": "Test: intermediates (gen_chainfix_fixtures.mjs)",
+      "url": "https://example.com/ccadb/intermediates.csv"
+    },
+    {
+      "id": "included",
+      "name": "Test: included roots",
+      "url": "https://example.com/ccadb/included.csv"
+    },
+    {
+      "id": "records",
+      "name": "Test: root records",
+      "url": "https://example.com/ccadb/records.csv"
+    }
+  ],
+  "lifecycleInput": "tools/root-lifecycle.json",
+  "license": {
+    "id": "CDLA-Permissive-2.0",
+    "attribution": "Common CA Database (CCADB)",
+    "text": "../THIRD_PARTY_LICENSES.txt"
+  },
+  "roots": "roots.json",
+  "shards": {
+    "ski": {
+      "dir": "ski",
+      "digits": 2,
+      "files": 5
+    },
+    "dn": {
+      "dir": "dn",
+      "digits": 1,
+      "files": 5
+    }
+  },
+  "counts": {
+    "intermediates": 6,
+    "keys": 5,
+    "roots": 3,
+    "events": 3,
+    "distrustEvents": 2,
+    "expiryEvents": 1,
+    "skipped": {
+      "unreadable": 0,
+      "notTls": 1,
+      "noKeyId": 0,
+      "expired": 1,
+      "notYetValid": 0,
+      "duplicate": 0
+    }
+  },
+  "lifecycleWindow": {
+    "from": "2025-01-01",
+    "to": "2040-12-31"
+  }
+}

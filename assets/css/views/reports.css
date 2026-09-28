@@ -1,0 +1,495 @@
+/*
+ * views/reports.css — "DMARC & TLS reports" view (.rpt-*). The drop zone with what was read and
+ * what could not be used, the results head with Copy summary, then two tabs: DMARC (the head
+ * card with the stats, policy, verdict, "Fix first" and the SPF line; the class tiles; the
+ * sending addresses; the reporters) and TLS-RPT (the head card, the failure types with advice
+ * and links, the failure details, the senders). The tables turn into labelled cards on a phone.
+ * Uses the design tokens from style.css only.
+ */
+
+/* Drop zone and what was read */
+.rpt-load .card-foot {
+  padding-top: 10px;
+}
+
+.rpt-load-actions {
+  justify-content: flex-end;
+}
+
+.rpt-files {
+  margin: 0;
+}
+
+.rpt-problem-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.rpt-problem-path {
+  overflow-wrap: anywhere;
+}
+
+/* Results head: the title with the busiest domain, Copy summary on the right (wraps under it on a phone). */
+.rpt-results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.rpt-results-title {
+  min-width: 0;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.rpt-results-title:focus {
+  outline: none;
+}
+
+.rpt-results-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.rpt-domain {
+  max-width: 28rem;
+}
+
+.rpt-subtitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+/* DMARC head card: the four numbers two by two on a phone (one per row would push the verdict far down). */
+.rpt-stats {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+}
+
+@media (max-width: 600px) {
+  .rpt-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .rpt-stats .stat {
+    padding: 10px 10px 10px 13px;
+  }
+
+  .rpt-stats .stat-label {
+    white-space: normal;
+  }
+
+  .rpt-stats .stat-value {
+    font-size: 21px;
+  }
+}
+
+.rpt-head .card-title,
+.rpt-tls-head .card-title {
+  overflow-wrap: anywhere;
+}
+
+.rpt-policy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 0;
+}
+
+.rpt-policy code,
+.rpt-tls-policies code {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.rpt-verdict .alert-message {
+  overflow-wrap: anywhere;
+}
+
+/* Fix first: one block per source, the address and its class on one line, the fixes under it. */
+.rpt-fix-first {
+  display: grid;
+  gap: 8px;
+}
+
+.rpt-fix {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: rpt-fix;
+}
+
+.rpt-fix-item {
+  position: relative;
+  padding: 10px 12px 10px 38px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn-solid);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  counter-increment: rpt-fix;
+}
+
+.rpt-fix-item::before {
+  content: counter(rpt-fix);
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.rpt-fix-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.rpt-fix-ip {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.rpt-fix-why {
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.rpt-fix-count {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.rpt-fix-steps {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.rpt-unknown-line {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.rpt-unknown-line .icon {
+  color: var(--warn-solid);
+  vertical-align: -2px;
+}
+
+/* The current SPF: label, state, the record itself (wraps), Check again. */
+.rpt-spf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.rpt-spf-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rpt-spf-label .icon {
+  vertical-align: -2px;
+  color: var(--warn-solid);
+}
+
+.rpt-spf[data-state="ok"] .rpt-spf-label .icon {
+  color: var(--ok-solid);
+}
+
+.rpt-spf[data-state="loading"] .rpt-spf-label .icon {
+  color: var(--text-3);
+}
+
+.rpt-spf-record {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.rpt-notes {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* Class tiles: four across on a wide screen, two on a phone. */
+.rpt-cls {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .rpt-cls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.rpt-cls .stat-label {
+  white-space: normal;
+}
+
+/* Sending addresses */
+.rpt-sources .dt-row.rpt-row-unknown td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.rpt-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.rpt-pct-pass {
+  color: var(--ok);
+}
+
+.rpt-pct-part {
+  color: var(--warn);
+}
+
+.rpt-pct-fail {
+  color: var(--error);
+}
+
+.rpt-why {
+  display: inline-block;
+  min-width: 14rem;
+  max-width: 28rem;
+  color: var(--text-2);
+}
+
+.rpt-net {
+  display: grid;
+  gap: 2px;
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
+.rpt-ptr,
+.rpt-asn {
+  overflow-wrap: anywhere;
+}
+
+.rpt-asn {
+  color: var(--text-3);
+}
+
+.rpt-details {
+  max-width: 60rem;
+}
+
+.rpt-auth {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+
+/* TLS-RPT */
+.rpt-tls-policies {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rpt-tls-policies li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.rpt-tls-types {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: 12px;
+}
+
+.rpt-tls-type {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn-solid);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+
+.rpt-tls-type p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rpt-tls-type-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.rpt-tls-type-icon {
+  color: var(--warn-solid);
+}
+
+.rpt-tls-type-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.rpt-tls-facts {
+  color: var(--text-2);
+}
+
+.rpt-tls-links a {
+  font-weight: 600;
+}
+
+/* A phone: each table row is a card of labelled lines (the headers come from data-label). */
+@media (max-width: 600px) {
+  .rpt-page .dt-table,
+  .rpt-page .dt-table tbody {
+    display: block;
+  }
+
+  .rpt-page .dt-table thead {
+    display: none;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 12px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row:last-child {
+    border-bottom: 0;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-shadow: none;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* The expand button's cell: no label, the button at the start of the card. */
+  .rpt-page .dt-table tbody tr.dt-row td.dt-expander::before {
+    content: none;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row td.dt-expander {
+    display: block;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row td > .badge,
+  .rpt-page .dt-table tbody tr.dt-row td > .btn {
+    justify-self: start;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-row td:has(> .dt-null) {
+    display: none;
+  }
+
+  .rpt-page .dt-table tbody tr.dt-details {
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rpt-page .dt-table tbody tr.dt-details td {
+    display: block;
+  }
+
+  .rpt-page .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+
+  .rpt-sources .dt-row.rpt-row-unknown {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .rpt-sources .dt-row.rpt-row-unknown td:first-child {
+    box-shadow: none;
+  }
+
+  .rpt-why,
+  .rpt-net {
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+/* Print (style.css hides the shell and every control): the reports read, not the drop zone. */
+@media print {
+  .rpt-load {
+    display: none;
+  }
+
+  .rpt-fix-item {
+    break-inside: avoid;
+  }
+
+  .rpt-tls-type {
+    break-inside: avoid;
+  }
+}

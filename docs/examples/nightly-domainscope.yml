@@ -5,8 +5,8 @@
 # Transparency watch for those domains (subdomain discovery, zone drift and renewal readiness
 # are there to switch on), commits the JSON reports and Markdown summaries under results/, and
 # keeps ONE issue: opened or updated when something changed since the night before, closed on
-# a night with no change. The results/*.json of one night are the next night's baseline; git
-# history keeps every night.
+# a night with no change when every check completed. The results/*.json of one night are the
+# next night's baseline; git history keeps every night.
 #
 # Read this before you switch it on:
 # - Use it in a PRIVATE repository. The results name your hosts, their addresses and your DNS
@@ -19,9 +19,15 @@
 #   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources). Nothing goes to
 #   Globalping: the checks that need a probe stay in the web app, behind a click.
 # - GitHub's hosted runners share their IP addresses, and the anonymous quotas of the passive
-#   sources and of Cert Spotter (10 full-domain queries an hour) are per address: a source may
-#   answer "rate limited" on some night. The report says so, and nothing it could not read
-#   counts as a change.
+#   sources are per address: a source may answer "rate limited" on some night. The report says
+#   so, and nothing it could not read counts as a change. Cert Spotter answers about 10
+#   full-domain queries an hour: after its first "rate limited" of a night the runner stops
+#   asking it, so with more than about 10 domains most of them are read from crt.sh alone. Add
+#   --sources crtsh to the ct line to leave Cert Spotter out altogether.
+# - Each check is stopped after CHECK_MINUTES and all of them after RUN_MINUTES (set under "Run
+#   the checks"), well inside the job's timeout-minutes: on a slow night (crt.sh down, a big
+#   discovery) a check fails, and the results and the issue still get their turn. Raise the
+#   three together when you switch more checks on.
 # - Pin the DomainScope version: `ref:` below takes a release tag or a commit SHA.
 name: DomainScope nightly
 
@@ -61,21 +67,31 @@ jobs:
       - name: Run the checks
         id: ds
         shell: bash
+        env:
+          CHECK_MINUTES: 20   # one check at most; then it is stopped and counts as failed
+          RUN_MINUTES: 45     # every check together; keep it under timeout-minutes
         run: |
           mkdir -p results
           changed=()
           failed=()
+          end=$(( $(date +%s) + RUN_MINUTES * 60 ))
           # ds NAME COMMAND ARGS...: results/NAME.json is both last night's baseline and tonight's
-          # report. Exit 4 means "changed since last night"; anything but 0 or 4 is a failure.
+          # report. Exit 4 means "changed since last night"; anything but 0 or 4 is a failure
+          # (124: stopped at its time limit), which leaves last night's files as they were.
           ds() {
             local name=$1
             shift
             local code=0
-            node .domainscope/tools/ds.mjs "$@" --baseline "results/$name.json" --json "results/$name.json" \
+            local limit=$(( CHECK_MINUTES * 60 ))
+            local left=$(( end - $(date +%s) ))
+            if [ "$left" -lt "$limit" ]; then limit=$left; fi
+            if [ "$limit" -lt 60 ]; then failed+=("$name:no-time-left"); return; fi
+            timeout -s INT -k 60 "$limit" node .domainscope/tools/ds.mjs "$@" --baseline "results/$name.json" --json "results/$name.json" \
               --md "results/$name.md" --fail-on-change --no-color || code=$?
             if [ "$code" -eq 4 ]; then changed+=("$name"); elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi
           }
           ds health health --list domains.txt
+          # More than about 10 domains: Cert Spotter's hourly quota runs out (see above); --sources crtsh leaves it out.
           ds ct ct --list domains.txt
           # Subdomain discovery (slower, and heavier on the passive sources' quotas):
           # ds subdomains subdomains --list domains.txt --level small
@@ -107,6 +123,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHANGED: ${{ steps.ds.outputs.changed }}
+          FAILED: ${{ steps.ds.outputs.failed }}
           RESULTS: ${{ github.server_url }}/${{ github.repository }}/tree/${{ steps.commit.outputs.sha }}/results
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -116,6 +133,10 @@ jobs:
           if [ -n "$CHANGED" ]; then
             {
               echo "Changed since the previous nightly run: $CHANGED. Results: $RESULTS · run: $RUN"
+              if [ -n "$FAILED" ]; then
+                echo
+                echo "These checks did not complete (name:exit code), so nothing of theirs was compared: $FAILED."
+              fi
               echo
               for name in $CHANGED; do
                 cat "results/$name.md"
@@ -130,8 +151,13 @@ jobs:
             else
               gh issue create --label "$label" --title 'DomainScope: changes since the last nightly run' --body-file "$RUNNER_TEMP/issue.md"
             fi
+          elif [ -n "$FAILED" ]; then
+            # A check that failed compared nothing: that is no "no change", so the issue stays open.
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "Not closed: these checks did not complete tonight (name:exit code): $FAILED ($RUN)."
+            fi
           elif [ -n "$issue" ]; then
-            gh issue close "$issue" --comment "No change since the previous nightly run ($RUN)."
+            gh issue close "$issue" --comment "No change since the previous nightly run, and every check completed ($RUN)."
           fi
 
       - name: Fail when a check did not complete
@@ -140,5 +166,5 @@ jobs:
         env:
           FAILED: ${{ steps.ds.outputs.failed }}
         run: |
-          echo "::error::These checks did not complete (name:exit code): $FAILED. See the log of 'Run the checks'."
+          echo "::error::These checks did not complete (name:exit code; 124: stopped at its time limit): $FAILED. See the log of 'Run the checks'."
           exit 1

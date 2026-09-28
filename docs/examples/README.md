@@ -30,17 +30,35 @@ both the baseline and the new report) and:
 - opens **one** issue labelled `domainscope` when something that counts changed — or updates the
   open one and comments on it — with each changed check's "Changes since the baseline" and
   summary;
-- closes that issue on a night with no change;
-- fails the job when a check could not run at all (a usage error, a report it could not write).
+- closes that issue on a night with no change on which every check completed. A check that did
+  not complete compared nothing, so on such a night the open issue stays open, with a comment
+  naming the check;
+- fails the job when a check did not complete: a usage error, a report it could not write, or
+  its time limit.
+
+Each check is stopped after `CHECK_MINUTES` (20) and all of them after `RUN_MINUTES` (45), well
+inside the job's `timeout-minutes` (60): on a slow night (crt.sh down, a large discovery) that
+check fails, keeps last night's files, and the results and the issue still get their turn. Raise
+the three together when you switch more checks on.
 
 What counts as a change mirrors the Python CLI's `--baseline`: a new or resolved health finding
 and the score, a host that appears, stops resolving, leaves its proxy or becomes a dangling CNAME,
 a new certificate issuer or a first certificate for a name, a zone record set whose live state
-moved, a renewal verdict. Moves between failure states, what a failed lookup may hide and renewed
-certificates from known issuers are listed but never counted. GitHub's hosted runners share their
-IP addresses and the anonymous quotas of the passive sources and Cert Spotter are per address, so
-a source may be rate limited on some night: the report says so, and nothing it could not read
-counts.
+moved, a renewal verdict. Moves between failure states, what a failed lookup or source may hide
+and renewed certificates from known issuers are listed but never counted. GitHub's hosted runners
+share their IP addresses and the anonymous quotas of the passive sources are per address, so a
+source may be rate limited on some night: the report says so, and nothing it could not read
+counts. An issuer or a name is new only when a source that lists it tonight read the domain in
+full the night before too, or when its certificate was issued after that run; issuers are named
+from the certificate's issuer DN, so crt.sh and Cert Spotter name them alike.
+
+**Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
+an hour per IP address. After its first "rate limited" of a night the runner does not ask it
+again until its wait is over (at most an hour), and once crt.sh is down (unavailable, or timed
+out on two domains in a row) it is not asked again that night; the domains after that read "not
+asked". With more than
+about 10 domains most of them are read from crt.sh alone: `--sources crtsh` on the `ct` line
+leaves Cert Spotter out altogether.
 
 ### The runner on its own
 
@@ -55,9 +73,12 @@ node tools/ds.mjs dane fullchain.pem
 ```
 
 `node tools/ds.mjs --help` lists every option. Exit codes: 0 done, 1 the run failed (an
-unexpected error, printed), 2 usage error (report files that cannot be written and a baseline
-that cannot be compared are refused before anything is sent), 3 a report could not be written
-after the run, 4 something changed since `--baseline` (only with `--fail-on-change`), 130
-interrupted. DNS goes to the app's DoH resolvers (Cloudflare,
+unexpected error, printed), 2 usage error (report files that cannot be written, a report file
+that is one of the run's own input files, and a baseline that cannot be compared are refused
+before anything is sent), 3 a report could not be written after the run, 4 something changed
+since `--baseline` (only with `--fail-on-change`), 130 interrupted (Ctrl-C, or `timeout -s INT`:
+nothing is written). DNS goes to the app's DoH resolvers (Cloudflare,
 Google, DNS.SB; Quad9 and CZ.NIC answer over HTTP/2 only, which Node's fetch does not speak) with
-the app's concurrency; nothing goes to Globalping.
+the app's concurrency; nothing goes to Globalping. A discovery run prints its progress through
+the long stages and the scanner's own warnings (a list of names cut at 20,000, resolvers that
+stopped answering), which also go into the report and the summary.

@@ -42,6 +42,8 @@ export const CURRENT = Object.freeze({
   'www.example.com|CNAME': none,
   'shop.example.com|A': ok(['203.0.113.7']),
   'shop.example.com|CNAME': none,
+  'mail.example.com|TXT': ok(TXT('v=spf1 a -all')),
+  'mail.example.com|CNAME': none,
   '_acme-challenge.example.net|CNAME': ok(['d7c1f3a2.auth.example.org']),
   '_acme-challenge.example.net|TXT': none
 });
@@ -69,6 +71,8 @@ export const CASES = Object.freeze([
   { id: 'record-cname-conflict', template: 'record', input: { name: 'shop.example.com', type: 'CNAME', values: 'shops.example.net' }, read: true },
   { id: 'record-txt-long', template: 'record', input: { name: 'long.example.com', type: 'TXT', values: `v=DKIM1; k=rsa; p=${'A'.repeat(300)}` } },
   { id: 'record-mx-delete', template: 'record', input: { name: 'example.com', type: 'MX', action: 'delete' }, read: true },
+  // Every TXT record of a name where the read found only an SPF record: the link says so (TXT:*).
+  { id: 'record-txt-delete-all', template: 'record', input: { name: 'mail.example.com', type: 'TXT', action: 'delete' }, read: true },
   { id: 'record-txt-escapes', template: 'record', input: { name: 'quote.example.com', type: 'TXT', values: 'a "quoted" \\ back|slash ^ caret; semi \'single\' café' } },
   { id: 'parked', template: 'parked', input: { domain: 'example.org', dkim: true } },
   { id: 'parked-mail-only', template: 'parked', input: { domain: 'example.com', caa: false }, read: true },

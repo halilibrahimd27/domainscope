@@ -4,7 +4,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHECK_RESOLVERS, CHECK_LIMITS, CHECK_TIMING, CHECK_VERDICTS, CHECK_HEADLINES, CHECK_STOPS, PENDING_REASONS, checkFromRequest, encodeCheck,
-  decodeCheck, linkEncode, judgeAnswer, checkRound, checkState, nextCheck, pairKey
+  decodeCheck, linkEncode, linkQuery, judgeAnswer, checkRound, checkState, nextCheck, pairKey
 } from '../../assets/js/lib/changecheck.js';
 import { buildChange, changeRequest, normalizeValue } from '../../assets/js/lib/fixes.js';
 import { CASES, caseRequest } from '../fixtures/fixes/gen-fixes-golden.mjs';
@@ -53,6 +53,44 @@ describe('the link', () => {
     const q = 'z=example.com&r=is+@+TXT+%22v=spf1+-all%22&r=none+@+TXT+^%22v=DMARC1;+p=none%22';
     const { check } = decodeCheck(q);
     assert.deepEqual(check.sets.map((s) => s.family), ['spf1', 'dmarc1']);
+  });
+
+  test('a family the values would read wrong is named in the type: TXT:* (every TXT record), TXT:spf1', () => {
+    // "Delete every TXT record of www" after a read that found only an SPF record there.
+    const cur = { 'www.example.com|TXT': { status: 'ok', values: [['v=spf1 -all']], ttl: 300, cname: null } };
+    const req = buildChange('record', { name: 'www.example.com', type: 'TXT', action: 'delete' }, { current: cur });
+    assert.equal(req.rrsets[0].family, null);
+    const check = checkFromRequest(req);
+    const { query } = encodeCheck(check);
+    assert.equal(query, 'z=example.com&r=none+www+TXT:*+%5E%22v=spf1+-all%22');
+    assert.deepEqual(decodeCheck(query).check, check, 'exact inverse');
+    const unread = { zone: 'example.com', sets: [{ name: 'example.com', type: 'TXT', mode: 'none', family: 'spf1', values: [], old: null, maxTtl: null }] };
+    assert.equal(encodeCheck(unread).query, 'z=example.com&r=none+@+TXT:spf1');
+    assert.deepEqual(decodeCheck(encodeCheck(unread).query).check, unread);
+    // A family the values give is never written twice.
+    assert.equal(encodeCheck(checkFromRequest(buildChange('record', { name: 'www.example.com', type: 'TXT', values: 'v=spf1 -all' }))).query, 'z=example.com&r=is+www+TXT+%22v=spf1+-all%22');
+    const err = (q) => decodeCheck(q).error;
+    assert.equal(err('z=example.com&r=none+www+A:*'), 'set', 'a family on another type');
+    assert.equal(err('z=example.com&r=none+www+TXT:nope'), 'set', 'an unknown family');
+  });
+
+  test('the length limit counts the link as written, also when the router hands over its URLSearchParams', () => {
+    // A long link full of ; = : / @ , — the characters URLSearchParams.toString() percent-encodes.
+    const tail = '; rua=mailto:dmarc@example.com,mailto:d2@example.net; ruf=mailto:f@example.com; fo=1:d:s; adkim=s; aspf=s'.repeat(3);
+    const values = [];
+    let query = null;
+    for (let n = 1; n < 40; n++) {
+      values.push(`v=DMARC1; p=quarantine; pct=${n}${tail}`);
+      const enc = encodeCheck({ zone: 'example.com', sets: [{ name: '_dmarc.example.com', type: 'TXT', mode: 'has', family: null, values: values.map((v) => normalizeValue('TXT', v)), old: null, maxTtl: null }] });
+      if (!enc.ok) break;
+      query = enc.query;
+    }
+    assert.ok(query.length > CHECK_LIMITS.chars - 200 && query.length <= CHECK_LIMITS.chars, `near the limit: ${query.length}`);
+    assert.ok(new URLSearchParams(query).toString().length > CHECK_LIMITS.chars, 'its own serialization would be over the limit');
+    assert.equal(linkQuery(new URLSearchParams(query)), query, 'linkQuery writes it back as it was');
+    assert.ok(decodeCheck(query).ok);
+    assert.ok(decodeCheck(new URLSearchParams(query)).ok, 'a link the builder made is never too long for the page');
+    assert.deepEqual(decodeCheck(new URLSearchParams(query)).check, decodeCheck(query).check);
   });
 
   test('refused: too long, too many sets or values, another version, no zone, no set, a name outside the zone, a value that does not parse', () => {

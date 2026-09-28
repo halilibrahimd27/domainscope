@@ -23,8 +23,8 @@
  * more; a check with the old value known (not yet vs wrong value), Esc stops it, Check again; Esc
  * while a slow round runs (its answers shown, nothing scheduled after it); no resolver answering
  * at all (said so after the first round, stopped as failed after three); a language switch that
- * resumes the check without asking again; a link that cannot be read (nothing sent);
- * 320 / 375 px phones light / dark in
+ * resumes the check without asking again; a link that cannot be read (nothing sent); a builder
+ * link near the length limit opens; 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
  *
@@ -329,6 +329,26 @@ async function main() {
       await page.evaluate(() => { window.__dns.views = { google: {} }; });
       await page.click('[data-action="check-again"]');
       await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'done after Check again', timeout: 10000 });
+    });
+
+    await run.step('a link near the length limit, full of ; = : @ (a DMARC record with its report addresses), opens', async () => {
+      const tail = '; rua=mailto:dmarc@example.com,mailto:d2@example.net; ruf=mailto:f@example.com; fo=1:d:s; adkim=s; aspf=s'.repeat(3);
+      const query = await page.evaluate(async (tl) => {
+        const { encodeCheck } = await import(new URL('assets/js/lib/changecheck.js', document.baseURI).href);
+        const { normalizeValue } = await import(new URL('assets/js/lib/fixes.js', document.baseURI).href);
+        const values = [];
+        let q = null;
+        for (let n = 1; n < 40; n++) {
+          values.push(normalizeValue('TXT', `v=DMARC1; p=quarantine; pct=${n}${tl}`));
+          const enc = encodeCheck({ zone: 'example.com', sets: [{ name: '_dmarc.example.com', type: 'TXT', mode: 'has', family: null, values: [...values], old: null, maxTtl: null }] });
+          if (!enc.ok) break;
+          q = enc.query;
+        }
+        return q;
+      }, tail);
+      assert(query.length > 3800 && query.length <= 4000, `near the limit: ${query.length}`);
+      await openCheck(page, query);
+      assert(await page.evaluate(() => document.querySelector('[data-page="check"]').dataset.state !== 'bad'), 'not refused as too long');
     });
 
     await run.step('a language switch keeps the answers and asks nothing again', async () => {

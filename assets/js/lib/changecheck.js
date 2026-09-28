@@ -6,8 +6,12 @@
  *   ticket, no server. Each set is one `r` parameter in presentation form, readable in the URL:
  *   `has _acme-challenge TXT "gfj9…"`, `is/300 www A 192.0.2.10^198.51.100.5` (mode, `/` the
  *   TTL a resolver's copy must expire within, the relative name, the type, the values separated
- *   by `|`, then `^` and the values the set held before, when they were known). {@link encodeCheck}
- *   / {@link decodeCheck} are exact inverses; both refuse a link over {@link CHECK_LIMITS}.
+ *   by `|`, then `^` and the values the set held before, when they were known). A TXT set's
+ *   family is read from its values (or the old ones of a deletion); where that would read it
+ *   wrong, the type says it (`TXT:*` every TXT record, `TXT:spf1` the SPF record only).
+ *   {@link encodeCheck} / {@link decodeCheck} are exact inverses; both refuse a link over
+ *   {@link CHECK_LIMITS}, counted as the link writes it (a URLSearchParams re-serialized by
+ *   {@link linkQuery}).
  * - {@link judgeAnswer}: one resolver's answer for one set — `done` (the answer is what the
  *   change asks for), `pending` (not yet: the record is not there, or still the old value, or the
  *   old TTL), `wrong` (a value that is neither the new nor the known old one) or `error` (no
@@ -22,8 +26,8 @@
  */
 
 import {
-  FIX_TYPES, FIX_MODES, rrsetPlan, valueKey, valueText, parseValueText, txtFamily, familyOf, relativeName, absoluteName, zoneName,
-  normalizeValue
+  FIX_TYPES, FIX_MODES, TXT_FAMILIES, rrsetPlan, valueKey, valueText, parseValueText, txtFamily, familyOf, relativeName, absoluteName,
+  zoneName, normalizeValue
 } from './fixes.js';
 
 /** The link format's version (`v`, left out for 1). */
@@ -93,8 +97,23 @@ export function linkEncode(value) {
   return encodeURIComponent(String(value ?? '')).replace(/%20/g, '+').replace(/%(40|3A|2F|2C|3B|3D)/g, (m) => decodeURIComponent(m));
 }
 
+/**
+ * A query's parameters written as the link writes them ({@link linkEncode}): what a URLSearchParams
+ * holds, never its own serialization (which percent-encodes `@ : / , ; =` and more, and so makes
+ * a link longer than the one that was opened).
+ * @param {URLSearchParams} params
+ * @returns {string}
+ */
+export function linkQuery(params) {
+  return [...params].map(([k, v]) => `${linkEncode(k)}=${linkEncode(v)}`).join('&');
+}
+
 /** A value's presentation text as the link holds it: `|` and `^` escaped (they only occur in quoted strings). */
 const linkValue = (type, v) => valueText(type, v).replace(/\|/g, '\\124').replace(/\^/g, '\\094');
+
+/** The family a link that names none reads for a set: its values', else (a deletion) its old values'. */
+const impliedFamily = (type, mode, values, old) => (type === 'TXT'
+  ? (familyOf('TXT', values) || (mode === 'none' && old ? familyOf('TXT', old) : null)) : null);
 
 /**
  * The link's query (after `#/change/check?`) of an expected check, or why there is none.
@@ -111,7 +130,10 @@ export function encodeCheck(check) {
   if (sets.length > CHECK_LIMITS.rrsets || values > CHECK_LIMITS.values) return fail('too-many');
   const parts = [`z=${linkEncode(zone)}`];
   for (const s of sets) {
-    const head = `${s.mode}${Number.isInteger(s.maxTtl) ? `/${s.maxTtl}` : ''} ${relativeName(s.name, zone)} ${s.type}`;
+    // The family only where the values would give another one (a deletion of every TXT record where only an SPF record was read).
+    const family = s.type === 'TXT' ? s.family || null : null;
+    const named = family === impliedFamily(s.type, s.mode, arr(s.values), s.old) ? '' : `:${family || '*'}`;
+    const head = `${s.mode}${Number.isInteger(s.maxTtl) ? `/${s.maxTtl}` : ''} ${relativeName(s.name, zone)} ${s.type}${named}`;
     const vals = arr(s.values).map((v) => linkValue(s.type, v)).join('|');
     const old = s.old && s.old.length ? `^${s.old.map((v) => linkValue(s.type, v)).join('|')}` : s.old && !s.old.length ? '^' : '';
     parts.push(`r=${linkEncode(`${head}${vals || old ? ` ${vals}${old}` : ''}`)}`);
@@ -120,16 +142,18 @@ export function encodeCheck(check) {
   return query.length > CHECK_LIMITS.chars ? fail('too-long', query) : { ok: true, query, length: query.length, reason: null };
 }
 
-const SET_RE = /^(is|has|none)(?:\/(\d{1,10}))? (\S+) ([A-Z]{1,10})(?: ([\s\S]*))?$/;
+const SET_RE = /^(is|has|none)(?:\/(\d{1,10}))? (\S+) ([A-Z]{1,10})(?::(\*|[a-z0-9]{1,16}))?(?: ([\s\S]*))?$/;
 
 /**
  * Read a check link's query back. Every name must lie in the zone, every value parse as its type,
- * and the link must stay within {@link CHECK_LIMITS}; anything else refuses the whole link.
+ * and the link must stay within {@link CHECK_LIMITS}; anything else refuses the whole link. The
+ * length counted is that of the query as written; a URLSearchParams counts as {@link linkQuery}
+ * writes it, so a link {@link encodeCheck} made is never refused for its length.
  * @param {URLSearchParams|string} input the query (with or without the leading '?')
  * @returns {{ ok: true, check: ExpectedCheck } | { ok: false, error: 'too-long'|'version'|'zone'|'empty'|'too-many'|'set', detail: string|null }}
  */
 export function decodeCheck(input) {
-  const raw = typeof input === 'string' ? input.replace(/^\?/, '') : input instanceof URLSearchParams ? input.toString() : '';
+  const raw = typeof input === 'string' ? input.replace(/^\?/, '') : input instanceof URLSearchParams ? linkQuery(input) : '';
   const fail = (error, detail = null) => ({ ok: false, error, detail });
   if (raw.length > CHECK_LIMITS.chars) return fail('too-long');
   const sp = new URLSearchParams(raw);
@@ -144,17 +168,18 @@ export function decodeCheck(input) {
   for (const text of list) {
     const m = SET_RE.exec(text);
     if (!m || !FIX_TYPES.includes(m[4])) return fail('set', text);
+    if (m[5] !== undefined && (m[4] !== 'TXT' || (m[5] !== '*' && !TXT_FAMILIES[m[5]]))) return fail('set', text);
     // The link writes every name relative to the zone ('@' for the apex).
     const abs = m[3].endsWith('.') ? { name: null } : absoluteName(m[3] === '@' ? '@' : `${m[3]}.${zone}`, zone);
     if (!abs.name) return fail('set', text);
-    const [valuePart, oldPart] = splitOld(m[5] ?? '');
+    const [valuePart, oldPart] = splitOld(m[6] ?? '');
     const values = parseList(m[4], valuePart, zone);
     const old = oldPart === null ? null : parseList(m[4], oldPart, zone);
     if (!values || (oldPart !== null && !old)) return fail('set', text);
     if (m[1] === 'none' ? values.length : !values.length) return fail('set', text);
     count += values.length + (old ? old.length : 0);
     if (count > CHECK_LIMITS.values) return fail('too-many');
-    const family = m[4] === 'TXT' ? (familyOf('TXT', values) || (m[1] === 'none' && old ? familyOf('TXT', old) : null)) : null;
+    const family = m[5] === undefined ? impliedFamily(m[4], m[1], values, old) : m[5] === '*' ? null : m[5];
     sets.push({ name: abs.name, type: m[4], mode: m[1], family, values, old, maxTtl: m[2] === undefined ? null : Number(m[2]) });
   }
   return { ok: true, check: { zone, sets } };

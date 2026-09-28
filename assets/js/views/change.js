@@ -38,7 +38,7 @@ import {
   CHANGE_TEMPLATES, FIX_FIELDS, FIX_CAS, TEMPLATE_IDS, TXT_FAMILIES, buildChange, changeTemplate, templateInput, validateChange, hasErrors,
   readCurrent, countSpfLookups, valueText
 } from '../lib/fixes.js';
-import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, checkRound, checkState, nextCheck, pairKey } from '../lib/changecheck.js';
+import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, linkQuery, checkRound, checkState, nextCheck, pairKey } from '../lib/changecheck.js';
 import { normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { getResolver } from '../lib/resolvers.js';
 import { isFillOnly } from '../lib/session.js';
@@ -530,7 +530,11 @@ const HEAD_VARIANT = Object.freeze({ done: 'ok', 'done-partial': 'ok', wrong: 'e
 
 function mountCheck(container, ctx) {
   const { t } = ctx;
-  const decoded = decodeCheck(ctx.searchParams);
+  // The link as it was opened (its readable form): what its length limit counts, Copy link, and
+  // resuming the same check.
+  const hash = String(globalThis.location ? globalThis.location.hash : '');
+  const query = hash.startsWith('#/change/check?') ? hash.slice('#/change/check?'.length) : linkQuery(ctx.searchParams);
+  const decoded = decodeCheck(query);
   const view = h('div', { class: 'stack-lg chg-view chg-check', dataset: { page: 'check' } });
   container.append(view);
   if (!decoded.ok) {
@@ -544,9 +548,6 @@ function mountCheck(container, ctx) {
     return;
   }
   const check = decoded.check;
-  // The link as it was opened (its readable form), for Copy link and to resume the same check.
-  const hash = String(globalThis.location ? globalThis.location.hash : '');
-  const query = hash.startsWith('#/change/check?') ? hash.slice('#/change/check?'.length) : ctx.searchParams.toString();
   if (!checkMemo || checkMemo.query !== query) {
     if (checkMemo && checkMemo.timer) clearTimeout(checkMemo.timer);
     checkMemo = { query, latest: new Map(), startedAt: Date.now(), round: 0, errorRounds: 0, lastAt: null, nextAt: null, pairs: null, stop: null, cachedUntil: null, timer: null, running: false };

@@ -45,6 +45,7 @@ import { toCsv, toJson } from '../lib/export.js';
 import { permalinkParams } from '../lib/summary.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { registerRunning } from '../ui/jobs.js';
 import { state as stateSingleton } from '../state.js';
 
 /** Route id (`#/retire`). */
@@ -791,10 +792,11 @@ const checkRunning = () => !!(session.job && session.job.status === 'running');
 const discoveryRunning = () => !!(session.discovery && session.discovery.status === 'running');
 const passiveRunning = () => !!(session.passive && session.passive.status === 'running');
 
-// "Delete all local data" forgets the boxes, the last check and what the passive lookup and the
-// discovery found; the shell opens the view again when it is on screen.
+// "Delete all local data" and a switch to another workspace (the other customer's addresses and
+// records) forget the boxes, the last check and what the passive lookup and the discovery found,
+// stopping what runs; the shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   if (checkRunning()) session.job.controller.abort();
   if (discoveryRunning()) session.discovery.controller.abort();
   if (passiveRunning()) session.passive.controller.abort();
@@ -804,6 +806,8 @@ stateSingleton.subscribe(({ key }) => {
   });
   if (intel) intel.clearCache();
 });
+// A switch to another workspace stops a running check, discovery or passive lookup: the shell names it first.
+registerRunning('nav.retire', () => checkRunning() || discoveryRunning() || passiveRunning());
 
 function emit(job, type, payload) {
   for (const fn of [...job.listeners]) {

@@ -69,7 +69,7 @@ import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
-  CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
+  CertAlternatives, CertLoader, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
   certDisplayName, issuerDisplayName, certLoadsFromFiles, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
 } from './cert.js';
 // Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
@@ -1718,6 +1718,7 @@ export function mount(container, ctx) {
         actions: [
           Button({ label: t('scan.cert.details'), icon: 'eye', size: 'sm', variant: 'ghost', dataset: { action: 'cert-details' }, onClick: () => ctx.navigate('cert') }),
           Button({ label: t('rw.add'), icon: 'plus', size: 'sm', variant: 'ghost', title: t('scan.cert.addTitle'), dataset: { action: 'cert-add' }, onClick: () => addPicker.open() }),
+          RenewalLink(ctx, leaf, { size: 'sm', variant: 'ghost' }),
           Button({ label: t('scan.cert.remove'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove' }, onClick: () => onCertLoad(null) })
         ]
       }));

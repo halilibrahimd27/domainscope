@@ -49,7 +49,7 @@ import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
 import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
-import { backToLastRun, fillReplaces } from '../lib/session.js';
+import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -192,6 +192,7 @@ registerStrings('en', {
   'cert.level.DV': 'DV · Domain Validated',
   'cert.findTargets': 'Find servers for this certificate',
   'cert.findTargetsHint': 'Opens SSL Targets with this certificate and its domains filled in',
+  'cert.renewHint': 'Opens Renewal readiness with these names: will the next ACME renewal validate (CAA, _acme-challenge, DNSSEC, HTTP-01)?',
   'cert.details': 'Details',
   'cert.downloadPem': 'Download PEM',
   'cert.copyPem': 'Copy PEM',
@@ -485,6 +486,7 @@ registerStrings('tr', {
   'cert.level.DV': 'DV · Alan adı doğrulamalı',
   'cert.findTargets': 'Bu sertifikanın sunucularını bul',
   'cert.findTargetsHint': 'SSL Hedefleri’ni bu sertifika ve alan adlarıyla doldurulmuş olarak açar',
+  'cert.renewHint': 'Yenileme hazırlığı’nı bu adlarla açar: bir sonraki ACME yenilemesi doğrulanacak mı (CAA, _acme-challenge, DNSSEC, HTTP-01)?',
   'cert.details': 'Ayrıntılar',
   'cert.downloadPem': 'PEM indir',
   'cert.copyPem': 'PEM kopyala',
@@ -1716,6 +1718,26 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
 }
 
 /**
+ * "Renewal readiness" for a certificate: a link that opens the view with its names filled in
+ * (`run=0`: nothing is sent until its button is pressed). The CA is taken there from the same
+ * certificate, which the views share for the page session. null when the certificate names no host.
+ * @param {{ href: (view: string, params: object) => string }} ctx
+ * @param {{ hostnames: string[] }} leaf
+ * @param {{ size?: 'sm'|'md', variant?: string }} [opts]
+ * @returns {HTMLAnchorElement|null}
+ */
+export function RenewalLink(ctx, leaf, { size = 'md', variant = 'secondary' } = {}) {
+  const names = leaf && Array.isArray(leaf.hostnames) ? leaf.hostnames : [];
+  if (!names.length) return null;
+  return h('a', {
+    class: ['btn', `btn-${variant}`, size !== 'md' ? `btn-${size}` : null],
+    href: ctx.href('renew', { names: names.join(','), [FILL_PARAM]: FILL_VALUE }),
+    title: t('cert.renewHint'),
+    dataset: { action: 'renew-link' }
+  }, Icon('refresh', { size: size === 'sm' ? 14 : 16 }), h('span', { class: 'btn-label' }, t('nav.renew')));
+}
+
+/**
  * Compact summary of the loaded certificate (name, issuer, validity, names).
  * @param {CertLoad} load
  * @param {{ actions?: Node|Node[], maxNames?: number }} [opts]
@@ -2040,8 +2062,10 @@ export function mount(container, ctx) {
         dataset: { action: 'find-targets' },
         onClick: openInTargets
       });
+      const renewLink = RenewalLink(ctx, leaf);
       const actions = h('div', { class: 'cluster cert-actions' },
         findBtn,
+        renewLink,
         Button({
           label: t('cert.downloadPem'), icon: 'download', dataset: { action: 'download-pem' },
           onClick: () => downloadText(pemFileName(leaf), pemEncode(leaf.der), 'application/x-pem-file')

@@ -15,7 +15,8 @@
  * token under /.well-known/acme-challenge/ from one Globalping probe on each of three continents
  * (per address family) through ui/globalping-gate.js (its own consent, the quota shared with the
  * other Globalping features). A measurement already paid for that could not be read yet (the view
- * was left) is read again for free when the result comes back.
+ * was left, Stop, an error) is read again for free; a family whose measurement was never created
+ * reads "not tested".
  *
  * Shareable: `#/renew?names=example.com,*.example.com&ca=letsencrypt&challenge=dns-01` runs on
  * open; with `run=0` (Certificate, SSL Targets, a carried target) it only fills the form. The
@@ -25,13 +26,13 @@
 import { h, clear } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, ProgressBar,
-  SeverityIcon, Spinner, TruncatedList, announce, describeError, select, setButtonBusy, textarea
+  SeverityIcon, Spinner, TruncatedList, announce, describeError, select, textarea
 } from '../ui/components.js';
 import { registerStrings, formatNumber, formatRelative, formatDateTime, formatDuration } from '../i18n.js';
 import {
   RENEWAL_I18N, RENEWAL_CHALLENGES, RENEWAL_CAS, RENEWAL_LIMITS, RENEWAL_AREAS, RENEWAL_VERDICTS, RENEWAL_CSV_COLUMNS,
   HTTP01_PATH_PREFIX, HTTP01_LOCATIONS, parseRenewalNames, renewalCa, caForIssuer, checkRenewal,
-  http01Plan, http01Request, http01Token, interpretHttp01, applyHttp01, renewalSummary, renewalRows, renewalExport
+  http01Plan, http01Request, http01Token, interpretHttp01, http01Families, applyHttp01, renewalSummary, renewalRows, renewalExport
 } from '../lib/renewal.js';
 import { GP_LIMITS } from '../lib/globalping.js';
 import { getResolver } from '../lib/resolvers.js';
@@ -114,7 +115,13 @@ registerStrings('en', {
   'rnw.h01.reread': 'Read the results again (no new probe)',
   'rnw.h01.family': '{family} · tested {time}',
   'rnw.h01.measurement': 'Measurement',
-  'rnw.h01.done': { one: 'HTTP-01 reachability tested for {count} name.', other: 'HTTP-01 reachability tested for {count} names.' }
+  'rnw.h01.done': { one: 'HTTP-01 reachability tested for {count} name.', other: 'HTTP-01 reachability tested for {count} names.' },
+  'rnw.h01.donePartial': {
+    one: 'HTTP-01 reachability tested for {count} name, but not completely: the test stopped before all its measurements were created. Test again for what is missing.',
+    other: 'HTTP-01 reachability tested for {count} names, but not completely: the test stopped before all its measurements were created. Test again for what is missing.'
+  },
+  'rnw.h01.untested': '{family} · not tested',
+  'rnw.h01.stopped': 'Stopped. The probes were already used: reading the results again uses the same measurements and costs nothing.'
 });
 
 registerStrings('tr', {
@@ -173,7 +180,10 @@ registerStrings('tr', {
   'rnw.h01.reread': 'Sonuçları yeniden oku (yeni ölçüm yok)',
   'rnw.h01.family': '{family} · test: {time}',
   'rnw.h01.measurement': 'Ölçüm',
-  'rnw.h01.done': 'HTTP-01 erişilebilirliği {count} ad için test edildi.'
+  'rnw.h01.done': 'HTTP-01 erişilebilirliği {count} ad için test edildi.',
+  'rnw.h01.donePartial': 'HTTP-01 erişilebilirliği {count} ad için test edildi, ama eksik: test, tüm ölçümleri oluşturulmadan durdu. Eksik kalanlar için yeniden test edin.',
+  'rnw.h01.untested': '{family} · test edilmedi',
+  'rnw.h01.stopped': 'Durduruldu. Ölçümler zaten harcandı: sonuçları yeniden okumak aynı ölçümleri kullanır ve ek maliyeti yoktur.'
 });
 
 /** Verdict → Badge variant and icon. */
@@ -328,11 +338,17 @@ export function mount(container, ctx) {
   container.append(h('div', { class: 'stack-lg rnw-view' }, formCard, progress.el, errorEl, emptyEl, results));
 
   /* --- state ----------------------------------------------------------------------- */
-  // current = { names, ca, challenge, controller, report, finishedAt, test }
-  //   test = { status: 'running'|'done'|'quota'|'error', phase: 'gate'|'fetch', names, controller, pending, error, resetAt }
+  // current = { names, ca, challenge, text, controller, report, finishedAt, test }
+  //   test = { status: 'running'|'done'|'quota'|'error'|'stopped', phase: 'gate'|'fetch', names, controller,
+  //     pending: [{ name, host, path, planned, families }], stopped, tested, partial, error, resetAt }
   let current = null;
   /** The Copy summary of the hero (disabled while a check runs). */
   let heroSummary = null;
+  /**
+   * The button a running test was started from (`{ action, name }`, keyboard or click): every state
+   * change of the test rebuilds it, and the consent dialog closes onto what had focus before it.
+   */
+  let testFocus = null;
   /** Names whose details the user opened or closed (name → open), kept across re-renders. */
   const openState = new Map(restored && Array.isArray(restored.open) ? restored.open : []);
   const boxNames = (text) => parseRenewalNames(text, { max: Infinity }).names.map((n) => n.name);
@@ -513,6 +529,11 @@ export function mount(container, ctx) {
   }
   const testRunning = () => !!(current && current.test && current.test.status === 'running');
 
+  /**
+   * A test button. While a test runs, the buttons of what it tests say they are busy but stay
+   * focusable (aria-disabled: a disabled button would drop the keyboard focus to the page, and a
+   * click is ignored anyway); the others are disabled.
+   */
   function testButton(list, { single = false } = {}) {
     const plan = testPlan(list);
     const btn = Button({
@@ -521,7 +542,15 @@ export function mount(container, ctx) {
       dataset: { action: single ? 'renew-http01-name' : 'renew-http01', probes: String(plan.probes) },
       onClick: () => testHttp01(list)
     });
-    btn.disabled = !plan.sent.length || testRunning() || !!(current && current.controller);
+    const job = testRunning() ? current.test : null;
+    if (job && plan.sent.length && (!single || job.names.includes(list[0].name))) {
+      btn.classList.add('is-busy');
+      btn.setAttribute('aria-busy', 'true');
+      btn.setAttribute('aria-disabled', 'true');
+      btn.prepend(h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }));
+    } else {
+      btn.disabled = !plan.sent.length || !!job || !!(current && current.controller);
+    }
     return btn;
   }
 
@@ -535,23 +564,26 @@ export function mount(container, ctx) {
     body.append(h('p', { class: 'muted text-sm' }, t('rnw.h01.intro')));
     if (!plan.sent.length) body.append(Alert({ variant: 'info', compact: true, message: t('rnw.h01.none') }));
     if (plan.capped) body.append(h('p', { class: 'muted text-sm' }, t('rnw.h01.capped', { max: formatNumber(RENEWAL_LIMITS.http01Names) })));
+    const paid = !!job && (job.status === 'error' || job.status === 'stopped') && job.pending.length > 0;
     if (job && job.status === 'quota') {
       body.append(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('rnw.h01.quota', { when: whenText(job.resetAt) }) }));
     } else if (job && job.status === 'error') {
       const banner = ErrorBanner(job.error, { title: t('rnw.h01.failed'), compact: true });
-      if (job.pending.length) banner.querySelector('.alert-body').append(h('p', { class: 'text-sm' }, t('rnw.h01.paid')));
+      if (paid) banner.querySelector('.alert-body').append(h('p', { class: 'text-sm' }, t('rnw.h01.paid')));
       body.append(banner);
+    } else if (job && job.status === 'stopped') {
+      body.append(Alert({ variant: 'info', compact: true, message: t('rnw.h01.stopped') }));
     } else if (job && job.status === 'done' && job.names.length) {
-      body.append(h('p', { class: 'text-sm rnw-test-done', attrs: { role: 'status' } }, Icon('check', { size: 14 }), ' ', t('rnw.h01.done', { count: job.names.length })));
+      const count = Number.isInteger(job.tested) ? job.tested : job.names.length;
+      body.append(h('p', { class: ['text-sm', 'rnw-test-done', { 'rnw-test-partial': !!job.partial }], attrs: { role: 'status' } },
+        Icon(job.partial ? 'alert' : 'check', { size: 14 }), ' ', t(job.partial ? 'rnw.h01.donePartial' : 'rnw.h01.done', { count })));
     }
     const actions = h('div', { class: 'rnw-test-actions' });
-    if (job && job.status === 'error' && job.pending.length) {
-      actions.append(Button({ label: t('rnw.h01.reread'), icon: 'refresh', size: 'sm', dataset: { action: 'renew-http01-reread' }, onClick: () => rereadTest() }));
-    }
+    if (paid) actions.append(Button({ label: t('rnw.h01.reread'), icon: 'refresh', size: 'sm', dataset: { action: 'renew-http01-reread' }, onClick: () => rereadTest() }));
     if (plan.sent.length) actions.append(testButton(report.names));
     if (testRunning()) {
-      const busy = actions.querySelector('[data-action="renew-http01"]');
-      if (busy) setButtonBusy(busy, true);
+      // Once the probes are being sent (the consent dialog is behind): what was paid for can still be read.
+      if (job.phase === 'fetch') actions.append(Button({ label: t('common.stop'), icon: 'stop', size: 'sm', dataset: { action: 'renew-http01-stop' }, onClick: () => stopTest() }));
       actions.append(h('span', { class: 'muted text-sm', attrs: { role: 'status' } }, t('rnw.h01.running')));
     }
     body.append(actions);
@@ -571,6 +603,7 @@ export function mount(container, ctx) {
     if (!sent.length) return;
     const prev = s.test;
     const job = { status: 'running', phase: 'gate', names: sent.map((x) => x.r.name), controller: new AbortController(), pending: [], error: null, resetAt: null };
+    testFocus = focusKeyOf(globalThis.document && globalThis.document.activeElement);
     s.test = job;
     renderReport();
     ctx.setBusy(true);
@@ -591,10 +624,11 @@ export function mount(container, ctx) {
       }
       if (gate.status === 'unreachable') throw gate.error;
       job.phase = 'fetch';
-      renderTest();
+      keepFocus(renderTest);
       for (const { r, plan } of sent) {
         const token = http01Token();
-        const entry = { name: r.name, host: r.base, path: `${HTTP01_PATH_PREFIX}${token}`, families: [] };
+        // `planned`: a family whose measurement is never created (the test stopped) reads "not tested".
+        const entry = { name: r.name, host: r.base, path: `${HTTP01_PATH_PREFIX}${token}`, planned: [...plan.families], families: [] };
         job.pending.push(entry);
         for (const family of plan.families) {
           const body = http01Request(r.base, { token, ipVersion: family });
@@ -612,7 +646,11 @@ export function mount(container, ctx) {
     }
   }
 
-  /** Read every created measurement of a test and merge the results into the report. */
+  /**
+   * Read every created measurement of a test and merge the results into the report. A test that
+   * stopped before all its measurements were created (the quota, the view left) is partial: a
+   * planned family never measured reads "not tested", and a name with none keeps what it had.
+   */
   async function readTest(job, client, signal) {
     job.pending = job.pending.filter((e) => e.families.length);
     const results = await Promise.all(job.pending.map(async (entry) => ({
@@ -625,10 +663,23 @@ export function mount(container, ctx) {
     if (current.test !== job) return;
     let report = current.report;
     const at = new Date();
-    for (const { entry, families } of results) report = applyHttp01(report, entry.name, { at, families });
+    let partial = results.length < job.names.length;
+    for (const { entry, families } of results) {
+      const all = http01Families(entry.planned || [], families, { path: entry.path });
+      partial = partial || all.length > families.length;
+      report = applyHttp01(report, entry.name, { at, families: all });
+    }
     current.report = report;
-    Object.assign(job, { status: 'done', pending: [] });
-    announce(t('rnw.h01.done', { count: results.length }));
+    Object.assign(job, { status: 'done', pending: [], tested: results.length, partial });
+    announce(t(partial ? 'rnw.h01.donePartial' : 'rnw.h01.done', { count: results.length }));
+  }
+
+  /** Stop a running test: the measurements already paid for can still be read ("Read the results again"). */
+  function stopTest() {
+    const job = current && current.test;
+    if (!job || job.status !== 'running' || !job.controller) return;
+    job.stopped = true;
+    job.controller.abort();
   }
 
   function failTest(job, err, signal, live) {
@@ -648,9 +699,23 @@ export function mount(container, ctx) {
 
   function finishTest(job, prev, s) {
     job.controller = null;
-    if (job.status === 'running' && !ctx.signal.aborted && current === s && s.test === job) Object.assign(job, { status: 'error', error: job.error || new Error(t('rnw.h01.failed')) });
-    if (!ctx.signal.aborted) ctx.setBusy(false);
-    if (current === s && (s.test === job || s.test === prev) && !ctx.signal.aborted) renderReport();
+    const ours = !ctx.signal.aborted && current === s && (s.test === job || s.test === prev);
+    if (ours && s.test === job && job.status === 'running') {
+      if (!job.stopped) {
+        Object.assign(job, { status: 'error', error: job.error || new Error(t('rnw.h01.failed')) });
+      } else if (job.pending.some((e) => e.families.length)) {
+        // Stopped by the user: what was paid for can still be read, for free.
+        Object.assign(job, { status: 'stopped', stopped: false });
+        announce(t('rnw.h01.stopped'));
+      } else {
+        // Stopped before a probe was used: as before the click.
+        s.test = prev === job ? null : prev;
+      }
+    }
+    // A check started meanwhile (it stopped this test) keeps the page busy.
+    if (!ctx.signal.aborted && !(current && current.controller)) ctx.setBusy(false);
+    if (ours) renderReport();
+    if (!testRunning()) testFocus = null;
   }
 
   /**
@@ -661,7 +726,8 @@ export function mount(container, ctx) {
     const s = current;
     const job = s && s.test;
     if (!job || job.status === 'running' || !job.pending.length || !ctx.requireOnline({ quiet: auto })) return;
-    Object.assign(job, { status: 'running', phase: 'fetch', controller: new AbortController(), error: null });
+    if (!auto) testFocus = focusKeyOf(globalThis.document && globalThis.document.activeElement);
+    Object.assign(job, { status: 'running', phase: 'fetch', controller: new AbortController(), error: null, stopped: false });
     renderReport();
     ctx.setBusy(true);
     const signal = mergeSignals(ctx.signal, job.controller.signal);
@@ -732,6 +798,10 @@ export function mount(container, ctx) {
     }
     if (area === 'http01' && r.http01) {
       return h('div', { class: 'stack-sm rnw-probes' }, r.http01.families.map((fam) => {
+        if (fam.verdict === 'untested') {
+          return h('div', { class: 'rnw-family', dataset: { family: String(fam.ipVersion), verdict: fam.verdict } },
+            h('div', { class: 'muted text-xs rnw-family-head' }, t('rnw.h01.untested', { family: `IPv${fam.ipVersion}` })));
+        }
         const link = measurementUrl(fam.measurementId);
         return h('div', { class: 'rnw-family', dataset: { family: String(fam.ipVersion), verdict: fam.verdict } },
           h('div', { class: 'muted text-xs rnw-family-head' },
@@ -767,7 +837,6 @@ export function mount(container, ctx) {
     if (testable(report) && http01Plan(r).ok) {
       const btn = testButton([r], { single: true });
       if (testRunning() && current.test.names.includes(r.name)) {
-        setButtonBusy(btn, true);
         body.append(h('div', { class: 'rnw-name-actions' }, btn, Spinner({ size: 'sm', label: t('rnw.h01.running'), showLabel: true })));
       } else body.append(h('div', { class: 'rnw-name-actions' }, btn));
     }
@@ -779,31 +848,76 @@ export function mount(container, ctx) {
     return card;
   }
 
+  /* --- keyboard focus over re-renders ------------------------------------------------ */
+  /** Did focus fall to the page (never pull it away from where the user or a dialog put it)? */
+  const focusDropped = () => {
+    const doc = globalThis.document;
+    const active = doc ? doc.activeElement : null;
+    return !active || active === doc.body || active === doc.documentElement || !active.isConnected;
+  };
+
+  /** The results' button `node` is (or is in), as `{ action, name }` (name: its name card's), or null. */
+  function focusKeyOf(node) {
+    const btn = node && results.contains(node) ? node.closest('[data-action]') : null;
+    if (!btn || !results.contains(btn)) return null;
+    const card = btn.closest('.rnw-name');
+    return { action: btn.dataset.action, name: card ? card.dataset.name : '' };
+  }
+
+  /**
+   * Focus the button `key` names. A test-card button that went with its state (Stop, Read the
+   * results again) hands focus on to the next action there.
+   * @returns {boolean}
+   */
+  function focusKeyed(key) {
+    const scope = key.name ? listEl.querySelector(`.rnw-name[data-name="${CSS.escape(key.name)}"]`) : results;
+    const actions = !key.name && key.action.startsWith('renew-http01') ? [key.action, 'renew-http01-reread', 'renew-http01'] : [key.action];
+    for (const action of actions) {
+      const btn = scope && scope.querySelector(`[data-action="${CSS.escape(action)}"]`);
+      if (btn && !btn.disabled) {
+        btn.focus({ preventScroll: true });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Re-render with keyboard focus kept on the button it was on (rebuilt), or — while a test runs —
+   * on the button the test was started from when it fell to the page (a dialog closing onto a
+   * button that is gone).
+   */
+  function keepFocus(render) {
+    const doc = globalThis.document;
+    const key = focusKeyOf(doc && doc.activeElement);
+    render();
+    if (!focusDropped()) return;
+    if (!(key && focusKeyed(key)) && testFocus) focusKeyed(testFocus);
+  }
+
   /** Re-render the results of the report on screen (keyboard focus on a button is put back). */
   function renderReport() {
     const report = current && current.report;
     results.hidden = !report;
     emptyEl.hidden = !!report || !!(current && current.controller);
     if (!report) return;
-    const doc = globalThis.document;
-    const focused = doc && doc.activeElement && results.contains(doc.activeElement) ? doc.activeElement : null;
-    const focusKey = focused ? [focused.dataset.action, focused.closest('.rnw-name') ? focused.closest('.rnw-name').dataset.name : ''] : null;
-    renderHero(report);
-    if (heroSummary) heroSummary.setDisabled(!!current.controller);
-    renderTest();
-    clear(listEl);
-    listEl.append(...namesByVerdict(report.names).map((r) => nameCard(r, report)));
-    if (focusKey && focusKey[0] && !focused.isConnected) {
-      const scope = focusKey[1] ? listEl.querySelector(`.rnw-name[data-name="${CSS.escape(focusKey[1])}"]`) : results;
-      const again = scope && scope.querySelector(`[data-action="${CSS.escape(focusKey[0])}"]`);
-      if (again && !again.disabled) again.focus({ preventScroll: true });
-    }
+    keepFocus(() => {
+      renderHero(report);
+      if (heroSummary) heroSummary.setDisabled(!!current.controller);
+      renderTest();
+      clear(listEl);
+      listEl.append(...namesByVerdict(report.names).map((r) => nameCard(r, report)));
+    });
   }
 
   /* --- run --------------------------------------------------------------------------- */
   function setRunning(on) {
+    // Keyboard focus follows Check ⇄ Stop instead of falling to <body> when one is hidden.
+    const doc = globalThis.document;
+    const moveFocus = !!doc && doc.activeElement === (on ? runBtn : stopBtn);
     runBtn.hidden = on;
     stopBtn.hidden = !on;
+    if (moveFocus) (on ? stopBtn : runBtn).focus({ preventScroll: true });
     namesField.input.readOnly = on;
     // The report on screen belongs to the previous check until this one finishes.
     if (heroSummary) heroSummary.setDisabled(on);

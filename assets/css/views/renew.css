@@ -138,6 +138,10 @@
   color: var(--ok);
 }
 
+.rnw-test-done.rnw-test-partial {
+  color: var(--warn);
+}
+
 .rnw-test-done .icon {
   vertical-align: -2px;
 }

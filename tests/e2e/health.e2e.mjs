@@ -27,7 +27,8 @@
  * MX and AAAA lookup (mxfail.example.com: "lookup failed" in the DNS card, never a dash or "no
  * IPv6"; the policy check "not compared", never "no MX"); "Show the fix" of an SPF "+all" (the
  * record with ~all, the other TXT record kept by the Route 53 change batch, the link that opens it
- * in the DNS change request, nothing sent); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
+ * in the DNS change request, nothing sent) and of a CAA tag marked critical that no CA knows (only
+ * the flag cleared); 1440 px and a 375 px phone, light and dark, without horizontal scroll.
  * It also clicks Copy summary (a clipboard recorder, scan.e2e.mjs stubClipboard): the Markdown and
  * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
  * refused clipboard gets; then a second check that is stopped: the button is off while it runs,
@@ -215,10 +216,12 @@ const MAIL_ZONE = {
   // Two v=STSv1 records: senders assume no policy (RFC 8461 §3.1), however valid the file is.
   'twosts.example.com': { A: ['192.0.2.82'], MX: [{ preference: 10, exchange: 'mx.example.com' }, { preference: 20, exchange: 'alt1.mx.example.com' }] },
   '_mta-sts.twosts.example.com': { TXT: [['v=STSv1; id=20260927T1400'], ['v=STSv1; id=20260927T1401']] },
-  // A zone of its own whose SPF lets every server send ("+all") next to a site verification: "Show the fix".
+  // A zone of its own whose SPF lets every server send ("+all") next to a site verification, and whose
+  // CAA set has an unknown tag marked critical (every CA must refuse): "Show the fix" of both.
   'fix.example.com': {
     A: ['192.0.2.83'], SOA: [{ ...MAIL_SOA, mname: 'ns1.example.com' }], NS: ['ns1.example.com', 'ns2.example.com'],
-    MX: [{ preference: 10, exchange: 'mx.example.com' }], TXT: [['v=spf1 mx +all'], ['site-verification=fix123']]
+    MX: [{ preference: 10, exchange: 'mx.example.com' }], TXT: [['v=spf1 mx +all'], ['site-verification=fix123']],
+    CAA: [{ flags: 128, tag: 'tbs', value: 'unknown' }, { flags: 0, tag: 'issue', value: 'letsencrypt.org' }]
   }
 };
 const MTASTS_CARD = '[data-mtasts="card"]';
@@ -842,6 +845,27 @@ async function mtaStsGroup(browser, server) {
       await shotSelector(page, 'health-fix-desktop-light-en', '[data-id="spf.all-pass"]');
       await page.click(toggle);
       assert(await page.evaluate(() => document.querySelector('[data-fix-for="spf.all-pass"]').hidden), 'Hide the fix');
+    });
+
+    await step('"Show the fix" of an unknown critical CAA tag: only its critical flag goes, the other value stays; nothing sent', async () => {
+      const toggle = '[data-action="health-fix"][data-check="caa.critical-unknown"]';
+      assert(await page.evaluate((sel) => !!document.querySelector(sel), toggle), 'a fix button on the CAA error');
+      const queries = await page.evaluate(() => window.__zoneDnsQueries);
+      await page.click(toggle);
+      await page.waitFor(() => !!document.querySelector('[data-fix-for="caa.critical-unknown"] .fix-outputs'), { message: 'CAA fix panel', timeout: 10000 });
+      const panel = await page.evaluate(() => {
+        const host = document.querySelector('[data-fix-for="caa.critical-unknown"]');
+        return {
+          sets: [...host.querySelectorAll('.fix-set')].map((li) => `${li.dataset.action} ${li.dataset.name}: ${[...li.querySelectorAll('.fix-value-text')].map((v) => v.textContent).join(' | ')}`),
+          advice: host.querySelector('.fix-advice')?.textContent || '',
+          edit: host.querySelector('a[href*="#/change?"]')?.getAttribute('href') || ''
+        };
+      });
+      assertEqual(panel.sets, ['replace fix.example.com: 0 tbs "unknown" | 0 issue "letsencrypt.org" | 128 tbs "unknown"'], 'the fix');
+      assert(/The critical flag goes from tbs/.test(panel.advice), `advice: ${panel.advice}`);
+      assert(panel.edit.startsWith('#/change?t=record&name=fix.example.com&type=CAA'), `edit link: ${panel.edit}`);
+      assertEqual(await page.evaluate(() => window.__zoneDnsQueries), queries, 'the panel sends nothing');
+      await page.click(toggle);
     });
 
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {

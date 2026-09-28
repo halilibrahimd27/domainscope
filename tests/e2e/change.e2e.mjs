@@ -14,9 +14,10 @@
  * admin's instructions in English and Turkish, BIND with its download, the route that reopens the
  * form); an SPF include with "Read the current records" from the keyboard (only names and types
  * asked; the include merged into the record there, the site verification kept by the Route 53
- * change batch, the lookups counted); a CNAME next to an A record found by the read (a lint error,
- * no outputs); a form opened from its route (CAA, the way Domain Health's "Edit in DNS change
- * request" opens it); the check link opened from the outputs: per-resolver verdicts (done, not yet
+ * change batch, the lookups counted, then "read again" once the form changes the record); a CNAME
+ * next to an A record found by the read (a lint error, no outputs); a form opened from its route
+ * (CAA, the way Domain Health's "Edit in DNS change request" opens it); the check link opened from
+ * the outputs: per-resolver verdicts (done, not yet
  * with the negative TTL waited for, no answer), the next check never before a cached answer
  * expires, Check now after the change reaches the lagging resolver, "done on every resolver that
  * answered", then done everywhere and the loop stopped, and Check again asks every resolver once
@@ -205,6 +206,11 @@ async function main() {
       const r53 = JSON.parse(await tabText(page, 'route53'));
       assertEqual(r53.Changes[0].ResourceRecordSet.ResourceRecords.map((r) => r.Value), ['"google-site-verification=abc123"', '"v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"'], 'UPSERT keeps the site verification');
       assert(/needs 2 of 10 DNS lookups/.test(await text(page, '.chg-problems')), 'lookups counted');
+      // Edited after the read: the count was of the record then, so it is no longer shown; "read again" is.
+      await fill(page, 'includes', '_spf.google.com\nspf.example.net');
+      await page.waitFor(() => !!document.querySelector('.fix-problem[data-key="fix.p.spf-recount"]'), { message: 'read again to count' });
+      assert(!/needs \d+ of 10 DNS lookups/.test(await text(page, '.chg-problems')), 'no count of another record');
+      assert(/changed after its lookups were counted/.test(await text(page, '.chg-read-note')), 'the read note says so');
       await page.evaluate(() => { window.__dns.log.length = 0; });
     });
 

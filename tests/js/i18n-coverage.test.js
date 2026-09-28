@@ -320,6 +320,12 @@ describe('i18n coverage', () => {
     for (const k of views.change.CHECK_ERROR_KINDS) add(`chg.check.err.${k}`);
     for (const m of ['is', 'has', 'none']) add(`chg.check.mode.${m}`);
     for (const e of ['too-long', 'too-many', 'version', 'zone', 'empty', 'set']) add(`chg.check.bad.${e}`);
+    // Zone File › New name servers (ui/parity-panel.js, lib/nsparity.js) and Retire an IP › the old
+    // and the new server (ui/origin-compare.js, lib/origincompare.js): every status, reason, server
+    // state, runbook step, field, note and verdict the panels word from a library code.
+    const [pp, oc, zd] = await Promise.all([imp('assets/js/ui/parity-panel.js'), imp('assets/js/ui/origin-compare.js'), imp('assets/js/lib/zonedrift.js')]);
+    for (const k of [...pp.generatedKeys(), ...oc.generatedKeys()]) add(k);
+    for (const r of zd.DRIFT_REASONS) add(pp.reasonKey(r));
     assert.deepEqual(missingIn(keys), []);
   });
 

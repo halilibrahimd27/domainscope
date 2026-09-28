@@ -76,4 +76,4 @@ sweep proxied targets=7 hosts=1 names=8 tokens=16 chars=260 probes=72 probesAtLe
 sweep all targets=13 hosts=1 names=19 tokens=33 chars=536 probes=280 probesAtLeast=true fileForm=false
 scan names=17 wildcardBases=1 delegations=1 proxied=8 skipped=intranet.example.com
 drift rrsets=32 queries=35 needed=35 names=26 targetsHidden=1 internalShare=0.063
-drift skipped private=1 occluded=1 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0
+drift skipped private=1 occluded=1 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 type=0 budget=0

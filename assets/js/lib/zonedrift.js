@@ -54,7 +54,8 @@ export const DRIFT_STATUSES = Object.freeze(['match', 'differs', 'missing-live',
 export const DRIFT_REASONS = Object.freeze(['values', 'nxdomain', 'nodata', 'cname-live', 'proxy-on-live', 'proxy-off-live',
   'not-cloudflare', 'flatten-mismatch', 'alias-disjoint', 'routing-outside', 'wildcard', 'servfail', 'refused', 'transport',
   'timeout', 'budget', 'private', 'unsupported-type', 'dnssec-type', 'escaped-name', 'cf-synthesized', 'txt-chunking',
-  'ttl-stale', 'placeholder', 'tunnel', 'provider', 'cf-caa-added', 'alias-rotating', 'filtered', 'target-hidden', 'out-of-zone']);
+  'ttl-stale', 'placeholder', 'tunnel', 'provider', 'cf-caa-added', 'alias-rotating', 'filtered', 'target-hidden', 'out-of-zone',
+  'not-queryable']);
 export const DRIFT_SEVERITY = Object.freeze({
   match: 'ok', 'proxied-ok': 'ok', 'flattened-ok': 'ok', 'alias-ok': 'ok', 'routing-ok': 'ok', occluded: 'info',
   skipped: 'info', differs: 'warn', 'missing-live': 'warn', 'origin-exposed': 'error', error: 'unknown'
@@ -252,6 +253,7 @@ function buildPlan(zone, opts) {
   const resolveTargets = opts.resolveTargets === true;
   const skipSet = new Set(opts.skip ? [...opts.skip].map(canon) : []);
   if (opts.skipPrivate !== false) for (const n of privateLookingNames(zone)) skipSet.add(n);
+  const queryTypes = opts.queryTypes ? new Set([...opts.queryTypes].map((t) => String(t).toUpperCase())) : null;
 
   const groups = new Map();
   for (const r of idx.unique) {
@@ -262,7 +264,7 @@ function buildPlan(zone, opts) {
     g.records.push(r);
   }
 
-  const skipped = { private: 0, occluded: 0, outOfZone: 0, unsupported: 0, escaped: 0, dnssec: 0, synthesized: 0, wildcard: 0, budget: 0 };
+  const skipped = { private: 0, occluded: 0, outOfZone: 0, unsupported: 0, escaped: 0, dnssec: 0, synthesized: 0, wildcard: 0, type: 0, budget: 0 };
   const reserved = new Set();
   const needed = new Set();
   const live = !!origin && !(zone && zone.fatal);
@@ -327,6 +329,12 @@ function buildPlan(zone, opts) {
       item.queries = [at(g.type)];
     }
 
+    // A transport that cannot ask every type this RRset needs (Globalping: no CAA, TLSA …) skips it whole.
+    if (queryTypes && item.queries.some((x) => !queryTypes.has(x.type))) {
+      item.queries = [];
+      zero(item, 'skipped', 'not-queryable', 'type');
+      continue;
+    }
     const keys = [...new Set(item.queries.map((x) => (x.probe ? probeKey(g.name, x.type) : qkey(x.name, x.type))))];
     for (const k of keys) needed.add(k);
     const fresh = keys.filter((k) => !reserved.has(k));
@@ -362,10 +370,11 @@ function buildPlan(zone, opts) {
  * queries go out) or the run is cancelled.
  * @param {object} zone
  * @param {{ skip?: Iterable<string>, skipPrivate?: boolean, wildcardProbes?: boolean, resolveTargets?: boolean,
- *   maxQueries?: number }} [opts]
+ *   maxQueries?: number, queryTypes?: Iterable<string> }} [opts] `queryTypes`: the only types the transport can
+ *   ask (an RRset needing another one is skipped `not-queryable`); default: any
  * @returns {{ rrsets: number, queries: number, needed: number, overBudget: boolean, maxQueries: number,
  *   names: number, skipped: { private: number, occluded: number, outOfZone: number, unsupported: number, escaped: number,
- *   dnssec: number, synthesized: number, wildcard: number, budget: number }, targetsHidden: number,
+ *   dnssec: number, synthesized: number, wildcard: number, type: number, budget: number }, targetsHidden: number,
  *   internalShare: number }} `needed`: queries without a budget; `targetsHidden`: flattened / alias
  *   targets left out (sent only with `resolveTargets`); `internalShare`: share of private addresses (0..1)
  */
@@ -397,7 +406,10 @@ function failureResponse(name, type, err) {
 
 /** Why a response cannot be compared (a row in status `error`), or null. */
 function failReason(resp) {
-  if (!resp || !resp.ok) return resp && resp.errorKind === 'timeout' ? 'timeout' : 'transport';
+  if (!resp || !resp.ok) {
+    if (resp && resp.errorKind === 'timeout') return 'timeout';
+    return resp && resp.errorKind === 'budget' ? 'budget' : 'transport';
+  }
   if (resp.rcode === 'NOERROR' || resp.rcode === 'NXDOMAIN') {
     return isFilteredResponse(resp, getResolver(resp.resolver) || null) ? 'filtered' : null;
   }
@@ -659,6 +671,8 @@ function safeCall(fn, arg) {
  * @param {boolean} [opts.skipPrivate=true] also skip {@link privateLookingNames}
  * @param {boolean} [opts.wildcardProbes=true] query `<random>.x` for `*.x` RRsets
  * @param {boolean} [opts.resolveTargets=false] also query external flattened / alias targets
+ * @param {Iterable<string>} [opts.queryTypes] the only types `dns` can ask: an RRset needing another is
+ *   skipped (`not-queryable`) at no cost; the SOA + NS preflight types must be among them
  * @param {() => string} [opts.labelFn=randomLabel] the wildcard probe label
  * @param {() => Date} [opts.now]
  * @returns {Promise<{ origin: string|null, startedAt: Date, finishedAt: Date, aborted: boolean, queries: number,

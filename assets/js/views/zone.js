@@ -9,7 +9,8 @@
  * - nothing touches the network before a click: parsing, lint, the origin map and the command
  *   are offline; the live check runs only from its own button (or, once one has finished, from
  *   "Run again" in the page header's kept-result note: the same check again) and sends names +
- *   types only;
+ *   types only; the New name servers tab (ui/parity-panel.js) sends names + types to Globalping
+ *   (the new servers as resolvers) only from its own button, behind the consent + cost dialog;
  * - the page session (lib/session.js) keeps only the fact that a live check finished
  *   (`result()`: no subject, so nothing about the zone becomes the current target or reaches a
  *   URL); the zone itself stays in this module. The note ("Live check from <time>") goes as soon
@@ -57,6 +58,7 @@ import { normalizeIP } from '../lib/netinfo.js';
 import { permalinkParams } from '../lib/summary.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { onceAsync } from '../lib/util.js';
+import { ParityTab, freshParity, stopParity, generatedKeys as parityKeys, reasonKey as parityReasonKey } from '../ui/parity-panel.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -66,7 +68,7 @@ export const titleKey = 'nav.zone';
 export const icon = 'file-text';
 
 /** Tabs of a parsed zone (the route carries only `tab=`). */
-export const ZONE_TABS = Object.freeze(['overview', 'records', 'origins', 'problems', 'live']);
+export const ZONE_TABS = Object.freeze(['overview', 'records', 'origins', 'problems', 'live', 'parity']);
 /**
  * Lint codes with a "Show the fix" (lib/fixes.js LINT_FIX_CODES; a unit test keeps the two equal):
  * the panel and lib/fixes.js load on the first click, so the list lives here.
@@ -164,7 +166,7 @@ export const SAMPLES = Object.freeze([
 
 const EN = {
   'zone.privacyTitle': 'Stays in this tab',
-  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers.',
+  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm.',
   'zone.import.title': 'Import a zone file',
   'zone.import.subtitle': 'Drop it, choose it or paste it — the format is detected',
   'zone.drop.title': 'Drop a zone export here, choose a file or paste it',
@@ -248,6 +250,10 @@ const EN = {
   'zone.next.drift.title': 'Compare with live DNS',
   'zone.next.drift.body': 'About {queries} DNS queries, only after you press Check.',
   'zone.next.drift.open': 'Open the live check',
+  'zone.next.parity.title': 'Moving to another DNS provider?',
+  'zone.next.parity.body': 'Before you change the name servers at the registrar: check that the new provider’s servers serve this file, with the steps of the move.',
+  'zone.next.parity.open': 'Compare with the new name servers',
+  'zone.parity.needOrigin': 'Confirm the zone name first: the new name servers are asked for names under it.',
   'zone.top.title': 'Top problems',
   'zone.top.all': 'See all problems',
   'zone.records.filter': 'Record type',
@@ -403,6 +409,7 @@ const EN = {
   'zone.reason.filtered': 'A filtering resolver blocked the answer.',
   'zone.reason.target-hidden': 'The target is hidden like an origin and was not queried.',
   'zone.reason.out-of-zone': 'Outside the zone: name servers ignore it, so it was not queried.',
+  'zone.reason.not-queryable': 'This record type cannot be asked this way: the CLI’s dns_parity.py compares it.',
   'zone.fatal.title': 'This file could not be read',
   'zone.fatal.EMPTY': 'The file is empty.',
   'zone.fatal.TOO_LARGE': 'The file is too large. Export one zone at a time.',
@@ -427,7 +434,7 @@ const EN = {
 
 const TR = {
   'zone.privacyTitle': 'Bu sekmede kalır',
-  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir.',
+  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir.',
   'zone.import.title': 'Zone dosyası içe aktar',
   'zone.import.subtitle': 'Bırakın, seçin ya da yapıştırın — biçim otomatik algılanır',
   'zone.drop.title': 'Zone dışa aktarımını buraya bırakın, dosya seçin ya da yapıştırın',
@@ -511,6 +518,10 @@ const TR = {
   'zone.next.drift.title': 'Canlı DNS ile karşılaştırın',
   'zone.next.drift.body': 'Yaklaşık {queries} DNS sorgusu, yalnızca Kontrol et’e bastıktan sonra.',
   'zone.next.drift.open': 'Canlı kontrolü aç',
+  'zone.next.parity.title': 'Başka bir DNS sağlayıcısına mı geçiyorsunuz?',
+  'zone.next.parity.body': 'Kayıt kuruluşunda ad sunucularını değiştirmeden önce: yeni sağlayıcının sunucularının bu dosyayı sunduğunu, taşımanın adımlarıyla birlikte kontrol edin.',
+  'zone.next.parity.open': 'Yeni ad sunucularıyla karşılaştır',
+  'zone.parity.needOrigin': 'Önce zone adını onaylayın: yeni ad sunucularına onun altındaki adlar sorulur.',
   'zone.top.title': 'Öne çıkan sorunlar',
   'zone.top.all': 'Tüm sorunları gör',
   'zone.records.filter': 'Kayıt türü',
@@ -666,6 +677,7 @@ const TR = {
   'zone.reason.filtered': 'Filtreleyen bir çözümleyici yanıtı engelledi.',
   'zone.reason.target-hidden': 'Hedef bir origin gibi gizli; sorgulanmadı.',
   'zone.reason.out-of-zone': 'Zone dışında: ad sunucuları onu yok sayar, bu yüzden sorgulanmadı.',
+  'zone.reason.not-queryable': 'Bu kayıt türü bu yolla sorulamaz: CLI’daki dns_parity.py onu karşılaştırır.',
   'zone.fatal.title': 'Bu dosya okunamadı',
   'zone.fatal.EMPTY': 'Dosya boş.',
   'zone.fatal.TOO_LARGE': 'Dosya çok büyük. Her seferinde tek bir zone dışa aktarın.',
@@ -774,6 +786,9 @@ export function generatedKeys() {
   for (const d of ZONE_DIALECTS) keys.push(`zone.dialect.${d}`);
   for (const hnt of NOT_A_ZONE_HINTS) keys.push(`zone.fatal.hint.${hnt}`);
   for (const tab of ZONE_TABS) keys.push(`zone.tab.${tab}`);
+  // The New name servers tab: its own codes, and every drift reason as the tab words it.
+  keys.push(...parityKeys());
+  for (const r of DRIFT_REASONS) keys.push(parityReasonKey(r));
   return keys;
 }
 
@@ -1139,7 +1154,9 @@ function freshSession() {
     live: {
       skipPrivate: true, wildcards: true, includeOrigins: false, status: 'idle', rows: [], result: null, done: 0, total: 0, error: null,
       filter: 'all', finishedAt: null
-    }
+    },
+    // The New name servers tab (ui/parity-panel.js): its job and options, dropped with the zone.
+    parity: freshParity()
   };
 }
 
@@ -1159,6 +1176,7 @@ function abortDrift() {
 
 function resetSession() {
   abortDrift();
+  stopParity(S.parity);
   S = freshSession();
 }
 
@@ -1226,6 +1244,10 @@ export function mount(container, ctx) {
     ctx.resultChanged();
     S.zone = zone;
     S.live = { ...freshSession().live, skipPrivate: S.live.skipPrivate, wildcards: S.live.wildcards };
+    // Another file: its comparison with the new name servers goes; the servers typed in stay.
+    stopParity(S.parity);
+    const { nsText, mode, extras, skipPrivate: parityPrivate, shell } = S.parity;
+    S.parity = { ...freshParity(), nsText, mode, extras, skipPrivate: parityPrivate, shell };
     if (zone.fatal) {
       S.lint = null;
       S.origins = [];
@@ -1312,7 +1334,8 @@ export function mount(container, ctx) {
       { id: 'records', label: t('zone.tab.records'), badge: S.counts.records, content: () => recordsTab(z) },
       { id: 'origins', label: t('zone.tab.origins'), badge: S.origins.length || null, content: () => originsTab(z) },
       { id: 'problems', label: t('zone.tab.problems'), badge: S.counts.errors || null, content: () => problemsTab() },
-      { id: 'live', label: t('zone.tab.live'), content: () => liveTab(z) }
+      { id: 'live', label: t('zone.tab.live'), content: () => liveTab(z) },
+      { id: 'parity', label: t('zone.tab.parity'), content: () => parityTab(z) }
     ], {
       selected: S.tab,
       label: t('nav.zone'),
@@ -1611,11 +1634,20 @@ export function mount(container, ctx) {
         h('div', { class: 'cluster' }, Button({ label: t('zone.next.drift.open'), size: 'sm', iconRight: 'arrow-right', dataset: { action: 'zone-open-live' }, onClick: () => goTab('live') })))
     });
 
+    const parityCard = Card({
+      title: t('zone.next.parity.title'),
+      icon: 'server',
+      className: 'zone-next-card',
+      children: h('div', { class: 'stack-sm' },
+        h('p', { class: 'text-sm' }, t('zone.next.parity.body')),
+        h('div', { class: 'cluster' }, Button({ label: t('zone.next.parity.open'), size: 'sm', iconRight: 'arrow-right', dataset: { action: 'zone-open-parity' }, onClick: () => goTab('parity') })))
+    });
+
     const top = S.problems.filter((p) => p.severity !== 'info').slice(0, 3);
     return h('div', { class: 'stack zone-overview' },
       stats,
       h('h3', { class: 'zone-h3' }, t('zone.next.title')),
-      h('div', { class: 'zone-next' }, discoverCard, sweepCard, certCard, driftCard),
+      h('div', { class: 'zone-next' }, discoverCard, sweepCard, certCard, driftCard, parityCard),
       top.length ? Card({
         title: t('zone.top.title'),
         icon: 'alert',
@@ -2091,6 +2123,15 @@ export function mount(container, ctx) {
 
   function valueLines(values) {
     return h('span', { class: 'zone-values' }, values.map((v) => h('span', null, v)));
+  }
+
+  /* --- new name servers (ui/parity-panel.js) ------------------------------ */
+  function parityTab(z) {
+    if (!originConfirmed(z, S.confirmed)) {
+      return h('div', { class: 'stack zone-parity' }, Alert({ variant: 'info', message: t('zone.parity.needOrigin') }));
+    }
+    const P = S.parity;
+    return ParityTab({ ctx, zone: z, P, redact: (values, include) => redactValues(values, secrets(), include) });
   }
 
   function driftResults(z, cur) {

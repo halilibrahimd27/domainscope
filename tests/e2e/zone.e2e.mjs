@@ -136,6 +136,109 @@ const fakeDnsScript = (table) => `(() => {
   };
 })();`;
 
+/** The new provider's name servers of the parity steps (documentation names). */
+const NEW_NS = ['ns1.example.net', 'ns2.example.net'];
+
+/**
+ * The NEW provider's zone for the "New name servers" tab: the fixture's records as presentation
+ * text (a provider that does not proxy: every proxied record answers its origin, a flattened CNAME
+ * is a plain CNAME), except mail A (missing), the MX set (another mail host), the tunnel (a
+ * Cloudflare Tunnel cannot move: missing) and vpn A (TTL 3600, the file says 300); its own NS
+ * records; the dev delegation answered by referral.
+ */
+async function newProviderTable() {
+  const P = await import('../../assets/js/lib/zoneparse.js');
+  const z = P.parseZone(await readFile(CF_FILE, 'utf8'), { filename: 'example.com.txt' });
+  const records = {};
+  for (const r of z.records) {
+    if (r.data === null || r.data === undefined || r.duplicateOf !== undefined || r.type === 'SOA') continue;
+    if (r.name === 'dev.example.com' && r.type === 'NS') continue;
+    if (r.name.endsWith('.dev.example.com') || (r.name === 'example.com' && r.type === 'NS')) continue;
+    (records[`${r.name}|${r.type}`] ||= []).push([r.ttlAuto ? 300 : r.ttl, r.text]);
+  }
+  records['example.com|NS'] = NEW_NS.map((n) => [86400, `${n}.`]);
+  records['example.com|MX'] = [[300, '10 mx.example.net.']];
+  delete records['mail.example.com|A'];
+  delete records['tunnel.example.com|CNAME'];
+  records['vpn.example.com|A'] = [[3600, '203.0.113.5']];
+  return { records, cuts: { 'dev.example.com': ['ns-1.example-dns.net.', 'ns-2.example-dns.net.'] } };
+}
+
+/**
+ * In-page fake Globalping for DNS measurements: each new name server answers from `table` as an
+ * authoritative server would (the dig flags line with aa, CNAME chains inside the zone, a
+ * wildcard, NXDOMAIN, a referral for the delegation). Every call is logged in window.__gp.
+ */
+const fakeGlobalpingScript = (table, servers) => `(() => {
+  const T = ${JSON.stringify(table)};
+  const SERVERS = ${JSON.stringify(servers)};
+  const gp = window.__gp = { calls: [], remaining: 250, n: 0, measurements: {} };
+  const prevFetch = window.fetch;
+  const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const probe = { continent: 'EU', region: 'Western Europe', country: 'DE', city: 'Frankfurt', asn: 24940, network: 'Hetzner Online', tags: ['datacenter-network'] };
+  const owners = new Set(Object.keys(T.records).map((k) => k.split('|')[0]));
+  const nodeOf = (name) => {
+    if (owners.has(name)) return name;
+    const wild = '*.' + name.split('.').slice(1).join('.');
+    return owners.has(wild) ? wild : null;
+  };
+  function answer(ns, name, type) {
+    const serial = SERVERS[ns];
+    const done = (rcode, answers, raw = ';; flags: qr aa rd; QUERY: 1, ANSWER: ' + answers.length + '\\n') => ({
+      status: 'finished', statusCodeName: rcode, statusCode: { NOERROR: 0, NXDOMAIN: 3, REFUSED: 5 }[rcode], rawOutput: raw, answers, timings: { total: 4 }, resolver: ns
+    });
+    if (serial === undefined) return { status: 'failed', rawOutput: "dig: couldn't get address for '" + ns + "': not found" };
+    if (serial === null) return done('REFUSED', [], ';; flags: qr rd; QUERY: 1, ANSWER: 0\\n');
+    if (type === 'SOA' && name === 'example.com') return done('NOERROR', [{ name: 'example.com.', type: 'SOA', ttl: 3600, class: 'IN', value: 'ns1.example.net. hostmaster.example.com. ' + serial + ' 7200 900 1209600 300' }]);
+    const cut = Object.keys(T.cuts).find((c) => name === c || name.endsWith('.' + c));
+    if (cut && type !== 'DS') {
+      const raw = ';; flags: qr rd; QUERY: 1, ANSWER: 0\\n\\n;; AUTHORITY SECTION:\\n' + T.cuts[cut].map((t) => cut + '.\\t\\t3600\\tIN\\tNS\\t' + t).join('\\n') + '\\n\\n';
+      return done('NOERROR', [], raw);
+    }
+    const answers = [];
+    let cur = name;
+    for (let hop = 0; hop < 6; hop += 1) {
+      const node = nodeOf(cur);
+      if (!node) return done(hop ? 'NOERROR' : (Object.keys(T.records).some((k) => k.split('|')[0].endsWith('.' + cur)) ? 'NOERROR' : 'NXDOMAIN'), answers);
+      const own = T.records[node + '|' + type];
+      if (own) {
+        for (const [ttl, value] of own) answers.push({ name: cur + '.', type, ttl, class: 'IN', value });
+        return done('NOERROR', answers);
+      }
+      const cname = type !== 'CNAME' && T.records[node + '|CNAME'];
+      if (!cname) return done('NOERROR', answers);
+      answers.push({ name: cur + '.', type: 'CNAME', ttl: cname[0][0], class: 'IN', value: cname[0][1] });
+      cur = cname[0][1].replace(/[.]$/, '');
+      if (cur !== 'example.com' && !cur.endsWith('.example.com')) return done('NOERROR', answers);
+    }
+    return done('NOERROR', answers);
+  }
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!url.startsWith('https://api.globalping.io/')) return prevFetch(input, init);
+    const p = url.slice('https://api.globalping.io/v1'.length);
+    const method = String((init && init.method) || 'GET').toUpperCase();
+    let body = null;
+    try { body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch { body = null; }
+    gp.calls.push({ method, path: p, body });
+    if (p === '/limits') return json({ rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.remaining, reset: 0 } } } });
+    if (p === '/measurements' && method === 'POST') {
+      gp.remaining -= 1;
+      gp.n += 1;
+      const id = 'fakeParity' + String(gp.n).padStart(6, '0');
+      gp.measurements[id] = { id, body };
+      return json({ id, probesCount: 1 }, 202, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': String(gp.remaining), 'x-ratelimit-reset': '3600', 'x-request-cost': '1' });
+    }
+    const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
+    if (m && gp.measurements[m[1]]) {
+      const { id, body: b } = gp.measurements[m[1]];
+      const result = answer(b.measurementOptions.resolver, b.target, b.measurementOptions.query.type);
+      return json({ id, type: 'dns', status: 'finished', target: b.target, probesCount: 1, results: [{ probe, result }] });
+    }
+    return json({ error: { type: 'not_found', message: 'Not Found.' } }, 404);
+  };
+})();`;
+
 async function nodeChecks(run) {
   const V = await import('../../assets/js/views/zone.js');
   const O = await import('../../assets/js/lib/zoneorigins.js');
@@ -179,6 +282,10 @@ async function main() {
     await page.send('Network.setBlockedURLs', { urls: ['https://*'] });
     await browser.conn.send('Browser.grantPermissions', { origin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] }).catch(() => {});
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeDnsScript(table) });
+    // ns1 / ns2 serve the new zone (the same serial), ns9 refuses it, any other name does not resolve.
+    await page.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: fakeGlobalpingScript(await newProviderTable(), { [NEW_NS[0]]: 2026092801, [NEW_NS[1]]: 2026092801, 'ns9.example.org': null })
+    });
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
@@ -466,6 +573,114 @@ async function main() {
       assert(/^Live check from /.test((await keptNote(page)).text), 'kept through the language switch');
     });
 
+    const gpPosts = () => page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').map((c) => c.body));
+    const typeNs = (value) => page.evaluate((v) => {
+      const ta = document.querySelector('[data-role="par-ns"]');
+      ta.value = v;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }, value);
+    const parityRows = () => page.evaluate(() => {
+      const keys = [...document.querySelectorAll('.par-table thead th')].map((th) => th.dataset.key || '');
+      return [...document.querySelectorAll('.par-table tbody tr.dt-row')].map((tr) => ({
+        status: tr.querySelector('[data-status]')?.dataset.status,
+        name: tr.cells[keys.indexOf('name')]?.textContent.trim(),
+        type: tr.cells[keys.indexOf('type')]?.textContent.trim()
+      }));
+    });
+    let plannedProbes = 0;
+
+    await run.step('New name servers: nothing sent before Compare; the file\'s own server is flagged; the plan is the library\'s', async () => {
+      await clickTab(page, 'parity');
+      assert(/Compare with the new name servers/.test(await text(page, '.par-card')), 'the card');
+      await typeNs('ada.ns.cloudflare.com');
+      await page.waitFor(() => /one of this file’s own name servers/.test(document.querySelector('[data-role="par-issues"]')?.textContent || ''), { message: 'in-file issue' });
+      await typeNs(NEW_NS.join('\n'));
+      await page.waitFor(() => Number(document.querySelector('[data-role="par-plan"]')?.dataset.probes) > 0 && !document.querySelector('[data-role="par-issues"]'), { message: 'plan' });
+      plannedProbes = Number(await page.evaluate(() => document.querySelector('[data-role="par-plan"]').dataset.probes));
+      const V = await import('../../assets/js/views/zone.js');
+      const NP = await import('../../assets/js/lib/nsparity.js');
+      const z = V.parseFiles([{ name: 'example.com.txt', text: await readFile(CF_FILE, 'utf8') }]);
+      assertEqual(plannedProbes, NP.planParity(z, { nameservers: NEW_NS }).probes, 'the planned probes, as lib/nsparity.js counts them');
+      assert(/CAA/.test(await text(page, '[data-role="par-not-queryable"]')), 'CAA left to the CLI');
+      await page.evaluate(() => { document.querySelector('.par-cli').open = true; });
+      assertEqual((await text(page, '.par-command code')).trim(), `python3 dns_parity.py example.com.parity.zone --ns ${NEW_NS.join(' ')}`, 'CLI command');
+      assert(await page.evaluate(() => document.querySelector('.par-cli a[href="cli/dns_parity.py"]')?.getAttribute('download') === 'dns_parity.py'), 'script link');
+      assertEqual(await page.evaluate(() => window.__gp.calls.length), 0, 'no Globalping before a click');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.par-step')].map((li) => li.dataset.step)), ['ttl', 'fix', 'dnssec', 'switch', 'wait', 'after'], 'the runbook before a run');
+      assertEqual(external, [], 'no external request');
+    });
+
+    await run.step('Compare: the consent + cost dialog (Escape sends nothing), then exactly the planned probes, names and types only', async () => {
+      await page.click('[data-action="par-run"]');
+      await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog' });
+      const dialog = await text(page, '.gp-confirm');
+      assert(new RegExp(`Cost: ${plannedProbes} probes`).test(dialog) && /never|stay here/.test(dialog), `dialog: ${dialog}`);
+      await page.press('Escape');
+      await page.waitFor(() => !document.querySelector('.gp-confirm') && !document.querySelector('[data-action="par-stop"]'), { message: 'closed' });
+      assertEqual((await gpPosts()).length, 0, 'Escape sends nothing');
+      await page.click('[data-action="par-run"]');
+      await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog again' });
+      await page.click('.gp-confirm .btn-primary');
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.status === 'done', { timeout: 30000, message: 'compared' });
+      const posts = await gpPosts();
+      assertEqual(posts.length, plannedProbes, 'exactly the planned probes');
+      assert(posts.every((b) => b.type === 'dns' && NEW_NS.includes(b.measurementOptions.resolver)), 'DNS measurements at the new servers');
+      assertEqual(posts.filter((b) => b.measurementOptions.resolver === NEW_NS[1]).map((b) => `${b.target} ${b.measurementOptions.query.type}`), ['example.com SOA'], 'the second server: its serial only');
+      for (const hidden of ['intranet.example.com', 'origin-lb.example.net', 'statuspage.example.org', 'old.dev.example.com']) {
+        assert(!posts.some((b) => b.target === hidden), `${hidden} never sent`);
+      }
+      assert(!posts.some((b) => b.measurementOptions.query.type === 'CAA'), 'no CAA question');
+      assert(posts.every((b) => !JSON.stringify(b).includes('192.0.2.')), 'no value of the file');
+      assert(await page.evaluate(() => window.__fakeDnsLog.some((q) => q.name === 'example.com' && q.type === 'DS')), 'the DS question went to DoH');
+      assertEqual(external, [], 'no external request');
+    });
+
+    await run.step('Results: fix verdict, the servers, statuses per record set, TTL difference, the runbook', async () => {
+      assertEqual(await page.evaluate(() => document.querySelector('.par-results').dataset.verdict), 'fix', 'verdict');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.par-server')].map((li) => `${li.dataset.ns} ${li.dataset.role} ${li.dataset.state}`)),
+        [`${NEW_NS[0]} full ok`, `${NEW_NS[1]} serial ok`], 'servers');
+      const rows = await parityRows();
+      const of = (name, type) => rows.find((r) => r.name === name && r.type === type)?.status;
+      assertEqual([of('mail', 'A'), of('tunnel', 'CNAME'), of('@', 'MX'), of('www', 'A'), of('app', 'CNAME'), of('@', 'NS'), of('dev', 'NS'),
+        of('status', 'CNAME'), of('@', 'CAA'), of('intranet', 'A'), of('vpn', 'A'), of('google._domainkey', 'TXT')],
+      ['missing', 'missing', 'different', 'unproxied', 'unproxied', 'same', 'same', 'same', 'skipped', 'skipped', 'same', 'same'], 'statuses');
+      assert(await page.evaluate(() => [...document.querySelectorAll('.par-ttl-differs')].some((el) => el.textContent.trim() === '300 → 3600')), 'the vpn TTL difference');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.par-step')].map((li) => `${li.dataset.step}:${li.dataset.state}`)),
+        ['ttl:todo', 'fix:todo', 'dnssec:ok', 'switch:blocked', 'wait:todo', 'after:todo'], 'runbook');
+      await page.click('.par-results .zone-chip[data-filter="missing"]');
+      await page.waitFor(() => document.querySelectorAll('.par-table tbody tr.dt-row').length === 2, { message: 'missing filter' });
+      await page.click('.par-results .zone-chip[data-filter="all"]');
+      await shot(page, opts, 'zone-parity-desktop-light-en');
+    });
+
+    await run.step('Exports redact origin addresses by default; the zone for the CLI is canonical BIND', async () => {
+      await takeDownloads(page);
+      await page.click('.par-table .dt-export button');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'CSV' });
+      const [csv] = await takeDownloads(page);
+      for (const ip of ['192.0.2.10', '192.0.2.14', 'origin-lb.example.net']) assert(!csv.text.includes(ip), `${ip} redacted`);
+      assert(csv.text.includes('[origin hidden]'), 'redaction marker');
+      await page.click('[data-action="par-zone-file"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'zone file' });
+      const [zoneFile] = await takeDownloads(page);
+      assertEqual(zoneFile.name, 'example.com.parity.zone', 'file name');
+      assert(zoneFile.text.startsWith('; DomainScope zone export') && zoneFile.text.includes('$ORIGIN example.com.'), 'canonical BIND');
+    });
+
+    await run.step('A server that does not serve the zone: one probe, no second dialog, blocked, and the switch waits', async () => {
+      const before = (await gpPosts()).length;
+      await typeNs('ns9.example.org');
+      await page.waitFor(() => document.querySelector('[data-role="par-plan"]')?.dataset.probes !== String(0), { message: 'plan' });
+      await page.click('[data-action="par-run"]');
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.verdict === 'blocked', { timeout: 20000, message: 'blocked' });
+      assert(!await page.evaluate(() => !!document.querySelector('.gp-confirm')), 'no second dialog in the page session');
+      assertEqual((await gpPosts()).length - before, 1, 'the SOA question only');
+      assertEqual(await page.evaluate(() => document.querySelector('.par-server')?.dataset.state), 'refused', 'refused');
+      assertEqual(await page.evaluate(() => document.querySelector('.par-step[data-step="fix"]').dataset.state), 'blocked', 'fix blocked');
+      await typeNs(NEW_NS.join(' '));
+      await page.waitFor(() => document.querySelector('[data-role="par-ns"]')?.value === 'ns1.example.net ns2.example.net', { message: 'typed' });
+    });
+
     await run.step('Scan these names (exact): publishes the zone + one-shot intent and opens Subdomains', async () => {
       await clickTab(page, 'overview');
       const before = await page.evaluate(() => localStorage.getItem('ssds.subdomains.options'));
@@ -513,6 +728,10 @@ async function main() {
       await page.waitFor(() => /AWS Route 53/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'route53' });
       assert(/incomplete/i.test(await text(page, '.zone-partial')), 'incomplete export alert');
       assertEqual((await keptNote(page)).text, '', 'a new import: no note about the old zone\'s check');
+      // ... and no comparison with the old file's new name servers either; the servers typed in stay.
+      await clickTab(page, 'parity');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="par-ns"]').value), NEW_NS.join(' '), 'servers kept over the new import');
+      assert(!await page.evaluate(() => !!document.querySelector('.par-results')), 'the old results went with the old import');
       await page.setFileInput('.zone-drop .filedrop-input', [path.join(ZONES, 'cpanel-example.com.db.txt')]);
       await page.waitFor(() => /cPanel/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'cpanel' });
       await clickTab(page, 'problems');
@@ -639,6 +858,34 @@ async function main() {
             await assertNoHorizontalScroll(page, `${tab} ${scheme} ${lang}`);
             await shot(page, opts, `zone-${tab}-mobile-${scheme}-${lang}`);
           }
+        }
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+    });
+
+    await run.step('New name servers with results at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
+      await clickTab(page, 'parity');
+      await typeNs(NEW_NS.join('\n'));
+      await page.waitFor(() => Number(document.querySelector('[data-role="par-plan"]')?.dataset.probes) > 0, { message: 'plan' });
+      await page.click('[data-action="par-run"]');
+      // "Delete all local data" also dropped the consent: the dialog again.
+      await page.waitFor(() => !!document.querySelector('.gp-confirm') || !!document.querySelector('.par-results'), { message: 'dialog or results' });
+      if (await page.evaluate(() => !!document.querySelector('.gp-confirm'))) await page.click('.gp-confirm .btn-primary');
+      await page.waitFor(() => document.querySelector('.par-results')?.dataset.status === 'done', { timeout: 30000, message: 'compared again' });
+      for (const lang of ['en', 'tr']) {
+        await setLangUi(page, lang);
+        await clickTab(page, 'parity');
+        await page.waitFor(() => !!document.querySelector('.par-results'), { message: 'results kept after the language switch' });
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          for (const width of [320, 375]) {
+            await page.setViewport({ width, height: 800, mobile: true });
+            await page.evaluate(() => window.scrollTo(0, 0));
+            await assertNoHorizontalScroll(page, `parity ${width} ${scheme} ${lang}`);
+          }
+          await shot(page, opts, `zone-parity-mobile-${scheme}-${lang}`);
         }
       }
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });

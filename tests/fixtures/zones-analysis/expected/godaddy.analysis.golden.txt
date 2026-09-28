@@ -13,4 +13,4 @@ sweep proxied targets=0 hosts=0 names=0 tokens=0 chars=0 probes=0 probesAtLeast=
 sweep all targets=3 hosts=0 names=5 tokens=8 chars=135 probes=15 probesAtLeast=false fileForm=false
 scan names=5 wildcardBases=0 delegations=0 proxied=0 skipped=-
 drift rrsets=12 queries=13 needed=13 names=9 targetsHidden=0 internalShare=0.000
-drift skipped private=0 occluded=0 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 budget=0
+drift skipped private=0 occluded=0 outOfZone=0 unsupported=0 escaped=0 dnssec=0 synthesized=0 wildcard=0 type=0 budget=0

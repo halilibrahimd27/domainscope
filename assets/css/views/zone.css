@@ -313,6 +313,134 @@
   color: var(--ok);
 }
 
+/* New name servers (ui/parity-panel.js) */
+.par-card p {
+  margin: 0;
+}
+
+.par-plan {
+  font-weight: 600;
+}
+
+.par-issues,
+.par-servers,
+.par-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.par-issues li,
+.par-server,
+.par-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.par-issues .sev,
+.par-server > .sev,
+.par-step-icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.par-server {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.par-server[data-state="refused"],
+.par-server[data-state="not-authoritative"],
+.par-server[data-state="no-zone"],
+.par-server[data-state="servfail"],
+.par-server[data-state="unreachable"],
+.par-server[data-state="failed"] {
+  border-color: var(--error-border);
+}
+
+.par-server-body,
+.par-step-body {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+}
+
+.par-step {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.par-step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.par-step-body {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.par-step-state {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+.par-step[data-state="blocked"] .par-step-state {
+  color: var(--error);
+}
+
+.par-step[data-state="warn"] .par-step-state {
+  color: var(--warn);
+}
+
+.par-step[data-state="ok"] .par-step-state {
+  color: var(--ok);
+}
+
+.par-ttl {
+  white-space: nowrap;
+}
+
+.par-ttl-differs {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.par-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 0;
+}
+
+.par-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.par-cli {
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.par-cli > .disclosure-body {
+  padding-bottom: 12px;
+}
+
 @media (max-width: 640px) {
   .zone-import-fields {
     grid-template-columns: minmax(0, 1fr);
@@ -335,9 +463,76 @@
   }
 
   .zone-filterbar .segmented,
-  .zone-sweep-controls .segmented {
+  .zone-sweep-controls .segmented,
+  .par-shell {
     flex-wrap: wrap;
     max-width: 100%;
+  }
+
+  .par-cli {
+    padding: 4px 12px;
+  }
+
+  /* The comparison table: each record set a card of labelled lines (seven columns never fit). */
+  .par-table .dt-table,
+  .par-table .dt-table tbody {
+    display: block;
+  }
+
+  .par-table .dt-table thead {
+    display: none;
+  }
+
+  .par-table .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .par-table .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .par-table .dt-table td,
+  .par-table .dt-table td:first-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .par-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* a line with nothing to say (no value at the new server, no note) is left out */
+  .par-table .dt-table td:empty,
+  .par-table .dt-table td:has(> span:only-child:empty) {
+    display: none;
+  }
+
+  .par-table .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+
+  .par-table .badge {
+    height: auto;
+    min-height: 21px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    white-space: normal;
   }
 }
 

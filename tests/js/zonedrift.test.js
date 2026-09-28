@@ -382,6 +382,26 @@ describe('what is never sent', () => {
     assert.equal(planDrift(z).maxQueries, DRIFT_DEFAULT_BUDGET);
   });
 
+  test('queryTypes: an RRset needing a type the transport cannot ask is skipped not-queryable, at no cost', async () => {
+    const z = cfZone([SOA, ['@', 'CAA', '0 issue "letsencrypt.org"'], ['a', 'A', '198.51.100.1', D], ['c', 'CNAME', 'lb.example.net.', P],
+      ['t', 'TXT', 'hello']]);
+    const types = ['SOA', 'NS', 'A', 'TXT'];
+    const plan = planDrift(z, { queryTypes: types });
+    assert.deepEqual([plan.skipped.type, plan.rrsets, plan.queries], [2, 4, 4], 'CAA and the proxied CNAME (CNAME + A) are left out');
+    assert.equal(planDrift(z).skipped.type, 0, 'no transport limit: nothing skipped for its type');
+    const r = await drift(z, {}, { queryTypes: types });
+    assert.equal(status(r.row('example.com|CAA')), 'skipped not-queryable');
+    assert.equal(status(r.row('c.example.com|CNAME')), 'skipped not-queryable');
+    assert.ok(!r.asked('example.com', 'CAA') && !r.asked('c.example.com'), 'never sent');
+    assert.equal(r.dns.log.length, plan.queries);
+  });
+
+  test('a transport that refuses a query for its own budget gives error budget, not transport', async () => {
+    const z = zone([SOA, ['a', 'A', '198.51.100.1']]);
+    const r = await drift(z, { 'a.example.com|A': { fail: 'budget' } });
+    assert.equal(status(r.row('a.example.com|A')), 'error budget');
+  });
+
   test('a budget below the SOA + NS preflight is floored at it: never more queries sent than maxQueries reports', async () => {
     const z = cfZone([SOA, ['a', 'A', '198.51.100.1', D]]);
     for (const max of [0, 1, -5]) {

@@ -31,8 +31,9 @@
  *   PowerShell (lib/cmdline quotes every token); Sources — the stage pills, per-source chips,
  *   status lines and free limits, and the other registrable domains named in the same
  *   certificates as the hosts (ui/related-domains.js, loaded with a run that reads Certificate
- *   Transparency; "Scan too" scans them together). Hosts is the automatic tab once a host is listed (Sources
- *   before that while the run is live, Overview when it ended empty); a tab the user picks stays.
+ *   Transparency; "Scan too" scans them together). Hosts is the automatic tab once a host is
+ *   listed (Sources before that while the run is live, Overview when it ended empty); a tab the
+ *   user picks stays.
  *
  * Like the SSL Targets scan, a running scan belongs to this module, not to the mounted view:
  * opening a subdomain in DNS Lookup and coming back keeps the results (a toast says when a

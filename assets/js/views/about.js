@@ -238,7 +238,7 @@ registerStrings('tr', {
   'about.col.source': 'Kaynak',
   'about.col.provides': 'Sağladığı',
   'about.col.limits': 'Sınırlar ve notlar',
-  'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad. İstendiğinde bir host adının sertifikasının nereden indirileceği (Sertifika, SSL Hedefleri) Cert Spotter yanıt veremediğinde bir alan adının geçerli sertifikalarını verenler (Alan adı özeti) ve aynı açık anahtarı taşıyan diğer sertifikalar da (Sertifika › CT kayıtları › Anahtar sürekliliği).',
+  'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad. İstendiğinde bir host adının sertifikasının nereden indirileceği (Sertifika, SSL Hedefleri), Cert Spotter yanıt veremediğinde bir alan adının geçerli sertifikalarını verenler (Alan adı özeti) ve aynı açık anahtarı taşıyan diğer sertifikalar da (Sertifika › CT kayıtları › Anahtar sürekliliği).',
   'about.src.crtshLimit': 'Ücretsiz. Yoğunlukta yavaş ya da kısa süre erişilemez olabilir: giderek uzayan aralarla yeniden denenir, sonra daha hafif bir aramaya geçilir — zaman aşımları sürerse yaklaşık 3 dakikaya kadar; bu sırada Cert Spotter devreye girer.',
   'about.src.certspotter': 'Adları ve parmak izleriyle Certificate Transparency kayıtları. İstendiğinde bir host adının geçerli sertifikası (Sertifika, SSL Hedefleri) ve bir alan adının geçerli sertifikalarını verenler de (Alan adı özeti, tek istek).',
   'about.src.certspotterLimit': 'Anonim kullanımda IP adresi başına küçük saatlik kotalar (dolunca HTTP 429): yaklaşık 10 tam alan adı araması (bir tarama her kayıtlı alan adı için en fazla 5 kullanır) ve bundan ayrı olarak tek host için 100 istek (bir host adının sertifikası; her sorgu iki istek, yani saatte yaklaşık 50 sorgu).',

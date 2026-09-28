@@ -580,7 +580,7 @@ export function http01Findings(test, { challenge, name }) {
   if (!test || !arr(test.families).length) return [];
   const out = [];
   const sev = methodSeverity(challenge === 'http-01' ? 'http-01' : 'unknown');
-  const places = (fam, pred) => fam.probes.filter(pred).map((p) => p.place).filter(Boolean).join(', ');
+  const places = (fam, pred) => fam.probes.filter(pred).map((p) => p.place).filter(Boolean).join('; ');
   for (const fam of test.families) {
     const family = fam.ipVersion === 6 ? 'IPv6' : 'IPv4';
     const answers = uniq(fam.probes.map((p) => (p.status ? String(p.status) : p.outcome))).join(', ');
@@ -1076,17 +1076,17 @@ const STRINGS = [
   ['ch.unknown', ['Not sure', 'Emin değilim']],
   ['area.caa', ['CAA', 'CAA']],
   ['area.resolvers', ['CAA on public resolvers', 'Genel çözümleyicilerde CAA']],
-  ['area.wildcard', ['Wildcard', 'Joker (wildcard)']],
+  ['area.wildcard', ['Wildcard', 'Joker ad']],
   ['area.acme', ['_acme-challenge', '_acme-challenge']],
   ['area.provider', ['DNS provider', 'DNS sağlayıcısı']],
   ['area.dnssec', ['DNSSEC', 'DNSSEC']],
   ['area.http', ['HTTP-01 / TLS-ALPN-01 prerequisites', 'HTTP-01 / TLS-ALPN-01 önkoşulları']],
   ['area.http01', ['HTTP-01 reachability', 'HTTP-01 erişilebilirliği']],
-  ['o.not-found', ['404 — reaches the web server', '404 — web sunucusuna ulaşıyor']],
+  ['o.not-found', ['reaches the web server', 'web sunucusuna ulaşıyor']],
   ['o.redirect', ['redirect CAs follow', 'otoritelerin izlediği yönlendirme']],
   ['o.catch-all', ['answers a made-up token', 'uydurma değeri yanıtlıyor']],
-  ['o.forbidden', ['access denied (401 / 403)', 'erişim reddedildi (401 / 403)']],
-  ['o.server-error', ['server error (5xx)', 'sunucu hatası (5xx)']],
+  ['o.forbidden', ['access denied', 'erişim reddedildi']],
+  ['o.server-error', ['server error', 'sunucu hatası']],
   ['o.status', ['unexpected status', 'beklenmeyen durum kodu']],
   ['o.redirect-loop', ['redirects to itself', 'kendisine yönlendiriyor']],
   ['o.redirect-port', ['redirect to a port other than 80 / 443', '80 / 443 dışında bir porta yönlendirme']],
@@ -1121,8 +1121,8 @@ const STRINGS = [
     ['Only {authorized} may issue ({property} at {foundAt}). The renewal fails until {foundAt} also publishes 0 {property} "{domain}".',
       'Yalnızca şunlar sertifika verebilir: {authorized} ({foundAt} üzerindeki {property}). {foundAt} için 0 {property} "{domain}" kaydı da yayımlanana kadar yenileme başarısız olur.']],
   ['f.caa.deny-all', ['CAA forbids every CA', 'CAA tüm otoriteleri yasaklıyor'],
-    ['The {property} records at {foundAt} authorize no CA (for example issue ";"), so no renewal can succeed until one is allowed.',
-      '{foundAt} üzerindeki {property} kayıtları hiçbir otoriteye izin vermiyor (örneğin issue ";"); bir otoriteye izin verilene kadar hiçbir yenileme başarılı olamaz.']],
+    ['The {property} records at {foundAt} authorize no CA (for example {property} ";"), so no renewal can succeed until one is allowed.',
+      '{foundAt} üzerindeki {property} kayıtları hiçbir otoriteye izin vermiyor (örneğin {property} ";"); bir otoriteye izin verilene kadar hiçbir yenileme başarılı olamaz.']],
   ['f.caa.critical', ['An unknown critical CAA tag blocks issuance', 'Bilinmeyen kritik bir CAA etiketi sertifika verilmesini engelliyor'],
     ['{foundAt} has a CAA record with the critical flag and a tag CAs do not know ({tags}): every CA must refuse (RFC 8659 §4.1).',
       '{foundAt} üzerinde kritik bayraklı ve otoritelerin tanımadığı bir etiketi olan CAA kaydı var ({tags}): her otorite reddetmek zorunda (RFC 8659 §4.1).']],
@@ -1152,8 +1152,8 @@ const STRINGS = [
     ['{resolvers} give the same answer, so the CA’s lookups from its other network perspectives should too.',
       '{resolvers} aynı yanıtı veriyor; otoritenin başka ağlardan yaptığı sorgular da aynısını görmeli.']],
   ['f.resolvers.differ', ['Resolvers see different CAA records', 'Çözümleyiciler farklı CAA kayıtları görüyor'],
-    ['{variants}. The CA checks CAA from several networks (multi-perspective validation), so a name server that lags behind or answers differently can make it refuse. Check that every name server of the zone serves the same records, and wait out the TTL after a change.',
-      '{variants}. Otorite CAA’yı birkaç ağdan kontrol eder (çok noktalı doğrulama); geride kalan ya da farklı yanıt veren bir ad sunucusu reddetmesine yol açabilir. Alanın tüm ad sunucularının aynı kayıtları sunduğunu kontrol edin ve bir değişiklikten sonra TTL süresi kadar bekleyin.']],
+    ['{count} different answers: each resolver’s is listed below. The CA checks CAA from several networks (multi-perspective validation), so a name server that lags behind or answers differently can make it refuse. Check that every name server of the zone serves the same records, and wait out the TTL after a change.',
+      '{count} farklı yanıt: her çözümleyicininki aşağıda. Otorite CAA’yı birkaç ağdan kontrol eder (çok noktalı doğrulama); geride kalan ya da farklı yanıt veren bir ad sunucusu reddetmesine yol açabilir. Alanın tüm ad sunucularının aynı kayıtları sunduğunu kontrol edin ve bir değişiklikten sonra TTL süresi kadar bekleyin.']],
   ['f.resolvers.servfail', ['CAA lookup fails on {resolvers}', 'CAA sorgusu şu çözümleyicilerde başarısız: {resolvers}'],
     ['{rcode}: at least one authoritative name server fails the CAA query (some old servers and appliances mishandle type 257). A CA perspective that reaches it cannot finish the CAA check.',
       '{rcode}: en az bir yetkili ad sunucusu CAA sorgusunda hata veriyor (bazı eski sunucular ve cihazlar 257 türünü doğru işlemez). Ona ulaşan bir otorite noktası CAA kontrolünü bitiremez.']],

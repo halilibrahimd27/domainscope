@@ -579,7 +579,7 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
   assert.notEqual(next, report);
   assert.equal(report.names[0].http01, null, 'the given report is not changed');
   const okF = next.names[0].findings.find((f) => f.id === 'http01.ok');
-  assert.deepEqual(okF.params, { name: 'www.example.com', family: 'IPv4', answers: '404', count: 3, places: 'Helsinki, FI, Buffalo, US, Tokyo, JP' });
+  assert.deepEqual(okF.params, { name: 'www.example.com', family: 'IPv4', answers: '404', count: 3, places: 'Helsinki, FI; Buffalo, US; Tokyo, JP' });
   assert.equal(next.names[0].findings[next.names[0].findings.length - 1].id, 'http01.ok', 'reachability comes last');
   assert.equal(next.names[1], report.names[1], 'other names are untouched');
   const redirect = { at: new Date(), families: [interpretHttp01(fx('m29-acme-http-redirect').final.body, { host: 'www.example.com', path: PATH })] };

@@ -89,7 +89,7 @@ const WORKSPACE_WAIT_MS = 8000;
  * order the views were opened in.
  */
 export const VIEW_CSS_ORDER = Object.freeze([
-  'views/subdomains.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
+  'views/subdomains.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/renew.css',
   'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/health.css',
   'views/inventory.css', 'views/about.css'
 ]);
@@ -120,6 +120,8 @@ export const VIEWS = Object.freeze([
     css: ['views/subdomains.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css']
   },
   { id: 'cert', group: 'ssl', icon: 'shield', css: ['views/dane.css', 'views/cert.css'], offline: true, load: () => import('./views/cert.js') },
+  // the certificate block reuses the Certificate view's loader (its module graph brings the DANE panel's classes)
+  { id: 'renew', group: 'ssl', icon: 'refresh', css: ['views/dane.css', 'views/cert.css', 'views/renew.css'], load: () => import('./views/renew.js') },
   { id: 'global', group: 'dns', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
   { id: 'lookup', group: 'dns', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
   { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },

@@ -1,0 +1,421 @@
+/*
+ * views/renew.css — "Renewal readiness" view (.rnw-*). The certificate block reuses the
+ * Certificate view's loader (views/cert.css, loaded with this view).
+ */
+
+/* ---- form ------------------------------------------------------------------ */
+
+.rnw-names-note:empty {
+  display: none;
+}
+
+.rnw-note-warn {
+  margin: 0;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.rnw-note-warn .icon {
+  vertical-align: -2px;
+}
+
+.rnw-cert-block > .disclosure-summary,
+.rnw-cert-another > .disclosure-summary {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.rnw-cert-another {
+  background: var(--surface-2);
+}
+
+.rnw-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+
+.rnw-options .field {
+  min-width: 0;
+}
+
+.rnw-form-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.rnw-privacy {
+  flex: 1 1 22rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.rnw-privacy .icon {
+  vertical-align: -2px;
+}
+
+.rnw-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .rnw-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rnw-buttons {
+    flex: 1 1 100%;
+  }
+
+  .rnw-buttons .btn {
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+.rnw-empty {
+  padding: 8px 0;
+}
+
+.rnw-error:empty {
+  display: none;
+}
+
+/* ---- summary --------------------------------------------------------------- */
+
+.rnw-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.rnw-hero-fail {
+  border-color: var(--error-border);
+}
+
+.rnw-hero-warnings {
+  border-color: var(--warn-border);
+}
+
+.rnw-hero-ready {
+  border-color: var(--ok-border);
+}
+
+.rnw-setup,
+.rnw-meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rnw-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- HTTP-01 test ------------------------------------------------------------ */
+
+.rnw-test p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.rnw-test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.rnw-test-done {
+  color: var(--ok);
+}
+
+.rnw-test-done .icon {
+  vertical-align: -2px;
+}
+
+@media (max-width: 480px) {
+  .rnw-test-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* ---- names ------------------------------------------------------------------------ */
+
+.rnw-name {
+  box-shadow: var(--shadow-xs);
+}
+
+.rnw-name-fail {
+  border-left: 3px solid var(--error-solid);
+}
+
+.rnw-name-warnings {
+  border-left: 3px solid var(--warn-solid);
+}
+
+.rnw-name-ready {
+  border-left: 3px solid var(--ok-solid);
+}
+
+.rnw-name > .disclosure-summary {
+  align-items: flex-start;
+}
+
+.rnw-name > .disclosure-summary .disclosure-chevron {
+  margin-top: 3px;
+  flex: none;
+}
+
+.rnw-name .disclosure-heading {
+  min-width: 0;
+}
+
+.rnw-name-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.rnw-name-text {
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.rnw-name-counts {
+  font-weight: 400;
+}
+
+.rnw-name-body {
+  padding-top: 6px;
+}
+
+.rnw-area {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rnw-area-title {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.rnw-findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.rnw-finding {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rnw-finding:last-child {
+  border-bottom: 0;
+}
+
+.rnw-finding-icon {
+  padding-top: 1px;
+}
+
+.rnw-sev-error {
+  background: color-mix(in srgb, var(--error-bg) 55%, transparent);
+}
+
+.rnw-sev-warn {
+  background: color-mix(in srgb, var(--warn-bg) 55%, transparent);
+}
+
+.rnw-finding-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.rnw-finding-detail {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.rnw-kv {
+  font-size: 13px;
+}
+
+.rnw-kv .kv-key,
+.rnw-kv .kv-value {
+  padding: 5px 0;
+}
+
+/* The CAA lookup on each public resolver: one line each, the state after the name. */
+.rnw-resolvers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.rnw-resolver {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.rnw-resolver:last-child {
+  border-bottom: 0;
+}
+
+.rnw-resolver-records {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.rnw-resolver-records .tlist {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.rnw-resolver-name {
+  min-width: 11rem;
+  font-weight: 550;
+}
+
+.rnw-resolver-state {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.rnw-rs-servfail .rnw-resolver-state {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.rnw-rs-error .rnw-resolver-state {
+  color: var(--text-3);
+}
+
+/* HTTP-01 test: one line per probe (a list, not a table: it fits a phone in any font). */
+.rnw-family-head {
+  overflow-wrap: anywhere;
+}
+
+.rnw-probe-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.rnw-probe {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.rnw-probe:last-child {
+  border-bottom: 0;
+}
+
+.rnw-probe-place {
+  min-width: 10rem;
+  font-weight: 550;
+}
+
+.rnw-probe-good .rnw-probe-answer {
+  color: var(--ok);
+}
+
+.rnw-probe-bad .rnw-probe-answer {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.rnw-probe-neutral .rnw-probe-answer {
+  color: var(--text-3);
+}
+
+.rnw-probe-extra {
+  flex: 1 1 100%;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.rnw-probe-addr {
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.rnw-measurement {
+  white-space: nowrap;
+}
+
+.rnw-name-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-top: 4px;
+}
+
+@media (max-width: 480px) {
+  .rnw-name-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .rnw-resolver-name,
+  .rnw-probe-place {
+    min-width: 0;
+  }
+}
+
+@media print {
+  .rnw-form-card,
+  .rnw-empty,
+  .rnw-name-actions,
+  .rnw-test-actions {
+    display: none;
+  }
+
+  /* Severity backgrounds and the verdict edge carry meaning on paper too. */
+  .rnw-finding,
+  .rnw-name {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

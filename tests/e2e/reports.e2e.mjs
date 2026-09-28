@@ -258,10 +258,11 @@ async function main() {
       await page.click('.rpt-tabs [data-tab="dmarc"]');
     });
 
-    await run.step('the second domain: its own sources and SPF; strict policy, reject enforced', async () => {
+    await run.step('the second domain: its own sources and SPF; strict policy, reject enforced; the picker keeps the focus', async () => {
       const before = (await counts(page)).dns;
       await page.evaluate(() => {
         const sel = document.querySelector('.rpt-domain select');
+        sel.focus();
         sel.value = 'example.net';
         sel.dispatchEvent(new Event('change', { bubbles: true }));
       });
@@ -270,12 +271,20 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('.rpt-verdict').dataset.verdict), 'enforced', 'p=reject enforced');
       assertEqual(Object.fromEntries(await tableClasses(page)), { '192.0.2.10': 'yours', '198.51.100.250': 'unknown' }, 'classes');
       assert((await counts(page)).dns > before, 'its SPF looked up');
+      assertEqual(await page.evaluate(() => !!document.activeElement?.matches('.rpt-domain select')), true, 'the focus on the picker drawn again');
     });
 
-    await run.step('an SPF lookup that fails is said so, never "not authorized"; Check again asks once more', async () => {
-      await page.evaluate(() => { window.__rcodes['example.net|TXT'] = 'SERVFAIL'; });
-      await page.click('[data-action="rpt-spf-retry"]');
+    await run.step('an SPF lookup that fails is said so, never "not authorized"; Check again asks once more, keeps the focus and the open details', async () => {
+      await page.evaluate(() => {
+        window.__rcodes['example.net|TXT'] = 'SERVFAIL';
+        const tr = [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '192.0.2.10');
+        tr.querySelector('.dt-expand-btn').click();
+        document.querySelector('[data-action="rpt-spf-retry"]').focus();
+      });
+      await page.press('Enter');
       await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'failed', { message: 'failed' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'rpt-spf-retry', 'the focus on Check again drawn again');
+      assert(/could not be read \(a lookup that failed here\)|cannot tell from here/.test(await text(page, '.rpt-sources .rpt-details')), await text(page, '.rpt-sources .rpt-details'));
       assert(/could not be read/.test(await text(page, '.rpt-spf')), await text(page, '.rpt-spf'));
       assert(await page.evaluate(() => !!document.querySelector('.rpt-notes [data-note="spf-unknown"]')), 'the note');
       // The reports saw 192.0.2.10 pass SPF aligned: without the current SPF it still counts as yours.

@@ -17,9 +17,10 @@
  * each answer reads done, not yet or wrong value. The page asks again with a growing wait, never
  * before a resolver's cached answer can have expired, and stops when every record is done, after
  * two hours, when nothing can change before then (a long TTL), or when a record had no answer
- * from any resolver three rounds in a row (and says so). Stop (Esc; a round already running still
- * shows its answers, nothing more is asked) / Check now / Check again (every record on every
- * resolver, from scratch).
+ * from any resolver three rounds in a row (and says so); offline it says so and asks once the
+ * connection is back. Stop (Esc; a round already running still shows its answers, nothing more is
+ * asked) / Check now / Check again (every record on every resolver, from scratch); the keyboard
+ * focus moves to Stop while a round runs, and to Check again once the check stops.
  *
  * Shareable: `#/change?t=caa&domain=example.com&cas=letsencrypt` opens a form (the "Edit in DNS
  * change request" of Domain Health and Zone File); a carried target fills the domain
@@ -121,7 +122,7 @@ registerStrings('en', {
   'chg.check.bad.zone': 'Its zone name is missing or invalid.',
   'chg.check.bad.empty': 'It holds no record to check.',
   'chg.check.bad.set': 'One of its records cannot be read: {detail}',
-  'chg.check.offline': 'You are offline: the check starts when you press Check now with a connection.',
+  'chg.check.offline': 'You are offline: the check goes on once the connection is back.',
   'chg.check.failed': 'The check could not run ({reason}). Check now tries again.'
 });
 
@@ -195,7 +196,7 @@ registerStrings('tr', {
   'chg.check.bad.zone': 'Zone adı eksik ya da geçersiz.',
   'chg.check.bad.empty': 'Kontrol edilecek bir kayıt taşımıyor.',
   'chg.check.bad.set': 'Kayıtlarından biri okunamıyor: {detail}',
-  'chg.check.offline': 'Çevrimdışısınız: kontrol, bağlantı varken Şimdi kontrol et’e bastığınızda başlar.',
+  'chg.check.offline': 'Çevrimdışısınız: bağlantı geri gelince kontrol sürer.',
   'chg.check.failed': 'Kontrol çalışamadı ({reason}). Şimdi kontrol et yeniden dener.'
 });
 
@@ -567,6 +568,7 @@ function mountCheck(container, ctx) {
   const stopBtn = Button({ label: t('chg.check.stop'), icon: 'stop', size: 'sm', dataset: { action: 'check-stop', shortcut: 'cancel' }, onClick: () => stop() });
   const againBtn = Button({ label: t('chg.check.again'), icon: 'refresh', size: 'sm', variant: 'primary', dataset: { action: 'check-again' }, onClick: () => again() });
   const copyBtn = CopyButton(() => checkUrl(query), { label: t('chg.check.copy'), size: 'sm', variant: 'ghost', toastOnCopy: true });
+  const actionBtns = [nowBtn, stopBtn, againBtn];
   const setsEl = h('div', { class: 'stack chg-sets' });
   const hero = h('section', { class: 'card chg-hero' },
     h('div', { class: 'chg-hero-top' },
@@ -653,10 +655,14 @@ function mountCheck(container, ctx) {
     lastHeadline = st.headline;
     renderMeta();
     const stopped = !!memo.stop;
+    const focused = actionBtns.find((b) => b === globalThis.document?.activeElement) || null;
     nowBtn.hidden = stopped;
     stopBtn.hidden = stopped;
     againBtn.hidden = !stopped;
     nowBtn.disabled = memo.running;
+    // A button that goes (Check now while a round runs, Stop once it stops) hands the keyboard focus
+    // to the one that takes its place, never to the page's body.
+    if (focused && (focused.hidden || focused.disabled)) (stopped ? againBtn : memo.running ? stopBtn : nowBtn).focus();
   }
 
   function renderMeta() {
@@ -676,10 +682,16 @@ function mountCheck(container, ctx) {
   async function runRound(only, { quiet = false } = {}) {
     if (memo.running) return;
     if (!ctx.requireOnline({ quiet })) {
+      // No round now and none scheduled: the 'online' event asks these pairs once the connection is back.
+      clearTimeout(memo.timer);
+      memo.timer = null;
+      memo.nextAt = null;
+      memo.offline = { only };
       memo.note = t('chg.check.offline');
-      renderMeta();
+      renderHead();
       return;
     }
+    memo.offline = null;
     memo.note = null;
     clearTimeout(memo.timer);
     memo.timer = null;
@@ -770,11 +782,18 @@ function mountCheck(container, ctx) {
       memo.latest = new Map();
       runRound(null);
     } else renderHead();
-    nowBtn.focus();
   }
+
+  /** Back online: the round that could not run (the first one, or a scheduled one) runs now. */
+  const onOnline = () => {
+    if (!view.isConnected || !memo.offline || memo.stop || memo.running) return;
+    runRound(memo.offline.only, { quiet: true });
+  };
+  globalThis.addEventListener?.('online', onOnline);
 
   ticker = setInterval(() => { if (view.isConnected) renderMeta(); }, 1000);
   ctx.onCleanup(() => {
+    globalThis.removeEventListener?.('online', onOnline);
     clearInterval(ticker);
     // The memo keeps the answers; its timer only runs while the page is on screen.
     clearTimeout(memo.timer);

@@ -23,7 +23,8 @@
  *     report of each endpoint in the details and a `report` column in the CSV; the same report
  *     again is a duplicate; pasting a report works, a pasted non-report says why; removing one
  *     report and Forget all; "Delete all local data" forgets the reports, with the view on screen
- *     or not, and so does a switch to another workspace;
+ *     or not, and so does a switch to another workspace; a report where no server returned a
+ *     certificate says so in the keys tab (not "an older CLI");
  *   - Certificate view › PEM & OpenSSL › Does this CSR match?: the certificate's own CSR matches
  *     (Ctrl+Enter in the box), another key's does not (with the names it asked for), a pasted
  *     private key is refused and the box emptied at once, without Compare (and it does not come
@@ -381,6 +382,27 @@ async function main() {
       }), id);
       await page.waitFor(() => document.querySelector('.estate-page .empty'), { message: 'back in Default, still empty' });
       assertEqual((await viewInfo(page)).reports, [], 'nothing came back with Default');
+    });
+
+    await run.step('a report where no server returned a certificate: no key to compare, not "an older CLI"', async () => {
+      const doc = JSON.parse(await readFile(REPORT_A, 'utf8'));
+      doc.results = doc.results.map((r) => ({ ...r, certSha256: null }));
+      doc.certificates = {};
+      delete doc.estate;
+      await page.evaluate(() => { document.querySelector('.estate-paste').open = true; });
+      await page.type('[data-role="estate-paste"]', JSON.stringify(doc));
+      await page.press('Enter', { ctrl: true });
+      await page.waitFor(() => document.querySelectorAll('.estate-report').length === 1, { message: 'the report read' });
+      const info = await viewInfo(page);
+      assertEqual(info.stats.all, '0', 'no certificate');
+      assert(!info.notes.some((n) => n.includes('older CLI')), `notes: ${info.notes}`);
+      await page.click('.estate-tabs .tab[data-tab="keys"]');
+      const text = await page.waitFor(() => document.querySelector('.estate-tabs .tabpanel[data-tab="keys"]:not([hidden]) .empty')?.textContent, { message: 'keys tab' });
+      assert(text.includes('No server returned a certificate') && !text.includes('older CLI'), text);
+      await page.click('.estate-tabs .tab[data-tab="certificates"]');
+      await page.click('[data-action="estate-forget"]');
+      await page.waitFor(() => !document.querySelector('.estate-report'), { message: 'forgotten' });
+      await removeToasts(page);
     });
 
     run.group('Certificate › PEM & OpenSSL › Does this CSR match?');

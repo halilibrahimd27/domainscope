@@ -680,13 +680,15 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
  * @property {string|null} holder the name whose A / AAAA holds the address (null for a hint / SPF)
  * @property {boolean} hint an HTTPS / SVCB address hint
  * @property {boolean|null} proxied
- * @property {boolean} internal
+ * @property {boolean} internal the owner looks internal (never sent to a public resolver)
+ * @property {boolean} targetInternal an MX / NS / SRV / HTTPS / CNAME target (or a name on its in-zone chain) looks internal
  * @property {boolean} occluded
  * @property {number|null} line
  * @property {number|null} preference
  * @property {{ term: string, qualifier: string, relation: string, range: string }|null} spf an SPF ip4 / ip6 term
  * @property {boolean|null} [live] set by {@link verifyZoneRefs}: true / false, null when the lookup failed;
- *   undefined when it was not asked (proxied, internal, wildcard)
+ *   undefined when it was not asked (proxied, internal, wildcard, over the cap)
+ * @property {boolean} [capped] not asked: more records than {@link RETIRE_MAX_ZONE_REFS} would have been
  */
 
 /**
@@ -724,21 +726,27 @@ export function zoneCandidates(records, blocks) {
     }
     return null;
   };
+  // Names the zone marks as internal-looking (zoneorigins privateLookingNames): never sent to a public resolver.
+  const internalNames = new Set(list.filter((r) => r.internal).map((r) => r.name));
   const out = [];
   const push = (r, extra) => out.push({
     name: r.name, type: r.type, value: r.value, proxied: r.proxied ?? null, internal: !!r.internal, occluded: !!r.occluded,
     line: Number.isFinite(r.line) ? r.line : null, preference: Number.isFinite(r.preference) ? r.preference : null,
-    via: [], holder: null, hint: false, spf: null, ...extra
+    via: [], holder: null, hint: false, spf: null, targetInternal: false, ...extra
   });
   const viaTarget = (r, target) => {
     const start = canon(target);
     const hit = follow(start);
     if (!hit) return;
+    const chain = [start, ...hit.via];
     for (const rec of hit.recs) {
       const b = blockOf(rec.value, blocks);
       if (!b) continue;
       // A DNS-only CNAME into a proxied name reaches the origin through the proxy: its record decides.
-      push(r, { address: normalizeIP(rec.value), block: b.cidr, via: [start, ...hit.via], holder: hit.holder, proxied: rec.proxied === true ? true : r.proxied ?? null });
+      push(r, {
+        address: normalizeIP(rec.value), block: b.cidr, via: chain, holder: hit.holder, proxied: rec.proxied === true ? true : r.proxied ?? null,
+        targetInternal: !!rec.internal || chain.some((n) => internalNames.has(n))
+      });
     }
   };
   for (const r of list) {
@@ -830,12 +838,14 @@ function answerHas(res, ref) {
  * - an SPF term: the owner's SPF policy holds the term.
  * A proxied record's origin (the proxy answers with its own edges), a name that looks internal
  * (never sent to a public resolver) and a wildcard owner are not asked (`live` stays undefined).
- * The DohClient caches, so a name the domain checks resolved costs nothing more.
+ * A served MX / NS / SRV / HTTPS record whose target looks internal is `live` without asking the
+ * target. Only the first `max` records that would be asked are; the rest keep `live` undefined and
+ * get `capped: true`. The DohClient caches, so a name the domain checks resolved costs nothing more.
  * @param {ZoneRef[]} refs
- * @param {{ dns: object, signal?: AbortSignal }} opts
- * @returns {Promise<ZoneRef[]>} copies with `live`
+ * @param {{ dns: object, signal?: AbortSignal, max?: number }} opts
+ * @returns {Promise<ZoneRef[]>} copies with `live` (and `capped`)
  */
-export async function verifyZoneRefs(refs, { dns, signal } = {}) {
+export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_REFS } = {}) {
   if (!dns || typeof dns.query !== 'function' || typeof dns.resolveHost !== 'function') {
     throw new TypeError('verifyZoneRefs: a DNS client with query() and resolveHost() is required');
   }
@@ -857,10 +867,16 @@ export async function verifyZoneRefs(refs, { dns, signal } = {}) {
   };
   const usable = (h) => h && (h.status === 'NOERROR' || h.status === 'NXDOMAIN');
   const reaches = (h, address) => [...(h.ipv4 || []), ...(h.ipv6 || [])].map((ip) => normalizeIP(ip)).includes(address);
+  let left = Math.max(0, Number(max) || 0);
   const out = await Promise.all((refs || []).map(async (ref) => {
     const copy = { ...ref, via: [...ref.via] };
     const aliasOrAddress = ref.type === 'A' || ref.type === 'AAAA' || ref.type === 'CNAME';
     if ((ref.proxied === true && aliasOrAddress) || ref.internal || ref.name.startsWith('*.')) return copy;
+    if (left <= 0) {
+      copy.capped = true;
+      return copy;
+    }
+    left -= 1;
     if (aliasOrAddress) {
       const h = await host(ref.name);
       if (!usable(h)) copy.live = null;
@@ -876,7 +892,9 @@ export async function verifyZoneRefs(refs, { dns, signal } = {}) {
       copy.live = false;
       return copy;
     }
-    if (ref.spf || ref.hint) {
+    // The record is served; its target's address is the file's word for it when the name looks
+    // internal (never sent to a public resolver).
+    if (ref.spf || ref.hint || ref.targetInternal) {
       copy.live = true;
       return copy;
     }

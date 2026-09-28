@@ -523,6 +523,42 @@ describe('the imported zone', () => {
     await assert.rejects(verifyZoneRefs(refs, {}), TypeError);
   });
 
+  test('a served record whose target looks internal is live without its target ever being asked', async () => {
+    const records = [
+      rec('example.com', 'MX', 'mx-int.example.com', { preference: 10 }),
+      rec('mx-int.example.com', 'A', '192.0.2.10', { internal: true }),
+      rec('_sip._tcp.example.com', 'SRV', 'sip.example.com'),
+      rec('sip.example.com', 'CNAME', 'sip.internal.example.com'),
+      rec('sip.internal.example.com', 'CNAME', 'pbx.example.com', { internal: true }),
+      rec('pbx.example.com', 'A', '192.0.2.10')
+    ];
+    const refs = zoneCandidates(records, blocksOf('192.0.2.10'));
+    assert.deepEqual(refs.filter((r) => r.type === 'MX' || r.type === 'SRV').map((r) => [r.type, r.targetInternal]), [['MX', true], ['SRV', true]]);
+    const dns = fakeDns({
+      'example.com': { MX: [{ preference: 10, exchange: 'mx-int.example.com' }] },
+      '_sip._tcp.example.com': { SRV: [{ priority: 10, weight: 5, port: 5060, target: 'sip.example.com' }] },
+      'pbx.example.com': { A: ['192.0.2.10'] }
+    });
+    const verified = await verifyZoneRefs(refs, { dns });
+    assert.deepEqual(verified.filter((r) => r.type === 'MX' || r.type === 'SRV').map((r) => r.live), [true, true]);
+    // sip.example.com itself does not look internal: its CNAME record is asked for by its own name.
+    assert.ok(!dns.calls.some((c) => /^(?:mx-int|sip\.internal)\./.test(c)), `no internal target sent: ${dns.calls}`);
+  });
+
+  test('only the first records up to the cap are verified live; the rest stay unverified and say so', async () => {
+    const records = Array.from({ length: 5 }, (_, i) => rec(`h${i}.example.com`, 'A', '192.0.2.10'));
+    const dns = fakeDns(Object.fromEntries(records.map((r) => [r.name, { A: ['192.0.2.10'] }])));
+    const blocks = blocksOf('192.0.2.10');
+    const verified = await verifyZoneRefs(zoneCandidates([rec('intranet.example.com', 'A', '192.0.2.10', { internal: true }), ...records], blocks), { dns, max: 3 });
+    assert.deepEqual(verified.map((r) => [r.name, r.live, !!r.capped]), [
+      ['intranet.example.com', undefined, false],
+      ['h0.example.com', true, false], ['h1.example.com', true, false], ['h2.example.com', true, false],
+      ['h3.example.com', undefined, true], ['h4.example.com', undefined, true]
+    ]);
+    assert.deepEqual(buildChanges({ blocks, zone: { origin: 'example.com', refs: verified } }).changes.filter((c) => c.verified === 'unverified').map((c) => c.name),
+      ['h3.example.com', 'h4.example.com']);
+  });
+
   test('zone rows join the live rows; the rest are origin / file / internal rows under the zone\'s origin', async () => {
     const table = {
       'example.com': { A: ['192.0.2.10'], MX: [{ preference: 10, exchange: 'mail.example.com' }], TXT: ['v=spf1 ip4:192.0.2.0/24 -all'] },

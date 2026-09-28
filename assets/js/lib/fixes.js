@@ -873,7 +873,8 @@ function octodnsText(req) {
     for (const r of sets) {
       const plan = rrsetPlan(r);
       if (r.mode === 'none') {
-        out.push(`  # delete: the ${r.family ? `${TXT_FAMILIES[r.family]} record` : `${r.type} records`} of this name go (remove the entry)`);
+        out.push(r.family ? `  # delete: remove the ${TXT_FAMILIES[r.family]} value from this name's TXT values; the other values stay`
+          : `  # delete: remove the ${r.type} record from this name's list; its other records stay`);
         continue;
       }
       const values = plan.full || plan.after || r.values;
@@ -1782,8 +1783,9 @@ function spfTermsFix(id, r, keep) {
   const parsed = r.spf && r.spf.parsed;
   if (!rec || !parsed) return null;
   const kept = parsed.terms.filter((t, i) => keep(t, i, parsed.allIndex)).map((t) => t.raw);
-  const mods = rec.split(/\s+/).filter((tok) => /^[a-z][a-z0-9_.-]*=/i.test(tok) && !/^v=/i.test(tok));
-  return spfRecordFix(id, r, ['v=spf1', ...kept, ...(parsed.allIndex >= 0 ? [] : mods)].join(' '));
+  // Modifiers stay (exp= and unknown ones), except a redirect= an `all` makes void (RFC 7208 §6.1).
+  const mods = rec.split(/\s+/).filter((tok) => /^[a-z][a-z0-9_.-]*=/i.test(tok) && !/^v=/i.test(tok) && !(parsed.allIndex >= 0 && /^redirect=/i.test(tok)));
+  return spfRecordFix(id, r, ['v=spf1', ...kept, ...mods].join(' '));
 }
 
 /** Domain Health check ids that have a fix. */
@@ -1798,7 +1800,17 @@ export const HEALTH_FIX_IDS = Object.freeze(Object.keys(HEALTH_FIXES).sort());
 export function healthFix(check, report) {
   const make = check && Object.hasOwn(HEALTH_FIXES, check.id) ? HEALTH_FIXES[check.id] : null;
   if (!make || !report || !report.domain || !report.records) return null;
-  return make(report, check) || null;
+  const f = make(report, check) || null;
+  return f && f.request ? { ...f, request: withReportTtlNote(f.request) } : f;
+}
+
+/**
+ * A report's answers came from resolvers, whose TTL is what is left of their cached copy: a set a
+ * fix only changes gets the template's TTL, with a note that it may keep its own.
+ */
+function withReportTtlNote(req) {
+  const changed = req.rrsets.find((r) => r.mode !== 'none' && r.before && r.before.length);
+  return changed ? { ...req, notes: [...req.notes, { key: 'fix.n.report-ttl', params: { ttl: changed.ttl } }] } : req;
 }
 
 /**
@@ -1975,7 +1987,7 @@ const STRINGS = [
   ['fix.opt.all.-all', ['-all (fail)', '-all (fail)']],
   ['fix.opt.policy.none', ['none (monitor)', 'none (izleme)']],
   ['fix.opt.policy.quarantine', ['quarantine (spam folder)', 'quarantine (spam klasörü)']],
-  ['fix.opt.policy.reject', ['reject', 'reject (reddet)']],
+  ['fix.opt.policy.reject', ['reject (bounce)', 'reject (reddet)']],
   ['fix.opt.sp.keep', ['Keep as it is', 'Olduğu gibi kalsın']],
   ['fix.opt.sp.none', ['none', 'none']],
   ['fix.opt.sp.quarantine', ['quarantine', 'quarantine']],
@@ -2044,12 +2056,13 @@ const STRINGS = [
   ['fix.n.caa-wildcard-dns01', ['Without dns-01 no CA can validate a wildcard certificate here.', 'dns-01 olmadan hiçbir otorite burada joker (wildcard) sertifika doğrulayamaz.']],
   ['fix.n.ttl-wait', ['Wait at least the old TTL after this change before the migration: until then resolvers may keep the longer-lived copies. A resolver still had one for {ttl} s; the zone’s own value can be higher.', 'Bu değişiklikten sonra taşımadan önce en az eski TTL kadar bekleyin: o zamana kadar çözümleyiciler uzun ömürlü kopyaları tutabilir. Bir çözümleyicide {ttl} sn kalmış bir kopya vardı; zone’daki asıl değer daha yüksek olabilir.']],
   ['fix.n.parked', ['Only for a domain that sends and receives no mail and needs no certificate: all mail as the domain is rejected and every CA refuses to issue.', 'Yalnızca e-posta almayan, göndermeyen ve sertifika gerektirmeyen bir alan adı için: alan adı adına tüm e-postalar reddedilir ve her otorite sertifika vermeyi reddeder.']],
+  ['fix.n.report-ttl', ['The TTL {ttl} is a default: a public resolver does not tell a zone’s own TTL. A record that is only changed can keep the TTL it has.', '{ttl} TTL değeri varsayılandır: genel bir çözümleyici zone’daki asıl TTL’i bildirmez. Yalnızca değiştirilen bir kayıt mevcut TTL’ini koruyabilir.']],
   ['fix.n.parked-mail', ['Only for a domain that sends and receives no mail: mail to it bounces at once and mail as it is rejected.', 'Yalnızca e-posta almayan ve göndermeyen bir alan adı için: ona gelen e-posta hemen geri döner, onun adına gönderilen e-posta reddedilir.']],
   // problems
   ['fix.p.template', ['Unknown template.', 'Bilinmeyen şablon.']],
   ['fix.p.too-many', ['A change request holds at most {max} record sets.', 'Bir değişiklik talebi en fazla {max} kayıt kümesi içerir.']],
   ['fix.p.too-many-values', ['A change request holds at most {max} values.', 'Bir değişiklik talebi en fazla {max} değer içerir.']],
-  ['fix.p.ttl', ['The TTL “{value}” is not a whole number of seconds.', '“{value}” TTL değeri tam sayı bir saniye değeri değil.']],
+  ['fix.p.ttl', ['The TTL “{value}” is not a whole number of seconds.', '“{value}” geçerli bir TTL değil: saniye cinsinden bir tam sayı girin.']],
   ['fix.p.zone', ['“{value}” is not a DNS zone name.', '“{value}” bir DNS zone adı değil.']],
   ['fix.p.domain-missing', ['Enter a domain name such as example.com.', 'example.com gibi bir alan adı girin.']],
   ['fix.p.name-missing', ['Enter a name such as www.example.com.', 'www.example.com gibi bir ad girin.']],

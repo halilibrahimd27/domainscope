@@ -52,7 +52,7 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 mail:
-  # delete: the TXT records of this name go (remove the entry)
+  # delete: remove the TXT record from this name's list; its other records stay
 ## terraform-cloudflare
 # DNS change request for example.com (DomainScope)
 # terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).

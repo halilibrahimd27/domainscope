@@ -589,6 +589,22 @@ describe('fixes of Domain Health checks', () => {
     assert.deepEqual(buildChange('parked', { domain: 'example.com' }).rrsets.find((r) => r.family === 'dmarc1').values.map((v) => v.join('')), ['v=DMARC1; p=reject'], 'not read: a new record');
   });
 
+  test('a report-based fix of existing records says its TTL is a default (a resolver cannot tell the zone\'s)', () => {
+    const f = healthFix({ id: 'spf.all-pass' }, report());
+    assert.deepEqual(f.request.notes.filter((n) => n.key === 'fix.n.report-ttl'), [{ key: 'fix.n.report-ttl', params: { ttl: 3600 } }]);
+    assert.match(changeInstructions(f.request), /TTL 3600 is a default/);
+    assert.ok(!healthFix({ id: 'dmarc.missing' }, report()).request.notes.some((n) => n.key === 'fix.n.report-ttl'), 'a new record: no note');
+  });
+
+  test('spf.ptr / spf.after-all keep exp= and unknown modifiers; only a redirect= an all voids goes', () => {
+    const rec = 'v=spf1 ptr mx -all exp=explain.example.com x-note=1 redirect=_spf.example.net';
+    const f = healthFix({ id: 'spf.ptr' }, report({ spf: { record: rec, parsed: parseSpf(rec) } }));
+    assert.deepEqual(f.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 mx -all exp=explain.example.com x-note=1']);
+    const noAll = 'v=spf1 ptr mx redirect=_spf.example.net';
+    assert.deepEqual(healthFix({ id: 'spf.ptr' }, report({ spf: { record: noAll, parsed: parseSpf(noAll) } })).request.rrsets[0].values.map((v) => v.join('')),
+      ['v=spf1 mx redirect=_spf.example.net']);
+  });
+
   test('currentFromReport: what the report read, never a failed lookup as "none"', () => {
     const cur = currentFromReport(report({ failedLookups: ['mx'] }));
     assert.deepEqual(Object.keys(cur).sort(), ['_dmarc.example.com|TXT', 'example.com|CAA', 'example.com|TXT']);

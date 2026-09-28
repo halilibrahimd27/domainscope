@@ -248,7 +248,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/cert"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['scan', 'cert', 'renew'], 'Certificates group');
+      assertEqual(nav, ['scan', 'cert', 'renew', 'estate'], 'Certificates group');
       assertEqual(await text(page, 'h1'), 'Renewal readiness', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.rnw-empty .empty')), 'empty state');
       assertEqual(await page.evaluate(() => [document.querySelector('[data-role="renew-ca"]').value, document.querySelector('[data-role="renew-challenge"]').value]), ['', 'unknown'], 'defaults');

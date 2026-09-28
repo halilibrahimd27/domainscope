@@ -23,13 +23,18 @@
  * What is checked:
  *   - step 1: several PEM blocks pasted at once, one file then "Add certificates", a folder (with a
  *     key, a CA file and a file of another type in it) — each grouped into the two sets with their
- *     key types; a file that adds nothing is listed with why and can be removed; Remove all;
+ *     key types; a file that adds nothing is listed with why and can be removed; Remove all; the
+ *     keyboard focus stays in the list after a Remove (the next Remove, else the drop zone); more
+ *     than 100 files at once: the first 100 are read and a toast says so; "Find servers for this
+ *     certificate" on one certificate of the renewal comes back to the whole renewal and says so;
  *   - one scan of the union of names; the Hosts tab names each host's set (shop → B, www → A) and
  *     "not covered" for x.dev.example.com;
  *   - the Renewal plan tab: the server × set matrix (db01, web01, web02, 5.6.7.8 not in the list),
- *     the uncovered names, the CSV work list (server, IP, names, set, key types, files);
+ *     the set cards (your servers and addresses outside the list apart), the uncovered names, the
+ *     CSV work list (server, IP, names, set, key types joined with " + ", files with "; ");
  *   - Behind CDN: one --cert per certificate in the command and a download for each;
- *   - Verify: one queue for every set (5 checks, cost shown once), a Set column, verdicts against
+ *   - Verify: one queue for every set (5 checks, cost shown once; "one name per IP and set" keeps
+ *     both sets of web02), a Set column, verdicts against
  *     the planned set (a set-A certificate on pay.example.com is new, marked "Another set"), the
  *     CLI card with the three --cert, CSV / JSON exports with the sets;
  *   - DANE: a picker of the three certificates, nothing sent;
@@ -397,10 +402,13 @@ async function main() {
       await shotEl(page, opts, 'renewal-step1-pasted-en-light', STEP1);
     });
 
-    await run.step('Remove all, then one file: the classic single-certificate step', async () => {
-      await page.click(`${STEP1} [data-action="cert-remove-all"]`);
+    await run.step('Remove all (keyboard: the focus moves to the drop zone), then one file: the classic single-certificate step', async () => {
+      await page.evaluate((s) => document.querySelector(`${s} [data-action="cert-remove-all"]`).focus(), STEP1);
+      await page.press('Enter');
       await waitStep1(page, 0, 'renewal removed');
       await page.waitFor((s) => !document.querySelector(`${s} .cert-summary`) && document.querySelector(`${s} .filedrop`), { args: [STEP1], message: 'empty step 1' });
+      assert(await page.evaluate((s) => document.activeElement === document.querySelector(`${s} .filedrop`), STEP1),
+        `focus after Remove all: ${await page.evaluate(() => document.activeElement?.className)}`);
       await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.aRsa]);
       await page.waitFor((s) => document.querySelector(`${s} .cert-summary`), { args: [STEP1], message: 'one certificate' });
       const s = await readStep1(page);
@@ -434,20 +442,81 @@ async function main() {
       // in the folder's (name) order; expected.json is not a certificate type: left out
       assertEqual(s.skipped, ['ca-only:ca.pem', 'no-certificate:ec_wildcard.key'], 'files not used');
       assertEqual(s.list.map((x) => [x.id, x.keys.join('+')]), [['A', 'RSA 2048+ECDSA P-256'], ['B', 'RSA 2048']], 'a set by key type, whatever the file order');
-      await page.click(`${STEP1} .rw-skip button`);
+      // Remove with the keyboard: the focus goes to the next Remove of that list, then (none left) to a certificate's
+      const focused = () => page.evaluate(() => `${document.activeElement?.dataset.action || document.activeElement?.tagName}|${document.activeElement?.getAttribute('aria-label') || ''}`);
+      await page.evaluate((st) => document.querySelector(`${st} .rw-skip button`).focus(), STEP1);
+      await page.press('Enter');
       await page.waitFor((st) => document.querySelectorAll(`${st} .rw-skip`).length === 1, { args: [STEP1], message: 'one skipped file left' });
-      await page.click(`${STEP1} .rw-skip button`);
+      assertEqual(await focused(), 'rw-remove-file|Remove ec_wildcard.key', 'focus on the next Remove');
+      await page.press('Enter');
       await page.waitFor((st) => !document.querySelector(`${st} .rw-skip`), { args: [STEP1], message: 'no skipped file' });
+      assertEqual(await focused(), 'rw-remove-leaf|Remove this certificate (RSA 2048, renew_a_rsa.pem)', 'focus on the first certificate\'s Remove');
+    });
+
+    await run.step('a certificate removed with the keyboard: the focus stays on the Remove now in its place; the set comes back', async () => {
+      await page.evaluate((st) => document.querySelector(`${st} .rw-set[data-set="B"] [data-action="rw-remove-leaf"]`).focus(), STEP1);
+      await page.press('Enter');
+      await waitStep1(page, 2, 'set B removed');
+      const active = await page.evaluate((st) => ({
+        action: document.activeElement?.dataset.action || document.activeElement?.tagName,
+        inStep: !!document.activeElement?.closest(st),
+        label: document.activeElement?.getAttribute('aria-label') || ''
+      }), STEP1);
+      assertEqual(active, { action: 'rw-remove-leaf', inStep: true, label: 'Remove this certificate (ECDSA P-256, renew_a_ecdsa.pem)' }, 'focus on the last Remove');
+      const details = await page.evaluate((st) => [...document.querySelectorAll(`${st} [data-action="rw-details"]`)].map((b) => b.getAttribute('aria-label')), STEP1);
+      assertEqual(details, ['Details of this certificate (RSA 2048, renew_a_rsa.pem)', 'Details of this certificate (ECDSA P-256, renew_a_ecdsa.pem)'], 'Details names each certificate');
+      await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.bRsa]);
+      await waitStep1(page, 3, 'set B back');
+      const s = await readStep1(page);
+      assertEqual(s.list.map((x) => [x.id, x.files.join(' | ')]), [['A', 'renew_a_rsa.pem | renew_a_ecdsa.pem'], ['B', 'renew_b_rsa.pem']], 'the two sets again');
+    });
+
+    await run.step('more than 100 files at once: the first 100 are read, and a toast says so', async () => {
+      const many = await mkdtemp(path.join(tmpdir(), 'ds-renewal-many-'));
+      try {
+        const files = [];
+        for (let i = 0; i < 101; i += 1) {
+          const f = path.join(many, `ca-${String(i).padStart(3, '0')}.pem`);
+          await copyFile(FILES.ca, f);
+          files.push(f);
+        }
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+        await page.setFileInput(`${STEP1} .filedrop-input`, files);
+        await page.waitFor((st) => document.querySelectorAll(`${st} .rw-skip`).length === 100, { args: [STEP1], timeout: 20000, message: '100 files listed' });
+        const toastText = await page.evaluate(() => [...document.querySelectorAll('.toast-warn .toast-message')].map((el) => el.textContent).join(' | '));
+        assertEqual(toastText, 'Only the first 100 of 101 files were read.', 'the toast');
+        assertEqual((await readStep1(page)).certs, 3, 'the three certificates stay');
+        // Remove all, and the three certificates again
+        await page.click(`${STEP1} [data-action="cert-remove-all"]`);
+        await waitStep1(page, 0, 'renewal removed');
+        await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.aRsa, FILES.aEc, FILES.bRsa]);
+        await waitStep1(page, 3, 'three certificates again');
+      } finally {
+        await rm(many, { recursive: true, force: true }).catch(() => {});
+      }
     });
 
     await run.step('Details on the ECDSA twin opens it in the Certificate view; back in SSL Targets the renewal is intact', async () => {
-      await page.click(`${STEP1} .rw-set[data-set="A"] .rw-leaf[data-key="ecdsa"] .rw-leaf-actions button`);
+      await page.click(`${STEP1} .rw-set[data-set="A"] .rw-leaf[data-key="ecdsa"] [data-action="rw-details"]`);
       await page.waitFor(() => document.documentElement.dataset.view === 'cert' && /P-256/.test(document.querySelector('#page-body')?.textContent || ''),
         { message: 'the Certificate view shows the ECDSA certificate' });
       await gotoRoute(page, 'scan');
       await waitStep1(page, 3, 'renewal kept');
       const s = await readStep1(page);
       assertEqual([s.sets, s.certs, s.domains], [2, 3, APEX], 'still the two sets and the domain');
+    });
+
+    await run.step('"Find servers for this certificate" on one certificate of the renewal: the renewal, and a note that says so', async () => {
+      await page.click(`${STEP1} .rw-set[data-set="B"] [data-action="rw-details"]`);
+      await page.waitFor(() => document.documentElement.dataset.view === 'cert' && document.querySelector('[data-action="find-targets"]'),
+        { message: 'the Certificate view with its hand-over button' });
+      await page.click('[data-action="find-targets"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'scan', { message: 'back in SSL Targets' });
+      await waitStep1(page, 3, 'the whole renewal');
+      const text = await page.evaluate((st) => document.querySelector(st).textContent, STEP1);
+      assert(/one of the renewal below: the scan covers every certificate listed/.test(text), 'the renewal note');
+      assert(!/taken over from the Certificate view/.test(text), 'no "taken over" note');
+      assertEqual((await readStep1(page)).sets, 2, 'both sets');
     });
 
     run.group('One scan of every set\'s names');
@@ -541,6 +610,19 @@ async function main() {
       }));
       assertEqual([info.checks, info.servers, info.gp], ['5', '3', 0], 'plan line; no Globalping call yet');
       assert(/Set A: example\.com \+1 · Set B: pay\.example\.com \+1/.test(info.sets), `sets sentence: ${info.sets}`);
+    });
+
+    await run.step('one name per IP and set: web02 keeps a check for each of its two sets; back to every name', async () => {
+      const scope = () => page.evaluate(() => [...document.querySelectorAll('[data-vfy="scope"] button')].map((b) => `${b.textContent}${b.getAttribute('aria-pressed') === 'true' ? ' *' : ''}`));
+      assertEqual(await scope(), ['Every name (5) *', 'One name per IP and set (4)'], 'the scope choice');
+      await page.click('[data-vfy="scope"] button[data-value="perIp"]');
+      const rows = await readVerify(page, 5);
+      assertEqual(Object.entries(rows).filter(([, v]) => v.state === 'pending').map(([k, v]) => `${k}:${v.set}`).sort(), [
+        'api.example.com|1.2.3.5:A', 'example.com|1.2.3.4:A', 'pay.example.com|5.6.7.8:B', 'shop.example.com|1.2.3.5:B'
+      ], 'one name per address and set');
+      await page.click('[data-vfy="scope"] button[data-value="all"]');
+      await readVerify(page, 6);
+      assertEqual(await scope(), ['Every name (5) *', 'One name per IP and set (4)'], 'every name again');
     });
 
     await run.step('Start → one dialog with the whole cost → five POSTs; verdicts against each name\'s set', async () => {

@@ -134,7 +134,7 @@ export const RENEWAL_FINDINGS = Object.freeze([
   'provider.known', 'provider.no-api', 'provider.target-no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
   'dnssec.secure', 'dnssec.unsigned', 'dnssec.bogus', 'dnssec.servfail', 'dnssec.unknown', 'dnssec.error',
   'http.ok', 'http.ipv6', 'http.cdn', 'http.alpn-cdn', 'http.private', 'http.private-some', 'http.none', 'http.nxdomain', 'http.dangling', 'http.error',
-  'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.catch-all', 'http01.inconclusive'
+  'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.catch-all', 'http01.inconclusive', 'http01.untested'
 ]);
 
 /**
@@ -145,8 +145,11 @@ export const RENEWAL_FINDINGS = Object.freeze([
 export const HTTP01_OUTCOMES = Object.freeze(['not-found', 'redirect', 'catch-all', 'forbidden', 'server-error', 'status',
   'redirect-loop', 'redirect-port', 'redirect-ip', 'redirect-path', 'redirect-scheme', 'redirect-none',
   'timeout', 'refused', 'dns', 'unreachable', 'private', 'reset', 'unknown', 'probe']);
-/** A family's (and a test's) result: every probe good, some, none, a catch-all answer, or only probe-side failures. */
-export const HTTP01_VERDICTS = Object.freeze(['ok', 'partial', 'failed', 'catch-all', 'inconclusive']);
+/**
+ * A family's (and a test's) result: every probe good, some, none, a catch-all answer, only
+ * probe-side failures, or 'untested' (the test stopped before this family's measurement was created).
+ */
+export const HTTP01_VERDICTS = Object.freeze(['ok', 'partial', 'failed', 'catch-all', 'inconclusive', 'untested']);
 
 const GOOD_OUTCOMES = new Set(['not-found', 'redirect']);
 const FAILURE_OUTCOMES = {
@@ -573,7 +576,10 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
 
 /**
  * The findings of an HTTP-01 reachability test ({@link interpretHttp01} per family): a failure is an
- * error when the renewal uses HTTP-01, a warning when the method is not known.
+ * error when the renewal uses HTTP-01, a warning when the method is not known. Some regions only:
+ * a warning, but an error for HTTP-01 once more than one probe could not reach the server — the
+ * CA's multi-perspective validation tolerates one failing remote perspective, two only with six or
+ * more (Baseline Requirements §3.2.2.9).
  * @param {{ families: Array<{ ipVersion: 4|6, verdict: string, probes: object[] }> }|null} test
  * @param {{ challenge: string, name: string }} ctx
  * @returns {Array<{ id: string, area: string, severity: string, params: object }>}
@@ -595,14 +601,20 @@ export function http01Findings(test, { challenge, name }) {
         out.push(redirect ? finding('http01.redirect', 'ok', { ...good, location: redirect.location }) : finding('http01.ok', 'ok', good));
         break;
       }
-      case 'partial':
-        out.push(finding('http01.partial', 'warn', { ...common, places: places(fam, bad), outcomes: uniq(fam.probes.filter(bad).map((p) => p.outcome)).join(', ') }));
+      case 'partial': {
+        // A catch-all answer still reached the web server: only what did not counts against the quorum.
+        const unreached = fam.probes.filter((p) => bad(p) && p.outcome !== 'catch-all').length;
+        out.push(finding('http01.partial', unreached > 1 ? sev : 'warn', { ...common, places: places(fam, bad), outcomes: uniq(fam.probes.filter(bad).map((p) => p.outcome)).join(', ') }));
         break;
+      }
       case 'failed':
         out.push(finding('http01.failed', sev, { ...common, outcomes: uniq(fam.probes.filter(bad).map((p) => p.outcome)).join(', ') }));
         break;
       case 'catch-all':
         out.push(finding('http01.catch-all', 'warn', common));
+        break;
+      case 'untested':
+        out.push(finding('http01.untested', 'info', { name, family }));
         break;
       default:
         out.push(finding('http01.inconclusive', 'info', common));
@@ -951,6 +963,21 @@ export function interpretHttp01(measurement, { host, path, ipVersion: family = 4
 }
 
 /**
+ * A name's tested families in plan order ({@link http01Plan}): each one read ({@link interpretHttp01}),
+ * and a family planned but never measured — the test stopped before its measurement was created
+ * (the quota ran out, the view was left) — as 'untested', so the report does not pass it over.
+ * @param {Array<4|6>} planned
+ * @param {object[]} read the families read
+ * @param {{ path: string }} ctx
+ * @returns {object[]}
+ */
+export function http01Families(planned, read, { path }) {
+  const got = arr(read);
+  const order = uniq([...arr(planned), ...got.map((f) => f.ipVersion)]);
+  return order.map((v) => got.find((f) => f.ipVersion === v) || { ipVersion: v === 6 ? 6 : 4, measurementId: null, path, verdict: 'untested', probes: [] });
+}
+
+/**
  * A report with one name's reachability test merged in: its findings and verdict recomputed, the
  * rest untouched (a new report object; the given one is not changed).
  * @param {object} report a {@link checkRenewal} report
@@ -1271,15 +1298,18 @@ const STRINGS = [
     ['{answers} to {location}. CAs follow it (to port 80 or 443, never to an IP address) and accept any certificate on an HTTPS target, so the site there must serve the token.',
       '{answers}, hedef: {location}. Otoriteler yönlendirmeyi izler (80 ya da 443 portuna, hiçbir zaman bir IP adresine değil) ve HTTPS hedefte her sertifikayı kabul eder; oradaki site değeri sunmalı.']],
   ['f.http01.partial', ['HTTP-01 path reachable from some regions only ({family})', 'HTTP-01 yoluna yalnızca bazı bölgelerden erişiliyor ({family})'],
-    ['Failed from {places}: {outcomes}. The CA validates from several regions (multi-perspective validation): a geo-block, a firewall rule or a regional outage can fail the renewal.',
-      'Başarısız olduğu yerler: {places} ({outcomes}). Otorite birkaç bölgeden doğrular (çok noktalı doğrulama): bir coğrafi engel, bir güvenlik duvarı kuralı ya da bölgesel bir kesinti yenilemeyi başarısız kılabilir.']],
+    ['Failed from {places}: {outcomes}. The CA validates from several regions (multi-perspective validation) and accepts at most one that fails (two when it uses six or more): a geo-block, a firewall rule or a regional outage can fail the renewal.',
+      'Başarısız olduğu yerler: {places} ({outcomes}). Otorite birkaç bölgeden doğrular (çok noktalı doğrulama) ve en fazla birinin (altı ya da daha fazla bölge kullanıyorsa ikisinin) başarısız olmasını kabul eder: bir coğrafi engel, bir güvenlik duvarı kuralı ya da bölgesel bir kesinti yenilemeyi başarısız kılabilir.']],
   ['f.http01.failed', ['HTTP-01 path not reachable over {family}', 'HTTP-01 yoluna {family} üzerinden erişilemiyor'],
     ['{outcomes}: the CA would get the same, so an HTTP-01 renewal fails.', '{outcomes}: otorite de aynısını alır; HTTP-01 ile yenileme başarısız olur.']],
   ['f.http01.catch-all', ['{answers} for a token that does not exist ({family})', 'Var olmayan bir değer için {answers} yanıtı ({family})'],
     ['Something answers every path under /.well-known/acme-challenge/. Make sure the file your ACME client writes wins over this catch-all (a single-page app, a rewrite rule).',
       '/.well-known/acme-challenge/ altındaki her yolu bir şey yanıtlıyor. ACME istemcinizin yazdığı dosyanın bu genel yanıta (tek sayfalı bir uygulama, bir yeniden yazma kuralı) baskın geldiğinden emin olun.']],
   ['f.http01.inconclusive', ['HTTP-01 test inconclusive ({family})', 'HTTP-01 testi sonuçsuz ({family})'],
-    ['The probes failed on their side ({answers}). Test again.', 'Ölçüm noktaları kendi taraflarında başarısız oldu ({answers}). Yeniden test edin.']]
+    ['The probes failed on their side ({answers}). Test again.', 'Ölçüm noktaları kendi taraflarında başarısız oldu ({answers}). Yeniden test edin.']],
+  ['f.http01.untested', ['{family} not tested', '{family} test edilmedi'],
+    ['The test stopped before its {family} measurement was created, so nothing is known about {name} over {family}. Test again.',
+      'Test, {family} ölçümü oluşturulmadan durdu; {name} adının {family} üzerinden erişilebilirliği bilinmiyor. Yeniden test edin.']]
 ];
 
 function buildStrings(lang) {

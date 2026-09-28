@@ -13,7 +13,7 @@ import {
   RENEWAL_AREAS, HTTP01_OUTCOMES, HTTP01_VERDICTS, HTTP01_LOCATIONS, RENEWAL_CSV_COLUMNS, RENEWAL_I18N,
   parseRenewalNames, renewalCa, caForIssuer, dnsProvidersFor, isAcmeDnsTarget, pluginText, nameFindings, nameVerdict,
   checkRenewal, http01Token, http01Plan, http01Request, redirectOutcome, http01Outcome, http01Verdict, interpretHttp01,
-  http01Findings, applyHttp01, renewalSummary, renewalRows, renewalExport
+  http01Findings, http01Families, applyHttp01, renewalSummary, renewalRows, renewalExport
 } from '../../assets/js/lib/renewal.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
@@ -128,6 +128,7 @@ test('constants: vocabularies are frozen and consistent', () => {
   for (const id of RENEWAL_FINDINGS) assert.ok(RENEWAL_AREAS.includes(id.slice(0, id.indexOf('.'))), id);
   assert.equal(new Set(DNS_PROVIDERS.map((p) => p.id)).size, DNS_PROVIDERS.length);
   assert.deepEqual(HTTP01_LOCATIONS.map((l) => l.continent), ['EU', 'NA', 'AS']);
+  assert.deepEqual([...HTTP01_VERDICTS], ['ok', 'partial', 'failed', 'catch-all', 'inconclusive', 'untested']);
 });
 
 test('RENEWAL_CAS: CAA identifiers from lib/health.js; ZeroSSL uses Sectigo\'s', () => {
@@ -642,11 +643,35 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
   const fam = (...results) => ({ ipVersion: 4, verdict: http01Verdict(results.map((outcome) => ({ outcome }))), probes: results.map((outcome, i) => ({ outcome, status: outcome === 'catch-all' ? 200 : null, place: `P${i}` })) });
   const find = (families, challenge = 'http-01') => http01Findings({ families }, { challenge, name: 'www.example.com' }).map((x) => [x.id, x.severity]);
   assert.deepEqual(find([fam('not-found', 'timeout')]), [['http01.partial', 'warn']]);
+  // Two regions that cannot reach the server: more than multi-perspective validation tolerates.
+  assert.deepEqual(find([fam('not-found', 'timeout', 'refused')]), [['http01.partial', 'error']]);
+  assert.deepEqual(find([fam('not-found', 'timeout', 'refused')], 'unknown'), [['http01.partial', 'warn']]);
+  assert.deepEqual(find([fam('not-found', 'timeout', 'probe')]), [['http01.partial', 'warn']], 'a probe problem is not a region that failed');
+  assert.deepEqual(find([fam('catch-all', 'timeout', 'catch-all')]), [['http01.partial', 'warn']], 'a catch-all answer reached the server');
   assert.deepEqual(find([fam('catch-all', 'catch-all')]), [['http01.catch-all', 'warn']]);
   assert.deepEqual(find([fam('probe')]), [['http01.inconclusive', 'info']]);
   assert.deepEqual(find([fam('timeout')], 'unknown'), [['http01.failed', 'warn']]);
   assert.equal(http01Findings({ families: [fam('not-found', 'timeout')] }, { challenge: 'http-01', name: 'x' })[0].params.places, 'P1');
   assert.deepEqual(http01Findings(null, { challenge: 'http-01', name: 'x' }), []);
+});
+
+test('http01Families: a planned family never measured reads "not tested", in plan order; the verdict stands on what was measured', async () => {
+  const report = await run(exampleZone(), ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' });
+  const v4 = interpretHttp01(fx('m28-acme-http-404').final.body, { host: 'www.example.com', path: PATH });
+  const all = http01Families([4, 6], [v4], { path: PATH });
+  assert.equal(all.length, 2);
+  assert.equal(all[0], v4);
+  assert.deepEqual(all[1], { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] });
+  const v6 = interpretHttp01(fx('m30-acme-http-v6').final.body, { host: 'www.example.com', path: PATH, ipVersion: 6 });
+  assert.deepEqual(http01Families([4, 6], [v6, v4], { path: PATH }).map((f) => f.ipVersion), [4, 6], 'plan order');
+  assert.deepEqual(http01Families([], [v4], { path: PATH }), [v4], 'a family read but not planned is kept');
+  const next = applyHttp01(report, 'www.example.com', { at: new Date(), families: all });
+  const r = next.names[0];
+  assert.deepEqual(r.findings.filter((f) => f.area === 'http01').map((f) => `${f.id}:${f.severity}`), ['http01.ok:ok', 'http01.untested:info']);
+  assert.deepEqual(r.findings.find((f) => f.id === 'http01.untested').params, { name: 'www.example.com', family: 'IPv6' });
+  assert.equal(r.verdict, 'ready');
+  assert.equal(renewalRows(next)[0].http01, 'IPv4 ok · IPv6 untested');
+  assert.deepEqual(renewalExport(next).names[0].http01.families[1], { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] });
 });
 
 test('http01Plan: which names can be tested, over which families', async () => {

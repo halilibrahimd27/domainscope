@@ -28,8 +28,9 @@ import { downloadJson, timestampedName } from './download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from './globalping-gate.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
-  checkCompare, runCompare, buildCompareCommand, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES, COMPARE_PROBES
+  checkCompare, runCompare, buildCompareCommand, sideFields, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES, COMPARE_PROBES
 } from '../lib/origincompare.js';
+import { FAILURE_KINDS } from '../lib/verify.js';
 import { errorKind } from '../lib/util.js';
 import { state } from '../state.js';
 
@@ -37,7 +38,8 @@ import { state } from '../state.js';
 export const COMPARE_PURPOSE = 'origin-compare';
 
 const SEV_ICON = Object.freeze({ ok: 'ok', info: 'info', warn: 'warn', error: 'error' });
-const VERDICT_VARIANT = Object.freeze({ same: 'ok', differs: 'warn', broken: 'error', incomplete: 'info' });
+const VERDICT_VARIANT = Object.freeze({ same: 'ok', differs: 'warn', broken: 'error', incomplete: 'info', unreachable: 'warn' });
+const QUOTA_CODES = new Set(['rate-limit', 'insufficient-credits']);
 
 registerStrings('en', {
   'oc.title': 'Compare the old and the new server',
@@ -55,9 +57,13 @@ registerStrings('en', {
   'oc.issue.path': 'The path must start with / and hold printable characters only.',
   'oc.issue.port': 'Not a port: {value}',
   'oc.run': 'Compare ({probes} probes)',
+  'oc.stop': 'Stop',
   'oc.running': 'Asking both servers…',
   'oc.privacy': 'Sends the two addresses, {host} and the path {path} to Globalping: one probe sends one HTTPS GET to each address (User-Agent “globalping probe”), so compare only servers you operate. Anyone with a measurement ID can read the results for about six months: the status, the response headers and the first 10,000 characters of each page.',
-  'oc.private': 'A probe cannot reach {list}: private, documentation and reserved addresses are never sent. Run the comparison from inside your network:',
+  'oc.private': {
+    one: 'A probe cannot reach {list}: private, documentation and reserved addresses are never sent. Run the comparison from inside your network:',
+    other: 'A probe cannot reach {list}: private, documentation and reserved addresses are never sent. Run the comparison from inside your network:'
+  },
   'oc.cliPort': 'A probe asks HTTPS ports only (not {port}): compare with the CLI from inside your network:',
   'oc.cli.shell': 'Shell',
   'oc.cli.posix': 'Linux / macOS',
@@ -65,9 +71,12 @@ registerStrings('en', {
   'oc.cli.none': 'The path holds characters no command line should carry: use a plain path.',
   'oc.failed': 'The comparison failed',
   'oc.quota': 'Not enough Globalping probes left this hour. More are available {when}; the CLI needs none.',
-  'oc.quotaAfter': 'The hourly Globalping quota ran out after the old server was asked: the new one was not. Compare again {when}.',
-  'oc.at': 'Compared {time} from {where} · {probes} probes',
-  'oc.measurements': 'measurements',
+  'oc.quotaAfter': 'The hourly Globalping quota ran out after the old server was asked: the new one was not. What the old one answered is below; compare again {when}.',
+  'oc.failedAfter': 'The old server was asked, the new one could not be: what the old one answered is below.',
+  'oc.stopped': 'Stopped after the old server was asked: the new one was not. What the old one answered is below.',
+  'oc.at': { one: 'Compared {time} from {where} · {count} probe', other: 'Compared {time} from {where} · {count} probes' },
+  'oc.oldAt': 'The old server, asked {time} from {where}',
+  'oc.measurement': 'measurement {n}',
   'oc.json': 'Download JSON',
   'oc.col.field': 'Field',
   'oc.col.old': 'Old · {ip}',
@@ -76,6 +85,7 @@ registerStrings('en', {
   'oc.verdict.differs': 'The new server answers differently: check the marked fields before you move the name.',
   'oc.verdict.broken': 'The new server is not ready: fix the fields marked as errors before you move the name.',
   'oc.verdict.incomplete': 'The old server did not answer, so there is nothing to compare with: the new server’s answer is shown.',
+  'oc.verdict.unreachable': 'Neither server answered this probe. Its network may be the cause as much as the servers: check the addresses and the port, then compare again, or run the CLI from your own network.',
   'oc.field.reach': 'Reached',
   'oc.field.status': 'HTTP status',
   'oc.field.location': 'Redirect (Location)',
@@ -84,6 +94,7 @@ registerStrings('en', {
   'oc.field.body': 'Body (SHA-256)',
   'oc.field.hsts': 'HSTS',
   'oc.field.server': 'Server header',
+  'oc.field.certSubject': 'Certificate names',
   'oc.field.certCovers': 'Certificate covers the name',
   'oc.field.certTrusted': 'Certificate trusted',
   'oc.field.certIssuer': 'Issuer',
@@ -106,6 +117,18 @@ registerStrings('en', {
   'oc.no': 'no',
   'oc.none': '—',
   'oc.reach.ok': 'yes',
+  'oc.fail.refused': 'no: connection refused',
+  'oc.fail.unreachable': 'no: address unreachable',
+  'oc.fail.connect-timeout': 'no: no TCP connection in time',
+  'oc.fail.tls-timeout': 'no: the TLS handshake timed out',
+  'oc.fail.tls-alert': 'no: the server ended the TLS handshake',
+  'oc.fail.reset': 'no: the connection was reset',
+  'oc.fail.not-tls': 'no: no TLS on this port',
+  'oc.fail.dns': 'no: a name lookup failed',
+  'oc.fail.private': 'no: a private address',
+  'oc.fail.internal': 'no: the probe failed',
+  'oc.fail.offline': 'no: the probe went offline',
+  'oc.fail.unknown': 'no answer',
   'oc.days': { one: '{date} ({count} day)', other: '{date} ({count} days)' },
   'oc.body': { one: '{hash}… ({length} character)', other: '{hash}… ({length} characters)' },
   'oc.bodyCut': '{hash}… (the first {length} characters)'
@@ -127,9 +150,13 @@ registerStrings('tr', {
   'oc.issue.path': 'Yol / ile başlamalı ve yalnızca yazdırılabilir karakterler içermeli.',
   'oc.issue.port': 'Port değil: {value}',
   'oc.run': 'Karşılaştır ({probes} ölçüm)',
+  'oc.stop': 'Durdur',
   'oc.running': 'İki sunucuya da soruluyor…',
   'oc.privacy': 'İki adresi, {host} adını ve {path} yolunu Globalping’e gönderir: bir ölçüm noktası her adrese bir HTTPS GET isteği gönderir (User-Agent “globalping probe”); yalnızca yönettiğiniz sunucuları karşılaştırın. Ölçüm kimliğini bilen herkes sonuçları yaklaşık altı ay okuyabilir: durum kodu, yanıt başlıkları ve her sayfanın ilk 10.000 karakteri.',
-  'oc.private': 'Ölçüm noktası {list} adresine ulaşamaz: özel, dokümantasyon ve ayrılmış adresler asla gönderilmez. Karşılaştırmayı ağınızın içinden çalıştırın:',
+  'oc.private': {
+    one: 'Ölçüm noktası {list} adresine ulaşamaz: özel, dokümantasyon ve ayrılmış adresler asla gönderilmez. Karşılaştırmayı ağınızın içinden çalıştırın:',
+    other: 'Ölçüm noktası {list} adreslerine ulaşamaz: özel, dokümantasyon ve ayrılmış adresler asla gönderilmez. Karşılaştırmayı ağınızın içinden çalıştırın:'
+  },
   'oc.cliPort': 'Ölçüm noktası yalnızca HTTPS portlarını sorar ({port} değil): ağınızın içinden CLI ile karşılaştırın:',
   'oc.cli.shell': 'Kabuk',
   'oc.cli.posix': 'Linux / macOS',
@@ -137,9 +164,12 @@ registerStrings('tr', {
   'oc.cli.none': 'Yol, hiçbir komut satırının taşımaması gereken karakterler içeriyor: düz bir yol kullanın.',
   'oc.failed': 'Karşılaştırma başarısız oldu',
   'oc.quota': 'Bu saat için yeterli Globalping ölçümü kalmadı. {when} yeniden kullanılabilir; CLI ölçüm harcamaz.',
-  'oc.quotaAfter': 'Eski sunucu sorulduktan sonra saatlik Globalping kotası doldu: yenisi sorulmadı. {when} yeniden karşılaştırın.',
-  'oc.at': '{time} karşılaştırıldı, {where} üzerinden · {probes} ölçüm',
-  'oc.measurements': 'ölçümler',
+  'oc.quotaAfter': 'Eski sunucu sorulduktan sonra saatlik Globalping kotası doldu: yenisi sorulmadı. Eskisinin yanıtı aşağıda; {when} yeniden karşılaştırın.',
+  'oc.failedAfter': 'Eski sunucu soruldu, yenisi sorulamadı: eskisinin yanıtı aşağıda.',
+  'oc.stopped': 'Eski sunucu sorulduktan sonra durduruldu: yenisi sorulmadı. Eskisinin yanıtı aşağıda.',
+  'oc.at': '{time} karşılaştırıldı, {where} üzerinden · {count} ölçüm',
+  'oc.oldAt': 'Eski sunucu, {time} tarihinde {where} üzerinden soruldu',
+  'oc.measurement': 'ölçüm {n}',
   'oc.json': 'JSON indir',
   'oc.col.field': 'Alan',
   'oc.col.old': 'Eski · {ip}',
@@ -148,6 +178,7 @@ registerStrings('tr', {
   'oc.verdict.differs': 'Yeni sunucu farklı yanıt veriyor: adı taşımadan önce işaretli alanlara bakın.',
   'oc.verdict.broken': 'Yeni sunucu hazır değil: adı taşımadan önce hata olarak işaretli alanları düzeltin.',
   'oc.verdict.incomplete': 'Eski sunucu yanıt vermedi, karşılaştırılacak bir şey yok: yeni sunucunun yanıtı gösteriliyor.',
+  'oc.verdict.unreachable': 'İki sunucu da bu ölçüm noktasına yanıt vermedi. Sebep sunucular kadar ölçüm noktasının ağı da olabilir: adresleri ve portu kontrol edip yeniden karşılaştırın ya da CLI’ı kendi ağınızdan çalıştırın.',
   'oc.field.reach': 'Ulaşıldı',
   'oc.field.status': 'HTTP durum kodu',
   'oc.field.location': 'Yönlendirme (Location)',
@@ -156,9 +187,10 @@ registerStrings('tr', {
   'oc.field.body': 'Gövde (SHA-256)',
   'oc.field.hsts': 'HSTS',
   'oc.field.server': 'Server başlığı',
+  'oc.field.certSubject': 'Sertifikadaki adlar',
   'oc.field.certCovers': 'Sertifika adı kapsıyor',
   'oc.field.certTrusted': 'Sertifika güvenilir',
-  'oc.field.certIssuer': 'Yayıncı',
+  'oc.field.certIssuer': 'Veren',
   'oc.field.certExpires': 'Bitiş',
   'oc.field.certFingerprint': 'Sertifika (SHA-256)',
   'oc.note.new-unreachable': 'Yeni sunucu yanıt vermedi.',
@@ -178,6 +210,18 @@ registerStrings('tr', {
   'oc.no': 'hayır',
   'oc.none': '—',
   'oc.reach.ok': 'evet',
+  'oc.fail.refused': 'hayır: bağlantı reddedildi',
+  'oc.fail.unreachable': 'hayır: adrese ulaşılamıyor',
+  'oc.fail.connect-timeout': 'hayır: TCP bağlantısı zamanında kurulamadı',
+  'oc.fail.tls-timeout': 'hayır: TLS el sıkışması zaman aşımına uğradı',
+  'oc.fail.tls-alert': 'hayır: sunucu TLS el sıkışmasını sonlandırdı',
+  'oc.fail.reset': 'hayır: bağlantı sıfırlandı',
+  'oc.fail.not-tls': 'hayır: bu portta TLS yok',
+  'oc.fail.dns': 'hayır: bir ad çözümlemesi başarısız oldu',
+  'oc.fail.private': 'hayır: özel bir adres',
+  'oc.fail.internal': 'hayır: ölçüm noktası başarısız oldu',
+  'oc.fail.offline': 'hayır: ölçüm noktası çevrimdışı oldu',
+  'oc.fail.unknown': 'yanıt yok',
   'oc.days': '{date} ({count} gün)',
   'oc.body': '{hash}… ({length} karakter)',
   'oc.bodyCut': '{hash}… (ilk {length} karakter)'
@@ -192,7 +236,8 @@ export function generatedKeys() {
     ...COMPARE_FIELDS.map((f) => `oc.field.${f}`),
     ...COMPARE_VERDICTS.map((v) => `oc.verdict.${v}`),
     ...COMPARE_NOTES.map((n) => `oc.note.${n}`),
-    ...COMPARE_ISSUES.map((i) => `oc.issue.${i}`)
+    ...COMPARE_ISSUES.map((i) => `oc.issue.${i}`),
+    ...FAILURE_KINDS.map((k) => `oc.fail.${k}`)
   ];
 }
 
@@ -202,7 +247,7 @@ export function generatedKeys() {
 
 const fresh = () => ({
   host: '', oldIp: '', newIp: '', path: '/', port: '443', shell: 'posix', status: 'idle', result: null, error: null, resetAt: null,
-  controller: null, touched: false
+  partial: null, controller: null, touched: false
 });
 let S = fresh();
 
@@ -226,7 +271,12 @@ state.subscribe(({ key }) => {
  */
 export function displayValue(key, value, side) {
   if (value === null || value === undefined || value === '') return t('oc.none');
-  if (key === 'reach') return value === 'ok' ? t('oc.reach.ok') : `${value}${side && side.failure && side.failure.text ? `: ${side.failure.text}` : ''}`;
+  if (key === 'reach') {
+    if (value === 'ok') return t('oc.reach.ok');
+    // The failure kind in the page's language; the probe's own line (data) after it.
+    const label = FAILURE_KINDS.includes(value) ? t(`oc.fail.${value}`) : String(value);
+    return side && side.failure && side.failure.text ? `${label} — ${side.failure.text}` : label;
+  }
   if (typeof value === 'boolean') return t(value ? 'oc.yes' : 'oc.no');
   if (key === 'body') {
     const b = side && side.body;
@@ -296,9 +346,24 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     }, 250);
   }
 
+  /** The control that takes over keyboard focus from `role` after a rebuild: Compare ⇄ Stop as a run starts or ends. */
+  const focusSuccessor = (role, running) => (role === 'oc-run' && running ? 'oc-stop' : role === 'oc-stop' && !running ? 'oc-run' : role);
+
   function render() {
+    const doc = globalThis.document;
+    const active = doc && doc.activeElement;
+    const focusRole = active && el.contains(active) && active.dataset ? active.dataset.role || active.dataset.action || null : null;
     fillDefaults();
     clear(el);
+    renderCard();
+    // Keyboard focus stays on its control, rebuilt; from Compare to Stop and back as a run starts
+    // and ends (a disabled or removed button would drop it to the page).
+    const want = focusRole ? focusSuccessor(focusRole, !!S.controller) : null;
+    const again = want ? el.querySelector(`[data-role="${want}"], [data-action="${want}"]`) : null;
+    if (again && !again.disabled) again.focus({ preventScroll: true });
+  }
+
+  function renderCard() {
     const check = checkCompare({ host: S.host, oldIp: S.oldIp, newIp: S.newIp, path: S.path, port: S.port });
     const typed = !!(S.host.trim() || S.newIp.trim());
     const issues = typed ? check.issues.filter((i) => (i.code === 'host' ? S.host.trim() : true) && (i.code !== 'new-ip' || S.newIp.trim())) : [];
@@ -327,16 +392,20 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
           dataset: { action: 'oc-run' },
           onClick: () => start()
         }),
+        running ? Button({ label: t('oc.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'oc-stop', shortcut: 'cancel' }, onClick: () => S.controller && S.controller.abort() }) : null,
         running ? Spinner({ size: 'sm', label: t('oc.running'), showLabel: true }) : null),
       h('p', { class: 'muted text-xs oc-privacy' }, Icon('lock', { size: 12 }), ' ',
         t('oc.privacy', { host: check.host || t('oc.host.placeholder'), path: check.path })));
     }
     if (S.status === 'quota') body.append(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quota', { when: whenText(S.resetAt) }) }));
     if (S.status === 'failed' && S.error) {
-      const quotaAfter = S.error && S.error.first && (S.error.code === 'rate-limit' || S.error.code === 'insufficient-credits');
+      const quotaAfter = S.partial && QUOTA_CODES.has(S.error.code);
       body.append(quotaAfter ? Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quotaAfter', { when: whenText(S.error.resetAt) }) })
-        : ErrorBanner(S.error, { title: t('oc.failed'), compact: true }));
+        : S.partial ? Alert({ variant: 'warn', compact: true, message: t('oc.failedAfter') })
+          : ErrorBanner(S.error, { title: t('oc.failed'), compact: true }));
     }
+    if (S.status === 'stopped' && S.partial) body.append(Alert({ variant: 'info', compact: true, message: t('oc.stopped') }));
+    if (S.partial) body.append(partialResults(S.partial));
     if (S.result) body.append(results(S.result));
     el.append(Card({ title: t('oc.title'), icon: 'swap', className: 'oc-card', children: body }));
   }
@@ -351,7 +420,7 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
         render();
       }
     });
-    const lead = check.private.length ? t('oc.private', { list: check.private.join(', ') }) : t('oc.cliPort', { port: check.port });
+    const lead = check.private.length ? t('oc.private', { count: check.private.length, list: check.private.join(', ') }) : t('oc.cliPort', { port: check.port });
     return h('div', { class: 'stack-sm oc-cli', dataset: { role: 'oc-cli' } },
       Alert({ variant: 'info', compact: true, icon: 'terminal', message: lead }),
       shell.el,
@@ -362,8 +431,8 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     const check = checkCompare({ host: S.host, oldIp: S.oldIp, newIp: S.newIp, path: S.path, port: S.port });
     if (S.controller || !check.ok || !check.probeable || !ctx.requireOnline()) return;
     const ac = new AbortController();
-    const prev = { status: S.status, result: S.result };
-    Object.assign(S, { controller: ac, status: 'running', error: null });
+    const prev = { status: S.status, result: S.result, partial: S.partial, error: S.error };
+    Object.assign(S, { controller: ac, status: 'running', error: null, partial: null });
     ctx.setBusy(true);
     render();
     try {
@@ -389,10 +458,14 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
       announce(t(`oc.verdict.${result.comparison.verdict}`));
     } catch (err) {
       if (S.controller !== ac) return;
-      if (errorKind(err) === 'abort' || ac.signal.aborted) Object.assign(S, prev);
-      else {
+      // The old server's answer, measured (and paid for) before a stop or a failure, stays on screen.
+      const first = err && typeof err === 'object' && err.first ? { side: err.first, at: new Date() } : null;
+      if (errorKind(err) === 'abort' || ac.signal.aborted) {
+        if (first) Object.assign(S, { status: 'stopped', result: null, partial: first });
+        else Object.assign(S, prev);
+      } else {
         if (err && err.quota) noteQuota(err.quota);
-        Object.assign(S, { status: 'failed', error: err });
+        Object.assign(S, { status: 'failed', error: err, result: first ? null : S.result, partial: first });
       }
     } finally {
       if (S.controller === ac) S.controller = null;
@@ -401,15 +474,40 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     }
   }
 
+  function probeWhere(probe) {
+    return probe ? [probe.city, probe.country].filter(Boolean).join(', ') + (probe.asn ? ` (AS${probe.asn})` : '') : '?';
+  }
+
+  function measurementLinks(ids) {
+    const links = ids.map((id) => measurementUrl(id)).filter(Boolean);
+    return links.length ? h('span', null, ' · ', ...links.flatMap((href, i) => [i ? ', ' : '',
+      h('a', { href, class: 'link', attrs: { target: '_blank', rel: 'noopener noreferrer' } }, t('oc.measurement', { n: i + 1 }))])) : null;
+  }
+
+  /** The old server's answer alone: a stop or a failure came before the new one was asked. */
+  function partialResults(p) {
+    const side = p.side;
+    const out = h('div', { class: 'stack-sm oc-results oc-partial', dataset: { verdict: 'partial' } });
+    out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.oldAt', { time: formatDateTime(p.at), where: probeWhere(side.probe) }),
+      measurementLinks(side.measurementId ? [side.measurementId] : [])));
+    const label = t('oc.col.old', { ip: side.ip });
+    const table = h('table', { class: 'oc-table oc-table-one', dataset: { role: 'oc-table' } },
+      h('thead', null, h('tr', null,
+        h('th', { attrs: { scope: 'col' } }, t('oc.col.field')),
+        h('th', { attrs: { scope: 'col' } }, label))),
+      h('tbody', null, sideFields(side).map((f) => h('tr', { class: 'oc-row', dataset: { field: f.key } },
+        h('th', { attrs: { scope: 'row' } }, h('span', { class: 'oc-field-name' }, t(`oc.field.${f.key}`))),
+        h('td', { class: 'mono', dataset: { label } }, displayValue(f.key, f.value, side))))));
+    out.append(h('div', { class: 'oc-table-wrap' }, table));
+    return out;
+  }
+
   function results(r) {
     const c = r.comparison;
     const out = h('div', { class: 'stack-sm oc-results', dataset: { verdict: c.verdict } });
     out.append(Alert({ variant: VERDICT_VARIANT[c.verdict], message: t(`oc.verdict.${c.verdict}`) }));
-    const probe = r.old.probe || r.new.probe;
-    const where = probe ? [probe.city, probe.country].filter(Boolean).join(', ') + (probe.asn ? ` (AS${probe.asn})` : '') : '?';
-    const links = r.ids.map((id) => measurementUrl(id)).filter(Boolean);
-    out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.at', { time: formatDateTime(r.at), where, probes: formatNumber(r.spent) }),
-      links.length ? h('span', null, ' · ', ...links.flatMap((href, i) => [i ? ', ' : '', h('a', { href, class: 'link', attrs: { target: '_blank', rel: 'noopener noreferrer' } }, `${t('oc.measurements')} ${i + 1}`)])) : null));
+    out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.at', { time: formatDateTime(r.at), where: probeWhere(r.old.probe || r.new.probe), count: r.spent }),
+      measurementLinks(r.ids)));
     const table = h('table', { class: 'oc-table', dataset: { role: 'oc-table' } },
       h('thead', null, h('tr', null,
         h('th', { attrs: { scope: 'col' } }, t('oc.col.field')),

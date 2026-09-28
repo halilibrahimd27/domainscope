@@ -156,10 +156,11 @@ const NEW_IP = '93.184.216.34';
  * In-page fake Globalping for the old / new server comparison: an HTTPS GET at an address answers
  * like a web server of www.example.com. `window.__compareScenario`: 'differs' (the new server has
  * its own certificate, no HSTS header and another Server header), 'broken' (its certificate names
- * another host). Every call is logged in window.__gp.
+ * another host), 'down' (neither address answers). `window.__gp.allowUpTo`: measurements numbered
+ * above it stay in progress. Every call is logged in window.__gp.
  */
 const fakeCompareScript = () => `(() => {
-  const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {} };
+  const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {}, allowUpTo: Infinity };
   window.__compareScenario = 'differs';
   const prevFetch = window.fetch;
   const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -171,6 +172,7 @@ const fakeCompareScript = () => `(() => {
     keyType: 'EC', keyBits: 256, serialNumber: '0A:0B', fingerprint256: Array.from({ length: 32 }, () => fp).join(':')
   });
   function result(ip, host, path) {
+    if (window.__compareScenario === 'down') return { status: 'failed', rawOutput: 'connect ECONNREFUSED ' + ip + ':443', timings: {} };
     const old = ip === '${OLD_IP}';
     const broken = !old && window.__compareScenario === 'broken';
     const headers = { 'content-type': 'text/html; charset=utf-8', server: old ? 'nginx' : 'caddy' };
@@ -193,12 +195,13 @@ const fakeCompareScript = () => `(() => {
       gp.remaining -= 1;
       gp.n += 1;
       const id = 'fakeCompare' + String(gp.n).padStart(6, '0');
-      gp.measurements[id] = { id, body: b };
+      gp.measurements[id] = { id, body: b, n: gp.n };
       return json({ id, probesCount: 1 }, 202, { 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': String(gp.remaining), 'x-ratelimit-reset': '3600', 'x-request-cost': '1' });
     }
     const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
     if (m && gp.measurements[m[1]]) {
-      const { id, body: q } = gp.measurements[m[1]];
+      const { id, body: q, n } = gp.measurements[m[1]];
+      if (n > gp.allowUpTo) return json({ id, type: 'http', status: 'in-progress', target: q.target, probesCount: 1, results: [] });
       return json({ id, type: 'http', status: 'finished', target: q.target, probesCount: 1,
         results: [{ probe, result: result(q.target, q.measurementOptions.request.host, q.measurementOptions.request.path) }] });
     }
@@ -635,8 +638,10 @@ async function main() {
         && b.measurementOptions.request.path === '/' && b.measurementOptions.protocol === 'HTTPS'), 'GET / with the name as SNI and Host');
       assertEqual(await page.evaluate(() => document.querySelector('.oc-results').dataset.verdict), 'differs', 'verdict');
       const rows = await ocRows();
-      assertEqual([rows.status, rows.title, rows.body, rows.hsts, rows.server, rows.certCovers, rows.certFingerprint],
-        ['ok', 'ok', 'ok', 'warn differs', 'info differs', 'ok', 'info differs'], 'fields');
+      assertEqual([rows.status, rows.title, rows.body, rows.hsts, rows.server, rows.certSubject, rows.certCovers, rows.certFingerprint],
+        ['ok', 'ok', 'ok', 'warn differs', 'info differs', 'ok', 'ok', 'info differs'], 'fields');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.oc-row[data-field="certSubject"] td')].map((td) => td.textContent)),
+        ['www.example.com, example.com', 'www.example.com, example.com'], 'the names each certificate carries');
       assert(/visitors whose browsers never saw it/.test(await page.evaluate(() => document.querySelector('.oc-row[data-field="hsts"]').textContent)), 'the HSTS note');
       await takeDownloads(page);
       await page.click('[data-action="oc-json"]');
@@ -655,7 +660,42 @@ async function main() {
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'broken', { timeout: 20000, message: 'broken' });
       assert(!await page.evaluate(() => !!document.querySelector('.gp-confirm')), 'consent kept for the page session');
       assertEqual((await ocRows()).certCovers, 'error differs', 'the certificate covers another name');
+      assertEqual((await ocRows()).certSubject, 'info differs', 'another certificate\'s names, side by side');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.oc-row[data-field="certSubject"] td')[1].textContent), 'www.example.net', 'the name it carries');
       await page.evaluate(() => { window.__compareScenario = 'differs'; });
+    });
+
+    await run.step('neither server answers: "unreachable" (maybe the probe\'s network), never "not ready"; the reason in the page\'s language', async () => {
+      await page.evaluate(() => { window.__compareScenario = 'down'; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'unreachable', { timeout: 20000, message: 'unreachable' });
+      assertEqual(await ocRows(), { reach: 'warn' }, 'the same on both sides: a warning, nothing else compared');
+      assert(/Neither server answered this probe/.test(await page.evaluate(() => document.querySelector('.oc-results .alert').textContent)), 'the verdict');
+      const reach = () => page.evaluate(() => document.querySelectorAll('.oc-row[data-field="reach"] td')[1].textContent);
+      assert((await reach()).startsWith('no: connection refused — connect ECONNREFUSED'), await reach());
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => (document.querySelectorAll('.oc-row[data-field="reach"] td')[1]?.textContent || '').startsWith('hayır: bağlantı reddedildi'), { message: 'TR reason' });
+      await setLangUi(page, 'en');
+      await page.evaluate(() => { window.__compareScenario = 'differs'; });
+    });
+
+    await run.step('Compare from the keyboard: focus goes to Stop and back; a stop after the old server keeps its answer on screen', async () => {
+      // The old address answers; the new one stays in progress until the stop.
+      const base = await page.evaluate(() => { window.__gp.allowUpTo = window.__gp.n + 1; return window.__gp.n; });
+      await page.waitFor(() => !!document.querySelector('[data-action="oc-run"]'), { message: 'Compare button' });
+      await page.evaluate(() => document.querySelector('[data-action="oc-run"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => document.activeElement?.dataset.action === 'oc-stop', { message: 'keyboard focus on Stop' });
+      await page.waitFor((b) => window.__gp.n >= b + 2, { args: [base], message: 'the new address asked' });
+      await page.press('Enter');
+      await page.waitFor(() => !document.querySelector('[data-action="oc-stop"]') && !!document.querySelector('.oc-partial'), { message: 'stopped with the old answer' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'oc-run', 'keyboard focus back on Compare');
+      assert(/Stopped after the old server was asked/.test(await page.evaluate(() => document.querySelector('.oc-card').textContent)), 'the stop alert');
+      assertEqual(await page.evaluate(() => document.querySelector('.oc-partial tr[data-field="status"] td')?.textContent), '200', 'the old server\'s answer kept');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.oc-partial thead th').length), 2, 'the old server alone');
+      await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs' && !document.querySelector('.oc-partial'), { timeout: 20000, message: 'compared again' });
     });
 
     await run.step('the comparison at 320 and 375 px, TR / EN × light / dark: labelled cards, no horizontal scroll', async () => {

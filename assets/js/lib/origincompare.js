@@ -5,8 +5,8 @@
  * the first one's probe (`locations: <id>`), so both answers come from the same place. The two
  * answers are compared field by field: reachability, HTTP status, redirect target, content type,
  * page title, body (SHA-256 of what the probe returned: the first 10,000 characters, decoded),
- * HSTS, the Server header, and the certificate (does it cover the name, did the probe trust it,
- * issuer, expiry, SHA-256 fingerprint). DOM-free; runs in browsers and Node 22.
+ * HSTS, the Server header, and the certificate (the names it carries, does it cover the name, did
+ * the probe trust it, issuer, expiry, SHA-256 fingerprint). DOM-free; runs in browsers and Node 22.
  *
  * Addresses a probe cannot reach (private, documentation, reserved) go to the CLI instead:
  * `ssl_origin_scan.py --compare OLD NEW -n NAME` does the same from inside your network
@@ -26,9 +26,9 @@ import { quoteArg } from './cmdline.js';
 
 /** Compared fields, in display order (`oc.field.<key>`). */
 export const COMPARE_FIELDS = Object.freeze(['reach', 'status', 'location', 'contentType', 'title', 'body', 'hsts', 'server',
-  'certCovers', 'certTrusted', 'certIssuer', 'certExpires', 'certFingerprint']);
+  'certSubject', 'certCovers', 'certTrusted', 'certIssuer', 'certExpires', 'certFingerprint']);
 /** What a comparison says overall (`oc.verdict.<v>`). */
-export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete']);
+export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete', 'unreachable']);
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
   'body-cut', 'hsts-lost', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-expiring', 'new-cert', 'same-cert']);
@@ -40,6 +40,8 @@ export const COMPARE_EXPIRY_WARN_DAYS = 14;
 export const COMPARE_BODY_LIMIT = 10000;
 /** Probes one comparison costs: one per address. */
 export const COMPARE_PROBES = 2;
+/** Names of a certificate shown before `+N` ({@link certNames}). */
+export const COMPARE_CERT_NAMES = 3;
 
 const PATH_RE = /^\/[\x21-\x22\x24-\x3e\x40-\x7e]{0,500}$/;
 const FILE_SAFE_PATH = /^\/[A-Za-z0-9._~\/-]{0,200}$/;
@@ -132,6 +134,30 @@ export function parseHsts(value) {
 }
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+
+/**
+ * The names a certificate carries, for one line of the side-by-side table: the subject CN first,
+ * then the SAN host names not already listed (case-insensitive), the first
+ * {@link COMPARE_CERT_NAMES} and `+N` for the rest (the CLI's cert_names_text). Null without a
+ * name.
+ * @param {{ subjectCN?: string|null, hostnames?: string[] }|null} cert a {@link CompareSide} certificate
+ * @param {number} [limit]
+ * @returns {string|null}
+ */
+export function certNames(cert, limit = COMPARE_CERT_NAMES) {
+  if (!cert) return null;
+  const names = [];
+  const seen = new Set();
+  for (const raw of [cert.subjectCN, ...(Array.isArray(cert.hostnames) ? cert.hostnames : [])]) {
+    const name = String(raw ?? '').trim().replace(/\.$/, '');
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    names.push(name);
+  }
+  if (!names.length) return null;
+  const more = names.length - limit;
+  return names.slice(0, limit).join(', ') + (more > 0 ? ` +${more}` : '');
+}
 
 /**
  * @typedef {object} CompareSide
@@ -228,12 +254,14 @@ const hstsText = (h) => (h ? h.raw : null);
  *   the certificate fields come only with a certificate from the new server;
  * - another status, redirect, content type or title, a lost HSTS header, or a certificate that
  *   expires within {@link COMPARE_EXPIRY_WARN_DAYS} days is a warning;
- * - another body, Server header, issuer, expiry or certificate is information: a page with a
- *   token or a time in it differs on every request, and a new server usually has its own
- *   certificate.
+ * - another body, Server header, certificate names, issuer, expiry or certificate is
+ *   information: a page with a token or a time in it differs on every request, and a new server
+ *   usually has its own certificate.
  *
- * `verdict`: 'broken' (an error), 'differs' (a warning), 'same' (information only), or
- * 'incomplete' (the old server did not answer, so there is nothing to compare with).
+ * `verdict`: 'unreachable' (neither server answered: the probe's network may be the cause as
+ * much as the servers, so nothing is judged), 'broken' (an error), 'differs' (a warning), 'same'
+ * (information only), or 'incomplete' (the old server did not answer, so there is nothing to
+ * compare with).
  * @param {CompareSide} a the old server
  * @param {CompareSide} b the new server
  * @param {{ now?: number }} [opts]
@@ -245,7 +273,7 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
   let reachNote = null;
   let reachSev = 'ok';
   if (!b.ok && a.ok) [reachNote, reachSev] = ['new-unreachable', 'error'];
-  else if (!b.ok && !a.ok) [reachNote, reachSev] = ['both-unreachable', 'error'];
+  else if (!b.ok && !a.ok) [reachNote, reachSev] = ['both-unreachable', 'warn'];
   else if (b.ok && !a.ok) [reachNote, reachSev] = ['old-unreachable', 'info'];
   fields.push({ key: 'reach', old: reachText(a), new: reachText(b), same: a.ok === b.ok, severity: reachSev, note: reachNote });
 
@@ -277,6 +305,7 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
   const ca = a.cert;
   const cb = b.cert;
   if (cb) {
+    fields.push(field('certSubject', certNames(ca), certNames(cb), certNames(ca) === certNames(cb), 'info'));
     const covers = (c) => (c ? c.covers : null);
     fields.push(field('certCovers', covers(ca), covers(cb), covers(ca) === covers(cb), cb && !cb.covers ? 'error' : 'info', cb && !cb.covers ? 'cert-name' : null));
     const trusted = (c) => (c ? c.authorized : null);
@@ -292,11 +321,23 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
 
   const worst = fields.reduce((w, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), 'ok');
   let verdict;
-  if (worst === 'error') verdict = 'broken';
+  if (!a.ok && !b.ok) verdict = 'unreachable';
+  else if (worst === 'error') verdict = 'broken';
   else if (!a.ok) verdict = 'incomplete';
   else if (worst === 'warn') verdict = 'differs';
   else verdict = 'same';
   return { verdict, fields, differences: fields.filter((f) => !f.same).length, worst };
+}
+
+/**
+ * One side on its own (the old server after a stop or a quota refusal before the new one was
+ * asked): the fields {@link compareSides} would show for it, in {@link COMPARE_FIELDS} order,
+ * as `{ key, value }`.
+ * @param {CompareSide} side
+ * @returns {Array<{ key: string, value: unknown }>}
+ */
+export function sideFields(side) {
+  return compareSides(side, side).fields.map((f) => ({ key: f.key, value: f.old }));
 }
 
 /**

@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  checkCompare, compareRequest, pageTitle, parseHsts, readSide, compareSides, runCompare, buildCompareCommand,
+  checkCompare, compareRequest, pageTitle, parseHsts, readSide, compareSides, runCompare, buildCompareCommand, certNames, sideFields,
   COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_ISSUES, COMPARE_PROBES, COMPARE_EXPIRY_WARN_DAYS
 } from '../../assets/js/lib/origincompare.js';
 import { GlobalpingError } from '../../assets/js/lib/globalping.js';
@@ -166,15 +166,38 @@ describe('the comparison', () => {
     assert.deepEqual(down.fields.map((f) => f.key), ['reach'], 'a server that does not answer is compared no further');
   });
 
-  test('the old server does not answer: incomplete; neither answers: broken', () => {
+  test('the old server does not answer: incomplete; neither answers: unreachable, never "not ready"', () => {
     const gone = sideOf(edited((r) => Object.assign(r, { status: 'failed', statusCode: null, tls: null, rawOutput: 'connect ECONNREFUSED' }), H1), OLD);
     const out = compare(gone, sideOf(H2.final.body));
     assert.deepEqual([out.verdict, byKey(out).reach.note, byKey(out).reach.severity], ['incomplete', 'old-unreachable', 'info']);
     assert.ok(out.fields.every((f) => f.severity === 'info' || f.severity === 'ok'), 'the new values are information: nothing to compare with');
     assert.equal(byKey(out).status.new, 200);
     const both = compare(gone, gone);
-    assert.deepEqual([both.verdict, byKey(both).reach.note], ['broken', 'both-unreachable']);
+    assert.deepEqual([both.verdict, byKey(both).reach.note, byKey(both).reach.severity], ['unreachable', 'both-unreachable', 'warn']);
     assert.equal(both.fields.length, 1, 'nothing else to compare');
+    // The TLS handshake of the new one worked (a certificate for another name), its HTTP answer did not: still nobody answered.
+    const tlsOnly = sideOf(edited((r) => Object.assign(r, { status: 'failed', statusCode: null, rawOutput: 'socket hang up' })));
+    assert.equal(compare(gone, tlsOnly).verdict, 'unreachable');
+  });
+
+  test('the certificate names: the subject CN first, then the SANs, three and +N', () => {
+    assert.equal(certNames({ subjectCN: 'www.example.com', hostnames: ['www.example.com', 'example.com'] }), 'www.example.com, example.com');
+    assert.equal(certNames({ subjectCN: 'WWW.Example.com.', hostnames: ['www.example.com', 'a.example.com', 'b.example.com', 'c.example.com', 'd.example.com'] }),
+      'WWW.Example.com, a.example.com, b.example.com +2');
+    assert.equal(certNames({ subjectCN: null, hostnames: ['example.net'] }), 'example.net');
+    assert.equal(certNames({ subjectCN: '', hostnames: [] }), null);
+    assert.equal(certNames(null), null);
+    const b = sideOf(edited((r) => { r.tls.subject = { CN: 'www.example.net', alt: 'DNS:www.example.net, DNS:example.net, DNS:a.example.net, DNS:b.example.net' }; }));
+    const f = byKey(compare(old, b)).certSubject;
+    assert.deepEqual([f.old, f.new, f.same, f.severity], ['github.com, www.github.com', 'www.example.net, example.net, a.example.net +1', false, 'info']);
+  });
+
+  test('sideFields: one side on its own, as the comparison would list it', () => {
+    const fields = sideFields(old);
+    assert.deepEqual(fields.map((f) => f.key), [...COMPARE_FIELDS]);
+    assert.deepEqual([fields[0].value, fields[1].value, fields.find((f) => f.key === 'certSubject').value], ['ok', 200, 'github.com, www.github.com']);
+    const gone = sideOf(edited((r) => Object.assign(r, { status: 'failed', statusCode: null, tls: null, rawOutput: 'connect ECONNREFUSED' })));
+    assert.deepEqual(sideFields(gone), [{ key: 'reach', value: 'refused' }]);
   });
 });
 

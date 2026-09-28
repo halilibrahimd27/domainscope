@@ -70,7 +70,7 @@ import { TargetChip, KeptNote } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summary.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
-import { setBaseTitle, refreshJobIndicators, runningJobs } from './ui/jobs.js';
+import { setBaseTitle, refreshJobIndicators, runningWork } from './ui/jobs.js';
 import { WorkspaceSwitch, WorkspaceMenuEntry, workspaceLabel, deleteAllLocalData, storageErrorText } from './ui/workspace-ui.js';
 
 /** Repository URL shown in the header/footer. */
@@ -1335,8 +1335,9 @@ async function openWorkspaces() {
 
 /**
  * Work in another workspace. What belongs to this one and would be lost — a long job still
- * running (Subdomains, SSL Targets, Bulk Resolve), which stops, or Servers edits not saved yet
- * (the view's `unsaved()`, or its draft kept in the session) — the user confirms first.
+ * running (Subdomains, SSL Targets, Bulk Resolve, a Reverse DNS sweep, a Verify check on
+ * Globalping: ui/jobs.js runningWork), which stops, or Servers edits not saved yet (the view's
+ * `unsaved()`, or its draft kept in the session) — the user confirms first.
  * @param {string} id
  * @returns {Promise<boolean>} switched
  */
@@ -1345,7 +1346,7 @@ async function switchWorkspace(id) {
   const next = state.workspaces.find((w) => w.id === id);
   if (!next) return false;
   const name = workspaceLabel(next);
-  const jobs = runningJobs();
+  const jobs = runningWork();
   let unsaved = !!state.getSession('inventoryDraft');
   try {
     if (current && current.view && typeof current.view.unsaved === 'function' && current.view.unsaved()) unsaved = true;
@@ -1354,7 +1355,7 @@ async function switchWorkspace(id) {
   }
   if (jobs.length || unsaved) {
     const lost = [
-      jobs.length ? t('ws.switchJobs', { jobs: jobs.map((v) => t(`nav.${v}`)).join(', '), name }) : null,
+      jobs.length ? t('ws.switchJobs', { jobs: jobs.map((key) => t(key)).join(', '), name }) : null,
       unsaved ? t('ws.switchUnsaved', { name }) : null
     ].filter(Boolean);
     const ok = await confirmDialog({

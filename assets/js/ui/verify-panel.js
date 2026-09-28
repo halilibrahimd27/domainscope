@@ -39,6 +39,7 @@ import { pemEncode, formatFingerprint } from '../lib/x509.js';
 import { errorKind } from '../lib/util.js';
 import { GP_LIMITS } from '../lib/globalping.js';
 import { ExpectedCaBadge } from './expected-ca.js';
+import { registerRunning } from './jobs.js';
 import { hasConsent, grantConsent, sharedQuota, noteQuota, liveQuota, whenText, measurementUrl } from './globalping-gate.js';
 import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
@@ -53,6 +54,7 @@ import {
 
 registerStrings('en', {
   'vfy.tab': 'Verify',
+  'vfy.switchRunning': 'Verify on Globalping (the probes it has used stay used)',
   'vfy.intro': 'A probe on the internet connects to each IP with the host name (TLS + SNI) and reads the certificate it is served; your browser compares it with the new one.',
   'vfy.caption': 'Checks from the internet',
   'vfy.plan': 'Checks: {checks} · Servers: {servers} · Cost: up to {checks} probes, plus up to {retries} retries if a probe fails (free: {limit} per hour)',
@@ -258,6 +260,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'vfy.tab': 'Doğrula',
+  'vfy.switchRunning': 'Globalping’de Doğrula (kullandığı ölçümler geri gelmez)',
   'vfy.intro': 'İnternetteki bir ölçüm noktası her IP’ye host adıyla bağlanır (TLS + SNI) ve sunulan sertifikayı okur; karşılaştırmayı tarayıcınız yenisiyle yapar.',
   'vfy.caption': 'İnternetten kontroller',
   'vfy.plan': 'Kontrol: {checks} · Sunucu: {servers} · Maliyet: en fazla {checks} ölçüm, bir ölçüm noktası hata verirse en fazla {retries} yeniden deneme (ücretsiz: saatte {limit})',
@@ -535,6 +538,8 @@ let fallbackShell = 'posix';
 const liveJobs = new Set();
 /** Jobs between a Start / Check again click and their batch (quota read, dialog). */
 const launchingJobs = new Set();
+// A switch to another workspace stops a batch in flight (its probes are spent): the shell names it first.
+registerRunning('vfy.switchRunning', () => liveJobs.size > 0);
 
 state.subscribe(({ key }) => {
   if (key !== 'cleared' && key !== 'workspace') return;

@@ -111,13 +111,35 @@ export function startJob({ view }) {
   };
 }
 
+/** Work that runs without a job here ({@link registerRunning}): i18n key of its name → is it running? */
+const otherWork = new Map();
+
 /**
- * The views whose long jobs are running now ('subdomains', 'scan', 'bulk'), each once: the shell
- * names them before a switch to another workspace stops them.
+ * Work that runs without a progress entry of its own — a Reverse DNS sweep, a Verify check on
+ * Globalping — and that a switch to another workspace stops as well: {@link runningWork} names it.
+ * @param {string} labelKey the i18n key of its name
+ * @param {() => boolean} running whether it runs now
+ */
+export function registerRunning(labelKey, running) {
+  otherWork.set(labelKey, running);
+}
+
+/**
+ * What runs now and would stop with a switch to another workspace, each once, as i18n keys of
+ * its name: the views of the long jobs (`nav.subdomains`, `nav.scan`, `nav.bulk`), then the work
+ * of {@link registerRunning}. The shell names them before the switch.
  * @returns {string[]}
  */
-export function runningJobs() {
-  return [...new Set([...jobs.values()].map((job) => job.view))];
+export function runningWork() {
+  const keys = new Set([...jobs.values()].map((job) => `nav.${job.view}`));
+  for (const [key, running] of otherWork) {
+    try {
+      if (running()) keys.add(key);
+    } catch {
+      // its module is in a state it cannot answer from: nothing to name
+    }
+  }
+  return [...keys];
 }
 
 /**

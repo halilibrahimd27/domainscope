@@ -44,6 +44,7 @@ import { getResolver } from '../lib/resolvers.js';
 import { errorKind } from '../lib/util.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { state as stateSingleton } from '../state.js';
+import { registerRunning } from '../ui/jobs.js';
 
 /** Route id (`#/ptr`). */
 export const id = 'ptr';
@@ -522,6 +523,8 @@ stateSingleton.subscribe(({ key }) => {
 let active = null;
 /** A sweep runs (in this view or in the background). */
 const sweepRunning = () => !!(session.job && session.job.status === 'running');
+// A switch to another workspace stops a running sweep: the shell names it first.
+registerRunning('nav.ptr', sweepRunning);
 
 function emit(job, type, payload) {
   for (const fn of [...job.listeners]) {

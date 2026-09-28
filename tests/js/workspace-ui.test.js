@@ -2,7 +2,7 @@
  * The workspace UI's pure parts (ui/workspace-ui.js, ui/workspace-panel.js, ui/jobs.js): the
  * hand-over file's name (an encrypted file never names its workspace), the export password
  * checks, Default's names in both languages, storage errors in words in both languages, the
- * Tools menu heading that must not read "Workspace".
+ * Tools menu heading that must not read "Workspace", and the work a switch would stop.
  * No DOM, no storage, no network.
  */
 import { test, describe, after } from 'node:test';
@@ -13,7 +13,10 @@ import {
   workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageReason, storageErrorText, STORAGE_REASONS
 } from '../../assets/js/ui/workspace-ui.js';
 import { exportFileName, passwordProblem, PASSWORD_PROBLEMS } from '../../assets/js/ui/workspace-panel.js';
+import { registerRunning, runningWork } from '../../assets/js/ui/jobs.js';
 import { WorkspaceError } from '../../assets/js/lib/workspace.js';
+import '../../assets/js/views/ptr.js';
+import '../../assets/js/ui/verify-panel.js';
 
 after(() => setLang('en'));
 
@@ -116,4 +119,21 @@ describe('the shell', () => {
     assert.equal(t('nav.groupData'), 'Setup & info');
   });
 
+  test('a switch names what it would stop: the long jobs and the registered work, each once', () => {
+    assert.deepEqual(runningWork(), [], 'nothing runs (a Reverse DNS sweep and a Verify batch are registered, idle)');
+    let busy = true;
+    registerRunning('nav.ptr.test', () => busy);
+    registerRunning('nav.broken.test', () => {
+      throw new Error('its module is gone');
+    });
+    try {
+      assert.deepEqual(runningWork(), ['nav.ptr.test']);
+      busy = false;
+      assert.deepEqual(runningWork(), []);
+    } finally {
+      registerRunning('nav.ptr.test', () => false);
+      registerRunning('nav.broken.test', () => false);
+    }
+    for (const lang of LANGS) assert.ok(hasString('vfy.switchRunning', lang) && hasString('nav.ptr', lang), lang);
+  });
 });

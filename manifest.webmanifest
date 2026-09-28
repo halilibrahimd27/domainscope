@@ -1,7 +1,7 @@
 {
   "name": "DomainScope — SSL & DNS toolkit",
   "short_name": "DomainScope",
-  "description": "Find the subdomains, IPs and servers a certificate belongs on — in your browser. Certificate, Certificate estate, Zone File, Servers and About also work offline.",
+  "description": "Find the subdomains, IPs and servers a certificate belongs on — in your browser. Certificate, Certificate estate, Zone File, DNS change request, Servers and About also work offline.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "./",

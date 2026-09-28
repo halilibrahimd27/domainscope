@@ -129,7 +129,8 @@ export const VIEWS = Object.freeze([
   { id: 'global', group: 'dns', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
   { id: 'lookup', group: 'dns', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
   { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
-  { id: 'change', group: 'dns', icon: 'edit', css: ['views/fix.css', 'views/change.css'], load: () => import('./views/change.js') },
+  // the form, its validation and every output need no network; Read and the check page say so in place
+  { id: 'change', group: 'dns', icon: 'edit', css: ['views/fix.css', 'views/change.css'], offline: true, load: () => import('./views/change.js') },
   { id: 'ip', group: 'ip', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
   { id: 'ptr', group: 'ip', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
   { id: 'retire', group: 'ip', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },

@@ -2275,7 +2275,7 @@ async function main() {
           title: document.querySelector('#page-offline .alert-title')?.textContent,
           tools: [...document.querySelectorAll('#page-offline a[data-view]')].map((a) => a.dataset.view)
         }));
-        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'estate', 'inventory', 'about'] }, 'offline note');
+        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'estate', 'change', 'inventory', 'about'] }, 'offline note');
         await pwa.type('[data-role="lookup-name"]', 'example.com');
         await pwa.click('[data-action="run"]');
         await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),

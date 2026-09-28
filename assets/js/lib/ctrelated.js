@@ -60,12 +60,14 @@ export const RELATED_MAX = 200;
  * @property {string|null} platform a hosting / CDN platform's domain (lib/netinfo.js provider name), not a brand
  */
 
-/** Same moment (or both unknown). */
-const sameTime = (a, b) => (a instanceof Date ? a.getTime() : null) === (b instanceof Date ? b.getTime() : null);
+/** A certificate's validity as a key: the same moments (or both unknown) give the same key. */
+const validityKey = (c) => `${c.notBefore instanceof Date ? c.notBefore.getTime() : ''}|${c.notAfter instanceof Date ? c.notAfter.getTime() : ''}`;
 
 /**
  * The certificates of a scan, once each: exact keys folded, and a crt.sh certificate folded into
- * the Cert Spotter issuance with the same validity whose names include all of its own.
+ * the Cert Spotter issuance with the same validity whose names include all of its own. The
+ * complete certificates are indexed by validity, so a scan of tens of thousands of crt.sh rows
+ * stays linear.
  * @param {object[]} certs lib/sources.js CtCert objects (a scan's SourceResult `certs`, merged or not)
  * @returns {Array<object & { complete: boolean }>} complete: its name list is the certificate's whole one
  */
@@ -84,12 +86,19 @@ export function uniqueCerts(certs) {
     }
     byKey.set(key, { ...c, key, names: [...c.names], sources: [...sources], complete: sources.includes('certspotter') });
   }
-  const complete = [...byKey.values()].filter((c) => c.complete);
+  /** validity key → the complete certificates with that validity, each with its names as a Set */
+  const complete = new Map();
+  for (const c of byKey.values()) {
+    if (!c.complete) continue;
+    const k = validityKey(c);
+    if (!complete.has(k)) complete.set(k, []);
+    complete.get(k).push({ cert: c, names: new Set(c.names) });
+  }
   const out = [];
   for (const c of byKey.values()) {
     if (!c.complete) {
-      const twin = complete.find((o) => sameTime(o.notBefore, c.notBefore) && sameTime(o.notAfter, c.notAfter)
-        && c.names.every((n) => o.names.includes(n)));
+      const found = (complete.get(validityKey(c)) || []).find((o) => c.names.every((n) => o.names.has(n)));
+      const twin = found ? found.cert : null;
       if (twin) {
         for (const s of c.sources) if (!twin.sources.includes(s)) twin.sources.push(s);
         if (!twin.url && c.url) twin.url = c.url;
@@ -128,7 +137,17 @@ export function relatedDomains(certs, { domains = [], now = Date.now() } = {}) {
     const reg = registrableDomain(base);
     if (reg) own.add(reg);
   }
-  const inScope = (name) => scopes.some((s) => isSubdomainOf(name, s));
+  // The same names come back in many certificates (every renewal): each is read once.
+  const names = new Map();
+  const nameInfo = (n) => {
+    let info = names.get(n);
+    if (!info) {
+      const base = stripWildcard(n).base;
+      info = { inScope: !!base && scopes.some((s) => isSubdomainOf(base, s)), reg: base ? registrableDomain(base) : null };
+      names.set(n, info);
+    }
+    return info;
+  };
   const list = uniqueCerts(certs);
   const byDomain = new Map();
   let withOthers = 0;
@@ -136,17 +155,16 @@ export function relatedDomains(certs, { domains = [], now = Date.now() } = {}) {
   let shared = 0;
   let read = 0;
   for (const c of list) {
-    const bases = c.names.map((n) => stripWildcard(n).base).filter(Boolean);
-    const ownNames = c.names.filter((n) => inScope(stripWildcard(n).base));
+    const ownNames = c.names.filter((n) => nameInfo(n).inScope);
     if (!ownNames.length) continue; // not a certificate of the scanned hosts
     read += 1;
     if (!c.complete) partial += 1;
     const regs = new Map();
-    for (const [i, base] of bases.entries()) {
-      const reg = registrableDomain(base);
+    for (const n of c.names) {
+      const { reg } = nameInfo(n);
       if (!reg) continue;
       if (!regs.has(reg)) regs.set(reg, []);
-      regs.get(reg).push(c.names[i]);
+      regs.get(reg).push(n);
     }
     const foreign = [...regs.keys()].filter((r) => !own.has(r));
     if (!foreign.length) continue;

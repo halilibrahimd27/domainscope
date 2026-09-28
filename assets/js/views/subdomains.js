@@ -3947,11 +3947,18 @@ export function mount(container, ctx) {
         startWaitingZoneScan();
       },
       // Sources › Related domains: "Scan too" scans the run's domains together with another one.
-      onScanWith: (domains) => {
+      // The button goes with the old run's results, so the focus moves to the new run's title.
+      onScanWith: async (domains) => {
         if (isRunning()) return;
+        const before = session.run;
         domainField.value = domains.join(', ');
         session.text = domainField.value;
-        start();
+        await start();
+        const heading = session.run !== before && !ctx.signal.aborted ? resultsHost.querySelector('.sub-run-title') : null;
+        if (heading) {
+          heading.setAttribute('tabindex', '-1');
+          heading.focus({ preventScroll: true });
+        }
       }
     });
     resultsHost.append(ui.el);

@@ -44,6 +44,23 @@ describe('uniqueCerts', () => {
     const list = uniqueCerts([full, crtsh(21, 'bb01', ['example.com'], { from: -29 }), crtsh(22, 'bb02', ['example.com', 'mail.example.com'])]);
     assert.equal(list.length, 3);
   });
+
+  test('a large scan folds each crt.sh certificate into its twin among several with the same validity, in linear time', () => {
+    // 20,000 crt.sh rows, 500 Cert Spotter issuances; two issuances share each validity.
+    const spotters = [];
+    const rows = [];
+    for (let i = 0; i < 250; i += 1) {
+      spotters.push(spotter(2 * i + 1, [`a${i}.example.com`, `a${i}.example.net`], { from: -i }), spotter(2 * i + 2, [`b${i}.example.com`, `b${i}.example.net`], { from: -i }));
+      rows.push(crtsh(10000 + i, `cc${i}`, [`b${i}.example.com`], { from: -i }));
+    }
+    for (let i = 0; i < 19750; i += 1) rows.push(crtsh(20000 + i, `dd${i}`, [`h${i}.example.com`], { from: -300 - i }));
+    const started = performance.now();
+    const list = uniqueCerts([...rows, ...spotters]);
+    assert.ok(performance.now() - started < 2000, 'no pairwise search');
+    assert.equal(list.length, 500 + 19750);
+    assert.deepEqual(list.find((c) => c.key === spotters[1].key).sources, ['certspotter', 'crtsh'], 'folded into the twin whose names it has');
+    assert.deepEqual(list.find((c) => c.key === spotters[0].key).sources, ['certspotter']);
+  });
 });
 
 describe('relatedDomains', () => {

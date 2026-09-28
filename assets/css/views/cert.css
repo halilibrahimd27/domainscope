@@ -122,6 +122,12 @@
   overflow-wrap: anywhere;
 }
 
+/* Muted text on the info callout: a step toward --text-2, so small labels keep 4.5:1 in light mode */
+.pfx-note .muted,
+.pfx-note .kv-key {
+  color: color-mix(in srgb, var(--text-3) 70%, var(--text-2));
+}
+
 .pfx-facts {
   margin-top: 8px;
   grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);

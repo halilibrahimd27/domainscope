@@ -334,6 +334,9 @@ async function main() {
       assert(/p12_nomac\.p12 was not opened/.test(toast), `toast: ${toast}`);
       assertEqual(await page.evaluate(() => [document.querySelector('.cert-overview-cn')?.textContent, document.querySelector('.pfx-note')?.dataset.keyCheck]),
         ['p12.example.com', 'none'], 'the legacy bundle is still shown');
+      // The drop zone no longer says the file it did not open was loaded.
+      const statuses = await page.evaluate(() => [...document.querySelectorAll('.cert-drop .filedrop-status')].map((el) => el.textContent));
+      assert(!statuses.some((x) => /p12_nomac/.test(x)), `drop status: ${statuses.join(' | ')}`);
       await removeToasts(page);
     });
 

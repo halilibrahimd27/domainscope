@@ -166,6 +166,14 @@ const CURVES = Object.freeze({
   '1.3.132.0.35': 'P-521'
 });
 
+/** EC named curves WebCrypto cannot import, named for display (the OID stays the fallback). */
+const OTHER_CURVES = Object.freeze({
+  '1.3.132.0.10': 'secp256k1',
+  '1.3.36.3.3.2.8.1.1.7': 'brainpoolP256r1',
+  '1.3.36.3.3.2.8.1.1.11': 'brainpoolP384r1',
+  '1.3.36.3.3.2.8.1.1.13': 'brainpoolP512r1'
+});
+
 /** Key algorithms the key check recognises but cannot check, by OID. */
 const OTHER_KEY_ALGORITHMS = Object.freeze({
   '1.2.840.113549.1.1.10': 'RSA-PSS',
@@ -812,7 +820,7 @@ function keyAlgorithm(algNode) {
   if (alg.id === OID.EC) {
     const curveOid = alg.params && alg.params.id === 0x06 ? oid(alg.params) : null;
     const curve = curveOid && CURVES[curveOid];
-    if (!curve) return { name: `EC ${curveOid || 'explicit curve'}`, unsupported: true };
+    if (!curve) return { name: `EC ${(curveOid && OTHER_CURVES[curveOid]) || curveOid || 'explicit curve'}`, unsupported: true };
     return { name: `EC ${curve}`, importAlg: { name: 'ECDSA', namedCurve: curve }, signAlg: { name: 'ECDSA', hash: 'SHA-256' } };
   }
   return { name: OTHER_KEY_ALGORITHMS[alg.id] || alg.id, unsupported: true };

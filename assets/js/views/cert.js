@@ -163,7 +163,7 @@ registerStrings('en', {
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'The file also contains a private key',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'It was ignored — never displayed, stored or uploaded. Only the certificate is needed here. Keep key files private and avoid sending them by e-mail.',
   'cert.warn.PKCS12_UNSUPPORTED.title': 'This PKCS#12 (.pfx / .p12) file was not opened',
-  'cert.warn.PKCS12_UNSUPPORTED.body': 'Load it again to enter its password, or extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.body': 'Load the .pfx / .p12 file on its own to enter its password, or extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.what': 'It uses {what}, which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'This browser cannot decrypt it here: the page needs WebCrypto, which works only over https or on localhost. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused': 'This browser’s WebCrypto refused {what}, which opening the file needs. Try another browser, or extract the certificates with OpenSSL and load cert.pem:',
@@ -466,7 +466,7 @@ registerStrings('tr', {
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'Dosyada özel anahtar da var',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'Yok sayıldı — asla gösterilmedi, saklanmadı, yüklenmedi. Burada yalnızca sertifika gerekir. Anahtar dosyalarını gizli tutun, e-postayla göndermekten kaçının.',
   'cert.warn.PKCS12_UNSUPPORTED.title': 'Bu PKCS#12 (.pfx / .p12) dosyası açılmadı',
-  'cert.warn.PKCS12_UNSUPPORTED.body': 'Parolasını girmek için dosyayı yeniden yükleyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.body': 'Parolasını girmek için .pfx / .p12 dosyasını tek başına yükleyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.what': 'Bu sayfanın desteklemediği {what} kullanıyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyanın şifresini burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused': 'Bu tarayıcının WebCrypto’su dosyayı açmak için gereken {what} işlemini reddetti. Başka bir tarayıcı deneyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
@@ -1231,11 +1231,13 @@ function pemFileName(cert, suffix = '') {
  * asks for it first (ui/pfx-import.js; one dialog per bundle, one after the other): Open puts its
  * certificates in its place, Cancel leaves it out and says so.
  * @param {Array<{ input: string|Uint8Array, meta: { name?: string, size?: number, source?: string } }>} items
- * @returns {Promise<{ loads: CertLoad[], opened: boolean }>} `opened`: a bundle was opened
+ * @returns {Promise<{ loads: CertLoad[], opened: boolean, cancelled: number }>} `opened`: a bundle
+ *   was opened; `cancelled`: bundles whose dialog was cancelled
  */
 export async function openCertInputs(items) {
   const loads = [];
   let opened = false;
+  let cancelled = 0;
   for (const { input, meta } of items) {
     const load = loadCertificateData(input, meta);
     if (!isLockedPfx(load.result)) {
@@ -1246,12 +1248,13 @@ export async function openCertInputs(items) {
     const pfx = await askPfxPassword({ name, open: (password, checkKey) => loadCertificateFile(input, { ...meta, password, checkKey }) });
     if (!pfx) {
       toast(t('pfx.cancelled', { name }), { type: 'info', timeout: 3000 });
+      cancelled += 1;
       continue;
     }
     loads.push(pfx);
     opened = true;
   }
-  return { loads, opened };
+  return { loads, opened, cancelled };
 }
 
 /**
@@ -1282,8 +1285,12 @@ export function certFileInputs(files) {
  */
 export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = false, compact = false, title = null, hint = null, focusTarget = null }) {
   const deliver = async (items) => {
-    const { loads, opened } = await openCertInputs(items);
-    if (!loads.length) return;
+    const { loads, opened, cancelled } = await openCertInputs(items);
+    if (!loads.length) {
+      // Nothing was opened: the drop zone no longer says the file was loaded.
+      if (cancelled) drop.setStatus('');
+      return;
+    }
     if (onLoads) onLoads(loads);
     else onLoad(loads[0]);
     if (opened && focusTarget) focusLoadedCert(focusTarget());

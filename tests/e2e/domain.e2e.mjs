@@ -12,17 +12,19 @@
  * fills the box (a host name reduced to its registrable domain, "Nothing has been sent yet") and
  * an IP refused; Build overview → the seven cards fill as their lookups land: an RDAP 503 and a
  * SERVFAIL for NS show "⚠ n/a" with the reason and a Retry that asks only that lookup again (the
- * keyboard focus stays on the card); DNS hosting, mail platform with SPF / DMARC one-liners, apex
- * and www with their CDN, CAA, SaaS vendors without a single token on the page, the health score;
- * the CT issuers on a click (exactly one Cert Spotter request) compared with CAA; Copy summary
- * (names only, the permalink); the print stylesheet; the kept result on the way back (no new
- * query); Ctrl+Enter builds and Esc stops (the cards not looked up offer to be, the focus back on
- * Build); a .tr domain (no RDAP: the registry's WHOIS); 320 / 375 px without horizontal scroll,
- * TR / EN × light / dark; zero console errors / CSP violations / missing i18n keys, nothing sent
- * outside the page.
+ * keyboard focus stays on the card), at once when pressed while the build still waits for RDAP
+ * (the health checks then follow the new answer); DNS hosting, mail platform with SPF / DMARC
+ * one-liners, apex and www with their CDN, CAA, SaaS vendors without a single token on the page,
+ * the health score; the CT issuers on a click (exactly one Cert Spotter request) compared with
+ * CAA; Copy summary (names only, the permalink); the print stylesheet; the kept result on the way
+ * back (no new query); Ctrl+Enter builds and Esc stops (the cards not looked up offer to be,
+ * named "Look up" for a screen reader too, the focus back on Build); a .tr domain (no RDAP: the
+ * registry's WHOIS); 320 / 375 px without horizontal scroll, TR / EN × light / dark; zero console
+ * errors / CSP violations / missing i18n keys, nothing sent outside the page.
  *
- * Data is documentation space only (example.com / .org, example-test.com.tr, 198.51.100.0/24,
- * 203.0.113.0/24) plus the Cloudflare edge 104.16.1.1 and the provider host names the tables name.
+ * Data is documentation space only (example.com / .net / .org, example-test.com.tr,
+ * 198.51.100.0/24, 203.0.113.0/24) plus the Cloudflare edge 104.16.1.1 and the provider host names
+ * the tables name.
  */
 
 import path from 'node:path';
@@ -380,7 +382,10 @@ async function main() {
       const states = Object.values(await cardStates(page));
       assert(states.some((s) => s.startsWith('stopped')), `a stopped card: ${states}`);
       assert(/Stopped/.test(await text(page, '.dov-head')), 'the head says so');
-      assert(await page.evaluate(() => [...document.querySelectorAll('.dov-card[data-state="stopped"] [data-action="retry-source"]')].every((b) => /Look up/.test(b.textContent))), 'Look up');
+      // "Look up", not "Retry": the visible label, the accessible name (it starts with the label) and the tooltip
+      const lookUp = await page.evaluate(() => [...document.querySelectorAll('.dov-card[data-state="stopped"] [data-action="retry-source"]')]
+        .map((b) => [b.textContent.trim(), b.getAttribute('aria-label'), b.title]));
+      assert(lookUp.length && lookUp.every(([label, name, title]) => label === 'Look up' && /^Look up \S/.test(name) && /^Ask /.test(title)), JSON.stringify(lookUp));
       await shot(page, opts, 'domain-stopped-desktop-light-en');
     });
 

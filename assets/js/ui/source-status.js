@@ -4,7 +4,8 @@
  * - {@link NaMark}: "⚠ n/a" in a cell a failed source left empty, with the source and the reason
  *   as its tooltip and as screen-reader text ("RIPEstat: rate limited — try again in 5 min").
  * - {@link statusText}: that sentence, for notes and chips.
- * - {@link RetryButton}: the per-row / per-card Retry that asks those sources again.
+ * - {@link RetryButton}: the per-row / per-card Retry that asks those sources again (or, for a
+ *   lookup a stopped run never sent, its "Look up").
  * - {@link SourceChip}: one status chip per service (the Subdomains source-chip pattern).
  *
  * Used by IP Intel, Domain Health (RDAP), DNS Lookup (a failed query) and the Domain overview (a
@@ -23,6 +24,9 @@ registerStrings('en', {
   'srcst.retry': 'Retry',
   'srcst.retryTitle': 'Ask {sources} again',
   'srcst.retryFor': 'Retry {target} ({sources})',
+  'srcst.lookUp': 'Look up',
+  'srcst.lookUpTitle': 'Ask {sources}',
+  'srcst.lookUpFor': 'Look up {target} ({sources})',
   'srcst.source.ripestat': 'RIPEstat',
   'srcst.source.ripestat-geo': 'RIPEstat (location)',
   'srcst.source.ipwhois': 'ipwho.is',
@@ -59,6 +63,9 @@ registerStrings('tr', {
   'srcst.retry': 'Yeniden dene',
   'srcst.retryTitle': '{sources} yeniden sorgulanır',
   'srcst.retryFor': 'Yeniden dene: {target} ({sources})',
+  'srcst.lookUp': 'Sorgula',
+  'srcst.lookUpTitle': '{sources} sorgulanır',
+  'srcst.lookUpFor': 'Sorgula: {target} ({sources})',
   'srcst.source.ripestat': 'RIPEstat',
   'srcst.source.ripestat-geo': 'RIPEstat (konum)',
   'srcst.source.ipwhois': 'ipwho.is',
@@ -140,19 +147,21 @@ export function NaMark(statuses, { className = '' } = {}) {
  * The Retry of a row or card: asks `sources` again (only those). With `target` (the row's address,
  * the card's type) its accessible name says what it retries — "Retry 192.0.2.1 (RIPEstat,
  * ipwho.is)" — so a list of rows is not "Retry, Retry, Retry" to a screen reader.
- * @param {{ sources: string[], onClick: Function, target?: string|null, size?: 'sm'|'md', variant?: string,
- *   dataset?: object }} opts
+ * `first` is for a lookup that was never sent (a stopped run): the button says "Look up" and its
+ * accessible name and tooltip say so too, so the name a voice user reads out still finds it.
+ * @param {{ sources: string[], onClick: Function, target?: string|null, first?: boolean, size?: 'sm'|'md',
+ *   variant?: string, dataset?: object }} opts
  * @returns {HTMLButtonElement}
  */
-export function RetryButton({ sources, onClick, target = null, size = 'sm', variant = 'ghost', dataset = {} }) {
+export function RetryButton({ sources, onClick, target = null, first = false, size = 'sm', variant = 'ghost', dataset = {} }) {
   const names = [...new Set((sources || []).map(sourceName))].join(', ');
   return Button({
-    label: t('srcst.retry'),
-    icon: 'refresh',
+    label: t(first ? 'srcst.lookUp' : 'srcst.retry'),
+    icon: first ? 'search' : 'refresh',
     size,
     variant,
-    title: t('srcst.retryTitle', { sources: names }),
-    ariaLabel: target ? t('srcst.retryFor', { target, sources: names }) : null,
+    title: t(first ? 'srcst.lookUpTitle' : 'srcst.retryTitle', { sources: names }),
+    ariaLabel: target ? t(first ? 'srcst.lookUpFor' : 'srcst.retryFor', { target, sources: names }) : null,
     dataset: { action: 'retry-source', sources: (sources || []).join(' '), ...dataset },
     onClick
   });

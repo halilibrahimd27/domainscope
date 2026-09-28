@@ -80,7 +80,6 @@ registerStrings('en', {
   'dov.pending': 'Looking up…',
   'dov.updating': 'Updating…',
   'dov.notLooked': 'Not looked up: the build was stopped.',
-  'dov.lookUp': 'Look up',
   'dov.retried': '{card}: updated',
   'dov.failedPart': 'Could not be read',
   'dov.none': 'none',
@@ -236,7 +235,6 @@ registerStrings('tr', {
   'dov.pending': 'Sorgulanıyor…',
   'dov.updating': 'Güncelleniyor…',
   'dov.notLooked': 'Sorgulanmadı: oluşturma durduruldu.',
-  'dov.lookUp': 'Sorgula',
   'dov.retried': '{card}: güncellendi',
   'dov.failedPart': 'Okunamadı',
   'dov.none': 'yok',
@@ -507,11 +505,10 @@ export function mount(container, ctx) {
     }, h('span', { class: 'btn-label' }, t('dov.openIn', { tool })), Icon('arrow-right', { size: 14 }));
   }
 
-  /** A card's Retry: its failed lookups (or, after a stop, the ones never run). */
-  function retryButton(card, lookups, { label = null } = {}) {
+  /** A card's Retry: its failed lookups (or, after a stop, its Look up: the ones never run). */
+  function retryButton(card, lookups, { first = false } = {}) {
     const sources = [...new Set(lookups.map((l) => (l === 'rdap' ? 'rdap' : 'doh')))];
-    const btn = RetryButton({ sources, target: t(`dov.card.${card.id}`), dataset: { card: card.id }, onClick: (e) => retryCard(card.id, lookups, e.currentTarget) });
-    if (label) btn.querySelector('.btn-label').textContent = label;
+    const btn = RetryButton({ sources, first, target: t(`dov.card.${card.id}`), dataset: { card: card.id }, onClick: (e) => retryCard(card.id, lookups, e.currentTarget) });
     if (current && lookups.some((l) => current.retrying.has(l))) setRetryBusy(btn);
     return btn;
   }
@@ -537,7 +534,7 @@ export function mount(container, ctx) {
       body = h('div', { class: 'stack-sm' },
         h('p', { class: 'muted text-sm dov-not-looked' }, t('dov.notLooked')),
         partialBody(cardId, card));
-      actions.push(retryButton(card, [...new Set([...card.retry, ...card.pending, ...(cardId === 'health' && current && current.raw.rdap === undefined ? ['rdap'] : [])])], { label: t('dov.lookUp') }));
+      actions.push(retryButton(card, [...new Set([...card.retry, ...card.pending, ...(cardId === 'health' && current && current.raw.rdap === undefined ? ['rdap'] : [])])], { first: true }));
     } else {
       body = BODIES[cardId](card);
       // A Retry (or the health checks run again after one) is on its way: the answers on screen

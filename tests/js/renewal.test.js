@@ -370,13 +370,18 @@ test('_acme-challenge: none, leftovers, a CNAME delegation, acme-dns, a dangling
   assert.equal(left.severity, 'info');
   assert.deepEqual(alias.acme.cnames, ['alias.acme.example.net']);
   assert.equal(sev(alias, 'acme.cname'), 'info');
-  // The TXT record goes into the delegation target's zone: its provider (no API) matters, but the delegation covers it.
+  // The TXT record goes into the delegation target's zone: a provider there without an API is
+  // where the client cannot write either (not "delegate _acme-challenge", which it already is).
   assert.equal(alias.dnsHost.zone, 'acme.example.net');
-  assert.deepEqual([alias.findings.find((f) => f.id === 'provider.no-api').severity, alias.findings.find((f) => f.id === 'provider.no-api').params.provider], ['info', 'Natro']);
+  const target = alias.findings.find((f) => f.id === 'provider.target-no-api');
+  assert.deepEqual([target.severity, target.params], ['warn', { zone: 'acme.example.net', provider: 'Natro' }]);
+  assert.ok(!ids(alias).includes('provider.no-api'));
   assert.equal(sev(adns, 'acme.acme-dns'), 'info');
   assert.ok(adns.acme.acmeDns);
   assert.equal(adns.acme.txt.length, 1, 'acme-dns keeps its last token: not a leftover');
   assert.ok(!ids(adns).includes('acme.leftover'));
+  assert.equal(adns.dnsHost, null, 'an acme-dns registration is updated through its API: no provider lookup');
+  assert.ok(!adns.findings.some((f) => f.area === 'provider'));
   assert.equal(gone.acme.state, 'dangling');
   assert.equal(sev(gone, 'acme.dangling'), 'error');
   assert.equal(gone.dnsHost, null, 'no provider lookup for a target that does not exist');
@@ -385,6 +390,8 @@ test('_acme-challenge: none, leftovers, a CNAME delegation, acme-dns, a dangling
   const http = await run(zone, ['gone.example.com', 'www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' });
   assert.equal(sev(http.names[0], 'acme.dangling'), 'warn');
   assert.ok(!ids(http.names[1]).includes('acme.none'));
+  // The same delegation when the method is not known: the Natro zone is only a note.
+  assert.equal(sev((await run(zone, ['alias.example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0], 'provider.target-no-api'), 'info');
 });
 
 test('a wildcard is validated with DNS-01 whatever the chosen challenge: its _acme-challenge problems fail it', async () => {

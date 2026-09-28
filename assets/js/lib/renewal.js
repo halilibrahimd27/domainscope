@@ -131,7 +131,7 @@ export const RENEWAL_FINDINGS = Object.freeze([
   'resolvers.agree', 'resolvers.differ', 'resolvers.servfail', 'resolvers.unreachable',
   'wildcard.dns01', 'wildcard.unknown', 'wildcard.method',
   'acme.none', 'acme.leftover', 'acme.cname', 'acme.acme-dns', 'acme.dangling', 'acme.servfail', 'acme.bogus', 'acme.error',
-  'provider.known', 'provider.no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
+  'provider.known', 'provider.no-api', 'provider.target-no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
   'dnssec.secure', 'dnssec.unsigned', 'dnssec.bogus', 'dnssec.servfail', 'dnssec.unknown', 'dnssec.error',
   'http.ok', 'http.ipv6', 'http.cdn', 'http.alpn-cdn', 'http.private', 'http.private-some', 'http.none', 'http.nxdomain', 'http.dangling', 'http.error',
   'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.catch-all', 'http01.inconclusive'
@@ -509,7 +509,8 @@ function providerFindings(host, { challenge, wildcard, delegated }) {
   }
   const p = host.providers[0];
   if (!p.api) {
-    out.push(finding('provider.no-api', certain && !delegated ? 'warn' : 'info', { zone, provider: p.name }));
+    // `host` is the zone that takes the TXT record: under a delegation, the target's.
+    out.push(finding(delegated ? 'provider.target-no-api' : 'provider.no-api', certain ? 'warn' : 'info', { zone, provider: p.name }));
     return out;
   }
   out.push(finding('provider.known', 'info', { zone, provider: p.name, plugins: pluginText(p) }));
@@ -773,7 +774,9 @@ export async function checkRenewalName(entry, { run, ca, challenge, resolvers })
     addressMatters(challenge, wildcard) ? addressOf(base, run) : null
   ]);
   const r = { name, base, wildcard, caa: caaResult(found), resolvers: resolverList, dnssec, acme, address, dnsHost: null, http01: null };
-  if (dnsMatters(challenge, wildcard)) r.dnsHost = await dnsHostOf(await txtZone(r, run), run);
+  // An acme-dns registration is updated through the acme-dns API: whoever serves its zone does not matter.
+  const viaAcmeDns = acme.state === 'cname' && acme.acmeDns;
+  if (dnsMatters(challenge, wildcard) && !viaAcmeDns) r.dnsHost = await dnsHostOf(await txtZone(r, run), run);
   r.findings = nameFindings(r, { ca, challenge });
   r.verdict = nameVerdict(r.findings);
   return r;
@@ -1202,6 +1205,9 @@ const STRINGS = [
   ['f.provider.no-api', ['{provider} has no DNS-01 plugin', '{provider} için DNS-01 eklentisi yok'],
     ['lego, acme.sh and certbot have no plugin for {provider}, so a DNS-01 client cannot create the record in {zone} by itself. Delegate _acme-challenge with a CNAME to a zone they can update (acme-dns, or a zone at a provider with an API), or renew with HTTP-01 (not for a wildcard).',
       'lego, acme.sh ve certbot’un {provider} için eklentisi yok; DNS-01 istemcisi {zone} alanında kaydı kendisi oluşturamaz. _acme-challenge adını bir CNAME ile güncelleyebildikleri bir alana devredin (acme-dns ya da API’si olan bir sağlayıcıdaki bir alan) veya HTTP-01 ile yenileyin (joker ad için olmaz).']],
+  ['f.provider.target-no-api', ['{provider} has no DNS-01 plugin', '{provider} için DNS-01 eklentisi yok'],
+    ['_acme-challenge is delegated to {zone}, which {provider} serves: lego, acme.sh and certbot have no plugin for it, so a DNS-01 client cannot create the record there by itself. Point the CNAME at a zone they can update (acme-dns, or a zone at a provider with an API).',
+      '_acme-challenge, {provider} tarafından barındırılan {zone} alanına devredilmiş: lego, acme.sh ve certbot’un bu sağlayıcı için eklentisi yok; DNS-01 istemcisi kaydı orada kendisi oluşturamaz. CNAME’i güncelleyebildikleri bir alana (acme-dns ya da API’si olan bir sağlayıcıdaki bir alan) yönlendirin.']],
   ['f.provider.multiple', ['{zone} is served by several providers', '{zone} birden fazla sağlayıcıda barındırılıyor'],
     ['{providers}: a DNS-01 record must be published at each of them, or a CA perspective that asks the other provider’s servers fails. Update all of them, or delegate _acme-challenge to one zone.',
       '{providers}: DNS-01 kaydı her birinde yayımlanmalı; yoksa diğer sağlayıcının sunucularına soran bir otorite noktası başarısız olur. Hepsini güncelleyin ya da _acme-challenge adını tek bir alana devredin.']],

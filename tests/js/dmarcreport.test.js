@@ -438,6 +438,24 @@ describe('classifySources — yours, authorized third parties, forwarders, unkno
     assert.equal(failed[0].spfNow.reason, 'lookup-failed');
   });
 
+  test('an SPF record that passes every address (+all) tells no sender apart: DKIM and the reports decide, and the overview says so', async () => {
+    const { domains } = aggregateDmarc([report(GOOGLE_XML)]);
+    const agg = domains[0];
+    const dns = fakeDns({ 'example.com': { TXT: [['v=spf1 +all']] } });
+    const spf = new Map([['example.com', await loadSpfContext('example.com', { dns })]]);
+    const rows = classifySources(agg, { spf });
+    const by = Object.fromEntries(rows.map((r) => [r.ip, r]));
+    assert.equal(by['192.0.2.200'].spfNow.term, '+all');
+    assert.deepEqual(brief(by['192.0.2.200']), ['unknown', 'none', null], 'a spoofer is no server of yours because +all passes it');
+    assert.deepEqual(brief(by['203.0.113.26']), ['unknown', 'none', null], 'nor is a sender with SPF only');
+    assert.deepEqual(brief(by['192.0.2.44']), ['forwarder', 'dkim-only', 'mail2026'], 'DKIM still decides');
+    // DKIM and SPF both aligned for all its mail: a direct sender (forwarding breaks SPF), never a forwarder
+    assert.deepEqual(brief(by['203.0.113.25']), ['yours', 'dkim-signed', 'mail2026']);
+    assert.deepEqual(brief(by['2001:db8:25::10']), ['yours', 'dkim-signed', 'mail2026']);
+    assert.ok(dmarcOverview(agg, rows).notes.includes('spf-all'));
+    assert.ok(!dmarcOverview(agg, classifySources(agg)).notes.includes('spf-all'));
+  });
+
   test('vocabularies are frozen and every class and reason is reachable', () => {
     for (const v of [SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS]) assert.ok(Object.isFrozen(v));
     assert.deepEqual(SOURCE_CLASSES, ['yours', 'third-party', 'forwarder', 'unknown']);

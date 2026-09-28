@@ -45,6 +45,8 @@ export const SOURCE_CLASSES = Object.freeze(['yours', 'third-party', 'forwarder'
  * Why a source is in its class (`rpt.why.<id>`): `inventory` a server in the list; `spf` the
  * domain's own SPF terms authorize it; `spf-report` SPF could not be checked here, but the reports
  * saw it pass aligned; `spf-include` an include of another organisation authorizes it;
+ * `dkim-signed` the current SPF tells nothing about it (it passes every address, or no longer
+ * lists it), but it signs with the domain's DKIM and all its mail passed SPF aligned: a direct sender;
  * `dkim-service` it signs with the domain's DKIM and bounces through its own domain; `forwarded`
  * the receiver says it was forwarded (a policy override); `dkim-forwarded` it carries a DKIM
  * signature the domain's own senders make; `dkim-only` DKIM passes, SPF does not; `spf-removed`
@@ -52,7 +54,7 @@ export const SOURCE_CLASSES = Object.freeze(['yours', 'third-party', 'forwarder'
  * authenticates only as another domain; `none` nothing authenticates it.
  */
 export const CLASS_REASONS = Object.freeze([
-  'inventory', 'spf', 'spf-report', 'spf-include', 'dkim-service', 'forwarded', 'dkim-forwarded', 'dkim-only', 'spf-removed', 'foreign', 'none'
+  'inventory', 'spf', 'spf-report', 'spf-include', 'dkim-signed', 'dkim-service', 'forwarded', 'dkim-forwarded', 'dkim-only', 'spf-removed', 'foreign', 'none'
 ]);
 /**
  * What a known source that fails DMARC needs (`rpt.fix.<id>`), most robust first: `dkim-sign`
@@ -64,7 +66,7 @@ export const FIX_CODES = Object.freeze(['dkim-sign', 'dkim-align', 'dkim-fix', '
 /** Headline verdicts of {@link dmarcOverview} (`rpt.verdict.<id>`). */
 export const DMARC_VERDICTS = Object.freeze(['no-mail', 'enforced', 'ready', 'fix-first']);
 /** Notes of {@link dmarcOverview} (`rpt.note.<id>`). */
-export const DMARC_NOTES = Object.freeze(['short-range', 'pct', 'mixed-policy', 'spf-unknown', 'quarantine', 'rejected-now']);
+export const DMARC_NOTES = Object.freeze(['short-range', 'pct', 'mixed-policy', 'spf-unknown', 'quarantine', 'rejected-now', 'spf-all']);
 /** Policy overrides of RFC 7489 Appendix C (`PolicyOverrideType`) that mean forwarded mail. */
 export const FORWARD_OVERRIDES = Object.freeze(['forwarded', 'mailing_list', 'trusted_forwarder']);
 /** Why a file or part of one is no report (`rpt.problem.<code>`): the zip reader's reasons, then these. */
@@ -717,6 +719,8 @@ export async function loadSpfContext(domain, { dns: client, signal, noCache = fa
  */
 
 const orgOf = (d) => registrableDomain(d) || d;
+/** An SPF pass given by `all` itself (`+all`, `all`): every address passes, so it says nothing about this one. */
+const passesAll = (v) => !!v && v.result === 'pass' && /^\+?all$/i.test(v.term || '');
 
 /**
  * The first organisation other than the checked domain's on the way to an SPF match: an include
@@ -732,8 +736,9 @@ function foreignOnPath(verdict, org) {
  * Put each source of an aggregate into one of {@link SOURCE_CLASSES}. In order: an address of the
  * server list is yours; one the current SPF authorizes is yours (the domain's own terms) or an
  * authorized third party (an include of another organisation); one with an aligned DKIM pass is a
- * forwarder when the receiver says so or it carries a selector the known senders use, a third
- * party when it bounces through a domain of its own, else a forwarder; the rest are unknown. When
+ * forwarder when the receiver says so, yours when all its mail passed SPF aligned too (forwarding
+ * breaks SPF), a forwarder when it carries a selector the known senders use, a third party when it
+ * bounces through a domain of its own, else a forwarder; the rest are unknown. When
  * the SPF could not be checked (`spf` without the domain, a lookup that failed, a term this page
  * cannot tell), an address the reports saw pass SPF aligned is counted as yours (`spf-report`).
  * @param {DomainAggregate} agg
@@ -763,11 +768,12 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
     return { ...s, servers, spfNow, spfDomain, cls: null, reason: null, detail: null, fixes: [] };
   });
 
-  // Pass 1: the server list and the SPF decide.
+  // Pass 1: the server list and the SPF decide. A pass by `+all` authorizes every address, so it
+  // tells no sender apart (the overview's `spf-all` note says so).
   for (const r of rows) {
     if (r.servers.length) {
       Object.assign(r, { cls: 'yours', reason: 'inventory', detail: r.servers.join(', ') });
-    } else if (r.spfNow && r.spfNow.result === 'pass') {
+    } else if (r.spfNow && r.spfNow.result === 'pass' && !passesAll(r.spfNow)) {
       const foreign = foreignOnPath(r.spfNow, orgOf(r.spfDomain || agg.domain));
       Object.assign(r, foreign ? { cls: 'third-party', reason: 'spf-include', detail: foreign } : { cls: 'yours', reason: 'spf', detail: r.spfNow.term });
     } else if ((!r.spfNow || r.spfNow.result === 'unknown') && r.spfAligned > 0) {
@@ -787,13 +793,14 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
       const carried = ownPass.find((a) => a.selector && knownSelectors.has(`${a.domain}|${a.selector}`));
       const bounce = r.spfAuth.find((a) => a.result === 'pass' && !inOrg(a.domain));
       if (override) Object.assign(r, { cls: 'forwarder', reason: 'forwarded', detail: override.type });
+      else if (r.spfAligned > 0 && r.spfAligned >= r.messages) Object.assign(r, { cls: 'yours', reason: 'dkim-signed', detail: ownPass[0] ? ownPass[0].selector : null });
       else if (carried) Object.assign(r, { cls: 'forwarder', reason: 'dkim-forwarded', detail: carried.selector });
       else if (bounce) Object.assign(r, { cls: 'third-party', reason: 'dkim-service', detail: bounce.domain });
       else Object.assign(r, { cls: 'forwarder', reason: 'dkim-only', detail: ownPass[0] ? ownPass[0].selector : null });
       continue;
     }
     const other = [...r.spfAuth, ...r.dkimAuth].find((a) => a.result === 'pass' && !inOrg(a.domain));
-    if (r.spfAligned > 0 && r.spfNow) Object.assign(r, { cls: 'unknown', reason: 'spf-removed', detail: r.spfNow.result });
+    if (r.spfAligned > 0 && r.spfNow && r.spfNow.result !== 'pass') Object.assign(r, { cls: 'unknown', reason: 'spf-removed', detail: r.spfNow.result });
     else if (other) Object.assign(r, { cls: 'unknown', reason: 'foreign', detail: other.domain });
     else Object.assign(r, { cls: 'unknown', reason: 'none', detail: null });
   }
@@ -868,6 +875,7 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
   if (!spfChecked) notes.push('spf-unknown');
   if (p.p === 'quarantine' && p.pct >= 100 && !blockers.length && agg.messages) notes.push('quarantine');
   if (rows.some((r) => r.dispositions.reject > 0 && (r.cls === 'yours' || r.cls === 'third-party'))) notes.push('rejected-now');
+  if (rows.some((r) => passesAll(r.spfNow))) notes.push('spf-all');
   return {
     domain: agg.domain,
     messages: agg.messages,

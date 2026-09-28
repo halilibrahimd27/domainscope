@@ -10,7 +10,7 @@ import {
   passportDomain, dnsProviderOf, dnsHosting, mailPlatformOf, spfSenders, txtVendorOf, saasFingerprints, registryWhois,
   rdapStatusFlags, serialDate, lookupStatus, passportCards, cardsOfLookup, passportDns, runLookup, buildPassport,
   registrationCard, dnsCard, mailCard, webCard, certsCard, saasCard, healthCard,
-  certspotterIssuersUrl, crtshIssuersUrl, issuersFromCertspotter, issuersFromCrtsh, lookupCtIssuers, passportSummaryFacts
+  certspotterIssuersUrl, crtshIssuersUrl, issuersFromCertspotter, issuersFromCrtsh, lookupCtIssuers, passportSummaryFacts, issuerName, dnPart
 } from '../../assets/js/lib/passport.js';
 import { domainHealth } from '../../assets/js/lib/health.js';
 import { ctNoteKey } from '../../assets/js/views/domain.js';
@@ -583,6 +583,18 @@ function issuance(id, { dn = LE, friendly = "Let's Encrypt", caa = ['letsencrypt
 }
 
 describe('CT issuers', () => {
+  test('issuerName and dnPart: the known CA, else the O, else the CN; one DN attribute, "," or "/" separated', () => {
+    assert.equal(issuerName("C=US, O=Let's Encrypt, CN=R11"), "Let's Encrypt");
+    assert.equal(issuerName('C=US, O=Example Private CA, CN=Example Issuing CA 1'), 'Example Private CA');
+    assert.equal(issuerName('CN=Example Test CA'), 'Example Test CA');
+    assert.equal(issuerName('C=US, O=Example Corp', 'Example Operator'), 'Example Operator');
+    assert.equal(issuerName(''), '?');
+    assert.equal(dnPart('/C=US/O=Example Corp/CN=Example CA', 'O'), 'Example Corp');
+    assert.equal(dnPart('C=US, O="Example, Inc.", CN=R1', 'O'), 'Example, Inc.');
+    assert.equal(dnPart('C=US, O=Example', 'CN'), null);
+    assert.equal(dnPart(null, 'CN'), null);
+  });
+
   test('the request URLs: one single-host Cert Spotter query with the issuer expanded; the crt.sh identity search', () => {
     assert.equal(certspotterIssuersUrl('Example.COM'), 'https://api.certspotter.com/v1/issuances?domain=example.com&match_wildcards=true&expand=issuer&expand=issuer.caa_domains&expand=issuer.operator');
     assert.equal(crtshIssuersUrl('example.com'), 'https://crt.sh/?q=example.com&output=json&exclude=expired');

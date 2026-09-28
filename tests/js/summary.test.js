@@ -1007,6 +1007,17 @@ describe('rendering and dispatch', () => {
     assert.deepEqual([...S.SUMMARY_KINDS].sort(), Object.keys(S.PERMALINK_PARAMS).sort());
   });
 
+  test('textParts and renderParts: a title\'s string params as code parts, one line by the renderers\' rule', () => {
+    const parts = S.textParts(i18n.t, 'health.dmarc.inherited.title', { org: '@team <b>example.com' });
+    assert.deepEqual(parts, ['DMARC inherited from ', { code: '@team <b>example.com' }]);
+    assert.deepEqual(S.textParts(i18n.t, 'health.spf.lookups-ok.title', { count: 3, limit: 10 }), ['SPF uses 3 of 10 DNS lookups']);
+    const line = [{ strong: 'NEW' }, ' ', { code: 'www.example.com' }, `: *moved* ${RLO}→ [x](y)`];
+    assert.equal(S.renderParts(line), '**NEW** `www.example.com`: \\*moved\\* → \\[x\\](y)');
+    assert.equal(S.renderParts(line, 'text'), 'NEW www.example.com: *moved* → [x](y)');
+    assert.equal(S.renderParts(parts), 'DMARC inherited from `@team <b>example.com`');
+    assert.equal(S.renderParts(null), '');
+  });
+
   test('renderSummary picks the format; no URL → no link in the footer', () => {
     const doc = S.zoneSummary({ origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, { ...opts(), url: null });
     assert.equal(S.renderSummary(doc, 'text'), txt(doc));

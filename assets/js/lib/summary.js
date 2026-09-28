@@ -249,13 +249,14 @@ const MARKED = new RegExp(`${MARK_OPEN}(\\d+)${MARK_CLOSE}`);
  * A translated text as parts with its quoted values as code spans: every string param that is
  * not a plain number (a name, a record value, a line of the file; each item of a list) goes
  * through `t` as a mark and is split back out, so the sentence stays translated and the value
- * stays inert. Numbers stay numbers (plural forms).
+ * stays inert. Numbers stay numbers (plural forms). Also used by the headless runner's
+ * "Changes since the baseline" (tools/ds), whose finding titles quote the same values.
  * @param {Function} t
  * @param {string} key
  * @param {Record<string, unknown>} [params]
  * @returns {SummaryPart[]}
  */
-function textParts(t, key, params) {
+export function textParts(t, key, params) {
   const values = [];
   const mark = (v) => {
     if (typeof v !== 'string' || !v.trim() || /^\d+$/.test(v.trim())) return v;
@@ -996,6 +997,18 @@ export function renderPlainText(summary) {
   const lines = summary.lines.map((l) => joinParts(l, partText));
   const body = summary.inline ? [`${title}: ${lines.join(' · ')}`] : [title, ...lines.map((l) => `- ${l}`)];
   return `${[...body, footerLine(summary.footer, cleanText)].join('\n')}\n`;
+}
+
+/**
+ * One line of parts in one of {@link SUMMARY_FORMATS}, by the rule of {@link renderMarkdown} /
+ * {@link renderPlainText} (code spans for untrusted values, the rest escaped or cleaned). Used by
+ * the headless runner (tools/ds) for its "Changes since the baseline" lines.
+ * @param {SummaryPart[]} parts
+ * @param {'markdown'|'text'} [format='markdown']
+ * @returns {string}
+ */
+export function renderParts(parts, format = 'markdown') {
+  return joinParts(Array.isArray(parts) ? parts : [], format === 'text' ? partText : partMarkdown);
 }
 
 /**

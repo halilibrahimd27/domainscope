@@ -1185,14 +1185,26 @@ function parseUtc(value) {
   return Number.isNaN(ms) ? null : new Date(ms);
 }
 
-/** The O (else CN) of a DN string ('C=US, O=Let's Encrypt, CN=R11' → "Let's Encrypt"). */
-function dnPart(dn, key) {
+/**
+ * One attribute of a DN string (`dnPart('C=US, O=Let's Encrypt, CN=R11', 'O')` → "Let's Encrypt"),
+ * `,` or `/` separated; null when it is not there. Also used by the headless runner (tools/ds).
+ * @param {string} dn
+ * @param {string} key attribute type (O, CN, …)
+ * @returns {string|null}
+ */
+export function dnPart(dn, key) {
   const m = new RegExp(`(?:^|[,/]\\s*)${key}=("(?:[^"\\\\]|\\\\.)*"|[^,/]+)`, 'i').exec(String(dn ?? ''));
   return m ? m[1].replace(/^"|"$/g, '').trim() : null;
 }
 
-/** The name an issuer is listed under: the known CA (health.CAA_ISSUERS), else the DN's O, else its CN. */
-function issuerName(dn, friendly) {
+/**
+ * The name an issuer is listed under: the known CA (health.CAA_ISSUERS), else the DN's O, else
+ * its CN. Also used by the headless runner (tools/ds), so its CT issuers read like the card's.
+ * @param {string} dn issuer DN
+ * @param {string|null} [friendly] Cert Spotter's operator / friendly name
+ * @returns {string}
+ */
+export function issuerName(dn, friendly) {
   const known = caaIssuerInfo(dn);
   if (known.length) return known[0].name;
   return (typeof friendly === 'string' && friendly.trim()) || dnPart(dn, 'O') || dnPart(dn, 'CN') || String(dn || '').trim() || '?';

@@ -66,7 +66,7 @@ registerStrings('en', {
   'egress.never.inventory': 'Your server inventory: never uploaded, and server names are never sent. An origin address from it leaves only through Verify’s opt-in origin check.',
   'egress.never.workspace': 'Workspaces: notes, expected CAs and the stored lists stay in this browser, and a workspace leaves only as a hand-over file you export. Custom and learned names are tried as DNS lookups under the domains you scan.',
   'egress.never.tracking': 'Analytics, cookies and tracking: there are none, and requests carry no referrer. Like any website, each service sees your IP address.',
-  'egress.how': 'How it is counted: each request the page’s code starts and each one your browser reports (Resource Timing), whichever is higher, so a request that got no answer counts too. What a service received comes from DomainScope’s registry of endpoints, which a test keeps in step with the code. Requests your browser makes on its own behalf (its updates, safe-browsing checks) and links you open yourself are not the page’s and are not listed.',
+  'egress.how': 'How it is counted: each request the page’s code starts and each one your browser reports (Resource Timing), whichever is higher, so a request that got no answer counts too. What a service received comes from DomainScope’s registry of endpoints, which a test keeps in step with the code, and where the address alone cannot tell (which kind of Globalping check) from what the page’s code says about the request. Requests your browser makes on its own behalf (its updates, safe-browsing checks) and links you open yourself are not the page’s and are not listed.',
   'egress.noResourceTiming': 'This browser does not report Resource Timing, so only the requests the page’s code starts are counted.',
   'egress.version.bundle': 'This page runs deploy {version}',
   'egress.version.commit': 'commit {commit}',
@@ -94,7 +94,8 @@ registerStrings('tr', {
   'egress.unknown': 'Kayıtta yok',
   'egress.unknownTitle': 'DomainScope’un kodu bu sunucuya hiçbir şey göndermez',
   'egress.unknownAlert': {
-    other: '{count} sunucu DomainScope’un kullandığı bir hizmet değil ve kodu bunlara hiçbir şey göndermez. İsteği bu sayfaya bir tarayıcı eklentisi eklemiş olabilir.'
+    one: '{count} sunucu DomainScope’un kullandığı bir hizmet değil ve kodu ona hiçbir şey göndermez. İsteği bu sayfaya bir tarayıcı eklentisi eklemiş olabilir.',
+    other: '{count} sunucu DomainScope’un kullandığı bir hizmet değil ve kodu bunlara hiçbir şey göndermez. İstekleri bu sayfaya bir tarayıcı eklentisi eklemiş olabilir.'
   },
   'egress.failed': { other: '{count} tanesi yanıt almadı' },
   'egress.role.site': 'Uygulamanın kendi dosyaları',
@@ -122,10 +123,10 @@ registerStrings('tr', {
   'egress.never.inventory': 'Sunucu envanteriniz: hiçbir yere yüklenmez, sunucu adları asla gönderilmez. İçindeki bir origin adresi yalnızca Doğrula’nın isteğe bağlı asıl sunucu kontrolüyle çıkar.',
   'egress.never.workspace': 'Çalışma alanları: notlar, beklenen CA’lar ve saklanan listeler bu tarayıcıda kalır; bir çalışma alanı yalnızca sizin dışa aktardığınız devir dosyası olarak çıkar. Özel ve öğrenilen adlar, taradığınız alan adlarının altında DNS sorgusu olarak denenir.',
   'egress.never.tracking': 'Analitik, çerez ve izleme: hiçbiri yok; istekler referrer bilgisi taşımaz. Her web sitesinde olduğu gibi her hizmet IP adresinizi görür.',
-  'egress.how': 'Nasıl sayılır: sayfanın kodunun başlattığı her istek ve tarayıcınızın bildirdiği her istek (Resource Timing), hangisi çoksa; yanıt almayan bir istek de sayılır. Bir hizmetin ne aldığı, DomainScope’un uç nokta kaydından gelir ve bir test bu kaydı kodla uyumlu tutar. Tarayıcınızın kendi adına yaptığı istekler (güncellemeleri, güvenli tarama kontrolleri) ve sizin açtığınız bağlantılar sayfaya ait değildir, listelenmez.',
+  'egress.how': 'Nasıl sayılır: sayfanın kodunun başlattığı her istek ve tarayıcınızın bildirdiği her istek (Resource Timing), hangisi çoksa; yanıt almayan bir istek de sayılır. Bir hizmetin ne aldığı, bir testin kodla uyumlu tuttuğu DomainScope uç nokta kaydından gelir; adresin tek başına söyleyemediği durumda (Globalping kontrolünün türü) ise sayfanın kodunun istek hakkında söylediğinden gelir. Tarayıcınızın kendi adına yaptığı istekler (güncellemeleri, güvenli tarama kontrolleri) ve sizin açtığınız bağlantılar sayfaya ait değildir, listelenmez.',
   'egress.noResourceTiming': 'Bu tarayıcı Resource Timing bildirmiyor; yalnızca sayfanın kodunun başlattığı istekler sayılıyor.',
   'egress.version.bundle': 'Bu sayfa {version} sürümünü çalıştırıyor',
-  'egress.version.commit': '{commit} commit’i',
+  'egress.version.commit': 'commit {commit}',
   'egress.version.noCommit': 'commit adı olmadan derlendi',
   'egress.version.unread': 'sürüm dosyası okunamadı',
   'egress.version.dev': 'Geliştirme kopyası: depodan olduğu gibi sunuluyor, bu yüzden bir yayın sürümü yok.'
@@ -264,7 +265,9 @@ export function EgressPanel({ repoUrl, signal = null }) {
 
 /**
  * The deploy line: the version the page's URL names, and the commit its version file gives (a
- * link to it). Only a page of the Pages bundle asks for the file; the repository has none.
+ * link to it). Only a page of the Pages bundle asks for the file; the repository has none. Until
+ * the file answers the line names the deploy alone (`data-state="reading"`), so it never says
+ * "no commit" of a bundle that has one.
  * @param {HTMLElement} host
  * @param {{ repoUrl: string, signal?: AbortSignal|null, moduleUrl?: string }} opts
  */
@@ -275,17 +278,21 @@ async function renderVersion(host, { repoUrl, signal, moduleUrl = import.meta.ur
     host.dataset.version = '';
     return;
   }
-  const show = (file, unread) => {
+  /** @param {'reading'|'read'|'unread'} state */
+  const show = (file, state) => {
     clear(host);
     host.dataset.version = info.version;
-    host.append(Icon('git-branch', { size: 14 }), ' ', t('egress.version.bundle', { version: info.version }), ' · ');
+    host.dataset.state = state;
+    host.append(Icon('git-branch', { size: 14 }), ' ', t('egress.version.bundle', { version: info.version }));
+    if (state === 'reading') return;
+    host.append(' · ');
     if (file && file.commit) {
       host.append(ExternalLink(`${String(repoUrl).replace(/\/+$/, '')}/commit/${file.commit}`, t('egress.version.commit', { commit: file.commit.slice(0, 12) }), { className: 'mono' }));
     } else {
-      host.append(t(unread ? 'egress.version.unread' : 'egress.version.noCommit'));
+      host.append(t(state === 'unread' ? 'egress.version.unread' : 'egress.version.noCommit'));
     }
   };
-  show(null, false);
+  show(null, 'reading');
   let file = null;
   try {
     file = parseVersionFile(await fetchJson(versionFileUrl(moduleUrl), { signal: signal || undefined, timeoutMs: 8000, headers: { accept: 'application/json' } }));
@@ -294,5 +301,5 @@ async function renderVersion(host, { repoUrl, signal, moduleUrl = import.meta.ur
   }
   if (signal && signal.aborted) return;
   // A file of another version (a cache serving a newer deploy's) names nothing about this page.
-  show(file && file.version === info.version ? file : null, !file);
+  show(file && file.version === info.version ? file : null, file ? 'read' : 'unread');
 }

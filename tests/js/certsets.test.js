@@ -10,7 +10,7 @@ import { parseCertificates, leafCertificates } from '../../assets/js/lib/x509.js
 import { toCsv } from '../../assets/js/lib/export.js';
 import {
   SKIP_ISSUES, WORKLIST_COLUMNS, assignSet, certSetsJson, cliCertFiles, groupCertSets, keyTypeOf, planRenewal,
-  renewalBundle, setId, setOfName, workListRows
+  fileForLeaf, primaryFile, renewalBundle, setId, setOfName, withoutLeaf, workListRows, leafKey
 } from '../../assets/js/lib/certsets.js';
 
 const read = (f) => readFileSync(new URL(`../fixtures/${f}`, import.meta.url));
@@ -70,12 +70,18 @@ describe('renewalBundle — leaves and sets', () => {
     assert.equal(b.leaves[1].keySlug, 'ecdsa');
   });
 
-  test('several PEM blocks pasted at once give every leaf, in the order pasted', () => {
+  test('several PEM blocks pasted at once give every leaf; sets in the order pasted, a set\'s certificates by key type', () => {
     const text = [RSA_B, EC_A, RSA_A].map((f) => read(f).toString('utf8')).join('\n');
     const b = renewalBundle([{ name: 'pasted', result: parseCertificates(text) }]);
     assert.deepEqual(b.sets.map((s) => [s.id, s.names[0], s.keyTypes.join('+')]),
-      [['A', 'pay.example.com', 'RSA 2048'], ['B', 'example.com', 'ECDSA P-256+RSA 2048']]);
+      [['A', 'pay.example.com', 'RSA 2048'], ['B', 'example.com', 'RSA 2048+ECDSA P-256']]);
     assert.deepEqual(b.sets[1].files, ['pasted']);
+    assert.deepEqual(b.leaves.map((l) => l.keySlug), ['rsa', 'ecdsa', 'rsa'], 'leaves stay in load order');
+    // a folder lists files by name: the ECDSA twin before the RSA one, the same set either way
+    const folder = renewalBundle([load(EC_A, 'a-ecdsa.pem'), load(RSA_A, 'a-rsa.pem')]);
+    assert.deepEqual(folder.sets[0].keyTypes, ['RSA 2048', 'ECDSA P-256']);
+    assert.deepEqual(folder.sets[0].files, ['a-rsa.pem', 'a-ecdsa.pem']);
+    assert.deepEqual(cliCertFiles(folder.sets).map((f) => f.file), ['new-cert-a-rsa.pem', 'new-cert-a-ecdsa.pem']);
   });
 
   test('the same certificate from two files is one leaf with both file names (a folder with cert.pem and fullchain.pem)', () => {
@@ -102,8 +108,59 @@ describe('renewalBundle — leaves and sets', () => {
     assert.ok(b.chain[0].isCA);
   });
 
+  test('withoutLeaf removes one certificate from every file; a file left without a leaf goes, one that never had one stays', () => {
+    const pasted = { name: 'pasted', result: parseCertificates(`${read(RSA_A)}\n${read(EC_A)}`) };
+    const files = [load('ec_wildcard.key', 'privkey.pem'), pasted, load(RSA_A, 'cert.pem'), load('chain.pem', 'fullchain.pem')];
+    const b = renewalBundle(files);
+    const rsaKey = b.leaves.find((l) => l.keySlug === 'rsa' && l.names[0] === 'example.com').key;
+    const next = withoutLeaf(files, rsaKey);
+    assert.deepEqual(next.map((f) => f.name), ['privkey.pem', 'pasted', 'fullchain.pem'], 'cert.pem held only that leaf');
+    assert.equal(next[0], files[0]);
+    assert.notEqual(next[1], files[1], 'a changed file is a copy');
+    assert.deepEqual(next[1].result.certificates.map((c) => c.keyAlgorithm), ['EC']);
+    assert.equal(next[1].result.leaf.keyAlgorithm, 'EC');
+    assert.equal(files[1].result.certificates.length, 2, 'the input is not mutated');
+    assert.equal(renewalBundle(next).leaves.length, 2);
+    // the leaf of fullchain.pem: its root alone adds nothing, so the file goes
+    const chainKey = renewalBundle([files[3]]).leaves[0].key;
+    assert.deepEqual(withoutLeaf(files, chainKey).map((f) => f.name), ['privkey.pem', 'pasted', 'cert.pem']);
+    assert.equal(leafKey(files[2].result.leaf), rsaKey);
+    assert.deepEqual(withoutLeaf(null, 'x'), []);
+  });
+
+  test('skipped entries say which file (index) or leaf (key) to remove', () => {
+    const files = [load(RSA_A), load('ec_wildcard.key', 'privkey.pem'), load('x509_v1_legacy.pem', 'legacy.pem')];
+    const { skipped } = renewalBundle(files);
+    assert.deepEqual(skipped.map((s) => [s.file, s.index, s.issue]), [['privkey.pem', 1, 'no-certificate'], ['legacy.pem', 2, 'no-names']]);
+    assert.equal(typeof skipped[1].key, 'string');
+    assert.deepEqual(withoutLeaf(files, skipped[1].key).map((f) => f.name), [RSA_A, 'privkey.pem']);
+  });
+
+  test('fileForLeaf: the file itself when it shows that leaf, else a copy with it as the leaf and the chain', () => {
+    const pasted = { name: 'pasted', source: 'paste', result: parseCertificates(`${read(RSA_A)}\n${read(EC_A)}\n${read('ca.pem')}`) };
+    const b = renewalBundle([pasted]);
+    const [rsa, ec] = b.leaves;
+    assert.equal(fileForLeaf([pasted], rsa.key), pasted);
+    const copy = fileForLeaf([pasted], ec.key);
+    assert.notEqual(copy, pasted);
+    assert.deepEqual([copy.name, copy.source], ['pasted', 'paste']);
+    assert.equal(copy.result.leaf.keyAlgorithm, 'EC');
+    assert.deepEqual(copy.result.certificates.map((c) => (c.isCA ? 'CA' : c.keyAlgorithm)), ['EC', 'CA'], 'the chain stays, the other leaf goes');
+    assert.equal(fileForLeaf([pasted], 'nope'), null);
+  });
+
+  test('primaryFile: the first file with a leaf, else the first', () => {
+    const key = load('ec_wildcard.key', 'privkey.pem');
+    const a = load(RSA_A);
+    assert.equal(primaryFile([key, a]), a);
+    assert.equal(primaryFile([key]), key);
+    assert.equal(primaryFile([load('ca.pem'), a]), a);
+    assert.equal(primaryFile([]), null);
+  });
+
   test('nothing loaded, nothing to group', () => {
-    assert.deepEqual(renewalBundle([]), { leaves: [], sets: [], chain: [], skipped: [], duplicates: 0 });
+    assert.deepEqual(renewalBundle([]), { leaves: [], sets: [], chain: [], skipped: [], duplicates: 0, keyFiles: [] });
+    assert.deepEqual(renewalBundle([load('with_key.pem'), load('ec_wildcard.key')]).keyFiles, ['with_key.pem'], 'a key file without a certificate is a skipped file instead');
     assert.deepEqual(renewalBundle(null).sets, []);
     assert.deepEqual(groupCertSets([{ names: [] }, null]), []);
   });

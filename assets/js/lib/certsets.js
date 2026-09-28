@@ -64,14 +64,25 @@ const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
  * @property {RenewalLeaf[]} leaves in load order
  * @property {CertSet[]} sets
  * @property {object[]} chain the other certificates of the files (intermediates, roots), deduplicated
- * @property {Array<{ file: string, issue: string, codes: string[], subject?: string, count?: number }>} skipped
- *   files (or leaves) that add nothing: 'no-certificate' (a key, a CSR, a PKCS#12 bundle, junk;
- *   `codes` are the parser's warning codes), 'ca-only' (CA certificates only, `count` of them),
- *   'no-names' (a leaf without a DNS name, `subject` its CN or DN)
+ * @property {Array<{ file: string, index: number, issue: string, codes: string[], subject?: string, count?: number, key?: string }>} skipped
+ *   files (or leaves) that add nothing, `index` being the file's position in the input: 'no-certificate'
+ *   (a key, a CSR, a PKCS#12 bundle, junk; `codes` are the parser's warning codes), 'ca-only' (CA
+ *   certificates only, `count` of them), 'no-names' (a leaf without a DNS name: `subject` its CN or
+ *   DN, `key` its {@link leafKey}, for {@link withoutLeaf})
  * @property {number} duplicates leaves that were already loaded from another file
+ * @property {string[]} keyFiles files that also held a private key (ignored, never displayed)
  */
 
 const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+
+/**
+ * A certificate's identity across files ({@link RenewalLeaf} `key`): its DER as hex.
+ * @param {object} cert x509 Certificate
+ * @returns {string}
+ */
+export function leafKey(cert) {
+  return derKey(cert);
+}
 
 /** The DER of a certificate as hex (identity across files). */
 function derKey(cert) {
@@ -123,9 +134,18 @@ export function setId(index) {
 
 const time = (d) => (d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : null);
 
+/** A set's certificates by key type, whatever the order they were loaded in (a folder lists files by name). */
+const KEY_ORDER = ['rsa', 'ecdsa', 'ed25519', 'ed448', 'dsa', 'cert'];
+const keyRank = (leaf) => {
+  const i = KEY_ORDER.indexOf(leaf.keySlug);
+  return i < 0 ? KEY_ORDER.length : i;
+};
+
 /**
  * Leaves whose name sets are equal form one set (an RSA + ECDSA pair for the same names is one
- * set with two key types). Sets keep the order their first leaf was loaded in.
+ * set with two key types). Sets keep the order their first leaf was loaded in; within a set the
+ * certificates go by key type (RSA, ECDSA, Ed25519, Ed448, DSA), then load order, so the list and
+ * the CLI's file names do not depend on the order the files came in.
  * @param {RenewalLeaf[]} leaves
  * @returns {CertSet[]}
  */
@@ -142,13 +162,18 @@ export function groupCertSets(leaves) {
       byNames.set(k, set);
     }
     set.leaves.push(leaf);
-    set.certs.push(leaf.cert);
-    if (!set.keyTypes.includes(leaf.keyType)) set.keyTypes.push(leaf.keyType);
-    for (const f of leaf.files) if (!set.files.includes(f)) set.files.push(f);
-    const end = time(leaf.cert && leaf.cert.notAfter);
-    if (end !== null) {
-      if (set.notAfter === null || end > set.notAfter.getTime()) set.notAfter = new Date(end);
-      if (set.expires === null || end < set.expires.getTime()) set.expires = new Date(end);
+  }
+  for (const set of sets) {
+    set.leaves = set.leaves.map((leaf, i) => ({ leaf, i })).sort((a, b) => keyRank(a.leaf) - keyRank(b.leaf) || a.i - b.i).map((x) => x.leaf);
+    for (const leaf of set.leaves) {
+      set.certs.push(leaf.cert);
+      if (!set.keyTypes.includes(leaf.keyType)) set.keyTypes.push(leaf.keyType);
+      for (const f of leaf.files) if (!set.files.includes(f)) set.files.push(f);
+      const end = time(leaf.cert && leaf.cert.notAfter);
+      if (end !== null) {
+        if (set.notAfter === null || end > set.notAfter.getTime()) set.notAfter = new Date(end);
+        if (set.expires === null || end < set.expires.getTime()) set.expires = new Date(end);
+      }
     }
   }
   return sets;
@@ -168,15 +193,17 @@ export function renewalBundle(files) {
   const noNames = new Set();
   const skipped = [];
   let duplicates = 0;
-  for (const f of Array.isArray(files) ? files : []) {
-    if (!f || typeof f !== 'object') continue;
+  const keyFiles = [];
+  (Array.isArray(files) ? files : []).forEach((f, index) => {
+    if (!f || typeof f !== 'object') return;
     const file = String(f.name ?? '');
     const result = f.result && typeof f.result === 'object' ? f.result : f;
     const certs = Array.isArray(result.certificates) ? result.certificates.filter(Boolean) : [];
     const codes = [...new Set((Array.isArray(result.warnings) ? result.warnings : []).map((w) => w && w.code).filter(Boolean))];
+    if (certs.length && codes.includes('PRIVATE_KEY_PRESENT') && !keyFiles.includes(file)) keyFiles.push(file);
     if (!certs.length) {
-      skipped.push({ file, issue: 'no-certificate', codes });
-      continue;
+      skipped.push({ file, index, issue: 'no-certificate', codes });
+      return;
     }
     const ends = leafCertificates(certs);
     for (const c of certs) {
@@ -188,8 +215,8 @@ export function renewalBundle(files) {
       }
     }
     if (!ends.length) {
-      skipped.push({ file, issue: 'ca-only', codes, count: certs.length });
-      continue;
+      skipped.push({ file, index, issue: 'ca-only', codes, count: certs.length });
+      return;
     }
     for (const cert of ends) {
       const key = derKey(cert);
@@ -201,7 +228,7 @@ export function renewalBundle(files) {
       }
       const names = namesOf(cert);
       if (!names.length) {
-        if (!noNames.has(key)) skipped.push({ file, issue: 'no-names', codes, subject: cert.subjectCN || cert.subjectDN || '' });
+        if (!noNames.has(key)) skipped.push({ file, index, issue: 'no-names', codes, subject: cert.subjectCN || cert.subjectDN || '', key });
         noNames.add(key);
         continue;
       }
@@ -210,8 +237,78 @@ export function renewalBundle(files) {
       byKey.set(key, leaf);
       leaves.push(leaf);
     }
+  });
+  return { leaves, sets: groupCertSets(leaves), chain, skipped, duplicates, keyFiles };
+}
+
+const certsOfFile = (f) => {
+  const result = f && f.result && typeof f.result === 'object' ? f.result : f;
+  return result && Array.isArray(result.certificates) ? result.certificates.filter(Boolean) : [];
+};
+
+/**
+ * The files without one certificate of the renewal (its Remove button): every file holding it
+ * loses it, and a file left without a leaf is dropped (a fullchain.pem whose leaf is removed
+ * would only add its chain). Files that never had a leaf (a key, a CSR) stay until removed
+ * themselves. Changed files are shallow copies with a new `result` (`certificates`, `leaf`).
+ * @template {CertFileInput} F
+ * @param {F[]} files
+ * @param {string} key {@link leafKey} of the certificate
+ * @returns {F[]}
+ */
+export function withoutLeaf(files, key) {
+  const out = [];
+  for (const f of Array.isArray(files) ? files : []) {
+    if (!f) continue;
+    const certs = certsOfFile(f);
+    const kept = certs.filter((c) => derKey(c) !== key);
+    if (kept.length === certs.length) {
+      out.push(f);
+      continue;
+    }
+    const leaves = leafCertificates(kept);
+    if (!leaves.length) continue;
+    const result = f.result && typeof f.result === 'object' ? f.result : f;
+    const next = { ...result, certificates: kept, leaf: leaves[0] };
+    out.push(f.result && typeof f.result === 'object' ? { ...f, result: next } : next);
   }
-  return { leaves, sets: groupCertSets(leaves), chain, skipped, duplicates };
+  return out;
+}
+
+/**
+ * The file that stands for the renewal where one certificate is shown (the Certificate view):
+ * the first file with a leaf certificate, else the first file; null without files.
+ * @template {CertFileInput} F
+ * @param {F[]} files
+ * @returns {F|null}
+ */
+export function primaryFile(files) {
+  const list = (Array.isArray(files) ? files : []).filter(Boolean);
+  return list.find((f) => leafCertificates(certsOfFile(f)).length > 0) || list[0] || null;
+}
+
+/**
+ * A file that shows one certificate of the renewal on its own (Details on it): the file it came
+ * from when that file's `leaf` is it, else a copy of that file with it as the leaf, next to the
+ * file's CA certificates (its chain) but without the file's other leaves.
+ * @template {CertFileInput} F
+ * @param {F[]} files
+ * @param {string} key {@link leafKey} of the certificate
+ * @returns {F|null} null when no file holds it
+ */
+export function fileForLeaf(files, key) {
+  for (const f of Array.isArray(files) ? files : []) {
+    if (!f) continue;
+    const certs = certsOfFile(f);
+    const cert = certs.find((c) => derKey(c) === key);
+    if (!cert) continue;
+    const result = f.result && typeof f.result === 'object' ? f.result : f;
+    if (result.leaf === cert) return f;
+    const others = leafCertificates(certs);
+    const next = { ...result, certificates: [cert, ...certs.filter((c) => c !== cert && !others.includes(c))], leaf: cert };
+    return f.result && typeof f.result === 'object' ? { ...f, result: next } : next;
+  }
+  return null;
 }
 
 /** Number of labels of a name ('*.shop.example.com' → 4). */

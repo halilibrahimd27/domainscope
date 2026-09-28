@@ -660,11 +660,14 @@ export function createState({
      * 'ssds.*' key from localStorage (settings, remembered view options, the active-workspace
      * pointer) and from this tab's session storage, reset all slices (session too) and notify:
      * 'inventory', 'settings', 'workspaces', then 'cleared'. Memory is reset at once; the promise
-     * says whether the storage was really emptied.
-     * @returns {Promise<boolean>} true when localStorage was cleaned and the database deleted
+     * says whether the storage was really emptied. A storage the browser blocks held nothing:
+     * there is nothing left behind in it (`persistence` / `workspacePersistence` tell the
+     * message which storage there was).
+     * @returns {Promise<boolean>} false only when something stored could not be removed (a
+     *   localStorage that throws on removal, a database whose deletion failed)
      */
     clearAll() {
-      let ok = !!storage;
+      let ok = true;
       if (storage) {
         try {
           removePrefixed(storage);

@@ -26,6 +26,7 @@ import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { HttpError } from '../../assets/js/lib/util.js';
 import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 import { NAV_GROUPS } from '../../assets/js/lib/shellnav.js';
+import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
@@ -602,6 +603,39 @@ describe('state', () => {
     stuck.fail.add('destroy');
     assert.equal(await t2.clearAll(), false);
     assert.ok(t2.workspaceError);
+  });
+
+  test('clearAll with storage blocked: nothing was stored, so nothing failed, and the message says so', async () => {
+    // Safari "Block all cookies": no localStorage, no sessionStorage, the workspaces in memory.
+    const s = createState({ storage: null, sessionStore: null, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: createMemoryBackend() }) });
+    await s.ready;
+    s.setInventory('web01 10.0.0.5');
+    const ok = await s.clearAll();
+    assert.equal(ok, true);
+    assert.equal(s.inventory.servers.length, 0);
+    const blocked = clearedMessage(s, ok);
+    assert.deepEqual(blocked, { type: 'success', text: i18n.t('ws.clearedMemory') });
+    assert.ok(!/IndexedDB/.test(blocked.text), 'no database is claimed');
+    // localStorage works, IndexedDB does not: the workspaces were in this tab only.
+    const noDb = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: createMemoryBackend() }) });
+    await noDb.ready;
+    assert.deepEqual(clearedMessage(noDb, await noDb.clearAll()), { type: 'success', text: i18n.t('ws.clearedNoDb') });
+    // Both stored: the database is named.
+    const full = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: createMemoryBackend([], { persistent: true }) }) });
+    await full.ready;
+    const cleared = clearedMessage(full, await full.clearAll());
+    assert.equal(cleared.text, i18n.t('ws.cleared'));
+    assert.ok(/IndexedDB/.test(cleared.text));
+    // A localStorage that throws on removal is a real failure, with its reason in words.
+    const stuck = new MemoryStorage({ 'ssds.settings': '{}' });
+    stuck.removeItem = () => {
+      throw Object.assign(new Error('The operation is insecure.'), { name: 'SecurityError' });
+    };
+    const failing = createState({ storage: stuck, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: createMemoryBackend([], { persistent: true }) }) });
+    await failing.ready;
+    const failed = clearedMessage(failing, await failing.clearAll());
+    assert.equal(failed.type, 'error');
+    assert.equal(failed.text, i18n.t('ws.clearFailed', { reason: i18n.t('ws.why.denied') }));
   });
 
   test('handleExternalChange re-reads the settings another tab wrote (workspaces tell each other themselves)', async () => {

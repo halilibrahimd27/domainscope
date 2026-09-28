@@ -3,17 +3,28 @@
  * header, next to the current-target chip, and its entry at the top of the phone Tools menu
  * (below 720 px the header has no room for it). Both open the Workspaces dialog
  * (ui/workspace-panel.js, loaded on first use). Also the name a workspace goes by everywhere:
- * Default is named in the page's language.
+ * Default is named in the page's language (and neither language's name is free for another
+ * workspace), and a storage error in words ({@link storageErrorText}).
  *
  * Every string is rendered through h() / text nodes.
  */
 
 import { h } from './dom.js';
 import { Button, Icon, toast } from './components.js';
-import { t, registerStrings } from '../i18n.js';
+import { t, registerStrings, LANGS } from '../i18n.js';
+import { normalizeWorkspaceName } from '../lib/workspace.js';
+
+/** What Default is called in each language (no other workspace may take one of these names). */
+const DEFAULT_NAMES = Object.freeze({ en: 'Default', tr: 'Varsayılan' });
+
+/**
+ * Why a workspace write or "Delete all local data" failed, as the page words it (`ws.why.<reason>`):
+ * see {@link storageErrorText}.
+ */
+export const STORAGE_REASONS = Object.freeze(['idb-blocked', 'idb-timeout', 'quota', 'denied', 'not-found', 'other', 'unknown']);
 
 registerStrings('en', {
-  'ws.default': 'Default',
+  'ws.default': DEFAULT_NAMES.en,
   'ws.label': 'Workspace',
   'ws.open': 'Workspace: {name}. Switch or manage workspaces',
   'ws.menuSwitch': 'Switch or manage',
@@ -24,13 +35,22 @@ registerStrings('en', {
   'ws.switchStop': 'Stop and switch',
   'ws.switchAnyway': 'Switch anyway',
   'ws.loadFailed': 'The workspaces could not be opened: {message}',
-  'ws.switchFailed': 'The workspace could not be opened: {message}',
+  'ws.switchFailed': 'The workspace could not be opened: {reason}.',
   'ws.cleared': 'Local data deleted: every workspace (its IndexedDB database too), the settings and the remembered options.',
-  'ws.clearFailed': 'Not all local data could be deleted ({message}). Close DomainScope in your other tabs and try again.'
+  'ws.clearedNoDb': 'Local data deleted: every workspace, the settings and the remembered options. This browser gave the page no IndexedDB, so the workspaces were kept only in this tab.',
+  'ws.clearedMemory': 'Local data reset: this browser blocks storage for this page, so nothing was saved. The workspaces, the settings and the remembered options of this tab are back to their defaults.',
+  'ws.clearFailed': 'Not all local data could be deleted: {reason}.',
+  'ws.why.idb-blocked': 'another DomainScope tab kept the database open. Close DomainScope in your other tabs and try again',
+  'ws.why.idb-timeout': 'the browser did not open its storage in time',
+  'ws.why.quota': 'the browser’s storage for this site is full',
+  'ws.why.denied': 'the browser does not allow storage on this page',
+  'ws.why.not-found': 'the workspace was deleted in another tab',
+  'ws.why.other': 'the browser reported “{detail}”',
+  'ws.why.unknown': 'the browser gave no reason'
 });
 
 registerStrings('tr', {
-  'ws.default': 'Varsayılan',
+  'ws.default': DEFAULT_NAMES.tr,
   'ws.label': 'Çalışma alanı',
   'ws.open': 'Çalışma alanı: {name}. Çalışma alanlarını değiştirin veya yönetin',
   'ws.menuSwitch': 'Değiştir veya yönet',
@@ -41,9 +61,18 @@ registerStrings('tr', {
   'ws.switchStop': 'Durdur ve geç',
   'ws.switchAnyway': 'Yine de geç',
   'ws.loadFailed': 'Çalışma alanları açılamadı: {message}',
-  'ws.switchFailed': 'Çalışma alanı açılamadı: {message}',
+  'ws.switchFailed': 'Çalışma alanı açılamadı: {reason}.',
   'ws.cleared': 'Yerel veriler silindi: tüm çalışma alanları (IndexedDB veritabanıyla birlikte), ayarlar ve hatırlanan seçenekler.',
-  'ws.clearFailed': 'Yerel verilerin tümü silinemedi ({message}). DomainScope’u diğer sekmelerinizde kapatıp yeniden deneyin.'
+  'ws.clearedNoDb': 'Yerel veriler silindi: tüm çalışma alanları, ayarlar ve hatırlanan seçenekler. Bu tarayıcı sayfaya IndexedDB vermediği için çalışma alanları yalnızca bu sekmede tutuluyordu.',
+  'ws.clearedMemory': 'Yerel veriler sıfırlandı: bu tarayıcı bu sayfa için depolamayı engelliyor, bu yüzden hiçbir şey kaydedilmemişti. Bu sekmedeki çalışma alanları, ayarlar ve hatırlanan seçenekler varsayılanlarına döndü.',
+  'ws.clearFailed': 'Yerel verilerin tümü silinemedi: {reason}.',
+  'ws.why.idb-blocked': 'başka bir DomainScope sekmesi veritabanını açık tuttu. DomainScope’u diğer sekmelerinizde kapatıp yeniden deneyin',
+  'ws.why.idb-timeout': 'tarayıcı depolamasını zamanında açmadı',
+  'ws.why.quota': 'tarayıcının bu site için ayırdığı depolama dolu',
+  'ws.why.denied': 'tarayıcı bu sayfada depolamaya izin vermiyor',
+  'ws.why.not-found': 'çalışma alanı başka bir sekmede silindi',
+  'ws.why.other': 'tarayıcı “{detail}” bildirdi',
+  'ws.why.unknown': 'tarayıcı bir neden bildirmedi'
 });
 
 /**
@@ -54,6 +83,58 @@ registerStrings('tr', {
 export function workspaceLabel(ws) {
   if (!ws || ws.isDefault || ws.id === 'default' || !ws.name) return t('ws.default');
   return ws.name;
+}
+
+/**
+ * Every name Default goes by, one per language: no other workspace may be called one of them
+ * (after a language switch the list would show two rows of the same name).
+ * @returns {string[]}
+ */
+export function defaultWorkspaceNames() {
+  return LANGS.map((lang) => DEFAULT_NAMES[lang]);
+}
+
+/**
+ * Is `name` one of Default's names (any language; case and surrounding space ignored)?
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isDefaultWorkspaceName(name) {
+  const clean = normalizeWorkspaceName(name);
+  // Both casings: "VARSAYILAN" lower-cases to "varsayılan" only the Turkish way.
+  const keys = new Set([clean.toLowerCase(), clean.toLocaleLowerCase('tr')]);
+  return !!clean && defaultWorkspaceNames().some((n) => keys.has(n.toLowerCase()));
+}
+
+/**
+ * Why a workspace write or deletion failed, as one of {@link STORAGE_REASONS}: the browser's full
+ * storage, its refusal, workspace-db.js's timeout and blocked deletion, a workspace deleted in
+ * another tab; 'other' for any other error, 'unknown' without one.
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function storageReason(err) {
+  if (!err) return 'unknown';
+  const code = typeof err === 'object' ? err.code : null;
+  const name = typeof err === 'object' ? err.name : null;
+  if (code === 'idb-blocked' || code === 'idb-timeout' || code === 'not-found') return code;
+  // 22: the legacy DOMException code of a full storage.
+  if (name === 'QuotaExceededError' || code === 22) return 'quota';
+  if (name === 'SecurityError' || name === 'NotAllowedError') return 'denied';
+  return 'other';
+}
+
+/**
+ * {@link storageReason} in words, in the page's language (an unknown error keeps its own text,
+ * quoted).
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function storageErrorText(err) {
+  const reason = storageReason(err);
+  if (reason !== 'other') return t(`ws.why.${reason}`);
+  const detail = (err && typeof err === 'object' ? err.message || err.name : String(err)) || '';
+  return detail ? t('ws.why.other', { detail }) : t('ws.why.unknown');
 }
 
 /**
@@ -78,20 +159,31 @@ export function WorkspaceSwitch({ workspace, onOpen }) {
 }
 
 /**
- * "Delete all local data" (Settings, About): state.clearAll(), then a toast that says what went —
- * every workspace with its IndexedDB database, the settings and the remembered options — or why
- * not all of it could go.
- * @param {{ clearAll(): Promise<boolean>, workspaceError: Error|null, lastPersistError: Error|null }} state
+ * What "Delete all local data" says once state.clearAll() settled: what went — every workspace
+ * with its IndexedDB database, the settings and the remembered options; without an IndexedDB the
+ * workspaces of this tab only; with storage blocked altogether, that nothing had been saved — or
+ * why not all of it could go.
+ * @param {{ persistence: boolean, workspacePersistence: boolean, workspaceError: Error|null, lastPersistError: Error|null }} state
+ * @param {boolean} ok what clearAll() resolved to
+ * @returns {{ type: 'success'|'error', text: string }}
+ */
+export function clearedMessage(state, ok) {
+  if (!ok) return { type: 'error', text: t('ws.clearFailed', { reason: storageErrorText(state.workspaceError || state.lastPersistError) }) };
+  if (state.workspacePersistence) return { type: 'success', text: t('ws.cleared') };
+  return { type: 'success', text: t(state.persistence ? 'ws.clearedNoDb' : 'ws.clearedMemory') };
+}
+
+/**
+ * "Delete all local data" (Settings, About): state.clearAll(), then a toast with
+ * {@link clearedMessage}.
+ * @param {{ clearAll(): Promise<boolean>, persistence: boolean, workspacePersistence: boolean,
+ *   workspaceError: Error|null, lastPersistError: Error|null }} state
  * @returns {Promise<boolean>}
  */
 export async function deleteAllLocalData(state) {
   const ok = await state.clearAll();
-  if (ok) {
-    toast(t('ws.cleared'), { type: 'success', timeout: 7000 });
-  } else {
-    const err = state.workspaceError || state.lastPersistError;
-    toast(t('ws.clearFailed', { message: err ? err.message || String(err) : '—' }), { type: 'error', timeout: 0 });
-  }
+  const { type, text } = clearedMessage(state, ok);
+  toast(text, { type, timeout: ok ? 7000 : 0 });
   return ok;
 }
 

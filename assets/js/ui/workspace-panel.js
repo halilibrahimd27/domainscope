@@ -28,7 +28,7 @@ import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, uniqueWorkspaceName, sanitizeEx
 import { exportWorkspaceFile, readWorkspaceFile, openWorkspaceFile, HANDOVER_MAX_BYTES } from '../lib/handover.js';
 import { MIN_PASSWORD_LENGTH } from '../lib/cryptobox.js';
 import { resolveExpectedCa } from '../lib/expectedca.js';
-import { workspaceLabel } from './workspace-ui.js';
+import { workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageErrorText } from './workspace-ui.js';
 
 /** The hand-over file errors the dialog words itself (lib/handover.js HandoverError codes). */
 export const IMPORT_ERRORS = Object.freeze([
@@ -36,6 +36,8 @@ export const IMPORT_ERRORS = Object.freeze([
 ]);
 /** Why a name is refused (lib/workspace.js WorkspaceError codes). */
 export const NAME_ERRORS = Object.freeze(['name-empty', 'name-taken', 'limit']);
+/** What can be wrong with the export's password fields ({@link passwordProblem}). */
+export const PASSWORD_PROBLEMS = Object.freeze(['password-short', 'password-blank', 'mismatch']);
 /** How long typing in the notes or the expected CAs waits before it is saved (ms). */
 const SAVE_DELAY_MS = 400;
 
@@ -63,7 +65,7 @@ registerStrings('en', {
   'ws.err.name-empty': 'Give the workspace a name.',
   'ws.err.name-taken': 'A workspace with this name exists already.',
   'ws.err.limit': 'That is the most workspaces this browser keeps ({count}). Delete one first.',
-  'ws.notSaved': 'Not saved: {message}. It lasts until you close this tab.',
+  'ws.notSaved': 'Not saved: {reason}. It lasts until you close this tab.',
   'ws.currentTitle': 'In “{name}”',
   'ws.recentTitle': 'Recent domains',
   'ws.recentHint': 'The domains and host names you worked on here. Pick one to make it the current target: every tool fills it in and runs nothing until you press its button.',
@@ -80,7 +82,7 @@ registerStrings('en', {
   'ws.savedNow': 'Saved',
   'ws.saving': 'Saving…',
   'ws.fileTitle': 'Hand-over file',
-  'ws.fileIntro': 'One JSON file with everything in a workspace, to move it to another browser or hand it to a colleague. With a password it is encrypted (AES-GCM, the key derived from the password with PBKDF2-SHA-256); the password is never stored, and without it the file cannot be opened. Without a password anyone who gets the file can read it.',
+  'ws.fileIntro': 'One JSON file with everything in a workspace, to move it to another browser or hand it to a colleague. With a password it is encrypted (AES-GCM, the key derived from the password with PBKDF2-SHA-256) and its file name leaves the workspace’s name out; the password is never stored, and without it the file cannot be opened. Without a password anyone who gets the file can read it, and its file name carries the workspace’s name.',
   'ws.exportTitle': 'Export “{name}”',
   'ws.password': 'Password',
   'ws.passwordOptional': 'optional, at least {count} characters',
@@ -88,6 +90,7 @@ registerStrings('en', {
   'ws.export': 'Export',
   'ws.exporting': 'Encrypting…',
   'ws.err.password-short': 'Use at least {count} characters.',
+  'ws.err.password-blank': 'A password of spaces only protects nothing: use letters, digits or symbols.',
   'ws.err.mismatch': 'The two passwords differ.',
   'ws.exportedSealed': '{file} saved, encrypted with your password.',
   'ws.exportedPlain': '{file} saved without a password: anyone who gets the file can read it.',
@@ -145,11 +148,11 @@ registerStrings('tr', {
   'ws.newLabel': 'Yeni çalışma alanı',
   'ws.newPlaceholder': 'Müşteri ya da proje adı',
   'ws.create': 'Oluştur',
-  'ws.createHint': 'Boş bir çalışma alanı; hemen onda çalışmaya başlarsınız.',
+  'ws.createHint': 'Boş bir çalışma alanı; hemen bu alanda çalışmaya başlarsınız.',
   'ws.err.name-empty': 'Çalışma alanına bir ad verin.',
   'ws.err.name-taken': 'Bu adda bir çalışma alanı zaten var.',
   'ws.err.limit': 'Bu tarayıcının tuttuğu en fazla çalışma alanı sayısına ({count}) ulaşıldı. Önce birini silin.',
-  'ws.notSaved': 'Kaydedilemedi: {message}. Bu sekmeyi kapatana kadar tutulur.',
+  'ws.notSaved': 'Kaydedilemedi: {reason}. Bu sekmeyi kapatana kadar tutulur.',
   'ws.currentTitle': '“{name}” içinde',
   'ws.recentTitle': 'Son alan adları',
   'ws.recentHint': 'Burada üzerinde çalıştığınız alan adları ve host adları. Birini seçerek geçerli hedef yapın: her araç onu doldurur ve düğmesine basana kadar hiçbir şey çalıştırmaz.',
@@ -166,14 +169,15 @@ registerStrings('tr', {
   'ws.savedNow': 'Kaydedildi',
   'ws.saving': 'Kaydediliyor…',
   'ws.fileTitle': 'Devir dosyası',
-  'ws.fileIntro': 'Bir çalışma alanındaki her şey tek bir JSON dosyasında: başka bir tarayıcıya taşımak ya da bir iş arkadaşınıza devretmek için. Parola verirseniz şifrelenir (AES-GCM; anahtar paroladan PBKDF2-SHA-256 ile türetilir); parola asla saklanmaz ve o olmadan dosya açılamaz. Parolasız dosyayı eline geçiren herkes okuyabilir.',
-  'ws.exportTitle': '“{name}” dışa aktar',
+  'ws.fileIntro': 'Bir çalışma alanındaki her şey tek bir JSON dosyasında: başka bir tarayıcıya taşımak ya da bir iş arkadaşınıza devretmek için. Parola verirseniz dosya şifrelenir (AES-GCM; anahtar paroladan PBKDF2-SHA-256 ile türetilir) ve dosya adında çalışma alanının adı yer almaz; parola asla saklanmaz ve o olmadan dosya açılamaz. Parolasız dosyayı eline geçiren herkes okuyabilir; dosya adında da çalışma alanının adı bulunur.',
+  'ws.exportTitle': '“{name}” alanını dışa aktar',
   'ws.password': 'Parola',
   'ws.passwordOptional': 'isteğe bağlı, en az {count} karakter',
   'ws.passwordRepeat': 'Parola (tekrar)',
   'ws.export': 'Dışa aktar',
   'ws.exporting': 'Şifreleniyor…',
   'ws.err.password-short': 'En az {count} karakter kullanın.',
+  'ws.err.password-blank': 'Yalnızca boşluktan oluşan bir parola hiçbir şeyi korumaz: harf, rakam ya da simge kullanın.',
   'ws.err.mismatch': 'İki parola farklı.',
   'ws.exportedSealed': '{file} kaydedildi; parolanızla şifrelendi.',
   'ws.exportedPlain': '{file} parolasız kaydedildi: dosyayı eline geçiren herkes okuyabilir.',
@@ -196,7 +200,7 @@ registerStrings('tr', {
   'ws.sum.notes': 'notlar',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
-  'ws.importReplace': '“{name}” yerine koy',
+  'ws.importReplace': '“{name}” alanının yerine koy',
   'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları ve son alan adları — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
   'ws.imported': '“{name}” adlı yeni çalışma alanı olarak içe aktarıldı.',
   'ws.replaced': '“{name}” dosyanın içeriğiyle değiştirildi.',
@@ -229,7 +233,35 @@ function errorMessage(err) {
   if (NAME_ERRORS.includes(code)) return t(`ws.err.${code}`, { count: WORKSPACE_LIMITS.count });
   if (IMPORT_ERRORS.includes(code)) return t(`ws.err.${code}`, { size: `${Math.round(HANDOVER_MAX_BYTES / (1024 * 1024))} MB` });
   if (code === 'password-short') return t('ws.err.password-short', { count: MIN_PASSWORD_LENGTH });
-  return String((err && err.message) || err);
+  return storageErrorText(err);
+}
+
+/**
+ * What is wrong with the export's password fields, as an error code (null: fine; an empty password
+ * is fine too: the file is then not encrypted): 'password-short' (fewer than MIN_PASSWORD_LENGTH
+ * characters), 'password-blank' (spaces only), 'mismatch' (the repetition differs).
+ * @param {string} password
+ * @param {string} repeat
+ * @returns {null|string} one of {@link PASSWORD_PROBLEMS}
+ */
+export function passwordProblem(password, repeat) {
+  const pw = String(password ?? '');
+  if (pw && [...pw.normalize('NFC')].length < MIN_PASSWORD_LENGTH) return 'password-short';
+  if (pw && !pw.trim()) return 'password-blank';
+  if (pw !== String(repeat ?? '')) return 'mismatch';
+  return null;
+}
+
+/**
+ * The hand-over file's name: `domainscope-workspace-<name>-<stamp>.json`; an encrypted file
+ * never carries the workspace's name (it would give away the customer the password hides):
+ * `domainscope-workspace-encrypted-<stamp>.json`.
+ * @param {string} name the workspace's name as shown
+ * @param {{ encrypted?: boolean, date?: Date }} [opts]
+ * @returns {string}
+ */
+export function exportFileName(name, { encrypted = false, date = new Date() } = {}) {
+  return timestampedName('domainscope-workspace', 'json', encrypted ? 'encrypted' : name, date);
 }
 
 /**
@@ -382,15 +414,11 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     }
   }
 
-  /** A name the Default workspace goes by in this language is not free for another one. */
-  function takenByDefault(name) {
-    return name.trim().toLowerCase() === t('ws.default').toLowerCase();
-  }
-
   async function create() {
     newName.setError(null);
     const name = newName.value;
-    if (takenByDefault(name)) {
+    // A name Default goes by (in either language) is not free for another workspace.
+    if (isDefaultWorkspaceName(name)) {
       newName.setError(t('ws.err.name-taken'));
       return;
     }
@@ -398,7 +426,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     try {
       const { meta, persisted } = await state.createWorkspace(name);
       newName.value = '';
-      if (!persisted) toast(t('ws.notSaved', { message: errorOf(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+      if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
       await flushEdits();
       await switchTo(meta.id);
       renderList({ focusId: meta.id });
@@ -412,7 +440,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
 
   async function saveRename(ws, field) {
     field.setError(null);
-    if (takenByDefault(field.value)) {
+    if (isDefaultWorkspaceName(field.value)) {
       field.setError(t('ws.err.name-taken'));
       return;
     }
@@ -464,7 +492,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     status.textContent = t('ws.saving');
     const entry = {
       run: () => saveEdit(wsId, part, read()).then((ok) => {
-        status.textContent = ok ? t('ws.savedNow') : t('ws.notSaved', { message: errorOf(state.workspaceError) });
+        status.textContent = ok ? t('ws.savedNow') : t('ws.notSaved', { reason: storageErrorText(state.workspaceError) });
       }),
       timer: setTimeout(() => entry.run(), SAVE_DELAY_MS)
     };
@@ -598,14 +626,11 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       pw.setError(null);
       pw2.setError(null);
       const password = pw.value;
-      if (password && [...password.normalize('NFC')].length < MIN_PASSWORD_LENGTH) {
-        pw.setError(t('ws.err.password-short', { count: MIN_PASSWORD_LENGTH }));
-        pw.focus();
-        return;
-      }
-      if (password !== pw2.value) {
-        pw2.setError(t('ws.err.mismatch'));
-        pw2.focus();
+      const problem = passwordProblem(password, pw2.value);
+      if (problem) {
+        const field = problem === 'mismatch' ? pw2 : pw;
+        field.setError(t(`ws.err.${problem}`, { count: MIN_PASSWORD_LENGTH }));
+        field.focus();
         return;
       }
       setButtonBusy(exportBtn, true);
@@ -616,7 +641,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         const text = await exportWorkspaceFile({
           name: workspaceLabel(active), isDefault: active.isDefault, data, app: `DomainScope ${appVersion}`.trim(), exportedAt: new Date()
         }, { password: password || null });
-        const file = timestampedName('domainscope-workspace', 'json', workspaceLabel(active));
+        const file = exportFileName(workspaceLabel(active), { encrypted: !!password });
         downloadText(file, text, 'application/json;charset=utf-8');
         toast(t(password ? 'ws.exportedSealed' : 'ws.exportedPlain', { file }), { type: password ? 'success' : 'warn', timeout: 8000 });
       } catch (err) {
@@ -754,11 +779,11 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       async function importNew() {
         setButtonBusy(newBtn, true);
         try {
-          const unique = uniqueWorkspaceName(name, [t('ws.default'), ...state.workspaces.filter((w) => !w.isDefault).map((w) => w.name)]);
+          const unique = uniqueWorkspaceName(name, [...defaultWorkspaceNames(), ...state.workspaces.filter((w) => !w.isDefault).map((w) => w.name)]);
           const { meta, persisted } = await state.createWorkspace(unique, ws.data);
           pending = null;
           clear(importArea);
-          if (!persisted) toast(t('ws.notSaved', { message: errorOf(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+          if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
           toast(t('ws.imported', { name: meta.name }), { type: 'success' });
           await flushEdits();
           await switchTo(meta.id);
@@ -777,17 +802,13 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         const { persisted } = await state.replaceWorkspace(into.id, ws.data);
         pending = null;
         clear(importArea);
-        if (!persisted) toast(t('ws.notSaved', { message: errorOf(state.workspaceError) }), { type: 'warn', timeout: 8000 });
+        if (!persisted) toast(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn', timeout: 8000 });
         toast(t('ws.replaced', { name: label }), { type: 'success' });
         renderCurrent();
       }
     }
 
     fileBody.append(exportPart, importPart);
-  }
-
-  function errorOf(err) {
-    return err ? err.message || String(err) : '—';
   }
 
   /* --- following the state -------------------------------------------------- */

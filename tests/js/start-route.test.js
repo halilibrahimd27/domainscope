@@ -35,10 +35,13 @@ const JS = join(ASSETS, 'js');
  * Customer workspaces put the workspace store on it (lib/workspace.js with the first-run
  * migration, the IndexedDB backend, the header switcher): every view reads its inventory at
  * mount, so the store opens before the first view — ≈ 355 KB (363,112 bytes). The Workspaces
- * dialog, the hand-over file and its encryption load on first use.
+ * dialog, the hand-over file and its encryption load on first use. A failed workspace write or
+ * "Delete all local data" then said why in both languages (a full or blocked storage, another
+ * tab holding the database — the browser's own message is English), and a write reads the
+ * stored meta in its own transaction: ≈ 358 KB (366,942 bytes).
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 358 * 1024;
+const START_ROUTE_BUDGET = 360 * 1024;
 
 /** Modules that must never be part of the start route. */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',

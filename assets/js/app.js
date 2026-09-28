@@ -71,7 +71,7 @@ import { permalinkParams, utcStamp } from './lib/summary.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
 import { setBaseTitle, refreshJobIndicators, runningJobs } from './ui/jobs.js';
-import { WorkspaceSwitch, WorkspaceMenuEntry, workspaceLabel, deleteAllLocalData } from './ui/workspace-ui.js';
+import { WorkspaceSwitch, WorkspaceMenuEntry, workspaceLabel, deleteAllLocalData, storageErrorText } from './ui/workspace-ui.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -1368,7 +1368,7 @@ async function switchWorkspace(id) {
   try {
     await state.switchWorkspace(id);
   } catch (err) {
-    toast(t('ws.switchFailed', { message: errorText(err) }), { type: 'error' });
+    toast(t('ws.switchFailed', { reason: storageErrorText(err) }), { type: 'error' });
     return false;
   }
   toast(t('ws.switched', { name: workspaceLabel(state.workspace) }), { type: 'success' });

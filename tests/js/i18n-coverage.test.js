@@ -255,6 +255,10 @@ describe('i18n coverage', () => {
     for (const s of [...Object.keys(ss.STATUS_SOURCES), ...Object.keys(ss.IP_SOURCE_GROUPS)]) add(`srcst.source.${s}`);
     for (const st of ['ok', 'idle', 'pending', 'failed']) add(`srcst.chip.${st}`);
     for (const id of ['cdn', 'mine', 'priv']) add(`ipi.zero.${id}`);
+    // Workspaces: the dialog's refusals and a storage error's reason, worded from their codes.
+    const [panel, wsUi] = await Promise.all([imp('assets/js/ui/workspace-panel.js'), imp('assets/js/ui/workspace-ui.js')]);
+    for (const code of [...panel.IMPORT_ERRORS, ...panel.NAME_ERRORS, ...panel.PASSWORD_PROBLEMS]) add(`ws.err.${code}`);
+    for (const reason of wsUi.STORAGE_REASONS) add(`ws.why.${reason}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

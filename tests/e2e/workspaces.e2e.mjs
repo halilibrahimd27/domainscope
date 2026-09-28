@@ -19,11 +19,14 @@
  *   - expected CAs: a fixture certificate in the Certificate view is flagged "Unexpected CA", then "Expected CA"
  *     once its CA is listed; the certificate's name joins the recent domains, and switching back
  *     to the workspace makes it the current target again;
- *   - the hand-over file: exported with a password it shows no name, server or address; the import
+ *   - the hand-over file: exported with a password it shows no name, server or address, not even in
+ *     its file name (a plain export's file name does carry the name); the import
  *     refuses a wrong password (nothing imported), then opens with the right one as a new workspace
  *     with the same servers, or replaces the workspace of the same name after a confirmation;
  *   - a workspace is deleted after a confirmation;
  *   - Settings › Delete all local data deletes every workspace and the IndexedDB database, and says so.
+ * With storage blocked (every storage accessor throws, as with Safari's "Block all cookies") the page
+ * works in memory, and Delete all local data says that nothing had been saved rather than a failure.
  * Then at 375 px (Turkish, dark) and 320 px: the switcher is in the Tools menu, the dialog fits
  * without horizontal scrolling. Fails on console errors, exceptions, CSP violations and missing
  * i18n keys.
@@ -191,6 +194,12 @@ async function desktop(browser, server, tmp) {
       const info = await page.evaluate(wsInfo);
       assertEqual([info.active, info.header, info.list, info.persistent], ['default', 'Default', ['default'], true], 'Default');
       assertEqual(await dbExists(page), false, 'no database yet');
+      // Nothing was written to Default: the dialog gives it no made-up "changed …" date.
+      await openWorkspaces(page);
+      const meta = await page.evaluate(() => !!document.querySelector('dialog.ws-modal .ws-list li[data-ws-id="default"] .ws-item-meta'));
+      assertEqual(meta, false, 'no date for an untouched Default');
+      await closeWorkspaces(page);
+      assertEqual(await dbExists(page), false, 'opening the dialog created no database');
     });
 
     await run.step('the data of an older version moves into Default on the next load; the old keys go', async () => {
@@ -342,7 +351,7 @@ async function desktop(browser, server, tmp) {
     });
 
     let sealed = '';
-    await run.step('export with a password: the file shows no name, server or address', async () => {
+    await run.step('export with a password: the file shows no name, server or address, not even in its file name', async () => {
       await openWorkspaces(page);
       await page.type('[data-role="ws-export-password"]', PASSWORD);
       await page.type('[data-role="ws-export-repeat"]', `${PASSWORD}x`);
@@ -353,14 +362,29 @@ async function desktop(browser, server, tmp) {
       await page.click('[data-action="ws-export"]');
       await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'file saved', timeout: 20000 });
       const [file] = await takeDownloads(page);
-      assert(/^domainscope-workspace-Acme-\d{8}-\d{4}\.json$/.test(file.name), file.name);
+      assert(/^domainscope-workspace-encrypted-\d{8}-\d{4}\.json$/.test(file.name), file.name);
       const json = JSON.parse(file.text);
       assertEqual([json.format, json.v, json.encrypted, json.kdf.name, json.kdf.hash, json.cipher.name], ['domainscope-workspace', 1, true, 'PBKDF2', 'SHA-256', 'AES-GCM'], 'sealed');
       assert(json.kdf.iterations >= 310000, `iterations ${json.kdf.iterations}`);
-      for (const secret of ['Acme', 'web01', '192.0.2.10', CERT_DOMAIN, PASSWORD]) assert(!file.text.includes(secret), `the file shows ${secret}`);
+      for (const secret of ['Acme', 'web01', '192.0.2.10', CERT_DOMAIN, PASSWORD]) {
+        assert(!file.text.includes(secret) && !file.name.includes(secret), `the file shows ${secret}`);
+      }
       const fields = await page.evaluate(() => [document.querySelector('[data-role="ws-export-password"]').value, document.querySelector('[data-role="ws-export-repeat"]').value]);
       assertEqual(fields, ['', ''], 'the password is not kept in the form');
       sealed = file.text;
+      // A password of spaces only is refused; no password at all is a plain file, named after its workspace.
+      await page.type('[data-role="ws-export-password"]', ' '.repeat(10));
+      await page.type('[data-role="ws-export-repeat"]', ' '.repeat(10));
+      await page.click('[data-action="ws-export"]');
+      await page.waitFor(() => /spaces only/.test(document.querySelector('[data-role="ws-export-password"]').closest('.field').textContent),
+        { message: 'a blank password refused' });
+      await page.type('[data-role="ws-export-password"]', '');
+      await page.type('[data-role="ws-export-repeat"]', '');
+      await page.click('[data-action="ws-export"]');
+      await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'plain file saved' });
+      const [plain] = await takeDownloads(page);
+      assert(/^domainscope-workspace-Acme-\d{8}-\d{4}\.json$/.test(plain.name), plain.name);
+      assertEqual(JSON.parse(plain.text).encrypted, false, 'plain');
     });
 
     await run.step('import: a wrong password imports nothing; the right one opens it as a new workspace', async () => {
@@ -450,6 +474,48 @@ async function desktop(browser, server, tmp) {
   }
 }
 
+/** What a browser that blocks storage for the page (Safari's "Block all cookies") does: every storage accessor throws. */
+const BLOCK_STORAGE = `(() => {
+  const refuse = () => { throw new DOMException('The operation is insecure.', 'SecurityError'); };
+  for (const name of ['localStorage', 'sessionStorage', 'indexedDB']) Object.defineProperty(window, name, { get: refuse, configurable: true });
+})();`;
+
+async function blockedStorage(browser, server) {
+  run.group('Storage blocked (1024 px, offline)');
+  const page = await browser.newPage('about:blank', { width: 1024, height: 800 });
+  await networkGuard(page);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: BLOCK_STORAGE });
+  try {
+    await run.step('the page works in memory; Delete all local data says nothing had been saved, not that it failed', async () => {
+      await page.goto(`${server.url}#/inventory`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      const stored = await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => [state.persistence, state.workspacePersistence]));
+      assertEqual(stored, [false, false], 'nothing can be stored');
+      await saveInventory(page, INVENTORY_A);
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      await page.click('[data-control="settings"]');
+      await page.waitForSelector('dialog.modal[open] .settings-danger');
+      await page.click('dialog.modal[open] .settings-danger .btn-danger');
+      await confirmTop(page);
+      const toast = await page.waitFor(() => {
+        const el = [...document.querySelectorAll('.toast')].find((x) => /Local data|local data/.test(x.textContent));
+        return el ? { text: el.textContent, error: el.classList.contains('toast-error') } : false;
+      }, { message: 'the toast', timeout: 10000 });
+      assert(/blocks storage for this page, so nothing was saved/.test(toast.text) && !toast.error, toast.text);
+      assert(!/IndexedDB|Not all/.test(toast.text), toast.text);
+      assertEqual((await page.evaluate(wsInfo)).inventory, '', 'reset in memory');
+    });
+
+    await run.step('storage blocked: no console errors, CSP violations or missing keys', async () => {
+      await assertClean(page, 'workspaces storage blocked', server.url);
+      await assertNoMissingKeys(page);
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 async function phone(browser, server) {
   run.group('Workspaces on a phone (375 / 320 px, Turkish, dark)');
   const page = await browser.newPage('about:blank', { width: 375, height: 812, mobile: true });
@@ -480,6 +546,10 @@ async function phone(browser, server) {
       await page.waitFor(() => document.querySelector('dialog.navmenu-modal[open] .navmenu-workspace-name'));
       const row = await page.evaluate(() => document.querySelector('.navmenu-workspace-name').textContent);
       assertEqual(row, 'Müşteri Anonim Şirketi — İstanbul Bölge Müdürlüğü', 'the Tools menu names it');
+      // One "Çalışma alanı" in the menu, the workspace row's: Servers and About have a heading of their own.
+      const headings = await page.evaluate(() => [...document.querySelectorAll('dialog.navmenu-modal[open] .navmenu-label')].map((el) => el.textContent));
+      assertEqual(headings.at(-1), 'Kurulum ve bilgi', 'Servers and About');
+      assert(!headings.includes('Çalışma alanı'), headings.join(' | '));
       await assertNoHorizontalScroll(page, 'tools menu');
       await page.evaluate(() => document.querySelector('dialog.navmenu-modal').close());
     });
@@ -513,6 +583,7 @@ async function main() {
   process.stdout.write(`Serving ${server.url} — ${version.product}\n`);
   try {
     await desktop(browser, server, tmp);
+    await blockedStorage(browser, server);
     await phone(browser, server);
   } finally {
     await browser.close();

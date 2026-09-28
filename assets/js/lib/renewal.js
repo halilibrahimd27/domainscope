@@ -979,18 +979,28 @@ export function interpretHttp01(measurement, { host, path, ipVersion: family = 4
 }
 
 /**
- * A name's tested families in plan order ({@link http01Plan}): each one read ({@link interpretHttp01}),
- * and a family planned but never measured — the test stopped before its measurement was created
- * (the quota ran out, the view was left) — as 'untested', so the report does not pass it over.
+ * A name's tested families in plan order ({@link http01Plan}), each with the time it was measured
+ * (`at`): each one read now ({@link interpretHttp01}, at `at`); a family planned but not measured
+ * this time — the test stopped before its measurement was created (the quota ran out, the view was
+ * left) — keeps what the name's earlier test measured for it, at that test's time, or reads
+ * 'untested', so the report neither passes it over nor improves on less evidence.
  * @param {Array<4|6>} planned
  * @param {object[]} read the families read
- * @param {{ path: string }} ctx
+ * @param {{ path: string, at?: Date|null, earlier?: { at?: Date, families: object[] }|null }} ctx
+ *   `earlier`: the name's previous test (its `http01`)
  * @returns {object[]}
  */
-export function http01Families(planned, read, { path }) {
+export function http01Families(planned, read, { path, at = null, earlier = null }) {
   const got = arr(read);
+  const before = arr(earlier && earlier.families);
   const order = uniq([...arr(planned), ...got.map((f) => f.ipVersion)]);
-  return order.map((v) => got.find((f) => f.ipVersion === v) || { ipVersion: v === 6 ? 6 : 4, measurementId: null, path, verdict: 'untested', probes: [] });
+  return order.map((v) => {
+    const now = got.find((f) => f.ipVersion === v);
+    if (now) return at && !now.at ? { ...now, at } : now;
+    const kept = before.find((f) => f.ipVersion === v && f.verdict !== 'untested');
+    if (kept) return kept.at ? kept : { ...kept, at: (earlier && earlier.at) || null };
+    return { ipVersion: v === 6 ? 6 : 4, measurementId: null, path, verdict: 'untested', probes: [], at: null };
+  });
 }
 
 /**
@@ -1101,7 +1111,7 @@ export function renewalExport(report, { app = 'DomainScope', version = null } = 
       http01: r.http01 ? {
         at: iso(r.http01.at),
         families: r.http01.families.map((f) => ({
-          ipVersion: f.ipVersion, measurementId: f.measurementId, path: f.path, verdict: f.verdict,
+          ipVersion: f.ipVersion, at: iso(f.at || null), measurementId: f.measurementId, path: f.path, verdict: f.verdict,
           probes: f.probes.map((p) => ({ place: p.place, network: p.probe.network, outcome: p.outcome, status: p.status, location: p.location, address: p.address, failure: p.failure }))
         }))
       } : null

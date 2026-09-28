@@ -721,20 +721,49 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
 test('http01Families: a planned family never measured reads "not tested", in plan order; the verdict stands on what was measured', async () => {
   const report = await run(exampleZone(), ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' });
   const v4 = interpretHttp01(fx('m28-acme-http-404').final.body, { host: 'www.example.com', path: PATH });
-  const all = http01Families([4, 6], [v4], { path: PATH });
+  const at = new Date('2026-09-28T10:00:00Z');
+  const all = http01Families([4, 6], [v4], { path: PATH, at });
   assert.equal(all.length, 2);
-  assert.equal(all[0], v4);
-  assert.deepEqual(all[1], { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] });
+  assert.deepEqual(all[0], { ...v4, at });
+  assert.deepEqual(all[1], { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [], at: null });
   const v6 = interpretHttp01(fx('m30-acme-http-v6').final.body, { host: 'www.example.com', path: PATH, ipVersion: 6 });
   assert.deepEqual(http01Families([4, 6], [v6, v4], { path: PATH }).map((f) => f.ipVersion), [4, 6], 'plan order');
   assert.deepEqual(http01Families([], [v4], { path: PATH }), [v4], 'a family read but not planned is kept');
-  const next = applyHttp01(report, 'www.example.com', { at: new Date(), families: all });
+  const next = applyHttp01(report, 'www.example.com', { at, families: all });
   const r = next.names[0];
   assert.deepEqual(r.findings.filter((f) => f.area === 'http01').map((f) => `${f.id}:${f.severity}`), ['http01.ok:ok', 'http01.untested:info']);
   assert.deepEqual(r.findings.find((f) => f.id === 'http01.untested').params, { name: 'www.example.com', family: 'IPv6' });
   assert.equal(r.verdict, 'ready');
   assert.equal(renewalRows(next)[0].http01, 'IPv4 ok · IPv6 untested');
-  assert.deepEqual(renewalExport(next).names[0].http01.families[1], { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] });
+  assert.deepEqual(renewalExport(next).names[0].http01.families[1], { ipVersion: 6, at: null, measurementId: null, path: PATH, verdict: 'untested', probes: [] });
+  assert.equal(renewalExport(next).names[0].http01.families[0].at, '2026-09-28T10:00:00.000Z');
+});
+
+test('http01Families: a test that stops partway keeps what the earlier test measured for the family it missed', async () => {
+  const report = await run(exampleZone(), ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' });
+  const v4 = interpretHttp01(fx('m28-acme-http-404').final.body, { host: 'www.example.com', path: PATH });
+  const v6bad = interpretHttp01({ id: 'x2345678', results: [
+    { probe: probe('EU', 'DE'), result: res({ statusCode: 503, resolvedAddress: '2001:db8::10' }) },
+    { probe: probe('NA', 'US'), result: res({ statusCode: 503, resolvedAddress: '2001:db8::10' }) }
+  ] }, { host: 'www.example.com', path: PATH, ipVersion: 6 });
+  const first = new Date('2026-09-28T10:00:00Z');
+  const earlier = { at: first, families: http01Families([4, 6], [v4, v6bad], { path: PATH, at: first }) };
+  let next = applyHttp01(report, 'www.example.com', earlier);
+  assert.equal(next.names[0].verdict, 'fail', 'IPv6 answers 503');
+  // The next test measures IPv4 only (the quota ran out before IPv6): IPv6's failure stands.
+  const second = new Date('2026-09-28T10:05:00Z');
+  const path2 = '/.well-known/acme-challenge/ds-fixture-second';
+  const v4again = interpretHttp01(fx('m28-acme-http-404').final.body, { host: 'www.example.com', path: path2 });
+  const families = http01Families([4, 6], [v4again], { path: path2, at: second, earlier: next.names[0].http01 });
+  assert.deepEqual(families.map((f) => [f.ipVersion, f.verdict, f.at, f.path]), [[4, 'ok', second, path2], [6, 'failed', first, PATH]]);
+  next = applyHttp01(next, 'www.example.com', { at: second, families });
+  assert.deepEqual(next.names[0].findings.filter((f) => f.area === 'http01').map((f) => `${f.id}:${f.severity}`), ['http01.ok:ok', 'http01.failed:error']);
+  assert.equal(next.names[0].verdict, 'fail', 'less evidence never improves the verdict');
+  // An earlier family with no time of its own takes its test's; an earlier "not tested" stays so.
+  const legacy = { at: first, families: [{ ...v4, at: undefined }, { ipVersion: 6, measurementId: null, path: PATH, verdict: 'untested', probes: [] }] };
+  delete legacy.families[0].at;
+  const kept = http01Families([4, 6], [], { path: path2, at: second, earlier: legacy });
+  assert.deepEqual(kept.map((f) => [f.ipVersion, f.verdict, f.at]), [[4, 'ok', first], [6, 'untested', null]]);
 });
 
 test('http01Plan: which names can be tested, over which families', async () => {

@@ -15,8 +15,8 @@
  * token under /.well-known/acme-challenge/ from one Globalping probe on each of three continents
  * (per address family) through ui/globalping-gate.js (its own consent, the quota shared with the
  * other Globalping features). A measurement already paid for that could not be read yet (the view
- * was left, Stop, an error) is read again for free; a family whose measurement was never created
- * reads "not tested".
+ * was left, Stop, an error) is read again for free; a family whose measurement was not created this
+ * time keeps what the name's earlier test measured for it (with that time), else reads "not tested".
  *
  * Shareable: `#/renew?names=example.com,*.example.com&ca=letsencrypt&challenge=dns-01` runs on
  * open; with `run=0` (Certificate, SSL Targets, a carried target) it only fills the form. The
@@ -651,7 +651,8 @@ export function mount(container, ctx) {
   /**
    * Read every created measurement of a test and merge the results into the report. A test that
    * stopped before all its measurements were created (the quota, the view left) is partial: a
-   * planned family never measured reads "not tested", and a name with none keeps what it had.
+   * planned family not measured this time keeps the name's earlier result for it (with that time)
+   * or reads "not tested", and a name with none keeps what it had.
    */
   async function readTest(job, client, signal) {
     job.pending = job.pending.filter((e) => e.families.length);
@@ -667,7 +668,8 @@ export function mount(container, ctx) {
     const at = new Date();
     let partial = results.length < job.names.length;
     for (const { entry, families } of results) {
-      const all = http01Families(entry.planned || [], families, { path: entry.path });
+      const earlier = (report.names.find((r) => r.name === entry.name) || {}).http01 || null;
+      const all = http01Families(entry.planned || [], families, { path: entry.path, at, earlier });
       partial = partial || all.length > families.length;
       report = applyHttp01(report, entry.name, { at, families: all });
     }
@@ -807,7 +809,7 @@ export function mount(container, ctx) {
         const link = measurementUrl(fam.measurementId);
         return h('div', { class: 'rnw-family', dataset: { family: String(fam.ipVersion), verdict: fam.verdict } },
           h('div', { class: 'muted text-xs rnw-family-head' },
-            t('rnw.h01.family', { family: `IPv${fam.ipVersion}`, time: formatRelative(r.http01.at) }),
+            h('span', { title: formatDateTime(fam.at || r.http01.at) }, t('rnw.h01.family', { family: `IPv${fam.ipVersion}`, time: formatRelative(fam.at || r.http01.at) })),
             link ? [' · ', ExternalLink(link, t('rnw.h01.measurement'), { className: 'rnw-measurement' })] : null),
           h('ul', { class: 'rnw-probe-list' }, fam.probes.map((p) => h('li', { class: ['rnw-probe', `rnw-probe-${p.outcome === 'not-found' || p.outcome === 'redirect' ? 'good' : p.outcome === 'probe' ? 'neutral' : 'bad'}`], dataset: { outcome: p.outcome } },
             h('span', { class: 'rnw-probe-place' }, [p.place || '—', p.probe && p.probe.network ? ` (${p.probe.network})` : ''].join('')),

@@ -43,6 +43,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { orderSuites } from './run-all.mjs';
@@ -56,7 +57,7 @@ import {
 /* Test data                                                                */
 /* ------------------------------------------------------------------------ */
 
-const FILES = {
+export const FILES = {
   aRsa: path.join(FIXTURES, 'renew_a_rsa.pem'),
   aEc: path.join(FIXTURES, 'renew_a_ecdsa.pem'),
   bRsa: path.join(FIXTURES, 'renew_b_rsa.pem'),
@@ -64,8 +65,8 @@ const FILES = {
   ca: path.join(FIXTURES, 'ca.pem'),
   other: path.join(FIXTURES, 'expected.json')
 };
-const APEX = 'example.com';
-const ZONE = {
+export const APEX = 'example.com';
+export const ZONE = {
   'example.com': { A: ['1.2.3.4'] },
   'www.example.com': { A: ['1.2.3.4'] },
   'api.example.com': { A: ['1.2.3.5'] },
@@ -74,12 +75,12 @@ const ZONE = {
   'vpn.example.com': { A: ['10.0.0.5'] },
   'x.dev.example.com': { A: ['1.2.3.4'] }
 };
-const INVENTORY = 'web01 1.2.3.4\nweb02 1.2.3.5\ndb01 10.0.0.5';
+export const INVENTORY = 'web01 1.2.3.4\nweb02 1.2.3.5\ndb01 10.0.0.5';
 const GP = 'https://api.globalping.io/v1';
 const THREE_CERTS = '--cert new-cert-a-rsa.pem --cert new-cert-a-ecdsa.pem --cert new-cert-b-rsa.pem';
 
 /** SHA-256 of a PEM certificate's DER as Globalping reports it ('AB:CD:…'). */
-async function colonSha256(file) {
+export async function colonSha256(file) {
   const pem = await readFile(file, 'utf8');
   const b64 = /-----BEGIN CERTIFICATE-----([\s\S]+?)-----END CERTIFICATE-----/.exec(pem)[1].replace(/\s+/g, '');
   return createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex').toUpperCase().match(/../g).join(':');
@@ -90,7 +91,7 @@ async function colonSha256(file) {
 /* ------------------------------------------------------------------------ */
 
 /** The example.com zone answered inside the page for every DoH resolver; nothing else leaves it. */
-const fakeZoneScript = (apex, zone) => `(() => {
+export const fakeZoneScript = (apex, zone) => `(() => {
   const APEX = ${JSON.stringify(apex)};
   const ZONE = ${JSON.stringify(zone)};
   const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
@@ -130,7 +131,7 @@ const fakeZoneScript = (apex, zone) => `(() => {
  * which is final at once. `window.__gp.calls` records every call; each `target|host` serves one
  * certificate: a set-A one (RSA or ECDSA), or an old certificate for shop.example.com.
  */
-const fakeGlobalpingScript = (fp) => `(() => {
+export const fakeGlobalpingScript = (fp) => `(() => {
   const API = ${JSON.stringify(GP)};
   const FP = ${JSON.stringify(fp)};
   const OLD_FP = Array(32).fill('AB').join(':');
@@ -282,7 +283,7 @@ async function runScan(page) {
 }
 
 /** Seed the offline scan options (no passive source, no wordlist, no permutations, no origin hints). */
-async function seedOptions(page) {
+export async function seedOptions(page) {
   const known = LIB_SOURCES.map((s) => s.id);
   await page.evaluate((k) => {
     localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'off', permutations: false, originHints: false }));
@@ -675,7 +676,10 @@ async function main() {
   run.finish(opts.shots ? ` — screenshots in ${path.relative(process.cwd(), SHOTS)}` : '');
 }
 
-main().catch((err) => {
-  process.stderr.write(`E2E crashed: ${(err && err.stack) || err}\n`);
-  process.exitCode = 1;
-});
+// Run only when executed directly (the fakes above can be imported by other scripts).
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((err) => {
+    process.stderr.write(`E2E crashed: ${(err && err.stack) || err}\n`);
+    process.exitCode = 1;
+  });
+}

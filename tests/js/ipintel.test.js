@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createIpIntel, splitAsHolder, parsePrefixOverview, parseGeoLite, parseIpwhois,
-  parseRipeReverseDns, parseReverseIpText, RIPESTAT_SOURCEAPP
+  parseRipeReverseDns, parseReverseIpText, parseThcReverseIp, RIPESTAT_SOURCEAPP, THC_REVERSE_IP, THC_REVERSE_LIMIT
 } from '../../assets/js/lib/ipintel.js';
 
 /* -------------------------------------------------------------------- */
@@ -461,6 +461,75 @@ test('reverseIp: private / invalid IPs, network errors, api key', async () => {
   assert.equal(r.limited, false);
   assert.equal(r.errorKind, 'network');
   assert.equal(log[0], 'https://api.hackertarget.com/reverseiplookup/?q=2001:4860:4860::8888&apikey=k%26y');
+});
+
+/* -------------------------------------------------------------------- */
+/* reverseIpThc (ip.thc.org)                                            */
+/* -------------------------------------------------------------------- */
+
+// Trimmed from a live answer (2026-09-28), names replaced with documentation ones.
+const THC_ANSWER = {
+  comment: 'Free Service!, Do not abuse',
+  processed_ip_address: '192.0.2.10',
+  matching_records: 3,
+  domains: [
+    { apex_domain: 'example.com', domain: 'www.example.com', country: '', city: '', asn: '', organization: '', ip_address: '192.0.2.10' },
+    { apex_domain: 'example.net', domain: 'Example.NET', ip_address: '192.0.2.10' },
+    { apex_domain: 'example.org', domain: 'bad name!', ip_address: '192.0.2.10' }
+  ],
+  next_page_state: ''
+};
+
+test('parseThcReverseIp: names, the count, a next page, no count, error documents', () => {
+  assert.deepEqual(parseThcReverseIp(THC_ANSWER), {
+    ok: true, domains: ['www.example.com', 'example.net'], error: null, limited: false, errorKind: null, total: 3, truncated: false
+  });
+  const more = parseThcReverseIp({ ...THC_ANSWER, matching_records: 90501, next_page_state: '002b40' });
+  assert.equal(more.truncated, true);
+  assert.equal(more.total, 90501);
+  const unknown = parseThcReverseIp({ matching_records: 0, count_unavailable: true, domains: [], next_page_state: '' });
+  assert.deepEqual([unknown.ok, unknown.total, unknown.truncated, unknown.domains], [true, null, false, []]);
+  const bad = parseThcReverseIp({ status: 'error', error: 'invalid ip' });
+  assert.deepEqual([bad.ok, bad.error, bad.errorKind, bad.limited], [false, 'ip.thc.org: invalid ip', 'http', false]);
+  assert.equal(parseThcReverseIp({ status: 'error', error: 'rate limit exceeded' }).limited, true);
+  assert.equal(parseThcReverseIp([]).ok, false);
+  assert.equal(parseThcReverseIp({ domains: 'x' }).ok, false);
+});
+
+test('reverseIpThc: one POST (text/plain, no preflight) with the address and a limit; cached; private never sent', async () => {
+  const log = [];
+  const bodies = [];
+  const f = mockFetch({
+    'ip.thc.org': (url, init) => {
+      bodies.push({ method: init.method, type: init.headers['content-type'], body: JSON.parse(init.body) });
+      return THC_ANSWER;
+    }
+  }, { log });
+  const intel = createIpIntel({ fetchImpl: f });
+  const r = await intel.reverseIpThc('192.0.2.10');
+  assert.deepEqual(r.domains, ['www.example.com', 'example.net'], 'sortHostnames order');
+  assert.deepEqual(log, [THC_REVERSE_IP]);
+  assert.deepEqual(bodies, [{ method: 'POST', type: 'text/plain;charset=UTF-8', body: { ip_address: '192.0.2.10', limit: THC_REVERSE_LIMIT } }]);
+  await intel.reverseIpThc('192.0.2.10');
+  assert.equal(log.length, 1, 'cached');
+  assert.equal((await intel.reverseIpThc('10.0.0.5')).errorKind, 'invalid');
+  assert.equal((await intel.reverseIpThc('nope')).error, 'Invalid IP address');
+  assert.equal(log.length, 1, 'private and invalid addresses are never sent');
+  intel.clearCache();
+  await intel.reverseIpThc('::ffff:192.0.2.10');
+  assert.equal(bodies[1].body.ip_address, '192.0.2.10', 'a mapped address is asked as IPv4');
+});
+
+test('reverseIpThc: HTTP 429 is limited, a network error is reported; failures are not cached', async () => {
+  let n = 0;
+  const f = mockFetch({ 'ip.thc.org': () => { n += 1; return n === 1 ? new Response('slow down', { status: 429 }) : new TypeError('Failed to fetch'); } });
+  const intel = createIpIntel({ fetchImpl: f, retries: 0 });
+  const a = await intel.reverseIpThc('192.0.2.10');
+  assert.deepEqual([a.ok, a.limited, a.errorKind], [false, true, 'rate-limit']);
+  const b = await intel.reverseIpThc('192.0.2.10');
+  assert.deepEqual([b.ok, b.limited, b.errorKind], [false, false, 'network']);
+  assert.equal(n, 2);
+  await assert.rejects(intel.reverseIpThc('192.0.2.10', { signal: AbortSignal.abort() }), { name: 'AbortError' });
 });
 
 /* -------------------------------------------------------------------- */

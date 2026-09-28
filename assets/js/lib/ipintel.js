@@ -13,6 +13,11 @@
  *  - HackerTarget reverseiplookup (text, one host per line). Errors and quota
  *    exhaustion come back as HTTP 200 text ("API count exceeded ...", "error ...").
  *    The free quota (~50/day per IP) is shared with the hostsearch source.
+ *  - ip.thc.org reverse IP (verified 2026-09-28): POST /api/v1/lookup with a text/plain JSON
+ *    body `{ ip_address, limit }` (no preflight), ACAO *; `{ matching_records, domains:
+ *    [{ domain, apex_domain, … }], next_page_state }` (`count_unavailable: true` when it has no
+ *    count), `{ status: 'error', error }` for a bad address. The same token bucket as the
+ *    subdomain lookup (~250 requests per IP, refilling 1 every 2 s).
  *
  * Private / reserved addresses (netinfo.isPrivateIP) never leave the browser.
  * DOM-free; runs in browsers and Node 22. All I/O is injectable (`fetchImpl`, `dns`).
@@ -36,6 +41,10 @@ export const RIPESTAT_SOURCEAPP = 'domainscope';
 export const IPWHOIS_BASE = 'https://ipwho.is';
 /** HackerTarget reverse-IP endpoint (quota shared with hostsearch). */
 export const HACKERTARGET_REVERSE_IP = 'https://api.hackertarget.com/reverseiplookup/';
+/** ip.thc.org reverse-IP endpoint (POST, text/plain JSON body; token bucket shared with its subdomain lookup). */
+export const THC_REVERSE_IP = 'https://ip.thc.org/api/v1/lookup';
+/** Names asked of ip.thc.org per address: one page, never paged further (its bucket is small). */
+export const THC_REVERSE_LIMIT = 100;
 
 const DEFAULT_TIMEOUT_MS = 12000;
 const INFO_TTL_MS = 60 * 60 * 1000; // routing / geo data change slowly
@@ -77,6 +86,9 @@ const REVERSE_TTL_MS = 30 * 60 * 1000;
  * @property {string|null} error
  * @property {boolean} limited true when the (daily) API quota is exhausted
  * @property {string|null} errorKind extension
+ * @property {number|null} [total] extension (ip.thc.org): how many names the service holds for the address
+ *   (null when it gives no count)
+ * @property {boolean} [truncated] extension (ip.thc.org): more names exist than one page brought
  */
 
 /* ------------------------------------------------------------------------ */
@@ -228,6 +240,34 @@ export function parseReverseIpText(text) {
   }
   if (domains.length === 0 && bad > 0) return fail(`Unexpected response: ${firstLine(body)}`);
   return { ok: true, domains: sortHostnames(uniq(domains)), error: null, limited: false, errorKind: null };
+}
+
+/**
+ * Interpret an ip.thc.org reverse-IP answer (`POST /api/v1/lookup`). An error document
+ * (`{ status: 'error', error }`) is a failure; one that mentions a limit is `limited`.
+ * @param {unknown} json
+ * @returns {ReverseIpResult} with `total` (matching_records; null when `count_unavailable`) and
+ *   `truncated` (a next page exists, or the count says there are more names than listed)
+ */
+export function parseThcReverseIp(json) {
+  const fail = (error, limited = false) => ({
+    ok: false, domains: [], error, limited, errorKind: limited ? 'rate-limit' : 'parse', total: null, truncated: false
+  });
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return fail('Unexpected ip.thc.org response (expected a JSON object)');
+  if (json.status === 'error' || (!('domains' in json) && json.error)) {
+    const msg = firstLine(json.error || json.message || 'error');
+    const limited = /rate.?limit|too many|quota|throttl/i.test(msg);
+    return { ...fail(`ip.thc.org: ${msg}`, limited), errorKind: limited ? 'rate-limit' : 'http' };
+  }
+  if (json.domains !== null && json.domains !== undefined && !Array.isArray(json.domains)) {
+    return fail('Unexpected ip.thc.org response (domains is not an array)');
+  }
+  const list = Array.isArray(json.domains) ? json.domains : [];
+  const names = list.map((item) => (item && typeof item === 'object' ? item.domain : item)).filter((v) => typeof v === 'string');
+  const domains = sortHostnames(cleanNames(names).filter((n) => n.includes('.')));
+  const total = json.count_unavailable === true || !Number.isFinite(json.matching_records) ? null : json.matching_records;
+  const truncated = (typeof json.next_page_state === 'string' && json.next_page_state !== '') || (total !== null && total > list.length);
+  return { ok: true, domains, error: null, limited: false, errorKind: null, total, truncated };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -465,7 +505,9 @@ function emptyInfo(ip, version) {
  * @returns {{ info: (ip: string, opts?: { signal?: AbortSignal, noCache?: boolean }) => Promise<IpInfo>,
  *   retry: (prev: IpInfo, opts?: { sources?: string[]|null, signal?: AbortSignal }) => Promise<IpInfo>,
  *   reverseIp: (ip: string, opts?: { signal?: AbortSignal, noCache?: boolean }) => Promise<ReverseIpResult>,
+ *   reverseIpThc: (ip: string, opts?: { signal?: AbortSignal, noCache?: boolean }) => Promise<ReverseIpResult>,
  *   clearCache: () => void, setConcurrency: (n: number) => void }}
+ *   `reverseIpThc` (extension): the same question asked of ip.thc.org, one page of names.
  */
 export function createIpIntel({
   fetchImpl = globalThis.fetch,
@@ -480,8 +522,10 @@ export function createIpIntel({
   const limiter = createLimiter(concurrency);
   const infoCache = createCache({ maxEntries: cacheSize, ttlMs: INFO_TTL_MS });
   const reverseCache = createCache({ maxEntries: cacheSize, ttlMs: REVERSE_TTL_MS });
+  const thcCache = createCache({ maxEntries: cacheSize, ttlMs: REVERSE_TTL_MS });
   const infoInflight = new Map();
   const reverseInflight = new Map();
+  const thcInflight = new Map();
 
   const getJson = (url, signal) => limiter.run(
     () => retry(() => fetchJson(url, { fetchImpl, signal, timeoutMs, headers: { accept: 'application/json' } }), {
@@ -715,12 +759,56 @@ export function createIpIntel({
     return { ...result, domains: [...result.domains] };
   }
 
+  /**
+   * Other hostnames pointing at `ip` according to ip.thc.org (extension): ONE request of
+   * {@link THC_REVERSE_LIMIT} names, never paged further (its token bucket is shared with the
+   * Subdomains source). Private addresses are never sent. Failures are reported, never thrown
+   * (except an abort).
+   * @param {string} ip
+   * @param {{ signal?: AbortSignal, noCache?: boolean }} [opts]
+   * @returns {Promise<ReverseIpResult>} with `total` and `truncated`
+   */
+  async function reverseIpThc(ip, { signal, noCache = false } = {}) {
+    throwIfAborted(signal);
+    const canonical = lookupForm(ip);
+    const refuse = (error) => ({ ok: false, domains: [], error, limited: false, errorKind: 'invalid', total: null, truncated: false });
+    if (!canonical) return refuse('Invalid IP address');
+    if (isPrivateIP(canonical)) return refuse('Private IP address (not looked up)');
+    if (!noCache) {
+      const hit = thcCache.get(canonical);
+      if (hit) return { ...hit, domains: [...hit.domains] };
+    }
+    const result = await shared(thcInflight, canonical, signal, async (sig) => {
+      let res;
+      try {
+        const json = await limiter.run(() => fetchJson(THC_REVERSE_IP, {
+          fetchImpl,
+          signal: sig,
+          timeoutMs,
+          method: 'POST',
+          // text/plain keeps it a simple request (no preflight); the service reads the body as JSON.
+          headers: { 'content-type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify({ ip_address: canonical, limit: THC_REVERSE_LIMIT })
+        }), { signal: sig });
+        res = parseThcReverseIp(json);
+      } catch (err) {
+        if (isAbort(err)) throw err;
+        const kind = errorKind(err);
+        res = { ok: false, domains: [], error: describe(err), limited: kind === 'rate-limit', errorKind: kind, total: null, truncated: false };
+      }
+      if (res.ok) thcCache.set(canonical, res);
+      return res;
+    });
+    return { ...result, domains: [...result.domains] };
+  }
+
   const networkDescriber = makeNetworkDescriber(getJson, cacheSize);
 
   return {
     info,
     retry: retrySources,
     reverseIp,
+    reverseIpThc,
     /**
      * Who announces an origin network (extension): see the module-level {@link describeNetwork}.
      * Shares this service's request limiter; cached per network (1 h).
@@ -733,6 +821,7 @@ export function createIpIntel({
     clearCache() {
       infoCache.clear();
       reverseCache.clear();
+      thcCache.clear();
       networkDescriber.clear();
     },
     /** Change the HTTP request concurrency. */

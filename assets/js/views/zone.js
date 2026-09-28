@@ -47,7 +47,7 @@ import {
 } from '../lib/zoneparse.js';
 import { lintZone, LINT_RULES } from '../lib/zonelint.js';
 import {
-  proxiedOriginMap, addressMap, zoneSweep, handoffFiles, zoneScanInput, privateLookingNames, referenceRecords, ORIGIN_KINDS,
+  proxiedOriginMap, addressMap, zoneSweep, handoffFiles, zoneScanInput, privateLookingNames, looksInternalName, referenceRecords, ORIGIN_KINDS,
   ZONE_NAMES_FILE, ZONE_TARGETS_FILE
 } from '../lib/zoneorigins.js';
 import { planDrift, driftZone, DRIFT_STATUSES, DRIFT_REASONS, DRIFT_SEVERITY } from '../lib/zonedrift.js';
@@ -1022,7 +1022,8 @@ export function buildIntent({ target, domain, mode = 'exact', autostart = true, 
  * address (`records`, zoneorigins.referenceRecords: every one, internal names included) and every
  * name that looks internal (`internalNames`, zoneorigins.privateLookingNames): Retire an IP never
  * sends those to a public resolver, even when `skipPrivate` is off and `names` holds them for a
- * scan. Memory only, like the rest of it.
+ * scan. `originInternal`: the zone's own domain looks internal by its name (zoneorigins
+ * looksInternalName), so Retire an IP does not fill it in. Memory only, like the rest of it.
  * @param {object} zone
  * @param {{ skipPrivate?: boolean, label?: string }} [opts]
  * @returns {object}
@@ -1034,7 +1035,8 @@ export function sessionZone(zone, { skipPrivate = true, label = '' } = {}) {
     label,
     counts: { names: input.names.length + input.wildcardBases.length, origins: input.proxied.length, skipped: input.skipped.length },
     records: referenceRecords(zone),
-    internalNames: [...privateLookingNames(zone)].sort()
+    internalNames: [...privateLookingNames(zone)].sort(),
+    originInternal: !!input.origin && looksInternalName(input.origin)
   };
 }
 

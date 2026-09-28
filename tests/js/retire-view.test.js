@@ -41,10 +41,31 @@ describe('Retire an IP view helpers', () => {
 
   test('prefillDomains: the last scan, then the zone — each domain once, with where from', () => {
     assert.deepEqual(prefillDomains({ scanHosts: { domains: ['example.com', 'www.example.net'] }, zone: { origin: 'example.org' } }),
-      { domains: ['example.com', 'www.example.net', 'example.org'], sources: ['scan', 'zone'] });
-    assert.deepEqual(prefillDomains({ scanHosts: { domains: ['example.com'] }, zone: { origin: 'example.com' } }), { domains: ['example.com'], sources: ['scan'] },
+      { domains: ['example.com', 'www.example.net', 'example.org'], sources: ['scan', 'zone'], internal: [] });
+    assert.deepEqual(prefillDomains({ scanHosts: { domains: ['example.com'] }, zone: { origin: 'example.com' } }), { domains: ['example.com'], sources: ['scan'], internal: [] },
       'a source that adds nothing new is not named');
-    assert.deepEqual(prefillDomains({ scanHosts: { domains: 'nope' }, zone: {} }), { domains: [], sources: [] });
+    assert.deepEqual(prefillDomains({ scanHosts: { domains: 'nope' }, zone: {} }), { domains: [], sources: [], internal: [] });
+  });
+
+  test('prefillDomains: an imported zone whose own domain looks internal is not filled in, only named', () => {
+    const zoneOf = (origin) => sessionZone(parseFiles([{ name: `${origin}.zone`, text: [
+      `$ORIGIN ${origin}.`,
+      `@ 3600 IN SOA ns1.${origin}. hostmaster.${origin}. 1 7200 3600 1209600 300`,
+      '@ 3600 IN A 10.0.0.5',
+      'www 3600 IN A 192.0.2.10',
+      ''
+    ].join('\n') }]));
+    for (const origin of ['example.corp', 'corp.example.com', 'intranet.example.net']) {
+      const zone = zoneOf(origin);
+      assert.equal(zone.originInternal, true, origin);
+      assert.deepEqual(prefillDomains({ zone }), { domains: [], sources: [], internal: [origin] }, origin);
+      assert.deepEqual(prefillDomains({ zone, scanHosts: { domains: ['example.com'] } }), { domains: ['example.com'], sources: ['scan'], internal: [origin] }, origin);
+    }
+    // A public apex whose A record is private is still a public domain: filled in as before.
+    const pub = zoneOf('example.org');
+    assert.equal(pub.originInternal, false);
+    assert.deepEqual(prefillDomains({ zone: pub }), { domains: ['example.org'], sources: ['zone'], internal: [] });
+    for (const lang of ['en', 'tr']) assert.ok(hasString('retire.filledInternal', lang), lang);
   });
 
   test('hostsForDomains: every source per domain, in order, capped for the whole check', () => {

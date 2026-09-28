@@ -157,8 +157,9 @@ async function nodeChecks(run) {
     assertEqual(V.shareParams('192.0.2.10', Array.from({ length: 30 }, (_, i) => `host-${i}.example.com`).join('\n')), null, 'too long for a link');
     assertEqual(V.linkText('192.0.2.10,192.0.2.0/28'), '192.0.2.10\n192.0.2.0/28', 'link text');
     assertEqual(V.prefillDomains({ scanHosts: { domains: ['example.com', 'example.net'] }, zone: { origin: 'example.org' } }),
-      { domains: ['example.com', 'example.net', 'example.org'], sources: ['scan', 'zone'] }, 'prefill');
-    assertEqual(V.prefillDomains({}), { domains: [], sources: [] }, 'nothing known');
+      { domains: ['example.com', 'example.net', 'example.org'], sources: ['scan', 'zone'], internal: [] }, 'prefill');
+    assertEqual(V.prefillDomains({}), { domains: [], sources: [], internal: [] }, 'nothing known');
+    assertEqual(V.prefillDomains({ zone: { origin: 'example.corp', originInternal: true } }), { domains: [], sources: [], internal: ['example.corp'] }, 'an internal-looking zone domain');
     const base = { key: 'k', group: 'example.com', groupKind: 'domain', name: 'example.com', type: 'TXT', value: 'ip4:192.0.2.10', addresses: ['192.0.2.10'], blocks: ['192.0.2.10/32'], via: ['example.com'], roles: [], sources: ['spf'], foundFor: ['example.com'], spf: { holder: 'example.com', range: '192.0.2.10/32' } };
     assertEqual(V.changeText({ ...base, severity: 'mail', action: 'remove' }).key, 'retire.act.remove.spf', 'SPF remove');
     assertEqual(V.changeText({ ...base, severity: 'stale', action: 'remove' }).key, 'retire.act.remove.spfStale', 'stale SPF');
@@ -569,6 +570,45 @@ async function main() {
       await shot(page, opts, 'retire-results-desktop-dark-tr');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
+    });
+
+    run.group('A zone whose own domain looks internal');
+    await run.step('corp.example.com imported under Zone File: its domain is not filled in, the note says why, nothing is sent', async () => {
+      const before = await dnsCount(page);
+      await page.evaluate(async () => {
+        const { state } = await import('./assets/js/state.js');
+        state.setSession('scanHosts', undefined);
+      });
+      await gotoRoute(page, 'zone');
+      await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
+      await page.type('[data-role="zone-paste"]', [
+        '$ORIGIN corp.example.com.',
+        '@ 3600 IN SOA ns1.corp.example.com. hostmaster.corp.example.com. 1 7200 3600 1209600 300',
+        '@ 3600 IN A 203.0.113.80',
+        'www 3600 IN A 192.0.2.10',
+        ''
+      ].join('\n'));
+      await page.click('[data-action="zone-paste-import"]');
+      await page.waitFor(async () => {
+        const { state } = await import('./assets/js/state.js');
+        const z = state.getSession('zone');
+        return !!(z && z.origin === 'corp.example.com' && z.originInternal === true);
+      }, { message: 'the corp zone published', timeout: 15000 });
+      await gotoRoute(page, 'retire');
+      await typeInto(page, 'retire-domains', '');
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'retire');
+      const form = await page.evaluate(() => ({
+        domains: document.querySelector('[data-role="retire-domains"]').value,
+        leftOut: document.querySelector('[data-left-out]')?.dataset.leftOut || '',
+        note: document.querySelector('[data-left-out]')?.textContent || ''
+      }));
+      assertEqual([form.domains, form.leftOut], ['', 'corp.example.com'], 'not filled in, named');
+      assert(/corp\.example\.com, the imported zone’s own domain, looks internal/.test(form.note), form.note);
+      // Typed in, it is checked as typed; the note goes.
+      await typeInto(page, 'retire-domains', 'corp.example.com');
+      await page.waitFor(() => !document.querySelector('[data-left-out]'), { message: 'the note goes once it is typed in' });
+      assertEqual(await dnsCount(page), before, 'nothing sent');
     });
 
     run.group('Quality');

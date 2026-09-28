@@ -96,6 +96,7 @@ registerStrings('en', {
   'retire.filled.scan': 'the last scan',
   'retire.filled.zone': 'the imported zone',
   'retire.filled.target': 'the current target',
+  'retire.filledInternal': '{name}, the imported zone’s own domain, looks internal, so it was not filled in: nothing about it goes to public DNS. Type it in to check it anyway.',
   'retire.link.prompt': 'Filled in from a link. Nothing has been sent yet: press Check references.',
   'retire.hosts.title': 'Host names checked besides each domain’s own records',
   'retire.hosts.from': '{domain}: {list}',
@@ -319,6 +320,7 @@ registerStrings('tr', {
   'retire.filled.scan': 'son tarama',
   'retire.filled.zone': 'içe aktarılan zone',
   'retire.filled.target': 'geçerli hedef',
+  'retire.filledInternal': 'İçe aktarılan zone’un kendi alan adı {name} iç ağa ait görünüyor; bu yüzden kutuya eklenmedi ve onunla ilgili hiçbir şey genel DNS’e gönderilmez. Yine de kontrol etmek için kutuya yazın.',
   'retire.link.prompt': 'Bir bağlantıdan dolduruldu. Henüz hiçbir şey gönderilmedi: Referansları kontrol et’e basın.',
   'retire.hosts.title': 'Her alan adının kendi kayıtlarının yanında kontrol edilen host adları',
   'retire.hosts.from': '{domain}: {list}',
@@ -542,10 +544,13 @@ export function linkText(raw) {
 
 /**
  * What an empty domain box is filled in with: the last scan's domains, then the imported zone's
- * origin — de-duplicated; `sources` names only the ones that added a domain. (A target carried
- * over from another tool goes into its box through the route, lib/session.js.)
- * @param {{ scanHosts?: { domains?: string[] }|null, zone?: { origin?: string|null }|null }} ctx
- * @returns {{ domains: string[], sources: Array<'scan'|'zone'> }}
+ * origin — de-duplicated; `sources` names only the ones that added a domain. A zone origin whose
+ * name looks internal (views/zone.js sessionZone `originInternal`: corp.example.com,
+ * example.corp) is not filled in, so nothing about it goes to a public resolver unless it is
+ * typed in: `internal` lists it for the note. (A target carried over from another tool goes into
+ * its box through the route, lib/session.js.)
+ * @param {{ scanHosts?: { domains?: string[] }|null, zone?: { origin?: string|null, originInternal?: boolean }|null }} ctx
+ * @returns {{ domains: string[], sources: Array<'scan'|'zone'>, internal: string[] }}
  */
 export function prefillDomains({ scanHosts = null, zone = null } = {}) {
   const domains = [];
@@ -562,8 +567,16 @@ export function prefillDomains({ scanHosts = null, zone = null } = {}) {
     if (added) sources.push(source);
   };
   if (scanHosts && Array.isArray(scanHosts.domains)) add(scanHosts.domains, 'scan');
-  if (zone && zone.origin) add([zone.origin], 'zone');
-  return { domains: domains.slice(0, RETIRE_MAX_DOMAINS), sources };
+  const internal = [];
+  if (zone && zone.origin) {
+    const origin = parseDomainList(String(zone.origin)).domains[0];
+    if (zone.originInternal) {
+      if (origin && !domains.includes(origin)) internal.push(origin);
+    } else {
+      add([zone.origin], 'zone');
+    }
+  }
+  return { domains: domains.slice(0, RETIRE_MAX_DOMAINS), sources, internal };
 }
 
 /**
@@ -771,14 +784,14 @@ export function summaryFacts(job, built, { owners = null, passive = false } = {}
 /**
  * `ips` / `domains`: the boxes' text; `carriedIps` / `carriedDomains`: what a box last took from a
  * carried target (lib/session.js fillReplaces); `filled`: where an empty domain box was filled in
- * from; `prompt`: a link filled the form and waits for a click; `job`: the last check;
+ * from; `leftOut`: the imported zone's own domain when it looks internal and was not filled in; `prompt`: a link filled the form and waits for a click; `job`: the last check;
  * `discovery`: a running / finished discovery; `discovered`: names found per domain;
  * `passive`: the passive lookup ({ key, status, results }); `extraHosts`: passive names to check;
  * `route`: the `ips` / `domains` params this page wrote for its last check (its own URL is no new link);
  * `hostsOpen`: the host-names disclosure as the user left it (null: open while a domain has none).
  */
 const session = {
-  ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null, hostsOpen: null,
+  ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, leftOut: null, prompt: false, route: null, hostsOpen: null,
   job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
 };
 let jobCounter = 0;
@@ -801,7 +814,7 @@ stateSingleton.subscribe(({ key }) => {
   if (discoveryRunning()) session.discovery.controller.abort();
   if (passiveRunning()) session.passive.controller.abort();
   Object.assign(session, {
-    ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, prompt: false, route: null, hostsOpen: null,
+    ips: null, domains: null, carriedIps: null, carriedDomains: null, filled: null, leftOut: null, prompt: false, route: null, hostsOpen: null,
     job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
   });
   if (intel) intel.clearCache();
@@ -1028,6 +1041,11 @@ export function mount(container, ctx) {
     if (session.filled && session.filled.length) {
       bits.push(h('span', { class: 'muted retire-filled', dataset: { filled: session.filled.join(' ') } },
         t('retire.filled', { sources: session.filled.map((s) => t(`retire.filled.${s}`)).join(', ') })));
+    }
+    // The imported zone's own domain looks internal: said while the box does not hold it.
+    const leftOut = (session.leftOut || []).filter((d) => !domainList.domains.includes(d));
+    if (leftOut.length) {
+      bits.push(h('span', { class: 'muted retire-filled', dataset: { leftOut: leftOut.join(' ') } }, t('retire.filledInternal', { name: leftOut.join(', ') })));
     }
     parsedEl.append(...bits);
     for (const issue of parsed.issues) {
@@ -1317,6 +1335,7 @@ export function mount(container, ctx) {
   /** Fill an empty domain box from what the page session knows (the last scan, the imported zone). */
   function prefill() {
     const p = prefillDomains({ scanHosts: state.getSession('scanHosts') || null, zone: state.getSession('zone') || null });
+    session.leftOut = p.internal;
     if (!p.domains.length) return;
     session.domains = p.domains.join('\n');
     session.filled = p.sources;

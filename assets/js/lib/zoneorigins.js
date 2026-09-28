@@ -924,6 +924,18 @@ function looksInternal(name) {
 }
 
 /**
+ * Whether a name looks internal by the name alone: a label of {@link INTERNAL_LABELS} or under one
+ * of {@link INTERNAL_SUFFIXES}. No address is involved: a public domain whose apex points at a
+ * private address is still a public domain.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function looksInternalName(name) {
+  const n = canonName(name);
+  return !!n && looksInternal(n);
+}
+
+/**
  * Names that look internal: skipped by default before anything is sent to a public
  * resolver (drift) or used as a scan seed. A name is in the set when any of its
  * A/AAAA is private, a label is in {@link INTERNAL_LABELS}, it sits under one of

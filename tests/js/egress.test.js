@@ -4,9 +4,12 @@
  * (ui/egress-meter.js) against a fake window.
  *
  * The code scan at the end is the registry's guarantee: every file that can send a request is
- * declared below with the services it talks to, and every URL literal in those files must be one
- * the registry classifies (as one of those services) or a link the user opens. A new endpoint, or
- * a new file that sends, fails here until the registry — and so the ledger — knows it. No network.
+ * declared below with the services it talks to, and every URL literal of every file must be one
+ * the registry classifies (in a call site, as one of its services) or a link that file declares —
+ * a URL constant can live in a module without a fetch call and be fetched by one that imports it.
+ * A new endpoint, or a new file that sends, fails here until the registry — and so the ledger —
+ * knows it. The senders' notes (what a POST body carried, a registry's RDAP server) are checked
+ * against the real lib/globalping.js and lib/rdap.js. No network.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -537,11 +540,48 @@ const CALL_SITES = {
   'assets/js/ui/egress-meter.js': [],
   'assets/js/ui/egress-panel.js': ['self']
 };
-/** Links the user opens (never fetched) in a call-site file, by host. */
+/**
+ * Links the user opens (never fetched), by file and host. Every other http(s) literal of every
+ * file — a call site or a module that only holds a URL a call site imports — must be an endpoint
+ * the registry classifies: a link host is declared for the one file that shows it.
+ */
 const LINK_HOSTS = {
   'assets/js/app.js': ['github.com'],
-  'assets/js/lib/passport.js': ['www.trabis.gov.tr', 'webwhois.denic.de', 'whois.jprs.jp', 'www.nic.ch', 'www.iana.org']
+  'assets/js/lib/passport.js': ['www.trabis.gov.tr', 'webwhois.denic.de', 'whois.jprs.jp', 'www.nic.ch', 'www.iana.org'],
+  // the platforms' home pages and the lists their built-in ranges were copied from (by hand, never by the page)
+  'assets/js/lib/netinfo.js': [
+    'www.cloudflare.com', 'www.fastly.com', 'api.fastly.com', 'aws.amazon.com', 'ip-ranges.amazonaws.com', 'www.akamai.com',
+    'azure.microsoft.com', 'www.imperva.com', 'my.imperva.com', 'sucuri.net', 'docs.sucuri.net', 'www.stackpath.com', 'bunny.net',
+    'www.keycdn.com', 'www.cdn77.com', 'edg.io', 'www.medianova.com', 'gcore.com', 'www.cachefly.com', 'pages.github.com',
+    'api.github.com', 'docs.gitlab.com', 'www.heroku.com', 'vercel.com', 'www.netlify.com', 'docs.netlify.com', 'support.google.com',
+    'firebase.google.com', 'www.shopify.com', 'wpengine.com', 'pantheon.io', 'render.com', 'fly.io', 'railway.com',
+    'www.digitalocean.com', 'www.wix.com', 'www.squarespace.com', 'webflow.com'
+  ],
+  // the resolvers' home pages (their DoH endpoints are the registry's)
+  'assets/js/lib/resolvers.js': [
+    'one.one.one.one', 'developers.google.com', 'quad9.net', 'www.nic.cz', 'dns.sb', 'controld.com', 'cleanbrowsing.org', 'dns.seby.io',
+    'tiarap.org'
+  ],
+  'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
+  // the SVG namespace, a name and never a request
+  'assets/js/ui/dom.js': ['www.w3.org'],
+  'assets/js/ui/verify-panel.js': ['globalping.io'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/ip.js': ['bgp.he.net']
 };
+/**
+ * Files with a URL whose host is data (a template's `${…}` there), and why the page never
+ * requests it. A call site may have none: the registry could not name the host it sends to.
+ */
+const BUILT_HOSTS = {
+  'assets/js/lib/domain.js': 'a typed host name read through the URL parser',
+  'assets/js/lib/x509.js': 'a certificate name read through the URL parser',
+  'assets/js/lib/mtasts.js': 'the policy URL a Globalping probe fetches, shown',
+  'assets/js/lib/renewal.js': 'the base a probe\'s redirect Location is read against',
+  'assets/js/views/health.js': 'the policy URL a Globalping probe fetches, shown'
+};
+/** What the lexer puts in a template literal's text where an expression `${…}` stood. */
+const HOLE = '${}';
 /** Network APIs the app never uses: every request goes through fetch, where the meter counts it. */
 const FORBIDDEN = /\bXMLHttpRequest\b|\bsendBeacon\b|\bnew\s+WebSocket\b|\bnew\s+EventSource\b|\bimportScripts\s*\(|\bnew\s+(?:Shared)?Worker\b|\bnew\s+Image\s*\(|\bRTCPeerConnection\b/;
 /** A network call site: a fetch call, a fetch function passed on, or the global fetch touched. */
@@ -554,8 +594,8 @@ const walk = (d) => readdirSync(d).flatMap((f) => {
 
 /**
  * JavaScript source without comments, and the contents of its string and template literals
- * (a template's `${…}` becomes `0`). Enough of a lexer for this codebase: strings, templates with
- * nested expressions, regular expression literals, line and block comments.
+ * (a template's `${…}` becomes {@link HOLE}). Enough of a lexer for this codebase: strings,
+ * templates with nested expressions, regular expression literals, line and block comments.
  * @param {string} src
  * @returns {{ code: string, literals: string[] }}
  */
@@ -614,7 +654,7 @@ function lex(src) {
             i += 2;
           } else if (src[i] === '$' && src[i + 1] === '{') {
             i += 2;
-            text += '0';
+            text += HOLE;
             code += '`';
             scan(true);
             code += '`';
@@ -669,6 +709,49 @@ function lex(src) {
   return { code, literals };
 }
 
+/**
+ * The http(s) literals of the lexed files the registry does not account for. Every file counts,
+ * not only the call sites: a URL constant can live in a module without a fetch call
+ * (lib/sourceinfo.js) and be fetched by a call site that imports it. A literal must be a link its
+ * own file declares (LINK_HOSTS), a reserved `.invalid` name (a URL-parsing trick, never
+ * contacted), a URL whose host is data in a file that says why it is never requested
+ * (BUILT_HOSTS; never in a call site), or classify through the registry — in a call site, as one
+ * of the services it declares.
+ * @param {Map<string, { literals: string[] }>} lexed file → lex() of it
+ * @returns {{ bad: string[], seen: Set<string> }} seen: the services the literals name
+ */
+function urlLiteralProblems(lexed) {
+  const bad = [];
+  const seen = new Set();
+  for (const [file, { literals }] of lexed) {
+    const ids = Object.hasOwn(CALL_SITES, file) ? CALL_SITES[file] : null;
+    const links = LINK_HOSTS[file] || [];
+    for (const lit of literals) {
+      if (!/^https?:\/\//i.test(lit)) continue;
+      const authority = lit.replace(/^https?:\/\//i, '').split(/[/?#]/)[0];
+      if (/\.invalid(?::\d+)?$/i.test(authority)) continue; // a URL-parsing trick, never contacted
+      if (authority.includes(HOLE)) {
+        if (ids) bad.push(`${file}: ${lit} sends to a host built from data, which the registry cannot name`);
+        else if (!Object.hasOwn(BUILT_HOSTS, file)) bad.push(`${file}: ${lit} has a host built from data: say why in BUILT_HOSTS`);
+        continue;
+      }
+      let host;
+      try {
+        host = new URL(lit).host;
+      } catch {
+        bad.push(`${file}: unparseable ${lit}`);
+        continue;
+      }
+      if (links.includes(host)) continue;
+      const c = classifyUrl(lit);
+      if (!c || !c.service) bad.push(`${file}: ${lit} is not in lib/egress.js`);
+      else if (ids && !ids.includes(c.service.id)) bad.push(`${file}: ${lit} is ${c.service.id}, not declared for this file`);
+      else seen.add(c.service.id);
+    }
+  }
+  return { bad, seen };
+}
+
 describe('the code scan', () => {
   const files = [...walk(join(ROOT, 'assets', 'js')).filter((f) => f.endsWith('.js')), join(ROOT, 'sw.js')];
   const rel = (f) => relative(ROOT, f).split(sep).join('/');
@@ -681,7 +764,7 @@ describe('the code scan', () => {
       'const t = `https://four.example/${host}/y?z=${a ? \'1\' : `in${2}`}`;',
       'const d = x / 2 / y;'
     ].join('\n'));
-    assert.deepEqual(literals, ['https://one.example/x', '1', 'in0', 'https://four.example/0/y?z=0']);
+    assert.deepEqual(literals, ['https://one.example/x', '1', `in${HOLE}`, `https://four.example/${HOLE}/y?z=${HOLE}`]);
     assert.ok(!/two\.example|three\.example|fetchImpl/.test(code), code);
     assert.match(code, /x \/ 2 \/ y/);
   });
@@ -699,40 +782,58 @@ describe('the code scan', () => {
     }
   });
 
-  test('every URL literal of a call site is an endpoint the registry classifies as one of its services, or a link', () => {
-    const bad = [];
-    const seen = new Set();
-    for (const [file, ids] of Object.entries(CALL_SITES)) {
-      const links = LINK_HOSTS[file] || [];
-      for (const lit of lexed.get(file).literals) {
-        if (!/^https?:\/\//i.test(lit)) continue;
-        let host;
-        try {
-          host = new URL(lit).host;
-        } catch {
-          bad.push(`${file}: unparseable ${lit}`);
-          continue;
-        }
-        // a link the user opens, or a reserved .invalid name (a URL-parsing trick, never contacted)
-        if (links.includes(host) || host.endsWith('.invalid')) continue;
-        const c = classifyUrl(lit);
-        if (!c || !c.service) bad.push(`${file}: ${lit} is not in lib/egress.js`);
-        else if (!ids.includes(c.service.id)) bad.push(`${file}: ${lit} is ${c.service.id}, not declared for this file`);
-        else seen.add(c.service.id);
-      }
-    }
+  test('every URL literal of every file is an endpoint the registry classifies (in a call site: one of its services), or a link', () => {
+    const { bad, seen } = urlLiteralProblems(lexed);
     assert.deepEqual(bad, []);
     // every registry service has an endpoint in the code (DNS-over-HTTPS: lib/resolvers.js, above)
     assert.deepEqual(EGRESS_SERVICES.map((s) => s.id).filter((id) => id !== 'doh' && !seen.has(id)), [], 'a service no code calls');
   });
 
-  test('the links the call sites carry are declared hosts, and no link host is a service the page calls', () => {
+  test('the scan catches a new endpoint whose URL lives in a module without a fetch call', () => {
+    /** The sources with `src` appended to some files. */
+    const plant = (added) => {
+      const out = new Map(lexed);
+      for (const [file, src] of Object.entries(added)) {
+        const l = lex(src);
+        out.set(file, { code: `${lexed.get(file).code}\n${l.code}`, literals: [...lexed.get(file).literals, ...l.literals] });
+      }
+      return out;
+    };
+    // A constant planted in a module a call site imports (lib/sourceinfo.js holds such URLs), and
+    // the call site fetching it: the ledger would not know the host, so the scan must fail.
+    assert.ok(!CALL_RE.test(lexed.get('assets/js/lib/sourceinfo.js').code), 'lib/sourceinfo.js has no call site of its own');
+    assert.deepEqual(urlLiteralProblems(plant({
+      'assets/js/lib/sourceinfo.js': "export const NEW_API = 'https://api.newservice.example/v1/lookup/';",
+      'assets/js/lib/sources.js': 'export const look = (domain, fetchImpl) => fetchImpl(`${NEW_API}${encodeURIComponent(domain)}`);'
+    })).bad, ['assets/js/lib/sourceinfo.js: https://api.newservice.example/v1/lookup/ is not in lib/egress.js']);
+    // A link host is one file's: the same host in another file is not a link there.
+    assert.deepEqual(urlLiteralProblems(plant({ 'assets/js/lib/sourceinfo.js': "const x = 'https://webwhois.denic.de/x';" })).bad,
+      ['assets/js/lib/sourceinfo.js: https://webwhois.denic.de/x is not in lib/egress.js']);
+    // A registry service a call site does not declare is refused there.
+    assert.deepEqual(urlLiteralProblems(plant({ 'assets/js/lib/ptrsweep.js': "const x = 'https://ipwho.is/';" })).bad,
+      ['assets/js/lib/ptrsweep.js: https://ipwho.is/ is ipwhois, not declared for this file']);
+    // A host built from data: never in a call site, elsewhere only where BUILT_HOSTS says why.
+    assert.deepEqual(urlLiteralProblems(plant({
+      'assets/js/lib/sources.js': 'const u = (host) => `https://${host}/api`;',
+      'assets/js/lib/sourceinfo.js': 'const v = (host) => `https://api.${host}/`;'
+    })).bad.sort(), [
+      'assets/js/lib/sourceinfo.js: https://api.${}/ has a host built from data: say why in BUILT_HOSTS',
+      'assets/js/lib/sources.js: https://${}/api sends to a host built from data, which the registry cannot name'
+    ]);
+  });
+
+  test('the declared links and data-built hosts are still there, and no link host is a service the page calls', () => {
     for (const [file, hosts] of Object.entries(LINK_HOSTS)) {
-      const present = new Set(lexed.get(file).literals.filter((l) => /^https?:\/\//.test(l)).map((l) => new URL(l).host));
+      assert.ok(lexed.has(file), `${file} is gone`);
+      const present = new Set(lexed.get(file).literals.filter((l) => /^https?:\/\/[^/?#$]+(?:[/?#]|$)/.test(l)).map((l) => new URL(l).host));
       for (const host of hosts) {
         assert.ok(present.has(host), `${file}: ${host} is no longer linked`);
         assert.equal(classifyUrl(`https://${host}/`).service, null, host);
       }
+    }
+    for (const file of Object.keys(BUILT_HOSTS)) {
+      assert.ok(lexed.has(file) && lexed.get(file).literals.some((l) => /^https?:\/\/[^/?#]*\$\{\}/.test(l)), `${file} no longer builds a host`);
+      assert.ok(!Object.hasOwn(CALL_SITES, file), `${file} is a call site`);
     }
   });
 });

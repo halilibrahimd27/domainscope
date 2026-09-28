@@ -6,7 +6,8 @@
  * this module draws it:
  *
  *   - {@link RenewalSets}: step 1's list — the sets with their names, and each certificate's key
- *     type, validity, expiry and files (Remove on each); files that add nothing and why;
+ *     type, validity, expiry and files (Remove on each); a certificate a newer one probably
+ *     replaces; files that add nothing and why, or that could be read only in part;
  *   - {@link RenewalPlanPanel}: the "Renewal plan" results tab — the sets, the server × set matrix
  *     (the names each server needs from each set; labelled cards on a phone), the per-server CSV
  *     work list and the names no certificate covers;
@@ -19,7 +20,7 @@
  */
 
 import { h } from './dom.js';
-import { Badge, Button, DataTable, EmptyState, Icon, IconButton, TruncatedList, toast } from './components.js';
+import { Alert, Badge, Button, DataTable, EmptyState, Icon, IconButton, TruncatedList, toast } from './components.js';
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { toCsv } from '../lib/export.js';
@@ -48,6 +49,16 @@ registerStrings('en', {
   'rw.skip.ca': { one: 'a CA certificate only, used as the chain', other: '{count} CA certificates only, used as the chain' },
   'rw.skip.noNames': 'a certificate without DNS names ({subject})',
   'rw.keyIgnored': 'A private key was ignored in {files}. It is never needed; keep it secret.',
+  'rw.unread': {
+    one: 'Part of this could not be read (damaged or in an unsupported format): {files}. A certificate in it may be missing: its names would be neither scanned nor checked.',
+    other: 'Part of these could not be read (damaged or in an unsupported format): {files}. A certificate in them may be missing: its names would be neither scanned nor checked.'
+  },
+  'rw.replaced.title': 'The certificate being replaced may be loaded too',
+  'rw.replaced.same': 'Set {set} holds two {key} certificates for the same names: {old} (expires {oldDate}) and {new} (expires {newDate}).',
+  'rw.replaced.other': 'Every name of the {oldKey} certificate {old} in set {set} (expires {oldDate}) is also in a newer {newKey} certificate, {new} in set {bySet} (expires {newDate}).',
+  'rw.replaced.body': 'If one of them is the certificate being replaced, remove it: a server still serving it would count as updated.',
+  'rw.replaced.badge': 'maybe the old one',
+  'rw.replaced.badgeTitle': 'A newer certificate with the same kind of key names all of its names: {file}',
   'rw.add': 'Add certificates',
   'rw.addTitle': 'Drop more certificate files here',
   'rw.removeAll': 'Remove all',
@@ -110,6 +121,16 @@ registerStrings('tr', {
   'rw.skip.ca': { one: 'yalnızca bir CA sertifikası, zincir olarak kullanılıyor', other: 'yalnızca {count} CA sertifikası, zincir olarak kullanılıyor' },
   'rw.skip.noNames': 'DNS adı olmayan bir sertifika ({subject})',
   'rw.keyIgnored': '{files} içindeki özel anahtar yok sayıldı. Hiç gerekmez; gizli tutun.',
+  'rw.unread': {
+    one: 'Şunun bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçindeki bir sertifika eksik olabilir: onun adları ne taranır ne de kontrol edilir.',
+    other: 'Şunların bir kısmı okunamadı (bozuk ya da desteklenmeyen biçimde): {files}. İçlerindeki bir sertifika eksik olabilir: onun adları ne taranır ne de kontrol edilir.'
+  },
+  'rw.replaced.title': 'Değiştirilen eski sertifika da yüklenmiş olabilir',
+  'rw.replaced.same': '{set} seti aynı adlar için iki {key} sertifikası içeriyor: {old} ({oldDate} tarihinde doluyor) ve {new} ({newDate} tarihinde doluyor).',
+  'rw.replaced.other': '{set} setindeki {oldKey} sertifikası {old} ({oldDate} tarihinde doluyor) için geçen her ad, {bySet} setindeki daha yeni {newKey} sertifikası {new} içinde de var ({newDate} tarihinde doluyor).',
+  'rw.replaced.body': 'Bunlardan biri değiştirilen sertifikaysa onu kaldırın: onu hâlâ sunan bir sunucu güncellenmiş sayılır.',
+  'rw.replaced.badge': 'eski olan olabilir',
+  'rw.replaced.badgeTitle': 'Aynı türde anahtarı olan daha yeni bir sertifika tüm adlarını içeriyor: {file}',
   'rw.add': 'Sertifika ekle',
   'rw.addTitle': 'Başka sertifika dosyalarını buraya bırakın',
   'rw.removeAll': 'Tümünü kaldır',
@@ -183,6 +204,53 @@ function skipText(s) {
 
 const fileLabel = (files) => (files || []).filter(Boolean).join(', ') || '—';
 
+/** The kind of key of a label ('RSA 2048' → 'RSA'): two certificates of one kind with other sizes. */
+const keyKind = (label) => String(label || '').split(' ')[0];
+
+/**
+ * The warning about certificates a newer one probably replaces (lib/certsets replacedLeaves): one
+ * sentence per certificate, then what to do. `data-role="renewal-replaced"`.
+ * @param {import('../lib/certsets.js').RenewalBundle['replaced']} replaced
+ * @returns {HTMLElement}
+ */
+function replacedAlert(replaced) {
+  const lines = replaced.map((r) => {
+    const params = {
+      set: r.set, bySet: r.bySet, old: fileLabel(r.leaf.files), new: fileLabel(r.by.files),
+      oldKey: r.leaf.keyType, newKey: r.by.keyType,
+      key: r.leaf.keyType === r.by.keyType ? r.leaf.keyType : keyKind(r.leaf.keyType),
+      oldDate: formatDate(r.leaf.cert.notAfter), newDate: formatDate(r.by.cert.notAfter)
+    };
+    return h('li', { dataset: { set: r.set, bySet: r.bySet } }, t(r.set === r.bySet ? 'rw.replaced.same' : 'rw.replaced.other', params));
+  });
+  const a = Alert({
+    variant: 'warn', compact: true, title: t('rw.replaced.title'),
+    message: h('ul', { class: 'rw-replaced-list' }, lines),
+    children: h('p', { class: 'rw-replaced-body' }, t('rw.replaced.body'))
+  });
+  a.dataset.role = 'renewal-replaced';
+  return a;
+}
+
+/**
+ * The files that gave certificates but could be read only in part (lib/certsets `unread`), with
+ * the parser's details collapsed. `data-role="renewal-unread"`.
+ * @param {import('../lib/certsets.js').RenewalBundle['unread']} unread
+ * @returns {HTMLElement}
+ */
+function unreadAlert(unread) {
+  const details = unread.flatMap((u) => u.details.map((d) => `${u.file || '—'}: ${d}`));
+  const a = Alert({
+    variant: 'warn', compact: true,
+    message: t('rw.unread', { count: unread.length, files: fileLabel(unread.map((u) => u.file || '—')) }),
+    children: details.length ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')),
+      h('div', { class: 'stack-sm' }, details.map((d) => h('code', { class: 'mono' }, d)))) : null
+  });
+  a.dataset.role = 'renewal-unread';
+  a.dataset.warning = 'PARSE_ERROR';
+  return a;
+}
+
 /** A button with a `data-action` (step 1 finds the Remove buttons by it to keep the focus in the list). */
 const withAction = (btn, action) => {
   btn.dataset.action = action;
@@ -212,9 +280,10 @@ export function CertFileButtons(sets) {
 
 /**
  * Step 1 of SSL Targets with several certificates: the sets (names; each certificate's key
- * type, validity, expiry and files, with Details and Remove) and the files that add nothing.
- * The buttons carry `data-action` rw-details, rw-remove-leaf and rw-remove-file; the head
- * (`.rw-sets-head`) takes the focus from script (tabindex -1).
+ * type, validity, expiry and files, with Details and Remove), a warning when a certificate a
+ * newer one probably replaces is loaded too (marked in the list), the files that add nothing and
+ * those read only in part. The buttons carry `data-action` rw-details, rw-remove-leaf and
+ * rw-remove-file; the head (`.rw-sets-head`) takes the focus from script (tabindex -1).
  * @param {{ bundle: import('../lib/certsets.js').RenewalBundle,
  *   validity?: ((cert: object) => HTMLElement)|null,
  *   onRemoveLeaf: (leaf: import('../lib/certsets.js').RenewalLeaf) => void,
@@ -236,12 +305,22 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
     ].join(' · '))) : null,
   bundle.leaves.length ? h('p', { class: 'muted text-xs rw-sets-intro' }, t('rw.intro')) : null);
 
+  // Last year's certificate next to its renewal would count as new: say so before the list.
+  const replaced = Array.isArray(bundle.replaced) ? bundle.replaced : [];
+  if (replaced.length) el.append(replacedAlert(replaced));
+  const olderBy = new Map(replaced.map((r) => [r.leaf, r.by]));
+
   for (const set of bundle.sets) {
     el.append(h('section', { class: 'rw-set', dataset: { set: set.id }, attrs: { 'aria-label': t('rw.set', { id: set.id }) } },
       h('div', { class: 'rw-set-head' }, SetBadge(set.id), TruncatedList(set.names, { max: 4, inline: true })),
-      h('ul', { class: 'rw-leaves' }, set.leaves.map((leaf) => h('li', { class: 'rw-leaf', dataset: { key: leaf.keySlug } },
+      h('ul', { class: 'rw-leaves' }, set.leaves.map((leaf) => h('li', {
+        class: ['rw-leaf', { 'is-replaced': olderBy.has(leaf) }], dataset: { key: leaf.keySlug }
+      },
         h('div', { class: 'rw-leaf-facts' },
           Badge(leaf.keyType, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }),
+          olderBy.has(leaf) ? Badge(t('rw.replaced.badge'), {
+            variant: 'warn', icon: 'alert', className: 'rw-replaced-badge', title: t('rw.replaced.badgeTitle', { file: fileLabel(olderBy.get(leaf).files) })
+          }) : null,
           validity ? validity(leaf.cert) : null,
           h('span', { class: 'rw-leaf-exp text-sm' }, t('rw.expires', { date: formatDate(leaf.cert.notAfter) })),
           h('span', { class: 'rw-leaf-files text-sm muted mono' }, fileLabel(leaf.files))),
@@ -256,6 +335,7 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
           }), 'rw-remove-leaf')))))));
   }
 
+  if (bundle.unread && bundle.unread.length) el.append(unreadAlert(bundle.unread));
   if (bundle.skipped.length) {
     el.append(h('div', { class: 'rw-skipped', dataset: { role: 'renewal-skipped' } },
       h('div', { class: 'rw-skipped-title text-sm' }, t('rw.skipped')),

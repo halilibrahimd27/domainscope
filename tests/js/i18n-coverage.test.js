@@ -326,6 +326,8 @@ describe('i18n coverage', () => {
     const [pp, oc, zd] = await Promise.all([imp('assets/js/ui/parity-panel.js'), imp('assets/js/ui/origin-compare.js'), imp('assets/js/lib/zonedrift.js')]);
     for (const k of [...pp.generatedKeys(), ...oc.generatedKeys()]) add(k);
     for (const r of zd.DRIFT_REASONS) add(pp.reasonKey(r));
+    // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key.
+    for (const w of ['reused', 'single']) { add(`key.tlsa.${w}`); add(`key.pin.${w}`); }
     assert.deepEqual(missingIn(keys), []);
   });
 

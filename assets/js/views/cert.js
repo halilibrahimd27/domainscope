@@ -5,7 +5,8 @@
  * validity, key, fingerprints (incl. the public-key SHA-256 for matching a private key
  * without uploading it), usages, AIA/CRL/SCT data, the chain order (with a correctly
  * ordered fullchain.pem download), a CAA check per name (lib/health.js), a Certificate
- * Transparency lookup of the serial number on crt.sh and, on a click, the DANE / TLSA check of
+ * Transparency lookup of the serial number on crt.sh and, on a click, of its public key (key
+ * continuity: reused across renewals or rotated, ui/key-continuity.js), the DANE / TLSA check of
  * the leaf (ui/dane-panel.js over lib/dane.js: do TLSA records at its mail servers and names pin
  * another certificate?). "Find servers for this certificate" hands the certificate to the SSL
  * Targets view (state.session.pendingCert). A PKCS#12 (.pfx / .p12) file asks for its password
@@ -66,6 +67,8 @@ import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 // The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
 import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain } from '../ui/chain-repair.js';
+// CT logs › Key continuity: other certificates with this public key (lib/keycontinuity.js).
+import { KeyContinuityCard } from '../ui/key-continuity.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
@@ -1988,6 +1991,8 @@ export function CertSummary(load, { actions = null, maxNames = 8 } = {}) {
 /** Per-certificate async results that survive re-mounts (keyed by serial + issuer). */
 const caaCache = new Map();
 const ctCache = new Map();
+/** Key continuity lookups per certificate (ui/key-continuity.js). */
+const keyCache = new Map();
 /** DANE / TLSA job holders per leaf certificate (ui/dane-panel.js keeps its job on `holder.dane`). */
 const daneHolders = new Map();
 /** View state that survives navigation and language re-mounts. */
@@ -2030,6 +2035,7 @@ stateSingleton.subscribe(({ key }) => {
   ctForm.last = null;
   caaCache.clear();
   ctCache.clear();
+  keyCache.clear();
   for (const holder of daneHolders.values()) cancelDane(holder);
   daneHolders.clear();
   Object.assign(viewState, { key: null, selected: 0, tab: 'names' });
@@ -2235,11 +2241,12 @@ export function mount(container, ctx) {
     }
     const tabsHost = h('div', { class: 'cert-tabs-host' });
     content.append(tabsHost);
+    let tabs = null;
 
     function renderTabs() {
       clear(tabsHost);
       const cert = result.certificates[viewState.selected] || result.leaf;
-      const tabs = Tabs([
+      tabs = Tabs([
         { id: 'names', label: t('cert.tab.names'), icon: 'globe', badge: cert.sans.length || null, content: () => namesPanel(cert) },
         { id: 'details', label: t('cert.tab.details'), icon: 'list', content: () => detailsPanel(cert) },
         { id: 'chain', label: t('cert.tab.chain'), icon: 'git-branch', badge: result.certificates.length, content: () => chainPanel(analysis) },
@@ -2826,7 +2833,17 @@ export function mount(container, ctx) {
         h('div', { class: 'cluster' }, runBtn,
           ExternalLink(serialUrl, t('cert.ct.openSerial')),
           domain ? ExternalLink(`https://crt.sh/?q=${encodeURIComponent(domain)}`, t('cert.ct.openDomain', { domain })) : null),
-        body);
+        body,
+        // Was this key carried over renewals, or is it new? Only on a click; sends only the key's hash.
+        cert.spkiDer ? KeyContinuityCard({
+          cert,
+          ctx,
+          cache: keyCache,
+          cacheKey: key,
+          onOpenDane: () => {
+            if (tabs) tabs.select('dane', { focus: true });
+          }
+        }) : null);
       const refresh = (entry) => {
         if (!panel.isConnected) return;
         if (entry.status === 'aborted' && !ctx.signal.aborted) run(); // see caaPanel

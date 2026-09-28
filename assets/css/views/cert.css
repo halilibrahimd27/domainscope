@@ -776,6 +776,43 @@
   overflow-wrap: anywhere;
 }
 
+/* CT logs › Key continuity (ui/key-continuity.js) */
+.cert-key-card {
+  margin-top: 4px;
+}
+
+.cert-key-spki {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.cert-key-spki-value {
+  padding: 3px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.cert-key-effects {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+}
+
+.cert-key-table .dt-table tbody .cert-key-row-this td {
+  background: var(--accent-soft);
+}
+
+.cert-key-id {
+  gap: 6px;
+}
+
 @media (max-width: 600px) {
   .cert-overview-main {
     padding: 14px;

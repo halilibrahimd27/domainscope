@@ -35,6 +35,10 @@
  * some other way. "Delete all local data" forgets all of it and opens the tool on screen again,
  * bare.
  *
+ * What this page sent: boot() starts ui/egress-meter.js before anything can send (the fetch
+ * wrapper and the Resource Timing observer, lib/egresslog.js), and the footer's link, with the
+ * count of third-party requests, opens About's ledger (`#/about?section=sent`).
+ *
  * Installable app: once the first view is up the shell registers the service worker
  * (ui/pwa.js; Pages bundle only). Offline, a view that needs the network says so above its
  * body, and ctx.requireOnline() stops its network work with a message instead of failing requests.
@@ -72,6 +76,8 @@ import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
 import { setBaseTitle, refreshJobIndicators, runningWork } from './ui/jobs.js';
 import { WorkspaceSwitch, WorkspaceMenuEntry, workspaceLabel, deleteAllLocalData, storageErrorText } from './ui/workspace-ui.js';
+import { egressLog, startEgressMeter } from './ui/egress-meter.js';
+import { countRequests } from './lib/egresslog.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -1478,6 +1484,7 @@ function scrollNavToActive(id) {
 
 function renderFooter() {
   clear(dom.footer);
+  dom.sentCount = h('span', { class: 'footer-sent-count' });
   dom.footer.append(
     h('span', null, `${t('app.name')} · ${t('shell.version', { version: APP_VERSION })}`),
     h('span', null, t('shell.footer')),
@@ -1490,7 +1497,26 @@ function renderFooter() {
       on: { click: openShortcutHelp }
     }, t('keys.title'), ' ', h('kbd', { attrs: { 'aria-hidden': 'true' } }, '?')),
     h('span', { class: 'spacer' }),
-    h('span', null, t('shell.privacyLong')));
+    h('span', null, t('shell.privacyLong')),
+    // About › What this page sent: the page session's requests, measured (ui/egress-meter.js).
+    h('a', { class: 'footer-sent', href: buildRoute('about', { section: 'sent' }), title: t('shell.sentTitle'), dataset: { control: 'sent' } },
+      t('shell.sent'), dom.sentCount));
+  renderSentCount();
+}
+
+/** The footer's count of third-party requests (throttled: a scan sends thousands a minute). */
+function renderSentCount() {
+  clearTimeout(sentCountTimer);
+  sentCountTimer = null;
+  if (!dom.sentCount) return;
+  const { thirdParty } = countRequests(egressLog.snapshot().entries, globalThis.location ? globalThis.location.origin : '');
+  dom.sentCount.textContent = ` · ${t('shell.sentCount', { count: thirdParty })}`;
+  dom.sentCount.dataset.count = String(thirdParty);
+}
+
+let sentCountTimer = null;
+function scheduleSentCount() {
+  if (sentCountTimer === null) sentCountTimer = setTimeout(renderSentCount, 1000);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2070,6 +2096,10 @@ function notifyUnexpected(err) {
 /* ------------------------------------------------------------------------ */
 
 function boot() {
+  // Before anything can send a request: About › What this page sent counts from here on (the
+  // app's own files loaded before this come from the buffered Resource Timing entries).
+  startEgressMeter(globalThis);
+  egressLog.subscribe(scheduleSentCount);
   dom.root = document.documentElement;
   dom.header = document.getElementById('app-header');
   dom.headerActions = document.getElementById('header-actions');

@@ -328,6 +328,13 @@ describe('i18n coverage', () => {
     const [pp, oc, zd] = await Promise.all([imp('assets/js/ui/parity-panel.js'), imp('assets/js/ui/origin-compare.js'), imp('assets/js/lib/zonedrift.js')]);
     for (const k of [...pp.generatedKeys(), ...oc.generatedKeys()]) add(k);
     for (const r of zd.DRIFT_REASONS) add(pp.reasonKey(r));
+    // About › What this page sent (ui/egress-panel.js over lib/egress.js): every data kind, service
+    // role and never-sent item the ledger words from the registry.
+    const egress = await imp('assets/js/lib/egress.js');
+    for (const k of egress.DATA_KINDS) add(`egress.kind.${k}`);
+    for (const r of egress.EGRESS_ROLES) add(`egress.role.${r}`);
+    for (const svc of egress.EGRESS_SERVICES) assert.ok(egress.EGRESS_ROLES.includes(svc.role), `${svc.id}: role ${svc.role}`);
+    for (const n of egress.NEVER_SENT) add(`egress.never.${n}`);
     // Subdomains › Related domains (ui/related-domains.js): every Certificate Transparency state it words.
     for (const st of ['off', 'waiting', 'failed', 'none', 'sharedOnlyNone']) add(`rel.${st}`);
     // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key.

@@ -97,8 +97,13 @@
   color: var(--text);
 }
 
-.about-page .section-title:focus {
+:root[data-view="about"] .section-title:focus {
   outline: none;
+}
+
+/* A section reached from "On this page" or a link (section=) keeps its title below the sticky header. */
+:root[data-view="about"] .section {
+  scroll-margin-top: 76px;
 }
 
 /* How it works */
@@ -424,6 +429,151 @@
   border-radius: 8px;
   background: var(--ok-bg);
   color: var(--ok);
+}
+
+/* What this page sent (ui/egress-panel.js): the page session's ledger */
+.egress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.egress-summary {
+  margin: 0;
+  color: var(--text-2);
+  font-weight: 550;
+}
+
+.egress-table .dt-table td {
+  vertical-align: top;
+}
+
+.egress-service {
+  display: grid;
+  gap: 1px;
+  min-width: 12rem;
+}
+
+.egress-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.egress-host,
+.egress-role {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.egress-count {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+
+.egress-failed {
+  font-size: 12px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.egress-kinds {
+  display: grid;
+  gap: 2px;
+  min-width: 12rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.egress-kind-count {
+  color: var(--text-3);
+}
+
+.egress-table .dt-table tbody .egress-row-unknown td {
+  background: var(--warn-bg);
+}
+
+.egress-how {
+  margin: 0;
+  max-width: 82ch;
+}
+
+.egress-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-3);
+}
+
+/* A phone: each host is a card of labelled lines; the kinds and host names break anywhere. */
+@media (max-width: 640px) {
+  .egress-table .dt-table,
+  .egress-table .dt-table tbody {
+    display: block;
+  }
+
+  .egress-table .dt-table thead {
+    display: none;
+  }
+
+  .egress-table .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .egress-table .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  /* an unknown host: the whole card is marked, not each line of it */
+  .egress-table .dt-table tbody tr.egress-row-unknown {
+    background: var(--warn-bg);
+  }
+
+  .egress-table .dt-table tbody .egress-row-unknown td {
+    background: none;
+  }
+
+  .egress-table .dt-table td,
+  .egress-table .dt-table td:first-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .egress-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .egress-service,
+  .egress-kinds {
+    min-width: 0;
+  }
+
+  .egress-table .badge {
+    height: auto;
+    min-height: 21px;
+    white-space: normal;
+  }
 }
 
 /* CLI */

@@ -1,7 +1,11 @@
 /**
  * views/about.js — where to start (the start page's job cards, always listed here), how the
- * toolkit works, data sources & quotas, privacy, the companion CLI (download + usage),
- * self-hosting on GitHub Pages, credits and license.
+ * toolkit works, data sources & quotas, privacy, what this page sent (the page session's ledger of
+ * requests, ui/egress-panel.js), the companion CLI (download + usage), self-hosting on GitHub
+ * Pages, credits and license.
+ *
+ * Route params: `#/about?section=sent` (the footer's "What this page sent") scrolls to that
+ * section and puts the focus on its heading, then drops the param so the link works again.
  */
 
 import { h } from '../ui/dom.js';
@@ -13,6 +17,7 @@ import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver
 import { RANGES_UPDATED, PROVIDERS } from '../lib/netinfo.js';
 import { StartTaskList } from '../ui/start-tasks.js';
 import { deleteAllLocalData } from '../ui/workspace-ui.js';
+import { EgressPanel } from '../ui/egress-panel.js';
 
 /** Route id. */
 export const id = 'about';
@@ -63,6 +68,7 @@ registerStrings('en', {
   'about.toc.cloudflare': 'Cloudflare & CDNs',
   'about.toc.sources': 'Sources & quotas',
   'about.toc.privacy': 'Privacy',
+  'about.toc.sent': 'What this page sent',
   'about.toc.cli': 'CLI',
   'about.toc.selfhost': 'Self-hosting',
   'about.toc.license': 'License',
@@ -100,7 +106,7 @@ registerStrings('en', {
   'about.col.source': 'Source',
   'about.col.provides': 'Provides',
   'about.col.limits': 'Limits & notes',
-  'about.src.crtsh': 'Certificate Transparency search: every name that appeared in a public certificate. On request, also where to download one host name’s certificate (Certificate, SSL Targets), and the issuers of a domain’s current certificates when Cert Spotter cannot answer (Domain overview).',
+  'about.src.crtsh': 'Certificate Transparency search: every name that appeared in a public certificate. On request, also where to download one host name’s certificate (Certificate, SSL Targets), the issuers of a domain’s current certificates when Cert Spotter cannot answer (Domain overview), and the other certificates with the same public key (Certificate › CT logs › Key continuity).',
   'about.src.crtshLimit': 'Free. Can be slow or briefly unavailable under load: retried with growing pauses, then a lighter search — up to about 3 minutes when it keeps timing out; Cert Spotter covers it meanwhile.',
   'about.src.certspotter': 'Certificate Transparency issuances with names and fingerprints. On request, also one host name’s current certificate (Certificate, SSL Targets) and the issuers of a domain’s current certificates (Domain overview, one request).',
   'about.src.certspotterLimit': 'Small anonymous hourly quotas per IP address (HTTP 429 when used up): about 10 full-domain searches (a scan uses up to 5 per registrable domain) and, separately, 100 single-host requests (one host name’s certificate; about 50 lookups, two requests each).',
@@ -135,7 +141,7 @@ registerStrings('en', {
   'about.priv2': 'Certificates are parsed in your browser. Private keys are never needed; if a file contains one it is ignored and never displayed.',
   'about.privChain': 'A missing intermediate is looked up in this site’s own copy of the CCADB list of public intermediates: the page reads a few small files of the site (usually one or two), each chosen by the first two hex digits of the key identifier of an intermediate it looks for (or, for a certificate that names no key identifier, by the first hex digit of a SHA-256 hash of its issuer’s name), and never sends the certificate anywhere. Those files are not kept for offline use, so a lookup needs a connection.',
   'about.priv3': 'Workspaces: each keeps its own server inventory, learned subdomain names (only if you switch them on: bare labels such as “api”, never full hostnames or IP addresses), custom wordlist, expected CAs, notes and the domains you worked on in it. They live in this browser’s IndexedDB (the database “ssds.workspaces”); only a pointer to the workspace you use, the settings and remembered options are in its local storage (keys starting with “ssds.”). Both belong to the site’s origin: on a GitHub Pages project site (<user>.github.io/<repo>/) every other Pages project of the same account shares that origin and could read them, so a copy that keeps customer data should have an origin of its own. A workspace leaves this browser only as a hand-over file you export yourself, encrypted if you give it a password (never stored; the file name then leaves the workspace’s name out too). Learned and custom names are tried as DNS lookups under the domains you scan in their workspace (label.domain), so the DNS resolvers and those domains’ nameservers see them. All of it can be deleted at any time.',
-  'about.priv4': 'What third parties see: domain names you scan go to the CT / passive-DNS services and DoH resolvers, and a host name whose certificate you load (Certificate, SSL Targets) or a domain whose certificate issuers you look up (Domain overview) to Cert Spotter and crt.sh; IP addresses you inspect go to RIPEstat and ipwho.is, the network addresses whose owner you look up and the AS numbers whose prefixes you list go to RIPEstat, and a reverse DNS sweep sends the reverse names of the addresses and the names found to the DoH resolvers. As with any website, they also see your IP address.',
+  'about.priv4': 'What third parties see: domain names you scan go to the CT / passive-DNS services and DoH resolvers, and a host name whose certificate you load (Certificate, SSL Targets) or a domain whose certificate issuers you look up (Domain overview) to Cert Spotter and crt.sh, and the public-key hash of a certificate whose key you look up (Certificate › CT logs) to crt.sh; IP addresses you inspect go to RIPEstat and ipwho.is, the network addresses whose owner you look up and the AS numbers whose prefixes you list go to RIPEstat, and a reverse DNS sweep sends the reverse names of the addresses and the names found to the DoH resolvers. As with any website, they also see your IP address.',
   'about.priv5': 'Requests carry no referrer, so services do not learn which page you used.',
   'about.privZone': 'An imported zone file is read in your browser and kept only in this tab’s memory: it is never uploaded or saved, and a reload, Forget or “Delete all local data” clears it. Only what you click sends anything: the Live check, or a scan of the zone’s names that you start, sends record names (and the Live check their types; never the values or origin addresses) to your DNS resolvers — a scan that also runs discovery asks the passive sources about the domain as usual. Names that look internal are skipped by default.',
   'about.privRetire': 'Retire an IP compares the addresses in your browser. A check sends the names it looks up to your DNS resolvers: each domain’s own name and records, the host names this page session knows, and the zone file’s records that point at the address (a wildcard record: a random name under it) — never a host name the zone file marks as internal, and its own domain is not filled in when it looks internal; a domain you type in is checked as typed. Only on a click, the passive lookup sends each address to HackerTarget and ip.thc.org (never a private one), and a discovery sends its wordlist guesses as DNS lookups.',
@@ -194,6 +200,7 @@ registerStrings('tr', {
   'about.toc.cloudflare': 'Cloudflare ve CDN’ler',
   'about.toc.sources': 'Kaynaklar ve kotalar',
   'about.toc.privacy': 'Gizlilik',
+  'about.toc.sent': 'Bu sayfa ne gönderdi',
   'about.toc.cli': 'CLI',
   'about.toc.selfhost': 'Kendin barındır',
   'about.toc.license': 'Lisans',
@@ -231,7 +238,7 @@ registerStrings('tr', {
   'about.col.source': 'Kaynak',
   'about.col.provides': 'Sağladığı',
   'about.col.limits': 'Sınırlar ve notlar',
-  'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad. İstendiğinde bir host adının sertifikasının nereden indirileceği (Sertifika, SSL Hedefleri) ve Cert Spotter yanıt veremediğinde bir alan adının geçerli sertifikalarını verenler de (Alan adı özeti).',
+  'about.src.crtsh': 'Certificate Transparency araması: genel bir sertifikada geçmiş her ad. İstendiğinde bir host adının sertifikasının nereden indirileceği (Sertifika, SSL Hedefleri) Cert Spotter yanıt veremediğinde bir alan adının geçerli sertifikalarını verenler (Alan adı özeti) ve aynı açık anahtarı taşıyan diğer sertifikalar da (Sertifika › CT kayıtları › Anahtar sürekliliği).',
   'about.src.crtshLimit': 'Ücretsiz. Yoğunlukta yavaş ya da kısa süre erişilemez olabilir: giderek uzayan aralarla yeniden denenir, sonra daha hafif bir aramaya geçilir — zaman aşımları sürerse yaklaşık 3 dakikaya kadar; bu sırada Cert Spotter devreye girer.',
   'about.src.certspotter': 'Adları ve parmak izleriyle Certificate Transparency kayıtları. İstendiğinde bir host adının geçerli sertifikası (Sertifika, SSL Hedefleri) ve bir alan adının geçerli sertifikalarını verenler de (Alan adı özeti, tek istek).',
   'about.src.certspotterLimit': 'Anonim kullanımda IP adresi başına küçük saatlik kotalar (dolunca HTTP 429): yaklaşık 10 tam alan adı araması (bir tarama her kayıtlı alan adı için en fazla 5 kullanır) ve bundan ayrı olarak tek host için 100 istek (bir host adının sertifikası; her sorgu iki istek, yani saatte yaklaşık 50 sorgu).',
@@ -266,7 +273,7 @@ registerStrings('tr', {
   'about.priv2': 'Sertifikalar tarayıcınızda ayrıştırılır. Özel anahtar hiçbir zaman gerekmez; dosyada varsa yok sayılır ve asla gösterilmez.',
   'about.privChain': 'Eksik bir ara sertifika, CCADB’nin herkese açık ara sertifika listesinin bu sitedeki kopyasında aranır: sayfa, aradığı her ara sertifikanın anahtar kimliğinin ilk iki onaltılık basamağına (anahtar kimliği belirtmeyen bir sertifikada, onu verenin adının SHA-256 özetinin ilk onaltılık basamağına) göre seçilen birkaç küçük site dosyasını (çoğunlukla bir ya da iki) okur ve sertifikayı hiçbir yere göndermez. Bu dosyalar çevrimdışı kullanım için saklanmaz; bu yüzden arama için bağlantı gerekir.',
   'about.priv3': 'Çalışma alanları: her biri kendi sunucu envanterini, öğrenilen subdomain adlarını (yalnızca açarsanız: “api” gibi yalın etiketler; asla tam host adları ya da IP adresleri değil), özel kelime listesini, beklenen CA’larını, notlarını ve içinde çalıştığınız alan adlarını tutar. Bunlar bu tarayıcının IndexedDB deposunda (“ssds.workspaces” veritabanı) durur; yerel depolamada (“ssds.” ile başlayan anahtarlar) yalnızca kullandığınız çalışma alanına bir işaret, ayarlar ve hatırlanan seçenekler bulunur. İkisi de sitenin kaynağına (origin) aittir: bir GitHub Pages proje sitesinde (<kullanıcı>.github.io/<depo>/) aynı hesabın diğer tüm Pages projeleri bu kaynağı paylaşır ve bunları okuyabilir; müşteri verisi tutacak bir kopyanın kendine ait bir kaynağı olmalıdır. Bir çalışma alanı bu tarayıcıdan yalnızca sizin dışa aktardığınız devir dosyası olarak çıkar; parola verirseniz (asla saklanmaz) şifrelenir ve dosya adında da çalışma alanının adı yer almaz. Öğrenilen ve özel adlar, kendi çalışma alanında taradığınız alan adlarının altında DNS sorgusu olarak denenir (etiket.alanadı); yani DNS çözümleyicileri ve o alan adlarının ad sunucuları bunları görür. Hepsi istediğiniz an silinebilir.',
-  'about.priv4': 'Üçüncü tarafların gördükleri: taradığınız alan adları CT / pasif DNS hizmetlerine ve DoH çözümleyicilerine, sertifikasını yüklediğiniz host adı (Sertifika, SSL Hedefleri) ya da sertifika sağlayıcılarını sorguladığınız alan adı (Alan adı özeti) Cert Spotter ve crt.sh’e; incelediğiniz IP adresleri RIPEstat ve ipwho.is’e, sahibini sorguladığınız ağ adresleri ve öneklerini listelediğiniz AS numaraları RIPEstat’a gider; bir ters DNS taraması ise adreslerin ters adlarını ve bulunan adları DoH çözümleyicilerine gönderir. Her web sitesinde olduğu gibi IP adresinizi de görürler.',
+  'about.priv4': 'Üçüncü tarafların gördükleri: taradığınız alan adları CT / pasif DNS hizmetlerine ve DoH çözümleyicilerine, sertifikasını yüklediğiniz host adı (Sertifika, SSL Hedefleri) ya da sertifika sağlayıcılarını sorguladığınız alan adı (Alan adı özeti) Cert Spotter ve crt.sh’e, anahtarını sorguladığınız bir sertifikanın açık anahtar özeti (Sertifika › CT kayıtları) crt.sh’e; incelediğiniz IP adresleri RIPEstat ve ipwho.is’e, sahibini sorguladığınız ağ adresleri ve öneklerini listelediğiniz AS numaraları RIPEstat’a gider; bir ters DNS taraması ise adreslerin ters adlarını ve bulunan adları DoH çözümleyicilerine gönderir. Her web sitesinde olduğu gibi IP adresinizi de görürler.',
   'about.priv5': 'İstekler referrer bilgisi taşımaz; hizmetler hangi sayfayı kullandığınızı öğrenmez.',
   'about.privZone': 'İçe aktardığınız zone dosyası tarayıcınızda okunur ve yalnızca bu sekmenin belleğinde tutulur: hiçbir yere yüklenmez ya da kaydedilmez; sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onu siler. Yalnızca tıkladığınız işlemler bir şey gönderir: Canlı kontrol ya da başlattığınız bir zone adları taraması, DNS çözümleyicilerinize kayıt adlarını (Canlı kontrol türlerini de; değerleri ya da origin adreslerini asla) gönderir — keşfi de çalıştıran bir tarama, her zamanki gibi alan adını pasif kaynaklara sorar. İç ağa ait görünen adlar varsayılan olarak atlanır.',
   'about.privRetire': 'IP emekliye ayırma adresleri tarayıcınızda karşılaştırır. Bir kontrol, sorguladığı adları DNS çözümleyicilerinize gönderir: her alan adının kendi adı ve kayıtları, bu sayfa oturumunun bildiği host adları ve zone dosyasının adresi gösteren kayıtları (joker bir kayıt için altındaki rastgele bir ad) — zone dosyasının iç ağa ait saydığı bir host adını asla; zone’un kendi alan adı da iç ağa ait görünüyorsa kutuya eklenmez. Kutuya yazdığınız bir alan adı yazdığınız gibi kontrol edilir. Yalnızca tıkladığınızda pasif sorgu her adresi HackerTarget ve ip.thc.org’a gönderir (özel adresleri asla), bir keşif de kelime listesi tahminlerini DNS sorgusu olarak gönderir.',
@@ -380,6 +387,18 @@ export function mount(container, ctx) {
     sections[key] = Section({ id: `about-${key}`, ...opts });
     return sections[key];
   };
+  /** Scroll a section into view and put the focus on its heading (the TOC, `section=`). */
+  const goTo = (key) => {
+    const target = sections[key];
+    if (!target) return false;
+    target.scrollIntoView({ block: 'start' });
+    const heading = target.querySelector('.section-title');
+    if (heading) {
+      heading.setAttribute('tabindex', '-1');
+      heading.focus({ preventScroll: true });
+    }
+    return true;
+  };
 
   /* Hero */
   const hero = h('div', { class: 'about-hero card' },
@@ -394,7 +413,7 @@ export function mount(container, ctx) {
     h('img', { class: 'about-hero-logo', src: 'favicon.svg', alt: '', attrs: { width: 96, height: 96 } }));
 
   /* On this page (buttons, not #anchors — the hash is the router's) */
-  const tocItems = ['start', 'how', 'cloudflare', 'sources', 'privacy', 'cli', 'selfhost', 'license'];
+  const tocItems = ['start', 'how', 'cloudflare', 'sources', 'privacy', 'sent', 'cli', 'selfhost', 'license'];
   // "Where to start" shares its title with the start page's "Hidden" note (a shell string).
   const tocLabel = (key) => (key === 'start' ? t('start.aboutTitle') : t(`about.toc.${key}`));
   const toc = h('nav', { class: 'about-toc', attrs: { 'aria-label': t('about.onThisPage') } },
@@ -402,18 +421,8 @@ export function mount(container, ctx) {
     tocItems.map((key) => h('button', {
       type: 'button',
       class: 'about-toc-link',
-      on: {
-        click: () => {
-          const target = sections[key];
-          if (!target) return;
-          target.scrollIntoView({ block: 'start' });
-          const heading = target.querySelector('.section-title');
-          if (heading) {
-            heading.setAttribute('tabindex', '-1');
-            heading.focus({ preventScroll: true });
-          }
-        }
-      }
+      dataset: { toc: key },
+      on: { click: () => goTo(key) }
     }, tocLabel(key))));
 
   /* Where to start: the first-visit task picker, reachable after it was dismissed or outgrown */
@@ -538,6 +547,15 @@ export function mount(container, ctx) {
       })))
   });
 
+  /* What this page sent: the page session's requests, measured live (ui/egress-panel.js) */
+  const ledger = EgressPanel({ repoUrl: ctx.repoUrl, signal: ctx.signal });
+  ctx.onCleanup(() => ledger.dispose());
+  const sent = section('sent', {
+    title: t('egress.title'),
+    description: t('egress.desc'),
+    children: ledger.el
+  });
+
   /* CLI */
   const cli = section('cli', {
     title: t('about.cliTitle'),
@@ -589,10 +607,38 @@ export function mount(container, ctx) {
         ExternalLink(ctx.repoUrl, 'GitHub')))
   });
 
-  container.append(hero, toc, start, how, cloudflare, sources, privacy, cli, selfhost, license);
+  container.append(hero, toc, start, how, cloudflare, sources, privacy, sent, cli, selfhost, license);
+
+  // `section=sent` (the footer link): after the shell has moved the focus to the page title.
+  const openSection = (params) => {
+    if (!params || !params.section || !sections[params.section]) return false;
+    setTimeout(() => {
+      if (!ctx.signal.aborted && goTo(params.section)) ctx.setParams({});
+    }, 0);
+    return true;
+  };
+  openSection(ctx.params);
+  active = { openSection };
+  ctx.onCleanup(() => {
+    active = null;
+  });
 }
 
-/** Nothing to clean up. */
+/** The mounted view's hooks for {@link update}. */
+let active = null;
+
+/**
+ * Take new route params without a re-mount: `section=` scrolls to that section.
+ * @param {Record<string, string>} params
+ * @returns {boolean}
+ */
+export function update(params) {
+  if (!active) return false;
+  active.openSection(params);
+  return true;
+}
+
+/** Nothing else to clean up (mount's cleanups stop the ledger). */
 export function unmount() {}
 
-export default { id, titleKey, icon, mount, unmount };
+export default { id, titleKey, icon, mount, unmount, update };

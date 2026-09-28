@@ -59,11 +59,11 @@ jobs:
       # image has the switch, so a missing one is fine
       - name: Allow the Chrome sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      # shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global --offline, ptr, retire, carry, workspaces and domain never leave the
+      # shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global --offline, ptr, retire, carry, workspaces, domain and privacy never leave the
       # machine (fake DoH / Globalping inside the page, every other https:// request blocked;
       # subdomains skips its live scans and resolves only the local server), nor do the offline
       # groups of ip, lookup and health (--offline skips their live groups); the rest hits live,
       # quota-limited APIs and is run by hand. Uses the runner's Google Chrome
       # (/usr/bin/google-chrome).
-      - name: Offline E2E (shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global, ptr, retire, carry, ip, lookup, health, workspaces, domain)
+      - name: Offline E2E (shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global, ptr, retire, carry, ip, lookup, health, workspaces, domain, privacy)
         run: npm run test:e2e:offline

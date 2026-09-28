@@ -11,8 +11,9 @@
  * - Order: shell first (offline, fastest), then the views in navigation order (verify, the
  *   offline suite of SSL Targets › Verify, right after scan; dane, the offline DANE / TLSA suite
  *   of the Certificate view and SSL Targets, right after cert), then carry (offline: the target
- *   and kept results carried across views), then the cross-view integration suite, then any
- *   other *.e2e.mjs file alphabetically.
+ *   and kept results carried across views) and workspaces (offline: the customer workspaces in
+ *   IndexedDB and their hand-over file), then the cross-view integration suite, then any other
+ *   *.e2e.mjs file alphabetically.
  * - --only / --skip take suite names without the `.e2e.mjs` suffix (e.g. `--only shell,cert`).
  * - Every other argument is passed through to each suite (they share --browser, --headed and
  *   --no-shots; unknown flags are ignored by suites that do not use them).
@@ -34,7 +35,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'zone', 'scan', 'verify', 'cert', 'dane', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'carry', 'integration'];
+const ORDER = ['shell', 'subdomains', 'zone', 'scan', 'verify', 'cert', 'dane', 'global', 'lookup', 'bulk', 'ip', 'ptr', 'health', 'carry', 'workspaces', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

@@ -268,6 +268,128 @@
     "policies": [],
     "mustStaple": false
   },
+  "renew_a_rsa.pem": {
+    "version": 3,
+    "serialHex": "4b4b586e4d6367fe9416063fed27d79d",
+    "signatureAlgorithm": "ecdsa-with-SHA256",
+    "subjectDN": "CN=example.com",
+    "issuerDN": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "subjectDNEscaped": "CN=example.com",
+    "issuerDNEscaped": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "notBefore": "2026-09-01T00:00:00.000Z",
+    "notAfter": "2036-09-01T00:00:00.000Z",
+    "sha256": "be8695ffccc0d2ce01b26b279a8a4b8fa4d3770aa37546ad2f49ec4477ab8049",
+    "sha1": "0543697c29aaa4694273e70582d0cacbe8f3831d",
+    "keyAlgorithmName": "rsaEncryption",
+    "keyBits": 2048,
+    "curve": null,
+    "dnsNames": [
+      "example.com",
+      "*.example.com"
+    ],
+    "ipAddresses": [],
+    "emails": [],
+    "uris": [],
+    "isCA": false,
+    "pathLen": null,
+    "keyUsage": [
+      "digitalSignature",
+      "keyEncipherment"
+    ],
+    "extKeyUsage": [
+      "serverAuth"
+    ],
+    "subjectKeyId": "3920dc8376977acc86cda0973eb4d251150a92b3",
+    "authorityKeyId": "2795b467db81cc84c972853542d87d48146cb852",
+    "ocspUrls": [],
+    "caIssuersUrls": [],
+    "crlUrls": [],
+    "isPrecertificate": false,
+    "sctCount": null,
+    "policies": [],
+    "mustStaple": false
+  },
+  "renew_a_ecdsa.pem": {
+    "version": 3,
+    "serialHex": "7a44463c0bcf31a795a0ebf11ea23e3b",
+    "signatureAlgorithm": "ecdsa-with-SHA256",
+    "subjectDN": "CN=example.com",
+    "issuerDN": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "subjectDNEscaped": "CN=example.com",
+    "issuerDNEscaped": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "notBefore": "2026-09-01T00:00:00.000Z",
+    "notAfter": "2036-09-01T00:00:00.000Z",
+    "sha256": "1277025d1afdcc1db011a1233a05ba2627b31178470f3d6f0fc8eab104cd3d91",
+    "sha1": "6a219ba7c75e081c7e4ba5181b7b4f9ad45e6b62",
+    "keyAlgorithmName": "id-ecPublicKey",
+    "keyBits": 256,
+    "curve": "P-256",
+    "dnsNames": [
+      "example.com",
+      "*.example.com"
+    ],
+    "ipAddresses": [],
+    "emails": [],
+    "uris": [],
+    "isCA": false,
+    "pathLen": null,
+    "keyUsage": [
+      "digitalSignature"
+    ],
+    "extKeyUsage": [
+      "serverAuth"
+    ],
+    "subjectKeyId": "5d927b292952891677274385c5b512d1cce33926",
+    "authorityKeyId": "2795b467db81cc84c972853542d87d48146cb852",
+    "ocspUrls": [],
+    "caIssuersUrls": [],
+    "crlUrls": [],
+    "isPrecertificate": false,
+    "sctCount": null,
+    "policies": [],
+    "mustStaple": false
+  },
+  "renew_b_rsa.pem": {
+    "version": 3,
+    "serialHex": "1cedc75a88cb8fecf5304ef5efeb2d34",
+    "signatureAlgorithm": "ecdsa-with-SHA256",
+    "subjectDN": "CN=shop.example.com",
+    "issuerDN": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "subjectDNEscaped": "CN=shop.example.com",
+    "issuerDNEscaped": "CN=DomainScope Test Renewal CA,O=DomainScope Test,C=XX",
+    "notBefore": "2026-09-01T00:00:00.000Z",
+    "notAfter": "2036-06-01T00:00:00.000Z",
+    "sha256": "e12efb50f085c75fcc27fe2c3b90f516b47bc06657d7f79377a9cb51c346e09f",
+    "sha1": "e359e765577539cb8f5e2b2e5bb6cef6813f2b9b",
+    "keyAlgorithmName": "rsaEncryption",
+    "keyBits": 2048,
+    "curve": null,
+    "dnsNames": [
+      "shop.example.com",
+      "pay.example.com"
+    ],
+    "ipAddresses": [],
+    "emails": [],
+    "uris": [],
+    "isCA": false,
+    "pathLen": null,
+    "keyUsage": [
+      "digitalSignature",
+      "keyEncipherment"
+    ],
+    "extKeyUsage": [
+      "serverAuth"
+    ],
+    "subjectKeyId": "fe9f893e458ad52f253b24594d820454ba5fe045",
+    "authorityKeyId": "2795b467db81cc84c972853542d87d48146cb852",
+    "ocspUrls": [],
+    "caIssuersUrls": [],
+    "crlUrls": [],
+    "isPrecertificate": false,
+    "sctCount": null,
+    "policies": [],
+    "mustStaple": false
+  },
   "x509_dn_torture.pem": {
     "version": 3,
     "serialHex": "0a1b2c3d4e5f",

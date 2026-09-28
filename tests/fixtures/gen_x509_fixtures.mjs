@@ -359,7 +359,56 @@ function craftKeyCert(kind) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Renewal week (SSL Targets with several certificates, lib/certsets.js)
+// ---------------------------------------------------------------------------
+/** The made-up CA the renewal leaves share in one run (its key is never written). */
+let renewalCa = null;
+
+/**
+ * A server leaf of "DomainScope Test Renewal CA" (EC P-256 issuer, key never written): set A is
+ * an RSA 2048 + ECDSA P-256 pair for example.com and *.example.com, set B one RSA 2048
+ * certificate for shop.example.com and pay.example.com (both also under set A's wildcard, so an
+ * exact name must win over it). Valid 2026-2036, so they never expire on screen.
+ * @param {{ key: 'rsa'|'ec', names: string[], notAfter: string }} spec notAfter as UTCTime
+ * @returns {Buffer} DER
+ */
+function craftRenewalLeaf({ key, names, notAfter }) {
+  if (!renewalCa) {
+    const pair = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    renewalCa = { pair, name: name([[[A.C, printable('XX')]], [[A.O, utf8('DomainScope Test')]], [[A.CN, utf8('DomainScope Test Renewal CA')]]]) };
+  }
+  const leaf = key === 'rsa' ? generateKeyPairSync('rsa', { modulusLength: 2048 }) : generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const serial = randomBytes(16);
+  serial[0] &= 0x7f;
+  const spki = spkiOf(leaf.publicKey);
+  const caSpki = spkiOf(renewalCa.pair.publicKey);
+  const san = seq(...names.map((n) => ctx(2, false, Buffer.from(n))));
+  return buildCert({
+    serial: serial.toString('hex'),
+    sigAlg: ALG.ecdsa256,
+    issuer: renewalCa.name,
+    notBefore: utc('260901000000Z'),
+    notAfter: utc(notAfter),
+    subject: name([[[A.CN, utf8(names[0])]]]),
+    spki,
+    extensions: [
+      ext('2.5.29.19', seq(), true),
+      // digitalSignature, plus keyEncipherment for RSA
+      ext('2.5.29.15', key === 'rsa' ? bits(Buffer.from([0xa0]), 5) : bits(Buffer.from([0x80]), 7), true),
+      ext('2.5.29.37', seq(oid('1.3.6.1.5.5.7.3.1'))),
+      ext('2.5.29.17', san),
+      ext('2.5.29.14', octet(createHash('sha1').update(spki).digest())),
+      ext('2.5.29.35', seq(ctx(0, false, createHash('sha1').update(caSpki).digest())))
+    ],
+    signer: signWith(renewalCa.pair.privateKey, 'sha256')
+  });
+}
+
 const CRAFTED = {
+  'renew_a_rsa.pem': () => craftRenewalLeaf({ key: 'rsa', names: ['example.com', '*.example.com'], notAfter: '360901000000Z' }),
+  'renew_a_ecdsa.pem': () => craftRenewalLeaf({ key: 'ec', names: ['example.com', '*.example.com'], notAfter: '360901000000Z' }),
+  'renew_b_rsa.pem': () => craftRenewalLeaf({ key: 'rsa', names: ['shop.example.com', 'pay.example.com'], notAfter: '360601000000Z' }),
   'x509_dn_torture.pem': craftDnTorture,
   'x509_dn_attrs.pem': craftDnAttrs,
   'x509_ext_torture.pem': craftExtTorture,

@@ -1640,10 +1640,23 @@ function issuedBy(child, parent) {
   return !child.authorityKeyId || !parent.subjectKeyId || child.authorityKeyId === parent.subjectKeyId;
 }
 
+/**
+ * Every end-entity certificate of one input, in input order: not a CA and not the issuer of
+ * another certificate in it (the rule {@link parseCertificates} picks its `leaf` by). A chain
+ * gives one; several PEM blocks pasted together (an RSA + ECDSA pair) give each of them; a file
+ * of CA certificates only gives none.
+ * @param {Certificate[]} certs
+ * @returns {Certificate[]}
+ */
+export function leafCertificates(certs) {
+  const list = Array.isArray(certs) ? certs.filter(Boolean) : [];
+  const issuesAnother = (c) => list.some((o) => o !== c && issuedBy(o, c));
+  return list.filter((c) => !c.isCA && !issuesAnother(c));
+}
+
 function pickLeaf(certs) {
   if (!certs.length) return null;
-  const issuesAnother = (c) => certs.some((o) => o !== c && issuedBy(o, c));
-  return certs.find((c) => !c.isCA && !issuesAnother(c)) || certs[0];
+  return leafCertificates(certs)[0] || certs[0];
 }
 
 /**

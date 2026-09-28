@@ -195,7 +195,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/subdomains"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [];
       });
-      assertEqual(nav.slice(0, 2), ['subdomains', 'zone'], 'Zone File is the 2nd Discover item');
+      assertEqual(nav.slice(0, 3), ['subdomains', 'domain', 'zone'], 'Zone File in Discover, after Subdomains and Domain overview');
       assert(/Zone File/.test(await text(page, 'h1')), 'title');
       const ui = await page.evaluate(() => ({
         drop: !!document.querySelector('.zone-drop'),

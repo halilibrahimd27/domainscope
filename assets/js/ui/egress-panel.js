@@ -106,7 +106,7 @@ registerStrings('tr', {
   'egress.role.registration': 'Kayıt verisi (RDAP)',
   'egress.role.probes': 'İnternetten kontroller',
   'egress.kind.appFiles': 'Size ait hiçbir şey: uygulamanın kendi dosyaları',
-  'egress.kind.nothing': 'Size ait hiçbir şey: açık bir liste ya da ücretsiz kota',
+  'egress.kind.nothing': 'Size ait hiçbir şey: herkese açık bir liste ya da ücretsiz kota',
   'egress.kind.dnsQuestions': 'DNS adları ve kayıt türleri',
   'egress.kind.domains': 'Alan adları ve host adları',
   'egress.kind.hostnames': 'Kontrol edilecek host adları',
@@ -295,11 +295,13 @@ async function renderVersion(host, { repoUrl, signal, moduleUrl = import.meta.ur
   show(null, 'reading');
   let file = null;
   try {
-    file = parseVersionFile(await fetchJson(versionFileUrl(moduleUrl), { signal: signal || undefined, timeoutMs: 8000, headers: { accept: 'application/json' } }));
+    // A file of another version (a cache serving a newer deploy's) names nothing about this page:
+    // it counts as unread, never as a deploy "built without a commit name".
+    file = parseVersionFile(await fetchJson(versionFileUrl(moduleUrl), { signal: signal || undefined, timeoutMs: 8000, headers: { accept: 'application/json' } }),
+      { version: info.version });
   } catch {
     file = null;
   }
   if (signal && signal.aborted) return;
-  // A file of another version (a cache serving a newer deploy's) names nothing about this page.
-  show(file && file.version === info.version ? file : null, file ? 'read' : 'unread');
+  show(file, file ? 'read' : 'unread');
 }

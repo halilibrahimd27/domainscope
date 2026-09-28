@@ -145,12 +145,15 @@ export function versionFileUrl(moduleUrl) {
 
 /**
  * A version file as served, checked: anything malformed is null (the page then shows only the
- * version its URL names).
+ * version its URL names), and so is the file of another deploy than `version` (a cache that
+ * served a newer deploy's file says nothing about this page's commit).
  * @param {unknown} json
+ * @param {{ version?: string|null }} [opts] version: the deploy the page runs (lib/pwa.js bundleInfo)
  * @returns {{ version: string, commit: string|null, digest: string|null }|null}
  */
-export function parseVersionFile(json) {
+export function parseVersionFile(json, { version = null } = {}) {
   if (!json || typeof json !== 'object' || !isVersion(json.version)) return null;
+  if (version !== null && json.version !== version) return null;
   const commit = typeof json.commit === 'string' && /^[0-9a-f]{40}$/.test(json.commit) ? json.commit : null;
   return { version: json.version, commit, digest: isDigest(json.digest) ? json.digest : null };
 }

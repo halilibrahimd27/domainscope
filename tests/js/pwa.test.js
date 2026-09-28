@@ -340,4 +340,14 @@ describe('the version file (About › What this page sent)', () => {
     assert.deepEqual(parseVersionFile({ version: 'v1', commit: '<script>', digest: 'nope' }), { version: 'v1', commit: null, digest: null });
     for (const bad of [null, 'v1', [], {}, { version: '../x' }, { version: 42 }]) assert.equal(parseVersionFile(bad), null, JSON.stringify(bad));
   });
+
+  test('parseVersionFile with the page\'s version: another deploy\'s file is no answer, never "built without a commit name"', () => {
+    const file = { version: '0123456789ab', commit: SHA, digest: DIGEST };
+    assert.deepEqual(parseVersionFile(file, { version: '0123456789ab' }), file);
+    assert.deepEqual(parseVersionFile({ version: '0123456789ab', digest: DIGEST }, { version: '0123456789ab' }),
+      { version: '0123456789ab', commit: null, digest: DIGEST }, 'this deploy, built without a commit');
+    assert.equal(parseVersionFile(file, { version: 'fedcba987654' }), null, 'a newer deploy\'s file from a cache');
+    assert.equal(parseVersionFile({ version: 'fedcba987654' }, { version: '0123456789ab' }), null);
+    assert.deepEqual(parseVersionFile(file, { version: null }), file, 'no version to compare: any well-formed file');
+  });
 });

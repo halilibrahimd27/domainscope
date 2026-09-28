@@ -47,6 +47,7 @@ export const TARGET_KINDS = Object.freeze(['domain', 'host', 'ip']);
  */
 export const TARGET_ROUTES = Object.freeze({
   subdomains: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) }),
+  domain: Object.freeze({ param: 'name', kinds: Object.freeze(['domain', 'host']) }),
   scan: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) }),
   cert: Object.freeze({ param: 'host', kinds: Object.freeze(['domain', 'host']) }),
   renew: Object.freeze({ param: 'names', kinds: Object.freeze(['domain', 'host']) }),

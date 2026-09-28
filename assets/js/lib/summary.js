@@ -4,7 +4,8 @@
  *
  * - Each builder takes the facts a view already shows ({@link healthSummary}, {@link globalSummary},
  *   {@link subdomainsSummary}, {@link scanSummary}, {@link zoneSummary}, {@link certSummary},
- *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link retireSummary}; {@link buildSummary} dispatches by view id) and
+ *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link retireSummary},
+ *   {@link domainSummary}; {@link buildSummary} dispatches by view id) and
  *   returns a {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP
  *   Intel) and a footer with the view's permalink and a UTC timestamp.
  * - {@link renderMarkdown} / {@link renderPlainText} turn a doc into text. Untrusted values
@@ -29,7 +30,7 @@
 import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -45,6 +46,7 @@ export const SUMMARY_MAX_VALUE = 96;
  */
 export const PERMALINK_PARAMS = Object.freeze({
   subdomains: Object.freeze(['domain', 'run']),
+  domain: Object.freeze(['name']),
   zone: Object.freeze([]),
   scan: Object.freeze(['domain', 'run']),
   cert: Object.freeze([]),
@@ -732,8 +734,155 @@ export function retireSummary(facts, opts) {
   ], { when: whenText(t, 'sum.at.checked', facts.at, opts.now || new Date()), url: opts.url });
 }
 
+/**
+ * Domain overview: one line per card — registration, DNS hosting, mail, web, certificates, SaaS
+ * verifications, health — from lib/passport.js passportSummaryFacts: names only (providers,
+ * platforms, vendors and CAs from the app's own tables as text; the registrar, host names and the
+ * issuers read from CT as code spans), never a verification token, a record value or an address.
+ * A part whose lookup failed says so, one that was not looked up (a stopped build) too.
+ * @param {object} facts passportSummaryFacts() output (`at`: when the overview was built)
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function domainSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const f = facts || {};
+  const label = (key) => [strong(`${t(key)}:`), ' '];
+  /** Trusted names (the app's own tables) as text: three, then "+N more". */
+  const names = (list, max = 3) => {
+    const items = [...new Set((list || []).map(cleanText).filter(Boolean))];
+    return items.slice(0, max).join(', ') + (items.length > max ? ` ${t('common.moreCount', { count: items.length - max })}` : '');
+  };
+  /** What a part says when it has nothing to show: not looked up (pending), or its lookup failed. */
+  const state = (part, empty) => {
+    if (!part || part.pending) return [t('sum.domain.notLooked')];
+    if (part.failed && empty) return [t('sum.domain.failed')];
+    return null;
+  };
+  const join = (bits) => bits.filter((b) => b && b.length).flatMap((b, i) => (i ? [' · ', ...b] : b));
+  const lines = [];
+
+  // Registration
+  const reg = f.registration || { pending: true };
+  let regLine = state(reg, reg.outcome === 'failed' || !reg.outcome);
+  if (!regLine) {
+    if (reg.outcome === 'unsupported') {
+      regLine = [reg.whois ? t('sum.domain.noRdapAt', { tld: reg.tld || '', registry: reg.whois }) : t('sum.domain.noRdap', { tld: reg.tld || '' })];
+    } else if (reg.outcome === 'not-found') regLine = [t('sum.domain.notRegistered')];
+    else if (reg.outcome === 'ok') {
+      const bits = [];
+      if (reg.registrar) bits.push([code(reg.registrar)]);
+      if (reg.expires) {
+        const days = Number(reg.daysLeft);
+        bits.push([days < 0 ? t('sum.domain.expired', { date: isoDay(reg.expires), count: -days }) : t('sum.domain.expires', { date: isoDay(reg.expires), count: days })]);
+      }
+      if (reg.transferLock === false) bits.push([t('sum.domain.noLock')]);
+      regLine = bits.length ? join(bits) : [t('sum.domain.noData')];
+    } else regLine = [t('sum.domain.failed')];
+  }
+  lines.push([...label('sum.domain.registration'), ...regLine]);
+
+  // DNS hosting
+  const dns = f.dns || { pending: true };
+  let dnsLine = state(dns, !(dns.providers || []).length && !dns.self && !(dns.other || []).length && !dns.dnssec);
+  if (!dnsLine) {
+    if (dns.exists === false) dnsLine = [t('sum.domain.nxdomain')];
+    else {
+      const who = [];
+      if ((dns.providers || []).length) who.push([names(dns.providers)]);
+      if (dns.self) who.push([t('sum.domain.ownNs')]);
+      if ((dns.other || []).length) who.push(k.values(dns.other, 2));
+      const bits = [who.length ? join(who) : [t(dns.nsFailed ? 'sum.domain.nsFailed' : 'sum.domain.noNs')]];
+      if (dns.dnssec) bits.push([t(`sum.domain.dnssec.${dns.dnssec}`)]);
+      if (dns.delegationDiffers) bits.push([t('sum.domain.delegation')]);
+      // Another lookup of the card failed (SOA, DS / DNSKEY): the line does not claim it all.
+      if (dns.failed && !(dns.nsFailed && !who.length)) bits.push([t('sum.domain.partFailed')]);
+      dnsLine = join(bits);
+    }
+  }
+  lines.push([...label('sum.domain.dns'), ...dnsLine]);
+
+  // Mail
+  const mail = f.mail || { pending: true };
+  let mailLine = state(mail, !mail.mx && !mail.spf && !mail.dmarc);
+  if (!mailLine) {
+    const bits = [];
+    if (mail.mx === 'none') bits.push([t('sum.domain.noMx')]);
+    else if (mail.mx === 'null') bits.push([t('sum.domain.nullMx')]);
+    else if (mail.mx === 'some') {
+      const who = [];
+      if ((mail.platforms || []).length) who.push([names(mail.platforms)]);
+      if ((mail.other || []).length) who.push(k.values(mail.other, 2));
+      bits.push(join(who));
+    } else bits.push([t('sum.domain.mxFailed')]);
+    const spf = mail.spf;
+    if (spf) {
+      if (spf.state === 'ok') bits.push([spf.all ? t('sum.domain.spfAll', { all: `${spf.all}all` }) : spf.redirect ? t('sum.domain.spfRedirect') : t('sum.domain.spfNoAll')]);
+      else bits.push([t(`sum.domain.spf.${spf.state}`, { count: spf.count })]);
+    }
+    const dmarc = mail.dmarc;
+    if (dmarc) bits.push([dmarc.state === 'ok' ? t('sum.domain.dmarcPolicy', { policy: `p=${dmarc.policy}` }) : t(`sum.domain.dmarc.${dmarc.state}`, { count: dmarc.count })]);
+    mailLine = join(bits);
+  }
+  lines.push([...label('sum.domain.mail'), ...mailLine]);
+
+  // Web
+  const web = f.web || { pending: true };
+  let webLine = state(web, !(web.hosts || []).some((h) => h.state !== 'failed' && h.state !== 'pending'));
+  if (!webLine) {
+    const hostText = (h) => {
+      if (h.state === 'failed') return t('sum.domain.failed');
+      if (h.state === 'pending') return t('sum.domain.notLooked');
+      if (h.state === 'nxdomain') return t('sum.domain.hostNx');
+      if (h.state === 'nodata') return t('sum.domain.hostNoData');
+      if (h.state === 'dangling') return t('kind.dangling');
+      if (h.kind === 'cloudflare') return 'Cloudflare';
+      if ((h.kind === 'cdn' || h.kind === 'platform') && h.provider) return cleanText(h.provider);
+      return t(`kind.${h.kind || 'unresolved'}`);
+    };
+    const bits = (web.hosts || []).map((h) => [code(h.name), ' ', hostText(h)]);
+    if (web.https === true) bits.push([t('sum.domain.https')]);
+    webLine = join(bits);
+  }
+  lines.push([...label('sum.domain.web'), ...webLine]);
+
+  // Certificates
+  const certs = f.certs || { pending: true };
+  let certLine = state(certs, !certs.caa);
+  if (!certLine) {
+    const bits = [];
+    if (certs.caa === 'none') bits.push([t('sum.domain.caaNone')]);
+    else if (certs.caa === 'deny-all') bits.push([t('sum.domain.caaDeny')]);
+    else if (certs.caa === 'present') bits.push([t('sum.domain.caaAllows', { list: names(certs.cas) })]);
+    if (certs.ct && certs.ct.issuers.length) {
+      const issuers = certs.ct.issuers.slice(0, 3).flatMap((i, n) => [...(n ? [', '] : []), code(i.name), ` (${k.num(i.count)})`]);
+      bits.push([t('sum.domain.ctIssuers'), ' ', ...issuers]);
+      if ((certs.ct.notAllowed || []).length) bits.push([t('sum.domain.ctNotAllowed'), ' ', ...k.values(certs.ct.notAllowed, 3)]);
+    } else if (certs.ct) bits.push([t('sum.domain.ctNone')]);
+    certLine = join(bits);
+  }
+  lines.push([...label('sum.domain.certs'), ...certLine]);
+
+  // SaaS verifications
+  const saas = f.saas || { pending: true };
+  const saasLine = state(saas, saas.failed) || [(saas.vendors || []).length
+    ? t('sum.domain.saas', { count: saas.vendors.length, list: names(saas.vendors) })
+    : t('sum.domain.saasNone')];
+  lines.push([...label('sum.domain.saasLabel'), ...saasLine]);
+
+  // Health
+  const health = f.health || { pending: true };
+  const healthLine = state(health, health.score === null || health.score === undefined)
+    || [t('sum.health.verdict', { verdict: t(`sum.health.light.${health.light || 'ok'}`), score: health.score })];
+  lines.push([...label('sum.domain.health'), ...healthLine]);
+
+  return doc('domain', k.title('domain', [code(f.domain)]), lines, { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
+}
+
 const BUILDERS = {
   subdomains: subdomainsSummary,
+  domain: domainSummary,
   zone: zoneSummary,
   scan: scanSummary,
   cert: certSummary,
@@ -850,6 +999,59 @@ const STRINGS = [
   ['sum.health.light.warn', ['Needs attention', 'İlgilenilmesi gerekiyor']],
   ['sum.health.light.error', ['Problems found', 'Sorun bulundu']],
   ['sum.health.noProblems', ['No errors or warnings', 'Hata ya da uyarı yok']],
+
+  ['sum.domain.registration', ['Registration', 'Kayıt']],
+  ['sum.domain.dns', ['DNS', 'DNS']],
+  ['sum.domain.mail', ['Mail', 'E-posta']],
+  ['sum.domain.web', ['Web', 'Web']],
+  ['sum.domain.certs', ['Certificates', 'Sertifikalar']],
+  ['sum.domain.saasLabel', ['Services', 'Hizmetler']],
+  ['sum.domain.health', ['Health', 'Sağlık']],
+  ['sum.domain.notLooked', ['not looked up', 'sorgulanmadı']],
+  ['sum.domain.failed', ['lookup failed', 'sorgu başarısız']],
+  ['sum.domain.partFailed', ['some lookups failed', 'bazı sorgular başarısız']],
+  ['sum.domain.noData', ['no registration data', 'kayıt bilgisi yok']],
+  ['sum.domain.noRdap', ['.{tld} publishes no RDAP: see the registry’s WHOIS', '.{tld} RDAP yayımlamıyor: kayıt kuruluşunun WHOIS hizmetine bakın']],
+  ['sum.domain.noRdapAt', ['.{tld} publishes no RDAP: see {registry}', '.{tld} RDAP yayımlamıyor: {registry} hizmetine bakın']],
+  ['sum.domain.notRegistered', ['not registered (RDAP)', 'kayıtlı değil (RDAP)']],
+  ['sum.domain.expires', [{ zero: 'expires {date} (today)', one: 'expires {date} ({count} day left)', other: 'expires {date} ({count} days left)' },
+    { zero: '{date} tarihinde sona eriyor (bugün)', other: '{date} tarihinde sona eriyor ({count} gün kaldı)' }]],
+  ['sum.domain.expired', [{ one: 'expired {date} ({count} day ago)', other: 'expired {date} ({count} days ago)' }, '{date} tarihinde sona erdi ({count} gün önce)']],
+  ['sum.domain.noLock', ['no transfer lock', 'transfer kilidi yok']],
+  ['sum.domain.nxdomain', ['the domain does not exist (NXDOMAIN)', 'alan adı mevcut değil (NXDOMAIN)']],
+  ['sum.domain.ownNs', ['its own name servers', 'kendi ad sunucuları']],
+  ['sum.domain.noNs', ['no NS records', 'NS kaydı yok']],
+  ['sum.domain.nsFailed', ['NS lookup failed', 'NS sorgusu başarısız']],
+  ['sum.domain.dnssec.validated', ['DNSSEC validated', 'DNSSEC doğrulanıyor']],
+  ['sum.domain.dnssec.signed', ['DNSSEC signed', 'DNSSEC imzalı']],
+  ['sum.domain.dnssec.unsigned', ['no DNSSEC', 'DNSSEC yok']],
+  ['sum.domain.dnssec.failing', ['DNSSEC may be broken', 'DNSSEC bozuk olabilir']],
+  ['sum.domain.delegation', ['the registry delegates to other name servers', 'kayıt kuruluşu başka ad sunucularına yönlendiriyor']],
+  ['sum.domain.noMx', ['no MX record', 'MX kaydı yok']],
+  ['sum.domain.nullMx', ['accepts no mail (null MX)', 'e-posta kabul etmiyor (null MX)']],
+  ['sum.domain.mxFailed', ['MX lookup failed', 'MX sorgusu başarısız']],
+  ['sum.domain.spfAll', ['SPF {all}', 'SPF {all}']],
+  ['sum.domain.spfRedirect', ['SPF redirect', 'SPF redirect']],
+  ['sum.domain.spfNoAll', ['SPF without “all”', '“all” içermeyen SPF']],
+  ['sum.domain.spf.none', ['no SPF', 'SPF yok']],
+  ['sum.domain.spf.many', ['{count} SPF records (invalid)', '{count} SPF kaydı (geçersiz)']],
+  ['sum.domain.spf.invalid', ['SPF invalid', 'SPF geçersiz']],
+  ['sum.domain.dmarcPolicy', ['DMARC {policy}', 'DMARC {policy}']],
+  ['sum.domain.dmarc.none', ['no DMARC', 'DMARC yok']],
+  ['sum.domain.dmarc.many', ['{count} DMARC records (invalid)', '{count} DMARC kaydı (geçersiz)']],
+  ['sum.domain.dmarc.invalid', ['DMARC invalid', 'DMARC geçersiz']],
+  ['sum.domain.hostNx', ['does not exist', 'mevcut değil']],
+  ['sum.domain.hostNoData', ['no address', 'adres yok']],
+  ['sum.domain.https', ['HTTPS record', 'HTTPS kaydı']],
+  ['sum.domain.caaNone', ['no CAA: any CA may issue', 'CAA yok: her CA sertifika verebilir']],
+  ['sum.domain.caaDeny', ['CAA allows no CA', 'CAA hiçbir CA’ya izin vermiyor']],
+  ['sum.domain.caaAllows', ['CAA allows {list}', 'CAA izinli: {list}']],
+  ['sum.domain.ctIssuers', ['issuers in CT:', 'CT’deki sertifika sağlayıcıları:']],
+  ['sum.domain.ctNone', ['no current certificate in CT', 'CT’de geçerli sertifika yok']],
+  ['sum.domain.ctNotAllowed', ['not allowed by CAA:', 'CAA izin vermiyor:']],
+  ['sum.domain.saas', [{ one: '{count} service verified the domain by TXT: {list}', other: '{count} services verified the domain by TXT: {list}' },
+    '{count} hizmet alan adını TXT ile doğrulamış: {list}']],
+  ['sum.domain.saasNone', ['no service verification records', 'hizmet doğrulama kaydı yok']],
 
   // The verdicts word what the Global DNS summary shows (glb.sum.*Title).
   ['sum.global.agree', ['All answers agree', 'Tüm yanıtlar aynı']],

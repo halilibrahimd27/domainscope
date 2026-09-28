@@ -89,7 +89,7 @@ const WORKSPACE_WAIT_MS = 8000;
  * order the views were opened in.
  */
 export const VIEW_CSS_ORDER = Object.freeze([
-  'views/subdomains.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/renew.css',
+  'views/subdomains.css', 'views/domain.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/renew.css',
   'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css', 'views/health.css',
   'views/inventory.css', 'views/about.css'
 ]);
@@ -113,6 +113,7 @@ export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js',
  */
 export const VIEWS = Object.freeze([
   { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: ENGINE_MODULES, load: () => import('./views/subdomains.js') },
+  { id: 'domain', group: 'discover', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
   { id: 'zone', group: 'discover', icon: 'file-text', css: ['views/zone.css'], offline: true, load: () => import('./views/zone.js') },
   {
     id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),

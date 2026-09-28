@@ -135,6 +135,7 @@ const ICONS = {
   key: [['circle', { cx: 8, cy: 15, r: 4 }], ['path', { d: 'M11 12l8.5-8.5M16 7l3 3M13.5 9.5l2 2' }]],
   clock: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3.2 2' }]],
   calendar: [['rect', { x: 3.5, y: 5, width: 17, height: 15.5, rx: 2 }], ['path', { d: 'M16 3v4M8 3v4M3.5 10h17' }]],
+  'id-card': [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['circle', { cx: 9, cy: 11, r: 2 }], ['path', { d: 'M6 16c.6-1.4 1.6-2 3-2s2.4.6 3 2M14.5 10h3.5M14.5 13.5h3.5' }]],
   zap: [['path', { d: 'M13 2.5L4.5 13.5H11l-1 8 8.5-11H12z' }]],
   box: [['path', { d: 'M12 3l8 4.5v9L12 21l-8-4.5v-9z' }], ['path', { d: 'M4 7.5l8 4.5 8-4.5M12 12v9' }]],
   briefcase: [['rect', { x: 3, y: 7, width: 18, height: 13, rx: 2 }], ['path', { d: 'M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M3 12.5h18M11 12.5h2' }]],

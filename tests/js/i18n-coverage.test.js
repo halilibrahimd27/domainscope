@@ -277,6 +277,17 @@ describe('i18n coverage', () => {
     const [panel, wsUi] = await Promise.all([imp('assets/js/ui/workspace-panel.js'), imp('assets/js/ui/workspace-ui.js')]);
     for (const code of [...panel.IMPORT_ERRORS, ...panel.NAME_ERRORS, ...panel.PASSWORD_PROBLEMS]) add(`ws.err.${code}`);
     for (const reason of wsUi.STORAGE_REASONS) add(`ws.why.${reason}`);
+    // Domain overview (lib/passport.js through views/domain.js): every card title and the tool its
+    // link opens, SPF qualifier, DMARC policy, DNSSEC state, health light and count, and the kind
+    // of a mail platform the view builds a key from.
+    const passport = await imp('assets/js/lib/passport.js');
+    for (const c of passport.PASSPORT_CARDS) { add(`dov.card.${c}`); add(`nav.${views.domain.cardLink(c, 'example.com').view}`); }
+    for (const q of ['-', '~', '?', '+', 'redirect', 'noAll', 'none', 'many', 'invalid']) add(`dov.mail.spf.${q}`);
+    for (const p of ['reject', 'quarantine', 'none', 'many', 'invalid', 'missing']) add(`dov.mail.dmarc.${p}`);
+    for (const d of ['validated', 'signed', 'failing', 'unsigned']) add(`dov.dns.dnssec.${d}`);
+    for (const l of ['ok', 'warn', 'error']) add(`dov.health.light.${l}`);
+    for (const k of ['error', 'warn', 'info']) add(`dov.health.count.${k}`);
+    for (const p of passport.MAIL_PLATFORMS) if (p.kind !== 'mailbox') add(`dov.mail.kind.${p.kind}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

@@ -1,0 +1,1186 @@
+/**
+ * views/domain.js — "Domain overview" (`#/domain?name=example.com`): one page per domain for a
+ * migration or a customer takeover, the facts otherwise gathered from five or six tools by hand.
+ * lib/passport.js runs the lookups and turns them into card data; this view draws the cards:
+ *
+ * - Registration (RDAP: registrar, dates with a countdown, status flags with the transfer lock,
+ *   DNSSEC delegation; a TLD without RDAP names the registry's WHOIS instead);
+ * - DNS hosting (name servers → provider, the registry's delegation when it differs, SOA,
+ *   DNSSEC); Mail (MX → platform, SPF and DMARC in one line each); Web (apex and www → CDN /
+ *   platform / direct, HTTPS records); Certificates (the CAs CAA allows, and on a click the
+ *   issuers of the current certificates in Certificate Transparency compared with CAA);
+ *   SaaS verifications (services named by TXT tokens, never the tokens); Health (Domain Health's
+ *   score and worst problems).
+ * - Each card links to the tool that goes deeper, carrying the name.
+ *
+ * Nothing is sent until "Build overview" is pressed: a route (a shared link, a carried target,
+ * `run=0` or not) only fills the box and says so. The cards fill as their lookups land; a lookup
+ * that failed shows "⚠ n/a" with the reason and a Retry that asks only that card's failed
+ * lookups again (past the DNS cache). A stopped build keeps what landed, and each unfinished card
+ * offers to look it up. The CT lookup is one Cert Spotter request (crt.sh when Cert Spotter
+ * cannot answer), only on its button.
+ *
+ * "Copy summary" (lib/summary.js domainSummary) and the print stylesheet work on the finished
+ * overview. It is kept for the page session (`result()` / `snapshot()`), so coming back shows it
+ * again with no request.
+ */
+
+import { h, clear } from '../ui/dom.js';
+import {
+  Alert, Badge, Button, Card, CopyButton, EmptyState, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, SeverityIcon,
+  announce, textInput
+} from '../ui/components.js';
+import { registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatRelative, getLang } from '../i18n.js';
+import {
+  PASSPORT_CARDS, PASSPORT_LOOKUPS, CARD_LOOKUPS, HEALTH_LOOKUPS, passportDomain, passportCards, cardsOfLookup, buildPassport,
+  lookupCtIssuers, passportSummaryFacts
+} from '../lib/passport.js';
+import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
+import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
+import { SummaryButton } from '../ui/summary-button.js';
+import { permalinkParams } from '../lib/summary.js';
+import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { mergeSignals } from '../lib/util.js';
+
+/** Route id (`#/domain`). */
+export const id = 'domain';
+/** i18n key of the page title. */
+export const titleKey = 'nav.domain';
+/** Icon name (ui/components.js Icon). */
+export const icon = 'id-card';
+
+/** Card icons. */
+export const CARD_ICONS = Object.freeze({
+  registration: 'calendar', dns: 'server', mail: 'mail', web: 'globe', certs: 'shield', saas: 'key', health: 'activity'
+});
+
+// The health card shows Domain Health's check titles (health.<id>.title).
+registerStrings('en', HEALTH_I18N.en);
+registerStrings('tr', HEALTH_I18N.tr);
+
+registerStrings('en', {
+  'dov.domain': 'Domain',
+  'dov.placeholder': 'example.com',
+  'dov.run': 'Build overview',
+  'dov.invalid': 'Enter a domain name such as example.com (not an IP address or a bare ending such as com.tr).',
+  'dov.sends': 'Nothing is sent until you press Build overview. Then the DNS questions go to your DoH resolvers and the registration lookup to the registry’s RDAP server; Certificate Transparency is asked only from the Certificates card.',
+  'dov.linkPrompt': 'Opened from a link: press Build overview to look up {domain}. Nothing has been sent yet.',
+  'dov.emptyTitle': 'Everything about a domain on one page',
+  'dov.emptyBody': 'Registration and expiry, who hosts its DNS and mail, what serves the website, which CAs may issue certificates, the services its TXT records verify and its health score — for a migration or a takeover, with a link to the tool that goes deeper.',
+  'dov.progress': 'Building the overview of {domain}',
+  'dov.progressCount': '{done} of {total} lookups',
+  'dov.builtAt': 'Built {time}',
+  'dov.stoppedAt': 'Stopped {time}: some parts were not looked up',
+  'dov.reduced': 'Overview of {domain}, the registrable domain of {host}.',
+  'dov.resultsTitle': 'Overview of {domain}',
+  'dov.done': 'Overview of {domain} ready',
+  'dov.stopped': 'Stopped: the parts that landed are shown',
+  'dov.openIn': 'Open in {tool}',
+  'dov.openInTitle': 'Opens {tool} with {domain}',
+  'dov.pending': 'Looking up…',
+  'dov.updating': 'Updating…',
+  'dov.notLooked': 'Not looked up: the build was stopped.',
+  'dov.lookUp': 'Look up',
+  'dov.retried': '{card}: updated',
+  'dov.failedPart': 'Could not be read',
+  'dov.none': 'none',
+
+  'dov.card.registration': 'Registration',
+  'dov.card.dns': 'DNS hosting',
+  'dov.card.mail': 'Mail',
+  'dov.card.web': 'Web',
+  'dov.card.certs': 'Certificates',
+  'dov.card.saas': 'SaaS verifications',
+  'dov.card.health': 'Health',
+
+  'dov.reg.registrar': 'Registrar',
+  'dov.reg.ianaId': 'IANA ID {id}',
+  'dov.reg.created': 'Registered',
+  'dov.reg.expires': 'Expires',
+  'dov.reg.daysLeft': { zero: 'expires today', one: '{count} day left', other: '{count} days left' },
+  'dov.reg.daysAgo': { one: 'expired {count} day ago', other: 'expired {count} days ago' },
+  'dov.reg.status': 'Status',
+  'dov.reg.lock': 'Transfer lock',
+  'dov.reg.lockOn': 'On',
+  'dov.reg.lockOff': 'Off',
+  'dov.reg.lockOffNote': 'Without clientTransferProhibited, anyone with the transfer code can move the domain to another registrar. Keep it on except during a planned transfer.',
+  'dov.reg.lockUnknown': 'the registry reports no status',
+  'dov.reg.dnssec': 'DNSSEC delegation',
+  'dov.reg.signed': 'Signed',
+  'dov.reg.unsigned': 'Not signed',
+  'dov.reg.nameservers': 'Name servers (registry)',
+  'dov.reg.registryDomain': 'Registered as',
+  'dov.reg.unsupported': 'The .{tld} registry publishes no RDAP service, so the registrar and the dates cannot be read from the browser.',
+  'dov.reg.whois': 'Look it up in the registry’s WHOIS: {registry}',
+  'dov.reg.iana': 'The .{tld} registry and its WHOIS server (IANA)',
+  'dov.reg.notFound': 'Not registered: the registry has no record of {domain}.',
+  'dov.reg.invalid': 'Not a domain a registry holds.',
+  'dov.reg.failed': 'Registration data could not be read',
+
+  'dov.dns.provider': 'DNS provider',
+  'dov.dns.own': 'Own name servers',
+  'dov.dns.other': 'Other',
+  'dov.dns.multi': 'Name servers of {count} providers: a multi-provider setup, or a move that is half done.',
+  'dov.dns.nameservers': 'Name servers',
+  'dov.dns.noNs': 'No NS records at this name: it is not the apex of a zone.',
+  'dov.dns.delegation': 'The registry delegates to {registry}, but the zone lists {zone}. Until they match, resolvers may use either set.',
+  'dov.dns.soa': 'SOA',
+  'dov.dns.soaValue': 'primary {mname} · serial {serial}',
+  'dov.dns.serialDate': 'changed {date}',
+  'dov.dns.contact': 'Contact',
+  'dov.dns.dnssec': 'DNSSEC',
+  'dov.dns.dnssec.validated': 'Signed and validated',
+  'dov.dns.dnssec.signed': 'Signed (DS at the parent)',
+  'dov.dns.dnssec.failing': 'Signed, but the keys could not be validated: see Domain Health',
+  'dov.dns.dnssec.unsigned': 'Not signed',
+  'dov.nxdomain': 'The domain does not exist in DNS (NXDOMAIN).',
+
+  'dov.mail.receives': 'Receives mail at',
+  'dov.mail.noMx': 'No MX record: senders fall back to the domain’s own address.',
+  'dov.mail.nullMx': 'Accepts no mail (null MX).',
+  'dov.mail.hosts': 'MX hosts',
+  'dov.mail.kind.gateway': 'filtering gateway',
+  'dov.mail.kind.forwarding': 'forwarding',
+  'dov.mail.kind.sending': 'sending service',
+  'dov.mail.own': 'this domain',
+  'dov.mail.spf': 'SPF',
+  'dov.mail.spf.-': 'Hard fail (-all): only the listed senders may send.',
+  'dov.mail.spf.~': 'Soft fail (~all): unlisted senders are marked, not refused.',
+  'dov.mail.spf.?': 'Neutral (?all): says nothing about unlisted senders.',
+  'dov.mail.spf.+': 'Pass (+all): anyone may send as this domain.',
+  'dov.mail.spf.redirect': 'Redirected to {domain}.',
+  'dov.mail.spf.noAll': 'No “all” at the end: unlisted senders are neutral.',
+  'dov.mail.spf.none': 'No SPF record.',
+  'dov.mail.spf.many': '{count} SPF records: receivers treat that as an error (permerror).',
+  'dov.mail.spf.invalid': 'The SPF record is not valid.',
+  'dov.mail.senders': 'Sends through',
+  'dov.mail.dmarc': 'DMARC',
+  'dov.mail.dmarc.reject': 'Reject (p=reject)',
+  'dov.mail.dmarc.quarantine': 'Quarantine (p=quarantine)',
+  'dov.mail.dmarc.none': 'Monitor only (p=none)',
+  'dov.mail.dmarc.pct': '{pct}% of failing mail',
+  'dov.mail.dmarc.reports': { one: 'reports to {count} address', other: 'reports to {count} addresses' },
+  'dov.mail.dmarc.missing': 'No DMARC record.',
+  'dov.mail.dmarc.many': '{count} DMARC records: receivers ignore them all.',
+  'dov.mail.dmarc.invalid': 'The DMARC record is not valid.',
+
+  'dov.web.alias': 'alias of {domain}',
+  'dov.web.same': 'same addresses as {domain}',
+  'dov.web.nxdomain': 'Not configured (NXDOMAIN)',
+  'dov.web.nodata': 'No address',
+  'dov.web.https': 'HTTPS record',
+  'dov.web.httpsNone': 'none',
+
+  'dov.certs.caa': 'CAA',
+  'dov.certs.caaNone': 'No CAA record: any CA may issue certificates for this domain.',
+  'dov.certs.caaDeny': 'CAA allows no CA to issue certificates.',
+  'dov.certs.allowed': 'Allowed CAs',
+  'dov.certs.wildcard': 'Wildcard certificates',
+  'dov.certs.wildNone': 'no CA',
+  'dov.certs.restricted': 'restricted',
+  'dov.certs.restrictedTitle': 'Limited by RFC 8657 parameters (validation methods or one ACME account): see Domain Health’s CAA card.',
+  'dov.certs.inherited': 'Published at {name}.',
+  'dov.certs.ct': 'Issuers in Certificate Transparency',
+  'dov.certs.ctRun': 'Look up issuers',
+  'dov.certs.ctHint': 'One request to Cert Spotter (crt.sh only if Cert Spotter cannot answer), sending only {domain}.',
+  'dov.certs.ctRunning': 'Asking Certificate Transparency…',
+  'dov.certs.ctAgain': 'Look up again',
+  'dov.certs.ctCount': { one: '{count} certificate', other: '{count} certificates' },
+  'dov.certs.ctNewest': 'newest {date}',
+  'dov.certs.ctAllowed': 'allowed by CAA',
+  'dov.certs.ctRestricted': 'allowed by CAA, with restrictions',
+  'dov.certs.ctDenied': 'not allowed by CAA',
+  'dov.certs.ctUnknown': 'CA not known',
+  'dov.certs.ctDeniedNote': 'CAA does not allow {list}: its next renewal of these certificates will fail until CAA names it.',
+  'dov.certs.ctFirstPage': 'From Cert Spotter’s first page of current certificates ({count} read); a longer list continues on later pages.',
+  'dov.certs.ctCrtsh': 'From crt.sh ({count} current certificates), because Cert Spotter could not answer.',
+  'dov.certs.ctEmpty': 'No current certificate for {domain} in Certificate Transparency.',
+
+  'dov.saas.none': 'No service verification records in TXT.',
+  'dov.saas.other': { one: '{count} other TXT record', other: '{count} other TXT records' },
+  'dov.saas.note': 'The tokens themselves are not shown; DNS Lookup lists the records.',
+  'dov.saas.chip': '{name} ×{count}',
+
+  'dov.health.score': 'Score {score}/100',
+  'dov.health.light.error': 'Problems found',
+  'dov.health.light.warn': 'Needs attention',
+  'dov.health.light.ok': 'Healthy',
+  'dov.health.count.error': { one: '{count} error', other: '{count} errors' },
+  'dov.health.count.warn': { one: '{count} warning', other: '{count} warnings' },
+  'dov.health.count.info': { one: '{count} note', other: '{count} notes' },
+  'dov.health.noProblems': 'No errors or warnings.',
+  'dov.health.more': { one: '+{count} more in Domain Health', other: '+{count} more in Domain Health' },
+  'dov.health.failed': 'The health checks could not run',
+  'dov.lookupFailed': 'lookup failed'
+});
+
+registerStrings('tr', {
+  'dov.domain': 'Alan adı',
+  'dov.placeholder': 'example.com',
+  'dov.run': 'Özeti oluştur',
+  'dov.invalid': 'example.com gibi bir alan adı girin (IP adresi ya da com.tr gibi yalın bir uzantı değil).',
+  'dov.sends': 'Özeti oluştur’a basana kadar hiçbir şey gönderilmez. Sonra DNS soruları DoH çözümleyicilerinize, kayıt sorgusu kayıt kuruluşunun RDAP sunucusuna gider; Certificate Transparency yalnızca Sertifikalar kartından sorulur.',
+  'dov.linkPrompt': 'Bir bağlantıdan açıldı: {domain} için Özeti oluştur’a basın. Henüz hiçbir şey gönderilmedi.',
+  'dov.emptyTitle': 'Bir alan adına dair her şey tek sayfada',
+  'dov.emptyBody': 'Kayıt ve bitiş tarihi, DNS’ini ve e-postasını kimin barındırdığı, web sitesini neyin sunduğu, hangi CA’ların sertifika verebileceği, TXT kayıtlarının doğruladığı hizmetler ve sağlık puanı — taşıma ya da devralma için, daha ayrıntılı araca bağlantılarla.',
+  'dov.progress': '{domain} özeti oluşturuluyor',
+  'dov.progressCount': '{total} sorgunun {done} tanesi',
+  'dov.builtAt': 'Oluşturuldu: {time}',
+  'dov.stoppedAt': 'Durduruldu: {time} — bazı bölümler sorgulanmadı',
+  'dov.reduced': '{host} adının kayıtlı alan adı olan {domain} özeti.',
+  'dov.resultsTitle': '{domain} özeti',
+  'dov.done': '{domain} özeti hazır',
+  'dov.stopped': 'Durduruldu: gelen bölümler gösteriliyor',
+  'dov.openIn': '{tool} aracında aç',
+  'dov.openInTitle': '{tool} aracını {domain} ile açar',
+  'dov.pending': 'Sorgulanıyor…',
+  'dov.updating': 'Güncelleniyor…',
+  'dov.notLooked': 'Sorgulanmadı: oluşturma durduruldu.',
+  'dov.lookUp': 'Sorgula',
+  'dov.retried': '{card}: güncellendi',
+  'dov.failedPart': 'Okunamadı',
+  'dov.none': 'yok',
+
+  'dov.card.registration': 'Kayıt',
+  'dov.card.dns': 'DNS barındırma',
+  'dov.card.mail': 'E-posta',
+  'dov.card.web': 'Web',
+  'dov.card.certs': 'Sertifikalar',
+  'dov.card.saas': 'SaaS doğrulamaları',
+  'dov.card.health': 'Sağlık',
+
+  'dov.reg.registrar': 'Kayıt şirketi',
+  'dov.reg.ianaId': 'IANA kimliği {id}',
+  'dov.reg.created': 'Kayıt tarihi',
+  'dov.reg.expires': 'Bitiş',
+  'dov.reg.daysLeft': { zero: 'bugün sona eriyor', other: '{count} gün kaldı' },
+  'dov.reg.daysAgo': '{count} gün önce sona erdi',
+  'dov.reg.status': 'Durum',
+  'dov.reg.lock': 'Transfer kilidi',
+  'dov.reg.lockOn': 'Açık',
+  'dov.reg.lockOff': 'Kapalı',
+  'dov.reg.lockOffNote': 'clientTransferProhibited olmadan, transfer kodunu bilen herkes alan adını başka bir kayıt şirketine taşıyabilir. Planlı bir transfer dışında açık tutun.',
+  'dov.reg.lockUnknown': 'kayıt kuruluşu durum bildirmiyor',
+  'dov.reg.dnssec': 'DNSSEC yetkilendirmesi',
+  'dov.reg.signed': 'İmzalı',
+  'dov.reg.unsigned': 'İmzasız',
+  'dov.reg.nameservers': 'Ad sunucuları (kayıt kuruluşu)',
+  'dov.reg.registryDomain': 'Kayıtlı ad',
+  'dov.reg.unsupported': '.{tld} kayıt kuruluşu RDAP hizmeti sunmuyor; kayıt şirketi ve tarihler tarayıcıdan okunamıyor.',
+  'dov.reg.whois': 'Kayıt kuruluşunun WHOIS hizmetine bakın: {registry}',
+  'dov.reg.iana': '.{tld} kayıt kuruluşu ve WHOIS sunucusu (IANA)',
+  'dov.reg.notFound': 'Kayıtlı değil: kayıt kuruluşunda {domain} için kayıt yok.',
+  'dov.reg.invalid': 'Bir kayıt kuruluşunun tuttuğu bir alan adı değil.',
+  'dov.reg.failed': 'Kayıt bilgileri okunamadı',
+
+  'dov.dns.provider': 'DNS sağlayıcısı',
+  'dov.dns.own': 'Kendi ad sunucuları',
+  'dov.dns.other': 'Diğer',
+  'dov.dns.multi': '{count} sağlayıcının ad sunucuları: ya çoklu sağlayıcılı bir yapı ya da yarım kalmış bir taşıma.',
+  'dov.dns.nameservers': 'Ad sunucuları',
+  'dov.dns.noNs': 'Bu adda NS kaydı yok: bir zone’un tepesi (apex) değil.',
+  'dov.dns.delegation': 'Kayıt kuruluşu {registry} sunucularına yönlendiriyor, ama zone {zone} listeliyor. Eşleşene kadar çözümleyiciler ikisinden birini kullanabilir.',
+  'dov.dns.soa': 'SOA',
+  'dov.dns.soaValue': 'birincil {mname} · seri {serial}',
+  'dov.dns.serialDate': '{date} tarihinde değişti',
+  'dov.dns.contact': 'İletişim',
+  'dov.dns.dnssec': 'DNSSEC',
+  'dov.dns.dnssec.validated': 'İmzalı ve doğrulanıyor',
+  'dov.dns.dnssec.signed': 'İmzalı (üst zone’da DS var)',
+  'dov.dns.dnssec.failing': 'İmzalı, ama anahtarlar doğrulanamadı: Alan Adı Sağlığı’na bakın',
+  'dov.dns.dnssec.unsigned': 'İmzasız',
+  'dov.nxdomain': 'Alan adı DNS’te mevcut değil (NXDOMAIN).',
+
+  'dov.mail.receives': 'E-postayı alan',
+  'dov.mail.noMx': 'MX kaydı yok: gönderenler alan adının kendi adresine yönelir.',
+  'dov.mail.nullMx': 'E-posta kabul etmiyor (null MX).',
+  'dov.mail.hosts': 'MX sunucuları',
+  'dov.mail.kind.gateway': 'filtreleme ağ geçidi',
+  'dov.mail.kind.forwarding': 'yönlendirme',
+  'dov.mail.kind.sending': 'gönderim hizmeti',
+  'dov.mail.own': 'bu alan adı',
+  'dov.mail.spf': 'SPF',
+  'dov.mail.spf.-': 'Kesin ret (-all): yalnızca listelenen göndericiler gönderebilir.',
+  'dov.mail.spf.~': 'Yumuşak ret (~all): listede olmayan göndericiler işaretlenir, reddedilmez.',
+  'dov.mail.spf.?': 'Nötr (?all): listede olmayan göndericiler hakkında bir şey söylemez.',
+  'dov.mail.spf.+': 'Geçer (+all): herkes bu alan adı adına gönderebilir.',
+  'dov.mail.spf.redirect': '{domain} adresine yönlendiriliyor.',
+  'dov.mail.spf.noAll': 'Sonunda “all” yok: listede olmayan göndericiler nötr sayılır.',
+  'dov.mail.spf.none': 'SPF kaydı yok.',
+  'dov.mail.spf.many': '{count} SPF kaydı: alıcılar bunu hata (permerror) sayar.',
+  'dov.mail.spf.invalid': 'SPF kaydı geçerli değil.',
+  'dov.mail.senders': 'Gönderdiği hizmetler',
+  'dov.mail.dmarc': 'DMARC',
+  'dov.mail.dmarc.reject': 'Reddet (p=reject)',
+  'dov.mail.dmarc.quarantine': 'Karantina (p=quarantine)',
+  'dov.mail.dmarc.none': 'Yalnızca izleme (p=none)',
+  'dov.mail.dmarc.pct': 'başarısız postanın %{pct} kadarı',
+  'dov.mail.dmarc.reports': 'raporlar {count} adrese',
+  'dov.mail.dmarc.missing': 'DMARC kaydı yok.',
+  'dov.mail.dmarc.many': '{count} DMARC kaydı: alıcılar hepsini yok sayar.',
+  'dov.mail.dmarc.invalid': 'DMARC kaydı geçerli değil.',
+
+  'dov.web.alias': '{domain} adının takma adı',
+  'dov.web.same': '{domain} ile aynı adresler',
+  'dov.web.nxdomain': 'Yapılandırılmamış (NXDOMAIN)',
+  'dov.web.nodata': 'Adres yok',
+  'dov.web.https': 'HTTPS kaydı',
+  'dov.web.httpsNone': 'yok',
+
+  'dov.certs.caa': 'CAA',
+  'dov.certs.caaNone': 'CAA kaydı yok: her CA bu alan adı için sertifika verebilir.',
+  'dov.certs.caaDeny': 'CAA hiçbir CA’nın sertifika vermesine izin vermiyor.',
+  'dov.certs.allowed': 'İzinli CA’lar',
+  'dov.certs.wildcard': 'Joker (wildcard) sertifikalar',
+  'dov.certs.wildNone': 'hiçbir CA',
+  'dov.certs.restricted': 'kısıtlı',
+  'dov.certs.restrictedTitle': 'RFC 8657 parametreleriyle sınırlı (doğrulama yöntemleri ya da tek bir ACME hesabı): Alan Adı Sağlığı’nın CAA kartına bakın.',
+  'dov.certs.inherited': '{name} adında yayımlanmış.',
+  'dov.certs.ct': 'Certificate Transparency’deki sertifika sağlayıcıları',
+  'dov.certs.ctRun': 'Sağlayıcıları sorgula',
+  'dov.certs.ctHint': 'Cert Spotter’a tek istek (crt.sh yalnızca Cert Spotter yanıt veremezse); yalnızca {domain} gönderilir.',
+  'dov.certs.ctRunning': 'Certificate Transparency sorgulanıyor…',
+  'dov.certs.ctAgain': 'Yeniden sorgula',
+  'dov.certs.ctCount': '{count} sertifika',
+  'dov.certs.ctNewest': 'en yenisi {date}',
+  'dov.certs.ctAllowed': 'CAA izin veriyor',
+  'dov.certs.ctRestricted': 'CAA kısıtlarla izin veriyor',
+  'dov.certs.ctDenied': 'CAA izin vermiyor',
+  'dov.certs.ctUnknown': 'CA bilinmiyor',
+  'dov.certs.ctDeniedNote': 'CAA {list} için izin vermiyor: CAA onu adlandırana kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
+  'dov.certs.ctFirstPage': 'Cert Spotter’ın geçerli sertifikalar listesinin ilk sayfasından ({count} okundu); daha uzun bir liste sonraki sayfalarda sürer.',
+  'dov.certs.ctCrtsh': 'crt.sh’ten ({count} geçerli sertifika), çünkü Cert Spotter yanıt veremedi.',
+  'dov.certs.ctEmpty': 'Certificate Transparency’de {domain} için geçerli sertifika yok.',
+
+  'dov.saas.none': 'TXT’de hizmet doğrulama kaydı yok.',
+  'dov.saas.other': '{count} başka TXT kaydı',
+  'dov.saas.note': 'Doğrulama değerleri burada gösterilmez; kayıtları DNS Sorgulama listeler.',
+  'dov.saas.chip': '{name} ×{count}',
+
+  'dov.health.score': 'Puan {score}/100',
+  'dov.health.light.error': 'Sorun bulundu',
+  'dov.health.light.warn': 'İlgilenilmesi gerekiyor',
+  'dov.health.light.ok': 'Sağlıklı',
+  'dov.health.count.error': '{count} hata',
+  'dov.health.count.warn': '{count} uyarı',
+  'dov.health.count.info': '{count} bilgi',
+  'dov.health.noProblems': 'Hata ya da uyarı yok.',
+  'dov.health.more': 'Alan Adı Sağlığı’nda {count} tane daha',
+  'dov.health.failed': 'Sağlık kontrolleri çalışamadı',
+  'dov.lookupFailed': 'sorgu başarısız'
+});
+
+/* ------------------------------------------------------------------------ */
+/* Pure helpers (exported for tests)                                        */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Where each card's "Open in <tool>" link goes, with the name filled in: Domain Health for the
+ * registration, mail and health cards, DNS Lookup for the name servers and the TXT records, Global
+ * DNS for the website, the Certificate view's "No file?" field (filled, not loaded) for the
+ * certificates.
+ * @param {string} card
+ * @param {string} domain
+ * @returns {{ view: string, params: Record<string, string> }}
+ */
+export function cardLink(card, domain) {
+  switch (card) {
+    case 'dns': return { view: 'lookup', params: { name: domain, type: 'NS,SOA,DS,DNSKEY' } };
+    case 'web': return { view: 'global', params: { name: domain, type: 'A' } };
+    case 'certs': return { view: 'cert', params: { host: domain, run: '0' } };
+    case 'saas': return { view: 'lookup', params: { name: domain, type: 'TXT' } };
+    default: return { view: 'health', params: { domain } };
+  }
+}
+
+/**
+ * The badge variant of an RDAP status flag (lib/passport.js rdapStatusFlags kind).
+ * @param {'lock'|'hold'|'pending'|'ok'|'other'} kind
+ * @returns {string}
+ */
+export function flagVariant(kind) {
+  return kind === 'lock' ? 'ok' : kind === 'hold' || kind === 'pending' ? 'error' : 'neutral';
+}
+
+/* ------------------------------------------------------------------------ */
+/* View                                                                     */
+/* ------------------------------------------------------------------------ */
+
+let active = null;
+
+/**
+ * Mount the Domain overview view.
+ * @param {HTMLElement} container
+ * @param {import('../app.js').ViewContext} ctx
+ */
+export function mount(container, ctx) {
+  const { t } = ctx;
+  const restored = ctx.restored && typeof ctx.restored === 'object' ? ctx.restored : null;
+  const routeName = ctx.params.name || '';
+  const initialName = restored ? restored.name ?? '' : routeName;
+  /** The name the last route carried (a link's, a carried target's): the prompt says it waits for a click. */
+  let linkName = routeName;
+  /** A link opened while a build runs: it goes into the box when the build ends or is stopped. */
+  let waitingLink = null;
+
+  /** The overview on screen: { domain, host, raw, controller, at, stopped, retrying: Set, ct: 'running'|null, ctController }. */
+  let current = null;
+
+  /* --- helpers ----------------------------------------------------------------------- */
+  const tr = (key, params, fallback) => (hasString(key, getLang()) || hasString(key, 'en') ? t(key, params) : fallback);
+  const localWords = { yes: 'common.yes', no: 'common.no', [LOOKUP_FAILED_PARAM]: 'dov.lookupFailed' };
+  const localParams = (params) => Object.fromEntries(Object.entries(params || {})
+    .map(([k, v]) => [k, typeof v === 'string' && Object.hasOwn(localWords, v) ? t(localWords[v]) : v]));
+  const mono = (text) => h('span', { class: 'mono dov-break' }, text);
+  const hostLink = (host, type = 'A,AAAA') => h('a', { class: 'mono dov-break', href: ctx.href('lookup', { name: host, type }) }, host);
+  const ipLink = (ip) => h('a', { class: 'mono dov-ip', href: ctx.href('ip', { ips: ip }) }, ip);
+  const chips = (items) => h('span', { class: 'cluster dov-chips' }, items);
+  const na = (status) => NaMark([status]);
+  const hostList = (hosts, render = mono) => h('span', { class: 'dov-list' }, hosts.map((x) => h('span', { class: 'dov-list-item' }, render(x))));
+
+  /* --- form ------------------------------------------------------------------------------ */
+  const nameField = textInput({
+    label: t('dov.domain'),
+    value: initialName,
+    placeholder: t('dov.placeholder'),
+    mono: true,
+    className: 'dov-name',
+    attrs: { 'data-role': 'dov-name', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'go' },
+    onEnter: () => start()
+  });
+  const runBtn = Button({ label: t('dov.run'), icon: 'id-card', variant: 'primary', dataset: { action: 'dov-run', shortcut: 'submit' }, onClick: () => start() });
+  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'dov-stop', shortcut: 'cancel' }, onClick: () => stop() });
+  stopBtn.hidden = true;
+  const promptEl = h('div', { class: 'dov-prompt' });
+  const formCard = h('div', { class: 'card dov-form-card' },
+    h('div', { class: 'card-body stack' },
+      h('div', { class: 'dov-form' }, nameField.el, h('div', { class: 'dov-buttons' }, stopBtn, runBtn)),
+      h('p', { class: 'muted text-sm dov-sends' }, t('dov.sends')),
+      promptEl));
+
+  /* --- results skeleton ------------------------------------------------------------------ */
+  const progress = ProgressBar({ label: t('dov.progress', { domain: '' }), format: (v, max) => t('dov.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
+  progress.el.hidden = true;
+  const emptyEl = h('div', { class: 'card dov-empty' }, EmptyState({ icon: 'id-card', title: t('dov.emptyTitle'), message: t('dov.emptyBody') }));
+  const headEl = h('div', { class: 'dov-head-wrap' });
+  const slots = Object.fromEntries(PASSPORT_CARDS.map((c) => [c, h('div', { class: 'dov-slot', dataset: { card: c } })]));
+  // No part of the form: Ctrl/Cmd+Enter on a card's button starts no new build.
+  const results = h('div', { class: 'stack-lg dov-results', hidden: true, dataset: { shortcutScope: 'results' } },
+    headEl,
+    h('div', { class: 'dov-grid' }, PASSPORT_CARDS.map((c) => slots[c])));
+  container.append(h('div', { class: 'stack-lg dov-view' }, formCard, progress, emptyEl, results));
+
+  /** The overview's summary button (disabled while a build runs). */
+  let summary = null;
+
+  /* --- rendering ---------------------------------------------------------------------- */
+  const cardsOf = () => passportCards(current ? current.raw : {}, { now: new Date() });
+
+  function renderHead() {
+    clear(headEl);
+    if (!current) return;
+    const { domain, host } = current;
+    summary = SummaryButton({
+      kind: 'domain',
+      facts: () => (current && current.at && !current.controller ? passportSummaryFacts(cardsOf(), { domain: current.domain, host: current.host, at: current.at }) : null),
+      url: () => (current ? ctx.shareUrl(permalinkParams('domain', { name: current.domain })) : null),
+      disabled: !!current.controller
+    });
+    const meta = current.controller
+      ? null
+      : h('span', { class: 'muted text-xs', title: current.at ? formatDateTime(current.at) : null },
+        current.stopped ? t('dov.stoppedAt', { time: formatRelative(current.at) }) : t('dov.builtAt', { time: formatRelative(current.at) }));
+    headEl.append(h('div', { class: 'card dov-head', dataset: { domain } },
+      h('div', { class: 'dov-head-main' },
+        h('h2', { class: 'dov-head-title' }, h('span', { class: 'sr-only' }, t('dov.resultsTitle', { domain: '' })), h('span', { class: 'mono dov-break' }, domain)),
+        host ? h('p', { class: 'text-sm muted dov-reduced' }, t('dov.reduced', { domain, host })) : null,
+        meta),
+      h('div', { class: 'dov-head-actions' }, summary)));
+  }
+
+  /** The "Open in <tool>" link of a card. */
+  function openLink(card, domain) {
+    const { view, params } = cardLink(card, domain);
+    const tool = t(`nav.${view}`);
+    return h('a', {
+      class: 'btn btn-ghost btn-sm dov-open', href: ctx.href(view, params), title: t('dov.openInTitle', { tool, domain }), dataset: { open: view }
+    }, h('span', { class: 'btn-label' }, t('dov.openIn', { tool })), Icon('arrow-right', { size: 14 }));
+  }
+
+  /** A card's Retry: its failed lookups (or, after a stop, the ones never run). */
+  function retryButton(card, lookups, { label = null } = {}) {
+    const sources = [...new Set(lookups.map((l) => (l === 'rdap' ? 'rdap' : 'doh')))];
+    const btn = RetryButton({ sources, target: t(`dov.card.${card.id}`), dataset: { card: card.id }, onClick: (e) => retryCard(card.id, lookups, e.currentTarget) });
+    if (label) btn.querySelector('.btn-label').textContent = label;
+    if (current && lookups.some((l) => current.retrying.has(l))) setRetryBusy(btn);
+    return btn;
+  }
+
+  function renderCard(cardId, cards = cardsOf()) {
+    const slot = slots[cardId];
+    const card = cards[cardId];
+    const running = !!(current && current.controller);
+    const actions = [];
+    let body;
+    if (card.state === 'pending' && running) {
+      body = h('p', { class: 'dov-pending muted text-sm', attrs: { 'aria-busy': 'true' } }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), ' ', t('dov.pending'));
+    } else if (card.state === 'pending') {
+      // A stopped build: what landed is shown, the rest offers to be looked up.
+      body = h('div', { class: 'stack-sm' },
+        h('p', { class: 'muted text-sm dov-not-looked' }, t('dov.notLooked')),
+        partialBody(cardId, card));
+      actions.push(retryButton(card, [...new Set([...card.retry, ...card.pending, ...(cardId === 'health' && current && current.raw.rdap === undefined ? ['rdap'] : [])])], { label: t('dov.lookUp') }));
+    } else {
+      body = BODIES[cardId](card);
+      // A Retry (or the health checks run again after one) is on its way: the answers on screen
+      // stay until the new ones land.
+      if (current && CARD_LOOKUPS[cardId].some((l) => current.retrying.has(l))) {
+        body = h('div', { class: 'stack-sm' },
+          h('p', { class: 'dov-updating muted text-sm', attrs: { 'aria-busy': 'true' } }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('dov.updating')),
+          body);
+      }
+      if (card.retry.length) actions.push(retryButton(card, card.retry));
+    }
+    if (current) actions.push(openLink(cardId, current.domain));
+    const el = Card({
+      title: t(`dov.card.${cardId}`),
+      icon: CARD_ICONS[cardId],
+      className: `dov-card dov-card-${cardId}`,
+      actions: h('div', { class: 'dov-card-actions' }, actions),
+      children: body
+    });
+    el.dataset.state = card.state === 'pending' && !running ? 'stopped' : card.state;
+    el.dataset.failed = card.failures.length ? card.failures.map((f) => f.lookup).join(' ') : '';
+    clear(slot);
+    slot.append(el);
+  }
+
+  /** What a stopped card can still show: nothing but the failures of what landed. */
+  function partialBody(cardId, card) {
+    return card.failures.length ? h('p', { class: 'text-sm dov-status' }, Icon('alert', { size: 14 }), ' ', card.failures.map((f) => statusText(f)).join(' · ')) : null;
+  }
+
+  function renderCards(ids = PASSPORT_CARDS) {
+    const cards = cardsOf();
+    for (const c of ids) renderCard(c, cards);
+  }
+
+  function renderAll() {
+    const has = !!current;
+    emptyEl.hidden = has;
+    results.hidden = !has;
+    renderHead();
+    if (has) renderCards();
+  }
+
+  /* --- card bodies ------------------------------------------------------------------------ */
+  const statusLine = (failures) => (failures.length
+    ? h('p', { class: 'text-sm dov-status', dataset: { reason: failures[0].reason } }, Icon('alert', { size: 14 }), h('span', null, failures.map((f) => statusText(f)).join(' · ')))
+    : null);
+  const kv = (items) => KeyValueList(items.filter(Boolean), { className: 'dov-kv' });
+  const failureFor = (card, lookup) => card.failures.find((f) => f.lookup === lookup) || null;
+
+  function registrationBody(card) {
+    const d = current.domain;
+    if (card.outcome === 'unsupported') {
+      const w = card.whois;
+      return Alert({
+        variant: 'info', compact: true, message: t('dov.reg.unsupported', { tld: card.tld || '' }),
+        children: w ? h('p', { class: 'text-sm dov-whois' }, ExternalLink(w.url, w.iana ? t('dov.reg.iana', { tld: card.tld || '' }) : t('dov.reg.whois', { registry: w.name }))) : null
+      });
+    }
+    if (card.outcome === 'not-found') return Alert({ variant: 'warn', compact: true, message: t('dov.reg.notFound', { domain: card.domain || d }) });
+    if (card.outcome === 'invalid') return Alert({ variant: 'info', compact: true, message: t('dov.reg.invalid') });
+    if (card.outcome === 'failed') {
+      const f = card.failures[0];
+      return h('div', { class: 'stack-sm' },
+        statusLine(card.failures),
+        kv([
+          { key: t('dov.reg.registrar'), value: na(f) },
+          { key: t('dov.reg.expires'), value: na(f) },
+          { key: t('dov.reg.status'), value: na(f) },
+          { key: t('dov.reg.nameservers'), value: na(f) }
+        ]));
+    }
+    const daysBadge = card.daysLeft === null ? null : card.daysLeft < 0
+      ? Badge(t('dov.reg.daysAgo', { count: -card.daysLeft }), { variant: 'error', icon: 'x-circle' })
+      : Badge(t('dov.reg.daysLeft', { count: card.daysLeft }), { variant: card.expiry === 'ok' ? 'ok' : card.expiry, icon: 'clock' });
+    const lock = card.transferLock === true
+      ? Badge(t('dov.reg.lockOn'), { variant: 'ok', icon: 'lock' })
+      : card.transferLock === false
+        ? h('span', { class: 'stack-xs' }, Badge(t('dov.reg.lockOff'), { variant: 'warn', icon: 'unlock' }), h('span', { class: 'text-xs muted dov-note' }, t('dov.reg.lockOffNote')))
+        : h('span', { class: 'muted' }, t('dov.reg.lockUnknown'));
+    return kv([
+      card.domain && card.domain !== d ? { key: t('dov.reg.registryDomain'), value: mono(card.domain) } : null,
+      {
+        key: t('dov.reg.registrar'),
+        value: card.registrar ? h('span', null, card.registrarUrl ? ExternalLink(card.registrarUrl, card.registrar) : card.registrar,
+          card.ianaId ? h('span', { class: 'muted text-xs' }, ` · ${t('dov.reg.ianaId', { id: card.ianaId })}`) : null) : null
+      },
+      { key: t('dov.reg.created'), value: card.created ? formatDate(card.created) : null },
+      { key: t('dov.reg.expires'), value: card.expires ? h('span', { class: 'dov-expiry', dataset: { days: card.daysLeft, expiry: card.expiry } }, h('strong', null, formatDate(card.expires)), ' ', daysBadge) : null },
+      { key: t('dov.reg.lock'), value: h('span', { class: 'dov-lock', dataset: { lock: String(card.transferLock) } }, lock) },
+      { key: t('dov.reg.status'), value: card.flags.length ? chips(card.flags.map((x) => Badge(x.code, { variant: flagVariant(x.kind), icon: x.kind === 'lock' ? 'lock' : null }))) : null },
+      { key: t('dov.reg.dnssec'), value: card.dnssec === null ? null : card.dnssec ? Badge(t('dov.reg.signed'), { variant: 'ok', icon: 'shield' }) : Badge(t('dov.reg.unsigned')) },
+      { key: t('dov.reg.nameservers'), value: card.nameservers.length ? hostList(card.nameservers) : null }
+    ]);
+  }
+
+  function dnsBody(card) {
+    if (!card.exists) return Alert({ variant: 'error', compact: true, message: t('dov.nxdomain') });
+    const { providers, self, other } = card.hosting;
+    const nsFailure = failureFor(card, 'ns');
+    const who = [
+      ...providers.map((p) => Badge(p.name, { variant: 'accent', title: p.hosts.join(', ') })),
+      self.length ? Badge(t('dov.dns.own'), { title: self.join(', ') }) : null,
+      other.length ? Badge(`${t('dov.dns.other')} (${formatNumber(other.length)})`, { title: other.join(', ') }) : null
+    ].filter(Boolean);
+    const soa = card.soa;
+    const soaFailure = failureFor(card, 'soa');
+    const dsFailure = failureFor(card, 'ds') || (card.dnssec === 'failing' ? null : failureFor(card, 'dnskey'));
+    const dnssecVariant = { validated: 'ok', signed: 'info', failing: 'error', unsigned: 'neutral' }[card.dnssec];
+    return h('div', { class: 'stack-sm' },
+      statusLine(card.failures),
+      kv([
+        { key: t('dov.dns.provider'), value: nsFailure ? na(nsFailure) : who.length ? chips(who) : null },
+        { key: t('dov.dns.nameservers'), value: nsFailure ? na(nsFailure) : card.nameservers.length ? hostList(card.nameservers, (x) => hostLink(x)) : card.noNs ? h('span', { class: 'muted text-sm' }, t('dov.dns.noNs')) : null },
+        {
+          key: t('dov.dns.soa'),
+          value: soaFailure ? na(soaFailure) : soa ? h('span', { class: 'stack-xs' },
+            h('span', { class: 'mono text-sm dov-break' }, t('dov.dns.soaValue', { mname: soa.mname, serial: String(soa.serial) })),
+            soa.serialDate ? h('span', { class: 'muted text-xs' }, t('dov.dns.serialDate', { date: soa.serialDate })) : null) : null
+        },
+        soa && soa.email ? { key: t('dov.dns.contact'), value: mono(soa.email) } : null,
+        { key: t('dov.dns.dnssec'), value: card.dnssec ? Badge(t(`dov.dns.dnssec.${card.dnssec}`), { variant: dnssecVariant, icon: card.dnssec === 'validated' ? 'shield' : card.dnssec === 'failing' ? 'x-circle' : null }) : dsFailure ? na(dsFailure) : null }
+      ]),
+      providers.length > 1 ? h('p', { class: 'text-sm muted dov-note', dataset: { note: 'multi' } }, t('dov.dns.multi', { count: providers.length })) : null,
+      card.delegation ? Alert({
+        variant: 'warn', compact: true,
+        message: t('dov.dns.delegation', { registry: card.delegation.registry.join(', '), zone: card.nameservers.join(', ') })
+      }) : null);
+  }
+
+  function mailBody(card) {
+    if (!card.exists) return Alert({ variant: 'error', compact: true, message: t('dov.nxdomain') });
+    const mxFailure = failureFor(card, 'mx');
+    const mx = card.mx;
+    let receives = null;
+    if (mxFailure) receives = na(mxFailure);
+    else if (mx && mx.state === 'none') receives = h('span', { class: 'text-sm' }, t('dov.mail.noMx'));
+    else if (mx && mx.state === 'null') receives = h('span', { class: 'text-sm' }, t('dov.mail.nullMx'));
+    else if (mx) {
+      receives = chips([
+        ...mx.platforms.map((p) => Badge(p.kind === 'mailbox' ? p.name : `${p.name} · ${t(`dov.mail.kind.${p.kind}`)}`, { variant: 'accent', title: p.hosts.join(', ') })),
+        ...(mx.other.length ? [Badge(`${t('dov.dns.other')} (${formatNumber(mx.other.length)})`, { title: mx.other.join(', ') })] : [])
+      ]);
+    }
+    const txtFailure = failureFor(card, 'txt');
+    const spf = card.spf;
+    let spfValue = null;
+    if (txtFailure) spfValue = na(txtFailure);
+    else if (spf) {
+      let line;
+      if (spf.state === 'ok') line = spf.all ? t(`dov.mail.spf.${spf.all}`) : spf.redirect ? t('dov.mail.spf.redirect', { domain: spf.redirect }) : t('dov.mail.spf.noAll');
+      else line = t(`dov.mail.spf.${spf.state}`, { count: spf.count });
+      spfValue = h('span', { class: 'text-sm', dataset: { spf: spf.state === 'ok' ? spf.all || (spf.redirect ? 'redirect' : 'noall') : spf.state } }, line);
+    }
+    const dmarcFailure = failureFor(card, 'dmarc');
+    const dm = card.dmarc;
+    let dmarcValue = null;
+    if (dmarcFailure) dmarcValue = na(dmarcFailure);
+    else if (dm) {
+      if (dm.state === 'ok') {
+        const extra = [dm.pct < 100 ? t('dov.mail.dmarc.pct', { pct: dm.pct }) : null, dm.reports ? t('dov.mail.dmarc.reports', { count: dm.reports }) : null].filter(Boolean);
+        dmarcValue = h('span', { class: 'text-sm', dataset: { dmarc: dm.policy || 'none' } },
+          Badge(t(`dov.mail.dmarc.${dm.policy || 'none'}`), { variant: dm.policy === 'reject' ? 'ok' : dm.policy === 'quarantine' ? 'info' : 'warn' }),
+          extra.length ? h('span', { class: 'muted text-xs' }, ` ${extra.join(' · ')}`) : null);
+      } else dmarcValue = h('span', { class: 'text-sm', dataset: { dmarc: dm.state } }, t(dm.state === 'none' ? 'dov.mail.dmarc.missing' : `dov.mail.dmarc.${dm.state}`, { count: dm.count }));
+    }
+    const senders = spf && spf.state === 'ok' && (spf.senders.length || spf.other.length) ? chips([
+      ...spf.senders.map((s) => Badge(s.name)),
+      ...spf.other.slice(0, 3).map((o) => Badge(o, { mono: true })),
+      spf.other.length > 3 ? h('span', { class: 'muted text-xs' }, t('common.moreCount', { count: spf.other.length - 3 })) : null
+    ].filter(Boolean)) : null;
+    return h('div', { class: 'stack-sm' },
+      statusLine(card.failures),
+      kv([
+        { key: t('dov.mail.receives'), value: receives },
+        mx && mx.hosts.length ? {
+          key: t('dov.mail.hosts'),
+          value: hostList(mx.hosts, (m) => h('span', null, h('span', { class: 'muted text-xs num' }, `${m.preference} `), hostLink(m.exchange), m.own ? h('span', { class: 'muted text-xs' }, ` · ${t('dov.mail.own')}`) : null))
+        } : null,
+        { key: t('dov.mail.spf'), value: spfValue },
+        senders ? { key: t('dov.mail.senders'), value: senders } : null,
+        { key: t('dov.mail.dmarc'), value: dmarcValue }
+      ]));
+  }
+
+  function webHostValue(x) {
+    if (x.state === 'failed') return na(x.failure);
+    if (x.state === 'pending') return h('span', { class: 'muted' }, t('dov.pending'));
+    if (x.state === 'nxdomain') return h('span', { class: 'text-sm muted' }, t('dov.web.nxdomain'));
+    if (x.state === 'nodata') return h('span', { class: 'text-sm muted' }, t('dov.web.nodata'));
+    const ips = [...x.ipv4, ...x.ipv6];
+    const target = x.cnames.length ? x.cnames[x.cnames.length - 1] : null;
+    return h('span', { class: 'stack-xs dov-webhost' },
+      h('span', { class: 'cluster' }, KindBadge(x.classification),
+        x.aliasOfApex ? h('span', { class: 'muted text-xs' }, t('dov.web.alias', { domain: current.domain }))
+          : x.sameAsApex ? h('span', { class: 'muted text-xs' }, t('dov.web.same', { domain: current.domain })) : null),
+      target && !x.aliasOfApex ? h('span', { class: 'text-xs muted dov-cname' }, 'CNAME → ', hostLink(target, 'CNAME')) : null,
+      ips.length ? h('span', { class: 'cluster dov-ips' }, ips.slice(0, 3).map(ipLink), ips.length > 3 ? h('span', { class: 'muted text-xs' }, t('common.moreCount', { count: ips.length - 3 })) : null) : null);
+  }
+
+  function webBody(card) {
+    const httpsText = (x, failure) => {
+      if (failure) return na(failure);
+      if (!x) return null;
+      return x.present ? chips([Badge(t('common.yes'), { variant: 'ok', icon: 'check' }), ...x.alpn.map((a) => Badge(a, { mono: true }))]) : h('span', { class: 'muted text-sm' }, t('dov.web.httpsNone'));
+    };
+    const [apex, www] = card.hosts;
+    return h('div', { class: 'stack-sm' },
+      statusLine(card.failures),
+      kv([
+        { key: mono(apex.name), value: webHostValue(apex) },
+        { key: mono(www.name), value: webHostValue(www) },
+        { key: `${t('dov.web.https')} · ${apex.name}`, value: httpsText(card.https.apex, failureFor(card, 'https')) },
+        { key: `${t('dov.web.https')} · ${www.name}`, value: httpsText(card.https.www, failureFor(card, 'wwwHttps')) }
+      ]));
+  }
+
+  function caEntry(e) {
+    return Badge(e.ca ? e.ca.name : e.issuer, {
+      variant: 'accent', icon: e.restricted ? 'lock' : null,
+      title: e.restricted ? `${e.issuer} · ${t('dov.certs.restrictedTitle')}` : e.issuer
+    });
+  }
+
+  function ctSection(card) {
+    const d = current.domain;
+    const head = h('div', { class: 'dov-subtitle' }, t('dov.certs.ct'));
+    if (current.ct === 'running') {
+      return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'running' } }, head,
+        h('p', { class: 'muted text-sm', attrs: { 'aria-busy': 'true' } }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), ' ', t('dov.certs.ctRunning')));
+    }
+    const run = (label, variant = 'secondary') => Button({ label, icon: 'search', size: 'sm', variant, dataset: { action: 'dov-ct' }, onClick: (e) => lookupCt(e.currentTarget) });
+    const ct = card.ct;
+    if (!ct) {
+      return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'idle' } }, head,
+        h('p', { class: 'muted text-xs' }, t('dov.certs.ctHint', { domain: d })),
+        h('div', null, run(t('dov.certs.ctRun'))));
+    }
+    if (ct.state === 'failed') {
+      const sources = ct.failures.map((f) => f.source);
+      return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'failed' } }, head,
+        h('p', { class: 'text-sm dov-status' }, NaMark(ct.failures), ' ', ct.failures.map((f) => statusText(f)).join(' · ')),
+        h('div', null, RetryButton({ sources, target: t('dov.certs.ct'), dataset: { action: 'dov-ct-retry' }, onClick: (e) => lookupCt(e.currentTarget) })));
+    }
+    const verdictBadge = (v) => {
+      if (v === 'allowed') return Badge(t('dov.certs.ctAllowed'), { variant: 'ok', icon: 'check' });
+      if (v === 'restricted') return Badge(t('dov.certs.ctRestricted'), { variant: 'info', icon: 'lock' });
+      if (v === 'denied') return Badge(t('dov.certs.ctDenied'), { variant: 'error', icon: 'x-circle' });
+      if (v === 'unknown') return Badge(t('dov.certs.ctUnknown'));
+      return null;
+    };
+    const rows = ct.issuers.map((i) => h('li', { class: 'dov-issuer', dataset: { verdict: i.verdict || '' } },
+      h('span', { class: 'dov-issuer-name', title: i.intermediates.join(', ') }, i.name),
+      h('span', { class: 'muted text-xs' }, `${t('dov.certs.ctCount', { count: i.count })} · ${t('dov.certs.ctNewest', { date: formatDate(i.newest) })}`),
+      verdictBadge(i.verdict)));
+    const source = ct.provider === 'crtsh' ? t('dov.certs.ctCrtsh', { count: formatNumber(ct.certificates) }) : t('dov.certs.ctFirstPage', { count: formatNumber(ct.certificates) });
+    return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'ok', provider: ct.provider } }, head,
+      rows.length ? h('ul', { class: 'dov-issuers' }, rows) : h('p', { class: 'text-sm muted' }, t('dov.certs.ctEmpty', { domain: d })),
+      ct.notAllowed.length ? Alert({ variant: 'warn', compact: true, message: t('dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', ') }) }) : null,
+      h('p', { class: 'muted text-xs' }, source),
+      h('div', null, run(t('dov.certs.ctAgain'), 'ghost')));
+  }
+
+  function certsBody(card) {
+    const caa = card.caa;
+    const caaFailure = failureFor(card, 'caa');
+    let caaPart;
+    if (caaFailure) caaPart = kv([{ key: t('dov.certs.caa'), value: na(caaFailure) }]);
+    else if (!caa) caaPart = null;
+    else if (caa.state === 'none') caaPart = h('p', { class: 'text-sm', dataset: { caa: 'none' } }, t('dov.certs.caaNone'));
+    else if (caa.state === 'deny-all') caaPart = Alert({ variant: 'error', compact: true, message: t('dov.certs.caaDeny') });
+    else {
+      caaPart = h('div', { class: 'stack-xs', dataset: { caa: 'present' } },
+        kv([
+          { key: t('dov.certs.allowed'), value: caa.issue.length ? chips(caa.issue.map(caEntry)) : h('span', { class: 'muted text-sm' }, t('dov.certs.wildNone')) },
+          caa.wildcardOnly ? { key: t('dov.certs.wildcard'), value: caa.issuewild.length ? chips(caa.issuewild.map(caEntry)) : h('span', { class: 'muted text-sm' }, t('dov.certs.wildNone')) } : null
+        ]),
+        caa.foundAt && caa.foundAt !== current.domain ? h('p', { class: 'muted text-xs' }, t('dov.certs.inherited', { name: caa.foundAt })) : null);
+    }
+    return h('div', { class: 'stack-sm' }, statusLine(card.failures), caaPart, ctSection(card));
+  }
+
+  function saasBody(card) {
+    if (!card.exists) return Alert({ variant: 'error', compact: true, message: t('dov.nxdomain') });
+    const txtFailure = failureFor(card, 'txt');
+    if (txtFailure) return h('div', { class: 'stack-sm' }, statusLine(card.failures), kv([{ key: 'TXT', value: na(txtFailure) }]));
+    const s = card.saas;
+    if (!s) return null;
+    return h('div', { class: 'stack-sm' },
+      s.vendors.length
+        ? h('ul', { class: 'dov-vendors', attrs: { 'aria-label': t('dov.card.saas') } }, s.vendors.map((v) => h('li', { class: 'dov-vendor', dataset: { vendor: v.id }, title: v.key },
+          Badge(v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name, { variant: 'accent' }))))
+        : h('p', { class: 'text-sm muted' }, t('dov.saas.none')),
+      s.other ? h('p', { class: 'text-xs muted' }, t('dov.saas.other', { count: s.other })) : null,
+      h('p', { class: 'text-xs muted' }, t('dov.saas.note')));
+  }
+
+  function healthBody(card) {
+    if (card.failures.length) return h('div', { class: 'stack-sm' }, Alert({ variant: 'error', compact: true, title: t('dov.health.failed') }), statusLine(card.failures));
+    const s = card.summary;
+    const counts = ['error', 'warn', 'info'].filter((k) => s[k]).map((k) => h('span', { class: ['dov-count', `dov-count-${k}`] }, SeverityIcon(k, { size: 14 }), ' ', t(`dov.health.count.${k}`, { count: s[k] })));
+    return h('div', { class: 'stack-sm' },
+      h('div', { class: ['dov-score', `dov-score-${card.light}`], dataset: { light: card.light, score: card.score } },
+        h('span', { class: ['dov-lamp', `dov-lamp-${card.light}`], attrs: { 'aria-hidden': 'true' } }),
+        h('span', { class: 'dov-score-verdict' }, t(`dov.health.light.${card.light}`)),
+        h('span', { class: 'dov-score-value num' }, t('dov.health.score', { score: card.score }))),
+      counts.length ? h('div', { class: 'cluster text-sm' }, counts) : null,
+      card.problems.length
+        ? h('ul', { class: 'dov-problems' }, card.problems.map((p) => h('li', { class: ['dov-problem', `dov-sev-${p.severity}`], dataset: { id: p.id } },
+          SeverityIcon(p.severity, { size: 15 }), h('span', null, tr(p.titleKey, localParams(p.params), p.id)))))
+        : h('p', { class: 'text-sm muted' }, t('dov.health.noProblems')),
+      card.moreProblems ? h('p', { class: 'text-xs muted' }, t('dov.health.more', { count: card.moreProblems })) : null);
+  }
+
+  const BODIES = { registration: registrationBody, dns: dnsBody, mail: mailBody, web: webBody, certs: certsBody, saas: saasBody, health: healthBody };
+
+  /* --- the box and the link prompt -------------------------------------------------- */
+  /** The domains the box holds, as a build reads them (what a carried target may replace). */
+  const boxDomains = (text) => {
+    const p = passportDomain(text);
+    return [p ? p.domain : String(text).trim()];
+  };
+
+  /**
+   * The domain the box last took from a carried target: a newer one replaces it while the box
+   * still holds it (lib/session.js fillReplaces). A re-mount keeps it; a build forgets it.
+   */
+  let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null) : (isFillOnly(ctx.params) && routeName) || null;
+
+  /** "Opened from a link …": the box holds a name no overview on screen is about, and nothing runs. */
+  function renderPrompt() {
+    clear(promptEl);
+    const p = passportDomain(nameField.value);
+    const linked = linkName ? passportDomain(linkName) : null;
+    const fromRoute = !!p && !!linked && linked.domain === p.domain;
+    if (!fromRoute || (current && (current.controller || current.domain === p.domain))) return;
+    promptEl.append(Alert({ variant: 'info', compact: true, message: t('dov.linkPrompt', { domain: p.domain }) }));
+    promptEl.firstChild.dataset.prompt = 'link';
+  }
+
+  /** A name from a route: into the box while it is empty or holds the last build or the last carried name. */
+  function takeName(name, { fillOnly }) {
+    const last = current ? [current.domain] : null;
+    if (fillReplaces(nameField.value, last, boxDomains, carried)) {
+      nameField.value = name;
+      nameField.setError(null);
+      carried = fillOnly ? name : null;
+    }
+  }
+
+  /* --- run ------------------------------------------------------------------------------ */
+  function setRunning(on) {
+    const hadFocus = document.activeElement === (on ? runBtn : stopBtn);
+    runBtn.hidden = on;
+    stopBtn.hidden = !on;
+    nameField.input.readOnly = on;
+    if (summary) summary.setDisabled(on);
+    ctx.setBusy(on);
+    // The keyboard focus follows the button it was on (Build ⇄ Stop), never falling to <body>.
+    if (hadFocus) (on ? stopBtn : runBtn).focus();
+  }
+
+  /** "Copy link" shares the overview on screen (not the box, which may hold a carried name). */
+  function setShareAction() {
+    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? { name: current.domain } : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+  }
+
+  function abortAll() {
+    if (!current) return;
+    for (const c of [current.controller, current.ctController, ...current.retryControllers]) if (c) c.abort();
+  }
+
+  function stop() {
+    if (current && current.controller) current.controller.abort();
+  }
+
+  /** Build the overview of the box's domain (a click, Enter, Ctrl/Cmd+Enter or Run again). */
+  function start() {
+    nameField.setError(null);
+    const parsed = passportDomain(nameField.value);
+    if (!parsed) {
+      nameField.setError(t('dov.invalid'));
+      nameField.focus();
+      return;
+    }
+    if (!ctx.requireOnline()) return;
+    nameField.value = parsed.domain;
+    carried = null;
+    waitingLink = null;
+    ctx.setParams({ name: parsed.domain });
+    ctx.runStarted(parsed.domain);
+    run(parsed);
+  }
+
+  async function run({ domain, host }) {
+    abortAll();
+    const controller = new AbortController();
+    const state = {
+      domain, host, raw: { domain }, controller, at: null, stopped: false,
+      retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null
+    };
+    current = state;
+    setShareAction();
+    renderPrompt();
+    renderAll();
+    progress.el.hidden = false;
+    progress.setVariant('default');
+    progress.setLabel(t('dov.progress', { domain }));
+    progress.set(0, PASSPORT_LOOKUPS.length);
+    setRunning(true);
+    let done = 0;
+    try {
+      const dns = await ctx.getDns();
+      await buildPassport(domain, {
+        dns,
+        signal: mergeSignals(ctx.signal, controller.signal),
+        onLookup: (lookup, result) => {
+          if (current !== state) return;
+          state.raw[lookup] = result;
+          done += 1;
+          progress.set(done, PASSPORT_LOOKUPS.length);
+          renderCards(cardsOfLookup(lookup));
+        }
+      });
+      if (current !== state) return;
+      state.at = new Date();
+      progress.done(t('common.done'));
+      setTimeout(() => { if (current === state && !state.controller) progress.el.hidden = true; }, 1200);
+      announce(t('dov.done', { domain }));
+    } catch (err) {
+      if (current !== state) return;
+      progress.el.hidden = true;
+      state.at = new Date();
+      if (err && err.name === 'AbortError') {
+        state.stopped = true;
+        if (!ctx.signal.aborted) announce(t('dov.stopped'));
+      } else {
+        ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      }
+    } finally {
+      if (current === state) {
+        state.controller = null;
+        if (!ctx.signal.aborted) {
+          setRunning(false);
+          renderHead();
+          renderCards();
+          if (waitingLink) {
+            takeName(waitingLink.name, { fillOnly: waitingLink.fillOnly });
+            waitingLink = null;
+          }
+          renderPrompt();
+        }
+      }
+    }
+  }
+
+  /**
+   * A card's Retry (or, after a stop, its Look up): only those lookups again, past the DNS
+   * cache. The content stays until the answers land; the keyboard focus stays on the card.
+   */
+  async function retryCard(cardId, lookups, btn) {
+    const state = current;
+    if (!state || state.controller || lookups.some((l) => state.retrying.has(l))) return;
+    if (!ctx.requireOnline()) return;
+    const controller = new AbortController();
+    state.retryControllers.add(controller);
+    for (const l of lookups) state.retrying.add(l);
+    setRetryBusy(btn);
+    let landed = false;
+    try {
+      const dns = await ctx.getDns();
+      await buildPassport(state.domain, {
+        dns,
+        lookups,
+        noCache: true,
+        signal: mergeSignals(ctx.signal, controller.signal),
+        onLookup: (lookup, result) => {
+          if (current !== state) return;
+          state.raw[lookup] = result;
+          state.retrying.delete(lookup);
+          renderCards(cardsOfLookup(lookup));
+        }
+      });
+      landed = true;
+    } catch (err) {
+      if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+    } finally {
+      state.retryControllers.delete(controller);
+      for (const l of lookups) state.retrying.delete(l);
+    }
+    if (current !== state || ctx.signal.aborted) return;
+    // Every card the lookups feed, drawn once more without the busy Retry (after a failure too).
+    renderCards(PASSPORT_CARDS.filter((c) => lookups.some((l) => cardsOfLookup(l).includes(c))));
+    if (!landed) return;
+    if (state.stopped && PASSPORT_LOOKUPS.every((l) => state.raw[l] !== undefined)) state.stopped = false;
+    state.at = new Date();
+    renderHead();
+    // The keyboard focus stays on the card: its Retry when a lookup still failed, else the card.
+    const card = slots[cardId].querySelector('.dov-card');
+    const again = card && card.querySelector('[data-action="retry-source"]');
+    if (again) again.focus();
+    else if (card) {
+      card.setAttribute('tabindex', '-1');
+      card.focus({ preventScroll: true });
+    }
+    const failures = cardsOf()[cardId].failures;
+    announce(failures.length ? failures.map((f) => statusText(f)).join(' · ') : t('dov.retried', { card: t(`dov.card.${cardId}`) }));
+    if (lookups.some((l) => HEALTH_LOOKUPS.includes(l)) && state.raw.health && !state.retrying.has('health')) refreshHealth(state);
+  }
+
+  /**
+   * The health checks again after a Retry of a DNS lookup they share: the retried answers are in
+   * the resolver's cache now, and so is every other one, so this costs little; the card says
+   * "Updating…" meanwhile and keeps the score it had.
+   */
+  async function refreshHealth(state) {
+    const controller = new AbortController();
+    state.retryControllers.add(controller);
+    state.retrying.add('health');
+    renderCard('health');
+    try {
+      const dns = await ctx.getDns();
+      await buildPassport(state.domain, {
+        dns,
+        lookups: ['health'],
+        signal: mergeSignals(ctx.signal, controller.signal),
+        onLookup: (lookup, result) => { if (current === state) state.raw.health = result; }
+      });
+    } catch (err) {
+      if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+    } finally {
+      state.retryControllers.delete(controller);
+      state.retrying.delete('health');
+    }
+    if (current === state && !ctx.signal.aborted) renderCard('health');
+  }
+
+  /** The certificates card's CT lookup: one Cert Spotter request (crt.sh as its fallback). */
+  async function lookupCt(btn) {
+    const state = current;
+    if (!state || state.ct === 'running') return;
+    if (!ctx.requireOnline()) return;
+    const controller = new AbortController();
+    state.ctController = controller;
+    state.ct = 'running';
+    renderCard('certs');
+    try {
+      const result = await lookupCtIssuers(state.domain, { signal: mergeSignals(ctx.signal, controller.signal) });
+      if (current !== state) return;
+      state.raw.ct = result;
+      const ct = cardsOf().certs.ct;
+      announce(ct.state === 'ok' ? `${t('dov.certs.ct')}: ${ct.issuers.map((i) => i.name).join(', ') || t('dov.none')}` : ct.failures.map((f) => statusText(f)).join(' · '));
+    } catch (err) {
+      if (!(err && err.name === 'AbortError')) ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+    } finally {
+      if (state.ctController === controller) state.ctController = null;
+      if (state.ct === 'running') state.ct = null;
+      if (current === state && !ctx.signal.aborted) {
+        renderCard('certs');
+        const again = slots.certs.querySelector('[data-action="dov-ct"], [data-action="dov-ct-retry"]');
+        if (again && btn && !btn.isConnected) again.focus();
+      }
+    }
+  }
+
+  /* --- initial state ------------------------------------------------------------------- */
+  if (restored && restored.run) {
+    const r = restored.run;
+    current = {
+      domain: r.domain, host: r.host || null, raw: r.raw, controller: null, at: r.at ? new Date(r.at) : new Date(), stopped: !!r.stopped,
+      retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null
+    };
+    setShareAction();
+  }
+  // A route's name only fills the box: a shared link, a carried target (`run=0`) or a nav link
+  // alike. Nothing is sent before Build overview.
+  if (routeName && !restored) takeName(routeName, { fillOnly: isFillOnly(ctx.params) });
+  else if (routeName && isFillOnly(ctx.params)) takeName(routeName, { fillOnly: true });
+  renderAll();
+  renderPrompt();
+
+  active = {
+    teardown: abortAll,
+    snapshot() {
+      const r = current && !current.controller && current.at ? current : null;
+      return {
+        name: nameField.value,
+        carried,
+        run: r ? { domain: r.domain, host: r.host, raw: r.raw, at: r.at, stopped: r.stopped } : null
+      };
+    },
+    result() {
+      if (!current || current.controller || !current.at) return null;
+      return { subject: current.domain, at: current.at, params: { name: current.domain } };
+    },
+    rerun() {
+      if (current) nameField.value = current.domain;
+      start();
+    },
+    update(params) {
+      const name = params.name;
+      if (!name) return false;
+      linkName = name;
+      if (current && current.controller) {
+        // A running build keeps its box; the link fills it when the build ends.
+        waitingLink = { name, fillOnly: isFillOnly(params) };
+        return true;
+      }
+      takeName(name, { fillOnly: isFillOnly(params) });
+      renderPrompt();
+      return true;
+    }
+  };
+}
+
+/** Abort a running build, retry or CT lookup. */
+export function unmount() {
+  if (active) active.teardown();
+  active = null;
+}
+
+/**
+ * The box and the finished (or stopped) overview, carried over a language re-mount and kept for
+ * the next visit (no new lookups).
+ * @returns {object|null}
+ */
+export function snapshot() {
+  return active ? active.snapshot() : null;
+}
+
+/**
+ * The overview on screen (kept by the shell when the view is left), or null while none is or a
+ * build runs.
+ * @returns {{ subject: string, at: Date, params: { name: string } }|null}
+ */
+export function result() {
+  return active ? active.result() : null;
+}
+
+/** "Run again" of the kept-result note: build the overview of the same domain again. */
+export function rerun() {
+  if (active) active.rerun();
+}
+
+/**
+ * Take a new route's name without a re-mount: it only fills the box (never runs).
+ * @param {Record<string, string>} params
+ * @returns {boolean}
+ */
+export function update(params) {
+  return active ? active.update(params) : false;
+}
+
+export default { id, titleKey, icon, mount, unmount, snapshot, result, rerun, update };

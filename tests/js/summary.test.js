@@ -807,6 +807,107 @@ describe('retire', () => {
   });
 });
 
+/* ------------------------------------------------------------------------ */
+describe('domain (overview)', () => {
+  /** passportSummaryFacts() of a healthy domain (lib/passport.js). */
+  const facts = (over = {}) => ({
+    domain: 'example.com',
+    host: null,
+    at: new Date('2026-09-27T13:58:00Z'),
+    registration: { pending: false, failed: false, outcome: 'ok', registrar: 'Example Registrar, Inc.', expires: new Date('2027-08-13T04:00:00Z'), daysLeft: 319, transferLock: true, tld: 'com', whois: null },
+    dns: { pending: false, failed: false, exists: true, providers: ['Cloudflare'], self: false, other: [], dnssec: 'validated', delegationDiffers: false },
+    mail: { pending: false, failed: false, mx: 'some', platforms: ['Microsoft 365'], other: [], spf: { state: 'ok', all: '-', redirect: false, count: 1 }, dmarc: { state: 'ok', policy: 'reject', count: 1 } },
+    web: {
+      pending: false, failed: false, https: true,
+      hosts: [{ name: 'example.com', state: 'ok', kind: 'cloudflare', provider: 'Cloudflare' }, { name: 'www.example.com', state: 'ok', kind: 'platform', provider: 'Netlify' }]
+    },
+    certs: { pending: false, failed: false, caa: 'present', cas: ["Let's Encrypt"], ct: null },
+    saas: { pending: false, failed: false, vendors: ['Google', 'Microsoft 365', 'Atlassian', 'Stripe'] },
+    health: { pending: false, failed: false, score: 88, light: 'warn' },
+    ...over
+  });
+  const url = `${URL_BASE}#/domain?name=example.com`;
+
+  test('one line per card, names from the app\'s tables as text, the registrar and host names as code', () => {
+    const doc = S.buildSummary('domain', facts(), opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Domain overview · `example.com`**',
+      '- **Registration:** `Example Registrar, Inc.` · expires 2027-08-13 (319 days left)',
+      '- **DNS:** Cloudflare · DNSSEC validated',
+      '- **Mail:** Microsoft 365 · SPF -all · DMARC p=reject',
+      '- **Web:** `example.com` Cloudflare · `www.example.com` Netlify · HTTPS record',
+      "- **Certificates:** CAA allows Let's Encrypt",
+      '- **Services:** 4 services verified the domain by TXT: Google, Microsoft 365, Atlassian +1 more',
+      '- **Health:** Needs attention · score 88/100',
+      '',
+      `DomainScope · checked 2026-09-27 13:58 UTC · ${url}`
+    ]);
+    const tr = md(S.buildSummary('domain', facts(), opts('tr', url)));
+    assert.match(tr, /^\*\*Alan adı özeti · `example\.com`\*\*$/m);
+    assert.match(tr, /- \*\*Kayıt:\*\* `Example Registrar, Inc\.` · 2027-08-13 tarihinde sona eriyor \(319 gün kaldı\)/);
+    assert.match(tr, /- \*\*Hizmetler:\*\* 4 hizmet alan adını TXT ile doğrulamış: Google, Microsoft 365, Atlassian \+1 tane daha/);
+  });
+
+  test('the CT issuers and what CAA does not allow; no transfer lock; several providers and an unknown name server', () => {
+    const doc = S.domainSummary(facts({
+      registration: { ...facts().registration, transferLock: false },
+      dns: { ...facts().dns, providers: ['Cloudflare', 'Amazon Route 53'], other: ['ns1.example.net'], delegationDiffers: true },
+      certs: { ...facts().certs, ct: { issuers: [{ name: "Let's Encrypt", count: 8 }, { name: 'Sectigo', count: 2 }], notAllowed: ['Sectigo'] } }
+    }), opts('en', url));
+    assertShape(doc);
+    const out = md(doc);
+    assert.match(out, /- \*\*Registration:\*\* `Example Registrar, Inc\.` · expires 2027-08-13 \(319 days left\) · no transfer lock/);
+    assert.match(out, /- \*\*DNS:\*\* Cloudflare, Amazon Route 53 · `ns1\.example\.net` · DNSSEC validated · the registry delegates to other name servers/);
+    assert.match(out, /- \*\*Certificates:\*\* CAA allows Let's Encrypt · issuers in CT: `Let's Encrypt` \(8\), `Sectigo` \(2\) · not allowed by CAA: `Sectigo`/);
+  });
+
+  test('a stopped build says what was not looked up; failed parts say so; a TLD without RDAP names its registry', () => {
+    const doc = S.domainSummary(facts({
+      registration: { pending: false, failed: false, outcome: 'unsupported', tld: 'tr', whois: 'TRABİS' },
+      dns: { pending: false, failed: true, exists: true, providers: [], self: false, other: [], dnssec: null },
+      mail: { pending: false, failed: true, mx: null, platforms: [], other: [], spf: { state: 'none', count: 1 }, dmarc: { state: 'ok', policy: 'none', count: 1 } },
+      web: { pending: true, failed: false, hosts: [], https: null },
+      certs: { pending: false, failed: false, caa: 'none', cas: [], ct: { issuers: [], notAllowed: [] } },
+      saas: { pending: false, failed: true, vendors: [] },
+      health: { pending: true, failed: false, score: null, light: null }
+    }), opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(txt(doc)).slice(1, 8), [
+      '- Registration: .tr publishes no RDAP: see TRABİS',
+      '- DNS: lookup failed',
+      '- Mail: MX lookup failed · no SPF · DMARC p=none',
+      '- Web: not looked up',
+      '- Certificates: no CAA: any CA may issue · no current certificate in CT',
+      '- Services: lookup failed',
+      '- Health: not looked up'
+    ]);
+    const other = S.domainSummary(facts({
+      registration: { pending: false, failed: true, outcome: 'failed' },
+      mail: { pending: false, failed: false, mx: 'null', platforms: [], other: [], spf: { state: 'many', count: 2 }, dmarc: { state: 'none', count: 1 } },
+      dns: { pending: false, failed: false, exists: false, providers: [], self: false, other: [], dnssec: 'unsigned' }
+    }), opts('en', url));
+    assert.match(txt(other), /- Registration: lookup failed\n- DNS: the domain does not exist \(NXDOMAIN\)\n- Mail: accepts no mail \(null MX\) · 2 SPF records \(invalid\) · no DMARC\n/);
+    // NS failed, the DNSSEC lookups answered: the line says which part is missing.
+    const ns = S.domainSummary(facts({ dns: { pending: false, failed: true, exists: true, providers: [], self: false, other: [], nsFailed: true, dnssec: 'validated' } }), opts('en', url));
+    assert.match(txt(ns), /- DNS: NS lookup failed · DNSSEC validated\n/);
+    const soa = S.domainSummary(facts({ dns: { ...facts().dns, failed: true } }), opts('en', url));
+    assert.match(txt(soa), /- DNS: Cloudflare · DNSSEC validated · some lookups failed\n/);
+  });
+
+  test('an untrusted registrar or host name stays inert; the permalink carries only the name', () => {
+    const doc = S.domainSummary(facts({
+      registration: { ...facts().registration, registrar: `Evil \`co\` <!channel> @here ${RLO}` },
+      web: { ...facts().web, hosts: [{ name: 'example.com', state: 'dangling', kind: 'unresolved', provider: null }, { name: 'www.example.com', state: 'failed' }] }
+    }), opts('en', url));
+    assertShape(doc);
+    const out = md(doc);
+    assert.match(out, /- \*\*Registration:\*\* `Evil 'co' <!channel> @here` · expires/);
+    assert.match(out, /- \*\*Web:\*\* `example\.com` Dangling CNAME · `www\.example\.com` lookup failed · HTTPS record/);
+    assert.deepEqual(S.permalinkParams('domain', { name: 'example.com', run: '0', type: 'A' }), { name: 'example.com' });
+  });
+});
+
 describe('rendering and dispatch', () => {
   test('buildSummary dispatches by view id and refuses unknown views', () => {
     const doc = S.buildSummary('zone', { origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts());
@@ -874,6 +975,9 @@ describe('i18n', () => {
     for (const f of ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']) used.add(`sum.global.find.${f}`);
     for (const w of S.CERT_SUMMARY_WARNINGS) used.add(`sum.cert.warn.${w}`);
     for (const r of S.RETIRE_BREAKING_SEVERITIES) used.add(`sum.retire.sev.${r}`);
+    // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
+    for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
+    for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }
     const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
     assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
     assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');

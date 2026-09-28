@@ -107,6 +107,8 @@ describe('routes', () => {
     assert.deepEqual(fillRoute('retire', ip), { ips: '192.0.2.10', run: '0' });
     assert.deepEqual(fillRoute('retire', domain), { domains: 'example.com', run: '0' });
     assert.deepEqual(fillRoute('retire', host), { domains: 'www.example.com', run: '0' });
+    assert.deepEqual(fillRoute('domain', host), { name: 'www.example.com', run: '0' });
+    assert.equal(fillRoute('domain', ip), null, 'an address has no domain overview');
   });
 
   test('a tool whose input does not take the kind gets nothing', () => {

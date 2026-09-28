@@ -956,6 +956,7 @@ button.nav-status:hover {
     gap: 1px;
   }
 
+  /* 13 links and room for one more; a link stays taller than a 24 px target. */
   .nav-link {
     padding-top: 4px;
     padding-bottom: 4px;

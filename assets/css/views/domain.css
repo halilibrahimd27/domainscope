@@ -1,0 +1,394 @@
+/*
+ * views/domain.css — "Domain overview" view (.dov-*).
+ */
+
+/* ---- form ------------------------------------------------------------------ */
+
+.dov-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.dov-form .field {
+  min-width: 0;
+}
+
+.dov-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.dov-sends {
+  margin: 0;
+}
+
+.dov-prompt:empty {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .dov-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dov-buttons .btn {
+    flex: 1;
+  }
+}
+
+.dov-empty {
+  padding: 8px 0;
+}
+
+/* ---- helpers --------------------------------------------------------------- */
+
+.dov-view .stack-xs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Host names break anywhere rather than push a card wider than a phone. */
+.dov-break {
+  overflow-wrap: anywhere;
+}
+
+.dov-ip {
+  white-space: nowrap;
+}
+
+.dov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dov-list-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dov-chips {
+  gap: 6px;
+}
+
+.dov-chips .badge,
+.dov-vendor .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.dov-note {
+  margin: 0;
+}
+
+.dov-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--warn);
+}
+
+.dov-status > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.dov-subtitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ---- head ------------------------------------------------------------------ */
+
+.dov-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 16px 18px;
+}
+
+.dov-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.dov-head-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.dov-reduced {
+  margin: 0;
+}
+
+.dov-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---- cards ----------------------------------------------------------------- */
+
+.dov-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.dov-slot {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .dov-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dov-card .card-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+/* The title never shrinks under the card's links: they move to a row of their own instead. */
+.dov-card .card-titles {
+  flex: 1 0 auto;
+  max-width: 100%;
+}
+
+.dov-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.dov-card[data-state="pending"] .card-body,
+.dov-card[data-state="stopped"] .card-body {
+  color: var(--text-3);
+}
+
+.dov-updating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.dov-pending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.dov-not-looked {
+  margin: 0;
+}
+
+.dov-kv .kv-key .mono {
+  font-weight: 550;
+}
+
+.dov-expiry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dov-lock .stack-xs {
+  align-items: flex-start;
+}
+
+.dov-webhost .cluster {
+  gap: 6px;
+}
+
+.dov-ips {
+  gap: 4px 10px;
+}
+
+.dov-cname {
+  overflow-wrap: anywhere;
+}
+
+/* The CT issuers and the SaaS vendors are lists; each entry wraps on a phone. */
+.dov-issuers,
+.dov-vendors,
+.dov-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dov-vendors {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.dov-issuer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.dov-issuer-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dov-issuer[data-verdict="denied"] {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+}
+
+.dov-ct {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.dov-whois {
+  margin: 6px 0 0;
+}
+
+/* ---- health ---------------------------------------------------------------- */
+
+.dov-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.dov-lamp {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ok-solid);
+}
+
+.dov-lamp-warn {
+  background: var(--warn-solid);
+}
+
+.dov-lamp-error {
+  background: var(--error-solid);
+}
+
+.dov-score-verdict {
+  font-weight: 650;
+}
+
+.dov-score-value {
+  margin-left: auto;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.dov-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dov-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13.5px;
+}
+
+.dov-problem .sev {
+  flex: none;
+  margin-top: 1px;
+}
+
+/* ---- phones ------------------------------------------------------------------ */
+
+@media (max-width: 600px) {
+  .dov-head {
+    padding: 14px;
+  }
+
+  .dov-head-title {
+    font-size: 18px;
+  }
+
+  .dov-card .card-head {
+    padding: 12px 14px;
+  }
+
+  .dov-card .card-body {
+    padding: 14px;
+  }
+
+  /* The card's links take their own row under the title. */
+  .dov-card .card-actions {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .dov-card-actions {
+    justify-content: flex-start;
+  }
+}
+
+/* ---- print ------------------------------------------------------------------- */
+
+@media print {
+  .dov-form-card,
+  .dov-empty,
+  .dov-prompt,
+  .dov-card-actions {
+    display: none;
+  }
+
+  .dov-grid {
+    display: block;
+  }
+
+  .dov-slot + .dov-slot {
+    margin-top: 12px;
+  }
+
+  .dov-card,
+  .dov-issuer {
+    break-inside: avoid;
+  }
+
+  /* Addresses and host names stay whole on paper where they fit. */
+  .dov-ip {
+    white-space: nowrap;
+  }
+
+  /* The lamp is drawn with a background, which paper leaves out by default. */
+  .dov-lamp {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

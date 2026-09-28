@@ -17,12 +17,12 @@
  * string is rendered through h() / text nodes; nothing here reaches the network.
  */
 
-import { h, clear, uid, debounce } from './dom.js';
+import { h, clear, uid } from './dom.js';
 import {
   Alert, Badge, Button, FileDrop, Icon, IconButton, Modal, announce, confirmDialog, setButtonBusy, textInput, textarea, toast
 } from './components.js';
 import { downloadText, timestampedName } from './download.js';
-import { t, registerStrings, formatNumber, formatRelative, formatDateTime } from '../i18n.js';
+import { t, registerStrings, formatRelative, formatDateTime } from '../i18n.js';
 import { parseInventory } from '../lib/inventory.js';
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, uniqueWorkspaceName, sanitizeExpectedCas } from '../lib/workspace.js';
 import { exportWorkspaceFile, readWorkspaceFile, openWorkspaceFile, HANDOVER_MAX_BYTES } from '../lib/handover.js';
@@ -276,7 +276,7 @@ export function replaceTarget(ws, list) {
 export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null, appVersion = '' }) {
   const cleanups = [];
   let renaming = null; // id of the workspace whose name is being edited
-  let pending = null; // an import in progress: { text, name, encrypted, ws? }
+  let pending = null; // an import in progress: { text, fileName, encrypted, ws } (ws once it is open)
 
   const memoryNote = h('div', { class: 'ws-memory' });
   const listEl = h('ul', { class: 'ws-list', dataset: { role: 'ws-list' } });

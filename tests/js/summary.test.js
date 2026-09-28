@@ -895,6 +895,48 @@ describe('domain (overview)', () => {
     assert.match(txt(soa), /- DNS: Cloudflare · DNSSEC validated · some lookups failed\n/);
   });
 
+  test('a line never reads as complete without the lookup that failed: SPF, DMARC, a host\'s HTTPS record, CAA, CT', () => {
+    const mail = { ...facts().mail, failed: true, platforms: ['Microsoft 365', 'Proofpoint'] };
+    // TXT failed (no SPF known), DMARC answered
+    const txtDown = S.domainSummary(facts({ mail: { ...mail, spf: null, spfFailed: true, dmarc: { state: 'ok', policy: 'quarantine', count: 1 } } }), opts('en', url));
+    assert.match(txt(txtDown), /- Mail: Microsoft 365, Proofpoint · SPF lookup failed · DMARC p=quarantine\n/);
+    // both failed, MX answered
+    const both = S.domainSummary(facts({ mail: { ...mail, spf: null, spfFailed: true, dmarc: null, dmarcFailed: true } }), opts('en', url));
+    assert.match(txt(both), /- Mail: Microsoft 365, Proofpoint · SPF lookup failed · DMARC lookup failed\n/);
+    assert.match(txt(S.domainSummary(facts({ mail: { ...mail, spf: null, spfFailed: true, dmarc: null, dmarcFailed: true } }), opts('tr', url))),
+      /- E-posta: Microsoft 365, Proofpoint · SPF sorgusu başarısız · DMARC sorgusu başarısız\n/);
+    // www's HTTPS record could not be read, the apex has one
+    const web = S.domainSummary(facts({ web: { ...facts().web, failed: true, httpsFailed: ['www.example.com'] } }), opts('en', url));
+    assert.match(md(web), /- \*\*Web:\*\* `example\.com` Cloudflare · `www\.example\.com` Netlify · HTTPS record · HTTPS record lookup failed for `www\.example\.com`\n/);
+    const noHttps = S.domainSummary(facts({ web: { ...facts().web, failed: true, https: null, httpsFailed: ['example.com', 'www.example.com'] } }), opts('en', url));
+    assert.match(txt(noHttps), /- Web: example\.com Cloudflare · www\.example\.com Netlify · HTTPS record lookup failed for example\.com, www\.example\.com\n/);
+    // CAA failed: the CT issuers read on the page are kept
+    const ct = { issuers: [{ name: "Let's Encrypt", count: 2 }], notAllowed: [] };
+    const caaDown = S.domainSummary(facts({ certs: { pending: false, failed: true, caa: null, caaFailed: true, cas: [], ct } }), opts('en', url));
+    assert.match(md(caaDown), /- \*\*Certificates:\*\* CAA lookup failed · issuers in CT: `Let's Encrypt` \(2\)\n/);
+    const caaOnly = S.domainSummary(facts({ certs: { pending: false, failed: true, caa: null, caaFailed: true, cas: [], ct: null } }), opts('en', url));
+    assert.match(txt(caaOnly), /- Certificates: lookup failed\n/);
+    const ctDown = S.domainSummary(facts({ certs: { ...facts().certs, ctFailed: true } }), opts('en', url));
+    assert.match(txt(ctDown), /- Certificates: CAA allows Let's Encrypt · CT lookup failed\n/);
+  });
+
+  test('a domain that does not exist: mail, certificates and services say so instead of "no record"', () => {
+    const doc = S.domainSummary(facts({
+      dns: { pending: false, failed: false, exists: false, providers: [], self: false, other: [], dnssec: 'unsigned' },
+      mail: { pending: false, failed: false, exists: false, mx: 'none', platforms: [], other: [], spf: { state: 'none', count: 1 }, dmarc: { state: 'none', count: 1 } },
+      web: { pending: false, failed: false, exists: false, https: false, httpsFailed: [], hosts: [{ name: 'example.com', state: 'nxdomain' }, { name: 'www.example.com', state: 'nxdomain' }] },
+      certs: { pending: false, failed: false, exists: false, caa: 'none', cas: [], ct: null },
+      saas: { pending: false, failed: false, exists: false, vendors: [] }
+    }), opts('en', url));
+    assert.deepEqual(lines(txt(doc)).slice(2, 7), [
+      '- DNS: the domain does not exist (NXDOMAIN)',
+      '- Mail: the domain does not exist (NXDOMAIN)',
+      '- Web: example.com does not exist · www.example.com does not exist',
+      '- Certificates: the domain does not exist (NXDOMAIN)',
+      '- Services: the domain does not exist (NXDOMAIN)'
+    ]);
+  });
+
   test('an untrusted registrar or host name stays inert; the permalink carries only the name', () => {
     const doc = S.domainSummary(facts({
       registration: { ...facts().registration, registrar: `Evil \`co\` <!channel> @here ${RLO}` },

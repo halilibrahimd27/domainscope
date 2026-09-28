@@ -679,12 +679,13 @@ describe('passportSummaryFacts', () => {
     });
     assert.deepEqual(facts.dns, { pending: false, failed: false, exists: true, providers: ['Cloudflare'], self: false, other: [], nsFailed: false, dnssec: 'validated', delegationDiffers: false });
     assert.deepEqual(facts.mail, {
-      pending: false, failed: false, mx: 'some', platforms: ['Microsoft 365'], other: [],
+      pending: false, failed: false, exists: true, mx: 'some', mxFailed: false, spfFailed: false, dmarcFailed: false, platforms: ['Microsoft 365'], other: [],
       spf: { state: 'ok', all: '-', redirect: false, count: 1 }, dmarc: { state: 'ok', policy: 'reject', count: 1 }
     });
     assert.deepEqual(facts.web.hosts.map((x) => [x.name, x.kind, x.provider]), [['example.com', 'cloudflare', 'Cloudflare'], ['www.example.com', 'cloudflare', 'Cloudflare']]);
-    assert.equal(facts.web.https, true);
-    assert.deepEqual(facts.certs, { pending: false, failed: false, caa: 'present', cas: ["Let's Encrypt"], ct: null });
+    assert.deepEqual([facts.web.exists, facts.web.https, facts.web.httpsFailed], [true, true, []]);
+    assert.deepEqual(facts.certs, { pending: false, failed: false, exists: true, caa: 'present', caaFailed: false, cas: ["Let's Encrypt"], ct: null, ctFailed: false });
+    assert.equal(facts.saas.exists, true);
     assert.deepEqual(facts.saas.vendors, ['Google', 'Atlassian', 'Microsoft 365', 'Stripe']);
     assert.equal(typeof facts.health.score, 'number');
     const text = JSON.stringify(facts);
@@ -693,6 +694,17 @@ describe('passportSummaryFacts', () => {
 
   test('pending and failed parts are said, not guessed', () => {
     const facts = passportSummaryFacts(passportCards({ domain: 'example.com', mx: { ok: false, error: 'down', errorKind: 'network' } }, { now: NOW }), { domain: 'example.com' });
-    assert.deepEqual([facts.registration.pending, facts.mail.failed, facts.mail.mx, facts.health.pending], [true, true, null, true]);
+    assert.deepEqual([facts.registration.pending, facts.mail.failed, facts.mail.mx, facts.mail.mxFailed, facts.health.pending], [true, true, null, true, true]);
+  });
+
+  test('each failed lookup of a card is named: TXT (SPF), DMARC, a host\'s HTTPS record, CAA, CT', async () => {
+    const rcodes = { 'example.com|TXT': 'SERVFAIL', '_dmarc.example.com|TXT': 'SERVFAIL', 'www.example.com|HTTPS': 'SERVFAIL', 'example.com|CAA': 'SERVFAIL' };
+    const raw = await buildPassport('example.com', { dns: fakeDns(zoneOf(), { rcodes }), fetchImpl: mockFetch(), now: NOW });
+    raw.ct = { status: 'failed', provider: null, issuers: [], certificates: 0, failures: [{ source: 'certspotter', reason: 'rate-limit-hour' }] };
+    const facts = passportSummaryFacts(passportCards(raw, { now: NOW }), { domain: 'example.com', at: NOW });
+    assert.deepEqual([facts.mail.mxFailed, facts.mail.spfFailed, facts.mail.dmarcFailed, facts.mail.spf, facts.mail.dmarc], [false, true, true, null, null]);
+    assert.deepEqual([facts.web.https, facts.web.httpsFailed], [true, ['www.example.com']], 'the apex has one, www could not be read');
+    assert.deepEqual([facts.certs.caa, facts.certs.caaFailed, facts.certs.ct, facts.certs.ctFailed], [null, true, null, true]);
+    assert.equal(facts.saas.failed, true);
   });
 });

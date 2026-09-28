@@ -1290,7 +1290,9 @@ export async function lookupCtIssuers(domain, {
 /**
  * What "Copy summary" says about a passport (lib/summary.js domainSummary): one fact group per
  * card, names only (vendors, platforms, providers, CAs), never a token, a record value or an
- * address. A part whose lookup failed is `failed: true`, one not finished `pending: true`.
+ * address. A part whose lookup failed is `failed: true`, one not finished `pending: true`; the
+ * `…Failed` flags name the lookup of a card that failed, so a line never reads as complete
+ * without it. `exists: false`: the domain is known not to exist.
  * @param {Record<string, object>} cards {@link passportCards} output
  * @param {{ domain: string, at?: Date|null, host?: string|null }} opts
  * @returns {object}
@@ -1298,6 +1300,7 @@ export async function lookupCtIssuers(domain, {
 export function passportSummaryFacts(cards, { domain, at = null, host = null }) {
   const c = cards || {};
   const part = (card) => ({ pending: !card || card.state !== 'ready', failed: !!card && card.failures.length > 0 });
+  const failedLookup = (card, lookup) => !!(card.failures && card.failures.some((f) => f.lookup === lookup));
   const reg = c.registration || {};
   const dns = c.dns || {};
   const mail = c.mail || {};
@@ -1326,13 +1329,17 @@ export function passportSummaryFacts(cards, { domain, at = null, host = null }) 
       providers: hosting.providers.map((p) => p.name),
       self: hosting.self.length > 0,
       other: hosting.other,
-      nsFailed: !!(dns.failures && dns.failures.some((f) => f.lookup === 'ns')),
+      nsFailed: failedLookup(dns, 'ns'),
       dnssec: dns.dnssec ?? null,
       delegationDiffers: !!dns.delegation
     },
     mail: {
       ...part(mail),
+      exists: mail.exists !== false,
       mx: mail.mx ? mail.mx.state : null,
+      mxFailed: failedLookup(mail, 'mx'),
+      spfFailed: failedLookup(mail, 'txt'),
+      dmarcFailed: failedLookup(mail, 'dmarc'),
       platforms: mail.mx ? mail.mx.platforms.map((p) => p.name) : [],
       other: mail.mx ? mail.mx.other : [],
       // state 'ok' | 'none' (no record) | 'many' | 'invalid'; `all` the qualifier, `redirect` without one
@@ -1341,25 +1348,32 @@ export function passportSummaryFacts(cards, { domain, at = null, host = null }) 
     },
     web: {
       ...part(web),
+      exists: web.exists !== false,
       hosts: (web.hosts || []).map((x) => ({
         name: x.name,
         state: x.state,
         kind: x.classification ? x.classification.kind : null,
         provider: x.classification && x.classification.provider ? x.classification.provider.name : null
       })),
-      https: web.https ? [web.https.apex, web.https.www].some((x) => x && x.present) : null
+      https: web.https ? [web.https.apex, web.https.www].some((x) => x && x.present) : null,
+      // the hosts (apex, www) whose HTTPS record lookup failed
+      httpsFailed: [['https', 0], ['wwwHttps', 1]].filter(([l, i]) => failedLookup(web, l) && web.hosts && web.hosts[i]).map(([, i]) => web.hosts[i].name)
     },
     certs: {
       ...part(certs),
+      exists: certs.exists !== false,
       caa: certs.caa ? certs.caa.state : null,
+      caaFailed: failedLookup(certs, 'caa'),
       cas: certs.caa ? uniq(certs.caa.issue.map((e) => (e.ca ? e.ca.name : e.issuer))) : [],
       ct: certs.ct && certs.ct.state === 'ok' ? {
         issuers: certs.ct.issuers.map((i) => ({ name: i.name, count: i.count })),
         notAllowed: certs.ct.notAllowed
-      } : null
+      } : null,
+      ctFailed: !!(certs.ct && certs.ct.state === 'failed')
     },
     saas: {
       ...part(saas),
+      exists: saas.exists !== false,
       vendors: saas.saas ? saas.saas.vendors.map((v) => v.name) : []
     },
     health: {

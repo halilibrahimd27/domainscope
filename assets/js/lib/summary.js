@@ -739,7 +739,8 @@ export function retireSummary(facts, opts) {
  * verifications, health — from lib/passport.js passportSummaryFacts: names only (providers,
  * platforms, vendors and CAs from the app's own tables as text; the registrar, host names and the
  * issuers read from CT as code spans), never a verification token, a record value or an address.
- * A part whose lookup failed says so, one that was not looked up (a stopped build) too.
+ * A part whose lookup failed says so, one that was not looked up (a stopped build) too: a line
+ * never reads as complete without the lookup that failed (SPF, DMARC, a host's HTTPS record, CAA).
  * @param {object} facts passportSummaryFacts() output (`at`: when the overview was built)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
@@ -806,6 +807,7 @@ export function domainSummary(facts, opts) {
   // Mail
   const mail = f.mail || { pending: true };
   let mailLine = state(mail, !mail.mx && !mail.spf && !mail.dmarc);
+  if (!mailLine && mail.exists === false) mailLine = [t('sum.domain.nxdomain')];
   if (!mailLine) {
     const bits = [];
     if (mail.mx === 'none') bits.push([t('sum.domain.noMx')]);
@@ -820,9 +822,10 @@ export function domainSummary(facts, opts) {
     if (spf) {
       if (spf.state === 'ok') bits.push([spf.all ? t('sum.domain.spfAll', { all: `${spf.all}all` }) : spf.redirect ? t('sum.domain.spfRedirect') : t('sum.domain.spfNoAll')]);
       else bits.push([t(`sum.domain.spf.${spf.state}`, { count: spf.count })]);
-    }
+    } else if (mail.spfFailed) bits.push([t('sum.domain.spfFailed')]);
     const dmarc = mail.dmarc;
     if (dmarc) bits.push([dmarc.state === 'ok' ? t('sum.domain.dmarcPolicy', { policy: `p=${dmarc.policy}` }) : t(`sum.domain.dmarc.${dmarc.state}`, { count: dmarc.count })]);
+    else if (mail.dmarcFailed) bits.push([t('sum.domain.dmarcFailed')]);
     mailLine = join(bits);
   }
   lines.push([...label('sum.domain.mail'), ...mailLine]);
@@ -843,30 +846,35 @@ export function domainSummary(facts, opts) {
     };
     const bits = (web.hosts || []).map((h) => [code(h.name), ' ', hostText(h)]);
     if (web.https === true) bits.push([t('sum.domain.https')]);
+    // "HTTPS record" is not all there is to say while a host's HTTPS lookup failed.
+    if ((web.httpsFailed || []).length) bits.push([t('sum.domain.httpsFailed'), ' ', ...k.values(web.httpsFailed, 2)]);
     webLine = join(bits);
   }
   lines.push([...label('sum.domain.web'), ...webLine]);
 
-  // Certificates
+  // Certificates: CAA, then the CT issuers when they were looked up (kept after a CAA failure)
   const certs = f.certs || { pending: true };
-  let certLine = state(certs, !certs.caa);
+  let certLine = state(certs, !certs.caa && !certs.ct && !certs.ctFailed);
   if (!certLine) {
     const bits = [];
-    if (certs.caa === 'none') bits.push([t('sum.domain.caaNone')]);
+    if (certs.exists === false) bits.push([t('sum.domain.nxdomain')]);
+    else if (certs.caa === 'none') bits.push([t('sum.domain.caaNone')]);
     else if (certs.caa === 'deny-all') bits.push([t('sum.domain.caaDeny')]);
     else if (certs.caa === 'present') bits.push([t('sum.domain.caaAllows', { list: names(certs.cas) })]);
+    else if (certs.caaFailed || certs.failed) bits.push([t('sum.domain.caaFailed')]);
     if (certs.ct && certs.ct.issuers.length) {
       const issuers = certs.ct.issuers.slice(0, 3).flatMap((i, n) => [...(n ? [', '] : []), code(i.name), ` (${k.num(i.count)})`]);
       bits.push([t('sum.domain.ctIssuers'), ' ', ...issuers]);
       if ((certs.ct.notAllowed || []).length) bits.push([t('sum.domain.ctNotAllowed'), ' ', ...k.values(certs.ct.notAllowed, 3)]);
     } else if (certs.ct) bits.push([t('sum.domain.ctNone')]);
+    else if (certs.ctFailed) bits.push([t('sum.domain.ctFailed')]);
     certLine = join(bits);
   }
   lines.push([...label('sum.domain.certs'), ...certLine]);
 
   // SaaS verifications
   const saas = f.saas || { pending: true };
-  const saasLine = state(saas, saas.failed) || [(saas.vendors || []).length
+  const saasLine = state(saas, saas.failed) || [saas.exists === false ? t('sum.domain.nxdomain') : (saas.vendors || []).length
     ? t('sum.domain.saas', { count: saas.vendors.length, list: names(saas.vendors) })
     : t('sum.domain.saasNone')];
   lines.push([...label('sum.domain.saasLabel'), ...saasLine]);
@@ -1030,6 +1038,8 @@ const STRINGS = [
   ['sum.domain.noMx', ['no MX record', 'MX kaydı yok']],
   ['sum.domain.nullMx', ['accepts no mail (null MX)', 'e-posta kabul etmiyor (null MX)']],
   ['sum.domain.mxFailed', ['MX lookup failed', 'MX sorgusu başarısız']],
+  ['sum.domain.spfFailed', ['SPF lookup failed', 'SPF sorgusu başarısız']],
+  ['sum.domain.dmarcFailed', ['DMARC lookup failed', 'DMARC sorgusu başarısız']],
   ['sum.domain.spfAll', ['SPF {all}', 'SPF {all}']],
   ['sum.domain.spfRedirect', ['SPF redirect', 'SPF redirect']],
   ['sum.domain.spfNoAll', ['SPF without “all”', '“all” içermeyen SPF']],
@@ -1043,12 +1053,15 @@ const STRINGS = [
   ['sum.domain.hostNx', ['does not exist', 'mevcut değil']],
   ['sum.domain.hostNoData', ['no address', 'adres yok']],
   ['sum.domain.https', ['HTTPS record', 'HTTPS kaydı']],
+  ['sum.domain.httpsFailed', ['HTTPS record lookup failed for', 'HTTPS kaydı sorgusu başarısız:']],
   ['sum.domain.caaNone', ['no CAA: any CA may issue', 'CAA yok: her CA sertifika verebilir']],
   ['sum.domain.caaDeny', ['CAA allows no CA', 'CAA hiçbir CA’ya izin vermiyor']],
   ['sum.domain.caaAllows', ['CAA allows {list}', 'CAA izinli: {list}']],
+  ['sum.domain.caaFailed', ['CAA lookup failed', 'CAA sorgusu başarısız']],
   ['sum.domain.ctIssuers', ['issuers in CT:', 'CT’deki sertifika sağlayıcıları:']],
   ['sum.domain.ctNone', ['no current certificate in CT', 'CT’de geçerli sertifika yok']],
   ['sum.domain.ctNotAllowed', ['not allowed by CAA:', 'CAA izin vermiyor:']],
+  ['sum.domain.ctFailed', ['CT lookup failed', 'CT sorgusu başarısız']],
   ['sum.domain.saas', [{ one: '{count} service verified the domain by TXT: {list}', other: '{count} services verified the domain by TXT: {list}' },
     '{count} hizmet alan adını TXT ile doğrulamış: {list}']],
   ['sum.domain.saasNone', ['no service verification records', 'hizmet doğrulama kaydı yok']],

@@ -13,7 +13,8 @@
  * like any other file's, its private key is never shown, and the note about the bundle offers
  * fullchain.pem and the result of the opt-in key check. "Does this CSR match?" (PEM & OpenSSL tab)
  * compares a pasted CSR's public key with the certificate's (lib/x509.js parseCertificateRequest,
- * csrMatchesCertificate); a private key pasted there is recognised, never read, and the box emptied.
+ * csrMatchesCertificate); a private key pasted there is recognised the moment it lands (looksLikePrivateKey),
+ * never read or kept, and the box emptied.
  *
  * "Copy summary" in the overview's actions (ui/summary-button.js, certSummaryFacts): names, validity,
  * issuer and warnings for Jira / Slack; the file is never in its link.
@@ -45,7 +46,8 @@ import {
   t, registerStrings, hasString, formatDate, formatDateTime, formatNumber, formatRegion, daysUntil
 } from '../i18n.js';
 import {
-  parseCertificates, loadCertificates, computeFingerprints, pemEncode, formatFingerprint, parseCertificateRequest, csrMatchesCertificate
+  parseCertificates, loadCertificates, computeFingerprints, pemEncode, formatFingerprint, parseCertificateRequest, csrMatchesCertificate,
+  looksLikePrivateKey
 } from '../lib/x509.js';
 import {
   normalizeHostname, certCovers, baseDomainsFromNames, stripWildcard, sortHostnames
@@ -408,7 +410,7 @@ registerStrings('en', {
   'cert.csr.placeholder': '-----BEGIN CERTIFICATE REQUEST-----\nMIIC…\n-----END CERTIFICATE REQUEST-----',
   'cert.csr.compare': 'Compare',
   'cert.csr.matchTitle': 'The CSR matches this certificate',
-  'cert.csr.match': 'It holds the certificate’s public key ({key}): the certificate was issued from this CSR.',
+  'cert.csr.match': 'It holds the certificate’s public key ({key}): the certificate was issued for this key — from this CSR or another one made with it.',
   'cert.csr.mismatchTitle': 'The CSR does not match',
   'cert.csr.mismatch': 'It was made for another key ({csrKey}; the certificate has {certKey}): this certificate was not issued from it, or it was re-keyed since.',
   'cert.csr.unknown': 'The keys could not be compared: the CSR’s public key ({csrKey}) cannot be read here.',
@@ -418,7 +420,7 @@ registerStrings('en', {
   'cert.csr.names': 'Names',
   'cert.csr.key': 'Key',
   'cert.csr.err.empty': 'Paste a CSR first.',
-  'cert.csr.err.private-key': 'That is a private key. It was not read, and the box is emptied: nothing here needs it. Paste the CSR (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.private-key': 'That is a private key. It was not read or kept, and the box is emptied: nothing here needs it. Paste the CSR (-----BEGIN CERTIFICATE REQUEST-----).',
   'cert.csr.err.certificate': 'That is a certificate, not a CSR. Paste the request it was made from (-----BEGIN CERTIFICATE REQUEST-----).',
   'cert.csr.err.not-csr': 'This is not a CSR. Paste the block that starts with -----BEGIN CERTIFICATE REQUEST-----.',
   'cert.csr.err.invalid': 'The CSR cannot be read: {detail}'
@@ -728,7 +730,7 @@ registerStrings('tr', {
   'cert.csr.placeholder': '-----BEGIN CERTIFICATE REQUEST-----\nMIIC…\n-----END CERTIFICATE REQUEST-----',
   'cert.csr.compare': 'Karşılaştır',
   'cert.csr.matchTitle': 'CSR bu sertifikayla eşleşiyor',
-  'cert.csr.match': 'Sertifikanın açık anahtarını ({key}) taşıyor: sertifika bu CSR ile verilmiş.',
+  'cert.csr.match': 'Sertifikanın açık anahtarını ({key}) taşıyor: sertifika bu anahtar için verilmiş — bu CSR ile ya da aynı anahtarla hazırlanmış başka biriyle.',
   'cert.csr.mismatchTitle': 'CSR eşleşmiyor',
   'cert.csr.mismatch': 'Başka bir anahtar için hazırlanmış ({csrKey}; sertifikanınki {certKey}): bu sertifika onunla verilmemiş ya da o zamandan beri anahtarı değiştirilmiş.',
   'cert.csr.unknown': 'Anahtarlar karşılaştırılamadı: CSR’ın açık anahtarı ({csrKey}) burada okunamıyor.',
@@ -738,7 +740,7 @@ registerStrings('tr', {
   'cert.csr.names': 'Adlar',
   'cert.csr.key': 'Anahtar',
   'cert.csr.err.empty': 'Önce bir CSR yapıştırın.',
-  'cert.csr.err.private-key': 'Bu bir özel anahtar. Okunmadı ve kutu boşaltıldı: burada hiçbir şeyin ona ihtiyacı yok. CSR’ı yapıştırın (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.private-key': 'Bu bir özel anahtar. Okunmadı, tutulmadı ve kutu boşaltıldı: burada ona gerek yok. CSR’ı yapıştırın (-----BEGIN CERTIFICATE REQUEST-----).',
   'cert.csr.err.certificate': 'Bu bir sertifika, CSR değil. Onun hazırlandığı isteği yapıştırın (-----BEGIN CERTIFICATE REQUEST-----).',
   'cert.csr.err.not-csr': 'Bu bir CSR değil. -----BEGIN CERTIFICATE REQUEST----- ile başlayan bloğu yapıştırın.',
   'cert.csr.err.invalid': 'CSR okunamıyor: {detail}'
@@ -1398,7 +1400,7 @@ export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = 
  * @type {{ text: string, carried: string|null, last: object|null, running: AbortController|null }}
  */
 const ctForm = { text: '', carried: null, last: null, running: null };
-/** The CSR pasted into "Does this CSR match?" (this tab's memory only; a private key is never kept). */
+/** The CSR pasted into "Does this CSR match?" (this tab's memory only; a private key never gets here). */
 const csrForm = { text: '' };
 
 /** Stop the host-name lookup in progress, if any (its block is being replaced). */
@@ -2908,21 +2910,30 @@ export function mount(container, ctx) {
       value: csrForm.text,
       attrs: { 'data-role': 'cert-csr' },
       onInput: (v) => {
-        csrForm.text = v;
+        // A private key is dropped the moment it lands, before anything keeps it: not in the
+        // box, not in this module's memory, whether Compare is pressed or not.
+        if (looksLikePrivateKey(v)) refuseKey();
+        else csrForm.text = v;
       }
     });
     const out = h('div', { class: 'cert-csr-result', attrs: { 'aria-live': 'polite' } });
+    const show = (read) => {
+      clear(out);
+      out.append(csrVerdict(read, cert));
+    };
+    function refuseKey() {
+      area.value = '';
+      csrForm.text = '';
+      show({ csr: null, error: 'private-key' });
+    }
     const compare = () => {
       const read = parseCertificateRequest(area.value);
       if (read.error === 'private-key') {
-        // never kept: not in the box, not in memory
-        area.value = '';
-        csrForm.text = '';
-      } else {
-        csrForm.text = area.value;
+        refuseKey();
+        return;
       }
-      clear(out);
-      out.append(csrVerdict(read, cert));
+      csrForm.text = area.value;
+      show(read);
     };
     const button = Button({
       label: t('cert.csr.compare'), icon: 'check', size: 'sm', variant: 'primary',

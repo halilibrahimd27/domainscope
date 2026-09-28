@@ -1975,7 +1975,8 @@ export function formatFingerprint(hex) {
 export const CSR_ERRORS = Object.freeze(['empty', 'private-key', 'certificate', 'not-csr', 'invalid']);
 
 const OID_EXTENSION_REQUEST = '1.2.840.113549.1.9.14';
-const PRIVATE_KEY_PEM_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+const PRIVATE_KEY_PEM_RE = /-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----/;
+const BARE_BASE64_RE = /^[A-Za-z0-9+/=_\-\s]+$/;
 const CSR_PEM_RE = /-----BEGIN (NEW )?CERTIFICATE REQUEST-----([\s\S]*?)-----END (NEW )?CERTIFICATE REQUEST-----/;
 const CERT_PEM_RE = /-----BEGIN (?:X509 |TRUSTED )?CERTIFICATE-----/;
 
@@ -2072,7 +2073,7 @@ export function parseCertificateRequest(input) {
     if (pem) der = decodeBase64(cleanPemBody(pem[2]));
     else if (CERT_PEM_RE.test(trimmed)) return { csr: null, error: 'certificate' };
     else if (trimmed.includes('-----BEGIN ')) return { csr: null, error: 'not-csr' };
-    else der = /^[A-Za-z0-9+/=_\-\s]+$/.test(trimmed) ? decodeBase64(trimmed) : null;
+    else der = BARE_BASE64_RE.test(trimmed) ? decodeBase64(trimmed) : null;
     if (!der || !der.length) return pem ? { csr: null, error: 'invalid', detail: 'invalid base64' } : { csr: null, error: 'not-csr' };
   }
   if (!der || !der.length) return { csr: null, error: 'empty' };
@@ -2090,6 +2091,28 @@ export function parseCertificateRequest(input) {
     return { csr: decodeCertificateRequest(der), error: null };
   } catch (err) {
     return { csr: null, error: 'invalid', detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Does a pasted text hold a private key: a `… PRIVATE KEY` PEM line (encrypted, OpenSSH and a
+ * lone END line too), or bare base64 whose DER has a private key's shape? Only the outline is
+ * looked at, never a key's numbers. For fields that must drop a key the moment it lands in them
+ * (the Certificate view's CSR box), before anything else reads or keeps the text.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function looksLikePrivateKey(text) {
+  const trimmed = String(text ?? '').trim(); // trim() drops a BOM too
+  if (!trimmed) return false;
+  if (PRIVATE_KEY_PEM_RE.test(trimmed)) return true;
+  if (trimmed.includes('-----') || !BARE_BASE64_RE.test(trimmed)) return false;
+  const der = decodeBase64(trimmed);
+  if (!der || der.length < 2 || der[0] !== 0x30) return false;
+  try {
+    return classifyDer(readNode(der, 0, der.length)).kind === 'privateKey';
+  } catch {
+    return false;
   }
 }
 
@@ -2131,8 +2154,9 @@ export function publicKeyId(spkiDer) {
 }
 
 /**
- * Does a CSR hold a certificate's public key — was the certificate issued from it (and not
- * re-keyed since)? Only public keys are compared; no private key is ever needed. `missing`: names
+ * Does a CSR hold a certificate's public key — was the certificate issued for its key (from this
+ * CSR, or another one made with the same key) and not re-keyed since? Only public keys are
+ * compared; no private key is ever needed. `missing`: names
  * the CSR asked for that the certificate does not have; `added`: names of the certificate the CSR
  * did not ask for (CAs add the bare domain or `www` to some requests).
  * @param {CertificateRequest} csr

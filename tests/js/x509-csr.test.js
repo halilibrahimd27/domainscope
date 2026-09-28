@@ -7,7 +7,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  CSR_ERRORS, csrMatchesCertificate, parseCertificateRequest, parseCertificates, pemEncode, publicKeyId
+  CSR_ERRORS, csrMatchesCertificate, looksLikePrivateKey, parseCertificateRequest, parseCertificates, pemEncode, publicKeyId
 } from '../../assets/js/lib/x509.js';
 
 const read = (f) => readFileSync(new URL(`../fixtures/${f}`, import.meta.url));
@@ -60,6 +60,30 @@ describe('parseCertificateRequest', () => {
     assert.equal(parseCertificateRequest(cut).error, 'not-csr');
     assert.equal(parseCertificateRequest(null).error, 'empty');
     for (const r of [parseCertificateRequest('x'), parseCertificateRequest(text('bundle_leaf.key'))]) assert.ok(CSR_ERRORS.includes(r.error));
+  });
+});
+
+describe('looksLikePrivateKey (the CSR box drops a key as it lands)', () => {
+  test('every private key PEM, a lone END line, a key’s bare base64', () => {
+    for (const f of ['bundle_leaf.key', 'bundle_leaf.rsa.key', 'bundle_ec_leaf.key', 'bundle_ec_leaf.nopub.key', 'bundle_leaf.enc.key', 'bundle_other.key']) {
+      assert.equal(looksLikePrivateKey(text(f)), true, f);
+      assert.equal(looksLikePrivateKey(`﻿notes\r\n${text(f).replace(/\n/g, '\r\n')}`), true, `${f} with a BOM, CRLF and text around it`);
+    }
+    const legacy = '-----BEGIN RSA ' + 'PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\nAAAA\n';
+    assert.equal(looksLikePrivateKey(legacy), true, 'the start of a legacy encrypted key');
+    assert.equal(looksLikePrivateKey('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----'), true, 'an OpenSSH key');
+    assert.equal(looksLikePrivateKey('AAAA\n-----END PRIVATE KEY-----\n'), true, 'the end of a key only');
+    for (const f of ['bundle_leaf.key', 'bundle_leaf.rsa.key', 'bundle_ec_leaf.key']) {
+      assert.equal(looksLikePrivateKey(text(f).replace(/-----[^-]+-----/g, '')), true, `${f}: bare base64`);
+    }
+  });
+
+  test('a CSR, a certificate, a public key or text is none', () => {
+    for (const f of ['bundle_leaf.csr', 'bundle_ec_leaf.csr', 'bundle_leaf.pem']) assert.equal(looksLikePrivateKey(text(f)), false, f);
+    assert.equal(looksLikePrivateKey(read('test_csr.der').toString('base64')), false, 'a CSR’s bare base64');
+    assert.equal(looksLikePrivateKey(text('bundle_leaf.pem').replace(/-----[^-]+-----/g, '')), false, 'a certificate’s bare base64');
+    assert.equal(looksLikePrivateKey('-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----'), false);
+    for (const v of ['', '   ', 'MIIE', 'hello world', null, undefined]) assert.equal(looksLikePrivateKey(v), false, String(v));
   });
 });
 

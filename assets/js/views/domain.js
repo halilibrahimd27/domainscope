@@ -16,9 +16,9 @@
  * Nothing is sent until "Build overview" is pressed: a route (a shared link, a carried target,
  * `run=0` or not) only fills the box and says so. The cards fill as their lookups land; a lookup
  * that failed shows "⚠ n/a" with the reason and a Retry that asks only that card's failed
- * lookups again (past the DNS cache). A stopped build keeps what landed, and each unfinished card
- * offers to look it up. The CT lookup is one Cert Spotter request (crt.sh when Cert Spotter
- * cannot answer), only on its button.
+ * lookups again (past the DNS cache), at once, even while the rest of the build still runs. A
+ * stopped build keeps what landed, and each unfinished card offers to look it up. The CT lookup
+ * is one Cert Spotter request (crt.sh when Cert Spotter cannot answer), only on its button.
  *
  * "Copy summary" (lib/summary.js domainSummary) and the print stylesheet work on the finished
  * overview. It is kept for the page session (`result()` / `snapshot()`), so coming back shows it
@@ -516,6 +516,14 @@ export function mount(container, ctx) {
     return btn;
   }
 
+  /** What the keyboard focus is on inside a card, to find it again in the card drawn next. */
+  function focusKey(el, card) {
+    if (el === card) return null;
+    if (el.dataset.action) return `[data-action="${CSS.escape(el.dataset.action)}"]`;
+    if (el.dataset.open) return `[data-open="${CSS.escape(el.dataset.open)}"]`;
+    return null;
+  }
+
   function renderCard(cardId, cards = cardsOf()) {
     const slot = slots[cardId];
     const card = cards[cardId];
@@ -539,6 +547,7 @@ export function mount(container, ctx) {
           h('p', { class: 'dov-updating muted text-sm', attrs: { 'aria-busy': 'true' } }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('dov.updating')),
           body);
       }
+      // Offered as soon as the card is complete, while the rest of the build may still run.
       if (card.retry.length) actions.push(retryButton(card, card.retry));
     }
     if (current) actions.push(openLink(cardId, current.domain));
@@ -551,8 +560,18 @@ export function mount(container, ctx) {
     });
     el.dataset.state = card.state === 'pending' && !running ? 'stopped' : card.state;
     el.dataset.failed = card.failures.length ? card.failures.map((f) => f.lookup).join(' ') : '';
+    // A card redrawn under the keyboard focus (another of its lookups landed, a Retry ended) keeps
+    // it: on the same control when the new card has one, else on the card itself.
+    const old = slot.firstElementChild;
+    const focused = old && old.contains(document.activeElement) ? document.activeElement : null;
+    const key = focused ? focusKey(focused, old) : null;
     clear(slot);
     slot.append(el);
+    if (focused) {
+      const target = (key && el.querySelector(key)) || el;
+      if (target === el) el.setAttribute('tabindex', '-1');
+      target.focus({ preventScroll: true });
+    }
   }
 
   /** What a stopped card can still show: nothing but the failures of what landed. */
@@ -929,7 +948,7 @@ export function mount(container, ctx) {
     const controller = new AbortController();
     const state = {
       domain, host, raw: { domain }, controller, at: null, stopped: false,
-      retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null
+      retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null, healthStale: false
     };
     current = state;
     setShareAction();
@@ -952,6 +971,11 @@ export function mount(container, ctx) {
           done += 1;
           progress.set(done, PASSPORT_LOOKUPS.length);
           renderCards(cardsOfLookup(lookup));
+          // A Retry replaced an answer this health run had read: it runs again on the new one.
+          if (lookup === 'health' && state.healthStale) {
+            state.healthStale = false;
+            refreshHealth(state);
+          }
         }
       });
       if (current !== state) return;
@@ -988,11 +1012,13 @@ export function mount(container, ctx) {
 
   /**
    * A card's Retry (or, after a stop, its Look up): only those lookups again, past the DNS
-   * cache. The content stays until the answers land; the keyboard focus stays on the card.
+   * cache. The content stays until the answers land; the keyboard focus stays on the card. It
+   * runs on its own controller, so a Retry pressed while the build still runs asks at once (Stop
+   * ends the build, not the Retry).
    */
   async function retryCard(cardId, lookups, btn) {
     const state = current;
-    if (!state || state.controller || lookups.some((l) => state.retrying.has(l))) return;
+    if (!state || lookups.some((l) => state.retrying.has(l))) return;
     if (!ctx.requireOnline()) return;
     const controller = new AbortController();
     state.retryControllers.add(controller);
@@ -1010,6 +1036,9 @@ export function mount(container, ctx) {
           if (current !== state) return;
           state.raw[lookup] = result;
           state.retrying.delete(lookup);
+          // The build's health run shares the build's answers, the failed one too: once it lands
+          // it runs again (a health result already on screen is refreshed below).
+          if (state.controller && HEALTH_LOOKUPS.includes(lookup) && state.raw.health === undefined) state.healthStale = true;
           renderCards(cardsOfLookup(lookup));
         }
       });
@@ -1024,16 +1053,23 @@ export function mount(container, ctx) {
     // Every card the lookups feed, drawn once more without the busy Retry (after a failure too).
     renderCards(PASSPORT_CARDS.filter((c) => lookups.some((l) => cardsOfLookup(l).includes(c))));
     if (!landed) return;
-    if (state.stopped && PASSPORT_LOOKUPS.every((l) => state.raw[l] !== undefined)) state.stopped = false;
-    state.at = new Date();
-    renderHead();
-    // The keyboard focus stays on the card: its Retry when a lookup still failed, else the card.
+    // While the build runs, it stamps the overview and draws the head when it ends.
+    if (!state.controller) {
+      if (state.stopped && PASSPORT_LOOKUPS.every((l) => state.raw[l] !== undefined)) state.stopped = false;
+      state.at = new Date();
+      renderHead();
+    }
+    // The keyboard focus stays on the card (renderCard kept it there): on its Retry when a lookup
+    // still failed, else on the card; unless it has moved on meanwhile.
     const card = slots[cardId].querySelector('.dov-card');
     const again = card && card.querySelector('[data-action="retry-source"]');
-    if (again) again.focus();
-    else if (card) {
-      card.setAttribute('tabindex', '-1');
-      card.focus({ preventScroll: true });
+    const active = document.activeElement;
+    if (card && (!active || active === document.body || card.contains(active))) {
+      if (again) again.focus();
+      else if (active !== card) {
+        card.setAttribute('tabindex', '-1');
+        card.focus({ preventScroll: true });
+      }
     }
     const failures = cardsOf()[cardId].failures;
     announce(failures.length ? failures.map((f) => statusText(f)).join(' · ') : t('dov.retried', { card: t(`dov.card.${cardId}`) }));
@@ -1089,8 +1125,10 @@ export function mount(container, ctx) {
       if (state.ct === 'running') state.ct = null;
       if (current === state && !ctx.signal.aborted) {
         renderCard('certs');
+        // The button pressed was redrawn: the focus goes to the new one, if it was still on the card.
         const again = slots.certs.querySelector('[data-action="dov-ct"], [data-action="dov-ct-retry"]');
-        if (again && btn && !btn.isConnected) again.focus();
+        const active = document.activeElement;
+        if (again && btn && !btn.isConnected && (!active || active === document.body || slots.certs.contains(active))) again.focus();
       }
     }
   }

@@ -75,6 +75,13 @@ const ZONE = {
     TXT: [['v=spf1 -all']]
   },
   'www.example-test.com.tr': { A: ['203.0.113.80'] },
+  // built only by the mid-build Retry step, so none of its answers is in the resolver's cache yet
+  'example.net': {
+    SOA: [{ mname: 'adam.ns.cloudflare.com', rname: 'dns.cloudflare.com', serial: 2026092802, refresh: 10000, retry: 2400, expire: 604800, minimum: 1800 }],
+    NS: ['adam.ns.cloudflare.com', 'bella.ns.cloudflare.com'],
+    A: ['104.16.1.1'],
+    TXT: [['v=spf1 -all']]
+  },
   'mx.yaanimail.com': { A: ['203.0.113.90'] }
 };
 const SIGNED = ['example.com'];
@@ -89,6 +96,7 @@ const RDAP = {
     secureDNS: { delegationSigned: true }
   }
 };
+RDAP['example.net'] = { ...RDAP['example.com'], ldhName: 'EXAMPLE.NET', nameservers: RDAP['example.com'].nameservers, secureDNS: { delegationSigned: false } };
 
 /** Cert Spotter's current issuances of example.com: Let's Encrypt (CAA allows it) and Sectigo (it does not). */
 const issuance = (id, dn, friendly, caa) => ({
@@ -113,6 +121,8 @@ const fakeScript = () => `(() => {
   window.__ctLog = [];
   window.__rcodes = {};
   window.__rdapStatus = 200;
+  window.__rdapGate = null;
+  window.__dnsHold = {};
   window.__dnsDelay = 0;
   let wire = null;
   const realFetch = window.fetch.bind(window);
@@ -126,6 +136,8 @@ const fakeScript = () => `(() => {
     if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [[['com', 'net', 'org'], ['https://rdap.example.net/']]] });
     if (url.startsWith('https://rdap.example.net/') || url.startsWith('https://rdap.org/')) {
       window.__rdapLog.push(url);
+      // a promise the test resolves: the registry answers only then
+      if (window.__rdapGate) await window.__rdapGate;
       if (window.__rdapStatus !== 200) return json({ errorCode: window.__rdapStatus }, window.__rdapStatus);
       const name = decodeURIComponent(url.split('/domain/')[1] || '');
       return RDAP[name] ? json(RDAP[name]) : json({ errorCode: 404 }, 404);
@@ -139,6 +151,8 @@ const fakeScript = () => `(() => {
     const qname = String(q.name).toLowerCase().replace(/[.]$/, '');
     window.__dnsLog.push({ name: qname, type: q.type });
     if (window.__dnsDelay) await wait(window.__dnsDelay, init?.signal);
+    // a question held back until the test resolves its promise
+    if (window.__dnsHold[qname + '|' + q.type]) await window.__dnsHold[qname + '|' + q.type];
     const forced = window.__rcodes[qname + '|' + q.type];
     const answers = [];
     let rcode = forced || 'NOERROR';
@@ -385,6 +399,45 @@ async function main() {
       assert(/Natro/.test(await text(page, '.dov-card-dns')), 'Natro');
       assert(/Yaani Mail/.test(await text(page, '.dov-card-mail')), 'Yaani');
       await shot(page, opts, 'domain-tr-desktop-light-en');
+    });
+
+    await run.step('a Retry pressed while the build still runs asks again at once; the health checks follow the new answer', async () => {
+      try {
+        // RDAP and one question only the health run asks are held back, so the Retry lands first.
+        await page.evaluate(() => {
+          window.__rcodes['example.net|NS'] = 'SERVFAIL';
+          window.__rdapGate = new Promise((resolve) => { window.__openRdap = resolve; });
+          window.__dnsHold['_smtp._tls.example.net|TXT'] = new Promise((resolve) => { window.__openHealth = resolve; });
+        });
+        await page.type('[data-role="dov-name"]', 'example.net');
+        await page.click('[data-action="dov-run"]');
+        // The DNS card is complete with NS failed while the registry holds its answer back.
+        await page.waitFor(() => document.querySelector('.dov-card-dns')?.dataset.failed === 'ns'
+          && !!document.querySelector('.dov-card-dns [data-action="retry-source"]'), { message: 'DNS card with its Retry' });
+        assert(await page.evaluate(() => !document.querySelector('[data-action="dov-stop"]').hidden), 'the build still runs');
+        const nsAsked = () => page.evaluate(() => window.__dnsLog.filter((q) => q.name === 'example.net' && q.type === 'NS').length);
+        const before = await nsAsked();
+        await page.evaluate(() => { delete window.__rcodes['example.net|NS']; });
+        await page.click('.dov-card-dns [data-action="retry-source"]');
+        await page.waitFor(() => document.querySelector('.dov-card-dns')?.dataset.failed === '' && /Cloudflare/.test(document.querySelector('.dov-card-dns').textContent),
+          { message: 'DNS card filled during the build' });
+        assertEqual(await nsAsked() - before, 1, 'NS asked again at once');
+        assert(await page.evaluate(() => !document.querySelector('[data-action="dov-stop"]').hidden), 'before the build ended');
+        // The build's health run lands now, made on the SERVFAIL it shares with the build.
+        await page.evaluate(() => { delete window.__dnsHold['_smtp._tls.example.net|TXT']; window.__openHealth(); window.__openRdap(); });
+        await waitBuilt(page, 'the build ends');
+        assertEqual(await page.evaluate(() => document.querySelector('.dov-card-dns').dataset.failed), '', 'the DNS card keeps the retried answer');
+        // It runs again on the retried answer.
+        await page.waitFor(() => !document.querySelector('.dov-card-health .dov-updating') && !!document.querySelector('.dov-score')
+          && !document.querySelector('.dov-problem[data-id="ns.error"]'), { timeout: 15000, message: 'health follows the retried NS' });
+      } finally {
+        // the registry answers again, whatever happened above
+        await page.evaluate(() => {
+          window.__dnsHold = {};
+          for (const open of [window.__openHealth, window.__openRdap]) if (open) open();
+          window.__rdapGate = null;
+        });
+      }
     });
 
     run.group('Phone 375 and 320 px, Turkish / English, light / dark');

@@ -10,6 +10,12 @@
  * - Another tab deleting the database ("Delete all local data") fires `versionchange` here: the
  *   connection closes at once so the deletion is not blocked, and the next access opens it again.
  * - `destroy()` closes this tab's connection and deletes the whole database.
+ * - A write's guard (lib/workspace.js WriteGuard) reads its record and writes it back in the
+ *   write's own transaction, from the read's success callback (a transaction stays open only
+ *   while its callbacks place new requests).
+ * - Its own errors (not the browser's) carry a `code` the page words itself (ui/workspace-ui.js
+ *   storageErrorText): 'idb-timeout' (the database did not open in time), 'idb-blocked' (another
+ *   tab kept the deletion waiting).
  */
 
 /** The database's name (the app's 'ssds.' namespace, as in localStorage). */
@@ -17,6 +23,13 @@ export const WORKSPACE_DB_NAME = 'ssds.workspaces';
 const STORE = 'records';
 const DB_VERSION = 1;
 const TIMEOUT_MS = 5000;
+
+/** An error of this backend, with its `code` (see above). */
+function backendError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
 
 /** A request as a promise. */
 function done(request) {
@@ -66,7 +79,7 @@ export function createIdbBackend({ indexedDB: factory = undefined, name = WORKSP
       let request;
       const timer = setTimeout(() => {
         settled = true;
-        reject(new Error('IndexedDB did not open in time'));
+        reject(backendError('idb-timeout', 'IndexedDB did not open in time'));
       }, timeoutMs);
       try {
         request = idb.open(name, DB_VERSION);
@@ -158,13 +171,31 @@ export function createIdbBackend({ indexedDB: factory = undefined, name = WORKSP
       return keys.map((k, i) => [String(k), values[i]]);
     },
 
-    async write(puts = [], deletes = []) {
+    async write(puts = [], deletes = [], { guard = null } = {}) {
       const tx = await transaction('readwrite');
       const end = finished(tx);
       const store = tx.objectStore(STORE);
-      for (const k of deletes) store.delete(k);
-      for (const [k, v] of puts) store.put(v, k);
+      const apply = () => {
+        for (const k of deletes) store.delete(k);
+        for (const [k, v] of puts) store.put(v, k);
+      };
+      let written = true;
+      if (!guard) {
+        apply();
+      } else {
+        const request = store.get(guard.key);
+        request.onsuccess = () => {
+          const next = guard.update(request.result);
+          if (next === undefined) {
+            written = false; // nothing to write: the transaction ends empty
+            return;
+          }
+          apply();
+          store.put(next, guard.key);
+        };
+      }
       await end;
+      return written;
     },
 
     async destroy() {
@@ -177,7 +208,7 @@ export function createIdbBackend({ indexedDB: factory = undefined, name = WORKSP
         connection = null;
       }
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('IndexedDB deletion is blocked by another tab')), timeoutMs);
+        const timer = setTimeout(() => reject(backendError('idb-blocked', 'IndexedDB deletion is blocked by another tab')), timeoutMs);
         const request = idb.deleteDatabase(name);
         request.onsuccess = () => {
           clearTimeout(timer);

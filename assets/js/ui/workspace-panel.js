@@ -331,7 +331,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     for (const ws of state.workspaces) {
       const name = workspaceLabel(ws);
       const active = ws.id === activeId;
-      const li = h('li', { class: ['ws-item', { 'is-active': active }], dataset: { wsId: ws.id, active: active ? '1' : '0' }, attrs: { tabindex: -1 } });
+      const li = h('li', { class: ['ws-item', { 'is-active': active, 'is-undated': !ws.updatedAt }], dataset: { wsId: ws.id, active: active ? '1' : '0' }, attrs: { tabindex: -1 } });
       if (renaming === ws.id) {
         const field = textInput({
           label: t('ws.renameLabel', { name }),
@@ -371,7 +371,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         h('div', { class: 'ws-item-main' },
           h('span', { class: 'ws-item-name' }, Icon('briefcase', { size: 15 }), h('span', { class: 'ws-item-label' }, name)),
           active ? Badge(t('ws.active'), { variant: 'ok', icon: 'check', className: 'ws-item-badge' }) : null,
-          h('span', { class: 'ws-item-meta' }, t('ws.updated', { when: formatRelative(new Date(ws.updatedAt)) }))),
+          // Default nothing was written to yet has no date: it never changed.
+          ws.updatedAt ? h('span', { class: 'ws-item-meta' }, t('ws.updated', { when: formatRelative(new Date(ws.updatedAt)) })) : null),
         actions);
       listEl.append(li);
     }

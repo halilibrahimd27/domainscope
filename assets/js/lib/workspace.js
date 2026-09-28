@@ -81,7 +81,8 @@ const slotKey = (id, part) => `${id}\n${part}`;
 
 /**
  * A refused workspace operation. `code`: 'name-empty' | 'name-taken' | 'default' (Default cannot
- * be renamed or deleted) | 'not-found' | 'limit' (too many workspaces) | 'part' (unknown part).
+ * be renamed or deleted) | 'not-found' (also the `lastError` of a write that found its workspace
+ * deleted in another tab) | 'limit' (too many workspaces) | 'part' (unknown part).
  */
 export class WorkspaceError extends Error {
   /**
@@ -389,8 +390,17 @@ function removeLegacy({ local = null, session = null } = {}, present) {
  *   false lets the store start empty without creating it
  * @property {(keys: string[]) => Promise<any[]>} get  values in key order (undefined: missing)
  * @property {(prefix: string) => Promise<Array<[string, any]>>} list  every record under a key prefix
- * @property {(puts: Array<[string, any]>, deletes?: string[]) => Promise<void>} write  one atomic transaction
+ * @property {(puts: Array<[string, any]>, deletes?: string[], opts?: { guard?: WriteGuard|null }) => Promise<boolean>} write
+ *   one atomic transaction; false when its guard wrote nothing
  * @property {() => Promise<void>} destroy  delete everything (IndexedDB: the whole database)
+ */
+
+/**
+ * A record read and written back in the same transaction as a write, so the write never works
+ * from another tab's stale copy of it: `update(stored)` gets the stored value (undefined: none)
+ * and returns the value to store, or undefined to write nothing at all (the puts and deletes
+ * included).
+ * @typedef {{ key: string, update: (stored: any) => any }} WriteGuard
  */
 
 /**
@@ -426,10 +436,17 @@ export function createMemoryBackend(entries = [], { persistent = false, exists =
       check('list');
       return [...map].filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k, copy(v)]);
     },
-    async write(puts = [], deletes = []) {
+    async write(puts = [], deletes = [], { guard = null } = {}) {
       check('write');
+      let next;
+      if (guard) {
+        next = guard.update(map.has(guard.key) ? copy(map.get(guard.key)) : undefined);
+        if (next === undefined) return false;
+      }
       for (const k of deletes) map.delete(k);
       for (const [k, v] of puts) map.set(k, copy(v));
+      if (guard) map.set(guard.key, copy(next));
+      return true;
     },
     async destroy() {
       check('destroy');
@@ -447,8 +464,8 @@ export function createMemoryBackend(entries = [], { persistent = false, exists =
  * @typedef {object} WorkspaceMeta
  * @property {string} id
  * @property {string|null} name   null for Default (the UI names it in the page's language)
- * @property {string} createdAt   ISO
- * @property {string} updatedAt   ISO (the last write to any of its parts)
+ * @property {string|null} createdAt   ISO; null only for a Default nothing was ever written to
+ * @property {string|null} updatedAt   ISO (the last write to any of its parts); null as createdAt
  */
 
 /** A stored meta record, checked; null when it is not one. */
@@ -518,8 +535,11 @@ export function createWorkspaceStore({
   const slots = new Map();
   /** Bumped by "Delete all local data": a save from before it is never written after it. */
   let generation = 0;
+  /** The parts (slot keys) whose last write failed: saving the same value again retries it. */
+  const unwritten = new Set();
 
-  const defaultMeta = (at) => ({ id: DEFAULT_WORKSPACE_ID, name: null, createdAt: isoOrNull(at), updatedAt: isoOrNull(at) });
+  /** Default before anything is written to it: no dates (it was neither created nor changed yet). */
+  const defaultMeta = () => ({ id: DEFAULT_WORKSPACE_ID, name: null, createdAt: null, updatedAt: null });
   const metaCopy = (m) => ({ ...m });
 
   function emit(event) {
@@ -567,7 +587,7 @@ export function createWorkspaceStore({
       const meta = sanitizeMeta(value);
       if (meta) next.set(meta.id, meta);
     }
-    if (!next.has(DEFAULT_WORKSPACE_ID)) next.set(DEFAULT_WORKSPACE_ID, metas.get(DEFAULT_WORKSPACE_ID) || defaultMeta(now()));
+    if (!next.has(DEFAULT_WORKSPACE_ID)) next.set(DEFAULT_WORKSPACE_ID, metas.get(DEFAULT_WORKSPACE_ID) || defaultMeta());
     return next;
   }
 
@@ -602,31 +622,50 @@ export function createWorkspaceStore({
   }
 
   /**
-   * Write parts of workspace `id` (empty values delete their record) and its meta with a new
-   * `updatedAt`, in one transaction; tell the other tabs. Never throws.
+   * Write parts of workspace `id` (empty values delete their record) and a new `updatedAt` on its
+   * meta, in one transaction; tell the other tabs. Never throws.
+   *
+   * The meta is read and written back inside that transaction ({@link WriteGuard}), never from
+   * this tab's memory: a write never undoes a rename another tab made meanwhile, and a workspace
+   * another tab deleted is not written at all (it would come back; `lastError` 'not-found').
+   * `create`: a new workspace, whose meta is written as this tab has it; `name`: a rename.
    * @returns {Promise<boolean>} written
    */
-  function persist(id, parts, { list = false } = {}) {
+  function persist(id, parts, { list = false, create = false, name = null } = {}) {
     const at = isoOrNull(now());
-    const meta = { ...(metas.get(id) || defaultMeta(at)), updatedAt: at };
-    metas.set(id, meta);
-    const puts = [[metaKey(id), meta]];
+    const mine = metas.get(id);
+    if (mine) metas.set(id, { ...mine, createdAt: mine.createdAt || at, updatedAt: at });
+    const puts = create ? [[metaKey(id), metas.get(id)]] : [];
     const deletes = [];
     for (const [part, value] of Object.entries(parts)) {
       if (isEmptyPart(value)) deletes.push(dataKey(id, part));
       else puts.push([dataKey(id, part), value]);
     }
     if (!initialised) puts.push([META_KEY, { v: STORE_VERSION, createdAt: at, migrated: [] }]);
+    const guard = create ? null : {
+      key: metaKey(id),
+      update: (stored) => {
+        // Default always exists: its first write stores its meta.
+        const base = sanitizeMeta(stored) || (id === DEFAULT_WORKSPACE_ID ? defaultMeta() : null);
+        if (!base) return undefined;
+        return { ...base, ...(name ? { name } : {}), createdAt: base.createdAt || at, updatedAt: at };
+      }
+    };
+    const written = Object.keys(parts).map((part) => slotKey(id, part));
     return track((async () => {
       try {
-        await db.write(puts, deletes);
+        if ((await db.write(puts, deletes, { guard })) === false) {
+          throw new WorkspaceError('not-found', 'the workspace was deleted in another tab');
+        }
         initialised = true;
         lastError = null;
+        for (const key of written) unwritten.delete(key);
         if (id === DEFAULT_WORKSPACE_ID && pendingLegacy) pendingLegacy = null;
         post(list ? { type: 'list' } : { type: 'data', id, parts: Object.keys(parts) });
         return true;
       } catch (err) {
         lastError = err;
+        for (const key of written) unwritten.add(key);
         return false;
       }
     })());
@@ -673,11 +712,11 @@ export function createWorkspaceStore({
     try {
       exists = await db.exists();
       if (exists !== false) [meta] = await db.get([META_KEY]);
-      metas = exists === false ? new Map([[DEFAULT_WORKSPACE_ID, defaultMeta(at)]]) : await readMetas();
+      metas = exists === false ? new Map([[DEFAULT_WORKSPACE_ID, defaultMeta()]]) : await readMetas();
     } catch (err) {
       degrade(err);
       meta = undefined;
-      metas = new Map([[DEFAULT_WORKSPACE_ID, defaultMeta(at)]]);
+      metas = new Map([[DEFAULT_WORKSPACE_ID, defaultMeta()]]);
     }
     initialised = !!meta;
     let migrated = [];
@@ -685,11 +724,14 @@ export function createWorkspaceStore({
       const old = readLegacyData(legacy || {});
       migrated = Object.keys(old.data);
       if (old.present.length) {
-        const def = metas.get(DEFAULT_WORKSPACE_ID);
-        const puts = [[metaKey(DEFAULT_WORKSPACE_ID), def], [META_KEY, { v: STORE_VERSION, createdAt: isoOrNull(at), migrated }]];
+        const stamp = isoOrNull(at);
+        const known = metas.get(DEFAULT_WORKSPACE_ID);
+        const def = { ...known, createdAt: known.createdAt || stamp, updatedAt: stamp };
+        const puts = [[metaKey(DEFAULT_WORKSPACE_ID), def], [META_KEY, { v: STORE_VERSION, createdAt: stamp, migrated }]];
         for (const [part, value] of Object.entries(old.data)) puts.push([dataKey(DEFAULT_WORKSPACE_ID, part), value]);
         try {
           await db.write(puts, []);
+          metas.set(DEFAULT_WORKSPACE_ID, def);
           initialised = true;
           // Committed: the old keys can go. In memory they stay, so the next load migrates again.
           if (persistent) removeLegacy(legacy || {}, old.present);
@@ -749,13 +791,14 @@ export function createWorkspaceStore({
 
   /** Memory back to a fresh store: Default only, empty. */
   function reset() {
-    metas = new Map([[DEFAULT_WORKSPACE_ID, defaultMeta(now())]]);
+    metas = new Map([[DEFAULT_WORKSPACE_ID, defaultMeta()]]);
     activeId = DEFAULT_WORKSPACE_ID;
     data = emptyWorkspaceData();
     initialised = false;
     pendingLegacy = null;
     generation += 1;
     slots.clear();
+    unwritten.clear();
   }
 
   function requireNamed(id) {
@@ -788,7 +831,7 @@ export function createWorkspaceStore({
     },
 
     get active() {
-      return metaCopy(metas.get(activeId) || defaultMeta(now()));
+      return metaCopy(metas.get(activeId) || defaultMeta());
     },
 
     get data() {
@@ -804,8 +847,16 @@ export function createWorkspaceStore({
 
     async save(part, value) {
       const clean = sanitizePart(part, value);
-      if (sameValue(data[part], clean)) return true;
-      data = { ...data, [part]: clean };
+      const key = slotKey(activeId, part);
+      if (sameValue(data[part], clean)) {
+        // Nothing new: its write is done or on its way — unless the last write of this value
+        // failed (a full disk), which saving it again retries.
+        const slot = slots.get(key);
+        if (slot && slot.pending && slot.gen === generation) return slot.pending;
+        if (!unwritten.has(key)) return true;
+      } else {
+        data = { ...data, [part]: clean };
+      }
       return schedule(activeId, part, clean);
     },
 
@@ -831,7 +882,7 @@ export function createWorkspaceStore({
       while (metas.has(id) || !/^[a-z0-9-]{1,64}$/.test(id)) id = newId();
       const meta = { id, name: clean, createdAt: at, updatedAt: at };
       metas.set(id, meta);
-      const persisted = await persist(id, parts ? sanitizeWorkspaceData(parts) : {}, { list: true });
+      const persisted = await persist(id, parts ? sanitizeWorkspaceData(parts) : {}, { list: true, create: true });
       return { meta: metaCopy(metas.get(id)), persisted };
     },
 
@@ -839,7 +890,7 @@ export function createWorkspaceStore({
       requireNamed(id);
       const clean = checkName(name, id);
       metas.set(id, { ...metas.get(id), name: clean });
-      const persisted = await persist(id, {}, { list: true });
+      const persisted = await persist(id, {}, { list: true, name: clean });
       return { meta: metaCopy(metas.get(id)), persisted };
     },
 
@@ -851,6 +902,7 @@ export function createWorkspaceStore({
         const slot = slots.get(slotKey(id, part));
         if (slot) slot.gen = -1;
         slots.delete(slotKey(id, part));
+        unwritten.delete(slotKey(id, part));
       }
       let persisted = true;
       try {

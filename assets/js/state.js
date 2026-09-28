@@ -195,8 +195,8 @@ function emptyInventory() {
  * @property {string} id
  * @property {string|null} name  null for Default (the UI names it in the page's language)
  * @property {boolean} isDefault
- * @property {string} createdAt
- * @property {string} updatedAt
+ * @property {string|null} createdAt  null (as updatedAt) only for a Default nothing was written to yet
+ * @property {string|null} updatedAt
  */
 
 /**

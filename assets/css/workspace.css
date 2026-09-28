@@ -312,6 +312,11 @@
     align-items: flex-start;
   }
 
+  /* One line only (a Default nothing was written to): centred like on a wide screen. */
+  .ws-item.is-undated {
+    align-items: center;
+  }
+
   .ws-item-actions {
     margin-top: 2px;
   }

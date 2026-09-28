@@ -251,6 +251,29 @@ describe('the store', () => {
     assert.equal(backend.entries().find(([k]) => k === 'meta')[1].v, STORE_VERSION);
   });
 
+  test('Default has no dates until something is written to it (the dialog shows no "changed" for it)', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    const opened = await store.open();
+    assert.deepEqual([opened.active.createdAt, opened.active.updatedAt], [null, null]);
+    // Another workspace written, Default not: a new page still gives Default no made-up date.
+    await store.create('Acme');
+    const later = makeStore({ backend });
+    await later.open();
+    assert.deepEqual([later.active.createdAt, later.active.updatedAt], [null, null]);
+    assert.equal(later.list()[1].name, 'Acme');
+    assert.ok(later.list()[1].updatedAt, 'a named workspace always has its dates');
+    // The first write to Default gives it both, stored.
+    await store.save('notes', 'first');
+    const stored = new Map(backend.entries()).get('wsmeta/default');
+    assert.ok(stored.createdAt && stored.updatedAt);
+    assert.deepEqual([store.active.createdAt, store.active.updatedAt], [stored.createdAt, stored.updatedAt]);
+    // The first-run migration is a write too.
+    const legacy = { local: new MemoryStorage({ [LEGACY_KEYS.learned]: JSON.stringify({ v: 1, seq: 1, labels: { api: [1, 1] } }) }) };
+    const migratedStore = makeStore({ backend: createMemoryBackend([], { persistent: true }), legacy });
+    assert.ok((await migratedStore.open()).active.updatedAt);
+  });
+
   test('two customers keep separate inventories: the same address in both is no DUPLICATE_IP', async () => {
     const store = makeStore();
     await store.open();
@@ -365,13 +388,38 @@ describe('the store', () => {
     assert.equal(writes, 2, 'empty was empty already');
   });
 
+  test('saving the same value again retries a write that failed; a value written already is not written again', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    let writes = 0;
+    const write = backend.write;
+    backend.write = async (...args) => {
+      writes += 1;
+      return write(...args);
+    };
+    const store = makeStore({ backend });
+    await store.open();
+    backend.fail.add('write');
+    assert.equal(await store.save('expectedCas', ["Let's Encrypt"]), false, 'a full disk');
+    backend.fail.delete('write');
+    assert.equal(await store.save('expectedCas', ["Let's Encrypt"]), true, 'the same value, written this time');
+    assert.deepEqual(new Map(backend.entries()).get('wsdata/default/expectedCas'), ["Let's Encrypt"]);
+    const before = writes;
+    assert.equal(await store.save('expectedCas', ["Let's Encrypt"]), true);
+    assert.equal(writes, before, 'nothing new: no write');
+    // A save of the value a write is busy with shares that write's result.
+    backend.fail.add('write');
+    const first = store.save('notes', 'n');
+    const again = store.save('notes', 'n');
+    assert.deepEqual(await Promise.all([first, again]), [false, false]);
+  });
+
   test('a burst of saves writes once, the latest value; idle() waits for every write', async () => {
     const backend = createMemoryBackend([], { persistent: true });
     const written = [];
     const write = backend.write;
-    backend.write = async (puts, deletes) => {
+    backend.write = async (puts, ...rest) => {
       written.push(puts.filter(([k]) => k.startsWith('wsdata/')).map(([, v]) => v));
-      return write(puts, deletes);
+      return write(puts, ...rest);
     };
     const store = makeStore({ backend });
     await store.open();
@@ -680,6 +728,42 @@ describe('several tabs', () => {
     await flush();
     assert.equal(events.at(-1).type, 'destroyed');
     assert.equal(tab2.data.notes, '');
+  });
+
+  test('a write from a tab that has not heard of a rename or a deletion yet never undoes it', async () => {
+    // Two tabs whose messages have not arrived yet (no channel): tab 1 keeps the old list.
+    const backend = createMemoryBackend([], { persistent: true });
+    const tab1 = makeStore({ backend });
+    const tab2 = makeStore({ backend });
+    await tab1.open();
+    const { meta } = await tab1.create('Acme');
+    await tab2.open();
+    await tab1.switchTo(meta.id);
+    await tab2.rename(meta.id, 'Acme Corp');
+    assert.equal(tab1.active.name, 'Acme', 'tab 1 still has the old name');
+    assert.equal(await tab1.save('notes', 'typed in tab 1'), true);
+    const record = () => new Map(backend.entries()).get(`wsmeta/${meta.id}`);
+    assert.equal(record().name, 'Acme Corp', 'the rename stands');
+    assert.equal(new Map(backend.entries()).get(`wsdata/${meta.id}/notes`), 'typed in tab 1');
+
+    await tab2.remove(meta.id);
+    assert.equal(await tab1.save('notes', 'still typing'), false);
+    assert.equal(tab1.lastError.code, 'not-found');
+    assert.deepEqual(backend.entries().filter(([k]) => k.includes(meta.id)), [], 'the workspace does not come back');
+    // A rename from the stale tab does not bring it back either.
+    assert.equal((await tab1.rename(meta.id, 'Acme Again')).persisted, false);
+    assert.equal(record(), undefined);
+  });
+
+  test('createMemoryBackend: a guarded write reads and writes its record with the others, or writes nothing', async () => {
+    const backend = createMemoryBackend([['m', { n: 1 }]]);
+    const bump = { key: 'm', update: (m) => ({ n: m.n + 1 }) };
+    assert.equal(await backend.write([['a', 1]], [], { guard: bump }), true);
+    assert.deepEqual(backend.entries(), [['m', { n: 2 }], ['a', 1]]);
+    const none = { key: 'gone', update: (v) => (v === undefined ? undefined : v) };
+    assert.equal(await backend.write([['b', 2]], ['a'], { guard: none }), false);
+    assert.deepEqual(backend.entries(), [['m', { n: 2 }], ['a', 1]], 'nothing written, nothing deleted');
+    assert.equal(await backend.write([['b', 2]]), true, 'no guard: a plain write');
   });
 
   test('a memory-only store tells no other tab anything', async () => {

@@ -931,6 +931,8 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
  * @property {number|null} compliance pass / messages, null without messages
  * @property {Record<string, { sources: number, messages: number, pass: number }>} byClass per {@link SOURCE_CLASSES}
  * @property {string} verdict one of {@link DMARC_VERDICTS}
+ * @property {boolean} enforced `p=reject` at 100 % and not in test mode: receivers refuse what fails now (with
+ *   `spf-broken`, the mail that passed through SPF alone; with `enforced`, the blockers' failing mail)
  * @property {Array<SourceRow & ClassifiedSource>} blockers the known sources (yours, third parties) that fail DMARC,
  *   the most failing messages first: what must be fixed before `p=reject`
  * @property {number} blocked messages of theirs that fail
@@ -948,8 +950,8 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
  * The headline of one domain's reports. The verdict: `no-mail` (no message in the reports),
  * `enforced` (`p=reject` at 100 % and not in test mode: any blocker is mail rejected now),
  * `fix-first` (known sources fail), `spf-broken` (none fails in these reports, but some passed
- * through SPF alone and the current SPF gives them a permerror) or `ready` (every known source
- * passes: only unknown senders would be turned away).
+ * through SPF alone and the current SPF gives them a permerror: with `enforced`, that mail is
+ * refused now) or `ready` (every known source passes: only unknown senders would be turned away).
  * @param {DomainAggregate} agg
  * @param {Array<SourceRow & ClassifiedSource>} rows from {@link classifySources}
  * @param {{ spfChecked?: boolean }} [opts] `spfChecked`: false adds the `spf-unknown` note
@@ -1002,6 +1004,7 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
     compliance: agg.messages ? agg.pass / agg.messages : null,
     byClass,
     verdict,
+    enforced,
     blockers,
     blocked: blockers.reduce((n, r) => n + r.fail, 0),
     atRisk,

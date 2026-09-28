@@ -18,12 +18,12 @@ const REPORTS_MAX_TLS_TYPES = 3;
 
 /**
  * DMARC & TLS reports: the DMARC compliance with the policy and what the reports cover, whether
- * `p=reject` can come, the known sources to fix first (≤ 2: address, class, failing messages — or
+ * `p=reject` can come (or, in force, what it refuses now), the known sources to fix first (≤ 2: address, class, failing messages — or
  * those that passed through SPF alone while the SPF record gives a permerror —, the first fix),
  * the unknown senders, whether the classes rest on the current SPF and the permerror it gives,
  * the TLS-RPT success rate and failure types, and the files that could not be read. Never a
  * server's name: a source of the list is "your server". A share has one decimal, as the page says it.
- * @param {{ domain: string, dmarc?: { overview: { compliance: number|null, messages: number, verdict: string,
+ * @param {{ domain: string, dmarc?: { overview: { compliance: number|null, messages: number, verdict: string, enforced?: boolean,
  *   blockers: Array<{ ip: string, cls: string, reason: string, detail: string|null, fail: number, fixes: string[] }>, blocked: number,
  *   atRisk?: Array<{ ip: string, cls: string, reason: string, detail: string|null, atRisk: number, fixes: string[] }>, atRiskMessages?: number,
  *   spfError?: { reason: string, sources: number }|null, unknown: Array<object>, unknownFail: number },
@@ -50,7 +50,8 @@ export function reportsSummary(facts, opts) {
     const atRisk = o.atRisk || [];
     if (o.verdict === 'fix-first') lines.push([t('sum.rpt.verdict.fix-first', { count: blockers.length, messages: o.blocked })]);
     else if (o.verdict === 'enforced') lines.push([blockers.length ? t('sum.rpt.verdict.enforcedLosing', { count: blockers.length, messages: o.blocked }) : t('sum.rpt.verdict.enforced')]);
-    else if (o.verdict === 'spf-broken') lines.push([t('sum.rpt.verdict.spf-broken', { count: atRisk.length, messages: o.atRiskMessages || 0 })]);
+    // p=reject in force while the SPF record errs: the mail that passed through SPF alone is refused now.
+    else if (o.verdict === 'spf-broken') lines.push([t(o.enforced ? 'sum.rpt.verdict.enforcedSpfBroken' : 'sum.rpt.verdict.spf-broken', { count: atRisk.length, messages: o.atRiskMessages || 0 })]);
     else if (o.verdict === 'ready') lines.push([t('sum.rpt.verdict.ready')]);
     const toFix = [...blockers, ...atRisk];
     for (const b of toFix.slice(0, REPORTS_MAX_FIXES)) {
@@ -96,6 +97,8 @@ const STRINGS = [
     'p=reject yürürlükte ve kullandığınız {count} kaynak geçmiyor: {messages} e-postası reddediliyor']],
   ['sum.rpt.verdict.spf-broken', [{ one: 'Not ready for p=reject: the SPF record gives receivers a permanent error, and {count} source you use passed through SPF alone ({messages} messages)', other: 'Not ready for p=reject: the SPF record gives receivers a permanent error, and {count} sources you use passed through SPF alone ({messages} messages)' },
     'p=reject için hazır değil: SPF kaydı alıcılara kalıcı hata veriyor ve kullandığınız {count} kaynak yalnızca SPF ile geçti ({messages} e-posta)']],
+  ['sum.rpt.verdict.enforcedSpfBroken', [{ one: 'p=reject is in force, and the SPF record gives receivers a permanent error: mail of {count} source you use that passed through SPF alone ({messages} messages) is refused now', other: 'p=reject is in force, and the SPF record gives receivers a permanent error: mail of {count} sources you use that passed through SPF alone ({messages} messages) is refused now' },
+    'p=reject yürürlükte ve SPF kaydı alıcılara kalıcı hata veriyor: kullandığınız {count} kaynağın yalnızca SPF ile geçen e-postası artık reddediliyor ({messages} e-posta)']],
   ['sum.rpt.fixFirst', ['Fix first', 'Önce düzeltin']],
   ['sum.rpt.failing', [{ one: '{count} message fails', other: '{count} messages fail' }, '{count} e-posta geçmiyor']],
   ['sum.rpt.spfOnly', [{ one: '{count} message passed through SPF alone', other: '{count} messages passed through SPF alone' }, '{count} e-posta yalnızca SPF ile geçti']],

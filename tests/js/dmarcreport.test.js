@@ -567,6 +567,16 @@ describe('classifySources — yours, authorized third parties, forwarders, unkno
     assert.deepEqual([c.o.blockers.length, c.o.atRisk.map((r) => r.ip), c.o.atRiskMessages], [0, ['203.0.113.25'], 500]);
     assert.deepEqual(c.o.spfError, { domain: 'example.com', reason: 'syntax', sources: 2 });
     assert.deepEqual(c.o.notes, ['spf-permerror']);
+    assert.equal(c.o.enforced, false, 'p=none: that mail fails from now on, nothing refuses it yet');
+    // (d) p=reject in force, and one include too many pushes the domain's own server past the 10th
+    // lookup (a common incident): its mail that passed through SPF alone is refused now
+    const past = { 'example.com': { TXT: [[`v=spf1 ${Array.from({ length: 11 }, (_, i) => `include:s${i}.example.net`).join(' ')} ip4:203.0.113.25 -all`]] } };
+    for (let i = 0; i < 11; i += 1) past[`s${i}.example.net`] = eleven[`s${i}.example.net`];
+    const d = await classify(past, smallReport([['203.0.113.25', 500]], { p: 'reject' }));
+    assert.deepEqual([d.by['203.0.113.25'].spfNow.reason, ...brief(d.by['203.0.113.25'])], ['lookup-limit', 'yours', 'spf-listed', 'ip4:203.0.113.25']);
+    assert.deepEqual([d.o.verdict, d.o.enforced, d.o.compliance, d.o.fail, d.o.atRiskMessages], ['spf-broken', true, 1, 0, 500], 'every message passed in the reports');
+    const tested = await classify(past, smallReport([['203.0.113.25', 500]], { p: 'reject', extraPolicy: '<testing>y</testing>' }));
+    assert.deepEqual([tested.o.verdict, tested.o.enforced], ['spf-broken', false], 'p=reject in test mode is not in force');
     // with DKIM aligned as well, nothing rests on SPF alone: ready, the note still says the record errs
     const signed = await classify(syntax, smallReport([['203.0.113.25', 500, { dkim: 'pass' }]]));
     assert.deepEqual([signed.by['203.0.113.25'].atRisk, signed.o.verdict, signed.o.notes], [0, 'ready', ['spf-permerror']]);
@@ -615,12 +625,13 @@ describe('dmarcOverview — compliance, what blocks p=reject, what to fix first'
     assert.deepEqual(dmarcOverview({ ...q, policy: { ...q.policy, pct: 100 }, policies: ['quarantine'] }, clean).notes, ['quarantine']);
     const rejected = rows.map((r) => (r.ip === '203.0.113.99' ? { ...r, dispositions: { none: 0, quarantine: 0, reject: r.fail } } : r));
     const enforced = dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'reject' }, days: 30 }, rejected);
-    assert.equal(enforced.verdict, 'enforced');
+    assert.deepEqual([enforced.verdict, enforced.enforced], ['enforced', true]);
     assert.deepEqual(enforced.notes, ['rejected-now']);
     assert.equal(enforced.blockers.length, 2, 'legitimate mail rejected now');
     // DMARCbis test mode: p=reject with t=y is not in force yet
     const testing = dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'reject', testing: 'y' }, days: 30 }, clean);
-    assert.deepEqual([testing.verdict, testing.notes], ['ready', ['testing']]);
+    assert.deepEqual([testing.verdict, testing.notes, testing.enforced], ['ready', ['testing'], false]);
+    assert.equal(dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'reject', pct: 50 }, days: 30 }, clean).enforced, false, 'pct under 100');
     const quarantineTest = dmarcOverview({ ...agg, policy: { ...agg.policy, p: 'quarantine', testing: 'y' }, days: 30 }, clean);
     assert.deepEqual(quarantineTest.notes, ['testing'], 'no "next step is p=reject" while quarantine is only tested');
     const none = dmarcOverview({ ...agg, messages: 0, pass: 0, sources: [] }, []);

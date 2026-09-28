@@ -8,9 +8,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, INTEL_MAX, FIX_FIRST_MAX, result
+  id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
+  INTEL_MAX, FIX_FIRST_MAX, result
 } from '../../assets/js/views/reports.js';
-import { SOURCE_CLASSES, FIX_CODES } from '../../assets/js/lib/dmarcreport.js';
+import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS } from '../../assets/js/lib/dmarcreport.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
 import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
 
@@ -53,6 +54,19 @@ test('headlineShare: the number Copy summary says, one decimal, never all or non
   assert.deepEqual(said(0.95), [95, 0]);
   assert.deepEqual(said(1), [100, 0]);
   assert.deepEqual(said(0.99996), [99.9, 1]);
+});
+
+test('verdictLook: p=reject in force turns a verdict about the future into mail refused now', () => {
+  const look = (verdict, over = {}) => verdictLook({ verdict, enforced: false, blockers: [], ...over });
+  assert.deepEqual(look('fix-first', { blockers: [{}] }), { key: 'fix-first', variant: 'warn' });
+  assert.deepEqual(look('enforced', { enforced: true }), { key: 'enforced', variant: 'ok' });
+  assert.deepEqual(look('enforced', { enforced: true, blockers: [{}] }), { key: 'enforcedLosing', variant: 'error' });
+  assert.deepEqual(look('spf-broken'), { key: 'spf-broken', variant: 'warn' });
+  // p=reject at 100 %, and the SPF record now gives a permerror (one include too many): refused now, never "not ready yet"
+  assert.deepEqual(look('spf-broken', { enforced: true }), { key: 'enforcedSpfBroken', variant: 'error' });
+  const keys = new Set([...DMARC_VERDICTS.map((v) => look(v).key), ...DMARC_VERDICTS.map((v) => look(v, { enforced: true, blockers: [{}] }).key)]);
+  assert.deepEqual([...keys].filter((k) => !DMARC_VERDICTS.includes(k)).sort(), [...VERDICT_EXTRA_KEYS].sort(), 'every text key is listed');
+  for (const v of DMARC_VERDICTS) assert.ok(['info', 'ok', 'warn', 'error'].includes(look(v).variant), v);
 });
 
 test('summaryFacts: the DMARC domain on screen with the TLS summary it is given; the SPF basis said', () => {

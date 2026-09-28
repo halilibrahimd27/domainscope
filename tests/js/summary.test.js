@@ -919,6 +919,27 @@ describe('reports (DMARC & TLS reports)', () => {
       '- Sources classified against the domain’s current SPF',
       '- The current SPF gives receivers a permanent error for 3 sending addresses: more than 10 DNS lookups before the address is reached'
     ]);
+    // p=reject in force (no t=y): that mail is refused now, not "not ready"
+    const enforced = R.reportsSummary({
+      ...f,
+      tls: null,
+      problems: 0,
+      dmarc: {
+        ...f.dmarc,
+        policy: { p: 'reject', pct: 100 },
+        spfErrorKey: 'rpt.spfError.lookup-limit',
+        overview: {
+          ...f.dmarc.overview, compliance: 1, verdict: 'spf-broken', enforced: true, blockers: [], blocked: 0, atRisk: [risk], atRiskMessages: 500,
+          spfError: { domain: 'example.com', reason: 'lookup-limit', sources: 1 }, unknown: [], unknownFail: 0
+        }
+      }
+    }, opts());
+    assert.deepEqual(lines(md(enforced)).slice(1, 3), [
+      '- **DMARC:** 100% of 5,175 messages pass · `p=reject` · 2 reports, 2026-09-25 → 2026-09-26',
+      '- p=reject is in force, and the SPF record gives receivers a permanent error: mail of 1 source you use that passed through SPF alone (500 messages) is refused now'
+    ]);
+    const enforcedTr = R.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'spf-broken', enforced: true, blockers: [], blocked: 0, atRisk: [risk], atRiskMessages: 500 } } }, opts('tr'));
+    assert.equal(lines(md(enforcedTr))[2], '- p=reject yürürlükte ve SPF kaydı alıcılara kalıcı hata veriyor: kullandığınız 1 kaynağın yalnızca SPF ile geçen e-postası artık reddediliyor (500 e-posta)');
     const tr = R.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spfErrorKey: 'rpt.spfError.syntax', overview: { ...f.dmarc.overview, spfError: { domain: 'example.com', reason: 'syntax', sources: 1 } } } }, opts('tr'));
     assert.ok(lines(md(tr)).includes('- Alıcılar güncel SPF kaydından 1 gönderen adres için kalıcı hata alıyor: bir sözdizimi hatası'), md(tr));
   });

@@ -154,6 +154,8 @@ registerStrings('en', {
   'rpt.verdict.fix-first.body': { one: '{count} source you use fails DMARC for {messages} messages. With p=reject, receivers would refuse that mail. Fix it first:', other: '{count} sources you use fail DMARC for {messages} messages. With p=reject, receivers would refuse that mail. Fix them first, the most mail first:' },
   'rpt.verdict.spf-broken.title': 'Not ready for p=reject: the SPF record gives a permanent error',
   'rpt.verdict.spf-broken.body': { one: '{count} source you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC. Repair the record, or sign that mail with DKIM:', other: '{count} sources you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC. Repair the record, or sign that mail with DKIM:' },
+  'rpt.verdict.enforcedSpfBroken.title': 'p=reject is in force, and the SPF record now gives a permanent error',
+  'rpt.verdict.enforcedSpfBroken.body': { one: '{count} source you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC and p=reject refuses it. Repair the record, or sign that mail with DKIM:', other: '{count} sources you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC and p=reject refuses it. Repair the record, or sign that mail with DKIM:' },
   'rpt.fixFirst': 'Fix first',
   'rpt.fix.failing': '{fail} of {messages} messages fail',
   'rpt.fix.spfOnly': '{count} of {messages} messages passed through SPF alone',
@@ -406,7 +408,9 @@ registerStrings('tr', {
   'rpt.verdict.fix-first.title': 'Henüz p=reject için hazır değil',
   'rpt.verdict.fix-first.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor. p=reject ile alıcılar bu e-postaları reddederdi. En çok e-posta gönderenden başlayarak önce bunları düzeltin:',
   'rpt.verdict.spf-broken.title': 'Henüz p=reject için hazır değil: SPF kaydı kalıcı hata veriyor',
-  'rpt.verdict.spf-broken.body': 'Kullandığınız {count} kaynak DMARC’den yalnızca SPF ile geçti (bu raporlarda {messages} e-posta). Alıcılar artık SPF kaydından kalıcı hata alıyor, bu yüzden bu e-postalar DMARC’den geçmiyor. Kaydı onarın ya da bu e-postaları DKIM ile imzalayın:',
+  'rpt.verdict.spf-broken.body': 'Kullandığınız {count} kaynağın e-postası DMARC’den yalnızca SPF ile geçti (bu raporlarda {messages} e-posta). Alıcılar artık SPF kaydından kalıcı hata alıyor: SPF ile geçen e-posta bundan sonra DMARC’den geçmiyor. Kaydı onarın ya da o e-postayı DKIM ile imzalayın:',
+  'rpt.verdict.enforcedSpfBroken.title': 'p=reject yürürlükte ve SPF kaydı artık kalıcı hata veriyor',
+  'rpt.verdict.enforcedSpfBroken.body': 'Kullandığınız {count} kaynağın e-postası DMARC’den yalnızca SPF ile geçti (bu raporlarda {messages} e-posta). Alıcılar artık SPF kaydından kalıcı hata alıyor: SPF ile geçen e-posta DMARC’den geçmiyor ve p=reject ile reddediliyor. Kaydı onarın ya da o e-postayı DKIM ile imzalayın:',
   'rpt.fixFirst': 'Önce düzeltin',
   'rpt.fix.failing': '{messages} e-postanın {fail} tanesi geçmiyor',
   'rpt.fix.spfOnly': '{messages} e-postanın {count} tanesi yalnızca SPF ile geçti',
@@ -615,6 +619,25 @@ export function fixParams(row, code, domain) {
   const foreign = (list) => (list || []).find((a) => a.result === 'pass' && (registrableDomain(a.domain) || a.domain) !== org);
   const other = code === 'dkim-align' ? foreign(row.dkimAuth) : code === 'spf-align' ? foreign(row.spfAuth) : null;
   return { domain: code === 'spf-permerror' && row.spfDomain ? row.spfDomain : domain, other: other ? other.domain : '' };
+}
+
+/** Look of each lib/dmarcreport.js DMARC_VERDICTS value, p=reject not in force (see {@link verdictLook}). */
+const VERDICT_VARIANTS = Object.freeze({ 'no-mail': 'info', enforced: 'ok', ready: 'ok', 'fix-first': 'warn', 'spf-broken': 'warn' });
+/** Verdict texts beyond DMARC_VERDICTS: p=reject in force while mail is refused ({@link verdictLook}). */
+export const VERDICT_EXTRA_KEYS = Object.freeze(['enforcedLosing', 'enforcedSpfBroken']);
+
+/**
+ * The verdict alert of the DMARC head: its texts (`rpt.verdict.<key>.title` / `.body`) and its
+ * look. With `p=reject` in force a verdict about the future is mail refused now: known sources
+ * that fail (`enforcedLosing`) or mail that passed through SPF alone while the SPF record gives a
+ * permerror (`enforcedSpfBroken`), both an error.
+ * @param {{ verdict: string, enforced?: boolean, blockers: object[] }} o lib/dmarcreport.js dmarcOverview
+ * @returns {{ key: string, variant: 'info'|'ok'|'warn'|'error' }}
+ */
+export function verdictLook(o) {
+  if (o.verdict === 'enforced' && o.blockers.length) return { key: 'enforcedLosing', variant: 'error' };
+  if (o.verdict === 'spf-broken' && o.enforced) return { key: 'enforcedSpfBroken', variant: 'error' };
+  return { key: o.verdict, variant: VERDICT_VARIANTS[o.verdict] || 'info' };
 }
 
 /**
@@ -1155,14 +1178,13 @@ export function mount(container, ctx) {
       p.np ? [' ', h('code', { class: 'mono' }, `np=${p.np}`)] : null,
       ' ', h('code', { class: 'mono' }, `pct=${p.pct}`), p.testing ? [' ', h('code', { class: 'mono' }, `t=${p.testing}`)] : null,
       ' ', h('code', { class: 'mono' }, `adkim=${p.adkim}`), ' ', h('code', { class: 'mono' }, `aspf=${p.aspf}`));
-    const losing = o.verdict === 'enforced' && o.blockers.length;
-    const vKey = losing ? 'enforcedLosing' : o.verdict;
-    const variant = { 'no-mail': 'info', enforced: losing ? 'error' : 'ok', ready: 'ok', 'fix-first': 'warn', 'spf-broken': 'warn' }[o.verdict];
+    const look = verdictLook(o);
     const counts = o.verdict === 'spf-broken' ? { count: o.atRisk.length, messages: num(o.atRiskMessages) }
       : { count: o.blockers.length, messages: num(o.verdict === 'ready' ? o.unknownFail : o.blocked) };
-    const verdict = Alert({ variant, title: t(`rpt.verdict.${vKey}.title`), message: t(`rpt.verdict.${vKey}.body`, counts) });
+    const verdict = Alert({ variant: look.variant, title: t(`rpt.verdict.${look.key}.title`), message: t(`rpt.verdict.${look.key}.body`, counts) });
     verdict.classList.add('rpt-verdict');
     verdict.dataset.verdict = o.verdict;
+    verdict.dataset.look = look.key;
     const body = h('div', { class: 'stack' }, stats, policy, verdict);
     if (o.blockers.length || o.atRisk.length) body.append(fixFirst(agg, o));
     if (o.unknown.length) body.append(h('p', { class: 'rpt-unknown-line text-sm' }, Icon('alert', { size: 14 }), ' ', t('rpt.unknownLine', { count: o.unknown.length, messages: num(o.unknownFail) })));

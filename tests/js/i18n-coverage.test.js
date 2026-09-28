@@ -351,7 +351,7 @@ describe('i18n coverage', () => {
     for (const c of dmarcreport.SOURCE_CLASSES) { add(`rpt.cls.${c}`); add(`rpt.clsOne.${c}`); add(`rpt.clsDesc.${c}`); }
     for (const r of dmarcreport.CLASS_REASONS) add(`rpt.why.${r}`);
     for (const f of dmarcreport.FIX_CODES) add(`rpt.fix.${f}`);
-    for (const v of [...dmarcreport.DMARC_VERDICTS, 'enforcedLosing']) { add(`rpt.verdict.${v}.title`); add(`rpt.verdict.${v}.body`); }
+    for (const v of [...dmarcreport.DMARC_VERDICTS, ...views.reports.VERDICT_EXTRA_KEYS]) { add(`rpt.verdict.${v}.title`); add(`rpt.verdict.${v}.body`); }
     for (const n of dmarcreport.DMARC_NOTES) add(`rpt.note.${n}`);
     for (const p of dmarcreport.REPORT_PROBLEMS) add(`rpt.problem.${p}`);
     for (const r of health.SPF_EVAL_RESULTS) add(`rpt.spfNow.${r}`);

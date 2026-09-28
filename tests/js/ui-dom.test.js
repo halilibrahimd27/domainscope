@@ -2412,7 +2412,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /const namesText = \(\) => namesForCli\(run\.result \|\| \{ hosts: liveHosts\(run\) \}, \{ onlyCovered \}\);/);
     const sync = /function syncExports\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
     assert.ok(sync && /const anyHosts = liveHosts\(run\)\.length > 0;/.test(sync[1]), 'syncExports counts the streamed hits');
-    assert.match(src, /const record = partialScanRecord\(partial, scanConfig\.cert\);/, 'startRun streams covered partials');
+    assert.match(src, /const record = partialScanRecord\(partial, coverCert\);/, 'startRun streams covered partials');
+    // Several certificates: a streamed hit is covered by the union of their names, one certificate by its own.
+    assert.match(src, /const coverCert = Array\.isArray\(scanConfig\.certs\) && scanConfig\.certs\.length\s*\? \{ hostnames: \[\.\.\.new Set\(scanConfig\.certs\.flatMap\(\(c\) => c\.hostnames \|\| \[\]\)\)\] \} : scanConfig\.cert;/);
   });
 
   test('SSL Targets Servers tab: one entry per name, the strongest match (DNS, then zone file, then hint)', async () => {
@@ -2453,7 +2455,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
   test('SSL Targets Behind CDN: one shell choice for the sweep, step 3 and the Verify card', async () => {
     const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     // Step 3 of the CLI card is launched with the interpreter of the chosen shell (not always python3).
-    assert.match(src, /cliCommand\(\{ certFile: cert \? 'new-cert\.pem' : null, python: PYTHON_FOR_SHELL\[cdnShell\(\)\] \}\)/);
+    // (Several certificates: one --cert file each, lib/certsets cliCertFiles.)
+    assert.match(src, /cliCommand\(\{ certFile: certFiles \|\| \(cert \? 'new-cert\.pem' : null\), python: PYTHON_FOR_SHELL\[cdnShell\(\)\] \}\)/);
+    assert.match(src, /const certFiles = sets \? cliCertFiles\(sets\)\.map\(\(f\) => f\.file\) : null;/);
     // A change in either card re-renders the other one's control and commands.
     assert.match(src, /setShell: \(sh\) => \{\s*session\.cdnShell = sh;\s*syncCdnShell\(\);/, 'Verify → Behind CDN');
     const sync = /function syncCdnShell\(\) \{([\s\S]*?)\n {2}\}/.exec(src);

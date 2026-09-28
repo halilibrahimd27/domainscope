@@ -1319,6 +1319,245 @@
   overflow-wrap: anywhere;
 }
 
+/* Several certificates at once (ui/renewal-panel.js): step 1's sets, the Renewal plan tab. */
+.scan-cert-several {
+  margin: 0;
+}
+
+.scan-cert-actions {
+  justify-content: flex-end;
+}
+
+.rw-sets-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 650;
+}
+
+.rw-sets-head .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.rw-sets-intro {
+  margin: 0;
+}
+
+.rw-set,
+.rw-plan-set {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.rw-set-head,
+.rw-plan-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.rw-set-head .tlist,
+.rw-plan-set .tlist {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rw-leaves,
+.rw-skipped-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rw-leaf {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.rw-leaf-facts {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.rw-leaf-files,
+.rw-plan-set-files {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rw-leaf-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.rw-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rw-skipped-title {
+  font-weight: 650;
+  color: var(--text-2);
+}
+
+.rw-skip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+
+.rw-skip > .icon {
+  flex: none;
+  color: var(--warn-solid);
+}
+
+.rw-skip-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rw-key-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--warn);
+}
+
+.rw-key-note .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.rw-plan-sets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+}
+
+.rw-plan-matrix-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rw-plan-matrix-head .scan-subtitle {
+  margin: 0;
+}
+
+.rw-srv {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rw-srv-name {
+  font-weight: 650;
+}
+
+.rw-srv-badges {
+  gap: 4px;
+}
+
+.rw-matrix td.rw-col-set,
+.rw-uncovered td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.rw-cell-name.is-hint {
+  color: var(--text-2);
+}
+
+.rw-row-needs td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+/* A phone: each server is a card of labelled lines (Server, Set A, Set B, Names; the column
+   headers come from data-label), a set it needs nothing from left out. */
+@media (max-width: 600px) {
+  .rw-matrix .dt-table,
+  .rw-matrix .dt-table tbody {
+    display: block;
+  }
+
+  .rw-matrix .dt-table thead {
+    display: none;
+  }
+
+  .rw-matrix .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 12px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rw-matrix .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .rw-matrix .dt-table tbody tr.rw-row-needs {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .rw-matrix .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-shadow: none;
+  }
+
+  .rw-matrix .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .rw-matrix .dt-table td:has(> .dt-null) {
+    display: none;
+  }
+
+  .rw-matrix .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+}
+
 /* Print (style.css hides the shell and every control): leave out the setup steps and the run bar
    (the results name the domains); a host name, the row's identity, never breaks inside. */
 @media print {

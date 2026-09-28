@@ -46,7 +46,7 @@
 import { h, clear, append, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CliText, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
-  Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
+  FileDrop, Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
   checkboxGroup, ipSortValue, radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -70,8 +70,13 @@ import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
   CertAlternatives, CertLoader, CertSourceNote, CertSummary, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
-  certDisplayName, issuerDisplayName, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS
+  certDisplayName, issuerDisplayName, certLoadsFromFiles, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
 } from './cert.js';
+// Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
+import {
+  renewalBundle, withoutLeaf, primaryFile, fileForLeaf, leafKey, planRenewal, setOfName, cliCertFiles, certSetsJson
+} from '../lib/certsets.js';
+import { RenewalSets, RenewalPlanPanel, CertFileButtons, SetBadge } from '../ui/renewal-panel.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
 import {
   LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
@@ -149,8 +154,10 @@ registerStrings('en', {
   'scan.cert.none': 'Without a certificate the scan still finds hosts, IPs and servers — only coverage is not checked.',
   'scan.cert.isCA': 'This is a CA certificate, not a server certificate. Load the certificate issued for your domain.',
   'scan.cert.taken': 'Certificate taken over from the Certificate view.',
-  'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves. It compares each server with this exact certificate, so a server with another valid certificate for the name (such as the RSA twin of an ECDSA certificate) shows as Old certificate.',
+  'scan.cert.ctVerify': 'After the scan, the Verify tab checks which certificate each server really serves. It compares each server with this exact certificate, so a server with another valid certificate for the name (such as the RSA twin of an ECDSA certificate) shows as Old certificate. Load the twin too (Add certificates) to accept either.',
   'scan.cert.sampleNext': 'Loading it starts nothing: a scan runs only when you press Start scan.',
+  'scan.cert.several': 'Renewing several certificates (an RSA + ECDSA pair, or a whole renewal week)? Drop or choose them all at once, choose a folder, or paste several PEM blocks: one scan plans them per server.',
+  'scan.cert.addTitle': 'Add more certificates to this renewal: an RSA + ECDSA twin, or others renewed with it',
 
   'scan.domains.label': 'Target domains',
   'scan.domains.placeholder': 'example.com\nexample.org',
@@ -226,6 +233,7 @@ registerStrings('en', {
   'scan.summary.bf.huge': 'huge wordlist',
   'scan.summary.perm': 'permutations',
   'scan.summary.cert': 'with certificate',
+  'scan.summary.certs': { one: 'with {count} certificate', other: 'with {count} certificates' },
   'scan.summary.noCert': 'no certificate',
   'scan.busy': 'Scanning…',
 
@@ -536,8 +544,10 @@ registerStrings('tr', {
   'scan.cert.none': 'Sertifika olmadan da tarama host’ları, IP’leri ve sunucuları bulur — yalnızca kapsama kontrol edilmez.',
   'scan.cert.isCA': 'Bu bir CA sertifikası, sunucu sertifikası değil. Alan adınız için verilen sertifikayı yükleyin.',
   'scan.cert.taken': 'Sertifika, Sertifika görünümünden aktarıldı.',
-  'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder. Her sunucuyu tam olarak bu sertifikayla karşılaştırır; bu yüzden ad için geçerli başka bir sertifika sunan bir sunucu (örneğin bir ECDSA sertifikasının RSA ikizi) Eski sertifika olarak görünür.',
+  'scan.cert.ctVerify': 'Taramadan sonra Doğrula sekmesi her sunucunun gerçekte hangi sertifikayı sunduğunu kontrol eder. Her sunucuyu tam olarak bu sertifikayla karşılaştırır; bu yüzden ad için geçerli başka bir sertifika sunan bir sunucu (örneğin bir ECDSA sertifikasının RSA ikizi) Eski sertifika olarak görünür. İkisini de kabul etmek için ikizini de yükleyin (Sertifika ekle).',
   'scan.cert.sampleNext': 'Yüklemek hiçbir şey başlatmaz: tarama yalnızca Taramayı başlat’a bastığınızda çalışır.',
+  'scan.cert.several': 'Birden çok sertifikayı mı yeniliyorsunuz (bir RSA + ECDSA ikilisi ya da bütün bir yenileme haftası)? Hepsini birden bırakın ya da seçin, bir klasör seçin veya birkaç PEM bloğunu yapıştırın: tek tarama hepsini sunucu sunucu planlar.',
+  'scan.cert.addTitle': 'Bu yenilemeye başka sertifikalar ekleyin: bir RSA + ECDSA ikizi ya da onunla yenilenen diğerleri',
 
   'scan.domains.label': 'Hedef alan adları',
   'scan.domains.placeholder': 'example.com.tr\nexample.com',
@@ -613,6 +623,7 @@ registerStrings('tr', {
   'scan.summary.bf.huge': 'çok büyük kelime listesi',
   'scan.summary.perm': 'varyasyonlar',
   'scan.summary.cert': 'sertifikalı',
+  'scan.summary.certs': { one: '{count} sertifikalı', other: '{count} sertifikalı' },
   'scan.summary.noCert': 'sertifikasız',
   'scan.busy': 'Taranıyor…',
 
@@ -1179,6 +1190,13 @@ export function strongestPerName(hosts) {
  * still holds it, lib/session.js fillReplaces); a scan forgets it.
  */
 const session = {
+  /**
+   * Step 1's certificate files (views/cert.js CertLoads). One file with one leaf is the classic
+   * single-certificate flow; several files, or several leaves in one, are a renewal of certificate
+   * sets (lib/certsets.js). The shared current certificate (CURRENT_CERT) is the first file with a
+   * leaf, or one of the renewal's certificates (Details); another one chosen elsewhere replaces them.
+   */
+  certLoads: [],
   domainsText: '',
   carried: null,
   domainsFromCert: false,
@@ -1230,10 +1248,49 @@ stateSingleton.subscribe(({ key }) => {
   if (run) {
     if (run.status === 'running') run.controller.abort();
     cancelVerify(run);
-    cancelDane(run);
+    cancelAllDane(run);
   }
-  Object.assign(session, { domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
+  Object.assign(session, { certLoads: [], domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
 });
+
+/** lib/certsets renewalBundle() of the last list of files asked for (the list is replaced, never changed). */
+const bundleCache = { loads: null, bundle: null };
+function bundleOf(loads) {
+  if (bundleCache.loads !== loads) {
+    bundleCache.loads = loads;
+    bundleCache.bundle = renewalBundle(loads);
+  }
+  return bundleCache.bundle;
+}
+
+/**
+ * The renewal of several certificates behind step 1's files — several files, or one with several
+ * leaves — or null for the classic flow (one file, or none).
+ * @param {object[]} loads
+ * @returns {import('../lib/certsets.js').RenewalBundle|null}
+ */
+function renewalOf(loads) {
+  const bundle = bundleOf(loads);
+  return loads.length > 1 || bundle.leaves.length > 1 ? bundle : null;
+}
+
+/**
+ * The run's certificate sets, or null when it scanned one certificate (or none): a renewal with
+ * two or more certificates (an RSA + ECDSA pair is one set of two).
+ * @param {object} run
+ * @returns {import('../lib/certsets.js').CertSet[]|null}
+ */
+function runSets(run) {
+  const sets = run && run.config && run.config.certSets;
+  return Array.isArray(sets) && sets.length ? sets : null;
+}
+
+/** Cancel the run's DANE checks: the one of the certificate (run.dane) and, with several, each one's. */
+function cancelAllDane(run) {
+  if (!run) return;
+  cancelDane(run);
+  for (const holder of (run.daneHolders ? run.daneHolders.values() : [])) cancelDane(holder);
+}
 
 /**
  * @typedef {object} ScanRun
@@ -1308,6 +1365,9 @@ function emit(run, type, payload) {
 function startRun(run, scanConfig, appState, onDataMissing) {
   // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
   run.job = startJob({ view: 'scan' });
+  // What a streamed hit is checked against: the certificate, or every certificate of a renewal.
+  const coverCert = Array.isArray(scanConfig.certs) && scanConfig.certs.length
+    ? { hostnames: [...new Set(scanConfig.certs.flatMap((c) => c.hostnames || []))] } : scanConfig.cert;
   const hooks = {
     onStage(stage, info = {}) {
       // Shared with the Subdomains view (parallel mining, wordlist size, source plan).
@@ -1327,7 +1387,7 @@ function startRun(run, scanConfig, appState, onDataMissing) {
     onFound(partial) {
       if (!partial || !partial.name) return;
       if (run.hosts.some((x) => x.name === partial.name)) return;
-      const record = partialScanRecord(partial, scanConfig.cert);
+      const record = partialScanRecord(partial, coverCert);
       run.found.set(partial.name, record);
       emit(run, 'found', record);
     },
@@ -1442,6 +1502,19 @@ export function mount(container, ctx) {
   }
   let certLoad = getCurrentCert(state);
 
+  /**
+   * Whether a shared certificate belongs to step 1's files: one of them, or (a renewal of several)
+   * one of their certificates shown on its own (Details). Anything else chosen elsewhere replaces them.
+   */
+  function inRenewal(load) {
+    if (!load) return false;
+    if (session.certLoads.includes(load)) return true;
+    const rw = renewalOf(session.certLoads);
+    const leaf = load.result && load.result.leaf;
+    return !!rw && !!leaf && rw.leaves.some((l) => l.key === leafKey(leaf));
+  }
+  if (!inRenewal(certLoad)) session.certLoads = certLoad ? [certLoad] : [];
+
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeDomains(ctx.searchParams, ctx.params);
   // A domain carried over from another tool (`run=0`, lib/session.js) never replaces what step 2
@@ -1485,10 +1558,11 @@ export function mount(container, ctx) {
   function renderFormProgress() {
     const parsed = parseDomainsInput(domainsField.value);
     const leaf = certLeaf();
+    const rw = renewal();
     const p = formProgress({
       cert: !!leaf,
       certCA: !!(leaf && leaf.isCA),
-      certNames: leaf ? leaf.hostnames.length : 0,
+      certNames: certNames().length,
       domains: parsed.domains.length,
       invalid: parsed.invalid.length,
       publicSuffixes: parsed.publicSuffixes.length,
@@ -1496,7 +1570,7 @@ export function mount(container, ctx) {
       servers: state.inventory.servers.length
     });
     const badges = {
-      cert: t('scan.stepDone'),
+      cert: rw && rw.leaves.length > 1 ? t('rw.certs', { count: rw.leaves.length }) : t('scan.stepDone'),
       domains: t('scan.summary.domains', { count: parsed.domains.length }),
       inventory: t('scan.stepDone')
     };
@@ -1539,9 +1613,36 @@ export function mount(container, ctx) {
   /* --- step 1: certificate --------------------------------------------------- */
   const certBody = h('div', { class: 'stack-sm' });
 
+  /** Several certificates in step 1 (lib/certsets.js RenewalBundle), or null for one or none. */
+  function renewal() {
+    return renewalOf(session.certLoads);
+  }
+
+  /** The certificate the scan is about: the one loaded, or the first of a renewal. */
   function certLeaf() {
+    const rw = renewal();
+    if (rw) return rw.leaves.length ? rw.leaves[0].cert : null;
     return certLoad && certLoad.result.leaf ? certLoad.result.leaf : null;
   }
+
+  /** The names the loaded certificate covers (a renewal: every set's names). */
+  function certNames() {
+    const rw = renewal();
+    if (rw) return [...new Set(rw.leaves.flatMap((l) => l.cert.hostnames))];
+    const leaf = certLeaf();
+    return leaf ? leaf.hostnames : [];
+  }
+
+  // Step 1's loaders take several files at once (and a folder where the browser can pick one):
+  // several certificates make a renewal of certificate sets. "Add certificates" next to a single
+  // certificate opens this picker (kept hidden: the button is its way in).
+  const loader = (opts = {}) => CertLoader({ onLoad: onCertLoad, onLoads: setLoads, multiple: true, folder: true, ...opts }).el;
+  const addPicker = FileDrop({
+    accept: CERT_ACCEPT, maxBytes: CERT_MAX_BYTES, multiple: true, paste: false, compact: true,
+    onFiles: (files) => addLoads(certLoadsFromFiles(files))
+  });
+  addPicker.el.hidden = true;
+  addPicker.el.dataset.role = 'cert-add-picker';
 
   // "No file?": a host name's certificate from CT, or the sample. Neither starts a scan: loading
   // one only fills step 2, like a dropped file. A running scan keeps the busy flag its own, and
@@ -1565,17 +1666,31 @@ export function mount(container, ctx) {
     extra: certLoad && certLoad.source === 'ct' ? t('scan.cert.ctVerify') : t('scan.cert.sampleNext')
   });
 
+  const takenAlert = () => Alert({ variant: 'info', compact: true, icon: 'arrow-right', message: t('scan.cert.taken'), dismissible: true, onDismiss: () => { takenOver = false; } });
+
   function renderCertStep() {
     clear(certBody);
     renderFormProgress();
+    fillCertStep();
+    // Last, so that step 1's own drop zone keeps the first file input of the step.
+    certBody.append(addPicker.el);
+  }
+
+  function fillCertStep() {
+    const rw = renewal();
+    if (rw) {
+      renderRenewal(rw);
+      return;
+    }
     const leaf = certLeaf();
     if (!certLoad) {
-      certBody.append(CertLoader({ onLoad: onCertLoad }).el,
+      certBody.append(loader(),
         h('p', { class: 'muted text-sm' }, t('scan.cert.none')),
+        h('p', { class: 'muted text-sm scan-cert-several' }, t('scan.cert.several')),
         certAlternatives());
       return;
     }
-    if (takenOver) certBody.append(Alert({ variant: 'info', compact: true, icon: 'arrow-right', message: t('scan.cert.taken'), dismissible: true, onDismiss: () => { takenOver = false; } }));
+    if (takenOver) certBody.append(takenAlert());
     certBody.append(...certWarningAlerts(certLoad.result, { name: certLoad.name }));
     if (leaf) {
       if (leaf.isCA) certBody.append(Alert({ variant: 'warn', compact: true, message: t('scan.cert.isCA') }));
@@ -1583,6 +1698,7 @@ export function mount(container, ctx) {
         maxNames: 6,
         actions: [
           Button({ label: t('scan.cert.details'), icon: 'eye', size: 'sm', variant: 'ghost', dataset: { action: 'cert-details' }, onClick: () => ctx.navigate('cert') }),
+          Button({ label: t('rw.add'), icon: 'plus', size: 'sm', variant: 'ghost', title: t('scan.cert.addTitle'), dataset: { action: 'cert-add' }, onClick: () => addPicker.open() }),
           Button({ label: t('scan.cert.remove'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove' }, onClick: () => onCertLoad(null) })
         ]
       }));
@@ -1591,21 +1707,59 @@ export function mount(container, ctx) {
       certBody.append(Disclosure({
         summary: t('scan.cert.another'),
         className: 'scan-cert-another',
-        children: h('div', { class: 'stack-sm' }, CertLoader({ onLoad: onCertLoad, compact: true }).el, certAlternatives())
+        children: h('div', { class: 'stack-sm' }, loader({ compact: true }), certAlternatives())
       }));
     } else {
-      certBody.append(CertLoader({ onLoad: onCertLoad, compact: true }).el, certAlternatives());
+      certBody.append(loader({ compact: true }), certAlternatives());
     }
   }
 
-  function onCertLoad(load) {
+  /** Step 1 with several certificates: the sets, a drop zone for more, Remove all. */
+  function renderRenewal(rw) {
+    if (takenOver) certBody.append(takenAlert());
+    certBody.append(RenewalSets({
+      bundle: rw,
+      validity: (cert) => ValidityBadge(cert),
+      // The Certificate view shows one certificate: this one, as the shared current certificate.
+      onDetails: (leaf) => {
+        const load = fileForLeaf(session.certLoads, leaf.key);
+        if (!load) return;
+        certLoad = load;
+        setCurrentCert(state, load);
+        ctx.navigate('cert');
+      },
+      onRemoveLeaf: (leaf) => setLoads(withoutLeaf(session.certLoads, leaf.key)),
+      onRemoveFile: (entry) => setLoads(entry.key ? withoutLeaf(session.certLoads, entry.key)
+        : session.certLoads.filter((_, i) => i !== entry.index))
+    }),
+    loader({ compact: true, onLoads: addLoads, title: t('rw.addTitle') }),
+    h('div', { class: 'cluster scan-cert-actions' },
+      Button({ label: t('rw.removeAll'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove-all' }, onClick: () => setLoads([]) })));
+  }
+
+  /**
+   * Step 1 holds these files from now on: one is the classic single-certificate flow, several (or
+   * one with several certificates) a renewal. The first file with a certificate is the shared
+   * current certificate, as a single file always was.
+   * @param {object[]} loads CertLoads
+   */
+  function setLoads(loads) {
     takenOver = false;
-    certLoad = load;
-    setCurrentCert(state, load);
+    session.certLoads = (loads || []).filter(Boolean);
+    certLoad = primaryFile(session.certLoads);
+    setCurrentCert(state, certLoad);
     autoFillDomains();
     renderCertStep();
     renderDomainsHint();
     renderRunSummary();
+  }
+
+  function addLoads(loads) {
+    setLoads([...session.certLoads, ...(loads || [])]);
+  }
+
+  function onCertLoad(load) {
+    setLoads(load ? [load] : []);
   }
 
   /* --- step 2: domains ------------------------------------------------------ */
@@ -1649,14 +1803,15 @@ export function mount(container, ctx) {
     }));
   }
   function certDomains() {
-    const leaf = certLeaf();
-    return leaf ? baseDomainsFromNames(leaf.hostnames) : [];
+    return certLeaf() ? baseDomainsFromNames(certNames()) : [];
   }
 
   function autoFillDomains() {
     const leaf = certLeaf();
     if (!leaf) return;
-    const key = `${leaf.serialHex}|${leaf.issuerDN}`;
+    // A renewal fills in again when a certificate joins or leaves it.
+    const rw = renewal();
+    const key = rw ? rw.leaves.map((l) => `${l.cert.serialHex}|${l.cert.issuerDN}`).join(',') : `${leaf.serialHex}|${leaf.issuerDN}`;
     if (session.certKeyForDomains === key) return;
     session.certKeyForDomains = key;
     const list = certDomains();
@@ -1776,9 +1931,8 @@ export function mount(container, ctx) {
    * session copy: this runs before the field exists.)
    */
   function planDomains() {
-    const leaf = certLeaf();
     const extras = parseHostList(session.extraText || '', { allowWildcard: true }).valid;
-    return bruteforceBases(parseDomainsInput(domainsField.value).domains, [...(leaf ? leaf.hostnames : []), ...extras]);
+    return bruteforceBases(parseDomainsInput(domainsField.value).domains, [...certNames(), ...extras]);
   }
   /** Plan line + vocabulary line, and the Options summary (it lists the shared vocabulary too). */
   function renderVocab() {
@@ -1824,12 +1978,11 @@ export function mount(container, ctx) {
     });
     // The honest whole-scan query estimate (wordlist + variations + deeper round + origin hints),
     // so the plan line does not under-count like a wordlist-only figure would.
-    const certNames = certLeaf() ? certLeaf().hostnames : [];
     const extraNames = parseHostList(session.extraText || '', { allowWildcard: true }).valid;
     const queries = planQueryRange({
       level: options.bruteforce, domains, locales: vocab.locales, custom: vocab.custom.length, learned: learnedCount,
       permutations: options.permutations, permutationBudget: options.permutationBudget, originHints: options.originHints,
-      certNames, extraNames
+      certNames: certNames(), extraNames
     });
     planLine.dataset.total = String(plan.total);
     planLine.dataset.queriesMin = String(queries.min);
@@ -2001,7 +2154,7 @@ export function mount(container, ctx) {
     const parsed = parseDomainsInput(domainsField.value);
     let domainsText = t('scan.summary.noDomains');
     if (parsed.domains.length) domainsText = t('scan.summary.domains', { count: parsed.domains.length });
-    else if (certLeaf() && certLeaf().hostnames.length) domainsText = t('scan.summary.domainsCert');
+    else if (certLeaf() && certNames().length) domainsText = t('scan.summary.domainsCert');
     clear(runSummary);
     // Exact zone mode (one run): the zone's names only — no sources, wordlist or permutations.
     const zone = activeZone();
@@ -2018,7 +2171,8 @@ export function mount(container, ctx) {
       zone && zoneModes.get(zone) !== 'off' ? h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·') : null,
       zone && zoneModes.get(zone) !== 'off' ? h('span', { dataset: { zoneMode: exact ? 'exact' : 'discover' } }, t('sub.origin.zone')) : null,
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
-      h('span', null, certLeaf() ? t('scan.summary.cert') : t('scan.summary.noCert')));
+      h('span', null, !certLeaf() ? t('scan.summary.noCert') : renewal() && renewal().leaves.length > 1
+        ? t('scan.summary.certs', { count: renewal().leaves.length }) : t('scan.summary.cert')));
   }
 
   /**
@@ -2144,6 +2298,8 @@ export function mount(container, ctx) {
       const next = normalizeCertLoad(value.value);
       if (next !== certLoad) {
         certLoad = next;
+        // Another certificate chosen elsewhere (the Certificate view) replaces step 1's files.
+        if (!inRenewal(next)) session.certLoads = next ? [next] : [];
         autoFillDomains();
         renderCertStep();
         renderDomainsHint();
@@ -2175,8 +2331,7 @@ export function mount(container, ctx) {
       invalidField = invalidField || extraField;
     }
     const leaf = certLeaf();
-    const certNames = leaf ? leaf.hostnames.length : 0;
-    if (!invalidField && !parsed.domains.length && !certNames && !extras.valid.length) {
+    if (!invalidField && !parsed.domains.length && !certNames().length && !extras.valid.length) {
       // With a certificate loaded, "or load a certificate" would read as if it were not there.
       domainsField.setError(t(leaf ? 'scan.req.certNoNames' : 'scan.domains.required'));
       invalidField = domainsField;
@@ -2207,7 +2362,10 @@ export function mount(container, ctx) {
       starting = false;
     }
     if (ctx.signal.aborted) return;
-    const shownDomains = v.domains.length ? v.domains : baseDomainsFromNames([...(v.cert ? v.cert.hostnames : []), ...v.extraNames]);
+    // Several certificates (lib/certsets.js): one scan of every set's names, then a plan per set.
+    const rw = renewal();
+    const certSets = rw && rw.leaves.length > 1 ? rw.sets : null;
+    const shownDomains = v.domains.length ? v.domains : baseDomainsFromNames([...(v.cert ? certNames() : []), ...v.extraNames]);
     const permutationBudget = options.permutations ? options.permutationBudget : 0;
     // The per-browser vocabulary shared with Subdomains › Advanced: languages, this tab's custom
     // wordlist and (when switched on there) the learned labels of earlier scans.
@@ -2234,9 +2392,12 @@ export function mount(container, ctx) {
       learned: vocab.learnedOn,
       workspace: state.workspace.id,
       cert: v.cert,
-      // The other certificates of the file: DANE-TA records are compared with them (DANE tab).
-      certChain: certLoad && v.cert ? certLoad.result.certificates.filter((c) => c !== v.cert) : [],
-      certName: certLoad ? certLoad.name : '',
+      // A renewal of several certificates: their sets (the plan, Verify, the CLI's --cert files).
+      certSets,
+      // The other certificates of the file (with several files: their CA certificates): DANE-TA
+      // records are compared with them (DANE tab).
+      certChain: rw ? rw.chain.slice() : certLoad && v.cert ? certLoad.result.certificates.filter((c) => c !== v.cert) : [],
+      certName: rw ? (primaryFile(session.certLoads) || { name: '' }).name : certLoad ? certLoad.name : '',
       inventoryServers: state.inventory.servers.length
     });
     // The DohClient counts queries for its whole life; remember where this run started.
@@ -2244,7 +2405,7 @@ export function mount(container, ctx) {
     // A new scan ends the old run's checks (Verify, DANE): their results would describe another run.
     if (session.run) {
       cancelVerify(session.run);
-      cancelDane(session.run);
+      cancelAllDane(session.run);
     }
     run.domainsInput = v.domains.slice();
     session.carried = null;
@@ -2257,6 +2418,7 @@ export function mount(container, ctx) {
     startRun(run, {
       domains: v.domains,
       cert: v.cert,
+      ...(certSets ? { certs: rw.leaves.map((l) => l.cert) } : {}),
       extraNames: v.extraNames,
       sources: [...options.sources],
       includeExpired: options.includeExpired,
@@ -2392,6 +2554,11 @@ export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 function buildRunUI(run, ctx, { onFinish }) {
   const { state } = ctx;
   const cert = run.config.cert;
+  // Several certificates (lib/certsets.js): every covered host gets its set; the Renewal plan tab
+  // shows which set each server needs.
+  const sets = runSets(run);
+  const setOf = sets ? setOfName(sets) : null;
+  let plan = null;
   const domainsLabel = run.config.domains.join(', ') || '—';
   // Behind-CDN origin-panel state: the exclude tokens and an on-demand network-owner cache.
   const cdnExclude = { raw: '', tokens: [] };
@@ -2572,6 +2739,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     return {
       domains: run.config.domains,
       cert: cert ? { name: certDisplayName(cert), issuer: issuerDisplayName(cert), notBefore: cert.notBefore, notAfter: cert.notAfter } : null,
+      // Several certificates: each set by its first name and key types, and how many servers need it.
+      sets: sets ? sets.map((s) => ({
+        id: s.id, name: s.names[0], names: s.names.length, keyTypes: s.keyTypes.slice(), expires: s.expires,
+        servers: plan && plan.perSet[s.id] ? plan.perSet[s.id].rows : null
+      })) : null,
       hosts: c.total,
       covered: c.covered,
       // As the results warning counts them: the host list may be incomplete.
@@ -2728,7 +2900,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         searchValue: (x) => x.resolution.cnames.join(' '),
         render: (x) => (x.resolution.cnames.length ? TruncatedList(x.resolution.cnames, { max: 2 }) : null)
       },
-      cert ? {
+      cert && !sets ? {
         key: 'cert',
         label: t('scan.col.cert'),
         sortable: true,
@@ -2737,6 +2909,20 @@ function buildRunUI(run, ctx, { onFinish }) {
         render: (x) => (x.cert && x.cert.covered
           ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check', title: t('scan.host.coveredBy', { name: x.cert.by }) })
           : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
+      } : null,
+      // Several certificates: the set the host gets (an exact name before a wildcard, …).
+      sets ? {
+        key: 'cert',
+        label: t('scan.col.cert'),
+        sortable: true,
+        sortValue: (x) => (x.cert && x.cert.covered ? setOf(x.name) || 'ZZZ' : '~'),
+        searchValue: (x) => (x.cert && x.cert.covered && setOf(x.name) ? t('rw.set', { id: setOf(x.name) }) : t('scan.host.notCovered')),
+        exportValue: (x) => (x.cert && x.cert.covered ? setOf(x.name) || '' : ''),
+        render: (x) => {
+          const id = x.cert && x.cert.covered ? setOf(x.name) : null;
+          return id ? SetBadge(id, { variant: 'ok', title: t('rw.host.setTitle', { id, name: x.cert.by }) })
+            : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' });
+        }
       } : null,
       {
         key: 'servers',
@@ -2784,6 +2970,8 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   const hostsPanel = h('div', { class: 'stack scan-tab-hosts' }, hostsTable.el);
   const serversPanel = h('div', { class: 'stack scan-tab-servers' });
+  // Renewal plan (several certificates): the server × set matrix and the names none covers.
+  const planPanel = sets ? h('div', { class: 'stack scan-tab-plan' }) : null;
   const cdnPanel = h('div', { class: 'stack scan-tab-cdn' });
   const sourcesPanel = h('div', { class: 'stack scan-tab-sources' });
   const ctPanel = h('div', { class: 'stack scan-tab-ct' });
@@ -2797,6 +2985,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   const tabs = Tabs([
     { id: 'hosts', label: t('scan.tab.hosts'), icon: 'list', content: hostsPanel },
     { id: 'servers', label: t('scan.tab.servers'), icon: 'server', content: serversPanel },
+    sets ? { id: 'plan', label: t('rw.tab'), icon: 'layers', content: planPanel } : null,
     { id: 'cdn', label: t('scan.tab.cdn'), icon: 'cloud', content: cdnPanel },
     cert ? { id: 'verify', label: t('vfy.tab'), icon: 'check-circle', content: verifyPanel } : null,
     cert ? { id: 'dane', label: t('dane.tabShort'), icon: 'key', content: danePanel } : null,
@@ -2879,7 +3068,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   const pendingState = () => EmptyState({ compact: true, icon: 'clock', message: t('scan.pending') });
   const unavailableState = () => EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.notAvailable') });
-  for (const p of [serversPanel, cdnPanel, ctPanel, verifyPanel]) if (p) p.append(pendingState());
+  for (const p of [serversPanel, planPanel, cdnPanel, ctPanel, verifyPanel]) if (p) p.append(pendingState());
 
   const results = h('section', { class: 'scan-results stack', attrs: { 'aria-labelledby': `scan-results-${run.id}` } },
     h('div', { class: 'scan-results-head' },
@@ -2940,9 +3129,14 @@ function buildRunUI(run, ctx, { onFinish }) {
         notAfter: cert.notAfter,
         hostnames: cert.hostnames
       } : null,
+      // Several certificates: the sets, and the set of every covered host with the per-server plan.
+      ...(sets ? {
+        certificateSets: certSetsJson(sets),
+        renewal: plan ? { assigned: Object.fromEntries(plan.assigned), rows: plan.rows, uncovered: plan.uncovered } : null
+      } : {}),
       scan: run.result,
       verification: verifyExport(run, ctx.version),
-      dane: daneExport(run, ctx.version)
+      dane: sets ? daneExportAll() : daneExport(run, ctx.version)
     };
   }
 
@@ -2995,6 +3189,17 @@ function buildRunUI(run, ctx, { onFinish }) {
       }
     } else {
       add('info', t('scan.sum.noInventory'), 'server', 'no-inventory');
+    }
+    // Several certificates: which set each server needs is on the Renewal plan tab.
+    if (plan) {
+      const openPlan = Button({ label: t('rw.sum.open'), icon: 'layers', size: 'sm', variant: 'ghost', dataset: { action: 'scan-open-plan' }, onClick: () => tabs.select('plan', { focus: true }) });
+      const a = Alert({
+        variant: 'info', compact: true, icon: 'layers', actions: [openPlan],
+        message: t('rw.sum', { sets: formatNumber(plan.sets.length), count: plan.rows.filter((row) => row.needsCert && row.server).length })
+      });
+      a.dataset.summary = 'renewal';
+      summaryHost.append(a);
+      if (plan.uncovered.length) add('info', t('rw.sum.uncovered', { count: plan.uncovered.length }), 'help', 'renewal-uncovered');
     }
     // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
     if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t('scan.sum.verify'), 'check-circle', 'verify');
@@ -3157,6 +3362,17 @@ function buildRunUI(run, ctx, { onFinish }) {
         } : null
       ].filter(Boolean)
     }).el;
+  }
+
+  /** The Renewal plan tab (several certificates): the sets, the server × set matrix, the uncovered names. */
+  function renderPlanTab() {
+    if (!planPanel) return;
+    clear(planPanel);
+    if (!run.result || !plan) {
+      planPanel.append(run.status === 'running' ? pendingState() : unavailableState());
+      return;
+    }
+    planPanel.append(RenewalPlanPanel({ plan, inventory: run.config.inventoryServers > 0, subject }));
   }
 
   function renderCdnTab() {
@@ -3472,25 +3688,30 @@ function buildRunUI(run, ctx, { onFinish }) {
     };
     refreshCounts();
     const covered = cert ? checkbox({
-      label: t('scan.cli.onlyCovered'),
+      label: t(sets ? 'rw.cli.onlyCovered' : 'scan.cli.onlyCovered'),
       checked: onlyCovered,
       onChange: (on) => {
         onlyCovered = on;
         refreshCounts();
       }
     }) : null;
-    const certBtn = cert ? Button({
+    const certBtn = cert && !sets ? Button({
       icon: 'download', label: t('scan.cli.certFile'), dataset: { action: 'cli-cert' },
       onClick: () => {
         const file = downloadText('new-cert.pem', pemEncode(cert.der), 'application/x-pem-file');
         toast(t('scan.exported', { file }), { type: 'success', timeout: 2500 });
       }
     }) : null;
+    // Several certificates: one file per certificate and one --cert each (serving any is UPDATED).
+    const certFiles = sets ? cliCertFiles(sets).map((f) => f.file) : null;
+    const certFilesBlock = sets ? h('div', { class: 'stack-sm scan-cli-certs', dataset: { role: 'cli-cert-files' } },
+      h('p', { class: 'muted text-sm' }, t('rw.cli.files')),
+      h('div', { class: 'cluster' }, CertFileButtons(sets))) : null;
     // Step 3 in the chosen shell (`python` on Windows PowerShell), redrawn when it changes.
     const commandHost = h('div', { class: 'scan-cli-command' });
     const renderCommand = () => {
       clear(commandHost);
-      commandHost.append(CodeBlock(cliCommand({ certFile: cert ? 'new-cert.pem' : null, python: PYTHON_FOR_SHELL[cdnShell()] }),
+      commandHost.append(CodeBlock(cliCommand({ certFile: certFiles || (cert ? 'new-cert.pem' : null), python: PYTHON_FOR_SHELL[cdnShell()] }),
         { label: t('scan.cli.command'), wrap: true }));
     };
     renderCommand();
@@ -3505,6 +3726,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         h('li', null,
           h('div', { class: 'scan-cli-step-title' }, t('scan.cli.step1')),
           h('div', { class: 'cluster' }, namesBtn, targetsBtn, certBtn),
+          certFilesBlock,
           covered ? covered.el : null,
           h('p', { class: 'muted text-sm' }, inv ? t('scan.cli.targetsNote') : t('scan.cli.noInventoryNote'))),
         h('li', null,
@@ -3559,13 +3781,54 @@ function buildRunUI(run, ctx, { onFinish }) {
       .map((x) => x.name);
   }
 
+  // Several certificates: the TLSA check compares one certificate at a time, each with a job holder
+  // of its own on the run (run.daneHolders, by certificate); the picked one is kept on the run too.
+  const daneLeaves = sets ? sets.flatMap((s) => s.leaves.map((leaf) => ({ set: s.id, leaf }))) : [];
+  function daneHolder(key) {
+    if (!run.daneHolders) run.daneHolders = new Map();
+    if (!run.daneHolders.has(key)) run.daneHolders.set(key, { key });
+    return run.daneHolders.get(key);
+  }
+
   function renderDaneTab() {
     if (!danePanel) return;
     if (daneUi) daneUi.dispose();
     daneUi = null;
+    const hadFocus = !!globalThis.document && danePanel.contains(globalThis.document.activeElement);
     clear(danePanel);
     if (!run.result) {
       danePanel.append(run.status === 'running' ? pendingState() : unavailableState());
+      return;
+    }
+    if (sets) {
+      const index = Math.max(0, daneLeaves.findIndex((x) => x.leaf.key === run.daneLeafKey));
+      const picked = daneLeaves[index];
+      run.daneLeafKey = picked.leaf.key;
+      const pick = select({
+        label: t('rw.dane.pick'), size: 'sm', value: String(index), className: 'scan-dane-pick',
+        options: daneLeaves.map((x, i) => ({
+          value: String(i), label: t('rw.dane.option', { set: t('rw.set', { id: x.set }), key: x.leaf.keyType, file: x.leaf.files.join(', ') })
+        })),
+        onChange: (v) => {
+          run.daneLeafKey = (daneLeaves[Number(v)] || picked).leaf.key;
+          renderDaneTab();
+          renderTabBadges();
+        }
+      });
+      danePanel.append(h('div', { class: 'stack-sm scan-dane-pick-row' }, h('p', { class: 'muted text-sm' }, t('rw.dane.one')), pick.el));
+      // The picked certificate's names only: the covered, resolving hosts under them.
+      const names = picked.leaf.names;
+      daneUi = DanePanel({
+        certs: { leaf: picked.leaf.cert, chain: run.config.certChain || [] },
+        ctx,
+        holder: daneHolder(picked.leaf.key),
+        extraNames: daneHosts(run.result).filter((n) => certCovers(names, n).covered),
+        compact: true,
+        subject,
+        onChange: renderBadgesSoon
+      });
+      danePanel.append(daneUi.el);
+      if (hadFocus) pick.input.focus({ preventScroll: true });
       return;
     }
     daneUi = DanePanel({
@@ -3669,6 +3932,23 @@ function buildRunUI(run, ctx, { onFinish }) {
     }));
   }
 
+  /** The DANE tab badge over every certificate checked (several certificates): the endpoints to act on. */
+  function daneBadgeOfAll() {
+    const badges = [...(run.daneHolders ? run.daneHolders.values() : [])].map(daneTabBadge).filter(Boolean);
+    if (!badges.length) return null;
+    return { value: badges.reduce((n, b) => n + b.value, 0), variant: badges.some((b) => b.variant === 'error') ? 'error' : 'warn' };
+  }
+
+  /** The DANE block of the full JSON with several certificates: one report per certificate checked. */
+  function daneExportAll() {
+    const out = daneLeaves.map(({ set, leaf }) => {
+      const holder = run.daneHolders && run.daneHolders.get(leaf.key);
+      const report = holder ? daneExport(holder, ctx.version) : null;
+      return report ? { set, keyType: leaf.keyType, files: leaf.files.slice(), ...report } : null;
+    }).filter(Boolean);
+    return out.length ? out : null;
+  }
+
   function renderTabBadges() {
     const r = run.result;
     const hostsCount = r ? r.hosts.length : liveHosts(run).length;
@@ -3685,8 +3965,12 @@ function buildRunUI(run, ctx, { onFinish }) {
       tabs.setBadge('verify', b ? b.value : null, b ? b.variant : null);
     }
     if (danePanel) {
-      const b = daneTabBadge(run);
+      const b = sets ? daneBadgeOfAll() : daneTabBadge(run);
       tabs.setBadge('dane', b ? b.value : null, b ? b.variant : null);
+    }
+    if (planPanel && plan) {
+      const need = plan.rows.filter((row) => row.needsCert).length;
+      tabs.setBadge('plan', plan.rows.length || null, need ? 'warn' : null);
     }
     const failed = run.sourceResults.filter((x) => !x.ok).length;
     tabs.setBadge('sources', run.sourceResults.length || null, failed ? 'error' : null);
@@ -3724,10 +4008,13 @@ function buildRunUI(run, ctx, { onFinish }) {
       hostsTable.setLoading(false);
       runNotice.append(ErrorBanner(run.error, { title: t('scan.run.failed') }));
     }
+    // Several certificates: which set each server needs (the summary and the plan tab read it).
+    plan = sets && run.result ? planRenewal(run.result, sets) : null;
     renderStats();
     renderSummary();
     renderSourceHealth();
     renderServersTab();
+    renderPlanTab();
     renderCdnTab();
     renderVerifyTab();
     renderDaneTab();

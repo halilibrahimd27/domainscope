@@ -2929,6 +2929,20 @@ class ScanReport:
     excluded: List[ExcludedAddress] = field(default_factory=list)  # removed, never probed
     private_cas: List[CertInfo] = field(default_factory=list)      # --private-ca certificates
     strict_public: bool = False                                    # --strict-public
+    new_cert_files: Dict[str, str] = field(default_factory=dict)   # sha256 -> its --cert FILE
+
+    @property
+    def several_new_certs(self) -> bool:
+        """Several new certificates (--cert repeated, e.g. an RSA + ECDSA pair or several
+        certificates renewed together): the reports then name the one a server serves."""
+        return len(self.new_certs) > 1
+
+    def new_cert_file(self, cert: Optional[CertInfo]) -> Optional[str]:
+        """The --cert FILE that ``cert`` came from, when it is one of several new
+        certificates; None otherwise (one --cert, or a certificate that is not a new one)."""
+        if cert is None or not self.several_new_certs:
+            return None
+        return self.new_cert_files.get(cert.sha256)
 
     def cert_kind(self, cert: CertInfo) -> Tuple[str, Optional[CertInfo]]:
         """:func:`certificate_kind` of ``cert`` with this scan's ``--private-ca`` list."""
@@ -3201,8 +3215,12 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
              cancel: Optional[threading.Event] = None,
              default_probe: bool = True, warnings: Optional[List[str]] = None,
              exclude: Iterable[Union[str, ExcludeRule]] = (),
-             private_cas: Sequence[CertInfo] = (), strict_public: bool = False) -> ScanReport:
+             private_cas: Sequence[CertInfo] = (), strict_public: bool = False,
+             new_cert_files: Optional[Dict[str, str]] = None) -> ScanReport:
     """Probe every ``server IP x port`` for every name and classify the results.
+
+    A served certificate that is any of ``new_certs`` is UPDATED; ``new_cert_files``
+    (sha256 -> the --cert FILE) lets the reports name which one when there are several.
 
     ``ports`` apply to every address except those with ports of their own
     (:attr:`Server.ports`). A certificate that covers a name but is not the new one is
@@ -3394,7 +3412,8 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                       finished_at=_utcnow(), timeout=timeout, workers=workers,
                       warnings=list(warnings or []),
                       exclude=[rule.label for rule in exclude_rules], excluded=excluded,
-                      private_cas=list(private_cas), strict_public=strict_public)
+                      private_cas=list(private_cas), strict_public=strict_public,
+                      new_cert_files=dict(new_cert_files or {}))
 
 
 def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional[str],
@@ -3478,6 +3497,23 @@ def _row_dict(row: ProbeResult, now: datetime) -> Dict[str, Any]:
     }
 
 
+def _new_cert_dict(report: ScanReport, cert: CertInfo, now: datetime) -> Dict[str, Any]:
+    """A ``newCertificates`` entry; with several new certificates it names its --cert FILE."""
+    entry = cert.to_dict(now)
+    if report.several_new_certs:
+        entry['file'] = report.new_cert_files.get(cert.sha256)
+    return entry
+
+
+def _result_dict(report: ScanReport, row: ProbeResult, now: datetime) -> Dict[str, Any]:
+    """A ``results`` entry; with several new certificates ``newCertFile`` names the --cert
+    FILE of the certificate served (null when it is none of them)."""
+    entry = _row_dict(row, now)
+    if report.several_new_certs:
+        entry['newCertFile'] = report.new_cert_file(row.cert)
+    return entry
+
+
 def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
                    ) -> Dict[str, Any]:
     """The ``--json`` document (see the module docstring / README for field meanings).
@@ -3538,7 +3574,7 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
                     'privateCa': [{'subjectDN': ca.subject_dn, 'sha256': ca.sha256,
                                    'subjectKeyId': ca.subject_key_id}
                                   for ca in report.private_cas]},
-        'newCertificates': [cert.to_dict(now) for cert in report.new_certs],
+        'newCertificates': [_new_cert_dict(report, cert, now) for cert in report.new_certs],
         'names': [{'name': p.name, 'sni': p.sni, 'wildcard': p.wildcard} for p in report.probes],
         'summary': {
             'servers': len(report.servers),
@@ -3554,7 +3590,7 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
         'servers': servers,
         'endpoints': [{'ip': e.ip, 'port': e.port, 'state': e.state, 'error': e.error,
                        'connectMs': e.connect_ms} for e in report.endpoints],
-        'results': [_row_dict(row, now) for row in report.results],
+        'results': [_result_dict(report, row, now) for row in report.results],
         # target addresses --exclude removed before the scan (never connected to)
         'excluded': [{'server': e.server, 'ip': e.ip, 'excludedBy': e.rule}
                      for e in report.excluded],
@@ -3586,6 +3622,9 @@ def render_json(report: ScanReport, ensure_ascii: bool = False,
 CSV_COLUMNS = ('server', 'ip', 'port', 'probe', 'name', 'sni', 'status', 'covered_by',
                'new_cert_covers', 'cert_subject_cn', 'cert_issuer', 'cert_serial',
                'cert_not_after', 'cert_days_left', 'cert_sha256', 'tls_version', 'error')
+# Added after CSV_COLUMNS only when --cert is given several times: the FILE of the new
+# certificate a server serves (empty when it serves none of them).
+NEW_CERT_CSV_COLUMN = 'new_cert'
 
 # Leading characters that make a spreadsheet evaluate a cell (CSV injection); the same set
 # as FORMULA_START in assets/js/lib/export.js.
@@ -3614,7 +3653,8 @@ def _csv_cell(value: Any, terminal: bool = False) -> Any:
 
 def render_csv(report: ScanReport, lineterminator: str = '\r\n',
                terminal: bool = False) -> str:
-    """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`.
+    """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`, plus
+    :data:`NEW_CERT_CSV_COLUMN` when --cert was given several times.
 
     With ``--exclude``, one more row per excluded target address follows the results:
     probe ``excluded``, status ``EXCLUDED``, empty port, the matching rule in ``error``.
@@ -3624,11 +3664,13 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
-    writer.writerow(CSV_COLUMNS)
+    several = report.several_new_certs
+    columns = CSV_COLUMNS + ((NEW_CERT_CSV_COLUMN,) if several else ())
+    writer.writerow(columns)
     for row in report.results:
         data = _row_dict(row, report.finished_at)
         covers = data['newCertCovers']
-        writer.writerow([_csv_cell(value, terminal) for value in (
+        values = [
             data['server'], data['ip'], data['port'], data['probe'], data['name'] or '',
             data['sni'] or '', data['status'], data['coveredBy'] or '',
             '' if covers is None else ('yes' if covers else 'no'),
@@ -3636,12 +3678,15 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
             data['certNotAfter'] or '',
             '' if data['certDaysLeft'] is None else data['certDaysLeft'],
             data['certSha256'] or '', data['tlsVersion'] or '', data['error'] or '',
-        )])
+        ]  # type: List[Any]
+        if several:
+            values.append(report.new_cert_file(row.cert) or '')
+        writer.writerow([_csv_cell(value, terminal) for value in values])
     for entry in report.excluded:
-        row = dict.fromkeys(CSV_COLUMNS, '')  # type: Dict[str, Any]
+        row = dict.fromkeys(columns, '')  # type: Dict[str, Any]
         row.update(server=entry.server, ip=entry.ip, probe=PROBE_EXCLUDED, status=EXCLUDED,
                    error='excluded by --exclude %s (never probed)' % entry.rule)
-        writer.writerow([_csv_cell(row[column], terminal) for column in CSV_COLUMNS])
+        writer.writerow([_csv_cell(row[column], terminal) for column in columns])
     return buffer.getvalue()
 
 
@@ -3856,6 +3901,10 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
             text = '      default certificate (no SNI): %s' % style.status(default.status)
             if default.cert is not None:
                 text += '  ' + cert_line(default.cert, now, style)
+                why = (note(UPDATED, default.cert)
+                       if note is not None and default.status == UPDATED else '')
+                if why:
+                    text += '  (%s)' % display_text(why)
             elif default.error:
                 text += '  ' + style.paint(display_text(default.error), 'dim')
             out.append(text)
@@ -3916,7 +3965,10 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     if report.exclude:
         lines.append(_excluded_line(report, style))
     for cert in report.new_certs:
-        lines.append('New certificate: %s | %s' % (cert_line(cert, now, style), cert_ids(cert)))
+        source = report.new_cert_file(cert)
+        lines.append('New certificate%s: %s | %s' % (
+            ' (%s)' % display_text(source) if source else '', cert_line(cert, now, style),
+            cert_ids(cert)))
     if report.private_cas:
         labels = [ca.short_label() for ca in report.private_cas]
         lines.append(display_text('Private CAs (--private-ca): %s%s' % (
@@ -3934,11 +3986,13 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
         lines.extend(render_monitor(report, monitor, style, show_all, width))
 
     def note(status: str, cert: CertInfo) -> str:
-        # Why a group is ORIGIN_CERT / PRIVATE_CERT, or why --strict-public made it NEEDS_UPDATE.
+        # Why a group is ORIGIN_CERT / PRIVATE_CERT, or why --strict-public made it NEEDS_UPDATE;
+        # with several --cert files, which one an UPDATED group serves.
         if status in (ORIGIN_CERT, PRIVATE_CERT) or (status == NEEDS_UPDATE
                                                      and report.strict_public):
             return kind_label(*report.cert_kind(cert))
-        return ''
+        source = report.new_cert_file(cert) if status == UPDATED else None
+        return 'matches %s' % source if source else ''
 
     buckets = {}  # type: Dict[str, List[ServerSummary]]
     for summary in summaries:
@@ -5260,6 +5314,9 @@ examples:
   CI / cron - exit code 1 while any server still needs the new certificate:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color
 
+  Renewal week - an RSA + ECDSA pair and another certificate, checked in one run:
+    python3 ssl_origin_scan.py -t hosts.ini --cert a-rsa.pem --cert a-ecdsa.pem --cert b.pem
+
   Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --private-ca internal-ca.pem
   Cron - compare every run with the previous one, warn 21 days before a served
@@ -5308,7 +5365,11 @@ names (-n, repeatable): hostnames or files with names (one per line, # comments)
   it on the command line, '*.example.com', so the shell does not expand the *).
   --cert FILE adds the certificate's SAN names and lets servers that already serve
   it be reported as UPDATED (compared by SHA-256 fingerprint). The private key is
-  never needed; if the file contains one it is ignored.
+  never needed; if the file contains one it is ignored. --cert may be repeated (an
+  RSA + ECDSA pair, or several certificates renewed together): every file's names
+  are probed, a server serving any of them is UPDATED, and the summary ("matches
+  FILE"), the JSON (newCertFile, newCertificates[].file) and the CSV (a last column
+  new_cert) name the one it serves. With one --cert the reports are unchanged.
 
 statuses (per server, port and name):
   UPDATED       serves the new certificate (--cert) for the name
@@ -5386,6 +5447,9 @@ output encoding: follows the reader - the console code page when piped on Window
 
 Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, örnek:
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni-sertifika.pem
+  Birden çok sertifika (RSA + ECDSA ikilisi ya da aynı hafta yenilenenler) için --cert
+  tekrarlanır: herhangi birini sunan sunucu UPDATED olur, raporlar hangisi olduğunu
+  yazar ("matches DOSYA", JSON'da newCertFile, CSV'de new_cert sütunu).
   Dokunulmaması gereken adresleri --exclude ile çıkarın: IP, CIDR ya da aralık,
   boşlukla ayrılmış ya da satır başına bir adres içeren bir dosya. Bu adreslere
   hiç bağlanılmaz; alan adı kabul edilmez. Örnek:
@@ -5429,7 +5493,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help='hostname(s) or a file with one name per line (repeatable)')
     what.add_argument('--cert', metavar='FILE', action='append', default=[],
                       help='the new certificate (PEM/DER/P7B, chain OK): adds its names and '
-                           'enables UPDATED detection (repeatable, e.g. RSA + ECDSA)')
+                           'enables UPDATED detection (repeatable, e.g. RSA + ECDSA or several '
+                           'certificates renewed together: serving any of them is UPDATED, and '
+                           'the reports name which)')
     what.add_argument('--private-ca', metavar='FILE', action='append', default=[],
                       help='CA certificate(s) of your internal PKI (PEM/DER/P7B): what they '
                            'issued is PRIVATE_CERT, not NEEDS_UPDATE (repeatable)')
@@ -5835,10 +5901,12 @@ def _run(args: argparse.Namespace) -> int:
     notify_url, notify_format = _notify_settings(args, all_warnings)
 
     new_certs = []  # type: List[CertInfo]
+    new_cert_files = {}  # type: Dict[str, str]
     for path in args.cert:
         leaf, messages = load_new_certificate(path)
         if all(leaf.sha256 != cert.sha256 for cert in new_certs):
             new_certs.append(leaf)
+            new_cert_files[leaf.sha256] = path
         all_warnings.extend(messages)
 
     private_cas, ca_messages = load_private_cas(args.private_ca)
@@ -5894,7 +5962,8 @@ def _run(args: argparse.Namespace) -> int:
         report = run_scan(servers, probes, ports, new_certs=new_certs, timeout=args.timeout,
                           workers=args.workers, progress=progress.update,
                           warnings=all_warnings, exclude=exclude_rules,
-                          private_cas=private_cas, strict_public=args.strict_public)
+                          private_cas=private_cas, strict_public=args.strict_public,
+                          new_cert_files=new_cert_files)
     finally:
         progress.finish()
     monitor = None  # type: Optional[MonitorResult]

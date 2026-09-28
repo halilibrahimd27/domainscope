@@ -1,0 +1,599 @@
+// Unit tests for assets/js/lib/fixes.js — pure, no network (a fake DohClient where a read is
+// needed). Every template in every format is pinned by the goldens of
+// tests/fixtures/fixes/gen-fixes-golden.mjs; the rest checks the pieces one by one.
+// Documentation names and addresses only.
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  FIX_TYPES, FIX_FORMATS, FIX_LIMITS, FIX_CAS, FIX_FIELDS, FIX_I18N, CHANGE_TEMPLATES, TEMPLATE_IDS, CLOUDFLARE_VARS, CHANGE_LINT_CODES,
+  HEALTH_FIX_IDS, LINT_FIX_CODES, ACME_TOKEN_RE,
+  absoluteName, relativeName, zoneName, txtChunks, normalizeValue, valueKey, valueText, parseValueText, txtFamily, familyOf,
+  rrset, rrsetPlan, changeRequest, readPlan, readCurrent, currentEntry, applyCurrent, validateChange, afterZoneText, countSpfLookups,
+  renderFix, formatNotes, changeInstructions, editSpf, mergeSpf, editDmarc, buildChange, templateInput, changeTemplate, mailtoUri,
+  m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors
+} from '../../assets/js/lib/fixes.js';
+import { LINT_I18N } from '../../assets/js/lib/zonelint.js';
+import { HEALTH_CHECK_IDS, parseSpf, parseDmarc } from '../../assets/js/lib/health.js';
+import { parseZone } from '../../assets/js/lib/zoneparse.js';
+import { lintZone } from '../../assets/js/lib/zonelint.js';
+import { CASES, caseGolden, goldenPath, FIXES_DIR } from '../fixtures/fixes/gen-fixes-golden.mjs';
+
+const TOKEN = 'gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk';
+
+/** A fake DohClient answering from a table: 'name|TYPE' → { rcode?, answers: [{ name, type, ttl, data }] }. */
+function fakeDns(table, log = []) {
+  return {
+    async query(name, type, opts = {}) {
+      log.push({ name, type, ...opts });
+      const hit = table[`${name}|${type}`];
+      if (hit === 'error') return { ok: false, rcode: null, answers: [], authorities: [], errorKind: 'network', error: 'down' };
+      if (!hit) return { ok: true, rcode: 'NOERROR', answers: [], authorities: [] };
+      return { ok: true, rcode: hit.rcode || 'NOERROR', answers: hit.answers || [], authorities: hit.authorities || [] };
+    }
+  };
+}
+
+describe('goldens: every template in every format and both languages', () => {
+  test('each case matches its golden (node tests/fixtures/fixes/gen-fixes-golden.mjs --write after a deliberate change)', () => {
+    for (const c of CASES) {
+      const expected = readFileSync(goldenPath(c.id), 'utf8').replace(/\r\n/g, '\n');
+      assert.equal(caseGolden(c), expected, c.id);
+    }
+  });
+
+  test('every template has a golden, and no golden is left without a case', () => {
+    const covered = new Set(CASES.filter((c) => c.template).map((c) => c.template));
+    for (const id of TEMPLATE_IDS) assert.ok(covered.has(id), `no golden for template ${id}`);
+    const files = readdirSync(join(FIXES_DIR, 'expected')).filter((f) => f.endsWith('.golden.txt')).map((f) => f.replace('.golden.txt', ''));
+    assert.deepEqual(files.sort(), CASES.map((c) => c.id).sort());
+  });
+
+  test('the goldens are deterministic (built twice, the same)', () => {
+    for (const c of CASES) assert.equal(caseGolden(c), caseGolden(c), c.id);
+  });
+});
+
+describe('names', () => {
+  test('zoneName: a host name, never an address, a single label or a service label', () => {
+    assert.equal(zoneName('Example.COM.'), 'example.com');
+    assert.equal(zoneName('sub.example.com'), 'sub.example.com');
+    for (const bad of ['', '192.0.2.1', '[2001:db8::1]', 'localhost', '_dmarc.example.com', 'exa mple.com', null]) assert.equal(zoneName(bad), null, String(bad));
+  });
+
+  test('absoluteName: @, relative, absolute, wildcards, and a dotted name outside the zone is an error', () => {
+    assert.deepEqual(absoluteName('@', 'example.com'), { name: 'example.com', error: null });
+    assert.deepEqual(absoluteName('', 'example.com'), { name: 'example.com', error: null });
+    assert.deepEqual(absoluteName('www', 'example.com'), { name: 'www.example.com', error: null });
+    assert.deepEqual(absoluteName('_acme-challenge.www', 'example.com'), { name: '_acme-challenge.www.example.com', error: null });
+    assert.deepEqual(absoluteName('WWW.Example.com.', 'example.com'), { name: 'www.example.com', error: null });
+    assert.deepEqual(absoluteName('*.dev', 'example.com'), { name: '*.dev.example.com', error: null });
+    assert.deepEqual(absoluteName('*.dev', 'example.com', { wildcard: false }), { name: null, error: 'invalid' });
+    assert.deepEqual(absoluteName('www.example.net', 'example.com'), { name: null, error: 'outside' });
+    assert.deepEqual(absoluteName('shop.eu', 'example.com'), { name: null, error: 'outside' });
+    assert.deepEqual(absoluteName('mail.', 'example.com'), { name: null, error: 'outside' });
+    assert.equal(absoluteName('a b', 'example.com').name, null);
+  });
+
+  test('relativeName: @ for the apex, the labels below it, a name outside kept absolute', () => {
+    assert.equal(relativeName('example.com', 'example.com'), '@');
+    assert.equal(relativeName('_dmarc.example.com', 'example.com'), '_dmarc');
+    assert.equal(relativeName('www.example.net', 'example.com'), 'www.example.net.');
+  });
+});
+
+describe('values', () => {
+  test('normalizeValue per type, null for anything else', () => {
+    assert.equal(normalizeValue('A', '192.0.2.1'), '192.0.2.1');
+    assert.equal(normalizeValue('A', '2001:db8::1'), null);
+    assert.equal(normalizeValue('AAAA', '2001:DB8:0::1'), '2001:db8::1');
+    assert.equal(normalizeValue('AAAA', '192.0.2.1'), null);
+    assert.equal(normalizeValue('CNAME', 'Target.Example.NET.'), 'target.example.net');
+    assert.equal(normalizeValue('CNAME', '*.example.net'), null);
+    assert.deepEqual(normalizeValue('MX', { preference: 0, exchange: '.' }), { preference: 0, exchange: '' });
+    assert.deepEqual(normalizeValue('MX', { preference: '10', exchange: 'Mail.example.com' }), { preference: 10, exchange: 'mail.example.com' });
+    assert.equal(normalizeValue('MX', { preference: 70000, exchange: 'mail.example.com' }), null);
+    assert.deepEqual(normalizeValue('CAA', { flags: 0, tag: 'ISSUE', value: 'letsencrypt.org' }), { flags: 0, tag: 'issue', value: 'letsencrypt.org' });
+    assert.equal(normalizeValue('CAA', { flags: 300, tag: 'issue', value: 'x' }), null);
+    assert.equal(normalizeValue('CAA', { flags: 0, tag: 'is-sue', value: 'x' }), null);
+    assert.equal(normalizeValue('TXT', 'x'.repeat(FIX_LIMITS.valueBytes + 1)), null);
+    assert.equal(normalizeValue('NS', 'ns1.example.com'), null);
+  });
+
+  test('txtChunks: 255 bytes at most, never splitting a UTF-8 character', () => {
+    assert.deepEqual(txtChunks(''), ['']);
+    assert.deepEqual(txtChunks('a'.repeat(255)), ['a'.repeat(255)]);
+    assert.deepEqual(txtChunks('a'.repeat(256)), ['a'.repeat(255), 'a']);
+    const chunks = txtChunks(`${'a'.repeat(254)}ş${'b'.repeat(3)}`);
+    assert.deepEqual(chunks, ['a'.repeat(254), `ş${'b'.repeat(3)}`], 'ş (2 bytes) does not fit in the last byte');
+    for (const c of txtChunks('ğüşiöç'.repeat(100))) assert.ok(new TextEncoder().encode(c).length <= 255);
+  });
+
+  test('valueKey compares TXT by its joined text, other types as live answers do', () => {
+    assert.equal(valueKey('TXT', ['ab', 'c']), valueKey('TXT', ['a', 'bc']));
+    assert.equal(valueKey('MX', { preference: 0, exchange: '' }), valueKey('MX', { preference: 0, exchange: '.' }));
+    assert.equal(valueKey('CNAME', 'a.example.net'), valueKey('CNAME', 'a.example.net.'));
+    assert.notEqual(valueKey('CAA', { flags: 0, tag: 'issue', value: 'a' }), valueKey('CAA', { flags: 128, tag: 'issue', value: 'a' }));
+  });
+
+  test('valueText writes what the zone parser reads back, for every type', () => {
+    const samples = {
+      A: '192.0.2.1', AAAA: '2001:db8::1', CNAME: 'target.example.net', MX: { preference: 0, exchange: '' },
+      TXT: txtChunks(`quote " back \\ semi ; ${'x'.repeat(300)} ş`), CAA: { flags: 128, tag: 'issue', value: 'letsencrypt.org; validationmethods=dns-01' }
+    };
+    for (const type of FIX_TYPES) {
+      const text = valueText(type, samples[type]);
+      const back = parseValueText(type, text, 'example.com');
+      assert.equal(valueKey(type, back), valueKey(type, samples[type]), `${type}: ${text}`);
+    }
+    assert.equal(valueText('MX', { preference: 0, exchange: '' }), '0 .');
+    assert.equal(parseValueText('A', '192.0.2.1\n@ A 192.0.2.2', 'example.com'), null, 'one line only');
+    assert.equal(parseValueText('A', 'not-an-ip', 'example.com'), null);
+    assert.equal(parseValueText('SOA', 'x', 'example.com'), null);
+  });
+
+  test('txtFamily / familyOf: the v= kind a TXT value (list) shares', () => {
+    assert.equal(txtFamily('v=spf1 -all'), 'spf1');
+    assert.equal(txtFamily(['v=DMARC1; ', 'p=none']), 'dmarc1');
+    assert.equal(txtFamily('v=TLSRPTv1; rua=mailto:tls@example.com'), 'tlsrptv1');
+    assert.equal(txtFamily('v=spf10'), null);
+    assert.equal(txtFamily('google-site-verification=abc'), null);
+    assert.equal(familyOf('TXT', ['v=spf1 -all']), 'spf1');
+    assert.equal(familyOf('TXT', ['v=spf1 -all', 'other']), null);
+    assert.equal(familyOf('CAA', [{}]), null);
+  });
+
+  test('mailtoUri and the Microsoft 365 MX host', () => {
+    assert.equal(mailtoUri('DMARC@Example.com'), 'mailto:DMARC@example.com');
+    assert.equal(mailtoUri('mailto:dmarc@example.com'), 'mailto:dmarc@example.com');
+    for (const bad of ['', 'dmarc', 'a@b@example.com', 'a b@example.com', 'x@', 'x@exa mple.com']) assert.equal(mailtoUri(bad), null, bad);
+    assert.equal(m365MxHost('example.com'), 'example-com.mail.protection.outlook.com');
+  });
+});
+
+describe('record-set plans', () => {
+  const A = (v) => rrset({ name: 'www.example.com', type: 'A', ...v });
+
+  test('is: add what is new, remove what goes; unknown current values stay unknown', () => {
+    assert.deepEqual(rrsetPlan(A({ values: ['192.0.2.1'], before: ['198.51.100.5'] })),
+      { add: ['192.0.2.1'], remove: ['198.51.100.5'], keep: [], after: ['192.0.2.1'], full: ['192.0.2.1'], ttlOnly: false, rewrite: false, unchanged: false, complete: true });
+    const unread = rrsetPlan(A({ values: ['192.0.2.1'] }));
+    assert.equal(unread.remove, null);
+    assert.deepEqual(unread.add, ['192.0.2.1']);
+    assert.ok(unread.complete, 'the whole set is known: exactly these values');
+  });
+
+  test('has: keeps what is there; the full set is known only after a read', () => {
+    const p = rrsetPlan(rrset({ name: 'x.example.com', type: 'TXT', mode: 'has', values: ['new'], before: ['old'] }));
+    assert.deepEqual(p.add.map((v) => v.join('')), ['new']);
+    assert.deepEqual(p.full.map((v) => v.join('')), ['old', 'new']);
+    assert.equal(rrsetPlan(rrset({ name: 'x.example.com', type: 'TXT', mode: 'has', values: ['new'] })).complete, false);
+  });
+
+  test('none: removes the current values (unknown before a read)', () => {
+    assert.deepEqual(rrsetPlan(A({ mode: 'none', before: ['192.0.2.1'] })).remove, ['192.0.2.1']);
+    assert.equal(rrsetPlan(A({ mode: 'none' })).remove, null);
+    assert.equal(rrsetPlan(A({ mode: 'none', before: [] })).unchanged, true, 'nothing there: nothing to delete');
+  });
+
+  test('a family set: its other TXT values are part of the full set only once read', () => {
+    const r = rrset({ name: 'example.com', type: 'TXT', values: ['v=spf1 -all'], before: ['v=spf1 ~all'], others: ['site-verification=1'] });
+    assert.equal(r.family, 'spf1');
+    assert.deepEqual(rrsetPlan(r).full.map((v) => v.join('')), ['site-verification=1', 'v=spf1 -all']);
+    assert.equal(rrsetPlan(rrset({ name: 'example.com', type: 'TXT', values: ['v=spf1 -all'] })).complete, false);
+  });
+
+  test('a TTL change counts only when asked for (maxTtl) or from the zone file; a resolver TTL never does', () => {
+    assert.equal(rrsetPlan(A({ values: ['192.0.2.1'], before: ['192.0.2.1'], ttl: 300, maxTtl: 300 })).ttlOnly, true);
+    assert.equal(rrsetPlan(A({ values: ['192.0.2.1'], before: ['192.0.2.1'], ttl: 300, beforeTtl: 5 })).ttlOnly, true);
+    assert.equal(rrsetPlan(A({ values: ['192.0.2.1'], before: ['192.0.2.1'], ttl: 300 })).unchanged, true);
+  });
+
+  test('rrset: canonical, de-duplicated values; defaults', () => {
+    const r = rrset({ name: 'WWW.example.com.', type: 'a', values: ['192.0.2.1', '192.0.2.1', 'bogus'] });
+    assert.deepEqual([r.name, r.type, r.values, r.mode, r.ttl, r.before], ['www.example.com', 'A', ['192.0.2.1'], 'is', 3600, null]);
+    assert.equal(rrset({ name: 'x.example.com', type: 'A', ttl: '0' }).ttl, 3600, 'TTL 0 falls back');
+  });
+});
+
+describe('change requests, reads and validation', () => {
+  test('changeRequest merges sets of one name, type and family, and caps them', () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [
+      { name: 'a.example.com', type: 'A', values: ['192.0.2.1'] }, { name: 'a.example.com', type: 'A', values: ['192.0.2.2'] }
+    ] });
+    assert.equal(req.rrsets.length, 1);
+    assert.deepEqual(req.rrsets[0].values, ['192.0.2.1', '192.0.2.2']);
+    const many = changeRequest({ zone: 'example.com', rrsets: Array.from({ length: 25 }, (_, i) => ({ name: `h${i}.example.com`, type: 'A', values: ['192.0.2.1'] })) });
+    assert.equal(many.rrsets.length, FIX_LIMITS.rrsets);
+    assert.ok(hasErrors(many));
+  });
+
+  test('readPlan: each set, and at its name what a CNAME would clash with', () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [{ name: 'www.example.com', type: 'CNAME', values: ['t.example.net'] }, { name: 'example.com', type: 'TXT', values: ['x'] }] });
+    assert.deepEqual(readPlan(req).map((q) => `${q.name} ${q.type}`), [
+      'www.example.com CNAME', 'www.example.com A', 'www.example.com AAAA', 'www.example.com TXT', 'www.example.com MX', 'example.com TXT', 'example.com CNAME'
+    ]);
+  });
+
+  test('readCurrent / currentEntry: the name\'s own records, a CNAME noted, NXDOMAIN and failures told apart', async () => {
+    const log = [];
+    const dns = fakeDns({
+      'www.example.com|A': { answers: [{ name: 'www.example.com', type: 'CNAME', ttl: 60, data: 'edge.example.net' }, { name: 'edge.example.net', type: 'A', ttl: 60, data: '192.0.2.9' }] },
+      'gone.example.com|A': { rcode: 'NXDOMAIN' },
+      'down.example.com|A': 'error',
+      'example.com|TXT': { answers: [{ name: 'example.com', type: 'TXT', ttl: 300, data: ['v=spf1 ', '-all'] }, { name: 'example.com', type: 'TXT', ttl: 200, data: ['x'] }] }
+    }, log);
+    const cur = await readCurrent([{ name: 'www.example.com', type: 'A' }, { name: 'gone.example.com', type: 'A' }, { name: 'down.example.com', type: 'A' }, { name: 'example.com', type: 'TXT' }], { dns });
+    assert.deepEqual(cur['www.example.com|A'], { status: 'nodata', values: [], ttl: null, cname: 'edge.example.net' });
+    assert.equal(cur['gone.example.com|A'].status, 'nxdomain');
+    assert.equal(cur['down.example.com|A'].status, 'error');
+    assert.deepEqual(cur['example.com|TXT'].values.map((v) => v.join('')), ['v=spf1 -all', 'x']);
+    assert.equal(cur['example.com|TXT'].ttl, 200);
+    assert.ok(log.every((q) => q.noCache === true), 'a read never answers from the cache');
+    assert.deepEqual(currentEntry({ ok: true, rcode: 'SERVFAIL', answers: [] }, 'x.example.com', 'A').status, 'error');
+  });
+
+  test('applyCurrent fills before / others per family, never the resolver TTL', () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [{ name: 'example.com', type: 'TXT', values: ['v=spf1 -all'] }] });
+    const cur = { 'example.com|TXT': { status: 'ok', values: [['v=spf1 ~all'], ['verify=1']], ttl: 77, cname: null } };
+    const r = applyCurrent(req, cur).rrsets[0];
+    assert.deepEqual([r.before.map((v) => v.join('')), r.others.map((v) => v.join('')), r.beforeTtl], [['v=spf1 ~all'], ['verify=1'], null]);
+    assert.equal(applyCurrent(req, { 'example.com|TXT': { status: 'error', values: [] } }).rrsets[0].before, null, 'a failed read stays unknown');
+  });
+
+  test('validateChange: the zone linter over the records after the change, with what the read found at the same names', () => {
+    const req = buildChange('record', { name: 'www.example.com', type: 'CNAME', values: 'edge.example.net' });
+    assert.deepEqual(validateChange(req), [], 'alone, a CNAME is fine');
+    const cur = { 'www.example.com|A': { status: 'ok', values: ['192.0.2.1'], ttl: 300, cname: null } };
+    const probs = validateChange(req, { current: cur });
+    assert.deepEqual(probs.map((p) => [p.severity, p.key]), [['error', 'zone.lint.CNAME_AND_OTHER_DATA']]);
+    assert.match(afterZoneText(req, cur), /www\.example\.com\. 300 IN A 192\.0\.2\.1/);
+  });
+
+  test('validateChange: private addresses, CAA flags and tags, SPF / DMARC syntax, the SPF lookup budget, TTL bounds', () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [
+      { name: 'intranet.example.com', type: 'A', values: ['10.0.0.5'], ttl: 20 },
+      { name: 'example.com', type: 'CAA', values: [{ flags: 1, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'isue', value: 'x' },
+        { flags: 0, tag: 'issue', value: 'letsencrypt.org; validationmethods=' }, { flags: 0, tag: 'issue', value: 'letsencrypt.org; accounturi=x y' }] },
+      { name: 'example.com', type: 'TXT', values: [`v=spf1 ${Array.from({ length: 11 }, (_, i) => `include:s${i}.example.net`).join(' ')} -all`], ttl: 100000 },
+      { name: '_dmarc.example.com', type: 'TXT', values: ['v=DMARC1; p=maybe'] }
+    ] });
+    const keys = validateChange(req, { spf: { 'example.com': { count: 14, exceeded: true } } }).map((p) => p.key);
+    for (const k of ['zone.lint.PRIVATE_IP', 'zone.lint.CAA_FLAGS', 'zone.lint.CAA_UNKNOWN_TAG', 'zone.lint.DMARC_INVALID', 'fix.p.caa-malformed',
+      'fix.p.spf-terms', 'fix.p.spf-lookups-over', 'fix.p.ttl-low', 'fix.p.ttl-high']) assert.ok(keys.includes(k), k);
+    assert.ok(keys.indexOf('fix.p.ttl-low') > keys.indexOf('fix.p.spf-terms'), 'errors before info');
+    for (const code of CHANGE_LINT_CODES) assert.ok(LINT_I18N.en[`zone.lint.${code}`], code);
+  });
+
+  test('countSpfLookups: the proposed record, its includes as published now', async () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [{ name: 'example.com', type: 'TXT', values: ['v=spf1 include:_spf.example.net -all'] }] });
+    const dns = fakeDns({ '_spf.example.net|TXT': { answers: [{ name: '_spf.example.net', type: 'TXT', ttl: 300, data: ['v=spf1 include:a.example.net include:b.example.net ~all'] }] },
+      'a.example.net|TXT': { answers: [{ name: 'a.example.net', type: 'TXT', ttl: 300, data: ['v=spf1 ip4:192.0.2.0/24 ~all'] }] },
+      'b.example.net|TXT': { answers: [{ name: 'b.example.net', type: 'TXT', ttl: 300, data: ['v=spf1 ip4:198.51.100.0/24 ~all'] }] } });
+    const out = await countSpfLookups(req, { dns });
+    assert.deepEqual(out, { 'example.com': { count: 3, exceeded: false, error: null } });
+  });
+});
+
+describe('formats', () => {
+  const req = buildChange('record', { name: 'www.example.com', type: 'A', values: '192.0.2.10' });
+
+  test('every format renders every template without throwing; an unknown format is refused', () => {
+    for (const c of CASES) {
+      const r = c.request ? c.request() : buildChange(c.template, c.input);
+      for (const f of FIX_FORMATS) assert.equal(typeof renderFix(r, f), 'string', `${c.id} ${f}`);
+    }
+    assert.throws(() => renderFix(req, 'pdf'), RangeError);
+  });
+
+  test('the Cloudflare script never holds a secret: the token and zone ID come from shell variables it names', () => {
+    for (const c of CASES) {
+      const text = renderFix(c.request ? c.request() : buildChange(c.template, c.input), 'cloudflare');
+      assert.match(text, new RegExp(`\\$\\{${CLOUDFLARE_VARS.token}:\\?`));
+      assert.match(text, new RegExp(`\\$\\{${CLOUDFLARE_VARS.zone}:\\?`));
+      assert.doesNotMatch(text, /Bearer [A-Za-z0-9_-]{20,}/, c.id);
+      for (const l of text.split('\n').filter((x) => x.includes('--data '))) assert.match(l, /--data '[\x20-\x7e]*'$/, 'ASCII, single-quoted');
+    }
+  });
+
+  test('Route 53 writes non-ASCII TXT bytes as octal escapes and splits strings over 255 bytes', () => {
+    const r = buildChange('record', { name: 'x.example.com', type: 'TXT', values: `café ${'a'.repeat(300)}` });
+    const batch = JSON.parse(renderFix(r, 'route53'));
+    const value = batch.Changes[0].ResourceRecordSet.ResourceRecords[0].Value;
+    assert.match(value, /^"caf\\303\\251 a+" "a+"$/);
+  });
+
+  test('Terraform escapes HCL interpolation and quotes; aws_route53_record splits long TXT with ""', () => {
+    const r = buildChange('record', { name: 'x.example.com', type: 'TXT', values: 'a ${b} %{c} "d"' });
+    assert.match(renderFix(r, 'terraform-cloudflare'), /content {2}= "a \$\$\{b\} %%\{c\} \\"d\\""/);
+    const long = buildChange('record', { name: 'x.example.com', type: 'TXT', values: 'b'.repeat(300) });
+    assert.match(renderFix(long, 'terraform-route53'), /records = \["b{255}\\"\\"b{45}"\]/);
+  });
+
+  test('octoDNS escapes ; in TXT values and quotes YAML specials; the apex is \'\'', () => {
+    const r = buildChange('record', { name: 'example.com', type: 'TXT', values: "v=DMARC1; p=none; it's" });
+    const y = renderFix(r, 'octodns');
+    assert.match(y, /^'':$/m);
+    assert.match(y, /- 'v=DMARC1\\; p=none\\; it''s'$/m);
+  });
+
+  test('formatNotes: a whole-set format says what was not read; a Route 53 DELETE must match exactly', () => {
+    const unread = buildChange('acme-txt', { name: 'example.com', tokens: TOKEN });
+    assert.deepEqual(formatNotes(unread, 'route53').map((n) => n.key), ['fix.fn.incomplete']);
+    assert.deepEqual(formatNotes(unread, 'bind'), []);
+    const del = changeRequest({ zone: 'example.com', rrsets: [{ name: 'old.example.com', type: 'A', mode: 'none', before: ['192.0.2.1'] }] });
+    assert.deepEqual(formatNotes(del, 'route53').map((n) => n.key), ['fix.fn.route53-delete']);
+    const low = buildChange('record', { name: 'www.example.com', type: 'A', values: '192.0.2.1', ttl: '30' });
+    assert.ok(formatNotes(low, 'cloudflare').some((n) => n.key === 'fix.fn.cloudflare-ttl'));
+  });
+
+  test('a one-for-one replacement is changed in place on Cloudflare (never two SPF records at once)', () => {
+    const r = changeRequest({ zone: 'example.com', rrsets: [{ name: 'example.com', type: 'TXT', values: ['v=spf1 -all'], before: ['v=spf1 ~all'], others: [] }] });
+    const text = renderFix(r, 'cloudflare');
+    assert.match(text, /# 1\. Change example\.com TXT \(SPF\): "v=spf1 ~all" -> "v=spf1 -all"/);
+    assert.doesNotMatch(text, /-X POST/);
+    assert.match(text, /-X PATCH "\$API\/RECORD_ID"/);
+  });
+
+  test('an unchanged set is left out of BIND, Route 53, Cloudflare and the instructions', () => {
+    const r = changeRequest({ zone: 'example.com', rrsets: [{ name: 'www.example.com', type: 'A', values: ['192.0.2.1'], before: ['192.0.2.1'] }] });
+    assert.doesNotMatch(renderFix(r, 'bind'), /IN A/);
+    assert.deepEqual(JSON.parse(renderFix(r, 'route53')).Changes, []);
+    assert.doesNotMatch(renderFix(r, 'cloudflare'), /curl/);
+    assert.match(changeInstructions(r), /Nothing to change/);
+  });
+});
+
+describe('instructions', () => {
+  test('English and Turkish: one numbered step per set, the notes, the check link', () => {
+    const req = buildChange('parked', { domain: 'example.org' });
+    const en = changeInstructions(req, { lang: 'en', checkUrl: 'https://example.github.io/domainscope/#/change/check?z=example.org' });
+    const tr = changeInstructions(req, { lang: 'tr' });
+    assert.match(en, /^DNS change request: example\.org\n/);
+    assert.equal((en.match(/^\d+\. /gm) || []).length, 4);
+    assert.equal((tr.match(/^\d+\. /gm) || []).length, 4);
+    assert.match(tr, /^DNS değişiklik talebi: example\.org\n/);
+    assert.match(en, /check\?z=example\.org\n$/);
+    assert.doesNotMatch(tr, /check\?/);
+    assert.equal(changeInstructions(req, { lang: 'de' }), changeInstructions(req, { lang: 'en' }), 'an unknown language writes English');
+  });
+
+  test('textIn: either language whatever the UI\'s, params filled, unknown params kept visible', () => {
+    assert.equal(textIn('tr', 'fix.ins.name'), 'Ad');
+    assert.equal(textIn('en', 'fix.ins.title', { zone: 'example.com' }), 'DNS change request: example.com');
+    assert.equal(textIn('en', 'fix.ins.title'), 'DNS change request: {zone}');
+    assert.equal(textIn('en', 'no.such.key'), 'no.such.key');
+  });
+});
+
+describe('SPF and DMARC editing', () => {
+  test('editSpf: an include before all / redirect, once; removal; the all qualifier', () => {
+    assert.equal(editSpf('v=spf1 mx ~all', { add: ['_spf.example.net'] }).record, 'v=spf1 mx include:_spf.example.net ~all');
+    assert.equal(editSpf('v=spf1 mx redirect=_spf.example.org', { add: ['a.example.net'] }).record, 'v=spf1 mx include:a.example.net redirect=_spf.example.org');
+    assert.deepEqual(editSpf('v=spf1 include:A.example.net ~all', { add: ['a.example.net'] }).present, ['a.example.net']);
+    const rm = editSpf('v=spf1 include:a.example.net +include:b.example.net ~all', { remove: ['b.example.net', 'c.example.net'] });
+    assert.deepEqual([rm.record, rm.removed, rm.missing], ['v=spf1 include:a.example.net ~all', ['b.example.net'], ['c.example.net']]);
+    assert.equal(editSpf('v=spf1 mx +all', { all: '-all' }).record, 'v=spf1 mx -all');
+    assert.equal(editSpf('v=spf1 mx redirect=x.example.net', { all: '~all' }).record, 'v=spf1 mx ~all', 'an all replaces a redirect');
+    assert.equal(editSpf('', { add: ['a.example.net'] }).record, 'v=spf1 include:a.example.net');
+  });
+
+  test('mergeSpf: every term once, the strictest all last', () => {
+    assert.equal(mergeSpf(['v=spf1 include:a.example.net ~all', 'v=spf1 ip4:192.0.2.0/24 include:a.example.net -all']),
+      'v=spf1 include:a.example.net ip4:192.0.2.0/24 -all');
+    assert.equal(mergeSpf(['v=spf1 mx', 'v=spf1 redirect=_spf.example.net']), 'v=spf1 mx redirect=_spf.example.net');
+    assert.equal(mergeSpf(['v=spf1 +all', 'v=spf1 a']), 'v=spf1 a +all');
+    assert.ok(parseSpf(mergeSpf(['v=spf1 a -all', 'v=spf1 mx ?all'])).valid);
+  });
+
+  test('editDmarc: v first, p second, tags kept in order, null removes one', () => {
+    assert.equal(editDmarc('v=DMARC1; rua=mailto:d@example.com; p=none; pct=50', { p: 'quarantine', pct: null }), 'v=DMARC1; p=quarantine; rua=mailto:d@example.com');
+    assert.equal(editDmarc(null, { p: 'none', rua: 'mailto:d@example.com' }), 'v=DMARC1; p=none; rua=mailto:d@example.com');
+    assert.equal(editDmarc('v=DMARC1; p=reject; sp=none', { sp: null }), 'v=DMARC1; p=reject');
+    assert.ok(parseDmarc(editDmarc('v=DMARC1; p=none', { p: 'reject', adkim: 's' })).valid);
+  });
+});
+
+describe('templates', () => {
+  test('every template: known fields, a default TTL, texts in both languages', () => {
+    assert.deepEqual(TEMPLATE_IDS, ['acme-txt', 'acme-cname', 'm365', 'google', 'caa', 'spf', 'dmarc', 'ttl', 'record', 'parked']);
+    for (const t of CHANGE_TEMPLATES) {
+      for (const f of t.fields) assert.ok(FIX_FIELDS[f], `${t.id}.${f}`);
+      assert.ok(Number.isInteger(t.ttl));
+      for (const k of [`fix.tpl.${t.id}`, `fix.tpl.${t.id}.desc`]) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
+    }
+    for (const [id, f] of Object.entries(FIX_FIELDS)) {
+      assert.ok(FIX_I18N.en[`fix.field.${id}`] && FIX_I18N.tr[`fix.field.${id}`], id);
+      if (f.kind === 'select' && !f.literal) for (const o of f.options) assert.ok(FIX_I18N.en[`fix.opt.${id}.${o}`] && FIX_I18N.tr[`fix.opt.${id}.${o}`], `${id}.${o}`);
+    }
+    assert.ok(FIX_CAS.some((c) => c.id === 'letsencrypt' && c.caa === 'letsencrypt.org'));
+    assert.ok(!FIX_CAS.some((c) => c.id === 'etugra'), 'no distrusted CA');
+  });
+
+  test('templateInput: defaults, booleans and lists from strings (a route\'s params)', () => {
+    assert.deepEqual(templateInput('caa', { domain: 'example.com', cas: 'google,letsencrypt,nope', wild: 'bogus' }),
+      { domain: 'example.com', cas: ['google', 'letsencrypt'], wild: 'unset', accountUri: '', methods: [], iodef: '', ttl: '', zone: '' });
+    assert.equal(templateInput('parked', { dkim: '1' }).dkim, true);
+    assert.equal(templateInput('parked', { caa: '0' }).caa, false);
+    assert.equal(changeTemplate('nope'), null);
+    assert.ok(hasErrors(buildChange('nope', {})));
+  });
+
+  test('the form\'s mistakes are problems, never a wrong record', () => {
+    const keys = (id, input, opts) => buildChange(id, input, opts).problems.map((p) => p.key);
+    assert.deepEqual(keys('acme-txt', { name: '' }), ['fix.p.name-missing']);
+    assert.deepEqual(keys('acme-txt', { name: 'example.com' }), ['fix.p.tokens-missing']);
+    assert.deepEqual(keys('acme-txt', { name: 'example.com', tokens: TOKEN }), []);
+    assert.ok(ACME_TOKEN_RE.test(TOKEN));
+    assert.deepEqual(keys('acme-txt', { name: 'example.com', tokens: 'short' }), ['fix.p.token-format']);
+    assert.deepEqual(keys('record', { name: 'www.example.net', zone: 'example.com', type: 'A', values: '192.0.2.1' }), ['fix.p.outside']);
+    assert.deepEqual(keys('record', { name: 'www.example.com', type: 'A', values: 'nope' }), ['fix.p.value']);
+    assert.deepEqual(keys('record', { name: 'www.example.com', type: 'CNAME', values: 'a.example.net\nb.example.net' }), ['fix.p.cname-one']);
+    assert.deepEqual(keys('record', { name: 'www.example.com', type: 'A', values: '192.0.2.1', ttl: 'soon' }), ['fix.p.ttl']);
+    assert.deepEqual(keys('caa', { domain: 'example.com', cas: ['letsencrypt', 'google'], accountUri: 'https://acme.example.net/acct/1' }), ['fix.p.accounturi-one']);
+    assert.deepEqual(keys('caa', { domain: 'example.com', cas: [] }), ['fix.p.caa-none']);
+    assert.deepEqual(keys('dmarc', { domain: 'example.com', pct: '0' }), ['fix.p.read-first', 'fix.p.pct', 'fix.p.dmarc-no-rua']);
+    assert.deepEqual(keys('spf', { domain: 'example.com', includes: 'bad..name' }), ['fix.p.host', 'fix.p.read-first']);
+    assert.deepEqual(keys('google', { domain: 'example.com', dkimKey: 'k=rsa; p=' }), ['fix.p.dkim-key']);
+    assert.deepEqual(keys('ttl', { domain: 'example.com', records: 'www\nwww A' }), ['fix.p.ttl-line', 'fix.p.ttl-read']);
+    assert.deepEqual(keys('m365', { domain: '_dmarc.example.com' }), ['fix.p.domain']);
+    assert.deepEqual(keys('m365', { domain: 'example.com', zone: '192.0.2.1' }), ['fix.p.zone']);
+    for (const k of new Set(CASES.flatMap((c) => (c.request ? c.request() : buildChange(c.template, c.input)).problems.map((p) => p.key)))) {
+      assert.ok(FIX_I18N.en[k] || LINT_I18N.en[k], k);
+    }
+  });
+
+  test('a delegated _acme-challenge is refused: the TXT belongs at the CNAME target', () => {
+    const cur = { '_acme-challenge.example.com|CNAME': { status: 'ok', values: ['x.auth.example.net'], ttl: 300, cname: null } };
+    const req = buildChange('acme-txt', { name: '*.example.com', tokens: TOKEN }, { current: cur });
+    assert.deepEqual(req.problems.find((p) => p.key === 'fix.p.acme-delegated').params, { name: '_acme-challenge.example.com', target: 'x.auth.example.net' });
+  });
+
+  test('the SPF of a mail template goes into the record there (after a read), never a second one', () => {
+    const cur = { 'example.com|TXT': { status: 'ok', values: [['v=spf1 include:_spf.example.net ~all']], ttl: 300, cname: null } };
+    const set = buildChange('google', { domain: 'example.com' }, { current: cur }).rrsets.find((r) => r.family === 'spf1');
+    assert.deepEqual(set.values.map((v) => v.join('')), ['v=spf1 include:_spf.example.net include:_spf.google.com ~all']);
+    const two = { 'example.com|TXT': { status: 'ok', values: [['v=spf1 -all'], ['v=spf1 a -all']], ttl: 300, cname: null } };
+    assert.ok(buildChange('m365', { domain: 'example.com' }, { current: two }).problems.some((p) => p.key === 'fix.p.spf-multiple'));
+  });
+
+  test('the lowered TTLs keep the values a read found, and the check asks for the new TTL', () => {
+    const cur = { 'www.example.com|A': { status: 'ok', values: ['192.0.2.1'], ttl: 86400, cname: null } };
+    const req = buildChange('ttl', { domain: 'example.com', records: 'www A' }, { current: cur });
+    assert.deepEqual([req.rrsets[0].values, req.rrsets[0].ttl, req.rrsets[0].maxTtl], [['192.0.2.1'], 300, 300]);
+    assert.deepEqual(req.notes, [{ key: 'fix.n.ttl-wait', params: { ttl: 86400 } }]);
+  });
+});
+
+describe('fixes of Domain Health checks', () => {
+  const report = (over = {}) => ({
+    domain: 'example.com',
+    zone: 'example.com',
+    records: { txt: ['v=spf1 include:_spf.example.net +all', 'site-verification=1'], mx: [{ preference: 10, exchange: 'mail.example.com' }], caa: [] },
+    spf: { record: 'v=spf1 include:_spf.example.net +all', parsed: parseSpf('v=spf1 include:_spf.example.net +all'), lookups: null },
+    dmarc: { record: null, parsed: null, foundAt: null, inherited: false },
+    failedLookups: [],
+    checks: [],
+    ...over
+  });
+
+  test('every fixable id is a real check id, and has texts', () => {
+    for (const id of HEALTH_FIX_IDS) assert.ok(HEALTH_CHECK_IDS.includes(id), id);
+    for (const k of Object.keys(FIX_I18N.en).filter((x) => x.startsWith('fix.a.'))) assert.ok(FIX_I18N.tr[k], k);
+  });
+
+  test('dmarc.missing: a p=none record with a report address to create first', () => {
+    const f = healthFix({ id: 'dmarc.missing' }, report());
+    assert.equal(f.kind, 'records');
+    assert.deepEqual(f.request.rrsets.map((r) => [r.name, r.values.map((v) => v.join(''))]), [['_dmarc.example.com', ['v=DMARC1; p=none; rua=mailto:dmarc-reports@example.com']]]);
+    assert.deepEqual(f.advice.map((a) => a.key), ['fix.a.rua-mailbox']);
+    assert.equal(f.template, 'dmarc');
+    assert.equal(f.input.domain, 'example.com');
+  });
+
+  test('spf.all-pass: the same record with ~all; Route 53 keeps the other TXT values (read by the check)', () => {
+    const f = healthFix({ id: 'spf.all-pass' }, report());
+    const r = f.request.rrsets[0];
+    assert.deepEqual([r.family, r.values.map((v) => v.join('')), r.others.map((v) => v.join(''))],
+      ['spf1', ['v=spf1 include:_spf.example.net ~all'], ['site-verification=1']]);
+    assert.ok(rrsetPlan(r).complete);
+    assert.deepEqual(JSON.parse(renderFix(f.request, 'route53')).Changes[0].ResourceRecordSet.ResourceRecords.map((x) => x.Value),
+      ['"site-verification=1"', '"v=spf1 include:_spf.example.net ~all"']);
+  });
+
+  test('spf.missing: -all without MX, the platform include for Microsoft 365, else advice only', () => {
+    const noMx = healthFix({ id: 'spf.missing' }, report({ records: { txt: [], mx: [], caa: [] }, spf: {} }));
+    assert.deepEqual(noMx.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 -all']);
+    assert.deepEqual(noMx.advice.map((a) => a.key), ['fix.a.spf-no-mail']);
+    const m365 = healthFix({ id: 'spf.missing' }, report({ records: { txt: [], mx: [{ preference: 0, exchange: 'example-com.mail.protection.outlook.com' }], caa: [] }, spf: {} }));
+    assert.deepEqual(m365.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 include:spf.protection.outlook.com -all']);
+    const other = healthFix({ id: 'spf.missing' }, report({ records: { txt: [], mx: [{ preference: 10, exchange: 'mail.example.com' }], caa: [] }, spf: {} }));
+    assert.equal(other.kind, 'advice');
+  });
+
+  test('spf.lookups-exceeded: flattening advice naming the costliest includes, never a record', () => {
+    const tree = { terms: [{ mechanism: 'include', target: 'a.example.net', child: { count: 4 } }, { mechanism: 'include', target: 'b.example.net', child: { count: 6 } }, { mechanism: 'ip4', target: null, child: null }] };
+    const f = healthFix({ id: 'spf.lookups-exceeded' }, report({ spf: { record: 'x', parsed: null, lookups: { tree } } }));
+    assert.equal(f.kind, 'advice');
+    assert.equal(f.request, null);
+    assert.deepEqual(f.advice, [{ key: 'fix.a.spf-flatten', params: { includes: 'b.example.net (7), a.example.net (5)' } }]);
+  });
+
+  test('spf.multiple: one merged record; ptr and terms after all removed', () => {
+    const f = healthFix({ id: 'spf.multiple' }, report({ records: { txt: ['v=spf1 a ~all', 'v=spf1 mx -all'], mx: [], caa: [] } }));
+    assert.deepEqual(f.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 a mx -all']);
+    assert.deepEqual(f.request.rrsets[0].before.map((v) => v.join('')), ['v=spf1 a ~all', 'v=spf1 mx -all']);
+    const ptr = 'v=spf1 ptr mx ~all ip4:192.0.2.1';
+    const p = healthFix({ id: 'spf.ptr' }, report({ spf: { record: ptr, parsed: parseSpf(ptr) } }));
+    assert.deepEqual(p.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 mx ~all ip4:192.0.2.1'], 'only ptr goes');
+    const after = healthFix({ id: 'spf.after-all' }, report({ spf: { record: ptr, parsed: parseSpf(ptr) } }));
+    assert.deepEqual(after.request.rrsets[0].values.map((v) => v.join('')), ['v=spf1 ptr mx ~all'], 'only what follows all goes');
+  });
+
+  test('caa.missing needs the CAs of the domain\'s certificates, then one issue value per CA', () => {
+    const f = healthFix({ id: 'caa.missing' }, report());
+    assert.equal(f.needsCt, true);
+    const done = caaFixFromIssuers(f, [{ caaDomains: ['letsencrypt.org'] }, { caaDomains: ['pki.goog'] }, { caaDomains: ['ca.example.net'] }, { caaDomains: ['letsencrypt.org'] }]);
+    assert.equal(done.needsCt, false);
+    assert.deepEqual(done.request.rrsets[0].values.map((v) => v.value), ['letsencrypt.org', 'pki.goog', 'ca.example.net']);
+    assert.deepEqual(done.input.cas, ['letsencrypt', 'google']);
+    assert.ok(!done.request.problems.some((p) => p.key === 'fix.p.caa-none'));
+  });
+
+  test('mx.none: the mail lock-down without the CAA part; checks without a fix give null', () => {
+    const f = healthFix({ id: 'mx.none' }, report({ records: { txt: [], mx: [], caa: [] } }));
+    assert.deepEqual(f.request.rrsets.map((r) => `${r.name} ${r.type}`), ['example.com MX', 'example.com TXT', '_dmarc.example.com TXT']);
+    assert.equal(healthFix({ id: 'dnssec.unsigned' }, report()), null);
+    assert.equal(healthFix({ id: 'dmarc.missing' }, null), null);
+  });
+
+  test('currentFromReport: what the report read, never a failed lookup as "none"', () => {
+    const cur = currentFromReport(report({ failedLookups: ['mx'] }));
+    assert.deepEqual(Object.keys(cur).sort(), ['_dmarc.example.com|TXT', 'example.com|CAA', 'example.com|TXT']);
+    assert.equal(cur['example.com|CAA'].status, 'nodata');
+  });
+});
+
+describe('fixes of Zone File findings', () => {
+  const zone = (text) => parseZone(text, { origin: 'example.com' });
+  const findingOf = (z, code) => lintZone(z).findings.find((f) => f.code === code);
+
+  test('every fixable code is a lint code', () => {
+    for (const code of LINT_FIX_CODES) assert.ok(LINT_I18N.en[`zone.lint.${code}`], code);
+  });
+
+  test('TTL_TOO_LOW: the set with TTL 300, values from the file (exact)', () => {
+    const z = zone('$ORIGIN example.com.\napi 5 IN A 192.0.2.20\napi 5 IN A 192.0.2.21\n');
+    const f = lintFix(findingOf(z, 'TTL_TOO_LOW'), z);
+    const r = f.request.rrsets[0];
+    assert.deepEqual([r.name, r.ttl, r.beforeTtl, r.values], ['api.example.com', 300, 5, ['192.0.2.20', '192.0.2.21']]);
+    assert.ok(rrsetPlan(r).ttlOnly);
+  });
+
+  test('LOCALHOST_RECORD deletes the set; CAA_FLAGS sets the flags to 0; MULTIPLE_SPF merges', () => {
+    const z = zone('$ORIGIN example.com.\nlocalhost 300 IN A 127.0.0.1\n@ 300 IN CAA 1 issue "letsencrypt.org"\n@ 300 IN TXT "v=spf1 a ~all"\n@ 300 IN TXT "v=spf1 mx -all"\n@ 300 IN TXT "verify=1"\n');
+    const lh = lintFix(findingOf(z, 'LOCALHOST_RECORD'), z).request.rrsets[0];
+    assert.deepEqual([lh.mode, rrsetPlan(lh).remove], ['none', ['127.0.0.1']]);
+    const caa = lintFix(findingOf(z, 'CAA_FLAGS'), z).request.rrsets[0];
+    assert.deepEqual(caa.values, [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }]);
+    const spf = lintFix(findingOf(z, 'MULTIPLE_SPF'), z).request.rrsets[0];
+    assert.deepEqual([spf.values.map((v) => v.join('')), spf.others.map((v) => v.join(''))], [['v=spf1 a mx -all'], ['verify=1']]);
+    assert.equal(lintFix({ code: 'SINGLE_NS', name: 'example.com', type: 'NS' }, z), null);
+  });
+
+  test('TXT_STRING_TOO_LONG: the same text re-split into strings of 255 bytes', () => {
+    const z = zone(`$ORIGIN example.com.\nk 300 IN TXT "${'a'.repeat(300)}"\n`);
+    const f = lintFix(findingOf(z, 'TXT_STRING_TOO_LONG'), z);
+    assert.deepEqual(f.request.rrsets[0].values[0].map((s) => s.length), [255, 45]);
+    assert.match(renderFix(f.request, 'bind'), /k 300 IN TXT "a{255}" "a{45}"/);
+  });
+});
+
+describe('i18n', () => {
+  test('English and Turkish have the same keys and placeholders', () => {
+    const holes = (s) => [...new Set([...JSON.stringify(s).matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((m) => m[1]))].sort().join(',');
+    assert.deepEqual(Object.keys(FIX_I18N.tr).sort(), Object.keys(FIX_I18N.en).sort());
+    for (const k of Object.keys(FIX_I18N.en)) assert.equal(holes(FIX_I18N.en[k]), holes(FIX_I18N.tr[k]), k);
+  });
+});

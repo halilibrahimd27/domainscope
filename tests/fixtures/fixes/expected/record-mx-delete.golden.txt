@@ -1,0 +1,97 @@
+# case: record-mx-delete
+## problems
+## notes
+## check
+z=example.com&r=none+@+MX+%5E10+mail.example.com.
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; example.com MX
+; delete: @ 3600 IN MX 10 mail.example.com.
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "DELETE",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "10 mail.example.com"
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 notes
+fix.fn.route53-delete {}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Delete example.com MX 10 mail.example.com.
+#    Find each record's id, then:
+curl -sS "$API?type=MX&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+'':
+  # delete: the MX records of this name go (remove the entry)
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# delete: remove the resources of example.com MX 10 mail.example.com.
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+# delete: remove the resource of example.com MX (terraform destroys the record set)
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Delete: MX records
+   Name: example.com
+   Values:
+     10 mail.example.com.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=none+@+MX+%5E10+mail.example.com.
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Sil: MX kayıtları
+   Ad: example.com
+   Değerler:
+     10 mail.example.com.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=none+@+MX+%5E10+mail.example.com.

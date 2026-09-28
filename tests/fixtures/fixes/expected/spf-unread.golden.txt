@@ -1,0 +1,140 @@
+# case: spf-unread
+## problems
+warn fix.p.read-first {}
+## notes
+fix.n.spf-new {}
+## check
+z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; example.com TXT (SPF); the other TXT records of @ stay
+; replaces the SPF record of @
+@ 3600 IN TXT "v=spf1 include:mailgun.org ~all"
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=spf1 include:mailgun.org ~all\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Delete the example.com TXT (SPF) records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=TXT&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 2. Add example.com TXT "v=spf1 include:mailgun.org ~all"
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"example.com","content":"\"v=spf1 include:mailgun.org ~all\"","ttl":3600}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+'':
+  # keep the other TXT values this name has; replace its SPF value with the one below
+  - type: TXT
+    ttl: 3600
+    values:
+      - 'v=spf1 include:mailgun.org ~all'
+## octodns notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# remove the resources of any other example.com TXT (SPF) record (the current ones were not read)
+
+resource "cloudflare_record" "txt_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "TXT"
+  content  = "v=spf1 include:mailgun.org ~all"
+  ttl      = 3600
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+# list the other TXT values of example.com here too (they were not read): this resource replaces the whole set
+
+resource "aws_route53_record" "txt_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=spf1 include:mailgun.org ~all"]
+}
+## terraform-route53 notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Replace: SPF record (TXT)
+   Name: example.com
+   Value:
+     "v=spf1 include:mailgun.org ~all"
+   TTL: 3600
+   Replace the name’s SPF record with the value above.
+   The other TXT records of the name stay as they are.
+
+Notes:
+- There is no SPF record yet: this creates one. List every service that sends mail as the domain.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Değiştir: SPF kaydı (TXT)
+   Ad: example.com
+   Değer:
+     "v=spf1 include:mailgun.org ~all"
+   TTL: 3600
+   Adın SPF kaydını yukarıdaki değerle değiştirin.
+   Adın diğer TXT kayıtları olduğu gibi kalır.
+
+Notlar:
+- Henüz SPF kaydı yok: bu değişiklik bir tane oluşturur. Alan adı adına e-posta gönderen her hizmeti listeleyin.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+TXT+%22v=spf1+include:mailgun.org+~all%22

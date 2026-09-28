@@ -1,0 +1,142 @@
+# case: record-a
+## problems
+## notes
+## check
+z=example.com&r=is+www+A+192.0.2.10%7C192.0.2.11%5E198.51.100.5
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; www.example.com A
+www 600 IN A 192.0.2.10
+www 600 IN A 192.0.2.11
+; delete: www 600 IN A 198.51.100.5
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "A",
+        "TTL": 600,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.10"
+          },
+          {
+            "Value": "192.0.2.11"
+          }
+        ]
+      }
+    }
+  ]
+}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Add www.example.com A 192.0.2.10
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"A","name":"www.example.com","content":"192.0.2.10","ttl":600}'
+
+# 2. Add www.example.com A 192.0.2.11
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"A","name":"www.example.com","content":"192.0.2.11","ttl":600}'
+
+# 3. Delete www.example.com A 198.51.100.5
+#    Find each record's id, then:
+curl -sS "$API?type=A&name=www.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+www:
+  - type: A
+    ttl: 600
+    values:
+      - '192.0.2.10'
+      - '192.0.2.11'
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# delete: remove the resources of www.example.com A 198.51.100.5
+
+resource "cloudflare_record" "a_www" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "www.example.com"
+  type     = "A"
+  content  = "192.0.2.10"
+  ttl      = 600
+}
+
+resource "cloudflare_record" "a_www_2" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "www.example.com"
+  type     = "A"
+  content  = "192.0.2.11"
+  ttl      = 600
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "a_www" {
+  zone_id = var.route53_zone_id
+  name    = "www.example.com"
+  type    = "A"
+  ttl     = 600
+  records = ["192.0.2.10", "192.0.2.11"]
+}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Replace: A records
+   Name: www.example.com
+   Values:
+     192.0.2.10
+     192.0.2.11
+   TTL: 600
+   This removes:
+     198.51.100.5
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+www+A+192.0.2.10%7C192.0.2.11%5E198.51.100.5
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Değiştir: A kayıtları
+   Ad: www.example.com
+   Değerler:
+     192.0.2.10
+     192.0.2.11
+   TTL: 600
+   Bu değişiklikle kalkanlar:
+     198.51.100.5
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+www+A+192.0.2.10%7C192.0.2.11%5E198.51.100.5

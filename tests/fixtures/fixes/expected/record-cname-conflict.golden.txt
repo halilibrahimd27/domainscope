@@ -1,0 +1,4 @@
+# case: record-cname-conflict
+## problems
+error zone.lint.CNAME_AND_OTHER_DATA {"name":"shop.example.com","types":["A"]}
+## notes

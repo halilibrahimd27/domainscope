@@ -1,0 +1,127 @@
+# case: acme-cname
+## problems
+## notes
+fix.n.acme-cname {"name":"_acme-challenge.www.example.com","target":"d7c1f3a2.auth.example.org"}
+## check
+z=example.com&r=is+_acme-challenge.www+CNAME+d7c1f3a2.auth.example.org.
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; _acme-challenge.www.example.com CNAME
+; replaces every CNAME record of _acme-challenge.www
+_acme-challenge.www 3600 IN CNAME d7c1f3a2.auth.example.org.
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_acme-challenge.www.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "d7c1f3a2.auth.example.org"
+          }
+        ]
+      }
+    }
+  ]
+}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Delete the _acme-challenge.www.example.com CNAME records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=CNAME&name=_acme-challenge.www.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 2. Add _acme-challenge.www.example.com CNAME d7c1f3a2.auth.example.org.
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"CNAME","name":"_acme-challenge.www.example.com","content":"d7c1f3a2.auth.example.org","ttl":3600}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+_acme-challenge.www:
+  - type: CNAME
+    ttl: 3600
+    value: d7c1f3a2.auth.example.org.
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# remove the resources of any other _acme-challenge.www.example.com CNAME record (the current ones were not read)
+
+resource "cloudflare_record" "cname_acme_challenge_www" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "_acme-challenge.www.example.com"
+  type     = "CNAME"
+  content  = "d7c1f3a2.auth.example.org"
+  ttl      = 3600
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "cname_acme_challenge_www" {
+  zone_id = var.route53_zone_id
+  name    = "_acme-challenge.www.example.com"
+  type    = "CNAME"
+  ttl     = 3600
+  records = ["d7c1f3a2.auth.example.org"]
+}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Replace: CNAME records
+   Name: _acme-challenge.www.example.com
+   Value:
+     d7c1f3a2.auth.example.org.
+   TTL: 3600
+   Replace every CNAME record of the name with the values above.
+
+Notes:
+- After this, validations of the name look up d7c1f3a2.auth.example.org; the ACME client writes its TXT there, and _acme-challenge.www.example.com never changes again.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+_acme-challenge.www+CNAME+d7c1f3a2.auth.example.org.
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Değiştir: CNAME kayıtları
+   Ad: _acme-challenge.www.example.com
+   Değer:
+     d7c1f3a2.auth.example.org.
+   TTL: 3600
+   Adın tüm CNAME kayıtlarını yukarıdaki değerlerle değiştirin.
+
+Notlar:
+- Bundan sonra adın doğrulamaları d7c1f3a2.auth.example.org adına bakar; ACME istemcisi TXT kaydını oraya yazar ve _acme-challenge.www.example.com bir daha değişmez.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+_acme-challenge.www+CNAME+d7c1f3a2.auth.example.org.

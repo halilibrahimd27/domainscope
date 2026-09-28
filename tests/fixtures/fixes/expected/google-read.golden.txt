@@ -1,0 +1,269 @@
+# case: google-read
+## problems
+## notes
+fix.n.google-mx {}
+fix.n.dmarc-kept {"name":"_dmarc.example.com"}
+## check
+z=example.com&r=is+@+MX+1+smtp.google.com.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+include:_spf.google.com+~all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+google._domainkey+TXT+%22v=DKIM1;+k=rsa;+p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample%22
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; example.com MX
+@ 3600 IN MX 1 smtp.google.com.
+; delete: @ 3600 IN MX 10 mail.example.com.
+
+; example.com TXT (SPF); the other TXT records of @ stay
+@ 3600 IN TXT "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
+; delete: @ 3600 IN TXT "v=spf1 include:spf.protection.outlook.com ~all"
+
+; google._domainkey.example.com TXT (DKIM); the other TXT records of google._domainkey stay
+; replaces the DKIM record of google._domainkey
+google._domainkey 3600 IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "1 smtp.google.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"google-site-verification=abc123\""
+          },
+          {
+            "Value": "\"v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "google._domainkey.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 notes
+fix.fn.incomplete {"name":"google._domainkey.example.com","type":"TXT"}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Change example.com MX: 10 mail.example.com. -> 1 smtp.google.com.
+#    Find the record's id, then:
+curl -sS "$API?type=MX&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"MX","name":"example.com","content":"smtp.google.com","priority":1,"ttl":3600}'
+
+# 2. Change example.com TXT (SPF): "v=spf1 include:spf.protection.outlook.com ~all" -> "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
+#    Find the record's id, then:
+curl -sS "$API?type=TXT&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"example.com","content":"\"v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all\"","ttl":3600}'
+
+# 3. Delete the google._domainkey.example.com TXT (DKIM) records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=TXT&name=google._domainkey.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 4. Add google._domainkey.example.com TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"google._domainkey.example.com","content":"\"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample\"","ttl":3600}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+'':
+  - type: MX
+    ttl: 3600
+    values:
+      - exchange: smtp.google.com.
+        preference: 1
+  - type: TXT
+    ttl: 3600
+    values:
+      - 'google-site-verification=abc123'
+      - 'v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all'
+google._domainkey:
+  # keep the other TXT values this name has; replace its DKIM value with the one below
+  - type: TXT
+    ttl: 3600
+    values:
+      - 'v=DKIM1\; k=rsa\; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample'
+## octodns notes
+fix.fn.incomplete {"name":"google._domainkey.example.com","type":"TXT"}
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# change: the resource that holds example.com MX 10 mail.example.com. gets the value below
+
+resource "cloudflare_record" "mx_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "MX"
+  content  = "smtp.google.com"
+  priority = 1
+  ttl      = 3600
+}
+
+# change: the resource that holds example.com TXT "v=spf1 include:spf.protection.outlook.com ~all" gets the value below
+
+resource "cloudflare_record" "txt_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "TXT"
+  content  = "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
+  ttl      = 3600
+}
+
+# remove the resources of any other google._domainkey.example.com TXT (DKIM) record (the current ones were not read)
+
+resource "cloudflare_record" "txt_google_domainkey" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "google._domainkey.example.com"
+  type     = "TXT"
+  content  = "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"
+  ttl      = 3600
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "mx_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "MX"
+  ttl     = 3600
+  records = ["1 smtp.google.com"]
+}
+
+resource "aws_route53_record" "txt_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["google-site-verification=abc123", "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"]
+}
+
+# list the other TXT values of google._domainkey.example.com here too (they were not read): this resource replaces the whole set
+
+resource "aws_route53_record" "txt_google_domainkey" {
+  zone_id = var.route53_zone_id
+  name    = "google._domainkey.example.com"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"]
+}
+## terraform-route53 notes
+fix.fn.incomplete {"name":"google._domainkey.example.com","type":"TXT"}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Replace: MX records
+   Name: example.com
+   Value:
+     1 smtp.google.com.
+   TTL: 3600
+   This removes:
+     10 mail.example.com.
+2. Replace: SPF record (TXT)
+   Name: example.com
+   Value:
+     "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
+   TTL: 3600
+   This removes:
+     "v=spf1 include:spf.protection.outlook.com ~all"
+   The other TXT records of the name stay as they are.
+3. Replace: DKIM record (TXT)
+   Name: google._domainkey.example.com
+   Value:
+     "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"
+   TTL: 3600
+   Replace the name’s DKIM record with the value above.
+   The other TXT records of the name stay as they are.
+
+Notes:
+- smtp.google.com with priority 1 is Google’s current single MX; the older five aspmx records keep working.
+- _dmarc.example.com already has a DMARC record; it stays as it is.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+1+smtp.google.com.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+include:_spf.google.com+~all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+google._domainkey+TXT+%22v=DKIM1;+k=rsa;+p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample%22
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Değiştir: MX kayıtları
+   Ad: example.com
+   Değer:
+     1 smtp.google.com.
+   TTL: 3600
+   Bu değişiklikle kalkanlar:
+     10 mail.example.com.
+2. Değiştir: SPF kaydı (TXT)
+   Ad: example.com
+   Değer:
+     "v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all"
+   TTL: 3600
+   Bu değişiklikle kalkanlar:
+     "v=spf1 include:spf.protection.outlook.com ~all"
+   Adın diğer TXT kayıtları olduğu gibi kalır.
+3. Değiştir: DKIM kaydı (TXT)
+   Ad: google._domainkey.example.com
+   Değer:
+     "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample"
+   TTL: 3600
+   Adın DKIM kaydını yukarıdaki değerle değiştirin.
+   Adın diğer TXT kayıtları olduğu gibi kalır.
+
+Notlar:
+- Öncelik 1 ile smtp.google.com, Google’ın güncel tek MX kaydıdır; eski beş aspmx kaydı da çalışmaya devam eder.
+- _dmarc.example.com adında zaten bir DMARC kaydı var; olduğu gibi kalır.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+1+smtp.google.com.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+include:_spf.google.com+~all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+google._domainkey+TXT+%22v=DKIM1;+k=rsa;+p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample%22

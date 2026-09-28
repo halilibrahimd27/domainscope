@@ -1,0 +1,110 @@
+# case: lint-ttl
+## problems
+## notes
+## check
+z=example.com&r=is/300+api+A+192.0.2.20%5E192.0.2.20
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; api.example.com A
+; TTL -> 300, values unchanged
+api 300 IN A 192.0.2.20
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "api.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.20"
+          }
+        ]
+      }
+    }
+  ]
+}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. TTL of api.example.com A -> 300, values unchanged
+#    Find the id of each record, then:
+curl -sS "$API?type=A&name=api.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"ttl":300}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+api:
+  - type: A
+    ttl: 300
+    values:
+      - '192.0.2.20'
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+resource "cloudflare_record" "a_api" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "api.example.com"
+  type     = "A"
+  content  = "192.0.2.20"
+  ttl      = 300
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "a_api" {
+  zone_id = var.route53_zone_id
+  name    = "api.example.com"
+  type    = "A"
+  ttl     = 300
+  records = ["192.0.2.20"]
+}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Change the TTL: A records
+   Name: api.example.com
+   New TTL: 300 seconds (the values stay the same)
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is/300+api+A+192.0.2.20%5E192.0.2.20
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. TTL’i değiştir: A kayıtları
+   Ad: api.example.com
+   Yeni TTL: 300 saniye (değerler aynı kalır)
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is/300+api+A+192.0.2.20%5E192.0.2.20

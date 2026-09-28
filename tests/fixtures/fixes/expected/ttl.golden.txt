@@ -1,0 +1,169 @@
+# case: ttl
+## problems
+## notes
+fix.n.ttl-wait {"ttl":3600}
+## check
+z=example.com&r=is/300+www+A+198.51.100.5%5E198.51.100.5&r=is/300+@+MX+10+mail.example.com.%5E10+mail.example.com.
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; www.example.com A
+; TTL -> 300, values unchanged
+www 300 IN A 198.51.100.5
+
+; example.com MX
+; TTL -> 300, values unchanged
+@ 300 IN MX 10 mail.example.com.
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.5"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "10 mail.example.com"
+          }
+        ]
+      }
+    }
+  ]
+}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. TTL of www.example.com A -> 300, values unchanged
+#    Find the id of each record, then:
+curl -sS "$API?type=A&name=www.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"ttl":300}'
+
+# 2. TTL of example.com MX -> 300, values unchanged
+#    Find the id of each record, then:
+curl -sS "$API?type=MX&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"ttl":300}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+www:
+  - type: A
+    ttl: 300
+    values:
+      - '198.51.100.5'
+'':
+  - type: MX
+    ttl: 300
+    values:
+      - exchange: mail.example.com.
+        preference: 10
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+resource "cloudflare_record" "a_www" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "www.example.com"
+  type     = "A"
+  content  = "198.51.100.5"
+  ttl      = 300
+}
+
+resource "cloudflare_record" "mx_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "MX"
+  content  = "mail.example.com"
+  priority = 10
+  ttl      = 300
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "a_www" {
+  zone_id = var.route53_zone_id
+  name    = "www.example.com"
+  type    = "A"
+  ttl     = 300
+  records = ["198.51.100.5"]
+}
+
+resource "aws_route53_record" "mx_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "MX"
+  ttl     = 300
+  records = ["10 mail.example.com"]
+}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Change the TTL: A records
+   Name: www.example.com
+   New TTL: 300 seconds (the values stay the same)
+2. Change the TTL: MX records
+   Name: example.com
+   New TTL: 300 seconds (the values stay the same)
+
+Notes:
+- Wait at least the old TTL after this change before the migration: until then resolvers may keep the longer-lived copies. A resolver still had one for 3600 s; the zone’s own value can be higher.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is/300+www+A+198.51.100.5%5E198.51.100.5&r=is/300+@+MX+10+mail.example.com.%5E10+mail.example.com.
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. TTL’i değiştir: A kayıtları
+   Ad: www.example.com
+   Yeni TTL: 300 saniye (değerler aynı kalır)
+2. TTL’i değiştir: MX kayıtları
+   Ad: example.com
+   Yeni TTL: 300 saniye (değerler aynı kalır)
+
+Notlar:
+- Bu değişiklikten sonra taşımadan önce en az eski TTL kadar bekleyin: o zamana kadar çözümleyiciler uzun ömürlü kopyaları tutabilir. Bir çözümleyicide 3600 sn kalmış bir kopya vardı; zone’daki asıl değer daha yüksek olabilir.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is/300+www+A+198.51.100.5%5E198.51.100.5&r=is/300+@+MX+10+mail.example.com.%5E10+mail.example.com.

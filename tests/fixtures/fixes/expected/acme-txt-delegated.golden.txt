@@ -1,0 +1,6 @@
+# case: acme-txt-delegated
+## problems
+error fix.p.acme-delegated {"name":"_acme-challenge.example.net","target":"d7c1f3a2.auth.example.org"}
+error zone.lint.CNAME_AND_OTHER_DATA {"name":"_acme-challenge.example.net","types":["TXT"]}
+## notes
+fix.n.acme-remove {"name":"_acme-challenge.example.net"}

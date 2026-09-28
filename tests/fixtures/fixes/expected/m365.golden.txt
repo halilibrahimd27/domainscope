@@ -1,0 +1,459 @@
+# case: m365
+## problems
+## notes
+fix.n.m365-mx {"host":"example-com.mail.protection.outlook.com"}
+fix.n.spf-unread {"include":"spf.protection.outlook.com"}
+fix.n.m365-dkim {}
+fix.n.dmarc-start {}
+## check
+z=example.com&r=is+@+MX+0+example-com.mail.protection.outlook.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+-all%22&r=is+autodiscover+CNAME+autodiscover.outlook.com.&r=is+selector1._domainkey+CNAME+selector1-example-com._domainkey.example.onmicrosoft.com.&r=is+selector2._domainkey+CNAME+selector2-example-com._domainkey.example.onmicrosoft.com.&r=is+_dmarc+TXT+%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
+## bind
+; DNS change request for example.com (DomainScope)
+; The records below are what the changed sets hold afterwards;
+; every other record of the zone stays as it is.
+$ORIGIN example.com.
+
+; example.com MX
+; replaces every MX record of @
+@ 3600 IN MX 0 example-com.mail.protection.outlook.com.
+
+; example.com TXT (SPF); the other TXT records of @ stay
+; replaces the SPF record of @
+@ 3600 IN TXT "v=spf1 include:spf.protection.outlook.com -all"
+
+; autodiscover.example.com CNAME
+; replaces every CNAME record of autodiscover
+autodiscover 3600 IN CNAME autodiscover.outlook.com.
+
+; selector1._domainkey.example.com CNAME
+; replaces every CNAME record of selector1._domainkey
+selector1._domainkey 3600 IN CNAME selector1-example-com._domainkey.example.onmicrosoft.com.
+
+; selector2._domainkey.example.com CNAME
+; replaces every CNAME record of selector2._domainkey
+selector2._domainkey 3600 IN CNAME selector2-example-com._domainkey.example.onmicrosoft.com.
+
+; _dmarc.example.com TXT (DMARC); the other TXT records of _dmarc stay
+; replaces the DMARC record of _dmarc
+_dmarc 3600 IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+## route53
+{
+  "Comment": "DNS change request for example.com (DomainScope)",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "0 example-com.mail.protection.outlook.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=spf1 include:spf.protection.outlook.com -all\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "autodiscover.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "autodiscover.outlook.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "selector1._domainkey.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "selector1-example-com._domainkey.example.onmicrosoft.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "selector2._domainkey.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "selector2-example-com._domainkey.example.onmicrosoft.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_dmarc.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=DMARC1; p=none; rua=mailto:dmarc@example.com\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
+## cloudflare
+#!/bin/sh
+# DNS change request for example.com (DomainScope)
+# Needs an API token that may edit this zone's DNS records (Zone > DNS > Edit) and the zone ID
+# (the zone's Overview page). Neither is written here: set both in your shell first.
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN to your API token}"
+: "${CLOUDFLARE_ZONE_ID:?set CLOUDFLARE_ZONE_ID to the zone ID of example.com}"
+API="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+
+# 1. Delete the example.com MX records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=MX&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 2. Add example.com MX 0 example-com.mail.protection.outlook.com.
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"MX","name":"example.com","content":"example-com.mail.protection.outlook.com","priority":0,"ttl":3600}'
+
+# 3. Delete the example.com TXT (SPF) records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=TXT&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 4. Add example.com TXT "v=spf1 include:spf.protection.outlook.com -all"
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"example.com","content":"\"v=spf1 include:spf.protection.outlook.com -all\"","ttl":3600}'
+
+# 5. Delete the autodiscover.example.com CNAME records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=CNAME&name=autodiscover.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 6. Add autodiscover.example.com CNAME autodiscover.outlook.com.
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"CNAME","name":"autodiscover.example.com","content":"autodiscover.outlook.com","ttl":3600}'
+
+# 7. Delete the selector1._domainkey.example.com CNAME records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=CNAME&name=selector1._domainkey.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 8. Add selector1._domainkey.example.com CNAME selector1-example-com._domainkey.example.onmicrosoft.com.
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"CNAME","name":"selector1._domainkey.example.com","content":"selector1-example-com._domainkey.example.onmicrosoft.com","ttl":3600}'
+
+# 9. Delete the selector2._domainkey.example.com CNAME records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=CNAME&name=selector2._domainkey.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 10. Add selector2._domainkey.example.com CNAME selector2-example-com._domainkey.example.onmicrosoft.com.
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"CNAME","name":"selector2._domainkey.example.com","content":"selector2-example-com._domainkey.example.onmicrosoft.com","ttl":3600}'
+
+# 11. Delete the _dmarc.example.com TXT (DMARC) records there now (they were not read)
+#    Find their ids (none: skip this step), then:
+curl -sS "$API?type=TXT&name=_dmarc.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+curl -sS -X DELETE "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+
+# 12. Add _dmarc.example.com TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"type":"TXT","name":"_dmarc.example.com","content":"\"v=DMARC1; p=none; rua=mailto:dmarc@example.com\"","ttl":3600}'
+## cloudflare notes
+fix.fn.cloudflare-ids {}
+## octodns
+# DNS change request for example.com (DomainScope)
+# In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+---
+'':
+  - type: MX
+    ttl: 3600
+    values:
+      - exchange: example-com.mail.protection.outlook.com.
+        preference: 0
+  # keep the other TXT values this name has; replace its SPF value with the one below
+  - type: TXT
+    ttl: 3600
+    values:
+      - 'v=spf1 include:spf.protection.outlook.com -all'
+autodiscover:
+  - type: CNAME
+    ttl: 3600
+    value: autodiscover.outlook.com.
+selector1._domainkey:
+  - type: CNAME
+    ttl: 3600
+    value: selector1-example-com._domainkey.example.onmicrosoft.com.
+selector2._domainkey:
+  - type: CNAME
+    ttl: 3600
+    value: selector2-example-com._domainkey.example.onmicrosoft.com.
+_dmarc:
+  # keep the other TXT values this name has; replace its DMARC value with the one below
+  - type: TXT
+    ttl: 3600
+    values:
+      - 'v=DMARC1\; p=none\; rua=mailto:dmarc@example.com'
+## octodns notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
+## terraform-cloudflare
+# DNS change request for example.com (DomainScope)
+# terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "The zone ID of example.com"
+}
+
+# remove the resources of any other example.com MX record (the current ones were not read)
+
+resource "cloudflare_record" "mx_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "MX"
+  content  = "example-com.mail.protection.outlook.com"
+  priority = 0
+  ttl      = 3600
+}
+
+# remove the resources of any other example.com TXT (SPF) record (the current ones were not read)
+
+resource "cloudflare_record" "txt_apex" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "example.com"
+  type     = "TXT"
+  content  = "v=spf1 include:spf.protection.outlook.com -all"
+  ttl      = 3600
+}
+
+# remove the resources of any other autodiscover.example.com CNAME record (the current ones were not read)
+
+resource "cloudflare_record" "cname_autodiscover" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "autodiscover.example.com"
+  type     = "CNAME"
+  content  = "autodiscover.outlook.com"
+  ttl      = 3600
+}
+
+# remove the resources of any other selector1._domainkey.example.com CNAME record (the current ones were not read)
+
+resource "cloudflare_record" "cname_selector1_domainkey" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "selector1._domainkey.example.com"
+  type     = "CNAME"
+  content  = "selector1-example-com._domainkey.example.onmicrosoft.com"
+  ttl      = 3600
+}
+
+# remove the resources of any other selector2._domainkey.example.com CNAME record (the current ones were not read)
+
+resource "cloudflare_record" "cname_selector2_domainkey" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "selector2._domainkey.example.com"
+  type     = "CNAME"
+  content  = "selector2-example-com._domainkey.example.onmicrosoft.com"
+  ttl      = 3600
+}
+
+# remove the resources of any other _dmarc.example.com TXT (DMARC) record (the current ones were not read)
+
+resource "cloudflare_record" "txt_dmarc" {
+  zone_id  = var.cloudflare_zone_id
+  name     = "_dmarc.example.com"
+  type     = "TXT"
+  content  = "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+  ttl      = 3600
+}
+## terraform-route53
+# DNS change request for example.com (DomainScope)
+# aws_route53_record manages a whole record set: every value of the name and type is listed.
+variable "route53_zone_id" {
+  type        = string
+  description = "The hosted zone ID of example.com"
+}
+
+resource "aws_route53_record" "mx_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "MX"
+  ttl     = 3600
+  records = ["0 example-com.mail.protection.outlook.com"]
+}
+
+# list the other TXT values of example.com here too (they were not read): this resource replaces the whole set
+
+resource "aws_route53_record" "txt_apex" {
+  zone_id = var.route53_zone_id
+  name    = "example.com"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=spf1 include:spf.protection.outlook.com -all"]
+}
+
+resource "aws_route53_record" "cname_autodiscover" {
+  zone_id = var.route53_zone_id
+  name    = "autodiscover.example.com"
+  type    = "CNAME"
+  ttl     = 3600
+  records = ["autodiscover.outlook.com"]
+}
+
+resource "aws_route53_record" "cname_selector1_domainkey" {
+  zone_id = var.route53_zone_id
+  name    = "selector1._domainkey.example.com"
+  type    = "CNAME"
+  ttl     = 3600
+  records = ["selector1-example-com._domainkey.example.onmicrosoft.com"]
+}
+
+resource "aws_route53_record" "cname_selector2_domainkey" {
+  zone_id = var.route53_zone_id
+  name    = "selector2._domainkey.example.com"
+  type    = "CNAME"
+  ttl     = 3600
+  records = ["selector2-example-com._domainkey.example.onmicrosoft.com"]
+}
+
+# list the other TXT values of _dmarc.example.com here too (they were not read): this resource replaces the whole set
+
+resource "aws_route53_record" "txt_dmarc" {
+  zone_id = var.route53_zone_id
+  name    = "_dmarc.example.com"
+  type    = "TXT"
+  ttl     = 3600
+  records = ["v=DMARC1; p=none; rua=mailto:dmarc@example.com"]
+}
+## terraform-route53 notes
+fix.fn.incomplete {"name":"example.com","type":"TXT"}
+fix.fn.incomplete {"name":"_dmarc.example.com","type":"TXT"}
+## en
+DNS change request: example.com
+
+Please make the following changes in the DNS zone example.com. Records not listed here stay as they are.
+
+1. Replace: MX records
+   Name: example.com
+   Value:
+     0 example-com.mail.protection.outlook.com.
+   TTL: 3600
+   Replace every MX record of the name with the values above.
+2. Replace: SPF record (TXT)
+   Name: example.com
+   Value:
+     "v=spf1 include:spf.protection.outlook.com -all"
+   TTL: 3600
+   Replace the name’s SPF record with the value above.
+   The other TXT records of the name stay as they are.
+3. Replace: CNAME records
+   Name: autodiscover.example.com
+   Value:
+     autodiscover.outlook.com.
+   TTL: 3600
+   Replace every CNAME record of the name with the values above.
+4. Replace: CNAME records
+   Name: selector1._domainkey.example.com
+   Value:
+     selector1-example-com._domainkey.example.onmicrosoft.com.
+   TTL: 3600
+   Replace every CNAME record of the name with the values above.
+5. Replace: CNAME records
+   Name: selector2._domainkey.example.com
+   Value:
+     selector2-example-com._domainkey.example.onmicrosoft.com.
+   TTL: 3600
+   Replace every CNAME record of the name with the values above.
+6. Replace: DMARC record (TXT)
+   Name: _dmarc.example.com
+   Value:
+     "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+   TTL: 3600
+   Replace the name’s DMARC record with the value above.
+   The other TXT records of the name stay as they are.
+
+Notes:
+- The MX host example-com.mail.protection.outlook.com is the usual form; the admin center shows the one of your tenant (newer tenants may get one under mx.microsoft).
+- The current records were not read: if the domain already has an SPF record, add include:spf.protection.outlook.com to it instead of publishing a second one (two SPF records fail SPF for all mail).
+- Turn DKIM on in Microsoft Defender (Email authentication settings) once the CNAMEs resolve; compare the two values with the ones it shows.
+- p=none only asks for reports: watch them until every legitimate sender passes, then step up to quarantine and reject.
+
+Once the change is made, this link shows whether public DNS resolvers see it:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+example-com.mail.protection.outlook.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+-all%22&r=is+autodiscover+CNAME+autodiscover.outlook.com.&r=is+selector1._domainkey+CNAME+selector1-example-com._domainkey.example.onmicrosoft.com.&r=is+selector2._domainkey+CNAME+selector2-example-com._domainkey.example.onmicrosoft.com.&r=is+_dmarc+TXT+%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
+## tr
+DNS değişiklik talebi: example.com
+
+Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada yer almayan kayıtlar olduğu gibi kalır.
+
+1. Değiştir: MX kayıtları
+   Ad: example.com
+   Değer:
+     0 example-com.mail.protection.outlook.com.
+   TTL: 3600
+   Adın tüm MX kayıtlarını yukarıdaki değerlerle değiştirin.
+2. Değiştir: SPF kaydı (TXT)
+   Ad: example.com
+   Değer:
+     "v=spf1 include:spf.protection.outlook.com -all"
+   TTL: 3600
+   Adın SPF kaydını yukarıdaki değerle değiştirin.
+   Adın diğer TXT kayıtları olduğu gibi kalır.
+3. Değiştir: CNAME kayıtları
+   Ad: autodiscover.example.com
+   Değer:
+     autodiscover.outlook.com.
+   TTL: 3600
+   Adın tüm CNAME kayıtlarını yukarıdaki değerlerle değiştirin.
+4. Değiştir: CNAME kayıtları
+   Ad: selector1._domainkey.example.com
+   Değer:
+     selector1-example-com._domainkey.example.onmicrosoft.com.
+   TTL: 3600
+   Adın tüm CNAME kayıtlarını yukarıdaki değerlerle değiştirin.
+5. Değiştir: CNAME kayıtları
+   Ad: selector2._domainkey.example.com
+   Değer:
+     selector2-example-com._domainkey.example.onmicrosoft.com.
+   TTL: 3600
+   Adın tüm CNAME kayıtlarını yukarıdaki değerlerle değiştirin.
+6. Değiştir: DMARC kaydı (TXT)
+   Ad: _dmarc.example.com
+   Değer:
+     "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+   TTL: 3600
+   Adın DMARC kaydını yukarıdaki değerle değiştirin.
+   Adın diğer TXT kayıtları olduğu gibi kalır.
+
+Notlar:
+- MX sunucusu example-com.mail.protection.outlook.com bilinen biçimdir; kiracınızınkini yönetim merkezi gösterir (yeni kiracılar mx.microsoft altında bir ad alabilir).
+- Mevcut kayıtlar okunmadı: alan adının zaten bir SPF kaydı varsa ikinci bir kayıt yayınlamak yerine include:spf.protection.outlook.com ifadesini ona ekleyin (iki SPF kaydı tüm e-postalarda SPF’i başarısız kılar).
+- CNAME kayıtları çözümlendikten sonra DKIM’i Microsoft Defender’da (E-posta kimlik doğrulama ayarları) açın; iki değeri orada gösterilenlerle karşılaştırın.
+- p=none yalnızca rapor ister: tüm meşru gönderenler geçene kadar raporları izleyin, sonra quarantine ve reject’e geçin.
+
+Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+example-com.mail.protection.outlook.com.&r=is+@+TXT+%22v=spf1+include:spf.protection.outlook.com+-all%22&r=is+autodiscover+CNAME+autodiscover.outlook.com.&r=is+selector1._domainkey+CNAME+selector1-example-com._domainkey.example.onmicrosoft.com.&r=is+selector2._domainkey+CNAME+selector2-example-com._domainkey.example.onmicrosoft.com.&r=is+_dmarc+TXT+%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22

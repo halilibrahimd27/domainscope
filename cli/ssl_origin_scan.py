@@ -6378,7 +6378,9 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
     self-signed CA certificate that names hosts or whose key is in the files is the leaf
     (``openssl req -x509`` marks what it makes CA:TRUE; a WARN says clients may refuse it);
     files of CA certificates only have no leaf (FAIL: the server certificate is missing,
-    nothing is written). Its chain follows :func:`issued_by` (issuer / subject names and key
+    nothing is written). Files with no certificate at all but a CSR compared with a private
+    key SKIP the chain (a key and CSR checked before ordering); with neither it is a FAIL.
+    Its chain follows :func:`issued_by` (issuer / subject names and key
     identifiers; signatures are not verified) through the other certificates. A leaf
     nothing issued is a missing intermediate (FAIL) unless it is self-signed; a chain that
     ends at an intermediate whose issuer is not in the files is fine (a root clients
@@ -6439,6 +6441,7 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
                 % (item.file, leaf_name, item.key.public_key.label(),
                    leaf_key.label() if leaf_key else 'unreadable'))))
 
+    csr_with_key = False  # a CSR compared with a private key, there being no certificate
     for item in csrs:
         assert item.csr is not None
         csr_key = item.csr.public_key
@@ -6464,13 +6467,17 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
             for key in keys:
                 if key.key is not None and _key_problem(key) is None:
                     same = key.key.public_key is not None and key.key.public_key.ident == csr_key.ident
+                    csr_with_key = True
                     checks.append(BundleCheck(BUNDLE_OK if same else BUNDLE_FAIL, 'csr', (
                         '%s was made with the private key %s' if same else
                         '%s was not made with the private key %s') % (item.file, key.file)))
 
     chain = []  # type: List[CertInfo]
     complete = False
-    if leaf is None:
+    if leaf is None and not certs and csr_with_key:
+        checks.append(BundleCheck(BUNDLE_SKIPPED, 'chain', 'no certificate in these files: only '
+                                  'the private key and the CSR were compared'))
+    elif leaf is None:
         checks.append(BundleCheck(BUNDLE_FAIL, 'chain', 'no server certificate in these files, '
                                   'only CA certificates (%s): add the certificate issued for '
                                   'your names' % ', '.join(_cert_label(cert) for cert in certs)
@@ -6684,7 +6691,8 @@ checks:
            and exponent, EC point); an encrypted key is skipped (no password is asked),
            an EC key file without its public key is named and skipped
   csr      the CSR holds the certificate's public key (and asks for no other names);
-           without a certificate: the CSR was made with the private key
+           without a certificate: the CSR was made with the private key (the chain is
+           then SKIPPED - a key and CSR checked before ordering the certificate)
   chain    the leaf, then each issuer (subject / issuer names and key identifiers, as
            servers are expected to send them; signatures are not verified): a leaf
            that nothing in the files issued is a missing intermediate (FAIL), CA

@@ -219,12 +219,25 @@ class CheckTests(unittest.TestCase):
         result = sos.check_bundle(items('bundle_leaf.pem', 'bundle_inter.pem') + [more])
         self.assertEqual(statuses(result, 'csr'), [('OK', 'csr'), ('WARN', 'csr')])
         self.assertIn('asks for names the certificate does not have: shop.example.com', texts(result))
-        # no certificate: the CSR against the key
+        # no certificate: the CSR against the key, the chain skipped (checked before ordering)
         result = sos.check_bundle(items('bundle_leaf.key', 'bundle_leaf.csr', 'bundle_other.csr'))
-        self.assertEqual(statuses(result), [('OK', 'csr'), ('FAIL', 'csr'), ('FAIL', 'chain')])
+        self.assertEqual(statuses(result), [('OK', 'csr'), ('FAIL', 'csr'), ('SKIPPED', 'chain')])
         self.assertIn('bundle_leaf.csr was made with the private key bundle_leaf.key', texts(result))
         self.assertIn('bundle_other.csr was not made with the private key bundle_leaf.key', texts(result))
-        self.assertIn('no certificate in these files', texts(result))
+        self.assertIn('no certificate in these files: only the private key and the CSR were compared',
+                      texts(result))
+        self.assertTrue(result.failed)  # by the CSR made with another key, not by the chain
+        result = sos.check_bundle(items('bundle_leaf.csr', 'bundle_leaf.key'))
+        self.assertEqual(statuses(result), [('OK', 'csr'), ('SKIPPED', 'chain')])
+        self.assertFalse(result.failed)
+        self.assertEqual(sos.bundle_outputs(result, haproxy=True), [])
+        # nothing compared: a CSR alone, a key alone, an encrypted key, CA certificates besides
+        for names in (('bundle_leaf.csr',), ('bundle_leaf.key',), ('bundle_leaf.enc.key', 'bundle_leaf.csr'),
+                      ('bundle_inter.pem', 'bundle_leaf.key', 'bundle_leaf.csr')):
+            with self.subTest(files=names):
+                result = sos.check_bundle(items(*names))
+                self.assertIn(('FAIL', 'chain'), statuses(result))
+                self.assertTrue(result.failed)
 
     def test_ca_certificates_without_the_server_certificate(self):
         for names in (('bundle_ca_reversed.pem',), ('bundle_inter.pem', 'bundle_root.pem'),
@@ -383,6 +396,17 @@ class BundleCliTests(unittest.TestCase):
         self.assertIn('haproxy.pem not written', ' '.join(out.split()))
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, 'haproxy.pem')))
         self.assertTrue(os.path.exists(os.path.join(self.tmp.name, 'fullchain.pem')))
+
+    def test_a_key_and_its_csr_before_ordering_pass(self):
+        code, out, err = self.run_check('bundle_leaf.key', 'bundle_leaf.csr', '-o', self.tmp.name)
+        self.assertEqual(code, 0, out + err)
+        text = ' '.join(out.split())
+        self.assertIn('bundle_leaf.csr was made with the private key', text)
+        self.assertIn('SKIPPED no certificate in these files: only the private key and the CSR were '
+                      'compared', text)
+        self.assertIn('Nothing written to', text)
+        self.assertEqual(os.listdir(self.tmp.name), [])
+        self.assertEqual(self.run_check('bundle_other.key', 'bundle_leaf.csr')[0], 1)
 
     def test_nothing_is_written_for_an_incomplete_chain(self):
         code, out, _err = self.run_check('bundle_leaf.pem', 'bundle_leaf.key', '-o', self.tmp.name)

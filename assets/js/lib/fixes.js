@@ -779,20 +779,28 @@ function cloudflareBody(r, v) {
   return body;
 }
 
+/**
+ * A query value inside a double-quoted shell word: percent-encoded, `!` too (an interactive
+ * bash expands it), so nothing of a name from a zone file (`` ` `` `$` `"` `\`) reaches the shell.
+ */
+const shellQueryValue = (s) => encodeURIComponent(String(s ?? '')).replace(/!/g, '%21');
+
 /** The Cloudflare API as a POSIX shell script (curl); the token and zone ID come from the shell. */
 function cloudflareText(req) {
   const { token, zone } = CLOUDFLARE_VARS;
   const auth = `-H "Authorization: Bearer $${token}"`;
+  // The zone's name in the ${VAR:?word} message only as a plain host name: that word is expanded by the shell.
+  const zoneWord = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(String(req.zone ?? '')) ? req.zone : 'the zone above';
   const out = [
     '#!/bin/sh',
     `# ${HEADER(req.zone)}`,
     '# Needs an API token that may edit this zone\'s DNS records (Zone > DNS > Edit) and the zone ID',
     '# (the zone\'s Overview page). Neither is written here: set both in your shell first.',
     `: "\${${token}:?set ${token} to your API token}"`,
-    `: "\${${zone}:?set ${zone} to the zone ID of ${req.zone}}"`,
+    `: "\${${zone}:?set ${zone} to the zone ID of ${zoneWord}}"`,
     `API="https://api.cloudflare.com/client/v4/zones/$${zone}/dns_records"`
   ];
-  const find = (r, what) => [`#    ${what}`, `curl -sS "$API?type=${r.type}&name=${r.name}" ${auth}`];
+  const find = (r, what) => [`#    ${what}`, `curl -sS "$API?type=${r.type}&name=${shellQueryValue(r.name)}" ${auth}`];
   const patch = (body) => [`curl -sS -X PATCH "$API/RECORD_ID" ${auth} -H "Content-Type: application/json" \\`, `  --data ${quoteArg(asciiJson(body))}`];
   const del = `curl -sS -X DELETE "$API/RECORD_ID" ${auth}`;
   let step = 0;

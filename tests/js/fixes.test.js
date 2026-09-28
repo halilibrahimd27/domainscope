@@ -706,6 +706,22 @@ describe('fixes of Zone File findings', () => {
     assert.equal(lintFix({ code: 'SINGLE_NS', name: 'example.com', type: 'NS' }, z), null);
   });
 
+  test('the Cloudflare script keeps a zone file\'s names out of the shell: a ` $ " \\ ! in an owner or $ORIGIN is never expanded', () => {
+    const texts = ['$ORIGIN ex`id`.com.\na`id`b 5 IN A 192.0.2.1\n', '$ORIGIN example.com.\na`id`b\\$x\\"c!d 5 IN A 192.0.2.1\n'];
+    for (const text of texts) {
+      const z = parseZone(text);
+      const f = lintFix(findingOf(z, 'TTL_TOO_LOW'), z);
+      const script = renderFix(f.request, 'cloudflare');
+      assert.match(script, /name=a%60id%60b/, 'the name percent-encoded in the list call');
+      for (const line of script.split('\n').filter((l) => l && !l.startsWith('#'))) {
+        const shell = line.replace(/'[^']*'/g, "''"); // single-quoted words are literal
+        assert.doesNotMatch(shell, /`|\$\(|!/, line);
+        assert.equal((shell.match(/"/g) || []).length % 2, 0, `balanced double quotes: ${line}`);
+        for (const m of shell.matchAll(/\$\{?([A-Za-z_]\w*)/g)) assert.ok(['API', CLOUDFLARE_VARS.token, CLOUDFLARE_VARS.zone].includes(m[1]), line);
+      }
+    }
+  });
+
   test('TXT_STRING_TOO_LONG: the same text re-split into strings of 255 bytes', () => {
     const z = zone(`$ORIGIN example.com.\nk 300 IN TXT "${'a'.repeat(300)}"\n`);
     const f = lintFix(findingOf(z, 'TXT_STRING_TOO_LONG'), z);

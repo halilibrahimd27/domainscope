@@ -885,6 +885,36 @@ describe('reports (DMARC & TLS reports)', () => {
     assert.equal(S.buildSummary('reports', facts(), opts()).kind, 'reports');
     assert.deepEqual(S.permalinkParams('reports', { domain: 'example.com', tab: 'tls' }), {}, 'the reports never go into a link');
   });
+
+  test('a broken SPF record: the sources that passed through SPF alone, the permerror and why; test mode; almost all is not all', async () => {
+    await import('../../assets/js/views/reports.js'); // the words of a permerror's reason are the view's (the key rides in the facts)
+    const f = facts();
+    const risk = { ip: '203.0.113.25', cls: 'yours', reason: 'spf-listed', detail: 'ip4:203.0.113.25', fail: 0, atRisk: 500, fixes: ['spf-permerror', 'dkim-sign'] };
+    const doc = S.reportsSummary({
+      ...f,
+      tls: null,
+      problems: 0,
+      dmarc: {
+        ...f.dmarc,
+        policy: { p: 'reject', pct: 100, testing: 'y' },
+        spfErrorKey: 'rpt.spfError.lookup-limit',
+        overview: {
+          ...f.dmarc.overview, compliance: 51749 / 51750, verdict: 'spf-broken', blockers: [], blocked: 0, atRisk: [risk], atRiskMessages: 500,
+          spfError: { domain: 'example.com', reason: 'lookup-limit', sources: 3 }, unknown: [], unknownFail: 0
+        }
+      }
+    }, opts());
+    assertShape(doc, { min: 5 });
+    assert.deepEqual(lines(md(doc)).slice(1, 6), [
+      '- **DMARC:** 99.9% of 5,175 messages pass · `p=reject; t=y` · 2 reports, 2026-09-25 → 2026-09-26',
+      '- Not ready for p=reject: the SPF record gives receivers a permanent error, and 1 source you use passed through SPF alone (500 messages)',
+      '- **Fix first:** `203.0.113.25` (your server): 500 messages passed through SPF alone — repair the SPF record: receivers get a permanent error from it',
+      '- Sources classified against the domain’s current SPF',
+      '- The current SPF gives receivers a permanent error for 3 sending addresses: more than 10 DNS lookups before the address is reached'
+    ]);
+    const tr = S.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spfErrorKey: 'rpt.spfError.syntax', overview: { ...f.dmarc.overview, spfError: { domain: 'example.com', reason: 'syntax', sources: 1 } } } }, opts('tr'));
+    assert.ok(lines(md(tr)).includes('- Alıcılar güncel SPF kaydından 1 gönderen adres için kalıcı hata alıyor: bir sözdizimi hatası'), md(tr));
+  });
 });
 
 /* ------------------------------------------------------------------------ */
@@ -1159,11 +1189,12 @@ describe('i18n', () => {
     // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
     for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
     for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }
-    // DMARC & TLS reports: sum.rpt.cls.<class of a source to fix>, sum.rpt.fix.<code>, the hyphenated verdict.
+    // DMARC & TLS reports: sum.rpt.cls.<class of a source to fix>, sum.rpt.fix.<code>, the hyphenated verdicts.
     const { FIX_CODES } = await imp('assets/js/lib/dmarcreport.js');
     for (const c of ['yours', 'third-party']) used.add(`sum.rpt.cls.${c}`);
     for (const f of FIX_CODES) used.add(`sum.rpt.fix.${f}`);
     used.add('sum.rpt.verdict.fix-first');
+    used.add('sum.rpt.verdict.spf-broken');
     const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
     assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
     assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');

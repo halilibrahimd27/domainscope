@@ -49,7 +49,9 @@ const JS = join(ASSETS, 'js');
  * it; the deploy's version file joined lib/pwa.js, and the senders' notes (what a measurement body
  * carried, a registry's RDAP server) the log: ≈ 376 KB (384,678 bytes). Wave 4's DMARC & TLS
  * reports put its Copy summary builder with its strings in lib/summary.js and an entry in the
- * navigation (the report readers load with the view): ≈ 3.5 KB more.
+ * navigation (the report readers load with the view): ≈ 3.5 KB more; its summary's lines for an
+ * SPF record that gives a permerror and a policy in test mode, one-decimal shares (lib/util.js)
+ * and FileDrop's `maxFiles` / `text: false`: ≈ 1.1 KB more.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 380 * 1024;

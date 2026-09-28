@@ -222,6 +222,22 @@ export function httpsCheckRequest({ ip, name, port = 443, timeoutS = 10, probes 
   const timeout = Math.min(GP_LIMITS.maxTimeoutS, Math.max(GP_LIMITS.minTimeoutS, Math.round(timeoutS)));
 
   const body = { type: 'http', target };
+  applyLocations(body, locations, probes);
+  body.timeout = timeout;
+  body.measurementOptions = { protocol: 'HTTPS', port, request: { method: 'HEAD', host: name, path: '/' } };
+  return body;
+}
+
+/**
+ * Where a measurement's probes come from: `null` → `{ limit: probes }` (anywhere); an Array →
+ * `{ locations }` with `limit: 1` on entries without one and no global limit (the API refuses
+ * both together); a string (a previous measurement id) → `{ locations: id }`.
+ * @param {object} body the request body, extended in place
+ * @param {null|string|object[]} locations
+ * @param {number} probes
+ * @throws {TypeError} for a bad location list
+ */
+function applyLocations(body, locations, probes) {
   if (locations === null || locations === undefined) {
     body.limit = probes;
   } else if (typeof locations === 'string') {
@@ -237,9 +253,6 @@ export function httpsCheckRequest({ ip, name, port = 443, timeoutS = 10, probes 
   } else {
     throw new TypeError('locations must be null, a measurement id or an array');
   }
-  body.timeout = timeout;
-  body.measurementOptions = { protocol: 'HTTPS', port, request: { method: 'HEAD', host: name, path: '/' } };
-  return body;
 }
 
 /** A request path Globalping takes and nothing else shapes: '/', then printable ASCII without spaces, '?' or '#'. */
@@ -274,6 +287,45 @@ export function httpsGetRequest({ host, path = '/', port = 443, timeoutS = 10, p
     type: 'http', target: host, limit: probes, timeout,
     measurementOptions: { protocol: 'HTTPS', port, request: { method: 'GET', path } }
   };
+}
+
+/**
+ * Body for one plain-HTTP GET of `path` on a host name (Renewal readiness: is the HTTP-01
+ * challenge path reachable?). The probe resolves `host` itself and sends it as the Host header;
+ * redirects are NOT followed: a 3xx result carries its `headers.location` (verified live
+ * 2026-09-28, tests/fixtures/globalping/m28–m30).
+ *
+ * - The target is the host name; `port` (default 80) and `timeout` (rounded, clamped to 5–30 s)
+ *   are always sent, a query string never.
+ * - `locations` as in {@link httpsCheckRequest} (null → `limit: probes` anywhere).
+ * - `ipVersion` 4 or 6 goes into `measurementOptions` (allowed with a host-name target only): the
+ *   probes then resolve and connect over that family; null leaves it out (the API's default, 4).
+ * @param {{ host: string, path?: string, port?: number, timeoutS?: number, probes?: number,
+ *   locations?: null|string|object[], ipVersion?: 4|6|null }} opts
+ * @returns {{ type: 'http', target: string, limit?: number, locations?: string|object[], timeout: number,
+ *   measurementOptions: { protocol: 'HTTP', port: number, ipVersion?: 4|6, request: { method: 'GET', path: string } } }}
+ * @throws {TypeError} for a host Globalping refuses, a path outside {@link GET_PATH_RE}, an unprobeable
+ *   port, a bad probe count, timeout, location list or IP version, or any unknown option
+ */
+export function httpGetRequest({ host, path = '/', port = 80, timeoutS = 10, probes = 1, locations = null, ipVersion = null, ...rest } = {}) {
+  const unknown = Object.keys(rest);
+  if (unknown.length) throw new TypeError(`Unknown option: ${unknown[0]}`);
+  if (!isProbeableHost(host)) throw new TypeError(`Globalping does not accept this host name: ${String(host)}`);
+  if (typeof path !== 'string' || !GET_PATH_RE.test(path)) throw new TypeError(`Not a plain request path: ${String(path)}`);
+  if (!isProbeablePort(port)) throw new TypeError(`Port cannot be checked through Globalping: ${String(port)}`);
+  if (!Number.isInteger(probes) || probes < 1 || probes > GP_LIMITS.maxProbesPerMeasurement) {
+    throw new TypeError(`probes must be an integer 1–${GP_LIMITS.maxProbesPerMeasurement}`);
+  }
+  if (typeof timeoutS !== 'number' || !Number.isFinite(timeoutS)) throw new TypeError('timeoutS must be a finite number');
+  if (ipVersion !== null && ipVersion !== 4 && ipVersion !== 6) throw new TypeError('ipVersion must be 4, 6 or null');
+  const timeout = Math.min(GP_LIMITS.maxTimeoutS, Math.max(GP_LIMITS.minTimeoutS, Math.round(timeoutS)));
+  const body = { type: 'http', target: host };
+  applyLocations(body, locations, probes);
+  body.timeout = timeout;
+  body.measurementOptions = { protocol: 'HTTP', port };
+  if (ipVersion !== null) body.measurementOptions.ipVersion = ipVersion;
+  body.measurementOptions.request = { method: 'GET', path };
+  return body;
 }
 
 /**

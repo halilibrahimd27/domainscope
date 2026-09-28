@@ -97,6 +97,9 @@ results are public by id on Globalping anyway (retained for about six months).
 | `m25-v6-doc-enetunreach.json` | 2pTgtxLlyWvamuItO00021C2q | 3fff::1 (IPv6 documentation prefix) | accepted **and charged**, `connect ENETUNREACH` |
 | `m26-mta-sts-policy.json` | 2IuWbVoKnaKkYjabJ00021DDq | hostname target mta-sts.<domain>, HTTPS GET `/.well-known/mta-sts.txt` | an MTA-STS policy: `statusCode` 200, `headers` (`content-type`), the decoded `rawBody` (CRLF lines), `tls` (scrubbed, see below) |
 | `m27-mta-sts-no-host.json` | 2JRJUjOJwPhya37ZH00021DDt | the same GET on mta-sts.example.com | `queryA ENODATA`: no policy host |
+| `m28-acme-http-404.json` | 2VxnLwVQJ9HR4iB2M00021DR4 | hostname target example.com, plain HTTP GET `/.well-known/acme-challenge/<token>` on port 80, `locations` EU / NA / AS | 3 probes, `statusCode` 404 everywhere: the challenge path reaches the web server |
+| `m29-acme-http-redirect.json` | 2bvEIAaztqWqIiYyH00021DR4 | the same GET on a site that sends HTTP to HTTPS (scrubbed, see below) | 301 with `headers.location`: the probe does not follow redirects |
+| `m30-acme-http-v6.json` | 2e4Nks2k6ZjJ4SBr200021DR4 | as m28 with `measurementOptions.ipVersion: 6` | the probes resolve AAAA and connect over IPv6 (`resolvedAddress` IPv6) |
 | `v-private-target-400.json` | – | 10.0.0.1 | `"target" must not be a private hostname` |
 | `v-testnet1-400.json` | – | 192.0.2.1 | same (TEST-NET-1) |
 | `v-bad-host-400.json` | – | host github.com:443 | `measurementOptions.request.host` invalid |
@@ -105,6 +108,14 @@ results are public by id on Globalping anyway (retained for about six months).
 | `v-no-probes-422.json` | – | `locations: [{ country: 'AQ' }]` | 422 `no_probes_found` |
 | `validation-cases.json` | – | every refused POST (28 saved + 7 from the review) | data for the prefilter tests |
 | `create-parallel-quota.json` | 6 ids | six concurrent POSTs | remaining 220, 216, 215, 219, 217, 218 |
+
+**HTTP-01 reachability** (Renewal readiness, captured 2026-09-28, 9 probes): `m28`–`m30` keep
+`headers.location` (a redirect's target, the one header `lib/renewal.js` reads); `rawHeaders`,
+`rawBody`, the other headers and a finished test's `rawOutput` (which repeats the response head
+and body) are dropped. The request path is a made-up token, so every server answers for a file that
+does not exist. `m29` was a large code-hosting site: its host name became `example.net` (the target
+and the `Location` URL) and its three addresses `192.0.2.81`–`192.0.2.83`, as its `scrubbed` field
+says. `m28` / `m30` target example.com as it is served (Cloudflare addresses, kept).
 
 **MTA-STS policy fetches** (Domain Health, captured 2026-09-27, 2 probes): `m26` and `m27` keep
 what `lib/mtasts.js` reads, so unlike the trim rules above their results keep `rawBody` and the

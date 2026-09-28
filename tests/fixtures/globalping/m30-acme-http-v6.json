@@ -1,0 +1,171 @@
+{
+  "name": "m30-acme-http-v6",
+  "capturedAt": "2026-09-28T01:30:34.359Z",
+  "request": {
+    "type": "http",
+    "target": "example.com",
+    "locations": [
+      {
+        "continent": "EU",
+        "limit": 1
+      },
+      {
+        "continent": "NA",
+        "limit": 1
+      },
+      {
+        "continent": "AS",
+        "limit": 1
+      }
+    ],
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTP",
+      "port": 80,
+      "ipVersion": 6,
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "3",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "241",
+      "x-ratelimit-reset": "3598",
+      "x-request-cost": "3"
+    },
+    "body": {
+      "id": "2e4Nks2k6ZjJ4SBr200021DR4",
+      "probesCount": 3
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2e4Nks2k6ZjJ4SBr200021DR4",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-28T01:30:34.359Z",
+      "updatedAt": "2026-09-28T01:30:34.649Z",
+      "target": "example.com",
+      "timeout": 10,
+      "probesCount": 3,
+      "locations": [
+        {
+          "continent": "EU"
+        },
+        {
+          "continent": "NA"
+        },
+        {
+          "continent": "AS"
+        }
+      ],
+      "measurementOptions": {
+        "protocol": "HTTP",
+        "port": 80,
+        "ipVersion": 6,
+        "request": {
+          "method": "GET",
+          "path": "/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Western Europe",
+            "country": "DE",
+            "city": "Falkenstein",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "2606:4700:10::ac42:93f3",
+            "truncated": false,
+            "statusCode": 404,
+            "statusCodeName": "Not Found",
+            "timings": {
+              "total": 19,
+              "dns": 1,
+              "tcp": 6,
+              "tls": null,
+              "firstByte": 11,
+              "download": 1
+            },
+            "tls": null
+          }
+        },
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Buffalo",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "2606:4700:10::6814:179a",
+            "truncated": false,
+            "statusCode": 404,
+            "statusCodeName": "Not Found",
+            "timings": {
+              "total": 99,
+              "dns": 50,
+              "tcp": 12,
+              "tls": null,
+              "firstByte": 24,
+              "download": 13
+            },
+            "tls": null
+          }
+        },
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 3258,
+            "network": "xTom",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "2606:4700:10::ac42:93f3",
+            "truncated": false,
+            "statusCode": 404,
+            "statusCodeName": "Not Found",
+            "timings": {
+              "total": 13,
+              "dns": 2,
+              "tcp": 2,
+              "tls": null,
+              "firstByte": 9,
+              "download": 0
+            },
+            "tls": null
+          }
+        }
+      ]
+    }
+  }
+}

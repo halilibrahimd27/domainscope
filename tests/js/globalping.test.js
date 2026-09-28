@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   GLOBALPING_API, GP_LIMITS, NON_HTTP_TLS_PORTS, GP_ERROR_CODES, GlobalpingError,
-  isMeasurementId, isProbeableIP, probeTarget, isProbeableHost, isProbeablePort, httpsCheckRequest, httpsGetRequest,
+  isMeasurementId, isProbeableIP, probeTarget, isProbeableHost, isProbeablePort, httpsCheckRequest, httpsGetRequest, httpGetRequest,
   probeSummary, quotaFromHeaders, quotaFromLimits, mergeQuota, createGlobalping
 } from '../../assets/js/lib/globalping.js';
 import { errorKind, throwIfAborted } from '../../assets/js/lib/util.js';
@@ -266,6 +266,44 @@ test('httpsGetRequest: refuses hosts Globalping rejects, paths with a query, spa
   assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', probes: 0 }), TypeError);
   assert.throws(() => httpsGetRequest({ host: 'mta-sts.example.com', method: 'POST' }), /Unknown option: method/);
   assert.throws(() => httpsGetRequest(), TypeError);
+});
+
+test('httpGetRequest: the HTTP-01 reachability bodies, exactly as sent live (m28, m30)', () => {
+  const locations = [{ continent: 'EU' }, { continent: 'NA' }, { continent: 'AS' }];
+  const path = '/.well-known/acme-challenge/ds-fixture-tg6denb8mh';
+  assert.deepEqual(httpGetRequest({ host: 'example.com', path, locations }), fx('m28-acme-http-404').request);
+  assert.deepEqual(httpGetRequest({ host: 'example.com', path, locations, ipVersion: 6 }), fx('m30-acme-http-v6').request);
+  assert.deepEqual(httpGetRequest({ host: 'www.example.com' }), {
+    type: 'http', target: 'www.example.com', limit: 1, timeout: 10,
+    measurementOptions: { protocol: 'HTTP', port: 80, request: { method: 'GET', path: '/' } }
+  });
+  const v4 = httpGetRequest({ host: 'www.example.com', ipVersion: 4, probes: 3, timeoutS: 2 });
+  assert.deepEqual([v4.limit, v4.timeout, v4.measurementOptions.ipVersion], [3, 5, 4]);
+  assert.equal('host' in v4.measurementOptions.request, false, 'the target is the host: no request.host');
+  assert.equal(httpGetRequest({ host: 'www.example.com', locations: '2VxnLwVQJ9HR4iB2M00021DR4' }).locations, '2VxnLwVQJ9HR4iB2M00021DR4');
+});
+
+test('httpGetRequest: refuses bad hosts, paths, ports, IP versions, location lists and unknown options', () => {
+  for (const host of ['192.0.2.1', '_acme-challenge.example.com', '*.example.com', 'localhost', '', null]) {
+    assert.throws(() => httpGetRequest({ host }), TypeError, String(host));
+  }
+  for (const path of ['a', '/a b', '/a?x=1', '']) assert.throws(() => httpGetRequest({ host: 'example.com', path }), TypeError, path);
+  for (const ipVersion of [0, 5, '6', true]) assert.throws(() => httpGetRequest({ host: 'example.com', ipVersion }), TypeError, String(ipVersion));
+  assert.throws(() => httpGetRequest({ host: 'example.com', port: 0 }), TypeError);
+  assert.throws(() => httpGetRequest({ host: 'example.com', locations: [] }), TypeError);
+  assert.throws(() => httpGetRequest({ host: 'example.com', locations: [{ planet: 'Mars' }] }), /unknown key: planet/);
+  assert.throws(() => httpGetRequest({ host: 'example.com', locations: [{ continent: 'EU', limit: 51 }] }), TypeError);
+  assert.throws(() => httpGetRequest({ host: 'example.com', method: 'HEAD' }), /Unknown option: method/);
+});
+
+test('measure: an HTTP GET is not redirected by the probe — a 301 carries its Location (m29)', async () => {
+  const { gp } = client([postOf('m29-acme-http-redirect'), finalOf('m29-acme-http-redirect')]);
+  const res = await gp.measure(fx('m29-acme-http-redirect').request);
+  assert.equal(res.cost, 3);
+  for (const { result } of res.measurement.results) {
+    assert.deepEqual([result.status, result.statusCode, result.tls], ['finished', 301, null]);
+    assert.equal(result.headers.location, 'https://example.net/.well-known/acme-challenge/ds-fixture-tg6denb8mh');
+  }
 });
 
 test('measure: an HTTPS GET measurement replays m26 (status, headers, decoded body, tls) at a cost of one probe', async () => {

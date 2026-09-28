@@ -1,0 +1,178 @@
+{
+  "name": "m29-acme-http-redirect",
+  "capturedAt": "2026-09-28T01:30:33.167Z",
+  "request": {
+    "type": "http",
+    "target": "example.net",
+    "locations": [
+      {
+        "continent": "EU",
+        "limit": 1
+      },
+      {
+        "continent": "NA",
+        "limit": 1
+      },
+      {
+        "continent": "AS",
+        "limit": 1
+      }
+    ],
+    "timeout": 10,
+    "measurementOptions": {
+      "protocol": "HTTP",
+      "port": 80,
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+      }
+    }
+  },
+  "post": {
+    "status": 202,
+    "headers": {
+      "x-ratelimit-consumed": "3",
+      "x-ratelimit-limit": "250",
+      "x-ratelimit-remaining": "244",
+      "x-ratelimit-reset": "3599",
+      "x-request-cost": "3"
+    },
+    "body": {
+      "id": "2bvEIAaztqWqIiYyH00021DR4",
+      "probesCount": 3
+    }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2bvEIAaztqWqIiYyH00021DR4",
+      "type": "http",
+      "status": "finished",
+      "createdAt": "2026-09-28T01:30:33.167Z",
+      "updatedAt": "2026-09-28T01:30:33.470Z",
+      "target": "example.net",
+      "timeout": 10,
+      "probesCount": 3,
+      "locations": [
+        {
+          "continent": "EU"
+        },
+        {
+          "continent": "NA"
+        },
+        {
+          "continent": "AS"
+        }
+      ],
+      "measurementOptions": {
+        "protocol": "HTTP",
+        "port": 80,
+        "request": {
+          "method": "GET",
+          "path": "/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+        }
+      },
+      "results": [
+        {
+          "probe": {
+            "continent": "EU",
+            "region": "Northern Europe",
+            "country": "FI",
+            "city": "Helsinki",
+            "asn": 24940,
+            "network": "Hetzner Online",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "192.0.2.81",
+            "truncated": false,
+            "statusCode": 301,
+            "statusCodeName": "Moved Permanently",
+            "timings": {
+              "total": 51,
+              "dns": 2,
+              "tcp": 24,
+              "tls": null,
+              "firstByte": 25,
+              "download": 0
+            },
+            "tls": null,
+            "headers": {
+              "location": "https://example.net/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+            }
+          }
+        },
+        {
+          "probe": {
+            "continent": "NA",
+            "region": "Northern America",
+            "country": "US",
+            "city": "Buffalo",
+            "asn": 36352,
+            "network": "HostPapa",
+            "tags": [
+              "datacenter-network",
+              "u-probe"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "192.0.2.82",
+            "truncated": false,
+            "statusCode": 301,
+            "statusCodeName": "Moved Permanently",
+            "timings": {
+              "total": 59,
+              "dns": 25,
+              "tcp": 17,
+              "tls": null,
+              "firstByte": 17,
+              "download": 0
+            },
+            "tls": null,
+            "headers": {
+              "location": "https://example.net/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+            }
+          }
+        },
+        {
+          "probe": {
+            "continent": "AS",
+            "region": "Eastern Asia",
+            "country": "JP",
+            "city": "Tokyo",
+            "asn": 31898,
+            "network": "Oracle",
+            "tags": [
+              "datacenter-network"
+            ]
+          },
+          "result": {
+            "status": "finished",
+            "resolvedAddress": "192.0.2.83",
+            "truncated": false,
+            "statusCode": 301,
+            "statusCodeName": "Moved Permanently",
+            "timings": {
+              "total": 23,
+              "dns": 1,
+              "tcp": 15,
+              "tls": null,
+              "firstByte": 6,
+              "download": 1
+            },
+            "tls": null,
+            "headers": {
+              "location": "https://example.net/.well-known/acme-challenge/ds-fixture-tg6denb8mh"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "scrubbed": "the target and its Location: example.net; its addresses: 192.0.2.81-83"
+}

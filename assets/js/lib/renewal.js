@@ -138,28 +138,36 @@ export const RENEWAL_FINDINGS = Object.freeze([
   'provider.known', 'provider.no-api', 'provider.target-no-api', 'provider.multiple', 'provider.unknown', 'provider.error',
   'dnssec.secure', 'dnssec.unsigned', 'dnssec.bogus', 'dnssec.servfail', 'dnssec.unknown', 'dnssec.error',
   'http.ok', 'http.ipv6', 'http.cdn', 'http.alpn-cdn', 'http.private', 'http.private-some', 'http.none', 'http.nxdomain', 'http.dangling', 'http.error',
-  'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.catch-all', 'http01.inconclusive', 'http01.untested'
+  'http01.ok', 'http01.redirect', 'http01.partial', 'http01.failed', 'http01.v6-fallback', 'http01.catch-all', 'http01.inconclusive',
+  'http01.untested'
 ]);
 
 /**
  * What one probe got for the made-up token, good first: 'not-found' (404 / 410: the path reaches
  * the web server), 'redirect' (to port 80 or 443 over HTTP(S) with the token kept: CAs follow it);
- * 'catch-all' (2xx for a file that does not exist); then the failures.
+ * 'catch-all' (2xx for a file that does not exist); then the failures — 'connect-timeout' while
+ * establishing the TCP connection, 'timeout' any other time out.
  */
 export const HTTP01_OUTCOMES = Object.freeze(['not-found', 'redirect', 'catch-all', 'forbidden', 'server-error', 'status',
   'redirect-loop', 'redirect-port', 'redirect-ip', 'redirect-path', 'redirect-scheme', 'redirect-none',
-  'timeout', 'refused', 'dns', 'unreachable', 'private', 'reset', 'unknown', 'probe']);
+  'connect-timeout', 'timeout', 'refused', 'dns', 'unreachable', 'private', 'reset', 'unknown', 'probe']);
 /**
  * A family's (and a test's) result: every probe good, some, none, a catch-all answer, only
- * probe-side failures, or 'untested' (the test stopped before this family's measurement was created).
+ * probe-side failures, or 'untested' (the test stopped before this family's measurement was
+ * created, and no earlier test of the name measured it).
  */
 export const HTTP01_VERDICTS = Object.freeze(['ok', 'partial', 'failed', 'catch-all', 'inconclusive', 'untested']);
 
 const GOOD_OUTCOMES = new Set(['not-found', 'redirect']);
 const FAILURE_OUTCOMES = {
-  'connect-timeout': 'timeout', 'tls-timeout': 'timeout', refused: 'refused', dns: 'dns', unreachable: 'unreachable',
+  'connect-timeout': 'connect-timeout', 'tls-timeout': 'timeout', refused: 'refused', dns: 'dns', unreachable: 'unreachable',
   private: 'private', reset: 'reset', offline: 'probe', internal: 'probe'
 };
+/**
+ * Outcomes where the TCP connection itself failed. Let's Encrypt retries such an IPv6 connection
+ * over IPv4 (Boulder's `fallbackErr`: dial errors only, never a server that answered).
+ */
+const CONNECT_FAILURES = new Set(['connect-timeout', 'refused', 'unreachable']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /* ------------------------------------------------------------------------ */
@@ -589,7 +597,9 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
  * error when the renewal uses HTTP-01, a warning when the method is not known. Some regions only:
  * a warning, but an error for HTTP-01 once more than one probe could not reach the server — the
  * CA's multi-perspective validation tolerates one failing remote perspective, two only with six or
- * more (Baseline Requirements §3.2.2.9).
+ * more (Baseline Requirements §3.2.2.9). IPv6 whose every failure is the connection itself (a
+ * connect timeout, a refusal, an unreachable network) while IPv4 passes is a warning: Let's Encrypt
+ * then retries over IPv4, other CAs may not. An IPv6 server that answers wrongly stays an error.
  * @param {{ families: Array<{ ipVersion: 4|6, verdict: string, probes: object[] }> }|null} test
  * @param {{ challenge: string, name: string }} ctx
  * @returns {Array<{ id: string, area: string, severity: string, params: object }>}
@@ -599,11 +609,16 @@ export function http01Findings(test, { challenge, name }) {
   const out = [];
   const sev = methodSeverity(challenge === 'http-01' ? 'http-01' : 'unknown');
   const places = (fam, pred) => fam.probes.filter(pred).map((p) => p.place).filter(Boolean).join('; ');
+  const v4 = test.families.find((f) => f.ipVersion !== 6);
+  const v4ok = !!v4 && v4.verdict === 'ok';
   for (const fam of test.families) {
     const family = fam.ipVersion === 6 ? 'IPv6' : 'IPv4';
     const answers = uniq(fam.probes.map((p) => (p.status ? String(p.status) : p.outcome))).join(', ');
     const common = { name, family, answers };
     const bad = (p) => !GOOD_OUTCOMES.has(p.outcome) && p.outcome !== 'probe';
+    const failures = fam.probes.filter(bad);
+    const outcomes = uniq(failures.map((p) => p.outcome)).join(', ');
+    const fallback = fam.ipVersion === 6 && v4ok && failures.length > 0 && failures.every((p) => CONNECT_FAILURES.has(p.outcome));
     switch (fam.verdict) {
       case 'ok': {
         const redirect = fam.probes.find((p) => p.outcome === 'redirect');
@@ -612,13 +627,14 @@ export function http01Findings(test, { challenge, name }) {
         break;
       }
       case 'partial': {
-        // A catch-all answer still reached the web server: only what did not counts against the quorum.
-        const unreached = fam.probes.filter((p) => bad(p) && p.outcome !== 'catch-all').length;
-        out.push(finding('http01.partial', unreached > 1 ? sev : 'warn', { ...common, places: places(fam, bad), outcomes: uniq(fam.probes.filter(bad).map((p) => p.outcome)).join(', ') }));
+        // A catch-all answer still reached the web server: only what did not counts against the
+        // quorum — and an IPv6 connection Let's Encrypt would retry over a working IPv4 does not.
+        const unreached = fallback ? 0 : failures.filter((p) => p.outcome !== 'catch-all').length;
+        out.push(finding('http01.partial', unreached > 1 ? sev : 'warn', { ...common, places: places(fam, bad), outcomes }));
         break;
       }
       case 'failed':
-        out.push(finding('http01.failed', sev, { ...common, outcomes: uniq(fam.probes.filter(bad).map((p) => p.outcome)).join(', ') }));
+        out.push(fallback ? finding('http01.v6-fallback', 'warn', { ...common, outcomes }) : finding('http01.failed', sev, { ...common, outcomes }));
         break;
       case 'catch-all':
         out.push(finding('http01.catch-all', 'warn', common));
@@ -1159,6 +1175,7 @@ const STRINGS = [
   ['o.redirect-path', ['redirect that drops the token', 'değeri düşüren yönlendirme']],
   ['o.redirect-scheme', ['redirect to another scheme', 'başka bir şemaya yönlendirme']],
   ['o.redirect-none', ['redirect without a target', 'hedefsiz yönlendirme']],
+  ['o.connect-timeout', ['connection timed out', 'bağlantı zaman aşımına uğradı']],
   ['o.timeout', ['timed out', 'zaman aşımı']],
   ['o.refused', ['connection refused (port 80 closed)', 'bağlantı reddedildi (80 portu kapalı)']],
   ['o.dns', ['the probe could not resolve the name', 'ölçüm noktası adı çözemedi']],
@@ -1333,6 +1350,9 @@ const STRINGS = [
       'Başarısız olduğu yerler: {places} ({outcomes}). Otorite birkaç bölgeden doğrular (çok noktalı doğrulama) ve en fazla birinin (altı ya da daha fazla bölge kullanıyorsa ikisinin) başarısız olmasını kabul eder: bir coğrafi engel, bir güvenlik duvarı kuralı ya da bölgesel bir kesinti yenilemeyi başarısız kılabilir.']],
   ['f.http01.failed', ['HTTP-01 path not reachable over {family}', 'HTTP-01 yoluna {family} üzerinden erişilemiyor'],
     ['The probes got: {outcomes}. The CA would get the same, so an HTTP-01 renewal fails.', 'Ölçüm noktalarının aldığı: {outcomes}. Otorite de aynısını alır; HTTP-01 ile yenileme başarısız olur.']],
+  ['f.http01.v6-fallback', ['No IPv6 connection to the HTTP-01 path', 'HTTP-01 yoluna IPv6 bağlantısı kurulamıyor'],
+    ['The probes got: {outcomes}. Let’s Encrypt retries over IPv4 when the IPv6 connection itself fails, and IPv4 passed, so its validation should succeed; other CAs may not retry. Fix IPv6 on the web server, or remove the AAAA record.',
+      'Ölçüm noktalarının aldığı: {outcomes}. Let’s Encrypt, IPv6 bağlantısının kendisi kurulamadığında IPv4 üzerinden yeniden dener ve IPv4 testi geçti; doğrulaması başarılı olmalı. Diğer otoriteler yeniden denemeyebilir. Web sunucusunda IPv6’yı düzeltin ya da AAAA kaydını kaldırın.']],
   ['f.http01.catch-all', ['{answers} for a token that does not exist ({family})', 'Var olmayan bir değer için {answers} yanıtı ({family})'],
     ['Something answers every path under /.well-known/acme-challenge/. Make sure the file your ACME client writes wins over this catch-all (a single-page app, a rewrite rule).',
       '/.well-known/acme-challenge/ altındaki her yolu bir şey yanıtlıyor. ACME istemcinizin yazdığı dosyanın bu genel yanıta (tek sayfalı bir uygulama, bir yeniden yazma kuralı) baskın geldiğinden emin olun.']],

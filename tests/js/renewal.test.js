@@ -637,8 +637,8 @@ test('http01Outcome: statuses and probe-side failures', () => {
   assert.equal(o(res({ statusCode: 301, headers: { Location: [`https://example.com${PATH}`] } })), 'redirect');
   assert.equal(o(res({ statusCode: 302 })), 'redirect-none');
   const failed = (rawOutput, extra = {}) => ({ status: 'failed', statusCode: null, resolvedAddress: null, rawOutput, ...extra });
-  assert.equal(o(failed('Request timed out while establishing the TCP connection.')), 'timeout');
-  assert.equal(o(failed('Request timed out.')), 'timeout');
+  assert.equal(o(failed('Request timed out while establishing the TCP connection.')), 'connect-timeout');
+  assert.equal(o(failed('Request timed out.')), 'timeout', 'a time-out once connected');
   assert.equal(o(failed('connect ECONNREFUSED 203.0.113.10:80')), 'refused');
   assert.equal(o(failed('queryA ENODATA example.com')), 'dns');
   assert.equal(o(failed('connect ENETUNREACH 2001:db8::10:80')), 'unreachable');
@@ -698,8 +698,18 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
     { probe: probe('NA', 'US'), result: { status: 'failed', rawOutput: 'connect ECONNREFUSED 2001:db8::10:80' } }
   ] }, { host: 'www.example.com', path: PATH, ipVersion: 6 });
   next = applyHttp01(report, 'www.example.com', { at: new Date(), families: [ok.families[0], failedFam] });
+  // Only the IPv6 connection failed and IPv4 passed: Let's Encrypt retries over IPv4 (a warning).
+  const fb = next.names[0].findings.find((x) => x.id === 'http01.v6-fallback');
+  assert.deepEqual([fb.severity, fb.params.family, fb.params.outcomes], ['warn', 'IPv6', 'connect-timeout, refused']);
+  assert.equal(next.names[0].verdict, 'warnings');
+  // An IPv6 server that answers, but wrongly (an old host, another site): no retry, the renewal fails.
+  const wrongFam = interpretHttp01({ id: 'x1234568', results: [
+    { probe: probe('EU', 'DE'), result: res({ statusCode: 503, resolvedAddress: '2001:db8::10' }) },
+    { probe: probe('NA', 'US'), result: { status: 'failed', rawOutput: 'Request timed out while establishing the TCP connection.' } }
+  ] }, { host: 'www.example.com', path: PATH, ipVersion: 6 });
+  next = applyHttp01(report, 'www.example.com', { at: new Date(), families: [ok.families[0], wrongFam] });
   const f = next.names[0].findings.find((x) => x.id === 'http01.failed');
-  assert.deepEqual([f.severity, f.params.family, f.params.outcomes], ['error', 'IPv6', 'timeout, refused']);
+  assert.deepEqual([f.severity, f.params.family, f.params.outcomes], ['error', 'IPv6', 'server-error, connect-timeout']);
   assert.equal(next.names[0].verdict, 'fail');
   assert.equal(applyHttp01(next, 'www.example.com', null).names[0].verdict, 'ready', 'removing the test restores the verdict');
   // Partial, catch-all and inconclusive families.
@@ -714,6 +724,14 @@ test('http01Findings + applyHttp01: a failed test fails an HTTP-01 renewal, warn
   assert.deepEqual(find([fam('catch-all', 'catch-all')]), [['http01.catch-all', 'warn']]);
   assert.deepEqual(find([fam('probe')]), [['http01.inconclusive', 'info']]);
   assert.deepEqual(find([fam('timeout')], 'unknown'), [['http01.failed', 'warn']]);
+  // IPv6 connections that fail next to a passing IPv4: the fallback, also for some regions only.
+  const v6 = (...results) => ({ ...fam(...results), ipVersion: 6 });
+  assert.deepEqual(find([fam('not-found', 'not-found'), v6('connect-timeout', 'refused', 'unreachable')]), [['http01.ok', 'ok'], ['http01.v6-fallback', 'warn']]);
+  assert.deepEqual(find([fam('not-found', 'not-found'), v6('not-found', 'connect-timeout', 'refused')]), [['http01.ok', 'ok'], ['http01.partial', 'warn']]);
+  assert.deepEqual(find([fam('not-found', 'not-found'), v6('not-found', 'timeout', 'refused')]), [['http01.ok', 'ok'], ['http01.partial', 'error']], 'a time-out once connected is no dial error');
+  assert.deepEqual(find([fam('not-found', 'timeout'), v6('connect-timeout', 'connect-timeout')]), [['http01.partial', 'warn'], ['http01.failed', 'error']], 'IPv4 does not pass');
+  assert.deepEqual(find([v6('connect-timeout', 'connect-timeout')]), [['http01.failed', 'error']], 'no IPv4 to fall back to');
+  assert.deepEqual(find([fam('not-found'), v6('reset', 'reset')]), [['http01.ok', 'ok'], ['http01.failed', 'error']], 'a reset comes once connected');
   assert.equal(http01Findings({ families: [fam('not-found', 'timeout')] }, { challenge: 'http-01', name: 'x' })[0].params.places, 'P1');
   assert.deepEqual(http01Findings(null, { challenge: 'http-01', name: 'x' }), []);
 });

@@ -40,8 +40,10 @@ export const TARGET_KINDS = Object.freeze(['domain', 'host', 'ip']);
 
 /**
  * Where each tool takes the current target: its main input's route param and the kinds of
- * target that input accepts. Tools that are not listed (Zone File, Servers, About) take none;
- * the Zone File view never publishes one either, so nothing about an imported zone reaches a URL.
+ * target that input accepts (`kindParams`: another input for one kind — Retire an IP takes an
+ * address into its address box, a domain or host name into its domain box). Tools that are not
+ * listed (Zone File, Servers, About) take none; the Zone File view never publishes one either, so
+ * nothing about an imported zone reaches a URL.
  */
 export const TARGET_ROUTES = Object.freeze({
   subdomains: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) }),
@@ -52,6 +54,7 @@ export const TARGET_ROUTES = Object.freeze({
   lookup: Object.freeze({ param: 'name', kinds: Object.freeze(['domain', 'host', 'ip']) }),
   bulk: Object.freeze({ param: 'names', kinds: Object.freeze(['domain', 'host']) }),
   ip: Object.freeze({ param: 'ips', kinds: Object.freeze(['ip']) }),
+  retire: Object.freeze({ param: 'domains', kinds: Object.freeze(['domain', 'host', 'ip']), kindParams: Object.freeze({ ip: 'ips' }) }),
   health: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) })
 });
 
@@ -157,7 +160,9 @@ export function targetFits(view, target) {
  */
 export function fillRoute(view, target) {
   if (!targetFits(view, target)) return null;
-  return { [TARGET_ROUTES[view].param]: target.value, [FILL_PARAM]: FILL_VALUE };
+  const spec = TARGET_ROUTES[view];
+  const param = (spec.kindParams && spec.kindParams[target.kind]) || spec.param;
+  return { [param]: target.value, [FILL_PARAM]: FILL_VALUE };
 }
 
 /**

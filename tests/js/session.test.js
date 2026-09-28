@@ -103,6 +103,10 @@ describe('routes', () => {
     assert.deepEqual(fillRoute('scan', domain), { domain: 'example.com', run: '0' });
     assert.deepEqual(fillRoute('renew', host), { names: 'www.example.com', run: '0' });
     assert.equal(fillRoute('renew', ip), null, 'a renewal names host names only');
+    // Retire an IP: an address into its address box, a domain or host name into its domain box.
+    assert.deepEqual(fillRoute('retire', ip), { ips: '192.0.2.10', run: '0' });
+    assert.deepEqual(fillRoute('retire', domain), { domains: 'example.com', run: '0' });
+    assert.deepEqual(fillRoute('retire', host), { domains: 'www.example.com', run: '0' });
   });
 
   test('a tool whose input does not take the kind gets nothing', () => {

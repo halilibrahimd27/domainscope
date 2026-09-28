@@ -790,13 +790,14 @@ async function checkKey(pkcs8, certificates, subtle) {
   const alg = keyAlgorithm(algNode);
   if (alg.unsupported) return { status: 'unsupported', algorithm: alg.name, certificates: [] };
   const s = needSubtle(subtle);
-  let key;
+  let signature;
   try {
-    key = await s.importKey('pkcs8', pkcs8, alg.importAlg, false, ['sign']);
+    const key = await s.importKey('pkcs8', pkcs8, alg.importAlg, false, ['sign']);
+    signature = new Uint8Array(await s.sign(alg.signAlg, key, CHALLENGE));
   } catch {
+    // The browser cannot use this key (a curve or size it refuses): nothing to compare, no verdict.
     return { status: 'unsupported', algorithm: alg.name, certificates: [] };
   }
-  const signature = new Uint8Array(await s.sign(alg.signAlg, key, CHALLENGE));
   const matches = [];
   for (let i = 0; i < certificates.length; i++) {
     let spki;

@@ -520,7 +520,28 @@ describe('x509 loadCertificates', () => {
     assert.deepEqual(opened.keys.map((k) => [k.encrypted, k.check.status, k.check.algorithm, k.check.certificates]), [[false, 'checked', 'EC P-256', []]]);
     const r = await loadCertificates(bundle, { password: 'k', checkKey: true });
     assert.deepEqual(r.warnings.map((w) => w.code), ['NO_CERTIFICATE']);
-    assert.deepEqual([r.pkcs12.certificates, r.pkcs12.keys, r.pkcs12.unencryptedKeys, r.pkcs12.keyCheck], [0, 1, 1, null]);
+    assert.deepEqual([r.pkcs12.certificates, r.pkcs12.keys, r.pkcs12.unencryptedKeys, r.pkcs12.keyCheck.status], [0, 1, 1, 'nocert']);
+    assert.equal((await loadCertificates(bundle, { password: 'k' })).pkcs12.keyCheck, null, 'not asked');
+  });
+
+  test('two bundles in one input: the first opens, the second is said to be skipped', async () => {
+    const der = read('p12_rsa_aes.p12');
+    const r = await loadCertificates(pemEncode(der, 'PKCS12') + pemEncode(read('p12_ec_aes128.p12'), 'PKCS12'), { password: PASS });
+    assert.equal(r.leaf.subjectCN, 'p12.example.com');
+    assert.deepEqual(r.warnings, [{ code: 'PARSE_ERROR', detail: 'PKCS#12 bundle 2: not opened (one bundle per file; load it on its own)' }]);
+  });
+
+  test('a key WebCrypto imports but will not sign with is "unsupported", and the certificates still load', async () => {
+    const subtle = new Proxy(globalThis.crypto.subtle, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop);
+        if (prop === 'sign') return (alg, ...rest) => (alg && alg.name === 'ECDSA' ? Promise.reject(new DOMException('no', 'OperationError')) : v.call(target, alg, ...rest));
+        return typeof v === 'function' ? v.bind(target) : v;
+      }
+    });
+    const r = await loadCertificates(read('p12_ec_aes128.p12'), { password: PASS, checkKey: true, subtle });
+    assert.equal(r.certificates.length, 3);
+    assert.deepEqual(r.pkcs12.keyCheck, { status: 'unsupported', algorithm: 'EC P-256', owner: null });
   });
 
   test('a key type the browser cannot check is "unsupported", not a mismatch', async () => {

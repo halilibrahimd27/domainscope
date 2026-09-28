@@ -256,6 +256,8 @@ export function PfxNote(summary, { actions = [], certName = (c) => c.subjectCN |
   const extra = [];
   if (!kc) {
     if (summary.keys && summary.certificates) verdict = h('p', { class: 'muted text-sm pfx-key-verdict' }, t('pfx.key.notChecked'));
+  } else if (kc.status === 'nocert') {
+    // No certificate was read: the alerts above say why; a key check has nothing to say.
   } else if (kc.status === 'match') {
     verdict = h('div', { class: 'pfx-key-verdict cluster' },
       Badge(t('pfx.key.match'), { variant: 'ok', icon: 'check-circle' }),

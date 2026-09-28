@@ -1757,11 +1757,12 @@ export function parseCertificates(input, options = {}) {
  * @property {import('./pkcs12.js').EncryptionInfo[]} keyEncryption of the private keys (one per scheme)
  * @property {boolean} passwordVerified the MAC matched or something decrypted with the password;
  *   false for a bundle with neither (its certificates were readable without it)
- * @property {null|{ status: 'match'|'mismatch'|'nokey'|'unsupported'|'failed', algorithm: string|null,
- *   owner: Certificate|null }} keyCheck only with `checkKey` and a leaf: 'match' a private key belongs to the
+ * @property {null|{ status: 'match'|'mismatch'|'nokey'|'nocert'|'unsupported'|'failed', algorithm: string|null,
+ *   owner: Certificate|null }} keyCheck only with `checkKey`: 'match' a private key belongs to the
  *   leaf; 'mismatch' none does (owner: a certificate of the bundle the key belongs to, if any);
- *   'nokey' the bundle holds no key; 'unsupported' a key type the browser cannot check
- *   (algorithm: its name); 'failed' the key did not decrypt although the certificates did
+ *   'nokey' the bundle holds no key; 'nocert' no certificate was read to check one against;
+ *   'unsupported' a key type the browser cannot check (algorithm: its name); 'failed' the key
+ *   did not decrypt although the certificates did
  */
 
 /** The {@link Pkcs12Summary} of an opened bundle; `parsed[i]` is the Certificate of its certificate i. */
@@ -1777,8 +1778,9 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
   };
   const leafIndex = leaf ? parsed.indexOf(leaf) : -1;
   let keyCheck = null;
-  // Without a certificate there is nothing to check a key against.
-  if (checkKey && leaf) {
+  if (checkKey && !leaf) {
+    keyCheck = { status: 'nocert', algorithm: null, owner: null }; // nothing to check a key against
+  } else if (checkKey) {
     const checks = opened.keys.map((k) => k.check).filter(Boolean);
     const checked = checks.filter((c) => c.status === 'checked');
     const match = checked.find((c) => c.certificates.includes(leafIndex));
@@ -1851,6 +1853,8 @@ export async function loadCertificates(input, options = {}) {
         else warn(ctx, 'PKCS12_DAMAGED', err.message);
       }
       if (opened) parsed = opened.certificates.map((c, i) => addCertificate(c.der, ctx, `PKCS#12 certificate ${i + 1}`));
+      // One bundle per load: any other one in the input is said to be skipped, never dropped silently.
+      for (let i = 1; i < ctx.pkcs12.length; i++) warn(ctx, 'PARSE_ERROR', `PKCS#12 bundle ${i + 1}: not opened (one bundle per file; load it on its own)`);
     }
     leaf = finishResult(ctx, options);
   } catch (err) {

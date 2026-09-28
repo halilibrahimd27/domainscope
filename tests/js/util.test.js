@@ -4,7 +4,7 @@ import {
   AbortError, TimeoutError, HttpError, RateLimitError, ParseError,
   sleep, createLimiter, fetchWithTimeout, fetchAndRead, fetchJson, fetchText, retry,
   defaultShouldRetry, errorKind, uniq, chunk, randomLabel, createCache,
-  mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError, onceAsync
+  mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError, onceAsync, sharePercent
 } from '../../assets/js/lib/util.js';
 
 /** A Response-like object for the fetch mocks (no real network). */
@@ -350,6 +350,16 @@ test('chunk splits and validates size', () => {
   assert.deepEqual(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
   assert.deepEqual(chunk([], 3), []);
   assert.throws(() => chunk([1], 0), RangeError);
+});
+
+test('sharePercent: one decimal, never 100 or 0 unless it is exactly that', () => {
+  assert.equal(sharePercent(0.9487), 94.9);
+  assert.equal(sharePercent(0.95), 95);
+  assert.equal(sharePercent(1), 100);
+  assert.equal(sharePercent(0), 0);
+  assert.equal(sharePercent(0.99996), 99.9, 'almost all is not all');
+  assert.equal(sharePercent(0.00004), 0.1, 'a few is not none');
+  assert.equal(sharePercent(Number.NaN), 0);
 });
 
 test('randomLabel yields lowercase alphanumerics of the requested length', () => {

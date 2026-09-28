@@ -633,6 +633,26 @@ export function chunk(arr, n) {
   return out;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Numbers                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * A share as a percentage with at most one decimal (0.9487 → 94.9), never rounded to 100 or 0
+ * when it is not exactly that: 99.96 % of the mail passing is 99.9, not "all of it". The page
+ * and its Copy summary say the same number this way.
+ * @param {number} ratio 0 … 1
+ * @returns {number} 0 … 100
+ */
+export function sharePercent(ratio) {
+  const r = Number(ratio);
+  if (!Number.isFinite(r)) return 0;
+  const v = Math.round(r * 1000) / 10;
+  if (r < 1 && v >= 100) return 99.9;
+  if (r > 0 && v <= 0) return 0.1;
+  return Math.min(100, Math.max(0, v));
+}
+
 const LABEL_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /**

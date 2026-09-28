@@ -4,7 +4,7 @@
  *
  * - Each builder takes the facts a view already shows ({@link healthSummary}, {@link globalSummary},
  *   {@link subdomainsSummary}, {@link scanSummary}, {@link zoneSummary}, {@link certSummary},
- *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}; {@link buildSummary} dispatches by view id) and
+ *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link retireSummary}; {@link buildSummary} dispatches by view id) and
  *   returns a {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP
  *   Intel) and a footer with the view's permalink and a UTC timestamp.
  * - {@link renderMarkdown} / {@link renderPlainText} turn a doc into text. Untrusted values
@@ -13,7 +13,7 @@
  *   Markdown (no link, mention or formatting survives inside one) and every other text is
  *   Markdown-escaped; control and bidi characters never reach the output.
  * - {@link permalinkParams} keeps only a view's own shareable route params (never inventory data
- *   or zone contents; IP Intel drops private and inventory addresses), for `ctx.shareUrl()`.
+ *   or zone contents; IP Intel and Retire an IP drop private and inventory addresses), for `ctx.shareUrl()`.
  * - A summary holds only what the result on screen shows. Inventory data in it: SSL Targets names
  *   the servers that need the certificate, as its Servers tab lists them; IP Intel says whether
  *   (or how many of) its addresses are in the server list, never a server's name.
@@ -29,7 +29,7 @@
 import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'health']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -52,6 +52,7 @@ export const PERMALINK_PARAMS = Object.freeze({
   global: Object.freeze(['name', 'type', 'geo']),
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
   ip: Object.freeze(['ips']),
+  retire: Object.freeze(['ips', 'domains']),
   health: Object.freeze(['domain', 'selectors'])
 });
 
@@ -151,7 +152,8 @@ function isoDay(value) {
 /**
  * The route params of a view's permalink: only the keys in {@link PERMALINK_PARAMS}, never an
  * empty value. IP Intel keeps the pasted host names and the public addresses that are not in
- * `exclude` (the inventory's addresses): a private or inventory address is inventory data.
+ * `exclude` (the inventory's addresses): a private or inventory address is inventory data. Retire
+ * an IP does the same with its addresses (a private network too).
  * @param {string} view
  * @param {Record<string, unknown>} [params] the view's route params (ctx.params)
  * @param {{ exclude?: Iterable<string> }} [opts]
@@ -164,11 +166,16 @@ export function permalinkParams(view, params = {}, { exclude = [] } = {}) {
     const raw = params && params[key];
     if (raw === null || raw === undefined || raw === '' || raw === false) continue;
     let value = Array.isArray(raw) ? raw.join(',') : String(raw);
-    if (view === 'ip' && key === 'ips') {
+    if ((view === 'ip' || view === 'retire') && key === 'ips') {
       const skip = new Set([...exclude].map((ip) => normalizeIP(ip) || String(ip)));
       value = value.split(/[\s,;]+/).filter((token) => {
         if (!token) return false;
         const ip = normalizeIP(token);
+        if (!ip && view === 'retire') {
+          // A network: its first address says whether it is private space.
+          const net = normalizeIP(token.split('/')[0]);
+          return !net || !isPrivateIP(net);
+        }
         return !ip || (!isPrivateIP(ip) && !skip.has(ip));
       }).join(',');
       if (!value) continue;
@@ -664,6 +671,60 @@ export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
   return doc('ip', k.title('ip', subject), [parts], { inline: true, when: whenText(t, 'sum.at.checked', at, opts.now || new Date()), url: opts.url });
 }
 
+/** Severities of lib/retire.js whose records break something, worst first (`sum.retire.sev.<id>` labels them). */
+export const RETIRE_BREAKING_SEVERITIES = Object.freeze(['mail', 'ns', 'live', 'origin', 'chain']);
+/** Records a Retire an IP summary lists by name (the 12-line budget holds four next to its other lines). */
+const RETIRE_MAX_RECORDS = 4;
+
+/**
+ * Retire an IP: how many records still point at the addresses and how many of them break
+ * something, what was checked, the worst records (≤ 4, then "+N more"), what the check could not
+ * settle — SPF terms it cannot tell, passive hits nobody checked, failed lookups, a stop — and what
+ * it never covers (internal DNS, domains not in the list). The server list only as a count, never a name.
+ * @param {{ label: string, domains?: string[], zone?: string|null, passive?: boolean,
+ *   counts: { total: number, breaking: number, bySeverity: Record<string, number>, byVerified?: Record<string, number> },
+ *   top?: Array<{ severity: string, name: string, type: string, value: string }>, owners?: number|null,
+ *   unverified?: number, failed?: number, stopped?: boolean, at?: Date }} facts lib/retire.js buildChanges counts and
+ *   changes (worst first); `zone`: the imported zone's origin when its records were compared; `passive`: a passive
+ *   reverse-IP lookup was made; `owners`: servers of the list that own an address (null: no list loaded);
+ *   `unverified`: passive hits nobody checked; `failed`: lookups that got no answer
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function retireSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const c = facts.counts || { total: 0, breaking: 0, bySeverity: {} };
+  const sev = c.bySeverity || {};
+  // What cannot be told and what nobody checked is said on lines of its own, never counted as pointing here.
+  const total = Math.max(0, (Number(c.total) || 0) - (Number(sev.unknown) || 0) - (Number(facts.unverified) || 0));
+  const breaking = Number(c.breaking) || 0;
+  let verdict;
+  if (!total) verdict = facts.stopped ? t('sum.retire.noneStopped') : t('sum.retire.none');
+  else verdict = `${t('sum.retire.records', { count: total })} · ${breaking ? t('sum.retire.breaking', { count: breaking }) : t('sum.retire.breakingNone')}`;
+  if (facts.stopped && total) verdict = `${verdict} ${t('sum.retire.partial')}`;
+  const domains = facts.domains || [];
+  const checked = domains.length ? [`${t('sum.retire.domains', { count: domains.length })} `, ...k.domains(domains)] : [t('sum.retire.noDomains')];
+  if (facts.zone) checked.push(' · ', ...textParts(t, 'sum.retire.lookedZone', { zone: facts.zone }));
+  if (facts.passive) checked.push(' · ', t('sum.retire.lookedPassive'));
+  const top = (facts.top || []).filter((r) => r && RETIRE_BREAKING_SEVERITIES.includes(r.severity));
+  const topLines = top.slice(0, RETIRE_MAX_RECORDS).map((r) => [
+    strong(`${t(`sum.retire.sev.${r.severity}`)}:`), ' ', code(r.name), ` ${cleanText(r.type)} `, code(r.value)
+  ]);
+  if (top.length > RETIRE_MAX_RECORDS) topLines.push([t('sum.retire.more', { count: top.length - RETIRE_MAX_RECORDS })]);
+  const owners = facts.owners;
+  // What the check could not settle, on one line: the budget is 12 lines with the worst records.
+  const open = k.counts([['sum.retire.unknown', sev.unknown], ['sum.retire.unverified', facts.unverified], ['sum.retire.failed', facts.failed]]);
+  return doc('retire', k.title('retire', [code(facts.label)]), [
+    [verdict],
+    checked,
+    owners === null || owners === undefined ? null : [owners > 0 ? t('sum.retire.owners', { count: owners }) : t('sum.retire.ownersNone')],
+    ...topLines,
+    open ? [strong(`${t('sum.retire.open')}:`), ' ', open] : null,
+    [t('sum.retire.scope')]
+  ], { when: whenText(t, 'sum.at.checked', facts.at, opts.now || new Date()), url: opts.url });
+}
+
 const BUILDERS = {
   subdomains: subdomainsSummary,
   zone: zoneSummary,
@@ -673,6 +734,7 @@ const BUILDERS = {
   global: globalSummary,
   lookup: lookupSummary,
   ip: ipSummary,
+  retire: retireSummary,
   health: healthSummary
 };
 
@@ -903,7 +965,33 @@ const STRINGS = [
   ['sum.ip.failed', [{ one: '{count} lookup failed', other: '{count} lookups failed' }, '{count} adreste sorgu başarısız']],
   ['sum.ip.failedOne', ['lookup failed', 'sorgu başarısız']],
   ['sum.ip.stopped', [{ one: 'stopped: {count} address not looked up', other: 'stopped: {count} addresses not looked up' }, 'durduruldu: {count} adres sorgulanmadı']],
-  ['sum.ip.stoppedOne', ['stopped before it was looked up', 'sorgulanmadan durduruldu']]
+  ['sum.ip.stoppedOne', ['stopped before it was looked up', 'sorgulanmadan durduruldu']],
+
+  ['sum.retire.records', [{ one: '{count} record still points at it', other: '{count} records still point at it' }, '{count} kayıt hâlâ bu adresi gösteriyor']],
+  ['sum.retire.breaking', [{ one: '{count} breaks something once it is gone', other: '{count} break something once it is gone' }, 'adres kalkınca {count} tanesi bir şeyi bozar']],
+  ['sum.retire.breakingNone', ['none of them breaks anything once it is gone', 'adres kalkınca hiçbiri bir şeyi bozmaz']],
+  ['sum.retire.none', ['Nothing in the checked domains points at it', 'Kontrol edilen alan adlarında bu adresi gösteren bir şey yok']],
+  ['sum.retire.noneStopped', ['Stopped before anything pointing at it was found', 'Bu adresi gösteren bir şey bulunmadan durduruldu']],
+  ['sum.retire.partial', ['(stopped early: not every domain was checked)', '(erken durduruldu: her alan adı kontrol edilmedi)']],
+  ['sum.retire.domains', [{ one: 'Checked {count} domain over public DNS:', other: 'Checked {count} domains over public DNS:' }, 'Genel DNS üzerinden {count} alan adı kontrol edildi:']],
+  ['sum.retire.noDomains', ['No domain checked', 'Hiçbir alan adı kontrol edilmedi']],
+  ['sum.retire.lookedZone', ['the zone file of {zone}', '{zone} zone dosyası']],
+  ['sum.retire.lookedPassive', ['passive reverse IP', 'pasif ters IP']],
+  ['sum.retire.owners', [{ one: 'Owned by {count} server in your list', other: 'Owned by {count} servers in your list' }, 'Listenizdeki {count} sunucuya ait']],
+  ['sum.retire.ownersNone', ['Not in your server list', 'Sunucu listenizde yok']],
+  ['sum.retire.sev.mail', ['Mail', 'E-posta']],
+  ['sum.retire.sev.ns', ['Name server', 'Ad sunucusu']],
+  ['sum.retire.sev.live', ['Live record', 'Canlı kayıt']],
+  ['sum.retire.sev.origin', ['Proxy origin', 'Proxy asıl sunucusu']],
+  ['sum.retire.sev.chain', ['CNAME chain', 'CNAME zinciri']],
+  ['sum.retire.more', [{ one: '+{count} more record to change', other: '+{count} more records to change' }, 'değiştirilecek +{count} kayıt daha']],
+  ['sum.retire.open', ['Not settled', 'Belirsiz kalanlar']],
+  ['sum.retire.scope', ['Not covered: internal (split-horizon) DNS and domains that are not in the list', 'Kapsam dışı: iç (split-horizon) DNS ve listede olmayan alan adları']],
+  ['sum.retire.unknown', [{ one: '{count} SPF term that cannot be told from here', other: '{count} SPF terms that cannot be told from here' },
+    'buradan anlaşılamayan {count} SPF terimi']],
+  ['sum.retire.unverified', [{ one: '{count} passive hit not checked yet', other: '{count} passive hits not checked yet' }, 'henüz kontrol edilmemiş {count} pasif sonuç']],
+  ['sum.retire.failed', [{ one: '{count} failed lookup (the list may be incomplete)', other: '{count} failed lookups (the list may be incomplete)' },
+    '{count} başarısız sorgu (liste eksik olabilir)']]
 ];
 
 function buildStrings(lang) {

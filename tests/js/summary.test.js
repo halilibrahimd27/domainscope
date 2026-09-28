@@ -113,6 +113,13 @@ describe('permalinkParams', () => {
     assert.deepEqual(p, { ips: 'example.com,203.0.113.7' });
     assert.deepEqual(S.permalinkParams('ip', { ips: '10.0.0.5' }), {}, 'nothing left: no ips key');
   });
+
+  test('Retire an IP drops private addresses and networks and inventory addresses, keeps the domains', () => {
+    const p = S.permalinkParams('retire', { ips: '192.0.2.10,10.0.0.0/28,198.51.100.0/28,203.0.113.7', domains: 'example.com,example.net', run: '0' },
+      { exclude: ['192.0.2.10'] });
+    assert.deepEqual(p, { ips: '198.51.100.0/28,203.0.113.7', domains: 'example.com,example.net' });
+    assert.deepEqual(S.permalinkParams('retire', { ips: '10.0.0.5', domains: 'example.com' }), { domains: 'example.com' });
+  });
 });
 
 describe('health', () => {
@@ -714,6 +721,75 @@ describe('ip (one line)', () => {
   });
 });
 
+describe('retire', () => {
+  const counts = (bySeverity, extra = {}) => {
+    const full = Object.fromEntries(['mail', 'ns', 'live', 'origin', 'chain', 'file', 'stale', 'unknown'].map((s) => [s, bySeverity[s] || 0]));
+    const total = Object.values(full).reduce((a, b) => a + b, 0);
+    const breaking = ['mail', 'ns', 'live', 'origin', 'chain'].reduce((a, s) => a + full[s], 0);
+    return { total, breaking, bySeverity: full, byVerified: {}, ...extra };
+  };
+  const top = [
+    { severity: 'mail', name: 'example.com', type: 'TXT', value: 'ip4:192.0.2.10' },
+    { severity: 'mail', name: 'example.com', type: 'MX', value: '10 mail.example.com' },
+    { severity: 'ns', name: 'example.com', type: 'NS', value: 'ns1.example.com' },
+    { severity: 'live', name: 'www.example.com', type: 'A', value: '192.0.2.10' },
+    { severity: 'origin', name: 'shop.example.com', type: 'A', value: '192.0.2.10' },
+    { severity: 'chain', name: 'blog.example.com', type: 'CNAME', value: 'www.example.com' },
+    { severity: 'stale', name: 'example.com', type: 'TXT', value: '-ip4:192.0.2.10' },
+    { severity: 'unknown', name: 'example.com', type: 'TXT', value: 'exists:%{i}.x.example.com' }
+  ];
+
+  test('what still points at the address, the worst records, what could not be told; a count of servers, never a name', () => {
+    const facts = {
+      label: '192.0.2.10', domains: ['example.com', 'example.net'], zone: 'example.com', passive: true,
+      counts: counts({ mail: 2, ns: 1, live: 1, origin: 1, chain: 1, stale: 3, unknown: 1 }), top, owners: 1, unverified: 2, failed: 1,
+      at: new Date('2026-09-28T09:15:00Z')
+    };
+    const url = `${URL_BASE}#/retire?ips=192.0.2.10&domains=example.com,example.net`;
+    const doc = S.retireSummary(facts, opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Retire an IP · `192.0.2.10`**',
+      '- 7 records still point at it · 6 break something once it is gone',
+      '- Checked 2 domains over public DNS: `example.com`, `example.net` · the zone file of `example.com` · passive reverse IP',
+      '- Owned by 1 server in your list',
+      '- **Mail:** `example.com` TXT `ip4:192.0.2.10`',
+      '- **Mail:** `example.com` MX `10 mail.example.com`',
+      '- **Name server:** `example.com` NS `ns1.example.com`',
+      '- **Live record:** `www.example.com` A `192.0.2.10`',
+      '- +2 more records to change',
+      '- **Not settled:** 1 SPF term that cannot be told from here · 2 passive hits not checked yet · 1 failed lookup (the list may be incomplete)',
+      '- Not covered: internal (split-horizon) DNS and domains that are not in the list',
+      '',
+      `DomainScope · checked 2026-09-28 09:15 UTC · ${url}`
+    ]);
+    assert.doesNotMatch(md(doc) + txt(doc), /web01|server name/);
+  });
+
+  test('nothing points at it; a stopped check never says nothing; Turkish; no server list', () => {
+    const none = S.retireSummary({ label: '192.0.2.10', domains: ['example.com'], counts: counts({}), top: [] }, opts());
+    assertShape(none);
+    assert.equal(lines(md(none))[1], '- Nothing in the checked domains points at it');
+    assert.doesNotMatch(md(none), /server list|your list/, 'no list loaded: nothing said about it');
+    const stopped = S.retireSummary({ label: '192.0.2.0/28', domains: ['example.com'], counts: counts({}), top: [], stopped: true, owners: 0 }, opts());
+    assert.equal(lines(md(stopped))[1], '- Stopped before anything pointing at it was found');
+    assert.match(md(stopped), /- Not in your server list/);
+    const tr = S.retireSummary({ label: '192.0.2.10', domains: ['example.com'], counts: counts({ live: 1 }), top: top.slice(3, 4), stopped: true }, opts('tr'));
+    assertShape(tr);
+    assert.equal(lines(md(tr))[0], '**IP emekliye ayırma · `192.0.2.10`**');
+    assert.equal(lines(md(tr))[1], '- 1 kayıt hâlâ bu adresi gösteriyor · adres kalkınca 1 tanesi bir şeyi bozar (erken durduruldu: her alan adı kontrol edilmedi)');
+    assert.equal(lines(md(tr))[3], '- **Canlı kayıt:** `www.example.com` A `192.0.2.10`');
+  });
+
+  test('a hostile record value stays an inert code span', () => {
+    const doc = S.retireSummary({
+      label: '192.0.2.10', domains: ['example.com'], counts: counts({ live: 1 }),
+      top: [{ severity: 'live', name: '<!channel>.example.com', type: 'A', value: '@here *x*' }]
+    }, opts());
+    assert.match(md(doc), /- \*\*Live record:\*\* `<!channel>\.example\.com` A `@here \*x\*`/);
+  });
+});
+
 describe('rendering and dispatch', () => {
   test('buildSummary dispatches by view id and refuses unknown views', () => {
     const doc = S.buildSummary('zone', { origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts());
@@ -780,6 +856,7 @@ describe('i18n', () => {
     for (const s of ['agree', 'geo', 'unresolved', 'differ']) used.add(`sum.global.${s}`);
     for (const f of ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']) used.add(`sum.global.find.${f}`);
     for (const w of S.CERT_SUMMARY_WARNINGS) used.add(`sum.cert.warn.${w}`);
+    for (const r of S.RETIRE_BREAKING_SEVERITIES) used.add(`sum.retire.sev.${r}`);
     const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
     assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
     assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');

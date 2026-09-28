@@ -47,10 +47,12 @@ const JS = join(ASSETS, 'js');
  * request from the first one, so its meter (the fetch wrapper and the Resource Timing observer,
  * ui/egress-meter.js) and its log (lib/egresslog.js) load with the shell, and the footer links to
  * it; the deploy's version file joined lib/pwa.js, and the senders' notes (what a measurement body
- * carried, a registry's RDAP server) the log: ≈ 376 KB (384,678 bytes).
+ * carried, a registry's RDAP server) the log: ≈ 376 KB (384,678 bytes). Wave 4's DMARC & TLS
+ * reports put its Copy summary builder with its strings in lib/summary.js and an entry in the
+ * navigation (the report readers load with the view): ≈ 3.5 KB more.
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 376 * 1024;
+const START_ROUTE_BUDGET = 380 * 1024;
 
 /** Modules that must never be part of the start route. */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',

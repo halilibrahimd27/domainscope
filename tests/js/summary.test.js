@@ -807,6 +807,86 @@ describe('retire', () => {
   });
 });
 
+describe('reports (DMARC & TLS reports)', () => {
+  const blocker = (ip, cls, reason, detail, fail, fixes) => ({ ip, cls, reason, detail, fail, fixes });
+  const facts = (over = {}) => ({
+    domain: 'example.com',
+    dmarc: {
+      overview: {
+        compliance: 4913 / 5175, messages: 5175, verdict: 'fix-first', blocked: 181,
+        blockers: [
+          blocker('198.51.100.20', 'third-party', 'spf-include', 'spf.mailer.example.net', 120, ['dkim-align', 'spf-align']),
+          blocker('203.0.113.99', 'yours', 'inventory', 'app02', 57, ['dkim-sign', 'spf-add']),
+          blocker('203.0.113.26', 'yours', 'spf', 'mx', 3, ['dkim-sign']),
+          blocker('198.51.100.130', 'third-party', 'dkim-service', 'bounce.esp.example.net', 1, ['dkim-fix'])
+        ],
+        unknown: [{ ip: '192.0.2.200' }, { ip: '198.51.100.200' }], unknownFail: 85
+      },
+      policy: { p: 'none', pct: 100 }, reports: 2, begin: new Date('2026-09-25T00:00:00Z'), end: new Date('2026-09-26T23:59:59Z'), spf: 'checked'
+    },
+    tls: {
+      success: 6138, failure: 63, rate: 6138 / 6201, reports: 2,
+      byType: [{ type: 'certificate-expired', sessions: 40 }, { type: 'starttls-not-supported', sessions: 9 }, { type: 'certificate-host-mismatch', sessions: 6 },
+        { type: 'validation-failure', sessions: 5 }]
+    },
+    problems: 1,
+    ...over
+  });
+
+  test('compliance, the verdict, what to fix first, the unknown senders, TLS-RPT; never a server\'s name', () => {
+    const url = `${URL_BASE}#/reports`;
+    const doc = S.reportsSummary(facts(), opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**DMARC & TLS reports · `example.com`**',
+      '- **DMARC:** 94.9% of 5,175 messages pass · `p=none` · 2 reports, 2026-09-25 → 2026-09-26',
+      '- Not ready for p=reject: 4 sources you use fail DMARC (181 messages)',
+      '- **Fix first:** `198.51.100.20` (authorized third party `spf.mailer.example.net`): 120 messages fail — it signs DKIM only as another domain: set up DKIM for the domain there',
+      '- **Fix first:** `203.0.113.99` (your server): 57 messages fail — sign its mail with DKIM for the domain',
+      '- +2 more sources to fix',
+      '- Unknown senders: 2 sources, 85 failing messages (spoofing?)',
+      '- Sources classified against the domain’s current SPF',
+      '- **TLS-RPT:** 99% of 6,201 TLS sessions succeeded · 2 reports',
+      '- **Failures:** `certificate-expired` 40, `starttls-not-supported` 9, `certificate-host-mismatch` 6 +1 more',
+      '- 1 file or entry was no report or could not be read',
+      '',
+      `DomainScope · as of 2026-09-27 14:03 UTC · ${url}`
+    ]);
+    assert.doesNotMatch(md(doc) + txt(doc), /app02/, 'no server name');
+  });
+
+  test('ready, enforced (and mail refused now), no mail, a pct under 100, SPF not checked, TLS only; Turkish', () => {
+    const f = facts();
+    const ready = S.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spf: 'failed', policy: { p: 'quarantine', pct: 50 }, overview: { ...f.dmarc.overview, verdict: 'ready', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
+    assertShape(ready, { min: 3 });
+    assert.deepEqual(lines(md(ready)).slice(1, 4), [
+      '- **DMARC:** 94.9% of 5,175 messages pass · `p=quarantine; pct=50` · 2 reports, 2026-09-25 → 2026-09-26',
+      '- Ready for p=reject: every source you use passes DMARC',
+      '- The current SPF was not checked: classes from the reports alone'
+    ]);
+    const losing = S.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: f.dmarc.overview.blockers.slice(1, 2), blocked: 57 } } }, opts());
+    assert.equal(lines(md(losing))[2], '- p=reject is in force, and 1 source you use fails: 57 of its messages are refused');
+    const enforced = S.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: [], blocked: 0 } } }, opts());
+    assert.equal(lines(md(enforced))[2], '- p=reject is in force, and every source you use passes');
+    const empty = S.reportsSummary({ ...f, tls: null, dmarc: { ...f.dmarc, overview: { compliance: null, messages: 0, verdict: 'no-mail', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
+    assert.match(lines(md(empty))[1], /^- \*\*DMARC:\*\* no message in the reports · `p=none`/);
+    const tlsOnly = S.reportsSummary({ domain: 'example.com', dmarc: null, tls: { ...f.tls, byType: [] }, problems: 0 }, opts());
+    assertShape(tlsOnly, { min: 2 });
+    assert.equal(lines(md(tlsOnly))[1], '- **TLS-RPT:** 99% of 6,201 TLS sessions succeeded · 2 reports');
+    const tr = S.reportsSummary(facts(), opts('tr'));
+    assertShape(tr);
+    assert.deepEqual(lines(md(tr)).slice(0, 5), [
+      '**DMARC ve TLS raporları · `example.com`**',
+      '- **DMARC:** 5.175 e-postanın %94,9 kadarı geçiyor · `p=none` · 2 rapor, 2026-09-25 → 2026-09-26',
+      '- p=reject için hazır değil: kullandığınız 4 kaynak DMARC’den geçmiyor (181 e-posta)',
+      '- **Önce düzeltin:** `198.51.100.20` (yetkili üçüncü taraf `spf.mailer.example.net`): 120 e-posta geçmiyor — DKIM’i yalnızca başka bir alan adı olarak imzalıyor: orada alan adınız için DKIM kurun',
+      '- **Önce düzeltin:** `203.0.113.99` (sunucunuz): 57 e-posta geçmiyor — e-postalarını alan adı için DKIM ile imzalayın'
+    ]);
+    assert.equal(S.buildSummary('reports', facts(), opts()).kind, 'reports');
+    assert.deepEqual(S.permalinkParams('reports', { domain: 'example.com', tab: 'tls' }), {}, 'the reports never go into a link');
+  });
+});
+
 /* ------------------------------------------------------------------------ */
 describe('domain (overview)', () => {
   /** passportSummaryFacts() of a healthy domain (lib/passport.js). */
@@ -1066,7 +1146,7 @@ describe('i18n', () => {
     }
   });
 
-  test('every sum.* key the builders use exists, and every defined key is used', () => {
+  test('every sum.* key the builders use exists, and every defined key is used', async () => {
     const src = readFileSync(join(ROOT, 'assets', 'js', 'lib', 'summary.js'), 'utf8');
     const code = src.slice(0, src.indexOf('const STRINGS = ['));
     const used = new Set([...code.matchAll(/'(sum\.[A-Za-z.]+)'/g)].map((m) => m[1]));
@@ -1079,6 +1159,11 @@ describe('i18n', () => {
     // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
     for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
     for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }
+    // DMARC & TLS reports: sum.rpt.cls.<class of a source to fix>, sum.rpt.fix.<code>, the hyphenated verdict.
+    const { FIX_CODES } = await imp('assets/js/lib/dmarcreport.js');
+    for (const c of ['yours', 'third-party']) used.add(`sum.rpt.cls.${c}`);
+    for (const f of FIX_CODES) used.add(`sum.rpt.fix.${f}`);
+    used.add('sum.rpt.verdict.fix-first');
     const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
     assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
     assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');

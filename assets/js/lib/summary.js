@@ -5,7 +5,7 @@
  * - Each builder takes the facts a view already shows ({@link healthSummary}, {@link globalSummary},
  *   {@link subdomainsSummary}, {@link scanSummary}, {@link zoneSummary}, {@link certSummary},
  *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link retireSummary},
- *   {@link domainSummary}; {@link buildSummary} dispatches by view id) and
+ *   {@link domainSummary}, {@link reportsSummary}; {@link buildSummary} dispatches by view id) and
  *   returns a {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP
  *   Intel) and a footer with the view's permalink and a UTC timestamp.
  * - {@link renderMarkdown} / {@link renderPlainText} turn a doc into text. Untrusted values
@@ -30,7 +30,7 @@
 import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health', 'reports']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -41,8 +41,8 @@ export const SUMMARY_MAX_PROBLEMS = 5;
 export const SUMMARY_MAX_VALUE = 96;
 
 /**
- * Route params a view's permalink may carry (app.js buildRoute keys). Zone File and Certificate
- * carry none: the file never goes into a URL.
+ * Route params a view's permalink may carry (app.js buildRoute keys). Zone File, Certificate and
+ * DMARC & TLS reports carry none: the file never goes into a URL.
  */
 export const PERMALINK_PARAMS = Object.freeze({
   subdomains: Object.freeze(['domain', 'run']),
@@ -55,7 +55,8 @@ export const PERMALINK_PARAMS = Object.freeze({
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
   ip: Object.freeze(['ips']),
   retire: Object.freeze(['ips', 'domains']),
-  health: Object.freeze(['domain', 'selectors'])
+  health: Object.freeze(['domain', 'selectors']),
+  reports: Object.freeze([])
 });
 
 /* ------------------------------------------------------------------------ */
@@ -910,6 +911,69 @@ export function domainSummary(facts, opts) {
   return doc('domain', k.title('domain', [code(f.domain)]), lines, { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
 }
 
+/** Known sources a DMARC & TLS reports summary lists by address (the rest as "+N more"). */
+const REPORTS_MAX_FIXES = 2;
+/** Failure types a DMARC & TLS reports summary names. */
+const REPORTS_MAX_TLS_TYPES = 3;
+
+/**
+ * DMARC & TLS reports: the DMARC compliance with the policy and what the reports cover, whether
+ * `p=reject` can come, the known sources to fix first (≤ 2: address, class, failing messages, the
+ * first fix), the unknown senders, whether the classes rest on the current SPF, the TLS-RPT success
+ * rate and failure types, and the files that could not be read. Never a server's name: a source
+ * of the list is "your server".
+ * @param {{ domain: string, dmarc?: { overview: { compliance: number|null, messages: number, verdict: string,
+ *   blockers: Array<{ ip: string, cls: string, reason: string, detail: string|null, fail: number, fixes: string[] }>, blocked: number,
+ *   unknown: Array<object>, unknownFail: number }, policy: { p: string, pct: number }, reports: number, begin: Date, end: Date,
+ *   spf: 'checked'|'failed'|'skipped' }|null, tls?: { success: number, failure: number, rate: number|null, reports: number,
+ *   byType: Array<{ type: string, sessions: number }> }|null, problems?: number, at?: Date }} facts lib/dmarcreport.js
+ *   dmarcOverview and lib/tlsrpt.js summarizeTls of the domain on screen; `problems`: files or entries that were no report
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function reportsSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const pct = (x) => k.num(Math.round(x * 1000) / 10);
+  const lines = [];
+  const d = facts.dmarc;
+  if (d) {
+    const o = d.overview;
+    const policy = [code(`p=${d.policy.p}${d.policy.pct < 100 ? `; pct=${d.policy.pct}` : ''}`)];
+    const period = t('sum.rpt.period', { count: d.reports, from: isoDay(d.begin), to: isoDay(d.end) });
+    lines.push([strong('DMARC:'), ' ',
+      o.compliance === null ? t('sum.rpt.noMail') : t('sum.rpt.compliance', { pct: pct(o.compliance), count: o.messages }), ' · ', ...policy, ` · ${period}`]);
+    const blockers = o.blockers || [];
+    if (o.verdict === 'fix-first') lines.push([t('sum.rpt.verdict.fix-first', { count: blockers.length, messages: o.blocked })]);
+    else if (o.verdict === 'enforced') lines.push([blockers.length ? t('sum.rpt.verdict.enforcedLosing', { count: blockers.length, messages: o.blocked }) : t('sum.rpt.verdict.enforced')]);
+    else if (o.verdict === 'ready') lines.push([t('sum.rpt.verdict.ready')]);
+    for (const b of blockers.slice(0, REPORTS_MAX_FIXES)) {
+      // A third party is named by the include or bounce domain the page shows; a server of the list never by its name.
+      const named = b.detail && (b.reason === 'spf-include' || b.reason === 'dkim-service') ? [' ', code(b.detail)] : [];
+      lines.push([strong(`${t('sum.rpt.fixFirst')}:`), ' ', code(b.ip), ` (${t(`sum.rpt.cls.${b.cls}`)}`, ...named, `): ${t('sum.rpt.failing', { count: b.fail })}`,
+        b.fixes && b.fixes.length ? ` — ${t(`sum.rpt.fix.${b.fixes[0]}`)}` : '']);
+    }
+    if (blockers.length > REPORTS_MAX_FIXES) lines.push([t('sum.rpt.moreFix', { count: blockers.length - REPORTS_MAX_FIXES })]);
+    if ((o.unknown || []).length) lines.push([t('sum.rpt.unknown', { count: o.unknown.length, messages: o.unknownFail })]);
+    lines.push([d.spf === 'checked' ? t('sum.rpt.spfChecked') : t('sum.rpt.spfNot')]);
+  }
+  const tls = facts.tls;
+  if (tls) {
+    const sessions = tls.success + tls.failure;
+    lines.push([strong('TLS-RPT:'), ' ', tls.rate === null ? t('sum.rpt.tlsNone') : t('sum.rpt.tlsRate', { pct: pct(tls.rate), count: sessions }),
+      ` · ${t('sum.rpt.tlsReports', { count: tls.reports })}`]);
+    const types = (tls.byType || []).filter((x) => x.sessions > 0);
+    if (types.length) {
+      const parts = [strong(`${t('sum.rpt.tlsFailures')}:`), ' '];
+      types.slice(0, REPORTS_MAX_TLS_TYPES).forEach((x, i) => parts.push(i ? ', ' : '', code(x.type), ` ${k.num(x.sessions)}`));
+      if (types.length > REPORTS_MAX_TLS_TYPES) parts.push(` ${t('common.moreCount', { count: types.length - REPORTS_MAX_TLS_TYPES })}`);
+      lines.push(parts);
+    }
+  }
+  if (Number(facts.problems) > 0) lines.push([t('sum.rpt.problems', { count: Number(facts.problems) })]);
+  return doc('reports', k.title('reports', [code(facts.domain || '')]), lines, { when: whenText(t, 'sum.at.asOf', null, opts.now || new Date()), url: opts.url });
+}
+
 const BUILDERS = {
   subdomains: subdomainsSummary,
   domain: domainSummary,
@@ -921,7 +985,8 @@ const BUILDERS = {
   lookup: lookupSummary,
   ip: ipSummary,
   retire: retireSummary,
-  health: healthSummary
+  health: healthSummary,
+  reports: reportsSummary
 };
 
 /**
@@ -1258,7 +1323,37 @@ const STRINGS = [
   ['sum.retire.failed', [{ one: '{count} failed lookup (the list may be incomplete)', other: '{count} failed lookups (the list may be incomplete)' },
     '{count} başarısız sorgu (liste eksik olabilir)']],
   ['sum.retire.missing', [{ one: '{count} domain that does not exist (a typo?)', other: '{count} domains that do not exist (a typo?)' },
-    'mevcut olmayan {count} alan adı (yazım hatası mı?)']]
+    'mevcut olmayan {count} alan adı (yazım hatası mı?)']],
+
+  ['sum.rpt.compliance', [{ one: '{pct}% of {count} message passes', other: '{pct}% of {count} messages pass' }, '{count} e-postanın %{pct} kadarı geçiyor']],
+  ['sum.rpt.noMail', ['no message in the reports', 'raporlarda e-posta yok']],
+  ['sum.rpt.period', [{ one: '{count} report, {from} → {to}', other: '{count} reports, {from} → {to}' }, '{count} rapor, {from} → {to}']],
+  ['sum.rpt.verdict.fix-first', [{ one: 'Not ready for p=reject: {count} source you use fails DMARC ({messages} messages)', other: 'Not ready for p=reject: {count} sources you use fail DMARC ({messages} messages)' },
+    'p=reject için hazır değil: kullandığınız {count} kaynak DMARC’den geçmiyor ({messages} e-posta)']],
+  ['sum.rpt.verdict.ready', ['Ready for p=reject: every source you use passes DMARC', 'p=reject için hazır: kullandığınız her kaynak DMARC’den geçiyor']],
+  ['sum.rpt.verdict.enforced', ['p=reject is in force, and every source you use passes', 'p=reject yürürlükte ve kullandığınız her kaynak geçiyor']],
+  ['sum.rpt.verdict.enforcedLosing', [{ one: 'p=reject is in force, and {count} source you use fails: {messages} of its messages are refused', other: 'p=reject is in force, and {count} sources you use fail: {messages} of their messages are refused' },
+    'p=reject yürürlükte ve kullandığınız {count} kaynak geçmiyor: {messages} e-postası reddediliyor']],
+  ['sum.rpt.fixFirst', ['Fix first', 'Önce düzeltin']],
+  ['sum.rpt.failing', [{ one: '{count} message fails', other: '{count} messages fail' }, '{count} e-posta geçmiyor']],
+  ['sum.rpt.cls.yours', ['your server', 'sunucunuz']],
+  ['sum.rpt.cls.third-party', ['authorized third party', 'yetkili üçüncü taraf']],
+  ['sum.rpt.fix.dkim-sign', ['sign its mail with DKIM for the domain', 'e-postalarını alan adı için DKIM ile imzalayın']],
+  ['sum.rpt.fix.dkim-align', ['it signs DKIM only as another domain: set up DKIM for the domain there', 'DKIM’i yalnızca başka bir alan adı olarak imzalıyor: orada alan adınız için DKIM kurun']],
+  ['sum.rpt.fix.dkim-fix', ['the domain’s DKIM signature does not verify', 'alan adının DKIM imzası doğrulanmıyor']],
+  ['sum.rpt.fix.spf-add', ['add the address to SPF', 'adresi SPF’e ekleyin']],
+  ['sum.rpt.fix.spf-align', ['SPF passes only for another domain: use a return-path under the domain', 'SPF yalnızca başka bir alan adı için geçiyor: alan adınızın altında bir return-path kullanın']],
+  ['sum.rpt.moreFix', [{ one: '+{count} more source to fix', other: '+{count} more sources to fix' }, 'düzeltilecek +{count} kaynak daha']],
+  ['sum.rpt.unknown', [{ one: 'Unknown senders: {count} source, {messages} failing messages (spoofing?)', other: 'Unknown senders: {count} sources, {messages} failing messages (spoofing?)' },
+    'Bilinmeyen göndericiler: {count} kaynak, geçmeyen {messages} e-posta (sahte gönderim mi?)']],
+  ['sum.rpt.spfChecked', ['Sources classified against the domain’s current SPF', 'Kaynaklar alan adının güncel SPF kaydına göre sınıflandı']],
+  ['sum.rpt.spfNot', ['The current SPF was not checked: classes from the reports alone', 'Güncel SPF kontrol edilmedi: sınıflar yalnızca raporlardan']],
+  ['sum.rpt.tlsRate', [{ one: '{pct}% of {count} TLS session succeeded', other: '{pct}% of {count} TLS sessions succeeded' }, '{count} TLS oturumunun %{pct} kadarı başarılı']],
+  ['sum.rpt.tlsNone', ['no TLS session reported', 'raporlanan TLS oturumu yok']],
+  ['sum.rpt.tlsReports', [{ one: '{count} report', other: '{count} reports' }, '{count} rapor']],
+  ['sum.rpt.tlsFailures', ['Failures', 'Hatalar']],
+  ['sum.rpt.problems', [{ one: '{count} file or entry was no report or could not be read', other: '{count} files or entries were no report or could not be read' },
+    '{count} dosya ya da arşiv girdisi rapor değildi ya da okunamadı']]
 ];
 
 function buildStrings(lang) {

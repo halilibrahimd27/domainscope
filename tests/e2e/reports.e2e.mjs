@@ -21,7 +21,8 @@
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
  * back (no new query); Forget; 150 daily reports in one drop (past the 100 other drop zones take) with
  * a zip whose entries share one stream, refused at once; files dropped while reading wait their turn,
- * the bar counts them, and Stop (Esc) ends the read with nothing half-read kept; an SPF record with a
+ * the bar counts them, and Stop (Esc) ends the read with nothing half-read kept; a zipped mailbox
+ * folder of 300 reports counted report by report and stopped in its middle; an SPF record with a
  * syntax error: the SPF line, the note and the verdict say receivers get a permanent error, the
  * server it lists stays yours and its mail that passed through SPF alone is to fix; offline, a dropped
  * report classified from its own evidence with the SPF line saying it was not checked and nothing
@@ -39,6 +40,7 @@ import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { crc32 } from '../../assets/js/lib/zipread.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady, csvHeader
@@ -129,6 +131,32 @@ function overlappingZip(n) {
   const central = Buffer.concat(Array.from({ length: n }, () => entry));
   const end = Buffer.concat([le(0x06054b50, 4), le(0, 2), le(0, 2), le(n, 2), le(n, 2), le(central.length, 4), le(local.length, 4), le(0, 2)]);
   return Buffer.concat([local, central, end]);
+}
+
+/** A stored (uncompressed) zip of [name, text] entries: a mailbox folder saved as one archive. */
+function storedZip(entries) {
+  const le = (v, size) => {
+    const b = Buffer.alloc(size);
+    if (size === 2) b.writeUInt16LE(v);
+    else b.writeUInt32LE(v);
+    return b;
+  };
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of entries) {
+    const n = Buffer.from(name);
+    const data = Buffer.from(content);
+    const crc = crc32(data);
+    const local = Buffer.concat([le(0x04034b50, 4), le(20, 2), le(0x800, 2), le(0, 2), le(0, 4), le(crc, 4), le(data.length, 4), le(data.length, 4),
+      le(n.length, 2), le(0, 2), n, data]);
+    central.push(Buffer.concat([le(0x02014b50, 4), le(20, 2), le(20, 2), le(0x800, 2), le(0, 2), le(0, 4), le(crc, 4), le(data.length, 4), le(data.length, 4),
+      le(n.length, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 4), le(offset, 4), n]));
+    locals.push(local);
+    offset += local.length;
+  }
+  const cd = Buffer.concat(central);
+  return Buffer.concat([...locals, cd, le(0x06054b50, 4), le(0, 2), le(0, 2), le(entries.length, 2), le(entries.length, 2), le(cd.length, 4), le(offset, 4), le(0, 2)]);
 }
 
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent.replace(/\s+/g, ' ').trim() || '', sel);
@@ -312,16 +340,22 @@ async function main() {
     });
 
     await run.step('an SPF lookup that fails is said so, never "not authorized"; Check again asks once more, keeps the focus and the open details', async () => {
+      // The SPF landed: the table draws its rows again on its next frame. A click on a row it replaces is lost.
+      await page.waitFor(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '192.0.2.10')
+        ?.textContent.includes('Your SPF authorizes it: ip4:192.0.2.10'), { message: 'the rows drawn from the SPF' });
+      await page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '192.0.2.10')
+        .querySelector('.dt-expand-btn').click());
+      await page.waitFor(() => !!document.querySelector('.rpt-sources .rpt-details'), { message: 'details open' });
       await page.evaluate(() => {
         window.__rcodes['example.net|TXT'] = 'SERVFAIL';
-        const tr = [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '192.0.2.10');
-        tr.querySelector('.dt-expand-btn').click();
         document.querySelector('[data-action="rpt-spf-retry"]').focus();
       });
       await page.press('Enter');
       await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'failed', { message: 'failed' });
       assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'rpt-spf-retry', 'the focus on Check again drawn again');
-      assert(/could not be read \(a lookup that failed here\)|cannot tell from here/.test(await text(page, '.rpt-sources .rpt-details')), await text(page, '.rpt-sources .rpt-details'));
+      // The open details are drawn again with the failed lookup on the table's next frame.
+      await page.waitFor(() => /could not be read \(a lookup that failed here\)|cannot tell from here/.test(document.querySelector('.rpt-sources .rpt-details')?.textContent || ''),
+        { message: 'the details say the SPF could not be read' });
       assert(/could not be read/.test(await text(page, '.rpt-spf')), await text(page, '.rpt-spf'));
       assert(await page.evaluate(() => !!document.querySelector('.rpt-notes [data-note="spf-unknown"]')), 'the note');
       // The reports saw 192.0.2.10 pass SPF aligned: without the current SPF it still counts as yours.
@@ -463,6 +497,52 @@ async function main() {
       assertEqual(await text(page, '[data-role="rpt-files"]'), '1 file · 1 DMARC report · 0 TLS reports', 'files line');
       await page.click('[data-action="rpt-forget"]');
       await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+    });
+
+    await run.step('a zipped mailbox folder: the bar counts the reports inside it, and Stop (Esc) acts between them', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-zip-'));
+      const n = 300;
+      const before = await counts(page);
+      try {
+        const zip = path.join(dir, 'mailbox.zip');
+        await writeFile(zip, storedZip(Array.from({ length: n }, (_, day) => [`dmarc/google.com!example.com!${1790294400 + day * 86400}.xml`, dailyReport(day)])));
+        // Every report decodes slowly (10 ms, a busy page): the archive takes seconds to read, so the Stop lands in its middle.
+        await page.evaluate(() => {
+          const real = TextDecoder.prototype.decode;
+          window.__realDecode = real;
+          window.__decodes = 0;
+          TextDecoder.prototype.decode = function slowDecode(input, options) {
+            if (input && input.byteLength > 400) {
+              window.__decodes += 1;
+              const until = performance.now() + 10;
+              while (performance.now() < until) { /* a long report */ }
+            }
+            return real.call(this, input, options);
+          };
+          document.querySelectorAll('.toast').forEach((el) => el.remove());
+        });
+        try {
+          await page.setFileInput('.rpt-load .filedrop-input', [zip]);
+          const bar = await page.waitFor((total) => {
+            const m = /^(\d+) \/ (\d+)\b/.exec(document.querySelector('[data-role="rpt-busy"] .progress-value')?.textContent || '');
+            return m && Number(m[1]) >= 5 && Number(m[2]) === total ? m[0] : null;
+          }, { args: [n], message: 'the bar counts the reports inside the archive' });
+          assert(Number(bar.split(' / ')[0]) < n, bar);
+          await page.evaluate(() => document.querySelector('.rpt-load .filedrop').focus());
+          await page.press('Escape');
+          await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
+          const decoded = await page.evaluate(() => window.__decodes);
+          assert(decoded < n, `stopped in the middle of the archive, not after it: ${decoded} of ${n} reports read`);
+          await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent === 'Reading stopped. What was read before it stays.', { message: 'the toast' });
+          assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing half-read kept');
+          assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus back on the drop zone');
+          assertEqual(await counts(page), before, 'nothing sent');
+        } finally {
+          await page.evaluate(() => { TextDecoder.prototype.decode = window.__realDecode; });
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
     });
 
     await run.step('an SPF record with a syntax error: receivers get a permanent error, said on the SPF line, in a note and in the verdict', async () => {

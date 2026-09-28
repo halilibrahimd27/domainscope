@@ -14,6 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const imp = (rel) => import(pathToFileURL(join(ROOT, rel)).href);
 
 let S;
+let R;
 let i18n;
 const NOW = new Date('2026-09-27T14:03:30Z');
 const URL_BASE = 'https://example.github.io/domainscope/';
@@ -25,11 +26,14 @@ const NUL = String.fromCharCode(0);
 before(async () => {
   i18n = await imp('assets/js/i18n.js');
   S = await imp('assets/js/lib/summary.js');
+  // DMARC & TLS reports: its builder and texts load with the view (lib/reportsummary.js).
+  R = await imp('assets/js/lib/reportsummary.js');
   const { HEALTH_I18N } = await imp('assets/js/lib/health.js');
   // The Verify headline keys a scan summary quotes (registered by the panel, as in the app).
   await imp('assets/js/ui/verify-panel.js');
   for (const lang of ['en', 'tr']) {
     i18n.registerStrings(lang, S.SUMMARY_I18N[lang]);
+    i18n.registerStrings(lang, R.REPORTS_SUMMARY_I18N[lang]);
     i18n.registerStrings(lang, HEALTH_I18N[lang]);
   }
   i18n.setLang('en');
@@ -835,7 +839,7 @@ describe('reports (DMARC & TLS reports)', () => {
 
   test('compliance, the verdict, what to fix first, the unknown senders, TLS-RPT; never a server\'s name', () => {
     const url = `${URL_BASE}#/reports`;
-    const doc = S.reportsSummary(facts(), opts('en', url));
+    const doc = R.reportsSummary(facts(), opts('en', url));
     assertShape(doc);
     assert.deepEqual(lines(md(doc)), [
       '**DMARC & TLS reports · `example.com`**',
@@ -857,23 +861,23 @@ describe('reports (DMARC & TLS reports)', () => {
 
   test('ready, enforced (and mail refused now), no mail, a pct under 100, SPF not checked, TLS only; Turkish', () => {
     const f = facts();
-    const ready = S.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spf: 'failed', policy: { p: 'quarantine', pct: 50 }, overview: { ...f.dmarc.overview, verdict: 'ready', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
+    const ready = R.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spf: 'failed', policy: { p: 'quarantine', pct: 50 }, overview: { ...f.dmarc.overview, verdict: 'ready', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
     assertShape(ready, { min: 3 });
     assert.deepEqual(lines(md(ready)).slice(1, 4), [
       '- **DMARC:** 94.9% of 5,175 messages pass · `p=quarantine; pct=50` · 2 reports, 2026-09-25 → 2026-09-26',
       '- Ready for p=reject: every source you use passes DMARC',
       '- The current SPF was not checked: classes from the reports alone'
     ]);
-    const losing = S.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: f.dmarc.overview.blockers.slice(1, 2), blocked: 57 } } }, opts());
+    const losing = R.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: f.dmarc.overview.blockers.slice(1, 2), blocked: 57 } } }, opts());
     assert.equal(lines(md(losing))[2], '- p=reject is in force, and 1 source you use fails: 57 of its messages are refused');
-    const enforced = S.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: [], blocked: 0 } } }, opts());
+    const enforced = R.reportsSummary({ ...f, dmarc: { ...f.dmarc, policy: { p: 'reject', pct: 100 }, overview: { ...f.dmarc.overview, verdict: 'enforced', blockers: [], blocked: 0 } } }, opts());
     assert.equal(lines(md(enforced))[2], '- p=reject is in force, and every source you use passes');
-    const empty = S.reportsSummary({ ...f, tls: null, dmarc: { ...f.dmarc, overview: { compliance: null, messages: 0, verdict: 'no-mail', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
+    const empty = R.reportsSummary({ ...f, tls: null, dmarc: { ...f.dmarc, overview: { compliance: null, messages: 0, verdict: 'no-mail', blockers: [], blocked: 0, unknown: [], unknownFail: 0 } } }, opts());
     assert.match(lines(md(empty))[1], /^- \*\*DMARC:\*\* no message in the reports · `p=none`/);
-    const tlsOnly = S.reportsSummary({ domain: 'example.com', dmarc: null, tls: { ...f.tls, byType: [] }, problems: 0 }, opts());
+    const tlsOnly = R.reportsSummary({ domain: 'example.com', dmarc: null, tls: { ...f.tls, byType: [] }, problems: 0 }, opts());
     assertShape(tlsOnly, { min: 2 });
     assert.equal(lines(md(tlsOnly))[1], '- **TLS-RPT:** 99% of 6,201 TLS sessions succeeded · 2 reports');
-    const tr = S.reportsSummary(facts(), opts('tr'));
+    const tr = R.reportsSummary(facts(), opts('tr'));
     assertShape(tr);
     assert.deepEqual(lines(md(tr)).slice(0, 5), [
       '**DMARC ve TLS raporları · `example.com`**',
@@ -882,7 +886,10 @@ describe('reports (DMARC & TLS reports)', () => {
       '- **Önce düzeltin:** `198.51.100.20` (yetkili üçüncü taraf `spf.mailer.example.net`): 120 e-posta geçmiyor — DKIM’i yalnızca başka bir alan adı olarak imzalıyor: orada alan adınız için DKIM kurun',
       '- **Önce düzeltin:** `203.0.113.99` (sunucunuz): 57 e-posta geçmiyor — e-postalarını alan adı için DKIM ile imzalayın'
     ]);
+    assert.throws(() => S.buildSummary('reports', facts(), opts()), RangeError, 'not before its view registers it');
+    S.registerSummaryBuilder('reports', R.reportsSummary);
     assert.equal(S.buildSummary('reports', facts(), opts()).kind, 'reports');
+    assert.throws(() => S.registerSummaryBuilder('bulk', R.reportsSummary), RangeError);
     assert.deepEqual(S.permalinkParams('reports', { domain: 'example.com', tab: 'tls' }), {}, 'the reports never go into a link');
   });
 
@@ -890,7 +897,7 @@ describe('reports (DMARC & TLS reports)', () => {
     await import('../../assets/js/views/reports.js'); // the words of a permerror's reason are the view's (the key rides in the facts)
     const f = facts();
     const risk = { ip: '203.0.113.25', cls: 'yours', reason: 'spf-listed', detail: 'ip4:203.0.113.25', fail: 0, atRisk: 500, fixes: ['spf-permerror', 'dkim-sign'] };
-    const doc = S.reportsSummary({
+    const doc = R.reportsSummary({
       ...f,
       tls: null,
       problems: 0,
@@ -912,7 +919,7 @@ describe('reports (DMARC & TLS reports)', () => {
       '- Sources classified against the domain’s current SPF',
       '- The current SPF gives receivers a permanent error for 3 sending addresses: more than 10 DNS lookups before the address is reached'
     ]);
-    const tr = S.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spfErrorKey: 'rpt.spfError.syntax', overview: { ...f.dmarc.overview, spfError: { domain: 'example.com', reason: 'syntax', sources: 1 } } } }, opts('tr'));
+    const tr = R.reportsSummary({ ...f, tls: null, problems: 0, dmarc: { ...f.dmarc, spfErrorKey: 'rpt.spfError.syntax', overview: { ...f.dmarc.overview, spfError: { domain: 'example.com', reason: 'syntax', sources: 1 } } } }, opts('tr'));
     assert.ok(lines(md(tr)).includes('- Alıcılar güncel SPF kaydından 1 gönderen adres için kalıcı hata alıyor: bir sözdizimi hatası'), md(tr));
   });
 });
@@ -1162,18 +1169,20 @@ describe('i18n', () => {
     return [...new Set(forms.flatMap((f) => [...f.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((m) => m[1])))].sort().join(',');
   };
 
-  test('EN and TR have the same keys and placeholders, never an empty text', () => {
-    const en = S.SUMMARY_I18N.en;
-    const tr = S.SUMMARY_I18N.tr;
-    const other = (v) => (typeof v === 'string' ? v : v.other);
-    // A plural form may leave {count} out ("in your server list"); every other placeholder is in both.
-    const named = (v) => placeholders(v).split(',').filter((p) => p && p !== 'count').join(',');
-    assert.deepEqual(Object.keys(en).sort(), Object.keys(tr).sort());
-    for (const k of Object.keys(en)) {
-      assert.ok(other(en[k]).trim() && other(tr[k]).trim(), `${k} empty`);
-      assert.equal(named(tr[k]), named(en[k]), `${k} placeholders`);
-      assert.equal(placeholders(other(tr[k])), placeholders(other(en[k])), `${k} {placeholders} of the 'other' form`);
+  test('EN and TR have the same keys and placeholders, never an empty text (the reports summary texts too)', () => {
+    for (const { en, tr } of [S.SUMMARY_I18N, R.REPORTS_SUMMARY_I18N]) {
+      const other = (v) => (typeof v === 'string' ? v : v.other);
+      // A plural form may leave {count} out ("in your server list"); every other placeholder is in both.
+      const named = (v) => placeholders(v).split(',').filter((p) => p && p !== 'count').join(',');
+      assert.deepEqual(Object.keys(en).sort(), Object.keys(tr).sort());
+      for (const k of Object.keys(en)) {
+        assert.ok(other(en[k]).trim() && other(tr[k]).trim(), `${k} empty`);
+        assert.equal(named(tr[k]), named(en[k]), `${k} placeholders`);
+        assert.equal(placeholders(other(tr[k])), placeholders(other(en[k])), `${k} {placeholders} of the 'other' form`);
+      }
     }
+    const shared = Object.keys(R.REPORTS_SUMMARY_I18N.en).filter((k) => k in S.SUMMARY_I18N.en);
+    assert.deepEqual(shared, [], 'no key in both tables');
   });
 
   test('every sum.* key the builders use exists, and every defined key is used', async () => {
@@ -1189,13 +1198,24 @@ describe('i18n', () => {
     // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
     for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
     for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }
-    // DMARC & TLS reports: sum.rpt.cls.<class of a source to fix>, sum.rpt.fix.<code>, the hyphenated verdicts.
+    const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
+    assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
+    assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');
+  });
+
+  test('every sum.rpt.* key the reports builder uses exists in its own table, and every defined key is used', async () => {
+    const src = readFileSync(join(ROOT, 'assets', 'js', 'lib', 'reportsummary.js'), 'utf8');
+    const code = src.slice(0, src.indexOf('const STRINGS = ['));
+    const used = new Set([...code.matchAll(/'(sum\.[A-Za-z.]+)'/g)].map((m) => m[1]));
+    // Keys built from a code: sum.rpt.cls.<class of a source to fix>, sum.rpt.fix.<code>, the hyphenated verdicts.
     const { FIX_CODES } = await imp('assets/js/lib/dmarcreport.js');
     for (const c of ['yours', 'third-party']) used.add(`sum.rpt.cls.${c}`);
     for (const f of FIX_CODES) used.add(`sum.rpt.fix.${f}`);
     used.add('sum.rpt.verdict.fix-first');
     used.add('sum.rpt.verdict.spf-broken');
-    const defined = new Set(Object.keys(S.SUMMARY_I18N.en));
+    assert.ok([...used].every((k) => k.startsWith('sum.rpt.') || k === 'sum.at.asOf'), 'only its own keys and the footer key');
+    used.delete('sum.at.asOf');
+    const defined = new Set(Object.keys(R.REPORTS_SUMMARY_I18N.en));
     assert.deepEqual([...used].filter((k) => !defined.has(k)), [], 'used but not defined');
     assert.deepEqual([...defined].filter((k) => !used.has(k)), [], 'defined but never used');
   });

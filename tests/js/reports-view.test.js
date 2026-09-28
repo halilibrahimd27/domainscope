@@ -12,7 +12,7 @@ import {
 } from '../../assets/js/views/reports.js';
 import { SOURCE_CLASSES, FIX_CODES } from '../../assets/js/lib/dmarcreport.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
-import { reportsSummary } from '../../assets/js/lib/summary.js';
+import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
 
 test('the view interface; nothing kept before reports were read', () => {
   assert.deepEqual([id, titleKey, icon], ['reports', 'nav.reports', 'inbox']);

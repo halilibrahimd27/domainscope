@@ -51,7 +51,8 @@ const JS = join(ASSETS, 'js');
  * reports put its Copy summary builder with its strings in lib/summary.js and an entry in the
  * navigation (the report readers load with the view): ≈ 3.5 KB more; its summary's lines for an
  * SPF record that gives a permerror and a policy in test mode, one-decimal shares (lib/util.js)
- * and FileDrop's `maxFiles` / `text: false`: ≈ 1.1 KB more.
+ * and FileDrop's `maxFiles` / `text: false`: ≈ 1.1 KB more. The reports summary's builder and
+ * texts then moved to lib/reportsummary.js, which loads with its view: ≈ 2.5 KB less.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 380 * 1024;

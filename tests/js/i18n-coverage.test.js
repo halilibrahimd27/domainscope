@@ -276,6 +276,9 @@ describe('i18n coverage', () => {
     // Copy summary (lib/summary.js): every sum.* text, registered with the views by ui/summary-button.js.
     const summary = await imp('assets/js/lib/summary.js');
     for (const k of Object.keys(summary.SUMMARY_I18N.en)) add(k);
+    // DMARC & TLS reports: its summary texts, registered by views/reports.js (lib/reportsummary.js).
+    const reportsummary = await imp('assets/js/lib/reportsummary.js');
+    for (const k of Object.keys(reportsummary.REPORTS_SUMMARY_I18N.en)) add(k);
     for (const kind of summary.SUMMARY_KINDS) add(`nav.${kind}`);
     // No silent dashes (lib/sourcestatus.js through ui/source-status.js): every reason, source and
     // chip state; IP Intel's folded zero counts (lib/density.js).

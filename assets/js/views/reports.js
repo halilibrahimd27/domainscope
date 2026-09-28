@@ -42,6 +42,8 @@ import { ipFieldStatus } from '../lib/sourcestatus.js';
 import { registrableDomain } from '../lib/domain.js';
 import { toCsv } from '../lib/export.js';
 import { mergeSignals, sharePercent } from '../lib/util.js';
+import { registerSummaryBuilder } from '../lib/summary.js';
+import { reportsSummary, REPORTS_SUMMARY_I18N } from '../lib/reportsummary.js';
 import { NaMark } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
 
@@ -72,6 +74,11 @@ export const CLASS_STYLE = Object.freeze({
 export const TLS_TOOLS = Object.freeze(['health', 'tlsa', 'cert']);
 /** States of the SPF line (`rpt.spf.<state>`). */
 export const SPF_LINE_STATES = Object.freeze(['loading', 'ok', 'none', 'multiple', 'failed', 'offline']);
+
+// Copy summary's builder and texts load with this view, not on the start route (lib/reportsummary.js).
+registerSummaryBuilder('reports', reportsSummary);
+registerStrings('en', REPORTS_SUMMARY_I18N.en);
+registerStrings('tr', REPORTS_SUMMARY_I18N.tr);
 
 registerStrings('en', {
   'rpt.privacyTitle': 'Everything stays in this browser',
@@ -622,7 +629,7 @@ export function headlineShare(ratio) {
 }
 
 /**
- * The facts of Copy summary (lib/summary.js reportsSummary) for the DMARC domain on screen and the
+ * The facts of Copy summary (lib/reportsummary.js reportsSummary) for the DMARC domain on screen and the
  * TLS summary of the same domain (or the TLS domain on screen when there is no DMARC report).
  * @param {{ agg: object|null, overview: object|null, spfState: string|null, tls: object|null, problems: number, at: Date|null }} s
  * @returns {object|null}

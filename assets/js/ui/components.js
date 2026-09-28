@@ -1202,12 +1202,17 @@ export function decodeText(buffer) {
  * @property {string} type MIME type reported by the browser ('' when unknown)
  * @property {ArrayBuffer} buffer raw bytes (give this to lib/x509.parseCertificates)
  * @property {string} text decoded text (BOM-aware)
- * @property {'drop'|'pick'|'paste'} source
+ * @property {'drop'|'pick'|'paste'|'folder'} source
  */
+
+/** Most files one drop, pick or folder (with its subfolders) of a `multiple` FileDrop reads. */
+export const FILE_DROP_MAX_FILES = 100;
 
 /**
  * Drag & drop + click-to-choose + paste zone. Files are read in the browser only.
- * Pasted text arrives as a LoadedFile named t('file.pasted').
+ * Pasted text arrives as a LoadedFile named t('file.pasted'). With `multiple`, at most
+ * {@link FILE_DROP_MAX_FILES} files are read at once; the status line and a toast (the caller
+ * may redraw the zone) say how many were left out.
  * @param {{ onFiles: (files: LoadedFile[]) => void, accept?: string, multiple?: boolean, maxBytes?: number,
  *   title?: string, hint?: string, icon?: string, compact?: boolean, paste?: boolean,
  *   onError?: (message: string) => void, className?: string }} opts
@@ -1252,8 +1257,11 @@ export function FileDrop({
   };
 
   async function readFiles(fileList, source) {
-    const files = [...(fileList || [])].slice(0, multiple ? 100 : 1);
+    const all = [...(fileList || [])];
+    const files = all.slice(0, multiple ? FILE_DROP_MAX_FILES : 1);
     if (!files.length) return;
+    const capped = multiple && all.length > files.length
+      ? t('file.capped', { max: formatNumber(files.length), count: formatNumber(all.length) }) : null;
     const out = [];
     for (const file of files) {
       if (file.size > maxBytes) {
@@ -1269,9 +1277,10 @@ export function FileDrop({
     }
     if (!out.length) return;
     status.classList.remove('is-error');
-    status.textContent = out.length === 1
+    status.textContent = [out.length === 1
       ? t('file.loaded', { name: out[0].name, size: formatBytes(out[0].size) })
-      : out.map((f) => f.name).join(', ');
+      : out.map((f) => f.name).join(', '), capped].filter(Boolean).join(' · ');
+    if (capped) toast(capped, { type: 'warn' });
     onFiles(out);
   }
 

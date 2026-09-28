@@ -12,11 +12,12 @@ records. **Never commit inventories or zone files unless you mean to**: the zone
 a zone export from the repository, so it stays commented out until that file belongs there (the
 origin addresses behind proxied names are hidden in the results unless you add
 `--include-origins`). **No secret is needed**: the job uses the workflow's own `GITHUB_TOKEN`, and
-the checks ask keyless public services only.
+the checks ask keyless public services only. The checkout keeps no token while the checks run
+(`persist-credentials: false`): only the commit step and the issue step are given it.
 
 1. Create a private repository with a `domains.txt`: one domain per line, `#` comments.
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
-   release tag or commit.
+   commit SHA (or to a release tag once there is one).
 3. Switch on the steps you want (health and the Certificate Transparency watch run by default;
    subdomain discovery, an exact host list, zone drift and renewal readiness are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
@@ -44,13 +45,21 @@ the three together when you switch more checks on.
 What counts as a change mirrors the Python CLI's `--baseline`: a new or resolved health finding
 and the score, a host that appears, stops resolving, leaves its proxy or becomes a dangling CNAME,
 a new certificate issuer or a first certificate for a name, a zone record set whose live state
-moved, a renewal verdict. Moves between failure states, what a failed lookup or source may hide
-and renewed certificates from known issuers are listed but never counted. GitHub's hosted runners
-share their IP addresses and the anonymous quotas of the passive sources are per address, so a
-source may be rate limited on some night: the report says so, and nothing it could not read
-counts. An issuer or a name is new only when a source that lists it tonight read the domain in
-full the night before too, or when its certificate was issued after that run; issuers are named
-from the certificate's issuer DN, so crt.sh and Cert Spotter name them alike.
+moved, a renewal verdict. Moves between failure states, Certificate Transparency sources that
+could not be read, what a failed lookup or source may hide and renewed certificates from known
+issuers are listed but never counted. GitHub's hosted runners share their IP addresses and the
+anonymous quotas of the passive sources are per address, so a source may be rate limited on some
+night: the report says so, and nothing a source could not read counts as a change.
+
+What a night could not read, its report carries from the last night that read it, so the night
+after compares with that read and not with the gap: a certificate from a new certificate
+authority issued while crt.sh was down still comes out as a new issuer once crt.sh answers, a
+warning of months hidden one night by a failed DMARC lookup is not "new" the night after, and a
+host whose lookup failed stays watched and is compared with its last answer (a move off its proxy
+meanwhile is said as such). An issuer or a name is new only when a source that lists it has read
+the domain in full before, or when its certificate was issued after the first of those full
+reads; issuers are named from the certificate's issuer DN, so crt.sh and Cert Spotter name them
+alike.
 
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it

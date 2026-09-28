@@ -24,12 +24,15 @@ Pipeline:
                  TLS_ERROR / TIMEOUT / CLOSED
   7. monitor  -> changes since a --baseline report, --warn-days expiry, --notify webhook
 
+--compare OLD_IP NEW_IP -n NAME runs instead of a scan: one GET over TLS (SNI and Host =
+NAME) against each address, the two answers side by side (before DNS moves the name).
+
 The module is importable: parse_certificate(), load_certificates(),
 parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
 is_numeric_host(), build_probe_names(), run_scan(), report_to_dict(), render_csv(),
 render_summary(), load_baseline(), compare_reports(), expiring_certificates(),
-build_monitor(), build_notification(), send_notification() and main() are the
-public API.
+build_monitor(), build_notification(), send_notification(), fetch_side(),
+compare_sides(), render_compare() and main() are the public API.
 """
 
 from __future__ import annotations
@@ -6853,6 +6856,392 @@ def bundle_main(argv: Sequence[str]) -> int:
 
 
 # =====================================================================================
+# Old versus new server (--compare)
+# =====================================================================================
+
+COMPARE_BODY_LIMIT = 1024 * 1024     # body bytes read and hashed per side
+COMPARE_EXPIRY_WARN_DAYS = 14        # a new certificate expiring sooner is a warning
+COMPARE_FIELDS = ('reach', 'status', 'location', 'content_type', 'title', 'body', 'hsts', 'server',
+                  'cert_covers', 'cert_trusted', 'cert_issuer', 'cert_expires', 'cert_sha256')
+COMPARE_LABELS = {
+    'reach': 'reached', 'status': 'HTTP status', 'location': 'Location', 'content_type': 'Content-Type',
+    'title': '<title>', 'body': 'body SHA-256', 'hsts': 'HSTS', 'server': 'Server',
+    'cert_covers': 'cert covers name', 'cert_trusted': 'cert trusted', 'cert_issuer': 'cert issuer',
+    'cert_expires': 'cert expires', 'cert_sha256': 'cert SHA-256',
+}
+COMPARE_NOTES = {
+    'new-unreachable': 'the new server did not answer',
+    'old-unreachable': 'the old server did not answer: nothing to compare with',
+    'both-unreachable': 'neither server answered',
+    'new-error-status': 'the new server answers with an error status',
+    'dynamic-body': 'a page with a token or a time in it differs on every request',
+    'body-cut': 'only the first %d bytes are compared' % COMPARE_BODY_LIMIT,
+    'hsts-lost': 'visitors that never saw the header lose HTTPS-only',
+    'hsts-new': 'the new server adds HSTS',
+    'cert-name': 'the certificate does not cover the name',
+    'cert-untrusted': 'not trusted by this machine',
+    'cert-expiring': 'expires within %d days' % COMPARE_EXPIRY_WARN_DAYS,
+    'new-cert': 'another certificate (usual on a new server)',
+    'same-cert': 'the same certificate',
+}
+_ABSOLUTE_NOTES = ('cert-name', 'cert-untrusted', 'cert-expiring')
+_SEVERITY_RANK = {'ok': 0, 'info': 1, 'warn': 2, 'error': 3}
+_TITLE_RE = re.compile(rb'<title\b[^>]*>(.*?)</title\s*>', re.I | re.S)
+
+
+@dataclass
+class CompareSide:
+    """What one address answered for the name (``--compare``)."""
+    ip: str
+    port: int
+    failure: Optional[str] = None       # TIMEOUT / CLOSED / TLS_ERROR / HTTP_ERROR
+    detail: str = ''
+    cert: Optional[CertInfo] = None
+    covers: Optional[bool] = None
+    trusted: Optional[bool] = None
+    trust_detail: str = ''
+    tls_version: Optional[str] = None
+    status: Optional[int] = None
+    location: Optional[str] = None
+    content_type: Optional[str] = None
+    server: Optional[str] = None
+    hsts: Optional[str] = None
+    body_sha256: Optional[str] = None
+    body_bytes: int = 0
+    body_truncated: bool = False
+    title: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        """The server gave an HTTP answer."""
+        return self.status is not None
+
+    def to_dict(self, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """JSON-friendly (camelCase keys, the certificate as in the scan reports)."""
+        return {
+            'ip': self.ip, 'port': self.port, 'failure': self.failure, 'detail': self.detail,
+            'status': self.status, 'location': self.location, 'contentType': self.content_type,
+            'server': self.server, 'hsts': self.hsts, 'title': self.title,
+            'body': ({'sha256': self.body_sha256, 'bytes': self.body_bytes, 'truncated': self.body_truncated}
+                     if self.body_sha256 else None),
+            'tlsVersion': self.tls_version,
+            'certificate': self.cert.to_dict(now) if self.cert else None,
+            'certCovers': self.covers, 'certTrusted': self.trusted, 'trustDetail': self.trust_detail,
+        }
+
+
+def page_title(body: bytes, charset: Optional[str] = None) -> Optional[str]:
+    """The first ``<title>`` of an HTML body: whitespace collapsed, the common entities
+    decoded, at most 200 characters (the web app's pageTitle)."""
+    match = _TITLE_RE.search(body)
+    if not match:
+        return None
+    try:
+        text = match.group(1).decode(charset or 'utf-8', 'replace')
+    except LookupError:
+        text = match.group(1).decode('utf-8', 'replace')
+
+    def numeric(m: 're.Match[str]', base: int) -> str:
+        value = int(m.group(1), base)
+        return chr(value) if 0 < value < 0x110000 else m.group(0)
+
+    text = re.sub(r'&#(\d{1,6});', lambda m: numeric(m, 10), text)
+    text = re.sub(r'&#x([0-9a-fA-F]{1,6});', lambda m: numeric(m, 16), text)
+    for entity, char in (('&quot;', '"'), ('&#39;', "'"), ('&apos;', "'"), ('&lt;', '<'), ('&gt;', '>'),
+                         ('&nbsp;', ' '), ('&amp;', '&')):
+        text = text.replace(entity, char)
+    text = ' '.join(text.split())
+    return text[:200] or None
+
+
+def _charset(content_type: Optional[str]) -> Optional[str]:
+    match = re.search(r'charset="?([A-Za-z0-9._-]+)', content_type or '')
+    return match.group(1) if match else None
+
+
+def fetch_side(ip: str, port: int, name: str, path: str, timeout: float,
+               private_cas: Sequence[CertInfo] = ()) -> CompareSide:
+    """One TLS connection to ``ip:port`` with SNI ``name`` (whatever certificate is served:
+    :func:`make_client_context`), one ``GET path`` over it with ``Host: name`` (http.client on
+    that socket), then one verifying handshake (the system's trust store and the host name;
+    a certificate issued by a ``--private-ca`` counts as trusted)."""
+    side = CompareSide(ip, port)
+    address = _connect_address(ip)
+    sock = None  # type: Optional[socket.socket]
+    connected = False
+    try:
+        sock = socket.create_connection((address, port), timeout=timeout)
+        connected = True
+        tls = make_client_context().wrap_socket(sock, server_hostname=name, do_handshake_on_connect=False)
+        sock = tls
+        tls.settimeout(timeout)
+        tls.do_handshake()
+        der = tls.getpeercert(binary_form=True)
+        side.tls_version = tls.version()
+        if der:
+            try:
+                side.cert = parse_certificate(der)
+                side.covers = side.cert.covers(name)[0]
+            except _CERT_PARSE_ERRORS:
+                side.detail = 'the certificate could not be read'
+        conn = http.client.HTTPConnection(name, port, timeout=timeout)
+        conn.sock = tls  # the request goes over this TLS connection, never a new one
+        host = name if port == 443 else '%s:%d' % (name, port)
+        conn.request('GET', path, headers={'Host': host, 'User-Agent': _USER_AGENT, 'Accept': '*/*',
+                                           'Accept-Encoding': 'identity', 'Connection': 'close'})
+        response = conn.getresponse()
+        body = response.read(COMPARE_BODY_LIMIT + 1)
+        side.status = response.status
+        side.location = response.getheader('Location')
+        side.content_type = response.getheader('Content-Type')
+        side.server = response.getheader('Server')
+        side.hsts = response.getheader('Strict-Transport-Security')
+        side.body_truncated = len(body) > COMPARE_BODY_LIMIT
+        body = body[:COMPARE_BODY_LIMIT]
+        side.body_bytes = len(body)
+        side.body_sha256 = hashlib.sha256(body).hexdigest()
+        side.title = page_title(body, _charset(side.content_type))
+    except http.client.HTTPException as exc:
+        side.failure, side.detail = 'HTTP_ERROR', 'no HTTP answer: %s' % (type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001 - every failure becomes a status
+        classify = classify_exception if connected else classify_connect_exception
+        side.failure, side.detail = classify(exc)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    if side.cert is not None:
+        side.trusted, side.trust_detail = _verify_side(address, port, name, timeout, side.cert, private_cas)
+    return side
+
+
+def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertInfo,
+                 private_cas: Sequence[CertInfo]) -> Tuple[Optional[bool], str]:
+    """``(trusted, detail)`` from a verifying handshake; None when it could not be made."""
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((address, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=name):
+                return True, ''
+    except ssl.SSLCertVerificationError as exc:
+        detail = getattr(exc, 'verify_message', '') or _clean_ssl_message(exc)
+        if cert.covers(name)[0] and any(issued_by(cert, ca) for ca in private_cas):
+            return True, 'issued by a --private-ca'
+        return False, detail
+    except (OSError, ssl.SSLError) as exc:
+        return None, _clean_ssl_message(exc)
+
+
+def _compare_field(key: str, old: Any, new: Any, severity: str, note: Optional[str] = None
+                   ) -> Dict[str, Any]:
+    same = old == new
+    return {'key': key, 'old': old, 'new': new, 'same': same,
+            'severity': 'ok' if same and note not in _ABSOLUTE_NOTES else severity, 'note': note}
+
+
+def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Field by field, with the web app's rules (lib/origincompare.js compareSides): the new
+    server not answering, answering 4xx / 5xx where the old one did not, or a certificate
+    that does not cover the name or is not trusted (while the old one was) is an error;
+    another status, redirect, content type or title, a lost HSTS header or a certificate
+    expiring within 14 days a warning; another body, Server header or certificate is
+    information. Verdict: broken, incomplete (the old server did not answer), differs, same."""
+    now = now or _utcnow()
+    fields = []  # type: List[Dict[str, Any]]
+    note, severity = None, 'ok'  # type: Optional[str], str
+    if not b.ok and a.ok:
+        note, severity = 'new-unreachable', 'error'
+    elif not b.ok and not a.ok:
+        note, severity = 'both-unreachable', 'error'
+    elif b.ok and not a.ok:
+        note, severity = 'old-unreachable', 'info'
+    fields.append({'key': 'reach', 'old': 'yes' if a.ok else (a.failure or 'no'),
+                   'new': 'yes' if b.ok else (b.failure or 'no'), 'same': a.ok == b.ok,
+                   'severity': severity, 'note': note})
+    # The HTTP fields only when the new server answered (a failure says it all); without an
+    # answer from the old one there is nothing to compare with: differences are information.
+    if b.ok:
+        warn = 'warn' if a.ok else 'info'
+
+        def bad(status: Optional[int]) -> bool:
+            return status is not None and status >= 400
+        status_sev = 'error' if bad(b.status) and not (a.ok and bad(a.status)) else warn
+        fields.append(_compare_field('status', a.status, b.status, status_sev,
+                                     'new-error-status' if status_sev == 'error' and a.status != b.status else None))
+        fields.append(_compare_field('location', a.location, b.location, warn))
+        fields.append(_compare_field('content_type', a.content_type, b.content_type, warn))
+        fields.append(_compare_field('title', a.title, b.title, warn))
+        cut = a.body_truncated or b.body_truncated
+        same_body = a.body_sha256 == b.body_sha256
+        fields.append(_compare_field('body', a.body_sha256, b.body_sha256, 'info',
+                                     ('body-cut' if cut else None) if same_body else 'dynamic-body'))
+        hsts_note, hsts_sev = None, 'info'  # type: Optional[str], str
+        if a.hsts and not b.hsts:
+            hsts_note, hsts_sev = 'hsts-lost', warn
+        elif b.hsts and not a.hsts:
+            hsts_note = 'hsts-new'
+        fields.append(_compare_field('hsts', a.hsts, b.hsts, hsts_sev, hsts_note))
+        fields.append(_compare_field('server', a.server, b.server, 'info'))
+    ca, cb = a.cert, b.cert
+    if cb is not None:  # the certificate fields come with a certificate from the new server
+        wrong_name = not b.covers
+        fields.append(_compare_field('cert_covers', a.covers, b.covers, 'error' if wrong_name else 'info',
+                                     'cert-name' if wrong_name else None))
+        untrusted = b.trusted is False
+        fields.append(_compare_field('cert_trusted', a.trusted, b.trusted,
+                                     ('error' if a.trusted else 'warn') if untrusted else 'info',
+                                     'cert-untrusted' if untrusted else None))
+        fields.append(_compare_field('cert_issuer', ca.issuer_label() if ca else None,
+                                     cb.issuer_label() if cb else None, 'info'))
+        soon = cb.days_left(now) < COMPARE_EXPIRY_WARN_DAYS
+        fields.append(_compare_field('cert_expires', ca.not_after.strftime('%Y-%m-%d') if ca else None,
+                                     cb.not_after.strftime('%Y-%m-%d') if cb else None,
+                                     'warn' if soon else 'info', 'cert-expiring' if soon else None))
+        same_cert = bool(ca and cb and ca.sha256 == cb.sha256)
+        fields.append(_compare_field('cert_sha256', ca.sha256 if ca else None, cb.sha256 if cb else None, 'info',
+                                     'same-cert' if same_cert else ('new-cert' if ca and cb else None)))
+    worst = 'ok'
+    for item in fields:
+        if _SEVERITY_RANK[item['severity']] > _SEVERITY_RANK[worst]:
+            worst = item['severity']
+    if worst == 'error':
+        verdict = 'broken'
+    elif not a.ok:
+        verdict = 'incomplete'
+    elif worst == 'warn':
+        verdict = 'differs'
+    else:
+        verdict = 'same'
+    return {'verdict': verdict, 'worst': worst, 'fields': fields,
+            'differences': sum(1 for item in fields if not item['same'])}
+
+
+def _compare_value(key: str, value: Any, side: CompareSide, now: datetime) -> str:
+    if key == 'cert_trusted' and value is False:
+        return 'no: %s' % (side.trust_detail or 'not trusted')
+    if value is None:
+        return '-'
+    if key == 'body':
+        return '%s... (%d bytes%s)' % (str(value)[:16], side.body_bytes, ', cut' if side.body_truncated else '')
+    if key == 'cert_sha256':
+        return '%s...' % str(value)[:16]
+    if key == 'cert_expires' and side.cert:
+        return '%s (%d days)' % (value, side.cert.days_left(now))
+    if isinstance(value, bool):
+        return 'yes' if value else 'no'
+    if key == 'reach' and value != 'yes' and side.detail:
+        return '%s: %s' % (value, side.detail)
+    return str(value)
+
+
+def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result: Dict[str, Any],
+                   color: bool = False, width: int = 100, now: Optional[datetime] = None) -> str:
+    """The side-by-side table: one line per field, the differences marked."""
+    now = now or _utcnow()
+    style = Style(color)
+    col = max(16, (width - 32) // 2)
+
+    def fit(text: str) -> str:
+        return text if len(text) <= col else text[:col - 3] + '...'
+
+    lines = ['Comparing %s on %s (old) and %s (new), port %d, GET %s' % (
+        display_text(name), a.ip, b.ip, a.port, display_text(path)), '']
+    lines.append('  %-18s %s %s' % ('', fit('old ' + a.ip).ljust(col), fit('new ' + b.ip)))
+    marks = {'error': ('ERROR', ('red', 'bold')), 'warn': ('DIFFERS', ('yellow', 'bold')),
+             'info': ('differs', ('gray',))}
+    for item in result['fields']:
+        old = fit(display_text(_compare_value(item['key'], item['old'], a, now)))
+        new = fit(display_text(_compare_value(item['key'], item['new'], b, now)))
+        mark = ''
+        if not (item['same'] and item['severity'] == 'ok') and item['severity'] in marks:
+            label, styles = marks[item['severity']]
+            mark = style.paint(label, *styles)
+        lines.append(('  %-18s %s %s  %s' % (COMPARE_LABELS[item['key']], old.ljust(col), new.ljust(col), mark)).rstrip())
+        if item['note'] and item['note'] not in ('same-cert', 'body-cut'):
+            lines.append('  %-18s %s' % ('', style.paint('^ ' + COMPARE_NOTES[item['note']], 'dim')))
+    verdict = result['verdict']
+    text = {
+        'same': 'The new server answers like the old one (only informational differences).',
+        'differs': 'The new server answers differently: check the fields marked DIFFERS before you move the name.',
+        'broken': 'The new server is not ready: fix the fields marked ERROR before you move the name.',
+        'incomplete': 'The old server did not answer, so there is nothing to compare with; the new one is shown.',
+    }[verdict]
+    verdict_style = {'same': ('green', 'bold'), 'differs': ('yellow', 'bold'), 'broken': ('red', 'bold')}.get(verdict, ('bold',))
+    lines.append('')
+    lines.append('%s: %s' % (style.paint(verdict.upper(), *verdict_style), text))
+    return '\n'.join(lines) + '\n'
+
+
+def compare_to_dict(name: str, path: str, a: CompareSide, b: CompareSide, result: Dict[str, Any],
+                    now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The ``--compare --json`` report (schema ``domainscope.compare/1``)."""
+    return {
+        'schema': 'domainscope.compare/1', 'tool': {'name': PROG, 'version': __version__},
+        'generatedAt': iso_utc(now or _utcnow()), 'name': name, 'path': path,
+        'old': a.to_dict(now), 'new': b.to_dict(now), 'verdict': result['verdict'], 'fields': result['fields'],
+    }
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    """``--compare OLD NEW -n NAME``: the same GET against both addresses, side by side."""
+    unsupported = [flag for flag, used in (
+        ('-t/--targets', args.targets), ('--exclude', args.exclude), ('--cert', args.cert), ('--csv', args.csv),
+        ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
+        ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update)) if used]
+    if unsupported:
+        raise UsageError('--compare does not take %s' % ', '.join(unsupported))
+    ips = []
+    for value in args.compare:
+        ip = normalize_ip(value.strip().strip('[]'))
+        if ip is None:
+            raise UsageError('--compare takes two IP addresses, not %r' % value)
+        ips.append(ip)
+    if ips[0] == ips[1]:
+        raise UsageError('--compare: the old and the new address are the same')
+    names, _warnings = load_names(args.names)
+    if len(names) != 1 or names[0].startswith('*'):
+        raise UsageError('--compare needs exactly one host name: -n www.example.com')
+    ports = parse_ports(args.ports)
+    if len(ports) != 1:
+        raise UsageError('--compare takes one port (-p 443)')
+    path = args.path or '/'
+    if not re.match(r'^/[\x21-\x7e]*$', path):
+        raise UsageError('--path must start with "/" and hold printable ASCII only')
+    if not (args.timeout > 0 and args.timeout <= MAX_TIMEOUT):
+        raise UsageError('--timeout must be > 0 and <= %d seconds' % MAX_TIMEOUT)
+    _check_output_path(args.json, '--json')
+    private_cas, ca_messages = load_private_cas(args.private_ca)
+    if not args.quiet:
+        for message in ca_messages:
+            print('warning: %s' % display_text(message), file=sys.stderr)
+        print('Comparing %s on %s and %s ...' % (names[0], ips[0], ips[1]), file=sys.stderr)
+    now = _utcnow()
+    old = fetch_side(ips[0], ports[0], names[0], path, args.timeout, private_cas)
+    new = fetch_side(ips[1], ports[0], names[0], path, args.timeout, private_cas)
+    result = compare_sides(old, new, now)
+    failed = False
+    if args.json:
+        text = json.dumps(compare_to_dict(names[0], path, old, new, result, now), indent=2,
+                          ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout)) + '\n'
+        try:
+            _write_output(args.json, text)
+        except UsageError as exc:
+            print('%s: error: %s' % (PROG, exc), file=sys.stderr)
+            failed = True
+    if args.json != '-':
+        width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
+        _write_output('-', render_compare(names[0], path, old, new, result,
+                                          color=use_color(args.no_color, sys.stdout), width=width, now=now))
+    if failed:
+        return EXIT_OUTPUT_ERROR
+    if args.fail_on_change and result['verdict'] in ('differs', 'broken'):
+        return EXIT_CHANGED
+    return EXIT_OK
+
+
+# =====================================================================================
 # Command line
 # =====================================================================================
 
@@ -6903,6 +7292,9 @@ examples:
     export DOMAINSCOPE_NOTIFY_URL='https://hooks.slack.com/services/...'
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json \\
       --json last.json --warn-days 21 -q > last.txt
+
+  Before DNS moves a name to a new server: does the new one answer like the old one?
+    python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com --path /healthz
 
 targets (-t, repeatable):
   an IP, hostname, CIDR (10.0.0.0/24), range (10.0.0.10-10.0.0.50 or 10.0.0.10-50),
@@ -7034,6 +7426,22 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   Cron mails what a job prints: -q and the summary in a file (> last.txt) leave only
   errors, such as a notification that failed.
 
+old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
+  Opens one TLS connection to each address with SNI = NAME (whatever certificate is
+  served), sends one GET of --path over it (Host: NAME, Accept-Encoding: identity) and
+  reads up to 1 MiB of the body; then one verifying handshake per address (this machine's
+  trust store and the name; a certificate issued by a --private-ca counts as trusted).
+  Prints both answers side by side - reached, HTTP status, Location, Content-Type,
+  <title>, body SHA-256, HSTS, Server, and the certificate: covers the name, trusted,
+  issuer, expiry, SHA-256 fingerprint - with ERROR (the new server does not answer, answers
+  4xx / 5xx where the old one did not, or its certificate does not cover the name or is not
+  trusted), DIFFERS (another status, redirect, type or title, a lost HSTS header, a
+  certificate expiring within 14 days) and differs (information: another body, Server header
+  or certificate; a page with a token or a time in it differs on every request). Private
+  addresses are fine: this is the counterpart of the web app's check from the internet
+  (Retire an IP > Compare the old and the new server). --json FILE writes both answers
+  (schema domainscope.compare/1); --fail-on-change exits with code 4 on ERROR or DIFFERS.
+
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
             and PRIVATE_CERT only with --strict-public),
             2 usage error (report files that cannot be written are refused before
@@ -7087,6 +7495,9 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   bundle-check alt komutu sertifikayı, zincirini, özel anahtarı ve CSR'ı birlikte
   denetler, -o DİZİN ile fullchain.pem ve chain.pem'i doğru sırayla yazar:
   python3 ssl_origin_scan.py bundle-check sertifika.pem ca-bundle.crt ozel.key -o cikti/
+  Bir adı yeni sunucuya taşımadan önce eski ve yeni sunucuyu karşılaştırın (durum kodu,
+  yönlendirme, başlık, gövde özeti, HSTS, sertifika yan yana):
+  python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com
 """
 
 
@@ -7097,8 +7508,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     what = parser.add_argument_group('what to scan')
     what.add_argument('-t', '--targets', metavar='TARGET', action='extend', nargs='+',
-                      required=True,
-                      help='inventory file, IP, CIDR, range, hostname or NAME=IP (repeatable)')
+                      default=[],
+                      help='inventory file, IP, CIDR, range, hostname or NAME=IP (repeatable; '
+                           'required unless --compare)')
     what.add_argument('--exclude', metavar='ADDR', action='extend', nargs='+', default=[],
                       help='IP, CIDR or range that must never be probed, or a file of them '
                            '(repeatable; hostnames are refused)')
@@ -7167,6 +7579,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help='notify after every run, even with nothing to report')
     mon.add_argument('--fail-on-notify-error', action='store_true',
                      help='exit with code 5 when the notification was not delivered')
+    cmp = parser.add_argument_group('old versus new server (instead of a scan)')
+    cmp.add_argument('--compare', metavar=('OLD_IP', 'NEW_IP'), nargs=2,
+                     help='before DNS moves a name: GET --path over TLS (SNI and Host = the one -n '
+                          'name) from both addresses and show the answers side by side (status, '
+                          'Location, title, body SHA-256, HSTS, certificate); with -p (one port), '
+                          '--timeout, --json, --private-ca, --fail-on-change (exit 4 when they differ)')
+    cmp.add_argument('--path', default='/', help='the path --compare requests (default: /)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser
 
@@ -7518,6 +7937,8 @@ def _configure_streams() -> None:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.compare:
+        return _run_compare(args)
     err = sys.stderr
     quiet = args.quiet
 
@@ -7783,6 +8204,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(args_list)
+        if not args.targets and not args.compare:
+            parser.error('the following arguments are required: -t/--targets')
     except SystemExit as exc:  # --help / --version (0) or usage errors (2)
         code = exc.code
         if code == EXIT_USAGE and 'bundle-check' in args_list:

@@ -458,7 +458,7 @@ async function main() {
         await page.click('.dov-card-certs [data-action="dov-ct"]');
         await page.waitFor(() => document.querySelector('.dov-ct')?.dataset.ct === 'ok', { message: 'CT issuers' });
         assertEqual(await page.evaluate(() => [...document.querySelectorAll('.dov-issuer')].map((li) => li.dataset.verdict)), ['denied', 'denied'], 'CT verdicts');
-        assert(/The critical tag blocks Let's Encrypt, Sectigo: their next renewal/.test(await text(page, '.dov-card-certs')), await text(page, '.dov-card-certs'));
+        assert(/CAA’s critical flag blocks Let's Encrypt, Sectigo: their next renewal/.test(await text(page, '.dov-card-certs')), await text(page, '.dov-card-certs'));
       } finally {
         // the registry answers again, whatever happened above
         await page.evaluate(() => {

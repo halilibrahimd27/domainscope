@@ -13,6 +13,7 @@ import {
   certspotterIssuersUrl, crtshIssuersUrl, issuersFromCertspotter, issuersFromCrtsh, lookupCtIssuers, passportSummaryFacts
 } from '../../assets/js/lib/passport.js';
 import { domainHealth } from '../../assets/js/lib/health.js';
+import { ctNoteKey } from '../../assets/js/views/domain.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
 import { healthScore } from '../../assets/js/lib/summary.js';
@@ -700,10 +701,15 @@ describe('CT issuers', () => {
     const onlyWildcards = await cardOf([caa('issue', ';'), caa('issuewild', 'letsencrypt.org')]);
     assert.deepEqual(shape(onlyWildcards), ['present', [], true, ['letsencrypt.org']]);
     assert.deepEqual(verdicts(onlyWildcards), ['denied', 'denied'], 'the CT verdicts are for the name itself');
+    // …and the note under them says so: it is the issue property that refuses them, not CAA as a whole.
+    assert.equal(ctNoteKey(onlyWildcards.caa), 'dov.certs.ctIssueNote');
+    assert.equal(ctNoteKey((await cardOf([caa('issue', 'pki.goog')])).caa), 'dov.certs.ctDeniedNote');
+    assert.equal(ctNoteKey(null), 'dov.certs.ctDeniedNote');
     assert.equal((await cardOf([caa('issue', ';'), caa('issuewild', ';')])).caa.state, 'deny-all');
     assert.equal((await cardOf([caa('issue', 'letsencrypt.org'), caa('issuewild', ';')])).caa.state, 'present');
     // a critical unknown tag: no CA may issue, whatever issue names (§4.1); a non-critical one changes nothing
     const critical = await cardOf([caa('issue', 'letsencrypt.org'), caa('tbs', 'unknown', 128), caa('tbs', 'again', 128)]);
+    assert.equal(ctNoteKey(critical.caa), 'dov.certs.ctCriticalNote');
     assert.deepEqual([critical.caa.state, critical.caa.criticalTags], ['critical', ['tbs']]);
     assert.deepEqual([verdicts(critical), critical.ct.notAllowed], [['denied', 'denied'], ["Let's Encrypt", 'Sectigo']]);
     assert.equal((await cardOf([caa('issue', 'letsencrypt.org'), caa('tbs', 'unknown')])).caa.state, 'present');

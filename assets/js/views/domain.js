@@ -200,8 +200,12 @@ registerStrings('en', {
     other: 'CAA does not allow {list}: their next renewal of these certificates will fail until CAA names them.'
   },
   'dov.certs.ctCriticalNote': {
-    one: 'The critical tag blocks {list}: its next renewal of these certificates will fail until the tag is removed or no longer marked critical.',
-    other: 'The critical tag blocks {list}: their next renewal of these certificates will fail until the tag is removed or no longer marked critical.'
+    one: 'CAA’s critical flag blocks {list}: its next renewal of these certificates will fail as long as an unknown tag is marked critical.',
+    other: 'CAA’s critical flag blocks {list}: their next renewal of these certificates will fail as long as an unknown tag is marked critical.'
+  },
+  'dov.certs.ctIssueNote': {
+    one: 'CAA’s issue property does not allow {list} for {domain} itself: its next renewal of these certificates will fail until issue names it.',
+    other: 'CAA’s issue property does not allow {list} for {domain} itself: their next renewal of these certificates will fail until issue names them.'
   },
   'dov.certs.ctFirstPage': 'From Cert Spotter’s first page of current certificates ({count} read); a longer list continues on later pages.',
   'dov.certs.ctCrtsh': 'From crt.sh ({count} current certificates), because Cert Spotter could not answer.',
@@ -360,7 +364,8 @@ registerStrings('tr', {
   'dov.certs.ctDenied': 'CAA izin vermiyor',
   'dov.certs.ctUnknown': 'CA bilinmiyor',
   'dov.certs.ctDeniedNote': 'CAA {list} için izin vermiyor: CAA kaydına eklenene kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
-  'dov.certs.ctCriticalNote': 'Kritik etiket {list} için engel oluşturuyor: etiket kaldırılana ya da kritik işareti kalkana kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
+  'dov.certs.ctCriticalNote': 'CAA’daki kritik işaret {list} için engel oluşturuyor: bilinmeyen bir etiket kritik işaretli olduğu sürece bu sertifikaların bir sonraki yenilemesi başarısız olur.',
+  'dov.certs.ctIssueNote': 'CAA’nın issue özelliği {domain} adının kendisi için şunlara izin vermiyor: {list}. issue bunları adlandırana kadar bu sertifikaların bir sonraki yenilemesi başarısız olur.',
   'dov.certs.ctFirstPage': 'Cert Spotter’ın geçerli sertifikalar listesinin ilk sayfasından ({count} okundu); daha uzun bir liste sonraki sayfalarda sürer.',
   'dov.certs.ctCrtsh': 'crt.sh’ten ({count} geçerli sertifika), çünkü Cert Spotter yanıt veremedi.',
   'dov.certs.ctEmpty': 'Certificate Transparency’de {domain} için geçerli sertifika yok.',
@@ -418,6 +423,19 @@ export function flagVariant(kind) {
 /* ------------------------------------------------------------------------ */
 /* View                                                                     */
 /* ------------------------------------------------------------------------ */
+
+/**
+ * The note under the CT issuers CAA does not allow: a critical unknown tag blocks every CA; with
+ * issuewild naming CAs and issue none, only the name itself is refused (the verdicts judge the
+ * name, not wildcard certificates); else CAA names none of them.
+ * @param {object|null} caa the Certificates card's `caa` (lib/passport.js certsCard)
+ * @returns {string} an i18n key
+ */
+export function ctNoteKey(caa) {
+  if (caa && caa.state === 'critical') return 'dov.certs.ctCriticalNote';
+  if (caa && caa.state === 'present' && !caa.issue.length && caa.issuewild.length) return 'dov.certs.ctIssueNote';
+  return 'dov.certs.ctDeniedNote';
+}
 
 let active = null;
 
@@ -838,9 +856,10 @@ export function mount(container, ctx) {
     return h('div', { class: 'stack-sm dov-ct', dataset: { ct: 'ok', provider: ct.provider } }, head,
       rows.length ? h('ul', { class: 'dov-issuers' }, rows) : h('p', { class: 'text-sm muted' }, t('dov.certs.ctEmpty', { domain: d })),
       // Behind a critical unknown tag no CA may issue, the ones CAA names too: adding them fixes nothing.
+      // With issuewild naming CAs and issue none, the verdict is about the name itself, not wildcards.
       ct.notAllowed.length ? Alert({
         variant: 'warn', compact: true,
-        message: t(card.caa && card.caa.state === 'critical' ? 'dov.certs.ctCriticalNote' : 'dov.certs.ctDeniedNote', { list: ct.notAllowed.join(', '), count: ct.notAllowed.length })
+        message: t(ctNoteKey(card.caa), { list: ct.notAllowed.join(', '), count: ct.notAllowed.length, domain: d })
       }) : null,
       h('p', { class: 'muted text-xs' }, source),
       h('div', null, run(t('dov.certs.ctAgain'), 'ghost')));

@@ -954,6 +954,9 @@ describe('domain (overview)', () => {
     // a critical unknown tag: the tag as a code span, never "Let's Encrypt allowed"
     assert.equal(line({ caa: 'critical', cas: ["Let's Encrypt"], criticalTags: ['tbs'] }), '- **Certificates:** CAA has an unknown tag marked critical (`tbs`): no CA may issue');
     assert.equal(line({ caa: 'critical', criticalTags: ['tbs', 'x`y'] }), "- **Certificates:** CAA has unknown tags marked critical (`tbs`, `x'y`): no CA may issue");
+    // Past three tags, "+N more" inside the parentheses: no tag goes unsaid.
+    assert.equal(line({ caa: 'critical', criticalTags: ['tbs', 'averyveryverylongtagname', 'zz9', 'q1'] }),
+      '- **Certificates:** CAA has unknown tags marked critical (`tbs`, `averyveryverylongtagname`, `zz9` +1 more): no CA may issue');
     // Turkish
     assert.equal(line({ caa: 'unrestricted', wildcard: true }, 'tr'), '- **Sertifikalar:** CAA her CA’ya izin veriyor (issue özelliği yok) · joker sertifikalara hiçbir CA izinli değil');
     assert.equal(line({ caa: 'present', wildcard: true, wildCas: ["Let's Encrypt"] }, 'tr'), "- **Sertifikalar:** CAA yalnızca joker (wildcard) sertifikalara izin veriyor: Let's Encrypt");

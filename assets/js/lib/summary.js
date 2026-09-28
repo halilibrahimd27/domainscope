@@ -863,7 +863,13 @@ export function domainSummary(facts, opts) {
     const bits = [];
     if (certs.exists === false) bits.push([t('sum.domain.nxdomain')]);
     else if (certs.caa === 'none') bits.push([t('sum.domain.caaNone')]);
-    else if (certs.caa === 'critical') bits.push(textParts(t, 'sum.domain.caaCritical', { tags: (certs.criticalTags || []).slice(0, 3), count: (certs.criticalTags || []).length }));
+    else if (certs.caa === 'critical') {
+      // Three tags as code spans, then "+N more" inside the parentheses, as every other list here.
+      const tags = certs.criticalTags || [];
+      const parts = textParts(t, 'sum.domain.caaCritical', { tags: tags.slice(0, 3), count: tags.length });
+      if (tags.length > 3) parts.splice(parts.map((p) => typeof p !== 'string').lastIndexOf(true) + 1, 0, ` ${t('common.moreCount', { count: tags.length - 3 })}`);
+      bits.push(parts);
+    }
     else if (certs.caa === 'present' || certs.caa === 'unrestricted') {
       const cas = certs.cas || [];
       const wild = certs.wildCas || [];

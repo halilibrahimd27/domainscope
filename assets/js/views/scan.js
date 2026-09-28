@@ -76,7 +76,7 @@ import {
 import {
   renewalBundle, withoutLeaf, primaryFile, fileForLeaf, leafKey, planRenewal, setOfName, cliCertFiles, certSetsJson
 } from '../lib/certsets.js';
-import { RenewalSets, RenewalPlanPanel, CertFileButtons, SetBadge } from '../ui/renewal-panel.js';
+import { RenewalSets, RenewalPlanPanel, CertFileButtons, SetBadge, renewalSummaryText } from '../ui/renewal-panel.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
 import {
   LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
@@ -135,6 +135,7 @@ registerStrings('en', {
 
   'scan.step.cert': 'Certificate',
   'scan.step.certDesc': 'Its names seed the search and every host is checked against it',
+  'scan.step.certDescMany': 'Their names seed the search and every host is checked against the set that covers it',
   'scan.step.domains': 'Domains',
   'scan.step.domainsDesc': 'Their subdomains are discovered from DNS records, wordlists and variations, plus CT logs and passive DNS',
   'scan.step.inventory': 'Your servers',
@@ -390,6 +391,7 @@ registerStrings('en', {
   'scan.srv.intro': 'Servers from your inventory that the names resolve to (DNS) or that origin hints point at. Servers that need the certificate come first.',
   'scan.srv.verifyHint': 'Installed it? Check from the internet which certificate each server really serves.',
   'scan.sum.verify': 'After installing the certificate, open the Verify tab to check it from the internet.',
+  'scan.sum.verifyMany': 'After installing the certificates, open the Verify tab to check them from the internet.',
   'scan.sum.dane': 'The domain has mail servers (MX). Before installing, check their TLSA records in the DANE tab: a record that pins the old certificate stops mail delivery.',
   'scan.srv.col.server': 'Server',
   'scan.srv.col.status': 'Action',
@@ -526,6 +528,7 @@ registerStrings('tr', {
 
   'scan.step.cert': 'Sertifika',
   'scan.step.certDesc': 'Adları aramayı başlatır; her host bu sertifikaya göre kontrol edilir',
+  'scan.step.certDescMany': 'Adları aramayı başlatır; her host onu kapsayan sete göre kontrol edilir',
   'scan.step.domains': 'Alan adları',
   'scan.step.domainsDesc': 'Alt alan adları DNS kayıtları, kelime listeleri ve varyasyonlarla, ayrıca CT kayıtları ve pasif DNS’ten keşfedilir',
   'scan.step.inventory': 'Sunucularınız',
@@ -781,6 +784,7 @@ registerStrings('tr', {
   'scan.srv.intro': 'Envanterinizdeki, adların çözümlendiği (DNS) veya asıl sunucu ipuçlarının işaret ettiği sunucular. Sertifika kurulması gerekenler en üstte.',
   'scan.srv.verifyHint': 'Kurdunuz mu? Her sunucunun gerçekte hangi sertifikayı sunduğunu internetten kontrol edin.',
   'scan.sum.verify': 'Sertifikayı kurduktan sonra internetten kontrol etmek için Doğrula sekmesini açın.',
+  'scan.sum.verifyMany': 'Sertifikaları kurduktan sonra internetten kontrol etmek için Doğrula sekmesini açın.',
   'scan.sum.dane': 'Alan adının e-posta sunucuları (MX) var. Kurmadan önce DANE sekmesinde TLSA kayıtlarını kontrol edin: eski sertifikayı sabitleyen bir kayıt e-posta teslimini durdurur.',
   'scan.srv.col.server': 'Sunucu',
   'scan.srv.col.status': 'Yapılacak',
@@ -1555,6 +1559,8 @@ export function mount(container, ctx) {
   // "(done)" / "(needs attention: CA certificate)" inside a step's heading: the sign and the badge
   // are visual only on phones.
   const stepSr = {};
+  // Step descriptions: step 1's says "their names" once several certificates are loaded.
+  const stepDesc = {};
   const stepStatus = {
     cert: h('span', { class: 'scan-step-status' }),
     domains: h('span', { class: 'scan-step-status' }),
@@ -1577,6 +1583,8 @@ export function mount(container, ctx) {
       extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid.length,
       servers: state.inventory.servers.length
     });
+    const certDesc = t(rw && rw.leaves.length > 1 ? 'scan.step.certDescMany' : 'scan.step.certDesc');
+    if (stepDesc.cert && stepDesc.cert.textContent !== certDesc) stepDesc.cert.textContent = certDesc;
     const badges = {
       cert: rw && rw.leaves.length > 1 ? t('rw.certs', { count: rw.leaves.length }) : t('scan.stepDone'),
       domains: t('scan.summary.domains', { count: parsed.domains.length }),
@@ -2281,7 +2289,7 @@ export function mount(container, ctx) {
       stepNums[key].el,
       h('div', { class: 'scan-step-titles' },
         h('h2', { class: 'scan-step-title', id: `scan-step-${key}` }, Icon(iconName, { size: 15 }), h('span', null, t(`scan.step.${key}`)), stepSr[key]),
-        h('p', { class: 'scan-step-desc' }, t(`scan.step.${key}Desc`))),
+        stepDesc[key] = h('p', { class: 'scan-step-desc' }, t(`scan.step.${key}Desc`))),
       stepStatus[key]),
     h('div', { class: 'scan-step-body' }, body));
   };
@@ -3236,14 +3244,14 @@ function buildRunUI(run, ctx, { onFinish }) {
       const need = plan.rows.filter((row) => row.needsCert && row.server).length;
       const a = Alert({
         variant: inv && need ? 'warn' : 'info', compact: true, icon: 'layers', actions: [openPlan],
-        message: inv ? t('rw.sum', { sets: formatNumber(plan.sets.length), count: need }) : t('rw.sum.noInventory', { sets: formatNumber(plan.sets.length) })
+        message: renewalSummaryText({ sets: plan.sets, inventory: inv, need })
       });
       a.dataset.summary = 'renewal';
       summaryHost.append(a);
       if (plan.uncovered.length) add('info', t('rw.sum.uncovered', { count: plan.uncovered.length }), 'help', 'renewal-uncovered');
     }
     // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
-    if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t('scan.sum.verify'), 'check-circle', 'verify');
+    if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t(plan ? 'scan.sum.verifyMany' : 'scan.sum.verify'), 'check-circle', 'verify');
     // In-domain mail servers (mined from MX): a TLSA record there may pin the old certificate.
     if (cert && r.hosts.some((x) => (x.origins || []).includes('dns-mine:MX'))) add('info', t('scan.sum.dane'), 'mail', 'dane');
     if (st.hiddenOrigin) add('info', t('scan.sum.hidden', { count: st.hiddenOrigin }), 'cloud', 'hidden');

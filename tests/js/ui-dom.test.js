@@ -2632,3 +2632,29 @@ describe('security & shell invariants', () => {
     }
   });
 });
+
+describe('renewal-panel: the scan summary line about certificate sets', () => {
+  test('one set is named by its key types and needs "it"; several sets need "one of them"; zero says none', async () => {
+    const { renewalSummaryText } = await import('../../assets/js/ui/renewal-panel.js');
+    const pair = [{ id: 'A', keyTypes: ['RSA 2048', 'ECDSA P-256'] }];
+    const two = [...pair, { id: 'B', keyTypes: ['RSA 2048'] }];
+    const prev = i18n.getLang();
+    try {
+      i18n.setLang('en');
+      assert.equal(renewalSummaryText({ sets: pair, inventory: true, need: 1 }),
+        '1 certificate set (RSA 2048 + ECDSA P-256): 1 server needs it — see “Renewal plan”.');
+      assert.equal(renewalSummaryText({ sets: pair, inventory: true, need: 3 }),
+        '1 certificate set (RSA 2048 + ECDSA P-256): 3 servers need it — see “Renewal plan”.');
+      assert.equal(renewalSummaryText({ sets: two, inventory: true, need: 1 }), '2 certificate sets: 1 server needs one of them — see “Renewal plan”.');
+      assert.equal(renewalSummaryText({ sets: two, inventory: true, need: 0 }), '2 certificate sets: none of your servers needs one of them — see “Renewal plan”.');
+      assert.match(renewalSummaryText({ sets: pair, inventory: false, need: 0 }), /^1 certificate set \(RSA 2048 \+ ECDSA P-256\): the Renewal plan lists the addresses/);
+      assert.match(renewalSummaryText({ sets: two, inventory: false, need: 0 }), /^2 certificate sets: the Renewal plan lists which set/);
+      i18n.setLang('tr');
+      assert.equal(renewalSummaryText({ sets: pair, inventory: true, need: 1 }),
+        '1 sertifika seti (RSA 2048 + ECDSA P-256): 1 sunucunun buna ihtiyacı var — “Yenileme planı”na bakın.');
+      assert.equal(renewalSummaryText({ sets: two, inventory: true, need: 2 }), '2 sertifika seti: 2 sunucunun bunlardan birine ihtiyacı var — “Yenileme planı”na bakın.');
+    } finally {
+      i18n.setLang(prev);
+    }
+  });
+});

@@ -12,7 +12,8 @@
  *     (the names each server needs from each set; labelled cards on a phone), the per-server CSV
  *     work list and the names no certificate covers;
  *   - {@link CertFileButtons}: one download per certificate for the CLI's repeated `--cert`
- *     (the Behind CDN card and the Verify tab's CLI card).
+ *     (the Behind CDN card and the Verify tab's CLI card);
+ *   - {@link renewalSummaryText}: the scan summary's line about the sets.
  *
  * It lives in ui/ (every views/*.js module is a routed view), so the view hands in what only it
  * knows (the Certificate view's validity badge). Names come from certificates and DNS: every
@@ -88,10 +89,20 @@ registerStrings('en', {
   'rw.col.dns': 'DNS',
   'rw.resolves': 'resolves',
   'rw.noAddress': 'no address',
-  'rw.sum': { one: '{sets} certificate sets: {count} server needs one of them — see “Renewal plan”.', other: '{sets} certificate sets: {count} servers need one of them — see “Renewal plan”.' },
+  'rw.sum': {
+    zero: '{sets} certificate sets: none of your servers needs one of them — see “Renewal plan”.',
+    one: '{sets} certificate sets: {count} server needs one of them — see “Renewal plan”.',
+    other: '{sets} certificate sets: {count} servers need one of them — see “Renewal plan”.'
+  },
+  'rw.sum.oneSet': {
+    zero: '1 certificate set ({keys}): none of your servers needs it — see “Renewal plan”.',
+    one: '1 certificate set ({keys}): {count} server needs it — see “Renewal plan”.',
+    other: '1 certificate set ({keys}): {count} servers need it — see “Renewal plan”.'
+  },
   'rw.sum.uncovered': { one: '{count} host no loaded certificate covers — see “Renewal plan”.', other: '{count} hosts no loaded certificate covers — see “Renewal plan”.' },
   'rw.sum.open': 'Renewal plan',
   'rw.sum.noInventory': '{sets} certificate sets: the Renewal plan lists which set each address the names resolve to needs. Add your servers to see them by name.',
+  'rw.sum.noInventoryOne': '1 certificate set ({keys}): the Renewal plan lists the addresses the names resolve to. Add your servers to see them by name.',
   'rw.host.setTitle': 'Set {id}: covered by {name}',
   'rw.cli.files': 'One --cert per certificate: a server serving any of them is UPDATED, and the report names which.',
   'rw.cli.onlyCovered': 'Only names one of the certificates covers',
@@ -160,10 +171,18 @@ registerStrings('tr', {
   'rw.col.dns': 'DNS',
   'rw.resolves': 'çözümleniyor',
   'rw.noAddress': 'adres yok',
-  'rw.sum': { one: '{sets} sertifika seti: {count} sunucunun bunlardan birine ihtiyacı var — “Yenileme planı”na bakın.', other: '{sets} sertifika seti: {count} sunucunun bunlardan birine ihtiyacı var — “Yenileme planı”na bakın.' },
+  'rw.sum': {
+    zero: '{sets} sertifika seti: sunucularınızın hiçbirinin bunlara ihtiyacı yok — “Yenileme planı”na bakın.',
+    other: '{sets} sertifika seti: {count} sunucunun bunlardan birine ihtiyacı var — “Yenileme planı”na bakın.'
+  },
+  'rw.sum.oneSet': {
+    zero: '1 sertifika seti ({keys}): sunucularınızın hiçbirinin buna ihtiyacı yok — “Yenileme planı”na bakın.',
+    other: '1 sertifika seti ({keys}): {count} sunucunun buna ihtiyacı var — “Yenileme planı”na bakın.'
+  },
   'rw.sum.uncovered': { one: 'Yüklenen hiçbir sertifikanın kapsamadığı {count} host var — “Yenileme planı”na bakın.', other: 'Yüklenen hiçbir sertifikanın kapsamadığı {count} host var — “Yenileme planı”na bakın.' },
   'rw.sum.open': 'Yenileme planı',
   'rw.sum.noInventory': '{sets} sertifika seti: Yenileme planı, adların çözümlendiği her adresin hangi sete ihtiyacı olduğunu listeliyor. Adlarıyla görmek için sunucularınızı ekleyin.',
+  'rw.sum.noInventoryOne': '1 sertifika seti ({keys}): Yenileme planı, adların çözümlendiği adresleri listeliyor. Adlarıyla görmek için sunucularınızı ekleyin.',
   'rw.host.setTitle': '{id} seti: {name} kapsıyor',
   'rw.cli.files': 'Her sertifika için bir --cert: bunlardan herhangi birini sunan sunucu UPDATED olur ve rapor hangisi olduğunu yazar.',
   'rw.cli.onlyCovered': 'Yalnızca sertifikalardan birinin kapsadığı adlar',
@@ -272,6 +291,22 @@ export function CertFileButtons(sets) {
       toast(t('rw.exported', { file: saved }), { type: 'success', timeout: 2500 });
     }
   }));
+}
+
+/**
+ * The scan summary's line about a renewal: how many of your servers need one of the sets (one
+ * set, an RSA + ECDSA pair typically, is named by its key types), or, without an inventory,
+ * that the plan lists addresses.
+ * @param {{ sets: import('../lib/certsets.js').CertSet[], inventory: boolean, need: number }} opts
+ *   `need`: your servers that need a set
+ * @returns {string}
+ */
+export function renewalSummaryText({ sets, inventory, need }) {
+  const list = Array.isArray(sets) ? sets : [];
+  const one = list.length === 1;
+  const params = { sets: formatNumber(list.length), keys: one ? list[0].keyTypes.join(' + ') : '', count: need };
+  if (!inventory) return one ? t('rw.sum.noInventoryOne', params) : t('rw.sum.noInventory', params);
+  return one ? t('rw.sum.oneSet', params) : t('rw.sum', params);
 }
 
 /* ------------------------------------------------------------------------ */

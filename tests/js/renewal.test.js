@@ -387,6 +387,44 @@ test('_acme-challenge: none, leftovers, a CNAME delegation, acme-dns, a dangling
   assert.ok(!ids(http.names[1]).includes('acme.none'));
 });
 
+test('a wildcard is validated with DNS-01 whatever the chosen challenge: its _acme-challenge problems fail it', async () => {
+  const zone = exampleZone({
+    'example.com': { SOA: SOA('example.com'), NS: ['ns1.natrohost.com', 'ns2.natrohost.com'], CAA: CAA('issue', 'letsencrypt.org') },
+    '_acme-challenge.example.com': { CNAME: 'deleted.acme.example.org' },
+    '_acme-challenge.shop.example.com': { CNAME: 'x.acme.example.net' },
+    'acme.example.net': { SOA: SOA('acme.example.net') },
+    'x.acme.example.net': {}
+  });
+  for (const challenge of ['unknown', 'dns-01', 'http-01']) {
+    const r = (await run(zone, ['*.example.com'], { ca: 'letsencrypt', challenge })).names[0];
+    assert.equal(sev(r, 'acme.dangling'), 'error', `dangling, ${challenge}`);
+    assert.equal(r.verdict, 'fail', challenge);
+  }
+  // Not sure, and the zone's provider has no API: the wildcard needs it, so a warning (not a note).
+  const bare = exampleZone({ 'example.com': { SOA: SOA('example.com'), NS: ['ns1.natrohost.com'], CAA: CAA('issue', 'letsencrypt.org') } });
+  let r = (await run(bare, ['*.example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0];
+  assert.deepEqual(r.findings.filter((f) => f.severity !== 'ok').map((f) => `${f.id}:${f.severity}`), ['wildcard.unknown:warn', 'provider.no-api:warn']);
+  // SERVFAIL and bogus at the delegation target.
+  r = (await run(zone, ['*.shop.example.com'], { ca: 'letsencrypt', challenge: 'unknown' }, { fake: { rcodes: { '_acme-challenge.shop.example.com|TXT': 'SERVFAIL' } } })).names[0];
+  assert.deepEqual([r.acme.state, sev(r, 'acme.servfail'), r.verdict], ['servfail', 'error', 'fail']);
+  r = (await run(zone, ['*.shop.example.com'], { ca: 'letsencrypt', challenge: 'unknown' }, { fake: { broken: ['acme.example.net'] } })).names[0];
+  assert.deepEqual([r.acme.state, sev(r, 'acme.bogus'), r.verdict], ['bogus', 'error', 'fail']);
+  // A plain name with the challenge not known: the same dangling delegation stays a warning.
+  r = (await run(zone, ['example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0];
+  assert.equal(sev(r, 'acme.dangling'), 'warn');
+  // CAA's validationmethods: for a wildcard only DNS-01 counts, so no "make sure your client uses
+  // one of" note — an alternative that leaves DNS-01 out is unusable (lib/health.js), one with it is fine.
+  const methods = (value) => exampleZone({ 'example.com': { SOA: SOA('example.com'), NS: ['ada.ns.cloudflare.com'], CAA: CAA('issue', value) } });
+  r = (await run(methods('letsencrypt.org; validationmethods=http-01'), ['*.example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0];
+  assert.equal(sev(r, 'caa.unusable'), 'error');
+  assert.match(r.findings.find((f) => f.id === 'caa.unusable').params.values, /wildcard-method/);
+  assert.ok(!ids(r).includes('caa.method-check'));
+  r = (await run(methods('letsencrypt.org; validationmethods=dns-01,http-01'), ['*.example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0];
+  assert.deepEqual(ids(r).filter((id) => id.startsWith('caa.')), ['caa.restricted'], 'DNS-01 is among the methods');
+  r = (await run(methods('letsencrypt.org; validationmethods=dns-01,http-01'), ['example.com'], { ca: 'letsencrypt', challenge: 'unknown' })).names[0];
+  assert.equal(sev(r, 'caa.method-check'), 'warn', 'a plain name with the method not known still gets the note');
+});
+
 test('_acme-challenge SERVFAIL: bogus (answers with CD) or broken', async () => {
   const zone = exampleZone({ '_acme-challenge.www.example.com': { CNAME: 'x.acme.example.net' }, 'acme.example.net': { SOA: SOA('acme.example.net') }, 'x.acme.example.net': {} });
   let r = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, { fake: { broken: ['acme.example.net'] } })).names[0];

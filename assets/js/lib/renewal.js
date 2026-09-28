@@ -461,7 +461,8 @@ function acmeFindings(acme, { challenge, wildcard }) {
   const out = [];
   if (!acme) return out;
   const matters = dnsMatters(challenge, wildcard);
-  const sev = challenge === 'dns-01' || (wildcard && challenge !== 'unknown') ? 'error' : 'warn';
+  // `challenge` is the effective one: DNS-01 for a wildcard, whatever was chosen.
+  const sev = challenge === 'dns-01' ? 'error' : 'warn';
   const p = { owner: acme.owner, target: acme.target || '', count: acme.txt.length };
   switch (acme.state) {
     case 'none':
@@ -497,7 +498,7 @@ function providerFindings(host, { challenge, wildcard, delegated }) {
     out.push(finding('provider.error', 'info', { zone, error: host.error }));
     return out;
   }
-  const certain = challenge === 'dns-01' || wildcard;
+  const certain = challenge === 'dns-01';
   if (host.providers.length > 1) {
     out.push(finding('provider.multiple', certain ? 'warn' : 'info', { zone, providers: host.providers.map((p) => p.name).join(', ') }));
     return out;
@@ -618,13 +619,16 @@ export function http01Findings(test, { challenge, name }) {
  */
 export function nameFindings(r, { ca, challenge }) {
   const ctx = { ca, challenge, wildcard: r.wildcard, name: r.name, base: r.base };
+  // Only DNS-01 validates a wildcard: what would stop it is certain, whatever was chosen (the
+  // wildcard finding says when the chosen method is another one).
+  const effective = { ...ctx, challenge: r.wildcard ? 'dns-01' : challenge };
   const dnsFailed = !!r.dnssec && (r.dnssec.state === 'bogus' || r.dnssec.state === 'servfail');
   const list = [
-    ...caaFindings(r.caa, ctx),
+    ...caaFindings(r.caa, effective),
     ...resolverFindings(r.resolvers, ctx),
     ...wildcardFindings(ctx),
-    ...acmeFindings(r.acme, ctx),
-    ...providerFindings(r.dnsHost, { ...ctx, delegated: !!r.acme && r.acme.state === 'cname' }),
+    ...acmeFindings(r.acme, effective),
+    ...providerFindings(r.dnsHost, { ...effective, delegated: !!r.acme && r.acme.state === 'cname' }),
     ...dnssecFindings(r.dnssec, ctx),
     ...addressFindings(r.address, { ...ctx, name: r.base, dnsFailed }),
     ...http01Findings(r.http01, { challenge, name: r.base })

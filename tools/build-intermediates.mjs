@@ -32,7 +32,7 @@
  * so a rebuild with nothing new changes no file; the skipped counts go to the build log only.
  *
  * Usage:
- *   node tools/build-intermediates.mjs             # download (cached for 12 h), build, write
+ *   node tools/build-intermediates.mjs             # download (5 min at most each; a report with its columns is cached for 12 h), build, write
  *   node tools/build-intermediates.mjs --offline   # use the cached downloads only
  *   INTERMEDIATES_CACHE=/path node tools/build-intermediates.mjs
  *
@@ -53,6 +53,8 @@ const REPO = join(HERE, '..');
 const OUT = join(REPO, 'assets', 'data', 'intermediates');
 const CACHE = process.env.INTERMEDIATES_CACHE || join(tmpdir(), 'domainscope-intermediates');
 const CACHE_MS = 12 * 3600 * 1000;
+/** One download may take this long: a stalled CCADB answer fails the build, not the job's time limit. */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** The CCADB reports (verified 2026-09-28; no ACAO header, so build time only). */
 export const SOURCES = Object.freeze({
@@ -532,21 +534,58 @@ export function buildDataset({
 /* I/O                                                                       */
 /* ------------------------------------------------------------------------ */
 
-async function download(source, { offline }) {
-  const file = join(CACHE, source.file);
+/**
+ * The rows of one CCADB report: the cached copy while it is fresh (any age with `offline`), else a
+ * download that may take `timeoutMs` at most. Only a download whose columns check out is cached,
+ * and a cached copy that fails the check is deleted (and downloaded again unless `offline`), so an
+ * error page CCADB answered with 200 is never read twice.
+ * @param {{ url: string, file: string }} source SOURCES entry
+ * @param {string[]} required the columns the report must have
+ * @param {{ offline?: boolean, cache?: string, fetchImpl?: typeof fetch, timeoutMs?: number, log?: (line: string) => void }} [opts]
+ * @returns {Promise<Array<Record<string, string>>>}
+ */
+export async function downloadCsv(source, required, {
+  offline = false, cache = CACHE, fetchImpl = globalThis.fetch, timeoutMs = DOWNLOAD_TIMEOUT_MS, log = (line) => process.stdout.write(`${line}\n`)
+} = {}) {
+  const file = join(cache, source.file);
+  let cached = null;
   try {
     const st = await stat(file);
-    if (offline || Date.now() - st.mtimeMs < CACHE_MS) return readFile(file, 'utf8');
+    if (offline || Date.now() - st.mtimeMs < CACHE_MS) cached = await readFile(file, 'utf8');
   } catch {
     if (offline) throw new Error(`--offline: ${file} is not cached`);
   }
-  process.stdout.write(`downloading ${source.url}\n`);
-  const res = await fetch(source.url, { headers: { 'user-agent': 'domainscope-build-intermediates (+https://github.com/halilibrahimd27/domainscope)' } });
-  if (!res.ok) throw new Error(`${source.url}: HTTP ${res.status}`);
-  const text = await res.text();
-  await mkdir(CACHE, { recursive: true });
+  if (cached !== null) {
+    try {
+      return csvObjects(cached, required);
+    } catch (err) {
+      await rm(file, { force: true });
+      if (offline) throw new Error(`--offline: ${file}: ${err.message} (the cached copy was deleted)`);
+      log(`${file}: ${err.message}; the cached copy was deleted`);
+    }
+  }
+  log(`downloading ${source.url}`);
+  let text;
+  try {
+    const res = await fetchImpl(source.url, {
+      headers: { 'user-agent': 'domainscope-build-intermediates (+https://github.com/halilibrahimd27/domainscope)' },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) throw new Error(`${source.url}: HTTP ${res.status}`);
+    text = await res.text();
+  } catch (err) {
+    if (err && err.name === 'TimeoutError') throw new Error(`${source.url}: no complete answer within ${timeoutMs / 1000} s`);
+    throw err;
+  }
+  let rows;
+  try {
+    rows = csvObjects(text, required);
+  } catch (err) {
+    throw new Error(`${source.url}: ${err.message} (not cached)`);
+  }
+  await mkdir(cache, { recursive: true });
   await writeFile(file, text);
-  return text;
+  return rows;
 }
 
 async function readJson(file) {
@@ -560,15 +599,15 @@ async function readJson(file) {
 async function main() {
   const offline = process.argv.includes('--offline');
   const [intermediates, included, records] = await Promise.all([
-    download(SOURCES.intermediates, { offline }).then((t) => csvObjects(t, REQUIRED.intermediates)),
-    download(SOURCES.included, { offline }).then((t) => csvObjects(t, REQUIRED.included)),
-    download(SOURCES.records, { offline }).then((t) => csvObjects(t, REQUIRED.records))
+    downloadCsv(SOURCES.intermediates, REQUIRED.intermediates, { offline }),
+    downloadCsv(SOURCES.included, REQUIRED.included, { offline }),
+    downloadCsv(SOURCES.records, REQUIRED.records, { offline })
   ]);
   // The PEMs of the intermediates only the records list: one report per notBefore year they need,
   // one after the other (each is 1–2 MB).
   const pems = [];
   for (const year of pemYears(extraIntermediateRecords(records, intermediates))) {
-    pems.push(...csvObjects(await download(pemSource(year), { offline }), REQUIRED.pems));
+    pems.push(...await downloadCsv(pemSource(year), REQUIRED.pems, { offline }));
   }
   const lifecycle = JSON.parse(await readFile(join(HERE, 'root-lifecycle.json'), 'utf8'));
   const previous = await readJson(join(OUT, 'manifest.json'));

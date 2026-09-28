@@ -1,5 +1,6 @@
 // Unit tests for tools/build-intermediates.mjs (the maintainers' builder of assets/data/intermediates)
-// and checks of the dataset it wrote: the CSV reader, the store statuses, the filtering, the
+// and checks of the dataset it wrote: the CSV reader, the download cache (only a report whose
+// columns check out is kept) and time limit, the store statuses, the filtering, the
 // intermediates only the CCADB certificate records list (their PEM from the PEM reports), the
 // canaries, the lifecycle table (hand-kept events, Mozilla's dates from CCADB, the expiry window),
 // the files' shape and determinism; then every shard, index and root of the checked-in dataset —
@@ -10,13 +11,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseCertificates, parseCertificate } from '../../assets/js/lib/x509.js';
 import { fileURLToPath } from 'node:url';
 import { dnHash, STORES, STORE_STATUSES, createIntermediateStore, repairChain } from '../../assets/js/lib/chainfix.js';
 import {
   CANARIES, DN_DIGITS, FORMAT, MIN_INTERMEDIATES, MIN_ROOTS, MOZILLA_REPORT_URL, SKI_DIGITS, SOURCES,
-  buildDataset, csvObjects, datasetDigest, extraIntermediateRecords, parseCsv, pemSource, pemYears, storeStatuses, tlsCapable
+  buildDataset, csvObjects, datasetDigest, downloadCsv, extraIntermediateRecords, parseCsv, pemSource, pemYears, storeStatuses, tlsCapable
 } from '../../tools/build-intermediates.mjs';
 
 const fixture = (f) => readFileSync(new URL(`../fixtures/${f}`, import.meta.url), 'utf8');
@@ -66,6 +69,86 @@ describe('CSV', () => {
   test('csvObjects keys each row by the header and names a missing column', () => {
     assert.deepEqual(csvObjects('A,B\n1,2\n3\n'), [{ A: '1', B: '2' }, { A: '3', B: '' }]);
     assert.throws(() => csvObjects('A,B\n1,2\n', ['A', 'PEM Info', 'C']), /missing column\(s\): PEM Info, C/);
+  });
+});
+
+describe('downloadCsv', () => {
+  const source = { url: 'https://example.com/ccadb/report.csv', file: 'report.csv' };
+  const required = ['SHA-256 Fingerprint', 'PEM Info'];
+  const good = 'SHA-256 Fingerprint,PEM Info\nAA,x\n';
+  const errorPage = '<!DOCTYPE html><html><body>Service unavailable</body></html>';
+  /** A cache directory of its own, and a fetch that answers `bodies` in turn and records its calls. */
+  const setup = (...bodies) => {
+    const cache = mkdtempSync(join(tmpdir(), 'ds-intermediates-'));
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      const body = bodies.shift();
+      return body instanceof Response ? body : new Response(body, { status: 200 });
+    };
+    return { cache, calls, file: join(cache, source.file), opts: { cache, fetchImpl, log: () => {} } };
+  };
+
+  test('a download whose columns check out is cached, and the cache is read while fresh', async () => {
+    const t = setup(good);
+    try {
+      assert.deepEqual(await downloadCsv(source, required, t.opts), [{ 'SHA-256 Fingerprint': 'AA', 'PEM Info': 'x' }]);
+      assert.equal(readFileSync(t.file, 'utf8'), good);
+      assert.ok(t.calls[0].init.signal instanceof AbortSignal, 'with a time limit');
+      assert.equal((await downloadCsv(source, required, t.opts)).length, 1);
+      assert.equal(t.calls.length, 1, 'the second call read the cache');
+    } finally {
+      rmSync(t.cache, { recursive: true, force: true });
+    }
+  });
+
+  test('an error page answered with 200, or an HTTP error, is never cached', async () => {
+    const t = setup(errorPage, new Response('busy', { status: 503 }));
+    try {
+      await assert.rejects(downloadCsv(source, required, t.opts), /report\.csv: CSV is missing column\(s\): SHA-256 Fingerprint, PEM Info \(not cached\)/);
+      assert.equal(existsSync(t.file), false);
+      await assert.rejects(downloadCsv(source, required, t.opts), /HTTP 503/);
+      assert.equal(existsSync(t.file), false);
+    } finally {
+      rmSync(t.cache, { recursive: true, force: true });
+    }
+  });
+
+  test('a cached copy that fails the check is deleted and downloaded again; offline it is only deleted', async () => {
+    const t = setup(good);
+    try {
+      writeFileSync(t.file, errorPage);
+      assert.equal((await downloadCsv(source, required, t.opts)).length, 1);
+      assert.equal(t.calls.length, 1);
+      assert.equal(readFileSync(t.file, 'utf8'), good);
+      writeFileSync(t.file, errorPage);
+      const old = new Date(Date.now() - 48 * 3600 * 1000);
+      utimesSync(t.file, old, old);
+      await assert.rejects(downloadCsv(source, required, { ...t.opts, offline: true }), /--offline: .*missing column/);
+      assert.equal(existsSync(t.file), false);
+      await assert.rejects(downloadCsv(source, required, { ...t.opts, offline: true }), /--offline: .* is not cached/);
+      assert.equal(t.calls.length, 1, 'offline never downloads');
+    } finally {
+      rmSync(t.cache, { recursive: true, force: true });
+    }
+  });
+
+  test('a stalled answer fails after the time limit', async () => {
+    const t = setup();
+    // It would answer after five seconds; the limit is 20 ms.
+    const fetchImpl = (url, { signal }) => new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 5000, new Response(good));
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      });
+    });
+    try {
+      await assert.rejects(downloadCsv(source, required, { ...t.opts, fetchImpl, timeoutMs: 20 }), /report\.csv: no complete answer within 0\.02 s/);
+      assert.equal(existsSync(t.file), false);
+    } finally {
+      rmSync(t.cache, { recursive: true, force: true });
+    }
   });
 });
 

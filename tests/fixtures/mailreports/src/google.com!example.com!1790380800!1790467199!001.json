@@ -1,0 +1,55 @@
+{
+  "organization-name": "Google Inc.",
+  "date-range": {
+    "start-datetime": "2026-09-26T00:00:00Z",
+    "end-datetime": "2026-09-26T23:59:59Z"
+  },
+  "contact-info": "smtp-tls-reporting@google.com",
+  "report-id": "2026-09-26T00:00:00Z_example.com",
+  "policies": [
+    {
+      "policy": {
+        "policy-type": "sts",
+        "policy-string": [
+          "version: STSv1",
+          "mode: testing",
+          "mx: mx1.example.com",
+          "mx: mx2.example.com",
+          "max_age: 604800"
+        ],
+        "policy-domain": "example.com",
+        "mx-host": [
+          "mx1.example.com",
+          "mx2.example.com"
+        ]
+      },
+      "summary": {
+        "total-successful-session-count": 5326,
+        "total-failure-session-count": 49
+      },
+      "failure-details": [
+        {
+          "result-type": "certificate-expired",
+          "sending-mta-ip": "198.51.100.61",
+          "receiving-mx-hostname": "mx2.example.com",
+          "receiving-ip": "203.0.113.27",
+          "failed-session-count": 40
+        },
+        {
+          "result-type": "certificate-host-mismatch",
+          "sending-mta-ip": "2001:db8:4860::1a",
+          "receiving-mx-hostname": "mx2.example.com",
+          "receiving-ip": "2001:db8:25::27",
+          "failed-session-count": 6
+        },
+        {
+          "result-type": "sts-policy-fetch-error",
+          "sending-mta-ip": "198.51.100.62",
+          "receiving-mx-hostname": "mx1.example.com",
+          "failed-session-count": 3,
+          "failure-reason-code": "HTTP 404 for https://mta-sts.example.com/.well-known/mta-sts.txt"
+        }
+      ]
+    }
+  ]
+}

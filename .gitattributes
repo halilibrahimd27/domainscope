@@ -8,6 +8,7 @@
 *.p12 binary
 *.p7b binary
 *.png binary
+*.zip binary
 # Pre-built, compressed wordlist tiers (assets/data): never normalised or diffed as text.
 *.gz binary
 

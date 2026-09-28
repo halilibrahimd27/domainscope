@@ -41,7 +41,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__']);
 const SKIP_PATHS = new Set(['tests/e2e/screenshots', 'tests/live/private', 'tests/live/.cache']);
 /** Text formats that can carry an address; binary fixtures (DER, .bin, keys) are skipped. */
-const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.md', '.py', '.txt', '.yml', '.yaml', '.html', '.css', '.svg', '.csv', '.webmanifest', '.gz']);
+const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.md', '.py', '.txt', '.yml', '.yaml', '.html', '.css', '.svg', '.csv', '.webmanifest', '.gz', '.xml']);
 /** The gitignored private files themselves (read separately, never scanned). */
 const isPrivateFile = (rel) => rel === '.private-denylist' || rel.endsWith('.local.json');
 /**

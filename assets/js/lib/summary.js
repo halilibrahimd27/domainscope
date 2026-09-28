@@ -394,7 +394,8 @@ export function subdomainsSummary(facts, opts) {
  * @param {{ domains: string[], cert: { name: string, issuer: string, notBefore?: Date,
  *   notAfter: Date }|null, hosts: number, covered?: number, failedSources?: number, inventory: number,
  *   needsCert?: string[], matched?: number, hiddenOrigin?: number, networks?: number,
- *   verify?: { key: string, params?: object }|null, dangling?: string[], at?: Date }} facts of a
+ *   verify?: { key: string, params?: object }|null, dangling?: string[], at?: Date,
+ *   sets?: Array<{ id: string, name: string, names: number, keyTypes: string[], servers?: number|null }>|null }} facts of a
  *   finished scan (SSL Targets keeps no result of a cancelled one)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
@@ -404,10 +405,23 @@ export function scanSummary(facts, opts) {
   const { t } = k;
   const now = opts.now || new Date();
   const cert = facts.cert;
+  // Several certificates (a renewal of certificate sets): each set by its first name and key
+  // types, and how many of your servers need it, in place of the one certificate.
+  const sets = Array.isArray(facts.sets) && facts.sets.length ? facts.sets : null;
   const lines = [];
-  lines.push(cert
-    ? [t('sum.scan.cert'), ' ', code(cert.name), ' · ', ...issuedBy(t, cert.issuer), ' · ', validityText(k, cert, now)]
-    : [t('sum.scan.noCert')]);
+  if (sets) {
+    const parts = [t('sum.scan.sets', { count: sets.length }), ' '];
+    sets.forEach((s, i) => {
+      if (i) parts.push(' · ');
+      parts.push(`${s.id}: `, code(s.name), s.names > 1 ? ` +${k.num(s.names - 1)}` : '', ` (${(s.keyTypes || []).join(', ')})`,
+        Number.isFinite(s.servers) && facts.inventory > 0 ? ` ${t('sum.scan.setServers', { count: s.servers })}` : '');
+    });
+    lines.push(parts.filter((p) => p !== ''));
+  } else {
+    lines.push(cert
+      ? [t('sum.scan.cert'), ' ', code(cert.name), ' · ', ...issuedBy(t, cert.issuer), ' · ', validityText(k, cert, now)]
+      : [t('sum.scan.noCert')]);
+  }
   const hosts = [t('sum.scan.hosts', { count: Number(facts.hosts) || 0 })];
   if (cert) hosts.push(' · ', t('sum.scan.covered', { count: Number(facts.covered) || 0 }));
   lines.push(hosts);
@@ -785,6 +799,8 @@ const STRINGS = [
     '{count} pasif kaynak başarısız: liste eksik olabilir']],
 
   ['sum.scan.cert', ['Certificate', 'Sertifika']],
+  ['sum.scan.sets', [{ one: '{count} certificate set:', other: '{count} certificate sets:' }, '{count} sertifika seti:']],
+  ['sum.scan.setServers', [{ one: '— {count} server', other: '— {count} servers' }, '— {count} sunucu']],
   ['sum.scan.noCert', ['No certificate loaded: names and servers only', 'Sertifika yüklenmedi: yalnızca adlar ve sunucular']],
   ['sum.scan.hosts', [{ one: '{count} host found', other: '{count} hosts found' }, '{count} host bulundu']],
   ['sum.scan.covered', [{ one: '{count} covered by the certificate', other: '{count} covered by the certificate' }, '{count} tanesi sertifikanın kapsamında']],

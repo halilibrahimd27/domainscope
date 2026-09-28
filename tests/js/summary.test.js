@@ -386,6 +386,22 @@ describe('scan (SSL Targets)', () => {
     assert.ok(out.includes('- 1 dangling CNAME (possible takeover): `old.example.com`'));
   });
 
+  test('several certificate sets: line 1 names each set, its key types and the servers that need it', () => {
+    const sets = [
+      { id: 'A', name: 'example.com', names: 2, keyTypes: ['RSA 2048', 'ECDSA P-256'], servers: 2 },
+      { id: 'B', name: 'shop.example.com', names: 1, keyTypes: ['RSA 2048'], servers: 1 }
+    ];
+    const doc = S.scanSummary({ ...facts, sets }, opts());
+    assertShape(doc);
+    assert.equal(lines(md(doc))[1],
+      '- 2 certificate sets: A: `example.com` +1 (RSA 2048, ECDSA P-256) — 2 servers · B: `shop.example.com` (RSA 2048) — 1 server');
+    assert.equal(lines(txt(doc))[1], '- 2 certificate sets: A: example.com +1 (RSA 2048, ECDSA P-256) — 2 servers · B: shop.example.com (RSA 2048) — 1 server');
+    const noInv = S.scanSummary({ ...facts, sets, inventory: 0 }, opts());
+    assert.equal(lines(md(noInv))[1], '- 2 certificate sets: A: `example.com` +1 (RSA 2048, ECDSA P-256) · B: `shop.example.com` (RSA 2048)');
+    assert.equal(lines(md(S.scanSummary({ ...facts, sets }, opts('tr'))))[1],
+      '- 2 sertifika seti: A: `example.com` +1 (RSA 2048, ECDSA P-256) — 2 sunucu · B: `shop.example.com` (RSA 2048) — 1 sunucu');
+  });
+
   test('the title names the scanned domains, not the certificate\'s (line 1 names that)', () => {
     const other = S.scanSummary({ ...facts, domains: ['example.net'], cert: { ...cert, name: 'example.com' } }, opts());
     const ls = lines(md(other));

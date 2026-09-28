@@ -9,10 +9,11 @@
  * - lib/estate.js does the work: readEstateReport (what is not a report says why), mergeReports
  *   (on an ip:port in several reports each name takes the newest report's answer; a note says
  *   so) and estateOf (the CLI's estate: expiry buckets, kinds, one name served with different
- *   certificates, one key on several hosts or certificates, weak keys or signatures,
+ *   certificates, one key on several hosts (addresses) or certificates, weak keys or signatures,
  *   certificates covering none of the names asked). Days left count from now.
  * - The page: the import card (a drop zone for .json files, the command that makes a report, the
- *   reports read so far), the numbers as tiles that filter the table, the kinds, and three tabs:
+ *   reports read so far), the numbers as tiles that filter the table (each counts certificates;
+ *   its hint the names or keys behind them), the kinds, and three tabs:
  *   Certificates (filter, search, a row's details: fingerprints and where it is served; CSV of
  *   what the filter shows, the CLI's --estate --csv columns), Same name, different certificates,
  *   and Shared keys.
@@ -29,8 +30,8 @@ import {
 import { downloadText, timestampedName } from '../ui/download.js';
 import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
 import {
-  ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, estateCsv, estateFilterCounts,
-  estateMatches, estateOf, mergeReports, readEstateReport
+  ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, SHARED_KEY_WIDE_HOSTS, estateCsv,
+  estateFilterCounts, estateMatches, estateOf, mergeReports, readEstateReport, sharedKeyNeedsLook
 } from '../lib/estate.js';
 
 /** Route id (`#/estate`). */
@@ -96,10 +97,10 @@ registerStrings('en', {
   'estate.stat.certsHint': { one: 'on {count} endpoint', other: 'on {count} endpoints' },
   'estate.stat.expiring': 'Expiring',
   'estate.stat.expiringHint': 'expired, or within 30 days',
-  'estate.stat.conflicts': 'Name conflicts',
+  'estate.stat.conflicts': 'In a name conflict',
   'estate.stat.conflictsHint': { one: '{count} name, several certificates', other: '{count} names, several certificates' },
-  'estate.stat.shared': 'Shared keys',
-  'estate.stat.sharedHint': { one: '{count} key on several hosts', other: '{count} keys on several hosts' },
+  'estate.stat.shared': 'With a shared key',
+  'estate.stat.sharedHint': { one: '{count} key in several certificates or on {hosts}+ addresses', other: '{count} keys in several certificates or on {hosts}+ addresses' },
   'estate.stat.weak': 'Weak',
   'estate.stat.weakHint': 'RSA < 2048, SHA-1, MD5',
   'estate.stat.coversNone': 'Covering no name',
@@ -126,7 +127,7 @@ registerStrings('en', {
   'estate.filter.attention': 'Needs a look ({count})',
   'estate.filter.expiring': 'Expired or within 30 days ({count})',
   'estate.filter.name-conflict': 'Name served with different certificates ({count})',
-  'estate.filter.shared-key': 'Key on several hosts or certificates ({count})',
+  'estate.filter.shared-key': 'Key in several certificates or on {hosts}+ addresses ({count})',
   'estate.filter.weak': 'Weak key or signature ({count})',
   'estate.filter.covers-none': 'Covers none of the names asked ({count})',
   'estate.filter.private': 'Self-signed or private CA ({count})',
@@ -153,7 +154,7 @@ registerStrings('en', {
   'estate.flag.covers-none': 'covers no name',
   'estate.flagTitle.name-conflict': 'A name it covers is served with another certificate elsewhere',
   'estate.flagTitle.stale': 'Another certificate of the same key type and kind was issued after it: the endpoints serving it were left behind',
-  'estate.flagTitle.shared-key': 'Its public key is on several hosts or in several certificates',
+  'estate.flagTitle.shared-key': 'Its public key is in several certificates, or on {hosts} or more addresses',
   'estate.flagTitle.weak': 'A weak key or signature',
   'estate.flagTitle.covers-none': 'It covers none of the names asked: a fallback or forgotten certificate',
   'estate.weak.rsa-short': 'RSA key under 2048 bits',
@@ -183,13 +184,15 @@ registerStrings('en', {
   'estate.conflicts.none': 'No name is served with different certificates.',
   'estate.conflicts.noNames': 'No names were asked, so none can be compared.',
   'estate.conflicts.cert': '{name} · expires {date} · {issuer}',
-  'estate.keys.intro': 'The same public key on several hosts, or in several certificates: one stolen key opens all of them, and a renewal that kept the key renews none of that risk.',
+  'estate.keys.intro': 'The same public key on several hosts (addresses), or in several certificates: one stolen key opens all of them, and a renewal that keeps the key removes none of that risk. One certificate on the members of a load-balancer pool is the usual case; “needs a look” marks a key in several certificates or on {hosts} or more addresses.',
   'estate.keys.none': 'No key is on more than one host or in more than one certificate.',
   'estate.keys.noHashes': 'Key reuse cannot be checked: the reports hold no public-key hashes (an older CLI).',
-  'estate.keys.hosts': { one: '{count} host', other: '{count} hosts' },
+  'estate.keys.noCerts': 'No server returned a certificate: there is no key to compare.',
+  'estate.keys.look': 'needs a look',
+  'estate.keys.hosts': { one: '{count} address', other: '{count} addresses' },
   'estate.keys.certs': { one: '{count} certificate', other: '{count} certificates' },
   'estate.keys.spki': 'Public key SHA-256',
-  'estate.keys.servers': 'Hosts',
+  'estate.keys.servers': 'Servers',
   'estate.keys.certsLabel': 'Certificates',
   'estate.csv': 'CSV',
   'estate.csvTitle': 'The certificates this filter shows, one row per certificate, endpoint and server (the CLI’s --estate --csv columns)',
@@ -200,7 +203,7 @@ registerStrings('tr', {
   'estate.privacyTitle': 'Tarayıcınızda okunur',
   'estate.privacy': 'Raporlar burada okunur ve yalnızca bu sekmede tutulur: hiçbir yere yüklenmez ya da kaydedilmez; sayfayı yenilemek, Unut, başka bir çalışma alanı ya da “Tüm yerel verileri sil” onları siler.',
   'estate.drop.title': 'CLI’nin JSON raporlarını buraya bırakın',
-  'estate.drop.hint': 'ya da seçmek için tıklayın · birden çoğu birlikte (her konum ya da atlama sunucusu için bir tane) · --json ile yazılan dosya',
+  'estate.drop.hint': 'ya da seçmek için tıklayın · aynı anda birkaç dosya (her konum ya da atlama sunucusu için bir tane) · --json ile yazılan dosya',
   'estate.paste.summary': 'Bir raporu yapıştırın',
   'estate.paste.label': 'Rapor (JSON, --json - çıktısı gibi)',
   'estate.paste.read': 'Raporu oku',
@@ -239,10 +242,10 @@ registerStrings('tr', {
   'estate.stat.certsHint': { one: '{count} uç noktada', other: '{count} uç noktada' },
   'estate.stat.expiring': 'Süresi dolan',
   'estate.stat.expiringHint': 'dolmuş ya da 30 gün içinde dolacak',
-  'estate.stat.conflicts': 'Ad çakışmaları',
+  'estate.stat.conflicts': 'Ad çakışmasında',
   'estate.stat.conflictsHint': { one: '{count} ad, birden çok sertifika', other: '{count} ad, birden çok sertifika' },
-  'estate.stat.shared': 'Ortak anahtarlar',
-  'estate.stat.sharedHint': { one: 'birden çok sunucuda {count} anahtar', other: 'birden çok sunucuda {count} anahtar' },
+  'estate.stat.shared': 'Paylaşılan anahtarlı',
+  'estate.stat.sharedHint': { one: 'birden çok sertifikada ya da {hosts}+ adreste {count} anahtar', other: 'birden çok sertifikada ya da {hosts}+ adreste {count} anahtar' },
   'estate.stat.weak': 'Zayıf',
   'estate.stat.weakHint': 'RSA < 2048, SHA-1, MD5',
   'estate.stat.coversNone': 'Hiçbir adı kapsamayan',
@@ -269,7 +272,7 @@ registerStrings('tr', {
   'estate.filter.attention': 'Bakılması gerekenler ({count})',
   'estate.filter.expiring': 'Süresi dolmuş ya da 30 gün içinde dolacak ({count})',
   'estate.filter.name-conflict': 'Farklı sertifikalarla sunulan ad ({count})',
-  'estate.filter.shared-key': 'Birden çok sunucuda ya da sertifikada anahtar ({count})',
+  'estate.filter.shared-key': 'Anahtarı birden çok sertifikada ya da {hosts}+ adreste olanlar ({count})',
   'estate.filter.weak': 'Zayıf anahtar ya da imza ({count})',
   'estate.filter.covers-none': 'Sorulan adların hiçbirini kapsamıyor ({count})',
   'estate.filter.private': 'Kendinden imzalı ya da özel CA ({count})',
@@ -296,7 +299,7 @@ registerStrings('tr', {
   'estate.flag.covers-none': 'ad kapsamıyor',
   'estate.flagTitle.name-conflict': 'Kapsadığı bir ad başka bir yerde başka bir sertifikayla sunuluyor',
   'estate.flagTitle.stale': 'Aynı anahtar türünde ve aynı türden başka bir sertifika ondan sonra verilmiş: onu sunan uç noktalar geride kalmış',
-  'estate.flagTitle.shared-key': 'Açık anahtarı birden çok sunucuda ya da sertifikada',
+  'estate.flagTitle.shared-key': 'Açık anahtarı birden çok sertifikada ya da {hosts} ya da daha çok adreste',
   'estate.flagTitle.weak': 'Zayıf bir anahtar ya da imza',
   'estate.flagTitle.covers-none': 'Sorulan adların hiçbirini kapsamıyor: bir yedek ya da unutulmuş sertifika',
   'estate.weak.rsa-short': '2048 bitten kısa RSA anahtarı',
@@ -326,10 +329,12 @@ registerStrings('tr', {
   'estate.conflicts.none': 'Hiçbir ad farklı sertifikalarla sunulmuyor.',
   'estate.conflicts.noNames': 'Hiçbir ad sorulmadığı için karşılaştırılacak ad yok.',
   'estate.conflicts.cert': '{name} · bitiş {date} · {issuer}',
-  'estate.keys.intro': 'Birden çok sunucuda ya da birden çok sertifikada aynı açık anahtar: çalınan tek bir anahtar hepsini açar; anahtarı koruyan bir yenileme bu riski yenilemez.',
+  'estate.keys.intro': 'Birden çok sunucuda (adreste) ya da birden çok sertifikada aynı açık anahtar: çalınan tek bir anahtar hepsini açar ve anahtarı koruyan bir yenileme bu riski ortadan kaldırmaz. Tek bir sertifikanın bir yük dengeleyici havuzunun üyelerinde olması olağandır; “bakılmalı”, birden çok sertifikada ya da {hosts} ya da daha çok adreste olan bir anahtarı gösterir.',
   'estate.keys.none': 'Hiçbir anahtar birden çok sunucuda ya da sertifikada değil.',
   'estate.keys.noHashes': 'Anahtarın yeniden kullanımı denetlenemiyor: raporlarda açık anahtar özetleri yok (eski bir CLI).',
-  'estate.keys.hosts': { one: '{count} sunucu', other: '{count} sunucu' },
+  'estate.keys.noCerts': 'Hiçbir sunucu sertifika döndürmedi: karşılaştırılacak anahtar yok.',
+  'estate.keys.look': 'bakılmalı',
+  'estate.keys.hosts': { one: '{count} adres', other: '{count} adres' },
   'estate.keys.certs': { one: '{count} sertifika', other: '{count} sertifika' },
   'estate.keys.spki': 'Açık anahtar SHA-256',
   'estate.keys.servers': 'Sunucular',
@@ -645,7 +650,9 @@ export function mount(container, ctx) {
       tile('all', t('estate.stat.certs'), estate.counts.certificates, t('estate.stat.certsHint', { count: estate.counts.endpointsWithCertificate }), 'accent'),
       tile('expiring', t('estate.stat.expiring'), counts.expiring, t('estate.stat.expiringHint'), 'error'),
       tile('name-conflict', t('estate.stat.conflicts'), counts['name-conflict'], t('estate.stat.conflictsHint', { count: estate.nameConflicts.length }), 'warn'),
-      tile('shared-key', t('estate.stat.shared'), counts['shared-key'], t('estate.stat.sharedHint', { count: estate.sharedKeys.length }), 'warn'),
+      tile('shared-key', t('estate.stat.shared'), counts['shared-key'], t('estate.stat.sharedHint', {
+        count: estate.sharedKeys.filter((g) => sharedKeyNeedsLook(g)).length, hosts: SHARED_KEY_WIDE_HOSTS
+      }), 'warn'),
       tile('weak', t('estate.stat.weak'), counts.weak, t('estate.stat.weakHint'), 'error'),
       tile('covers-none', t('estate.stat.coversNone'), noNames ? '—' : counts['covers-none'], noNames ? t('estate.stat.noNames') : t('estate.stat.coversNoneHint'), 'warn'));
   }
@@ -687,7 +694,7 @@ export function mount(container, ctx) {
       className: 'estate-filter',
       size: 'sm',
       value: S.filter,
-      options: ESTATE_FILTERS.map((f) => ({ value: f, label: t(`estate.filter.${f}`, { count: formatNumber(counts[f]) }) })),
+      options: ESTATE_FILTERS.map((f) => ({ value: f, label: t(`estate.filter.${f}`, { count: formatNumber(counts[f]), hosts: SHARED_KEY_WIDE_HOSTS }) })),
       onChange: (v) => {
         S.filter = v;
         table.setFilter((c) => estateMatches(c, S.filter));
@@ -765,9 +772,9 @@ export function mount(container, ctx) {
     return Badge(t(`estate.kind.${kind}`), { variant: kind === 'origin-ca' ? 'cloudflare' : 'private' });
   }
 
-  function flagBadge(flag) {
+  function flagBadge(flag, label = null) {
     const variant = flag === 'weak' || flag === 'stale' ? 'error' : flag === 'covers-none' ? 'neutral' : 'warn';
-    return Badge(t(`estate.flag.${flag}`), { variant, title: t(`estate.flagTitle.${flag}`), className: `estate-flag estate-flag-${flag}` });
+    return Badge(label || t(`estate.flag.${flag}`), { variant, title: t(`estate.flagTitle.${flag}`, { hosts: SHARED_KEY_WIDE_HOSTS }), className: `estate-flag estate-flag-${flag}` });
   }
 
   function daysText(days) {
@@ -839,16 +846,18 @@ export function mount(container, ctx) {
 
   /* --- Shared keys ------------------------------------------------------------ */
   function keysPanel(estate) {
+    if (!estate.certificates.length) return EmptyState({ compact: true, icon: 'key', message: t('estate.keys.noCerts') });
     if (!estate.certificates.some((c) => c.spkiSha256)) return EmptyState({ compact: true, icon: 'key', message: t('estate.keys.noHashes') });
     if (!estate.sharedKeys.length) return EmptyState({ compact: true, icon: 'check-circle', message: t('estate.keys.none') });
     const certs = new Map(estate.certificates.map((c) => [c.sha256, c]));
     return h('div', { class: 'stack-sm estate-keys' },
-      h('p', { class: 'text-sm muted' }, t('estate.keys.intro')),
-      estate.sharedKeys.map((group) => h('section', { class: 'estate-key-group', dataset: { spki: group.spkiSha256 } },
+      h('p', { class: 'text-sm muted' }, t('estate.keys.intro', { hosts: SHARED_KEY_WIDE_HOSTS })),
+      estate.sharedKeys.map((group) => h('section', { class: 'estate-key-group', dataset: { spki: group.spkiSha256, look: String(sharedKeyNeedsLook(group)) } },
         h('div', { class: 'estate-key-head' },
           h('h3', { class: 'estate-key-title' }, group.key),
-          Badge(t('estate.keys.hosts', { count: group.hosts }), { variant: group.certificates.length > 1 ? 'warn' : 'neutral' }),
-          Badge(t('estate.keys.certs', { count: group.certificates.length }), { variant: group.certificates.length > 1 ? 'warn' : 'neutral' })),
+          Badge(t('estate.keys.hosts', { count: group.hosts }), { variant: group.hosts >= SHARED_KEY_WIDE_HOSTS ? 'warn' : 'neutral' }),
+          Badge(t('estate.keys.certs', { count: group.certificates.length }), { variant: group.certificates.length > 1 ? 'warn' : 'neutral' }),
+          sharedKeyNeedsLook(group) ? flagBadge('shared-key', t('estate.keys.look')) : null),
         h('dl', { class: 'estate-d' },
           h('div', { class: 'estate-d-row' }, h('dt', { class: 'estate-d-key' }, t('estate.keys.spki')), h('dd', { class: 'estate-d-value mono' }, group.spkiSha256)),
           h('div', { class: 'estate-d-row' }, h('dt', { class: 'estate-d-key' }, t('estate.keys.certsLabel')),

@@ -8,8 +8,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ESTATE_BUCKETS, ESTATE_CSV_COLUMNS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_BYTES, REPORT_ERRORS,
-  estateCsv, estateCsvRows, estateFilterCounts, estateMatches, estateOf, expiryBucket, keyLabel, mergeReports,
-  readEstateReport, weakReasons
+  SHARED_KEY_WIDE_HOSTS, estateCsv, estateCsvRows, estateFilterCounts, estateMatches, estateOf, expiryBucket, keyLabel,
+  mergeReports, readEstateReport, sharedKeyNeedsLook, weakReasons
 } from '../../assets/js/lib/estate.js';
 
 const text = (f) => readFileSync(new URL(`../fixtures/estate/${f}`, import.meta.url), 'utf8');
@@ -37,6 +37,15 @@ describe('the rules shared with the CLI', () => {
     assert.equal(keyLabel('EC', null, null), 'EC');
     assert.equal(keyLabel('Ed25519', 256, null), 'Ed25519');
     assert.equal(keyLabel(null, null, null), 'unknown');
+  });
+
+  test('a shared key needs a look in several certificates or on many addresses, not on a pair', () => {
+    assert.equal(SHARED_KEY_WIDE_HOSTS, 5);
+    assert.equal(sharedKeyNeedsLook({ hosts: 2, certificates: ['a'] }), false, 'one certificate on a load-balancer pair');
+    assert.equal(sharedKeyNeedsLook({ hosts: 4, certificates: ['a'] }), false);
+    assert.equal(sharedKeyNeedsLook({ hosts: 5, certificates: ['a'] }), true, 'on five addresses');
+    assert.equal(sharedKeyNeedsLook({ hosts: 1, certificates: ['a', 'b'] }), true, 'a renewal that kept the key');
+    assert.equal(sharedKeyNeedsLook(null), false);
   });
 });
 
@@ -93,6 +102,11 @@ describe('estateOf — the CLI\'s estate_from_report', () => {
     assert.deepEqual(wild.map((c) => c.stale), [false, true, false], 'the old wildcard next to its renewal; the Origin CA one is another kind');
     assert.deepEqual(estate.sharedKeys[0].servers, ['web03', 'legacy-a', 'legacy-b']);
     assert.equal(estate.sharedKeys[0].certificates.length, 2);
+    // hosts are addresses (legacy-a and legacy-b share one); only the key in two certificates flags them
+    assert.deepEqual(estate.sharedKeys.map((g) => [g.hosts, sharedKeyNeedsLook(g)]), [[2, true], [2, false], [2, false]]);
+    assert.deepEqual(estate.certificates.filter((c) => c.flags.includes('shared-key')).map((c) => c.subjectCN).sort(),
+      ['legacy.example.net', WWW]);
+    assert.ok(!byCn(estate, 'old.example.net')[0].flags.includes('shared-key'), 'two names of one address are one host');
     assert.deepEqual(estate.weakKeys.map((w) => w.reasons), [['rsa-short', 'sha1'], ['rsa-short', 'md5']]);
     assert.equal(estate.coversNone.length, 3);
     for (const cert of estate.certificates) for (const f of cert.flags) assert.ok(ESTATE_FLAGS.includes(f));
@@ -170,6 +184,7 @@ describe('mergeReports', () => {
       // the public RSA certificate: web01, web02 (A, B) and web05 (B) - one key on three hosts
       const rsa = estate.sharedKeys.find((g) => g.key === 'RSA 2048' && g.servers.includes('web05'));
       assert.deepEqual(rsa.servers.sort(), ['web01', 'web02', 'web05']);
+      assert.equal(rsa.hosts, 3);
     }
   });
 

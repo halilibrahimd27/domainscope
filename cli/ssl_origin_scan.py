@@ -5450,12 +5450,22 @@ ESTATE_WEAK_REASONS = ('rsa-short', 'sha1', 'md5')
 WEAK_RSA_BITS = 2048
 # What is odd about a certificate (estate certificates[].flags, the CSV's flags column):
 # served for a name that other endpoints serve with another certificate, the older one
-# of such a pair (same key type, issued before), its key on several hosts or in several
-# certificates, weak, covering none of the names asked.
+# of such a pair (same key type, issued before), its key in several certificates or on
+# many hosts (:func:`shared_key_needs_look`), weak, covering none of the names asked.
 ESTATE_FLAGS = ('name-conflict', 'stale', 'shared-key', 'weak', 'covers-none')
-# A key is "shared" when this many hosts (inventory servers) serve it, or when several
-# certificates carry it.
+# A key is listed as shared when this many hosts (distinct addresses) serve it, or when
+# several certificates carry it. One certificate on the members of a load-balancer pool is
+# listed but not flagged: only a key in several certificates, or on SHARED_KEY_WIDE_HOSTS
+# addresses or more, is.
 SHARED_KEY_MIN_HOSTS = 2
+SHARED_KEY_WIDE_HOSTS = 5
+
+
+def shared_key_needs_look(group: Dict[str, Any]) -> bool:
+    """A shared key (estate ``sharedKeys`` entry) that flags its certificates: carried by
+    several certificates (a renewal that kept the key, one key for several sites), or served
+    by :data:`SHARED_KEY_WIDE_HOSTS` or more addresses."""
+    return len(group['certificates']) >= 2 or group['hosts'] >= SHARED_KEY_WIDE_HOSTS
 
 
 def expiry_bucket(days_left: int) -> str:
@@ -5548,7 +5558,9 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
     ``stale`` marks a certificate of a name conflict that another certificate of the same
     key type and kind family (public, Origin CA, private), issued later, replaces: the
     endpoints serving it are the ones left behind. An RSA + ECDSA pair, or an Origin CA
-    certificate next to a public one, is a conflict without a stale side.
+    certificate next to a public one, is a conflict without a stale side. A shared key's
+    ``hosts`` counts distinct addresses; only one that :func:`shared_key_needs_look` flags
+    its certificates ``shared-key``.
     """
     now = now or _parse_iso_utc(doc.get('finishedAt')) or _utcnow()
     probes = _report_probes(doc)
@@ -5607,8 +5619,9 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
             if cert['stale']:
                 flags[cert['sha256']].add('stale')
     for group in shared:
-        for sha in group['certificates']:
-            flags.setdefault(sha, set()).add('shared-key')
+        if shared_key_needs_look(group):
+            for sha in group['certificates']:
+                flags.setdefault(sha, set()).add('shared-key')
     for item in weak:
         flags.setdefault(item['sha256'], set()).add('weak')
     for sha in covers_none or []:
@@ -5734,24 +5747,26 @@ def _name_conflicts(probes: Sequence[Tuple[str, str]],
 
 def _shared_keys(certificates: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Public keys (SPKI SHA-256) served by :data:`SHARED_KEY_MIN_HOSTS` or more hosts, or
-    carried by several certificates: one stolen key opens all of them."""
+    carried by several certificates: one stolen key opens all of them. A host is an address
+    (several inventory names of one address are one host, its ports too); ``servers`` names
+    them as the inventory does."""
     groups = {}  # type: Dict[str, List[Dict[str, Any]]]
     for entry in certificates:
         if entry['spkiSha256']:
             groups.setdefault(entry['spkiSha256'], []).append(entry)
     out = []
     for spki, certs in groups.items():
-        servers, addresses, hosts = [], [], set()  # type: List[str], List[str], Set[str]
+        servers, addresses, folded = [], [], set()  # type: List[str], List[str], Set[str]
         for cert in certs:
             for endpoint in cert['endpoints']:
                 if endpoint['ip'] not in addresses:
                     addresses.append(endpoint['ip'])
                 for server in endpoint['servers'] or [endpoint['ip']]:
-                    if server.casefold() not in hosts:
-                        hosts.add(server.casefold())
+                    if server.casefold() not in folded:
+                        folded.add(server.casefold())
                         servers.append(server)
-        if len(hosts) >= SHARED_KEY_MIN_HOSTS or len(certs) >= 2:
-            out.append({'spkiSha256': spki, 'key': certs[0]['key'], 'hosts': len(hosts),
+        if len(addresses) >= SHARED_KEY_MIN_HOSTS or len(certs) >= 2:
+            out.append({'spkiSha256': spki, 'key': certs[0]['key'], 'hosts': len(addresses),
                         'servers': servers, 'addresses': addresses,
                         'certificates': [cert['sha256'] for cert in certs]})
     out.sort(key=lambda g: (-g['hosts'], -len(g['certificates']), g['spkiSha256']))
@@ -5840,8 +5855,9 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
                   monitor: Optional[MonitorResult] = None) -> str:
     """The ``--estate`` summary: what was scanned, the certificates by expiry and kind, then
     what needs a look first - one name served with different certificates, keys on several
-    hosts, weak keys or signatures, certificates covering none of the names asked - and
-    every certificate served, soonest expiry first, with where it is served."""
+    hosts or in several certificates, weak keys or signatures, certificates covering none of
+    the names asked - and every certificate served, soonest expiry first, with where it is
+    served."""
     style = Style(color)
     now = report.finished_at
     counts = estate['counts']
@@ -5901,18 +5917,29 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
     lines.append('')
 
     shared = estate['sharedKeys']
-    section('Same key on several hosts or certificates', len(shared), ('yellow', 'bold'))
+    look = [group for group in shared if shared_key_needs_look(group)]
+    section('Same key on several hosts or certificates', len(shared),
+            ('yellow', 'bold') if look else ('bold',))
+    if shared:
+        lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, (
+            'One stolen key opens every address listed; one certificate on the members of '
+            'a load-balancer pool is the usual case. NEEDS A LOOK: the key is in several '
+            'certificates (a renewal that kept it) or on %d or more addresses.'
+            % SHARED_KEY_WIDE_HOSTS), width))
     for group in shared:
-        lines.append('  %s key %s...: %s, %s' % (
-            group['key'], group['spkiSha256'][:16], _count_text(group['hosts'], 'host'),
-            _count_text(len(group['certificates']), 'certificate')))
+        lines.append('  %s key %s...: %s, %s%s' % (
+            group['key'], group['spkiSha256'][:16],
+            _count_text(group['hosts'], 'address', 'addresses'),
+            _count_text(len(group['certificates']), 'certificate'),
+            '  ' + style.paint('NEEDS A LOOK', 'yellow', 'bold')
+            if shared_key_needs_look(group) else ''))
         names = [certs[sha]['subjectCN'] or sha[:16] for sha in group['certificates']]
         lines.extend(_wrap('    ', 4, display_text('certificates: ' + ', '.join(names)), width))
         limit = len(group['servers']) if show_all else MAX_SUMMARY_ENDPOINTS
         servers = group['servers'][:limit] + (['+%d more' % (len(group['servers']) - limit)]
                                               if len(group['servers']) > limit else [])
         lines.extend(style.paint(line, 'dim') for line in _wrap(
-            '    ', 4, display_text('hosts: ' + ', '.join(servers)), width))
+            '    ', 4, display_text('servers: ' + ', '.join(servers)), width))
     lines.append('')
 
     weak = estate['weakKeys']
@@ -6907,7 +6934,8 @@ estate (--estate): an inventory of every certificate the servers serve. Each ip:
   server named web01.example.com, a target given by host name); no --cert is needed. The
   summary lists, most urgent first: one name served with different certificates on
   different endpoints (OLDER: the one a renewal left behind - same key type and kind,
-  issued before another), one public key on several hosts or in several certificates,
+  issued before another), one public key on several hosts (addresses) or in several
+  certificates (NEEDS A LOOK: in several certificates, or on 5 or more addresses),
   weak keys or signatures (RSA under 2048 bits, SHA-1, MD5), certificates covering none of
   the names asked, then every certificate by expiry (expired, < 7, < 30, < 90 days,
   later) with its kind (Cloudflare Origin CA, self-signed, --private-ca, other), key,

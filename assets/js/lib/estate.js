@@ -17,8 +17,9 @@
  *   `estate_from_report`, so one report's result equals its `estate` section (tests/fixtures/estate):
  *   expiry buckets ({@link ESTATE_BUCKETS}), kinds ({@link ESTATE_KINDS}), one name served with
  *   different certificates (a load-balancer member or a server the last renewal forgot; `stale`:
- *   the older one of the same key type and kind family), one public key on several hosts or in
- *   several certificates, weak keys or signatures ({@link ESTATE_WEAK_REASONS}) and certificates
+ *   the older one of the same key type and kind family), one public key on several hosts (distinct
+ *   addresses) or in several certificates ({@link sharedKeyNeedsLook}: only a key in several
+ *   certificates or on many addresses flags them), weak keys or signatures ({@link ESTATE_WEAK_REASONS}) and certificates
  *   covering none of the names asked (null when no name was asked).
  * - {@link estateMatches} / {@link estateFilterCounts}: the view's filters ({@link ESTATE_FILTERS}).
  * - {@link estateCsvRows} / {@link estateCsv}: the CSV of the CLI's `--estate --csv`, one row per
@@ -42,8 +43,13 @@ export const ESTATE_WEAK_REASONS = Object.freeze(['rsa-short', 'sha1', 'md5']);
 export const ESTATE_FLAGS = Object.freeze(['name-conflict', 'stale', 'shared-key', 'weak', 'covers-none']);
 /** RSA keys shorter than this are weak. */
 export const WEAK_RSA_BITS = 2048;
-/** A key served by this many hosts (inventory servers), or carried by several certificates, is shared. */
+/** A key served by this many hosts (distinct addresses), or carried by several certificates, is listed as shared. */
 export const SHARED_KEY_MIN_HOSTS = 2;
+/**
+ * A shared key on this many addresses or more flags its certificates, as one in several certificates
+ * does; one certificate on the members of a load-balancer pool is only listed.
+ */
+export const SHARED_KEY_WIDE_HOSTS = 5;
 /** The Certificate estate view's filters, in display order. */
 export const ESTATE_FILTERS = Object.freeze(['all', 'attention', 'expiring', 'name-conflict', 'shared-key', 'weak',
   'covers-none', 'private', 'origin-ca']);
@@ -108,6 +114,17 @@ export function keyLabel(keyAlgorithm, keyBits, curve) {
   if (algorithm === 'EC') return curve ? `EC ${curve}` : 'EC';
   if ((algorithm === 'RSA' || algorithm === 'DSA') && Number.isInteger(keyBits)) return `${algorithm} ${keyBits}`;
   return algorithm;
+}
+
+/**
+ * Does a shared key (an estate `sharedKeys` entry) flag its certificates `shared-key`? When several
+ * certificates carry it (a renewal that kept the key, one key for several sites) or it is on
+ * {@link SHARED_KEY_WIDE_HOSTS} addresses or more — the CLI's shared_key_needs_look.
+ * @param {{ hosts: number, certificates: string[] }} group
+ * @returns {boolean}
+ */
+export function sharedKeyNeedsLook(group) {
+  return !!group && (group.certificates.length >= 2 || group.hosts >= SHARED_KEY_WIDE_HOSTS);
 }
 
 /** Self-signed and private-CA certificates are one family (lib/verify.js, the CLI's _kind_family). */
@@ -432,7 +449,7 @@ export function estateOf(doc, { now } = {}) {
       if (cert.stale) flag(cert.sha256, 'stale');
     }
   }
-  for (const group of shared) for (const sha of group.certificates) flag(sha, 'shared-key');
+  for (const group of shared) if (sharedKeyNeedsLook(group)) for (const sha of group.certificates) flag(sha, 'shared-key');
   for (const item of weak) flag(item.sha256, 'weak');
   for (const sha of coversNone || []) flag(sha, 'covers-none');
   for (const entry of certificates) entry.flags = ESTATE_FLAGS.filter((f) => flags.has(entry.sha256) && flags.get(entry.sha256).has(f));
@@ -551,6 +568,7 @@ function nameConflicts(probes, served, entries, endpointsOf, ipPort) {
   return out;
 }
 
+/** Keys on {@link SHARED_KEY_MIN_HOSTS} addresses or more, or in several certificates (the CLI's _shared_keys). */
 function sharedKeys(certificates) {
   const groups = new Map();
   for (const entry of certificates) {
@@ -562,21 +580,22 @@ function sharedKeys(certificates) {
   for (const [spki, certs] of groups) {
     const servers = [];
     const addresses = [];
-    const hosts = new Set();
+    const folded = new Set();
     for (const cert of certs) {
       for (const endpoint of cert.endpoints) {
         if (!addresses.includes(endpoint.ip)) addresses.push(endpoint.ip);
         for (const server of endpoint.servers.length ? endpoint.servers : [endpoint.ip]) {
-          const folded = server.toLowerCase();
-          if (!hosts.has(folded)) {
-            hosts.add(folded);
+          const key = server.toLowerCase();
+          if (!folded.has(key)) {
+            folded.add(key);
             servers.push(server);
           }
         }
       }
     }
-    if (hosts.size >= SHARED_KEY_MIN_HOSTS || certs.length >= 2) {
-      out.push({ spkiSha256: spki, key: certs[0].key, hosts: hosts.size, servers, addresses, certificates: certs.map((c) => c.sha256) });
+    // a host is an address: several inventory names of one address (or its ports) are one host
+    if (addresses.length >= SHARED_KEY_MIN_HOSTS || certs.length >= 2) {
+      out.push({ spkiSha256: spki, key: certs[0].key, hosts: addresses.length, servers, addresses, certificates: certs.map((c) => c.sha256) });
     }
   }
   out.sort((a, b) => b.hosts - a.hosts || b.certificates.length - a.certificates.length

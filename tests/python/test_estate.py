@@ -239,15 +239,39 @@ class EstateOfReportTests(unittest.TestCase):
         self.assertEqual(shared[weak_spki]['certificates'],
                          [sos.parse_certificate(WEAK_DER).sha256,
                           sos.parse_certificate(MD5_DER).sha256])
-        self.assertEqual(shared[weak_spki]['hosts'], 3)  # web03, legacy-a, legacy-b
+        # hosts are addresses: legacy-a and legacy-b are one
+        self.assertEqual(shared[weak_spki]['hosts'], 2)
+        self.assertEqual(shared[weak_spki]['servers'], ['web03', 'legacy-a', 'legacy-b'])
         self.assertEqual(shared[weak_spki]['addresses'], ['2001:db8::13', '198.51.100.23'])
         rsa_spki_hash = sos.parse_certificate(RSA_DER).spki_sha256
         self.assertEqual(shared[rsa_spki_hash]['servers'], ['web01', 'web02'])
         self.assertEqual(shared[rsa_spki_hash]['key'], 'RSA 2048')
-        # one certificate on one host: not shared
+        # one certificate on one host (two inventory names of one address): not shared
         self.assertNotIn(sos.parse_certificate(ORIGIN_DER).spki_sha256, shared)
+        self.assertNotIn(sos.parse_certificate(EXPIRED_DER).spki_sha256, shared)
         hosts = [g['hosts'] for g in self.estate['sharedKeys']]
         self.assertEqual(hosts, sorted(hosts, reverse=True))
+        # only the key in two certificates flags them; one certificate on a pair is listed only
+        self.assertEqual([sos.shared_key_needs_look(g) for g in self.estate['sharedKeys']],
+                         [True, False, False])
+        for der in (WEAK_DER, MD5_DER):
+            self.assertIn('shared-key', self.cert(sos.parse_certificate(der).sha256)['flags'])
+        for der in (RSA_DER, CN_ONLY_DER):
+            self.assertNotIn('shared-key', self.cert(sos.parse_certificate(der).sha256)['flags'])
+
+    def test_one_certificate_on_many_addresses_needs_a_look(self):
+        for count, flagged in ((sos.SHARED_KEY_WIDE_HOSTS - 1, False), (sos.SHARED_KEY_WIDE_HOSTS, True)):
+            with self.subTest(addresses=count):
+                ips = ['192.0.2.%d' % (20 + i) for i in range(count)]
+                report = estate_scan([sos.Server('web%02d' % i, [ip]) for i, ip in enumerate(ips)]
+                                     + [sos.Server('alias', [ips[0]])],
+                                     {ip: serve(default=RSA_DER, other=RSA_DER) for ip in ips})
+                estate = sos.estate_from_report(sos.report_to_dict(report), NOW_A)
+                [group] = estate['sharedKeys']
+                self.assertEqual(group['hosts'], count)  # 'alias' shares web00's address
+                self.assertEqual(len(group['servers']), count + 1)
+                self.assertEqual(sos.shared_key_needs_look(group), flagged)
+                self.assertEqual('shared-key' in estate['certificates'][0]['flags'], flagged)
 
     def test_weak_keys_and_signatures(self):
         weak = {w['sha256']: w['reasons'] for w in self.estate['weakKeys']}
@@ -330,8 +354,10 @@ class EstateOfReportTests(unittest.TestCase):
                 'Kinds: Cloudflare Origin CA 1, self-signed 6, private CA 1, other CA 1',
                 'Private CAs (--private-ca): Example Internal Test CA',
                 'Same name, different certificates: 2', 'OLDER',
-                'Same key on several hosts or certificates: 4', 'RSA 1024 key',
-                '3 hosts, 2 certificates', 'Weak keys or signatures: 2',
+                'Same key on several hosts or certificates: 3', 'RSA 1024 key',
+                '2 addresses, 2 certificates NEEDS A LOOK', 'servers: web03, legacy-a, legacy-b',
+                '2 addresses, 1 certificate certificates: www.example-test.com.tr servers: web01, web02',
+                'Weak keys or signatures: 2',
                 'RSA key shorter than 2048 bits (RSA 1024); SHA-1 signature (sha1WithRSAEncryption)',
                 'Covering none of the names asked: 3',
                 'Every certificate served (9), soonest expiry first',
@@ -424,7 +450,10 @@ class EstateCliTests(unittest.TestCase):
         self.assertEqual(legacy['flags'], ['covers-none'])
         self.assertEqual(legacy['kind'], 'self-signed')
         www = by_cn[WWW][0]
-        self.assertIn('shared-key', www['flags'])  # served by old and new
+        # served by old and new: two ports of one address, one host
+        self.assertEqual([e['servers'] for e in www['endpoints']], [['old'], ['new']])
+        self.assertNotIn('shared-key', www['flags'])
+        self.assertEqual(estate['sharedKeys'], [])
         self.assertEqual(estate['counts']['endpoints'], 3)
         self.assertEqual(estate['counts']['openEndpoints'], 2)
         self.assertEqual(set(records[0]), set(sos.ESTATE_CSV_COLUMNS))

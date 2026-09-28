@@ -1054,7 +1054,6 @@
         "weak": [],
         "coversAsked": [],
         "flags": [
-          "shared-key",
           "covers-none"
         ],
         "endpoints": [
@@ -1200,8 +1199,7 @@
           "www.example-test.com.tr"
         ],
         "flags": [
-          "name-conflict",
-          "shared-key"
+          "name-conflict"
         ],
         "endpoints": [
           {
@@ -1254,7 +1252,6 @@
         "weak": [],
         "coversAsked": [],
         "flags": [
-          "shared-key",
           "covers-none"
         ],
         "endpoints": [
@@ -1546,7 +1543,7 @@
       {
         "spkiSha256": "259720bbc9c3ec1a8be2766833c8177f6fc8010f9fee1e193da16ee48c86558e",
         "key": "RSA 1024",
-        "hosts": 3,
+        "hosts": 2,
         "servers": [
           "web03",
           "legacy-a",
@@ -1575,21 +1572,6 @@
         ],
         "certificates": [
           "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808"
-        ]
-      },
-      {
-        "spkiSha256": "d1317f475b0b5d58b995b945a15c2d9c34c3bd01fdaa4df6d5887532140c0349",
-        "key": "RSA 2048",
-        "hosts": 2,
-        "servers": [
-          "legacy-a",
-          "legacy-b"
-        ],
-        "addresses": [
-          "198.51.100.23"
-        ],
-        "certificates": [
-          "31e3e21eaf5ae24225e3138eb6c7a9af17e8443977e5713cb384d3a445b543c4"
         ]
       },
       {

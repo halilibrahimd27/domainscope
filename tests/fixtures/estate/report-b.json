@@ -369,9 +369,7 @@
           "www.example-test.com.tr",
           "api.example-test.com.tr"
         ],
-        "flags": [
-          "shared-key"
-        ],
+        "flags": [],
         "endpoints": [
           {
             "servers": [

@@ -577,6 +577,22 @@ describe('x509 loadCertificates', () => {
     assert.equal((await loadCertificates(bundle, { password: 'k' })).pkcs12.keyCheck, null, 'not asked');
   });
 
+  test('the leaf is the certificate the key is paired with by localKeyId, unless it issued another one', async () => {
+    const [root] = parseCertificates(read('p12_root.pem')).certificates.map((c) => c.der);
+    const [rsa] = parseCertificates(read('p12_rsa.pem')).certificates.map((c) => c.der);
+    const pkcs8 = read('ec_wildcard.pkcs8.key.der');
+    const bundle = async (...bags) => pfx(seq(contentInfo('data', octet(seq(...bags)))), { password: 'k' });
+    // A self-signed CA:TRUE certificate with its key, and a server certificate it did not issue.
+    const keyed = await loadCertificates(await bundle(certBag(root, 'k1'), certBag(rsa), keyBag(pkcs8, 'k1')), { password: 'k' });
+    assert.equal(keyed.leaf.subjectCN, 'Example P12 Test Root');
+    // Without the pairing the usual pick holds: the certificate that is no CA.
+    const unpaired = await loadCertificates(await bundle(certBag(root), certBag(rsa), keyBag(pkcs8)), { password: 'k' });
+    assert.equal(unpaired.leaf.subjectCN, 'p12.example.com');
+    // The intermediate that issued the leaf stays a CA even with the key (p12_mismatch.p12).
+    const mismatch = await loadCertificates(read('p12_mismatch.p12'), { password: PASS, checkKey: true });
+    assert.deepEqual([mismatch.leaf.subjectCN, mismatch.pkcs12.keyCheck.status], ['p12.example.com', 'mismatch']);
+  });
+
   test('a key this page cannot decrypt: its encryption in the summary, its own verdict', async () => {
     const [rsa] = parseCertificates(read('p12_rsa.pem')).certificates.map((c) => c.der);
     const rc4 = seq(oid(OIDS.rc4), seq(octet(randomBytes(8)), int(2048)));

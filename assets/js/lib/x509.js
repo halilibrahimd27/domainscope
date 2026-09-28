@@ -1656,6 +1656,18 @@ function issuedBy(child, parent) {
 }
 
 /**
+ * True when `child` was signed by `parent` in the chain sense: {@link issuedBy}, and a
+ * self-issued certificate (issuer = subject) only when its key ids point at another
+ * certificate's key, so two self-signed twins with the same subject (RSA + ECDSA) are not each
+ * other's CA.
+ */
+const signedBy = (child, parent) => issuedBy(child, parent) && (child.issuerDN !== child.subjectDN
+  || (!!child.authorityKeyId && child.authorityKeyId === parent.subjectKeyId && child.authorityKeyId !== child.subjectKeyId));
+
+/** True when `c` signed another certificate of `certs` ({@link signedBy}). */
+const issuesAnother = (c, certs) => certs.some((o) => o !== c && signedBy(o, c));
+
+/**
  * Every end-entity certificate of one input, in input order: not a CA and not the issuer of
  * another certificate in it (the rule {@link parseCertificates} picks its `leaf` by). A chain
  * gives one; several PEM blocks pasted together (an RSA + ECDSA pair) give each of them; a file
@@ -1667,14 +1679,13 @@ function issuedBy(child, parent) {
  */
 export function leafCertificates(certs) {
   const list = Array.isArray(certs) ? certs.filter(Boolean) : [];
-  const signedBy = (child, parent) => issuedBy(child, parent) && (child.issuerDN !== child.subjectDN
-    || (!!child.authorityKeyId && child.authorityKeyId === parent.subjectKeyId && child.authorityKeyId !== child.subjectKeyId));
-  const issuesAnother = (c) => list.some((o) => o !== c && signedBy(o, c));
-  return list.filter((c) => !c.isCA && !issuesAnother(c));
+  return list.filter((c) => !c.isCA && !issuesAnother(c, list));
 }
 
-function pickLeaf(certs) {
+/** The leaf: `preferred` when it is one of `certs`, else the first of {@link leafCertificates}, else the first. */
+function pickLeaf(certs, preferred = null) {
   if (!certs.length) return null;
+  if (preferred && certs.includes(preferred)) return preferred;
   return leafCertificates(certs)[0] || certs[0];
 }
 
@@ -1693,12 +1704,12 @@ function ingestInput(input, ctx) {
   }
 }
 
-/** NO_CERTIFICATE, the leaf and its validity warnings: the end of every parse. */
-function finishResult(ctx, options) {
+/** NO_CERTIFICATE, the leaf ({@link pickLeaf}) and its validity warnings: the end of every parse. */
+function finishResult(ctx, options, preferredLeaf = null) {
   if (!ctx.certificates.length) {
     warn(ctx, 'NO_CERTIFICATE', ctx.ignored.size ? `Found only: ${[...ctx.ignored].join(', ')}` : undefined);
   }
-  const leaf = pickLeaf(ctx.certificates);
+  const leaf = pickLeaf(ctx.certificates, preferredLeaf);
   if (leaf) {
     const now = toDate(options?.now); // options may be null: never throw
     if (now < leaf.notBefore) warn(ctx, 'NOT_YET_VALID', leaf.notBefore.toISOString());
@@ -1823,6 +1834,27 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
 }
 
 /**
+ * The certificate of an opened bundle that a private key is paired with by localKeyId (the
+ * attribute the key bag and its certificate bag share), when it can be the leaf: one that issued
+ * another certificate of the input is a CA of the chain, whatever key came with it. So a
+ * self-signed server certificate marked CA:TRUE (`openssl req -x509`) is still the leaf when
+ * other certificates ride along. null when no key names a certificate.
+ * @param {{ certificates: Array<{ localKeyId: string|null }>, keys: Array<{ localKeyId: string|null }> }} opened
+ * @param {Array<Certificate|null>} parsed the Certificate of each of the bundle's certificates
+ * @param {Certificate[]} all every certificate of the input
+ * @returns {Certificate|null}
+ */
+function keyedCertificate(opened, parsed, all) {
+  for (const key of opened.keys) {
+    if (!key.localKeyId) continue;
+    const i = opened.certificates.findIndex((c) => c.localKeyId === key.localKeyId);
+    const cert = i >= 0 ? parsed[i] : null;
+    if (cert && !issuesAnother(cert, all)) return cert;
+  }
+  return null;
+}
+
+/**
  * {@link parseCertificates} that also opens a PKCS#12 (.pfx / .p12) bundle with its password
  * (lib/pkcs12.js). Never rejects.
  *
@@ -1834,6 +1866,9 @@ function pkcs12Summary(opened, parsed, leaf, checkKey) {
  *   nothing decrypts and there is no integrity check to tell a damaged file apart),
  *   PKCS12_DAMAGED (detail: what is wrong) or PKCS12_UNSUPPORTED (detail: the algorithm or mode,
  *   e.g. 'pbeWithSHAAnd128BitRC4', 'envelopedData', 'webcrypto') instead.
+ * - The leaf of an opened bundle is the certificate its private key is paired with by
+ *   localKeyId, unless that one issued another certificate of the input; else it is picked as
+ *   parseCertificates() picks it. The key check does not move it.
  * - Private keys are never returned. `checkKey` decrypts them in memory only to check whether one
  *   belongs to the leaf (`pkcs12.keyCheck`), then drops them.
  *
@@ -1867,7 +1902,7 @@ export async function loadCertificates(input, options = {}) {
       // One bundle per load: any other one in the input is said to be skipped, never dropped silently.
       for (let i = 1; i < ctx.pkcs12.length; i++) warn(ctx, 'PARSE_ERROR', `PKCS#12 bundle ${i + 1}: not opened (one bundle per file; load it on its own)`);
     }
-    leaf = finishResult(ctx, options);
+    leaf = finishResult(ctx, options, opened ? keyedCertificate(opened, parsed, ctx.certificates) : null);
   } catch (err) {
     failedResult(ctx, err);
   }

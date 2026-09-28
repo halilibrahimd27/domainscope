@@ -25,9 +25,11 @@
  * token is the good answer: the path reaches the web server.
  *
  * Findings are `{ id, area, severity, params }` with EN / TR texts in {@link RENEWAL_I18N}
- * (`renew.f.<id>.title` / `.detail`, params language-neutral and pre-joined); a name's verdict is
- * 'fail' with any error, 'warnings' with any warning, else 'ready'. DOM-free; runs in browsers and
- * Node 22. All DNS goes through an injected client with the DohClient contract (§5.9): only
+ * (`renew.f.<id>.title` / `.detail`, params language-neutral and pre-joined); `unchecked: true`
+ * marks one that says a lookup the verdict rests on got no answer in this browser. A name's verdict
+ * is 'fail' with any error, 'unknown' (could not be checked) with an unchecked finding, 'warnings'
+ * with any warning, else 'ready'. DOM-free; runs in browsers and Node 22. All DNS goes through an
+ * injected client with the DohClient contract (§5.9): only
  * `query(name, type, { resolver, dnssec, cd, signal, noCache })`.
  */
 
@@ -46,8 +48,10 @@ import { EDE_CODES } from './dnswire.js';
 
 /** ACME challenge types the form offers; 'unknown' = the user does not know which one the client uses. */
 export const RENEWAL_CHALLENGES = Object.freeze(['http-01', 'dns-01', 'tls-alpn-01', 'unknown']);
-/** A name's verdict, worst first. */
-export const RENEWAL_VERDICTS = Object.freeze(['fail', 'warnings', 'ready']);
+/** A name's verdict, worst first: 'unknown' = a lookup the verdict rests on got no answer. */
+export const RENEWAL_VERDICTS = Object.freeze(['fail', 'unknown', 'warnings', 'ready']);
+/** The summary's headline, worst first ({@link renewalSummary}); 'none' without names. */
+export const RENEWAL_HEADLINES = Object.freeze(['fail', 'incomplete', 'warnings', 'ready', 'none']);
 /** At most this many names per check, and per HTTP-01 reachability test. */
 export const RENEWAL_LIMITS = Object.freeze({ names: 50, http01Names: 10 });
 /**
@@ -166,7 +170,10 @@ const arr = (v) => (Array.isArray(v) ? v : []);
 const canonName = (s) => String(s ?? '').trim().toLowerCase().replace(/\.$/, '');
 const isAbort = (err) => errorKind(err) === 'abort';
 const answered = (res) => !!res && res.ok && (res.rcode === 'NOERROR' || res.rcode === 'NXDOMAIN');
-const finding = (id, severity, params = {}) => ({ id, area: id.slice(0, id.indexOf('.')), severity, params });
+/** `unchecked`: a lookup the verdict rests on got no answer here, so the name reads "could not be checked". */
+const finding = (id, severity, params = {}, { unchecked = false } = {}) => ({
+  id, area: id.slice(0, id.indexOf('.')), severity, params, ...(unchecked ? { unchecked: true } : {})
+});
 
 function records(res, type) {
   return arr(res && res.answers).filter((rr) => rr && rr.type === type);
@@ -375,8 +382,9 @@ function caaFindings(caa, { ca, challenge, wildcard, name }) {
   if (!caa) return out;
   if (caa.error) {
     const servfail = !!caa.rcode && caa.rcode !== 'NOERROR' && caa.rcode !== 'NXDOMAIN';
+    // No answer in this browser says nothing about what the CA will see: the name is not checked.
     out.push(servfail ? finding('caa.servfail', 'error', { name, rcode: caa.rcode, error: caa.error })
-      : finding('caa.error', 'warn', { name, error: caa.error }));
+      : finding('caa.error', 'warn', { name, error: caa.error }, { unchecked: true }));
     return out;
   }
   const alias = arr(caa.chain).find((c) => arr(c.cnames).length);
@@ -488,7 +496,8 @@ function acmeFindings(acme, { challenge, wildcard }) {
       if (matters) out.push(finding('acme.servfail', sev, { ...p, rcode: acme.rcode || '' }));
       break;
     default:
-      if (matters) out.push(finding('acme.error', 'warn', { ...p, error: acme.error || '' }));
+      // For DNS-01 this is the record the CA reads: without it the name is not checked.
+      if (matters) out.push(finding('acme.error', 'warn', { ...p, error: acme.error || '' }, { unchecked: challenge === 'dns-01' }));
   }
   return out;
 }
@@ -544,8 +553,9 @@ function addressFindings(a, { challenge, wildcard, name, dnsFailed }) {
   if (!a || !addressMatters(challenge, wildcard)) return out;
   const sev = methodSeverity(challenge);
   if (a.error) {
-    // A name whose lookups fail for DNSSEC or at its servers says so once, under DNSSEC.
-    if (!dnsFailed) out.push(finding('http.error', 'warn', { name, error: a.error }));
+    // A name whose lookups fail for DNSSEC or at its servers says so once, under DNSSEC. For
+    // HTTP-01 / TLS-ALPN-01 the addresses are what the CA connects to: without them, not checked.
+    if (!dnsFailed) out.push(finding('http.error', 'warn', { name, error: a.error }, { unchecked: sev === 'error' }));
     return out;
   }
   const ips = [...a.ipv4, ...a.ipv6];
@@ -646,17 +656,23 @@ export function nameFindings(r, { ca, challenge }) {
     ...addressFindings(r.address, { ...ctx, name: r.base, dnsFailed }),
     ...http01Findings(r.http01, { challenge, name: r.base })
   ];
+  // The method not known and neither the addresses nor `_acme-challenge` read: no method was checked.
+  const unread = list.filter((f) => f.id === 'http.error' || f.id === 'acme.error');
+  if (challenge === 'unknown' && !r.wildcard && unread.length === 2) for (const f of unread) f.unchecked = true;
   return list.map((f, i) => ({ f, i }))
     .sort((a, b) => RENEWAL_AREAS.indexOf(a.f.area) - RENEWAL_AREAS.indexOf(b.f.area) || a.i - b.i).map((x) => x.f);
 }
 
 /**
- * 'fail' with any error, 'warnings' with any warning, else 'ready'.
- * @param {Array<{ severity: string }>} findings
- * @returns {'fail'|'warnings'|'ready'}
+ * 'fail' with any error; 'unknown' (could not be checked) when a lookup the verdict rests on got no
+ * answer here — the effective CAA lookup, the addresses for HTTP-01 / TLS-ALPN-01, `_acme-challenge`
+ * for DNS-01 (an `unchecked` finding) —; 'warnings' with any warning; else 'ready'.
+ * @param {Array<{ severity: string, unchecked?: boolean }>} findings
+ * @returns {'fail'|'unknown'|'warnings'|'ready'}
  */
 export function nameVerdict(findings) {
   if (arr(findings).some((f) => f.severity === 'error')) return 'fail';
+  if (arr(findings).some((f) => f.unchecked)) return 'unknown';
   if (arr(findings).some((f) => f.severity === 'warn')) return 'warnings';
   return 'ready';
 }
@@ -1001,17 +1017,20 @@ export function applyHttp01(report, name, test) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Counts per verdict and the overall headline: 'fail' when a name will fail, 'warnings' when one
- * has warnings, 'ready' when all are ready, 'none' without names.
+ * Counts per verdict and the overall headline ({@link RENEWAL_HEADLINES}): 'fail' when a name will
+ * fail, 'incomplete' when one could not be checked, 'warnings' when one has warnings, 'ready' when
+ * all are ready, 'none' without names.
  * @param {object} report
- * @returns {{ total: number, counts: { ready: number, warnings: number, fail: number }, headline: string, tested: number }}
+ * @returns {{ total: number, counts: { ready: number, warnings: number, unknown: number, fail: number }, headline: string,
+ *   tested: number }}
  */
 export function renewalSummary(report) {
   const list = arr(report && report.names);
-  const counts = { ready: 0, warnings: 0, fail: 0 };
+  const counts = { ready: 0, warnings: 0, unknown: 0, fail: 0 };
   for (const r of list) counts[r.verdict] = (counts[r.verdict] || 0) + 1;
   let headline = 'none';
   if (counts.fail) headline = 'fail';
+  else if (counts.unknown) headline = 'incomplete';
   else if (counts.warnings) headline = 'warnings';
   else if (list.length) headline = 'ready';
   return { total: list.length, counts, headline, tested: list.filter((r) => r.http01).length };
@@ -1069,7 +1088,7 @@ export function renewalExport(report, { app = 'DomainScope', version = null } = 
     summary: { total: summary.total, ...summary.counts, headline: summary.headline },
     names: arr(report.names).map((r) => ({
       name: r.name, wildcard: r.wildcard, verdict: r.verdict,
-      findings: r.findings.map((f) => ({ id: f.id, severity: f.severity, params: { ...f.params } })),
+      findings: r.findings.map((f) => ({ id: f.id, severity: f.severity, ...(f.unchecked ? { unchecked: true } : {}), params: { ...f.params } })),
       caa: r.caa ? { foundAt: r.caa.foundAt, records: [...r.caa.records], chain: r.caa.chain, error: r.caa.error } : null,
       resolvers: arr(r.resolvers).map((x) => ({ id: x.id, state: x.state, foundAt: x.foundAt, records: x.records, rcode: x.rcode, error: x.error })),
       acmeChallenge: r.acme ? { owner: r.acme.owner, state: r.acme.state, target: r.acme.target, acmeDns: r.acme.acmeDns, txt: r.acme.txt, rcode: r.acme.rcode, error: r.acme.error } : null,
@@ -1099,8 +1118,10 @@ export function renewalExport(report, { app = 'DomainScope', version = null } = 
 const STRINGS = [
   ['v.ready', ['Ready', 'Hazır']],
   ['v.warnings', ['Ready, with warnings', 'Uyarılarla hazır']],
+  ['v.unknown', ['Could not be checked', 'Kontrol edilemedi']],
   ['v.fail', ['Will fail', 'Başarısız olacak']],
   ['head.fail', ['At least one name will fail to renew', 'En az bir adın yenilemesi başarısız olacak']],
+  ['head.incomplete', ['At least one name could not be checked — check again', 'En az bir ad kontrol edilemedi — yeniden kontrol edin']],
   ['head.warnings', ['The names should renew, but check the warnings', 'Adlar yenilenebilir, ama uyarılara bakın']],
   ['head.ready', ['Every name is ready to renew', 'Her ad yenilemeye hazır']],
   ['head.none', ['No names were checked', 'Hiçbir ad kontrol edilmedi']],

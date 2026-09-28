@@ -586,6 +586,14 @@ describe('renew (Renewal readiness)', () => {
     assert.deepEqual(S.permalinkParams('renew', { names: 'www.example.com,*.example.com', ca: 'letsencrypt', challenge: 'http-01', run: '0', tab: 'x' }),
       { names: 'www.example.com,*.example.com', ca: 'letsencrypt', challenge: 'http-01' });
   });
+
+  test('a name that could not be checked is counted as such, after the ones that will fail', () => {
+    const unknown = { name: 'api.example.com', verdict: 'unknown', problems: [problem('warn', 'caa.error', { name: 'api.example.com', error: 'HTTP 429' })] };
+    const facts2 = { names: [{ name: 'www.example.com', verdict: 'ready', problems: [] }, unknown, { ...facts.names[0] }], ca: null, challenge: 'dns-01' };
+    assert.deepEqual(lines(md(S.renewSummary(facts2, opts())))[1], '- 1 will fail · 1 could not be checked · 1 ready');
+    assert.ok(md(S.renewSummary(facts2, opts())).includes('- **Warning:** `api.example.com` — CAA could not be checked'));
+    assert.deepEqual(lines(md(S.renewSummary(facts2, opts('tr'))))[1], '- 1 tanesi başarısız olacak · 1 tanesi kontrol edilemedi · 1 tanesi hazır');
+  });
 });
 
 describe('lookup (one line)', () => {

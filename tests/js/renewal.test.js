@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  RENEWAL_CHALLENGES, RENEWAL_VERDICTS, RENEWAL_LIMITS, CONSISTENCY_RESOLVERS, RENEWAL_CAS, DNS_PROVIDERS, RENEWAL_FINDINGS,
+  RENEWAL_CHALLENGES, RENEWAL_VERDICTS, RENEWAL_HEADLINES, RENEWAL_LIMITS, CONSISTENCY_RESOLVERS, RENEWAL_CAS, DNS_PROVIDERS, RENEWAL_FINDINGS,
   RENEWAL_AREAS, HTTP01_OUTCOMES, HTTP01_VERDICTS, HTTP01_LOCATIONS, RENEWAL_CSV_COLUMNS, RENEWAL_I18N,
   parseRenewalNames, renewalCa, caForIssuer, dnsProvidersFor, isAcmeDnsTarget, pluginText, nameFindings, nameVerdict,
   checkRenewal, http01Token, http01Plan, http01Request, redirectOutcome, http01Outcome, http01Verdict, interpretHttp01,
@@ -119,7 +119,8 @@ const run = (zone, list, input = {}, opts = {}) => {
 
 test('constants: vocabularies are frozen and consistent', () => {
   assert.deepEqual([...RENEWAL_CHALLENGES], ['http-01', 'dns-01', 'tls-alpn-01', 'unknown']);
-  assert.deepEqual([...RENEWAL_VERDICTS], ['fail', 'warnings', 'ready']);
+  assert.deepEqual([...RENEWAL_VERDICTS], ['fail', 'unknown', 'warnings', 'ready']);
+  assert.deepEqual([...RENEWAL_HEADLINES], ['fail', 'incomplete', 'warnings', 'ready', 'none']);
   assert.deepEqual([...CONSISTENCY_RESOLVERS], ['cloudflare', 'google', 'dnssb', 'cznic']);
   assert.equal(RENEWAL_LIMITS.names, 50);
   for (const x of [RENEWAL_CHALLENGES, RENEWAL_CAS, DNS_PROVIDERS, RENEWAL_FINDINGS, RENEWAL_AREAS, HTTP01_OUTCOMES, HTTP01_VERDICTS, HTTP01_LOCATIONS]) {
@@ -340,6 +341,68 @@ test('the effective CAA lookup: SERVFAIL is an error (the CA must refuse), a tra
   assert.equal(f.params.rcode, 'SERVFAIL');
   r = (await run(exampleZone(), ['www.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, { fake: { fail: { 'www.example.com|CAA': 'Failed to fetch' } } })).names[0];
   assert.equal(sev(r, 'caa.error'), 'warn');
+  assert.equal(r.findings.find((f) => f.id === 'caa.error').unchecked, true);
+  assert.equal(r.verdict, 'unknown', 'CAA not read here: not "ready, with warnings"');
+});
+
+test('no lookup answers (every resolver 429): each name could not be checked, never ready or with warnings', async () => {
+  const calls = [];
+  const limited = {
+    async query(name, type, { resolver = null, signal } = {}) {
+      throwIfAborted(signal);
+      calls.push({ name, type, resolver });
+      return { name, type, resolver: resolver || 'cloudflare', ok: false, rcode: null, flags: null, answers: [], authorities: [], error: 'HTTP 429', errorKind: 'rate-limit' };
+    }
+  };
+  const list = ['www.example.com', '*.example.com', 'api.example.com'];
+  for (const challenge of RENEWAL_CHALLENGES) {
+    const report = await run(null, list, { ca: 'letsencrypt', challenge }, { dns: limited });
+    for (const r of report.names) {
+      assert.equal(sev(r, 'caa.error'), 'warn');
+      // Only the wildcard's own rule (DNS-01 chosen) needs no lookup.
+      assert.ok(!r.findings.some((f) => f.severity === 'ok' && f.area !== 'wildcard'), `${r.name}, ${challenge}: nothing reads as passed`);
+    }
+    // HTTP-01 and TLS-ALPN-01 cannot validate a wildcard: that fails without a lookup.
+    const wildFails = challenge === 'http-01' || challenge === 'tls-alpn-01';
+    assert.deepEqual(report.names.map((r) => r.verdict), ['unknown', wildFails ? 'fail' : 'unknown', 'unknown'], challenge);
+    const s = renewalSummary(report);
+    assert.deepEqual([s.headline, s.counts], wildFails ? ['fail', { ready: 0, warnings: 0, unknown: 2, fail: 1 }]
+      : ['incomplete', { ready: 0, warnings: 0, unknown: 3, fail: 0 }], challenge);
+    assert.equal(renewalRows(report)[0].verdict, 'unknown');
+    const json = renewalExport(report);
+    assert.equal(json.summary.unknown, s.counts.unknown);
+    assert.deepEqual(json.names[0].findings.find((f) => f.id === 'caa.error'), { id: 'caa.error', severity: 'warn', unchecked: true, params: { name: 'www.example.com', error: 'www.example.com: HTTP 429' } });
+  }
+  const s = renewalSummary(await run(null, ['www.example.com', 'api.example.com'], { ca: 'letsencrypt', challenge: 'dns-01' }, { dns: limited }));
+  assert.deepEqual(s, { total: 2, counts: { ready: 0, warnings: 0, unknown: 2, fail: 0 }, headline: 'incomplete', tested: 0 });
+  assert.ok(calls.length > 0);
+});
+
+test('could not be checked: the addresses for HTTP-01 / TLS-ALPN-01, _acme-challenge for DNS-01; an error still fails', async () => {
+  const zone = exampleZone();
+  const noAddr = { fail: { 'www.example.com|A': 'Failed to fetch', 'www.example.com|AAAA': 'Failed to fetch' } };
+  for (const [challenge, verdict] of [['http-01', 'unknown'], ['tls-alpn-01', 'unknown'], ['unknown', 'warnings']]) {
+    const r = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge }, { fake: noAddr })).names[0];
+    assert.deepEqual([sev(r, 'http.error'), r.verdict], ['warn', verdict], challenge);
+  }
+  const noAcme = { fail: { '_acme-challenge.www.example.com|TXT': 'Failed to fetch' } };
+  for (const [challenge, verdict] of [['dns-01', 'unknown'], ['unknown', 'warnings']]) {
+    const r = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge }, { fake: noAcme })).names[0];
+    assert.deepEqual([sev(r, 'acme.error'), r.verdict], ['warn', verdict], challenge);
+  }
+  // Not sure which method, and neither the addresses nor _acme-challenge could be read: nothing was checked.
+  const neither = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'unknown' }, { fake: { fail: { ...noAddr.fail, ...noAcme.fail } } })).names[0];
+  assert.deepEqual([sev(neither, 'http.error'), sev(neither, 'acme.error'), neither.verdict], ['warn', 'warn', 'unknown']);
+  // A wildcard is DNS-01 whatever was chosen.
+  const wild = (await run(zone, ['*.example.com'], { ca: 'letsencrypt', challenge: 'unknown' }, { fake: { fail: { '_acme-challenge.example.com|TXT': 'Failed to fetch' } } })).names[0];
+  assert.equal(wild.verdict, 'unknown');
+  // Something that will fail is said whatever else could not be read.
+  const denied = exampleZone({ 'example.com': { SOA: SOA('example.com'), CAA: CAA('issue', 'pki.goog'), NS: ['ada.ns.cloudflare.com'] } });
+  const r = (await run(denied, ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' }, { fake: noAddr })).names[0];
+  assert.deepEqual([sev(r, 'caa.denied'), sev(r, 'http.error'), r.verdict], ['error', 'warn', 'fail']);
+  // A DNSSEC lookup that failed alone: the CAA answer came from a validating resolver, so a warning.
+  const soa = (await run(zone, ['www.example.com'], { ca: 'letsencrypt', challenge: 'http-01' }, { fake: { fail: { 'www.example.com|SOA': 'Failed to fetch' } } })).names[0];
+  assert.deepEqual([sev(soa, 'dnssec.error'), soa.verdict], ['warn', 'warnings']);
 });
 
 test('CAA through a CNAME: the alias target answers, the climb goes on with the name\'s parents', async () => {
@@ -694,6 +757,8 @@ test('nameVerdict / nameFindings: worst severity wins; findings in area order', 
   assert.equal(nameVerdict([{ severity: 'warn' }, { severity: 'info' }]), 'warnings');
   assert.equal(nameVerdict([{ severity: 'warn' }, { severity: 'error' }]), 'fail');
   assert.equal(nameVerdict([]), 'ready');
+  assert.equal(nameVerdict([{ severity: 'warn' }, { severity: 'warn', unchecked: true }]), 'unknown');
+  assert.equal(nameVerdict([{ severity: 'warn', unchecked: true }, { severity: 'error' }]), 'fail', 'what will fail is said first');
   const r = {
     name: 'www.example.com', base: 'www.example.com', wildcard: false, caa: null, resolvers: [],
     dnssec: { state: 'unsigned', zone: 'example.com', ede: [] }, acme: null, address: null, dnsHost: null, http01: null
@@ -705,7 +770,7 @@ test('renewalSummary, renewalRows (CSV) and renewalExport (JSON)', async () => {
   const zone = exampleZone({ 'intra.example.com': { A: '10.0.0.5' }, 'example.com': { SOA: SOA('example.com'), NS: ['ns1.natrohost.com'], CAA: CAA('issue', 'letsencrypt.org') } });
   const report = await run(zone, ['www.example.com', 'intra.example.com', '*.example.com'], { ca: 'letsencrypt', challenge: 'unknown' });
   const s = renewalSummary(report);
-  assert.deepEqual(s, { total: 3, counts: { ready: 1, warnings: 2, fail: 0 }, headline: 'warnings', tested: 0 });
+  assert.deepEqual(s, { total: 3, counts: { ready: 1, warnings: 2, unknown: 0, fail: 0 }, headline: 'warnings', tested: 0 });
   assert.equal(renewalSummary({ names: [] }).headline, 'none');
   const rows = renewalRows(report);
   assert.deepEqual(Object.keys(rows[0]), [...RENEWAL_CSV_COLUMNS]);
@@ -717,7 +782,7 @@ test('renewalSummary, renewalRows (CSV) and renewalExport (JSON)', async () => {
   const json = renewalExport(report, { version: '1.0.0' });
   assert.equal(json.schema, 'domainscope.renewal/1');
   assert.deepEqual(json.ca, { id: 'letsencrypt', name: "Let's Encrypt", caa: ['letsencrypt.org'] });
-  assert.deepEqual(json.summary, { total: 3, ready: 1, warnings: 2, fail: 0, headline: 'warnings' });
+  assert.deepEqual(json.summary, { total: 3, ready: 1, warnings: 2, unknown: 0, fail: 0, headline: 'warnings' });
   assert.equal(json.names[2].wildcard, true);
   assert.equal(json.names[0].caa.records[0], '0 issue "letsencrypt.org"');
   assert.equal(json.names[0].dnsProvider.providers[0].id, 'natro');
@@ -743,7 +808,7 @@ test('RENEWAL_I18N: every finding, outcome, verdict, headline, challenge and are
     ...RENEWAL_FINDINGS.flatMap((id) => [`renew.f.${id}.title`, `renew.f.${id}.detail`]),
     ...HTTP01_OUTCOMES.map((o) => `renew.o.${o}`),
     ...RENEWAL_VERDICTS.map((v) => `renew.v.${v}`),
-    ...['fail', 'warnings', 'ready', 'none'].map((x) => `renew.head.${x}`),
+    ...RENEWAL_HEADLINES.map((x) => `renew.head.${x}`),
     ...RENEWAL_CHALLENGES.map((c) => `renew.ch.${c}`),
     ...RENEWAL_AREAS.map((a) => `renew.area.${a}`)
   ];

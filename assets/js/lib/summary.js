@@ -518,11 +518,11 @@ export function certSummary(facts, opts) {
 }
 
 /**
- * Renewal readiness: how many names are ready, have warnings or will fail, the CA and challenge
- * checked against, then the worst problems as "Error: `name` — title" (lib/renewal.js finding
- * titles, `renew.f.<id>.title`, which the view registers), and whether HTTP-01 reachability was
- * tested from Globalping.
- * @param {{ names: Array<{ name: string, verdict: 'ready'|'warnings'|'fail',
+ * Renewal readiness: how many names will fail, could not be checked, have warnings or are ready,
+ * the CA and challenge checked against, then the worst problems as "Error: `name` — title"
+ * (lib/renewal.js finding titles, `renew.f.<id>.title`, which the view registers), and whether
+ * HTTP-01 reachability was tested from Globalping.
+ * @param {{ names: Array<{ name: string, verdict: 'ready'|'warnings'|'unknown'|'fail',
  *   problems?: Array<{ severity: string, key: string, params?: object }> }>, ca?: string|null, challenge?: string,
  *   tested?: number, at?: Date }} facts `ca`: the CA's name (null: not chosen); `at`: when the check ended
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
@@ -532,8 +532,9 @@ export function renewSummary(facts, opts) {
   const k = kit(opts);
   const { t } = k;
   const list = (facts.names || []).filter((n) => n && n.name);
-  const tally = k.counts([['sum.renew.fail', list.filter((n) => n.verdict === 'fail').length],
-    ['sum.renew.warnings', list.filter((n) => n.verdict === 'warnings').length], ['sum.renew.ready', list.filter((n) => n.verdict === 'ready').length]]);
+  const count = (verdict) => list.filter((n) => n.verdict === verdict).length;
+  const tally = k.counts([['sum.renew.fail', count('fail')], ['sum.renew.unknown', count('unknown')],
+    ['sum.renew.warnings', count('warnings')], ['sum.renew.ready', count('ready')]]);
   const rank = { error: 0, warn: 1 };
   const problems = list.flatMap((n) => (n.problems || []).filter((p) => p && rank[p.severity] !== undefined).map((p) => ({ n, p })))
     .map((x, i) => ({ ...x, i })).sort((a, b) => rank[a.p.severity] - rank[b.p.severity] || a.i - b.i);
@@ -874,6 +875,7 @@ const STRINGS = [
   ['sum.cert.private', ['The certificate file stays in this browser: the link opens the Certificate tool without it', 'Sertifika dosyası bu tarayıcıda kalır: bağlantı Sertifika aracını dosya olmadan açar']],
 
   ['sum.renew.fail', ['{count} will fail', '{count} tanesi başarısız olacak']],
+  ['sum.renew.unknown', ['{count} could not be checked', '{count} tanesi kontrol edilemedi']],
   ['sum.renew.warnings', ['{count} with warnings', '{count} tanesi uyarılı']],
   ['sum.renew.ready', ['{count} ready', '{count} tanesi hazır']],
   ['sum.renew.none', ['No names checked', 'Hiçbir ad kontrol edilmedi']],

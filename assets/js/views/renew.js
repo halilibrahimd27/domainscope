@@ -187,7 +187,9 @@ registerStrings('tr', {
 });
 
 /** Verdict → Badge variant and icon. */
-const VERDICT_STYLE = Object.freeze({ fail: ['error', 'x-circle'], warnings: ['warn', 'alert'], ready: ['ok', 'check-circle'] });
+const VERDICT_STYLE = Object.freeze({ fail: ['error', 'x-circle'], unknown: ['info', 'help'], warnings: ['warn', 'alert'], ready: ['ok', 'check-circle'] });
+/** Headline → Alert variant. */
+const HEADLINE_VARIANT = Object.freeze({ fail: 'error', incomplete: 'info', warnings: 'warn', ready: 'ok' });
 /** Finding severities, worst first. */
 const SEVERITIES = ['error', 'warn', 'info', 'ok'];
 
@@ -215,8 +217,8 @@ export function checkParams(check) {
 }
 
 /**
- * Names in the order the results list shows them: will fail, then with warnings, then ready,
- * each in the order they were entered.
+ * Names in the order the results list shows them: will fail, could not be checked, with warnings,
+ * then ready, each in the order they were entered.
  * @param {Array<{ verdict: string }>} names
  * @returns {object[]}
  */
@@ -485,8 +487,8 @@ export function mount(container, ctx) {
   function renderHero(report) {
     clear(heroEl);
     const s = renewalSummary(report);
-    const variant = { fail: 'error', warnings: 'warn', ready: 'ok' }[s.headline] || 'info';
-    const headline = Alert({ variant, compact: true, message: t(`renew.head.${s.headline}`) });
+    const variant = HEADLINE_VARIANT[s.headline] || 'info';
+    const headline = Alert({ variant, compact: true, icon: s.headline === 'incomplete' ? 'help' : undefined, message: t(`renew.head.${s.headline}`) });
     headline.dataset.renewHeadline = s.headline;
     const counts = h('div', { class: 'cluster rnw-counts' }, RENEWAL_VERDICTS.filter((v) => s.counts[v]).map((v) => {
       const b = Badge(t(`sum.renew.${v}`, { count: s.counts[v] }), { variant: VERDICT_STYLE[v][0], icon: VERDICT_STYLE[v][1] });

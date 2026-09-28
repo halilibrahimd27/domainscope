@@ -99,6 +99,10 @@
   border-color: var(--error-border);
 }
 
+.rnw-hero-incomplete {
+  border-color: var(--info-border);
+}
+
 .rnw-hero-warnings {
   border-color: var(--warn-border);
 }
@@ -161,6 +165,10 @@
 
 .rnw-name-fail {
   border-left: 3px solid var(--error-solid);
+}
+
+.rnw-name-unknown {
+  border-left: 3px solid var(--info-solid);
 }
 
 .rnw-name-warnings {

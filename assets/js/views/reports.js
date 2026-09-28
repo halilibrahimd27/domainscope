@@ -664,6 +664,7 @@ export function mount(container, ctx) {
     ctx.setBusy(true);
     renderAll();
     announce(t('rpt.reading', { count: files.length }));
+    const mine = S;
     let got;
     try {
       got = await readReportFiles(files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.buffer) })), { signal: signal() });
@@ -679,6 +680,11 @@ export function mount(container, ctx) {
     busy = false;
     if (ctx.signal.aborted) return;
     ctx.setBusy(false);
+    // Another workspace (or "Delete all local data") came while the files were read: they belonged to the one left.
+    if (mine !== S) {
+      renderAll();
+      return;
+    }
     S.files += files.length;
     S.dmarcReports.push(...got.dmarc);
     S.tlsReports.push(...got.tls);
@@ -1350,8 +1356,9 @@ export function mount(container, ctx) {
     else renderAll();
   };
   renderAll();
-  // Coming back with reports read before: the SPF of a domain not looked up yet (offline then).
-  if (hasReports() && S.domain && !S.spfState.has(S.domain)) checkSpf();
+  // Coming back with reports read before: the SPF of a domain not looked up yet, or not while offline
+  // (quietly again: nothing is said when the browser still is).
+  if (hasReports() && S.domain && (!S.spfState.has(S.domain) || S.spfState.get(S.domain) === 'offline')) checkSpf();
 
   active = {
     teardown() {

@@ -1,0 +1,243 @@
+/*
+ * views/fix.css — what a DNS change request produces (ui/fix-panel.js, .fix-*): the record sets as
+ * they change, the output formats, the check link, and "Show the fix" in Domain Health and Zone
+ * File. Loaded with the DNS change request, Domain Health and Zone File views.
+ */
+
+/* ---- record sets ------------------------------------------------------------------ */
+
+.fix-sets-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fix-sets {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fix-set {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.fix-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.fix-set-type {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.fix-set-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fix-set-ttl {
+  font-size: 12px;
+}
+
+.fix-values {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.fix-value {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.fix-value-mark {
+  flex: none;
+  width: 1ch;
+  font-weight: 700;
+}
+
+.fix-value-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.fix-value-add {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.fix-value-remove {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.fix-value-remove del {
+  text-decoration-thickness: 1px;
+}
+
+.fix-set-note {
+  margin: 6px 0 0;
+}
+
+/* ---- problems ------------------------------------------------------------------- */
+
+.fix-problems {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fix-problem {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.fix-problem .sev {
+  flex: none;
+  margin-top: 2px;
+}
+
+.fix-problem-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- output formats ------------------------------------------------------------- */
+
+.fix-tabs .tabpanel {
+  padding-top: 10px;
+}
+
+.fix-tab-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.fix-how {
+  flex: 1 1 18rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fix-code .codeblock-pre {
+  font-size: 12px;
+}
+
+/* The instructions wrap; the check link at their end has no space to wrap at. */
+.fix-admin-text .codeblock-pre {
+  overflow-wrap: anywhere;
+}
+
+.fix-format-notes {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+/* ---- check link ------------------------------------------------------------------- */
+
+.fix-check {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+}
+
+.fix-check-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fix-check-title .icon,
+.fix-check-privacy .icon,
+.fix-advice .icon {
+  vertical-align: -2px;
+}
+
+.fix-check-intro,
+.fix-check-privacy {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.fix-check-url .codeblock-pre {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---- "Show the fix" -------------------------------------------------------------- */
+
+.fix-panel {
+  min-width: 0;
+}
+
+.fix-advice {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.fix-ct {
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.fix-ct p {
+  margin: 0;
+}
+
+.fix-toggle[aria-expanded="true"] .icon {
+  transform: rotate(90deg);
+}
+
+.fix-host {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  .fix-set,
+  .fix-host {
+    padding: 10px;
+  }
+
+  .fix-check {
+    padding: 12px;
+  }
+}
+
+@media print {
+  .fix-host[hidden] {
+    display: none;
+  }
+}

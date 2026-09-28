@@ -408,7 +408,8 @@ export function rrsetPlan(r) {
  * @property {RRsetChange[]} rrsets
  * @property {FixText[]} notes what the admin should know (in the instructions too)
  * @property {FixProblem[]} problems what is wrong with the form (errors stop the outputs)
- * @property {Array<{ name: string, type: string }>} reads what a live read asks ({@link readPlan})
+ * @property {Array<{ name: string, type: string }>} reads what a live read asks: {@link readPlan}, and what a template
+ *   built from the current state looked at (the SPF record it edits, the records whose TTL it lowers)
  */
 
 /**
@@ -973,6 +974,26 @@ function awsResource(id, v, r, values, ttl) {
 /* Instructions for the DNS admin                                           */
 /* ------------------------------------------------------------------------ */
 
+/** What a set change does, in one word ({@link FIX_ACTIONS}). */
+export const FIX_ACTIONS = Object.freeze(['add', 'replace', 'delete', 'ttl', 'rewrite', 'unchanged']);
+
+/**
+ * The action of one set change: `add` (values join the set: `has`, or nothing there before),
+ * `replace` (the set becomes exactly these values), `delete`, `ttl` (only the TTL changes),
+ * `rewrite` (the same values in their right form) or `unchanged`.
+ * @param {RRsetChange} r
+ * @param {ReturnType<typeof rrsetPlan>} [plan]
+ * @returns {string}
+ */
+export function rrsetAction(r, plan = rrsetPlan(r)) {
+  if (plan.unchanged) return 'unchanged';
+  if (r.mode === 'none') return 'delete';
+  if (plan.ttlOnly) return 'ttl';
+  if (plan.rewrite) return 'rewrite';
+  if (r.mode === 'has' || (r.before && !r.before.length)) return 'add';
+  return 'replace';
+}
+
 /**
  * The admin's instructions in one language (either, whatever the UI language): one numbered step
  * per set (add / replace / delete / change the TTL), the template's notes and, when given, the
@@ -988,15 +1009,11 @@ export function changeInstructions(req, { lang = 'en', checkUrl = null } = {}) {
   let step = 0;
   for (const r of req.rrsets) {
     const plan = rrsetPlan(r);
-    if (plan.unchanged && !plan.ttlOnly) continue;
+    if (plan.unchanged) continue;
     step += 1;
     const kind = r.family ? tx('fix.ins.family', { family: TXT_FAMILIES[r.family] }) : tx('fix.ins.records', { type: r.type });
     const vals = (list) => list.map((v) => `     ${valueText(r.type, v)}`);
-    let action = 'replace';
-    if (r.mode === 'none') action = 'delete';
-    else if (plan.ttlOnly) action = 'ttl';
-    else if (plan.rewrite) action = 'rewrite';
-    else if (r.mode === 'has' || (r.before && !r.before.length)) action = 'add';
+    const action = rrsetAction(r, plan);
     out.push(`${step}. ${tx(`fix.ins.action.${action}`)}: ${kind}`);
     out.push(`   ${tx('fix.ins.name')}: ${r.name}`);
     if (action === 'ttl') {
@@ -1271,10 +1288,16 @@ export function buildChange(id, input = {}, { current = null } = {}) {
       return changeRequest({ zone, template: id, problems });
     }
   }
-  const cur = (name, type) => (current ? current[`${name}|${type}`] || null : null);
+  // What the template looks at in the current state is what a live read must ask too.
+  const asked = [];
+  const cur = (name, type) => {
+    if (!asked.some((q) => q.name === name && q.type === type)) asked.push({ name, type });
+    return current ? current[`${name}|${type}`] || null : null;
+  };
   const ctx = { form, zone, domain, ttl, problems, notes, cur, current };
   const rrsets = TEMPLATE_BUILDERS[id](ctx) || [];
   const req = changeRequest({ zone, template: id, rrsets, notes, problems });
+  for (const q of asked) if (!req.reads.some((x) => x.name === q.name && x.type === q.type)) req.reads.push(q);
   return current ? applyCurrent(req, current) : req;
 }
 
@@ -1672,7 +1695,6 @@ const HEALTH_FIXES = {
   'dmarc.missing': (r) => reportFix('dmarc.missing', r, 'dmarc', { policy: 'none', rua: `dmarc-reports@${registrableDomain(r.domain) || r.domain}` },
     { advice: [{ key: 'fix.a.rua-mailbox', params: { address: `dmarc-reports@${registrableDomain(r.domain) || r.domain}` } }] }),
   'dmarc.policy-none': (r) => reportFix('dmarc.policy-none', r, 'dmarc', { policy: 'quarantine' }),
-  'dmarc.policy-quarantine': (r) => reportFix('dmarc.policy-quarantine', r, 'dmarc', { policy: 'reject' }),
   'dmarc.pct': (r) => reportFix('dmarc.pct', r, 'dmarc', { policy: (r.dmarc && r.dmarc.parsed && r.dmarc.parsed.policy) || 'quarantine', pct: '' }),
   'dmarc.sp-none': (r) => {
     const p = (r.dmarc && r.dmarc.parsed && r.dmarc.parsed.policy) || 'quarantine';
@@ -1963,6 +1985,7 @@ const STRINGS = [
   ['fix.ins.action.delete', ['Delete', 'Sil']],
   ['fix.ins.action.ttl', ['Change the TTL', 'TTL’i değiştir']],
   ['fix.ins.action.rewrite', ['Rewrite', 'Yeniden yaz']],
+  ['fix.ins.action.unchanged', ['No change', 'Değişiklik yok']],
   ['fix.ins.rewrite', ['The same text, split into strings of at most 255 bytes:', 'Aynı metin, en fazla 255 baytlık dizelere bölünmüş olarak:']],
   ['fix.ins.name', ['Name', 'Ad']],
   ['fix.ins.value', ['Value', 'Değer']],

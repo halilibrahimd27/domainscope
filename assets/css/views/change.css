@@ -1,0 +1,263 @@
+/*
+ * views/change.css — "DNS change request" (.chg-*): the form and the "is it live?" check page.
+ * The outputs are ui/fix-panel.js (views/fix.css, loaded with this view).
+ */
+
+/* ---- form ------------------------------------------------------------------ */
+
+.chg-template {
+  max-width: 32rem;
+}
+
+.chg-template-desc {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.chg-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+
+.chg-field {
+  min-width: 0;
+}
+
+.chg-field-wide {
+  grid-column: 1 / -1;
+}
+
+.chg-field .choice-inline .choice-list {
+  gap: 4px 14px;
+}
+
+.chg-form-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.chg-privacy {
+  flex: 1 1 22rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.chg-privacy .icon,
+.chg-read-note .icon,
+.chg-check-privacy .icon {
+  vertical-align: -2px;
+}
+
+.chg-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.chg-read-note:empty {
+  display: none;
+}
+
+.chg-read-note p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.chg-problems:empty,
+.chg-outputs:empty {
+  display: none;
+}
+
+.chg-problems {
+  display: grid;
+  gap: 10px;
+}
+
+.chg-problems-card {
+  padding: 14px 16px;
+}
+
+.chg-problems-card .section-title {
+  margin: 0 0 8px;
+}
+
+.chg-blocked {
+  margin: 0;
+}
+
+/* ---- check page ------------------------------------------------------------------- */
+
+.chg-hero {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.chg-hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.chg-hero-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.chg-zone {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.chg-check-meta,
+.chg-stopped {
+  margin: 0;
+}
+
+.chg-set {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-left: 3px solid var(--border-strong);
+}
+
+.chg-set[data-state="done"] {
+  border-left-color: var(--ok-solid);
+}
+
+.chg-set[data-state="pending"] {
+  border-left-color: var(--warn-solid);
+}
+
+.chg-set[data-state="wrong"] {
+  border-left-color: var(--error-solid);
+}
+
+.chg-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.chg-set-type {
+  font-weight: 650;
+}
+
+.chg-set-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chg-set-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.chg-set-col {
+  min-width: 0;
+}
+
+.chg-label {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.chg-values {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chg-value {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.chg-set-old .chg-value {
+  color: var(--text-3);
+}
+
+.chg-resolvers {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chg-res {
+  display: grid;
+  grid-template-columns: minmax(7rem, 11rem) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.chg-res-name {
+  font-weight: 550;
+}
+
+.chg-res-verdict {
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.chg-res-detail {
+  grid-column: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chg-res-seen {
+  word-break: break-all;
+}
+
+.chg-check-privacy {
+  margin: 0;
+  line-height: 1.5;
+}
+
+@media (max-width: 600px) {
+  .chg-fields,
+  .chg-set-values {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chg-buttons {
+    flex: 1 1 100%;
+  }
+
+  .chg-buttons .btn {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .chg-hero,
+  .chg-set,
+  .chg-problems-card {
+    padding: 12px;
+  }
+
+  .chg-res {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chg-res-detail {
+    grid-column: 1;
+  }
+}

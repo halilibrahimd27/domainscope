@@ -54,6 +54,7 @@ export const TARGET_ROUTES = Object.freeze({
   global: Object.freeze({ param: 'name', kinds: Object.freeze(['domain', 'host']) }),
   lookup: Object.freeze({ param: 'name', kinds: Object.freeze(['domain', 'host', 'ip']) }),
   bulk: Object.freeze({ param: 'names', kinds: Object.freeze(['domain', 'host']) }),
+  change: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) }),
   ip: Object.freeze({ param: 'ips', kinds: Object.freeze(['ip']) }),
   retire: Object.freeze({ param: 'domains', kinds: Object.freeze(['domain', 'host', 'ip']), kindParams: Object.freeze({ ip: 'ips' }) }),
   health: Object.freeze({ param: 'domain', kinds: Object.freeze(['domain', 'host']) })

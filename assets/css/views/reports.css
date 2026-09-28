@@ -20,6 +20,11 @@
   margin: 0;
 }
 
+/* While reading: the files read so far, Stop under them. */
+.rpt-busy .btn {
+  align-self: flex-start;
+}
+
 .rpt-problem-list {
   display: grid;
   gap: 4px;
@@ -229,6 +234,11 @@
 
 .rpt-spf[data-state="ok"] .rpt-spf-label .icon {
   color: var(--ok-solid);
+}
+
+/* Checked, and the record gives receivers a permerror: the warning colour again. */
+.rpt-spf[data-state="ok"][data-error] .rpt-spf-label .icon {
+  color: var(--warn-solid);
 }
 
 .rpt-spf[data-state="loading"] .rpt-spf-label .icon {

@@ -342,7 +342,7 @@ describe('i18n coverage', () => {
     for (const w of ['reused', 'single']) for (const suffix of ['', 'Ca']) { add(`key.tlsa.${w}${suffix}`); add(`key.pin.${w}${suffix}`); }
     // DMARC & TLS reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/health.js spfEvaluate through
     // views/reports.js): every source class (tile, badge, tooltip), reason, fix, verdict and note,
-    // why a file could not be used, the SPF line's states and verdicts, every TLS-RPT result type
+    // why a file could not be used, the SPF line's states and verdicts (a permerror's reason too), every TLS-RPT result type
     // with its advice, policy type and the tools its advice links.
     const [dmarcreport, tlsrpt] = await Promise.all([imp('assets/js/lib/dmarcreport.js'), imp('assets/js/lib/tlsrpt.js')]);
     for (const c of dmarcreport.SOURCE_CLASSES) { add(`rpt.cls.${c}`); add(`rpt.clsOne.${c}`); add(`rpt.clsDesc.${c}`); }
@@ -353,6 +353,7 @@ describe('i18n coverage', () => {
     for (const p of dmarcreport.REPORT_PROBLEMS) add(`rpt.problem.${p}`);
     for (const r of health.SPF_EVAL_RESULTS) add(`rpt.spfNow.${r}`);
     for (const r of health.SPF_UNKNOWN_REASONS) add(`rpt.spfUnknown.${r}`);
+    for (const r of health.SPF_PERMERROR_REASONS) add(`rpt.spfError.${r}`);
     for (const s of views.reports.SPF_LINE_STATES) add(`rpt.spf.${s}`);
     for (const ty of [...tlsrpt.TLS_RESULT_TYPES, 'other']) { add(`rpt.tls.type.${ty}`); add(`rpt.tls.advice.${ty}`); }
     for (const p of tlsrpt.TLS_POLICY_TYPES) add(`rpt.tls.policy.${p}`);

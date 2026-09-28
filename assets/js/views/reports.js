@@ -1,7 +1,9 @@
 /**
  * views/reports.js — "DMARC & TLS reports" (`#/reports`): the DMARC aggregate (rua) and SMTP TLS
- * (TLS-RPT) reports a domain receives, dropped in many at once (zip, gzip, XML, JSON) and read in
- * the browser. lib/dmarcreport.js, lib/tlsrpt.js and lib/zipread.js do the work; this view draws:
+ * (TLS-RPT) reports a domain receives, dropped in many at once (zip, gzip, XML, JSON; up to
+ * lib/dmarcreport.js MAX_REPORT_FILES a drop) and read in the browser, with the files read so far
+ * counted and a Stop; files dropped while it reads are read next. lib/dmarcreport.js,
+ * lib/tlsrpt.js and lib/zipread.js do the work; this view draws:
  *
  * - DMARC: the headline (compliance, the published policy, whether p=reject can come and which
  *   sources to fix first, the unknown senders), the four source classes as filter tiles (your
@@ -32,14 +34,14 @@ import { downloadText, timestampedName } from '../ui/download.js';
 import { registerStrings, formatNumber, formatPercent, formatDate, formatDateTime } from '../i18n.js';
 import {
   readReportFiles, aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows,
-  DMARC_CSV_COLUMNS, SOURCE_CLASSES
+  DMARC_CSV_COLUMNS, SOURCE_CLASSES, DISPOSITIONS, MAX_REPORT_FILES
 } from '../lib/dmarcreport.js';
 import { summarizeTls, tlsAdvice, tlsCsvRows, TLS_CSV_COLUMNS, TLS_RESULT_TYPES, TLS_POLICY_TYPES } from '../lib/tlsrpt.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { ipFieldStatus } from '../lib/sourcestatus.js';
 import { registrableDomain } from '../lib/domain.js';
 import { toCsv } from '../lib/export.js';
-import { mergeSignals } from '../lib/util.js';
+import { mergeSignals, sharePercent } from '../lib/util.js';
 import { NaMark } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
 
@@ -76,13 +78,16 @@ registerStrings('en', {
   'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up.',
   'rpt.drop.title': 'Drop DMARC and TLS reports here, or choose them',
   'rpt.drop.more': 'Add more reports',
-  'rpt.drop.hint': 'Many files at once: .xml, .xml.gz, .zip (a zipped mailbox folder too), .json, .json.gz',
+  'rpt.drop.hint': 'Up to {max} files at once: .xml, .xml.gz, .zip (a zipped mailbox folder too), .json, .json.gz',
   'rpt.choose': 'Choose files',
   'rpt.folder': 'Choose a folder',
   'rpt.forget': 'Forget reports',
   'rpt.forgotten': 'The reports were forgotten.',
   'rpt.busy': 'Reading the reports…',
   'rpt.reading': { one: 'Reading {count} file…', other: 'Reading {count} files…' },
+  'rpt.queued': { one: '{count} more file will be read next.', other: '{count} more files will be read next.' },
+  'rpt.stop': 'Stop reading',
+  'rpt.stopped': 'Reading stopped. What was read before it stays.',
   'rpt.loaded': 'Read: {dmarc} DMARC and {tls} TLS reports',
   'rpt.noneRead': 'No DMARC or TLS report in these files.',
   'rpt.kept': 'Reports read at {time}',
@@ -101,6 +106,7 @@ registerStrings('en', {
   'rpt.problem.too-large': 'too large to unpack here',
   'rpt.problem.too-many': 'more entries than one drop reads ({detail})',
   'rpt.problem.corrupt': 'damaged: it could not be unpacked',
+  'rpt.problem.overlap': 'entries that share their bytes: an archive built to unpack far more than it holds',
   'rpt.problem.nested': 'an archive inside an archive inside an archive: unpack it first',
   'rpt.problem.unsupported': 'this browser cannot unpack it',
   'rpt.problem.not-report': 'neither a DMARC nor a TLS report',
@@ -139,8 +145,12 @@ registerStrings('en', {
   'rpt.verdict.ready.body': 'Every source you use passes DMARC. With p=reject, receivers would refuse the {messages} failing messages of unknown senders — which is the point, if none of them is yours.',
   'rpt.verdict.fix-first.title': 'Not ready for p=reject yet',
   'rpt.verdict.fix-first.body': { one: '{count} source you use fails DMARC for {messages} messages. With p=reject, receivers would refuse that mail. Fix it first:', other: '{count} sources you use fail DMARC for {messages} messages. With p=reject, receivers would refuse that mail. Fix them first, the most mail first:' },
+  'rpt.verdict.spf-broken.title': 'Not ready for p=reject: the SPF record gives a permanent error',
+  'rpt.verdict.spf-broken.body': { one: '{count} source you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC. Repair the record, or sign that mail with DKIM:', other: '{count} sources you use passed DMARC through SPF alone ({messages} messages in these reports). Receivers now get a permanent error from the SPF record, so that mail fails DMARC. Repair the record, or sign that mail with DKIM:' },
   'rpt.fixFirst': 'Fix first',
   'rpt.fix.failing': '{fail} of {messages} messages fail',
+  'rpt.fix.spfOnly': '{count} of {messages} messages passed through SPF alone',
+  'rpt.fix.spf-permerror': 'Repair the SPF record of {domain}: receivers get a permanent error from it ({why}), so SPF fails for this address whatever the record lists.',
   'rpt.fix.dkim-sign': 'Sign its mail with DKIM for {domain}: publish the public key under a selector (<selector>._domainkey.{domain}) and turn signing on.',
   'rpt.fix.dkim-align': 'It signs DKIM only as {other}: set up DKIM for {domain} in that service (often called a custom or branded sending domain).',
   'rpt.fix.dkim-fix': 'A DKIM signature for {domain} is there but does not verify: check the selector’s public key in DNS, and that nothing changes the message after signing.',
@@ -150,8 +160,10 @@ registerStrings('en', {
   'rpt.unknownLine': { one: '{count} unknown sender, {messages} failing messages: spoofing, or a service nobody has set up yet? Look it up in the table.', other: '{count} unknown senders, {messages} failing messages: spoofing, or services nobody has set up yet? Look them up in the table.' },
   'rpt.note.short-range': { one: 'The reports cover {count} day: a sender that mails once a week or a month may be missing. Collect at least two weeks before p=reject.', other: 'The reports cover {count} days: a sender that mails once a week or a month may be missing. Collect at least two weeks before p=reject.' },
   'rpt.note.pct': 'pct={pct}: the policy applies to part of the failing mail only.',
+  'rpt.note.testing': 't=y: the policy is published in test mode, and receivers are asked to apply the next lower one (reject as quarantine, quarantine as none).',
   'rpt.note.mixed-policy': 'The policy changed during this period ({policies}); the latest one is shown.',
   'rpt.note.spf-unknown': 'The current SPF could not be checked: sources the reports saw pass SPF count as yours, and only your server list tells your servers from third parties.',
+  'rpt.note.spf-permerror': { one: 'Receivers get a permanent error from the current SPF of {domain} for {count} sending address: {why}. For it SPF fails, whatever the record lists.', other: 'Receivers get a permanent error from the current SPF of {domain} for {count} sending addresses: {why}. For them SPF fails, whatever the record lists.' },
   'rpt.note.quarantine': 'p=quarantine, and every source you use passes: the next step is p=reject.',
   'rpt.note.rejected-now': 'Receivers already rejected mail from sources you use (disposition reject).',
   'rpt.note.spf-all': 'The SPF record passes every address (+all): it tells no sender apart, and anyone can pass SPF as the domain. End it with ~all or -all.',
@@ -163,6 +175,15 @@ registerStrings('en', {
   'rpt.spf.failed': 'could not be read ({error})',
   'rpt.spf.offline': 'not checked: the browser is offline',
   'rpt.spf.retry': 'Check again',
+  'rpt.spf.broken': 'a permanent error for receivers: {why}',
+  'rpt.spfError.syntax': 'a syntax error',
+  'rpt.spfError.multiple-records': 'more than one SPF record',
+  'rpt.spfError.no-record': 'an include or redirect to a domain without SPF',
+  'rpt.spfError.loop': 'an include loop',
+  'rpt.spfError.depth': 'includes nested too deep',
+  'rpt.spfError.too-many-mx': 'an mx term with more than 10 hosts',
+  'rpt.spfError.lookup-limit': 'more than 10 DNS lookups before the address is reached',
+  'rpt.spfError.void-limit': 'more than 2 lookups that find nothing',
   'rpt.cls.yours': 'Your servers',
   'rpt.cls.third-party': 'Authorized third parties',
   'rpt.cls.forwarder': 'Forwarders',
@@ -194,8 +215,10 @@ registerStrings('en', {
   'rpt.aligned.part': '{pct} pass',
   'rpt.why.inventory': 'In your server list: {detail}',
   'rpt.why.spf': 'Your SPF authorizes it: {detail}',
-  'rpt.why.spf-report': 'Passed SPF aligned in the reports (the current SPF was not checked)',
+  'rpt.why.spf-listed': 'Listed by your SPF ({detail}), but receivers get a permanent error from the record first',
+  'rpt.why.spf-report': 'Passed SPF aligned in the reports (the current SPF could not tell)',
   'rpt.why.spf-include': 'Authorized through include:{detail}',
+  'rpt.why.include-listed': 'Listed through include:{detail}, but receivers get a permanent error from the record first',
   'rpt.why.dkim-signed': 'Signs with your DKIM, and all its mail passed SPF aligned in the reports',
   'rpt.why.dkim-service': 'Signs with your DKIM, bounces through {detail}',
   'rpt.why.forwarded': 'The receiver says it was forwarded ({detail})',
@@ -308,13 +331,16 @@ registerStrings('tr', {
   'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya bastığınızda sorulur.',
   'rpt.drop.title': 'DMARC ve TLS raporlarını buraya bırakın ya da seçin',
   'rpt.drop.more': 'Daha fazla rapor ekleyin',
-  'rpt.drop.hint': 'Aynı anda birden çok dosya: .xml, .xml.gz, .zip (zip’lenmiş bir posta klasörü de), .json, .json.gz',
+  'rpt.drop.hint': 'Aynı anda en fazla {max} dosya: .xml, .xml.gz, .zip (zip’lenmiş bir posta klasörü de), .json, .json.gz',
   'rpt.choose': 'Dosya seçin',
   'rpt.folder': 'Klasör seçin',
   'rpt.forget': 'Raporları unut',
   'rpt.forgotten': 'Raporlar unutuldu.',
   'rpt.busy': 'Raporlar okunuyor…',
   'rpt.reading': '{count} dosya okunuyor…',
+  'rpt.queued': 'Sırada {count} dosya daha var; ardından okunacak.',
+  'rpt.stop': 'Okumayı durdur',
+  'rpt.stopped': 'Okuma durduruldu. Ondan önce okunanlar duruyor.',
   'rpt.loaded': 'Okundu: {dmarc} DMARC ve {tls} TLS raporu',
   'rpt.noneRead': 'Bu dosyalarda DMARC ya da TLS raporu yok.',
   'rpt.kept': 'Raporlar {time} okundu',
@@ -333,6 +359,7 @@ registerStrings('tr', {
   'rpt.problem.too-large': 'burada açılamayacak kadar büyük',
   'rpt.problem.too-many': 'bir bırakmada okunandan fazla girdi ({detail})',
   'rpt.problem.corrupt': 'bozuk: açılamadı',
+  'rpt.problem.overlap': 'baytlarını paylaşan girdiler: tuttuğundan çok daha fazlasını açmak için yapılmış bir arşiv',
   'rpt.problem.nested': 'arşiv içinde arşiv içinde arşiv: önce açın',
   'rpt.problem.unsupported': 'bu tarayıcı açamıyor',
   'rpt.problem.not-report': 'ne DMARC ne de TLS raporu',
@@ -371,8 +398,12 @@ registerStrings('tr', {
   'rpt.verdict.ready.body': 'Kullandığınız her kaynak DMARC’den geçiyor. p=reject ile alıcılar bilinmeyen göndericilerin geçmeyen {messages} e-postasını reddeder — hiçbiri sizin değilse amaç da budur.',
   'rpt.verdict.fix-first.title': 'Henüz p=reject için hazır değil',
   'rpt.verdict.fix-first.body': 'Kullandığınız {count} kaynak {messages} e-postada DMARC’den geçmiyor. p=reject ile alıcılar bu e-postaları reddederdi. En çok e-posta gönderenden başlayarak önce bunları düzeltin:',
+  'rpt.verdict.spf-broken.title': 'Henüz p=reject için hazır değil: SPF kaydı kalıcı hata veriyor',
+  'rpt.verdict.spf-broken.body': 'Kullandığınız {count} kaynak DMARC’den yalnızca SPF ile geçti (bu raporlarda {messages} e-posta). Alıcılar artık SPF kaydından kalıcı hata alıyor, bu yüzden bu e-postalar DMARC’den geçmiyor. Kaydı onarın ya da bu e-postaları DKIM ile imzalayın:',
   'rpt.fixFirst': 'Önce düzeltin',
   'rpt.fix.failing': '{messages} e-postanın {fail} tanesi geçmiyor',
+  'rpt.fix.spfOnly': '{messages} e-postanın {count} tanesi yalnızca SPF ile geçti',
+  'rpt.fix.spf-permerror': '{domain} SPF kaydını onarın: alıcılar ondan kalıcı hata alıyor ({why}); bu yüzden kayıt ne listelerse listelesin bu adres için SPF geçmiyor.',
   'rpt.fix.dkim-sign': 'E-postalarını {domain} için DKIM ile imzalayın: genel anahtarı bir seçici altında yayınlayın (<seçici>._domainkey.{domain}) ve imzalamayı açın.',
   'rpt.fix.dkim-align': 'DKIM’i yalnızca {other} olarak imzalıyor: o hizmette {domain} için DKIM kurun (çoğunlukla özel ya da markalı gönderim alan adı diye geçer).',
   'rpt.fix.dkim-fix': '{domain} için bir DKIM imzası var ama doğrulanmıyor: seçicinin DNS’teki genel anahtarını ve imzadan sonra iletinin değiştirilmediğini kontrol edin.',
@@ -382,8 +413,10 @@ registerStrings('tr', {
   'rpt.unknownLine': '{count} bilinmeyen gönderici, geçmeyen {messages} e-posta: sahte gönderim mi, yoksa henüz kimsenin kurmadığı bir hizmet mi? Tabloda sorgulayın.',
   'rpt.note.short-range': 'Raporlar {count} günü kapsıyor: haftada ya da ayda bir gönderen bir kaynak eksik olabilir. p=reject’ten önce en az iki haftalık rapor toplayın.',
   'rpt.note.pct': 'pct={pct}: politika geçmeyen e-postaların yalnızca bir kısmına uygulanıyor.',
+  'rpt.note.testing': 't=y: politika test kipinde yayınlanmış; alıcılardan bir alt düzeyi uygulamaları isteniyor (reject yerine quarantine, quarantine yerine none).',
   'rpt.note.mixed-policy': 'Politika bu dönemde değişti ({policies}); en son olanı gösteriliyor.',
   'rpt.note.spf-unknown': 'Güncel SPF kontrol edilemedi: raporlarda SPF’ten geçen kaynaklar sizin sayılır ve sunucularınızı üçüncü taraflardan yalnızca sunucu listeniz ayırır.',
+  'rpt.note.spf-permerror': 'Alıcılar {domain} alan adının güncel SPF kaydından {count} gönderen adres için kalıcı hata alıyor: {why}. Bu adresler için kayıt ne listelerse listelesin SPF geçmiyor.',
   'rpt.note.quarantine': 'p=quarantine ve kullandığınız her kaynak geçiyor: sıradaki adım p=reject.',
   'rpt.note.rejected-now': 'Alıcılar kullandığınız kaynaklardan gelen e-postaları zaten reddetti (disposition reject).',
   'rpt.note.spf-all': 'SPF kaydı her adresi geçiriyor (+all): hiçbir göndericiyi ayırt etmez ve herkes alan adı olarak SPF’ten geçebilir. Kaydı ~all ya da -all ile bitirin.',
@@ -395,6 +428,15 @@ registerStrings('tr', {
   'rpt.spf.failed': 'okunamadı ({error})',
   'rpt.spf.offline': 'kontrol edilmedi: tarayıcı çevrimdışı',
   'rpt.spf.retry': 'Yeniden kontrol et',
+  'rpt.spf.broken': 'alıcılar için kalıcı hata: {why}',
+  'rpt.spfError.syntax': 'bir sözdizimi hatası',
+  'rpt.spfError.multiple-records': 'birden çok SPF kaydı',
+  'rpt.spfError.no-record': 'SPF kaydı olmayan bir alan adına include ya da redirect',
+  'rpt.spfError.loop': 'bir include döngüsü',
+  'rpt.spfError.depth': 'çok derin iç içe include’lar',
+  'rpt.spfError.too-many-mx': '10’dan fazla sunucusu olan bir mx terimi',
+  'rpt.spfError.lookup-limit': 'adrese ulaşmadan önce 10’dan fazla DNS sorgusu',
+  'rpt.spfError.void-limit': 'hiçbir şey bulamayan 2’den fazla sorgu',
   'rpt.cls.yours': 'Sunucularınız',
   'rpt.cls.third-party': 'Yetkili üçüncü taraflar',
   'rpt.cls.forwarder': 'Yönlendiren sunucular',
@@ -408,7 +450,7 @@ registerStrings('tr', {
   'rpt.clsDesc.forwarder': 'DKIM geçiyor, SPF geçmiyor: yönlendirilen ya da bir e-posta listesinin aktardığı e-posta.',
   'rpt.clsDesc.unknown': 'Hiçbir şey onu alan adı olarak doğrulamıyor: sahte gönderim ya da henüz kurulmamış bir hizmet.',
   'rpt.clsHint': '{count} adres · {pct} geçiyor',
-  'rpt.clsFilter': 'Yalnızca {cls} göster',
+  'rpt.clsFilter': 'Yalnızca bu sınıfı göster: {cls}',
   'rpt.filterClear': 'Her sınıfı göster',
   'rpt.sources': 'Gönderen adresler',
   'rpt.sourcesCaption': '{domain} alan adının gönderen adresleri',
@@ -426,8 +468,10 @@ registerStrings('tr', {
   'rpt.aligned.part': '{pct} geçti',
   'rpt.why.inventory': 'Sunucu listenizde: {detail}',
   'rpt.why.spf': 'SPF kaydınız yetkilendiriyor: {detail}',
-  'rpt.why.spf-report': 'Raporlarda hizalı SPF’ten geçti (güncel SPF kontrol edilmedi)',
+  'rpt.why.spf-listed': 'SPF kaydınızda listeli ({detail}), ama alıcılar önce kayıttan kalıcı hata alıyor',
+  'rpt.why.spf-report': 'Raporlarda hizalı SPF’ten geçti (güncel SPF bunu söyleyemedi)',
   'rpt.why.spf-include': 'include:{detail} üzerinden yetkili',
+  'rpt.why.include-listed': 'include:{detail} üzerinden listeli, ama alıcılar önce kayıttan kalıcı hata alıyor',
   'rpt.why.dkim-signed': 'DKIM’inizle imzalıyor ve tüm e-postaları raporlarda hizalı SPF’ten geçti',
   'rpt.why.dkim-service': 'DKIM’inizle imzalıyor, geri dönüşler {detail} üzerinden',
   'rpt.why.forwarded': 'Alıcı yönlendirildiğini bildiriyor ({detail})',
@@ -524,7 +568,7 @@ registerStrings('tr', {
   'rpt.tls.failuresCaption': '{domain} TLS hataları',
   'rpt.tls.col.type': 'Sonuç',
   'rpt.tls.col.mx': 'MX sunucusu',
-  'rpt.tls.col.rip': 'Alan IP',
+  'rpt.tls.col.rip': 'Alıcı IP',
   'rpt.tls.col.org': 'Gönderici',
   'rpt.tls.col.sip': 'Gönderen MTA',
   'rpt.tls.col.sessions': 'Oturum',
@@ -551,9 +595,10 @@ export function alignedState(passed, total) {
 }
 
 /**
- * The parameters of a fix text (`rpt.fix.<code>`): the policy domain and, for the alignment fixes,
- * the other domain the source authenticates as.
- * @param {{ dkimAuth: Array<{ domain: string, result: string }>, spfAuth: Array<{ domain: string, result: string }> }} row
+ * The parameters of a fix text (`rpt.fix.<code>`): the policy domain (for `spf-permerror`, the
+ * domain whose record gives the permerror) and, for the alignment fixes, the other domain the
+ * source authenticates as. The view adds `why`, the permerror's reason in words.
+ * @param {{ dkimAuth: Array<{ domain: string, result: string }>, spfAuth: Array<{ domain: string, result: string }>, spfDomain?: string|null }} row
  * @param {string} code a lib/dmarcreport.js FIX_CODES value
  * @param {string} domain the policy domain
  * @returns {{ domain: string, other: string }}
@@ -562,7 +607,18 @@ export function fixParams(row, code, domain) {
   const org = registrableDomain(domain) || domain;
   const foreign = (list) => (list || []).find((a) => a.result === 'pass' && (registrableDomain(a.domain) || a.domain) !== org);
   const other = code === 'dkim-align' ? foreign(row.dkimAuth) : code === 'spf-align' ? foreign(row.spfAuth) : null;
-  return { domain, other: other ? other.domain : '' };
+  return { domain: code === 'spf-permerror' && row.spfDomain ? row.spfDomain : domain, other: other ? other.domain : '' };
+}
+
+/**
+ * A share as the headline says it (lib/util.js sharePercent: one decimal, never 100 % or 0 %
+ * unless exactly so), the same number Copy summary gives.
+ * @param {number} ratio
+ * @returns {{ value: number, digits: 0|1 }} `value` 0 … 1 for formatPercent
+ */
+export function headlineShare(ratio) {
+  const v = sharePercent(ratio);
+  return { value: v / 100, digits: Number.isInteger(v) ? 0 : 1 };
 }
 
 /**
@@ -575,12 +631,14 @@ export function summaryFacts({ agg, overview, spfState, tls, problems, at }) {
   if (!agg && !tls) return null;
   const dmarc = agg && overview ? {
     overview,
-    policy: { p: agg.policy.p, pct: agg.policy.pct },
+    policy: { p: agg.policy.p, pct: agg.policy.pct, testing: agg.policy.testing || null },
     reports: agg.reports,
     begin: agg.begin,
     end: agg.end,
     // No SPF record, or several, is an answer too: the classes rest on it.
-    spf: ['ok', 'none', 'multiple'].includes(spfState) ? 'checked' : spfState === 'offline' ? 'skipped' : 'failed'
+    spf: ['ok', 'none', 'multiple'].includes(spfState) ? 'checked' : spfState === 'offline' ? 'skipped' : 'failed',
+    // Why the SPF errs, as this view words it (its strings are registered once the view is loaded).
+    spfErrorKey: overview.spfError ? `rpt.spfError.${overview.spfError.reason}` : null
   } : null;
   return {
     domain: agg ? agg.domain : tls.domain,
@@ -655,41 +713,84 @@ export function mount(container, ctx) {
   container.append(root);
 
   let busy = false;
+  // While reading: the files still to read (a drop in the meantime joins them), the Stop, the bar.
+  let queue = [];
+  let reading = null;
+  let progress = null;
+  let readDone = 0;
+  let readTotal = 0;
   let sourcesTable = null;
   let bulkBtn = null;
   const num = (n) => formatNumber(n);
   const pct = (ratio) => formatPercent(ratio, ratio > 0.99 && ratio < 1 ? 1 : 0);
+  const share = (ratio) => {
+    const x = headlineShare(ratio);
+    return formatPercent(x.value, x.digits);
+  };
   const day = (d) => formatDate(d, { utc: true, dateStyle: 'medium' });
 
   /* --- reading ----------------------------------------------------------------------- */
+  const showProgress = () => {
+    if (progress) progress.set(readDone, Math.max(readTotal, 1));
+  };
+
+  /** Read dropped files; a drop while reading joins the queue and is read next. */
   async function load(files) {
-    if (busy || !files.length) return;
+    if (!files.length) return;
+    queue.push(...files);
+    readTotal += files.length;
+    if (busy) {
+      showProgress();
+      announce(t('rpt.queued', { count: files.length }));
+      return;
+    }
     busy = true;
+    reading = new AbortController();
+    readDone = 0;
+    readTotal = queue.length;
     ctx.setBusy(true);
     renderAll();
-    announce(t('rpt.reading', { count: files.length }));
+    announce(t('rpt.reading', { count: readTotal }));
     const mine = S;
-    let got;
+    const got = { files: 0, dmarc: [], tls: [], problems: [] };
     try {
-      got = await readReportFiles(files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.buffer) })), { signal: signal() });
-    } catch (err) {
-      busy = false;
-      if (!ctx.signal.aborted) {
-        ctx.setBusy(false);
-        if (!(err && err.name === 'AbortError')) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
-        renderAll();
+      while (queue.length && mine === S) {
+        const batch = queue;
+        queue = [];
+        const before = readDone;
+        const r = await readReportFiles(batch.map((f) => ({ name: f.name, bytes: new Uint8Array(f.buffer) })), {
+          signal: mergeSignals(signal(), reading.signal),
+          onProgress: (n) => {
+            readDone = before + n;
+            showProgress();
+          }
+        });
+        readDone = before + batch.length;
+        got.files += batch.length;
+        got.dmarc.push(...r.dmarc);
+        got.tls.push(...r.tls);
+        got.problems.push(...r.problems);
       }
-      return;
+    } catch (err) {
+      // Stop: what the batches before it read stays; the batch it cut is dropped whole.
+      if (!(err && err.name === 'AbortError') && !ctx.signal.aborted) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
     }
+    const stopped = reading.signal.aborted && !ctx.signal.aborted;
     busy = false;
+    queue = [];
+    reading = null;
+    progress = null;
+    readTotal = 0;
     if (ctx.signal.aborted) return;
     ctx.setBusy(false);
+    if (stopped) toast(t('rpt.stopped'), { type: 'info' });
     // Another workspace (or "Delete all local data") came while the files were read: they belonged to the one left.
-    if (mine !== S) {
+    if (mine !== S || !got.files) {
       renderAll();
+      if (stopped) focusDrop();
       return;
     }
-    S.files += files.length;
+    S.files += got.files;
     S.dmarcReports.push(...got.dmarc);
     S.tlsReports.push(...got.tls);
     S.problems.push(...got.problems);
@@ -708,7 +809,19 @@ export function mount(container, ctx) {
     renderAll();
     const head = root.querySelector('.rpt-results-title');
     if (head && (got.dmarc.length || got.tls.length)) head.focus({ preventScroll: true });
+    else if (stopped) focusDrop();
     checkSpf();
+  }
+
+  /** Stop reading (the Stop button, Esc): the queue is dropped, the file being read too. */
+  function stopReading() {
+    queue = [];
+    if (reading) reading.abort();
+  }
+
+  function focusDrop() {
+    const drop = root.querySelector('.rpt-load .filedrop');
+    if (drop) drop.focus();
   }
 
   /** Aggregate what is loaded; keep the chosen domains when they are still there. */
@@ -729,8 +842,7 @@ export function mount(container, ctx) {
     ctx.resultChanged();
     toast(t('rpt.forgotten'), { type: 'info' });
     renderAll();
-    const drop = root.querySelector('.rpt-load .filedrop');
-    if (drop) drop.focus();
+    focusDrop();
   }
 
   const aggOf = (domain) => (S.dmarc ? S.dmarc.domains.find((d) => d.domain === domain) || null : null);
@@ -848,26 +960,32 @@ export function mount(container, ctx) {
       multiple: true,
       directory: true,
       maxBytes: MAX_FILE_BYTES,
+      // A month of daily reports from a few receivers, or a mailbox folder: as many as one read takes.
+      maxFiles: MAX_REPORT_FILES,
+      // The reports are read from their bytes (zip, gzip, the XML's own encoding): no text decoded here.
+      text: false,
       paste: false,
       icon: 'inbox',
       title: hasReports() ? t('rpt.drop.more') : t('rpt.drop.title'),
-      hint: t('rpt.drop.hint'),
+      hint: t('rpt.drop.hint', { max: num(MAX_REPORT_FILES) }),
       compact: hasReports()
     });
     // '/' focuses the drop zone; Ctrl/Cmd+Enter (the shell's run shortcut) chooses files.
     drop.el.dataset.shortcut = 'focus';
+    // Choosing more while it reads is fine: they are read next.
     const actions = [Button({
-      label: t('rpt.choose'), icon: 'upload', size: 'sm', variant: hasReports() ? 'secondary' : 'primary', disabled: busy,
+      label: t('rpt.choose'), icon: 'upload', size: 'sm', variant: hasReports() ? 'secondary' : 'primary',
       dataset: { action: 'rpt-choose', shortcut: 'submit' }, onClick: () => drop.open()
     })];
-    if (drop.openFolder) actions.push(Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', disabled: busy, onClick: () => drop.openFolder() }));
+    if (drop.openFolder) actions.push(Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', onClick: () => drop.openFolder() }));
     if (hasReports()) {
       actions.push(Button({ label: t('rpt.forget'), icon: 'trash', size: 'sm', variant: 'ghost', disabled: busy, dataset: { action: 'rpt-forget' }, onClick: forget }));
     }
     const body = h('div', { class: 'stack-sm' }, drop.el);
     if (busy) {
-      const bar = ProgressBar({ label: t('rpt.busy'), indeterminate: true, showCount: false });
-      body.append(bar.el);
+      progress = ProgressBar({ label: t('rpt.busy'), value: readDone, max: Math.max(readTotal, 1) });
+      const stop = Button({ label: t('rpt.stop'), icon: 'stop', size: 'sm', variant: 'secondary', dataset: { action: 'rpt-stop', shortcut: 'cancel' }, onClick: stopReading });
+      body.append(h('div', { class: 'rpt-busy stack-sm', dataset: { role: 'rpt-busy' } }, progress.el, stop));
     }
     if (hasReports() || S.problems.length) body.append(filesLine());
     if (S.problems.length) body.append(problemsList());
@@ -1018,7 +1136,7 @@ export function mount(container, ctx) {
     const shown = reporters.slice(0, 3).join(', ') + (reporters.length > 3 ? ` ${t('common.moreCount', { count: reporters.length - 3 })}` : '');
     const complianceVariant = o.compliance === null ? 'default' : o.compliance >= 0.98 ? 'ok' : o.compliance >= 0.9 ? 'warn' : 'error';
     const stats = h('div', { class: 'stat-grid rpt-stats' },
-      StatCard({ label: t('rpt.stat.compliance'), value: o.compliance === null ? '—' : pct(o.compliance), variant: complianceVariant,
+      StatCard({ label: t('rpt.stat.compliance'), value: o.compliance === null ? '—' : share(o.compliance), variant: complianceVariant,
         hint: t('rpt.stat.complianceHint', { pass: num(o.pass), total: num(o.messages) }) }).el,
       StatCard({ label: t('rpt.stat.messages'), value: o.messages }).el,
       StatCard({ label: t('rpt.stat.sources'), value: agg.sources.length }).el,
@@ -1028,24 +1146,24 @@ export function mount(container, ctx) {
     const policy = h('p', { class: 'rpt-policy text-sm' }, h('span', { class: 'muted' }, `${t('rpt.policy')}: `),
       h('code', { class: 'mono' }, `p=${p.p}`), ' ', h('code', { class: 'mono' }, `sp=${p.sp}`),
       p.np ? [' ', h('code', { class: 'mono' }, `np=${p.np}`)] : null,
-      ' ', h('code', { class: 'mono' }, `pct=${p.pct}`), ' ', h('code', { class: 'mono' }, `adkim=${p.adkim}`), ' ', h('code', { class: 'mono' }, `aspf=${p.aspf}`));
+      ' ', h('code', { class: 'mono' }, `pct=${p.pct}`), p.testing ? [' ', h('code', { class: 'mono' }, `t=${p.testing}`)] : null,
+      ' ', h('code', { class: 'mono' }, `adkim=${p.adkim}`), ' ', h('code', { class: 'mono' }, `aspf=${p.aspf}`));
     const losing = o.verdict === 'enforced' && o.blockers.length;
     const vKey = losing ? 'enforcedLosing' : o.verdict;
-    const variant = { 'no-mail': 'info', enforced: losing ? 'error' : 'ok', ready: 'ok', 'fix-first': 'warn' }[o.verdict];
-    const verdict = Alert({
-      variant,
-      title: t(`rpt.verdict.${vKey}.title`),
-      message: t(`rpt.verdict.${vKey}.body`, { count: o.blockers.length, messages: num(o.verdict === 'ready' ? o.unknownFail : o.blocked) })
-    });
+    const variant = { 'no-mail': 'info', enforced: losing ? 'error' : 'ok', ready: 'ok', 'fix-first': 'warn', 'spf-broken': 'warn' }[o.verdict];
+    const counts = o.verdict === 'spf-broken' ? { count: o.atRisk.length, messages: num(o.atRiskMessages) }
+      : { count: o.blockers.length, messages: num(o.verdict === 'ready' ? o.unknownFail : o.blocked) };
+    const verdict = Alert({ variant, title: t(`rpt.verdict.${vKey}.title`), message: t(`rpt.verdict.${vKey}.body`, counts) });
     verdict.classList.add('rpt-verdict');
     verdict.dataset.verdict = o.verdict;
     const body = h('div', { class: 'stack' }, stats, policy, verdict);
-    if (o.blockers.length) body.append(fixFirst(agg, o));
+    if (o.blockers.length || o.atRisk.length) body.append(fixFirst(agg, o));
     if (o.unknown.length) body.append(h('p', { class: 'rpt-unknown-line text-sm' }, Icon('alert', { size: 14 }), ' ', t('rpt.unknownLine', { count: o.unknown.length, messages: num(o.unknownFail) })));
-    body.append(spfLine(agg, line));
-    const notes = o.notes.filter((n) => n !== 'spf-unknown' || line !== null).map((n) => h('li', { dataset: { note: n } }, t(`rpt.note.${n}`, {
-      count: agg.days, pct: p.pct, policies: agg.policies.map((x) => `p=${x}`).join(', ')
-    })));
+    body.append(spfLine(agg, line, o));
+    const noteParams = (n) => (n === 'spf-permerror'
+      ? { count: o.spfError.sources, domain: o.spfError.domain, why: spfErrorText(o.spfError.reason) }
+      : { count: agg.days, pct: p.pct, policies: agg.policies.map((x) => `p=${x}`).join(', ') });
+    const notes = o.notes.filter((n) => n !== 'spf-unknown' || line !== null).map((n) => h('li', { dataset: { note: n } }, t(`rpt.note.${n}`, noteParams(n))));
     if (agg.skipped) notes.push(h('li', { dataset: { note: 'skipped' } }, t('rpt.skipped', { count: agg.skipped })));
     if (notes.length) body.append(h('ul', { class: 'rpt-notes text-sm muted' }, notes));
     if (agg.errors.length) body.append(Disclosure({ summary: t('rpt.errors'), className: 'rpt-reporter-errors', children: h('ul', null, agg.errors.slice(0, 20).map((e) => h('li', { class: 'mono text-sm' }, e))) }));
@@ -1058,27 +1176,41 @@ export function mount(container, ctx) {
     });
   }
 
+  /** The words of a permerror's reason (health.SPF_PERMERROR_REASONS). */
+  function spfErrorText(reason) {
+    return t(`rpt.spfError.${reason || 'syntax'}`);
+  }
+
+  function fixText(r, f, domain) {
+    return t(`rpt.fix.${f}`, { ...fixParams(r, f, domain), why: r.spfNow && r.spfNow.reason ? spfErrorText(r.spfNow.reason) : '' });
+  }
+
   function fixFirst(agg, o) {
-    const list = h('ol', { class: 'rpt-fix' }, o.blockers.slice(0, FIX_FIRST_MAX).map((r) => {
+    // The sources that fail first, then those whose mail passed through SPF alone while the record now errs.
+    const all = [...o.blockers, ...o.atRisk];
+    const list = h('ol', { class: 'rpt-fix' }, all.slice(0, FIX_FIRST_MAX).map((r) => {
       const style = CLASS_STYLE[r.cls];
+      const count = r.fail ? t('rpt.fix.failing', { fail: num(r.fail), messages: num(r.messages) }) : t('rpt.fix.spfOnly', { count: num(r.atRisk), messages: num(r.messages) });
       return h('li', { class: 'rpt-fix-item', dataset: { ip: r.ip, cls: r.cls } },
         h('div', { class: 'rpt-fix-head' },
           h('span', { class: 'mono rpt-fix-ip' }, r.ip), ' ',
           Badge(t(`rpt.clsOne.${r.cls}`), { variant: style.variant, icon: style.icon }), ' ',
           h('span', { class: 'rpt-fix-why text-sm' }, whyText(r)), ' ',
-          h('span', { class: 'rpt-fix-count text-sm' }, t('rpt.fix.failing', { fail: num(r.fail), messages: num(r.messages) }))),
-        r.fixes.length ? h('ul', { class: 'rpt-fix-steps text-sm' }, r.fixes.map((f) => h('li', { dataset: { fix: f } }, t(`rpt.fix.${f}`, fixParams(r, f, agg.domain))))) : null);
+          h('span', { class: 'rpt-fix-count text-sm' }, count)),
+        r.fixes.length ? h('ul', { class: 'rpt-fix-steps text-sm' }, r.fixes.map((f) => h('li', { dataset: { fix: f } }, fixText(r, f, agg.domain)))) : null);
     }));
-    const more = o.blockers.length > FIX_FIRST_MAX ? h('p', { class: 'text-sm muted' }, t('rpt.fix.more', { count: o.blockers.length - FIX_FIRST_MAX })) : null;
+    const more = all.length > FIX_FIRST_MAX ? h('p', { class: 'text-sm muted' }, t('rpt.fix.more', { count: all.length - FIX_FIRST_MAX })) : null;
     return h('section', { class: 'rpt-fix-first', attrs: { 'aria-label': t('rpt.fixFirst') } }, h('h3', { class: 'rpt-subtitle' }, t('rpt.fixFirst')), list, more);
   }
 
-  function spfLine(agg, line) {
+  function spfLine(agg, line, o) {
     const c = S.spf.get(agg.domain);
+    // The domain's own record gives receivers a permerror (for the most mail): the line says so and why.
+    const broken = line === 'ok' && o.spfError && o.spfError.domain === agg.domain ? o.spfError.reason : null;
     let text;
     if (line === 'loading') text = t('rpt.spf.loading');
     else if (line === 'offline') text = t('rpt.spf.offline');
-    else if (line === 'ok') text = t('rpt.spf.ok', { time: formatDateTime(c.at) });
+    else if (line === 'ok') text = [t('rpt.spf.ok', { time: formatDateTime(c.at) }), broken ? t('rpt.spf.broken', { why: spfErrorText(broken) }) : null].filter(Boolean).join(' · ');
     else if (line === 'none' || line === 'multiple') text = t(`rpt.spf.${line}`);
     else if (line === 'failed') text = t('rpt.spf.failed', { error: (c && c.error) || '' });
     else text = t('rpt.det.notChecked');
@@ -1089,8 +1221,8 @@ export function mount(container, ctx) {
       attrs: { 'aria-disabled': loading ? 'true' : null, 'aria-busy': loading ? 'true' : null },
       onClick: () => { if (!loading) checkSpf({ force: true, loud: true }); }
     });
-    return h('div', { class: 'rpt-spf text-sm', dataset: { state: line || 'none-yet' } },
-      h('span', { class: 'rpt-spf-label' }, Icon(line === 'ok' ? 'check-circle' : line === 'loading' ? 'clock' : 'alert', { size: 14 }), ' ', `${t('rpt.spf.label', { domain: agg.domain })}: `),
+    return h('div', { class: 'rpt-spf text-sm', dataset: { state: line || 'none-yet', error: broken } },
+      h('span', { class: 'rpt-spf-label' }, Icon(line === 'ok' && !broken ? 'check-circle' : line === 'loading' ? 'clock' : 'alert', { size: 14 }), ' ', `${t('rpt.spf.label', { domain: agg.domain })}: `),
       h('span', null, text),
       c && c.record ? h('code', { class: 'mono rpt-spf-record' }, c.record) : null,
       retry);
@@ -1173,7 +1305,7 @@ export function mount(container, ctx) {
   }
 
   function dispositionText(r) {
-    return ['none', 'quarantine', 'reject'].filter((k) => r.dispositions[k]).map((k) => `${k} ${num(r.dispositions[k])}`).join(' · ');
+    return DISPOSITIONS.filter((k) => r.dispositions[k]).map((k) => `${k} ${num(r.dispositions[k])}`).join(' · ');
   }
 
   function details(agg, r) {
@@ -1185,6 +1317,7 @@ export function mount(container, ctx) {
       const result = t(`rpt.spfNow.${verdict.result}`);
       spfNow = verdict.term ? t('rpt.spfNow.by', { result, term: verdict.term, holder: verdict.holder || r.spfDomain || '' }) : result;
       if (verdict.result === 'unknown' && verdict.reason) spfNow = `${spfNow} (${t(`rpt.spfUnknown.${verdict.reason}`)})`;
+      else if (verdict.result === 'permerror') spfNow = `${spfNow} (${spfErrorText(verdict.reason)})`;
     }
     const items = [
       [t('rpt.det.headerFrom'), r.headerFrom.join(', ')],
@@ -1195,7 +1328,7 @@ export function mount(container, ctx) {
       [t('rpt.det.spfNow'), spfNow],
       [t('rpt.det.reporters'), r.reporters.join(', ')],
       [t('rpt.det.seen'), t('rpt.period', { from: day(r.begin), to: day(r.end) })],
-      r.fixes.length ? [t('rpt.det.fixes'), h('ul', { class: 'rpt-auth' }, r.fixes.map((f) => h('li', null, t(`rpt.fix.${f}`, fixParams(r, f, agg.domain)))))] : null
+      r.fixes.length ? [t('rpt.det.fixes'), h('ul', { class: 'rpt-auth' }, r.fixes.map((f) => h('li', null, fixText(r, f, agg.domain))))] : null
     ];
     return h('div', { class: 'stack-sm rpt-details' },
       KeyValueList(items.filter(Boolean)),
@@ -1300,7 +1433,7 @@ export function mount(container, ctx) {
     const total = s.success + s.failure;
     const variant = s.rate === null ? 'default' : s.rate >= 0.99 ? 'ok' : s.rate >= 0.9 ? 'warn' : 'error';
     const stats = h('div', { class: 'stat-grid rpt-stats' },
-      StatCard({ label: t('rpt.tls.stat.rate'), value: s.rate === null ? '—' : pct(s.rate), variant, hint: t('rpt.tls.stat.rateHint', { ok: num(s.success), total: num(total) }) }).el,
+      StatCard({ label: t('rpt.tls.stat.rate'), value: s.rate === null ? '—' : share(s.rate), variant, hint: t('rpt.tls.stat.rateHint', { ok: num(s.success), total: num(total) }) }).el,
       StatCard({ label: t('rpt.tls.stat.sessions'), value: total }).el,
       StatCard({ label: t('rpt.tls.stat.failed'), value: s.failure, variant: s.failure ? 'warn' : 'ok' }).el,
       StatCard({ label: t('rpt.tls.stat.senders'), value: s.orgs.length }).el);
@@ -1411,6 +1544,7 @@ export function mount(container, ctx) {
   active = {
     teardown() {
       work.abort();
+      stopReading();
       rerender = null;
       // A lookup the unmount stopped is not "loading" any more: the next visit asks again.
       for (const [d, st] of S.spfState) if (st === 'loading') S.spfState.delete(d);

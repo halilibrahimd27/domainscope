@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  id, titleKey, icon, alignedState, fixParams, summaryFacts, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, INTEL_MAX, FIX_FIRST_MAX, result
+  id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, INTEL_MAX, FIX_FIRST_MAX, result
 } from '../../assets/js/views/reports.js';
 import { SOURCE_CLASSES, FIX_CODES } from '../../assets/js/lib/dmarcreport.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
@@ -39,6 +39,20 @@ test('fixParams: the policy domain, and the other domain an alignment fix names'
   // a subdomain of the policy domain is the same organisation, never "another domain"
   assert.deepEqual(fixParams({ dkimAuth: [], spfAuth: [{ domain: 'mail.example.com', result: 'pass' }] }, 'spf-align', 'example.com').other, '');
   for (const code of FIX_CODES) assert.equal(typeof fixParams(row, code, 'example.com').domain, 'string');
+  // a broken record is named by the domain that holds it (a bounce subdomain's own record, say)
+  assert.equal(fixParams({ ...row, spfDomain: 'bounce.example.com' }, 'spf-permerror', 'example.com').domain, 'bounce.example.com');
+  assert.equal(fixParams(row, 'spf-permerror', 'example.com').domain, 'example.com');
+});
+
+test('headlineShare: the number Copy summary says, one decimal, never all or none unless it is', () => {
+  const said = (ratio) => {
+    const x = headlineShare(ratio);
+    return [Math.round(x.value * 1000) / 10, x.digits];
+  };
+  assert.deepEqual(said(4913 / 5175), [94.9, 1], 'the page said 95% while the summary said 94.9%');
+  assert.deepEqual(said(0.95), [95, 0]);
+  assert.deepEqual(said(1), [100, 0]);
+  assert.deepEqual(said(0.99996), [99.9, 1]);
 });
 
 test('summaryFacts: the DMARC domain on screen with the TLS summary it is given; the SPF basis said', () => {
@@ -46,8 +60,11 @@ test('summaryFacts: the DMARC domain on screen with the TLS summary it is given;
   const overview = { compliance: 0.5, messages: 10, verdict: 'ready', blockers: [], blocked: 0, unknown: [], unknownFail: 5 };
   const tls = { domain: 'example.com', success: 9, failure: 1, rate: 0.9, reports: 1, byType: [{ type: 'certificate-expired', sessions: 1 }], orgs: [] };
   const f = summaryFacts({ agg, overview, spfState: 'ok', tls, problems: 1, at: new Date(0) });
-  assert.deepEqual(f.dmarc.policy, { p: 'none', pct: 100 });
+  assert.deepEqual(f.dmarc.policy, { p: 'none', pct: 100, testing: null });
   assert.equal(f.dmarc.spf, 'checked');
+  assert.equal(f.dmarc.spfErrorKey, null);
+  const broken = summaryFacts({ agg, overview: { ...overview, spfError: { domain: 'example.com', reason: 'void-limit', sources: 2 } }, spfState: 'ok', tls: null, problems: 0, at: null });
+  assert.equal(broken.dmarc.spfErrorKey, 'rpt.spfError.void-limit', 'the view\'s own words ride in the facts');
   assert.deepEqual(f.tls, { success: 9, failure: 1, rate: 0.9, reports: 1, byType: tls.byType });
   assert.equal(f.domain, 'example.com');
   assert.equal(summaryFacts({ agg, overview, spfState: 'offline', tls: null, problems: 0, at: null }).dmarc.spf, 'skipped');

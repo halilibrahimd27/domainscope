@@ -6386,8 +6386,9 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
     first one (not a CA, issuing no other certificate of the files). With none, a
     self-signed CA certificate is the leaf when it names hosts in subjectAltName, its key is
     in the files, or its subject CN is a host name and it may not sign certificates (no
-    keyUsage keyCertSign - ``openssl req -x509 -subj /CN=www.example.com`` makes such a
-    CA:TRUE certificate; a WARN says clients may refuse it); files of CA certificates only
+    keyUsage keyCertSign, and it issued none of the others - ``openssl req -x509 -subj
+    /CN=www.example.com`` makes such a CA:TRUE certificate; a WARN says clients may refuse
+    it); files of CA certificates only
     have no leaf (FAIL: the server certificate is missing, nothing is written). Files with
     no certificate at all but a CSR compared with a private key SKIP the chain (a key and
     CSR checked before ordering); with neither it is a FAIL. A leaf without a
@@ -6419,12 +6420,14 @@ def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) ->
         return pk is not None and any(item.key is not None and item.key.public_key is not None
                                       and item.key.public_key.ident == pk.ident for item in keys)
 
-    leaves = [cert for cert in certs if not cert.is_ca
-              and not any(other is not cert and issued_by(other, cert) for other in certs)]
+    def issues(cert: CertInfo) -> bool:
+        return any(other is not cert and issued_by(other, cert) for other in certs)
+
+    leaves = [cert for cert in certs if not cert.is_ca and not issues(cert)]
     if not leaves:
         leaves = [cert for cert in certs if cert.is_ca and cert.self_signed
                   and (cert.dns_names or cert.ip_addresses or has_key(cert)
-                       or (cert.hostnames and not cert.key_cert_sign))]
+                       or (cert.hostnames and not cert.key_cert_sign and not issues(cert)))]
     leaf = next((cert for cert in leaves if has_key(cert)), leaves[0] if leaves else None)
     leaf_key = leaf.public_key() if leaf is not None else None
     leaf_name = _cert_label(leaf) if leaf is not None else ''

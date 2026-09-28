@@ -302,6 +302,11 @@ class CheckTests(unittest.TestCase):
             plain = dataclasses.replace(signing, key_cert_sign=usage)
             result = sos.check_bundle([sos.BundleItem('ca.pem', 'certificate', cert=plain)])
             self.assertEqual(result.leaf, plain, usage)
+        # unless it issued another certificate of the files: a home-made CA and its intermediate
+        result = sos.check_bundle([sos.BundleItem('ca.pem', 'certificate', cert=plain)]
+                                  + items('bundle_inter.pem'))
+        self.assertIsNone(result.leaf)
+        self.assertIn('only CA certificates', texts(result))
         # a root whose CN is no host name is never the leaf alone
         self.assertIsNone(sos.check_bundle(items('bundle_root.pem')).leaf)
 

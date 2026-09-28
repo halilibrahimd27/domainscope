@@ -16,7 +16,8 @@
  * resolvers' answers), the URL, Copy summary, the CSV / JSON exports, the HTTP-01 reachability test
  * (nothing sent before the click; the consent + cost dialog, Cancel sends nothing; exactly the
  * lib/renewal.js requests, IPv4 and IPv6; an IPv6 address that times out fails the name; a
- * redirect to HTTPS keeping the token passes), the language switch keeping report and test, the
+ * redirect to HTTPS keeping the token passes; leaving the view mid-test reads the paid measurement
+ * again on return, with no new probe), the language switch keeping report and test, the
  * certificate block (the sample: its names, a CA not in the list), the links from Certificate and
  * SSL Targets (names filled in, the CA from the shared certificate, nothing sent), a shared link
  * that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter, 320 / 375 px
@@ -309,6 +310,22 @@ async function main() {
       assertEqual([await dnsCount(page), (await gpCalls(page)).length], [before, calls], 'nothing sent');
       await shot(page, opts, 'renew-tested-desktop-light-tr');
       await setLangUi(page, 'en');
+    });
+
+    await run.step('leaving the view while a test reads its results: coming back reads the paid measurement again, no new probe', async () => {
+      await page.evaluate(() => { window.__gp.delayMs = 2500; });
+      const posts = () => page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').length);
+      const before = await posts();
+      await page.click('.rnw-name[data-name="shop.example.com"] [data-action="renew-http01-name"]');
+      await page.waitFor((n) => window.__gp.calls.filter((c) => c.method === 'POST').length === n + 1, { args: [before], message: 'one measurement created (consent given before: no dialog)' });
+      assert(!await page.evaluate(() => !!document.querySelector('.gp-confirm')), 'no second dialog in the page session');
+      await gotoRoute(page, 'lookup');
+      await page.evaluate(() => { window.__gp.delayMs = 0; });
+      await page.click('.nav-link[data-view="renew"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'renew' && document.querySelector('.rnw-test')?.dataset.state === 'done', { message: 'read again on return', timeout: 20000 });
+      assertEqual(await posts(), before + 1, 'no new probe');
+      const shop = (await cards(page)).find((x) => x.name === 'shop.example.com');
+      assert(shop.findings.includes('http01.redirect:ok'), `shop tested: ${shop.findings}`);
     });
 
     await run.step('the certificate block: the sample fills the names; its CA is not in the list', async () => {

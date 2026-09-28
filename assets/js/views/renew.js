@@ -69,7 +69,6 @@ registerStrings('en', {
   'rnw.certRemove': 'Remove',
   'rnw.certAnother': 'Load another certificate',
   'rnw.certNoNames': 'This certificate names no host, so there is nothing to renew here.',
-  'rnw.certTaken': 'The names and the CA were taken from this certificate.',
   'rnw.ca': 'Certificate authority',
   'rnw.caUnknown': 'Not known',
   'rnw.caHint': 'Checked against the CAA records. A certificate you load sets it from its issuer.',
@@ -129,7 +128,6 @@ registerStrings('tr', {
   'rnw.certRemove': 'Kaldır',
   'rnw.certAnother': 'Başka bir sertifika yükle',
   'rnw.certNoNames': 'Bu sertifika hiçbir host adı içermiyor; burada yenilenecek bir şey yok.',
-  'rnw.certTaken': 'Adlar ve otorite bu sertifikadan alındı.',
   'rnw.ca': 'Sertifika otoritesi',
   'rnw.caUnknown': 'Bilinmiyor',
   'rnw.caHint': 'CAA kayıtlarıyla karşılaştırılır. Yüklediğiniz bir sertifika onu verenden belirler.',
@@ -180,7 +178,7 @@ registerStrings('tr', {
 
 /** Verdict → Badge variant and icon. */
 const VERDICT_STYLE = Object.freeze({ fail: ['error', 'x-circle'], warnings: ['warn', 'alert'], ready: ['ok', 'check-circle'] });
-/** Areas whose findings get the DNS data they rest on underneath. */
+/** Finding severities, worst first. */
 const SEVERITIES = ['error', 'warn', 'info', 'ok'];
 
 /**
@@ -632,11 +630,14 @@ export function mount(container, ctx) {
     if (current === s && (s.test === job || s.test === prev) && !ctx.signal.aborted) renderReport();
   }
 
-  /** Read again the measurements of a test that failed after they were paid for (no new probe). */
-  async function rereadTest() {
+  /**
+   * Read again the measurements of a test that failed after they were paid for (no new probe).
+   * `auto`: a test the view was left in the middle of, resumed on return (offline: no toast).
+   */
+  async function rereadTest({ auto = false } = {}) {
     const s = current;
     const job = s && s.test;
-    if (!job || job.status === 'running' || !job.pending.length || !ctx.requireOnline()) return;
+    if (!job || job.status === 'running' || !job.pending.length || !ctx.requireOnline({ quiet: auto })) return;
     Object.assign(job, { status: 'running', phase: 'fetch', controller: new AbortController(), error: null });
     renderReport();
     ctx.setBusy(true);
@@ -885,19 +886,19 @@ export function mount(container, ctx) {
   renderCert();
   if (restored && restored.report) {
     const test = restored.test || null;
+    // A test that was reading its paid measurements when the view was left stands as interrupted
+    // until they are read again (offline, its "Read the results again" is offered).
+    const interrupted = !!(test && test.status === 'running' && test.pending && test.pending.length);
     current = {
       names: restored.report.names.map((r) => ({ name: r.name, base: r.base, wildcard: r.wildcard })),
       ca: restored.report.ca, challenge: restored.report.challenge, controller: null,
       report: restored.report, finishedAt: restored.report.finishedAt,
-      test: test ? { ...test, controller: null } : null
+      test: test ? { ...test, controller: null, ...(interrupted ? { status: 'error', error: new DOMException('Interrupted', 'AbortError') } : {}) } : null
     };
     renderReport();
     setShareAction();
-    // A test that was reading its paid measurements when the view was left: read them (GETs are free).
-    if (test && test.status === 'running' && test.pending && test.pending.length) {
-      current.test.status = 'error';
-      rereadTest();
-    }
+    // GETs are free: read them now.
+    if (interrupted) rereadTest({ auto: true });
     if (isFillOnly(ctx.params) && routeNames) takeCarried(routeNames);
   } else if (!restored) {
     // The certificate loaded in Certificate or SSL Targets: its names and CA, nothing sent. Their

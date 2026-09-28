@@ -133,22 +133,30 @@ export function builderParams(template, input) {
   return out;
 }
 
-/** A change problem (a fix.* or zone.lint.* key) as text in the UI language. */
-export function problemText(p) {
+const problemParams = (p) => {
   const params = { ...(p.params || {}) };
   if (Array.isArray(params.types)) params.types = params.types.join(', ');
-  return hasString(p.key) ? t(p.key, params) : p.key;
+  return params;
+};
+
+/** A change problem (a fix.* or zone.lint.* key) as text in the UI language: a lint finding's title. */
+export function problemText(p) {
+  return hasString(p.key) ? t(p.key, problemParams(p)) : p.key;
 }
 
 /**
- * The problems of a change, errors first, each with its severity icon.
+ * The problems of a change, errors first, each with its severity icon; a lint finding with its
+ * title and what it breaks (`zone.lint.<CODE>.why`).
  * @param {Array<{ severity: string, key: string, params?: object }>} problems
  * @returns {HTMLUListElement}
  */
 export function ProblemList(problems) {
-  return h('ul', { class: 'fix-problems' }, problems.map((p) => h('li', { class: 'fix-problem', dataset: { severity: p.severity, key: p.key } },
-    SeverityIcon(p.severity === 'warn' ? 'warn' : p.severity, { size: 16 }),
-    h('span', { class: 'fix-problem-text' }, problemText(p)))));
+  return h('ul', { class: 'fix-problems' }, problems.map((p) => {
+    const why = p.key.startsWith('zone.lint.') && hasString(`${p.key}.why`) ? t(`${p.key}.why`, problemParams(p)) : null;
+    return h('li', { class: 'fix-problem', dataset: { severity: p.severity, key: p.key } },
+      SeverityIcon(p.severity === 'warn' ? 'warn' : p.severity, { size: 16 }),
+      h('span', { class: 'fix-problem-text' }, why ? [h('strong', null, problemText(p)), ' ', why] : problemText(p)));
+  }));
 }
 
 const ACTION_BADGE = Object.freeze({ add: 'ok', replace: 'info', delete: 'error', ttl: 'warn', rewrite: 'info', unchanged: 'neutral' });

@@ -254,10 +254,15 @@
   }
 
   .chg-res {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .chg-res-verdict {
+    justify-self: end;
+    text-align: right;
   }
 
   .chg-res-detail {
-    grid-column: 1;
+    grid-column: 1 / -1;
   }
 }

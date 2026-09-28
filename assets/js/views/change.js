@@ -392,7 +392,7 @@ function mountBuilder(container, ctx) {
     for (const f of changeTemplate(draft.template).fields) {
       widgets[f] = widgetFor(f);
       const wide = ['lines', 'multi'].includes(FIX_FIELDS[f].kind) || f === 'dkimKey';
-      fieldsEl.append(h('div', { class: ['chg-field', { 'chg-field-wide': wide }], dataset: { field: f } }, widgets[f].el));
+      fieldsEl.append(h('div', { class: ['chg-field', { 'chg-field-wide': wide }], dataset: { fieldBox: f } }, widgets[f].el));
     }
   }
 
@@ -587,6 +587,10 @@ function mountCheck(container, ctx) {
     const st = checkState(check, memo.latest);
     view.dataset.state = memo.stop || (memo.running ? 'running' : 'waiting');
     view.dataset.headline = st.headline;
+    // The schedule, for the tests (and anyone curious): rounds so far, the next one (ms epoch).
+    view.dataset.round = String(memo.round);
+    view.dataset.nextAt = memo.nextAt && !memo.stop ? String(memo.nextAt) : '';
+    view.dataset.nextPairs = memo.nextAt && !memo.stop ? (memo.pairs || []).join(' ') : '';
     clear(headEl);
     const doneSets = st.sets.filter((s) => s.state === 'done').length;
     const params = { count: check.sets.length, done: doneSets };
@@ -604,7 +608,7 @@ function mountCheck(container, ctx) {
     const stopped = !!memo.stop;
     nowBtn.hidden = stopped;
     stopBtn.hidden = stopped;
-    againBtn.hidden = !stopped || memo.stop === 'done';
+    againBtn.hidden = !stopped;
     nowBtn.disabled = memo.running;
   }
 
@@ -662,6 +666,7 @@ function mountCheck(container, ctx) {
     memo.stop = n.stop;
     memo.cachedUntil = n.cachedUntil ? new Date(n.cachedUntil) : null;
     memo.nextAt = n.at;
+    memo.pairs = n.pairs;
     if (!n.stop) memo.timer = setTimeout(() => { if (view.isConnected) runRound(new Set(n.pairs), { quiet: true }); }, Math.max(0, n.at - Date.now()));
     if (view.isConnected) renderAll();
   }

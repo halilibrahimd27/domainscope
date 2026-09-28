@@ -14,7 +14,7 @@
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,7 +82,7 @@ const OIDS = {
   encryptedData: '1.2.840.113549.1.7.6', certBag: '1.2.840.113549.1.12.10.1.3', x509: '1.2.840.113549.1.9.22.1',
   sha256: '2.16.840.1.101.3.4.2.1', sha512: '2.16.840.1.101.3.4.2.3', sha224: '2.16.840.1.101.3.4.2.4', rc4: '1.2.840.113549.1.12.1.1',
   pbes2: '1.2.840.113549.1.5.13', pbkdf2: '1.2.840.113549.1.5.12', hmacSha256: '1.2.840.113549.2.9',
-  aes256: '2.16.840.1.101.3.4.1.42'
+  aes256: '2.16.840.1.101.3.4.1.42', pbe3des: '1.2.840.113549.1.12.1.3'
 };
 const contentInfo = (type, inner) => seq(oid(OIDS[type]), explicit0(inner));
 const certBag = (der) => seq(oid(OIDS.certBag), explicit0(seq(oid(OIDS.x509), explicit0(octet(der)))));
@@ -92,6 +92,7 @@ const encryptedData = (alg, ciphertext) => contentInfo('encryptedData',
 const pbes2Aes256 = (salt, iv) => seq(oid(OIDS.pbes2), seq(
   seq(oid(OIDS.pbkdf2), seq(octet(salt), int(2048), seq(oid(OIDS.hmacSha256), Buffer.from([5, 0])))),
   seq(oid(OIDS.aes256), octet(iv))));
+const pbe3des = (salt, iterations) => seq(oid(OIDS.pbe3des), seq(octet(salt), int(iterations)));
 
 /**
  * A PFX around `authSafe` (the DER of the AuthenticatedSafe). With `password` it gets an
@@ -408,6 +409,31 @@ describe('openPkcs12: damaged and unsupported bundles', () => {
       const err = await rejection(openPkcs12(input, 'x'));
       assert.deepEqual([err.code, err.detail], ['UNSUPPORTED', detail]);
     }
+  });
+
+  test('a large 3DES bundle (as Windows writes them) opens without holding the event loop', async () => {
+    // About 700 KB of certificate bags under pbeWithSHAAnd3-KeyTripleDES-CBC: several slices.
+    const salt = randomBytes(8);
+    const derive = (id, length) => pkcs12Kdf({ hash: 'SHA-1', password: bmpPassword('big'), salt, id, iterations: 2048, length });
+    const cipher = createCipheriv('des-ede3-cbc', await derive(1, 24), await derive(2, 8));
+    const bags = Array.from({ length: Math.ceil(700000 / leaf.length) }, () => certBag(leaf));
+    const ct = Buffer.concat([cipher.update(seq(...bags)), cipher.final()]);
+    const bundle = await pfx(seq(encryptedData(pbe3des(salt, 2048), ct)), { password: 'big' });
+    let last = performance.now();
+    let longest = 0;
+    const timer = setInterval(() => {
+      longest = Math.max(longest, performance.now() - last);
+      last = performance.now();
+    }, 1);
+    try {
+      const got = await openPkcs12(bundle, 'big');
+      assert.equal(got.certificates.length, bags.length);
+      assert.equal(got.encryption[0].cipher, '3DES-CBC');
+    } finally {
+      clearInterval(timer);
+    }
+    // A slice is a few milliseconds; the one-piece decryption of a bit-per-byte DES held it for 20 s.
+    assert.ok(longest < 250, `the event loop was held for ${longest.toFixed(0)} ms`);
   });
 
   test('an absurd iteration count is refused at once instead of hanging the page', async () => {

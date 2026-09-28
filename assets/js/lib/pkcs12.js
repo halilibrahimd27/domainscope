@@ -32,7 +32,7 @@
  */
 
 import { sha1, sha256 } from './sha.js';
-import { CipherError, aesCbcDecrypt, desEde3CbcDecrypt, rc2CbcDecrypt } from './ciphers.js';
+import { CipherError, aesCbcDecrypt, cbcDecryptInSlices, desEde3CbcDecrypt, rc2CbcDecrypt } from './ciphers.js';
 
 /** Error codes of {@link Pkcs12Error}. */
 export const PKCS12_ERRORS = Object.freeze(['NOT_PKCS12', 'BAD_PASSWORD', 'DAMAGED', 'UNSUPPORTED']);
@@ -506,7 +506,7 @@ function encryptionScheme(node) {
         const key = await derive(1, pbe.keyLength);
         const iv = await derive(2, 8);
         try {
-          return pbe.kind === 'des' ? desEde3CbcDecrypt(key, iv, data) : rc2CbcDecrypt(key, pbe.bits, iv, data);
+          return await (pbe.kind === 'des' ? des(key, iv, data) : rc2(key, pbe.bits, iv, data));
         } finally {
           key.fill(0);
         }
@@ -545,8 +545,8 @@ function encryptionScheme(node) {
       async decrypt(data, form, subtle) {
         const key = await pbkdf2(subtle, { password: form.utf8, salt: params.salt, iterations: params.iterations, hash: params.hash, length: keyLength });
         try {
-          if (cipher.kind === 'des') return desEde3CbcDecrypt(key, iv, data);
-          if (cipher.kind === 'rc2') return rc2CbcDecrypt(key, rc2Bits, iv, data);
+          if (cipher.kind === 'des') return await des(key, iv, data);
+          if (cipher.kind === 'rc2') return await rc2(key, rc2Bits, iv, data);
           return await aesDecrypt(subtle, key, iv, data);
         } finally {
           key.fill(0);
@@ -558,6 +558,11 @@ function encryptionScheme(node) {
   throw new Pkcs12Error('UNSUPPORTED', `Encryption ${name} is not supported`, { detail: name });
 }
 
+// The JS ciphers (lib/ciphers.js) run a slice at a time, yielding between slices: a large
+// legacy bundle does not freeze the page while it decrypts.
+const des = (key, iv, data) => cbcDecryptInSlices((v, d, o) => desEde3CbcDecrypt(key, v, d, o), 8, iv, data);
+const rc2 = (key, bits, iv, data) => cbcDecryptInSlices((v, d, o) => rc2CbcDecrypt(key, bits, v, d, o), 8, iv, data);
+
 /** AES-CBC through WebCrypto; lib/ciphers.js when WebCrypto refuses the key (AES-192 in Chromium). */
 async function aesDecrypt(subtle, key, iv, data) {
   const s = needSubtle(subtle);
@@ -565,7 +570,7 @@ async function aesDecrypt(subtle, key, iv, data) {
   try {
     k = await s.importKey('raw', key, { name: 'AES-CBC' }, false, ['decrypt']);
   } catch {
-    return aesCbcDecrypt(key, iv, data);
+    return cbcDecryptInSlices((v, d, o) => aesCbcDecrypt(key, v, d, o), 16, iv, data);
   }
   try {
     return new Uint8Array(await s.decrypt({ name: 'AES-CBC', iv }, k, data));

@@ -1,0 +1,467 @@
+{
+  "tool": "ssl_origin_scan",
+  "version": "1.0.0",
+  "startedAt": "2026-10-05T12:00:00.000Z",
+  "finishedAt": "2026-10-05T12:00:00.000Z",
+  "elapsedSeconds": 0.0,
+  "options": {
+    "ports": [
+      443
+    ],
+    "timeoutSeconds": 1,
+    "workers": 4,
+    "exclude": [],
+    "strictPublic": false,
+    "privateCa": [],
+    "estate": true
+  },
+  "newCertificates": [],
+  "names": [
+    {
+      "name": "www.example-test.com.tr",
+      "sni": "www.example-test.com.tr",
+      "wildcard": false
+    },
+    {
+      "name": "api.example-test.com.tr",
+      "sni": "api.example-test.com.tr",
+      "wildcard": false
+    }
+  ],
+  "summary": {
+    "servers": 2,
+    "endpoints": 2,
+    "openEndpoints": 2,
+    "serversNeedingUpdate": 2,
+    "serversUpdated": 0,
+    "serversWithOriginCert": 0,
+    "serversWithPrivateCert": 0,
+    "statusCounts": {
+      "UPDATED": 0,
+      "NEEDS_UPDATE": 3,
+      "ORIGIN_CERT": 0,
+      "PRIVATE_CERT": 0,
+      "NOT_HOSTED": 0,
+      "TLS_ERROR": 1,
+      "TIMEOUT": 0,
+      "CLOSED": 0
+    },
+    "excludedAddresses": 0
+  },
+  "servers": [
+    {
+      "name": "web02",
+      "ips": [
+        "192.0.2.11"
+      ],
+      "ports": {},
+      "groups": [],
+      "status": "NEEDS_UPDATE",
+      "needsUpdate": [
+        "www.example-test.com.tr"
+      ],
+      "updated": [],
+      "originCert": [],
+      "privateCert": [],
+      "errors": [
+        "api.example-test.com.tr"
+      ],
+      "hostedNotInNewCert": [],
+      "defaultCertNeedsUpdate": false
+    },
+    {
+      "name": "web05",
+      "ips": [
+        "203.0.113.5"
+      ],
+      "ports": {},
+      "groups": [],
+      "status": "NEEDS_UPDATE",
+      "needsUpdate": [
+        "www.example-test.com.tr",
+        "api.example-test.com.tr"
+      ],
+      "updated": [],
+      "originCert": [],
+      "privateCert": [],
+      "errors": [],
+      "hostedNotInNewCert": [],
+      "defaultCertNeedsUpdate": true
+    }
+  ],
+  "endpoints": [
+    {
+      "ip": "192.0.2.11",
+      "port": 443,
+      "state": "OPEN",
+      "error": null,
+      "connectMs": 0
+    },
+    {
+      "ip": "203.0.113.5",
+      "port": 443,
+      "state": "OPEN",
+      "error": null,
+      "connectMs": 0
+    }
+  ],
+  "results": [
+    {
+      "server": "web02",
+      "ip": "192.0.2.11",
+      "port": 443,
+      "probe": "default",
+      "name": null,
+      "sni": null,
+      "status": "NOT_HOSTED",
+      "coveredBy": null,
+      "newCertCovers": null,
+      "certSha256": "773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f",
+      "certSubjectCN": "*.wild.example.net",
+      "certIssuer": "*.wild.example.net (Renewed Test)",
+      "certSerial": "0a0b0c",
+      "certNotAfter": "2052-01-01T00:00:00.000Z",
+      "certDaysLeft": 9218,
+      "tlsVersion": "TLSv1.3",
+      "error": null,
+      "elapsedMs": 0
+    },
+    {
+      "server": "web02",
+      "ip": "192.0.2.11",
+      "port": 443,
+      "probe": "sni",
+      "name": "www.example-test.com.tr",
+      "sni": "www.example-test.com.tr",
+      "status": "NEEDS_UPDATE",
+      "coveredBy": "www.example-test.com.tr",
+      "newCertCovers": null,
+      "certSha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+      "certSubjectCN": "www.example-test.com.tr",
+      "certIssuer": "Subdomain Scanner Test Root CA (Test CA)",
+      "certSerial": "f1e2d3c4b5a69788",
+      "certNotAfter": "2034-06-01T00:00:00.000Z",
+      "certDaysLeft": 2795,
+      "tlsVersion": "TLSv1.3",
+      "error": null,
+      "elapsedMs": 0
+    },
+    {
+      "server": "web02",
+      "ip": "192.0.2.11",
+      "port": 443,
+      "probe": "sni",
+      "name": "api.example-test.com.tr",
+      "sni": "api.example-test.com.tr",
+      "status": "TLS_ERROR",
+      "coveredBy": null,
+      "newCertCovers": null,
+      "certSha256": null,
+      "certSubjectCN": null,
+      "certIssuer": null,
+      "certSerial": null,
+      "certNotAfter": null,
+      "certDaysLeft": null,
+      "tlsVersion": "TLSv1.3",
+      "error": "unparseable certificate: empty input",
+      "elapsedMs": 0
+    },
+    {
+      "server": "web05",
+      "ip": "203.0.113.5",
+      "port": 443,
+      "probe": "default",
+      "name": null,
+      "sni": null,
+      "status": "NEEDS_UPDATE",
+      "coveredBy": "www.example-test.com.tr",
+      "newCertCovers": null,
+      "certSha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+      "certSubjectCN": "www.example-test.com.tr",
+      "certIssuer": "Subdomain Scanner Test Root CA (Test CA)",
+      "certSerial": "f1e2d3c4b5a69788",
+      "certNotAfter": "2034-06-01T00:00:00.000Z",
+      "certDaysLeft": 2795,
+      "tlsVersion": "TLSv1.3",
+      "error": null,
+      "elapsedMs": 0
+    },
+    {
+      "server": "web05",
+      "ip": "203.0.113.5",
+      "port": 443,
+      "probe": "sni",
+      "name": "www.example-test.com.tr",
+      "sni": "www.example-test.com.tr",
+      "status": "NEEDS_UPDATE",
+      "coveredBy": "www.example-test.com.tr",
+      "newCertCovers": null,
+      "certSha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+      "certSubjectCN": "www.example-test.com.tr",
+      "certIssuer": "Subdomain Scanner Test Root CA (Test CA)",
+      "certSerial": "f1e2d3c4b5a69788",
+      "certNotAfter": "2034-06-01T00:00:00.000Z",
+      "certDaysLeft": 2795,
+      "tlsVersion": "TLSv1.3",
+      "error": null,
+      "elapsedMs": 0
+    },
+    {
+      "server": "web05",
+      "ip": "203.0.113.5",
+      "port": 443,
+      "probe": "sni",
+      "name": "api.example-test.com.tr",
+      "sni": "api.example-test.com.tr",
+      "status": "NEEDS_UPDATE",
+      "coveredBy": "api.example-test.com.tr",
+      "newCertCovers": null,
+      "certSha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+      "certSubjectCN": "www.example-test.com.tr",
+      "certIssuer": "Subdomain Scanner Test Root CA (Test CA)",
+      "certSerial": "f1e2d3c4b5a69788",
+      "certNotAfter": "2034-06-01T00:00:00.000Z",
+      "certDaysLeft": 2795,
+      "tlsVersion": "TLSv1.3",
+      "error": null,
+      "elapsedMs": 0
+    }
+  ],
+  "excluded": [],
+  "certificates": {
+    "773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f": {
+      "subjectCN": "*.wild.example.net",
+      "subjectDN": "O=Renewed Test,CN=*.wild.example.net",
+      "issuerCN": "*.wild.example.net",
+      "issuerO": "Renewed Test",
+      "issuerDN": "O=Renewed Test,CN=*.wild.example.net",
+      "serialHex": "0a0b0c",
+      "notBefore": "2026-01-01T00:00:00.000Z",
+      "notAfter": "2052-01-01T00:00:00.000Z",
+      "daysLeft": 9218,
+      "dnsNames": [
+        "*.wild.example.net",
+        "wild.example.net"
+      ],
+      "ipAddresses": [],
+      "emails": [],
+      "hostnames": [
+        "*.wild.example.net",
+        "wild.example.net"
+      ],
+      "keyAlgorithm": "EC",
+      "keyBits": 256,
+      "curve": "P-256",
+      "signatureAlgorithm": "ecdsa-with-SHA256",
+      "isCA": false,
+      "selfSigned": true,
+      "subjectKeyId": "0fee91feb41b523afa806a2bf338a1faa7f8cf1e",
+      "authorityKeyId": "0fee91feb41b523afa806a2bf338a1faa7f8cf1e",
+      "sha256": "773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f",
+      "sha1": "922b9a5e8c1830a58819eae6b405046283a2a5fc",
+      "spkiSha256": "6bf0ec2632645dff4738c1b10c7e2e58dfb27fa1d564199b26f2ae024ab45d0b",
+      "isNewCert": false,
+      "kind": "self-signed",
+      "privateCa": null
+    },
+    "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808": {
+      "subjectCN": "www.example-test.com.tr",
+      "subjectDN": "CN=www.example-test.com.tr,O=Ornek AS,C=TR",
+      "issuerCN": "Subdomain Scanner Test Root CA",
+      "issuerO": "Test CA",
+      "issuerDN": "CN=Subdomain Scanner Test Root CA,O=Test CA,C=TR",
+      "serialHex": "f1e2d3c4b5a69788",
+      "notBefore": "2025-06-01T00:00:00.000Z",
+      "notAfter": "2034-06-01T00:00:00.000Z",
+      "daysLeft": 2795,
+      "dnsNames": [
+        "example-test.com.tr",
+        "www.example-test.com.tr",
+        "api.example-test.com.tr",
+        "*.cdn.example-test.com.tr",
+        "xn--mnchen-3ya.example-test.com.tr"
+      ],
+      "ipAddresses": [
+        "10.0.0.5",
+        "2001:db8::1"
+      ],
+      "emails": [
+        "ops@example-test.com.tr"
+      ],
+      "hostnames": [
+        "example-test.com.tr",
+        "www.example-test.com.tr",
+        "api.example-test.com.tr",
+        "*.cdn.example-test.com.tr",
+        "xn--mnchen-3ya.example-test.com.tr"
+      ],
+      "keyAlgorithm": "RSA",
+      "keyBits": 2048,
+      "curve": null,
+      "signatureAlgorithm": "sha256WithRSAEncryption",
+      "isCA": false,
+      "selfSigned": false,
+      "subjectKeyId": "777a7b3d61140e1343090d9640d10852b93d322d",
+      "authorityKeyId": "5ef68887857b91fecba907d567a0cd9ff78830e6",
+      "sha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+      "sha1": "df22ad7f4521abee84cac1c258c0b2ffe0aac2b5",
+      "spkiSha256": "0c6b7b702ac185648170677e9a51113959ee804f3e8260f2be2309d28935c928",
+      "isNewCert": false,
+      "kind": "other",
+      "privateCa": null
+    }
+  },
+  "warnings": [],
+  "estate": {
+    "namesAsked": [
+      "www.example-test.com.tr",
+      "api.example-test.com.tr"
+    ],
+    "counts": {
+      "certificates": 2,
+      "endpoints": 2,
+      "openEndpoints": 2,
+      "endpointsWithCertificate": 2,
+      "expiry": {
+        "expired": 0,
+        "7d": 0,
+        "30d": 0,
+        "90d": 0,
+        "later": 2
+      },
+      "kinds": {
+        "origin-ca": 0,
+        "self-signed": 1,
+        "private-ca": 0,
+        "other": 1
+      }
+    },
+    "certificates": [
+      {
+        "sha256": "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808",
+        "subjectCN": "www.example-test.com.tr",
+        "subjectDN": "CN=www.example-test.com.tr,O=Ornek AS,C=TR",
+        "issuer": "Subdomain Scanner Test Root CA (Test CA)",
+        "issuerDN": "CN=Subdomain Scanner Test Root CA,O=Test CA,C=TR",
+        "serialHex": "f1e2d3c4b5a69788",
+        "notBefore": "2025-06-01T00:00:00.000Z",
+        "notAfter": "2034-06-01T00:00:00.000Z",
+        "daysLeft": 2795,
+        "expiry": "later",
+        "hostnames": [
+          "example-test.com.tr",
+          "www.example-test.com.tr",
+          "api.example-test.com.tr",
+          "*.cdn.example-test.com.tr",
+          "xn--mnchen-3ya.example-test.com.tr"
+        ],
+        "keyAlgorithm": "RSA",
+        "keyBits": 2048,
+        "curve": null,
+        "key": "RSA 2048",
+        "signatureAlgorithm": "sha256WithRSAEncryption",
+        "spkiSha256": "0c6b7b702ac185648170677e9a51113959ee804f3e8260f2be2309d28935c928",
+        "kind": "other",
+        "privateCa": null,
+        "isCA": false,
+        "weak": [],
+        "coversAsked": [
+          "www.example-test.com.tr",
+          "api.example-test.com.tr"
+        ],
+        "flags": [
+          "shared-key"
+        ],
+        "endpoints": [
+          {
+            "servers": [
+              "web02"
+            ],
+            "ip": "192.0.2.11",
+            "port": 443,
+            "defaultCert": false,
+            "names": [
+              "www.example-test.com.tr"
+            ]
+          },
+          {
+            "servers": [
+              "web05"
+            ],
+            "ip": "203.0.113.5",
+            "port": 443,
+            "defaultCert": true,
+            "names": [
+              "www.example-test.com.tr",
+              "api.example-test.com.tr"
+            ]
+          }
+        ]
+      },
+      {
+        "sha256": "773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f",
+        "subjectCN": "*.wild.example.net",
+        "subjectDN": "O=Renewed Test,CN=*.wild.example.net",
+        "issuer": "*.wild.example.net (Renewed Test)",
+        "issuerDN": "O=Renewed Test,CN=*.wild.example.net",
+        "serialHex": "0a0b0c",
+        "notBefore": "2026-01-01T00:00:00.000Z",
+        "notAfter": "2052-01-01T00:00:00.000Z",
+        "daysLeft": 9218,
+        "expiry": "later",
+        "hostnames": [
+          "*.wild.example.net",
+          "wild.example.net"
+        ],
+        "keyAlgorithm": "EC",
+        "keyBits": 256,
+        "curve": "P-256",
+        "key": "EC P-256",
+        "signatureAlgorithm": "ecdsa-with-SHA256",
+        "spkiSha256": "6bf0ec2632645dff4738c1b10c7e2e58dfb27fa1d564199b26f2ae024ab45d0b",
+        "kind": "self-signed",
+        "privateCa": null,
+        "isCA": false,
+        "weak": [],
+        "coversAsked": [],
+        "flags": [
+          "covers-none"
+        ],
+        "endpoints": [
+          {
+            "servers": [
+              "web02"
+            ],
+            "ip": "192.0.2.11",
+            "port": 443,
+            "defaultCert": true,
+            "names": []
+          }
+        ]
+      }
+    ],
+    "nameConflicts": [],
+    "sharedKeys": [
+      {
+        "spkiSha256": "0c6b7b702ac185648170677e9a51113959ee804f3e8260f2be2309d28935c928",
+        "key": "RSA 2048",
+        "hosts": 2,
+        "servers": [
+          "web02",
+          "web05"
+        ],
+        "addresses": [
+          "192.0.2.11",
+          "203.0.113.5"
+        ],
+        "certificates": [
+          "a0b856a56505ca472e3aa7a639fca0b24eb6b9bb55d8197662bab722d8cb5808"
+        ]
+      }
+    ],
+    "weakKeys": [],
+    "coversNone": [
+      "773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f"
+    ]
+  }
+}

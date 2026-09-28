@@ -36,3 +36,19 @@ than the leaf. The keys exist only inside the bundles. `p12_expected.json` holds
 what OpenSSL reads back from each bundle (`openssl pkcs12 -info`, certificate hashes in file
 order, whether the key belongs to the leaf); the tests compare against it, never against the code
 under test.
+
+bundle-check (the CLI's `bundle-check` subcommand, `tests/python/test_bundle_check.py`):
+`gen_bundle_fixtures.sh` made a throwaway PKI — `bundle_root.pem` and `bundle_inter.pem` (EC P-256
+CAs whose keys were never kept), `bundle_leaf.pem` (RSA 2048, `www.example.com` and `example.com`,
+with an AIA "CA Issuers" URL) with its key as PKCS#8 (`bundle_leaf.key`), PKCS#1
+(`bundle_leaf.rsa.key`) and encrypted PKCS#8 (`bundle_leaf.enc.key`, password `bundle-test`) and its
+CSR (`bundle_leaf.csr`), `bundle_ec_leaf.pem` (EC P-256, `api.example.net`) with its SEC1 key with
+and without the public point (`bundle_ec_leaf.key`, `bundle_ec_leaf.nopub.key`) and its CSR, another
+RSA key and a CSR made with it (`bundle_other.key`, `bundle_other.csr`), and `bundle_ca_reversed.pem`
+(the root before the intermediate, as some CAs ship their bundle).
+
+`estate/report-a.json` and `estate/report-b.json` are `--estate --json` reports of the CLI over a
+made-up network (two sites a week apart; documentation addresses only), written by
+`python tests/python/test_estate.py --write-fixtures`: `tests/python/test_estate.py` checks that they
+are exactly what the CLI writes, `tests/js/estate.test.js` that lib/estate.js computes the same
+`estate` from them, and the `estate` E2E suite imports them in the Certificate estate view.

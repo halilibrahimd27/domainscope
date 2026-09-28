@@ -289,8 +289,11 @@ _DN_ATTRS = {
 }
 
 _SIGNATURE_ALGORITHMS = {
+    '1.2.840.113549.1.1.2': 'md2WithRSAEncryption',
     '1.2.840.113549.1.1.4': 'md5WithRSAEncryption',
     '1.2.840.113549.1.1.5': 'sha1WithRSAEncryption',
+    '1.3.14.3.2.29': 'sha1WithRSA',
+    '1.2.840.10040.4.3': 'dsaWithSHA1',
     '1.2.840.113549.1.1.10': 'rsassaPss',
     '1.2.840.113549.1.1.11': 'sha256WithRSAEncryption',
     '1.2.840.113549.1.1.12': 'sha384WithRSAEncryption',
@@ -323,6 +326,8 @@ _OID_SAN = '2.5.29.17'
 _OID_BASIC_CONSTRAINTS = '2.5.29.19'
 _OID_SKI = '2.5.29.14'
 _OID_AKI = '2.5.29.35'
+_OID_AIA = '1.3.6.1.5.5.7.1.1'
+_OID_CA_ISSUERS = '1.3.6.1.5.5.7.48.2'
 _OID_PKCS7_DATA = '1.2.840.113549.1.7.1'
 _OID_PKCS7_SIGNED = '1.2.840.113549.1.7.2'
 
@@ -489,6 +494,102 @@ def _parse_spki(buf: bytes, spki: Tlv) -> Tuple[str, Optional[int], Optional[str
     return 'unknown', None, None
 
 
+_KEY_FAMILIES = {_OID_RSA: 'RSA', _OID_RSA_PSS: 'RSA', _OID_EC: 'EC', _OID_ED25519: 'Ed25519',
+                 _OID_ED448: 'Ed448', _OID_DSA: 'DSA'}
+
+
+@dataclass(frozen=True)
+class PublicKey:
+    """A public key reduced to what identifies it: bundle-check compares these.
+
+    ``ident`` is what every encoding of one key has in common - an RSA key's modulus and
+    exponent, an EC key's curve, x coordinate and the parity of y (a compressed and an
+    uncompressed point are the same key), the raw key bytes of any other algorithm - so two
+    files hold the same key exactly when their ``ident`` is equal. It is public data.
+    """
+
+    algorithm: str                 # RSA | EC | Ed25519 | Ed448 | DSA | unknown
+    bits: Optional[int]
+    curve: Optional[str]           # P-256 ... for EC; the dotted OID of an unknown curve
+    ident: Tuple[Any, ...] = field(repr=False)
+
+    def label(self) -> str:
+        """``RSA 2048``, ``EC P-256``, ``Ed25519``."""
+        if self.algorithm == 'EC':
+            return 'EC %s' % (self.curve or '(curve not named)')
+        if self.algorithm in ('RSA', 'DSA') and self.bits:
+            return '%s %d' % (self.algorithm, self.bits)
+        return self.algorithm
+
+
+def _ec_point_ident(curve: Optional[str], point: bytes) -> Tuple[Any, ...]:
+    """(EC, curve, x, parity of y) of an uncompressed (04), hybrid (06 / 07) or compressed
+    (02 / 03) point; the raw bytes when it is none of these."""
+    if len(point) > 1 and len(point) % 2 == 1 and point[0] in (4, 6, 7):
+        size = (len(point) - 1) // 2
+        return ('EC', curve, int.from_bytes(point[1:1 + size], 'big'), point[-1] & 1)
+    if len(point) > 1 and point[0] in (2, 3):
+        return ('EC', curve, int.from_bytes(point[1:], 'big'), point[0] & 1)
+    return ('EC', curve, point)
+
+
+def _ec_point_bits(point: bytes) -> Optional[int]:
+    if len(point) > 1 and point[0] in (4, 6, 7):
+        return (len(point) - 1) // 2 * 8
+    if len(point) > 1 and point[0] in (2, 3):
+        return (len(point) - 1) * 8
+    return None
+
+
+def _curve_of(oid: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    """(curve name, bits) of a named-curve OID (the OID itself when it is not known)."""
+    if not oid:
+        return None, None
+    return _CURVES.get(oid, (oid, None))
+
+
+def rsa_public_key(modulus: int, exponent: int) -> PublicKey:
+    """The :class:`PublicKey` of an RSA modulus and public exponent."""
+    return PublicKey('RSA', modulus.bit_length(), None, ('RSA', modulus, exponent))
+
+
+def ec_public_key(curve_oid: Optional[str], point: bytes) -> PublicKey:
+    """The :class:`PublicKey` of an EC point on the named curve ``curve_oid``."""
+    curve, bits = _curve_of(curve_oid)
+    return PublicKey('EC', bits or _ec_point_bits(point), curve, _ec_point_ident(curve, point))
+
+
+def public_key_from_spki(der: Union[bytes, bytearray, memoryview]) -> PublicKey:
+    """The :class:`PublicKey` of a DER SubjectPublicKeyInfo (a certificate's, a CSR's or a
+    ``PUBLIC KEY`` PEM's). Raises :class:`DerError` on malformed input."""
+    buf = bytes(der)
+    spki = _expect(_read_tlv(buf, 0, len(buf)), 0x30, 'SubjectPublicKeyInfo')
+    parts = _children(buf, spki[2], spki[3])
+    if len(parts) != 2:
+        raise DerError('malformed SubjectPublicKeyInfo')
+    alg_parts = _children(buf, *_expect(parts[0], 0x30, 'AlgorithmIdentifier')[2:4])
+    if not alg_parts:
+        raise DerError('empty AlgorithmIdentifier')
+    oid = _oid(buf, alg_parts[0])
+    bits_tlv = _expect(parts[1], 0x03, 'subjectPublicKey BIT STRING')
+    key = buf[bits_tlv[2] + 1:bits_tlv[3]]  # after the "unused bits" byte
+    family = _KEY_FAMILIES.get(oid, 'unknown')
+    if family == 'RSA':
+        inner = _expect(_read_tlv(key, 0, len(key)), 0x30, 'RSAPublicKey')
+        fields = _children(key, inner[2], inner[3])
+        if len(fields) < 2:
+            raise DerError('malformed RSAPublicKey')
+        return rsa_public_key(int.from_bytes(_content(key, _expect(fields[0], 0x02, 'modulus')), 'big'),
+                              int.from_bytes(_content(key, _expect(fields[1], 0x02, 'exponent')),
+                                             'big'))
+    if family == 'EC':
+        curve_oid = _oid(buf, alg_parts[1]) if len(alg_parts) > 1 and alg_parts[1][0] == 0x06 \
+            else None
+        return ec_public_key(curve_oid, key)
+    _algorithm, bits, curve = _parse_spki(buf, spki)
+    return PublicKey(family, bits, curve, (oid, key))
+
+
 _HOSTNAME_LIKE_RE = re.compile(r'^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)+$')
 
 
@@ -521,6 +622,16 @@ class CertInfo:
     sha1: str
     subject_key_id: Optional[str] = None     # lowercase hex (SubjectKeyIdentifier)
     authority_key_id: Optional[str] = None   # lowercase hex (AKI keyIdentifier only)
+    spki_der: bytes = field(default=b'', repr=False)  # SubjectPublicKeyInfo DER
+    spki_sha256: Optional[str] = None        # lowercase hex SHA-256 of spki_der (key pinning)
+    ca_issuers: List[str] = field(default_factory=list)  # AIA "CA Issuers" URLs
+
+    def public_key(self) -> Optional[PublicKey]:
+        """The certificate's :class:`PublicKey`, or None when its key cannot be read."""
+        try:
+            return public_key_from_spki(self.spki_der) if self.spki_der else None
+        except _CERT_PARSE_ERRORS:
+            return None
 
     @property
     def issuer_o(self) -> Optional[str]:
@@ -586,6 +697,7 @@ class CertInfo:
             'authorityKeyId': self.authority_key_id,
             'sha256': self.sha256,
             'sha1': self.sha1,
+            'spkiSha256': self.spki_sha256,
         }
 
 
@@ -654,6 +766,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     is_ca = False
     subject_key_id = None  # type: Optional[str]
     authority_key_id = None  # type: Optional[str]
+    ca_issuers = []  # type: List[str]
     for extra in fields[index + 6:]:
         if extra[0] != 0xA3:
             continue  # issuerUniqueID [1] / subjectUniqueID [2]
@@ -692,7 +805,19 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
                 for item in _children(buf, aki[2], aki[3]):
                     if item[0] == 0x80:  # [0] keyIdentifier
                         authority_key_id = _content(buf, item).hex()
+            elif ext_oid == _OID_AIA:
+                # AuthorityInfoAccessSyntax: where to download the issuer (bundle-check names it
+                # for a missing intermediate). A malformed entry is skipped, never fatal.
+                try:
+                    aia = _expect(_read_tlv(buf, value[2], value[3]), 0x30, 'AuthorityInfoAccess')
+                    for access in _children(buf, aia[2], aia[3]):
+                        method, location = _children(buf, access[2], access[3])[:2]
+                        if _oid(buf, method) == _OID_CA_ISSUERS and location[0] == 0x86:
+                            ca_issuers.append(_content(buf, location).decode('ascii', 'replace'))
+                except (DerError, ValueError):
+                    pass
 
+    spki_der = buf[spki[1]:spki[3]]
     return CertInfo(
         der=cert_der,
         version=version,
@@ -723,6 +848,9 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
         sha1=hashlib.sha1(cert_der).hexdigest(),
         subject_key_id=subject_key_id,
         authority_key_id=authority_key_id,
+        spki_der=spki_der,
+        spki_sha256=hashlib.sha256(spki_der).hexdigest(),
+        ca_issuers=ca_issuers,
     )
 
 
@@ -2679,6 +2807,22 @@ def load_names(values: Sequence[str], stdin: Optional[TextIO] = None
     return names, warnings
 
 
+def inventory_names(servers: Iterable[Server]) -> List[str]:
+    """The host names among the targets (``--estate`` asks every server for them too): a
+    server named by a host name (``web01.example.com 192.0.2.10``, ``-t www.example.com``)
+    and the host names a server was resolved from. Plain labels (``web01``), addresses and
+    numeric names are not host names."""
+    names = []  # type: List[str]
+    for server in servers:
+        for candidate in [server.name] + list(server.hostnames):
+            if normalize_ip(candidate) or is_numeric_host(candidate):
+                continue
+            host = normalize_hostname(candidate)
+            if host and '.' in host and host not in names:
+                names.append(host)
+    return names
+
+
 def build_probe_names(names: Iterable[str], wildcard_probe: bool = True) -> List[ProbeName]:
     """Deduplicated probes for ``names``.
 
@@ -3514,13 +3658,15 @@ def _result_dict(report: ScanReport, row: ProbeResult, now: datetime) -> Dict[st
     return entry
 
 
-def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
-                   ) -> Dict[str, Any]:
+def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
+                   estate: bool = False) -> Dict[str, Any]:
     """The ``--json`` document (see the module docstring / README for field meanings).
 
     With ``monitor`` (:func:`build_monitor`) the document also carries ``baseline`` and
     ``changes`` (with ``--baseline``), ``expiring`` and ``options.warnDays`` (with
-    ``--warn-days``); without it, it is exactly the plain scan report.
+    ``--warn-days``); ``estate`` (``--estate``) adds the ``estate`` section
+    (:func:`estate_from_report`) and ``options.estate``. Without them, it is exactly the plain
+    scan report.
     """
     now = report.finished_at
     new_fps = {cert.sha256 for cert in report.new_certs}
@@ -3605,17 +3751,20 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None
             doc['changes'] = monitor.changes
         if monitor.expiring is not None:
             doc['expiring'] = monitor.expiring
+    if estate:
+        doc['options']['estate'] = True
+        doc['estate'] = estate_from_report(doc, report.finished_at)
     return doc
 
 
 def render_json(report: ScanReport, ensure_ascii: bool = False,
-                monitor: Optional[MonitorResult] = None) -> str:
+                monitor: Optional[MonitorResult] = None, estate: bool = False) -> str:
     """Pretty-printed JSON text of :func:`report_to_dict` (UTF-8, 2-space indent).
 
     ``ensure_ascii=True`` escapes non-ASCII characters (``\\u00fc``) - used when stdout is
     not UTF-8, so every consumer decodes the JSON correctly whatever the code page.
     """
-    return json.dumps(report_to_dict(report, monitor), indent=2,
+    return json.dumps(report_to_dict(report, monitor, estate), indent=2,
                       ensure_ascii=ensure_ascii) + '\n'
 
 
@@ -5284,6 +5433,1312 @@ def send_notification(url: str, payload: Dict[str, Any], timeout: float = NOTIFY
 
 
 # =====================================================================================
+# Estate: every certificate the servers serve (--estate)
+# =====================================================================================
+# The estate is computed from a report dict (report_to_dict), like expiring_certificates:
+# assets/js/lib/estate.js computes the same from one or more imported --json reports, and
+# tests/fixtures/estate/ holds a report whose "estate" both must reproduce.
+
+# Expiry buckets of a served certificate, by whole days left: expired (< 0), < 7, < 30,
+# < 90 days, later.
+ESTATE_BUCKETS = ('expired', '7d', '30d', '90d', 'later')
+_ESTATE_BUCKET_LIMITS = ((0, 'expired'), (7, '7d'), (30, '30d'), (90, '90d'))
+ESTATE_KINDS = (KIND_ORIGIN_CA, KIND_SELF_SIGNED, KIND_PRIVATE_CA, KIND_OTHER)
+# Why a served certificate is weak: an RSA key under 2048 bits, a SHA-1 or an MD5 / MD2
+# signature (public CAs stopped issuing all three years ago).
+ESTATE_WEAK_REASONS = ('rsa-short', 'sha1', 'md5')
+WEAK_RSA_BITS = 2048
+# What is odd about a certificate (estate certificates[].flags, the CSV's flags column):
+# served for a name that other endpoints serve with another certificate, the older one
+# of such a pair (same key type, issued before), its key on several hosts or in several
+# certificates, weak, covering none of the names asked.
+ESTATE_FLAGS = ('name-conflict', 'stale', 'shared-key', 'weak', 'covers-none')
+# A key is "shared" when this many hosts (inventory servers) serve it, or when several
+# certificates carry it.
+SHARED_KEY_MIN_HOSTS = 2
+
+
+def expiry_bucket(days_left: int) -> str:
+    """The :data:`ESTATE_BUCKETS` entry of a certificate with ``days_left`` whole days left."""
+    for limit, bucket in _ESTATE_BUCKET_LIMITS:
+        if days_left < limit:
+            return bucket
+    return 'later'
+
+
+def weak_reasons(key_algorithm: Any, key_bits: Any, signature_algorithm: Any) -> List[str]:
+    """The :data:`ESTATE_WEAK_REASONS` of a certificate (``[]`` when it is not weak)."""
+    reasons = []  # type: List[str]
+    if key_algorithm == 'RSA' and isinstance(key_bits, int) and key_bits < WEAK_RSA_BITS:
+        reasons.append('rsa-short')
+    signature = str(signature_algorithm or '').lower()
+    if 'sha1' in signature:
+        reasons.append('sha1')
+    if signature.startswith(('md5', 'md2')):
+        reasons.append('md5')
+    return reasons
+
+
+def key_label(key_algorithm: Any, key_bits: Any, curve: Any) -> str:
+    """``RSA 2048``, ``EC P-256``, ``Ed25519`` from a report's certificate fields."""
+    algorithm = str(key_algorithm or 'unknown')
+    if algorithm == 'EC':
+        return 'EC %s' % curve if curve else 'EC'
+    if algorithm in ('RSA', 'DSA') and isinstance(key_bits, int):
+        return '%s %d' % (algorithm, key_bits)
+    return algorithm
+
+
+def _parse_iso_utc(value: Any) -> Optional[datetime]:
+    """An ISO time as this tool writes it (``2026-09-28T12:00:00.000Z``), or None."""
+    if not isinstance(value, str):
+        return None
+    match = re.match(r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$', value)
+    if not match:
+        return None
+    parts = [int(part) for part in match.groups()[:6]]
+    micro = int((match.group(7) or '0').ljust(6, '0'))
+    try:
+        return datetime(*parts, micro, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _report_probes(doc: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """``(name, sni)`` of every name a report asked for, in its order: ``names``, or what
+    its rows probed when a report has none."""
+    out = []  # type: List[Tuple[str, str]]
+    seen = set()  # type: Set[str]
+    entries = doc.get('names') if isinstance(doc.get('names'), list) else None
+    if entries is None:
+        entries = [{'name': row.get('name'), 'sni': row.get('sni')}
+                   for row in doc.get('results') or []
+                   if isinstance(row, dict) and row.get('probe') in (PROBE_SNI, PROBE_WILDCARD)]
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name, sni = entry.get('name'), entry.get('sni')
+        if isinstance(name, str) and name and name not in seen:
+            seen.add(name)
+            out.append((name, sni if isinstance(sni, str) and sni else name))
+    return out
+
+
+def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The ``estate`` section of a report dict: every distinct certificate served, where and
+    for which names, and what is odd about the whole.
+
+    ``now`` counts the days left (default: the report's ``finishedAt``). Every handshake
+    that returned a certificate counts - with SNI or without, covering the name or not (a
+    server's fallback certificate is served too). Returns::
+
+        {namesAsked, counts: {certificates, endpoints, openEndpoints, endpointsWithCertificate,
+                              expiry: {bucket: n}, kinds: {kind: n}},
+         certificates: [{sha256, subjectCN, subjectDN, issuer, issuerDN, serialHex, notBefore,
+                         notAfter, daysLeft, expiry, hostnames, keyAlgorithm, keyBits, curve,
+                         key, signatureAlgorithm, spkiSha256, kind, privateCa, isCA, weak,
+                         coversAsked, flags, endpoints: [{servers, ip, port, defaultCert,
+                         names}]}],                  # soonest expiry first
+         nameConflicts: [{name, certificates: [{sha256, stale, endpoints: [{servers, ip,
+                          port}]}]}],               # a name served with 2+ certificates
+         sharedKeys: [{spkiSha256, key, hosts, servers, addresses, certificates}],
+         weakKeys: [{sha256, reasons}],
+         coversNone: [sha256] or None}              # None when no name was asked
+
+    ``stale`` marks a certificate of a name conflict that another certificate of the same
+    key type and kind family (public, Origin CA, private), issued later, replaces: the
+    endpoints serving it are the ones left behind. An RSA + ECDSA pair, or an Origin CA
+    certificate next to a public one, is a conflict without a stale side.
+    """
+    now = now or _parse_iso_utc(doc.get('finishedAt')) or _utcnow()
+    probes = _report_probes(doc)
+    info_of = doc.get('certificates') if isinstance(doc.get('certificates'), dict) else {}
+    entries = {}  # type: Dict[str, Dict[str, Any]]
+    endpoints_of = {}  # type: Dict[str, Dict[Tuple[str, int], Dict[str, Any]]]
+    served = {}  # type: Dict[str, Dict[Tuple[str, int], str]]  name -> endpoint -> sha256
+    seen_endpoints = {}  # type: Dict[Tuple[str, int], str]  every endpoint -> OPEN / state
+    for row in doc.get('results') or []:
+        if not isinstance(row, dict) or row.get('probe') not in _ROW_PROBES + (PROBE_CONNECT,):
+            continue
+        ip, port = row.get('ip'), row.get('port')
+        if not isinstance(ip, str) or isinstance(port, bool) or not isinstance(port, int):
+            continue
+        key = (normalize_ip(ip) or ip, port)
+        if row['probe'] == PROBE_CONNECT:
+            seen_endpoints[key] = str(row.get('status'))
+            continue
+        seen_endpoints.setdefault(key, OPEN)
+        sha = row.get('certSha256')
+        if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+            continue
+        entry = entries.get(sha)
+        if entry is None:
+            entry = entries[sha] = _estate_entry(sha, row, info_of.get(sha), probes, now)
+            endpoints_of[sha] = {}
+        endpoint = endpoints_of[sha].get(key)
+        if endpoint is None:
+            endpoint = endpoints_of[sha][key] = {'servers': [], 'ip': key[0], 'port': port,
+                                                 'defaultCert': False, 'names': []}
+            entry['endpoints'].append(endpoint)
+        server = row.get('server')
+        if isinstance(server, str) and server and server not in endpoint['servers']:
+            endpoint['servers'].append(server)
+        name = row.get('name')
+        if row['probe'] == PROBE_DEFAULT:
+            endpoint['defaultCert'] = True
+        elif isinstance(name, str) and name:
+            if name not in endpoint['names']:
+                endpoint['names'].append(name)
+            sni = row.get('sni') if isinstance(row.get('sni'), str) else name
+            if cert_covers(entry['hostnames'], sni)[0]:
+                served.setdefault(name, {}).setdefault(key, sha)
+    certificates = sorted(entries.values(), key=lambda e: (e['daysLeft'], e['sha256']))
+
+    conflicts = _name_conflicts(probes, served, entries, endpoints_of)
+    shared = _shared_keys(certificates)
+    weak = [{'sha256': e['sha256'], 'reasons': list(e['weak'])} for e in certificates
+            if e['weak']]
+    covers_none = ([e['sha256'] for e in certificates if not e['coversAsked']]
+                   if probes else None)
+    flags = {}  # type: Dict[str, Set[str]]
+    for conflict in conflicts:
+        for cert in conflict['certificates']:
+            flags.setdefault(cert['sha256'], set()).add('name-conflict')
+            if cert['stale']:
+                flags[cert['sha256']].add('stale')
+    for group in shared:
+        for sha in group['certificates']:
+            flags.setdefault(sha, set()).add('shared-key')
+    for item in weak:
+        flags.setdefault(item['sha256'], set()).add('weak')
+    for sha in covers_none or []:
+        flags.setdefault(sha, set()).add('covers-none')
+    for entry in certificates:
+        entry['flags'] = [flag for flag in ESTATE_FLAGS if flag in flags.get(entry['sha256'], ())]
+
+    report_endpoints = doc.get('endpoints') if isinstance(doc.get('endpoints'), list) else None
+    if report_endpoints is not None:
+        endpoint_count = len(report_endpoints)
+        open_count = sum(1 for e in report_endpoints if isinstance(e, dict)
+                         and e.get('state') == OPEN)
+    else:
+        endpoint_count = len(seen_endpoints)
+        open_count = sum(1 for state in seen_endpoints.values() if state == OPEN)
+    return {
+        'namesAsked': [name for name, _sni in probes],
+        'counts': {
+            'certificates': len(certificates),
+            'endpoints': endpoint_count,
+            'openEndpoints': open_count,
+            'endpointsWithCertificate': len({key for eps in endpoints_of.values() for key in eps}),
+            'expiry': {bucket: sum(1 for e in certificates if e['expiry'] == bucket)
+                       for bucket in ESTATE_BUCKETS},
+            'kinds': {kind: sum(1 for e in certificates if e['kind'] == kind)
+                      for kind in ESTATE_KINDS},
+        },
+        'certificates': certificates,
+        'nameConflicts': conflicts,
+        'sharedKeys': shared,
+        'weakKeys': weak,
+        'coversNone': covers_none,
+    }
+
+
+def _estate_entry(sha: str, row: Dict[str, Any], info: Any, probes: Sequence[Tuple[str, str]],
+                  now: datetime) -> Dict[str, Any]:
+    """A certificate of the estate from the report's ``certificates`` entry (the row's own
+    fields when a report lacks it)."""
+    info = info if isinstance(info, dict) else {}
+
+    def text(key: str, fallback: Any = None) -> Optional[str]:
+        value = info.get(key, fallback)
+        return value if isinstance(value, str) else None
+
+    hostnames = [name for name in info.get('hostnames') or [] if isinstance(name, str)]
+    not_after = text('notAfter', row.get('certNotAfter'))
+    when = _parse_iso_utc(not_after)
+    days = days_until(when, now) if when else row.get('certDaysLeft')
+    days = days if isinstance(days, int) and not isinstance(days, bool) else 0
+    kind = text('kind')
+    if kind not in ESTATE_KINDS:
+        kind = KIND_SELF_SIGNED if info.get('selfSigned') is True else KIND_OTHER
+    bits = info.get('keyBits')
+    bits = bits if isinstance(bits, int) and not isinstance(bits, bool) else None
+    algorithm = text('keyAlgorithm')
+    signature = text('signatureAlgorithm')
+    spki = text('spkiSha256')
+    return {
+        'sha256': sha,
+        'subjectCN': text('subjectCN', row.get('certSubjectCN')),
+        'subjectDN': text('subjectDN'),
+        'issuer': row.get('certIssuer') if isinstance(row.get('certIssuer'), str) else None,
+        'issuerDN': text('issuerDN'),
+        'serialHex': text('serialHex', row.get('certSerial')),
+        'notBefore': text('notBefore'),
+        'notAfter': not_after,
+        'daysLeft': days,
+        'expiry': expiry_bucket(days),
+        'hostnames': hostnames,
+        'keyAlgorithm': algorithm,
+        'keyBits': bits,
+        'curve': text('curve'),
+        'key': key_label(algorithm, bits, text('curve')),
+        'signatureAlgorithm': signature,
+        'spkiSha256': spki if spki and _SHA256_RE.match(spki) else None,
+        'kind': kind,
+        'privateCa': text('privateCa'),
+        'isCA': info.get('isCA') is True,
+        'weak': weak_reasons(algorithm, bits, signature),
+        'coversAsked': [name for name, sni in probes if cert_covers(hostnames, sni)[0]],
+        'flags': [],
+        'endpoints': [],
+    }
+
+
+def _issued_after(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """``a`` was issued after ``b``: a later notBefore, else a later notAfter (ISO text as this
+    tool writes it sorts like the time)."""
+    for key in ('notBefore', 'notAfter'):
+        x, y = a.get(key) or '', b.get(key) or ''
+        if x != y:
+            return x > y
+    return False
+
+
+def _name_conflicts(probes: Sequence[Tuple[str, str]],
+                    served: Dict[str, Dict[Tuple[str, int], str]],
+                    entries: Dict[str, Dict[str, Any]],
+                    endpoints_of: Dict[str, Dict[Tuple[str, int], Dict[str, Any]]]
+                    ) -> List[Dict[str, Any]]:
+    """Names asked that endpoints serve with different certificates (each covering the name):
+    a load-balancer member or a server the last renewal forgot."""
+    out = []
+    for name, _sni in probes:
+        by_cert = {}  # type: Dict[str, List[Tuple[str, int]]]
+        for key, sha in (served.get(name) or {}).items():
+            by_cert.setdefault(sha, []).append(key)
+        if len(by_cert) < 2:
+            continue
+        certs = [entries[sha] for sha in by_cert]
+        certs.sort(key=lambda e: (e.get('notBefore') or '', e.get('notAfter') or ''), reverse=True)
+        out.append({'name': name, 'certificates': [{
+            'sha256': cert['sha256'],
+            'stale': any(other is not cert and other['keyAlgorithm'] == cert['keyAlgorithm']
+                         and _kind_family(other['kind']) == _kind_family(cert['kind'])
+                         and _issued_after(other, cert) for other in certs),
+            'endpoints': [{'servers': list(endpoints_of[cert['sha256']][key]['servers']),
+                           'ip': key[0], 'port': key[1]} for key in by_cert[cert['sha256']]],
+        } for cert in certs]})
+    return out
+
+
+def _shared_keys(certificates: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Public keys (SPKI SHA-256) served by :data:`SHARED_KEY_MIN_HOSTS` or more hosts, or
+    carried by several certificates: one stolen key opens all of them."""
+    groups = {}  # type: Dict[str, List[Dict[str, Any]]]
+    for entry in certificates:
+        if entry['spkiSha256']:
+            groups.setdefault(entry['spkiSha256'], []).append(entry)
+    out = []
+    for spki, certs in groups.items():
+        servers, addresses, hosts = [], [], set()  # type: List[str], List[str], Set[str]
+        for cert in certs:
+            for endpoint in cert['endpoints']:
+                if endpoint['ip'] not in addresses:
+                    addresses.append(endpoint['ip'])
+                for server in endpoint['servers'] or [endpoint['ip']]:
+                    if server.casefold() not in hosts:
+                        hosts.add(server.casefold())
+                        servers.append(server)
+        if len(hosts) >= SHARED_KEY_MIN_HOSTS or len(certs) >= 2:
+            out.append({'spkiSha256': spki, 'key': certs[0]['key'], 'hosts': len(hosts),
+                        'servers': servers, 'addresses': addresses,
+                        'certificates': [cert['sha256'] for cert in certs]})
+    out.sort(key=lambda g: (-g['hosts'], -len(g['certificates']), g['spkiSha256']))
+    return out
+
+
+# --- estate output: summary and CSV ------------------------------------------------
+
+ESTATE_CSV_COLUMNS = ('sha256', 'subject_cn', 'issuer', 'kind', 'not_after', 'days_left',
+                      'expiry', 'key', 'signature_algorithm', 'spki_sha256', 'hostnames',
+                      'covers_asked', 'server', 'ip', 'port', 'default_cert', 'served_for',
+                      'flags', 'weak')
+
+
+def estate_csv_rows(estate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One row per certificate, endpoint and server (:data:`ESTATE_CSV_COLUMNS`), in the
+    estate's order; lib/estate.js estateCsvRows gives the same rows."""
+    rows = []
+    for cert in estate.get('certificates') or []:
+        for endpoint in cert['endpoints']:
+            for server in endpoint['servers'] or ['']:
+                rows.append({
+                    'sha256': cert['sha256'], 'subject_cn': cert['subjectCN'] or '',
+                    'issuer': cert['issuer'] or '', 'kind': cert['kind'],
+                    'not_after': cert['notAfter'] or '', 'days_left': cert['daysLeft'],
+                    'expiry': cert['expiry'], 'key': cert['key'],
+                    'signature_algorithm': cert['signatureAlgorithm'] or '',
+                    'spki_sha256': cert['spkiSha256'] or '',
+                    'hostnames': ' '.join(cert['hostnames']),
+                    'covers_asked': ' '.join(cert['coversAsked']),
+                    'server': server, 'ip': endpoint['ip'], 'port': endpoint['port'],
+                    'default_cert': 'yes' if endpoint['defaultCert'] else 'no',
+                    'served_for': ' '.join(endpoint['names']),
+                    'flags': ' '.join(cert['flags']), 'weak': ' '.join(cert['weak']),
+                })
+    return rows
+
+
+def render_estate_csv(estate: Dict[str, Any], lineterminator: str = '\r\n',
+                      terminal: bool = False) -> str:
+    """The ``--estate --csv`` file: :func:`estate_csv_rows` under :data:`ESTATE_CSV_COLUMNS`,
+    every text cell spreadsheet-safe (:func:`_csv_cell`)."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator=lineterminator)
+    writer.writerow(ESTATE_CSV_COLUMNS)
+    for row in estate_csv_rows(estate):
+        writer.writerow([_csv_cell(row[column], terminal) for column in ESTATE_CSV_COLUMNS])
+    return buffer.getvalue()
+
+
+_BUCKET_TEXT = {'expired': 'expired', '7d': '< 7 days', '30d': '< 30 days', '90d': '< 90 days',
+                'later': 'later'}
+_KIND_TEXT = {KIND_ORIGIN_CA: 'Cloudflare Origin CA', KIND_SELF_SIGNED: 'self-signed',
+              KIND_PRIVATE_CA: 'private CA', KIND_OTHER: 'other CA'}
+_WEAK_TEXT = {'rsa-short': 'RSA key shorter than %d bits' % WEAK_RSA_BITS,
+              'sha1': 'SHA-1 signature', 'md5': 'MD5 / MD2 signature'}
+
+
+def _count_text(count: int, one: str, many: Optional[str] = None) -> str:
+    return '%d %s' % (count, one if count == 1 else (many or one + 's'))
+
+
+def _estate_endpoint_text(endpoint: Dict[str, Any], with_names: bool = True) -> str:
+    """``web01 192.0.2.10:443 (default; www.example.com)``."""
+    label = _endpoint_label(endpoint['ip'], endpoint['port'])
+    servers = [s for s in endpoint['servers'] if s != endpoint['ip']]
+    text = '%s %s' % (', '.join(servers), label) if servers else label
+    what = ['default'] if endpoint.get('defaultCert') else []
+    if with_names and endpoint.get('names'):
+        what.append(', '.join(endpoint['names']))
+    return '%s (%s)' % (text, '; '.join(what)) if what else text
+
+
+def _estate_where(endpoints: Sequence[Dict[str, Any]], show_all: bool,
+                  with_names: bool = True) -> str:
+    """The endpoints of a certificate, :data:`MAX_SUMMARY_ENDPOINTS` without --show-all."""
+    limit = len(endpoints) if show_all else MAX_SUMMARY_ENDPOINTS
+    parts = [_estate_endpoint_text(e, with_names) for e in endpoints[:limit]]
+    if len(endpoints) > limit:
+        parts.append('+%d more' % (len(endpoints) - limit))
+    return ', '.join(parts)
+
+
+def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = False,
+                  show_all: bool = False, width: int = 100,
+                  monitor: Optional[MonitorResult] = None) -> str:
+    """The ``--estate`` summary: what was scanned, the certificates by expiry and kind, then
+    what needs a look first - one name served with different certificates, keys on several
+    hosts, weak keys or signatures, certificates covering none of the names asked - and
+    every certificate served, soonest expiry first, with where it is served."""
+    style = Style(color)
+    now = report.finished_at
+    counts = estate['counts']
+    elapsed = (report.finished_at - report.started_at).total_seconds()
+    ports = list(dict.fromkeys(e.port for e in report.endpoints)) or list(report.ports)
+    lines = [style.paint('SSL estate: %d server(s), %d endpoint(s) (%d open), %d name(s) asked, '
+                         'ports %s, %.1fs' % (len(report.servers), counts['endpoints'],
+                                              counts['openEndpoints'], len(estate['namesAsked']),
+                                              ','.join(str(p) for p in ports), elapsed), 'bold')]
+    if report.exclude:
+        lines.append(_excluded_line(report, style))
+    if report.private_cas:
+        labels = [ca.short_label() for ca in report.private_cas]
+        lines.append(display_text('Private CAs (--private-ca): %s%s' % (
+            ', '.join(labels[:5]), ' ...' if len(labels) > 5 else '')))
+    expiry = counts['expiry']
+    lines.append('Certificates served: %d - %s' % (counts['certificates'], ', '.join(
+        style.paint('%s %d' % (_BUCKET_TEXT[b], expiry[b]),
+                    *(('red', 'bold') if b in ('expired', '7d') and expiry[b] else
+                      ('yellow',) if b == '30d' and expiry[b] else ()))
+        for b in ESTATE_BUCKETS)))
+    lines.append('Kinds: %s' % ', '.join('%s %d' % (_KIND_TEXT[k], counts['kinds'][k])
+                                         for k in ESTATE_KINDS))
+    if not estate['namesAsked']:
+        lines.append(style.paint('No names asked: every server was asked without SNI only. Give '
+                                 'your host names with -n (or targets by host name) to see the '
+                                 'certificate of each name.', 'dim'))
+    lines.append('')
+    if monitor is not None:
+        lines.extend(render_monitor(report, monitor, style, show_all, width))
+
+    certs = {entry['sha256']: entry for entry in estate['certificates']}
+
+    def head(sha: str, indent: str, extra: str = '') -> List[str]:
+        cert = report.certificates.get(sha)
+        text = cert_line(cert, now, style) if cert is not None else sha
+        return _wrap(indent, len(indent), text + extra, width)
+
+    def section(title: str, count: int, colors: Tuple[str, ...]) -> None:
+        lines.append(style.paint('%s: %d' % (title, count), *(colors if count else ('bold',))))
+
+    conflicts = estate['nameConflicts']
+    section('Same name, different certificates', len(conflicts), ('red', 'bold'))
+    if conflicts:
+        lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, (
+            'Endpoints serve these names with different certificates: a load-balancer member '
+            'or a server the last renewal left out. OLDER: another certificate of the same key '
+            'type and kind was issued after it.'), width))
+    for conflict in conflicts:
+        lines.append('  ' + style.paint(display_text(conflict['name']), 'bold'))
+        for item in conflict['certificates']:
+            lines.extend(head(item['sha256'], '    ',
+                              '  ' + style.paint('OLDER', 'red', 'bold') if item['stale'] else ''))
+            lines.extend(style.paint(line, 'dim') for line in _wrap(
+                '      ', 6, display_text(_estate_where(item['endpoints'], show_all,
+                                                        with_names=False)), width))
+    lines.append('')
+
+    shared = estate['sharedKeys']
+    section('Same key on several hosts or certificates', len(shared), ('yellow', 'bold'))
+    for group in shared:
+        lines.append('  %s key %s...: %s, %s' % (
+            group['key'], group['spkiSha256'][:16], _count_text(group['hosts'], 'host'),
+            _count_text(len(group['certificates']), 'certificate')))
+        names = [certs[sha]['subjectCN'] or sha[:16] for sha in group['certificates']]
+        lines.extend(_wrap('    ', 4, display_text('certificates: ' + ', '.join(names)), width))
+        limit = len(group['servers']) if show_all else MAX_SUMMARY_ENDPOINTS
+        servers = group['servers'][:limit] + (['+%d more' % (len(group['servers']) - limit)]
+                                              if len(group['servers']) > limit else [])
+        lines.extend(style.paint(line, 'dim') for line in _wrap(
+            '    ', 4, display_text('hosts: ' + ', '.join(servers)), width))
+    lines.append('')
+
+    weak = estate['weakKeys']
+    section('Weak keys or signatures', len(weak), ('red', 'bold'))
+    for item in weak:
+        entry = certs[item['sha256']]
+        lines.extend(head(item['sha256'], '  '))
+        reasons = ['%s (%s)' % (_WEAK_TEXT[r], entry['key'] if r == 'rsa-short'
+                                else entry['signatureAlgorithm']) for r in item['reasons']]
+        lines.append('    ' + style.paint('; '.join(reasons), 'red'))
+        lines.extend(style.paint(line, 'dim') for line in _wrap(
+            '    ', 4, display_text(_estate_where(entry['endpoints'], show_all)), width))
+    lines.append('')
+
+    if estate['coversNone'] is not None:
+        section('Covering none of the names asked', len(estate['coversNone']), ('yellow', 'bold'))
+        for sha in estate['coversNone']:
+            lines.extend(head(sha, '  '))
+            lines.extend(style.paint(line, 'dim') for line in _wrap(
+                '    ', 4, display_text(_estate_where(certs[sha]['endpoints'], show_all)), width))
+        lines.append('')
+
+    lines.append(style.paint('Every certificate served (%d), soonest expiry first'
+                             % counts['certificates'], 'bold'))
+    for entry in estate['certificates']:
+        kind = _KIND_TEXT[entry['kind']] if entry['kind'] != KIND_OTHER else ''
+        marks = [text for text in (kind, 'CA certificate' if entry['isCA'] else '') if text]
+        lines.extend(head(entry['sha256'], '  ', '  [%s]' % ', '.join(marks) if marks else ''))
+        detail = '%s, %s | sha256 %s... | key %s...' % (
+            entry['key'], entry['signatureAlgorithm'] or '?', entry['sha256'][:16],
+            (entry['spkiSha256'] or '?')[:16])
+        lines.append('    ' + style.paint(detail, 'dim'))
+        names = entry['hostnames']
+        if names:
+            shown = names if show_all else names[:8]
+            more = ' (+%d)' % (len(names) - len(shown)) if len(names) > len(shown) else ''
+            lines.extend(_wrap('    ', 4, display_text('names: ' + ', '.join(shown) + more), width))
+        lines.extend(_wrap('    ', 4, display_text('served: ' + _estate_where(entry['endpoints'],
+                                                                           show_all)), width))
+    lines.append('')
+
+    with_cert = {(e['ip'], e['port']) for c in estate['certificates'] for e in c['endpoints']}
+    missing = [e for e in report.endpoints if (e.ip, e.port) not in with_cert]
+    if missing:
+        closed = sum(1 for e in missing if e.state != OPEN)
+        parts = ['%d closed or not answering' % closed] if closed else []
+        if len(missing) > closed:
+            parts.append('%d open without a completed handshake' % (len(missing) - closed))
+        text = 'No certificate from %s: %s' % (_count_text(len(missing), 'endpoint'),
+                                               ', '.join(parts))
+        if not show_all:
+            lines.append(style.paint(text + ' - --show-all lists them.', 'dim'))
+        else:
+            lines.append(style.paint(text, 'bold'))
+            failure = {}  # type: Dict[Tuple[str, int], ProbeResult]
+            for row in report.results:
+                if row.status in _FAILED_STATUSES + (NOT_HOSTED,):
+                    failure.setdefault((row.ip, row.port), row)
+            for endpoint in missing:
+                row = failure.get((endpoint.ip, endpoint.port))
+                status = endpoint.state if endpoint.state != OPEN else (
+                    row.status if row else TLS_ERROR)
+                error = endpoint.error if endpoint.state != OPEN else (row.error if row else '')
+                lines.append('  %s  %s  %s' % (_endpoint_label(endpoint.ip, endpoint.port),
+                                               style.status(status),
+                                               style.paint(display_text(error or ''), 'dim')))
+    return '\n'.join(lines) + '\n'
+
+
+# =====================================================================================
+# bundle-check: a certificate, its chain, private key and CSR checked before installing
+# =====================================================================================
+# Files are classified block by block (PEM or DER): certificates (also PKCS#7), private keys
+# (PKCS#1, PKCS#8, SEC1; an encrypted one is named and skipped), CSRs and public keys. Keys
+# are compared by their public half only: an RSA private key holds n and e, an EC one
+# (SEC1 / PKCS#8) usually its public point. Nothing secret is ever printed; a key's PEM is
+# kept only to write haproxy.pem when asked. Signatures are not verified: the chain is
+# ordered by issuer / subject names and key identifiers, as issued_by() does for the scan.
+
+BUNDLE_OK = 'OK'
+BUNDLE_WARN = 'WARN'
+BUNDLE_FAIL = 'FAIL'
+BUNDLE_SKIPPED = 'SKIPPED'
+BUNDLE_STATUSES = (BUNDLE_OK, BUNDLE_WARN, BUNDLE_FAIL, BUNDLE_SKIPPED)
+ENCRYPTED_KEY_NOTE = 'encrypted key: cannot check without a password - skipped'
+NO_PUBLIC_KEY_NOTE = ('the key file does not hold its public key (%s keys usually do): it '
+                      'cannot be compared - skipped')
+_OID_EXTENSION_REQUEST = '1.2.840.113549.1.9.14'
+_KEY_PEM_LABELS = {'PKCS#8': 'PRIVATE KEY', 'PKCS#1': 'RSA PRIVATE KEY', 'SEC1': 'EC PRIVATE KEY'}
+CERT_FILE_MAX_BYTES = 10 << 20  # a bundle-check file larger than this is no certificate or key
+
+
+@dataclass
+class PrivateKeyInfo:
+    """What bundle-check reads from a private key: its format and public key, never the
+    private numbers. ``pem`` (the key as found) only goes into haproxy.pem, never on screen."""
+
+    format: str                      # PKCS#1 | PKCS#8 | SEC1 | encrypted PKCS#8 | encrypted PEM ...
+    algorithm: str                   # RSA | EC | Ed25519 | ... | unknown
+    public_key: Optional[PublicKey] = None
+    encrypted: bool = False
+    note: Optional[str] = None       # why there is no public key to compare
+    pem: str = field(default='', repr=False)
+
+
+@dataclass
+class CsrInfo:
+    """A certificate signing request: who it names and the key it was made for."""
+
+    subject_dn: str
+    subject_cn: Optional[str]
+    dns_names: List[str]
+    public_key: Optional[PublicKey]
+    signature_algorithm: str
+
+
+@dataclass
+class BundleItem:
+    """One thing found in a bundle-check file (a PEM block, or a DER file)."""
+
+    file: str
+    kind: str                        # certificate | private-key | csr | public-key | pkcs12 | unknown
+    cert: Optional[CertInfo] = None
+    key: Optional[PrivateKeyInfo] = None
+    csr: Optional[CsrInfo] = None
+    public_key: Optional[PublicKey] = None
+    detail: str = ''
+
+
+@dataclass
+class BundleCheck:
+    """One verdict line: :data:`BUNDLE_STATUSES` status, a topic and what it means."""
+
+    status: str
+    topic: str                       # key | csr | chain | order | root | expiry | other | haproxy
+    text: str
+
+
+@dataclass
+class BundleResult:
+    """What :func:`check_bundle` found; ``chain`` is the leaf and each issuer found after it
+    (a root included when a file holds it)."""
+
+    items: List[BundleItem]
+    leaf: Optional[CertInfo]
+    chain: List[CertInfo]
+    checks: List[BundleCheck]
+    key: Optional[BundleItem] = None  # the unencrypted private key that belongs to the leaf
+    complete: bool = False           # nothing is missing between the leaf and a trusted root
+
+    @property
+    def fullchain(self) -> List[CertInfo]:
+        """The leaf and its intermediates, in the order servers send them (no root)."""
+        return [cert for cert in self.chain if not (cert.self_signed and cert is not self.leaf)]
+
+    @property
+    def intermediates(self) -> List[CertInfo]:
+        """The fullchain without the leaf (chain.pem)."""
+        return self.fullchain[1:]
+
+    @property
+    def failed(self) -> bool:
+        """Any FAIL check (exit code 1)."""
+        return any(check.status == BUNDLE_FAIL for check in self.checks)
+
+
+def pem_encode(der: bytes, label: str = 'CERTIFICATE') -> str:
+    """``der`` as a PEM block (64-character lines, trailing newline)."""
+    b64 = base64.b64encode(der).decode('ascii')
+    body = '\n'.join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return '-----BEGIN %s-----\n%s\n-----END %s-----\n' % (label, body, label)
+
+
+def _bit_string_bytes(buf: bytes, tlv: Tlv) -> bytes:
+    """A BIT STRING's bytes after its "unused bits" octet."""
+    data = _content(buf, tlv)
+    if not data:
+        raise DerError('empty BIT STRING')
+    return data[1:]
+
+
+def _rsa_private(der: bytes, fmt: str) -> PrivateKeyInfo:
+    """RSAPrivateKey ::= SEQUENCE { version, modulus, publicExponent, privateExponent, ... }:
+    only the modulus and the public exponent are read."""
+    top = _expect(_read_tlv(der, 0, len(der)), 0x30, 'RSAPrivateKey')
+    fields = _children(der, top[2], top[3])
+    if len(fields) < 3 or any(item[0] != 0x02 for item in fields[:3]):
+        raise DerError('malformed RSAPrivateKey')
+    return PrivateKeyInfo(fmt, 'RSA', rsa_public_key(int.from_bytes(_content(der, fields[1]), 'big'),
+                                                     int.from_bytes(_content(der, fields[2]), 'big')))
+
+
+def _sec1_private(der: bytes, fmt: str, curve_oid: Optional[str] = None) -> PrivateKeyInfo:
+    """ECPrivateKey ::= SEQUENCE { version 1, privateKey OCTET STRING, [0] parameters
+    OPTIONAL, [1] publicKey OPTIONAL }: the curve and the public point, when present."""
+    top = _expect(_read_tlv(der, 0, len(der)), 0x30, 'ECPrivateKey')
+    fields = _children(der, top[2], top[3])
+    if len(fields) < 2 or fields[0][0] != 0x02 or fields[1][0] != 0x04:
+        raise DerError('malformed ECPrivateKey')
+    point = None  # type: Optional[bytes]
+    for item in fields[2:]:
+        inner = _children(der, item[2], item[3])
+        if item[0] == 0xA0 and inner and inner[0][0] == 0x06:
+            curve_oid = _oid(der, inner[0])
+        elif item[0] == 0xA1 and inner and inner[0][0] == 0x03:
+            point = _bit_string_bytes(der, inner[0])
+    if point is None:
+        return PrivateKeyInfo(fmt, 'EC', note=NO_PUBLIC_KEY_NOTE % 'EC')
+    return PrivateKeyInfo(fmt, 'EC', ec_public_key(curve_oid, point))
+
+
+def parse_private_key(der: Union[bytes, bytearray, memoryview]) -> PrivateKeyInfo:
+    """The format and public key of a DER private key: PKCS#8 (``PRIVATE KEY``, also
+    OneAsymmetricKey with its public key), encrypted PKCS#8, PKCS#1 (``RSA PRIVATE KEY``) or
+    SEC1 (``EC PRIVATE KEY``). The private numbers are never kept. Raises
+    :class:`DerError` for anything else."""
+    buf = bytes(der)
+    top = _expect(_read_tlv(buf, 0, len(buf)), 0x30, 'private key SEQUENCE')
+    fields = _children(buf, top[2], top[3])
+    tags = [item[0] for item in fields]
+    if tags == [0x30, 0x04]:  # EncryptedPrivateKeyInfo { AlgorithmIdentifier, OCTET STRING }
+        return PrivateKeyInfo('encrypted PKCS#8', 'unknown', encrypted=True,
+                              note=ENCRYPTED_KEY_NOTE)
+    if len(fields) >= 3 and tags[:3] == [0x02, 0x30, 0x04]:  # PrivateKeyInfo / OneAsymmetricKey
+        alg = _children(buf, fields[1][2], fields[1][3])
+        if not alg:
+            raise DerError('empty AlgorithmIdentifier')
+        oid = _oid(buf, alg[0])
+        family = _KEY_FAMILIES.get(oid, 'unknown')
+        inner = _content(buf, fields[2])
+        # OneAsymmetricKey (RFC 5958) publicKey [1] IMPLICIT BIT STRING
+        outer = next((item for item in fields[3:] if item[0] == 0x81), None)
+        if family == 'RSA':
+            return _rsa_private(inner, 'PKCS#8')
+        if family == 'EC':
+            curve_oid = _oid(buf, alg[1]) if len(alg) > 1 and alg[1][0] == 0x06 else None
+            info = _sec1_private(inner, 'PKCS#8', curve_oid)
+            if info.public_key is None and outer is not None:
+                info = PrivateKeyInfo('PKCS#8', 'EC',
+                                      ec_public_key(curve_oid, _bit_string_bytes(buf, outer)))
+            return info
+        if outer is not None and family in ('Ed25519', 'Ed448'):
+            key = _bit_string_bytes(buf, outer)
+            return PrivateKeyInfo('PKCS#8', family,
+                                  PublicKey(family, 256 if family == 'Ed25519' else 456, None,
+                                            (oid, key)))
+        return PrivateKeyInfo('PKCS#8', family, note=NO_PUBLIC_KEY_NOTE % family
+                              if family in ('Ed25519', 'Ed448') else
+                              'a %s key: not compared by this tool - skipped' % family)
+    if len(fields) >= 9 and all(tag == 0x02 for tag in tags[:9]):
+        return _rsa_private(buf[top[1]:top[3]], 'PKCS#1')
+    if len(fields) >= 2 and tags[:2] == [0x02, 0x04]:
+        return _sec1_private(buf[top[1]:top[3]], 'SEC1')
+    if len(fields) == 6 and all(tag == 0x02 for tag in tags):
+        return PrivateKeyInfo('DSA', 'DSA', note='a DSA key: not compared by this tool - skipped')
+    raise DerError('not a private key this tool reads')
+
+
+def _general_names(buf: bytes, tlv: Tlv) -> List[str]:
+    names = _expect(tlv, 0x30, 'GeneralNames')
+    return [_content(buf, item).decode('ascii', 'replace')
+            for item in _children(buf, names[2], names[3]) if item[0] == 0x82]
+
+
+def parse_csr(der: Union[bytes, bytearray, memoryview]) -> CsrInfo:
+    """A DER PKCS#10 CertificationRequest: subject, the DNS names of its extensionRequest
+    and its public key. The signature is not verified. Raises :class:`DerError`."""
+    buf = bytes(der)
+    top = _expect(_read_tlv(buf, 0, len(buf)), 0x30, 'CertificationRequest')
+    parts = _children(buf, top[2], top[3])
+    if len(parts) != 3:
+        raise DerError('a CertificationRequest has 3 elements, found %d' % len(parts))
+    info = _children(buf, *_expect(parts[0], 0x30, 'CertificationRequestInfo')[2:4])
+    if len(info) < 3:
+        raise DerError('CertificationRequestInfo is missing fields')
+    _expect(info[0], 0x02, 'version')
+    subject = _parse_name(buf, _expect(info[1], 0x30, 'subject Name'))
+    spki = _expect(info[2], 0x30, 'SubjectPublicKeyInfo')
+    dns_names = []  # type: List[str]
+    for attrs in info[3:]:
+        if attrs[0] != 0xA0:
+            continue
+        for attr in _children(buf, attrs[2], attrs[3]):
+            fields = _children(buf, *_expect(attr, 0x30, 'Attribute')[2:4])
+            if len(fields) < 2 or _oid(buf, fields[0]) != _OID_EXTENSION_REQUEST:
+                continue
+            for extensions in _children(buf, fields[1][2], fields[1][3]):
+                for ext in _children(buf, *_expect(extensions, 0x30, 'Extensions')[2:4]):
+                    ext_parts = _children(buf, *_expect(ext, 0x30, 'Extension')[2:4])
+                    if len(ext_parts) >= 2 and _oid(buf, ext_parts[0]) == _OID_SAN:
+                        value = _expect(ext_parts[-1], 0x04, 'extnValue')
+                        dns_names.extend(_general_names(buf, _read_tlv(buf, value[2], value[3])))
+    try:
+        public_key = public_key_from_spki(buf[spki[1]:spki[3]])  # type: Optional[PublicKey]
+    except _CERT_PARSE_ERRORS:
+        public_key = None
+    sig = _children(buf, *_expect(parts[1], 0x30, 'signatureAlgorithm')[2:4])
+    sig_oid = _oid(buf, sig[0]) if sig else ''
+    attrs = _dn_attrs(subject)
+    return CsrInfo(_dn_string(subject), attrs.get('CN'), dns_names, public_key,
+                   _SIGNATURE_ALGORITHMS.get(sig_oid, sig_oid))
+
+
+def _der_shape(buf: bytes) -> List[int]:
+    """The tags of a DER SEQUENCE's children ([] when ``buf`` is not one)."""
+    try:
+        top = _expect(_read_tlv(buf, 0, len(buf)), 0x30, 'SEQUENCE')
+        return [item[0] for item in _children(buf, top[2], top[3])]
+    except DerError:
+        return []
+
+
+def _is_csr(buf: bytes) -> bool:
+    """A signed structure whose to-be-signed part is { INTEGER, Name, SPKI, [0] }: a CSR."""
+    try:
+        top = _read_tlv(buf, 0, len(buf))
+        info = _children(buf, top[2], top[3])[0]
+        return [item[0] for item in _children(buf, info[2], info[3])][:4] == [0x02, 0x30, 0x30,
+                                                                             0xA0]
+    except (DerError, IndexError):
+        return False
+
+
+def _key_item(name: str, der: bytes, pem: Optional[str] = None) -> BundleItem:
+    try:
+        key = parse_private_key(der)
+    except DerError as exc:
+        return BundleItem(name, 'unknown', detail='unreadable private key (%s)' % exc)
+    if not key.encrypted and key.format in _KEY_PEM_LABELS:
+        key.pem = pem if pem is not None else pem_encode(der, _KEY_PEM_LABELS[key.format])
+    return BundleItem(name, 'private-key', key=key)
+
+
+def _der_items(name: str, der: bytes) -> List[BundleItem]:
+    """Items of one DER structure: certificates (also PKCS#7), a CSR, a key or a public key."""
+    if _looks_like_pkcs12(der):
+        return [BundleItem(name, 'pkcs12', detail=PKCS12_HINT)]
+    shape = _der_shape(der)
+    if shape == [0x30, 0x30, 0x03] and _is_csr(der):
+        try:
+            return [BundleItem(name, 'csr', csr=parse_csr(der))]
+        except _CERT_PARSE_ERRORS as exc:
+            return [BundleItem(name, 'unknown', detail='unreadable CSR (%s)' % exc)]
+    if shape == [0x30, 0x03]:
+        try:
+            return [BundleItem(name, 'public-key', public_key=public_key_from_spki(der))]
+        except _CERT_PARSE_ERRORS as exc:
+            return [BundleItem(name, 'unknown', detail='unreadable public key (%s)' % exc)]
+    if shape[:1] == [0x06] or shape == [0x30, 0x30, 0x03]:
+        certs, warnings = [], []  # type: List[CertInfo], List[CertWarning]
+        _load_der(der, certs, warnings)
+        return ([BundleItem(name, 'certificate', cert=cert) for cert in certs]
+                + [BundleItem(name, 'unknown', detail=detail) for _code, detail in warnings])
+    return [_key_item(name, der)] if shape else [
+        BundleItem(name, 'unknown', detail='not PEM or DER')]
+
+
+def _pem_items(name: str, label: str, body: str, block: str) -> List[BundleItem]:
+    """Items of one PEM block (``block``: the whole block, kept for a key's haproxy.pem)."""
+    if 'PRIVATE KEY' in label:
+        if 'ENCRYPTED' in label or re.search(r'Proc-Type:\s*4\s*,\s*ENCRYPTED', body):
+            return [BundleItem(name, 'private-key', key=PrivateKeyInfo(
+                'encrypted PKCS#8' if 'ENCRYPTED' in label else 'encrypted PEM', 'unknown',
+                encrypted=True, note=ENCRYPTED_KEY_NOTE))]
+        if label == 'OPENSSH PRIVATE KEY':
+            return [BundleItem(name, 'unknown', detail='an OpenSSH key (ssh-keygen), not a TLS key')]
+    try:
+        der = _b64decode(body)
+    except (binascii.Error, ValueError) as exc:
+        return [BundleItem(name, 'unknown', detail='%s: bad base64 (%s)' % (label, exc))]
+    if 'PRIVATE KEY' in label:
+        return [_key_item(name, der, re.sub(r'\r\n?', '\n', block).strip() + '\n')]
+    if 'CERTIFICATE REQUEST' in label:
+        try:
+            return [BundleItem(name, 'csr', csr=parse_csr(der))]
+        except _CERT_PARSE_ERRORS as exc:
+            return [BundleItem(name, 'unknown', detail='unreadable CSR (%s)' % exc)]
+    if label == 'RSA PUBLIC KEY':
+        try:
+            fields = _children(der, *_expect(_read_tlv(der, 0, len(der)), 0x30,
+                                             'RSAPublicKey')[2:4])
+            return [BundleItem(name, 'public-key', public_key=rsa_public_key(
+                int.from_bytes(_content(der, fields[0]), 'big'),
+                int.from_bytes(_content(der, fields[1]), 'big')))]
+        except (DerError, IndexError) as exc:
+            return [BundleItem(name, 'unknown', detail='unreadable RSA public key (%s)' % exc)]
+    if label in _CERT_LABELS + ('PKCS7', 'CMS', 'PUBLIC KEY', 'PKCS12', 'PFX'):
+        return _der_items(name, der)
+    return [BundleItem(name, 'unknown', detail='a %s block (not used)' % label)]
+
+
+def bundle_items(data: Union[bytes, str], name: str) -> List[BundleItem]:
+    """Everything in one bundle-check file, in file order: PEM blocks of any kind (text
+    around them is ignored), or one DER structure. Never raises for bad input."""
+    raw = (data.lstrip('﻿').encode('latin-1', 'replace') if isinstance(data, str)
+           else _text_bytes(bytes(data)))
+    text = raw.decode('latin-1')
+    items = []  # type: List[BundleItem]
+    if '-----BEGIN ' in text:
+        for match in _PEM_RE.finditer(text):
+            items.extend(_pem_items(name, match.group(1), match.group(2), match.group(0)))
+    elif raw[:1] == b'\x30':
+        items.extend(_der_items(name, raw))
+    if not items:
+        items.append(BundleItem(name, 'unknown', detail='no certificate, key or CSR found'))
+    return items
+
+
+def _cert_label(cert: CertInfo) -> str:
+    return display_text(cert.short_label())
+
+
+def _key_problem(item: BundleItem) -> Optional[str]:
+    """Why a private key cannot be compared (None when it can)."""
+    assert item.key is not None
+    if item.key.encrypted:
+        return ENCRYPTED_KEY_NOTE
+    if item.key.public_key is None:
+        return item.key.note or 'no public key to compare - skipped'
+    return None
+
+
+def check_bundle(items: Sequence[BundleItem], now: Optional[datetime] = None) -> BundleResult:
+    """Classify the leaf, order the chain and check key, CSR and chain together.
+
+    The leaf is the end-entity certificate a private key of the files belongs to, else the
+    first one (not a CA, issuing no other certificate of the files). Its chain follows
+    :func:`issued_by` (issuer / subject names and key identifiers; signatures are not
+    verified) through the other certificates. A leaf nothing issued is a missing
+    intermediate (FAIL) unless it is self-signed; a chain that ends at an intermediate whose
+    issuer is not in the files is fine (a root clients trust); a root in the files is an
+    extra root (WARN: servers need not send it). Files that list chain certificates in
+    another order than servers send them get a WARN; fullchain.pem is written in the right
+    order anyway.
+    """
+    now = now or _utcnow()
+    checks = []  # type: List[BundleCheck]
+    certs = []  # type: List[CertInfo]
+    where = {}  # type: Dict[str, Tuple[str, int]]  sha256 -> (file, position in all items)
+    for position, item in enumerate(items):
+        if item.cert is not None and item.cert.sha256 not in where:
+            where[item.cert.sha256] = (item.file, position)
+            certs.append(item.cert)
+    keys = [item for item in items if item.kind == 'private-key']
+    csrs = [item for item in items if item.kind == 'csr']
+
+    leaves = [cert for cert in certs if not cert.is_ca
+              and not any(other is not cert and issued_by(other, cert) for other in certs)]
+    leaf = None  # type: Optional[CertInfo]
+    for cert in leaves:
+        pk = cert.public_key()
+        if pk is not None and any(item.key is not None and item.key.public_key is not None
+                                  and item.key.public_key.ident == pk.ident for item in keys):
+            leaf = cert
+            break
+    if leaf is None:
+        leaf = leaves[0] if leaves else (certs[0] if certs else None)
+    leaf_key = leaf.public_key() if leaf is not None else None
+    leaf_name = _cert_label(leaf) if leaf is not None else ''
+
+    matching = None  # type: Optional[BundleItem]
+    for item in keys:
+        problem = _key_problem(item)
+        assert item.key is not None
+        if problem:
+            checks.append(BundleCheck(BUNDLE_SKIPPED, 'key', '%s: %s' % (item.file, problem)))
+        elif leaf is None:
+            pass  # compared with the CSR below
+        elif leaf_key is not None and item.key.public_key.ident == leaf_key.ident:
+            matching = matching or item
+            checks.append(BundleCheck(BUNDLE_OK, 'key', '%s belongs to the certificate %s (%s)' % (
+                item.file, leaf_name, leaf_key.label())))
+        else:
+            owner = next((cert for cert in certs if cert is not leaf and cert.public_key()
+                          and cert.public_key().ident == item.key.public_key.ident), None)
+            checks.append(BundleCheck(BUNDLE_FAIL, 'key', (
+                '%s belongs to %s, not to the certificate %s' % (item.file, _cert_label(owner),
+                                                                 leaf_name)
+                if owner is not None else
+                '%s does not belong to the certificate %s (the key: %s; the certificate: %s)'
+                % (item.file, leaf_name, item.key.public_key.label(),
+                   leaf_key.label() if leaf_key else 'unreadable'))))
+
+    for item in csrs:
+        assert item.csr is not None
+        csr_key = item.csr.public_key
+        if csr_key is None:
+            checks.append(BundleCheck(BUNDLE_SKIPPED, 'csr', '%s: its public key cannot be read'
+                                      % item.file))
+        elif leaf is not None:
+            if leaf_key is not None and csr_key.ident == leaf_key.ident:
+                checks.append(BundleCheck(BUNDLE_OK, 'csr', '%s holds the public key of the '
+                                          'certificate %s' % (item.file, leaf_name)))
+                asked = [normalize_hostname(n, allow_wildcard=True) or n.lower()
+                         for n in item.csr.dns_names]
+                extra = [n for n in asked if n not in leaf.hostnames]
+                if extra:
+                    checks.append(BundleCheck(BUNDLE_WARN, 'csr', '%s asks for names the '
+                                              'certificate does not have: %s' % (
+                                                  item.file, display_text(', '.join(extra)))))
+            else:
+                checks.append(BundleCheck(BUNDLE_FAIL, 'csr', '%s was made for another key: the '
+                                          'certificate %s was not issued from it (or was '
+                                          're-keyed since)' % (item.file, leaf_name)))
+        else:
+            for key in keys:
+                if key.key is not None and _key_problem(key) is None:
+                    same = key.key.public_key is not None and key.key.public_key.ident == csr_key.ident
+                    checks.append(BundleCheck(BUNDLE_OK if same else BUNDLE_FAIL, 'csr', (
+                        '%s was made with the private key %s' if same else
+                        '%s was not made with the private key %s') % (item.file, key.file)))
+
+    chain = []  # type: List[CertInfo]
+    complete = False
+    if leaf is None:
+        checks.append(BundleCheck(BUNDLE_FAIL, 'chain', 'no certificate in these files'))
+    else:
+        chain = [leaf]
+        in_chain = {leaf.sha256}
+        current = leaf
+        while not current.self_signed:
+            issuer = next((cert for cert in certs if cert.sha256 not in in_chain
+                           and issued_by(current, cert)), None)
+            if issuer is None:
+                break
+            chain.append(issuer)
+            in_chain.add(issuer.sha256)
+            current = issuer
+        checks.extend(_chain_checks(leaf, chain, now))
+        complete = chain[-1].self_signed or len(chain) > 1
+        checks.extend(_order_checks(chain, where))
+        for cert in certs:
+            if cert.sha256 not in in_chain:
+                checks.append(BundleCheck(BUNDLE_WARN, 'other', '%s (%s) is not part of the '
+                                          'chain of %s: left out' % (
+                                              _cert_label(cert), where[cert.sha256][0], leaf_name)))
+    return BundleResult(list(items), leaf, chain, checks, matching, complete)
+
+
+def _chain_checks(leaf: CertInfo, chain: Sequence[CertInfo], now: datetime) -> List[BundleCheck]:
+    """Validity of each certificate, the chain as found, a missing intermediate, an extra root."""
+    out = []  # type: List[BundleCheck]
+    for cert in chain:
+        if cert.not_after < now:
+            out.append(BundleCheck(BUNDLE_FAIL if cert is leaf else BUNDLE_WARN, 'expiry',
+                                   '%s expired on %s' % (_cert_label(cert),
+                                                         cert.not_after.strftime('%Y-%m-%d'))))
+        elif cert.not_before > now:
+            out.append(BundleCheck(BUNDLE_WARN, 'expiry', '%s is not valid before %s' % (
+                _cert_label(cert), cert.not_before.strftime('%Y-%m-%d'))))
+    path = ' -> '.join(_cert_label(cert) + (' (root)' if cert.self_signed and cert is not leaf
+                                            else '') for cert in chain)
+    last = chain[-1]
+    if leaf.self_signed:
+        out.append(BundleCheck(BUNDLE_OK, 'chain', '%s is self-signed: there is no chain to send'
+                               % _cert_label(leaf)))
+    elif len(chain) == 1:
+        hint = ' (the CA publishes it at %s)' % ', '.join(leaf.ca_issuers) if leaf.ca_issuers else ''
+        out.append(BundleCheck(BUNDLE_FAIL, 'chain', 'missing intermediate: no file holds %s, the '
+                               'issuer of %s%s; servers must send it with the certificate - unless '
+                               'it is a root your clients already trust (a private CA)' % (
+                                   display_text(leaf.issuer_label()), _cert_label(leaf), hint)))
+    elif last.self_signed:
+        out.append(BundleCheck(BUNDLE_OK, 'chain', path))
+        out.append(BundleCheck(BUNDLE_WARN, 'root', 'extra root: %s is a root certificate; servers '
+                               'need not send it (clients use their own copy), so fullchain.pem '
+                               'and chain.pem leave it out' % _cert_label(last)))
+    else:
+        out.append(BundleCheck(BUNDLE_OK, 'chain', '%s; %s is issued by %s, not in these files '
+                               '(normal for a root the clients trust)' % (
+                                   path, _cert_label(last), display_text(last.issuer_label()))))
+    return out
+
+
+def _order_checks(chain: Sequence[CertInfo], where: Dict[str, Tuple[str, int]]
+                  ) -> List[BundleCheck]:
+    """A file that lists chain certificates in another order than servers send them (the
+    leaf first, then each certificate's issuer)."""
+    out = []  # type: List[BundleCheck]
+    by_file = {}  # type: Dict[str, List[Tuple[int, int, CertInfo]]]
+    for rank, cert in enumerate(chain):
+        file, position = where[cert.sha256]
+        by_file.setdefault(file, []).append((position, rank, cert))
+    for file, entries in by_file.items():
+        entries.sort(key=lambda entry: entry[0])
+        for (_pos, rank, cert), (_next_pos, next_rank, next_cert) in zip(entries, entries[1:]):
+            if next_rank < rank:
+                out.append(BundleCheck(BUNDLE_WARN, 'order', '%s lists %s before %s; servers send '
+                                       'the leaf first, then each certificate\'s issuer '
+                                       '(fullchain.pem has that order)' % (
+                                           file, _cert_label(cert), _cert_label(next_cert))))
+                break
+    return out
+
+
+def _write_secret(path: str, text: str) -> None:
+    """Write ``path`` whole or not at all, readable by the owner only where the system has
+    modes (a key goes in it)."""
+    temp = _temp_path(path)
+    try:
+        handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0),
+                         0o600)
+        with os.fdopen(handle, 'w', encoding='utf-8', newline='') as out:
+            out.write(text)
+        os.replace(temp, path)
+    except OSError as exc:
+        _remove_quietly(temp)
+        raise UsageError('cannot write %s: %s' % (path, exc.strerror or exc))
+    except BaseException:
+        _remove_quietly(temp)
+        raise
+
+
+def bundle_outputs(result: BundleResult, haproxy: bool = False) -> List[Tuple[str, str, str]]:
+    """``(file name, text, what it holds)`` to write: fullchain.pem (the leaf and its
+    intermediates, leaf first), chain.pem (the intermediates, when there are any) and, with
+    ``haproxy``, haproxy.pem (fullchain.pem and the private key). Empty when the chain is not
+    complete (a missing intermediate) or there is no leaf."""
+    if result.leaf is None or not result.complete:
+        return []
+    full = result.fullchain
+    inter = result.intermediates
+    what = 'the certificate%s' % (' + %s' % _count_text(len(inter), 'intermediate') if inter else '')
+    out = [('fullchain.pem', ''.join(pem_encode(cert.der) for cert in full), what)]
+    if inter:
+        out.append(('chain.pem', ''.join(pem_encode(cert.der) for cert in inter),
+                    _count_text(len(inter), 'intermediate')))
+    if haproxy and result.key is not None and result.key.key is not None:
+        out.append(('haproxy.pem', out[0][1] + result.key.key.pem,
+                    what + ' + the private key'))
+    return out
+
+
+def _item_text(item: BundleItem, now: datetime, style: Style) -> str:
+    """One line about one item: what it is (never key material)."""
+    if item.cert is not None:
+        cert = item.cert
+        role = 'root' if cert.self_signed and cert.is_ca else 'CA' if cert.is_ca else ''
+        return 'certificate%s: %s' % (' (%s)' % role if role else '', cert_line(cert, now, style))
+    if item.key is not None:
+        key = item.key
+        if key.encrypted:
+            return 'private key: %s' % key.format
+        what = key.public_key.label() if key.public_key is not None else key.algorithm
+        return 'private key: %s, %s, unencrypted' % (what, key.format)
+    if item.csr is not None:
+        csr = item.csr
+        text = 'CSR: %s' % (display_text(csr.subject_dn) or '(empty subject)')
+        if csr.dns_names:
+            text += ', names %s' % display_text(' '.join(csr.dns_names[:6])) + (
+                ' (+%d)' % (len(csr.dns_names) - 6) if len(csr.dns_names) > 6 else '')
+        if csr.public_key is not None:
+            text += ', %s' % csr.public_key.label()
+        return text
+    if item.public_key is not None:
+        return 'public key: %s' % item.public_key.label()
+    if item.kind == 'pkcs12':
+        return 'PKCS#12 bundle: not read here; extract it first: %s' % item.detail
+    return 'not used: %s' % display_text(item.detail)
+
+
+_BUNDLE_STYLES = {BUNDLE_OK: ('green', 'bold'), BUNDLE_WARN: ('yellow', 'bold'),
+                  BUNDLE_FAIL: ('red', 'bold'), BUNDLE_SKIPPED: ('dim',)}
+
+
+def render_bundle(result: BundleResult, written: Sequence[Tuple[str, str]] = (),
+                  color: bool = False, width: int = 100, now: Optional[datetime] = None,
+                  notes: Sequence[str] = ()) -> str:
+    """The bundle-check report: each file's items, the checks, what was written."""
+    style = Style(color)
+    now = now or _utcnow()
+    files = list(dict.fromkeys(item.file for item in result.items))
+    lines = [style.paint('Bundle check: %s' % _count_text(len(files), 'file'), 'bold')]
+    pad = min(32, max(len(display_text(f)) for f in files)) if files else 0
+    for file in files:
+        label = display_text(file)
+        for index, item in enumerate(i for i in result.items if i.file == file):
+            prefix = '  %s  ' % (label.ljust(pad) if index == 0 else ' ' * max(pad, len(label)))
+            lines.extend(_wrap(prefix, len(prefix), _item_text(item, now, style), width))
+    lines.append('')
+    lines.append(style.paint('Checks', 'bold'))
+    label_width = max(len(status) for status in BUNDLE_STATUSES)
+    for check in result.checks:
+        prefix = '  %s  ' % style.paint(check.status.ljust(label_width),
+                                        *_BUNDLE_STYLES[check.status])
+        lines.extend(_wrap(prefix, 4 + label_width, check.text, width))
+    for note in notes:
+        lines.extend(_wrap('  ', 2, note, width))
+    if written:
+        lines.append('')
+        lines.append('Written: %s' % ', '.join('%s (%s)' % (path, what) for path, what in written))
+    return '\n'.join(lines) + '\n'
+
+
+BUNDLE_DESCRIPTION = """\
+Check a certificate, its chain, private key and CSR together before installing them - in
+any order and format (PEM, DER, P7B; PKCS#1, PKCS#8 and SEC1 keys) - and write the chain
+in the order servers send it. Nothing is sent anywhere; nothing secret is printed."""
+
+BUNDLE_EPILOG = """\
+checks:
+  key      the private key belongs to the certificate (public key compared: RSA modulus
+           and exponent, EC point); an encrypted key is skipped (no password is asked),
+           an EC key file without its public key is named and skipped
+  csr      the CSR holds the certificate's public key (and asks for no other names);
+           without a certificate: the CSR was made with the private key
+  chain    the leaf, then each issuer (subject / issuer names and key identifiers, as
+           servers are expected to send them; signatures are not verified): a leaf
+           that nothing in the files issued is a missing intermediate (FAIL), a root in
+           the files an extra root (WARN), a file in another order a WARN, a
+           certificate of another chain is left out
+  expiry   an expired certificate (the leaf: FAIL) or one not valid yet
+
+output (--out-dir DIR): fullchain.pem (leaf + intermediates, leaf first, no root) and
+  chain.pem (the intermediates), written only when the chain is complete; with
+  --write-haproxy also haproxy.pem (fullchain.pem + the private key, owner-only on
+  Linux / macOS - HAProxy's crt file). Existing files of these names are replaced.
+
+exit codes: 0 every check passed, 1 a check failed (FAIL, or haproxy.pem could not be
+            made), 2 usage error, 3 a file could not be written
+
+examples:
+  python3 ssl_origin_scan.py bundle-check www.example.com.crt ca-bundle.crt private.key
+  python3 ssl_origin_scan.py bundle-check cert.pem chain.pem key.pem request.csr -o out/
+  python3 ssl_origin_scan.py bundle-check cert.pem chain.pem key.pem -o /etc/haproxy/certs \\
+    --write-haproxy
+
+Türkçe: sertifikayı, zincirini, özel anahtarı ve CSR'ı birlikte denetler (anahtar
+sertifikaya ait mi, CSR bu anahtarla mı yapıldı, zincir sırası, eksik ara sertifika,
+fazladan kök) ve -o DİZİN ile fullchain.pem ile chain.pem'i doğru sırayla yazar;
+--write-haproxy anahtarı da içeren haproxy.pem'i yazar. Hiçbir şey gönderilmez, gizli
+hiçbir şey ekrana yazılmaz.
+"""
+
+
+def build_bundle_parser() -> argparse.ArgumentParser:
+    """The ``bundle-check`` subcommand's parser (exposed for tests and documentation)."""
+    parser = argparse.ArgumentParser(
+        prog='%s bundle-check' % PROG, description=BUNDLE_DESCRIPTION, epilog=BUNDLE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('files', metavar='FILE', nargs='+',
+                        help='certificate, chain, private key and CSR files (PEM or DER; one '
+                             'file may hold several)')
+    parser.add_argument('-o', '--out-dir', metavar='DIR',
+                        help='write fullchain.pem and chain.pem there (the directory must exist)')
+    parser.add_argument('--write-haproxy', action='store_true',
+                        help='also write haproxy.pem: fullchain.pem + the private key (needs '
+                             '--out-dir; the file holds the key - keep it private)')
+    parser.add_argument('--no-color', action='store_true',
+                        help='disable colours (also: NO_COLOR environment variable)')
+    return parser
+
+
+def _run_bundle(args: argparse.Namespace) -> int:
+    err = sys.stderr
+    if args.write_haproxy and not args.out_dir:
+        raise UsageError('--write-haproxy needs --out-dir DIR')
+    if args.out_dir and not os.path.isdir(args.out_dir):
+        raise UsageError('--out-dir: directory does not exist: %s' % args.out_dir)
+    items = []  # type: List[BundleItem]
+    for path in args.files:
+        try:
+            with open(path, 'rb') as handle:
+                data = handle.read(CERT_FILE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise UsageError('cannot read %s: %s' % (path, exc.strerror or exc))
+        if len(data) > CERT_FILE_MAX_BYTES:
+            raise UsageError('%s is larger than %d MB: not a certificate or key file'
+                             % (path, CERT_FILE_MAX_BYTES >> 20))
+        items.extend(bundle_items(data, path))
+    now = _utcnow()
+    result = check_bundle(items, now)
+    notes = []  # type: List[str]
+    written, failed = [], []  # type: List[Tuple[str, str]], List[str]
+    exit_code = EXIT_NEEDS_UPDATE if result.failed else EXIT_OK
+    if args.write_haproxy and result.key is None:
+        result.checks.append(BundleCheck(BUNDLE_FAIL, 'haproxy', 'haproxy.pem not written: no '
+                                         'unencrypted private key in these files belongs to the '
+                                         'certificate'))
+        exit_code = EXIT_NEEDS_UPDATE
+    if args.out_dir:
+        outputs = bundle_outputs(result, haproxy=args.write_haproxy)
+        if not outputs:
+            notes.append('Nothing written to %s: %s.' % (
+                args.out_dir, 'no certificate' if result.leaf is None else
+                'the chain is incomplete (a missing intermediate)'))
+        for name, text, what in outputs:
+            path = os.path.join(args.out_dir, name)
+            try:
+                if name == 'haproxy.pem':
+                    _write_secret(path, text)
+                else:
+                    _replace_file(path, text)
+                written.append((path, what))
+            except UsageError as exc:
+                print('%s: error: %s' % (PROG, exc), file=err)
+                failed.append(path)
+        if any(os.path.basename(path) == 'haproxy.pem' for path, _what in written):
+            notes.append('haproxy.pem holds the private key: %s; keep it out of backups, tickets '
+                         'and repositories.' % ('readable by its owner only (mode 600)'
+                                                if os.name != 'nt' else
+                                                'restrict who can read it'))
+    width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
+    _write_stdout(render_bundle(result, written, color=use_color(args.no_color, sys.stdout),
+                                width=width, now=now, notes=notes))
+    if failed:
+        return EXIT_OUTPUT_ERROR
+    return exit_code
+
+
+def bundle_main(argv: Sequence[str]) -> int:
+    """``ssl_origin_scan.py bundle-check FILE...``; returns the exit code (0, 1, 2 or 3)."""
+    parser = build_bundle_parser()
+    try:
+        args = parser.parse_args(list(argv))
+    except SystemExit as exc:
+        code = exc.code
+        return code if isinstance(code, int) else EXIT_USAGE
+    try:
+        return _run_bundle(args)
+    except UsageError as exc:
+        print('%s bundle-check: error: %s' % (PROG, exc), file=sys.stderr)
+        return EXIT_USAGE
+
+
+# =====================================================================================
 # Command line
 # =====================================================================================
 
@@ -5319,6 +6774,14 @@ examples:
 
   Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --private-ca internal-ca.pem
+
+  Every certificate your servers serve (no --cert needed), as a CSV inventory:
+    python3 ssl_origin_scan.py -t hosts.ini -n names.txt --estate --csv estate.csv
+
+  Before installing - the certificate, its chain, key and CSR checked together, and
+  fullchain.pem / chain.pem written in the order servers send them:
+    python3 ssl_origin_scan.py bundle-check cert.pem ca-bundle.crt private.key -o out/
+    (python3 ssl_origin_scan.py bundle-check --help for every check)
   Cron - compare every run with the previous one, warn 21 days before a served
   certificate expires, post to a chat webhook only when there is something to say
   (the summary goes to a file, so cron mails only errors):
@@ -5397,6 +6860,26 @@ statuses (per server, port and name):
   new certificate's issuer) stay NEEDS_UPDATE. --private-ca matches the issuer DN and,
   when both certificates carry one, the key identifier; list the CA that signs the server
   certificates (the intermediate, if there is one) - a bundle file is fine.
+
+estate (--estate): an inventory of every certificate the servers serve. Each ip:port is
+  asked without SNI and for every -n name and every host name among the targets (a
+  server named web01.example.com, a target given by host name); no --cert is needed. The
+  summary lists, most urgent first: one name served with different certificates on
+  different endpoints (OLDER: the one a renewal left behind - same key type and kind,
+  issued before another), one public key on several hosts or in several certificates,
+  weak keys or signatures (RSA under 2048 bits, SHA-1, MD5), certificates covering none of
+  the names asked, then every certificate by expiry (expired, < 7, < 30, < 90 days,
+  later) with its kind (Cloudflare Origin CA, self-signed, --private-ca, other), key,
+  SPKI SHA-256 and where it is served. The JSON gets an "estate" section (the result rows
+  stay as they are), and --csv writes one row per certificate, endpoint and server
+  instead of the result rows. The web app's Certificate estate view opens these JSON
+  reports - several at once - with filters and a CSV export.
+
+bundle-check FILE...: a subcommand - the certificate, its chain, private key and CSR
+  checked together (key and CSR against the certificate by their public key, the chain
+  order, a missing intermediate, an extra root; nothing secret is printed), and with
+  -o DIR fullchain.pem and chain.pem written in the order servers send them
+  (--write-haproxy: haproxy.pem with the key too). See bundle-check --help.
 
 monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   --baseline FILE compares the scan with a previous --json report, per IP, port and
@@ -5479,6 +6962,15 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   yalnızca hataları e-postayla gönderir. Örnek:
   python3 ssl_origin_scan.py -t sunucular.txt --cert yeni.pem --baseline son.json \\
     --json son.json --warn-days 21 -q > son.txt
+  --estate sunucuların sunduğu her sertifikanın envanterini çıkarır (--cert gerekmez):
+  süre dolumu, türü, anahtarı, farklı uç noktalarda farklı sertifikayla sunulan adlar
+  (yenilemede unutulan sunucu), birden çok sunucudaki aynı anahtar, zayıf anahtar ya da
+  imzalar ve sorulan adların hiçbirini kapsamayan sertifikalar. JSON'a "estate" bölümü
+  eklenir, --csv envanteri yazar; web uygulamasının Sertifika envanteri görünümü bu
+  raporları açar.
+  bundle-check alt komutu sertifikayı, zincirini, özel anahtarı ve CSR'ı birlikte
+  denetler, -o DİZİN ile fullchain.pem ve chain.pem'i doğru sırayla yazar:
+  python3 ssl_origin_scan.py bundle-check sertifika.pem ca-bundle.crt ozel.key -o cikti/
 """
 
 
@@ -5507,6 +6999,14 @@ def build_parser() -> argparse.ArgumentParser:
     what.add_argument('--strict-public', action='store_true',
                       help='count Cloudflare Origin CA, self-signed and private-CA '
                            'certificates as NEEDS_UPDATE too')
+    what.add_argument('--estate', action='store_true',
+                      help='inventory of every certificate the servers serve (no --cert '
+                           'needed): asks each ip:port without SNI and for every -n name and '
+                           'every host name among the targets; the summary, the JSON '
+                           '("estate") and the CSV list each certificate by expiry, kind and '
+                           'key, and one name served with different certificates, keys on '
+                           'several hosts, weak keys and certificates covering none of the '
+                           'names')
     scan = parser.add_argument_group('scan options')
     scan.add_argument('-p', '--ports', default=DEFAULT_PORTS, metavar='LIST',
                       help='TLS ports, comma separated, ranges allowed (default: 443); a '
@@ -5962,9 +7462,10 @@ def _run(args: argparse.Namespace) -> int:
     all_warnings.extend(name_warnings)
     cert_names = [host for cert in new_certs for host in cert.hostnames]
     probes = build_probe_names(names + cert_names, wildcard_probe=not args.no_wildcard_probe)
-    if not probes:
+    if not probes and not args.estate:  # --estate asks every server without SNI anyway
         raise UsageError('nothing to probe: give hostnames with -n NAME|FILE and/or the new '
-                         'certificate with --cert FILE')
+                         'certificate with --cert FILE (or --estate for every certificate '
+                         'the servers serve)')
     if new_certs:
         uncovered = [p.name for p in probes if not p.wildcard and p.name in names
                      and not any(cert.covers(p.sni)[0] for cert in new_certs)]
@@ -5989,6 +7490,9 @@ def _run(args: argparse.Namespace) -> int:
     if not kept:
         raise UsageError('no scannable targets: all %d target address(es) are excluded by '
                          '--exclude' % excluded_address_count(excluded))
+    if args.estate:  # every server is asked for the host names among the targets too
+        probes = build_probe_names(names + cert_names + inventory_names(kept),
+                                   wildcard_probe=not args.no_wildcard_probe)
 
     ip_count = len({ip for server in kept for ip in server.ips})
     if not quiet:
@@ -6031,24 +7535,33 @@ def _run(args: argparse.Namespace) -> int:
             print('%s: error: %s' % (PROG, exc), file=err)
             failed.append(path)
 
+    estate = estate_from_report(report_to_dict(report), report.finished_at) \
+        if args.estate else None
     json_text = None  # type: Optional[str]
     if args.json:
         # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
         json_text = render_json(
             report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout),
-            monitor=monitor)
+            monitor=monitor, estate=args.estate)
         if not json_is_baseline:  # the baseline is replaced after the notification
             write_report(args.json, json_text)
     if args.csv:
-        # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout.
+        # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout. --estate
+        # writes its inventory instead of the result rows (those stay in the JSON).
         if args.csv == '-':
-            write_report('-', render_csv(report, lineterminator='\n', terminal=True))
+            write_report('-', render_estate_csv(estate, lineterminator='\n', terminal=True)
+                         if estate is not None else
+                         render_csv(report, lineterminator='\n', terminal=True))
         else:
-            write_report(args.csv, render_csv(report), encoding='utf-8-sig')
+            write_report(args.csv, render_estate_csv(estate) if estate is not None
+                         else render_csv(report), encoding='utf-8-sig')
     if args.json != '-' and args.csv != '-':
         width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
-        write_report('-', render_summary(report, color=use_color(args.no_color, sys.stdout),
-                                         show_all=args.show_all, width=width, monitor=monitor))
+        color = use_color(args.no_color, sys.stdout)
+        write_report('-', render_estate(report, estate, color=color, show_all=args.show_all,
+                                        width=width, monitor=monitor) if estate is not None else
+                     render_summary(report, color=color, show_all=args.show_all, width=width,
+                                    monitor=monitor))
 
     notify_failed = interrupted = False
     if notify_url and notify_format and should_notify(monitor, args.notify_always):
@@ -6134,11 +7647,17 @@ def _notify_settings(args: argparse.Namespace, warnings: List[str]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5 or 130).
+
+    ``bundle-check FILE...`` as the first argument runs :func:`bundle_main` instead (the scan
+    always starts with an option, so the word cannot be anything else)."""
     _configure_streams()
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ['bundle-check']:
+        return bundle_main(args_list[1:])
     parser = build_parser()
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(args_list)
     except SystemExit as exc:  # --help / --version (0) or usage errors (2)
         code = exc.code
         return code if isinstance(code, int) else EXIT_USAGE

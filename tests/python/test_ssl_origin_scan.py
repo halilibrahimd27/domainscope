@@ -4308,12 +4308,19 @@ class MonitorCliTests(unittest.TestCase):
         self.assertLessEqual(max(len(line) for line in sos.EPILOG.splitlines()), 100)
         self.assertEqual(sum(' > last.txt' in c or ' > son.txt' in c for c in commands + helped),
                          3)
-        parser = sos.build_parser()
-        for command in commands + helped:
+        parser, bundle = sos.build_parser(), sos.build_bundle_parser()
+        bundle_helped = re.findall(r'^ +(python3 ssl_origin_scan\.py bundle-check .+)$',
+                                   sos.BUNDLE_EPILOG.replace('\\\n', ' '), re.M)
+        self.assertGreaterEqual(len(bundle_helped), 3)
+        for command in commands + helped + bundle_helped:
             with self.subTest(command=command):
                 with contextlib.redirect_stderr(io.StringIO()) as err:
+                    args = shlex.split(re.sub(r' > \S+$', '', command))[2:]
                     try:
-                        parser.parse_args(shlex.split(re.sub(r' > \S+$', '', command))[2:])
+                        if args[:1] == ['bundle-check']:  # the subcommand's own parser
+                            bundle.parse_args(args[1:])
+                        else:
+                            parser.parse_args(args)
                     except SystemExit:
                         self.fail('%s: %s' % (command, err.getvalue()))
 

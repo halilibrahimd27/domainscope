@@ -403,6 +403,13 @@ describe('SPF and DMARC editing', () => {
     assert.ok(parseSpf(mergeSpf(['v=spf1 a -all', 'v=spf1 mx ?all'])).valid);
   });
 
+  test('mergeSpf keeps exp= and unknown modifiers, each once (the first record\'s value)', () => {
+    assert.equal(mergeSpf(['v=spf1 a exp=explain.example.com -all', 'v=spf1 mx x-note=1 ~all']), 'v=spf1 a mx -all exp=explain.example.com x-note=1');
+    assert.equal(mergeSpf(['v=spf1 a exp=a.example.com X-Note=1 -all', 'v=spf1 mx exp=b.example.net x-note=2 ~all']), 'v=spf1 a mx -all exp=a.example.com X-Note=1');
+    assert.equal(mergeSpf(['v=spf1 a redirect=_spf.example.net', 'v=spf1 mx -all exp=e.example.com']), 'v=spf1 a mx -all exp=e.example.com', 'an all voids the redirect, never the exp');
+    assert.ok(parseSpf(mergeSpf(['v=spf1 a exp=explain.example.com -all', 'v=spf1 mx exp=other.example.com ~all'])).valid, 'one exp= only');
+  });
+
   test('editDmarc: v first, p second, tags kept in order, null removes one', () => {
     assert.equal(editDmarc('v=DMARC1; rua=mailto:d@example.com; p=none; pct=50', { p: 'quarantine', pct: null }), 'v=DMARC1; p=quarantine; rua=mailto:d@example.com');
     assert.equal(editDmarc(null, { p: 'none', rua: 'mailto:d@example.com' }), 'v=DMARC1; p=none; rua=mailto:d@example.com');

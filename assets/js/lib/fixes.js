@@ -1106,12 +1106,14 @@ export function editSpf(record, { add = [], remove = [], all = null } = {}) {
 
 /**
  * Several SPF records merged into one (RFC 7208 allows one): every term once, in order, the
- * strictest `all` last; a `redirect=` only when no record has an `all`.
+ * strictest `all` last; a `redirect=` only when no record has an `all`; then the first `exp=` and
+ * every other modifier once (by name, the first record's value).
  * @param {string[]} records
  * @returns {string}
  */
 export function mergeSpf(records) {
   const terms = [];
+  const mods = new Map();
   let all = null;
   let redirect = null;
   for (const rec of records) {
@@ -1124,9 +1126,15 @@ export function mergeSpf(records) {
       if (!terms.some((x) => x.toLowerCase() === t.raw.toLowerCase())) terms.push(t.raw);
     }
     if (parsed.modifiers.redirect && !redirect) redirect = parsed.modifiers.redirect;
+    // exp= and unknown modifiers as written (RFC 7208 §6: an unknown one is ignored, never an error).
+    for (const tok of String(rec ?? '').trim().split(/\s+/).slice(1)) {
+      const m = /^([a-z][a-z0-9_.-]*)=/i.exec(tok);
+      const key = m ? m[1].toLowerCase() : null;
+      if (key && key !== 'redirect' && !mods.has(key)) mods.set(key, tok);
+    }
   }
   const tail = all !== null ? [`${all === '+' ? '' : all}all`.replace(/^all$/, '+all')] : redirect ? [`redirect=${redirect}`] : [];
-  return ['v=spf1', ...terms, ...tail].join(' ');
+  return ['v=spf1', ...terms, ...tail, ...mods.values()].join(' ');
 }
 
 /**

@@ -1,0 +1,640 @@
+/**
+ * lib/workspace.js — customer workspaces: names, part values, the recent list, the first-run
+ * migration of the pre-workspace data into Default, and the store over an in-memory backend
+ * (IndexedDB has its own E2E suite, tests/e2e/workspaces.e2e.mjs): separate data per workspace,
+ * the active-workspace pointer, degraded storage, "Delete all local data" and the other tabs.
+ * No DOM, no network.
+ */
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  DEFAULT_WORKSPACE_ID, WORKSPACE_PARTS, WORKSPACE_LIMITS, LEGACY_KEYS, ACTIVE_WORKSPACE_KEY, STORE_VERSION,
+  WorkspaceError, normalizeWorkspaceName, uniqueWorkspaceName, sanitizePart, sanitizeExpectedCas, sanitizeRecent,
+  sanitizeWorkspaceData, emptyWorkspaceData, addRecent, readLegacyData, createMemoryBackend, createWorkspaceStore
+} from '../../assets/js/lib/workspace.js';
+import { parseInventory, buildIpIndex, lookupServers } from '../../assets/js/lib/inventory.js';
+import { createLearnedStore } from '../../assets/js/lib/learned.js';
+
+/** Web Storage stub (localStorage / sessionStorage) that can refuse writes. */
+class MemoryStorage {
+  constructor(entries = {}) {
+    this.map = new Map(Object.entries(entries));
+    this.failRemove = false;
+  }
+
+  get length() {
+    return this.map.size;
+  }
+
+  key(i) {
+    return [...this.map.keys()][i] ?? null;
+  }
+
+  getItem(k) {
+    return this.map.has(k) ? this.map.get(k) : null;
+  }
+
+  setItem(k, v) {
+    this.map.set(k, String(v));
+  }
+
+  removeItem(k) {
+    if (this.failRemove) throw new Error('SecurityError');
+    this.map.delete(k);
+  }
+}
+
+/** The active-workspace pointer over a Web Storage stub, as state.js builds it. */
+const pointerOf = (storage) => ({
+  get: () => storage.getItem(ACTIVE_WORKSPACE_KEY),
+  set: (id) => storage.setItem(ACTIVE_WORKSPACE_KEY, id)
+});
+
+let ids = 0;
+const nextId = () => `ws-test${(ids += 1)}`;
+const clock = (iso = '2026-09-28T10:00:00Z') => {
+  let t = Date.parse(iso);
+  return () => new Date((t += 1000));
+};
+
+/** A store over `backend` (a persistent in-memory one by default) with a deterministic clock and ids. */
+function makeStore({ backend = createMemoryBackend([], { persistent: true }), pointer = null, legacy = null, channel = null } = {}) {
+  return createWorkspaceStore({ backend, pointer, legacy, channel, now: clock(), newId: nextId });
+}
+
+/** A pair of BroadcastChannel-like objects: a message posted on one reaches the other's listeners. */
+function channelPair() {
+  const deliveries = [];
+  const make = () => ({
+    listeners: [],
+    peer: null,
+    postMessage(msg) {
+      const data = structuredClone(msg);
+      for (const fn of this.peer.listeners) deliveries.push(Promise.resolve().then(() => fn({ data })));
+    },
+    addEventListener(type, fn) {
+      if (type === 'message') this.listeners.push(fn);
+    }
+  });
+  const a = make();
+  const b = make();
+  a.peer = b;
+  b.peer = a;
+  /** Wait until every message so far has been handled (and what the handlers awaited). */
+  const flush = async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.all(deliveries.splice(0));
+      await new Promise((r) => setImmediate(r));
+    }
+  };
+  return { a, b, flush };
+}
+
+const INVENTORY_A = 'web01 192.0.2.10\nweb02 192.0.2.11';
+const INVENTORY_B = 'mail 192.0.2.10\nvpn 198.51.100.7';
+
+describe('names', () => {
+  test('normalizeWorkspaceName: NFC, controls and invisible characters out, whitespace collapsed, capped', () => {
+    assert.equal(normalizeWorkspaceName('  Acme   Corp \n'), 'Acme Corp');
+    assert.equal(normalizeWorkspaceName('Ac\u0000me\u202eX\u200b'), 'Ac me X');
+    assert.equal(normalizeWorkspaceName('Cafe\u0301'), 'Café', 'NFC');
+    assert.equal(normalizeWorkspaceName('x'.repeat(200)).length, WORKSPACE_LIMITS.name);
+    assert.equal([...normalizeWorkspaceName('🙂'.repeat(100))].length, WORKSPACE_LIMITS.name, 'counted in characters, never a broken surrogate');
+    for (const bad of [null, undefined, 42, {}, '   ', '\u200b']) assert.equal(normalizeWorkspaceName(bad), '');
+  });
+
+  test('uniqueWorkspaceName: the name when free, else the first free "(n)", case-insensitive', () => {
+    assert.equal(uniqueWorkspaceName('Acme', ['Other']), 'Acme');
+    assert.equal(uniqueWorkspaceName('Acme', ['acme']), 'Acme (2)');
+    assert.equal(uniqueWorkspaceName('Acme', ['Acme', 'Acme (2)']), 'Acme (3)');
+    assert.equal(uniqueWorkspaceName('Acme (2)', ['Acme', 'Acme (2)']), 'Acme (3)', 'a trailing (n) is not doubled');
+    assert.equal(uniqueWorkspaceName('   ', []), '');
+    const long = uniqueWorkspaceName('y'.repeat(80), ['y'.repeat(60)]);
+    assert.ok(long.endsWith(' (2)') && long.length === WORKSPACE_LIMITS.name, long);
+  });
+});
+
+describe('part values', () => {
+  test('every part has an empty value and a sanitizer; an unknown part is refused', () => {
+    const empty = emptyWorkspaceData();
+    assert.deepEqual(Object.keys(empty), [...WORKSPACE_PARTS]);
+    for (const part of WORKSPACE_PARTS) assert.deepEqual(sanitizePart(part, undefined), empty[part], part);
+    assert.throws(() => sanitizePart('settings', {}), (err) => err instanceof WorkspaceError && err.code === 'part');
+  });
+
+  test('inventory: the raw text and when it was saved; no text is no inventory', () => {
+    assert.deepEqual(sanitizePart('inventory', { text: INVENTORY_A, updatedAt: '2026-09-28T10:00:00Z', servers: [1] }),
+      { text: INVENTORY_A, updatedAt: '2026-09-28T10:00:00.000Z' });
+    assert.deepEqual(sanitizePart('inventory', INVENTORY_A), { text: INVENTORY_A, updatedAt: null });
+    assert.equal(sanitizePart('inventory', { text: '  \n ' }), null);
+    assert.equal(sanitizePart('inventory', { text: 42 }), null);
+    assert.equal(sanitizePart('inventory', { text: 'a', updatedAt: 'yesterday' }).updatedAt, null);
+  });
+
+  test('learned: only storable labels (never an address or a full name), capped by hits', () => {
+    const clean = sanitizePart('learned', {
+      v: 1, seq: 3, labels: { api: [5, 3], '198-51-100-7': [9, 1], 'a.b': [1, 1], vpn: { hits: 2, last: 9 }, panel: 'x', '-bad': [1, 1] }
+    });
+    assert.deepEqual(clean, { v: 1, seq: 9, labels: { api: [5, 3], vpn: [2, 9], panel: [1, 0] } });
+    assert.equal(sanitizePart('learned', { labels: {} }), null);
+    assert.equal(sanitizePart('learned', { labels: ['api'] }), null);
+    const many = { labels: Object.fromEntries(Array.from({ length: WORKSPACE_LIMITS.learned + 10 }, (_, i) => [`n${i}x`, [i + 1, i]])) };
+    const capped = sanitizePart('learned', many);
+    assert.equal(Object.keys(capped.labels).length, WORKSPACE_LIMITS.learned);
+    assert.ok(!('n0x' in capped.labels), 'the fewest hits go first');
+  });
+
+  test('expected CAs: one per line or array entry, trimmed, de-duplicated without case, capped', () => {
+    assert.deepEqual(sanitizeExpectedCas("Let's Encrypt\n  digicert.com \n\nLET'S ENCRYPT\r\nExample  Internal CA"),
+      ["Let's Encrypt", 'digicert.com', 'Example Internal CA']);
+    assert.deepEqual(sanitizeExpectedCas(['Sectigo', 7, null, '', 'sectigo']), ['Sectigo']);
+    assert.equal(sanitizeExpectedCas(Array.from({ length: 50 }, (_, i) => `CA ${i}`)).length, WORKSPACE_LIMITS.expectedCas);
+    assert.equal(sanitizeExpectedCas(['x'.repeat(500)])[0].length, WORKSPACE_LIMITS.expectedCa);
+    assert.deepEqual(sanitizePart('expectedCas', { a: 1 }), []);
+  });
+
+  test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
+    assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
+    assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);
+    assert.equal(sanitizePart('notes', 5), '');
+  });
+
+  test('recent: domains and host names only, normalized, one entry each, most recent first, capped', () => {
+    assert.deepEqual(sanitizeRecent([
+      { value: 'https://WWW.Example.com/login', at: '2026-09-28T10:00:00Z' },
+      'example.net',
+      { value: '192.0.2.10', at: '2026-09-28T09:00:00Z' },
+      { value: 'www.example.com', at: '2026-09-27T09:00:00Z' },
+      { value: 'com' },
+      { value: 42 }
+    ]), [
+      { value: 'www.example.com', at: '2026-09-28T10:00:00.000Z' },
+      { value: 'example.net', at: null }
+    ]);
+    assert.equal(sanitizeRecent(Array.from({ length: 40 }, (_, i) => `h${i}.example.com`)).length, WORKSPACE_LIMITS.recent);
+  });
+
+  test('addRecent: the entry moves to the top; the top entry again changes nothing; IPs never enter', () => {
+    const at = new Date('2026-09-28T12:00:00Z');
+    let list = addRecent([], 'example.com', at);
+    list = addRecent(list, 'shop.example.net', at);
+    assert.deepEqual(list.map((r) => r.value), ['shop.example.net', 'example.com']);
+    list = addRecent(list, 'EXAMPLE.com.', at);
+    assert.deepEqual(list.map((r) => r.value), ['example.com', 'shop.example.net']);
+    assert.deepEqual(addRecent(list, 'example.com', new Date('2026-09-29T00:00:00Z')), list, 'already on top');
+    assert.deepEqual(addRecent(list, '203.0.113.9', at), list);
+    assert.deepEqual(addRecent(list, 'not a name', at), list);
+  });
+
+  test('sanitizeWorkspaceData: every part checked, the missing ones empty, unknown keys dropped', () => {
+    const data = sanitizeWorkspaceData({ notes: 'n', expectedCas: 'Sectigo', settings: { theme: 'dark' } });
+    assert.deepEqual(data, { ...emptyWorkspaceData(), notes: 'n', expectedCas: ['Sectigo'] });
+    assert.deepEqual(sanitizeWorkspaceData(null), emptyWorkspaceData());
+  });
+});
+
+describe('the data before workspaces', () => {
+  test('readLegacyData reads the inventory, learned names and this tab\'s custom wordlist without changing them', () => {
+    const local = new MemoryStorage({
+      [LEGACY_KEYS.inventory]: JSON.stringify({ v: 1, text: INVENTORY_A, updatedAt: '2026-09-01T08:00:00Z' }),
+      [LEGACY_KEYS.learned]: JSON.stringify({ v: 1, seq: 2, labels: { api: [3, 1], vpn: [1, 2] } }),
+      'ssds.settings': '{"v":2}'
+    });
+    const session = new MemoryStorage({ [LEGACY_KEYS.wordlist]: 'billing\nportal' });
+    const { data, present } = readLegacyData({ local, session });
+    assert.deepEqual(data, {
+      inventory: { text: INVENTORY_A, updatedAt: '2026-09-01T08:00:00.000Z' },
+      learned: { v: 1, seq: 2, labels: { api: [3, 1], vpn: [1, 2] } },
+      wordlist: 'billing\nportal'
+    });
+    assert.deepEqual(present.map((p) => `${p.area}:${p.key}`), [`local:${LEGACY_KEYS.inventory}`, `local:${LEGACY_KEYS.learned}`, `session:${LEGACY_KEYS.wordlist}`]);
+    assert.equal(local.map.size, 3, 'nothing removed');
+  });
+
+  test('corrupt or empty legacy values are present (to be removed) but carry no data', () => {
+    const local = new MemoryStorage({ [LEGACY_KEYS.inventory]: '{not json', [LEGACY_KEYS.learned]: JSON.stringify({ v: 1, seq: 0, labels: {} }) });
+    const { data, present } = readLegacyData({ local, session: new MemoryStorage({ [LEGACY_KEYS.wordlist]: '   ' }) });
+    assert.deepEqual(data, {});
+    assert.equal(present.length, 3);
+    const hostile = { getItem() { throw new Error('SecurityError'); } };
+    assert.deepEqual(readLegacyData({ local: hostile, session: hostile }), { data: {}, present: [] });
+    assert.deepEqual(readLegacyData(), { data: {}, present: [] });
+  });
+});
+
+describe('the store', () => {
+  test('a first visit: Default only, empty, and no database written until something is saved', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    const opened = await store.open();
+    assert.equal(opened.active.id, DEFAULT_WORKSPACE_ID);
+    assert.equal(opened.active.name, null, 'the UI names Default in the page language');
+    assert.deepEqual(opened.list.map((m) => m.id), [DEFAULT_WORKSPACE_ID]);
+    assert.deepEqual(opened.migrated, []);
+    assert.equal(opened.persistent, true);
+    assert.deepEqual(store.data, emptyWorkspaceData());
+    assert.deepEqual(backend.entries(), [], 'nothing written');
+    assert.equal(store.open(), store.open(), 'one open for all callers');
+
+    assert.equal(await store.save('notes', 'first note'), true);
+    const keys = backend.entries().map(([k]) => k).sort();
+    assert.deepEqual(keys, ['meta', 'wsdata/default/notes', 'wsmeta/default']);
+    assert.equal(backend.entries().find(([k]) => k === 'meta')[1].v, STORE_VERSION);
+  });
+
+  test('two customers keep separate inventories: the same address in both is no DUPLICATE_IP', async () => {
+    const store = makeStore();
+    await store.open();
+    const { meta: a } = await store.create('Acme');
+    const { meta: b } = await store.create('Globex');
+    await store.switchTo(a.id);
+    await store.save('inventory', { text: INVENTORY_A, updatedAt: new Date() });
+    await store.switchTo(b.id);
+    assert.equal(store.data.inventory, null, 'a new workspace starts empty');
+    await store.save('inventory', { text: INVENTORY_B, updatedAt: new Date() });
+
+    const parsedB = parseInventory(store.data.inventory.text);
+    assert.deepEqual(parsedB.warnings.filter((w) => w.code === 'DUPLICATE_IP'), []);
+    assert.deepEqual(lookupServers(['192.0.2.10'], buildIpIndex(parsedB.servers)).map((m) => m.server.name), ['mail']);
+    await store.switchTo(a.id);
+    assert.deepEqual(parseInventory(store.data.inventory.text).servers.map((s) => s.name), ['web01', 'web02']);
+    // All the text in one workspace would have been a DUPLICATE_IP: that is the noise workspaces remove.
+    const mixed = parseInventory(`${INVENTORY_A}\n${INVENTORY_B}`);
+    assert.ok(mixed.warnings.some((w) => w.code === 'DUPLICATE_IP'));
+  });
+
+  test('learned names stay in the workspace whose scans taught them (lib/learned.js over the store)', async () => {
+    const store = makeStore();
+    await store.open();
+    const { meta: acme } = await store.create('Acme');
+    const adapter = () => ({
+      getItem: () => (store.data.learned ? JSON.stringify(store.data.learned) : null),
+      setItem: (_k, v) => { store.save('learned', JSON.parse(v)); }
+    });
+    await store.switchTo(acme.id);
+    createLearnedStore(adapter()).record(['billing.example.com', 'intranet.example.com'], 'example.com');
+    assert.deepEqual(createLearnedStore(adapter()).labels().sort(), ['billing', 'intranet']);
+    await store.switchTo(DEFAULT_WORKSPACE_ID);
+    assert.equal(createLearnedStore(adapter()).size(), 0, 'Default never saw them');
+  });
+
+  test('list: Default first, then the names in order; create refuses empty, taken and too many names', async () => {
+    const store = makeStore();
+    await store.open();
+    await store.create('globex');
+    await store.create('Acme 10');
+    await store.create('Acme 9');
+    assert.deepEqual(store.list().map((m) => m.name), [null, 'Acme 9', 'Acme 10', 'globex']);
+    await assert.rejects(store.create('  '), (e) => e.code === 'name-empty');
+    await assert.rejects(store.create('ACME 9'), (e) => e.code === 'name-taken');
+    const many = makeStore();
+    await many.open();
+    for (let i = 0; i < WORKSPACE_LIMITS.count; i += 1) await many.create(`c${i}`);
+    await assert.rejects(many.create('one more'), (e) => e.code === 'limit');
+  });
+
+  test('rename and delete: never Default; a taken name is refused; deleting the active one goes back to Default', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    const { meta: a } = await store.create('Acme');
+    const { meta: b } = await store.create('Globex');
+    await assert.rejects(store.rename(DEFAULT_WORKSPACE_ID, 'Mine'), (e) => e.code === 'default');
+    await assert.rejects(store.remove(DEFAULT_WORKSPACE_ID), (e) => e.code === 'default');
+    await assert.rejects(store.rename(a.id, 'globex'), (e) => e.code === 'name-taken');
+    await assert.rejects(store.rename('ws-nope', 'x'), (e) => e.code === 'not-found');
+    assert.equal((await store.rename(a.id, 'Acme Corp')).meta.name, 'Acme Corp');
+    assert.equal((await store.rename(a.id, 'acme corp')).meta.name, 'acme corp', 'its own name in another case');
+
+    await store.switchTo(b.id);
+    await store.save('notes', 'Globex notes');
+    const removed = await store.remove(b.id);
+    assert.deepEqual(removed, { switched: true, persisted: true });
+    assert.equal(store.active.id, DEFAULT_WORKSPACE_ID);
+    assert.equal(store.data.notes, '');
+    assert.ok(!backend.entries().some(([k]) => k.includes(b.id)), 'its records are gone');
+    assert.equal((await store.remove(a.id)).switched, false);
+  });
+
+  test('the pointer: a new page opens the workspace used last; a pointer to a deleted one opens Default', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const local = new MemoryStorage();
+    const first = makeStore({ backend, pointer: pointerOf(local) });
+    await first.open();
+    const { meta } = await first.create('Acme');
+    await first.switchTo(meta.id);
+    await first.save('expectedCas', ["Let's Encrypt"]);
+    assert.equal(local.getItem(ACTIVE_WORKSPACE_KEY), meta.id);
+
+    const second = makeStore({ backend, pointer: pointerOf(local) });
+    const opened = await second.open();
+    assert.equal(opened.active.id, meta.id);
+    assert.deepEqual(second.data.expectedCas, ["Let's Encrypt"]);
+
+    local.setItem(ACTIVE_WORKSPACE_KEY, 'ws-gone');
+    const third = makeStore({ backend, pointer: pointerOf(local) });
+    assert.equal((await third.open()).active.id, DEFAULT_WORKSPACE_ID);
+  });
+
+  test('save writes only a real change; an empty value removes its record', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    let writes = 0;
+    const write = backend.write;
+    backend.write = async (...args) => {
+      writes += 1;
+      return write(...args);
+    };
+    const store = makeStore({ backend });
+    await store.open();
+    await store.save('wordlist', 'billing');
+    await store.save('wordlist', 'billing');
+    assert.equal(writes, 1);
+    await store.save('wordlist', '');
+    assert.equal(writes, 2);
+    assert.ok(!backend.entries().some(([k]) => k === 'wsdata/default/wordlist'));
+    await store.save('expectedCas', []);
+    assert.equal(writes, 2, 'empty was empty already');
+  });
+
+  test('recordRecent keeps the domains worked on, newest first', async () => {
+    const store = makeStore();
+    await store.open();
+    await store.recordRecent('example.com');
+    await store.recordRecent('https://shop.example.net/');
+    await store.recordRecent('198.51.100.7');
+    assert.deepEqual(store.data.recent.map((r) => r.value), ['shop.example.net', 'example.com']);
+  });
+
+  test('replace and load: another workspace\'s data without switching to it; copies, never the store\'s own objects', async () => {
+    const store = makeStore();
+    await store.open();
+    const { meta } = await store.create('Acme');
+    await store.replace(meta.id, { notes: 'imported', expectedCas: ['Sectigo'], inventory: { text: INVENTORY_A } });
+    assert.equal(store.active.id, DEFAULT_WORKSPACE_ID);
+    const loaded = await store.load(meta.id);
+    assert.deepEqual([loaded.notes, loaded.expectedCas, loaded.inventory.text], ['imported', ['Sectigo'], INVENTORY_A]);
+    loaded.expectedCas.push('changed');
+    assert.deepEqual((await store.load(meta.id)).expectedCas, ['Sectigo']);
+    await store.replace(DEFAULT_WORKSPACE_ID, { notes: 'default notes' });
+    assert.equal(store.data.notes, 'default notes', 'the active workspace changes in memory at once');
+    await assert.rejects(store.load('ws-nope'), (e) => e.code === 'not-found');
+    await assert.rejects(store.switchTo('ws-nope'), (e) => e.code === 'not-found');
+  });
+
+  test('create with data: an imported workspace in one write', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    const { meta, persisted } = await store.create('Imported', { notes: 'from a colleague', recent: ['example.com'] });
+    assert.equal(persisted, true);
+    assert.deepEqual((await store.load(meta.id)).recent.map((r) => r.value), ['example.com']);
+  });
+});
+
+describe('the first-run migration into Default', () => {
+  const legacyStorages = () => ({
+    local: new MemoryStorage({
+      [LEGACY_KEYS.inventory]: JSON.stringify({ v: 1, text: INVENTORY_A, updatedAt: '2026-09-01T08:00:00Z' }),
+      [LEGACY_KEYS.learned]: JSON.stringify({ v: 1, seq: 4, labels: { api: [3, 1], vpn: [1, 4] } }),
+      'ssds.settings': JSON.stringify({ v: 2, theme: 'dark' }),
+      'ssds.subdomains.options': '{}'
+    }),
+    session: new MemoryStorage({ [LEGACY_KEYS.wordlist]: 'billing\nportal', other: 'keep' })
+  });
+
+  test('moves the inventory, learned names and custom wordlist into Default, then removes the old keys', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const legacy = legacyStorages();
+    const store = makeStore({ backend, legacy });
+    const opened = await store.open();
+    assert.deepEqual(opened.migrated.sort(), ['inventory', 'learned', 'wordlist']);
+    assert.equal(opened.active.id, DEFAULT_WORKSPACE_ID);
+    assert.deepEqual(store.data.inventory, { text: INVENTORY_A, updatedAt: '2026-09-01T08:00:00.000Z' });
+    assert.deepEqual(Object.keys(store.data.learned.labels), ['api', 'vpn']);
+    assert.equal(store.data.wordlist, 'billing\nportal');
+    // Not lost: the same values are in the backend …
+    const records = new Map(backend.entries());
+    assert.equal(records.get('wsdata/default/inventory').text, INVENTORY_A);
+    assert.equal(records.get('wsdata/default/wordlist'), 'billing\nportal');
+    assert.deepEqual(records.get('meta').migrated.sort(), ['inventory', 'learned', 'wordlist']);
+    // … and only the migrated keys left the old storages.
+    assert.deepEqual([...legacy.local.map.keys()].sort(), ['ssds.settings', 'ssds.subdomains.options']);
+    assert.deepEqual([...legacy.session.map.keys()], ['other']);
+  });
+
+  test('runs once: a later load reads the store and never takes a legacy key again', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const legacy = legacyStorages();
+    await makeStore({ backend, legacy }).open();
+    // An old tab (a page from before the update) writes the old key again.
+    legacy.local.setItem(LEGACY_KEYS.inventory, JSON.stringify({ v: 1, text: 'old-tab 203.0.113.1' }));
+    const again = makeStore({ backend, legacy });
+    const opened = await again.open();
+    assert.deepEqual(opened.migrated, []);
+    assert.equal(again.data.inventory.text, INVENTORY_A);
+  });
+
+  test('a failed write loses nothing: the data is in memory, the old keys stay, the next load migrates', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    backend.fail.add('write');
+    const legacy = legacyStorages();
+    const store = makeStore({ backend, legacy });
+    const opened = await store.open();
+    assert.deepEqual(opened.migrated.sort(), ['inventory', 'learned', 'wordlist']);
+    assert.equal(store.data.inventory.text, INVENTORY_A, 'this page works with it');
+    assert.equal(store.lastError.name, 'QuotaExceededError');
+    assert.ok(legacy.local.getItem(LEGACY_KEYS.inventory), 'kept for the next try');
+    assert.ok(legacy.session.getItem(LEGACY_KEYS.wordlist));
+
+    backend.fail.delete('write');
+    const next = makeStore({ backend, legacy });
+    assert.deepEqual((await next.open()).migrated.sort(), ['inventory', 'learned', 'wordlist']);
+    assert.equal(legacy.local.getItem(LEGACY_KEYS.inventory), null);
+  });
+
+  test('Default\'s migrated data survives a trip to another workspace while it could not be written', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend, legacy: legacyStorages() });
+    backend.fail.add('write');
+    await store.open();
+    const { meta } = await store.create('Acme');
+    await store.switchTo(meta.id);
+    await store.switchTo(DEFAULT_WORKSPACE_ID);
+    assert.equal(store.data.inventory.text, INVENTORY_A);
+  });
+
+  test('without persistent storage the old data is read into memory and left where it is', async () => {
+    const legacy = legacyStorages();
+    const store = makeStore({ backend: createMemoryBackend(), legacy });
+    const opened = await store.open();
+    assert.equal(opened.persistent, false);
+    assert.equal(store.data.inventory.text, INVENTORY_A);
+    assert.ok(legacy.local.getItem(LEGACY_KEYS.inventory), 'nothing removed: nothing was saved');
+  });
+
+  test('a storage that refuses removeItem keeps its keys; the "meta" record still stops a second migration', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const legacy = legacyStorages();
+    legacy.local.failRemove = true;
+    await makeStore({ backend, legacy }).open();
+    assert.ok(legacy.local.getItem(LEGACY_KEYS.inventory));
+    const again = makeStore({ backend, legacy });
+    assert.deepEqual((await again.open()).migrated, []);
+  });
+
+  test('nothing to migrate: no database is created', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    await makeStore({ backend, legacy: { local: new MemoryStorage({ 'ssds.settings': '{}' }), session: new MemoryStorage() } }).open();
+    assert.deepEqual(backend.entries(), []);
+  });
+});
+
+describe('degraded storage', () => {
+  test('a backend that cannot be read: the page works in memory and says so', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    backend.fail.add('exists');
+    const store = makeStore({ backend });
+    const opened = await store.open();
+    assert.equal(opened.persistent, false);
+    assert.equal(store.persistent, false);
+    assert.ok(store.lastError);
+    const { meta } = await store.create('Acme');
+    await store.switchTo(meta.id);
+    assert.equal(await store.save('notes', 'kept in memory'), true);
+    assert.equal(store.data.notes, 'kept in memory');
+  });
+
+  test('a failing write keeps the change in memory and reports it', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    backend.fail.add('write');
+    assert.equal(await store.save('notes', 'unsaved'), false);
+    assert.equal(store.data.notes, 'unsaved');
+    assert.equal(store.lastError.name, 'QuotaExceededError');
+    const created = await store.create('Acme');
+    assert.equal(created.persisted, false);
+    assert.ok(store.list().some((m) => m.name === 'Acme'), 'usable for this page');
+    backend.fail.delete('write');
+    assert.equal(await store.save('notes', 'saved'), true);
+    assert.equal(store.lastError, null);
+  });
+
+  test('a failed read of one workspace opens it empty rather than failing the switch', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    const { meta } = await store.create('Acme');
+    backend.fail.add('get');
+    await store.switchTo(meta.id);
+    assert.deepEqual(store.data, emptyWorkspaceData());
+    assert.ok(store.lastError);
+  });
+});
+
+describe('"Delete all local data"', () => {
+  test('destroy empties the backend and resets memory at once, before the deletion finishes', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    const { meta } = await store.create('Acme');
+    await store.switchTo(meta.id);
+    await store.save('notes', 'secret');
+    const pending = store.destroy();
+    assert.equal(store.active.id, DEFAULT_WORKSPACE_ID);
+    assert.deepEqual(store.data, emptyWorkspaceData());
+    assert.deepEqual(store.list().map((m) => m.id), [DEFAULT_WORKSPACE_ID]);
+    assert.equal(await pending, true);
+    assert.deepEqual(backend.entries(), []);
+    // Saving the empty values the views put back writes nothing (no database comes back by itself).
+    await store.save('wordlist', '');
+    assert.deepEqual(backend.entries(), []);
+    // A real save later starts a fresh store (with its 'meta' record, so nothing is migrated again).
+    await store.save('notes', 'new');
+    assert.ok(backend.entries().some(([k]) => k === 'meta'));
+  });
+
+  test('a deletion that fails reports false; memory is reset anyway', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    await store.save('notes', 'x');
+    backend.fail.add('destroy');
+    assert.equal(await store.destroy(), false);
+    assert.equal(store.data.notes, '');
+    assert.ok(store.lastError);
+  });
+});
+
+describe('several tabs', () => {
+  async function twoTabs() {
+    const backend = createMemoryBackend([], { persistent: true });
+    const { a, b, flush } = channelPair();
+    const tab1 = makeStore({ backend, channel: a });
+    const tab2 = makeStore({ backend, channel: b });
+    await tab1.open();
+    await tab2.open();
+    const events = [];
+    tab2.subscribe((e) => events.push(e));
+    return { tab1, tab2, events, flush };
+  }
+
+  test('a part written in one tab is read again by the other tab working in the same workspace', async () => {
+    const { tab1, tab2, events, flush } = await twoTabs();
+    await tab1.save('inventory', { text: INVENTORY_A });
+    await flush();
+    assert.deepEqual(events, [{ type: 'data', parts: ['inventory'] }]);
+    assert.equal(tab2.data.inventory.text, INVENTORY_A);
+    await tab1.save('inventory', null);
+    await flush();
+    assert.equal(tab2.data.inventory, null);
+  });
+
+  test('a write to another workspace is no concern of a tab in Default', async () => {
+    const { tab1, tab2, events, flush } = await twoTabs();
+    const { meta } = await tab1.create('Acme');
+    await tab1.switchTo(meta.id);
+    await tab1.save('notes', 'Acme only');
+    await flush();
+    assert.deepEqual(events.map((e) => e.type), ['list']);
+    assert.equal(tab2.data.notes, '');
+    assert.ok(tab2.list().some((m) => m.name === 'Acme'), 'the list follows');
+  });
+
+  test('the workspace a tab works in, deleted in another tab: it goes on in Default', async () => {
+    const { tab1, tab2, events, flush } = await twoTabs();
+    const { meta } = await tab1.create('Acme');
+    await flush();
+    await tab2.switchTo(meta.id);
+    events.length = 0;
+    await tab1.remove(meta.id);
+    await flush();
+    assert.deepEqual(events.map((e) => e.type), ['switch', 'list']);
+    assert.equal(tab2.active.id, DEFAULT_WORKSPACE_ID);
+  });
+
+  test('"Delete all local data" in one tab resets the other', async () => {
+    const { tab1, tab2, events, flush } = await twoTabs();
+    await tab1.save('notes', 'shared');
+    await flush();
+    assert.equal(tab2.data.notes, 'shared');
+    await tab1.destroy();
+    await flush();
+    assert.equal(events.at(-1).type, 'destroyed');
+    assert.equal(tab2.data.notes, '');
+  });
+
+  test('a memory-only store tells no other tab anything', async () => {
+    const { a, b, flush } = channelPair();
+    const tab1 = makeStore({ backend: createMemoryBackend(), channel: a });
+    const tab2 = makeStore({ backend: createMemoryBackend(), channel: b });
+    await tab1.open();
+    await tab2.open();
+    const events = [];
+    tab2.subscribe((e) => events.push(e));
+    await tab1.save('notes', 'mine');
+    await flush();
+    assert.deepEqual(events, []);
+  });
+});

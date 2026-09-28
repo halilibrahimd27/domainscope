@@ -149,7 +149,13 @@ test('parseRenewalNames: host names and wildcards, URLs, duplicates, comments; I
     { name: 'shop.example.com', base: 'shop.example.com', wildcard: false }
   ]);
   assert.deepEqual(r.invalid, ['192.0.2.1', '[2001:db8::1]', '_acme-challenge.example.com', 'bad..name', 'localhost']);
+  assert.deepEqual(r.suffixWildcards, []);
   assert.equal(r.overCap, 0);
+  // No CA issues a wildcard directly under a public suffix (BR §3.2.2.6, the ICANN section).
+  const suffix = parseRenewalNames('*.co.uk *.com.tr *.CO.UK *.example.co.uk *.github.io *.com');
+  assert.deepEqual(suffix.suffixWildcards, ['*.co.uk', '*.com.tr']);
+  assert.deepEqual(suffix.names.map((n) => n.name), ['*.example.co.uk', '*.github.io'], 'a private suffix is not what CAs read');
+  assert.deepEqual(suffix.invalid, ['*.com']);
   const many = parseRenewalNames(Array.from({ length: 55 }, (_, i) => `h${i}.example.com`));
   assert.equal(many.names.length, 50);
   assert.equal(many.overCap, 5);

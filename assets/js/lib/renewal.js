@@ -34,7 +34,7 @@
  */
 
 import { errorKind, throwIfAborted, uniq, randomLabel, createLimiter } from './util.js';
-import { normalizeHostname, isSubdomainOf, registrableDomain } from './domain.js';
+import { normalizeHostname, isSubdomainOf, registrableDomain, isPublicSuffix } from './domain.js';
 import { normalizeIP, ipVersion, isPrivateIP, classifyResolution } from './netinfo.js';
 import { findCaa, checkCaaAllows, caaIssuerInfo, caaRestrictionText, CAA_ISSUERS } from './health.js';
 import { httpGetRequest, isProbeableHost, probeSummary } from './globalping.js';
@@ -276,16 +276,21 @@ function dnsRun(dns, { signal, noCache }) {
 /**
  * The names of a renewal: host names and `*.` wildcards, one per line or separated by spaces,
  * commas or semicolons (URLs and a trailing dot are accepted, `#` lines are comments). IP
- * addresses, single labels and names with `_` are invalid; duplicates are dropped; past `max` the rest is counted.
+ * addresses, single labels and names with `_` are invalid; a wildcard directly under a public
+ * suffix (`*.co.uk`; the ICANN section of the list, which is what CAs read) is one no CA issues
+ * (Baseline Requirements §3.2.2.6) and is left out too; duplicates are dropped; past `max` the
+ * rest is counted.
  * @param {string|string[]} input
  * @param {{ max?: number }} [opts]
- * @returns {{ names: Array<{ name: string, base: string, wildcard: boolean }>, invalid: string[], overCap: number }}
+ * @returns {{ names: Array<{ name: string, base: string, wildcard: boolean }>, invalid: string[],
+ *   suffixWildcards: string[], overCap: number }}
  */
 export function parseRenewalNames(input, { max = RENEWAL_LIMITS.names } = {}) {
   const tokens = (Array.isArray(input) ? input : String(input ?? '').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n').split(/[\s,;]+/))
     .map((s) => String(s).trim()).filter(Boolean);
   const names = [];
   const invalid = [];
+  const suffixWildcards = [];
   const seen = new Set();
   let overCap = 0;
   for (const token of tokens) {
@@ -296,16 +301,21 @@ export function parseRenewalNames(input, { max = RENEWAL_LIMITS.names } = {}) {
       if (!invalid.includes(token)) invalid.push(token);
       continue;
     }
+    const wildcard = name.startsWith('*.');
+    const base = wildcard ? name.slice(2) : name;
+    if (wildcard && isPublicSuffix(base, { includePrivate: false })) {
+      if (!suffixWildcards.includes(name)) suffixWildcards.push(name);
+      continue;
+    }
     if (seen.has(name)) continue;
     seen.add(name);
     if (names.length >= max) {
       overCap += 1;
       continue;
     }
-    const wildcard = name.startsWith('*.');
-    names.push({ name, base: wildcard ? name.slice(2) : name, wildcard });
+    names.push({ name, base, wildcard });
   }
-  return { names, invalid, overCap };
+  return { names, invalid, suffixWildcards, overCap };
 }
 
 /**

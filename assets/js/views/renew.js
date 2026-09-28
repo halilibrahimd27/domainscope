@@ -64,6 +64,7 @@ registerStrings('en', {
   'rnw.namesHint': 'One per line, or separated by spaces or commas; *.example.com for a wildcard. Up to {max} names.',
   'rnw.invalid': { one: 'Not a host name, left out: {list}', other: 'Not host names, left out: {list}' },
   'rnw.overCap': 'Only the first {max} names are checked; {count} more are left out.',
+  'rnw.suffixWildcard': 'No CA issues a wildcard directly under a public suffix, left out: {list}',
   'rnw.noNames': 'Enter at least one host name, or take the names from a certificate.',
   'rnw.fromCert': 'Take the names from a certificate',
   'rnw.certUse': 'Use its names',
@@ -129,6 +130,7 @@ registerStrings('tr', {
   'rnw.namesHint': 'Her satıra bir tane ya da boşluk veya virgülle ayırarak; joker ad için *.example.com. En fazla {max} ad.',
   'rnw.invalid': 'Host adı değil, dışarıda bırakıldı: {list}',
   'rnw.overCap': 'Yalnızca ilk {max} ad kontrol edilir; {count} ad dışarıda kaldı.',
+  'rnw.suffixWildcard': 'Bir genel sonekin hemen altındaki joker ada hiçbir otorite sertifika vermez; dışarıda bırakıldı: {list}',
   'rnw.noNames': 'En az bir host adı girin ya da adları bir sertifikadan alın.',
   'rnw.fromCert': 'Adları bir sertifikadan al',
   'rnw.certUse': 'Adlarını kullan',
@@ -366,6 +368,7 @@ export function mount(container, ctx) {
     const parsed = parseRenewalNames(namesField.value);
     const lines = [];
     if (parsed.invalid.length) lines.push(t('rnw.invalid', { count: parsed.invalid.length, list: parsed.invalid.slice(0, 6).join(', ') + (parsed.invalid.length > 6 ? ' …' : '') }));
+    if (parsed.suffixWildcards.length) lines.push(t('rnw.suffixWildcard', { list: parsed.suffixWildcards.slice(0, 6).join(', ') + (parsed.suffixWildcards.length > 6 ? ' …' : '') }));
     if (parsed.overCap) lines.push(t('rnw.overCap', { max: formatNumber(RENEWAL_LIMITS.names), count: parsed.overCap }));
     for (const line of lines) namesNote.append(h('p', { class: 'text-sm rnw-note-warn' }, Icon('alert', { size: 14 }), ' ', line));
   }

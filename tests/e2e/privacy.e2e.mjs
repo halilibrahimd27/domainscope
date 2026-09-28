@@ -17,8 +17,9 @@
  *     footer's count, Clear, the "never sent" list and the development copy's version line;
  *   - Subdomains › Sources › Related domains: a scan of example.com whose Cert Spotter and crt.sh
  *     answers name example.net (two certificates), example.org (a crt.sh common name only: the
- *     partial-names note) and thirteen customer domains of one shared certificate (folded, no
- *     scan button); opening the card sends nothing; "Scan too" (named for its domain) scans
+ *     partial-names note) and thirteen customer domains of one shared certificate (folded, worded
+ *     as usually a CDN's or a host's but possibly one company's, each with "Scan too"); opening
+ *     the card sends nothing; "Scan too" (named for its domain) scans
  *     example.com and example.net together and hands the focus to the new run's title; the ledger
  *     then names every host the scans contacted, none unknown;
  *   - a Globalping measurement of a host name (lib/globalping.js against an in-page fake, as
@@ -29,7 +30,8 @@
  *     search by that hash, which keeps running while About › What this page sent shows it and
  *     answers when the view is back; "Key reused across renewals" worded as what crt.sh lists, with
  *     the TLSA / pinning consequences, and the button that opens the DANE / TLSA tab; the ledger
- *     names it "A public-key SHA-256";
+ *     names it "A public-key SHA-256"; the intermediate picked in "Certificate shown" is worded for
+ *     a CA key (TLSA 2 1 1 and CA pins, never 3 1 1);
  *   - the Pages bundle (tools/assemble-site.mjs into a temporary folder): the ledger names the
  *     deploy and links its commit from version.json;
  *   - 375 px (and 320 px for the ledger) without horizontal scroll, TR / EN × light / dark; zero
@@ -306,8 +308,17 @@ async function main() {
       });
       assert(/shop\.example\.net/.test(net.names) && /api\.example\.net/.test(net.names), net.names);
       assert(/2 certificates/.test(net.badges) && /Current/.test(net.badges), net.badges);
-      assert(/13 domains appear only in shared certificates/.test(await text(page, '.sub-rel-shared summary')), 'shared certificate folded');
-      assertEqual(await page.evaluate(() => document.querySelectorAll('.sub-rel-shared [data-action="rel-scan"]').length), 0, 'no scan of a shared certificate\'s domains');
+      assert(/^13 domains appear only in certificates that name more than 12 registrable domains$/.test(await text(page, '.sub-rel-shared summary')),
+        'shared certificate folded');
+      await page.click('.sub-rel-shared summary');
+      const shared = await page.evaluate(() => ({
+        hint: document.querySelector('.sub-rel-shared .sub-src-hint').textContent,
+        scan: [...document.querySelectorAll('.sub-rel-shared-item')].map((li) => li.querySelector('[data-action="rel-scan"]')?.getAttribute('aria-label') || null)
+      }));
+      assert(/usually a CDN’s or a host’s/.test(shared.hint) && /one company’s certificate for its many brands/.test(shared.hint), `hedged: ${shared.hint}`);
+      assertEqual(shared.scan.length, 13, 'the thirteen domains');
+      assertEqual(shared.scan.filter((l) => /^Scan too: customer\d+\.example$/.test(l || '')).length, 13, 'each can be scanned too: a company\'s many brands look the same');
+      await page.click('.sub-rel-shared summary');
       assert(/1 certificate only crt\.sh reported may name more domains/.test(await text(page, '.sub-rel .alert')), 'partial names');
       assert(/2 other domains share certificates with these hosts \(4 certificates read\)/.test(await text(page, '[data-role="rel-summary"]')), await text(page, '[data-role="rel-summary"]'));
       await page.waitFor(() => Number(document.querySelector('.footer-sent-count')?.dataset.count) > 0, { message: 'the footer counts the scan' });
@@ -414,6 +425,36 @@ async function main() {
       assertEqual(crt.kinds, ['domains', 'keyHash'], 'crt.sh kinds');
     });
 
+    await run.step('an intermediate picked in "Certificate shown" is worded for a CA key: TLSA 2 1 1 and CA pins', async () => {
+      await gotoRoute(page, 'cert');
+      await page.evaluate(() => {
+        const sel = document.querySelector('[data-role="cert-select"]');
+        sel.value = '1';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.click('.cert-tabs [role="tab"][data-tab="ct"]');
+      await page.waitFor(() => document.querySelector('.cert-key-card')?.dataset.keyOf === 'ca'
+        && /^[0-9a-f]{64}$/.test(document.querySelector('[data-role="key-spki"]')?.textContent || ''), { message: 'the CA card' });
+      assert(/^Is this CA certificate’s public key/.test(await text(page, '.cert-key-card p')), 'CA intro');
+      assert((await text(page, '[data-role="key-spki"]')) !== SAMPLE_SPKI, 'the intermediate\'s own key');
+      await page.click('[data-action="key-run"]');
+      await page.waitFor(() => !!document.querySelector('.cert-key-card [data-key-status]'), { timeout: 15000, message: 'the CA answer' });
+      const body = await text(page, '.cert-key-card');
+      // the fake answers any key with the leaf's three rows: other certificates with this key
+      assert(/Key also in other certificates/.test(body) && !/Key reused across renewals/.test(body), body);
+      assert(/TLSA 2 1 1: a record for this CA key/.test(body) && /Key pinning of a CA/.test(body), 'CA consequences');
+      assert(!/3 1 1/.test(body), 'no leaf TLSA advice on a CA key');
+      await page.evaluate(() => {
+        const sel = document.querySelector('[data-role="cert-select"]');
+        sel.value = '0';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.click('.cert-tabs [role="tab"][data-tab="ct"]');
+      await page.waitFor(() => document.querySelector('.cert-key-card')?.dataset.keyOf === 'leaf'
+        && document.querySelector('.cert-key-card [data-key-status]')?.dataset.keyStatus === 'reused', { message: 'the leaf\'s kept answer' });
+      assert(/Key reused across renewals/.test(await text(page, '.cert-key-card')), 'the leaf is worded for a leaf key');
+    });
+
     run.group('Phone 375 px, TR / EN × light / dark');
     await run.step('the ledger, the related domains and the key card fit without scrolling sideways', async () => {
       await page.setViewport({ width: 375, height: 812, mobile: true });
@@ -432,6 +473,10 @@ async function main() {
           await page.evaluate(() => document.querySelector('.sub-rel').scrollIntoView({ block: 'start' }));
           await assertNoHorizontalScroll(page, `related ${lang} ${scheme}`);
           assertEqual(await page.evaluate(() => [...document.querySelectorAll('.sub-rel-item')].filter((li) => li.scrollWidth > li.clientWidth + 1).length), 0, 'items fit');
+          await page.evaluate(() => { document.querySelector('.sub-rel-shared').open = true; });
+          await assertNoHorizontalScroll(page, `related shared ${lang} ${scheme}`);
+          assertEqual(await page.evaluate(() => [...document.querySelectorAll('.sub-rel-shared-item')].filter((li) => li.scrollWidth > li.clientWidth + 1).length), 0,
+            'shared items fit');
           await shot(page, opts, `privacy-related-mobile-${scheme}-${lang}`);
           await gotoRoute(page, 'cert');
           await page.click('.cert-tabs [role="tab"][data-tab="ct"]');

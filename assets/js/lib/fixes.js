@@ -1337,6 +1337,14 @@ function spfWithInclude(ctx, include, all) {
   return { name: ctx.domain, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'spf1', values: [`v=spf1 include:${include} ${all}`] };
 }
 
+/**
+ * Does an SPF record let a server send as the domain: any term but a failing `all` (`-all`,
+ * `~all`) and `exp=`? A `?all` or `+all`, a mechanism, a `redirect=` all do.
+ */
+function spfSends(record) {
+  return String(record ?? '').trim().split(/\s+/).slice(1).some((tok) => !/^[-~]all$/i.test(tok) && !/^exp=/i.test(tok));
+}
+
 /** A p=none DMARC record to start with, unless a read found one. */
 function dmarcStart(ctx) {
   if (!ctx.form.dmarc) return null;
@@ -1600,10 +1608,16 @@ const TEMPLATE_BUILDERS = {
     const d = ctx.domain;
     const mx = ctx.cur(d, 'MX');
     if (mx && mx.status === 'ok' && mx.values.some((v) => v.exchange)) ctx.problems.push({ severity: 'warn', key: 'fix.p.parked-mail', params: { name: d } });
+    // Mail sent as the domain (a send-only domain has no MX): -all and p=reject would fail all of it.
+    const sending = (currentFamily(ctx, d, 'spf1') || []).filter(spfSends);
+    if (sending.length) ctx.problems.push({ severity: 'warn', key: 'fix.p.parked-sends', params: { name: d, record: sending[0] } });
+    // A DMARC record there keeps its report addresses: the spoofing reports of a parked domain are worth reading.
+    const dmarcNow = currentFamily(ctx, `_dmarc.${d}`, 'dmarc1');
+    const dmarc = dmarcNow && dmarcNow.length === 1 ? editDmarc(dmarcNow[0], { p: 'reject', sp: null, pct: null }) : 'v=DMARC1; p=reject';
     const sets = [
       { name: d, type: 'MX', ttl: ctx.ttl, mode: 'is', values: [{ preference: 0, exchange: '' }] },
       { name: d, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'spf1', values: ['v=spf1 -all'] },
-      { name: `_dmarc.${d}`, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'dmarc1', values: ['v=DMARC1; p=reject'] }
+      { name: `_dmarc.${d}`, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'dmarc1', values: [dmarc] }
     ];
     if (ctx.form.caa) sets.push({ name: d, type: 'CAA', ttl: ctx.ttl, mode: 'is', values: [{ flags: 0, tag: 'issue', value: ';' }] });
     if (ctx.form.dkim) sets.push({ name: `*._domainkey.${d}`, type: 'TXT', ttl: ctx.ttl, mode: 'is', family: 'dkim1', values: ['v=DKIM1; p='] });
@@ -1740,7 +1754,12 @@ const HEALTH_FIXES = {
   },
   'spf.lookups-exceeded': (r) => fix('spf.lookups-exceeded', 'advice', { advice: [{ key: 'fix.a.spf-flatten', params: { includes: costliestIncludes(r) || '—' } }] }),
   'spf.lookups-high': (r) => fix('spf.lookups-high', 'advice', { advice: [{ key: 'fix.a.spf-flatten', params: { includes: costliestIncludes(r) || '—' } }] }),
-  'mx.none': (r) => reportFix('mx.none', r, 'parked', { caa: false }, { advice: [{ key: 'fix.a.no-mail' }] }),
+  'mx.none': (r) => {
+    // A send-only domain has no MX either: its SPF record lets servers send, and the lock-down would fail all of that mail.
+    const sends = arr(r.records.txt).filter((x) => txtFamily(x) === 'spf1' && spfSends(x));
+    if (sends.length) return fix('mx.none', 'advice', { advice: [{ key: 'fix.a.no-mx-sends', params: { record: sends[0] } }] });
+    return reportFix('mx.none', r, 'parked', { caa: false }, { advice: [{ key: 'fix.a.no-mail' }] });
+  },
   'mx.null-mixed': () => fix('mx.null-mixed', 'advice', { advice: [{ key: 'fix.a.null-mixed' }] }),
   'caa.missing': (r) => reportFix('caa.missing', r, 'caa', { cas: [] }, { needsCt: true }),
   'tls-rpt.missing': (r) => {
@@ -2075,6 +2094,7 @@ const STRINGS = [
   ['fix.p.cname-one', ['A name has at most one CNAME.', 'Bir adın en fazla bir CNAME kaydı olur.']],
   ['fix.p.cname-add', ['A CNAME cannot be added next to another one: use Set.', 'Bir CNAME başka birinin yanına eklenemez: Ayarla’yı kullanın.']],
   ['fix.p.parked-mail', ['{name} has MX records now: after this change it receives no mail.', '{name} adının şu anda MX kayıtları var: bu değişiklikten sonra e-posta almaz.']],
+  ['fix.p.parked-sends', ['{name} has an SPF record that lets servers send as it ({record}): after this change all of that mail fails SPF and DMARC rejects it.', '{name} adının, sunucuların onun adına göndermesine izin veren bir SPF kaydı var ({record}): bu değişiklikten sonra o e-postaların tümü SPF’ten geçemez ve DMARC onları reddeder.']],
   ['fix.p.ttl-low', ['TTL {ttl} s for {name} {type}: some providers refuse TTLs under 60 s (Cloudflare needs an Enterprise plan for them).', '{name} {type} için TTL {ttl} sn: bazı sağlayıcılar 60 sn altındaki TTL’leri reddeder (Cloudflare’de Enterprise planı gerekir).']],
   ['fix.p.ttl-high', ['TTL {ttl} s for {name} {type}: over a day, so the next change takes that long to reach everyone.', '{name} {type} için TTL {ttl} sn: bir günden uzun; bir sonraki değişikliğin herkese ulaşması bu kadar sürer.']],
   // advice
@@ -2086,6 +2106,7 @@ const STRINGS = [
   ['fix.a.spf-merged', ['The records are merged into one with every term once and the strictest all; count its DNS lookups before you publish it.', 'Kayıtlar her ifade bir kez ve en sıkı all ile tek kayıtta birleştirildi; yayınlamadan önce DNS sorgu sayısını kontrol edin.']],
   ['fix.a.spf-flatten', ['No automatic record: flatten the include that costs the most into ip4: / ip6: terms (and keep them in sync with the provider), move a sender to its own subdomain, or drop includes that no longer send. Most expensive: {includes}.', 'Otomatik kayıt yok: en çok sorgu harcayan include’u ip4: / ip6: ifadelerine düzleştirin (ve sağlayıcıyla güncel tutun), bir göndereni kendi alt alan adına taşıyın ya da artık göndermeyen include’ları kaldırın. En pahalıları: {includes}.']],
   ['fix.a.no-mail', ['Only if the domain sends and receives no mail: these records say so, and receivers then reject spoofed mail at once.', 'Yalnızca alan adı e-posta almıyor ve göndermiyorsa: bu kayıtlar bunu söyler ve alıcılar sahte e-postaları hemen reddeder.']],
+  ['fix.a.no-mx-sends', ['The domain sends mail: its SPF record lets servers send as it ({record}). A null MX, “v=spf1 -all” and DMARC p=reject would fail all of that mail, so no record is suggested. To get bounces and replies, add the MX records of the mail platform that sends as it.', 'Alan adı e-posta gönderiyor: SPF kaydı sunucuların onun adına göndermesine izin veriyor ({record}). Null MX, “v=spf1 -all” ve DMARC p=reject bu e-postaların tümünü başarısız kılar; bu yüzden kayıt önerilmez. Geri dönen iletileri ve yanıtları almak için onun adına gönderen e-posta platformunun MX kayıtlarını ekleyin.']],
   ['fix.a.null-mixed', ['Keep either the null MX (“0 .”, the domain receives no mail) or the real MX records, not both.', 'Ya null MX’i (“0 .”, alan adı e-posta almaz) ya da gerçek MX kayıtlarını tutun; ikisini birden değil.']]
 ];
 

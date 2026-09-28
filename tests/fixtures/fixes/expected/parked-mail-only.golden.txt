@@ -1,10 +1,11 @@
 # case: parked-mail-only
 ## problems
 warn fix.p.parked-mail {"name":"example.com"}
+warn fix.p.parked-sends {"name":"example.com","record":"v=spf1 include:spf.protection.outlook.com ~all"}
 ## notes
 fix.n.parked-mail {}
 ## check
-z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
+z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject;+rua=mailto:dmarc@example.com%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
 ## bind
 ; DNS change request for example.com (DomainScope)
 ; The records below are what the changed sets hold afterwards;
@@ -20,7 +21,7 @@ $ORIGIN example.com.
 ; delete: @ 3600 IN TXT "v=spf1 include:spf.protection.outlook.com ~all"
 
 ; _dmarc.example.com TXT (DMARC); the other TXT records of _dmarc stay
-_dmarc 3600 IN TXT "v=DMARC1; p=reject"
+_dmarc 3600 IN TXT "v=DMARC1; p=reject; rua=mailto:dmarc@example.com"
 ; delete: _dmarc 3600 IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
 ## route53
 {
@@ -63,7 +64,7 @@ _dmarc 3600 IN TXT "v=DMARC1; p=reject"
         "TTL": 3600,
         "ResourceRecords": [
           {
-            "Value": "\"v=DMARC1; p=reject\""
+            "Value": "\"v=DMARC1; p=reject; rua=mailto:dmarc@example.com\""
           }
         ]
       }
@@ -91,11 +92,11 @@ curl -sS "$API?type=TXT&name=example.com" -H "Authorization: Bearer $CLOUDFLARE_
 curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
   --data '{"type":"TXT","name":"example.com","content":"\"v=spf1 -all\"","ttl":3600}'
 
-# 3. Change _dmarc.example.com TXT (DMARC): "v=DMARC1; p=none; rua=mailto:dmarc@example.com" -> "v=DMARC1; p=reject"
+# 3. Change _dmarc.example.com TXT (DMARC): "v=DMARC1; p=none; rua=mailto:dmarc@example.com" -> "v=DMARC1; p=reject; rua=mailto:dmarc@example.com"
 #    Find the record's id, then:
 curl -sS "$API?type=TXT&name=_dmarc.example.com" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
 curl -sS -X PATCH "$API/RECORD_ID" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
-  --data '{"type":"TXT","name":"_dmarc.example.com","content":"\"v=DMARC1; p=reject\"","ttl":3600}'
+  --data '{"type":"TXT","name":"_dmarc.example.com","content":"\"v=DMARC1; p=reject; rua=mailto:dmarc@example.com\"","ttl":3600}'
 ## cloudflare notes
 fix.fn.cloudflare-ids {}
 ## octodns
@@ -117,7 +118,7 @@ _dmarc:
   - type: TXT
     ttl: 3600
     values:
-      - 'v=DMARC1\; p=reject'
+      - 'v=DMARC1\; p=reject\; rua=mailto:dmarc@example.com'
 ## terraform-cloudflare
 # DNS change request for example.com (DomainScope)
 # terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).
@@ -153,7 +154,7 @@ resource "cloudflare_record" "txt_dmarc" {
   zone_id  = var.cloudflare_zone_id
   name     = "_dmarc.example.com"
   type     = "TXT"
-  content  = "v=DMARC1; p=reject"
+  content  = "v=DMARC1; p=reject; rua=mailto:dmarc@example.com"
   ttl      = 3600
 }
 ## terraform-route53
@@ -185,7 +186,7 @@ resource "aws_route53_record" "txt_dmarc" {
   name    = "_dmarc.example.com"
   type    = "TXT"
   ttl     = 3600
-  records = ["v=DMARC1; p=reject"]
+  records = ["v=DMARC1; p=reject; rua=mailto:dmarc@example.com"]
 }
 ## en
 DNS change request: example.com
@@ -210,7 +211,7 @@ Please make the following changes in the DNS zone example.com. Records not liste
 3. Replace: DMARC record (TXT)
    Name: _dmarc.example.com
    Value:
-     "v=DMARC1; p=reject"
+     "v=DMARC1; p=reject; rua=mailto:dmarc@example.com"
    TTL: 3600
    This removes:
      "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
@@ -220,7 +221,7 @@ Notes:
 - Only for a domain that sends and receives no mail: mail to it bounces at once and mail as it is rejected.
 
 Once the change is made, this link shows whether public DNS resolvers see it:
-https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject;+rua=mailto:dmarc@example.com%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
 ## tr
 DNS değişiklik talebi: example.com
 
@@ -244,7 +245,7 @@ Lütfen example.com DNS zone’unda aşağıdaki değişiklikleri yapın. Burada
 3. Değiştir: DMARC kaydı (TXT)
    Ad: _dmarc.example.com
    Değer:
-     "v=DMARC1; p=reject"
+     "v=DMARC1; p=reject; rua=mailto:dmarc@example.com"
    TTL: 3600
    Bu değişiklikle kalkanlar:
      "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
@@ -254,4 +255,4 @@ Notlar:
 - Yalnızca e-posta almayan ve göndermeyen bir alan adı için: ona gelen e-posta hemen geri döner, onun adına gönderilen e-posta reddedilir.
 
 Değişiklik yapıldıktan sonra genel DNS çözümleyicilerinin onu görüp görmediğini bu bağlantı gösterir:
-https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22
+https://example.github.io/domainscope/#/change/check?z=example.com&r=is+@+MX+0+.%5E10+mail.example.com.&r=is+@+TXT+%22v=spf1+-all%22%5E%22v=spf1+include:spf.protection.outlook.com+~all%22&r=is+_dmarc+TXT+%22v=DMARC1;+p=reject;+rua=mailto:dmarc@example.com%22%5E%22v=DMARC1;+p=none;+rua=mailto:dmarc@example.com%22

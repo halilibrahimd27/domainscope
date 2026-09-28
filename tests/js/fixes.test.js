@@ -560,8 +560,33 @@ describe('fixes of Domain Health checks', () => {
   test('mx.none: the mail lock-down without the CAA part; checks without a fix give null', () => {
     const f = healthFix({ id: 'mx.none' }, report({ records: { txt: [], mx: [], caa: [] } }));
     assert.deepEqual(f.request.rrsets.map((r) => `${r.name} ${r.type}`), ['example.com MX', 'example.com TXT', '_dmarc.example.com TXT']);
+    assert.deepEqual(f.request.problems, []);
+    const locked = healthFix({ id: 'mx.none' }, report({ records: { txt: ['v=spf1 -all'], mx: [], caa: [] } }));
+    assert.equal(locked.kind, 'records', 'an SPF record that lets nobody send: the lock-down');
     assert.equal(healthFix({ id: 'dnssec.unsigned' }, report()), null);
     assert.equal(healthFix({ id: 'dmarc.missing' }, null), null);
+  });
+
+  test('mx.none of a domain that sends mail (no MX, an SPF record with senders): advice only, never the lock-down', () => {
+    const sender = 'v=spf1 include:sendgrid.example.net ~all';
+    const f = healthFix({ id: 'mx.none' }, report({ records: { txt: [sender, 'site-verification=1'], mx: [], caa: [] } }));
+    assert.deepEqual([f.kind, f.request, f.template], ['advice', null, null]);
+    assert.deepEqual(f.advice, [{ key: 'fix.a.no-mx-sends', params: { record: sender } }]);
+    for (const rec of ['v=spf1 +all', 'v=spf1 ?all', 'v=spf1 redirect=_spf.example.net', 'v=spf1 ip4:192.0.2.0/24 -all']) {
+      assert.equal(healthFix({ id: 'mx.none' }, report({ records: { txt: [rec], mx: [], caa: [] } })).kind, 'advice', rec);
+    }
+  });
+
+  test('the parked lock-down after a read: an SPF record with senders is a warning; a DMARC record keeps its report addresses', () => {
+    const cur = {
+      'example.com|TXT': { status: 'ok', values: [['v=spf1 include:sendgrid.example.net ~all']], ttl: 300, cname: null },
+      'example.com|MX': { status: 'nodata', values: [], ttl: null, cname: null },
+      '_dmarc.example.com|TXT': { status: 'ok', values: [['v=DMARC1; p=none; sp=none; pct=20; rua=mailto:d@example.com']], ttl: 300, cname: null }
+    };
+    const req = buildChange('parked', { domain: 'example.com' }, { current: cur });
+    assert.deepEqual(req.problems, [{ severity: 'warn', key: 'fix.p.parked-sends', params: { name: 'example.com', record: 'v=spf1 include:sendgrid.example.net ~all' } }]);
+    assert.deepEqual(req.rrsets.find((r) => r.family === 'dmarc1').values.map((v) => v.join('')), ['v=DMARC1; p=reject; rua=mailto:d@example.com']);
+    assert.deepEqual(buildChange('parked', { domain: 'example.com' }).rrsets.find((r) => r.family === 'dmarc1').values.map((v) => v.join('')), ['v=DMARC1; p=reject'], 'not read: a new record');
   });
 
   test('currentFromReport: what the report read, never a failed lookup as "none"', () => {

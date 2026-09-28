@@ -354,6 +354,13 @@ export function mount(container, ctx) {
 
   /* --- the certificate block ------------------------------------------------------- */
   const certHostnames = (leaf) => (leaf.hostnames.length ? leaf.hostnames : leaf.dnsNames);
+  const certKey = (leaf) => `${leaf.issuerDN || ''}|${leaf.serialHex || ''}`;
+  const sameNames = (a, b) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+  /**
+   * The certificate whose issuer last set the CA (its issuer DN and serial), kept over a re-mount:
+   * the same certificate shared again leaves a CA chosen since then alone.
+   */
+  let caCert = restored && typeof restored.caCert === 'string' ? restored.caCert : null;
 
   /** The CA of a certificate's issuer into the CA field, and the hint says where it came from. */
   function takeCa(leaf) {
@@ -363,6 +370,21 @@ export function mount(container, ctx) {
     // A CA outside the list leaves "Not known": the choice made for another certificate would not apply.
     caField.value = ca || '';
     setCaHint({ key: ca ? 'rnw.caDetected' : 'rnw.caNotDetected', issuer: issuerName || '—' });
+    caCert = certKey(leaf);
+  }
+
+  /**
+   * The CA of the certificate shared by Certificate and SSL Targets, when the box holds exactly its
+   * names: their "Renewal readiness" links carry the names only. Taken when the box has just taken
+   * those names, or when the certificate is not the one the CA was last set from — never over a CA
+   * the user chose since for the same names and certificate.
+   * @param {boolean} boxChanged
+   */
+  function takeSharedCa(boxChanged) {
+    const load = getCurrentCert(ctx.state);
+    const leaf = load && load.result ? load.result.leaf : null;
+    if (!leaf || (!boxChanged && certKey(leaf) === caCert)) return;
+    if (sameNames(boxNames(certHostnames(leaf).join('\n')), boxNames(namesField.value))) takeCa(leaf);
   }
 
   /** A certificate's names into the box (replacing it: the user asked for them) and its CA. */
@@ -376,7 +398,8 @@ export function mount(container, ctx) {
     }
     namesField.value = hostnames.join('\n');
     namesField.setError(null);
-    carried = null;
+    // Not a draft of the user's: a certificate shared later (its link) may replace these names.
+    carried = namesField.value;
     takeCa(leaf);
     renderNamesNote();
   }
@@ -794,17 +817,33 @@ export function mount(container, ctx) {
 
   /**
    * A name list carried over from another tool (`run=0`) goes into the box while it is empty or
-   * still holds the report's names or the names carried before — never over a draft — and nothing
-   * runs; the report stays.
+   * still holds the report's names (all of them, past the cap too) or the names carried before —
+   * never over a draft — and nothing runs; the report stays.
+   * @param {string} text
+   * @returns {boolean} whether the box now holds other names than before
    */
   function takeCarried(text) {
-    const last = current && current.report ? current.report.names.map((r) => r.name) : null;
-    if (fillReplaces(namesField.value, last, boxNames, carried)) {
-      namesField.value = text;
-      namesField.setError(null);
-      carried = text;
-      renderNamesNote();
-    }
+    const last = current && current.report ? boxNames(typeof current.text === 'string' ? current.text : current.report.names.map((r) => r.name).join('\n')) : null;
+    if (!fillReplaces(namesField.value, last, boxNames, carried)) return false;
+    const changed = !sameNames(boxNames(namesField.value), boxNames(text));
+    namesField.value = text;
+    namesField.setError(null);
+    carried = text;
+    renderNamesNote();
+    return changed;
+  }
+
+  /**
+   * Names carried from another tool (`run=0`), with the CA the link names, else the CA of the
+   * shared certificate that names them.
+   * @param {string} text
+   * @param {{ ca?: string|null, keepCa?: boolean }} [opts] `ca`: a valid CA id to set; `keepCa`: the
+   *   form keeps its own CA (a link back to the kept report names the report's)
+   */
+  function takeCarriedTarget(text, { ca = null, keepCa = false } = {}) {
+    const boxChanged = takeCarried(text);
+    if (ca) setCa(ca);
+    else if (!keepCa) takeSharedCa(boxChanged);
   }
 
   /** Run the checks. `auto`: a shared link's run on arrival (offline: no toast). */
@@ -821,7 +860,8 @@ export function mount(container, ctx) {
     const challenge = RENEWAL_CHALLENGES.includes(challengeField.value) ? challengeField.value : 'unknown';
     if (!ctx.requireOnline({ quiet: auto })) return;
     carried = null;
-    const check = { names: parsed.names, ca: renewalCa(ca), challenge };
+    // `text`: the box as it was run (past the cap too), for a carried target to tell from a draft.
+    const check = { names: parsed.names, ca: renewalCa(ca), challenge, text: namesField.value };
     ctx.setParams(checkParams(check));
     setShareAction();
     const subject = commonTarget(parsed.names.map((n) => n.base));
@@ -892,22 +932,22 @@ export function mount(container, ctx) {
     current = {
       names: restored.report.names.map((r) => ({ name: r.name, base: r.base, wildcard: r.wildcard })),
       ca: restored.report.ca, challenge: restored.report.challenge, controller: null,
-      report: restored.report, finishedAt: restored.report.finishedAt,
+      report: restored.report, finishedAt: restored.report.finishedAt, text: typeof restored.ranText === 'string' ? restored.ranText : null,
       test: test ? { ...test, controller: null, ...(interrupted ? { status: 'error', error: new DOMException('Interrupted', 'AbortError') } : {}) } : null
     };
     renderReport();
     setShareAction();
     // GETs are free: read them now.
     if (interrupted) rereadTest({ auto: true });
-    if (isFillOnly(ctx.params) && routeNames) takeCarried(routeNames);
+    // A link back to the kept report names the report's CA: the form keeps its own.
+    if (isFillOnly(ctx.params) && routeNames) takeCarriedTarget(routeNames, { keepCa: !!routeCa });
   } else if (!restored) {
     // The certificate loaded in Certificate or SSL Targets: its names and CA, nothing sent. Their
     // "Renewal readiness" links carry its names only; the CA then comes from the same certificate.
     const load = getCurrentCert(ctx.state);
     const leaf = load && load.result ? load.result.leaf : null;
-    const same = (a, b) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
     if (leaf && !routeNames) useCert(load);
-    else if (leaf && !routeCa && same(boxNames(certHostnames(leaf).join('\n')), boxNames(routeNames))) takeCa(leaf);
+    else if (!routeCa) takeSharedCa(true);
     // Shared link: run immediately. Names carried over from another tool (`run=0`) only fill the form.
     if (routeNames && !isFillOnly(ctx.params)) Promise.resolve().then(() => start({ auto: true }));
   }
@@ -930,8 +970,10 @@ export function mount(container, ctx) {
         carried,
         ca: caField.value,
         caHint,
+        caCert,
         challenge: challengeField.value,
         report,
+        ranText: report && typeof current.text === 'string' ? current.text : null,
         test,
         open: [...openState]
       };
@@ -954,14 +996,16 @@ export function mount(container, ctx) {
       const text = namesText(params.names ?? params.name ?? '');
       if (!text) return false;
       if (isFillOnly(params)) {
-        takeCarried(text);
-        if (renewalCa(params.ca)) setCa(params.ca);
+        takeCarriedTarget(text, { ca: renewalCa(params.ca) ? params.ca : null });
         if (RENEWAL_CHALLENGES.includes(params.challenge)) challengeField.value = params.challenge;
         return true;
       }
+      // A shared link runs what it says, as on arrival: without a CA in it, none is chosen (unless
+      // the shared certificate names exactly these names); without a challenge, "Not sure".
       namesField.value = text;
-      if (renewalCa(params.ca)) setCa(params.ca);
-      if (RENEWAL_CHALLENGES.includes(params.challenge)) challengeField.value = params.challenge;
+      setCa(renewalCa(params.ca) ? params.ca : '');
+      if (!renewalCa(params.ca)) takeSharedCa(true);
+      challengeField.value = RENEWAL_CHALLENGES.includes(params.challenge) ? params.challenge : 'unknown';
       renderNamesNote();
       start();
       return true;

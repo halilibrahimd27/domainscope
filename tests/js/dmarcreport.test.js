@@ -18,8 +18,9 @@ import { gzipSync } from 'node:zlib';
 import {
   SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS, XML_LIMITS, DISPOSITIONS,
   XmlError, parseXml, xmlChild, xmlChildren, xmlText, looksLikeAggregate, parseAggregateReport, decodeReportText, readReportFiles,
-  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS, MAX_REPORT_FILES
+  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS, MAX_REPORT_FILES, READ_YIELD_MS
 } from '../../assets/js/lib/dmarcreport.js';
+import { crc32 } from '../../assets/js/lib/zipread.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { hostResolutionFrom } from '../../assets/js/lib/doh.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
@@ -88,6 +89,33 @@ function smallReport(records, { p = 'none', extraPolicy = '', id = '1' } = {}) {
     <policy_published><domain>example.com</domain><p>${p}</p>${extraPolicy}</policy_published>${records.map(rec).join('')}</feedback>`;
 }
 const aggOf = (xml) => aggregateDmarc([parseAggregateReport(xml).report]).domains[0];
+
+/** A stored (uncompressed) zip of [name, text] entries: a mailbox folder saved as one archive. */
+function storedZip(entries) {
+  const le = (v, size) => {
+    const b = Buffer.alloc(size);
+    if (size === 2) b.writeUInt16LE(v);
+    else b.writeUInt32LE(v);
+    return b;
+  };
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, text] of entries) {
+    const n = Buffer.from(name);
+    const data = Buffer.from(text);
+    const crc = crc32(data);
+    const local = Buffer.concat([le(0x04034b50, 4), le(20, 2), le(0x800, 2), le(0, 2), le(0, 4), le(crc, 4), le(data.length, 4), le(data.length, 4),
+      le(n.length, 2), le(0, 2), n, data]);
+    central.push(Buffer.concat([le(0x02014b50, 4), le(20, 2), le(20, 2), le(0x800, 2), le(0, 2), le(0, 4), le(crc, 4), le(data.length, 4), le(data.length, 4),
+      le(n.length, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 2), le(0, 4), le(offset, 4), n]));
+    locals.push(local);
+    offset += local.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.concat([le(0x06054b50, 4), le(0, 2), le(0, 2), le(entries.length, 2), le(entries.length, 2), le(cd.length, 4), le(offset, 4), le(0, 2)]);
+  return new Uint8Array(Buffer.concat([...locals, cd, end]));
+}
 
 /* ---- XML ---------------------------------------------------------------------------------- */
 
@@ -317,6 +345,55 @@ describe('readReportFiles — told apart by their content', () => {
 
   test('an abort rejects', async () => {
     await assert.rejects(readReportFiles([{ name: 'a.xml', bytes: enc.encode('<a/>') }], { signal: AbortSignal.abort() }), (err) => err.name === 'AbortError');
+  });
+
+  test('a zipped mailbox folder counts its reports: the bar moves per file inside it, a damaged file counts one', async () => {
+    const zip = storedZip(Array.from({ length: 5 }, (_, i) => [`dmarc/r${i}.xml`, smallReport([['192.0.2.1', 1]], { id: `z${i}` })]));
+    const seen = [];
+    const r = await readReportFiles([
+      { name: 'mailbox.zip', bytes: zip },
+      { name: 'cut.zip', bytes: zip.slice(0, 40) },
+      { name: 'one.xml', bytes: enc.encode(smallReport([['192.0.2.1', 1]], { id: 'one' })) }
+    ], { onProgress: (done, total) => seen.push(`${done}/${total}`) });
+    assert.deepEqual([r.read, r.dmarc.length, r.problems.map((p) => p.code)], [6, 6, ['truncated']]);
+    assert.deepEqual(seen, ['1/7', '2/7', '3/7', '4/7', '5/7', '6/7', '7/7'], 'three dropped files, the first of them five');
+  });
+
+  test('a Stop in the middle of a zipped mailbox folder is heard between its reports; the event loop gets its turns', async () => {
+    const n = 200;
+    const zip = storedZip(Array.from({ length: n }, (_, i) => [`r${i}.xml`, smallReport([['192.0.2.1', 1], ['198.51.100.7', 2]], { id: `s${i}` })]));
+    const ctl = new AbortController();
+    const seen = [];
+    // A clock that moves READ_YIELD_MS per look: every report is a long one, so the reader yields before each.
+    const realNow = Date.now;
+    let clock = 0;
+    Date.now = () => (clock += READ_YIELD_MS);
+    try {
+      await assert.rejects(readReportFiles([{ name: 'mailbox.zip', bytes: zip }], {
+        signal: ctl.signal,
+        // The Stop is a task of its own (a click): it runs only when the reader gives the event loop a turn.
+        onProgress: (done, total) => {
+          seen.push(`${done}/${total}`);
+          if (done === 3) setTimeout(() => ctl.abort(), 0);
+        }
+      }), (err) => err.name === 'AbortError');
+    } finally {
+      Date.now = realNow;
+    }
+    assert.deepEqual(seen.slice(0, 3), [`1/${n}`, `2/${n}`, `3/${n}`], 'the total is the reports inside the archive');
+    assert.ok(seen.length >= 3 && seen.length < 6, `stopped right after the click, not after ${n} reports: ${seen.length}`);
+  });
+
+  test('a plain file past the entry bound is named too large, never parsed in one long task', async () => {
+    const xml = smallReport(Array.from({ length: 40 }, (_, i) => [`192.0.2.${i + 1}`, 1]));
+    const r = await readReportFiles([
+      { name: 'big.xml', bytes: enc.encode(xml) },
+      { name: 'big.zip', bytes: storedZip([['inner.xml', xml]]) },
+      { name: 'small.xml', bytes: enc.encode(smallReport([['192.0.2.1', 1]], { id: 'small' })) }
+    ], { limits: { maxEntryBytes: 1000 } });
+    assert.ok(xml.length > 1000);
+    assert.deepEqual(r.problems.map((p) => [p.path, p.code]), [['big.xml', 'too-large'], ['big.zip › inner.xml', 'too-large']]);
+    assert.equal(r.dmarc.length, 1);
   });
 
   test('a report that starts with a DOCTYPE line is read', async () => {

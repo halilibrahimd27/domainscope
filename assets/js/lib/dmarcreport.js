@@ -33,7 +33,7 @@ import { normalizeHostname, registrableDomain } from './domain.js';
 import { normalizeIP, ipVersion, isPrivateIP } from './netinfo.js';
 import { spfLookupCount, spfEvaluate, spfMxHosts } from './health.js';
 import { lookupServers } from './inventory.js';
-import { unpackFile, ZIP_ERRORS } from './zipread.js';
+import { unpackFile, ZIP_ERRORS, ZIP_LIMITS } from './zipread.js';
 import { parseTlsReport } from './tlsrpt.js';
 
 /* ------------------------------------------------------------------------ */
@@ -477,61 +477,88 @@ export function decodeReportText(bytes) {
  * told apart by its content — XML with a `feedback` element is a DMARC aggregate report, JSON with
  * `policies` a TLS report — never by its name. Everything that is neither, or cannot be read, is a
  * {@link ReportProblem}; nothing is dropped silently. At most {@link MAX_REPORT_FILES} plain files
- * are read; the files after that are named, not unpacked. Between files the event loop gets a
- * turn every {@link READ_YIELD_MS} ms, so a page can draw the progress and hear a Stop.
+ * are read; the files after that are named, not unpacked. A plain file larger than lib/zipread.js
+ * `maxEntryBytes` is not parsed (`too-large`), whether it was dropped as it is or unpacked, so one
+ * parse stays short. Before each file — a dropped one and every plain file an archive holds — the
+ * event loop gets a turn once {@link READ_YIELD_MS} ms of work have passed and a Stop is heard, so
+ * a page can draw the progress and stop in the middle of a zipped mailbox folder too.
  * @param {Array<{ name: string, bytes: Uint8Array|ArrayBuffer }>} files
  * @param {{ signal?: AbortSignal, limits?: object, onProgress?: (done: number, total: number) => void }} [opts]
- *   `limits`: lib/zipread.js unpackFile bounds
+ *   `limits`: lib/zipread.js unpackFile bounds; `onProgress`: files read of the files known, a
+ *   dropped file counting one until it is unpacked, then as the plain files inside it (at least one)
  * @returns {Promise<{ dmarc: AggregateReport[], tls: import('./tlsrpt.js').TlsReport[], problems: ReportProblem[], read: number }>}
  *   `read`: the plain files looked at. Rejects only with an AbortError.
  */
 export async function readReportFiles(files, { signal, limits = {}, onProgress = null } = {}) {
   const out = { dmarc: [], tls: [], problems: [], read: 0 };
   const list = Array.isArray(files) ? files : [];
+  const maxBytes = Number.isFinite(limits.maxEntryBytes) ? limits.maxEntryBytes : ZIP_LIMITS.maxEntryBytes;
+  let done = 0;
+  let total = list.length;
+  const step = () => {
+    done += 1;
+    if (onProgress) onProgress(done, total);
+  };
   let turn = Date.now();
-  for (let n = 0; n < list.length; n += 1) {
+  /** A turn for the event loop once READ_YIELD_MS of work have passed; a Stop is heard here. */
+  const breathe = async () => {
     if (Date.now() - turn >= READ_YIELD_MS) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       turn = Date.now();
     }
     throwIfAborted(signal);
-    const file = list[n];
+  };
+  for (const file of list) {
+    await breathe();
     if (out.read >= MAX_REPORT_FILES) {
       // Full: the rest is named, not unpacked.
       out.problems.push({ path: String(file && file.name ? file.name : 'file'), code: 'too-many', detail: `${MAX_REPORT_FILES}` });
-      if (onProgress) onProgress(n + 1, list.length);
+      step();
       continue;
     }
     const unpacked = await unpackFile(file, { ...limits, signal });
     out.problems.push(...unpacked.problems);
+    // From here the dropped file counts as the plain files inside it.
+    total += Math.max(unpacked.files.length, 1) - 1;
+    if (!unpacked.files.length) step();
     for (const f of unpacked.files) {
-      if (out.read >= MAX_REPORT_FILES) {
-        out.problems.push({ path: f.path, code: 'too-many', detail: `${MAX_REPORT_FILES}` });
-        continue;
-      }
-      out.read += 1;
-      const text = decodeReportText(f.bytes);
-      const lead = text.replace(/^﻿/, '').trimStart();
-      if (!lead) {
-        out.problems.push({ path: f.path, code: 'empty', detail: '' });
-      } else if (lead[0] === '<' && !looksLikeAggregate(lead)) {
-        // Another XML document (an RSS feed, a forensic report's HTML part): not worth a full parse.
-        out.problems.push({ path: f.path, code: 'not-dmarc', detail: '' });
-      } else if (lead[0] === '<') {
-        const r = parseAggregateReport(text, { file: f.path });
-        if (r.ok) out.dmarc.push(r.report);
-        else out.problems.push({ path: f.path, code: r.code, detail: r.detail });
-      } else if (lead[0] === '{') {
-        const r = parseTlsReport(lead, { file: f.path });
-        if (r.ok) out.tls.push(r.report);
-        else out.problems.push({ path: f.path, code: r.code, detail: r.detail });
-      } else {
-        out.problems.push({ path: f.path, code: 'not-report', detail: '' });
-      }
+      await breathe();
+      readOne(f, out, maxBytes);
+      step();
     }
-    if (onProgress) onProgress(n + 1, list.length);
   }
   return out;
+}
+
+/** One plain file of {@link readReportFiles} into `out`: a report, or a problem that says why not. */
+function readOne(f, out, maxBytes) {
+  if (out.read >= MAX_REPORT_FILES) {
+    out.problems.push({ path: f.path, code: 'too-many', detail: `${MAX_REPORT_FILES}` });
+    return;
+  }
+  out.read += 1;
+  if (f.bytes.length > maxBytes) {
+    out.problems.push({ path: f.path, code: 'too-large', detail: `over ${maxBytes}` });
+    return;
+  }
+  const text = decodeReportText(f.bytes);
+  const lead = text.replace(/^﻿/, '').trimStart();
+  if (!lead) {
+    out.problems.push({ path: f.path, code: 'empty', detail: '' });
+  } else if (lead[0] === '<' && !looksLikeAggregate(lead)) {
+    // Another XML document (an RSS feed, a forensic report's HTML part): not worth a full parse.
+    out.problems.push({ path: f.path, code: 'not-dmarc', detail: '' });
+  } else if (lead[0] === '<') {
+    const r = parseAggregateReport(text, { file: f.path });
+    if (r.ok) out.dmarc.push(r.report);
+    else out.problems.push({ path: f.path, code: r.code, detail: r.detail });
+  } else if (lead[0] === '{') {
+    const r = parseTlsReport(lead, { file: f.path });
+    if (r.ok) out.tls.push(r.report);
+    else out.problems.push({ path: f.path, code: r.code, detail: r.detail });
+  } else {
+    out.problems.push({ path: f.path, code: 'not-report', detail: '' });
+  }
 }
 
 /* ------------------------------------------------------------------------ */

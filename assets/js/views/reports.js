@@ -110,7 +110,7 @@ registerStrings('en', {
   'rpt.problem.encrypted': 'an encrypted (password-protected) entry',
   'rpt.problem.method': 'packed with a method browsers cannot unpack ({detail})',
   'rpt.problem.crc': 'damaged: its checksum does not match',
-  'rpt.problem.too-large': 'too large to unpack here',
+  'rpt.problem.too-large': 'too large to read here',
   'rpt.problem.too-many': 'more entries than one drop reads ({detail})',
   'rpt.problem.corrupt': 'damaged: it could not be unpacked',
   'rpt.problem.overlap': 'entries that share their bytes: an archive built to unpack far more than it holds',
@@ -365,7 +365,7 @@ registerStrings('tr', {
   'rpt.problem.encrypted': 'şifreli (parola korumalı) bir girdi',
   'rpt.problem.method': 'tarayıcıların açamadığı bir yöntemle sıkıştırılmış ({detail})',
   'rpt.problem.crc': 'bozuk: sağlama toplamı tutmuyor',
-  'rpt.problem.too-large': 'burada açılamayacak kadar büyük',
+  'rpt.problem.too-large': 'burada okunamayacak kadar büyük',
   'rpt.problem.too-many': 'bir bırakmada okunandan fazla girdi ({detail})',
   'rpt.problem.corrupt': 'bozuk: açılamadı',
   'rpt.problem.overlap': 'baytlarını paylaşan girdiler: tuttuğundan çok daha fazlasını açmak için yapılmış bir arşiv',
@@ -747,6 +747,7 @@ export function mount(container, ctx) {
   let queue = [];
   let reading = null;
   let progress = null;
+  // The bar: files read of the files known; a dropped archive counts as the files inside it once unpacked.
   let readDone = 0;
   let readTotal = 0;
   let sourcesTable = null;
@@ -788,14 +789,17 @@ export function mount(container, ctx) {
         const batch = queue;
         queue = [];
         const before = readDone;
+        let batchTotal = batch.length;
         const r = await readReportFiles(batch.map((f) => ({ name: f.name, bytes: new Uint8Array(f.buffer) })), {
           signal: mergeSignals(signal(), reading.signal),
-          onProgress: (n) => {
-            readDone = before + n;
+          onProgress: (done, total) => {
+            readDone = before + done;
+            readTotal += total - batchTotal;
+            batchTotal = total;
             showProgress();
           }
         });
-        readDone = before + batch.length;
+        readDone = before + batchTotal;
         got.files += batch.length;
         got.dmarc.push(...r.dmarc);
         got.tls.push(...r.tls);

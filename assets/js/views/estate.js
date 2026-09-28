@@ -142,7 +142,7 @@ registerStrings('en', {
   'estate.noSubject': '(no subject)',
   'estate.days': { one: '{count} day', other: '{count} days' },
   'estate.expiredAgo': { one: 'expired {count} day ago', other: 'expired {count} days ago' },
-  'estate.expiredToday': 'expires today',
+  'estate.expiresToday': 'less than a day left',
   'estate.endpoints': { one: '{count} endpoint', other: '{count} endpoints' },
   'estate.moreEndpoints': '+{count} more',
   'estate.default': 'default',
@@ -153,7 +153,7 @@ registerStrings('en', {
   'estate.flag.weak': 'weak',
   'estate.flag.covers-none': 'covers no name',
   'estate.flagTitle.name-conflict': 'A name it covers is served with another certificate elsewhere',
-  'estate.flagTitle.stale': 'Another certificate of the same key type and kind was issued after it: the endpoints serving it were left behind',
+  'estate.flagTitle.stale': 'Another certificate of the same key type and kind (Origin CA, private, other CA) was issued after it: the endpoints serving it were left behind',
   'estate.flagTitle.shared-key': 'Its public key is in several certificates, or on {hosts} or more addresses',
   'estate.flagTitle.weak': 'A weak key or signature',
   'estate.flagTitle.covers-none': 'It covers none of the names asked: a fallback or forgotten certificate',
@@ -180,7 +180,7 @@ registerStrings('en', {
   'estate.d.servedTitle': 'Where it is served',
   'estate.d.servedFor': 'when asked for {names}',
   'estate.d.report': 'report {name}',
-  'estate.conflicts.intro': 'These names are served with different certificates on different endpoints: a load-balancer member or a server the last renewal left out. “older” marks a certificate another one of the same key type and kind replaces.',
+  'estate.conflicts.intro': 'These names are served with different certificates on different endpoints: a load-balancer member or a server the last renewal left out. “older” marks a certificate another one of the same key type and kind (Origin CA, private, other CA) replaces.',
   'estate.conflicts.none': 'No name is served with different certificates.',
   'estate.conflicts.noNames': 'No names were asked, so none can be compared.',
   'estate.conflicts.cert': '{name} · expires {date} · {issuer}',
@@ -265,7 +265,7 @@ registerStrings('tr', {
   'estate.bucket.later': 'daha sonra',
   'estate.tab.certificates': 'Sertifikalar',
   'estate.tab.conflicts': 'Ad çakışmaları',
-  'estate.tab.keys': 'Ortak anahtarlar',
+  'estate.tab.keys': 'Paylaşılan anahtarlar',
   'estate.tabsLabel': 'Envanter sonuçları',
   'estate.filter.label': 'Göster',
   'estate.filter.all': 'Tümü ({count})',
@@ -287,18 +287,18 @@ registerStrings('tr', {
   'estate.noSubject': '(konu yok)',
   'estate.days': { one: '{count} gün', other: '{count} gün' },
   'estate.expiredAgo': { one: '{count} gün önce doldu', other: '{count} gün önce doldu' },
-  'estate.expiredToday': 'bugün doluyor',
+  'estate.expiresToday': '1 günden az kaldı',
   'estate.endpoints': { one: '{count} uç nokta', other: '{count} uç nokta' },
   'estate.moreEndpoints': '+{count} daha',
   'estate.default': 'varsayılan',
   'estate.defaultTitle': 'SNI olmadan sunuluyor (bu adresin başka ad bilmediğinde verdiği sertifika)',
   'estate.flag.name-conflict': 'ad çakışması',
   'estate.flag.stale': 'eski',
-  'estate.flag.shared-key': 'ortak anahtar',
+  'estate.flag.shared-key': 'paylaşılan anahtar',
   'estate.flag.weak': 'zayıf',
   'estate.flag.covers-none': 'ad kapsamıyor',
   'estate.flagTitle.name-conflict': 'Kapsadığı bir ad başka bir yerde başka bir sertifikayla sunuluyor',
-  'estate.flagTitle.stale': 'Aynı anahtar türünde ve aynı türden başka bir sertifika ondan sonra verilmiş: onu sunan uç noktalar geride kalmış',
+  'estate.flagTitle.stale': 'Aynı anahtar tipinde ve aynı sınıfta (Origin CA, özel, diğer CA) başka bir sertifika ondan sonra verilmiş: onu sunan uç noktalar geride kalmış',
   'estate.flagTitle.shared-key': 'Açık anahtarı birden çok sertifikada ya da {hosts} ya da daha çok adreste',
   'estate.flagTitle.weak': 'Zayıf bir anahtar ya da imza',
   'estate.flagTitle.covers-none': 'Sorulan adların hiçbirini kapsamıyor: bir yedek ya da unutulmuş sertifika',
@@ -325,7 +325,7 @@ registerStrings('tr', {
   'estate.d.servedTitle': 'Sunulduğu yerler',
   'estate.d.servedFor': '{names} sorulduğunda',
   'estate.d.report': '{name} raporu',
-  'estate.conflicts.intro': 'Bu adlar farklı uç noktalarda farklı sertifikalarla sunuluyor: yük dengeleyicinin bir üyesi ya da son yenilemede atlanan bir sunucu. “eski”, aynı anahtar türünde ve aynı türden başka bir sertifikanın yerini aldığı sertifikayı gösterir.',
+  'estate.conflicts.intro': 'Bu adlar farklı uç noktalarda farklı sertifikalarla sunuluyor: yük dengeleyicinin bir üyesi ya da son yenilemede atlanan bir sunucu. “eski”, aynı anahtar tipinde ve aynı sınıfta (Origin CA, özel, diğer CA) başka bir sertifikanın yerini aldığı sertifikayı gösterir.',
   'estate.conflicts.none': 'Hiçbir ad farklı sertifikalarla sunulmuyor.',
   'estate.conflicts.noNames': 'Hiçbir ad sorulmadığı için karşılaştırılacak ad yok.',
   'estate.conflicts.cert': '{name} · bitiş {date} · {issuer}',
@@ -779,7 +779,7 @@ export function mount(container, ctx) {
 
   function daysText(days) {
     if (days < 0) return t('estate.expiredAgo', { count: -days });
-    if (days === 0) return t('estate.expiredToday');
+    if (days === 0) return t('estate.expiresToday'); // under 24 hours: maybe tomorrow on the calendar
     return t('estate.days', { count: days });
   }
 

@@ -23,6 +23,8 @@ export const icon = 'info';
 
 /** Path of the CLI relative to the site root (published by the Pages workflow). */
 export const CLI_PATH = 'cli/ssl_origin_scan.py';
+/** The DNS provider move's CLI (Zone File › New name servers hands it the zone). */
+export const PARITY_CLI_PATH = 'cli/dns_parity.py';
 
 /**
  * The wordlist and data licence texts, resolved from this module: the Pages bundle serves assets/ under
@@ -155,6 +157,9 @@ registerStrings('en', {
   'about.ex5': 'CI / cron — exit code 1 while any server still needs the new certificate',
   'about.ex6': 'Internal hosts signed by your own CA are PRIVATE_CERT, not NEEDS_UPDATE; an address with its own port is scanned on that port',
   'about.ex7': 'Cron — changes since the last run and certificates expiring within 21 days (set DOMAINSCOPE_NOTIFY_URL for Slack, Teams, Discord, Telegram or Google Chat)',
+  'about.ex8': 'Before DNS moves a name to a new server: the old and the new server’s answers side by side (private addresses too)',
+  'about.parityDesc': 'Moving DNS to another provider: asks the new name servers for every record set of a zone file, from your machine, and lists what is missing, different or extra there. Python 3.8+, a single file.',
+  'about.parityEx': 'Zone File › New name servers downloads the zone and gives this command',
   'about.statusesTitle': 'Result statuses',
   'about.st.UPDATED': 'Serves the new certificate for the name.',
   'about.st.NEEDS_UPDATE': 'Serves a certificate that covers the name, but not the new one — install it here.',
@@ -283,6 +288,9 @@ registerStrings('tr', {
   'about.ex5': 'CI / cron — yeni sertifikaya ihtiyaç duyan sunucu kaldıkça çıkış kodu 1',
   'about.ex6': 'Kendi CA’nızın imzaladığı iç sunucular NEEDS_UPDATE değil PRIVATE_CERT olur; portuyla yazılan bir adres o porttan taranır',
   'about.ex7': 'Cron — son çalıştırmadan beri değişenler ve 21 gün içinde süresi dolacak sertifikalar (Slack, Teams, Discord, Telegram ya da Google Chat bildirimi için DOMAINSCOPE_NOTIFY_URL ortam değişkenini tanımlayın)',
+  'about.ex8': 'DNS bir adı yeni sunucuya taşımadan önce: eski ve yeni sunucunun yanıtları yan yana (özel adresler de olur)',
+  'about.parityDesc': 'DNS’i başka bir sağlayıcıya taşırken: bir zone dosyasındaki her kayıt kümesini kendi makinenizden yeni ad sunucularına sorar; orada eksik, farklı ya da fazladan olanları listeler. Python 3.8+, tek dosya.',
+  'about.parityEx': 'Zone File › Yeni ad sunucuları zone’u indirir ve bu komutu verir',
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
@@ -327,7 +335,8 @@ const CLI_EXAMPLES = [
   { key: 'about.ex4', cmd: 'python3 ssl_origin_scan.py -t 10.0.0.0/24 -n www.example.com api.example.com' },
   { key: 'about.ex5', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color' },
   { key: 'about.ex6', cmd: 'python3 ssl_origin_scan.py -t hosts.ini -t 10.0.0.5:8443 --cert new.pem --private-ca internal-ca.pem' },
-  { key: 'about.ex7', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json --json last.json --warn-days 21 -q > last.txt' }
+  { key: 'about.ex7', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json --json last.json --warn-days 21 -q > last.txt' },
+  { key: 'about.ex8', cmd: 'python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com' }
 ];
 
 const CLI_STATUSES = [
@@ -547,7 +556,15 @@ export function mount(container, ctx) {
       simpleTable([t('common.status'), t('common.details')], CLI_STATUSES.map((s) => [
         Badge(s.code, { variant: s.variant, icon: s.icon, mono: true }),
         CliText(t(`about.st.${s.code}`))
-      ]), 'about-statuses'))
+      ]), 'about-statuses'),
+      h('div', { class: 'about-cli-bar card' },
+        h('span', { class: 'about-cli-icon' }, Icon('server', { size: 20 })),
+        h('div', { class: 'about-cli-text' },
+          h('div', { class: 'about-cli-file mono' }, 'dns_parity.py'),
+          h('div', { class: 'muted text-sm' }, t('about.parityDesc'))),
+        h('div', { class: 'cluster' },
+          ButtonLink({ href: PARITY_CLI_PATH, label: t('common.download'), icon: 'download', variant: 'secondary', download: 'dns_parity.py' }))),
+      CodeBlock('python3 dns_parity.py example.com.parity.zone --ns ns1.example.net ns2.example.net', { label: t('about.parityEx'), wrap: true }))
   });
 
   /* Self-hosting */

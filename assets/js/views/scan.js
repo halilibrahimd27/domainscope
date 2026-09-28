@@ -69,8 +69,8 @@ import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import {
-  CertAlternatives, CertLoader, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
-  certDisplayName, issuerDisplayName, certLoadsFromFiles, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
+  CertAlternatives, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad,
+  certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
 } from './cert.js';
 // Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
 import {
@@ -1651,11 +1651,17 @@ export function mount(container, ctx) {
 
   // Step 1's loaders take several files at once (and a folder where the browser can pick one):
   // several certificates make a renewal of certificate sets. "Add certificates" next to a single
-  // certificate opens this picker (kept hidden: the button is its way in).
-  const loader = (opts = {}) => CertLoader({ onLoad: onCertLoad, onLoads: setLoads, multiple: true, folder: true, ...opts }).el;
+  // certificate opens this picker (kept hidden: the button is its way in). After a PKCS#12 file's
+  // password dialog the focus goes to the note about the bundle.
+  const loader = (opts = {}) => CertLoader({
+    onLoad: onCertLoad, onLoads: setLoads, multiple: true, folder: true, focusTarget: () => certBody.querySelector('.pfx-note'), ...opts
+  }).el;
   const addPicker = FileDrop({
     accept: CERT_ACCEPT, maxBytes: CERT_MAX_BYTES, multiple: true, paste: false, compact: true,
-    onFiles: (files) => addLoads(certLoadsFromFiles(files))
+    onFiles: async (files) => {
+      const { loads } = await openCertInputs(certFileInputs(files));
+      if (loads.length) addLoads(loads);
+    }
   });
   addPicker.el.hidden = true;
   addPicker.el.dataset.role = 'cert-add-picker';
@@ -1724,6 +1730,8 @@ export function mount(container, ctx) {
       }));
       const note = certSourceNote();
       if (note) certBody.append(note);
+      const pfxNote = CertPfxNote(certLoad);
+      if (pfxNote) certBody.append(pfxNote);
       certBody.append(Disclosure({
         summary: t('scan.cert.another'),
         className: 'scan-cert-another',

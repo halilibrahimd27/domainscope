@@ -90,6 +90,87 @@
   overflow-wrap: anywhere;
 }
 
+/* A PKCS#12 bundle: the password dialog (ui/pfx-import.js, a Modal on <body>) and the note */
+.pfx-intro,
+.pfx-privacy {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pfx-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.pfx-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.pfx-note:focus {
+  outline: none;
+}
+
+.pfx-note:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.pfx-note .alert-message {
+  overflow-wrap: anywhere;
+}
+
+.pfx-facts {
+  margin-top: 8px;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  column-gap: 14px;
+}
+
+.pfx-facts .kv-key,
+.pfx-facts .kv-value {
+  padding: 5px 0;
+  border-bottom-color: var(--info-border);
+}
+
+.pfx-facts .kv-key {
+  font-size: 12.5px;
+}
+
+.pfx-strength {
+  vertical-align: 1px;
+}
+
+.pfx-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 8px 0 0;
+  color: var(--warn);
+}
+
+.pfx-warning .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.pfx-key-verdict {
+  margin: 8px 0 0;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.pfx-note .alert-actions {
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.pfx-fullchain-hint {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
 .cert-summary {
   display: flex;
   flex-direction: column;
@@ -602,6 +683,20 @@
 
   .cert-chain-head .btn {
     margin-left: 0;
+  }
+
+  /* The bundle's facts stack: label over value, so a long scheme keeps the width. */
+  .pfx-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pfx-facts .kv-key {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .pfx-facts .kv-value {
+    padding-top: 2px;
   }
 
   /* CAA on a phone: the name (breaking before a dot) with its record set under it, then the

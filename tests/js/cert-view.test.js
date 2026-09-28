@@ -3,7 +3,8 @@
  * certificate name that is not a plain host name (a hostile SAN would run in the user's shell);
  * the bundled "Try a sample" certificate, the CertLoad of a Certificate Transparency lookup and
  * the text of a lookup that loaded nothing (why crt.sh was asked, Cert Spotter's hourly limit), and
- * what Copy summary says about a certificate (certSummaryFacts).
+ * what Copy summary says about a certificate (certSummaryFacts), and a PKCS#12 bundle as a
+ * CertLoad (locked until its password, then its chain and fullchain order).
  * Pure Node (the view is DOM-free at import time). Names are documentation data only.
  */
 import { test, describe, after } from 'node:test';
@@ -14,8 +15,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
-  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, certSummaryFacts, issuerDisplayName
+  ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, loadCertificateFile, certSummaryFacts, issuerDisplayName,
+  fullchainCerts
 } from '../../assets/js/views/cert.js';
+import { isLockedPfx } from '../../assets/js/ui/pfx-import.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';
 import { parseCertificate, parseCertificates } from '../../assets/js/lib/x509.js';
@@ -400,5 +403,34 @@ describe('cert view: what Copy summary says about a certificate (certSummaryFact
     assert.equal(certSummaryFacts(ct).name, '*.wild.example.net');
     const sample = loadCertificateData(readFileSync(join(FIX, '..', '..', 'assets', 'data', 'sample-cert.pem')), { name: 'sample-cert.pem', source: 'sample' });
     assert.deepEqual([certSummaryFacts(sample).source, certSummaryFacts(sample).name, certSummaryFacts(sample).warnings], ['sample', 'example.com', []]);
+  });
+});
+
+describe('cert view: a PKCS#12 bundle as a CertLoad', () => {
+  const read = (file) => readFileSync(join(FIX, file));
+  const { passwords } = JSON.parse(readFileSync(join(FIX, 'p12_expected.json'), 'utf8'));
+
+  test('locked until its password: the loaders ask for it only for a bundle', () => {
+    assert.equal(isLockedPfx(loadCertificateData(read('p12_rsa_aes.p12'), { name: 'p12_rsa_aes.p12' }).result), true);
+    assert.equal(isLockedPfx(loadCertificateData(read('p12_rsa_aes.p12').toString('base64')).result), true, 'pasted as base64');
+    assert.equal(isLockedPfx(loadCertificateData(read('chain.pem')).result), false);
+    assert.equal(isLockedPfx(loadCertificateData(read('test.csr')).result), false);
+    assert.equal(isLockedPfx(null), false);
+  });
+
+  test('opened: name, size, source kept; the chain in server order for fullchain.pem (no root)', async () => {
+    const bytes = read('p12_rsa_aes.p12');
+    const load = await loadCertificateFile(new Uint8Array(bytes), { name: 'p12_rsa_aes.p12', source: 'drop', password: passwords.test, checkKey: true });
+    assert.deepEqual([load.name, load.size, load.source], ['p12_rsa_aes.p12', bytes.length, 'drop']);
+    assert.equal(load.result.pkcs12.keyCheck.status, 'match');
+    const full = fullchainCerts(analyzeChain(load.result.certificates, load.result.leaf));
+    assert.deepEqual(full.map((c) => c.subjectCN), ['p12.example.com', 'Example P12 Test Intermediate']);
+    assert.equal(certTarget(load), 'p12.example.com');
+  });
+
+  test('a wrong password is a result, never a rejection', async () => {
+    const load = await loadCertificateFile(read('p12_rsa_aes.p12'), { name: 'x.p12', password: 'nope' });
+    assert.deepEqual(load.result.warnings.map((w) => w.code), ['PKCS12_BAD_PASSWORD', 'NO_CERTIFICATE']);
+    assert.equal(isLockedPfx(load.result), false, 'the dialog reads the reason, it does not ask again blindly');
   });
 });

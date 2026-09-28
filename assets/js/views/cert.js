@@ -8,7 +8,10 @@
  * Transparency lookup of the serial number on crt.sh and, on a click, the DANE / TLSA check of
  * the leaf (ui/dane-panel.js over lib/dane.js: do TLSA records at its mail servers and names pin
  * another certificate?). "Find servers for this certificate" hands the certificate to the SSL
- * Targets view (state.session.pendingCert).
+ * Targets view (state.session.pendingCert). A PKCS#12 (.pfx / .p12) file asks for its password
+ * (ui/pfx-import.js over lib/x509.js loadCertificates and lib/pkcs12.js); its certificates load
+ * like any other file's, its private key is never shown, and the note about the bundle offers
+ * fullchain.pem and the result of the opt-in key check.
  *
  * "Copy summary" in the overview's actions (ui/summary-button.js, certSummaryFacts): names, validity,
  * issuer and warnings for Jira / Slack; the file is never in its link.
@@ -39,7 +42,7 @@ import { downloadText, sanitizeFilename } from '../ui/download.js';
 import {
   t, registerStrings, hasString, formatDate, formatDateTime, formatNumber, formatRegion, daysUntil
 } from '../i18n.js';
-import { parseCertificates, computeFingerprints, pemEncode, formatFingerprint } from '../lib/x509.js';
+import { parseCertificates, loadCertificates, computeFingerprints, pemEncode, formatFingerprint } from '../lib/x509.js';
 import {
   normalizeHostname, certCovers, baseDomainsFromNames, stripWildcard, sortHostnames
 } from '../lib/domain.js';
@@ -49,6 +52,8 @@ import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
 import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
+// The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
+import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { permalinkParams } from '../lib/summary.js';
@@ -91,7 +96,7 @@ const CRTSH_SERIAL_URL = 'https://crt.sh/?serial=';
 
 registerStrings('en', {
   'cert.dropTitle': 'Drop the certificate file here',
-  'cert.dropHint': 'or click to choose · paste with Ctrl+V · PEM, CRT/CER, DER, P7B',
+  'cert.dropHint': 'or click to choose · paste with Ctrl+V · PEM, CRT/CER, DER, P7B, PFX/P12',
   'cert.pasteToggle': 'Paste the certificate as text',
   'cert.pasteLabel': 'Certificate text (PEM)',
   'cert.pastePlaceholder': '-----BEGIN CERTIFICATE-----\nMIIF…\n-----END CERTIFICATE-----',
@@ -154,8 +159,14 @@ registerStrings('en', {
 
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'The file also contains a private key',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'It was ignored — never displayed, stored or uploaded. Only the certificate is needed here. Keep key files private and avoid sending them by e-mail.',
-  'cert.warn.PKCS12_UNSUPPORTED.title': 'PKCS#12 (.pfx / .p12) files are password-protected',
-  'cert.warn.PKCS12_UNSUPPORTED.body': 'Extract the certificates with OpenSSL first, then load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.title': 'This PKCS#12 (.pfx / .p12) file was not opened',
+  'cert.warn.PKCS12_UNSUPPORTED.body': 'Load it again to enter its password, or extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.what': 'It uses {what}, which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'This browser cannot decrypt it here: the page needs WebCrypto, which works only over https or on localhost. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Its password is stretched with more iterations than this page runs. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_BAD_PASSWORD.title': 'Wrong password for the PKCS#12 file',
+  'cert.warn.PKCS12_DAMAGED.title': 'The PKCS#12 file is damaged',
+  'cert.warn.PKCS12_DAMAGED.body': 'Its contents cannot be read, although the password is right. Export the file again.',
   'cert.warn.CSR_NOT_CERT.title': 'This is a certificate signing request (CSR), not a certificate',
   'cert.warn.CSR_NOT_CERT.body': 'A CSR is what you send to the certificate authority. Load the certificate you received back (usually .crt or .pem).',
   'cert.warn.NO_CERTIFICATE.title': 'No certificate found',
@@ -385,7 +396,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'cert.dropTitle': 'Sertifika dosyasını buraya bırakın',
-  'cert.dropHint': 'veya seçmek için tıklayın · Ctrl+V ile yapıştırın · PEM, CRT/CER, DER, P7B',
+  'cert.dropHint': 'veya seçmek için tıklayın · Ctrl+V ile yapıştırın · PEM, CRT/CER, DER, P7B, PFX/P12',
   'cert.pasteToggle': 'Sertifikayı metin olarak yapıştır',
   'cert.pasteLabel': 'Sertifika metni (PEM)',
   'cert.pastePlaceholder': '-----BEGIN CERTIFICATE-----\nMIIF…\n-----END CERTIFICATE-----',
@@ -448,8 +459,14 @@ registerStrings('tr', {
 
   'cert.warn.PRIVATE_KEY_PRESENT.title': 'Dosyada özel anahtar da var',
   'cert.warn.PRIVATE_KEY_PRESENT.body': 'Yok sayıldı — asla gösterilmedi, saklanmadı, yüklenmedi. Burada yalnızca sertifika gerekir. Anahtar dosyalarını gizli tutun, e-postayla göndermekten kaçının.',
-  'cert.warn.PKCS12_UNSUPPORTED.title': 'PKCS#12 (.pfx / .p12) dosyaları parolayla korunur',
-  'cert.warn.PKCS12_UNSUPPORTED.body': 'Önce sertifikaları OpenSSL ile çıkarın, ardından cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.title': 'Bu PKCS#12 (.pfx / .p12) dosyası açılmadı',
+  'cert.warn.PKCS12_UNSUPPORTED.body': 'Parolasını girmek için dosyayı yeniden yükleyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.what': 'Bu sayfanın desteklemediği {what} kullanıyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyayı burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_BAD_PASSWORD.title': 'PKCS#12 dosyasının parolası yanlış',
+  'cert.warn.PKCS12_DAMAGED.title': 'PKCS#12 dosyası bozuk',
+  'cert.warn.PKCS12_DAMAGED.body': 'Parola doğru olduğu hâlde içeriği okunamıyor. Dosyayı yeniden dışa aktarın.',
   'cert.warn.CSR_NOT_CERT.title': 'Bu bir sertifika imzalama isteği (CSR), sertifika değil',
   'cert.warn.CSR_NOT_CERT.body': 'CSR, sertifika otoritesine gönderdiğiniz dosyadır. Karşılığında aldığınız sertifikayı (genellikle .crt veya .pem) yükleyin.',
   'cert.warn.NO_CERTIFICATE.title': 'Sertifika bulunamadı',
@@ -691,8 +708,9 @@ for (const lang of ['en', 'tr']) {
  * @property {'pick'|'drop'|'paste'|'session'|'ct'|'sample'} source 'ct': read from Certificate
  *   Transparency for a host name ({@link ctCertLoad}); 'sample': the bundled sample
  * @property {Date} loadedAt
- * @property {{ certificates: object[], leaf: object|null, warnings: Array<{ code: string, detail?: string }> }} result
- *   lib/x509.parseCertificates() result
+ * @property {{ certificates: object[], leaf: object|null, warnings: Array<{ code: string, detail?: string }>, pkcs12?: object }} result
+ *   lib/x509.parseCertificates() result, or loadCertificates()'s for an opened PKCS#12 bundle
+ *   (`pkcs12`: lib/x509.js Pkcs12Summary — never the key)
  * @property {{ host: string, provider: string, issuance: object, precertificate: boolean,
  *   newerPrecertificate: object|null, truncated: boolean }} [ct] source 'ct' only: what the lookup
  *   found (lib/ctcert.js CtLookup fields)
@@ -706,7 +724,23 @@ for (const lang of ['en', 'tr']) {
  * @returns {CertLoad}
  */
 export function loadCertificateData(input, { name = '', size = null, source = 'pick', now } = {}) {
-  const result = parseCertificates(input, now !== undefined ? { now } : {});
+  return certLoadOf(input, parseCertificates(input, now !== undefined ? { now } : {}), { name, size, source });
+}
+
+/**
+ * {@link loadCertificateData} for a file that may be a PKCS#12 bundle: with `password` the bundle
+ * is opened (lib/x509.js loadCertificates) and `result.pkcs12` describes it; `checkKey` asks
+ * whether its private key belongs to the leaf (decrypted in memory for that only). Never rejects.
+ * @param {string|ArrayBuffer|Uint8Array} input
+ * @param {{ name?: string, size?: number, source?: string, now?: Date|number, password?: string|null, checkKey?: boolean }} [opts]
+ * @returns {Promise<CertLoad>}
+ */
+export async function loadCertificateFile(input, { name = '', size = null, source = 'pick', now, password = null, checkKey = false } = {}) {
+  const result = await loadCertificates(input, { password, checkKey, ...(now !== undefined ? { now } : {}) });
+  return certLoadOf(input, result, { name, size, source });
+}
+
+function certLoadOf(input, result, { name, size, source }) {
   let bytes = 0;
   if (typeof input === 'string') bytes = new TextEncoder().encode(input).length;
   else if (input && Number.isFinite(input.byteLength)) bytes = input.byteLength;
@@ -1184,13 +1218,41 @@ function pemFileName(cert, suffix = '') {
 /* ------------------------------------------------------------------------ */
 
 /**
- * {@link CertLoad}s of files a FileDrop read ({ name, size, buffer, source }), in order.
- * @param {Array<{ name: string, size: number, buffer: ArrayBuffer, source?: string }>} files
- * @returns {CertLoad[]}
+ * {@link CertLoad}s of what a picker read, in order, where a PKCS#12 bundle that needs its password
+ * asks for it first (ui/pfx-import.js; one dialog per bundle, one after the other): Open puts its
+ * certificates in its place, Cancel leaves it out and says so.
+ * @param {Array<{ input: string|Uint8Array, meta: { name?: string, size?: number, source?: string } }>} items
+ * @returns {Promise<{ loads: CertLoad[], opened: boolean }>} `opened`: a bundle was opened
  */
-export function certLoadsFromFiles(files) {
+export async function openCertInputs(items) {
+  const loads = [];
+  let opened = false;
+  for (const { input, meta } of items) {
+    const load = loadCertificateData(input, meta);
+    if (!isLockedPfx(load.result)) {
+      loads.push(load);
+      continue;
+    }
+    const name = meta.name || t('file.pasted');
+    const pfx = await askPfxPassword({ name, open: (password, checkKey) => loadCertificateFile(input, { ...meta, password, checkKey }) });
+    if (!pfx) {
+      toast(t('pfx.cancelled', { name }), { type: 'info', timeout: 3000 });
+      continue;
+    }
+    loads.push(pfx);
+    opened = true;
+  }
+  return { loads, opened };
+}
+
+/**
+ * The picker's items of files a FileDrop read ({@link openCertInputs}).
+ * @param {Array<{ name: string, size: number, buffer: ArrayBuffer, source?: string }>} files
+ * @returns {Array<{ input: Uint8Array, meta: object }>}
+ */
+export function certFileInputs(files) {
   return (files || []).filter(Boolean)
-    .map((f) => loadCertificateData(new Uint8Array(f.buffer), { name: f.name, size: f.size, source: f.source }));
+    .map((f) => ({ input: new Uint8Array(f.buffer), meta: { name: f.name, size: f.size, source: f.source } }));
 }
 
 /**
@@ -1199,16 +1261,22 @@ export function certLoadsFromFiles(files) {
  * With `multiple` it takes several files at once (and, with `folder`, a folder where the browser
  * can pick one) and hands them to `onLoads` together, one {@link CertLoad} per file; pasted text
  * is one load, whatever the number of PEM blocks in it.
+ * A PKCS#12 bundle asks for its password first ({@link openCertInputs}): Open loads its certificates
+ * (and moves the keyboard focus to `focusTarget()`, the note about the bundle, rather than let it
+ * fall to <body>), Cancel loads nothing and says so.
  * @param {{ onLoad: (load: CertLoad) => void, onLoads?: ((loads: CertLoad[]) => void)|null, multiple?: boolean,
- *   folder?: boolean, compact?: boolean, title?: string, hint?: string }} opts `onLoads` takes every load
+ *   folder?: boolean, compact?: boolean, title?: string, hint?: string,
+ *   focusTarget?: () => (HTMLElement|null) }} opts `onLoads` takes every load
  *   (one file too) when given, else `onLoad` gets the first
  * @returns {{ el: HTMLElement, drop: object, input: HTMLInputElement, paste: object }}
  */
-export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = false, compact = false, title = null, hint = null }) {
-  const deliver = (loads) => {
+export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = false, compact = false, title = null, hint = null, focusTarget = null }) {
+  const deliver = async (items) => {
+    const { loads, opened } = await openCertInputs(items);
     if (!loads.length) return;
     if (onLoads) onLoads(loads);
     else onLoad(loads[0]);
+    if (opened && focusTarget) focusLoadedCert(focusTarget());
   };
   const drop = FileDrop({
     accept: CERT_ACCEPT,
@@ -1220,7 +1288,7 @@ export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = 
     title: title ?? t('cert.dropTitle'),
     hint: hint ?? t('cert.dropHint'),
     className: 'cert-drop',
-    onFiles: (files) => deliver(certLoadsFromFiles(multiple ? files : files.slice(0, 1)))
+    onFiles: (files) => deliver(certFileInputs(multiple ? files : files.slice(0, 1)))
   });
   const area = textarea({
     label: t('cert.pasteLabel'),
@@ -1236,7 +1304,7 @@ export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = 
     }
     area.setError(null);
     area.value = '';
-    deliver([loadCertificateData(text, { name: t('file.pasted'), source: 'paste' })]);
+    deliver([{ input: text, meta: { name: t('file.pasted'), source: 'paste' } }]);
   };
   // A complete PEM block is read automatically (debounced) — no extra click needed.
   const auto = debounce(() => {
@@ -1640,8 +1708,32 @@ export function CertSourceNote(load, { actions = [], extra = null } = {}) {
 }
 
 /**
- * Alerts for parseCertificates() warnings (translated; technical details collapsed).
- * NO_CERTIFICATE is dropped when a more specific reason (PKCS#12 / CSR) explains it.
+ * The note about an opened PKCS#12 bundle (ui/pfx-import.js PfxNote: what it held, how it was
+ * protected, the key check) with Download fullchain.pem — the leaf and its intermediates in chain
+ * order without the root ({@link fullchainCerts}), never the key. null for any other load.
+ * @param {CertLoad|null} load
+ * @returns {HTMLElement|null}
+ */
+export function CertPfxNote(load) {
+  const result = load && load.result;
+  if (!result || !result.pkcs12) return null;
+  const leaf = result.leaf;
+  const full = leaf ? fullchainCerts(analyzeChain(result.certificates, leaf)) : [];
+  return PfxNote(result.pkcs12, {
+    certName: certDisplayName,
+    actions: leaf ? [
+      Button({
+        label: t('pfx.fullchain'), icon: 'download', size: 'sm', dataset: { action: 'pfx-fullchain' },
+        onClick: () => downloadText(pemFileName(leaf, '-fullchain'), pemBundle(full), 'application/x-pem-file')
+      }),
+      h('span', { class: 'muted text-sm pfx-fullchain-hint' }, t('pfx.fullchainHint'))
+    ] : []
+  });
+}
+
+/**
+ * Alerts for parseCertificates() / loadCertificates() warnings (translated; technical details
+ * collapsed). NO_CERTIFICATE is dropped when a more specific reason (PKCS#12 / CSR) explains it.
  * @param {{ warnings: Array<{ code: string, detail?: string }> }} result
  * @param {{ name?: string, compact?: boolean }} [opts]
  * @returns {HTMLElement[]}
@@ -1676,16 +1768,28 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
         alert('warn', 'key', t('cert.warn.PRIVATE_KEY_PRESENT.body'));
         break;
       case 'PKCS12_UNSUPPORTED': {
-        let cmd = w.detail || 'openssl pkcs12 -in file.pfx -nokeys -out cert.pem';
-        if (/^[\w.-]+\.(pfx|p12)$/i.test(name)) cmd = cmd.replace('file.pfx', name);
-        alert('warn', 'lock', t('cert.warn.PKCS12_UNSUPPORTED.body'), CodeBlock(cmd, { label: 'OpenSSL' }));
+        // detail: the OpenSSL command when the bundle was not opened, else what it uses that this page cannot decrypt.
+        const file = /^[\w.-]+\.(pfx|p12)$/i.test(name) ? name : 'file.pfx';
+        const what = w.detail && !/^openssl /.test(w.detail) ? w.detail : null;
+        let body = t('cert.warn.PKCS12_UNSUPPORTED.body');
+        if (what === 'webcrypto' || what === 'iterations') body = t(`cert.warn.PKCS12_UNSUPPORTED.${what}`);
+        else if (what) body = t('cert.warn.PKCS12_UNSUPPORTED.what', { what });
+        // OpenSSL 3 reads the legacy PBE algorithms (RC4, DES, MD5) only with -legacy.
+        const legacy = what && /^pbeWith/.test(what) ? ' -legacy' : '';
+        alert('warn', 'lock', body, CodeBlock(`openssl pkcs12${legacy} -in ${file} -nokeys -out cert.pem`, { label: 'OpenSSL' }));
         break;
       }
+      case 'PKCS12_BAD_PASSWORD':
+        alert('error', 'lock', t(w.detail === 'no-mac' ? 'pfx.wrong.noMac' : 'pfx.wrong.mac'));
+        break;
+      case 'PKCS12_DAMAGED':
+        alert('error', 'x-circle', t('cert.warn.PKCS12_DAMAGED.body'), details(same));
+        break;
       case 'CSR_NOT_CERT':
         alert('info', 'file-text', t('cert.warn.CSR_NOT_CERT.body'));
         break;
       case 'NO_CERTIFICATE':
-        if (codes.has('PKCS12_UNSUPPORTED') || codes.has('CSR_NOT_CERT')) break;
+        if (['PKCS12_UNSUPPORTED', 'PKCS12_BAD_PASSWORD', 'PKCS12_DAMAGED', 'CSR_NOT_CERT'].some((c) => codes.has(c))) break;
         alert('error', 'x-circle', t('cert.warn.NO_CERTIFICATE.body'),
           same.length ? h('div', { class: 'text-sm' }, t('cert.warn.foundOnly', { what: same.join(', ').replace(/^Found only:\s*/i, '') })) : null);
         break;
@@ -1928,7 +2032,7 @@ export function mount(container, ctx) {
 
   function renderLoader() {
     clear(loaderHost);
-    const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load });
+    const loader = CertLoader({ onLoad: (l) => setLoad(l), compact: !!load, focusTarget: () => content.querySelector('.pfx-note') });
     // '/' lands on the drop zone, which also takes a pasted certificate (Ctrl+V).
     loader.drop.el.dataset.shortcut = 'focus';
     alternatives = CertAlternatives({
@@ -1993,6 +2097,8 @@ export function mount(container, ctx) {
       })] : []
     });
     if (sourceNote) content.append(sourceNote);
+    const pfxNote = CertPfxNote(load);
+    if (pfxNote) content.append(pfxNote);
     content.append(overviewCard(result.leaf, analysis));
     if (result.certificates.length > 1) {
       const sel = select({
@@ -2070,7 +2176,8 @@ export function mount(container, ctx) {
           label: t('cert.downloadPem'), icon: 'download', dataset: { action: 'download-pem' },
           onClick: () => downloadText(pemFileName(leaf), pemEncode(leaf.der), 'application/x-pem-file')
         }),
-        full.length > 1 ? Button({
+        // A PKCS#12 bundle's note offers fullchain.pem already.
+        full.length > 1 && !load.result.pkcs12 ? Button({
           label: t('cert.downloadChain'), icon: 'download', dataset: { action: 'download-chain' }, title: t('cert.chain.fullchainHint'),
           onClick: () => downloadText(pemFileName(leaf, '-fullchain'), pemBundle(full), 'application/x-pem-file')
         }) : null,

@@ -208,7 +208,11 @@ describe('i18n coverage', () => {
     // Source health: every state and every quota hint key a SourceResult can carry.
     for (const s of sources.SOURCE_HEALTH_STATES) add(`source.state.${s}`);
     for (const k of ['source.quota.day', 'source.quota.hour', 'source.quota.minutes', 'source.quota.later', 'source.fallback', 'error.kind.unavailable']) add(k);
-    for (const c of ['PRIVATE_KEY_PRESENT', 'NO_CERTIFICATE', 'PKCS12_UNSUPPORTED', 'CSR_NOT_CERT', 'PARSE_ERROR', 'EXPIRED', 'NOT_YET_VALID']) add(`cert.warn.${c}.title`);
+    for (const c of ['PRIVATE_KEY_PRESENT', 'NO_CERTIFICATE', 'PKCS12_UNSUPPORTED', 'PKCS12_BAD_PASSWORD', 'PKCS12_DAMAGED', 'CSR_NOT_CERT', 'PARSE_ERROR', 'EXPIRED', 'NOT_YET_VALID']) add(`cert.warn.${c}.title`);
+    // A PKCS#12 bundle (ui/pfx-import.js, views/cert.js): the encryption strengths lib/pkcs12.js
+    // reports, and the unsupported details the Certificate view words on their own.
+    for (const s of ['weak', 'legacy']) { add(`pfx.strength.${s}`); add(`pfx.strength.${s}Title`); }
+    for (const d of ['webcrypto', 'iterations']) add(`cert.warn.PKCS12_UNSUPPORTED.${d}`);
     for (const l of ['EV', 'OV', 'IV', 'DV']) add(`cert.level.${l}`);
     for (const r of ['leaf', 'intermediate', 'root', 'unrelated']) add(`cert.role.${r}`);
     for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);

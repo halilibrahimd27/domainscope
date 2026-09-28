@@ -1067,7 +1067,7 @@ export const Toast = toast;
  * when dismissible). `open()` resolves with the clicked action's `value` (or null when
  * dismissed). An action's onClick may return false (or a Promise of false) to keep it open.
  * @param {{ title: string, content?: any, actions?: Array<{ label: string, value?: any, variant?: string, icon?: string,
- *   onClick?: (modal: object) => (boolean|void|Promise<boolean|void>), autofocus?: boolean }>, size?: 'sm'|'md'|'lg',
+ *   onClick?: (modal: object) => (boolean|void|Promise<boolean|void>), autofocus?: boolean, dataset?: object }>, size?: 'sm'|'md'|'lg',
  *   dismissible?: boolean, onClose?: (value: any) => void, className?: string }} opts
  * @returns {{ el: HTMLDialogElement, body: HTMLElement, open(): Promise<any>, close(value?: any): void, setContent(...nodes: any[]): void }}
  */
@@ -1119,7 +1119,7 @@ export function Modal({ title, content = null, actions = null, size = 'md', dism
         label: action.label,
         icon: action.icon || null,
         variant: action.variant || 'secondary',
-        dataset: action.autofocus ? { autofocus: '1' } : {},
+        dataset: { ...(action.dataset || {}), ...(action.autofocus ? { autofocus: '1' } : {}) },
         onClick: async () => {
           if (action.onClick) {
             const keep = await action.onClick(api);
@@ -1300,7 +1300,12 @@ export function FileDrop({
     }
   });
   input.addEventListener('click', (event) => event.stopPropagation());
-  input.addEventListener('change', () => readFiles(input.files, 'pick'));
+  input.addEventListener('change', () => {
+    // Emptied at once, so choosing the same file again (after a cancelled PKCS#12 password, say) is a change too.
+    const files = [...(input.files || [])];
+    input.value = '';
+    readFiles(files, 'pick');
+  });
   if (folderInput) {
     folderInput.addEventListener('click', (event) => event.stopPropagation());
     folderInput.addEventListener('change', () => {

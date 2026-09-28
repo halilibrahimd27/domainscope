@@ -490,6 +490,11 @@ export function mount(container, ctx) {
   const cardsOf = () => passportCards(current ? current.raw : {}, { now: new Date() });
 
   function renderHead() {
+    // The head redrawn under the keyboard focus (a Retry landed after the build) keeps it on the
+    // same button, like a card (renderCard).
+    const old = headEl.firstElementChild;
+    const focused = old && old.contains(document.activeElement) ? document.activeElement : null;
+    const key = focused ? focusKey(focused, old) : null;
     clear(headEl);
     if (!current) return;
     const { domain, host } = current;
@@ -511,6 +516,15 @@ export function mount(container, ctx) {
         host ? h('p', { class: 'text-sm muted dov-reduced' }, t('dov.reduced', { domain, host })) : null,
         meta),
       h('div', { class: 'dov-head-actions' }, summary)));
+    if (focused) {
+      const el = headEl.firstElementChild;
+      const target = key && el.querySelector(key);
+      if (target && !target.disabled) target.focus({ preventScroll: true });
+      else {
+        el.setAttribute('tabindex', '-1');
+        el.focus({ preventScroll: true });
+      }
+    }
   }
 
   /** The "Open in <tool>" link of a card. */

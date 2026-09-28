@@ -12,15 +12,17 @@
  * fills the box (a host name reduced to its registrable domain, "Nothing has been sent yet") and
  * an IP refused; Build overview → the seven cards fill as their lookups land: an RDAP 503 and a
  * SERVFAIL for NS show "⚠ n/a" with the reason and a Retry that asks only that lookup again (the
- * keyboard focus stays on the card), at once when pressed while the build still waits for RDAP
- * (the health checks then follow the new answer); DNS hosting, mail platform with SPF / DMARC
- * one-liners, apex and www with their CDN, CAA, SaaS vendors without a single token on the page,
- * the health score; the CT issuers on a click (exactly one Cert Spotter request) compared with
- * CAA; Copy summary (names only, the permalink); the print stylesheet; the kept result on the way
- * back (no new query); Ctrl+Enter builds and Esc stops (the cards not looked up offer to be,
- * named "Look up" for a screen reader too, the focus back on Build); a .tr domain (no RDAP: the
- * registry's WHOIS); 320 / 375 px without horizontal scroll, TR / EN × light / dark; zero console
- * errors / CSP violations / missing i18n keys, nothing sent outside the page.
+ * keyboard focus stays on the card, or on Copy summary when it moved there meanwhile), at once
+ * when pressed while the build still waits for RDAP (the health checks then follow the new
+ * answer); DNS hosting, mail platform with SPF / DMARC one-liners, apex and www with their CDN,
+ * CAA, SaaS vendors without a single token on the page, the health score; the CT issuers on a
+ * click (exactly one Cert Spotter request) compared with CAA; Copy summary (names only, the
+ * permalink); the print stylesheet; the kept result on the way back (no new query); Ctrl+Enter
+ * builds and Esc stops (the cards not looked up offer to be, named "Look up" for a screen reader
+ * too, the focus back on Build); a .tr domain (no RDAP: the registry's WHOIS; CAA without an
+ * issue property); CAA with an unknown tag marked critical; 320 / 375 px without horizontal
+ * scroll, TR / EN × light / dark; zero console errors / CSP violations / missing i18n keys,
+ * nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, example-test.com.tr,
  * 198.51.100.0/24, 203.0.113.0/24) plus the Cloudflare edge 104.16.1.1 and the provider host names
@@ -304,10 +306,16 @@ async function main() {
       const after = await counts(page);
       assertEqual([after.rdap - before.rdap, after.dns - before.dns], [1, 0], 'one RDAP request, no DNS');
       assert(await page.evaluate(() => !!document.querySelector('.dov-problem[data-id="ns.error"]')), 'the health card still has the NS failure');
-      // the DNS card's Retry: NS alone, past the cache
+      // the DNS card's Retry: NS alone, past the cache. Its answer waits while the keyboard moves
+      // on to Copy summary, which keeps the focus when the head is drawn again.
       const dnsBefore = await page.evaluate(() => window.__dnsLog.length);
+      await page.evaluate(() => { window.__dnsHold['example.com|NS'] = new Promise((resolve) => { window.__openNs = resolve; }); });
       await page.click('.dov-card-dns [data-action="retry-source"]');
+      await page.waitFor((n) => window.__dnsLog.slice(n).some((q) => q.name === 'example.com' && q.type === 'NS'), { args: [dnsBefore], message: 'NS asked' });
+      await page.evaluate(() => document.querySelector('.dov-head [data-action="copy-summary"]').focus());
+      await page.evaluate(() => { delete window.__dnsHold['example.com|NS']; window.__openNs(); });
       await page.waitFor(() => document.querySelector('.dov-card-dns')?.dataset.failed === '' && /Cloudflare/.test(document.querySelector('.dov-card-dns').textContent), { message: 'dns filled' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'copy-summary', 'the focus stays on Copy summary');
       // the health checks run again on the retried answer (the rest from the resolver's cache)
       await page.waitFor(() => !document.querySelector('.dov-card-health .dov-updating') && !!document.querySelector('.dov-score')
         && !document.querySelector('.dov-problem[data-id="ns.error"]'), { timeout: 15000, message: 'health refreshed' });

@@ -479,10 +479,11 @@ export function mount(container, ctx) {
       toast(msg, { type: 'success', timeout: 2500 });
     }
     render();
-    if (result.added) {
-      const head = root.querySelector('.estate-stats');
-      if (head) head.scrollIntoView({ block: 'nearest' });
-    }
+    // The page is drawn again: the focus goes to the numbers of what was read, else back to where
+    // the text or the file came from (never to <body>).
+    const target = result.added ? root.querySelector('.estate-stats [data-filter="all"]')
+      : pasted !== null ? root.querySelector('[data-role="estate-paste"]') : root.querySelector('.estate-drop');
+    if (target) target.focus();
   }
 
   function removeReport(report) {

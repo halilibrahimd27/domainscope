@@ -198,6 +198,7 @@ async function main() {
       assertEqual(info.pressed, ['all'], 'All pressed');
       assertEqual(info.tabs, ['certificates:9', 'conflicts:2', 'keys:4'], 'tab badges');
       assertEqual(info.names[0], 'old.example.net', 'soonest expiry first');
+      assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'all'), 'the focus on the Certificates tile, not <body>');
       const lines = await page.evaluate(() => [...document.querySelectorAll('.estate-line')].map((l) => l.textContent));
       assert(lines[0].includes('expired 1') && lines[0].includes('< 7 days 1') && lines[0].includes('later 6'), `expiry line: ${lines[0]}`);
       assert(lines[1].includes('Cloudflare Origin CA 1') && lines[1].includes('self-signed 6') && lines[1].includes('private CA 1'), `kinds: ${lines[1]}`);
@@ -287,6 +288,8 @@ async function main() {
       await page.press('Enter', { ctrl: true });
       await page.waitFor(() => document.querySelectorAll('.estate-errors li').length === 1, { message: 'pasted non-report' });
       assert((await viewInfo(page)).errors[0].includes('not a report of ssl_origin_scan.py'), 'reason');
+      const box = await page.evaluate(() => ({ focused: document.activeElement?.dataset.role, text: document.querySelector('[data-role="estate-paste"]').value }));
+      assertEqual(box, { focused: 'estate-paste', text: '{"tool":"other"}' }, 'the pasted text stays, focused, to be fixed');
       await removeToasts(page);
       await shotEl(page, opts, 'estate-import-desktop-light-en', '.estate-import');
     });

@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { lintZone, LINT_RULES, SEVERITY_ORDER, CF_PROXY_PORTS } from '../../assets/js/lib/zonelint.js';
+import { lintZone, LINT_RULES, LINT_I18N, SEVERITY_ORDER, CF_PROXY_PORTS } from '../../assets/js/lib/zonelint.js';
 import { zone, cfZone, P, D } from '../fixtures/zones-analysis/zone-builder.mjs';
 import { fixtureNames, loadFixture, HERE } from '../fixtures/zones-analysis/gen-analysis-golden.mjs';
 
@@ -28,6 +28,18 @@ describe('vocabulary', () => {
     // folded into ORIGIN_EXPOSED_BY_SIBLING (role 'mx'), per the critic notes
     assert.equal(LINT_RULES.ORIGIN_EXPOSED_BY_MX, undefined);
     assert.ok(LINT_RULES.MX_TARGET_PROXIED && LINT_RULES.SRV_TARGET_PROXIED);
+  });
+
+  test('LINT_I18N: a title and a why text for every code, in English and Turkish, with the same placeholders', () => {
+    const holes = (s) => [...new Set([...String(s).matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((m) => m[1]))].sort().join(',');
+    for (const code of Object.keys(LINT_RULES)) {
+      for (const key of [`zone.lint.${code}`, `zone.lint.${code}.why`]) {
+        assert.ok(LINT_I18N.en[key] && LINT_I18N.tr[key], key);
+        assert.equal(holes(LINT_I18N.en[key]), holes(LINT_I18N.tr[key]), key);
+      }
+    }
+    assert.equal(Object.keys(LINT_I18N.en).length, Object.keys(LINT_RULES).length * 2);
+    assert.deepEqual(Object.keys(LINT_I18N.tr).sort(), Object.keys(LINT_I18N.en).sort());
   });
 
   test('a clean zone has no findings, and malformed / fatal input never throws', () => {

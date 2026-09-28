@@ -7,9 +7,9 @@
  * DOM-free, synchronous and pure (no network, no storage). Runs in browsers and Node 22.
  *
  * Every finding is `{ code, severity, name, type, line, recordIds, params, detail }`:
- * the view builds its title / why / fix text (EN and TR) from `code` + `params`
- * (`zone.lint.<CODE>.*`); `detail` is English log text the UI never parses. Codes form
- * the closed set {@link LINT_RULES}.
+ * its title and why / fix text (EN and TR) are {@link LINT_I18N} `zone.lint.<CODE>` and
+ * `zone.lint.<CODE>.why` with `params`; `detail` is English log text the UI never parses.
+ * Codes form the closed set {@link LINT_RULES}.
  *
  * Only unique records count (`duplicateOf` unset), except for DUPLICATE_RR. The zone
  * index (zoneorigins.js) is built once and shared with the origin map and drift, so
@@ -123,6 +123,69 @@ const utf8 = new TextEncoder();
  * @property {object} params values for the translated text (never English)
  * @property {string} detail English log text
  */
+
+/** Lint text (`zone.lint.<CODE>` title, `.why`): EN [title, why], TR [title, why]. */
+const LINT_TEXT = {
+  CNAME_AND_OTHER_DATA: [['CNAME next to other records', '{name} has a CNAME and {types}. A CNAME must be alone at its name; resolvers answer unpredictably and BIND refuses the zone. Keep either the CNAME or the other records.'],
+    ['CNAME başka kayıtlarla birlikte', '{name} adında hem CNAME hem {types} var. CNAME kendi adında tek başına olmalı; çözümleyiciler tutarsız yanıt verir, BIND zone’u yüklemez. Ya CNAME’i ya da diğer kayıtları tutun.']],
+  CNAME_AT_APEX: [['CNAME at the zone apex', '{name} is a CNAME to {target}. Outside Cloudflare (which flattens it) a CNAME cannot sit next to the SOA and NS records.'],
+    ['Zone kökünde CNAME', '{name}, {target} adresine CNAME. Cloudflare dışında (orada düzleştirilir) CNAME, SOA ve NS kayıtlarının yanında duramaz.']],
+  MULTIPLE_CNAME: [['Several CNAMEs at one name', '{name} has {count} CNAME records; only one is allowed.'], ['Bir adda birden fazla CNAME', '{name} adında {count} CNAME kaydı var; yalnızca bir tane olabilir.']],
+  CNAME_LOOP: [['CNAME loop', '{name} never resolves: {chain}.'], ['CNAME döngüsü', '{name} hiç çözümlenmez: {chain}.']],
+  CNAME_CHAIN_LONG: [['Long CNAME chain', '{name} goes through {hops} CNAME hops inside the zone; resolvers may give up.'], ['Uzun CNAME zinciri', '{name} zone içinde {hops} CNAME adımından geçiyor; çözümleyiciler vazgeçebilir.']],
+  MX_TO_CNAME: [['MX points to a CNAME', 'The mail host of {name} is a CNAME. RFC 2181 requires an MX target with its own address; some mail servers refuse to deliver.'], ['MX bir CNAME’e işaret ediyor', '{name} adının e-posta sunucusu bir CNAME. RFC 2181’e göre MX hedefinin kendi adresi olmalı; bazı e-posta sunucuları teslim etmeyi reddeder.']],
+  NS_TO_CNAME: [['NS points to a CNAME', 'A name server of {name} is a CNAME, which RFC 2181 forbids.'], ['NS bir CNAME’e işaret ediyor', '{name} adının bir ad sunucusu CNAME; RFC 2181 bunu yasaklar.']],
+  SRV_TO_CNAME: [['SRV points to a CNAME', 'The SRV target of {name} is a CNAME, which RFC 2782 forbids.'], ['SRV bir CNAME’e işaret ediyor', '{name} adının SRV hedefi bir CNAME; RFC 2782 bunu yasaklar.']],
+  TARGET_IS_IP: [['Target is an IP address', 'The target of {name} is {target}, an IP address; this record type needs a host name.'], ['Hedef bir IP adresi', '{name} kaydının hedefi {target}, bir IP adresi; bu kayıt türü host adı ister.']],
+  DANGLING_IN_ZONE_TARGET: [['Target has no records', '{name} points to {target}, which has no records in this zone.'], ['Hedefin kaydı yok', '{name}, bu zone’da hiç kaydı olmayan {target} adresine işaret ediyor.']],
+  DUPLICATE_RR: [['Duplicate record', 'The same {type} record of {name} is listed twice.'], ['Yinelenen kayıt', '{name} adının aynı {type} kaydı iki kez yazılmış.']],
+  OCCLUDED_BY_DELEGATION: [['Record hidden below a delegation', '{name} is under {cut}, which is delegated to other name servers; this zone never serves it. Move it into the child zone or delete it.'], ['Yetki devrinin altında kalmış kayıt', '{name}, başka ad sunucularına devredilen {cut} altında; bu zone onu hiçbir zaman sunmaz. Kaydı alt zone’a taşıyın ya da silin.']],
+  OCCLUDED_BY_DNAME: [['Record hidden below a DNAME', '{name} is below the DNAME at {dname}; this zone never serves it.'], ['DNAME altında kalmış kayıt', '{name}, {dname} adındaki DNAME’in altında; bu zone onu hiçbir zaman sunmaz.']],
+  PRIVATE_IP: [['Private address in a public zone', '{name} points at {ip}. Public resolvers return it to anyone, which leaks internal addressing. Move internal names to an internal (split-horizon) zone.'], ['Herkese açık zone’da özel adres', '{name}, {ip} adresine işaret ediyor. Genel çözümleyiciler bunu herkese döndürür; iç adresleme sızar. İç adları dahili (split-horizon) bir zone’a taşıyın.']],
+  LOCALHOST_RECORD: [['localhost in a public zone', '{name} points at {ip}. Hosting panels add it by default; it lets pages on other subdomains share cookies with a local process. Delete it.'], ['Herkese açık zone’da localhost', '{name}, {ip} adresine işaret ediyor. Barındırma panelleri bunu varsayılan olarak ekler; yerel bir süreçle çerez paylaşımına yol açar. Silin.']],
+  NON_GLOBAL_IPV6: [['Non-global IPv6 address', '{name} points at {ip}, outside the global unicast range.'], ['Genel olmayan IPv6 adresi', '{name}, genel tekil yayın aralığı dışındaki {ip} adresine işaret ediyor.']],
+  MIXED_PROXY_FLAGS: [['Proxied and DNS-only on one name', '{name} has both. Cloudflare then proxies every A/AAAA of this name, so the DNS-only flag has no effect.'], ['Aynı adda hem proxy’li hem yalnızca DNS', '{name} ikisine de sahip. Cloudflare bu durumda adın tüm A/AAAA kayıtlarını proxy’ler; yalnızca DNS ayarının etkisi olmaz.']],
+  ORIGIN_EXPOSED_BY_SIBLING: [['Proxied origin published by a DNS-only name', '{name} is DNS-only and publishes the origin behind proxied {proxied}. Anyone can reach the server directly and bypass Cloudflare’s WAF and DDoS protection. Proxy it too, move it, or allow only Cloudflare’s ranges on the origin firewall.'],
+    ['Proxy’li origin, yalnızca DNS olan bir adla yayımlanıyor', '{name} yalnızca DNS ve proxy’li {proxied} adlarının arkasındaki origin’i yayımlıyor. Herkes sunucuya doğrudan ulaşıp Cloudflare’in WAF ve DDoS korumasını atlayabilir. Onu da proxy’leyin, taşıyın ya da origin güvenlik duvarında yalnızca Cloudflare aralıklarına izin verin.']],
+  ORIGIN_EXPOSED_BY_SPF: [['SPF reveals a proxied origin', 'The SPF record of {spfName} authorises {ips}, the origin of proxied {proxied}: mail and web share a server, and SPF is public.'], ['SPF proxy’li bir origin’i ele veriyor', '{spfName} SPF kaydı, proxy’li {proxied} adlarının origin’i olan {ips} adresine izin veriyor: e-posta ve web aynı sunucuda ve SPF herkese açık.']],
+  PROXIED_PRIVATE_ORIGIN: [['Proxied to a private address', '{name} is proxied to {ip}, which Cloudflare’s edge cannot reach.'], ['Özel bir adrese proxy’lenmiş', '{name}, Cloudflare’in erişemediği {ip} adresine proxy’lenmiş.']],
+  PROXIED_TO_CLOUDFLARE_IP: [['Proxied record points at Cloudflare', 'Cloudflare answers {name} ({ip}) with error 1000 “DNS points to prohibited IP”. Point it at your origin server.'], ['Proxy’li kayıt Cloudflare’e işaret ediyor', 'Cloudflare, {name} ({ip}) için 1000 “DNS points to prohibited IP” hatası verir. Kaydı origin sunucunuza yönlendirin.']],
+  ORIGINLESS_PLACEHOLDER: [['Placeholder record', '{name} points at {ip}: a Worker or a redirect rule answers it; there is no server behind it.'], ['Yer tutucu kayıt', '{name}, {ip} adresine işaret ediyor: onu bir Worker ya da yönlendirme kuralı yanıtlar; arkasında sunucu yok.']],
+  PROXIED_TUNNEL: [['Origin is a Cloudflare Tunnel', '{name} goes through a Tunnel; there is no inbound origin to sweep.'], ['Origin bir Cloudflare Tunnel', '{name} bir Tunnel üzerinden gidiyor; taranacak dışarıdan erişilen origin yok.']],
+  PROXIED_PROVIDER: [['Origin is a third party', '{name} points at {provider} ({target}); its certificate is managed there.'], ['Origin üçüncü taraf', '{name}, {provider} ({target}) üzerine işaret ediyor; sertifikası orada yönetilir.']],
+  MX_TARGET_PROXIED: [['Mail host is proxied', 'The mail host {target} of {name} is proxied, but Cloudflare’s proxy carries HTTP(S) only: mail to it fails.'], ['E-posta sunucusu proxy’li', '{name} adının e-posta sunucusu {target} proxy’li, ama Cloudflare proxy’si yalnızca HTTP(S) taşır: ona giden e-posta başarısız olur.']],
+  SRV_TARGET_PROXIED: [['SRV target is proxied', 'The SRV target {target} of {name} is proxied on port {port}, which Cloudflare’s proxy does not carry.'], ['SRV hedefi proxy’li', '{name} adının SRV hedefi {target}, Cloudflare proxy’sinin taşımadığı {port} portunda proxy’li.']],
+  MULTIPLE_SPF: [['More than one SPF record', '{name} has {count} “v=spf1” records. Receivers treat this as a permanent error and SPF fails for all mail. Merge them into one record.'], ['Birden fazla SPF kaydı', '{name} adında {count} adet “v=spf1” kaydı var. Alıcılar bunu kalıcı hata sayar ve tüm e-postalarda SPF başarısız olur. Hepsini tek kayıtta birleştirin.']],
+  SPF_INVALID: [['Invalid SPF record', 'The SPF record of {name} has an error ({error}).'], ['Geçersiz SPF kaydı', '{name} SPF kaydında hata var ({error}).']],
+  SPF_RR_TYPE: [['Obsolete SPF record type', '{name} uses record type SPF (99); publish the policy as TXT only.'], ['Eskimiş SPF kayıt türü', '{name} SPF (99) kayıt türünü kullanıyor; politikayı yalnızca TXT olarak yayımlayın.']],
+  DMARC_INVALID: [['Invalid DMARC record', 'The DMARC record of {name} has an error ({error}).'], ['Geçersiz DMARC kaydı', '{name} DMARC kaydında hata var ({error}).']],
+  TXT_STRING_TOO_LONG: [['TXT string too long', 'One string of {name} is {bytes} bytes; the maximum is 255. Split it into several quoted strings.'], ['TXT dizesi çok uzun', '{name} adının bir dizesi {bytes} bayt; en fazla 255 olabilir. Birkaç tırnaklı dizeye bölün.']],
+  CAA_UNKNOWN_TAG: [['Unknown CAA tag', 'The CAA record of {name} uses the tag “{tag}”, which CAs ignore.'], ['Bilinmeyen CAA etiketi', '{name} CAA kaydı, CA’ların yok saydığı “{tag}” etiketini kullanıyor.']],
+  CAA_FLAGS: [['Unusual CAA flags', 'The CAA record of {name} has flags {flags}; a critical flag on an unknown tag blocks every CA.'], ['Olağan dışı CAA işaretleri', '{name} CAA kaydının işaretleri {flags}; bilinmeyen bir etikette kritik işaret tüm CA’ları engeller.']],
+  TTL_OUTLIER: [['Unusually long TTL', '{name} has a TTL of {ttl} s, while {median} s is typical in this zone: a change takes that long to reach everyone.'], ['Alışılmadık uzun TTL', '{name} için TTL {ttl} sn; bu zone’da tipik olan {median} sn: bir değişikliğin herkese ulaşması bu kadar sürer.']],
+  TTL_TOO_LOW: [['Very short TTL', '{name} has a TTL of {ttl} s; resolvers query it constantly and some raise it anyway.'], ['Çok kısa TTL', '{name} için TTL {ttl} sn; çözümleyiciler onu sürekli sorgular, bazıları yine de yükseltir.']],
+  SOA_NEGATIVE_TTL: [['Long negative-caching TTL', 'The SOA minimum of {name} is {minimum} s: a newly added name may stay “missing” that long.'], ['Uzun negatif önbellek TTL’i', '{name} SOA minimumu {minimum} sn: yeni eklenen bir ad bu kadar süre “yok” görünebilir.']],
+  SINGLE_NS: [['Only one name server', '{name} lists a single name server; if it fails the whole zone is unreachable.'], ['Yalnızca bir ad sunucusu', '{name} tek bir ad sunucusu listeliyor; o çökerse tüm zone erişilemez olur.']],
+  ALIAS_TARGET_MISSING: [['Alias target not in the file', 'The alias of {name} points to {target} in this zone, which has no such record.'], ['Alias hedefi dosyada yok', '{name} alias’ı bu zone’daki {target} adına işaret ediyor, ama böyle bir kayıt yok.']]
+};
+
+function buildLintStrings(lang) {
+  const out = {};
+  for (const [code, pair] of Object.entries(LINT_TEXT)) {
+    const [title, why] = pair[lang];
+    out[`zone.lint.${code}`] = title;
+    out[`zone.lint.${code}.why`] = why;
+  }
+  return out;
+}
+
+/**
+ * English and Turkish texts of every finding: `zone.lint.<CODE>` (the title) and
+ * `zone.lint.<CODE>.why` (what it breaks and what to do), with the finding's `params` as
+ * `{placeholders}`. The Zone File view and the DNS change request register them.
+ * @type {{ en: Object<string, string>, tr: Object<string, string> }}
+ */
+export const LINT_I18N = Object.freeze({ en: Object.freeze(buildLintStrings(0)), tr: Object.freeze(buildLintStrings(1)) });
 
 /* ------------------------------------------------------------------------ */
 /* Helpers                                                                  */

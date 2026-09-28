@@ -591,6 +591,16 @@ describe('fixes of Zone File findings', () => {
 });
 
 describe('i18n', () => {
+  test('every fix.* key the module can emit exists in both languages (not only the ones the goldens reach)', () => {
+    const src = readFileSync(new URL('../../assets/js/lib/fixes.js', import.meta.url), 'utf8');
+    const literal = new Set([...src.matchAll(/key: '(fix\.[a-z]+\.[a-z0-9.-]+)'/g)].map((m) => m[1]));
+    assert.ok(literal.size > 60, `found ${literal.size}`);
+    for (const k of literal) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
+    // Built keys: formats, templates, actions.
+    for (const f of FIX_FORMATS) for (const k of [`fix.fmt.${f}`, `fix.fmt.${f}.how`]) assert.ok(FIX_I18N.en[k] && FIX_I18N.tr[k], k);
+    for (const a of ['add', 'replace', 'delete', 'ttl', 'rewrite', 'unchanged']) assert.ok(FIX_I18N.tr[`fix.ins.action.${a}`], a);
+  });
+
   test('English and Turkish have the same keys and placeholders', () => {
     const holes = (s) => [...new Set([...JSON.stringify(s).matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((m) => m[1]))].sort().join(',');
     assert.deepEqual(Object.keys(FIX_I18N.tr).sort(), Object.keys(FIX_I18N.en).sort());

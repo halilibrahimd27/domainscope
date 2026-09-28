@@ -28,6 +28,7 @@
  * its CA; other carried names drop that CA's hint; a link never sets its CA or challenge next to a
  * draft it left alone; nothing sent), a check past the 50-name cap still replaced by a certificate's
  * link, a shared link that runs on open (DNS-01: the Cloudflare plugins, TXT leftovers), Ctrl+Enter,
+ * an AAAA lookup no resolver answers (IPv6 not checked: "could not be checked", only IPv4 counted),
  * 320 / 375 px phones light / dark in both languages without horizontal scroll, every resolver
  * answering 429 ("could not be checked", never "ready"), zero console errors / CSP violations /
  * missing i18n keys, nothing sent outside the page.

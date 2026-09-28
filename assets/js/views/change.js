@@ -203,13 +203,16 @@ registerStrings('tr', {
 /* Module state (page session only)                                          */
 /* ------------------------------------------------------------------------ */
 
-/** The form: the template on screen and each template's values, the carried domain, the last read. */
+/**
+ * The form: the template on screen and each template's values, the carried domain, the last read,
+ * and the output tab and instructions' language picked (they stay while the form is edited).
+ */
 let draft = null;
 /** The last check: its query, answers and timing, so a language switch or a return resumes it. */
 let checkMemo = null;
 
 function freshDraft() {
-  return { template: 'acme-txt', forms: {}, carried: null, read: null };
+  return { template: 'acme-txt', forms: {}, carried: null, read: null, choice: {} };
 }
 
 stateSingleton.subscribe(({ key }) => {
@@ -472,7 +475,7 @@ function mountBuilder(container, ctx) {
       outputsEl.append(h('p', { class: 'muted text-sm chg-blocked' }, t('chg.blocked')));
       return;
     }
-    outputsEl.append(ChangeOutputs(req, { fileStem: `dns-change-${req.zone}` }));
+    outputsEl.append(ChangeOutputs(req, { fileStem: `dns-change-${req.zone}`, choice: draft.choice }));
   }
 
   function renderReadNote(read, spfStale = false) {

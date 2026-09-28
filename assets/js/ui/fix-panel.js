@@ -197,16 +197,19 @@ function SetItem(r, edit = false) {
  * Everything a change request produces: the sets, the admin's instructions (English / Turkish),
  * every code format with a download, and the check link.
  * @param {import('../lib/fixes.js').ChangeRequest} req a request without errors
- * @param {{ fileStem?: string, check?: boolean, className?: string }} [opts]
- *   `fileStem`: the downloads' name before the extension; `check`: show the check link (default true)
+ * @param {{ fileStem?: string, check?: boolean, className?: string, choice?: { tab?: string, lang?: string } }} [opts]
+ *   `fileStem`: the downloads' name before the extension; `check`: show the check link (default
+ *   true); `choice`: the output tab and the instructions' language picked so far, kept up to date
+ *   here — a caller that renders the outputs again as the form changes passes the same object, so
+ *   the format being watched stays on screen
  * @returns {HTMLElement}
  */
-export function ChangeOutputs(req, { fileStem = null, check = true, className = '' } = {}) {
+export function ChangeOutputs(req, { fileStem = null, check = true, className = '', choice = {} } = {}) {
   const link = check ? encodeCheck(checkFromRequest(req)) : null;
   const url = link && link.ok ? checkUrl(link.query) : null;
   const stem = sanitizeFilename(fileStem || `dns-change-${req.zone || 'zone'}`);
-  let lang = getLang();
   const unread = unreadEdits(req);
+  let lang = choice.lang === 'en' || choice.lang === 'tr' ? choice.lang : getLang();
 
   const adminHost = h('div', { class: 'fix-admin-text' });
   const renderAdmin = () => {
@@ -221,6 +224,7 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
     options: [{ value: 'en', label: 'English' }, { value: 'tr', label: 'Türkçe' }],
     onChange: (v) => {
       lang = v;
+      choice.lang = v;
       renderAdmin();
     }
   });
@@ -246,7 +250,7 @@ export function ChangeOutputs(req, { fileStem = null, check = true, className = 
   const tabs = Tabs([
     { id: 'admin', label: t('fixp.admin'), content: adminTab },
     ...FIX_FORMATS.map((f) => ({ id: f, label: t(`fix.fmt.${f}`), content: formatTab(f) }))
-  ], { label: t('fixp.formats'), className: 'fix-tabs' });
+  ], { label: t('fixp.formats'), className: 'fix-tabs', selected: choice.tab || null, onChange: (id) => { choice.tab = id; } });
 
   let checkEl = null;
   if (check) {

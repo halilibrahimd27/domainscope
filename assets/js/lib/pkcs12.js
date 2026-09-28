@@ -42,8 +42,11 @@ export const PKCS12_ERRORS = Object.freeze(['NOT_PKCS12', 'BAD_PASSWORD', 'DAMAG
 
 /**
  * Why a bundle could not be opened. `code`: one of {@link PKCS12_ERRORS}; `detail`: 'mac' or
- * 'no-mac' for BAD_PASSWORD, what is not supported for UNSUPPORTED (an algorithm name, 'webcrypto',
- * 'iterations', 'envelopedData' / 'signedData' for the public-key modes, …), else null.
+ * 'no-mac' for BAD_PASSWORD, what is not supported for UNSUPPORTED (an algorithm name or OID,
+ * 'iterations', 'envelopedData' / 'signedData' for the public-key modes, 'webcrypto' when the page
+ * has no WebCrypto, 'webcrypto-refused: <operation>' when WebCrypto refused one, …), else null.
+ * `encryption`: for 'iterations', the {@link EncryptionInfo} the count belongs to when it is an
+ * encryption's.
  */
 export class Pkcs12Error extends Error {
   /**
@@ -453,12 +456,16 @@ export async function pkcs12Kdf({ hash = 'SHA-1', password, salt, id, iterations
   return result;
 }
 
-/** A WebCrypto operation the browser refused: UNSUPPORTED ('webcrypto'), never a wrong password. */
+/**
+ * A WebCrypto operation the browser refused although it has WebCrypto: UNSUPPORTED
+ * ('webcrypto-refused: <what>', e.g. 'webcrypto-refused: PBKDF2-HMAC-SHA-256'), never a wrong
+ * password. A page without WebCrypto at all is 'webcrypto' ({@link needSubtle}).
+ */
 async function webCrypto(what, run) {
   try {
     return await run();
   } catch (err) {
-    throw new Pkcs12Error('UNSUPPORTED', `WebCrypto refused ${what}: ${(err && err.message) || err}`, { detail: 'webcrypto', cause: err });
+    throw new Pkcs12Error('UNSUPPORTED', `WebCrypto refused ${what}: ${(err && err.message) || err}`, { detail: `webcrypto-refused: ${what}`, cause: err });
   }
 }
 

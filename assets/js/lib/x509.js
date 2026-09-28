@@ -1865,7 +1865,8 @@ function keyedCertificate(opened, parsed, all) {
  *   opened gives PKCS12_BAD_PASSWORD (detail 'mac': the integrity check does not match; 'no-mac':
  *   nothing decrypts and there is no integrity check to tell a damaged file apart),
  *   PKCS12_DAMAGED (detail: what is wrong) or PKCS12_UNSUPPORTED (detail: the algorithm or mode,
- *   e.g. 'pbeWithSHAAnd128BitRC4', 'envelopedData', 'webcrypto') instead.
+ *   e.g. 'pbeWithSHAAnd128BitRC4', 'envelopedData', 'iterations'; 'webcrypto' when the page has no
+ *   WebCrypto, 'webcrypto-refused: <operation>' when the browser refused one) instead.
  * - The leaf of an opened bundle is the certificate its private key is paired with by
  *   localKeyId, unless that one issued another certificate of the input; else it is picked as
  *   parseCertificates() picks it. The key check does not move it.

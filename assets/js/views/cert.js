@@ -166,6 +166,7 @@ registerStrings('en', {
   'cert.warn.PKCS12_UNSUPPORTED.body': 'Load it again to enter its password, or extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.what': 'It uses {what}, which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'This browser cannot decrypt it here: the page needs WebCrypto, which works only over https or on localhost. Extract the certificates with OpenSSL and load cert.pem:',
+  'cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused': 'This browser’s WebCrypto refused {what}, which opening the file needs. Try another browser, or extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Its password is stretched with more iterations than this page runs. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.envelopedData': 'It is protected with a certificate’s key instead of a password (public-key privacy mode), which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
   'cert.warn.PKCS12_UNSUPPORTED.signedData': 'Its integrity is signed with a certificate’s key instead of a password (public-key integrity mode), which this page does not support. Extract the certificates with OpenSSL and load cert.pem:',
@@ -468,6 +469,7 @@ registerStrings('tr', {
   'cert.warn.PKCS12_UNSUPPORTED.body': 'Parolasını girmek için dosyayı yeniden yükleyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.what': 'Bu sayfanın desteklemediği {what} kullanıyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.webcrypto': 'Bu tarayıcı dosyayı burada çözemiyor: sayfanın WebCrypto’ya ihtiyacı var, o da yalnızca https üzerinden ya da localhost’ta çalışır. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
+  'cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused': 'Bu tarayıcının WebCrypto’su dosyayı açmak için gereken {what} işlemini reddetti. Başka bir tarayıcı deneyin ya da sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.iterations': 'Parolası bu sayfanın çalıştırdığından daha çok yinelemeyle güçlendirilmiş. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.envelopedData': 'Parola yerine bir sertifikanın anahtarıyla korunmuş (açık anahtarla gizlilik kipi); bu sayfa bunu desteklemiyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
   'cert.warn.PKCS12_UNSUPPORTED.signedData': 'Bütünlüğü parola yerine bir sertifikanın anahtarıyla imzalanmış (açık anahtarla bütünlük kipi); bu sayfa bunu desteklemiyor. Sertifikaları OpenSSL ile çıkarıp cert.pem dosyasını yükleyin:',
@@ -1778,8 +1780,11 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
         // detail: the OpenSSL command when the bundle was not opened, else what it uses that this page cannot decrypt.
         const file = /^[\w.-]+\.(pfx|p12)$/i.test(name) ? name : 'file.pfx';
         const what = w.detail && !/^openssl /.test(w.detail) ? w.detail : null;
+        // 'webcrypto-refused: <operation>': WebCrypto is there but refused that operation.
+        const refused = what && /^webcrypto-refused:\s*(.*)$/.exec(what);
         let body = t('cert.warn.PKCS12_UNSUPPORTED.body');
-        if (PKCS12_WORDED.includes(what)) body = t(`cert.warn.PKCS12_UNSUPPORTED.${what}`);
+        if (refused) body = t('cert.warn.PKCS12_UNSUPPORTED.webcryptoRefused', { what: refused[1] || 'WebCrypto' });
+        else if (PKCS12_WORDED.includes(what)) body = t(`cert.warn.PKCS12_UNSUPPORTED.${what}`);
         else if (what) body = t('cert.warn.PKCS12_UNSUPPORTED.what', { what });
         // OpenSSL 3 reads the legacy PBE algorithms (RC4, DES, MD5) only with -legacy.
         const legacy = what && /^pbeWith/.test(what) ? ' -legacy' : '';

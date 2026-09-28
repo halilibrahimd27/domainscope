@@ -356,6 +356,22 @@ describe('openPkcs12: the OpenSSL-made bundles', () => {
     assert.deepEqual([err.code, err.detail], ['UNSUPPORTED', 'webcrypto']);
   });
 
+  test('an operation WebCrypto refuses is named: "webcrypto-refused", not a missing WebCrypto', async () => {
+    const refusing = (name) => new Proxy(globalThis.crypto.subtle, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop);
+        if (prop === name) return () => Promise.reject(new DOMException('refused', 'NotSupportedError'));
+        return typeof v === 'function' ? v.bind(target) : v;
+      }
+    });
+    const mac = await rejection(openPkcs12(read('p12_rsa_aes.p12'), PASS, { subtle: refusing('sign') }));
+    assert.deepEqual([mac.code, mac.detail], ['UNSUPPORTED', 'webcrypto-refused: HMAC-SHA-256']);
+    const kdf = await rejection(openPkcs12(read('p12_rsa_aes.p12'), PASS, { subtle: refusing('deriveBits') }));
+    assert.deepEqual([kdf.code, kdf.detail], ['UNSUPPORTED', 'webcrypto-refused: PBKDF2-HMAC-SHA-256']);
+    const r = await loadCertificates(read('p12_rsa_aes.p12'), { password: PASS, subtle: refusing('deriveBits') });
+    assert.deepEqual(r.warnings[0], { code: 'PKCS12_UNSUPPORTED', detail: 'webcrypto-refused: PBKDF2-HMAC-SHA-256' });
+  });
+
   test('BER as Windows writes it: indefinite lengths and a segmented OCTET STRING', async () => {
     const ber = toWindowsBer(read('p12_rsa_legacy.p12'), 300);
     assert.equal(ber[1], 0x80, 'indefinite outer length');

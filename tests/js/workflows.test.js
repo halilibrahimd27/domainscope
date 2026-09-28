@@ -3,7 +3,9 @@
  * - CI runs on pushes to main, pull requests, by hand and as a reusable workflow, and includes
  *   the offline E2E suites;
  * - Deploy to GitHub Pages runs CI first and deploys only when it passes, never cancels a running
- *   deployment, and publishes the bundle of tools/assemble-site.mjs.
+ *   deployment, and publishes the bundle of tools/assemble-site.mjs;
+ * - Intermediates rebuilds the CCADB intermediate list weekly, checks it, and proposes a change
+ *   only as a pull request from its own branch.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,6 +85,34 @@ describe('ci.yml', () => {
       assert.match(readFileSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`), 'utf8'), /if \(!OFFLINE\) await liveGroups\(/, suite);
     }
     assert.match(readFileSync(join(ROOT, 'tests', 'e2e', 'health.e2e.mjs'), 'utf8'), /if \(OFFLINE\)[^\n]*\n\s*else await liveGroups\(/);
+  });
+});
+
+describe('intermediates.yml', () => {
+  const yml = read('.github/workflows/intermediates.yml');
+  const j = jobs(yml);
+
+  test('runs weekly and by hand, one at a time', () => {
+    assert.match(yml, /^name: Intermediates$/m);
+    assert.deepEqual(keysAt(block(yml, 'on'), 2).sort(), ['schedule', 'workflow_dispatch']);
+    assert.match(block(yml, 'on').join('\n'), /schedule:\n {4}- cron: '\d+ \d+ \* \* \d'/);
+    assert.match(yml, /^concurrency:\n {2}group: intermediates\n {2}cancel-in-progress: false$/m);
+  });
+
+  test('builds, checks the data before anything is pushed, and only ever proposes it in a pull request', () => {
+    assert.deepEqual(Object.keys(j), ['rebuild']);
+    assert.doesNotMatch(block(yml, 'permissions').join('\n'), /write/, 'write access only in the job');
+    assert.match(j.rebuild, /^ {6}contents: write$/m);
+    assert.match(j.rebuild, /^ {6}pull-requests: write$/m);
+    const build = j.rebuild.indexOf('run: node tools/build-intermediates.mjs');
+    const check = j.rebuild.indexOf('run: node --test tests/js/build-intermediates.test.js');
+    const push = j.rebuild.indexOf('git push --force origin "$branch"');
+    assert.ok(build > 0 && check > build && push > check, 'build, then check, then push');
+    assert.match(j.rebuild, /^ {10}branch=bot\/intermediates$/m);
+    assert.match(j.rebuild, /git add -- assets\/data\/intermediates/);
+    assert.match(j.rebuild, /gh pr create --head "\$branch" --base main/);
+    assert.doesNotMatch(j.rebuild, /push[^\n]*\bmain\b/, 'never pushes to main');
+    assert.ok(existsSync(join(ROOT, 'tools', 'build-intermediates.mjs')));
   });
 });
 

@@ -1,0 +1,60 @@
+name: Intermediates
+
+# Weekly rebuild of assets/data/intermediates (the CCADB list behind the Certificate view's
+# missing-intermediate repair) with tools/build-intermediates.mjs. When the data changed, the job
+# checks it, pushes it to the bot/intermediates branch and opens a pull request (or updates the
+# open one); it never commits to main. The builder writes nothing when a download looks wrong,
+# and keeps the dataset's date when nothing changed, so a quiet week opens nothing.
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intermediates
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    name: Rebuild the intermediate list
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Build from the CCADB reports
+        run: node tools/build-intermediates.mjs
+      # the dataset's own checks, the repair over the fixtures and the repository hygiene scan
+      - name: Check the dataset
+        run: node --test tests/js/build-intermediates.test.js tests/js/chainfix.test.js tests/js/pwa.test.js tests/js/repo-hygiene.test.js
+      # A pull request opened with this workflow's token does not start CI by itself: close and
+      # reopen it (or run CI by hand) before merging. The repository must allow GitHub Actions to
+      # create pull requests (Settings › Actions › General).
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(git status --porcelain -- assets/data/intermediates)" ]; then
+            echo "The intermediate list did not change."
+            exit 0
+          fi
+          branch=bot/intermediates
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -- assets/data/intermediates
+          git commit -m "data(intermediates): weekly refresh from ccadb"
+          git push --force origin "$branch"
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$branch" --base main \
+              --title "data(intermediates): weekly refresh from ccadb" \
+              --body "The weekly rebuild of assets/data/intermediates by tools/build-intermediates.mjs from the CCADB reports (see assets/data/intermediates/manifest.json for the counts). Close and reopen this pull request to run CI before merging."
+          fi

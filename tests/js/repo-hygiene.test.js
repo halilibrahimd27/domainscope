@@ -44,6 +44,14 @@ const SKIP_PATHS = new Set(['tests/e2e/screenshots', 'tests/live/private', 'test
 const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.json', '.md', '.py', '.txt', '.yml', '.yaml', '.html', '.css', '.svg', '.csv', '.webmanifest', '.gz']);
 /** The gitignored private files themselves (read separately, never scanned). */
 const isPrivateFile = (rel) => rel === '.private-denylist' || rel.endsWith('.local.json');
+/**
+ * The intermediate certificate shards (tools/build-intermediates.mjs; the test dataset too) hold
+ * each certificate as base64 DER: opaque bytes that can hold no readable address or name, yet in
+ * megabytes of them a short case-insensitive denylist pattern would match by chance. Their `der`
+ * values are blanked before the scan; the CA owner names and every other file stay scanned.
+ */
+const DER_SHARD = /^(?:assets\/data|tests\/fixtures)\/intermediates\/ski\/[0-9a-f]+\.json$/;
+const blankDer = (rel, text) => (DER_SHARD.test(rel) ? text.replace(/"der":"[A-Za-z0-9+/=]*"/g, '"der":""') : text);
 
 const toRel = (p) => relative(ROOT, p).split(sep).join('/');
 
@@ -75,7 +83,7 @@ function repoFiles() {
     } catch {
       continue; // not gzip after all
     }
-    cache.push({ rel: toRel(p), text });
+    cache.push({ rel: toRel(p), text: blankDer(toRel(p), text) });
   }
   return cache;
 }
@@ -217,6 +225,16 @@ test('hygiene: the classifier accepts documentation / infrastructure addresses a
   }
   const found = ipv4Literals('a 203.0.113.5 b 1.3.6.1.5.5.7.3.1 c 2.5.4.3 d RFC 4034 §3.1.8.1 e 010.0.0.1 f 1.2.3.4.in-addr.arpa g 300.1.1.1');
   assert.deepEqual(found.map((f) => [f.ip, f.asName]), [['203.0.113.5', false], ['1.2.3.4', true]]);
+});
+
+test('hygiene: only the base64 DER values of the intermediate shards are left out of the scan', () => {
+  const shard = '{\n  "ab": [{"owner":"Example CA 203.0.113.9","der":"MIIB+/0="}]\n}\n';
+  assert.equal(blankDer('assets/data/intermediates/ski/ab.json', shard), '{\n  "ab": [{"owner":"Example CA 203.0.113.9","der":""}]\n}\n');
+  assert.equal(blankDer('tests/fixtures/intermediates/ski/0b.json', shard).includes('MIIB'), false);
+  for (const rel of ['assets/data/intermediates/roots.json', 'assets/data/intermediates/dn/a.json', 'assets/data/other/ski/ab.json']) {
+    assert.equal(blankDer(rel, shard), shard, rel);
+  }
+  assert.ok(repoFiles().some((f) => DER_SHARD.test(f.rel) && f.text.includes('"owner"')), 'the shards are still scanned');
 });
 
 test('hygiene: every IPv4 literal is documentation space, product data or well-known infrastructure', () => {

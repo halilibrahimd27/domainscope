@@ -25,6 +25,13 @@ export const UPDATE_CHECK_MS = 60 * 60 * 1000;
  * (build-time data; lib/wordlist.js embeds its counts) and the data README.
  */
 export const PRECACHE_SKIP = Object.freeze(['data/README.md', 'data/wordlist-manifest.json']);
+/**
+ * Directories under assets/ left out of the precache: the intermediate certificate shards of
+ * lib/chainfix.js (256 + 16 files, about 3.5 MB; a repair reads the one or two it needs over the
+ * network). The dataset's manifest and roots table are precached, so the lifecycle warnings of a
+ * complete chain work offline.
+ */
+export const PRECACHE_SKIP_DIRS = Object.freeze(['data/intermediates/ski/', 'data/intermediates/dn/']);
 
 /** A deploy version as tools/assemble-site.mjs allows it (one URL path segment). */
 const VERSION_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -145,9 +152,9 @@ export function wordlistFiles(manifest) {
  * writes it into sw.js):
  * - `precache`: the app shell of this version, relative to the site root — './' (index.html,
  *   what a navigation to the app loads), the other site-root files the app uses (favicon, web
- *   app manifests, icons) and every file under v/<version>/assets/ except the wordlists and
- *   {@link PRECACHE_SKIP}. Every module is in it, so every view opens offline (the ones that need
- *   the network then say so).
+ *   app manifests, icons) and every file under v/<version>/assets/ except the wordlists,
+ *   {@link PRECACHE_SKIP} and the intermediate shards ({@link PRECACHE_SKIP_DIRS}). Every module
+ *   is in it, so every view opens offline (the ones that need the network then say so).
  * - `wordlists`: each tier and locale pack's versioned path → its hash-keyed cache key; they are
  *   cached on first use only (a Huge tier is 575 KB).
  * - `version` and `digest` (the SHA-256 of the deploy's files, tools/assemble-site.mjs
@@ -179,7 +186,8 @@ export function buildSwManifest({ version, digest, rootFiles = [], assetFiles = 
 
   const root = [...new Set(rootFiles.map((f) => (f === 'index.html' ? './' : f)))];
   root.sort((a, b) => (a === './' ? -1 : b === './' ? 1 : a < b ? -1 : a > b ? 1 : 0));
-  const shell = assetFiles.filter((f) => !listed.has(f) && !PRECACHE_SKIP.includes(f)).sort().map((f) => `${assets}${f}`);
+  const skipped = (f) => PRECACHE_SKIP.includes(f) || PRECACHE_SKIP_DIRS.some((dir) => f.startsWith(dir));
+  const shell = assetFiles.filter((f) => !listed.has(f) && !skipped(f)).sort().map((f) => `${assets}${f}`);
   return { version, digest, precache: [...root, ...shell], wordlists };
 }
 

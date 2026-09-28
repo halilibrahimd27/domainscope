@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CACHE_PREFIX, MANIFEST_FILES, PRECACHE_SKIP, UPDATE_CHECK_MS,
+  CACHE_PREFIX, MANIFEST_FILES, PRECACHE_SKIP, PRECACHE_SKIP_DIRS, UPDATE_CHECK_MS,
   bundleInfo, buildSwManifest, cacheNames, manifestFor, scopeTag, updateCheckDue, wordlistCacheKey, wordlistFiles
 } from '../../assets/js/lib/pwa.js';
 import { listFiles, SHELL_ROOT_FILES } from '../../tools/assemble-site.mjs';
@@ -167,12 +167,20 @@ describe('the repository\'s service worker manifest', () => {
     for (const f of ['./', 'favicon.svg', 'manifest.webmanifest', 'manifest.tr.webmanifest']) assert.ok(shell.has(f), f);
   });
 
+  test('the intermediate list: its manifest and roots table precached, its 272 shards read when needed', () => {
+    for (const f of ['data/intermediates/manifest.json', 'data/intermediates/roots.json']) assert.ok(shell.has(`v/x/assets/${f}`), f);
+    const shards = assetFiles.filter((f) => /^data\/intermediates\/(?:ski|dn)\//.test(f));
+    assert.equal(shards.length, 256 + 16);
+    assert.ok(shards.every((f) => !shell.has(`v/x/assets/${f}`)));
+  });
+
   test('every wordlist tier and locale pack is hash-keyed, none precached, and nothing is left out by accident', () => {
     const words = Object.keys(build.wordlists);
     assert.equal(words.length, 3 + Object.keys(wordlistManifest.locales).length);
     assert.ok(words.every((p) => !shell.has(p)));
     const accounted = new Set([...build.precache, ...words].map((p) => p.replace('v/x/assets/', '')));
-    assert.deepEqual(assetFiles.filter((f) => !accounted.has(f)), [...PRECACHE_SKIP].sort());
+    const inSkippedDir = (f) => PRECACHE_SKIP_DIRS.some((dir) => f.startsWith(dir));
+    assert.deepEqual(assetFiles.filter((f) => !accounted.has(f) && !inSkippedDir(f)), [...PRECACHE_SKIP].sort());
     // The Huge tier alone is larger than the whole precache would be without it.
     assert.ok(!build.precache.some((p) => p.endsWith('.gz')));
   });

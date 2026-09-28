@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "generated": "2026-09-28",
+  "digest": "e8f87225820fb5aadeb5dcf32dda0c23a08195068f6af4ea66fa9c27915ab231",
+  "sources": [
+    {
+      "id": "intermediates",
+      "name": "Mozilla: public intermediate certificates with PEM (CCADB)",
+      "url": "https://ccadb.my.salesforce-sites.com/mozilla/PublicAllIntermediateCertsWithPEMCSV"
+    },
+    {
+      "id": "included",
+      "name": "Mozilla: included CA certificates with PEM (CCADB)",
+      "url": "https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV"
+    },
+    {
+      "id": "records",
+      "name": "CCADB: all certificate records, v4",
+      "url": "https://ccadb.my.salesforce-sites.com/ccadb/AllCertificateRecordsCSVFormatv4"
+    }
+  ],
+  "lifecycleInput": "tools/root-lifecycle.json",
+  "license": {
+    "id": "CDLA-Permissive-2.0",
+    "attribution": "Common CA Database (CCADB)",
+    "text": "../THIRD_PARTY_LICENSES.txt"
+  },
+  "roots": "roots.json",
+  "shards": {
+    "ski": {
+      "dir": "ski",
+      "digits": 2,
+      "files": 256
+    },
+    "dn": {
+      "dir": "dn",
+      "digits": 1,
+      "files": 16
+    }
+  },
+  "counts": {
+    "intermediates": 1999,
+    "keys": 1898,
+    "roots": 223,
+    "events": 35,
+    "distrustEvents": 31,
+    "expiryEvents": 4,
+    "skipped": {
+      "unreadable": 0,
+      "notTls": 557,
+      "noKeyId": 0,
+      "expired": 0,
+      "notYetValid": 0,
+      "duplicate": 0
+    }
+  },
+  "lifecycleWindow": {
+    "from": "2025-01-01",
+    "to": "2027-12-31"
+  }
+}

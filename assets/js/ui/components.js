@@ -1210,6 +1210,19 @@ export function decodeText(buffer) {
 export const FILE_DROP_MAX_FILES = 100;
 
 /**
+ * A folder's files by their path in the folder. Browsers list a folder in the file system's
+ * order (by name on Windows and macOS, by hash on most Linux file systems), so without this
+ * the same folder would be read, capped and listed in a different order per machine.
+ * @template {{ name?: string, webkitRelativePath?: string }} F
+ * @param {F[]} files
+ * @returns {F[]} a sorted copy (code-point order, the same in every locale)
+ */
+export function folderOrder(files) {
+  const key = (f) => String(f.webkitRelativePath || f.name || '');
+  return [...files].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+}
+
+/**
  * Drag & drop + click-to-choose + paste zone. Files are read in the browser only.
  * Pasted text arrives as a LoadedFile named t('file.pasted'). With `multiple`, at most
  * {@link FILE_DROP_MAX_FILES} files are read at once; the status line and a toast (the caller
@@ -1309,7 +1322,7 @@ export function FileDrop({
   if (folderInput) {
     folderInput.addEventListener('click', (event) => event.stopPropagation());
     folderInput.addEventListener('change', () => {
-      const all = [...(folderInput.files || [])];
+      const all = folderOrder([...(folderInput.files || [])]);
       const files = all.filter(accepted);
       if (all.length && !files.length) fail(t('file.folderNone'));
       else readFiles(files, 'folder');

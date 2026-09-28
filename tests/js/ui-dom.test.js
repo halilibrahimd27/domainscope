@@ -17,7 +17,8 @@ import { createWorkspaceStore, createMemoryBackend } from '../../assets/js/lib/w
 import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
-  compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText
+  compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
+  folderOrder
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -2657,4 +2658,18 @@ describe('renewal-panel: the scan summary line about certificate sets', () => {
       i18n.setLang(prev);
     }
   });
+});
+
+test('folderOrder: a folder reads in path order whatever order the file system lists it in', () => {
+  const files = [
+    { name: 'b.pem', webkitRelativePath: 'certs/b.pem' },
+    { name: 'z.pem', webkitRelativePath: 'certs/sub/z.pem' },
+    { name: 'A.pem', webkitRelativePath: 'certs/A.pem' },
+    { name: 'a.pem', webkitRelativePath: 'certs/a.pem' }
+  ];
+  const sorted = folderOrder(files);
+  assert.deepEqual(sorted.map((f) => f.webkitRelativePath), ['certs/A.pem', 'certs/a.pem', 'certs/b.pem', 'certs/sub/z.pem']);
+  assert.deepEqual(folderOrder([...files].reverse()).map((f) => f.name), sorted.map((f) => f.name));
+  assert.equal(files[0].name, 'b.pem', 'the input is not reordered');
+  assert.deepEqual(folderOrder([{ name: 'y' }, { name: 'x' }]).map((f) => f.name), ['x', 'y'], 'no relative path: by name');
 });

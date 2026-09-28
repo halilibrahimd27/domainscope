@@ -8,8 +8,9 @@
  *   SCORE, ISSUER, NAME, CERT, EXPOSED, DANGLING); `tone`: 'bad' | 'good' | 'info' | 'quiet';
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
- *   way), what a failed lookup may hide (a finding "gone" while that lookup failed), and a
- *   renewed certificate from a known issuer for known names (CERT);
+ *   way), what a failed lookup may hide (a finding "gone" while that lookup failed), a CT issuer
+ *   or name that may only have been missed the night before (see surelyNew), and a renewed
+ *   certificate from a known issuer for known names (CERT);
  * - `target` / `item`: the domain, name, zone or certificate, and what inside it moved (a
  *   finding id, a host, an RRset key, an issuer, an endpoint), null for the target itself;
  * - `parts`: the line as lib/summary.js parts, its untrusted values as code parts.
@@ -311,17 +312,41 @@ function diffSubdomains(before, after) {
 /* ct                                                                       */
 /* ------------------------------------------------------------------------ */
 
+/** The CT sources that read a domain in full in a report: answered, not in part, not cut at a page cap. */
+function fullSources(x) {
+  return new Set((x.sources || []).filter((s) => s && s.ok && s.state !== 'partial' && !s.truncated).map((s) => s.source));
+}
+
+/**
+ * Is a certificate of this run surely absent from the baseline `b` (run at `since`), so an issuer
+ * or a name it brings is new? Per source, as the sources answer on different nights (Cert
+ * Spotter's hourly quota runs out on a list of domains; crt.sh is often down): yes when a source
+ * that lists it now read the domain in full in the baseline too, or when it was issued after the
+ * baseline run started while the baseline read at least one source in full (a certificate that
+ * did not exist yet cannot have been missed). A baseline without per-source states (never written
+ * by this version) falls back to its `complete`.
+ * @param {object} b the baseline's target
+ * @param {number} since the baseline run's start (ms), NaN when unknown
+ * @returns {(c: object) => boolean}
+ */
+function surelyNew(b, since) {
+  if (!Array.isArray(b.sources)) return () => b.complete !== false;
+  const full = fullSources(b);
+  return (c) => (c.sources || []).some((s) => full.has(s)) || (full.size > 0 && Number.isFinite(since) && Date.parse(c.notBefore) > since);
+}
+
 function diffCt(before, after) {
   const out = [];
   const old = byTarget(before);
   const now = byTarget(after);
+  const since = Date.parse(before.startedAt);
   for (const [domain, a] of now) {
     const b = old.get(domain);
     if (!b) {
       out.push(change('NEW', domain, null, [`now watched: ${(a.certificates || []).length} current certificates`], { kind: 'appeared' }));
       continue;
     }
-    const failedText = (x) => (x.sources || []).filter((s) => !s.ok).map((s) => `${s.source} ${s.state || 'error'}`).join(', ');
+    const failedText = (x) => (x.sources || []).filter((s) => !s.ok).map((s) => `${s.source} ${s.state || 'error'}${s.skipped ? ' (not asked)' : ''}`).join(', ');
     if (!a.answered && !b.answered) continue;
     if (!a.answered) {
       out.push(change('FAILED', domain, null, [`Certificate Transparency could not be read this run (${failedText(a)}): nothing compared`], { tone: 'bad' }));
@@ -331,24 +356,29 @@ function diffCt(before, after) {
       out.push(change('RECOVERED', domain, null, [`Certificate Transparency read again: ${(a.certificates || []).length} current certificates (not compared: the baseline has none)`], { tone: 'good' }));
       continue;
     }
-    // New issuers and names count only against a baseline that read every source in full.
-    const sure = b.complete !== false;
-    const unsure = sure ? [] : [' (the baseline run did not read every source: it may not be new)'];
+    // A new issuer or name counts only when one of its certificates is surely new (surelyNew):
+    // one a source missed in the baseline may have been there all along.
+    const isNew = surelyNew(b, since);
+    const unsure = [' (listed only by a source the baseline run did not read in full: it may not be new)'];
+    const certs = a.certificates || [];
     const oldIssuers = new Set((b.issuers || []).map((g) => g.name));
     const newIssuers = new Set();
     for (const g of a.issuers || []) {
       if (oldIssuers.has(g.name)) continue;
       newIssuers.add(g.name);
+      const sure = certs.some((c) => c.ca === g.name && isNew(c));
       out.push(change('ISSUER', domain, g.name, ['new issuer ', code(g.name),
         ...(g.intermediates && g.intermediates.length ? [' (', ...g.intermediates.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ')'] : []),
-        `: ${g.count} current certificate${g.count === 1 ? '' : 's'}, newest ${isoDay(g.newest)}`, ...unsure],
+        `: ${g.count} current certificate${g.count === 1 ? '' : 's'}, newest ${isoDay(g.newest)}`, ...(sure ? [] : unsure)],
       { tone: sure ? 'bad' : 'quiet', counts: sure, kind: 'appeared', after: g.count }));
     }
     const oldNames = new Set(b.names || []);
     const newNames = new Set((a.names || []).filter((n) => !oldNames.has(n)));
     for (const name of newNames) {
-      const first = (a.certificates || []).filter((c) => c.names.includes(name)).slice(-1)[0];
-      out.push(change('NAME', domain, name, ['first certificate for ', code(name), ...(first ? [' (', code(first.ca), `, ${isoDay(first.notBefore)})`] : []), ...unsure],
+      const holders = certs.filter((c) => c.names.includes(name));
+      const first = holders.slice(-1)[0];
+      const sure = holders.some(isNew);
+      out.push(change('NAME', domain, name, ['first certificate for ', code(name), ...(first ? [' (', code(first.ca), `, ${isoDay(first.notBefore)})`] : []), ...(sure ? [] : unsure)],
         { tone: sure ? 'info' : 'quiet', counts: sure, kind: 'appeared' }));
     }
     const oldIds = new Set((b.certificates || []).map((c) => c.id));

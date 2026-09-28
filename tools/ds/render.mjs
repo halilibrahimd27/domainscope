@@ -152,7 +152,7 @@ export function renderChangesText(run, { paint, showAll = false }) {
   }
   const quiet = changes.length - counted.length;
   if (quiet) {
-    lines.push(paint(`  Not counted: ${quiet} (moves between failure states, what a failed lookup may hide, renewed certificates) - listed only, never counted by --fail-on-change.`, 'dim'));
+    lines.push(paint(`  Not counted: ${quiet} (moves between failure states, what a failed lookup or source may hide, renewed certificates) - listed only, never counted by --fail-on-change.`, 'dim'));
   }
   for (const note of run.notes || []) lines.push(paint(`  ${note}`, 'dim'));
   lines.push('');
@@ -177,7 +177,7 @@ export function renderChangesMarkdown(run) {
   const lines = changes.slice(0, MAX_MARKDOWN_CHANGES).map((c) => `- **${c.tag}**${c.counts ? '' : ' (not counted)'} ${renderParts(c.parts, 'markdown')}`);
   if (changes.length > MAX_MARKDOWN_CHANGES) lines.push(`- … and ${changes.length - MAX_MARKDOWN_CHANGES} more: the JSON report lists them all`);
   if (changes.length > counted) {
-    lines.push(`- ${changes.length - counted} listed only (moves between failure states, what a failed lookup may hide, renewed certificates): never counted by --fail-on-change`);
+    lines.push(`- ${changes.length - counted} listed only (moves between failure states, what a failed lookup or source may hide, renewed certificates): never counted by --fail-on-change`);
   }
   for (const note of run.notes || []) lines.push(`- ${renderParts([note], 'markdown')}`);
   return `${[head, ...(lines.length ? ['', ...lines] : [])].join('\n')}\n`;

@@ -7,7 +7,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -18,8 +18,9 @@ import {
 } from '../../tools/ds/args.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, orderChanges, notableChanges } from '../../tools/ds/diff.mjs';
 import { setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, painter, changeText, CHANGE_TAGS, MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES } from '../../tools/ds/render.mjs';
-import { ctCertId, ctTarget, hostRow, baselineSeeds, reportHosts } from '../../tools/ds/commands.mjs';
-import { main, decodeText } from '../../tools/ds.mjs';
+import { ctCertId, ctTarget, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts } from '../../tools/ds/commands.mjs';
+import { main, decodeText, skippedWarnings } from '../../tools/ds.mjs';
+import { renderParts } from '../../assets/js/lib/summary.js';
 import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { issuerName, dnPart } from '../../assets/js/lib/passport.js';
@@ -114,6 +115,25 @@ describe('command line', () => {
     assert.ok(samePath('r.json', './r.json'));
     assert.ok(samePath('C:\\X\\r.json', 'c:\\x\\R.JSON', { platform: 'win32' }));
     assert.ok(!samePath('/x/r.json', '/x/R.json', { platform: 'linux' }));
+  });
+
+  test('a report file that is a file the run reads is refused: the zone, the certificate, a list, the names file', () => {
+    assert.throws(() => parseCommandLine(['drift', 'example.com.zone', '--json', './example.com.zone']), /--json names the same file as the zone file \(example\.com\.zone\): the report would overwrite it/);
+    assert.throws(() => parseCommandLine(['dane', 'fullchain.pem', '--md', 'fullchain.pem']), /--md names the same file as the certificate file \(fullchain\.pem\)/);
+    assert.throws(() => parseCommandLine(['ct', '--list', 'a.txt', '--list', 'domains.txt', '--md', 'domains.txt']), /--md names the same file as --list \(domains\.txt\)/);
+    assert.throws(() => parseCommandLine(['subdomains', 'example.com', '--exact', 'hosts.txt', '--json', 'hosts.txt']), /--json names the same file as --exact \(hosts\.txt\)/);
+    assert.doesNotThrow(() => parseCommandLine(['ct', '--list', 'domains.txt', '--json', 'ct.json', '--md', 'ct.md']));
+  });
+
+  test('skipped entries of a file: the first few quoted and cleaned, then how many more', () => {
+    const invalid = ['bad host!', `evil\u202e\u0007name`, 'x'.repeat(200), ...Array.from({ length: 77 }, (_, i) => `"k${i}": 1,`)];
+    const lines = skippedWarnings('--exact package.json', invalid, 'a host name');
+    assert.equal(lines.length, 6);
+    assert.equal(lines[0], '--exact package.json: skipped "bad host!": not a host name');
+    assert.equal(lines[1], '--exact package.json: skipped "evil name": not a host name');
+    assert.match(lines[2], /skipped "x{79}…": not a host name$/);
+    assert.equal(lines[5], '--exact package.json: 75 more entries skipped: not a host name');
+    assert.deepEqual(skippedWarnings('--list d.txt', ['a b'], 'a domain name'), ['--list d.txt: skipped "a b": not a domain name']);
   });
 
   test('subdomains: level, sources, exact', () => {
@@ -394,12 +414,46 @@ describe('diff: ct', () => {
     assert.match(changeText(changes[2]), /new certificate from Let's Encrypt \(R10\), 2026-09-27: example\.com, www\.example\.com/);
   });
 
-  test('against a baseline that missed a source, new issuers and names are listed only', () => {
+  test('an issuer or a name only a source the baseline missed lists is listed only; one a source read in full both nights lists counts', () => {
     const b = report('ct', [ctT([le1], { complete: false, sources: [{ source: 'crtsh', ok: false, state: 'timeout' }, { source: 'certspotter', ok: true, state: 'ok' }] })]);
-    const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com']);
+    const gts = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com', 'mail.example.com']);
     const changes = diffReports('ct', b, report('ct', [ctT([gts, le1])]), { t });
-    assert.deepEqual(tags(changes), ['ISSUER? example.com Google Trust Services']);
-    assert.match(changeText(changes[0]), /the baseline run did not read every source/);
+    assert.deepEqual(tags(changes), ['ISSUER? example.com Google Trust Services', 'NAME? example.com mail.example.com']);
+    assert.match(changeText(changes[0]), /listed only by a source the baseline run did not read in full: it may not be new\)$/);
+    // Cert Spotter read the domain in full on both nights and lists it now: it is new.
+    const both = cert('Google Trust Services', 'WR1', '2026-09-26T00:00:00.000Z', ['example.com', 'mail.example.com'], { sources: ['certspotter', 'crtsh'] });
+    const counted = diffReports('ct', b, report('ct', [ctT([both, le1])]), { t });
+    assert.deepEqual(tags(counted), ['ISSUER example.com Google Trust Services', 'NAME example.com mail.example.com']);
+    assert.doesNotMatch(changeText(counted[0]), /may not be new/);
+  });
+
+  test('a certificate issued after the baseline run is new whichever source lists it, once the baseline read one source in full', () => {
+    const crtshOnly = [{ source: 'crtsh', ok: true, state: 'ok' }, { source: 'certspotter', ok: false, state: 'rate-limited' }];
+    const b = report('ct', [ctT([le1], { complete: false, sources: crtshOnly })]);
+    // Tonight crt.sh is down and Cert Spotter answers, which the baseline did not read.
+    const tonight = [{ source: 'crtsh', ok: false, state: 'unavailable' }, { source: 'certspotter', ok: true, state: 'ok' }];
+    const late = cert('Google Trust Services', 'WR1', '2026-09-27T12:00:00.000Z', ['example.com'], { sources: ['certspotter'] });
+    assert.deepEqual(tags(diffReports('ct', b, report('ct', [ctT([late, le1], { complete: false, sources: tonight })]), { t })), ['ISSUER example.com Google Trust Services']);
+    const early = cert('Google Trust Services', 'WR1', '2026-09-26T12:00:00.000Z', ['example.com'], { sources: ['certspotter'] });
+    assert.deepEqual(tags(diffReports('ct', b, report('ct', [ctT([early, le1], { complete: false, sources: tonight })]), { t })), ['ISSUER? example.com Google Trust Services']);
+    // A baseline that read nothing in full (crt.sh's lighter search, Cert Spotter cut at its page cap) confirms nothing.
+    const partial = report('ct', [ctT([le1], { complete: false, sources: [{ source: 'crtsh', ok: true, state: 'partial' }, { source: 'certspotter', ok: true, state: 'ok', truncated: true }] })]);
+    assert.deepEqual(tags(diffReports('ct', partial, report('ct', [ctT([late, le1], { complete: false, sources: tonight })]), { t })), ['ISSUER? example.com Google Trust Services']);
+  });
+
+  test('a night with Cert Spotter alone names the issuers as a night with both: from the DN, never Cert Spotter\'s operator name', () => {
+    const dn = 'C=TR, O=Example Kamu SM, CN=Example Kamu SM SSL';
+    const at = { notBefore: new Date('2026-09-20T00:00:00Z'), notAfter: new Date('2026-12-19T00:00:00Z') };
+    const crtshCert = { source: 'crtsh', sources: ['crtsh'], issuer: dn, ...at, names: ['example.com'], sha256: null };
+    const spotterCert = { source: 'certspotter', sources: ['certspotter'], issuer: dn, issuerFriendlyName: 'Example Operator', ...at, names: ['example.com'], sha256: 'cd'.repeat(32) };
+    const opts = { issuerName, dnPart, days: 30, now: NOW, sources: ['crtsh', 'certspotter'] };
+    const night1 = ctTarget('example.com', { certs: [crtshCert, spotterCert], health: [{ source: 'crtsh', state: 'ok', ok: true }, { source: 'certspotter', state: 'ok', ok: true }] }, opts);
+    const night2 = ctTarget('example.com', { certs: [spotterCert], health: [{ source: 'crtsh', state: 'unavailable', ok: false }, { source: 'certspotter', state: 'ok', ok: true }] }, opts);
+    assert.equal(night1.certificates[0].ca, 'Example Kamu SM');
+    assert.equal(night2.certificates[0].ca, 'Example Kamu SM');
+    assert.equal(night1.certificates[0].id, night2.certificates[0].id);
+    assert.deepEqual(diffReports('ct', report('ct', [night1]), report('ct', [night2]), { t }), []);
+    assert.deepEqual(diffReports('ct', report('ct', [night2]), report('ct', [night1]), { t }), []);
   });
 
   test('CT unreadable: FAILED once, nothing compared; read again: RECOVERED; an issuer gone only after a complete read', () => {
@@ -431,6 +485,70 @@ describe('diff: ct', () => {
     assert.deepEqual(x.issuers, [{ name: "Let's Encrypt", count: 1, intermediates: ['R11'], newest: '2026-09-20T00:00:00.000Z' }]);
     assert.equal(x.recent, 1);
     assert.equal(x.complete, true);
+  });
+});
+
+describe('sources a run stops asking', () => {
+  const res = (source, extra = {}) => ({ source, ok: true, partial: false, errorKind: null, error: null, quota: null, ...extra });
+  const clock = (start) => {
+    let now = new Date(start);
+    return { now: () => now, set: (d) => { now = new Date(d); } };
+  };
+
+  test('Cert Spotter: after a rate limit, not asked until its Retry-After (at most an hour) is over', () => {
+    const c = clock(NOW);
+    const breaker = createSourceBreaker({ now: c.now, spotterHint: '--sources crtsh leaves it out' });
+    assert.deepEqual(breaker.ask(['crtsh', 'certspotter']), ['crtsh', 'certspotter']);
+    assert.deepEqual(breaker.note('example.com', [res('crtsh'), res('certspotter')]), []);
+    const limited = res('certspotter', { ok: false, errorKind: 'rate-limit', error: 'HTTP 429', quota: { limited: true, retryAfterMs: 7200000 } });
+    const [w] = breaker.note('example.net', [res('crtsh'), limited]);
+    assert.match(w, /^Cert Spotter answered "rate limited" for example\.net: not asked again until 04:00 UTC \(its anonymous quota is about 10 full-domain queries an hour per IP address, and GitHub's runners share addresses; --sources crtsh leaves it out\)$/);
+    assert.deepEqual(breaker.ask(['crtsh', 'certspotter']), ['crtsh']);
+    assert.deepEqual(breaker.skipped(['certspotter']), [{ source: 'certspotter', state: 'rate-limited', ok: false, truncated: false, errorKind: 'rate-limit', error: 'not asked: rate limited since example.net', skipped: true }]);
+    c.set('2026-09-28T04:00:01Z');
+    assert.deepEqual(breaker.ask(['crtsh', 'certspotter']), ['crtsh', 'certspotter'], 'asked again once the hour is over');
+    // A readable X-RateLimit-Remaining of 0: the next query would be refused.
+    const spent = res('certspotter', { quota: { limited: false, retryAfterMs: null, remaining: 0 } });
+    assert.match(breaker.note('example.org', [spent])[0], /^Cert Spotter had no request left this hour for example\.org: not asked again until 05:00 UTC/);
+    assert.deepEqual(breaker.ask(['certspotter']), []);
+  });
+
+  test('crt.sh: down as a service at once, timeouts only on two domains in a row', () => {
+    const breaker = createSourceBreaker({ now: () => NOW });
+    const timeout = res('crtsh', { ok: false, errorKind: 'timeout' });
+    assert.deepEqual(breaker.note('a.example.com', [timeout]), []);
+    assert.deepEqual(breaker.note('b.example.com', [res('crtsh')]), [], 'an answer in between resets the count');
+    assert.deepEqual(breaker.note('c.example.com', [timeout]), []);
+    assert.deepEqual(breaker.note('d.example.com', [res('crtsh', { ok: false, errorKind: 'http' })]), [], 'an HTTP error of one query is no outage');
+    assert.deepEqual(breaker.ask(['crtsh']), ['crtsh']);
+    assert.deepEqual(breaker.note('e.example.com', [timeout]), []);
+    assert.deepEqual(breaker.note('f.example.com', [timeout]), ['crt.sh timed out on 2 domains in a row (the last: f.example.com): not asked again this run']);
+    assert.deepEqual(breaker.ask(['crtsh', 'certspotter']), ['certspotter']);
+    const down = createSourceBreaker({ now: () => NOW });
+    assert.deepEqual(down.note('example.com', [res('crtsh', { ok: false, errorKind: 'unavailable' })]), ['crt.sh was unavailable for example.com: not asked again this run']);
+    assert.equal(down.skipped(['crtsh'])[0].state, 'unavailable');
+    assert.deepEqual(down.note('example.org', [res('crtsh')]), [], 'noted once');
+  });
+
+  test('a long discovery stage says how far it is in tenths; a short one says nothing more', () => {
+    const lines = [];
+    const hook = stageProgress('example.com', (s) => lines.push(s));
+    for (let done = 1; done <= 20000; done += 1) hook({ stage: 'resolve', done, total: 20000 });
+    for (let done = 1; done <= 400; done += 1) hook({ stage: 'hints', done, total: 400 });
+    hook({ stage: 'sources', done: 1 });
+    assert.equal(lines.length, 10);
+    assert.equal(lines[0], 'subdomains example.com: resolve 2,000/20,000 (10%)');
+    assert.equal(lines.at(-1), 'subdomains example.com: resolve 20,000/20,000 (100%)');
+  });
+
+  test('the scanner\'s warnings in the Subdomains view\'s words, their detail a code part', async () => {
+    const { WARNING_CODES } = await import('../../assets/js/views/subdomains.js');
+    const cut = scanWarningParts(t, { code: 'TRUNCATED', detail: '22249 > 20000' }, WARNING_CODES);
+    assert.equal(renderParts(cut, 'text'), 'Too many names — only the first ones were resolved (22249 > 20000).');
+    assert.ok(cut.some((p) => p && p.code === '22249 > 20000'));
+    const name = scanWarningParts(t, { code: 'INVALID_NAME', detail: '@team [x](y)' }, WARNING_CODES);
+    assert.equal(renderParts(name, 'markdown'), 'Invalid hostname skipped: `@team [x](y)`');
+    assert.equal(renderParts(scanWarningParts(t, { code: 'NEW_CODE', detail: 'x' }, WARNING_CODES), 'text'), 'NEW_CODE: x');
   });
 });
 
@@ -746,6 +864,56 @@ describe('offline runs (fake DoH)', () => {
     }
   });
 
+  test('subdomains discovery: the scanner\'s warnings reach stderr, the report, the summary and the Markdown', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'subs.json');
+      const md = join(dir, 'subs.md');
+      // A hand-edited baseline: its host is seeded, and the scanner skips the name as the app would.
+      writeFileSync(json, JSON.stringify(report('subdomains', [{ target: 'example.com', mode: 'discover', hosts: [host('-bad.example.com', { ipv4: ['192.0.2.99'] })] }])));
+      const fetchImpl = createFakeFetch(zoneTable(), { other: (url) => (url.startsWith('https://crt.sh/') ? Response.json([]) : new Response('', { status: 404 })) });
+      const res = await runMain(['subdomains', 'example.com', '--level', 'off', '--sources', 'crtsh', '--baseline', json, '--json', json, '--md', md], { fetchImpl });
+      assert.equal(res.code, EXIT.OK, res.err);
+      assert.match(res.err, /ds: warning: example\.com: Invalid hostname skipped: -bad\.example\.com\n/);
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc.targets[0].warnings, ['INVALID_NAME']);
+      assert.ok(doc.warnings.includes('example.com: Invalid hostname skipped: -bad.example.com'), doc.warnings.join(' | '));
+      assert.match(res.out, /\n- Warning: Invalid hostname skipped: -bad\.example\.com\n/);
+      assert.match(readFileSync(md, 'utf8'), /\n- \*\*Warning:\*\* Invalid hostname skipped: `-bad\.example\.com`\n/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('subdomains discovery over two domains: Cert Spotter not asked again after its 429, and the summary says so', async () => {
+    const dir = tmp();
+    try {
+      const spotter = [];
+      const fetchImpl = createFakeFetch(zoneTable(), {
+        other: (url) => {
+          if (url.startsWith('https://crt.sh/')) return Response.json([]);
+          if (url.startsWith('https://api.certspotter.com/')) {
+            spotter.push(url);
+            return new Response('{"code":"rate_limited"}', { status: 429, headers: { 'retry-after': '1800' } });
+          }
+          return new Response('', { status: 404 });
+        }
+      });
+      const json = join(dir, 'subs.json');
+      const res = await runMain(['subdomains', 'example.com', 'example.net', '--level', 'off', '--sources', 'crtsh,certspotter', '--json', json], { fetchImpl });
+      assert.equal(res.code, EXIT.OK, res.err);
+      assert.equal(spotter.length, 1, spotter.join(' '));
+      assert.match(res.err, /ds: subdomains example\.net \(2\/2\), level off, not asking Cert Spotter\n/);
+      assert.match(res.err, /ds: warning: Cert Spotter answered "rate limited" for example\.com: not asked again until 03:30 UTC \(its anonymous quota[^\n]*addresses\)\n/);
+      const [first, second] = JSON.parse(readFileSync(json, 'utf8')).targets;
+      assert.deepEqual(first.sources.map((s) => `${s.source} ${s.state}`), ['crtsh empty', 'certspotter rate-limited']);
+      assert.deepEqual(second.sources.map((s) => `${s.source} ${s.state}${s.skipped ? ' skipped' : ''}`), ['crtsh empty', 'certspotter rate-limited skipped']);
+      assert.match(res.out, /Subdomains · example\.net\n(?:- .*\n)*- Not asked: Cert Spotter \(rate limited earlier in this run\): the list may be incomplete\n/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ct: crt.sh and Cert Spotter answered in the test, a new issuer the next night', async () => {
     const dir = tmp();
     try {
@@ -764,11 +932,79 @@ describe('offline runs (fake DoH)', () => {
       assert.match(first.out, /Certificate Transparency · example\.com\n- 1 current certificate · 1 issued in the last 30 days\n- Issuers: Let's Encrypt 1\n/);
       assert.match(first.out, /Not read: Cert Spotter \(rate limited\): the list may be incomplete/);
       assert.match(readFileSync(md, 'utf8'), /- Issuers: `Let's Encrypt` 1/);
+      assert.match(first.err, /ds: warning: Cert Spotter answered "rate limited" for example\.com: not asked again until 04:00 UTC/);
       rows = [...rows, crtshRow(2, 'C=US, O=Google Trust Services, CN=WR1', '2026-09-27T00:00:00', ['example.com'])];
       const second = await runMain(['ct', 'example.com', '--baseline', json, '--json', join(dir, 'ct2.json'), '--fail-on-change'], { fetchImpl });
-      // The baseline missed Cert Spotter: the new issuer is listed, not counted.
-      assert.equal(second.code, EXIT.OK, second.err);
-      assert.match(second.out, /ISSUER {5}example\.com: new issuer Google Trust Services \(WR1\): 1 current certificate, newest 2026-09-27 \(the baseline run did not read every source/);
+      // The baseline missed Cert Spotter, but crt.sh read the domain in full on both nights and
+      // lists the new issuer: it counts.
+      assert.equal(second.code, EXIT.CHANGED, second.err);
+      assert.match(second.out, /ISSUER {5}example\.com: new issuer Google Trust Services \(WR1\): 1 current certificate, newest 2026-09-27\n/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ct over a list: Cert Spotter asked once after its 429, crt.sh not asked again once it is down', async () => {
+    const dir = tmp();
+    try {
+      const list = join(dir, 'domains.txt');
+      writeFileSync(list, 'example.com\nexample.net\nexample.org\n');
+      const asked = [];
+      const fetchImpl = async (url) => {
+        const u = String(url);
+        asked.push(u);
+        if (u.startsWith('https://crt.sh/')) return new Response('busy', { status: 503, headers: { 'retry-after': '0' } });
+        if (u.startsWith('https://api.certspotter.com/')) return new Response('{"code":"rate_limited"}', { status: 429, headers: { 'retry-after': '3600' } });
+        return new Response('', { status: 404 });
+      };
+      const json = join(dir, 'ct.json');
+      const res = await runMain(['ct', '--list', list, '--json', json], { fetchImpl });
+      assert.equal(res.code, EXIT.OK, res.err);
+      const spotter = asked.filter((u) => u.startsWith('https://api.certspotter.com/'));
+      const crtsh = asked.filter((u) => u.startsWith('https://crt.sh/'));
+      assert.equal(spotter.length, 1, spotter.join(' '));
+      assert.ok(crtsh.length >= 1 && crtsh.every((u) => u.includes('example.com')), crtsh.join(' '));
+      assert.match(res.err, /ds: ct example\.net \(2\/3\), not asking crt\.sh or Cert Spotter\n/);
+      assert.match(res.err, /ds: warning: crt\.sh was unavailable for example\.com: not asked again this run\n/);
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc.targets[0].sources.map((s) => `${s.source} ${s.state}${s.skipped ? ' skipped' : ''}`), ['crtsh unavailable', 'certspotter rate-limited']);
+      for (const x of doc.targets.slice(1)) {
+        assert.deepEqual(x.sources.map((s) => `${s.source} ${s.state}${s.skipped ? ' skipped' : ''}`), ['crtsh unavailable skipped', 'certspotter rate-limited skipped'], x.target);
+        assert.equal(x.answered, false);
+      }
+      assert.equal(doc.warnings.length, 2);
+      assert.match(res.out, /Certificate Transparency · example\.org\n- Certificate Transparency could not be read: crt\.sh \(unavailable earlier in this run: not asked\), Cert Spotter \(rate limited earlier in this run: not asked\)\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ct: a night with crt.sh down is no new issuer for a CA Cert Spotter names otherwise', async () => {
+    const dir = tmp();
+    try {
+      const dn = 'C=TR, O=Example Kamu SM, CN=Example Kamu SM SSL';
+      let crtshDown = false;
+      const fetchImpl = async (url) => {
+        const u = String(url);
+        if (u.startsWith('https://crt.sh/')) {
+          if (crtshDown) return new Response('busy', { status: 503, headers: { 'retry-after': '0' } });
+          return Response.json([{ issuer_ca_id: 9, issuer_name: dn, common_name: 'example.com', name_value: 'example.com\nwww.example.com', id: 90, not_before: '2026-09-20T00:00:00', not_after: '2026-12-19T00:00:00', serial_number: '09' }]);
+        }
+        if (u.startsWith('https://api.certspotter.com/')) {
+          if (u.includes('after=')) return Response.json([]);
+          return Response.json([{ id: '1', cert_sha256: 'ef'.repeat(32), dns_names: ['example.com', 'www.example.com'], not_before: '2026-09-20T00:00:00Z', not_after: '2026-12-19T00:00:00Z', issuer: { name: dn, friendly_name: 'Example Operator' } }]);
+        }
+        return new Response('', { status: 404 });
+      };
+      const json = join(dir, 'ct.json');
+      const first = await runMain(['ct', 'example.com', '--baseline', json, '--json', json], { fetchImpl });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.match(first.out, /Issuers: Example Kamu SM 1\n/);
+      crtshDown = true;
+      const second = await runMain(['ct', 'example.com', '--baseline', json, '--json', json, '--fail-on-change'], { fetchImpl });
+      assert.equal(second.code, EXIT.OK, second.out);
+      assert.match(second.out, /Changes since the baseline \(ct\.json, run of 2026-09-28 03:00 UTC\): none/);
+      assert.match(second.out, /Issuers: Example Kamu SM 1\n/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -799,8 +1035,13 @@ describe('offline runs (fake DoH)', () => {
       const before = readFileSync(json, 'utf8');
       const controller = new AbortController();
       let asked = 0;
-      // Every DoH request waits until the run is stopped; the first one stops it.
+      // Every DoH request waits until the run is stopped; the first one stops it. The rest (the
+      // shared RDAP bootstrap, which is not tied to the run's signal) are settled at once.
       const fetchImpl = (url, init = {}) => new Promise((resolve, reject) => {
+        if (!/[?&]dns=/.test(String(url))) {
+          resolve(new Response('', { status: 404 }));
+          return;
+        }
         asked += 1;
         const stop = () => reject(init.signal.reason);
         if (init.signal.aborted) stop();
@@ -883,8 +1124,26 @@ describe('the documented commands', () => {
         '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--fail-on-change', '--no-color'];
       assert.doesNotThrow(() => parseCommandLine(argv), argv.join(' '));
     }
-    assert.match(yml, /node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --no-color/);
+    assert.match(yml, /timeout -s INT -k 60 "\$limit" node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --no-color/);
     assert.match(yml, /if \[ "\$code" -eq 4 \]; then changed\+=/);
+  });
+
+  test('every check has a time limit inside the job\'s, and a night a check failed never closes the issue', () => {
+    const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
+    const job = Number(/timeout-minutes: (\d+)/.exec(yml)[1]);
+    const check = Number(/CHECK_MINUTES: (\d+)/.exec(yml)[1]);
+    const all = Number(/RUN_MINUTES: (\d+)/.exec(yml)[1]);
+    assert.ok(check <= all && all + 10 <= job, `${check} / ${all} / ${job}`);
+    assert.match(yml, /end=\$\(\( \$\(date \+%s\) \+ RUN_MINUTES \* 60 \)\)/);
+    assert.match(yml, /FAILED: \$\{\{ steps\.ds\.outputs\.failed \}\}\n\s+RESULTS:/, 'the issue step knows what failed');
+    const issueStep = yml.slice(yml.indexOf('- name: Open, update or close the issue'), yml.indexOf('- name: Fail when a check did not complete'));
+    const close = issueStep.indexOf('gh issue close');
+    assert.ok(close > issueStep.indexOf('elif [ -n "$FAILED" ]; then'), 'closed only after the failed nights are handled');
+    assert.match(issueStep, /elif \[ -n "\$FAILED" \]; then\n(?:.*\n){1,2}\s+if \[ -n "\$issue" \]; then\n\s+gh issue comment "\$issue" --body "Not closed: /);
+    assert.match(yml, /--sources crtsh/);
+    const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
+    assert.match(readme, /`--sources crtsh` on the `ct` line/);
+    assert.match(readme, /CHECK_MINUTES/);
   });
 
   test('the template says the three rules, runs nightly with only the token\'s write scopes it needs, and keeps one issue', () => {
@@ -937,6 +1196,41 @@ test('the program itself: a spawned runner whose fetch is the fake DoH (node --i
     const help = spawnSync(process.execPath, [DS, '--help'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
     assert.equal(help.status, 0);
     assert.equal(help.stdout, `${USAGE}${USAGE.endsWith('\n') ? '' : '\n'}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the program stopped with Ctrl-C (SIGINT) leaves at once, not when the RDAP bootstrap download times out', async (t2) => {
+  if (process.platform === 'win32') {
+    t2.skip('a signal sent to a child process ends it on Windows without running its handler');
+    return;
+  }
+  const dir = tmp();
+  try {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(join(ROOT, 'tests', 'js', 'ds-fake-doh.mjs')).href, DS, 'health', 'example.com', '--json', join(dir, 'h.json')], {
+      cwd: ROOT, env: { ...process.env, DS_FAKE_DOH: 'hang' }, stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let err = '';
+    let stoppedAt = 0;
+    const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (s) => {
+      err += s;
+      // Stop it once the bootstrap download (bound by its own 15 s timeout and a retry) hangs.
+      if (!stoppedAt && err.includes('fake: GET https://data.iana.org/rdap/dns.json')) {
+        stoppedAt = Date.now();
+        child.kill('SIGINT');
+      }
+    });
+    const guard = setTimeout(() => child.kill('SIGKILL'), 60000);
+    const { code, at } = await exited;
+    clearTimeout(guard);
+    assert.ok(stoppedAt > 0, err);
+    assert.equal(code, EXIT.INTERRUPTED, err);
+    assert.match(err, /ds: interrupted: nothing written\n/);
+    assert.ok(at - stoppedAt < 5000, `exited ${at - stoppedAt} ms after Ctrl-C`);
+    assert.ok(!existsSync(join(dir, 'h.json')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

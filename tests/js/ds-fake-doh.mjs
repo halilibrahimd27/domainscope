@@ -10,7 +10,8 @@
  *
  * Loaded with `node --import <this file>` and DS_FAKE_DOH=1 in the environment it replaces
  * globalThis.fetch of a spawned runner, and DS_FAKE_DOH_LOG=<file> receives the questions asked
- * (JSON) when the process exits. Documentation data only (example.com, 192.0.2.0/24,
+ * (JSON) when the process exits; DS_FAKE_DOH=hang gives it a network that never answers
+ * ({@link createHangingFetch}, the Ctrl-C test). Documentation data only (example.com, 192.0.2.0/24,
  * 198.51.100.0/24, 2001:db8::/32, the fake Cloudflare edge 104.16.1.1).
  */
 
@@ -121,11 +122,30 @@ export function createFakeFetch(table, { apex = 'example.com', log = [], other, 
   };
 }
 
-// `node --import tests/js/ds-fake-doh.mjs` with DS_FAKE_DOH=1: the spawned runner's fetch.
+/**
+ * A fetch that never answers: each request waits for its signal (a request without one waits
+ * for ever) and `onRequest(url)` hears of it. The Ctrl-C test's network.
+ * @param {(url: string) => void} [onRequest]
+ * @returns {typeof fetch}
+ */
+export function createHangingFetch(onRequest = () => {}) {
+  return (input, init = {}) => new Promise((resolve, reject) => {
+    onRequest(typeof input === 'string' ? input : (input && input.url) || String(input));
+    const signal = init.signal;
+    if (!signal) return;
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+}
+
+// `node --import tests/js/ds-fake-doh.mjs` with DS_FAKE_DOH=1: the spawned runner's fetch;
+// DS_FAKE_DOH=hang: nothing ever answers, and each request is named on stderr (`fake: GET <url>`).
 if (process.env.DS_FAKE_DOH === '1') {
   const log = [];
   globalThis.fetch = createFakeFetch(zoneTable(), { log });
   if (process.env.DS_FAKE_DOH_LOG) {
     process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify(log)));
   }
+} else if (process.env.DS_FAKE_DOH === 'hang') {
+  globalThis.fetch = createHangingFetch((url) => process.stderr.write(`fake: GET ${url.split('?')[0]}\n`));
 }

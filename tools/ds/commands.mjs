@@ -19,11 +19,94 @@ import { NODE_UNREADABLE, CT_SOURCES, DS_VERSION, UsageError } from './args.mjs'
 import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo } from './render.mjs';
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
+import { textParts, renderParts } from '../../assets/js/lib/summary.js';
+import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
 
 const APP = 'DomainScope';
 const DAY_MS = 86400000;
 /** Lines of problems / rows / issuances a summary lists before "+N more" (lib/summary.js SUMMARY_MAX_PROBLEMS). */
 const MAX_LINES = 5;
+/** Source names for a sentence ('crt.sh', 'Cert Spotter'). */
+const SOURCE_NAMES = Object.freeze({ crtsh: 'crt.sh', certspotter: 'Cert Spotter' });
+const sourceName = (id) => SOURCE_NAMES[id] || id;
+
+/* ------------------------------------------------------------------------ */
+/* Sources a run stops asking                                               */
+/* ------------------------------------------------------------------------ */
+
+/** crt.sh failures of the service itself (every retry answered 5xx / 429 / nothing): not asked again. */
+const CRTSH_DOWN = new Set(['unavailable', 'rate-limit', 'network']);
+/** crt.sh timeouts on this many domains in a row: not asked again (one very large domain can be too slow alone). */
+const CRTSH_TIMEOUTS = 2;
+
+/**
+ * The passive sources a run stops asking, so a list of domains neither prolongs a rate limit nor
+ * waits for a service that is down on every domain (lib/doh.js does the same for resolvers):
+ * - Cert Spotter after a rate limit (HTTP 429, or a readable X-RateLimit-Remaining of 0): its
+ *   anonymous quota is about 10 full-domain queries an hour per IP address, and GitHub's hosted
+ *   runners share addresses. Not asked until its Retry-After (at most an hour, lib/ctcert.js
+ *   CT_COOLDOWN_MS) is over.
+ * - crt.sh after it failed as a service (every retry unavailable or rate limited: up to three
+ *   minutes per domain), or timed out on {@link CRTSH_TIMEOUTS} domains in a row. Not asked again
+ *   this run.
+ * The domains after that get the source as "not asked" (`skipped`): nothing read, nothing known.
+ * @param {{ now: () => Date, spotterHint?: string }} opts `spotterHint`: how to leave Cert
+ *   Spotter out, for the sentence ('--sources crtsh leaves it out')
+ * @returns {{ ask: (ids: string[]) => string[], skipped: (ids: string[]) => object[],
+ *   note: (domain: string, results: object[]) => string[] }} `ask`: the ids to ask now;
+ *   `skipped`: SourceHealth-like entries of the ids not asked; `note`: one domain's
+ *   lib/sources.js SourceResults, returning a sentence for each source it stops asking
+ */
+export function createSourceBreaker({ now, spotterHint = '' }) {
+  const at = () => now().getTime();
+  const spotter = createCtCooldown();
+  let crtsh = null;
+  let crtshTimeouts = 0;
+  const benched = (id) => (id === 'certspotter' ? spotter.get(at()) : id === 'crtsh' ? crtsh : null);
+  return {
+    ask: (ids) => ids.filter((id) => !benched(id)),
+    skipped: (ids) => ids.filter((id) => benched(id)).map((id) => {
+      const b = benched(id);
+      return { source: id, state: b.state, ok: false, truncated: false, errorKind: b.errorKind, error: b.error, skipped: true };
+    }),
+    note(domain, results) {
+      const out = [];
+      for (const r of results || []) {
+        if (!r || typeof r !== 'object') continue;
+        if (r.source === 'certspotter' && !spotter.get(at())) {
+          const quota = r.quota || {};
+          const limited = r.errorKind === 'rate-limit';
+          if (!limited && quota.remaining !== 0) continue;
+          const waitMs = Number.isFinite(quota.retryAfterMs) && quota.retryAfterMs > 0 ? Math.min(quota.retryAfterMs, CT_COOLDOWN_MS) : CT_COOLDOWN_MS;
+          const until = new Date(at() + waitMs);
+          spotter.set({ state: 'rate-limited', errorKind: 'rate-limit', error: `not asked: rate limited since ${domain}` }, until.getTime());
+          out.push(`Cert Spotter ${limited ? 'answered "rate limited"' : 'had no request left this hour'} for ${domain}: not asked again until ${isoTime(until).slice(11, 16)} UTC `
+            + `(its anonymous quota is about 10 full-domain queries an hour per IP address, and GitHub's runners share addresses${spotterHint ? `; ${spotterHint}` : ''})`);
+        }
+        if (r.source === 'crtsh' && !crtsh) {
+          if (r.ok) {
+            crtshTimeouts = 0;
+            continue;
+          }
+          crtshTimeouts = r.errorKind === 'timeout' ? crtshTimeouts + 1 : 0;
+          if (!CRTSH_DOWN.has(r.errorKind) && crtshTimeouts < CRTSH_TIMEOUTS) continue;
+          const state = r.errorKind === 'rate-limit' ? 'rate-limited' : r.errorKind === 'timeout' ? 'timeout' : 'unavailable';
+          crtsh = { state, errorKind: r.errorKind, error: `not asked: ${state.replace('-', ' ')} since ${domain}` };
+          out.push(r.errorKind === 'timeout'
+            ? `crt.sh timed out on ${CRTSH_TIMEOUTS} domains in a row (the last: ${domain}): not asked again this run`
+            : `crt.sh was ${state.replace('-', ' ')} for ${domain}: not asked again this run`);
+        }
+      }
+      return out;
+    }
+  };
+}
+
+/** The source ids a run asks by default (lib/sourceinfo.js `defaultEnabled`). */
+async function defaultSourceIds() {
+  const { SOURCES } = await import('../../assets/js/lib/sourceinfo.js');
+  return SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
+}
 
 /* ------------------------------------------------------------------------ */
 /* health                                                                   */
@@ -128,18 +211,61 @@ export function baselineSeeds(baseline, domain) {
     && isSubdomainOf(h.name, domain)).map((h) => h.name);
 }
 
+/** A discovery stage this long gets progress lines (a nightly log that says nothing for minutes looks hung). */
+const PROGRESS_MIN_TOTAL = 1000;
+/** Progress lines per long stage (one per tenth). */
+const PROGRESS_STEPS = 10;
+
+/**
+ * A lib/scanner.js `onProgress` hook that says how far a long stage is, in steps of a tenth:
+ * `subdomains example.com: resolve 2,000/20,000 (10%)`. Stages under {@link PROGRESS_MIN_TOTAL}
+ * names say nothing more than their start.
+ * @param {string} domain
+ * @param {(text: string) => void} progress
+ * @returns {(p: { stage: string, done: number, total: number }) => void}
+ */
+export function stageProgress(domain, progress) {
+  const last = new Map();
+  const n = (v) => Number(v).toLocaleString('en-US');
+  return ({ stage, done, total } = {}) => {
+    if (!Number.isFinite(total) || total < PROGRESS_MIN_TOTAL || !Number.isFinite(done)) return;
+    const step = Math.min(PROGRESS_STEPS, Math.floor((done * PROGRESS_STEPS) / total));
+    if (step <= (last.get(stage) ?? 0)) return;
+    last.set(stage, step);
+    progress(`subdomains ${domain}: ${stage} ${n(Math.min(done, total))}/${n(total)} (${Math.round((step * 100) / PROGRESS_STEPS)}%)`);
+  };
+}
+
+/**
+ * A ScanResult warning as the Subdomains view words it (`sub.warn.<code>`, registered when
+ * views/subdomains.js is imported), as summary parts: its detail is a code part (it can be a
+ * name from a source). Unknown codes read `CODE: detail`.
+ * @param {Function} t
+ * @param {{ code: string, detail?: unknown }} w
+ * @param {string[]} known views/subdomains.js WARNING_CODES
+ * @returns {Array}
+ */
+export function scanWarningParts(t, w, known) {
+  const detail = w.detail === undefined || w.detail === null ? '' : String(w.detail);
+  if (known.includes(w.code)) return textParts(t, `sub.warn.${w.code}`, { detail });
+  return [String(w.code), ...(detail ? [': ', code(detail)] : [])];
+}
+
 async function runSubdomains(targets, options, env) {
   const { runScan } = await import('../../assets/js/lib/scanner.js');
   const { scanHostRows } = await import('../../assets/js/lib/export.js');
   const { subdomainsSummary } = await import('../../assets/js/lib/summary.js');
   // The view's own pure helpers (DOM-free at import, tests/js/i18n-coverage.test.js): the stat
-  // cards, its Copy summary facts and its scan concurrency, so the report says what the app says.
-  const { countHosts, subdomainsSummaryFacts, scanConcurrency } = await import('../../assets/js/views/subdomains.js');
+  // cards, its Copy summary facts, its scan concurrency and its warning sentences, so the report
+  // says what the app says.
+  const { countHosts, subdomainsSummaryFacts, scanConcurrency, WARNING_CODES } = await import('../../assets/js/views/subdomains.js');
   const exact = Array.isArray(env.inputs.exactNames);
   const out = [];
   const docs = [];
   const warnings = [];
   const pool = scanConcurrency(options.concurrency);
+  const sources = exact ? [] : options.sources || await defaultSourceIds();
+  const breaker = createSourceBreaker({ now: env.now });
   if (exact) {
     const outside = env.inputs.exactNames.filter((n) => !targets.some((d) => n === d || isSubdomainOf(n, d)));
     if (outside.length) warnings.push(`${outside.length} name${outside.length === 1 ? '' : 's'} of ${env.inputs.exactFile} under none of the domains left out (never sent)`);
@@ -148,13 +274,16 @@ async function runSubdomains(targets, options, env) {
     const own = exact ? env.inputs.exactNames.filter((n) => n === domain || isSubdomainOf(n, domain)) : [];
     if (exact && !own.length) warnings.push(`${domain}: no name of ${env.inputs.exactFile} is under it; only the domain itself is resolved`);
     const seeds = exact ? [] : baselineSeeds(env.baseline, domain);
-    env.progress(`subdomains ${domain} (${i + 1}/${targets.length})${exact ? `, ${own.length} names` : `, level ${options.level}`}`);
+    const ask = breaker.ask(sources);
+    const notAsked = sources.filter((s) => !ask.includes(s));
+    env.progress(`subdomains ${domain} (${i + 1}/${targets.length})${exact ? `, ${own.length} names` : `, level ${options.level}`}`
+      + `${notAsked.length ? `, not asking ${notAsked.map(sourceName).join(' or ')}` : ''}`);
     const result = await runScan({
       domains: [domain],
       extraNames: exact ? own : seeds,
       exact,
       ...(exact ? { sources: [], bruteforce: 'off', permutationBudget: 0, recursive: false, mine: false } : {
-        ...(options.sources ? { sources: options.sources } : {}),
+        ...(options.sources || notAsked.length ? { sources: ask } : {}),
         bruteforce: options.level
       }),
       originHints: true,
@@ -167,22 +296,45 @@ async function runSubdomains(targets, options, env) {
     }, {
       onStage: (stage, info = {}) => {
         if (!info.skipped && stage !== 'done') env.progress(`subdomains ${domain}: ${stage}`);
-      }
+      },
+      onProgress: stageProgress(domain, env.progress)
     });
+    if (!exact) warnings.push(...breaker.note(domain, result.sources));
+    // The scanner's own warnings (a cut list of names, a DNS pool that stopped answering …): what
+    // the view shows above its results, for stderr, the report and the summary.
+    const scanWarnings = [];
+    for (const w of result.warnings || []) {
+      if (!w || typeof w.code !== 'string' || scanWarnings.some((x) => x.code === w.code && x.detail === w.detail)) continue;
+      scanWarnings.push(w);
+    }
+    const warnParts = scanWarnings.map((w) => scanWarningParts(env.t, w, WARNING_CODES));
+    for (const parts of warnParts) warnings.push(`${domain}: ${renderParts(parts, 'text')}`);
     const seeded = new Set(seeds);
     out.push({
       target: domain,
       mode: exact ? 'exact' : 'discover',
       level: exact ? null : result.options.bruteforce,
-      sources: (result.sourceHealth || []).map((s) => ({ source: s.source, state: s.state, names: s.names, error: s.error || null })),
+      sources: [
+        ...(result.sourceHealth || []).map((s) => ({ source: s.source, state: s.state, names: s.names, error: s.error || null })),
+        ...breaker.skipped(notAsked).map((s) => ({ source: s.source, state: s.state, names: 0, error: s.error, skipped: true }))
+      ],
       finishedAt: isoTime(result.finishedAt),
       counts: countHosts(result.hosts),
-      warnings: [...new Set((result.warnings || []).map((w) => w.code))],
+      warnings: [...new Set(scanWarnings.map((w) => w.code))],
       seeded: seeds.length,
       hosts: reportHosts(scanHostRows(result).map((row) => hostRow(row, seeded)), { exact, seeded })
     });
     const run = { status: 'done', config: { domains: [domain] }, result, hosts: result.hosts, found: new Map(), sourceResults: result.sources, finishedAt: result.finishedAt };
-    docs.push(subdomainsSummary(subdomainsSummaryFacts(run), { t: env.t, now: env.now() }));
+    const doc = subdomainsSummary(subdomainsSummaryFacts(run), { t: env.t, now: env.now() });
+    const unasked = breaker.skipped(notAsked).map((s) => `${sourceName(s.source)} (${s.state.replace('-', ' ')} earlier in this run)`);
+    docs.push({
+      ...doc,
+      lines: [
+        ...doc.lines,
+        ...(unasked.length ? [[`Not asked: ${unasked.join(', ')}: the list may be incomplete`]] : []),
+        ...warnParts.map((parts) => [strong('Warning:'), ' ', ...parts])
+      ]
+    });
   }
   return {
     options: exact
@@ -210,10 +362,14 @@ export function ctCertId(cert) {
 
 /**
  * The compared part of one domain's certificates in CT: every current certificate (id, CA,
- * intermediate, validity, names), the issuers with their counts, the names, and how each source
- * answered (`complete`: every source answered in full).
+ * intermediate, validity, names, the sources that list it), the issuers with their counts, the
+ * names, and how each source answered (`complete`: every source answered in full; `skipped`: not
+ * asked, {@link createSourceBreaker}). The CA is named from the issuer DN alone (the known CA,
+ * else its O, else its CN), never from Cert Spotter's friendly name, so a certificate reads the
+ * same whichever source answered: a night without crt.sh is no "new issuer".
  * @param {string} domain
- * @param {object} fetched lib/sources.js fetchAllSources() result
+ * @param {{ certs: object[], health: object[] }} fetched lib/sources.js fetchAllSources() result
+ *   (`health` may add the sources not asked)
  * @param {{ issuerName: Function, dnPart: Function, days: number, now: Date, sources: string[] }} opts
  * @returns {object}
  */
@@ -229,7 +385,7 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
   for (const c of fetched.certs || []) {
     const intermediate = dnPart(c.issuer, 'CN');
     const fields = {
-      ca: issuerName(c.issuer, c.issuerFriendlyName || null),
+      ca: issuerName(c.issuer),
       intermediate,
       issuer: c.issuer || '',
       notBefore: isoTime(c.notBefore),
@@ -262,7 +418,10 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
   return {
     target: domain,
     days,
-    sources: health.map((h) => ({ source: h.source, state: h.state, ok: h.ok, truncated: !!h.truncated, errorKind: h.errorKind || null, error: h.error || null })),
+    sources: health.map((h) => ({
+      source: h.source, state: h.state, ok: h.ok, truncated: !!h.truncated, errorKind: h.errorKind || null, error: h.error || null,
+      ...(h.skipped ? { skipped: true } : {})
+    })),
     complete: sources.every((id) => health.some((h) => h.source === id && h.ok && h.state !== 'partial' && !h.truncated)),
     answered: health.some((h) => h.ok),
     recent: certificates.filter((c) => Date.parse(c.notBefore) >= since).length,
@@ -272,9 +431,6 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
   };
 }
 
-/** Source names for a sentence ('crt.sh', 'Cert Spotter'). */
-const SOURCE_NAMES = Object.freeze({ crtsh: 'crt.sh', certspotter: 'Cert Spotter' });
-
 /**
  * The summary of one domain's CT result.
  * @param {object} target {@link ctTarget}
@@ -283,7 +439,7 @@ const SOURCE_NAMES = Object.freeze({ crtsh: 'crt.sh', certspotter: 'Cert Spotter
 export function ctDoc(target, { t, now }) {
   const lines = [];
   const failed = target.sources.filter((s) => !s.ok);
-  const why = (s) => `${SOURCE_NAMES[s.source] || s.source} (${String(s.state || 'error').replace('-', ' ')})`;
+  const why = (s) => `${sourceName(s.source)} (${String(s.state || 'error').replace('-', ' ')}${s.skipped ? ' earlier in this run: not asked' : ''})`;
   if (!target.answered) {
     lines.push([`Certificate Transparency could not be read: ${failed.map(why).join(', ')}. Nothing is known about this domain's certificates.`]);
   } else {
@@ -315,17 +471,24 @@ async function runCt(targets, options, env) {
   const { fetchAllSources } = await import('../../assets/js/lib/sources.js');
   const { issuerName, dnPart } = await import('../../assets/js/lib/passport.js');
   const sources = options.sources || [...CT_SOURCES];
+  const breaker = createSourceBreaker({ now: env.now, spotterHint: sources.includes('crtsh') ? '--sources crtsh leaves it out' : '' });
   const out = [];
   const docs = [];
+  const warnings = [];
   for (const [i, domain] of targets.entries()) {
-    env.progress(`ct ${domain} (${i + 1}/${targets.length})`);
-    const fetched = await fetchAllSources(domain, { sources, fetchImpl: env.fetchImpl, signal: env.signal });
+    const ask = breaker.ask(sources);
+    env.progress(`ct ${domain} (${i + 1}/${targets.length})${ask.length < sources.length ? `, not asking ${sources.filter((s) => !ask.includes(s)).map(sourceName).join(' or ')}` : ''}`);
+    const fetched = ask.length
+      ? await fetchAllSources(domain, { sources: ask, fetchImpl: env.fetchImpl, signal: env.signal })
+      : { results: [], certs: [], health: [] };
+    warnings.push(...breaker.note(domain, fetched.results));
     const now = env.now();
-    const target = ctTarget(domain, fetched, { issuerName, dnPart, days: options.days, now, sources });
+    const health = [...(fetched.health || []), ...breaker.skipped(sources.filter((s) => !ask.includes(s)))];
+    const target = ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources });
     out.push(target);
     docs.push(ctDoc(target, { t: env.t, now }));
   }
-  return { options: { sources, days: options.days }, targets: out, docs, warnings: [] };
+  return { options: { sources, days: options.days }, targets: out, docs, warnings };
 }
 
 /* ------------------------------------------------------------------------ */

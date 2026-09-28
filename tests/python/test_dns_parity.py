@@ -23,6 +23,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,17 +92,21 @@ class FakeAuthority:
         self.silent = silent
         self.truncate = set(truncate)
         self.asked = []  # type: List[Tuple[str, str, str]]
-        for _ in range(20):
-            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp.bind(('127.0.0.1', 0))
-            self.port = self.udp.getsockname()[1]
+        # TCP first: its ephemeral port is never in a range Windows reserves for TCP (Hyper-V,
+        # Docker), which a UDP ephemeral port can be in.
+        for _ in range(50):
             self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp.bind(('127.0.0.1', 0))
+            self.port = self.tcp.getsockname()[1]
+            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                self.tcp.bind(('127.0.0.1', self.port))
+                self.udp.bind(('127.0.0.1', self.port))
                 break
             except OSError:
                 self.udp.close()
                 self.tcp.close()
+        else:
+            raise OSError('no local port free for both UDP and TCP')
         self.tcp.listen(16)
         self.alive = True
         threading.Thread(target=self._serve_udp, daemon=True).start()
@@ -227,6 +232,26 @@ x.dev   IN A 192.0.2.54
 @       IN DNSKEY 257 3 13 AAAA
 """
 
+# A second $ORIGIN part way (RFC 1035 5.1): relative names in the data follow it.
+SUB_ORIGIN_TEXT = """\
+$ORIGIN example.com.
+$TTL 3600
+@       IN SOA ns1.example.org. hostmaster.example.com. 2026092801 7200 900 1209600 300
+@       IN NS ns1.example.org.
+@       IN MX 10 mail
+mail    IN A 198.51.100.25
+dev     IN NS ns1.dev
+$ORIGIN dev.example.com.
+ns1     IN A 192.0.2.53
+x       IN A 192.0.2.54
+$ORIGIN sub.example.com.
+@       IN MX 10 mail
+www     IN CNAME host
+_sip._tcp IN SRV 10 5 5060 sip
+host    IN A 192.0.2.20
+mail    IN A 192.0.2.21
+"""
+
 GOOD = {
     ('example.com', 'NS'): [(86400, 'ns1.example.net'), (86400, 'ns2.example.net')],
     ('example.com', 'A'): [(300, '192.0.2.10')],
@@ -292,6 +317,20 @@ class ZoneFileTests(unittest.TestCase):
         self.assertEqual(dp.parse_zone('@ 300 IN A 192.0.2.1\n', origin='Example.NET.').origin, 'example.net')
         with self.assertRaises(dp.UsageError):
             dp.parse_zone('www 300 IN A 192.0.2.1\n')
+
+    def test_a_second_origin_completes_the_relative_names_of_its_records(self):
+        zone = dp.parse_zone(SUB_ORIGIN_TEXT)
+        by = {(r.name, r.rtype): r for r in zone.records}
+        value = lambda name, rtype: dp.file_value(by[(name, rtype)], zone.origin)
+        self.assertEqual(zone.origin, 'example.com')
+        self.assertEqual(value('www.sub.example.com', 'CNAME')[0], 'host.sub.example.com')
+        self.assertEqual(value('sub.example.com', 'MX')[0], (10, 'mail.sub.example.com'))
+        self.assertEqual(value('_sip._tcp.sub.example.com', 'SRV')[0], (10, 5, 5060, 'sip.sub.example.com'))
+        self.assertEqual(value('example.com', 'MX')[0], (10, 'mail.example.com'), 'the first $ORIGIN still applies above')
+        self.assertEqual(value('dev.example.com', 'NS')[0], 'ns1.dev.example.com')
+        asked, skipped = dp.plan_rrsets(zone)
+        self.assertIn(('ns1.dev.example.com', 'A'), {(r.name, r.rtype) for r in asked}, 'glue named relative to its own $ORIGIN')
+        self.assertEqual([(r.name, reason) for r, reason in skipped], [('x.dev.example.com', 'delegated')])
 
     def test_names(self):
         self.assertEqual(dp.canonical_name('A\\046b.Example.COM.'), 'a\\046b.example.com')
@@ -448,6 +487,31 @@ class ParityRunTests(unittest.TestCase):
         self.assertIsNone(s('example.com', 'AAAA', extra=True), 'never asked at a proxied name')
         self.assertIsNone(rows.get(('ns1.example.net', 'example.com', 'A', False)).file_ttl, 'TTL 1 is automatic')
 
+    def test_relative_names_under_a_second_origin_are_the_same_at_the_new_server(self):
+        records = {
+            ('example.com', 'NS'): [(3600, 'ns1.example.net')],
+            ('example.com', 'MX'): [(3600, (10, 'mail.example.com'))],
+            ('mail.example.com', 'A'): [(3600, '198.51.100.25')],
+            ('sub.example.com', 'MX'): [(3600, (10, 'mail.sub.example.com'))],
+            ('www.sub.example.com', 'CNAME'): [(3600, 'host.sub.example.com')],
+            ('_sip._tcp.sub.example.com', 'SRV'): [(3600, (10, 5, 5060, 'sip.sub.example.com'))],
+            ('host.sub.example.com', 'A'): [(3600, '192.0.2.20')],
+            ('mail.sub.example.com', 'A'): [(3600, '192.0.2.21')],
+        }
+        server = FakeAuthority('example.com', records, cuts={'dev.example.com': (['ns1.dev.example.com'], {'ns1.dev.example.com': '192.0.2.53'})})
+        try:
+            report, rows = self.run_zone(server, text=SUB_ORIGIN_TEXT, extras=False)
+        finally:
+            server.close()
+        s = lambda *k, **kw: self.status(rows, *k, **kw)
+        self.assertEqual(s('www.sub.example.com', 'CNAME'), ('SAME', []))
+        self.assertEqual(s('sub.example.com', 'MX'), ('SAME', []))
+        self.assertEqual(s('_sip._tcp.sub.example.com', 'SRV'), ('SAME', []))
+        self.assertEqual(s('example.com', 'MX'), ('SAME', []))
+        self.assertEqual(s('dev.example.com', 'NS'), ('SAME', ['referral']))
+        self.assertEqual(s('ns1.dev.example.com', 'A'), ('SAME', ['referral']))
+        self.assertEqual(report.verdict(), 'ready')
+
     def test_servers_that_do_not_serve_the_zone(self):
         refusing = FakeAuthority('example.com', GOOD, refuse=True)
         cache = FakeAuthority('example.com', GOOD, authoritative=False)
@@ -514,6 +578,35 @@ class CommandLineTests(unittest.TestCase):
         code, _, err = run_main(no_origin, '--ns', '192.0.2.1')
         self.assertEqual(code, 2)
         self.assertIn('--origin', err)
+
+    def test_a_name_server_whose_name_does_not_resolve_is_unreachable_and_the_others_are_asked(self):
+        def resolve(host):
+            raise dp.DnsError('resolve', 'its name does not resolve: Name or service not known')
+        server = FakeAuthority('example.com', GOOD, cuts=DEV_CUT)
+        out_json = os.path.join(self.tmp.name, 'unresolved.json')
+        try:
+            with mock.patch.object(dp, '_resolve', resolve):
+                code, out, err = run_main(self.zone, '--ns', server.ns(), 'ns2.example.net', '--json', out_json, '--no-extras')
+        finally:
+            server.close()
+        self.assertEqual(code, 0)
+        self.assertIn('ns2.example.net (no address)  UNREACHABLE: its name does not resolve', out)
+        self.assertIn('warning: name server ns2.example.net: its name does not resolve', err)
+        doc = json.loads(Path(out_json).read_text(encoding='utf-8'))
+        self.assertEqual([(n['name'], n['address'], n['state']) for n in doc['nameservers']],
+                         [('ns1.example.net', '127.0.0.1', 'OK'), ('ns2.example.net', None, 'UNREACHABLE')])
+        self.assertEqual(doc['summary']['verdict'], 'fix', 'a server that cannot be asked is a server to fix')
+
+    def test_the_file_is_read_before_any_name_is_resolved(self):
+        def resolve(host):
+            raise dp.DnsError('resolve', 'its name does not resolve: Name or service not known')
+        with mock.patch.object(dp, '_resolve', resolve):
+            code, _, err = run_main(os.path.join(self.tmp.name, 'none.zone'), '--ns', 'ns1.example.net')
+            self.assertEqual(code, 2)
+            self.assertIn('cannot read', err)
+            code, _, err = run_main(self.zone, '--ns', 'ns1.example.net', 'ns2.example.net')
+        self.assertEqual(code, 2, 'no server can be asked')
+        self.assertIn('no name server can be asked: ns1.example.net: its name does not resolve', err)
 
     def test_help_and_version(self):
         code, out, _ = run_main('--help')

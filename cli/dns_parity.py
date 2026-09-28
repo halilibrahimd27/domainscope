@@ -116,7 +116,7 @@ class DnsError(Exception):
 
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
-        self.kind = kind  # 'timeout' | 'network' | 'format'
+        self.kind = kind  # 'timeout' | 'network' | 'format' | 'resolve' (a name server's own name)
 
 
 # ---------------------------------------------------------------------------------------
@@ -203,6 +203,12 @@ def in_zone(name: str, origin: str) -> bool:
     return name == origin or name.endswith('.' + origin)
 
 
+def record_origin(record: 'Record', zone_origin: str) -> str:
+    """The origin that completes the relative names in a record's data: the $ORIGIN in force
+    at that line of the file, else the zone's."""
+    return record.origin if record.origin is not None else zone_origin
+
+
 # ---------------------------------------------------------------------------------------
 # Zone file (BIND / RFC 1035 master format)
 # ---------------------------------------------------------------------------------------
@@ -234,6 +240,7 @@ class Record:
     flatten: bool = False            # Cloudflare cf_tags=cf-flatten-cname
     routing: bool = False            # a cli53 "; AWS routing=" variant
     alias: Optional[str] = None      # a cli53 "AWS ALIAS <type> <target>" record
+    origin: Optional[str] = None     # the $ORIGIN in force at this record (relative names in its data)
 
 
 @dataclass
@@ -444,7 +451,7 @@ def parse_zone(text: str, origin: Optional[str] = None, source: str = '') -> Zon
         last_ttl = ttl if ttl is not None else last_ttl
         proxied, flatten = _cf_tags(entry.comment)
         records.append(Record(owner, rtype, ttl, toks, entry.line, entry.comment, proxied, flatten,
-                              'AWS routing=' in entry.comment, alias))
+                              'AWS routing=' in entry.comment, alias, current))
     if zone_origin is None:
         raise UsageError('%s names no zone: give --origin example.com' % (source or 'the zone file'))
     kept = []
@@ -502,10 +509,12 @@ def _hex(tokens: Sequence[Token]) -> str:
 
 
 def file_value(record: Record, origin: str) -> Tuple[Any, str]:
-    """``(key, text)`` of a file record: the comparison key and the value as printed. Raises
-    ValueError for a value this script cannot read."""
+    """``(key, text)`` of a file record: the comparison key and the value as printed. A relative
+    name in the data is completed with the $ORIGIN in force at the record (``origin`` when the
+    file set none there). Raises ValueError for a value this script cannot read."""
     rtype = record.rtype
     t = [tok.text for tok in record.tokens]
+    origin = record_origin(record, origin)
     if rtype == 'A':
         ip = str(ipaddress.IPv4Address(t[0]))
         return ip, ip
@@ -777,7 +786,7 @@ def query_dns(server: str, port: int, name: str, rtype: str, timeout: float = DE
 class NameServer:
     label: str                 # what was given: a host name, or an address
     host: Optional[str]        # its host name, when one was given
-    address: str               # the address asked
+    address: str               # the address asked ('' when the host name does not resolve)
     port: int
     state: str = ''
     serial: Optional[int] = None
@@ -785,20 +794,24 @@ class NameServer:
 
 
 def _resolve(host: str) -> str:
+    """The first address of a host name (IPv4 first). Raises DnsError('resolve', ...)."""
     try:
         infos = socket.getaddrinfo(host, None, 0, socket.SOCK_DGRAM)
-    except socket.gaierror as exc:
-        raise UsageError('name server %s does not resolve: %s' % (host, exc.strerror or exc))
+    except (socket.gaierror, UnicodeError) as exc:
+        raise DnsError('resolve', 'its name does not resolve: %s' % (getattr(exc, 'strerror', None) or exc))
     v4 = [i[4][0] for i in infos if i[0] == socket.AF_INET]
     v6 = [i[4][0] for i in infos if i[0] == socket.AF_INET6]
     if not v4 and not v6:
-        raise UsageError('name server %s has no address' % host)
+        raise DnsError('resolve', 'its name has no address')
     return (v4 or v6)[0]
 
 
-def parse_nameserver(value: str, default_port: int = DEFAULT_PORT, resolve: Any = _resolve) -> NameServer:
+def parse_nameserver(value: str, default_port: int = DEFAULT_PORT, resolve: Any = None) -> NameServer:
     """``ns1.example.net``, ``ns1.example.net=192.0.2.53`` (a host name asked at an address:
-    before its name resolves), ``192.0.2.53``, ``192.0.2.53:5353``, ``[2001:db8::53]:5353``."""
+    before its name resolves), ``192.0.2.53``, ``192.0.2.53:5353``, ``[2001:db8::53]:5353``.
+    A host name that does not resolve is no usage error: the server comes back without an
+    address, already :data:`NS_UNREACHABLE` (the report says so, and the others are asked).
+    Raises UsageError for a value that is not a name server."""
     text = value.strip().rstrip('.') if '=' not in value else value.strip()
     host = None  # type: Optional[str]
     if '=' in text:
@@ -828,7 +841,11 @@ def parse_nameserver(value: str, default_port: int = DEFAULT_PORT, resolve: Any 
         raise UsageError('bad name server %r' % value)
     if not re.match(r'^[a-z0-9-]+(\.[a-z0-9-]+)+$', name):
         raise UsageError('bad name server %r' % value)
-    return NameServer(name, name, resolve(name), port)
+    try:
+        address = (resolve or _resolve)(name)
+    except DnsError as exc:
+        return NameServer(name, name, '', port, NS_UNREACHABLE, None, str(exc))
+    return NameServer(name, name, address, port)
 
 
 # ---------------------------------------------------------------------------------------
@@ -908,7 +925,7 @@ def plan_rrsets(zone: Zone) -> Tuple[List[RRset], List[Tuple[RRset, str]]]:
     for cut in cuts:
         for record in groups[(cut, 'NS')].records:
             try:
-                target = absolute_name(record.tokens[0].text, zone.origin)
+                target = absolute_name(record.tokens[0].text, record_origin(record, zone.origin))
             except (ValueError, IndexError):
                 continue
             if target == cut or target.endswith('.' + cut):
@@ -971,8 +988,13 @@ class Asker:
 
 
 def check_nameserver(asker: Asker, origin: str) -> None:
-    """Ask the SOA of the zone and set the server's state and serial."""
+    """Ask the SOA of the zone and set the server's state and serial (a server without an
+    address, whose name did not resolve, stays :data:`NS_UNREACHABLE` and is not asked)."""
     ns = asker.ns
+    if not ns.address:
+        ns.state = NS_UNREACHABLE
+        ns.detail = ns.detail or 'its name does not resolve'
+        return
     reply = asker.ask(origin, 'SOA')
     if isinstance(reply, DnsError):
         ns.state, ns.detail = NS_UNREACHABLE, str(reply)
@@ -1279,7 +1301,8 @@ def render_summary(report: ParityReport, show_all: bool = False) -> str:
     lines = ['DNS parity: %s (%d record sets in %s) against %d name server(s)' % (
         zone.origin, report.rrsets, report.source or 'the zone file', len(report.nameservers))]
     for ns in report.nameservers:
-        where = ns.address if ns.port == DEFAULT_PORT else '%s port %d' % (ns.address, ns.port)
+        address = ns.address or 'no address'
+        where = address if ns.port == DEFAULT_PORT else '%s port %d' % (address, ns.port)
         if ns.state == NS_OK:
             state = 'authoritative, serial %s' % ns.serial
         else:
@@ -1359,7 +1382,7 @@ def report_to_dict(report: ParityReport) -> Dict[str, Any]:
         'zone': report.zone.origin,
         'file': report.source,
         'recordSets': report.rrsets,
-        'nameservers': [{'name': ns.label, 'address': ns.address, 'port': ns.port, 'state': ns.state,
+        'nameservers': [{'name': ns.label, 'address': ns.address or None, 'port': ns.port, 'state': ns.state,
                          'serial': ns.serial, 'detail': ns.detail} for ns in report.nameservers],
         'rows': [{'ns': r.ns, 'name': r.name, 'type': r.rtype, 'status': r.status, 'notes': r.notes,
                   'file': r.file, 'new': r.new, 'added': r.added, 'removed': r.removed,
@@ -1495,11 +1518,7 @@ def _run(args: argparse.Namespace) -> int:
     values = [v for item in args.ns for v in re.split(r'[\s,]+', item) if v]
     if len(values) > MAX_NAMESERVERS:
         raise UsageError('at most %d name servers' % MAX_NAMESERVERS)
-    nameservers = []  # type: List[NameServer]
-    for value in values:
-        ns = parse_nameserver(value, args.port)
-        if all((n.address, n.port) != (ns.address, ns.port) for n in nameservers):
-            nameservers.append(ns)
+    # The file first: a file that cannot be read is reported as such, before any name is resolved.
     try:
         zone = parse_zone(_read_zone_text(args.zonefile), args.origin, args.zonefile)
     except ValueError as exc:
@@ -1511,6 +1530,18 @@ def _run(args: argparse.Namespace) -> int:
             print('warning: ... and %d more' % (len(zone.warnings) - 25), file=err)
     if not zone.records:
         raise UsageError('no records of %s in %s' % (zone.origin, args.zonefile))
+    nameservers = []  # type: List[NameServer]
+    for value in values:
+        ns = parse_nameserver(value, args.port)
+        if all((n.address or n.label, n.port) != (ns.address or ns.label, ns.port) for n in nameservers):
+            nameservers.append(ns)
+    unresolved = [ns for ns in nameservers if not ns.address]
+    if len(unresolved) == len(nameservers):
+        raise UsageError('no name server can be asked: %s' % '; '.join(
+            '%s: %s' % (ns.label, ns.detail) for ns in unresolved))
+    if not args.quiet:
+        for ns in unresolved:
+            print('warning: name server %s: %s; reported UNREACHABLE' % (ns.label, _plain(ns.detail)), file=err)
 
     tty = not args.quiet and hasattr(err, 'isatty') and err.isatty()
 

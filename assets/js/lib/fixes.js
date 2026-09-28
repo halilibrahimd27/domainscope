@@ -1964,13 +1964,21 @@ export function caaFixFromIssuers(base, issuers) {
     if (ca && !known.includes(ca.id)) known.push(ca.id);
     else if (!ca && ds[0] && !domains.includes(ds[0])) domains.push(ds[0]);
   }
-  const input = { ...base.input, cas: known };
-  let request = buildChange('caa', input, { current: null });
+  let input = { ...base.input, cas: known };
+  // What the report read at the name (no CAA set): the change still adds, never "replaces what was not read".
+  const current = {};
+  for (const r of arr(base.request && base.request.rrsets)) {
+    if (r.before) current[`${r.name}|${r.type}`] = { status: r.before.length ? 'ok' : 'nodata', values: r.before, ttl: null, cname: null };
+  }
+  let request = buildChange('caa', input, { current });
   if (domains.length && request.rrsets.length) {
     const r = request.rrsets[0];
     const extra = domains.map((d) => ({ flags: 0, tag: 'issue', value: d }));
     const values = [...r.values.filter((v) => !(v.tag === 'issue' && v.value === ';')), ...extra];
     request = { ...request, rrsets: [rrset({ ...r, values })], problems: request.problems.filter((p) => p.key !== 'fix.p.caa-none') };
+    // A CA the form does not list: the edit link opens the plain-record template with every value.
+    input = { name: r.name, type: 'CAA', action: 'set', values: values.map((v) => valueText('CAA', v)).join('\n'), zone: base.input.zone || '' };
+    return { ...base, template: 'record', input, request, needsCt: false };
   }
   return { ...base, input, request, needsCt: false };
 }

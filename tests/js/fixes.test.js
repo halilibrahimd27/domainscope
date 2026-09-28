@@ -613,8 +613,15 @@ describe('fixes of Domain Health checks', () => {
     const done = caaFixFromIssuers(f, [{ caaDomains: ['letsencrypt.org'] }, { caaDomains: ['pki.goog'] }, { caaDomains: ['ca.example.net'] }, { caaDomains: ['letsencrypt.org'] }]);
     assert.equal(done.needsCt, false);
     assert.deepEqual(done.request.rrsets[0].values.map((v) => v.value), ['letsencrypt.org', 'pki.goog', 'ca.example.net']);
-    assert.deepEqual(done.input.cas, ['letsencrypt', 'google']);
     assert.ok(!done.request.problems.some((p) => p.key === 'fix.p.caa-none'));
+    // The report read no CAA set there: the fix adds one (no "not read" in any format).
+    assert.deepEqual([done.request.rrsets[0].before, rrsetAction(done.request.rrsets[0])], [[], 'add']);
+    assert.deepEqual(formatNotes(done.request, 'route53'), []);
+    // A CA the form does not list: the edit link opens the plain record with every value.
+    assert.deepEqual([done.template, done.input.name, done.input.type], ['record', 'example.com', 'CAA']);
+    assert.deepEqual(buildChange('record', done.input).rrsets[0].values, done.request.rrsets[0].values, 'the edit link builds the same set');
+    const known = caaFixFromIssuers(f, [{ caaDomains: ['letsencrypt.org'] }, { caaDomains: ['pki.goog'] }]);
+    assert.deepEqual([known.template, known.input.cas, rrsetAction(known.request.rrsets[0])], ['caa', ['letsencrypt', 'google'], 'add']);
   });
 
   test('mx.none: the mail lock-down without the CAA part; checks without a fix give null', () => {

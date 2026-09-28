@@ -2,8 +2,8 @@
 <feedback>
   <report_metadata>
     <org_name>google.com</org_name>
-    <email>noreply-dmarc-support@google.com</email>
-    <extra_contact_info>https://support.google.com/a/answer/2466580</extra_contact_info>
+    <email>noreply-dmarc-support@example.org</email>
+    <extra_contact_info>https://support.example.org/a/answer/2466580</extra_contact_info>
     <report_id>4271836590127734456</report_id>
     <date_range>
       <begin>1790380800</begin>

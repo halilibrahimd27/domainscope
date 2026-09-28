@@ -76,7 +76,8 @@ builder's output). The shared DER encoder of both generators is `der-builder.mjs
 Mail reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/zipread.js, the `reports` E2E suite): `mailreports/src/`
 holds hand-written reports in the formats reporters send, with documentation data only — a Google-style
 and a Microsoft-style DMARC aggregate report for `example.com`, a DMARCbis-style one (the `dmarc-2.0`
-namespace) for `example.net`, and a Google- and a Microsoft-style TLS-RPT report. `mailreports/gen_mailreports.py`
+namespace) for `example.net`, and a Google- and a Microsoft-style TLS-RPT report. The reporters keep their
+organisation names; their contact addresses and pages are under `example.org`. `mailreports/gen_mailreports.py`
 packs them with Python's own `zipfile` and `gzip` (so the zip reader is tested against archives another
 implementation wrote): the Google report as a `.zip`, the Microsoft one as `.xml.gz`, the TLS reports as
 `.json.gz`, `reports-2026-09.zip` (a mailbox export: those files stored, a `notes.txt` that is no report and

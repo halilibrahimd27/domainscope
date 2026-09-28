@@ -4,7 +4,7 @@
     "start-datetime": "2026-09-26T00:00:00Z",
     "end-datetime": "2026-09-26T23:59:59Z"
   },
-  "contact-info": "smtp-tls-reporting@google.com",
+  "contact-info": "smtp-tls-reporting@example.org",
   "report-id": "2026-09-26T00:00:00Z_example.com",
   "policies": [
     {

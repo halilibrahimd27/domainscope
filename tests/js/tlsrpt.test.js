@@ -29,7 +29,7 @@ describe('parseTlsReport — RFC 8460 §4.4', () => {
     const r = read(GOOGLE);
     assert.equal(r.kind, 'tlsrpt');
     assert.equal(r.org, 'Google Inc.');
-    assert.equal(r.contact, 'smtp-tls-reporting@google.com');
+    assert.equal(r.contact, 'smtp-tls-reporting@example.org');
     assert.equal(r.reportId, '2026-09-26T00:00:00Z_example.com');
     assert.equal(r.key, 'google inc.|2026-09-26T00:00:00Z_example.com');
     assert.equal(r.begin.toISOString(), '2026-09-26T00:00:00.000Z');

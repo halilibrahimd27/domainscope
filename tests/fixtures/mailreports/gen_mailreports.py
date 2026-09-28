@@ -3,7 +3,8 @@
 
 The report bodies in src/ are hand-written after the real formats (a Google and a Microsoft
 DMARC aggregate report, a DMARCbis-style one, a Google and a Microsoft TLS-RPT report) with
-documentation data only. This script packs them with Python's own zipfile and gzip modules, so
+documentation data only: the reporters keep their organisation names, their contacts are under
+example.org. This script packs them with Python's own zipfile and gzip modules, so
 lib/zipread.js is tested against archives another implementation wrote:
 
   google.com!example.com!....zip        deflate, like Google's aggregate reports

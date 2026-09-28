@@ -212,8 +212,8 @@ describe('parseAggregateReport — RFC 7489 Appendix C', () => {
     const r = report(GOOGLE_XML);
     assert.equal(r.kind, 'dmarc');
     assert.equal(r.org, 'google.com');
-    assert.equal(r.email, 'noreply-dmarc-support@google.com');
-    assert.equal(r.extraContact, 'https://support.google.com/a/answer/2466580');
+    assert.equal(r.email, 'noreply-dmarc-support@example.org');
+    assert.equal(r.extraContact, 'https://support.example.org/a/answer/2466580');
     assert.equal(r.reportId, '4271836590127734456');
     assert.equal(r.key, 'google.com|4271836590127734456');
     assert.equal(r.begin.toISOString(), '2026-09-26T00:00:00.000Z');

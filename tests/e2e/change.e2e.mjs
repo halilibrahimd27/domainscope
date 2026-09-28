@@ -19,7 +19,8 @@
  * with the negative TTL waited for, no answer), the next check never before a cached answer
  * expires, Check now after the change reaches the lagging resolver, "done on every resolver that
  * answered", then done everywhere and the loop stopped; a check with the old value known (not yet
- * vs wrong value), Esc stops it, Check again; a language switch that resumes the check without
+ * vs wrong value), Esc stops it, Check again; no resolver answering at all (said so after the
+ * first round, stopped as failed after three); a language switch that resumes the check without
  * asking again; a link that cannot be read (nothing sent); 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
@@ -275,7 +276,30 @@ async function main() {
       await shot(page, opts, 'change-check-done-desktop-light-en');
     });
 
+    await run.step('no resolver answers at all: said after the first round, stopped as failed after three; Check again recovers', async () => {
+      await page.evaluate(() => { for (const r of ['cloudflare', 'google', 'dnssb', 'cznic']) window.__dns.views[r] = { _status: 500 }; window.__dns.log.length = 0; });
+      await openCheck(page, 'z=example.com&r=is+shop+A+203.0.113.7');
+      let info = await checkInfo(page);
+      assertEqual([info.headline, info.state], ['no-answer', 'waiting'], 'no answer yet, asking again');
+      assert(/No resolver answered for 1 record set/.test(await text(page, '.chg-check-head-wrap')), 'the headline says so');
+      for (const round of ['2', '3']) {
+        await page.click('[data-action="check-now"]');
+        await page.waitFor((r) => { const v = document.querySelector('[data-page="check"]'); return v.dataset.round === r && v.dataset.state !== 'running'; },
+          { args: [round], message: `round ${round}`, timeout: 10000 });
+      }
+      info = await checkInfo(page);
+      assertEqual([info.headline, info.state, info.nextAt], ['no-answer', 'failed', null], 'stopped as failed, not done');
+      assert(/Stopped: no answer in three rounds in a row/.test(await text(page, '.chg-stopped')), 'the stop is explained');
+      assert(await page.evaluate(() => !document.querySelector('[data-action="check-again"]').hidden), 'Check again offered');
+      assertEqual((await dnsLog(page)).length, 12, '3 rounds × 4 resolvers');
+      await shot(page, opts, 'change-check-failed-desktop-light-en');
+      await page.evaluate(() => { window.__dns.views = { google: {} }; });
+      await page.click('[data-action="check-again"]');
+      await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'done after Check again', timeout: 10000 });
+    });
+
     await run.step('a language switch keeps the answers and asks nothing again', async () => {
+      await openCheck(page, wrongQuery);
       const before = (await dnsLog(page)).length;
       await setLangUi(page, 'tr');
       await page.waitFor(() => /Tamam: tüm çözümleyiciler/.test(document.querySelector('.chg-check-head-wrap')?.textContent || ''), { message: 'Turkish headline' });

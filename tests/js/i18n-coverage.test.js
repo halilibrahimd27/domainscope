@@ -310,6 +310,15 @@ describe('i18n coverage', () => {
     // Certificate › PEM & OpenSSL › Does this CSR match?: why a pasted text is not a CSR.
     const x509 = await imp('assets/js/lib/x509.js');
     for (const e of x509.CSR_ERRORS) add(`cert.csr.err.${e}`);
+    // DNS change request › the check page (lib/changecheck.js through views/change.js): every
+    // headline, every stop the page words (the user's too), verdict, reason not done yet and error kind.
+    const cc = await imp('assets/js/lib/changecheck.js');
+    for (const hk of cc.CHECK_HEADLINES) add(`chg.check.head.${hk}`);
+    for (const s of [...cc.CHECK_STOPS.filter((x) => x !== 'done'), 'user']) add(`chg.check.stop.${s}`);
+    for (const v of [...cc.CHECK_VERDICTS.filter((x) => x !== 'pending'), 'waiting']) add(`chg.check.v.${v}`);
+    for (const r of cc.PENDING_REASONS) add(`chg.check.p.${r}`);
+    for (const m of ['is', 'has', 'none']) add(`chg.check.mode.${m}`);
+    for (const e of ['too-long', 'too-many', 'version', 'zone', 'empty', 'set']) add(`chg.check.bad.${e}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

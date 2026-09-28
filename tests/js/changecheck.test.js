@@ -3,8 +3,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CHECK_RESOLVERS, CHECK_LIMITS, CHECK_TIMING, CHECK_VERDICTS, PENDING_REASONS, checkFromRequest, encodeCheck, decodeCheck, linkEncode,
-  judgeAnswer, checkRound, checkState, nextCheck, pairKey
+  CHECK_RESOLVERS, CHECK_LIMITS, CHECK_TIMING, CHECK_VERDICTS, CHECK_HEADLINES, CHECK_STOPS, PENDING_REASONS, checkFromRequest, encodeCheck,
+  decodeCheck, linkEncode, judgeAnswer, checkRound, checkState, nextCheck, pairKey
 } from '../../assets/js/lib/changecheck.js';
 import { buildChange, changeRequest, normalizeValue } from '../../assets/js/lib/fixes.js';
 import { CASES, caseRequest } from '../fixtures/fixes/gen-fixes-golden.mjs';
@@ -174,7 +174,39 @@ describe('rounds, state and timing', () => {
     assert.equal(checkState(check, all('done', 'cznic')).headline, 'done-partial');
     assert.ok(checkState(check, all('done', 'cznic')).settled);
     assert.equal(checkState(check, all('wrong')).headline, 'wrong');
-    assert.equal(checkState(check, all('error')).headline, 'unknown', 'nobody answered');
+    assert.equal(checkState(check, all('error')).headline, 'no-answer', 'nobody answered');
+    const oneSet = new Map([...all('done')].map(([k, v]) => [k, k.startsWith('1|') ? { ...v, verdict: 'error' } : v]));
+    const st = checkState(check, oneSet);
+    assert.deepEqual([st.headline, st.sets.map((s) => s.state)], ['no-answer', ['done', 'unknown']], 'one set with no answer at all');
+    const waiting = new Map([[pairKey(0, 'cloudflare'), { verdict: 'error' }]]);
+    assert.equal(checkState(check, waiting).headline, 'unknown', 'still asking');
+    assert.ok(CHECK_HEADLINES.includes('no-answer'));
+  });
+
+  test('nextCheck: no answer from any resolver three rounds in a row stops as failed, never as done', async () => {
+    const t0 = 7_000_000;
+    // A DohClient that always fails (DoH blocked by a firewall, offline mid-check, rate-limited everywhere).
+    const down = { async query() { return { ok: false, errorKind: 'network' }; } };
+    const latest = new Map();
+    let errorRounds = 0;
+    let n = null;
+    for (let round = 1; round <= 3; round++) {
+      const out = await checkRound(check, { dns: down, only: n ? new Set(n.pairs) : null, now: () => t0 + round * 1000 });
+      for (const r of out) latest.set(pairKey(r.set, r.resolver), r);
+      errorRounds = out.some((r) => r.verdict === 'error') ? errorRounds + 1 : 0;
+      n = nextCheck({ latest, check, round, startedAt: t0, now: t0 + round * 1000, errorRounds });
+      assert.equal(checkState(check, latest).headline, 'no-answer', `round ${round}`);
+      if (round < 3) assert.deepEqual([n.stop, n.pairs.length], [null, 8], `round ${round}: asked again`);
+    }
+    assert.deepEqual([n.stop, n.at, n.pairs], ['failed', null, []]);
+    assert.ok(CHECK_STOPS.includes('failed'));
+    // Every resolver failed for one set, the other is done: failed too.
+    const mixed = new Map(check.sets.flatMap((_, s) => CHECK_RESOLVERS.map((r) => [pairKey(s, r), { verdict: s === 1 ? 'error' : 'done', at: t0 }])));
+    assert.equal(nextCheck({ latest: mixed, check, round: 3, startedAt: t0, now: t0, errorRounds: 3 }).stop, 'failed');
+    // One resolver failed for both sets, the others answered: done (the headline says done-partial).
+    const partial = new Map(check.sets.flatMap((_, s) => CHECK_RESOLVERS.map((r) => [pairKey(s, r), { verdict: r === 'cznic' ? 'error' : 'done', at: t0 }])));
+    assert.equal(nextCheck({ latest: partial, check, round: 3, startedAt: t0, now: t0, errorRounds: 3 }).stop, 'done');
+    assert.equal(checkState(check, partial).headline, 'done-partial');
   });
 
   test('nextCheck: a growing backoff, never before a cached copy expires, and a stop', () => {

@@ -16,7 +16,8 @@
  * (lib/changecheck.js), which holds nothing else. Four public resolvers are asked for each record;
  * each answer reads done, not yet or wrong value. The page asks again with a growing wait, never
  * before a resolver's cached answer can have expired, and stops when every record is done, after
- * two hours, or when nothing can change before then (a long TTL). Stop / Check now / Check again.
+ * two hours, when nothing can change before then (a long TTL), or when a record had no answer
+ * from any resolver three rounds in a row (and says so). Stop / Check now / Check again.
  *
  * Shareable: `#/change?t=caa&domain=example.com&cas=letsencrypt` opens a form (the "Edit in DNS
  * change request" of Domain Health and Zone File); a carried target fills the domain
@@ -70,9 +71,11 @@ registerStrings('en', {
   'chg.check.head.done-partial': { one: 'Done on every resolver that answered; {count} resolver did not answer.', other: 'Done on every resolver that answered; {count} resolvers did not answer.' },
   'chg.check.head.wrong': 'A resolver serves a value that is neither the new nor the old one: check what was published.',
   'chg.check.head.pending': { one: 'Not live everywhere yet: {done} of {count} record set done.', other: 'Not live everywhere yet: {done} of {count} record sets done.' },
+  'chg.check.head.no-answer': { one: 'No resolver answered for {count} record set, so whether it is live is not known.', other: 'No resolver answered for {count} record sets, so whether they are live is not known.' },
   'chg.check.head.unknown': 'Asking the resolvers…',
   'chg.check.stop.timeout': 'Stopped after two hours. Check again when the change has been made.',
   'chg.check.stop.cached': 'Stopped: the resolvers that are not done yet keep their cached answer until {time}, so asking before then shows nothing new.',
+  'chg.check.stop.failed': 'Stopped: no answer in three rounds in a row. DNS-over-HTTPS may be blocked on this network, the connection may be down, or the zone’s name servers may be failing (SERVFAIL). Check again once that is fixed.',
   'chg.check.stop.user': 'Stopped.',
   'chg.check.checked': 'Checked {time}',
   'chg.check.next': 'Next check in {wait}',
@@ -135,9 +138,11 @@ registerStrings('tr', {
   'chg.check.head.done-partial': 'Yanıt veren tüm çözümleyicilerde tamam; {count} çözümleyici yanıt vermedi.',
   'chg.check.head.wrong': 'Bir çözümleyici ne yeni ne de eski olan bir değer döndürüyor: yayınlananı kontrol edin.',
   'chg.check.head.pending': 'Henüz her yerde yayında değil: {count} kayıt kümesinden {done} tanesi tamam.',
+  'chg.check.head.no-answer': '{count} kayıt kümesi için hiçbir çözümleyici yanıt vermedi; yayında olup olmadığı bilinmiyor.',
   'chg.check.head.unknown': 'Çözümleyicilere soruluyor…',
   'chg.check.stop.timeout': 'İki saat sonra durduruldu. Değişiklik yapıldığında yeniden kontrol edin.',
   'chg.check.stop.cached': 'Durduruldu: henüz tamamlanmayan çözümleyiciler önbellekteki yanıtlarını {time} saatine kadar tutar; o zamandan önce sormak yeni bir şey göstermez.',
+  'chg.check.stop.failed': 'Durduruldu: art arda üç turda yanıt yok. Bu ağda DNS-over-HTTPS engellenmiş, bağlantı kopmuş ya da zone’un ad sunucuları hata veriyor (SERVFAIL) olabilir. Bu düzelince yeniden kontrol edin.',
   'chg.check.stop.user': 'Durduruldu.',
   'chg.check.checked': 'Kontrol: {time}',
   'chg.check.next': 'Sonraki kontrol {wait} sonra',
@@ -490,7 +495,7 @@ function mountBuilder(container, ctx) {
 /* --- the check page --------------------------------------------------------------- */
 
 const VERDICT_BADGE = Object.freeze({ done: ['ok', 'check-circle'], pending: ['warn', 'clock'], wrong: ['error', 'x-circle'], error: ['neutral', 'help'], waiting: ['neutral', 'clock'] });
-const HEAD_VARIANT = Object.freeze({ done: 'ok', 'done-partial': 'ok', wrong: 'error', pending: 'warn', unknown: 'info' });
+const HEAD_VARIANT = Object.freeze({ done: 'ok', 'done-partial': 'ok', wrong: 'error', pending: 'warn', 'no-answer': 'warn', unknown: 'info' });
 
 function mountCheck(container, ctx) {
   const { t } = ctx;
@@ -596,7 +601,9 @@ function mountCheck(container, ctx) {
     clear(headEl);
     const doneSets = st.sets.filter((s) => s.state === 'done').length;
     const params = { count: check.sets.length, done: doneSets };
-    if (st.headline === 'done-partial') params.count = CHECK_RESOLVERS.filter((rid) => check.sets.every((_, i) => { const r = memo.latest.get(pairKey(i, rid)); return r && r.verdict === 'error'; })).length || 1;
+    // done-partial: the resolvers that failed for at least one set; no-answer: the sets no resolver answered for.
+    if (st.headline === 'done-partial') params.count = CHECK_RESOLVERS.filter((rid) => check.sets.some((_, i) => (memo.latest.get(pairKey(i, rid)) || {}).verdict === 'error')).length;
+    if (st.headline === 'no-answer') params.count = st.sets.filter((s) => !s.counts.done).length;
     const headline = Alert({ variant: HEAD_VARIANT[st.headline], compact: true, message: t(`chg.check.head.${st.headline}`, params) });
     headline.dataset.headline = st.headline;
     headEl.append(headline);

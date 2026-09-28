@@ -15,7 +15,8 @@
  * - {@link checkRound} asks {@link CHECK_RESOLVERS} (names and types only, never cached here);
  *   {@link nextCheck} decides when asking again is worth it: a backoff from 15 s up to 5 min, never
  *   before a resolver's cached copy (its TTL, or the negative TTL of the SOA) can have expired, and
- *   a stop after two hours, or once nothing can change before then.
+ *   a stop after two hours, once nothing can change before then, or once a record set has had no
+ *   answer from any resolver three rounds in a row (`failed`).
  *
  * DOM-free, no I/O of its own (an injected DohClient); runs in browsers and Node 22.
  */
@@ -38,10 +39,10 @@ export const CHECK_LIMITS = Object.freeze({ rrsets: 20, values: 40, chars: 4000 
 export const CHECK_VERDICTS = Object.freeze(['done', 'pending', 'wrong', 'error']);
 /** Why a set is not done yet on a resolver. */
 export const PENDING_REASONS = Object.freeze(['missing', 'old', 'other', 'partial', 'ttl', 'present']);
-/** Headlines of a check. */
-export const CHECK_HEADLINES = Object.freeze(['done', 'done-partial', 'wrong', 'pending', 'unknown']);
-/** When a stopped check stopped by itself. */
-export const CHECK_STOPS = Object.freeze(['done', 'timeout', 'cached']);
+/** Headlines of a check (`no-answer`: every pair has answered or failed, and a set got no answer at all). */
+export const CHECK_HEADLINES = Object.freeze(['done', 'done-partial', 'wrong', 'pending', 'no-answer', 'unknown']);
+/** When a stopped check stopped by itself (`failed`: a set had no answer from any resolver, three rounds in a row). */
+export const CHECK_STOPS = Object.freeze(['done', 'timeout', 'cached', 'failed']);
 /**
  * Re-check timing (ms): the first wait `base`, then × `factor` per round up to `max`; a check
  * stops `stopAfter` after it started. A resolver's cached copy is waited for up to `maxTtlWait`.
@@ -278,7 +279,8 @@ export async function checkRound(check, { dns, resolvers = CHECK_RESOLVERS, only
  * @returns {{ headline: string, counts: Record<string, number>, sets: Array<{ state: string, counts: Record<string, number> }>,
  *   settled: boolean, answered: number, pairs: number }}
  *   `settled`: no pair is pending or wrong (errors aside); set state: done (every resolver that
- *   answered), wrong, pending, unknown (nothing answered yet)
+ *   answered), wrong, pending, unknown (nothing answered yet, or every resolver failed); headline
+ *   `no-answer` once every pair has answered or failed and a set got no answer at all
  */
 export function checkState(check, latest, resolvers = CHECK_RESOLVERS) {
   const get = (k) => (latest instanceof Map ? latest.get(k) : latest && latest[k]) || null;
@@ -302,17 +304,19 @@ export function checkState(check, latest, resolvers = CHECK_RESOLVERS) {
   if (counts.wrong) headline = 'wrong';
   else if (counts.pending || (counts.waiting && counts.done)) headline = 'pending';
   else if (settled && sets.every((s) => s.counts.done > 0)) headline = counts.error ? 'done-partial' : 'done';
+  else if (settled) headline = 'no-answer';
   return { headline, counts, sets, settled, answered: pairs - counts.error - counts.waiting, pairs };
 }
 
 /**
  * When to ask again, and which pairs: never sooner than the backoff of this round, and a pair only
  * once its resolver's cached copy can have expired (its TTL after it answered, at most
- * `maxTtlWait`). Stops when every pair is settled, `stopAfter` after the start, or when no pair can
- * change before then.
+ * `maxTtlWait`). Stops when every pair is settled (`done`; a pair that failed three rounds in a row
+ * is given up), `stopAfter` after the start, when no pair can change before then (`cached`), or
+ * (`failed`) when what was given up leaves a set with no answer from any resolver.
  * @param {{ latest: Map<string, PairResult>, check: ExpectedCheck, round: number, startedAt: number, now: number,
  *   resolvers?: string[], timing?: typeof CHECK_TIMING, errorRounds?: number }} state
- * @returns {{ stop: 'done'|'timeout'|'cached'|null, at: number|null, pairs: string[], cachedUntil: number|null }}
+ * @returns {{ stop: 'done'|'timeout'|'cached'|'failed'|null, at: number|null, pairs: string[], cachedUntil: number|null }}
  *   `at`: when to run the next round (ms epoch); `pairs`: the pairs it asks; `cachedUntil`: the
  *   latest time a resolver's copy of an old answer expires (for the 'cached' stop)
  */
@@ -321,19 +325,27 @@ export function nextCheck({ latest, check, round, startedAt, now, resolvers = CH
   const deadline = startedAt + timing.stopAfter;
   const open = [];
   let cachedUntil = null;
+  let givenUp = 0;
   check.sets.forEach((_, set) => {
     for (const r of resolvers) {
       const k = pairKey(set, r);
       const res = get(k);
       if (res && res.verdict === 'done') continue;
-      if (res && res.verdict === 'error' && errorRounds >= 3) continue;
+      if (res && res.verdict === 'error' && errorRounds >= 3) {
+        givenUp += 1;
+        continue;
+      }
       const wait = res && res.verdict !== 'error' && Number.isFinite(res.ttl) ? Math.min(res.ttl * 1000, timing.maxTtlWait) : 0;
       const ready = res ? res.at + wait + (wait ? 1000 : 0) : now;
       if (wait) cachedUntil = Math.max(cachedUntil ?? 0, ready);
       open.push({ k, ready });
     }
   });
-  if (!open.length) return { stop: 'done', at: null, pairs: [], cachedUntil: null };
+  if (!open.length) {
+    // Nothing left to ask: done, unless a set was left with no answer at all (DoH blocked, offline, rate-limited, SERVFAIL).
+    const unanswered = givenUp > 0 && check.sets.some((_, set) => !resolvers.some((r) => (get(pairKey(set, r)) || {}).verdict === 'done'));
+    return { stop: unanswered ? 'failed' : 'done', at: null, pairs: [], cachedUntil: null };
+  }
   if (now >= deadline) return { stop: 'timeout', at: null, pairs: [], cachedUntil };
   const soonest = Math.min(...open.map((p) => p.ready));
   if (soonest > deadline) return { stop: 'cached', at: null, pairs: [], cachedUntil };

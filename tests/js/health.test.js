@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   domainHealth, applyRdap, parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, parseDkim, rsaKeyBits,
-  spfLookupCount, spfEvaluate, spfMxHosts, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa,
+  spfLookupCount, spfEvaluate, spfMxHosts, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, SPF_PERMERROR_REASONS, caaDomainsForIssuer, caaIssuerInfo, checkCaaAllows, findCaa,
   caaRestrictionNotes, caaRestrictionText,
   DEFAULT_DKIM_SELECTORS, HEALTH_I18N, HEALTH_CHECK_IDS, HEALTH_CATEGORIES, SPF_LOOKUP_LIMIT, MAIL_FCRDNS_MAX, LOOKUP_FAILED_PARAM,
   ACME_VALIDATION_METHODS, CAA_PROBLEMS, CAA_NOTES, CAA_REASONS
@@ -958,6 +958,50 @@ test('spfEvaluate: none, permerror (syntax, an include without SPF, a loop, too 
   assert.equal((await res('down.example.org')).result, 'pass');
   const d = await res('down.example.org', '198.51.100.1');
   assert.deepEqual([d.result, d.reason, d.term], ['unknown', 'lookup-failed', 'include:gone.example.org']);
+});
+
+test('spfEvaluate: the RFC 7208 limits — the 11th DNS lookup and the 3rd void lookup before a match are a permerror; strict: false asks what the record lists', async () => {
+  const zone = {
+    // eleven includes: the 11th lookup is past the limit, whether it would match or not
+    'many.example.com': { TXT: [`v=spf1 ${Array.from({ length: 11 }, (_, i) => `include:s${i}.example.net`).join(' ')} -all`] },
+    // lookups inside an include and a redirect count too: a, include (2), its 3 a (5), redirect (6), 4 a (10), then mx is the 11th
+    'deep.example.com': { TXT: ['v=spf1 a:h1.example.org include:d2.example.org redirect=d3.example.org'] },
+    'd2.example.org': { TXT: ['v=spf1 a:h1.example.org a:h1.example.org a:h1.example.org -all'] },
+    'd3.example.org': { TXT: ['v=spf1 a:h1.example.org a:h1.example.org a:h1.example.org a:h1.example.org mx:h1.example.org ip4:192.0.2.50 -all'] },
+    'h1.example.org': { A: ['198.51.100.99'], MX: [{ preference: 1, exchange: 'h1.example.org' }] },
+    // three lookups that find nothing in front of the match
+    'void.example.com': { TXT: ['v=spf1 a:v1.example.com mx:v2.example.com exists:v3.example.com ip4:192.0.2.1 -all'] },
+    'two.example.com': { TXT: ['v=spf1 a:v1.example.com a:v2.example.com ip4:192.0.2.1 -all'] },
+    // an IPv6-only host is a void lookup for an IPv4 sender (a receiver asks A), not for an IPv6 one
+    'fam.example.com': { TXT: ['v=spf1 a:v6.example.com a:v1.example.com a:v2.example.com ip4:192.0.2.1 ip6:2001:db8::/32 -all'] },
+    'v6.example.com': { AAAA: ['2001:db8:66::1'] },
+    'broken.example.com': { TXT: ['v=spf1 ip4:203.0.113.25 foo:bar -all'] }
+  };
+  for (let i = 0; i < 11; i += 1) zone[`s${i}.example.net`] = { TXT: [`v=spf1 ip4:198.51.100.${i} -all`] };
+  const dns = fakeDns(zone);
+  const tree = async (d) => (await spfLookupCount(d, { dns })).tree;
+  const brief = (v) => [v.result, v.reason, v.term];
+  const many = await tree('many.example.com');
+  assert.deepEqual(brief(spfEvaluate(many, '198.51.100.0')), ['pass', null, 'ip4:198.51.100.0'], 'the 1st include: well within');
+  assert.deepEqual(brief(spfEvaluate(many, '198.51.100.9')), ['pass', null, 'ip4:198.51.100.9'], 'the 10th lookup still counts');
+  assert.deepEqual(brief(spfEvaluate(many, '198.51.100.10')), ['permerror', 'lookup-limit', 'include:s10.example.net'], 'listed only in the 11th');
+  assert.deepEqual(brief(spfEvaluate(many, '192.0.2.200')), ['permerror', 'lookup-limit', 'include:s10.example.net'], 'no -all is ever reached');
+  assert.deepEqual(brief(spfEvaluate(many, '198.51.100.10', { strict: false })), ['pass', null, 'ip4:198.51.100.10'], 'what the record lists');
+  const deep = await tree('deep.example.com');
+  assert.deepEqual(brief(spfEvaluate(deep, '192.0.2.50')), ['permerror', 'lookup-limit', 'mx:h1.example.org'], 'counted across include and redirect');
+  assert.equal(spfEvaluate(deep, '198.51.100.99').result, 'pass', 'the first a matches');
+  assert.deepEqual(brief(spfEvaluate(await tree('void.example.com'), '192.0.2.1')), ['permerror', 'void-limit', 'exists:v3.example.com']);
+  assert.equal(spfEvaluate(await tree('void.example.com'), '192.0.2.1', { strict: false }).result, 'pass');
+  assert.equal(spfEvaluate(await tree('two.example.com'), '192.0.2.1').result, 'pass', 'two void lookups are allowed');
+  const fam = await tree('fam.example.com');
+  assert.deepEqual(brief(spfEvaluate(fam, '192.0.2.1')), ['permerror', 'void-limit', 'a:v2.example.com'], 'no A for an IPv4 sender');
+  assert.equal(spfEvaluate(fam, '2001:db8::5').result, 'pass', 'v6.example.com answers AAAA: two voids only');
+  const broken = await tree('broken.example.com');
+  assert.deepEqual(brief(spfEvaluate(broken, '203.0.113.25')), ['permerror', 'syntax', null]);
+  assert.deepEqual(brief(spfEvaluate(broken, '203.0.113.25', { strict: false })), ['pass', null, 'ip4:203.0.113.25'], 'past the syntax error');
+  assert.equal(spfEvaluate(broken, '192.0.2.9', { strict: false }).result, 'fail');
+  assert.deepEqual(SPF_PERMERROR_REASONS, ['syntax', 'multiple-records', 'no-record', 'loop', 'depth', 'too-many-mx', 'lookup-limit', 'void-limit']);
+  assert.ok(Object.isFrozen(SPF_PERMERROR_REASONS));
 });
 
 test('SPF checks in domainHealth: missing, multiple, +all, ?all, ~all, no all, syntax', async () => {

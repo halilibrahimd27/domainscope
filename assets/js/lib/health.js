@@ -628,6 +628,13 @@ export function spfMxHosts(tree) {
 export const SPF_EVAL_RESULTS = Object.freeze(['pass', 'fail', 'softfail', 'neutral', 'none', 'permerror', 'temperror', 'unknown']);
 /** Why {@link spfEvaluate} says `unknown`. */
 export const SPF_UNKNOWN_REASONS = Object.freeze(['macro', 'ptr', 'lookup-failed', 'skipped']);
+/**
+ * Why {@link spfEvaluate} says `permerror`: a syntax error in a record, several SPF records, an
+ * include or redirect to a domain without SPF, a loop, the depth guard, an `mx` with more than 10
+ * hosts, more than {@link SPF_LOOKUP_LIMIT} DNS-querying terms or {@link SPF_VOID_LIMIT} void
+ * lookups on the way to the decision (RFC 7208 §4.6.4).
+ */
+export const SPF_PERMERROR_REASONS = Object.freeze(['syntax', 'multiple-records', 'no-record', 'loop', 'depth', 'too-many-mx', 'lookup-limit', 'void-limit']);
 
 const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfail', '?': 'neutral' });
 
@@ -639,8 +646,8 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * @property {string|null} holder the domain whose record holds that term
  * @property {string[]} path the policies from the checked domain to the holder (include / redirect chain)
  * @property {{ host: string, address: string }|null} via an `a` / `mx` match: the host and its address
- * @property {string|null} reason for `unknown`: one of {@link SPF_UNKNOWN_REASONS}; for `permerror`: 'syntax',
- *   'multiple-records', 'no-record' (an include or redirect to a domain without SPF), 'loop', 'depth', 'too-many-mx'
+ * @property {string|null} reason for `unknown`: one of {@link SPF_UNKNOWN_REASONS}; for `permerror`: one of
+ *   {@link SPF_PERMERROR_REASONS}
  */
 
 /**
@@ -650,19 +657,31 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * policy passes, a `redirect` hands the whole result over, and nothing matching is `neutral`.
  * `mx` mechanisms need their hosts' addresses (`mxAddresses`, from {@link spfMxHosts}).
  *
+ * The processing limits of RFC 7208 §4.6.4 hold across includes and redirects, in the order a
+ * receiver meets the terms: the 11th DNS-querying term (include, a, mx, ptr, exists, redirect)
+ * or the 3rd void lookup (an `a` with no address of the sender's family, an `mx` or `exists`
+ * with no answer) before a match is `permerror` ('lookup-limit', 'void-limit'), so a sender listed
+ * only past the 10th lookup does not pass. `strict: false` answers another question, what the
+ * record means to authorize: the limits are not applied and a record's syntax error is passed over
+ * (the terms that could be read are tried), so a caller can tell whom a broken record lists.
+ *
  * Honest about what a browser cannot see: a term that needs the sender (`%{i}`, `%{s}` …), `ptr`,
  * or a lookup that failed here (our resolver, not the receiver's) cannot be told. The evaluation
  * goes on past it, and its result stands when the undecided term could only have given the same
  * result had it matched (a `+ptr` in front of the `+ip4` that matches); otherwise it is `unknown`.
  * @param {SpfNode|null} tree `spfLookupCount().tree`
  * @param {string} ip
- * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null }> }} [opts]
+ * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null }>, strict?: boolean }} [opts]
  * @returns {SpfVerdict}
  */
-export function spfEvaluate(tree, ip, { mxAddresses = new Map() } = {}) {
+export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true } = {}) {
   const addr = normalizeIP(ip);
   const verdict = (result, extra = {}) => ({ result, term: null, holder: null, path: [], via: null, reason: null, ...extra });
   if (!tree || !addr) return verdict('unknown', { reason: 'lookup-failed' });
+  const family = ipVersion(addr);
+  // RFC 7208 §4.6.4, counted over the whole evaluation: includes and redirects share them.
+  let lookups = 0;
+  let voids = 0;
   const inRange = (address, v4, v6) => {
     const v = ipVersion(address);
     if (!v) return false;
@@ -682,7 +701,7 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map() } = {}) {
       if (own('no-record')) return verdict('none', { holder: node.domain, path });
       return verdict('unknown', { holder: node.domain, path, reason: 'lookup-failed' });
     }
-    if (own('syntax')) return verdict('permerror', { holder: node.domain, path, reason: 'syntax' });
+    if (strict && own('syntax')) return verdict('permerror', { holder: node.domain, path, reason: 'syntax' });
     if (depth > 12) return verdict('permerror', { holder: node.domain, path, reason: 'depth' });
     const pending = [];
     const undecided = (t, reason, wouldGive = QUALIFIER_RESULT[t.qualifier] || 'pass') => {
@@ -693,8 +712,14 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map() } = {}) {
       const other = pending.find((p) => p.result !== v.result);
       return other ? other.verdict : v;
     };
+    /** Count a void lookup of a term that did not match; true for the one past the limit. */
+    const overVoid = () => strict && ++voids > SPF_VOID_LIMIT;
     for (const t of node.terms || []) {
       const q = QUALIFIER_RESULT[t.qualifier] || 'pass';
+      // The 11th DNS-querying term is a permerror before its query is made.
+      if (strict && (SPF_LOOKUP_MECHANISMS.has(t.mechanism) || t.mechanism === 'redirect') && ++lookups > SPF_LOOKUP_LIMIT) {
+        return decide(at(t, 'permerror', { reason: 'lookup-limit' }));
+      }
       switch (t.mechanism) {
         case 'all':
           return decide(at(t, q));
@@ -720,11 +745,18 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map() } = {}) {
           }
           if (t.mechanism === 'exists') {
             if (!t.void) return decide(at(t, q));
+            if (overVoid()) return decide(at(t, 'permerror', { reason: 'void-limit' }));
             break;
           }
           if (t.mechanism === 'a') {
             const hit = (t.addresses || []).find((a) => inRange(a, t.cidr4, t.cidr6));
             if (hit) return decide(at(t, q, { via: { host: t.target, address: normalizeIP(hit) } }));
+            // A receiver asks only the sender's family (A for IPv4, AAAA for IPv6): none of it is void.
+            if (!(t.addresses || []).some((a) => ipVersion(a) === family) && overVoid()) return decide(at(t, 'permerror', { reason: 'void-limit' }));
+            break;
+          }
+          if (t.void) {
+            if (overVoid()) return decide(at(t, 'permerror', { reason: 'void-limit' }));
             break;
           }
           let failed = false;

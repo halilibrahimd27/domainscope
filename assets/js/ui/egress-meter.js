@@ -5,10 +5,11 @@
  * followed and a request that got no answer; and a buffered PerformanceObserver on Resource
  * Timing for every request the browser made for the page, the app's files loaded before the
  * boot included. The wrapper passes the same arguments to the browser's fetch and returns its
- * answer or error unchanged. Browser only.
+ * answer or error unchanged. The notes the sending code gives (lib/egresslog.js noteRequest: what
+ * a POST body carried, a registry's RDAP server) are attached to the signatures here. Browser only.
  */
 
-import { createEgressLog } from '../lib/egresslog.js';
+import { createEgressLog, onRequestNote } from '../lib/egresslog.js';
 
 /** The page session's request log. */
 export const egressLog = createEgressLog();
@@ -23,7 +24,8 @@ const installed = { fetch: false, resourceTiming: false };
 export function startEgressMeter(win = globalThis) {
   if (installed.fetch || installed.resourceTiming) return { ...installed };
   const base = () => (win.location ? win.location.href : undefined);
-  const record = (url, via) => egressLog.record(url, { via, base: base() });
+  const record = (url, via, from = undefined) => egressLog.record(url, { via, base: base(), from });
+  onRequestNote((url, note) => egressLog.note(url, note, { base: base() }));
   const original = win.fetch;
   if (typeof original === 'function') {
     win.fetch = function fetch(input, init) {
@@ -38,7 +40,7 @@ export function startEgressMeter(win = globalThis) {
       }
       // A new promise with the same outcome: a rejection nobody handles is still reported as one.
       return Promise.resolve(pending).then((res) => {
-        if (res && res.redirected && typeof res.url === 'string' && res.url) record(res.url, 'redirect');
+        if (res && res.redirected && typeof res.url === 'string' && res.url) record(res.url, 'redirect', url);
         return res;
       }, (err) => {
         record(url, 'failed');

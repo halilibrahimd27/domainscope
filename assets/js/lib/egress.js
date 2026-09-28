@@ -6,7 +6,9 @@
  * says what each host is and what it got. The kinds are per endpoint where one service has
  * several (crt.sh receives domain names from a search, a serial number from the Certificate
  * view's lookup and a public-key hash from the key continuity check), so a row says what this
- * session really sent, not everything the service could get.
+ * session really sent, not everything the service could get. Where the URL cannot tell (one
+ * Globalping endpoint takes an address check and a host-name check alike), the sending code's
+ * note does (lib/egresslog.js noteRequest).
  *
  * The registry must name every endpoint the code can call: tests/js/egress.test.js scans the
  * sources for network call sites and URL literals and fails on one this registry does not
@@ -27,8 +29,9 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - nothing: a public list or a quota read (the IANA RDAP bootstrap, Globalping's free quota);
  * - dnsQuestions: DNS names and record types (a DoH question);
  * - domains: domain and host names searched or looked up;
- * - hostnames: host names a check from the internet connects to (Globalping);
- * - ipNamePairs: public IP address, host name and port together (SSL Targets › Verify);
+ * - hostnames: host names a check from the internet connects to (Globalping: Domain Health's
+ *   MTA-STS policy, Renewal readiness's HTTP-01 test);
+ * - ipNamePairs: public IP address, host name and port together (Globalping: SSL Targets › Verify);
  * - ipAddresses: IP addresses and networks;
  * - asNumbers: AS numbers;
  * - certSerial: a certificate's serial number;
@@ -56,6 +59,8 @@ export const NEVER_SENT = Object.freeze(['certificates', 'keys', 'zone', 'invent
  * @property {string} [path] the signature path it matches: segments equal, '*' any one segment,
  *   '**' any run of segments (lib/egresslog.js requestSignature)
  * @property {string} [param] a query parameter name the request carries
+ * @property {Record<string, string[]>} [notes] what a request carried by the note its sender gave
+ *   (lib/egresslog.js noteRequest); `sends` holds for a request without one of these notes
  */
 
 /**
@@ -65,10 +70,14 @@ export const NEVER_SENT = Object.freeze(['certificates', 'keys', 'zone', 'invent
  * @property {string} role {@link EGRESS_ROLES}
  * @property {string[]} hosts exact host names
  * @property {EgressEndpoint[]} endpoints first match wins; one without `path` / `param` matches any request
- * @property {boolean} [pathHosts] also any other host whose request path is this service's (RDAP servers the IANA bootstrap names)
+ * @property {string} [noteHost] also any other https host whose requests the code noted with this word
+ *   (lib/rdap.js notes each registry server it asks, one the IANA bootstrap named or rdap.org redirected to)
  */
 
-const ep = (id, sends, match = {}) => Object.freeze({ id, sends: Object.freeze([...sends]), ...match });
+const ep = (id, sends, { notes, ...match } = {}) => Object.freeze({
+  id, sends: Object.freeze([...sends]), ...match,
+  ...(notes ? { notes: Object.freeze(Object.fromEntries(Object.entries(notes).map(([n, k]) => [n, Object.freeze([...k])]))) } : {})
+});
 const service = (s) => Object.freeze({ ...s, hosts: Object.freeze([...s.hosts]), endpoints: Object.freeze([...s.endpoints]) });
 
 /** Host name of a URL (lower case), or null. */
@@ -129,7 +138,7 @@ export const EGRESS_SERVICES = Object.freeze([
   service({ id: 'ipwhois', name: 'ipwho.is', role: 'ip', hosts: ['ipwho.is'], endpoints: [ep('address', ['ipAddresses'], { path: '/*' })] }),
   service({ id: 'rdap-bootstrap', name: 'IANA', role: 'registration', hosts: ['data.iana.org'], endpoints: [ep('bootstrap', ['nothing'], { path: '/rdap/*' })] }),
   service({
-    id: 'rdap', name: 'RDAP', role: 'registration', hosts: ['rdap.org'], pathHosts: true,
+    id: 'rdap', name: 'RDAP', role: 'registration', hosts: ['rdap.org'], noteHost: 'rdap',
     // RFC 9082 lookup paths under a server's base URL: domain/<name>, ip/<address> or ip/<address>/<length>.
     endpoints: [
       ep('domain', ['domains'], { path: '/**/domain/*' }),
@@ -141,7 +150,11 @@ export const EGRESS_SERVICES = Object.freeze([
     id: 'globalping', name: 'Globalping', role: 'probes', hosts: ['api.globalping.io'],
     endpoints: [
       ep('limits', ['nothing'], { path: '/*/limits' }),
-      ep('create', ['ipNamePairs', 'hostnames'], { path: '/*/measurements' }),
+      // One endpoint for every check: lib/globalping.js says whether the body sends an address (Verify)
+      // or a host name alone (MTA-STS, HTTP-01); a request without its note may have sent either.
+      ep('create', ['hostnames', 'ipNamePairs'], {
+        path: '/*/measurements', notes: { 'host-target': ['hostnames'], 'ip-target': ['ipNamePairs'] }
+      }),
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]
   })
@@ -198,8 +211,22 @@ function endpointMatches(endpoint, sig) {
  */
 
 /**
+ * What a request of an endpoint carried: by the notes its sender gave, where the endpoint reads
+ * them, else everything the endpoint can carry.
+ * @param {EgressEndpoint} endpoint
+ * @param {string[]} notes
+ * @returns {string[]} {@link DATA_KINDS} order
+ */
+function endpointSends(endpoint, notes) {
+  const byNote = endpoint.notes ? notes.filter((n) => Object.hasOwn(endpoint.notes, n)).flatMap((n) => endpoint.notes[n]) : [];
+  const kinds = new Set(byNote.length ? byNote : endpoint.sends);
+  return DATA_KINDS.filter((k) => kinds.has(k));
+}
+
+/**
  * Classify one request signature (lib/egresslog.js) against the registry.
- * @param {{ origin: string, host: string, path: string, query: string }} sig
+ * @param {{ origin: string, host: string, path: string, query: string, notes?: string[] }} sig
+ *   notes: what the sending code said about it (lib/egresslog.js noteRequest)
  * @param {{ origin?: string|null }} [opts] origin: the page's own origin (its requests are the app's files)
  * @returns {EgressClass}
  */
@@ -208,16 +235,15 @@ export function classifySignature(sig, { origin = null } = {}) {
     return { service: SELF_SERVICE, endpoint: SELF_SERVICE.endpoints[0], sends: ['appFiles'], label: null };
   }
   const host = String(sig.host || '').toLowerCase();
+  const notes = Array.isArray(sig.notes) ? sig.notes : [];
   let svc = SERVICE_BY_HOST.get(host) || null;
   if (!svc || sig.origin.startsWith('http:')) {
-    // A plain-http request is never one the registry names; path-matched services (RDAP servers) need https too.
-    svc = sig.origin.startsWith('https:')
-      ? EGRESS_SERVICES.find((s) => s.pathHosts && s.endpoints.some((e) => e.path && endpointMatches(e, sig))) || null
-      : null;
+    // A plain-http request is never one the registry names; a host the code noted (an RDAP server) needs https too.
+    svc = sig.origin.startsWith('https:') ? EGRESS_SERVICES.find((s) => s.noteHost && notes.includes(s.noteHost)) || null : null;
   }
   if (!svc) return { service: null, endpoint: null, sends: [], label: null };
   const endpoint = svc.endpoints.find((e) => endpointMatches(e, sig)) || null;
-  const sends = endpoint ? [...endpoint.sends] : serviceSends(svc);
+  const sends = endpoint ? endpointSends(endpoint, notes) : serviceSends(svc);
   const resolver = svc.id === 'doh' ? RESOLVER_BY_HOST.get(host) : null;
   return { service: svc, endpoint, sends, label: resolver ? resolver.name : null };
 }
@@ -225,12 +251,12 @@ export function classifySignature(sig, { origin = null } = {}) {
 /**
  * Classify a request URL (the unit tests' and the code scan's entry point).
  * @param {string} url
- * @param {{ origin?: string|null }} [opts]
+ * @param {{ origin?: string|null, notes?: string[] }} [opts] notes: as the sending code would give them
  * @returns {EgressClass|null} null for a URL that is not http(s)
  */
-export function classifyUrl(url, opts = {}) {
+export function classifyUrl(url, { notes = [], ...opts } = {}) {
   const sig = requestSignature(url);
-  return sig ? classifySignature(sig, opts) : null;
+  return sig ? classifySignature({ ...sig, notes }, opts) : null;
 }
 
 /**
@@ -280,8 +306,8 @@ export function ledgerRows(snapshot, { origin = null } = {}) {
   const rows = [];
   for (const [entryOrigin, list] of byOrigin) {
     const classes = list.map((e) => classifySignature(e, { origin }));
-    // A host is one service only when every request of it is: an unregistered host one of whose
-    // paths happens to look like an RDAP query stays unknown.
+    // A host is one service only when every request of it is: an unregistered host the code
+    // noted as an RDAP server once, with other requests it did not note, stays unknown.
     const svc = classes[0].service;
     const same = !!svc && classes.every((c) => c.service === svc);
     const kind = !same ? 'unknown' : svc === SELF_SERVICE ? 'self' : 'service';
@@ -315,14 +341,17 @@ export function ledgerRows(snapshot, { origin = null } = {}) {
       const sends = kind === 'unknown' ? [] : cls.sends;
       for (const k of sends) row.sends.add(k);
       const epId = kind === 'unknown' || !cls.endpoint ? null : cls.endpoint.id;
-      const prev = row.endpoints.get(epId) || { id: epId, requests: 0, sends: [...sends] };
+      // One endpoint can come from several signatures (the RDAP servers' lookup paths): their kinds add up.
+      const prev = row.endpoints.get(epId) || { id: epId, requests: 0, sends: new Set() };
       prev.requests += n;
+      for (const k of sends) prev.sends.add(k);
       row.endpoints.set(epId, prev);
     });
     rows.push({
       ...row,
       sends: DATA_KINDS.filter((k) => row.sends.has(k)),
-      endpoints: [...row.endpoints.values()].sort((a, b) => b.requests - a.requests)
+      endpoints: [...row.endpoints.values()].map((e) => ({ ...e, sends: DATA_KINDS.filter((k) => e.sends.has(k)) }))
+        .sort((a, b) => b.requests - a.requests)
     });
   }
   const order = new Map(EGRESS_SERVICES.map((s, i) => [s.id, i]));

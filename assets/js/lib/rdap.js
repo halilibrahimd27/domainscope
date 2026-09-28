@@ -27,6 +27,7 @@ import {
 } from './util.js';
 import { normalizeHostname, isPublicSuffix } from './domain.js';
 import { normalizeIP, parseIP, parseCidr, isPrivateIP, formatIP } from './netinfo.js';
+import { noteRequest } from './egresslog.js';
 
 /** IANA RDAP bootstrap files (RFC 9224). */
 export const IANA_BOOTSTRAP = Object.freeze({
@@ -379,6 +380,9 @@ function failureFields(err) {
 }
 
 async function fetchRdap(url, { fetchImpl, signal, timeoutMs }) {
+  // About › What this page sent: this host is a registry's RDAP server (the bootstrap named it, or
+  // it is rdap.org, whose redirect takes the note along) — not a host whose path merely looks like one.
+  noteRequest(url, 'rdap');
   return retry(
     () => fetchJson(url, { fetchImpl, signal, timeoutMs, headers: { accept: ACCEPT } }),
     // Retry timeouts / 429 / 5xx once; never 4xx (404 = not found is an answer)

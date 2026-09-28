@@ -24,6 +24,7 @@
 import { fetchAndRead, sleep, throwIfAborted, parseRetryAfter, abortReasonToError } from './util.js';
 import { normalizeHostname } from './domain.js';
 import { isGloballyRoutable, parseIP, formatIP, normalizeIP, ipVersion } from './netinfo.js';
+import { noteRequest } from './egresslog.js';
 
 /* ------------------------------------------------------------------------ */
 /* Constants                                                                */
@@ -724,6 +725,9 @@ export function createGlobalping({
     }
     throwIfAborted(signal);
     const payload = JSON.stringify(body);
+    // About › What this page sent: whether this body sends an address (with the host name and port,
+    // Verify) or a host name alone (MTA-STS, HTTP-01) — the kind, never the value.
+    const note = typeof body.target === 'string' && ipVersion(body.target) ? 'ip-target' : 'host-target';
     let anonRetried = false;
     let burstRetried = false;
     let gatewayRetried = false;
@@ -731,6 +735,7 @@ export function createGlobalping({
       const withToken = !!authToken;
       const headers = { 'content-type': 'application/json' };
       if (withToken) headers.authorization = `Bearer ${authToken}`;
+      noteRequest(`${base}/measurements`, note);
       // A network error or timeout (headers or body) is never retried: the measurement may already
       // exist (and be charged).
       const { res, text, json } = await send(`${base}/measurements`, { method: 'POST', headers, body: payload }, signal);

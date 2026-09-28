@@ -15,7 +15,8 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  requestSignature, requestCount, countRequests, createEgressLog, EGRESS_VIA, MAX_SIGNATURES, OVERFLOW_PATH
+  requestSignature, requestCount, countRequests, createEgressLog, noteRequest, onRequestNote, EGRESS_VIA, MAX_NOTES, MAX_SIGNATURES,
+  OVERFLOW_PATH
 } from '../../assets/js/lib/egresslog.js';
 import {
   DATA_KINDS, EGRESS_ROLES, EGRESS_SERVICES, NEVER_SENT, SELF_SERVICE, classifySignature, classifyUrl, getEgressService,
@@ -26,8 +27,8 @@ import { certspotterUrl, crtshSearchUrls, CRTSH_BASE, CERTSPOTTER_ISSUANCES } fr
 import { certspotterIssuersUrl, crtshIssuersUrl } from '../../assets/js/lib/passport.js';
 import { announcedPrefixesUrl } from '../../assets/js/lib/ptrsweep.js';
 import { RIPESTAT_BASE, RIPESTAT_SOURCEAPP, IPWHOIS_BASE, HACKERTARGET_REVERSE_IP, THC_REVERSE_IP } from '../../assets/js/lib/ipintel.js';
-import { IANA_BOOTSTRAP, RDAP_ORG } from '../../assets/js/lib/rdap.js';
-import { GLOBALPING_API } from '../../assets/js/lib/globalping.js';
+import { IANA_BOOTSTRAP, RDAP_ORG, rdapDomain } from '../../assets/js/lib/rdap.js';
+import { GLOBALPING_API, createGlobalping, httpsGetRequest } from '../../assets/js/lib/globalping.js';
 import { crtshKeyUrl } from '../../assets/js/lib/keycontinuity.js';
 import { startEgressMeter, egressLog, egressMeterStatus } from '../../assets/js/ui/egress-meter.js';
 
@@ -58,6 +59,17 @@ describe('requestSignature', () => {
       assert.ok(!/example\.com|2001|db8|secret|s3cr3t|abab/i.test(JSON.stringify({ ...s, key: s.key.replace(s.origin, '') })), url);
     }
     assert.equal(requestSignature('https://x.example/p?Token=1&token=2&%24weird=3').query, '*&token', 'names lower-cased, odd ones as *');
+  });
+
+  test('the segment after a word that names a value is masked, even a plain word', () => {
+    // a Globalping id without digits, a single-label RDAP name, an Anubis search of a bare word
+    assert.equal(requestSignature('https://api.globalping.io/v1/measurements/abcdefghijklmnop').path, '/*/measurements/*');
+    assert.equal(requestSignature('https://rdap.example.net/domain/localhost').path, '/domain/*');
+    assert.equal(requestSignature('https://rdap.example.net/rdap/ip/fe/80').path, '/rdap/ip/*/*');
+    assert.equal(requestSignature('https://anubisdb.com/anubis/subdomains/intranet').path, '/anubis/subdomains/*');
+    assert.equal(requestSignature('https://otx.alienvault.com/api/v1/indicators/domain/intranet/passive_dns').path,
+      '/api/*/indicators/domain/*/passive_dns', 'the fixed words after the value stay');
+    assert.equal(requestSignature('https://ip.thc.org/api/v1/lookup/subdomains').path, '/api/*/lookup/subdomains');
   });
 
   test('relative URLs resolve against the page; anything but http(s) is not a request of the page', () => {
@@ -102,6 +114,42 @@ describe('createEgressLog', () => {
     assert.equal(requestCount(null), 0);
     assert.equal(log.record(url, { via: 'beacon' }), false, 'an unknown witness is ignored');
     assert.equal(log.record('data:,x'), false);
+  });
+
+  test('notes attach to a signature, only as fixed words; a redirect takes its request\'s notes along', () => {
+    const log = createEgressLog();
+    const create = `${GLOBALPING_API}/measurements`;
+    assert.equal(log.note(create, 'host-target'), true);
+    log.record(create);
+    log.note(create, 'ip-target');
+    log.note(create, 'host-target');
+    for (const bad of ['203.0.113.7', 'Example', 'www.example.com', '', null, 'x'.repeat(40)]) assert.equal(log.note(create, bad), false, String(bad));
+    const rdap = 'https://rdap.org/domain/example.com';
+    log.note(rdap, 'rdap');
+    log.record(rdap);
+    log.record('https://rdap.example.net/v1/domain/example.com', { via: 'redirect', from: rdap });
+    log.record('https://other.example.net/next', { via: 'redirect', from: 'https://unseen.example.org/x' });
+    const byHost = Object.fromEntries(log.snapshot().entries.map((e) => [e.host, e]));
+    assert.deepEqual(byHost['api.globalping.io'].notes, ['host-target', 'ip-target']);
+    assert.deepEqual(byHost['rdap.example.net'].notes, ['rdap'], 'the registry server rdap.org redirected to');
+    assert.deepEqual(byHost['other.example.net'].notes, []);
+    const many = createEgressLog();
+    for (let i = 0; i < MAX_NOTES + 3; i += 1) many.note('https://example.net/', `n${i}`);
+    assert.equal(many.snapshot().entries[0].notes.length, MAX_NOTES);
+    assert.equal(ledgerRows(many.snapshot()).length, 0, 'a note alone is no request');
+  });
+
+  test('noteRequest reaches the listeners with fixed words only, and a failing listener harms nobody', () => {
+    const heard = [];
+    const offBad = onRequestNote(() => { throw new Error('listener bug'); });
+    const off = onRequestNote((url, note) => heard.push([url, note]));
+    noteRequest(new URL('https://rdap.org/domain/example.com'), 'rdap');
+    noteRequest('https://api.globalping.io/v1/measurements', '203.0.113.7');
+    noteRequest('https://api.globalping.io/v1/measurements', { toString: () => 'ip-target' });
+    off();
+    offBad();
+    noteRequest('https://rdap.org/', 'rdap');
+    assert.deepEqual(heard, [['https://rdap.org/domain/example.com', 'rdap']]);
   });
 
   test('a snapshot is a copy; clear starts over; since moves', () => {
@@ -222,26 +270,42 @@ describe('the registry', () => {
       [`${RIPESTAT_BASE}/maxmind-geo-lite/data.json?resource=2001:db8::1&sourceapp=${RIPESTAT_SOURCEAPP}`, 'ripestat', 'address', ['ipAddresses']],
       [announcedPrefixesUrl(64496), 'ripestat', 'prefixes', ['asNumbers']],
       [`${IPWHOIS_BASE}/192.0.2.1`, 'ipwhois', 'address', ['ipAddresses']],
-      // registration: the bootstrap is a public list; any registry server the bootstrap names, by its path
+      // registration: the bootstrap is a public list; a registry server lib/rdap.js noted (the
+      // bootstrap named it, or rdap.org redirected to it), by its path
       [IANA_BOOTSTRAP.dns, 'rdap-bootstrap', 'bootstrap', ['nothing']],
       [IANA_BOOTSTRAP.ipv6, 'rdap-bootstrap', 'bootstrap', ['nothing']],
       [`${RDAP_ORG}domain/example.com`, 'rdap', 'domain', ['domains']],
-      ['https://rdap.example.net/com/v1/domain/EXAMPLE.COM', 'rdap', 'domain', ['domains']],
-      ['https://rdap.example.net/rdap/ip/192.0.2.1', 'rdap', 'ip', ['ipAddresses']],
-      ['https://rdap.example.net/ip/2001:db8::/32', 'rdap', 'ip-network', ['ipAddresses']],
-      // checks from the internet
+      ['https://rdap.example.net/com/v1/domain/EXAMPLE.COM', 'rdap', 'domain', ['domains'], ['rdap']],
+      ['https://rdap.example.net/rdap/ip/192.0.2.1', 'rdap', 'ip', ['ipAddresses'], ['rdap']],
+      ['https://rdap.example.net/ip/2001:db8::/32', 'rdap', 'ip-network', ['ipAddresses'], ['rdap']],
+      ['https://rdap.example.net/help', 'rdap', null, ['domains', 'ipAddresses'], ['rdap']],
+      // checks from the internet: what a measurement sent is the note lib/globalping.js gave it
       [`${GLOBALPING_API}/limits`, 'globalping', 'limits', ['nothing']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['ipNamePairs'], ['ip-target']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames'], ['host-target']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs'], ['host-target', 'ip-target']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs'], ['rdap']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs']],
       [`${GLOBALPING_API}/measurements/AbCdEf123`, 'globalping', 'result', ['measurementIds']]
     ];
-    for (const [url, service, endpoint, sends] of cases) {
-      const c = classifyUrl(url);
-      assert.equal(c.service && c.service.id, service, url);
-      assert.equal(c.endpoint && c.endpoint.id, endpoint, url);
-      assert.deepEqual([...c.sends].sort(), [...sends].sort(), url);
+    for (const [url, service, endpoint, sends, notes = []] of cases) {
+      const c = classifyUrl(url, { notes });
+      const what = `${url} ${notes.join(',')}`;
+      assert.equal(c.service && c.service.id, service, what);
+      assert.equal(c.endpoint && c.endpoint.id, endpoint, what);
+      assert.deepEqual(c.sends, DATA_KINDS.filter((k) => sends.includes(k)), what);
     }
     assert.equal(CRTSH_BASE, 'https://crt.sh/');
     assert.equal(classifyUrl(CERTSPOTTER_ISSUANCES).service.id, 'certspotter');
+  });
+
+  test('a host whose path merely looks like an RDAP query is not a registry server', () => {
+    for (const url of ['https://rdap.example.net/domain/example.com', 'https://tracker.example.net/rdap/ip/192.0.2.1']) {
+      assert.equal(classifyUrl(url).service, null, url);
+      assert.equal(classifyUrl(url, { notes: ['host-target'] }).service, null, `${url}: another note`);
+    }
+    assert.equal(classifyUrl('http://rdap.example.net/domain/example.com', { notes: ['rdap'] }).service, null, 'never over plain http');
+    assert.equal(classifyUrl('https://crt.sh/?q=example.com', { notes: ['rdap'] }).service.id, 'crtsh', 'a registered host is its own service');
   });
 
   test('the page\'s own origin is the app\'s files; an unknown host, plain http or an odd crt.sh request say so', () => {
@@ -260,10 +324,14 @@ describe('the registry', () => {
 });
 
 describe('ledgerRows / ledgerTotals', () => {
+  /** A snapshot of `[url, via, times, notes]` records (the notes given before the requests, as the code does). */
   const snapshotOf = (records) => {
     let t = 0;
     const log = createEgressLog({ now: () => (t += 1) });
-    for (const [url, via = 'fetch', times = 1] of records) for (let i = 0; i < times; i += 1) log.record(url, { via });
+    for (const [url, via = 'fetch', times = 1, notes = []] of records) {
+      for (const n of notes) log.note(url, n);
+      for (let i = 0; i < times; i += 1) log.record(url, { via });
+    }
     return log.snapshot();
   };
 
@@ -278,7 +346,7 @@ describe('ledgerRows / ledgerTotals', () => {
       ['https://cloudflare-dns.com/dns-query?dns=a', 'resource', 9],
       ['https://tracker.example.net/pixel.gif', 'resource', 1],
       [`${GLOBALPING_API}/limits`, 'fetch', 1],
-      [`${GLOBALPING_API}/measurements`, 'fetch', 2],
+      [`${GLOBALPING_API}/measurements`, 'fetch', 2, ['ip-target', 'host-target']],
       [`${GLOBALPING_API}/measurements/Abc1`, 'fetch', 3]
     ]);
     const rows = ledgerRows(snap, { origin: PAGE });
@@ -303,7 +371,24 @@ describe('ledgerRows / ledgerTotals', () => {
     assert.deepEqual(ledgerTotals(rows), { requests: 3 + 7 + 9 + 1 + 6, services: 3, hosts: 5, self: 5, unknown: 1, failed: 1 });
   });
 
-  test('an unregistered host stays unknown even when one of its paths looks like an RDAP query', () => {
+  test('a session whose only measurement checked a host name says Globalping got host names, never an address', () => {
+    // Domain Health's MTA-STS check alone: the quota read, one measurement with a host-name target, its polls.
+    const rows = ledgerRows(snapshotOf([
+      [`${GLOBALPING_API}/limits`, 'fetch', 1],
+      [`${GLOBALPING_API}/measurements`, 'fetch', 1, ['host-target']],
+      [`${GLOBALPING_API}/measurements/Abc1`, 'fetch', 4]
+    ]), { origin: PAGE });
+    assert.deepEqual(rows.map((r) => [r.serviceId, r.sends]), [['globalping', ['nothing', 'hostnames', 'measurementIds']]]);
+    assert.deepEqual(rows[0].endpoints.find((e) => e.id === 'create').sends, ['hostnames']);
+    // Verify's origin check afterwards adds the address, host name and port.
+    const both = ledgerRows(snapshotOf([
+      [`${GLOBALPING_API}/measurements`, 'fetch', 1, ['host-target']],
+      [`${GLOBALPING_API}/measurements`, 'fetch', 2, ['ip-target']]
+    ]), { origin: PAGE });
+    assert.deepEqual(both[0].sends, ['hostnames', 'ipNamePairs']);
+  });
+
+  test('a host is a registry\'s RDAP server only when lib/rdap.js noted every request of it', () => {
     const rows = ledgerRows(snapshotOf([
       ['https://tracker.example.net/domain/example.com'],
       ['https://tracker.example.net/collect?x=1']
@@ -311,8 +396,18 @@ describe('ledgerRows / ledgerTotals', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].kind, 'unknown');
     assert.equal(rows[0].requests, 2);
-    const rdap = ledgerRows(snapshotOf([['https://rdap.example.net/domain/example.com', 'fetch', 2]]), { origin: PAGE });
-    assert.deepEqual([rdap[0].kind, rdap[0].serviceId, rdap[0].name], ['service', 'rdap', 'RDAP']);
+    const unnoted = ledgerRows(snapshotOf([['https://rdap.example.net/domain/example.com', 'fetch', 2]]), { origin: PAGE });
+    assert.deepEqual([unnoted[0].kind, unnoted[0].serviceId], ['unknown', null], 'a path that looks like RDAP is not enough');
+    const noted = ledgerRows(snapshotOf([
+      ['https://rdap.example.net/domain/example.com', 'fetch', 2, ['rdap']],
+      ['https://rdap.example.net/ip/192.0.2.1', 'fetch', 1, ['rdap']]
+    ]), { origin: PAGE });
+    assert.deepEqual([noted[0].kind, noted[0].serviceId, noted[0].name, noted[0].sends], ['service', 'rdap', 'RDAP', ['domains', 'ipAddresses']]);
+    const mixed = ledgerRows(snapshotOf([
+      ['https://rdap.example.net/domain/example.com', 'fetch', 1, ['rdap']],
+      ['https://rdap.example.net/collect?x=1']
+    ]), { origin: PAGE });
+    assert.equal(mixed[0].kind, 'unknown', 'a request the code did not note makes the host one to look at');
   });
 
   test('an empty session is an empty ledger', () => {
@@ -362,6 +457,7 @@ test('the meter wraps fetch without changing it, and feeds Resource Timing entri
   assert.equal(calls[0][0], win, 'called on the window');
   assert.equal(calls[0][2], init, 'the same init');
   await assert.rejects(win.fetch({ url: 'https://down.example.net/x' }), /Failed to fetch/);
+  noteRequest('https://rdap.org/domain/moved.example', 'rdap'); // as lib/rdap.js does before its fetch
   await win.fetch('https://rdap.org/domain/moved.example');
   await win.fetch('assets/data/wordlist-base.txt');
   observer.cb({ getEntries: () => [{ name: 'https://crt.sh/?q=example.com' }, { name: `${PAGE}/domainscope/assets/js/app.js` }] });
@@ -371,9 +467,43 @@ test('the meter wraps fetch without changing it, and feeds Resource Timing entri
   assert.equal(byHost['crt.sh'].requests, 1, 'fetch + Resource Timing of one request');
   assert.equal(byHost['down.example.net'].failed, 1);
   assert.equal(byHost['rdap.example.net'].redirect, 1, 'the redirect target counts as contacted');
+  assert.deepEqual([byHost['rdap.example.net'].serviceId, byHost['rdap.example.net'].sends], ['rdap', ['domains']],
+    'the registry server rdap.org redirected to, with the note of the request');
   assert.equal(byHost['example.org'].requests, 2, 'a relative fetch and a module, both the page\'s own');
   assert.deepEqual(egressMeterStatus(), { fetch: true, resourceTiming: true });
   assert.deepEqual(startEgressMeter(win), { fetch: true, resourceTiming: true }, 'installed once');
+});
+
+test('the senders note what the URL cannot say: a measurement\'s target kind, a registry\'s RDAP server', async () => {
+  const log = createEgressLog();
+  const off = onRequestNote((url, note) => log.note(url, note));
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const fetchImpl = async (input) => {
+    const url = String(input);
+    log.record(url);
+    if (url === `${GLOBALPING_API}/measurements`) return json({ id: 'AbCdEf123456', probesCount: 1 }, 202);
+    if (url === IANA_BOOTSTRAP.dns) return json({ services: [[['com'], ['https://rdap.example.net/com/v1/']]] });
+    if (url.startsWith('https://rdap.example.net/')) return json({ objectClassName: 'domain', ldhName: 'EXAMPLE.COM', status: ['active'] });
+    throw new TypeError(`unexpected ${url}`);
+  };
+  try {
+    const gp = createGlobalping({ fetchImpl });
+    // Domain Health's MTA-STS check: a host name only.
+    await gp.create(httpsGetRequest({ host: 'mta-sts.example.com', path: '/.well-known/mta-sts.txt' }));
+    const gpRow = () => ledgerRows(log.snapshot()).find((r) => r.serviceId === 'globalping');
+    assert.deepEqual(gpRow().sends, ['hostnames']);
+    // Verify's origin check: an address with the host name and port (a body as httpsCheckRequest builds it).
+    await gp.create({ type: 'http', target: '203.0.113.7', limit: 1, timeout: 10, measurementOptions: { protocol: 'HTTPS', port: 443, request: { method: 'HEAD', host: 'www.example.com', path: '/' } } });
+    assert.deepEqual(gpRow().sends, ['hostnames', 'ipNamePairs']);
+    // RDAP: the server the bootstrap named is the registry's, by lib/rdap.js's note.
+    const r = await rdapDomain('www.example.com', { fetchImpl, fallback: false });
+    assert.equal(r.ok, true);
+    const rdapRow = ledgerRows(log.snapshot()).find((row) => row.host === 'rdap.example.net');
+    assert.deepEqual([rdapRow.kind, rdapRow.serviceId, rdapRow.sends], ['service', 'rdap', ['domains']]);
+    assert.deepEqual(log.snapshot().entries.flatMap((e) => e.notes).sort(), ['host-target', 'ip-target', 'rdap']);
+  } finally {
+    off();
+  }
 });
 
 /* ------------------------------------------------------------------------ */

@@ -46,7 +46,8 @@ const JS = join(ASSETS, 'js');
  * few shared components: ≈ 368 KB (377,294 bytes). Wave 4's "What this page sent" ledger counts every
  * request from the first one, so its meter (the fetch wrapper and the Resource Timing observer,
  * ui/egress-meter.js) and its log (lib/egresslog.js) load with the shell, and the footer links to
- * it; the deploy's version file joined lib/pwa.js: ≈ 374 KB (383,558 bytes).
+ * it; the deploy's version file joined lib/pwa.js, and the senders' notes (what a measurement body
+ * carried, a registry's RDAP server) the log: ≈ 376 KB (384,678 bytes).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 376 * 1024;

@@ -36,6 +36,7 @@ import {
 } from '../lib/retire.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { estimateQueries } from '../lib/scanplan.js';
+import { WORDLIST_SMALL } from '../lib/wordlist.js';
 import { isPrivateIP } from '../lib/netinfo.js';
 import { isSubdomainOf, registrableDomain } from '../lib/domain.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
@@ -105,7 +106,7 @@ registerStrings('en', {
   'retire.hosts.capped': 'Only the first {max} host names are resolved.',
   'retire.discover.offer': { one: '{count} domain has no known host names: its A records and CNAMEs under it are not found without them.', other: '{count} domains have no known host names: their A records and CNAMEs are not found without them.' },
   'retire.discover.button': 'Discover host names (Small wordlist)',
-  'retire.discover.title': 'Tries the Small wordlist (159 common names) under each of these domains, then checks again. About {min}–{max} DNS queries; no passive source is asked.',
+  'retire.discover.cost': { one: 'Tries {words} common names under it, then checks again: about {min}–{max} DNS queries, no passive source.', other: 'Tries {words} common names under each, then checks again: about {min}–{max} DNS queries, no passive source.' },
   'retire.discover.running': 'Discovering host names under {domain}…',
   'retire.discover.failed': 'Discovery failed',
 
@@ -316,7 +317,10 @@ registerStrings('tr', {
   'retire.hosts.capped': 'Yalnızca ilk {max} host adı çözümlenir.',
   'retire.discover.offer': '{count} alan adının bilinen host adı yok: onlar olmadan altındaki A kayıtları ve CNAME’ler bulunamaz.',
   'retire.discover.button': 'Host adlarını keşfet (Küçük kelime listesi)',
-  'retire.discover.title': 'Bu alan adlarının her birinin altında Küçük kelime listesini (159 yaygın ad) dener, sonra yeniden kontrol eder. Yaklaşık {min}–{max} DNS sorgusu; hiçbir pasif kaynağa sorulmaz.',
+  'retire.discover.cost': {
+    one: 'Alan adının altında {words} yaygın adı dener, sonra yeniden kontrol eder: yaklaşık {min}–{max} DNS sorgusu, pasif kaynak yok.',
+    other: 'Her birinin altında {words} yaygın adı dener, sonra yeniden kontrol eder: yaklaşık {min}–{max} DNS sorgusu, pasif kaynak yok.'
+  },
   'retire.discover.running': '{domain} altındaki host adları keşfediliyor…',
   'retire.discover.failed': 'Keşif başarısız',
 
@@ -693,6 +697,8 @@ const session = {
   job: null, discovery: null, discovered: new Map(), passive: null, extraHosts: new Map()
 };
 let jobCounter = 0;
+/** Ids of the discovery offer's cost text (aria-describedby of its button). */
+let discoverSeq = 0;
 let active = null;
 let intel = null;
 
@@ -968,16 +974,22 @@ export function mount(container, ctx) {
     if (bare.length) {
       const est = estimateQueries({ bruteforce: 'small', domains: bare, locales: [], permutationBudget: 0, recursive: false, originHints: false, resolverLeak: false });
       const running = discoveryRunning();
+      // The cost is written out next to the button (not a tooltip): touch and keyboard users read it too.
+      const costId = `retire-discover-cost-${++discoverSeq}`;
       const btn = Button({
         label: t('retire.discover.button'), icon: 'layers', size: 'sm', variant: 'secondary',
-        title: t('retire.discover.title', { min: formatNumber(est.min), max: formatNumber(est.max) }),
         disabled: running || checkRunning(),
+        attrs: { 'aria-describedby': costId },
         dataset: { action: 'retire-discover' },
         onClick: () => discover(bare)
       });
+      const cost = h('span', { class: 'muted text-xs retire-discover-cost', id: costId },
+        t('retire.discover.cost', { count: bare.length, words: formatNumber(WORDLIST_SMALL.length), min: formatNumber(est.min), max: formatNumber(est.max) }));
       children.push(h('div', { class: 'retire-discover' },
         h('p', { class: 'text-sm' }, Icon('info', { size: 13 }), ' ', t('retire.discover.offer', { count: bare.length })),
-        running ? h('p', { class: 'muted text-sm', dataset: { role: 'retire-discovering' } }, t('retire.discover.running', { domain: session.discovery.current || bare[0] })) : btn));
+        running
+          ? h('p', { class: 'muted text-sm', dataset: { role: 'retire-discovering' } }, t('retire.discover.running', { domain: session.discovery.current || bare[0] }))
+          : h('div', { class: 'retire-discover-go' }, btn, cost)));
     }
     if (session.discovery && session.discovery.status === 'error') {
       children.push(ErrorBanner(session.discovery.error, { title: t('retire.discover.failed'), compact: true }));

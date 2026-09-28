@@ -77,6 +77,37 @@
   vertical-align: -2px;
 }
 
+/* The button with its cost under it. The label may wrap (a long Turkish one on a phone): the
+   button grows in height rather than out of its box. */
+.retire-discover-go {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.retire-discover-go .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--btn-h);
+  padding-block: 5px;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+}
+
+.retire-discover-go .btn .icon {
+  flex: none;
+}
+
+@media (max-width: 600px) {
+  .retire-discover-go {
+    flex: 1 1 100%;
+    justify-items: stretch;
+  }
+}
+
 .retire-actions {
   display: flex;
   flex-wrap: wrap;

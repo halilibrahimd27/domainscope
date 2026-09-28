@@ -385,6 +385,26 @@ async function main() {
       }));
       assertEqual(offer, { bare: ['example.net'], button: true }, 'offer');
       assert(!(await page.evaluate(() => window.__fakeDnsLog.some((q) => q.name === 'www.example.net'))), 'no guess sent yet');
+      // The offer on a 320 px phone in both languages: the cost is written out, the button wraps
+      // inside its box and nothing scrolls sideways.
+      for (const lang of ['tr', 'en']) {
+        await setLangUi(page, lang);
+        await page.setViewport({ width: 320, height: 640, mobile: true });
+        await page.waitFor(() => document.querySelector('[data-action="retire-discover"]')?.getBoundingClientRect().width > 0, { message: `the offer at 320 px (${lang})` });
+        await page.evaluate(() => document.querySelector('.retire-discover').scrollIntoView({ block: 'center' }));
+        await assertNoHorizontalScroll(page, `retire discovery offer 320 px ${lang}`);
+        const fit = await page.evaluate(() => {
+          const box = document.querySelector('.retire-discover').getBoundingClientRect();
+          const btn = document.querySelector('[data-action="retire-discover"]');
+          const b = btn.getBoundingClientRect();
+          const cost = document.getElementById(btn.getAttribute('aria-describedby'));
+          return { inside: b.left >= box.left - 0.5 && b.right <= box.right + 0.5, cost: cost ? cost.textContent : '' };
+        });
+        assert(fit.inside, `the button stays inside its box (${lang})`);
+        assert(/159/.test(fit.cost) && /\d+–\d+/.test(fit.cost), `the cost next to the button (${lang}): ${fit.cost}`);
+        if (lang === 'tr') await shot(page, opts, 'retire-discover-320-tr');
+        await page.setViewport({ width: 1440, height: 900 });
+      }
       await jsClick(page, '[data-action="retire-discover"]');
       await page.waitFor(() => [...document.querySelectorAll('.retire-group[data-group="example.net"] tbody tr')].some((tr) => tr.querySelector('.retire-name').textContent === 'www.example.net'),
         { timeout: 60000, message: 'discovered www.example.net checked' });

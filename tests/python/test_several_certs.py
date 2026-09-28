@@ -99,6 +99,25 @@ class SeveralCertsReportTests(unittest.TestCase):
         self.assertEqual(sos.render_summary(plain).split('\n')[1:],
                          sos.render_summary(with_files).split('\n')[1:])
 
+    def test_a_cert_a_newer_one_replaces_is_warned_about(self):
+        # cli_public_wild (2025) and its renewal cli_renewed_wild (2026): the same EC key type
+        # and names - the older one would make a server still serving it UPDATED
+        old = fixture_cert('cli_public_wild.pem')
+        warnings = sos.replaced_new_certs([(old, 'old.pem'), (RENEWED, 'new.pem')])
+        self.assertEqual(len(warnings), 1)
+        self.assertTrue(warnings[0].startswith('--cert old.pem is probably replaced by the '
+                                               'newer --cert new.pem'), warnings[0])
+        # the order they are given in does not matter; the newer one is never flagged
+        self.assertEqual(sos.replaced_new_certs([(RENEWED, 'new.pem'), (old, 'old.pem')]),
+                         warnings)
+        # another key type or other names: an RSA + ECDSA pair, certificates for other names
+        self.assertEqual(sos.replaced_new_certs([(RENEWED, 'new.pem'), (RSA, 'tr.pem')]), [])
+        self.assertEqual(sos.replaced_new_certs([(RENEWED, 'new.pem')]), [])
+        # the same names, key type and dates: the one given later is flagged
+        self.assertEqual(len(sos.replaced_new_certs([(RENEWED, 'a.pem'), (RENEWED, 'b.pem')])), 1)
+        self.assertIn('--cert b.pem is probably replaced by the newer --cert a.pem',
+                      sos.replaced_new_certs([(RENEWED, 'a.pem'), (RENEWED, 'b.pem')])[0])
+
     def test_several_certificates_without_file_names_still_scan(self):
         # library use: run_scan without new_cert_files - UPDATED as usual, no file to name
         report = scan([RENEWED, RSA])
@@ -151,6 +170,18 @@ class SeveralCertsCliTests(unittest.TestCase):
         self.assertIn(self.wild, {r['new_cert'] for r in records})
         self.assertIn('(matches %s)' % self.wild, ' '.join(out.split()))
         self.assertIn('Servers that need the new certificate: 1', out)
+
+    def test_last_years_certificate_next_to_its_renewal_is_warned_about(self):
+        old = str(FIXTURES / 'cli_public_wild.pem')
+        code, _out, err, doc, _records = self.run_scan(old, self.wild)
+        self.assertEqual(code, 0, err)
+        text = ' '.join(err.split())
+        self.assertIn('warning: --cert %s is probably replaced by the newer --cert %s'
+                      % (old, self.wild), text)
+        self.assertIn('probably replaced', ' '.join(doc['warnings']))
+        # an RSA + ECDSA pair or certificates for other names: no such warning
+        _code, _out, err2, _doc, _records = self.run_scan(self.wild, self.tr)
+        self.assertNotIn('probably replaced', err2)
 
     def test_the_same_certificate_twice_is_one_certificate(self):
         code, out, err, doc, records = self.run_scan(self.wild, self.wild)

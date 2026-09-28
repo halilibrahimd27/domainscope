@@ -5369,7 +5369,10 @@ names (-n, repeatable): hostnames or files with names (one per line, # comments)
   RSA + ECDSA pair, or several certificates renewed together): every file's names
   are probed, a server serving any of them is UPDATED, and the summary ("matches
   FILE"), the JSON (newCertFile, newCertificates[].file) and the CSV (a last column
-  new_cert) name the one it serves. With one --cert the reports are unchanged.
+  new_cert) name the one it serves. With one --cert the reports are unchanged. A
+  --cert whose names are all in a newer --cert with the same key type (last year's
+  certificate next to its renewal) gets a warning: a server still serving it would
+  be UPDATED, so leave it out if it is the certificate being replaced.
 
 statuses (per server, port and name):
   UPDATED       serves the new certificate (--cert) for the name
@@ -5609,6 +5612,45 @@ def load_new_certificate(path: str, now: Optional[datetime] = None
         messages.append('the new certificate %s is not valid before %s' % (
             leaf.short_label(), leaf.not_before.strftime('%Y-%m-%d')))
     return leaf, messages
+
+
+def _issued_later(a: CertInfo, b: CertInfo) -> int:
+    """1 when ``a`` was issued after ``b`` (a later notBefore, else a later notAfter), -1 when
+    ``b`` was, 0 when the dates do not tell them apart."""
+    for x, y in ((a.not_before, b.not_before), (a.not_after, b.not_after)):
+        if x != y:
+            return 1 if x > y else -1
+    return 0
+
+
+def replaced_new_certs(certs: Sequence[Tuple[CertInfo, str]]) -> List[str]:
+    """Warnings for a ``--cert`` that another ``--cert`` probably replaces, as
+    ``replacedLeaves`` in assets/js/lib/certsets.js: the same key algorithm, every name of it
+    among the other's, and the other issued later (of two with the same names and dates, the
+    one given later is flagged). Last year's certificate passed next to its renewal (a folder of
+    certificates) would make a server still serving it UPDATED. ``certs`` are ``(certificate,
+    --cert FILE)`` in command-line order."""
+    out = []  # type: List[str]
+    for i, (cert, path) in enumerate(certs):
+        names = cert.hostnames
+        if not names:
+            continue
+        newest = None  # type: Optional[Tuple[CertInfo, str]]
+        for j, (other, other_path) in enumerate(certs):
+            if j == i or other.key_algorithm != cert.key_algorithm:
+                continue
+            other_names = other.hostnames
+            if not all(name in other_names for name in names):
+                continue
+            later = _issued_later(other, cert)
+            twin = later == 0 and j < i and len(other_names) == len(names)
+            if (later > 0 or twin) and (newest is None or _issued_later(other, newest[0]) > 0):
+                newest = (other, other_path)
+        if newest is not None:
+            out.append('--cert %s is probably replaced by the newer --cert %s (the same key type '
+                       'and all of its names): a server still serving it is reported UPDATED - '
+                       'leave it out if it is the old certificate' % (path, newest[1]))
+    return out
 
 
 def _write_output(path: str, text: str, encoding: str = 'utf-8') -> None:
@@ -5908,6 +5950,8 @@ def _run(args: argparse.Namespace) -> int:
             new_certs.append(leaf)
             new_cert_files[leaf.sha256] = path
         all_warnings.extend(messages)
+    all_warnings.extend(replaced_new_certs([(cert, new_cert_files[cert.sha256])
+                                            for cert in new_certs]))
 
     private_cas, ca_messages = load_private_cas(args.private_ca)
     all_warnings.extend(ca_messages)

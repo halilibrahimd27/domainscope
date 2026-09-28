@@ -3182,8 +3182,10 @@ function buildRunUI(run, ctx, { onFinish }) {
     };
     if (inv) {
       if (cert) {
-        if (st.needsCert) add('warn', t('scan.sum.needs', { count: st.needsCert }), 'server', 'needs');
-        else add('ok', t('scan.sum.needsNone'), 'check-circle', 'needs-none');
+        // Several certificates: the renewal line below says how many servers need one of the sets.
+        if (st.needsCert) {
+          if (!plan) add('warn', t('scan.sum.needs', { count: st.needsCert }), 'server', 'needs');
+        } else add('ok', t('scan.sum.needsNone'), 'check-circle', 'needs-none');
       } else if (st.matchedServers) {
         add('info', t('scan.sum.matched', { count: st.matchedServers }), 'server', 'matched');
       }
@@ -3193,9 +3195,10 @@ function buildRunUI(run, ctx, { onFinish }) {
     // Several certificates: which set each server needs is on the Renewal plan tab.
     if (plan) {
       const openPlan = Button({ label: t('rw.sum.open'), icon: 'layers', size: 'sm', variant: 'ghost', dataset: { action: 'scan-open-plan' }, onClick: () => tabs.select('plan', { focus: true }) });
+      const need = plan.rows.filter((row) => row.needsCert && row.server).length;
       const a = Alert({
-        variant: 'info', compact: true, icon: 'layers', actions: [openPlan],
-        message: t('rw.sum', { sets: formatNumber(plan.sets.length), count: plan.rows.filter((row) => row.needsCert && row.server).length })
+        variant: inv && need ? 'warn' : 'info', compact: true, icon: 'layers', actions: [openPlan],
+        message: inv ? t('rw.sum', { sets: formatNumber(plan.sets.length), count: need }) : t('rw.sum.noInventory', { sets: formatNumber(plan.sets.length) })
       });
       a.dataset.summary = 'renewal';
       summaryHost.append(a);

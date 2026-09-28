@@ -1486,10 +1486,9 @@
   gap: 4px;
 }
 
-.rw-matrix td.rw-col-set,
-.rw-uncovered td {
+/* A set's names stack in their cell; a host name stays whole (the table scrolls instead). */
+.rw-matrix td.rw-col-set {
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 
 .rw-cell-name.is-hint {

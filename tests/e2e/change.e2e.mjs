@@ -448,6 +448,15 @@ async function main() {
           await assertNoHorizontalScroll(page, `form ${lang} ${theme} ${width}`);
         }
         await shot(page, opts, `change-form-phone-${theme}-${lang}`);
+        // Microsoft 365 not read: the longest set badge ("Add or change") next to the DKIM CNAMEs.
+        await page.setViewport({ width: 1440, height: 900 });
+        await page.evaluate(() => { window.location.hash = '#/change?t=m365&domain=example.com&tenant=example.onmicrosoft.com'; });
+        await page.waitFor(() => document.querySelectorAll('.fix-set[data-action="set"]').length === 2, { message: 'two sets to add or change', timeout: 8000 });
+        for (const width of [320, 375]) {
+          await page.setViewport({ width, height: 740, mobile: true });
+          await assertNoHorizontalScroll(page, `m365 ${lang} ${theme} ${width}`);
+        }
+        await shot(page, opts, `change-m365-unread-phone-${theme}-${lang}`);
         await openCheck(page, checkQuery);
         for (const width of [320, 375]) {
           await page.setViewport({ width, height: 740, mobile: true });

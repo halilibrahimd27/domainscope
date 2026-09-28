@@ -44,6 +44,26 @@ function diskStore() {
 
 const names = (certs) => certs.map((c) => c.subjectCN);
 
+/**
+ * The test roots as TWCA Global Root CA stands in the real list: the old root is a root without
+ * a key id (its certificate has no subject key id extension and CCADB's column is empty, so
+ * roots.json says `ski: null`) that every store trusts, while the current root — which
+ * cross-signed it — is no longer in Chrome. The Issuing CA's cross-signed copy (issued by the old
+ * root) and the old root's cross-signature carry authority key ids all the same.
+ */
+function keylessRoots() {
+  const json = JSON.parse(read('intermediates/roots.json'));
+  const tls = { chrome: 'tls', mozilla: 'tls', apple: 'tls', microsoft: 'tls' };
+  return rootTable({
+    roots: json.roots.map((r) => {
+      if (r.name === 'DomainScope Test Old Root') return { ...r, ski: null, stores: tls };
+      if (r.name === 'DomainScope Test Root CA') return { ...r, stores: { ...tls, chrome: 'removed' } };
+      return r;
+    }),
+    events: json.events
+  });
+}
+
 describe('small helpers', () => {
   test('the dataset URL sits next to the other data files, relative to the module', () => {
     assert.match(DATASET_URL, /\/assets\/data\/intermediates\/manifest\.json$/);
@@ -137,6 +157,21 @@ describe('rootTable', () => {
     assert.deepEqual(rootsWithKey(table, cert('chainfix_old_root_cross.pem')).map((r) => r.name), ['DomainScope Test Old Root']);
     assert.equal(rootEntryFor(table, cert('chainfix_root.pem')).name, 'DomainScope Test Root CA');
     assert.equal(rootEntryFor(table, cert('chainfix_leaf.pem')), null);
+    assert.deepEqual(rootsIssuing(table, { ...inter, authorityKeyId: 'ff'.repeat(20) }), [], 'the right name under another key id is not its root');
+  });
+
+  test('a root without a key id is found by its DN, under a certificate that names a key id', () => {
+    const table = keylessRoots();
+    const old = table.roots.find((r) => r.name === 'DomainScope Test Old Root');
+    assert.equal(old.ski, null);
+    assert.deepEqual(rootsIssuing(table, cert('chainfix_inter_cross.pem')), [old]);
+    assert.ok(cert('chainfix_inter_cross.pem').authorityKeyId);
+    assert.deepEqual(rootsIssuing(table, { ...cert('chainfix_inter_cross.pem'), issuerDN: 'CN=Someone Else' }), [], 'the DN must match');
+    assert.deepEqual(rootsWithKey(table, cert('chainfix_old_root_cross.pem')), [old], 'its cross-signed copy (which has a key id)');
+    assert.deepEqual(rootsWithKey(table, cert('chainfix_inter_cross.pem')), [], 'another name');
+    assert.equal(rootEntryFor(table, { ...cert('chainfix_old_root.pem'), der: new Uint8Array([1]) }), old, 'another certificate of the root: by the DN');
+    // The current root still needs its key id: a DN alone never matches a root that has one.
+    assert.deepEqual(rootsIssuing(table, { ...cert('chainfix_inter.pem'), authorityKeyId: 'ff'.repeat(20) }), []);
   });
 });
 
@@ -330,6 +365,37 @@ describe('repairChain', () => {
     assert.deepEqual(r.added.map((a) => `${a.cert.subjectCN} ← ${a.cert.issuerCN}`), ['DomainScope Test Issuing CA ← DomainScope Test Old Root'],
       'the cross-signed copy reaches the root every store trusts');
     assert.deepEqual(r.standing.trusted, STORES);
+  });
+
+  test('a root without a key id (TWCA Global Root CA): a complete file stays complete, a leaf alone chains to it, its cross-signed copy never wins', async () => {
+    const { store } = diskStore();
+    const table = keylessRoots();
+    const fake = { ...store, roots: async () => table };
+    const old = table.roots.find((r) => r.name === 'DomainScope Test Old Root');
+    // leaf + the CA the keyless root issued: complete, every store trusts it, nothing to warn about
+    const complete = await repairChain(load('chainfix_leaf.pem', 'chainfix_inter_cross.pem'), { store: fake, now: NOW });
+    assert.equal(complete.status, 'complete');
+    assert.equal(complete.root, old);
+    assert.deepEqual(complete.added, []);
+    assert.deepEqual(complete.standing.trusted, STORES);
+    assert.deepEqual(complete.standing.warnings, []);
+    // … as the server sends it, with the root's cross-signature by the root Chrome removed:
+    // the keyless root is where every store stops, the removed one behind it says nothing
+    const served = await repairChain(load('chainfix_leaf.pem', 'chainfix_inter_cross.pem', 'chainfix_old_root_cross.pem'), { store: fake, now: NOW });
+    assert.equal(served.status, 'complete');
+    assert.deepEqual(served.anchors.map((a) => a.name), ['DomainScope Test Old Root', 'DomainScope Test Root CA']);
+    assert.ok(STORES.every((s) => served.standing.stores[s].root === old));
+    assert.deepEqual(served.standing.trusted, STORES);
+    assert.deepEqual(served.standing.warnings, []);
+    // a leaf alone: the CA under the keyless root, not the one under the removed root, and not
+    // the way through the keyless root's cross-signature
+    const alone = await repairChain(load('chainfix_leaf.pem'), { store: fake, now: NOW });
+    assert.equal(alone.status, 'repaired');
+    assert.equal(alone.reason, 'missing');
+    assert.deepEqual(alone.added.map((a) => `${a.cert.subjectCN} ← ${a.cert.issuerCN}`), ['DomainScope Test Issuing CA ← DomainScope Test Old Root']);
+    assert.equal(alone.root, old);
+    assert.deepEqual(alone.standing.trusted, STORES);
+    assert.deepEqual(alone.standing.warnings, []);
   });
 
   test('no known root above: the shortest partial way is added, root unknown', async () => {

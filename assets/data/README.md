@@ -108,7 +108,7 @@ edit by hand.
 | `manifest.json` | format, date of the data, sources, licence, shard layout, counts, the lifecycle window, a digest of the files and of the manifest itself (the date moves only when one of them does; the skipped counts are in the build log, not here) |
 | `ski/<xx>.json` (256) | subject key identifier (hex) → `[{ owner, der }]`: the CCADB CA owner and the base64 DER, sharded by the first two hex digits; each issuer looked up reads one ≈ 16 KB file |
 | `dn/<x>.json` (16) | the first 16 hex digits of SHA-256 over a subject DN (as `lib/x509.js` writes it) → subject key identifiers, for a certificate that names no authority key identifier |
-| `roots.json` | the roots (SHA-256, CCADB name — made unique with the DN's OU where several share a CN —, owner, key identifier, DN, expiry, status in the Chrome, Mozilla, Apple and Microsoft stores) and the lifecycle table: distrust-after dates and the roots that expire from January 1 of last year to December 31 of next year |
+| `roots.json` | the roots (SHA-256, CCADB name — made unique with the DN's OU where several share a CN —, owner, key identifier — `null` for a root whose certificate carries none, such as TWCA Global Root CA, which the page then matches by its DN —, DN, expiry, status in the Chrome, Mozilla, Apple and Microsoft stores) and the lifecycle table: distrust-after dates and the roots that expire from January 1 of last year to December 31 of next year |
 
 The intermediates come from two CCADB sources. Mozilla's report lists the ones whose parent in
 CCADB is a root Mozilla includes for websites. It misses the hierarchies browsers reach through a

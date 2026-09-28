@@ -4,7 +4,8 @@
 // canaries, the lifecycle table (hand-kept events, Mozilla's dates from CCADB, the expiry window),
 // the files' shape and determinism; then every shard, index and root of the checked-in dataset —
 // the page reads it with lib/chainfix.js, which must find each certificate where the index says —
-// and, on the site's dataset, a Let's Encrypt YE leaf repaired up to ISRG Root X2.
+// and, on the site's dataset, a Let's Encrypt YE leaf repaired up to ISRG Root X2 and a TWCA leaf up
+// to TWCA Global Root CA, a root without a key id.
 // No network: report rows are built here from the chainfix_*.pem fixtures.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -351,33 +352,71 @@ describe('the checked-in datasets', () => {
     });
   }
 
-  test('assets/data/intermediates: the well-known current issuers, and a Let\'s Encrypt YE leaf repaired up to ISRG Root X2', async () => {
+  // The site's dataset as the page reads it: every intermediate parsed with its owner, a store over
+  // the files, and a www.example.com leaf under a CA of it, valid from the day before for 60 days.
+  const site = (() => {
     const base = new URL('../../assets/data/intermediates/', import.meta.url);
     const manifest = JSON.parse(readFileSync(new URL('manifest.json', base), 'utf8'));
-    const all = readdirSync(new URL('ski/', base))
-      .flatMap((f) => Object.values(JSON.parse(readFileSync(new URL(`ski/${f}`, base), 'utf8'))).flat())
-      .map((e) => ({ owner: e.owner, cert: parseCertificate(Buffer.from(e.der, 'base64')) }));
-    for (const c of CANARIES.filter((x) => x.until >= manifest.generated)) {
+    return {
+      manifest,
+      now: new Date(`${manifest.generated}T12:00:00Z`),
+      roots: () => JSON.parse(readFileSync(new URL('roots.json', base), 'utf8')).roots,
+      all: () => readdirSync(new URL('ski/', base))
+        .flatMap((f) => Object.values(JSON.parse(readFileSync(new URL(`ski/${f}`, base), 'utf8'))).flat())
+        .map((e) => ({ owner: e.owner, cert: parseCertificate(Buffer.from(e.der, 'base64')) })),
+      store: () => createIntermediateStore({ url: new URL('manifest.json', base).href, fetchImpl: async (url) => new Response(readFileSync(fileURLToPath(url))) })
+    };
+  })();
+  const leafUnder = (ca, now) => ({
+    subjectDN: 'CN=www.example.com', subjectCN: 'www.example.com', issuerDN: ca.subjectDN, issuerCN: ca.subjectCN,
+    authorityKeyId: ca.subjectKeyId, subjectKeyId: '00', serialHex: '01', selfSigned: false, isCA: false,
+    notBefore: new Date(now.getTime() - 86400000), notAfter: new Date(now.getTime() + 60 * 86400000), scts: []
+  });
+
+  test('assets/data/intermediates: the well-known current issuers, and a Let\'s Encrypt YE leaf repaired up to ISRG Root X2', async () => {
+    const all = site.all();
+    for (const c of CANARIES.filter((x) => x.until >= site.manifest.generated)) {
       assert.ok(all.some((e) => e.cert.subjectCN === c.cn && e.owner === c.owner), `${c.cn} (${c.owner})`);
     }
     // YE1–YE3 are only in the certificate records (Root YE is in no store; browsers reach it
     // through its ISRG Root X2 cross-sign, which Mozilla's report lists).
     const ye = all.find((e) => e.owner === 'Internet Security Research Group' && /^YE\d$/.test(e.cert.subjectCN));
     assert.ok(ye, 'a Let\'s Encrypt YE issuer');
-    const now = new Date(`${manifest.generated}T12:00:00Z`);
-    const leaf = {
-      subjectDN: 'CN=www.example.com', subjectCN: 'www.example.com', issuerDN: ye.cert.subjectDN, issuerCN: ye.cert.subjectCN,
-      authorityKeyId: ye.cert.subjectKeyId, subjectKeyId: '00', serialHex: '01', selfSigned: false, isCA: false,
-      notBefore: new Date(now.getTime() - 86400000), notAfter: new Date(now.getTime() + 60 * 86400000), scts: []
-    };
-    const store = createIntermediateStore({ url: new URL('manifest.json', base).href, fetchImpl: async (url) => new Response(readFileSync(fileURLToPath(url))) });
-    const r = await repairChain({ certificates: [leaf], leaf }, { store, now });
+    const leaf = leafUnder(ye.cert, site.now);
+    const r = await repairChain({ certificates: [leaf], leaf }, { store: site.store(), now: site.now });
     assert.equal(r.status, 'repaired');
     assert.deepEqual(r.added.map((a) => `${a.cert.subjectCN} ← ${a.cert.issuerCN}`), [`${ye.cert.subjectCN} ← Root YE`, 'Root YE ← ISRG Root X2'],
       'Let\'s Encrypt\'s hierarchy changed? Check the path and update this test');
     assert.equal(r.root.name, 'ISRG Root X2');
     assert.deepEqual(r.standing.trusted, STORES);
     assert.deepEqual(r.standing.warnings, []);
+  });
+
+  test('assets/data/intermediates: TWCA Global Root CA, a root without a key id, ends the chain of a CA it issued', async () => {
+    // Its certificate has no subject key id and CCADB lists none, so roots.json says `ski: null`;
+    // the CAs under it name it by an authority key id all the same. Every store trusts it, while
+    // TWCA Root Certification Authority, which cross-signed it, is no longer in Chrome.
+    const all = site.all();
+    const root = site.roots().find((r) => r.name === 'TWCA Global Root CA');
+    assert.ok(root && root.dn, 'TWCA Global Root CA left the list? Pick another root without a key id or drop this test');
+    const ca = all.find((e) => e.cert.subjectCN === 'TWCA Global EVSSL Certification Authority' && e.cert.issuerDN === root.dn);
+    const cross = all.find((e) => e.cert.subjectDN === root.dn);
+    assert.ok(ca && ca.cert.authorityKeyId && cross, 'TWCA\'s hierarchy changed? Check it and update this test');
+    const leaf = leafUnder(ca.cert, site.now);
+    const store = site.store();
+    const check = (r, status) => {
+      assert.equal(r.status, status);
+      assert.ok(STORES.every((s) => r.standing.stores[s].root.name === 'TWCA Global Root CA'), 'every store stops at it');
+      assert.deepEqual(r.standing.trusted, STORES);
+      assert.deepEqual(r.standing.warnings, [], 'no store rejects it');
+    };
+    const alone = await repairChain({ certificates: [leaf], leaf }, { store, now: site.now });
+    check(alone, 'repaired');
+    assert.equal(alone.root.name, 'TWCA Global Root CA');
+    assert.deepEqual(alone.added.map((a) => a.cert.subjectCN), ['TWCA Global EVSSL Certification Authority'], 'never through the cross-signed root');
+    // the CA alone, and as the server sends it: with the root's cross-signature
+    check(await repairChain({ certificates: [leaf, ca.cert], leaf }, { store, now: site.now }), 'complete');
+    check(await repairChain({ certificates: [leaf, ca.cert, cross.cert], leaf }, { store, now: site.now }), 'complete');
   });
 
   test('the hand-kept lifecycle input names its sources', () => {

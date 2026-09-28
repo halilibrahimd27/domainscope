@@ -182,8 +182,16 @@ export function rootTable(json) {
 }
 
 /**
+ * The roots of `table` without a subject key id whose DN is `dn`: a root certificate without the
+ * extension, which CCADB lists without one either (TWCA Global Root CA). Its children still carry
+ * an authority key id, so such a root can only be matched by its DN.
+ */
+const keylessRoots = (table, dn) => (table.byDn.get(dn) || []).filter((r) => !r.ski);
+
+/**
  * The roots of `table` that issued `cert`: by its authority key id (the DN must agree where the
- * table knows it), else by its issuer DN.
+ * table knows it) or, for a root without a key id, by the issuer DN; by the issuer DN alone when
+ * the certificate names no key id.
  * @param {ReturnType<typeof rootTable>} table
  * @param {import('./x509.js').Certificate} cert
  * @returns {RootInfo[]}
@@ -191,7 +199,10 @@ export function rootTable(json) {
 export function rootsIssuing(table, cert) {
   if (!table || !cert) return [];
   if (cert.authorityKeyId) {
-    return (table.bySki.get(cert.authorityKeyId) || []).filter((r) => !r.dn || r.dn === cert.issuerDN);
+    return [
+      ...(table.bySki.get(cert.authorityKeyId) || []).filter((r) => !r.dn || r.dn === cert.issuerDN),
+      ...keylessRoots(table, cert.issuerDN)
+    ];
   }
   return (table.byDn.get(cert.issuerDN) || []).slice();
 }
@@ -213,16 +224,20 @@ export function rootEntryFor(table, cert) {
 }
 
 /**
- * The roots of `table` that `cert` is a copy of: the same subject key id and DN — a cross-signed
- * root, which clients holding that root treat as the end of the chain.
+ * The roots of `table` that `cert` is a copy of: the same subject key id and DN (the DN alone for
+ * a root without a key id, or a certificate without one) — a cross-signed root, which clients
+ * holding that root treat as the end of the chain.
  * @param {ReturnType<typeof rootTable>} table
  * @param {import('./x509.js').Certificate} cert
  * @returns {RootInfo[]}
  */
 export function rootsWithKey(table, cert) {
   if (!table || !cert) return [];
-  const byKey = cert.subjectKeyId ? (table.bySki.get(cert.subjectKeyId) || []) : (table.byDn.get(cert.subjectDN) || []);
-  return byKey.filter((r) => (r.dn ? r.dn === cert.subjectDN : !!cert.subjectKeyId));
+  if (!cert.subjectKeyId) return (table.byDn.get(cert.subjectDN) || []).slice();
+  return [
+    ...(table.bySki.get(cert.subjectKeyId) || []).filter((r) => !r.dn || r.dn === cert.subjectDN),
+    ...keylessRoots(table, cert.subjectDN)
+  ];
 }
 
 /**

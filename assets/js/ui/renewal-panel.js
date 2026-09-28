@@ -37,7 +37,7 @@ registerStrings('en', {
   'rw.names': { one: '{count} name', other: '{count} names' },
   'rw.intro': 'Certificates with the same names form one set (an RSA + ECDSA pair). One scan covers the names of every set, and each host gets the set that names it exactly, else the most specific wildcard, else the one that expires last.',
   'rw.expires': 'expires {date}',
-  'rw.details': 'Details of this certificate',
+  'rw.details': 'Details of this certificate ({key}, {file})',
   'rw.removeCert': 'Remove this certificate ({key}, {file})',
   'rw.removeFile': 'Remove {file}',
   'rw.skipped': 'Not used',
@@ -98,7 +98,7 @@ registerStrings('tr', {
   'rw.names': { one: '{count} ad', other: '{count} ad' },
   'rw.intro': 'Adları aynı olan sertifikalar bir set oluşturur (bir RSA + ECDSA ikilisi gibi). Tek tarama tüm setlerin adlarını kapsar; her host’a onu tam adıyla içeren set, yoksa en belirgin joker (wildcard), o da yoksa süresi en geç dolan set verilir.',
   'rw.expires': '{date} tarihinde doluyor',
-  'rw.details': 'Bu sertifikanın ayrıntıları',
+  'rw.details': 'Bu sertifikanın ayrıntıları ({key}, {file})',
   'rw.removeCert': 'Bu sertifikayı kaldır ({key}, {file})',
   'rw.removeFile': '{file} dosyasını kaldır',
   'rw.skipped': 'Kullanılmayanlar',
@@ -181,6 +181,12 @@ function skipText(s) {
 
 const fileLabel = (files) => (files || []).filter(Boolean).join(', ') || '—';
 
+/** A button with a `data-action` (step 1 finds the Remove buttons by it to keep the focus in the list). */
+const withAction = (btn, action) => {
+  btn.dataset.action = action;
+  return btn;
+};
+
 /**
  * One download button per certificate of the renewal, named as the CLI command names it
  * (lib/certsets cliCertFiles: new-cert-a-rsa.pem …). The file holds that certificate only.
@@ -205,6 +211,8 @@ export function CertFileButtons(sets) {
 /**
  * Step 1 of SSL Targets with several certificates: the sets (names; each certificate's key
  * type, validity, expiry and files, with Details and Remove) and the files that add nothing.
+ * The buttons carry `data-action` rw-details, rw-remove-leaf and rw-remove-file; the head
+ * (`.rw-sets-head`) takes the focus from script (tabindex -1).
  * @param {{ bundle: import('../lib/certsets.js').RenewalBundle,
  *   validity?: ((cert: object) => HTMLElement)|null,
  *   onRemoveLeaf: (leaf: import('../lib/certsets.js').RenewalLeaf) => void,
@@ -220,7 +228,7 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
     dataset: { role: 'renewal-sets', sets: String(bundle.sets.length), certs: String(bundle.leaves.length) }
   },
   // Files without a usable certificate only (a key, a CSR): just the list of what is not used.
-  bundle.leaves.length ? h('p', { class: 'rw-sets-head' }, Icon('layers', { size: 15 }),
+  bundle.leaves.length ? h('p', { class: 'rw-sets-head', tabindex: -1 }, Icon('layers', { size: 15 }),
     h('span', null, [
       t('rw.certs', { count: bundle.leaves.length }), t('rw.sets', { count: bundle.sets.length }), t('rw.names', { count: names.size })
     ].join(' · '))) : null,
@@ -236,11 +244,14 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
           h('span', { class: 'rw-leaf-exp text-sm' }, t('rw.expires', { date: formatDate(leaf.cert.notAfter) })),
           h('span', { class: 'rw-leaf-files text-sm muted mono' }, fileLabel(leaf.files))),
         h('div', { class: 'rw-leaf-actions' },
-          onDetails ? IconButton({ icon: 'eye', size: 'sm', label: t('rw.details'), onClick: () => onDetails(leaf) }) : null,
-          IconButton({
+          // Named by key type and file, like Remove: a list of buttons tells the certificates apart.
+          onDetails ? withAction(IconButton({
+            icon: 'eye', size: 'sm', label: t('rw.details', { key: leaf.keyType, file: fileLabel(leaf.files) }), onClick: () => onDetails(leaf)
+          }), 'rw-details') : null,
+          withAction(IconButton({
             icon: 'x', size: 'sm', label: t('rw.removeCert', { key: leaf.keyType, file: fileLabel(leaf.files) }),
             onClick: () => onRemoveLeaf(leaf)
-          })))))));
+          }), 'rw-remove-leaf')))))));
   }
 
   if (bundle.skipped.length) {
@@ -249,7 +260,8 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
       h('ul', { class: 'rw-skipped-list' }, bundle.skipped.map((s) => h('li', { class: 'rw-skip', dataset: { issue: s.issue } },
         Icon('alert', { size: 14 }),
         h('span', { class: 'rw-skip-text text-sm' }, h('span', { class: 'mono' }, s.file || '—'), ` — ${skipText(s)}`),
-        IconButton({ icon: 'x', size: 'sm', label: t('rw.removeFile', { file: s.file || '—' }), onClick: () => onRemoveFile(s) }))))));
+        withAction(IconButton({ icon: 'x', size: 'sm', label: t('rw.removeFile', { file: s.file || '—' }), onClick: () => onRemoveFile(s) }),
+          'rw-remove-file'))))));
   }
   if (bundle.keyFiles && bundle.keyFiles.length) {
     el.append(h('p', { class: 'rw-key-note text-sm', dataset: { warning: 'PRIVATE_KEY_PRESENT' } },

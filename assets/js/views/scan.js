@@ -1728,13 +1728,39 @@ export function mount(container, ctx) {
         setCurrentCert(state, load);
         ctx.navigate('cert');
       },
-      onRemoveLeaf: (leaf) => setLoads(withoutLeaf(session.certLoads, leaf.key)),
-      onRemoveFile: (entry) => setLoads(entry.key ? withoutLeaf(session.certLoads, entry.key)
-        : session.certLoads.filter((_, i) => i !== entry.index))
+      onRemoveLeaf: (leaf) => removeKeepingFocus(withoutLeaf(session.certLoads, leaf.key), 'rw-remove-leaf'),
+      onRemoveFile: (entry) => removeKeepingFocus(entry.key ? withoutLeaf(session.certLoads, entry.key)
+        : session.certLoads.filter((_, i) => i !== entry.index), 'rw-remove-file')
     }),
     loader({ compact: true, onLoads: addLoads, title: t('rw.addTitle') }),
     h('div', { class: 'cluster scan-cert-actions' },
-      Button({ label: t('rw.removeAll'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove-all' }, onClick: () => setLoads([]) })));
+      Button({ label: t('rw.removeAll'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'cert-remove-all' }, onClick: () => removeKeepingFocus([]) })));
+  }
+
+  /**
+   * A Remove in step 1's list of several certificates: step 1 keeps these files, and the keyboard
+   * focus stays in the step instead of falling to the page (re-rendering drops the pressed
+   * button). When the focus was in step 1 it goes to the Remove button now at the same place in
+   * that list (the next one, else the last), else to any Remove left, the list's head, "Add
+   * certificates" (one certificate left) or the drop zone (none left).
+   * @param {object[]} loads the files step 1 keeps
+   * @param {string|null} [action] the pressed button's list: 'rw-remove-leaf' | 'rw-remove-file'
+   */
+  function removeKeepingFocus(loads, action = null) {
+    const doc = globalThis.document;
+    const active = doc ? doc.activeElement : null;
+    const hadFocus = !!active && certBody.contains(active);
+    const inList = (a) => [...certBody.querySelectorAll(`[data-action="${a}"]`)];
+    const index = action ? inList(action).indexOf(active) : -1;
+    setLoads(loads);
+    if (!hadFocus || (doc.activeElement && doc.activeElement !== doc.body && certBody.contains(doc.activeElement))) return;
+    const same = action ? inList(action) : [];
+    const target = (same.length ? same[Math.min(Math.max(index, 0), same.length - 1)] : null)
+      || certBody.querySelector('[data-action="rw-remove-leaf"], [data-action="rw-remove-file"]')
+      || certBody.querySelector('.rw-sets-head')
+      || certBody.querySelector('[data-action="cert-add"]')
+      || certBody.querySelector('.filedrop:not([hidden])');
+    if (target) target.focus({ preventScroll: true });
   }
 
   /**

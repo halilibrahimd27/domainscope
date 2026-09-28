@@ -11,7 +11,9 @@
  * Targets view (state.session.pendingCert). A PKCS#12 (.pfx / .p12) file asks for its password
  * (ui/pfx-import.js over lib/x509.js loadCertificates and lib/pkcs12.js); its certificates load
  * like any other file's, its private key is never shown, and the note about the bundle offers
- * fullchain.pem and the result of the opt-in key check.
+ * fullchain.pem and the result of the opt-in key check. "Does this CSR match?" (PEM & OpenSSL tab)
+ * compares a pasted CSR's public key with the certificate's (lib/x509.js parseCertificateRequest,
+ * csrMatchesCertificate); a private key pasted there is recognised, never read, and the box emptied.
  *
  * "Copy summary" in the overview's actions (ui/summary-button.js, certSummaryFacts): names, validity,
  * issuer and warnings for Jira / Slack; the file is never in its link.
@@ -42,7 +44,9 @@ import { downloadText, sanitizeFilename } from '../ui/download.js';
 import {
   t, registerStrings, hasString, formatDate, formatDateTime, formatNumber, formatRegion, daysUntil
 } from '../i18n.js';
-import { parseCertificates, loadCertificates, computeFingerprints, pemEncode, formatFingerprint } from '../lib/x509.js';
+import {
+  parseCertificates, loadCertificates, computeFingerprints, pemEncode, formatFingerprint, parseCertificateRequest, csrMatchesCertificate
+} from '../lib/x509.js';
 import {
   normalizeHostname, certCovers, baseDomainsFromNames, stripWildcard, sortHostnames
 } from '../lib/domain.js';
@@ -397,7 +401,27 @@ registerStrings('en', {
   'cert.pem.keyMatchTitle': 'Does a private key belong to this certificate?',
   'cert.pem.keyMatchBody': 'Run this where the key is — it never has to leave the server — and compare the result with the public key SHA-256 of this certificate:',
   'cert.pem.inspectTitle': 'Inspect or check a server with OpenSSL',
-  'cert.pem.spki': 'Public key SHA-256 of this certificate'
+  'cert.pem.spki': 'Public key SHA-256 of this certificate',
+  'cert.csr.title': 'Does this CSR match?',
+  'cert.csr.body': 'Paste the certificate signing request (CSR) this certificate was requested with: its public key is compared with the certificate’s, here in the browser. Only public keys are compared — a private key is never needed.',
+  'cert.csr.label': 'CSR (PEM)',
+  'cert.csr.placeholder': '-----BEGIN CERTIFICATE REQUEST-----\nMIIC…\n-----END CERTIFICATE REQUEST-----',
+  'cert.csr.compare': 'Compare',
+  'cert.csr.matchTitle': 'The CSR matches this certificate',
+  'cert.csr.match': 'It holds the certificate’s public key ({key}): the certificate was issued from this CSR.',
+  'cert.csr.mismatchTitle': 'The CSR does not match',
+  'cert.csr.mismatch': 'It was made for another key ({csrKey}; the certificate has {certKey}): this certificate was not issued from it, or it was re-keyed since.',
+  'cert.csr.unknown': 'The keys could not be compared: the CSR’s public key ({csrKey}) cannot be read here.',
+  'cert.csr.missing': 'The CSR also asked for names the certificate does not have: {names}',
+  'cert.csr.added': 'The certificate has names the CSR did not ask for (some CAs add them): {names}',
+  'cert.csr.subject': 'Subject',
+  'cert.csr.names': 'Names',
+  'cert.csr.key': 'Key',
+  'cert.csr.err.empty': 'Paste a CSR first.',
+  'cert.csr.err.private-key': 'That is a private key. It was not read, and the box is emptied: nothing here needs it. Paste the CSR (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.certificate': 'That is a certificate, not a CSR. Paste the request it was made from (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.not-csr': 'This is not a CSR. Paste the block that starts with -----BEGIN CERTIFICATE REQUEST-----.',
+  'cert.csr.err.invalid': 'The CSR cannot be read: {detail}'
 });
 
 registerStrings('tr', {
@@ -697,7 +721,27 @@ registerStrings('tr', {
   'cert.pem.keyMatchTitle': 'Bir özel anahtar bu sertifikaya mı ait?',
   'cert.pem.keyMatchBody': 'Bunu anahtarın bulunduğu yerde çalıştırın — anahtarın sunucudan çıkması gerekmez — ve sonucu bu sertifikanın açık anahtar SHA-256 değeriyle karşılaştırın:',
   'cert.pem.inspectTitle': 'OpenSSL ile incele veya bir sunucuyu kontrol et',
-  'cert.pem.spki': 'Bu sertifikanın açık anahtar SHA-256 değeri'
+  'cert.pem.spki': 'Bu sertifikanın açık anahtar SHA-256 değeri',
+  'cert.csr.title': 'Bu CSR eşleşiyor mu?',
+  'cert.csr.body': 'Bu sertifikanın istendiği sertifika imzalama isteğini (CSR) yapıştırın: açık anahtarı sertifikanınkiyle burada, tarayıcıda karşılaştırılır. Yalnızca açık anahtarlar karşılaştırılır — özel anahtar hiç gerekmez.',
+  'cert.csr.label': 'CSR (PEM)',
+  'cert.csr.placeholder': '-----BEGIN CERTIFICATE REQUEST-----\nMIIC…\n-----END CERTIFICATE REQUEST-----',
+  'cert.csr.compare': 'Karşılaştır',
+  'cert.csr.matchTitle': 'CSR bu sertifikayla eşleşiyor',
+  'cert.csr.match': 'Sertifikanın açık anahtarını ({key}) taşıyor: sertifika bu CSR ile verilmiş.',
+  'cert.csr.mismatchTitle': 'CSR eşleşmiyor',
+  'cert.csr.mismatch': 'Başka bir anahtar için hazırlanmış ({csrKey}; sertifikanınki {certKey}): bu sertifika onunla verilmemiş ya da o zamandan beri anahtarı değiştirilmiş.',
+  'cert.csr.unknown': 'Anahtarlar karşılaştırılamadı: CSR’ın açık anahtarı ({csrKey}) burada okunamıyor.',
+  'cert.csr.missing': 'CSR sertifikada olmayan adlar da istemiş: {names}',
+  'cert.csr.added': 'Sertifikada CSR’ın istemediği adlar var (bazı CA’lar ekler): {names}',
+  'cert.csr.subject': 'Konu',
+  'cert.csr.names': 'Adlar',
+  'cert.csr.key': 'Anahtar',
+  'cert.csr.err.empty': 'Önce bir CSR yapıştırın.',
+  'cert.csr.err.private-key': 'Bu bir özel anahtar. Okunmadı ve kutu boşaltıldı: burada hiçbir şeyin ona ihtiyacı yok. CSR’ı yapıştırın (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.certificate': 'Bu bir sertifika, CSR değil. Onun hazırlandığı isteği yapıştırın (-----BEGIN CERTIFICATE REQUEST-----).',
+  'cert.csr.err.not-csr': 'Bu bir CSR değil. -----BEGIN CERTIFICATE REQUEST----- ile başlayan bloğu yapıştırın.',
+  'cert.csr.err.invalid': 'CSR okunamıyor: {detail}'
 });
 
 // CAA verdict reasons, problems and renewal notes (health.caa.reason.* / problem.* / note.*) come with lib/health.js.
@@ -1354,6 +1398,8 @@ export function CertLoader({ onLoad, onLoads = null, multiple = false, folder = 
  * @type {{ text: string, carried: string|null, last: object|null, running: AbortController|null }}
  */
 const ctForm = { text: '', carried: null, last: null, running: null };
+/** The CSR pasted into "Does this CSR match?" (this tab's memory only; a private key is never kept). */
+const csrForm = { text: '' };
 
 /** Stop the host-name lookup in progress, if any (its block is being replaced). */
 function stopCtLookup() {
@@ -1942,12 +1988,13 @@ const ctFieldHosts = (text) => {
 };
 
 // "Delete all local data" (About, or Settings on any view) and a switch to another workspace
-// forget the "No file?" field, its last outcome and what was checked per certificate (the
-// certificate itself goes with state.session), stopping what runs; the shell opens the view again
-// when it is on screen.
+// forget the "No file?" field, its last outcome, the pasted CSR and what was checked per
+// certificate (the certificate itself goes with state.session), stopping what runs; the shell
+// opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
   if (key !== 'cleared' && key !== 'workspace') return;
   stopCtLookup();
+  csrForm.text = '';
   ctForm.text = '';
   ctForm.carried = null;
   ctForm.last = null;
@@ -2841,6 +2888,7 @@ export function mount(container, ctx) {
             CodeBlock('openssl pkey -in private.key -pubout -outform DER | openssl dgst -sha256', { label: 'OpenSSL' }),
             h('div', { class: 'cert-spki' }, h('span', { class: 'field-label' }, t('cert.pem.spki')), spkiOut, CopyButton(() => spkiOut.textContent, { iconOnly: true })))
         }),
+        csrCard(cert),
         Card({
           title: t('cert.pem.inspectTitle'),
           icon: 'terminal',
@@ -2849,6 +2897,83 @@ export function mount(container, ctx) {
             CodeBlock(sClientCommand(cert.hostnames), { label: 's_client', wrap: true }))
         }));
     }
+  }
+
+  /* --- Does this CSR match? ------------------------------------------------- */
+  function csrCard(cert) {
+    const area = textarea({
+      label: t('cert.csr.label'),
+      rows: 5,
+      placeholder: t('cert.csr.placeholder'),
+      value: csrForm.text,
+      attrs: { 'data-role': 'cert-csr' },
+      onInput: (v) => {
+        csrForm.text = v;
+      }
+    });
+    const out = h('div', { class: 'cert-csr-result', attrs: { 'aria-live': 'polite' } });
+    const compare = () => {
+      const read = parseCertificateRequest(area.value);
+      if (read.error === 'private-key') {
+        // never kept: not in the box, not in memory
+        area.value = '';
+        csrForm.text = '';
+      } else {
+        csrForm.text = area.value;
+      }
+      clear(out);
+      out.append(csrVerdict(read, cert));
+    };
+    const button = Button({
+      label: t('cert.csr.compare'), icon: 'check', size: 'sm', variant: 'primary',
+      dataset: { action: 'cert-csr-compare', shortcut: 'submit' }, onClick: compare
+    });
+    return Card({
+      title: t('cert.csr.title'),
+      icon: 'file-text',
+      className: 'cert-csr',
+      children: h('div', { class: 'stack-sm', dataset: { shortcutScope: 'cert-csr' } },
+        h('p', { class: 'text-sm' }, t('cert.csr.body')),
+        area.el,
+        h('div', { class: 'cluster' }, button),
+        out)
+    });
+  }
+
+  function csrVerdict(read, cert) {
+    if (read.error) {
+      const alert = Alert({
+        variant: read.error === 'empty' ? 'info' : read.error === 'private-key' || read.error === 'certificate' ? 'warn' : 'error',
+        compact: true,
+        message: t(`cert.csr.err.${read.error}`, { detail: read.detail || '' })
+      });
+      alert.classList.add('cert-csr-verdict');
+      alert.dataset.error = read.error;
+      return alert;
+    }
+    const { csr } = read;
+    const { match, missing, added } = csrMatchesCertificate(csr, cert);
+    const keyOf = (c) => `${c.keyAlgorithm}${c.curve ? ` ${c.curve}` : c.keyBits ? ` ${c.keyBits}` : ''}`;
+    const facts = KeyValueList([
+      [t('cert.csr.subject'), csr.subjectDN || '—'],
+      [t('cert.csr.names'), csr.hostnames.length ? TruncatedList(csr.hostnames, { max: 6, inline: true }) : '—'],
+      [t('cert.csr.key'), keyOf(csr)]
+    ], { className: 'cert-csr-facts' });
+    const names = match ? [
+      missing.length ? h('p', { class: 'text-sm' }, t('cert.csr.missing', { names: missing.join(', ') })) : null,
+      added.length ? h('p', { class: 'text-sm muted' }, t('cert.csr.added', { names: added.join(', ') })) : null
+    ] : null;
+    const el = Alert({
+      variant: match ? 'ok' : match === false ? 'error' : 'warn',
+      title: match ? t('cert.csr.matchTitle') : match === false ? t('cert.csr.mismatchTitle') : null,
+      message: match ? t('cert.csr.match', { key: keyOf(cert) })
+        : match === false ? t('cert.csr.mismatch', { csrKey: keyOf(csr), certKey: keyOf(cert) })
+          : t('cert.csr.unknown', { csrKey: keyOf(csr) }),
+      children: h('div', { class: 'stack-sm' }, names, facts)
+    });
+    el.classList.add('cert-csr-verdict');
+    el.dataset.match = String(match);
+    return el;
   }
 
   render();

@@ -45,8 +45,11 @@ import {
   VERIFY_ERRORS, VERIFY_REASONS, VERIFY_WARNINGS, EXPOSURES, NOT_RUN_REASONS, SKIP_REASONS,
   VERIFY_SOFT_CONFIRM_PROBES, VERIFY_MAX_RETRIES, VERIFY_TIMEOUT_S, VERIFY_CSV_COLUMNS, VERIFY_REUSE_WINDOW_MS,
   buildVerifyPairs, scopePairs, createVerifyRows, checkCount, expectationFor, runVerify, recheckRows, requeueRows,
-  applyOriginOptIn, isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan
+  applyOriginOptIn, isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan,
+  setExpectations, VERIFY_SET_COLUMNS
 } from '../lib/verify.js';
+import { setOfName, cliCertFiles } from '../lib/certsets.js';
+import { SetBadge, CertFileButtons } from './renewal-panel.js';
 
 /* ------------------------------------------------------------------------ */
 /* Strings                                                                  */
@@ -119,6 +122,8 @@ registerStrings('en', {
   'vfy.col.ip': 'IP address',
   'vfy.col.served': 'Served certificate',
   'vfy.col.from': 'Checked from',
+  'vfy.col.set': 'Set',
+  'vfy.sets': 'Each name is compared with the certificate set planned for it ({list}); a new certificate of another loaded set counts as new too, marked “Another set”.',
 
   'vfy.st.UPDATED': 'New certificate',
   'vfy.st.NEEDS_UPDATE': 'Old certificate',
@@ -238,6 +243,8 @@ registerStrings('en', {
   'vfy.det.measurement': 'Measurement',
   'vfy.det.checkedAt': 'Checked at',
   'vfy.det.via': 'Matched via',
+  'vfy.det.set': 'Planned set',
+  'vfy.det.servedSet': 'Set served',
   'vfy.det.server': 'Server',
   'vfy.det.kind.datacenter': 'data centre',
   'vfy.det.kind.eyeball': 'home or mobile network',
@@ -327,6 +334,8 @@ registerStrings('tr', {
   'vfy.col.ip': 'IP adresi',
   'vfy.col.served': 'Sunulan sertifika',
   'vfy.col.from': 'Kontrol noktası',
+  'vfy.col.set': 'Set',
+  'vfy.sets': 'Her ad, onun için planlanan sertifika setiyle karşılaştırılır ({list}); yüklediğiniz başka bir setin yeni sertifikası da yeni sayılır ve “Başka set” olarak işaretlenir.',
 
   'vfy.st.UPDATED': 'Yeni sertifika',
   'vfy.st.NEEDS_UPDATE': 'Eski sertifika',
@@ -446,6 +455,8 @@ registerStrings('tr', {
   'vfy.det.measurement': 'Ölçüm',
   'vfy.det.checkedAt': 'Kontrol zamanı',
   'vfy.det.via': 'Eşleşme yolu',
+  'vfy.det.set': 'Planlanan set',
+  'vfy.det.servedSet': 'Sunulan set',
   'vfy.det.server': 'Sunucu',
   'vfy.det.kind.datacenter': 'veri merkezi',
   'vfy.det.kind.eyeball': 'ev ya da mobil ağ',
@@ -796,13 +807,15 @@ export function planText(rows, { quota = null } = {}) {
  * target list still too long after that to verify-targets.txt as well.
  * @param {{ targets: string[], names: string[] }} plan lib/verify cliPlan()
  * @param {string} shell
+ * @param {string[]|null} [certFiles] several certificate sets: one `--cert` per certificate
+ *   (lib/certsets cliCertFiles), else new-cert.pem
  * @returns {object} lib/cmdline buildSweepCommand() result (`targetsInline: false` and
  *   `targetsFile` when the targets went to their file)
  */
-export function verifyCliSweep(plan, shell) {
+export function verifyCliSweep(plan, shell, certFiles = null) {
   return buildFittedSweepCommand({
-    targets: plan.targets, names: plan.names, script: CLI_SCRIPT, shell, cert: CLI_CERT_FILE, json: CLI_JSON_FILE,
-    namesFile: CLI_NAMES_FILE, allowPorts: true
+    targets: plan.targets, names: plan.names, script: CLI_SCRIPT, shell, cert: certFiles && certFiles.length ? certFiles : CLI_CERT_FILE,
+    json: CLI_JSON_FILE, namesFile: CLI_NAMES_FILE, allowPorts: true
   }, CLI_TARGETS_FILE);
 }
 
@@ -1104,6 +1117,10 @@ export function verifyDetails(row) {
   if (row.checkedAt) items.push({ key: t('vfy.det.checkedAt'), value: formatDateTime(row.checkedAt, { utc: true }) });
   if (serverLabel(row)) items.push({ key: t('vfy.det.server'), value: serverLabel(row) });
   items.push({ key: t('vfy.det.via'), value: t(`vfy.via.${VIA_KINDS.includes(row.via) ? row.via : 'dns'}`) });
+  // Several certificate sets: the set planned for the name, and the one served when another.
+  if (row.setId) items.push({ key: t('vfy.det.set'), value: t('rw.set', { id: row.setId }) });
+  const servedSet = row.state === 'done' && row.verdict ? row.verdict.matchedSet : null;
+  if (servedSet && servedSet !== row.setId) items.push({ key: t('vfy.det.servedSet'), value: t('rw.set', { id: servedSet }) });
   return KeyValueList(items, { className: 'vfy-details' });
 }
 
@@ -1138,18 +1155,28 @@ function setScope(job, scope) {
 function ensureJob(run) {
   if (run.verify) return run.verify;
   if (!run.result || !run.config || !run.config.cert) return null;
-  const { pairs, stats } = buildVerifyPairs(run.result);
+  // Several certificate sets (lib/certsets.js): one queue for every set; each pair carries the set
+  // planned for its name, and its verdict compares with that set's certificates.
+  const sets = Array.isArray(run.config.certSets) && run.config.certSets.length ? run.config.certSets : null;
+  const { pairs, stats } = buildVerifyPairs(run.result, sets ? { setOf: setOfName(sets) } : {});
   const job = {
     rows: [], pairs, stats: stats || {}, scope: 'all', origins: false,
     status: 'idle', stoppedBy: null, spent: 0, runs: 0, controller: null, listeners: new Set(),
-    expect: null, expectValue: null, startedAt: null, finishedAt: null,
+    expect: null, expectValue: null, sets, setExpect: null, setExpectValue: null, startedAt: null, finishedAt: null,
     batch: [], quotaOut: null, error: null, starting: false, launch: null, rememberTab: null
   };
-  job.expect = expectationFor(run.config.cert).then((e) => {
+  job.expect = expectationFor(sets ? sets.flatMap((s) => s.certs) : run.config.cert).then((e) => {
     job.expectValue = e;
     return e;
   });
   job.expect.catch(() => {}); // surfaced when a batch starts
+  if (sets) {
+    job.setExpect = setExpectations(sets).then((m) => {
+      job.setExpectValue = m;
+      return m;
+    });
+    job.setExpect.catch(() => {});
+  }
   setScope(job, 'all');
   run.verify = job;
   return job;
@@ -1222,9 +1249,11 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
   const { signal } = job.controller;
   (async () => {
     const expect = await job.expect;
+    const bySet = job.setExpect ? await job.setExpect : null;
     return runVerify(runOrder(job.rows, batch), {
       client,
       expect,
+      expectFor: bySet ? (row) => bySet.get(row.setId) ?? null : null,
       signal,
       maxProbes,
       now,
@@ -1498,7 +1527,7 @@ export function verifyTabBadge(run) {
 export function verifyExport(run, version) {
   const job = run && run.verify;
   if (!job || !job.runs) return null;
-  return verifyExportJson(job.rows, { expect: job.expectValue, summary: summarizeVerify(job.rows), version });
+  return verifyExportJson(job.rows, { expect: job.expectValue, sets: job.setExpectValue, summary: summarizeVerify(job.rows), version });
 }
 
 /**
@@ -1527,6 +1556,8 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
   }
   if (rememberTab) job.rememberTab = rememberTab;
   const cert = run.config.cert;
+  // Several certificate sets: a Set column and a line on how names are compared (one set: no column).
+  const showSets = !!job.sets && job.sets.length > 1;
   const subject = (run.config.domains && run.config.domains[0]) || '';
   const shells = Array.isArray(cli.shells) && cli.shells.length ? cli.shells : DEFAULT_SHELLS;
   const pythonFor = cli.pythonFor || DEFAULT_PYTHON;
@@ -1546,7 +1577,10 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
 
   /* --- static parts ------------------------------------------------------ */
   const checkable = job.pairs.some((p) => !p.skip);
-  const intro = h('p', { class: 'vfy-intro' }, t('vfy.intro'));
+  const intro = h('p', { class: 'vfy-intro' }, t('vfy.intro'),
+    showSets ? h('span', { class: 'vfy-sets', dataset: { vfy: 'sets' } }, ` ${t('vfy.sets', {
+      list: job.sets.map((s) => `${t('rw.set', { id: s.id })}: ${s.names[0]}${s.names.length > 1 ? ` +${s.names.length - 1}` : ''}`).join(' · ')
+    })}`) : null);
   const infoHost = h('div', { class: 'vfy-info' });
   const statusHost = h('div', { class: 'vfy-status' });
   const actionsHost = h('div', { class: 'vfy-actions' });
@@ -1575,9 +1609,9 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
       filename: 'verify',
       subject,
       onExport: (format, rows) => {
-        if (format === 'csv') saveFile('csv', toCsv(verifyExportRows(rows), VERIFY_CSV_COLUMNS), 'text/csv;charset=utf-8');
+        if (format === 'csv') saveFile('csv', toCsv(verifyExportRows(rows), job.sets ? [...VERIFY_CSV_COLUMNS, ...VERIFY_SET_COLUMNS] : VERIFY_CSV_COLUMNS), 'text/csv;charset=utf-8');
         else {
-          const json = verifyExportJson(rows, { expect: job.expectValue, summary: summarizeVerify(rows), version: ctx.version });
+          const json = verifyExportJson(rows, { expect: job.expectValue, sets: job.setExpectValue, summary: summarizeVerify(rows), version: ctx.version });
           saveFile('json', `${toJson(json)}\n`, 'application/json;charset=utf-8');
         }
       }
@@ -1591,6 +1625,11 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
         key: 'name', label: t('vfy.col.name'), sortable: true, sortValue: (r) => hostSortKey(r.name),
         searchValue: (r) => r.name, render: (r) => h('span', { class: 'mono vfy-name' }, r.name)
       },
+      showSets ? {
+        key: 'set', label: t('vfy.col.set'), sortable: true, sortValue: (r) => r.setId || '',
+        searchValue: (r) => (r.setId ? t('rw.set', { id: r.setId }) : ''),
+        render: (r) => (r.setId ? SetBadge(r.setId, { variant: 'neutral' }) : null)
+      } : null,
       {
         key: 'ip', label: t('vfy.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
         searchValue: (r) => [r.ip, serverLabel(r)].join(' '), render: ipCell
@@ -1607,7 +1646,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
         searchValue: (r) => probesOf(r).map(probeText).join(' '),
         render: fromCell
       }
-    ]
+    ].filter(Boolean)
   }) : null;
 
   /* --- rendering ------------------------------------------------------------ */
@@ -1844,7 +1883,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
     const renderCmd = () => {
       clear(cmdHost);
       const shell = getShell();
-      const sweep = verifyCliSweep(plan, shell);
+      const sweep = verifyCliSweep(plan, shell, job.sets ? cliCertFiles(job.sets).map((f) => f.file) : null);
       if (!sweep.command) {
         cmdHost.append(h('p', { class: 'muted text-sm', dataset: { vfy: 'cli-none' } }, t('vfy.cli.none')));
       } else {
@@ -1890,7 +1929,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
     });
     seg.el.dataset.vfy = 'shell';
     renderCmd();
-    const certBtn = cert && cert.der ? Button({
+    const certBtn = cert && cert.der && !job.sets ? Button({
       icon: 'download', label: t('vfy.cli.cert'), dataset: { action: 'vfy-cert' },
       onClick: () => {
         const file = downloadText(CLI_CERT_FILE, pemEncode(cert.der), 'application/x-pem-file');
@@ -1903,6 +1942,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
       icon: 'terminal',
       className: 'vfy-cli',
       children: h('div', { class: 'stack-sm' }, seg.el, cmdHost,
+        job.sets ? h('div', { class: 'vfy-actions', dataset: { vfy: 'cli-certs' } }, CertFileButtons(job.sets)) : null,
         h('div', { class: 'vfy-actions' }, certBtn,
           ButtonLink({ href: cliPath, label: t('vfy.cli.download'), icon: 'download', download: CLI_SCRIPT })))
     }));

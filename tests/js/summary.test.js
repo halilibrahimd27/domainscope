@@ -835,7 +835,7 @@ describe('domain (overview)', () => {
       '**Domain overview · `example.com`**',
       '- **Registration:** `Example Registrar, Inc.` · expires 2027-08-13 (319 days left)',
       '- **DNS:** Cloudflare · DNSSEC validated',
-      '- **Mail:** Microsoft 365 · SPF -all · DMARC p=reject',
+      '- **Mail:** Microsoft 365 · SPF `-all` · DMARC `p=reject`',
       '- **Web:** `example.com` Cloudflare · `www.example.com` Netlify · HTTPS record',
       "- **Certificates:** CAA allows Let's Encrypt",
       '- **Services:** 4 services verified the domain by TXT: Google, Microsoft 365, Atlassian +1 more',
@@ -918,6 +918,21 @@ describe('domain (overview)', () => {
     assert.match(txt(caaOnly), /- Certificates: lookup failed\n/);
     const ctDown = S.domainSummary(facts({ certs: { ...facts().certs, ctFailed: true } }), opts('en', url));
     assert.match(txt(ctDown), /- Certificates: CAA allows Let's Encrypt · CT lookup failed\n/);
+  });
+
+  test('the SPF qualifier and the DMARC policy are code spans: a tilde pasted into Slack keeps no backslash', () => {
+    const doc = S.domainSummary(facts({ mail: { ...facts().mail, spf: { state: 'ok', all: '~', redirect: false, count: 1 }, dmarc: { state: 'ok', policy: 'none', count: 1 } } }), opts('en', url));
+    assert.match(md(doc), /- \*\*Mail:\*\* Microsoft 365 · SPF `~all` · DMARC `p=none`\n/);
+    assert.doesNotMatch(md(doc), /\\~/);
+    assert.match(txt(doc), /- Mail: Microsoft 365 · SPF ~all · DMARC p=none\n/);
+    assert.match(md(S.domainSummary(facts({ mail: { ...facts().mail, spf: { state: 'ok', all: '?', redirect: false, count: 1 } } }), opts('tr', url))),
+      /- \*\*E-posta:\*\* Microsoft 365 · SPF `\?all` · DMARC `p=reject`\n/);
+  });
+
+  test('a name RDAP says no registry holds reads as the card words it', () => {
+    const reg = { pending: false, failed: false, outcome: 'invalid', tld: null, whois: null };
+    assert.match(txt(S.domainSummary(facts({ registration: reg }), opts('en', url))), /- Registration: not a domain a registry holds\n/);
+    assert.match(txt(S.domainSummary(facts({ registration: reg }), opts('tr', url))), /- Kayıt: bir kayıt kuruluşunun tuttuğu bir alan adı değil\n/);
   });
 
   test('CAA as RFC 8659 reads it: no issue property, issuewild on its own, wildcards only, a critical unknown tag', () => {

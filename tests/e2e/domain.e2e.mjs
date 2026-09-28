@@ -342,7 +342,7 @@ async function main() {
       assertEqual(ls[0], '**Domain overview · `example.com`**', 'title');
       assert(ls.some((l) => l.startsWith('- **Registration:** `Example Registrar, Inc.` · expires') && l.endsWith('· no transfer lock')), out);
       assert(ls.includes('- **DNS:** Cloudflare · DNSSEC validated'), out);
-      assert(ls.includes('- **Mail:** Microsoft 365 · SPF -all · DMARC p=reject'), out);
+      assert(ls.includes('- **Mail:** Microsoft 365 · SPF `-all` · DMARC `p=reject`'), out);
       assert(ls.includes("- **Certificates:** CAA allows Let's Encrypt · issuers in CT: `Let's Encrypt` (2), `Sectigo` (1) · not allowed by CAA: `Sectigo`"), out);
       assert(ls.includes('- **Services:** 4 services verified the domain by TXT: Atlassian, Google, Microsoft 365 +1 more'), out);
       assert(/\/domainscope\/#\/domain\?name=example\.com$/.test(ls[ls.length - 1]), ls[ls.length - 1]);

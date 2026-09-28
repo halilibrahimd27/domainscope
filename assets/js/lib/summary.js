@@ -771,6 +771,7 @@ export function domainSummary(facts, opts) {
     if (reg.outcome === 'unsupported') {
       regLine = [reg.whois ? t('sum.domain.noRdapAt', { tld: reg.tld || '', registry: reg.whois }) : t('sum.domain.noRdap', { tld: reg.tld || '' })];
     } else if (reg.outcome === 'not-found') regLine = [t('sum.domain.notRegistered')];
+    else if (reg.outcome === 'invalid') regLine = [t('sum.domain.notRegistrable')];
     else if (reg.outcome === 'ok') {
       const bits = [];
       if (reg.registrar) bits.push([code(reg.registrar)]);
@@ -818,14 +819,17 @@ export function domainSummary(facts, opts) {
       if ((mail.other || []).length) who.push(k.values(mail.other, 2));
       bits.push(join(who));
     } else bits.push([t('sum.domain.mxFailed')]);
+    // The qualifier and the policy as code spans: `~all` pasted into Slack keeps its tilde.
     const spf = mail.spf;
     if (spf) {
-      if (spf.state === 'ok') bits.push([spf.all ? t('sum.domain.spfAll', { all: `${spf.all}all` }) : spf.redirect ? t('sum.domain.spfRedirect') : t('sum.domain.spfNoAll')]);
-      else bits.push([t(`sum.domain.spf.${spf.state}`, { count: spf.count })]);
+      if (spf.state === 'ok') {
+        bits.push(spf.all ? textParts(t, 'sum.domain.spfAll', { all: `${spf.all}all` }) : [t(spf.redirect ? 'sum.domain.spfRedirect' : 'sum.domain.spfNoAll')]);
+      } else bits.push([t(`sum.domain.spf.${spf.state}`, { count: spf.count })]);
     } else if (mail.spfFailed) bits.push([t('sum.domain.spfFailed')]);
     const dmarc = mail.dmarc;
-    if (dmarc) bits.push([dmarc.state === 'ok' ? t('sum.domain.dmarcPolicy', { policy: `p=${dmarc.policy}` }) : t(`sum.domain.dmarc.${dmarc.state}`, { count: dmarc.count })]);
-    else if (mail.dmarcFailed) bits.push([t('sum.domain.dmarcFailed')]);
+    if (dmarc) {
+      bits.push(dmarc.state === 'ok' ? textParts(t, 'sum.domain.dmarcPolicy', { policy: `p=${dmarc.policy}` }) : [t(`sum.domain.dmarc.${dmarc.state}`, { count: dmarc.count })]);
+    } else if (mail.dmarcFailed) bits.push([t('sum.domain.dmarcFailed')]);
     mailLine = join(bits);
   }
   lines.push([...label('sum.domain.mail'), ...mailLine]);
@@ -1033,6 +1037,7 @@ const STRINGS = [
   ['sum.domain.noRdap', ['.{tld} publishes no RDAP: see the registry’s WHOIS', '.{tld} RDAP yayımlamıyor: kayıt kuruluşunun WHOIS hizmetine bakın']],
   ['sum.domain.noRdapAt', ['.{tld} publishes no RDAP: see {registry}', '.{tld} RDAP yayımlamıyor: {registry} hizmetine bakın']],
   ['sum.domain.notRegistered', ['not registered (RDAP)', 'kayıtlı değil (RDAP)']],
+  ['sum.domain.notRegistrable', ['not a domain a registry holds', 'bir kayıt kuruluşunun tuttuğu bir alan adı değil']],
   ['sum.domain.expires', [{ zero: 'expires {date} (today)', one: 'expires {date} ({count} day left)', other: 'expires {date} ({count} days left)' },
     { zero: '{date} tarihinde sona eriyor (bugün)', other: '{date} tarihinde sona eriyor ({count} gün kaldı)' }]],
   ['sum.domain.expired', [{ one: 'expired {date} ({count} day ago)', other: 'expired {date} ({count} days ago)' }, '{date} tarihinde sona erdi ({count} gün önce)']],

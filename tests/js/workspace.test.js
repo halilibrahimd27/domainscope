@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_WORKSPACE_ID, WORKSPACE_PARTS, WORKSPACE_LIMITS, LEGACY_KEYS, ACTIVE_WORKSPACE_KEY, STORE_VERSION,
   WorkspaceError, normalizeWorkspaceName, uniqueWorkspaceName, sanitizePart, sanitizeExpectedCas, sanitizeRecent,
-  sanitizeWorkspaceData, emptyWorkspaceData, addRecent, readLegacyData, createMemoryBackend, createWorkspaceStore
+  sanitizeWorkspaceData, emptyWorkspaceData, addRecent, readLegacyData, createMemoryBackend, createWorkspaceStore, impliesDatabase
 } from '../../assets/js/lib/workspace.js';
 import { parseInventory, buildIpIndex, lookupServers } from '../../assets/js/lib/inventory.js';
 import { createLearnedStore } from '../../assets/js/lib/learned.js';
@@ -766,6 +766,36 @@ describe('"Delete all local data"', () => {
     const memory = makeStore({ backend: createMemoryBackend() });
     await memory.open();
     assert.equal(memory.database, false);
+  });
+
+  test('storage the browser refuses altogether is no database: Delete all local data succeeds', async () => {
+    // Chrome's "Don't allow sites to save data": databases() rejects (exists() cannot tell), and
+    // open() and deleteDatabase() fail with an UnknownError. Nothing was ever stored.
+    const refused = createMemoryBackend([], { persistent: true, exists: null });
+    for (const op of ['get', 'list', 'write', 'destroy']) refused.fail.add(op);
+    const store = makeStore({ backend: refused });
+    const opened = await store.open();
+    assert.deepEqual([opened.persistent, store.persistent, store.database], [false, false, false]);
+    assert.equal(store.lastError.name, 'UnknownError');
+    assert.equal(await store.destroy(), true, 'nothing to delete is no failure');
+    assert.equal(store.lastError, null);
+    // A failure only a database causes keeps it for the deletion, even where exists() cannot tell.
+    for (const name of ['VersionError', 'NotFoundError']) {
+      const later = createMemoryBackend([], { persistent: true, exists: null });
+      later.get = async () => {
+        throw Object.assign(new Error('cannot open'), { name });
+      };
+      const other = makeStore({ backend: later });
+      await other.open();
+      assert.deepEqual([other.persistent, other.database], [false, true], name);
+      later.fail.add('destroy');
+      assert.equal(await other.destroy(), false, `${name}: its deletion failing is reported`);
+    }
+    assert.equal(impliesDatabase(Object.assign(new Error('late'), { code: 'idb-timeout' })), true);
+    for (const name of ['UnknownError', 'SecurityError', 'InvalidStateError']) {
+      assert.equal(impliesDatabase(Object.assign(new Error('refused'), { name })), false, name);
+    }
+    assert.equal(impliesDatabase(null), false);
   });
 });
 

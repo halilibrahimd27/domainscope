@@ -29,8 +29,10 @@
  *   - a workspace whose creation could not be written (every put refused as a full storage) says
  *     why, and is stored by its next save once storage works: it is there after a reload;
  *   - Settings › Delete all local data deletes every workspace and the IndexedDB database, and says so.
- * With storage blocked (every storage accessor throws, as with Safari's "Block all cookies") the page
- * works in memory, and Delete all local data says that nothing had been saved rather than a failure.
+ * With storage blocked (every storage accessor throws, as with Safari's "Block all cookies"), and
+ * with site data blocked as Chrome blocks it (Web Storage throws, IndexedDB refuses every call with
+ * an UnknownError), the page works in memory, and Delete all local data says that nothing had been
+ * saved rather than a failure.
  * With a database of a later version (the page cannot open it and works in memory), Delete all local
  * data deletes it all the same and says the database went.
  * Then at 375 px (Turkish, dark) and 320 px: the switcher is in the Tools menu, the dialog fits
@@ -544,13 +546,40 @@ const BLOCK_STORAGE = `(() => {
   for (const name of ['localStorage', 'sessionStorage', 'indexedDB']) Object.defineProperty(window, name, { get: refuse, configurable: true });
 })();`;
 
-async function blockedStorage(browser, server) {
-  run.group('Storage blocked (1024 px, offline)');
+/**
+ * What Chrome and Edge do when site data is blocked ("Don't allow sites to save data", or a
+ * per-site Block): the Web Storage accessors throw, and IndexedDB is there but refuses everything
+ * — databases() rejects, open() and deleteDatabase() fail with an UnknownError.
+ */
+const REFUSE_STORAGE = `(() => {
+  const refuse = () => { throw new DOMException('Access is denied for this document.', 'SecurityError'); };
+  for (const name of ['localStorage', 'sessionStorage']) Object.defineProperty(window, name, { get: refuse, configurable: true });
+  const denied = () => new DOMException('The user denied permission to access the database.', 'UnknownError');
+  const failing = () => {
+    const request = { result: undefined, error: null, onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null };
+    setTimeout(() => {
+      request.error = denied();
+      if (typeof request.onerror === 'function') request.onerror({ target: request });
+    }, 0);
+    return request;
+  };
+  for (const [name, value] of [['open', failing], ['deleteDatabase', failing], ['databases', () => Promise.reject(denied())]]) {
+    Object.defineProperty(indexedDB, name, { value, configurable: true });
+  }
+})();`;
+
+/**
+ * Delete all local data where the browser keeps nothing for the page: in memory, and the toast
+ * says nothing had been saved, never that something could not be deleted.
+ * @param {{ group: string, script: string, label: string }} variant
+ */
+async function blockedStorage(browser, server, { group, script, label }) {
+  run.group(group);
   const page = await browser.newPage('about:blank', { width: 1024, height: 800 });
   await networkGuard(page);
-  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: BLOCK_STORAGE });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: script });
   try {
-    await run.step('the page works in memory; Delete all local data says nothing had been saved, not that it failed', async () => {
+    await run.step(`${label}: the page works in memory; Delete all local data says nothing had been saved, not that it failed`, async () => {
       await page.goto(`${server.url}#/inventory`);
       await waitReady(page);
       await setLangUi(page, 'en');
@@ -571,8 +600,8 @@ async function blockedStorage(browser, server) {
       assertEqual((await page.evaluate(wsInfo)).inventory, '', 'reset in memory');
     });
 
-    await run.step('storage blocked: no console errors, CSP violations or missing keys', async () => {
-      await assertClean(page, 'workspaces storage blocked', server.url);
+    await run.step(`${label}: no console errors, CSP violations or missing keys`, async () => {
+      await assertClean(page, `workspaces ${label}`, server.url);
       await assertNoMissingKeys(page);
     });
   } finally {
@@ -696,7 +725,8 @@ async function main() {
   process.stdout.write(`Serving ${server.url} — ${version.product}\n`);
   try {
     await desktop(browser, server, tmp);
-    await blockedStorage(browser, server);
+    await blockedStorage(browser, server, { group: 'Storage blocked (1024 px, offline)', script: BLOCK_STORAGE, label: 'storage blocked' });
+    await blockedStorage(browser, server, { group: 'Site data blocked as Chrome blocks it (1024 px, offline)', script: REFUSE_STORAGE, label: 'site data refused' });
     await unreadableDatabase(browser, server);
     await phone(browser, server);
   } finally {

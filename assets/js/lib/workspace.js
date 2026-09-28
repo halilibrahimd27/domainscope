@@ -461,6 +461,18 @@ export function createMemoryBackend(entries = [], { persistent = false, exists =
 /* ------------------------------------------------------------------------ */
 
 /**
+ * Whether a backend's failure to open says a database is there: one of a later schema version
+ * (VersionError), one without the expected object store (NotFoundError) or an open that did not
+ * finish in time (the IndexedDB backend's 'idb-timeout'). A refusal (UnknownError, SecurityError,
+ * InvalidStateError) says nothing either way.
+ * @param {Error|null} err
+ * @returns {boolean}
+ */
+export function impliesDatabase(err) {
+  return !!err && (err.name === 'VersionError' || err.name === 'NotFoundError' || err.code === 'idb-timeout');
+}
+
+/**
  * @typedef {object} WorkspaceMeta
  * @property {string} id
  * @property {string|null} name   null for Default (the UI names it in the page's language)
@@ -727,12 +739,18 @@ export function createWorkspaceStore({
 
   /**
    * Fall back to memory for the rest of the page (the backend could not be read: a database of a
-   * later schema version, a broken one, an open that timed out). The backend is kept for
-   * "Delete all local data", which must still delete what it holds.
+   * later schema version, a broken one, an open that timed out, or storage refused). The backend
+   * is kept for "Delete all local data", which must still delete what it holds, when there is a
+   * database to delete: it was listed (`exists` true), or the failure is one only a database
+   * causes ({@link impliesDatabase}). A refusal is not: a browser that blocks storage for the page
+   * (Chrome's "Don't allow sites to save data") answers every call, the deletion too, with an
+   * UnknownError, and nothing was ever stored.
+   * @param {Error} err
+   * @param {boolean|null} exists what the backend's `exists()` said
    */
-  function degrade(err) {
+  function degrade(err, exists = null) {
     lastError = err;
-    if (db.persistent) fallenBack = db;
+    if (db.persistent && (exists === true || impliesDatabase(err))) fallenBack = db;
     db = createMemoryBackend();
     persistent = false;
   }
@@ -746,7 +764,7 @@ export function createWorkspaceStore({
       if (exists !== false) [meta] = await db.get([META_KEY]);
       metas = exists === false ? new Map([[DEFAULT_WORKSPACE_ID, defaultMeta()]]) : await readMetas();
     } catch (err) {
-      degrade(err);
+      degrade(err, exists);
       meta = undefined;
       metas = new Map([[DEFAULT_WORKSPACE_ID, defaultMeta()]]);
     }

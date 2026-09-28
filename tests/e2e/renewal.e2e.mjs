@@ -23,7 +23,9 @@
  * What is checked:
  *   - step 1: several PEM blocks pasted at once, one file then "Add certificates", a folder (with a
  *     key, a CA file and a file of another type in it) — each grouped into the two sets with their
- *     key types; a file that adds nothing is listed with why and can be removed; Remove all; the
+ *     key types; a paste with a damaged block says a certificate may be missing; last year's
+ *     certificate next to its renewal is flagged (a server serving it would count as updated);
+ *     a file that adds nothing is listed with why and can be removed; Remove all; the
  *     keyboard focus stays in the list after a Remove (the next Remove, else the drop zone); more
  *     than 100 files at once: the first 100 are read and a toast says so; "Find servers for this
  *     certificate" on one certificate of the renewal comes back to the whole renewal and says so;
@@ -39,7 +41,9 @@
  *     CLI card with the three --cert, CSV / JSON exports with the sets;
  *   - DANE: a picker of the three certificates, nothing sent;
  *   - the scan's full JSON: certificateSets and the plan;
- *   - TR + dark at 375 px: labelled cards, no horizontal scroll, no missing i18n keys;
+ *   - TR + dark at 375 px: labelled cards (the matrix and the uncovered names), no horizontal
+ *     scroll, no missing i18n keys;
+ *   - an RSA + ECDSA pair alone is one set: the summary names it by its key types ("needs it");
  *   - one certificate alone is the classic flow again (no plan tab, `--cert new-cert.pem`);
  *   - zero console errors, exceptions and CSP violations.
  */
@@ -68,7 +72,10 @@ export const FILES = {
   bRsa: path.join(FIXTURES, 'renew_b_rsa.pem'),
   key: path.join(FIXTURES, 'ec_wildcard.key'),
   ca: path.join(FIXTURES, 'ca.pem'),
-  other: path.join(FIXTURES, 'expected.json')
+  other: path.join(FIXTURES, 'expected.json'),
+  // last year's certificate and its renewal (ECDSA P-256, *.wild.example.net and wild.example.net)
+  oldWild: path.join(FIXTURES, 'cli_public_wild.pem'),
+  newWild: path.join(FIXTURES, 'cli_renewed_wild.pem')
 };
 export const APEX = 'example.com';
 export const ZONE = {
@@ -400,6 +407,30 @@ async function main() {
       assertEqual(s.domains, APEX, 'step 2 filled from the certificates');
       assert(/3 certificates/.test(s.badge), `step badge: ${s.badge}`);
       await shotEl(page, opts, 'renewal-step1-pasted-en-light', STEP1);
+      const desc = await page.evaluate(() => document.querySelector('[data-step="cert"] .scan-step-desc')?.textContent || '');
+      assertEqual(desc, 'Their names seed the search and every host is checked against the set that covers it', 'step 1 says "their names"');
+    });
+
+    await run.step('a damaged third block: the two good certificates load, and step 1 says a certificate may be missing', async () => {
+      await page.click(`${STEP1} [data-action="cert-remove-all"]`);
+      await waitStep1(page, 0, 'renewal removed');
+      // set B's certificate with four lines of its base64 cut out
+      const lines = pems.bRsa.trim().split('\n');
+      const damaged = [...lines.slice(0, 4), ...lines.slice(8)].join('\n');
+      await page.evaluate((st) => { document.querySelector(`${st} .cert-paste`).open = true; }, STEP1);
+      await page.type(`${STEP1} textarea[data-role="cert-paste"]`, [pems.aRsa, pems.aEc, damaged].join('\n'));
+      await page.click(`${STEP1} [data-action="cert-paste-read"]`);
+      await waitStep1(page, 2, 'the two good certificates');
+      const s = await readStep1(page);
+      assertEqual([s.sets, s.certs, s.skipped], [1, 2, []], 'one set of two, nothing listed as not used');
+      const alert = await page.evaluate((st) => {
+        const a = document.querySelector(`${st} [data-role="renewal-unread"]`);
+        return a ? { text: a.querySelector('.alert-message').textContent, details: a.querySelector('details code')?.textContent || '' } : null;
+      }, STEP1);
+      assert(alert, 'the read-in-part alert');
+      assertEqual(alert.text, 'Part of this could not be read (damaged or in an unsupported format): Pasted text. A certificate in it may be missing: its names would be neither scanned nor checked.', 'alert');
+      assert(/^Pasted text: PEM block 3 \(CERTIFICATE\): /.test(alert.details), `details: ${alert.details}`);
+      await shotEl(page, opts, 'renewal-step1-unread-en-light', STEP1);
     });
 
     await run.step('Remove all (keyboard: the focus moves to the drop zone), then one file: the classic single-certificate step', async () => {
@@ -469,6 +500,30 @@ async function main() {
       await waitStep1(page, 3, 'set B back');
       const s = await readStep1(page);
       assertEqual(s.list.map((x) => [x.id, x.files.join(' | ')]), [['A', 'renew_a_rsa.pem | renew_a_ecdsa.pem'], ['B', 'renew_b_rsa.pem']], 'the two sets again');
+    });
+
+    await run.step('last year\'s certificate next to its renewal: flagged and marked; removing it clears the warning', async () => {
+      await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.oldWild, FILES.newWild]);
+      await waitStep1(page, 5, 'five certificates');
+      let s = await readStep1(page);
+      assertEqual(s.list.map((x) => [x.id, x.files.join(' | ')]), [
+        ['A', 'renew_a_rsa.pem | renew_a_ecdsa.pem'], ['B', 'renew_b_rsa.pem'], ['C', 'cli_renewed_wild.pem | cli_public_wild.pem']
+      ], 'one set for the two, the newer first');
+      const info = await page.evaluate((st) => ({
+        text: document.querySelector(`${st} [data-role="renewal-replaced"] .rw-replaced-list`)?.textContent || '',
+        marked: [...document.querySelectorAll(`${st} .rw-leaf.is-replaced .rw-leaf-files`)].map((el) => el.textContent),
+        badge: document.querySelector(`${st} .rw-leaf.is-replaced .rw-replaced-badge`)?.textContent || ''
+      }), STEP1);
+      assert(/^Set C holds two ECDSA P-256 certificates for the same names: cli_public_wild\.pem \(expires .+\) and cli_renewed_wild\.pem \(expires .+\)\.$/.test(info.text), `warning: ${info.text}`);
+      assertEqual([info.marked, info.badge], [['cli_public_wild.pem'], 'maybe the old one'], 'the old one is marked');
+      await shotEl(page, opts, 'renewal-step1-replaced-en-light', STEP1);
+      await page.click(`${STEP1} .rw-leaf.is-replaced [data-action="rw-remove-leaf"]`);
+      await waitStep1(page, 4, 'the old one removed');
+      assert(await page.evaluate((st) => !document.querySelector(`${st} [data-role="renewal-replaced"]`), STEP1), 'no warning left');
+      await page.click(`${STEP1} .rw-set[data-set="C"] [data-action="rw-remove-leaf"]`);
+      await waitStep1(page, 3, 'the renewal again');
+      s = await readStep1(page);
+      assertEqual([s.sets, s.domains], [2, APEX], 'the two sets and the domain again');
     });
 
     await run.step('more than 100 files at once: the first 100 are read, and a toast says so', async () => {
@@ -707,6 +762,17 @@ async function main() {
       assertEqual([cards.label, cards.display], ['A seti', 'grid'], 'a labelled card');
       assert(/A seti/.test(cards.before), `the label is drawn: ${cards.before}`);
       await assertNoHorizontalScroll(page, 'plan tab, 375 px');
+      // the names no certificate covers are labelled cards too: nothing scrolls sideways inside
+      const uncovered = await page.evaluate(() => {
+        const tr = document.querySelector('.rw-uncovered tbody tr.dt-row');
+        const scroll = document.querySelector('.rw-uncovered .dt-scroll');
+        return {
+          display: tr ? getComputedStyle(tr).display : '', labels: tr ? [...tr.cells].map((td) => td.dataset.label || '') : [],
+          overflow: scroll ? scroll.scrollWidth - scroll.clientWidth : -1
+        };
+      });
+      assertEqual([uncovered.display, uncovered.labels], ['grid', ['Host adı', 'Sunucularınız', 'DNS']], 'uncovered names as labelled cards');
+      assert(uncovered.overflow <= 0, `the uncovered table scrolls sideways by ${uncovered.overflow}px`);
       await shotEl(page, opts, 'renewal-plan-tr-dark-375', '.scan-tab-plan');
       await openTab(page, 'verify');
       await assertNoHorizontalScroll(page, 'verify tab, 375 px');
@@ -715,10 +781,24 @@ async function main() {
       await shotEl(page, opts, 'renewal-step1-tr-dark-375', STEP1);
     });
 
-    await run.step('one certificate alone is the classic flow: no plan tab, --cert new-cert.pem', async () => {
+    await run.step('an RSA + ECDSA pair alone is one set: the summary names it by its key types and says "needs it"', async () => {
       await setLangUi(page, 'en');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await page.setViewport({ width: 1440, height: 900 });
+      await page.click(`${STEP1} [data-action="cert-remove-all"]`);
+      await waitStep1(page, 0, 'renewal removed');
+      await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.aRsa, FILES.aEc]);
+      await waitStep1(page, 2, 'the pair');
+      await runScan(page);
+      const sum = await page.evaluate(() => ({
+        renewal: document.querySelector('[data-summary="renewal"] .alert-message')?.textContent || '',
+        verify: document.querySelector('[data-summary="verify"] .alert-message')?.textContent || ''
+      }));
+      assertEqual(sum.renewal, '1 certificate set (RSA 2048 + ECDSA P-256): 3 servers need it — see “Renewal plan”.', 'one-set summary');
+      assertEqual(sum.verify, 'After installing the certificates, open the Verify tab to check them from the internet.', 'the verify line');
+    });
+
+    await run.step('one certificate alone is the classic flow: no plan tab, --cert new-cert.pem', async () => {
       await page.click(`${STEP1} [data-action="cert-remove-all"]`);
       await waitStep1(page, 0, 'renewal removed');
       await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.bRsa]);

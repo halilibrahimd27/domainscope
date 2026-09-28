@@ -975,7 +975,11 @@ test('spfEvaluate: the RFC 7208 limits — the 11th DNS lookup and the 3rd void 
     // an IPv6-only host is a void lookup for an IPv4 sender (a receiver asks A), not for an IPv6 one
     'fam.example.com': { TXT: ['v=spf1 a:v6.example.com a:v1.example.com a:v2.example.com ip4:192.0.2.1 ip6:2001:db8::/32 -all'] },
     'v6.example.com': { AAAA: ['2001:db8:66::1'] },
-    'broken.example.com': { TXT: ['v=spf1 ip4:203.0.113.25 foo:bar -all'] }
+    'broken.example.com': { TXT: ['v=spf1 ip4:203.0.113.25 foo:bar -all'] },
+    // an include of a domain that has no SPF (any more), in front of the sender; a redirect to one
+    'gone.example.com': { TXT: ['v=spf1 include:gone.example.net ip4:203.0.113.25 -all'] },
+    'gone.example.net': { A: ['192.0.2.80'] },
+    'away.example.com': { TXT: ['v=spf1 ip4:203.0.113.25 redirect=gone.example.net'] }
   };
   for (let i = 0; i < 11; i += 1) zone[`s${i}.example.net`] = { TXT: [`v=spf1 ip4:198.51.100.${i} -all`] };
   const dns = fakeDns(zone);
@@ -1000,6 +1004,13 @@ test('spfEvaluate: the RFC 7208 limits — the 11th DNS lookup and the 3rd void 
   assert.deepEqual(brief(spfEvaluate(broken, '203.0.113.25')), ['permerror', 'syntax', null]);
   assert.deepEqual(brief(spfEvaluate(broken, '203.0.113.25', { strict: false })), ['pass', null, 'ip4:203.0.113.25'], 'past the syntax error');
   assert.equal(spfEvaluate(broken, '192.0.2.9', { strict: false }).result, 'fail');
+  const gone = await tree('gone.example.com');
+  assert.deepEqual(brief(spfEvaluate(gone, '203.0.113.25')), ['permerror', 'no-record', 'include:gone.example.net'], 'receivers stop at the include');
+  assert.deepEqual(brief(spfEvaluate(gone, '203.0.113.25', { strict: false })), ['pass', null, 'ip4:203.0.113.25'], 'the record lists it after the include');
+  assert.equal(spfEvaluate(gone, '192.0.2.9', { strict: false }).result, 'fail', 'and nothing else');
+  const away = await tree('away.example.com');
+  assert.deepEqual(brief(spfEvaluate(away, '192.0.2.9', { strict: false })), ['permerror', 'no-record', 'redirect=gone.example.net'], 'a redirect has nothing after it');
+  assert.equal(spfEvaluate(away, '203.0.113.25', { strict: false }).result, 'pass');
   assert.deepEqual(SPF_PERMERROR_REASONS, ['syntax', 'multiple-records', 'no-record', 'loop', 'depth', 'too-many-mx', 'lookup-limit', 'void-limit']);
   assert.ok(Object.isFrozen(SPF_PERMERROR_REASONS));
 });

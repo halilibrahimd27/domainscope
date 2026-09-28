@@ -654,6 +654,10 @@ describe('classifySources — yours, authorized third parties, forwarders, unkno
     assert.deepEqual([d.o.verdict, d.o.enforced, d.o.compliance, d.o.fail, d.o.atRiskMessages], ['spf-broken', true, 1, 0, 500], 'every message passed in the reports');
     const tested = await classify(past, smallReport([['203.0.113.25', 500]], { p: 'reject', extraPolicy: '<testing>y</testing>' }));
     assert.deepEqual([tested.o.verdict, tested.o.enforced], ['spf-broken', false], 'p=reject in test mode is not in force');
+    // (e) an include of a domain that no longer has SPF, in front of the sender: receivers stop there, the record still lists it
+    const gone = await classify({ 'example.com': { TXT: [['v=spf1 include:gone.example.net ip4:203.0.113.25 -all']] } }, smallReport([['203.0.113.25', 500]]));
+    assert.deepEqual([gone.by['203.0.113.25'].spfNow.reason, ...brief(gone.by['203.0.113.25'])], ['no-record', 'yours', 'spf-listed', 'ip4:203.0.113.25'],
+      'never "the current SPF could not tell"');
     // with DKIM aligned as well, nothing rests on SPF alone: ready, the note still says the record errs
     const signed = await classify(syntax, smallReport([['203.0.113.25', 500, { dkim: 'pass' }]]));
     assert.deepEqual([signed.by['203.0.113.25'].atRisk, signed.o.verdict, signed.o.notes], [0, 'ready', ['spf-permerror']]);

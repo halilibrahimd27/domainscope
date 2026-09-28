@@ -662,8 +662,10 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * or the 3rd void lookup (an `a` with no address of the sender's family, an `mx` or `exists`
  * with no answer) before a match is `permerror` ('lookup-limit', 'void-limit'), so a sender listed
  * only past the 10th lookup does not pass. `strict: false` answers another question, what the
- * record means to authorize: the limits are not applied and a record's syntax error is passed over
- * (the terms that could be read are tried), so a caller can tell whom a broken record lists.
+ * record means to authorize: the limits are not applied, a record's syntax error is passed over
+ * (the terms that could be read are tried) and an include of a domain without SPF lists no one
+ * (a redirect to one stays a permerror: nothing else is left to try), so a caller can tell whom a
+ * broken record lists.
  *
  * Honest about what a browser cannot see: a term that needs the sender (`%{i}`, `%{s}` …), `ptr`,
  * or a lookup that failed here (our resolver, not the receiver's) cannot be told. The evaluation
@@ -800,6 +802,8 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
             break;
           }
           const inner = evalNode(t.child, [...path, t.child.domain], depth + 1);
+          // Asked what the record lists (strict: false), an include of a domain without SPF lists no one: the next term is tried.
+          if (!strict && !redirect && inner.result === 'none') break;
           // RFC 7208 §5.2 / §6.1: an included or redirected-to domain without SPF is a permerror.
           const r = inner.result === 'none' ? verdict('permerror', { term: t.term, holder: node.domain, path, reason: 'no-record' }) : inner;
           if (redirect) return decide(r);

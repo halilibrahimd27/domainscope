@@ -24,7 +24,8 @@
  * the bar counts them, and Stop (Esc) ends the read with nothing half-read kept; a zipped mailbox
  * folder of 300 reports counted report by report and stopped in its middle; an SPF record with a
  * syntax error: the SPF line, the note and the verdict say receivers get a permanent error, the
- * server it lists stays yours and its mail that passed through SPF alone is to fix; offline, a dropped
+ * server it lists stays yours and its mail that passed through SPF alone is to fix, refused now once
+ * p=reject is in force; offline, a dropped
  * report classified from its own evidence with the SPF line saying it was not checked and nothing
  * sent, then Check again online; 375 / 320 px without
  * horizontal scroll, TR / EN × light / dark; zero
@@ -105,11 +106,11 @@ const fakeScript = () => `(() => {
 })();`;
 
 /** One day's aggregate report of example.com from one reporter (its own report id): 10 messages of 203.0.113.25. */
-const dailyReport = (day, { dkim = 'pass' } = {}) => {
+const dailyReport = (day, { dkim = 'pass', p = 'none' } = {}) => {
   const begin = 1790294400 + day * 86400;
   return `<?xml version="1.0" encoding="UTF-8"?><feedback><report_metadata><org_name>google.com</org_name><email>noreply-dmarc-support@example.org</email>
 <report_id>daily-${day}</report_id><date_range><begin>${begin}</begin><end>${begin + 86399}</end></date_range></report_metadata>
-<policy_published><domain>example.com</domain><p>none</p></policy_published>
+<policy_published><domain>example.com</domain><p>${p}</p></policy_published>
 <record><row><source_ip>203.0.113.25</source_ip><count>10</count><policy_evaluated><disposition>none</disposition><dkim>${dkim}</dkim><spf>pass</spf></policy_evaluated></row>
 <identifiers><header_from>example.com</header_from></identifiers><auth_results><dkim><domain>example.com</domain><selector>mail2026</selector><result>${dkim}</result></dkim>
 <spf><domain>example.com</domain><result>pass</result></spf></auth_results></record></feedback>`;
@@ -567,6 +568,15 @@ async function main() {
           && /Repair the SPF record of example\.com: receivers get a permanent error from it \(a syntax error\)/.test(item), item);
         assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpt-fix-item [data-fix]')].map((f) => f.dataset.fix)), ['spf-permerror', 'dkim-fix'], 'fixes: the record, then its DKIM signature that does not verify');
         assert(/Receivers get a permanent error from the current SPF of example\.com for 1 sending address: a syntax error/.test(await text(page, '.rpt-notes [data-note="spf-permerror"]')), 'the note');
+        // A later report publishes p=reject: that mail is refused now, an error, never "not ready yet".
+        const later = path.join(dir, 'google.com!example.com!spf-reject.xml');
+        await writeFile(later, dailyReport(201, { dkim: 'fail', p: 'reject' }));
+        await page.setFileInput('.rpt-load .filedrop-input', [later]);
+        await page.waitFor(() => document.querySelector('.rpt-verdict')?.dataset.look === 'enforcedSpfBroken', { message: 'p=reject in force' });
+        assert(/p=reject is in force, and the SPF record now gives a permanent error/.test(await text(page, '.rpt-verdict'))
+          && /20 messages in these reports/.test(await text(page, '.rpt-verdict')), await text(page, '.rpt-verdict'));
+        assertEqual(await page.evaluate(() => [document.querySelector('.rpt-verdict').dataset.verdict, document.querySelector('.rpt-verdict').classList.contains('alert-error')]),
+          ['spf-broken', true], 'an error');
       } finally {
         await page.evaluate((txt) => { window.__zone['example.com'].TXT = txt; }, good);
         await rm(dir, { recursive: true, force: true }).catch(() => {});

@@ -40,10 +40,13 @@ const JS = join(ASSETS, 'js');
  * tab holding the database — the browser's own message is English), and a write reads the
  * stored meta in its own transaction: ≈ 358 KB (366,942 bytes). A workspace whose creation could
  * not be written is stored by its next write, and "Delete all local data" also deletes a database
- * the page could not open: ≈ 359 KB (367,785 bytes).
+ * the page could not open: ≈ 359 KB (367,785 bytes). Wave 3's new tools — Renewal readiness,
+ * Retire an IP and the Domain overview — each put a Copy summary builder with its strings in
+ * lib/summary.js and an entry in the shell's navigation, and SSL Targets' several certificates a
+ * few shared components: ≈ 368 KB (377,294 bytes).
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 360 * 1024;
+const START_ROUTE_BUDGET = 370 * 1024;
 
 /** Modules that must never be part of the start route. */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',

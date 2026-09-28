@@ -163,7 +163,7 @@ describe('i18n coverage', () => {
     for (const r of retire.UNKNOWN_REASONS) add(`retire.act.check.${r}`);
     for (const p of retire.PASSIVE_SOURCES) add(`retire.passive.src.${p}`);
     for (const s of retire.HOST_SOURCES) add(`retire.hosts.${s}`);
-    for (const s of ['dns', 'spf', 'zone', 'passive', 'scan', 'discovered']) add(`retire.ev.src.${s}`);
+    for (const s of views.retire.EVIDENCE_SOURCES) add(`retire.ev.src.${s}`);
     for (const r of ['mx', 'ns', 'spf']) add(`retire.ev.roles.${r}`);
     for (const s of ['scan', 'zone', 'target']) add(`retire.filled.${s}`);
     for (const k of ['remove.a', 'remove.https', 'remove.spf', 'remove.spfStale', 'narrow', 'follow.spf', 'follow.cname', 'repoint.mx',

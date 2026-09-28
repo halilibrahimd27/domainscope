@@ -246,8 +246,9 @@
   overflow-wrap: anywhere;
 }
 
+/* wide enough for an MX value ("10 mail.example.com") on one line */
 .retire-value {
-  min-width: 8rem;
+  min-width: 11rem;
   max-width: 22rem;
 }
 

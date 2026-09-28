@@ -1008,7 +1008,8 @@ export function inventoryOwners(blocks, servers) {
  * @property {string} verified one of {@link VERIFIED_STATES}
  * @property {string[]} via a CNAME chain (owner first), an MX / NS host's chain, or an SPF include path
  * @property {string[]} roles what else the owner is: 'mx', 'ns', 'spf'
- * @property {string[]} sources 'dns', 'spf', 'zone', 'passive' and a known host's source ({@link HOST_SOURCES})
+ * @property {string[]} sources 'dns', 'spf', 'zone' (the zone file holds the record), 'passive' and where a known host came
+ *   from ({@link HOST_SOURCES}; a name listed in the zone file is 'zone-name')
  * @property {number|null} line the zone file line
  * @property {boolean|null} proxied
  * @property {object|null} spf `{ term, qualifier, effective, relation, range, holder, record, mechanism, host }`
@@ -1106,7 +1107,9 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
       const roles = n.roles.filter((r) => r === 'mx' || r === 'ns' || r === 'spf');
       const severity = roles.includes('mx') ? 'mail' : roles.includes('ns') ? 'ns' : 'live';
       for (const { address, block } of hits(n)) {
-        const common = { addresses: [address], blocks: [block.cidr], roles, sources: ['dns', ...n.sources], verified: 'live' };
+        // A name the zone file listed is not a record the file holds: its source says so apart ('zone-name').
+        const hostSources = n.sources.map((s) => (s === 'zone' ? 'zone-name' : s));
+        const common = { addresses: [address], blocks: [block.cidr], roles, sources: ['dns', ...hostSources], verified: 'live' };
         add({ ...common, name: holder, type: address.includes(':') ? 'AAAA' : 'A', value: address, severity, action: 'remove', via: n.cnames.length ? [n.name, ...n.cnames] : [] }, c.domain);
         if (n.cnames.length) add({ ...common, name: n.name, type: 'CNAME', value: n.cnames[0], severity: 'chain', action: 'follow', via: [n.name, ...n.cnames] }, c.domain);
       }

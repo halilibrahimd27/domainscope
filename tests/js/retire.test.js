@@ -485,8 +485,11 @@ describe('the imported zone', () => {
     assert.equal(only.changes.find((c) => c.name === 'old.example.com').line, 6);
 
     // With the domain checked too, the same records are one row each (sources joined).
-    const check = await checkDomain('example.com', { dns, blocks, hosts: ['old.example.com'] });
+    const check = await checkDomain('example.com', { dns, blocks, hosts: ['old.example.com', { name: 'mail.example.com', source: 'zone' }] });
     const both = buildChanges({ blocks, checks: [check], zone: { origin: 'example.com', refs } });
+    // A name the zone listed ('zone-name') is not the same as a record the file holds ('zone', with its line).
+    const mail = both.changes.find((c) => c.name === 'mail.example.com' && c.type === 'A');
+    assert.deepEqual([mail.sources, mail.line], [['dns', 'zone-name', 'zone'], 8]);
     assert.deepEqual(both.groups.map((g) => [g.key, g.kind]), [['example.com', 'domain']]);
     const apex = both.changes.filter((c) => c.name === 'example.com' && c.type === 'A');
     assert.equal(apex.length, 1);

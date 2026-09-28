@@ -61,6 +61,8 @@ export const GROUP_PAGE = 100;
 const DOMAIN_CONCURRENCY = 2;
 
 const SEVERITY_VARIANT = Object.freeze({ mail: 'error', ns: 'error', live: 'warn', origin: 'warn', chain: 'warn', file: 'info', stale: 'neutral', unknown: 'neutral' });
+/** The row sources the Evidence column names (lib/retire.js Change.sources), in that order of the row. */
+export const EVIDENCE_SOURCES = Object.freeze(['dns', 'spf', 'zone', 'passive', 'scan', 'zone-name', 'discovered']);
 const VERIFIED_VARIANT = Object.freeze({ live: 'ok', file: 'neutral', hidden: 'info', internal: 'neutral', unverified: 'neutral', unknown: 'neutral' });
 
 registerStrings('en', {
@@ -246,6 +248,7 @@ registerStrings('en', {
   'retire.ev.src.dns': 'public DNS',
   'retire.ev.src.spf': 'SPF',
   'retire.ev.src.zone': 'zone file',
+  'retire.ev.src.zone-name': 'a name in the zone file',
   'retire.ev.src.passive': 'passive reverse IP',
   'retire.ev.src.scan': 'the last scan',
   'retire.ev.src.discovered': 'discovery',
@@ -441,6 +444,7 @@ registerStrings('tr', {
   'retire.ev.src.dns': 'genel DNS',
   'retire.ev.src.spf': 'SPF',
   'retire.ev.src.zone': 'zone dosyası',
+  'retire.ev.src.zone-name': 'zone dosyasındaki bir ad',
   'retire.ev.src.passive': 'pasif ters IP',
   'retire.ev.src.scan': 'son tarama',
   'retire.ev.src.discovered': 'keşif',
@@ -1448,7 +1452,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     if (c.proxied === true) roles.push(t('retire.ev.proxied'));
     if (roles.length) add(roles.join(' · '));
     const hasLine = c.line !== null && c.line !== undefined;
-    const srcs = c.sources.filter((s) => ['dns', 'spf', 'zone', 'passive', 'scan', 'discovered'].includes(s))
+    const srcs = c.sources.filter((s) => EVIDENCE_SOURCES.includes(s))
       .map((s) => (s === 'zone' && hasLine ? t('retire.line', { line: c.line }) : t(`retire.ev.src.${s}`)));
     if (srcs.length) add(srcs.join(' · '));
     if (c.groupKind === 'other' && c.foundFor.length) add(t('retire.ev.foundFor', { list: c.foundFor.join(', ') }));

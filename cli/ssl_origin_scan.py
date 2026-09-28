@@ -6885,7 +6885,17 @@ COMPARE_NOTES = {
     'new-cert': 'another certificate (usual on a new server)',
     'same-cert': 'the same certificate',
 }
-_ABSOLUTE_NOTES = ('cert-name', 'cert-untrusted', 'cert-expiring')
+# Certificate problems both servers can share: no difference, so said apart from the verdict.
+COMPARE_SHARED = {
+    'cert-untrusted': 'Both servers serve a certificate this machine does not trust: no difference between '
+                      'them (an origin CA certificate behind a CDN is trusted by the CDN only; --private-ca '
+                      'names your own CA), but a client that reaches either server directly refuses it.',
+    'cert-name': 'Neither server\'s certificate covers the name: no difference between them (a CDN that '
+                 'does not check the name hides it), but a client that reaches either server directly '
+                 'refuses it.',
+    'cert-expiring': 'Both servers serve a certificate that expires within %d days: no difference between '
+                     'them, but renew it on both.' % COMPARE_EXPIRY_WARN_DAYS,
+}
 _SEVERITY_RANK = {'ok': 0, 'info': 1, 'warn': 2, 'error': 3}
 _TITLE_RE = re.compile(rb'<title\b[^>]*>(.*?)</title\s*>', re.I | re.S)
 
@@ -7052,11 +7062,15 @@ def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertI
         return None, _clean_ssl_message(exc)
 
 
-def _compare_field(key: str, old: Any, new: Any, severity: str, note: Optional[str] = None
-                   ) -> Dict[str, Any]:
+def _compare_field(key: str, old: Any, new: Any, severity: str, note: Optional[str] = None,
+                   shared: Optional[bool] = None) -> Dict[str, Any]:
+    """One compared field: 'ok' when both agree, unless its note is a certificate problem both
+    servers share (``shared``: a 'warn' the verdict leaves out; the caller can say it itself)."""
     same = old == new
+    if shared is None:
+        shared = same and note in COMPARE_SHARED
     return {'key': key, 'old': old, 'new': new, 'same': same,
-            'severity': 'ok' if same and note not in _ABSOLUTE_NOTES else severity, 'note': note}
+            'severity': 'warn' if shared else 'ok' if same else severity, 'note': note, 'shared': shared}
 
 
 def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -7065,9 +7079,12 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     that does not cover the name or is not trusted (while the old one was) is an error;
     another status, redirect, content type or title, a lost HSTS header or a certificate
     expiring within 14 days a warning; another body, Server header or certificate (its names,
-    issuer, expiry, fingerprint) is information. Verdict: unreachable (neither server answered:
-    this machine's network may be the cause as much as the servers), broken, incomplete (the
-    old server did not answer), differs, same."""
+    issuer, expiry, fingerprint) is information. A certificate problem both servers share (the
+    same untrusted certificate, neither covering the name, both expiring soon with the new one
+    no sooner) is no difference: the field is ``shared``, its note is listed in ``shared`` and
+    the verdict leaves it out. Verdict: unreachable (neither server answered: this machine's
+    network may be the cause as much as the servers), broken, incomplete (the old server did
+    not answer), differs, same."""
     now = now or _utcnow()
     fields = []  # type: List[Dict[str, Any]]
     note, severity = None, 'ok'  # type: Optional[str], str
@@ -7117,15 +7134,19 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
         fields.append(_compare_field('cert_issuer', ca.issuer_label() if ca else None,
                                      cb.issuer_label() if cb else None, 'info'))
         soon = cb.days_left(now) < COMPARE_EXPIRY_WARN_DAYS
-        fields.append(_compare_field('cert_expires', ca.not_after.strftime('%Y-%m-%d') if ca else None,
-                                     cb.not_after.strftime('%Y-%m-%d') if cb else None,
-                                     'warn' if soon else 'info', 'cert-expiring' if soon else None))
+        old_day = ca.not_after.strftime('%Y-%m-%d') if ca else None
+        new_day = cb.not_after.strftime('%Y-%m-%d')
+        # Both expire soon, the new one no sooner: renew both, but the move changes nothing there.
+        both_soon = soon and ca is not None and (old_day == new_day or (
+            ca.days_left(now) < COMPARE_EXPIRY_WARN_DAYS and cb.not_after >= ca.not_after))
+        fields.append(_compare_field('cert_expires', old_day, new_day, 'warn' if soon else 'info',
+                                     'cert-expiring' if soon else None, both_soon))
         same_cert = bool(ca and cb and ca.sha256 == cb.sha256)
         fields.append(_compare_field('cert_sha256', ca.sha256 if ca else None, cb.sha256 if cb else None, 'info',
                                      'same-cert' if same_cert else ('new-cert' if ca and cb else None)))
-    worst = 'ok'
+    worst = 'ok'  # of the fields that count: a problem both servers share is said apart
     for item in fields:
-        if _SEVERITY_RANK[item['severity']] > _SEVERITY_RANK[worst]:
+        if not item.get('shared') and _SEVERITY_RANK[item['severity']] > _SEVERITY_RANK[worst]:
             worst = item['severity']
     if not a.ok and not b.ok:
         verdict = 'unreachable'
@@ -7138,7 +7159,8 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     else:
         verdict = 'same'
     return {'verdict': verdict, 'worst': worst, 'fields': fields,
-            'differences': sum(1 for item in fields if not item['same'])}
+            'differences': sum(1 for item in fields if not item['same']),
+            'shared': [item['note'] for item in fields if item.get('shared')]}
 
 
 def _compare_value(key: str, value: Any, side: CompareSide, now: datetime) -> str:
@@ -7172,8 +7194,9 @@ def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result:
     lines = ['Comparing %s on %s (old) and %s (new), port %d, GET %s' % (
         display_text(name), a.ip, b.ip, a.port, display_text(path)), '']
     lines.append('  %-18s %s %s' % ('', fit('old ' + a.ip).ljust(col), fit('new ' + b.ip)))
-    # A difference is DIFFERS (warning) or differs (information); a warning about what both
-    # servers share (a certificate that expires soon on both, neither answering) is WARNING.
+    # A difference is ERROR, DIFFERS (warning) or differs (information); a problem both servers
+    # share (the same untrusted certificate, one expiring soon on both) or neither answering is
+    # WARNING: no difference.
     marks = {('error', False): ('ERROR', ('red', 'bold')), ('error', True): ('ERROR', ('red', 'bold')),
              ('warn', False): ('DIFFERS', ('yellow', 'bold')), ('warn', True): ('WARNING', ('yellow', 'bold')),
              ('info', False): ('differs', ('gray',))}
@@ -7181,8 +7204,9 @@ def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result:
         old = fit(display_text(_compare_value(item['key'], item['old'], a, now)))
         new = fit(display_text(_compare_value(item['key'], item['new'], b, now)))
         mark = ''
-        if (item['severity'], bool(item['same'])) in marks:
-            label, styles = marks[(item['severity'], bool(item['same']))]
+        key = (item['severity'], bool(item['same'] or item.get('shared')))
+        if key in marks:
+            label, styles = marks[key]
             mark = style.paint(label, *styles)
         lines.append(('  %-18s %s %s  %s' % (COMPARE_LABELS[item['key']], old.ljust(col), new.ljust(col), mark)).rstrip())
         if item['note'] and item['note'] not in ('same-cert', 'body-cut'):
@@ -7200,6 +7224,8 @@ def render_compare(name: str, path: str, a: CompareSide, b: CompareSide, result:
                      'unreachable': ('yellow', 'bold')}.get(verdict, ('bold',))
     lines.append('')
     lines.append('%s: %s' % (style.paint(verdict.upper(), *verdict_style), text))
+    for note in result.get('shared', []):
+        lines.append('%s: %s' % (style.paint('WARNING', 'yellow', 'bold'), COMPARE_SHARED[note]))
     return '\n'.join(lines) + '\n'
 
 
@@ -7209,7 +7235,8 @@ def compare_to_dict(name: str, path: str, a: CompareSide, b: CompareSide, result
     return {
         'schema': 'domainscope.compare/1', 'tool': {'name': PROG, 'version': __version__},
         'generatedAt': iso_utc(now or _utcnow()), 'name': name, 'path': path,
-        'old': a.to_dict(now), 'new': b.to_dict(now), 'verdict': result['verdict'], 'fields': result['fields'],
+        'old': a.to_dict(now), 'new': b.to_dict(now), 'verdict': result['verdict'],
+        'shared': result.get('shared', []), 'fields': result['fields'],
     }
 
 
@@ -7465,13 +7492,17 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   covers the name, trusted, issuer, expiry, SHA-256 fingerprint - with ERROR (the new server
   does not answer, answers 4xx / 5xx where the old one did not, or its certificate does not
   cover the name or is not trusted), DIFFERS (another status, redirect, type or title, a lost
-  HSTS header), WARNING (a certificate expiring within 14 days) and differs (information:
+  HSTS header, a new certificate expiring within 14 days) and differs (information:
   another body, Server header or certificate; a page with a token or a time in it differs on
-  every request). When neither server answers, the verdict is UNREACHABLE: this machine's
-  network may be the cause as much as the servers. Private addresses are fine: this is the
-  counterpart of the web app's check from the internet (Retire an IP > Compare the old and
-  the new server). --json FILE writes both answers (schema domainscope.compare/1);
-  --fail-on-change exits with code 4 on ERROR, DIFFERS or UNREACHABLE.
+  every request). A certificate problem both servers share - the same untrusted certificate
+  (an origin CA certificate behind a CDN), neither covering the name, both expiring within
+  14 days - is WARNING and no difference: two identical servers are SAME, with a WARNING
+  line under the verdict. When neither server answers, the verdict is UNREACHABLE: this
+  machine's network may be the cause as much as the servers. Private addresses are fine:
+  this is the counterpart of the web app's check from the internet (Retire an IP > Compare
+  the old and the new server). --json FILE writes both answers (schema
+  domainscope.compare/1, the shared problems in "shared"); --fail-on-change exits with
+  code 4 on BROKEN, DIFFERS or UNREACHABLE, never for a problem both servers share.
 
 exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIGIN_CERT
             and PRIVATE_CERT only with --strict-public),

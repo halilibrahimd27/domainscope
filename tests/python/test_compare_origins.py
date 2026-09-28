@@ -86,9 +86,9 @@ class CompareIntegrationTests(unittest.TestCase):
         self.servers += [old, new]
         return old, new
 
-    def compare(self, port: int, *extra: str) -> Tuple[int, str, str]:
+    def compare(self, port: int, *extra: str, private_ca: bool = True) -> Tuple[int, str, str]:
         return run_main('--compare', '127.0.0.1', '127.0.0.2', '-n', NAME, '-p', str(port), '--timeout', '3',
-                        '--private-ca', PRIVATE_CA, '--no-color', *extra)
+                        *(('--private-ca', PRIVATE_CA) if private_ca else ()), '--no-color', *extra)
 
     def test_the_same_site_on_both(self):
         old, new = self.pair()
@@ -112,6 +112,23 @@ class CompareIntegrationTests(unittest.TestCase):
             self.assertTrue(request.startswith('GET /healthz?x=1 HTTP/1.1\r\n'), request)
             self.assertIn('\r\nHost: %s:%d\r\n' % (NAME, old.port), request)
             self.assertIn('\r\nAccept-Encoding: identity\r\n', request)
+
+    def test_the_same_untrusted_certificate_on_both_is_no_difference(self):
+        # Without --private-ca this machine trusts neither: the same private-CA certificate on
+        # both servers (an origin CA certificate behind a CDN is the usual case) is SAME.
+        old, _new = self.pair()
+        path = os.path.join(self.tmp.name, 'compare.json')
+        code, out, err = self.compare(old.port, '--json', path, '--fail-on-change', private_ca=False)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn('SAME: The new server answers like the old one', out)
+        self.assertIn('WARNING: Both servers serve a certificate this machine does not trust', out)
+        self.assertNotIn('DIFFERS', out)
+        line = next(l for l in out.splitlines() if l.strip().startswith('cert trusted'))
+        self.assertTrue(line.rstrip().endswith('WARNING'), line)
+        doc = read_json(path)
+        self.assertEqual([doc['verdict'], doc['shared']], ['same', ['cert-untrusted']])
+        trusted = next(f for f in doc['fields'] if f['key'] == 'cert_trusted')
+        self.assertEqual([trusted['same'], trusted['shared'], trusted['severity']], [True, True, 'warn'])
 
     def test_a_new_server_that_answers_differently(self):
         old, _new = self.pair(new_kwargs={'status': 301, 'headers': {'Location': 'https://www.example.net/', 'Server': 'caddy'},
@@ -180,6 +197,35 @@ class CompareUnitTests(unittest.TestCase):
         self.assertIn('cert-expiring', [f['note'] for f in expiring['fields']])
         untrusted = sos.compare_sides(self.side(cert=cert, covers=True, trusted=True), self.side(cert=cert, covers=True, trusted=False), now)
         self.assertEqual(untrusted['verdict'], 'broken')
+        fixed = sos.compare_sides(self.side(cert=cert, covers=True, trusted=False), self.side(cert=cert, covers=True, trusted=True), now)
+        self.assertEqual([fixed['verdict'], fixed['shared']], ['same', []], 'untrusted -> trusted is information')
+
+    def test_a_problem_both_servers_share_is_no_difference(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        cert = fixture_cert('cli_private_wild.pem')
+        other = fixture_cert('rsa_multi_san.pem')
+        untrusted = dict(cert=cert, covers=True, trusted=False)
+        both = sos.compare_sides(self.side(**untrusted), self.side(ip='192.0.2.2', **untrusted), now)
+        self.assertEqual([both['verdict'], both['shared'], both['worst']], ['same', ['cert-untrusted'], 'ok'])
+        field = next(f for f in both['fields'] if f['key'] == 'cert_trusted')
+        self.assertEqual([field['same'], field['shared'], field['severity']], [True, True, 'warn'])
+        text = sos.render_compare(NAME, '/', self.side(**untrusted), self.side(ip='192.0.2.2', **untrusted), both, width=160, now=now)
+        self.assertIn('SAME: ', text)
+        self.assertIn('WARNING: Both servers serve a certificate this machine does not trust', text)
+        # The same certificate, expiring within 14 days on both.
+        soon = cert.not_after if cert.not_after.tzinfo else cert.not_after.replace(tzinfo=timezone.utc)
+        valid = dict(cert=cert, covers=True, trusted=True)
+        expiring = sos.compare_sides(self.side(**valid), self.side(ip='192.0.2.2', **valid), soon)
+        self.assertEqual([expiring['verdict'], expiring['shared']], ['same', ['cert-expiring']])
+        text = sos.render_compare(NAME, '/', self.side(**valid), self.side(ip='192.0.2.2', **valid), expiring, width=160, now=soon)
+        self.assertIn('WARNING: Both servers serve a certificate that expires within 14 days', text)
+        # A default certificate that covers the name on neither server.
+        wrong = dict(cert=other, covers=False, trusted=False)
+        neither = sos.compare_sides(self.side(**wrong), self.side(ip='192.0.2.2', **wrong), now)
+        self.assertEqual([neither['verdict'], sorted(neither['shared'])], ['same', ['cert-name', 'cert-untrusted']])
+        # Next to a real difference, the verdict follows the difference.
+        moved = sos.compare_sides(self.side(**untrusted), self.side(ip='192.0.2.2', status=301, location='https://www.example.net/', **untrusted), now)
+        self.assertEqual([moved['verdict'], moved['shared']], ['differs', ['cert-untrusted']])
 
     def test_certificate_names_side_by_side(self):
         now = datetime(2026, 9, 28, tzinfo=timezone.utc)

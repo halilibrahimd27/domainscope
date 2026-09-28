@@ -8,10 +8,10 @@
  *   "Advanced" disclosure (passive sources with quota notes, wordlist level Off / Small /
  *   Smart / Large / Huge with exact candidate counts, the locale packs the typed domain gets and
  *   a time estimate, languages / markets (automatic from the domain ending or chosen), a custom
- *   wordlist (paste or .txt, this tab only), learned names of earlier scans (opt-in; bare labels
- *   of in-scope names, stored in this browser and tried as DNS lookups under later targets —
- *   never at level Off), permutations + budget, origin hints, expired certificates, extra
- *   hostnames; the plan counts every wildcard base too).
+ *   wordlist (paste or .txt, kept in the active workspace), learned names of earlier scans (opt-in;
+ *   bare labels of in-scope names, stored in the active workspace and tried as DNS lookups under
+ *   its later targets — never at level Off), permutations + budget, origin hints, expired
+ *   certificates, extra hostnames; the plan counts every wildcard base too).
  *   The options are remembered per browser (a stored legacy 'medium' level loads as 'smart').
  * - Runs lib/scanner.runScan (the DNS-first discovery engine) without a certificate: stages
  *   (sources, DNS records, wildcard, wordlist, permutations, resolve, origin hints), per-source
@@ -50,8 +50,8 @@
  * has none); a re-mount (a language switch, Back from another view) opens that tab again. A
  * domain carried over from another tool (`run=0`, lib/session.js) fills the box only while it is
  * empty or still holds the last scan's domains or the domain carried before. "Delete all local
- * data" forgets the box and the last scan (a running one is stopped), whether or not the view is
- * mounted.
+ * data" and a switch to another workspace forget the box and the last scan (a running one is
+ * stopped), whether or not the view is mounted.
  */
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
@@ -121,10 +121,6 @@ export const BRUTEFORCE_TOTAL_CAP = 200000;
 export const LOCALE_CODES = LOCALE_PACK_CODES;
 /** Learned labels tried per scan at most (the most frequent first). */
 export const LEARNED_TRY_MAX = 1000;
-/** sessionStorage key of the pasted / uploaded custom wordlist (raw text, this tab only). */
-export const CUSTOM_WORDLIST_KEY = 'ssds.wordlist.custom';
-/** Longest custom wordlist kept in sessionStorage (characters); a longer one stays in memory. */
-export const CUSTOM_WORDLIST_MAX_CHARS = 2000000;
 /** Largest .txt file the custom-wordlist upload reads. */
 export const CUSTOM_FILE_MAX_BYTES = 5 * 1024 * 1024;
 /** Shells the origin sweep command is offered for. */
@@ -279,20 +275,20 @@ registerStrings('en', {
 
   'sub.custom.label': 'Custom wordlist',
   'sub.custom.placeholder': 'api\nbilling\ndev.api',
-  'sub.custom.hint': 'Your own names, one per line or separated by commas / spaces (dev.api tries a deeper name). They are tried first. Kept in this browser tab only (session storage) and gone when the tab closes; never uploaded.',
+  'sub.custom.hint': 'Your own names, one per line or separated by commas / spaces (dev.api tries a deeper name). They are tried first. Kept with the current workspace in this browser (IndexedDB) and in its hand-over file; never uploaded.',
   'sub.custom.upload': 'Load .txt',
   'sub.custom.uploadLabel': 'Adds the names of a .txt file — read in your browser, never uploaded',
   'sub.custom.clear': 'Clear',
   'sub.custom.empty': 'No custom names.',
   'sub.custom.count': { one: '{count} name accepted', other: '{count} names accepted' },
   'sub.custom.rejected': { one: '{count} rejected: {list}', other: '{count} rejected: {list}' },
-  'sub.custom.memory': 'Too long for session storage — kept until you leave this page.',
+  'sub.custom.memory': 'Browser storage is unavailable — the list is kept until you close this tab.',
   'sub.custom.loaded': '{name} added ({size}).',
   'sub.custom.tooLarge': '{name} is too large ({size}; at most {max}).',
   'sub.custom.readError': '{name} could not be read.',
 
   'sub.learned.label': { zero: 'Try names found in your earlier scans first (none yet)', one: 'Try names found in your earlier scans first ({count})', other: 'Try names found in your earlier scans first ({count})' },
-  'sub.learned.hint': 'Off by default. When on, each finished scan saves only the left-most labels of the resolving names under the scanned domains (api, vpn, panel …) in this browser’s local storage — never full hostnames or IP addresses. Later scans of any domain try them first (at every wordlist level except Off) as DNS lookups such as label.domain, so the DNS resolvers and that domain’s nameservers see these labels. Keep it off when you scan unrelated organisations. When off, nothing is saved or tried.',
+  'sub.learned.hint': 'Off by default. When on, each finished scan saves only the left-most labels of the resolving names under the scanned domains (api, vpn, panel …) in the current workspace (this browser’s IndexedDB) — never full hostnames or IP addresses. Later scans of any domain in this workspace try them first (at every wordlist level except Off) as DNS lookups such as label.domain, so the DNS resolvers and that domain’s nameservers see these labels. Give each organisation its own workspace, or keep it off when you scan unrelated ones in one. When off, nothing is saved or tried.',
   'sub.learned.clear': 'Forget learned names',
   'sub.learned.cleared': 'Learned names forgotten.',
 
@@ -717,20 +713,20 @@ registerStrings('tr', {
 
   'sub.custom.label': 'Özel kelime listesi',
   'sub.custom.placeholder': 'api\nfatura\ndev.api',
-  'sub.custom.hint': 'Kendi adlarınız; her satıra bir tane ya da virgül / boşlukla ayrılmış (dev.api bir alt seviyeyi dener). Önce bunlar denenir. Yalnızca bu tarayıcı sekmesinde tutulur (oturum deposu), sekme kapanınca silinir; hiçbir yere gönderilmez.',
+  'sub.custom.hint': 'Kendi adlarınız; her satıra bir tane ya da virgül / boşlukla ayrılmış (dev.api bir alt seviyeyi dener). Önce bunlar denenir. Geçerli çalışma alanıyla birlikte bu tarayıcıda (IndexedDB) ve devir dosyasında tutulur; hiçbir yere gönderilmez.',
   'sub.custom.upload': '.txt ekle',
   'sub.custom.uploadLabel': 'Bir .txt dosyasındaki adları ekler — tarayıcınızda okunur, hiçbir yere gönderilmez',
   'sub.custom.clear': 'Temizle',
   'sub.custom.empty': 'Özel ad yok.',
   'sub.custom.count': '{count} ad kabul edildi',
   'sub.custom.rejected': '{count} tanesi reddedildi: {list}',
-  'sub.custom.memory': 'Oturum deposu için fazla uzun — bu sayfadan ayrılana kadar tutulur.',
+  'sub.custom.memory': 'Tarayıcı depolaması kullanılamıyor — liste bu sekmeyi kapatana kadar tutulur.',
   'sub.custom.loaded': '{name} eklendi ({size}).',
   'sub.custom.tooLarge': '{name} çok büyük ({size}; en fazla {max}).',
   'sub.custom.readError': '{name} okunamadı.',
 
   'sub.learned.label': { zero: 'Önceki taramalarınızda bulunan adları önce dene (henüz yok)', other: 'Önceki taramalarınızda bulunan adları önce dene ({count})' },
-  'sub.learned.hint': 'Varsayılan olarak kapalıdır. Açıkken her tamamlanan tarama, taranan alan adlarının altında çözümlenen adların yalnızca en soldaki etiketlerini (api, vpn, panel …) bu tarayıcının yerel deposuna kaydeder — asla tam host adlarını ya da IP adreslerini değil. Sonraki taramalar, hangi alan adı olursa olsun, bunları önce (Kapalı dışındaki her kelime listesi seviyesinde) etiket.alanadı biçiminde DNS sorgusu olarak dener; yani DNS çözümleyicileri ve o alan adının ad sunucuları bu etiketleri görür. Birbiriyle ilgisiz kurumları tarıyorsanız kapalı bırakın. Kapalıyken hiçbir şey kaydedilmez ya da denenmez.',
+  'sub.learned.hint': 'Varsayılan olarak kapalıdır. Açıkken her tamamlanan tarama, taranan alan adlarının altında çözümlenen adların yalnızca en soldaki etiketlerini (api, vpn, panel …) geçerli çalışma alanına (bu tarayıcının IndexedDB deposu) kaydeder — asla tam host adlarını ya da IP adreslerini değil. Bu çalışma alanındaki sonraki taramalar, hangi alan adı olursa olsun, bunları önce (Kapalı dışındaki her kelime listesi seviyesinde) etiket.alanadı biçiminde DNS sorgusu olarak dener; yani DNS çözümleyicileri ve o alan adının ad sunucuları bu etiketleri görür. Her kuruma ayrı bir çalışma alanı açın ya da ilgisiz kurumları tek bir alanda tarıyorsanız kapalı bırakın. Kapalıyken hiçbir şey kaydedilmez ya da denenmez.',
   'sub.learned.clear': 'Öğrenilen adları unut',
   'sub.learned.cleared': 'Öğrenilen adlar silindi.',
 
@@ -1514,45 +1510,16 @@ export function wordlistScanConfig(options, { custom = [], learned = [] } = {}) 
   return out;
 }
 
-/* ---- per-browser vocabulary: learned labels (localStorage), custom list (sessionStorage) ---- */
-
-let memoryLearned = null;
-
-/** localStorage, or null where it is missing or throws (private mode, sandbox). */
-function localStore() {
-  try {
-    return globalThis.localStorage || null;
-  } catch {
-    return null;
-  }
-}
-
-/** sessionStorage, or null where it is missing or throws. */
-function sessionStore() {
-  try {
-    return globalThis.sessionStorage || null;
-  } catch {
-    return null;
-  }
-}
+/* ---- the workspace's vocabulary: learned labels and the custom list (state.js, lib/workspace.js) ---- */
 
 /**
- * The learned-labels store of this browser (lib/learned.js over localStorage). Read afresh on
- * every call, so another tab's scan or "Delete all local data" is always reflected; without
- * usable storage an in-memory store serves this page.
+ * The learned-labels store of the active workspace (lib/learned.js over state.learnedStorage).
+ * Read afresh on every call, so another workspace, another tab's scan or "Delete all local data"
+ * is always reflected; where the browser refuses storage the workspace lives in memory.
  * @returns {ReturnType<typeof createLearnedStore>}
  */
 export function learnedStore() {
-  const storage = localStore();
-  if (storage) {
-    try {
-      return createLearnedStore(storage);
-    } catch {
-      // fall through to memory
-    }
-  }
-  if (!memoryLearned) memoryLearned = createLearnedStore(null);
-  return memoryLearned;
+  return createLearnedStore(stateSingleton.learnedStorage);
 }
 
 /**
@@ -1587,99 +1554,55 @@ export function rememberLearned(result, enabled, store = learnedStore) {
   }
 }
 
-/** The pasted / uploaded custom wordlist of this tab: raw text + where it is kept. */
-const custom = { text: null, parsed: null, parsedFor: null, stored: 'session' };
+/** The last custom wordlist parsed (parseCustomWordlist of a long list is not free). */
+const custom = { parsed: null, parsedFor: null };
 
 /**
- * The custom wordlist text of this tab (sessionStorage; memory when that is unavailable or
- * the list is too long for it). While it is kept in sessionStorage the storage is the truth and
- * is read afresh every time, so "Delete all local data" (which empties it) takes effect whatever
- * view is mounted; a memory-only copy is dropped through the 'cleared' state event instead.
+ * The custom wordlist text of the active workspace (state.js; stored with the workspace, so each
+ * customer has its own list and it comes back on the next visit). The workspace is the truth and
+ * is read every time: another workspace, another tab or "Delete all local data" takes effect
+ * whatever view is mounted.
  * @returns {string}
  */
 export function loadCustomWordlist() {
-  if (custom.text === null || custom.stored === 'session') {
-    let text = '';
-    const s = sessionStore();
-    try {
-      text = (s && s.getItem(CUSTOM_WORDLIST_KEY)) || '';
-    } catch {
-      text = '';
-    }
-    custom.text = typeof text === 'string' ? text : '';
-  }
-  return custom.text;
+  const text = stateSingleton.workspaceData('wordlist');
+  return typeof text === 'string' ? text : '';
 }
 
 /**
- * Keep the custom wordlist text for this tab.
+ * Keep the custom wordlist text in the active workspace (in memory at once; the store writes the
+ * latest text of a burst of keystrokes once).
  * @param {string} text
- * @returns {'session'|'memory'} where it is kept
+ * @returns {'workspace'|'memory'} where it is kept: the workspace's storage, or memory until the
+ *   tab closes where the browser refuses storage
  */
 export function saveCustomWordlist(text) {
-  const value = String(text ?? '');
-  custom.text = value;
-  const s = sessionStore();
-  let stored = 'memory';
-  try {
-    if (s) {
-      if (!value.trim()) {
-        s.removeItem(CUSTOM_WORDLIST_KEY);
-        stored = 'session';
-      } else if (value.length <= CUSTOM_WORDLIST_MAX_CHARS) {
-        s.setItem(CUSTOM_WORDLIST_KEY, value);
-        stored = 'session';
-      } else {
-        s.removeItem(CUSTOM_WORDLIST_KEY);
-      }
-    }
-  } catch {
-    // A failed write (quota, private mode) must not leave an older, replaced list behind that a
-    // reload of this tab would bring back.
-    if (s) {
-      try {
-        s.removeItem(CUSTOM_WORDLIST_KEY);
-      } catch {
-        // storage unusable: nothing of ours can be read back from it either
-      }
-    }
-    stored = 'memory';
-  }
-  custom.stored = stored;
-  return stored;
+  stateSingleton.setWorkspaceData('wordlist', String(text ?? ''));
+  return stateSingleton.workspacePersistence ? 'workspace' : 'memory';
 }
 
-/** Forget the in-memory copy (after "Delete all local data" cleared the storage). */
+/** Forget the parsed copy (the list itself lives in the workspace). */
 export function resetCustomWordlist() {
-  custom.text = null;
   custom.parsed = null;
   custom.parsedFor = null;
-  custom.stored = 'session';
 }
 
-// "Delete all local data" (About, or Settings on any view) must also drop the copies this module
-// keeps in memory — the custom list when it was too long for sessionStorage, the learned store of
-// a browser without localStorage, the names a Reverse DNS sweep handed over, the search box and
-// the last scan (a running one is stopped) — whether or not the Subdomains view is mounted: the
-// module stays loaded (SSL Targets imports it) and would otherwise keep probing the old names.
-// The shell opens the view again when it is on screen.
+// "Delete all local data" (About, or Settings on any view) and a switch to another workspace must
+// also drop what this module keeps in memory — the names a Reverse DNS sweep handed over, the
+// search box and the last scan (a running one is stopped) — whether or not the Subdomains view is
+// mounted: the module stays loaded (SSL Targets imports it) and would otherwise keep probing the
+// previous customer's names. The shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   resetCustomWordlist();
   session.handoff = null;
-  if (memoryLearned) {
-    try {
-      memoryLearned.clear();
-    } catch {
-      memoryLearned = null;
-    }
-  }
   forgetRuns();
 });
 
 /**
- * The custom wordlist of this tab, parsed with lib/wordlist.parseCustomWordlist (cached per text).
- * @returns {{ labels: string[], rejected: string[], stored: 'session'|'memory' }}
+ * The custom wordlist of the active workspace, parsed with lib/wordlist.parseCustomWordlist
+ * (cached per text).
+ * @returns {{ labels: string[], rejected: string[], stored: 'workspace'|'memory' }}
  */
 export function customWordlist() {
   const text = loadCustomWordlist();
@@ -1687,13 +1610,13 @@ export function customWordlist() {
     custom.parsed = parseCustomWordlist(text);
     custom.parsedFor = text;
   }
-  return { ...custom.parsed, stored: custom.stored };
+  return { ...custom.parsed, stored: stateSingleton.workspacePersistence ? 'workspace' : 'memory' };
 }
 
 /**
- * The per-browser wordlist vocabulary both scan views use: the language choice and the
- * "learned names" switch of the Subdomains options (Advanced), this tab's custom wordlist and,
- * when the switch is on, the learned labels (most frequent first). Never throws.
+ * The wordlist vocabulary both scan views use: the language choice and the "learned names" switch
+ * of the Subdomains options (Advanced; per browser), the active workspace's custom wordlist and,
+ * when the switch is on, its learned labels (most frequent first). Never throws.
  * @returns {{ locales: string[]|null, learnedOn: boolean, custom: string[], learned: string[] }}
  */
 export function sharedVocabulary() {
@@ -3029,9 +2952,10 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       resolving: result.hosts.filter((x) => !x.wildcardSuspect && isResolving(x)).map((x) => x.name),
       finishedAt: run.finishedAt
     });
-    // Learn the naming vocabulary of this scan (labels only, in this browser) so the next scan
-    // tries it first; the mounted view refreshes its "learned names" count. Never throws.
-    if (rememberLearned(result, run.config && run.config.learned) && active && active.refreshLearned) active.refreshLearned();
+    // Learn the naming vocabulary of this scan (labels only, in the workspace it ran in) so the
+    // next scan tries it first; the mounted view refreshes its "learned names" count. Never throws.
+    const sameWorkspace = !run.config || !run.config.workspace || run.config.workspace === appState.workspace.id;
+    if (sameWorkspace && rememberLearned(result, run.config && run.config.learned) && active && active.refreshLearned) active.refreshLearned();
     emit(run, 'done', result);
     if (!active && session.run === run) {
       const count = result.hosts.filter((x) => !x.wildcardSuspect).length;
@@ -3432,7 +3356,7 @@ export function mount(container, ctx) {
     h('div', { class: 'field-hint' }, t('sub.lang.hint')),
     langAutoBox.el, langAutoLine, langList);
 
-  /* --- custom wordlist (paste / upload; kept in this browser tab only) ------------- */
+  /* --- custom wordlist (paste / upload; kept in the active workspace) ------------- */
   const customField = textarea({
     label: t('sub.custom.label'),
     optional: true,
@@ -3498,7 +3422,7 @@ export function mount(container, ctx) {
     toast(t('sub.custom.loaded', { name: file.name, size: formatBytes(file.size) }), { type: 'success', timeout: 3000 });
   }
 
-  /* --- learned names (per-browser vocabulary from earlier scans) ------------------- */
+  /* --- learned names (the workspace's vocabulary from earlier scans) ------------- */
   const learnedLabel = h('span');
   const learnedBox = checkbox({
     label: learnedLabel,
@@ -3809,9 +3733,10 @@ export function mount(container, ctx) {
   renderAdvSummary();
   renderDoh();
 
-  cleanups.push(state.subscribe(({ key, value }) => {
-    // A zone imported, replaced or forgotten (Zone File view / "Delete all local data").
-    if ((key === 'session' && value && value.name === 'zone') || key === 'cleared') {
+  cleanups.push(state.subscribe(({ key, value, origin }) => {
+    const reset = key === 'cleared' || key === 'workspace';
+    // A zone imported, replaced or forgotten (Zone File view / "Delete all local data" / another workspace).
+    if ((key === 'session' && value && value.name === 'zone') || reset) {
       renderZoneChip();
       renderPlan();
       // A zone scan waiting for the running one goes with its zone.
@@ -3823,15 +3748,21 @@ export function mount(container, ctx) {
       renderBfOptions();
       renderPlan();
     }
-    // "Delete all local data" clears the learned store (localStorage) too; keep the count honest.
-    if (key === 'inventory' || key === 'settings') renderLearned();
-    // ... and this tab's custom wordlist (sessionStorage): forget the in-memory copy as well.
-    if (key === 'cleared') {
-      session.handoff = null;
-      renderHandoff();
+    // Another workspace, "Delete all local data" or another tab's scan changes the learned names
+    // and the custom wordlist of the workspace: keep the count and the box honest. The box follows
+    // only a change made elsewhere, never the typing it reports itself.
+    const parts = key === 'workspaceData' && value && Array.isArray(value.parts) ? value.parts : [];
+    const wordlistElsewhere = parts.includes('wordlist') && origin === 'external';
+    if (reset || wordlistElsewhere) {
+      if (reset) {
+        session.handoff = null;
+        renderHandoff();
+      }
       resetCustomWordlist();
       customField.value = loadCustomWordlist();
       renderCustom();
+    }
+    if (reset || wordlistElsewhere || parts.includes('learned') || key === 'inventory' || key === 'settings') {
       renderLearned();
       renderPlan();
       renderAdvSummary();
@@ -3890,7 +3821,7 @@ export function mount(container, ctx) {
     }
     if (ctx.signal.aborted) return;
     const permutationBudget = options.permutations ? options.permutationBudget : 0;
-    // Per-browser vocabulary: the pasted / uploaded list (tried first) and the learned labels
+    // The workspace's vocabulary: the pasted / uploaded list (tried first) and the learned labels
     // of earlier scans (only when the opt-in switch is on and a wordlist level is chosen —
     // wordlistScanConfig). Both are sent as DNS lookups under the scanned domains.
     const customLabels = customWordlist().labels;
@@ -3919,8 +3850,10 @@ export function mount(container, ctx) {
       permutationBudget: exact ? 0 : permutationBudget,
       originHints: options.originHints,
       includeExpired: options.includeExpired,
-      // Remember the "learned names" switch so the finished scan records into the store.
+      // Remember the "learned names" switch so the finished scan records into the store — of the
+      // workspace it started in, never of one switched to meanwhile.
       learned: options.learned,
+      workspace: state.workspace.id,
       inventoryServers: state.inventory.servers.length,
       zoneMode: zoneCfg.zone ? zoneMode : null
     });

@@ -18,14 +18,15 @@ import { VIEWS, DEFAULT_VIEW } from '../../assets/js/app.js';
 import { hasString } from '../../assets/js/i18n.js';
 import { createState } from '../../assets/js/state.js';
 import { createLearnedStore } from '../../assets/js/lib/learned.js';
+import { LEGACY_KEYS, createWorkspaceStore, createMemoryBackend } from '../../assets/js/lib/workspace.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ids = (list) => list.map((x) => x.id);
 
 /** Web Storage stub: just enough for state.js and lib/learned.js. */
 class MemoryStorage {
-  constructor() {
-    this.map = new Map();
+  constructor(entries = {}) {
+    this.map = new Map(Object.entries(entries));
   }
 
   get length() {
@@ -157,16 +158,31 @@ describe('first-visit task picker', () => {
     assert.equal(hasUsedBefore(null), false);
   });
 
-  test('RUN_STORAGE_KEYS are the keys state.js and lib/learned.js really write', () => {
-    const storage = new MemoryStorage();
-    const s = createState({ storage, listenStorageEvents: false });
-    s.updateSettings({ theme: 'dark' });
-    assert.equal(hasUsedBefore([...storage.map.keys()]), false, 'settings only');
-    s.setInventory('web01 192.0.2.10');
-    assert.ok([...storage.map.keys()].includes(RUN_STORAGE_KEYS[0]), 'saved servers');
+  test('RUN_STORAGE_KEYS are the keys written before workspaces, which the workspace store migrates', async () => {
+    assert.deepEqual(RUN_STORAGE_KEYS, [LEGACY_KEYS.inventory, LEGACY_KEYS.learned]);
+    // lib/learned.js over a raw Storage still names its record the old way.
     const learned = new MemoryStorage();
     createLearnedStore(learned).record(['api.example.com', 'shop.example.com'], 'example.com');
     assert.deepEqual([...learned.map.keys()], [RUN_STORAGE_KEYS[1]], 'learned names');
+    // Today's state keeps servers and learned names in the workspace: localStorage gets settings only.
+    const storage = new MemoryStorage();
+    const s = createState({ storage, sessionStore: null, listenStorageEvents: false, workspaces: createWorkspaceStore() });
+    await s.ready;
+    s.updateSettings({ theme: 'dark' });
+    s.setInventory('web01 192.0.2.10');
+    assert.equal(hasUsedBefore([...storage.map.keys()]), false, 'nothing a run leaves is in localStorage');
+    // A browser that used the app before: its old keys are moved into Default, and state says so.
+    const old = new MemoryStorage({ [LEGACY_KEYS.inventory]: JSON.stringify({ v: 1, text: 'web01 192.0.2.10' }) });
+    assert.equal(hasUsedBefore([...old.map.keys()]), true);
+    const backend = createMemoryBackend([], { persistent: true });
+    const migrated = createState({
+      storage: old, sessionStore: null, listenStorageEvents: false,
+      workspaces: createWorkspaceStore({ backend, legacy: { local: old, session: null } })
+    });
+    await migrated.ready;
+    assert.deepEqual(migrated.migrated, ['inventory']);
+    assert.equal(migrated.inventory.servers[0].name, 'web01');
+    assert.equal(hasUsedBefore([...old.map.keys()]), false, 'the old key is gone once it is safe in Default');
   });
 });
 

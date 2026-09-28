@@ -1213,7 +1213,8 @@ export function mount(container, ctx) {
   if (!subscribed) {
     subscribed = true;
     state.subscribe(({ key }) => {
-      if (key === 'cleared') {
+      // The imported zone is the customer's: another workspace forgets it like "Delete all local data".
+      if (key === 'cleared' || key === 'workspace') {
         resetSession();
         if (rerender) rerender();
       } else if (key === 'inventory' && reindexServers(state.getInventoryIndex()) && rerender) {

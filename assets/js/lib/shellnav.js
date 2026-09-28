@@ -108,9 +108,11 @@ export function isRunSignal(change) {
 }
 
 /**
- * Stored keys that only a run or a save leaves behind: saved servers (state.js) and the names a
- * finished scan learned (lib/learned.js). Remembered view options are not among them: a switch
- * flipped or a language pack opened on the start page writes those without running anything.
+ * Stored keys that only a run or a save left behind before workspaces existed: saved servers and
+ * the names a finished scan learned (lib/workspace.js LEGACY_KEYS, which the workspace store moves
+ * into Default on the first load; state.js `migrated` says so afterwards). Remembered view
+ * options are not among them: a switch flipped or a language pack opened on the start page writes
+ * those without running anything.
  */
 export const RUN_STORAGE_KEYS = Object.freeze(['ssds.inventory', 'ssds.learned.labels']);
 

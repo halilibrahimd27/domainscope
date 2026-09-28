@@ -16,6 +16,21 @@
   }
 }
 
+/* The workspace badge goes under the titles on a narrow card rather than squeezing them. */
+.inv-editor .card-head {
+  flex-wrap: wrap;
+}
+
+.inv-editor .card-titles {
+  flex: 1 1 200px;
+}
+
+/* A long workspace name is cut with an ellipsis (its title has it in full). */
+.inv-editor .card-actions {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .inv-editor .textarea {
   min-height: 320px;
   font-size: 12.5px;
@@ -29,9 +44,13 @@
   gap: 8px;
 }
 
+/* On a 320 px phone with wider fonts Save goes under Clear rather than past the card. */
 .inv-buttons {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
   margin-left: auto;
 }
 

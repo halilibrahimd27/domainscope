@@ -504,7 +504,11 @@ async function main() {
       await waitReady(page);
       await setLangUi(page, 'en');
       await seedOptions(page);
-      await page.evaluate((text) => localStorage.setItem('ssds.inventory', JSON.stringify({ v: 1, text, updatedAt: new Date().toISOString() })), INVENTORY);
+      // Saved in the workspace (IndexedDB) the way the Servers view saves it; the reload reads it back.
+      await page.evaluate(async (text) => {
+        const { state } = await import('./assets/js/state.js');
+        await state.setInventory(text).done;
+      }, INVENTORY);
       await page.reload();
       await waitReady(page);
       await gotoRoute(page, 'scan');
@@ -1061,7 +1065,7 @@ async function main() {
       }
       // The dialog's 'close' event (and so the wipe) lands a task after [open] goes away: wait for
       // the wipe itself, or it can erase the options seeded below on a busy machine.
-      await page.waitFor(() => localStorage.getItem('ssds.inventory') === null, { message: 'local data wiped' });
+      await page.waitFor(() => localStorage.getItem('ssds.scan.options') === null, { message: 'local data wiped' });
       await dismissToasts(page);
       await seedOptions(page); // the wipe restored every passive source: keep the suite offline
       await gotoRoute(page, 'scan');

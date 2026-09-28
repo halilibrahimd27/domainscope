@@ -43,6 +43,7 @@ import { toCsv, toJson } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind } from '../lib/util.js';
 import { downloadText, timestampedName } from '../ui/download.js';
+import { state as stateSingleton } from '../state.js';
 
 /** Route id (`#/ptr`). */
 export const id = 'ptr';
@@ -503,11 +504,21 @@ export function shareParams(target, focus = '') {
  * sweep ends. Each sweep starts at the 'ptr' filter; `filterChosen`: the user picked one for
  * this sweep (else a sweep that ends without any PTR name shows all its addresses).
  */
-const session = {
+const freshSession = () => ({
   text: '', focus: '', job: null, asn: null, filter: 'ptr', filterChosen: false, expand: false, prompt: false,
   routeTarget: null, routeFocus: '', pending: null
-};
+});
+const session = freshSession();
 let jobCounter = 0;
+
+// A switch to another workspace forgets the form and the last sweep (the other customer's
+// network, matched against its servers), stopping what runs; the shell opens the view again.
+stateSingleton.subscribe(({ key }) => {
+  if (key !== 'workspace') return;
+  if (session.job && session.job.status === 'running') session.job.controller.abort();
+  if (session.asn && session.asn.controller) session.asn.controller.abort();
+  Object.assign(session, freshSession());
+});
 let active = null;
 /** A sweep runs (in this view or in the background). */
 const sweepRunning = () => !!(session.job && session.job.status === 'running');

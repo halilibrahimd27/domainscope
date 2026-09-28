@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as i18n from '../../assets/js/i18n.js';
 import { createState, sanitizeSettings, DEFAULT_SETTINGS, STORAGE_PREFIX } from '../../assets/js/state.js';
+import { createWorkspaceStore, createMemoryBackend } from '../../assets/js/lib/workspace.js';
 import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
@@ -422,17 +423,21 @@ describe('state', () => {
     assert.equal(STORAGE_PREFIX, 'ssds.');
   });
 
-  test('inventory round-trips through storage (text only; servers re-parsed)', () => {
+  test('inventory round-trips through the workspace store (text only; servers re-parsed)', async () => {
     const storage = new MemoryStorage();
-    const a = make(storage);
+    const backend = createMemoryBackend([], { persistent: true });
+    const a = createState({ storage, listenStorageEvents: false, now: () => new Date('2026-09-23T10:00:00Z'), workspaces: createWorkspaceStore({ backend }) });
+    await a.ready;
     const res = a.setInventory('web01 10.0.0.5\nweb02 10.0.0.6 2001:db8::6\nbroken');
     assert.equal(res.persisted, true);
+    assert.equal(await res.done, true);
     assert.equal(res.inventory.servers.length, 2);
-    const raw = JSON.parse(storage.getItem('ssds.inventory'));
-    assert.equal(raw.v, 1);
+    const raw = new Map(backend.entries()).get('wsdata/default/inventory');
     assert.equal(raw.text.startsWith('web01'), true);
     assert.equal(raw.servers, undefined, 'derived data is not stored');
-    const b = make(storage);
+    assert.equal(storage.getItem('ssds.inventory'), null, 'not in localStorage');
+    const b = createState({ storage, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await b.ready;
     assert.equal(b.inventory.servers.length, 2);
     assert.deepEqual(b.inventory.servers[1].ips, ['10.0.0.6', '2001:db8::6']);
     assert.equal(b.inventory.warnings.length, 1);
@@ -440,12 +445,13 @@ describe('state', () => {
     assert.equal(b.inventory.updatedAt.toISOString(), '2026-09-23T10:00:00.000Z');
   });
 
-  test('corrupt or foreign storage values fall back to defaults', () => {
+  test('corrupt or foreign storage values fall back to defaults', async () => {
     const storage = new MemoryStorage({
       'ssds.inventory': '{not json',
       'ssds.settings': JSON.stringify({ theme: 'neon', lang: 'de', chain: ['nope', 'google', 'google', 'cloudflare'], concurrency: 1000 })
     });
     const s = make(storage);
+    await s.ready;
     assert.equal(s.inventory.text, '');
     assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true });
   });
@@ -465,25 +471,33 @@ describe('state', () => {
     assert.equal(sanitizeSettings({ startTasks: 'no' }).startTasks, true, 'only an explicit false turns it off');
   });
 
-  test('write failures (quota / disabled storage) keep state in memory and report it', () => {
+  test('write failures (quota / disabled storage) keep state in memory and report it', async () => {
     const storage = new MemoryStorage();
     storage.failWrites = true;
-    const s = make(storage);
+    const backend = createMemoryBackend([], { persistent: true });
+    const s = createState({ storage, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    backend.fail.add('write');
     const res = s.setInventory('web01 10.0.0.5');
-    assert.equal(res.persisted, false);
+    assert.equal(await res.done, false);
     assert.equal(s.inventory.servers.length, 1, 'in-memory state still updated');
-    assert.equal(s.lastPersistError.name, 'QuotaExceededError');
+    assert.equal(s.workspaceError.name, 'QuotaExceededError');
+    s.updateSettings({ theme: 'dark' });
+    assert.equal(s.lastPersistError.name, 'QuotaExceededError', 'settings too');
     const none = make(null);
+    await none.ready;
     assert.equal(none.persistence, false);
+    assert.equal(none.workspacePersistence, false, 'no IndexedDB in Node: memory only');
     assert.equal(none.setInventory('a 10.0.0.1').persisted, false);
     assert.equal(none.updateSettings({ theme: 'dark' }).theme, 'dark');
   });
 
-  test('a storage whose getItem throws (SecurityError) degrades to defaults', () => {
+  test('a storage whose getItem throws (SecurityError) degrades to defaults', async () => {
     const hostile = { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('no'); }, removeItem() {}, length: 0, key: () => null };
     const s = make(hostile);
+    await s.ready;
     assert.equal(s.settings.theme, 'auto');
-    assert.equal(s.clearAll(), true);
+    assert.equal(await s.clearAll(), true);
   });
 
   test('updateSettings merges, persists and notifies only on real changes', () => {
@@ -538,45 +552,96 @@ describe('state', () => {
     assert.equal(s.getInventoryIndex().size, 0);
   });
 
-  test('clearAll removes only ssds.* keys and resets every slice', () => {
+  test('clearAll removes only ssds.* keys, every workspace, and resets every slice', async () => {
     const storage = new MemoryStorage({ other: 'keep', 'ssds.extra': '1' });
-    const s = make(storage);
-    s.setInventory('web01 10.0.0.5');
+    const backend = createMemoryBackend([], { persistent: true });
+    const s = createState({ storage, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    const { meta } = await s.createWorkspace('Acme');
+    await s.switchWorkspace(meta.id);
+    await s.setInventory('web01 10.0.0.5').done;
+    await s.setWorkspaceData('notes', 'Acme notes');
     s.updateSettings({ theme: 'dark' });
     s.setSession('x', 1);
-    assert.equal(s.clearAll(), true);
-    assert.deepEqual([...storage.map.keys()], ['other']);
+    const pending = s.clearAll();
+    // Memory is reset at once, before the database is gone.
     assert.equal(s.inventory.servers.length, 0);
+    assert.equal(s.workspace.isDefault, true);
+    assert.deepEqual(s.workspaces.map((w) => w.id), ['default']);
+    assert.equal(s.workspaceData('notes'), '');
+    assert.equal(await pending, true);
+    assert.deepEqual([...storage.map.keys()], ['other']);
+    assert.deepEqual(backend.entries(), [], 'the workspace database is empty');
     assert.equal(s.settings.theme, 'auto');
     assert.equal(s.getSession('x'), undefined);
   });
 
-  test('clearAll also removes the learned names and this tab\'s custom wordlist, then emits "cleared"', () => {
-    const storage = new MemoryStorage({ 'ssds.learned.labels': '{"v":1,"labels":{"api":[1,1]}}', 'ssds.subdomains.options': '{}' });
-    const sessionStore = new MemoryStorage({ 'ssds.wordlist.custom': 'api\nvpn', other: 'keep' });
-    const s = createState({ storage, sessionStore, listenStorageEvents: false });
+  test('clearAll also removes the learned names and the custom wordlist, then emits "cleared"', async () => {
+    const storage = new MemoryStorage({ 'ssds.subdomains.options': '{}' });
+    const sessionStore = new MemoryStorage({ other: 'keep', 'ssds.x': '1' });
+    const backend = createMemoryBackend([], { persistent: true });
+    const s = createState({ storage, sessionStore, listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    await s.setWorkspaceData('learned', { v: 1, seq: 1, labels: { api: [1, 1] } });
+    await s.setWorkspaceData('wordlist', 'api\nvpn');
     const events = [];
     s.subscribe((e) => events.push(e.key));
-    assert.equal(s.clearAll(), true);
-    assert.equal(storage.map.size, 0, 'learned names and remembered options gone');
+    assert.equal(await s.clearAll(), true);
+    assert.equal(storage.map.size, 0, 'remembered options gone');
     assert.deepEqual([...sessionStore.map.keys()], ['other'], 'only our session keys removed');
-    assert.deepEqual(events, ['inventory', 'settings', 'cleared']);
+    assert.equal(s.workspaceData('learned'), null);
+    assert.equal(s.workspaceData('wordlist'), '');
+    assert.deepEqual(events, ['inventory', 'settings', 'workspaces', 'cleared']);
     // A broken session storage never breaks "Delete all local data".
     const broken = { get length() { throw new Error('SecurityError'); } };
-    assert.equal(createState({ storage: new MemoryStorage(), sessionStore: broken, listenStorageEvents: false }).clearAll(), true);
+    assert.equal(await createState({ storage: new MemoryStorage(), sessionStore: broken, listenStorageEvents: false }).clearAll(), true);
+    // A database that cannot be deleted is reported.
+    const stuck = createMemoryBackend([], { persistent: true });
+    const t2 = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend: stuck }) });
+    await t2.ready;
+    stuck.fail.add('destroy');
+    assert.equal(await t2.clearAll(), false);
+    assert.ok(t2.workspaceError);
   });
 
-  test('handleExternalChange re-reads storage written by another tab', () => {
+  test('handleExternalChange re-reads the settings another tab wrote (workspaces tell each other themselves)', async () => {
     const storage = new MemoryStorage();
     const s = make(storage);
+    await s.ready;
     const events = [];
     s.subscribe((e) => events.push(e));
     storage.setItem('ssds.inventory', JSON.stringify({ v: 1, text: 'web09 10.9.9.9', updatedAt: '2026-01-01T00:00:00Z' }));
     storage.setItem('ssds.settings', JSON.stringify({ v: 1, theme: 'dark' }));
     s.handleExternalChange(null);
-    assert.equal(s.inventory.servers[0].name, 'web09');
+    assert.equal(s.inventory.servers.length, 0, 'an old tab\'s inventory key is not today\'s inventory');
     assert.equal(s.settings.theme, 'dark');
-    assert.deepEqual(events.map((e) => [e.key, e.origin]), [['inventory', 'external'], ['settings', 'external']]);
+    assert.deepEqual(events.map((e) => [e.key, e.origin]), [['settings', 'external']]);
+  });
+
+  test('workspaces: separate inventories, a switch clears the session and says so, the recent list', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const s = createState({ storage: new MemoryStorage(), listenStorageEvents: false, workspaces: createWorkspaceStore({ backend }) });
+    await s.ready;
+    await s.setInventory('web01 192.0.2.10').done;
+    const { meta } = await s.createWorkspace('Acme');
+    assert.equal(s.workspace.isDefault, true, 'a new workspace does not become active by itself');
+    s.setSession('zone', { origin: 'example.com' });
+    const events = [];
+    s.subscribe((e) => events.push(e.key));
+    const active = await s.switchWorkspace(meta.id);
+    assert.deepEqual([active.name, active.isDefault], ['Acme', false]);
+    assert.deepEqual(events, ['inventory', 'workspace']);
+    assert.equal(s.inventory.servers.length, 0);
+    assert.equal(s.getSession('zone'), undefined, 'the other customer\'s zone is forgotten');
+    await s.setInventory('mail 192.0.2.10').done;
+    assert.deepEqual(s.getInventoryIndex().get('192.0.2.10').map((x) => x.name), ['mail'], 'no DUPLICATE_IP across customers');
+    await s.recordRecent('https://shop.example.com/');
+    assert.deepEqual(s.workspaceData('recent').map((r) => r.value), ['shop.example.com']);
+    await s.switchWorkspace('default');
+    assert.deepEqual(s.inventory.servers.map((x) => x.name), ['web01']);
+    assert.deepEqual(s.workspaceData('recent'), []);
+    assert.throws(() => s.workspaceData('settings'), RangeError);
+    assert.throws(() => s.setWorkspaceData('inventory', 'x'), RangeError);
   });
 });
 
@@ -1399,43 +1464,34 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.equal(S.originOverview(sharedResult).shared, true, 'a shared cloud / hosting network flags the panel');
   });
 
-  test('custom wordlist: this tab only (sessionStorage), parsed with accepted / rejected counts, memory fallback', async () => {
+  test('custom wordlist: kept in the active workspace, parsed with accepted / rejected counts', async () => {
     const { S } = await load();
-    const prev = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
-    const store = new MemoryStorage();
-    Object.defineProperty(globalThis, 'sessionStorage', { value: store, configurable: true, writable: true });
+    const { state: singleton } = await import('../../assets/js/state.js');
+    await singleton.ready;
+    let other = null;
     try {
-      S.resetCustomWordlist();
+      S.saveCustomWordlist('');
       assert.deepEqual(S.customWordlist().labels, [], 'empty by default');
-      assert.equal(S.saveCustomWordlist('api\nbilling, dev.api\n-bad-\n'), 'session');
-      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), 'api\nbilling, dev.api\n-bad-\n', 'raw text kept in this tab');
+      // Node has no IndexedDB: the workspace lives in memory, and the view says so.
+      assert.equal(S.saveCustomWordlist('api\nbilling, dev.api\n-bad-\n'), 'memory');
+      assert.equal(singleton.workspaceData('wordlist'), 'api\nbilling, dev.api\n-bad-\n', 'the raw text is the workspace\'s');
       const cw = S.customWordlist();
       assert.deepEqual(cw.labels, ['api', 'billing', 'dev.api']);
       assert.deepEqual(cw.rejected, ['-bad-']);
-      assert.equal(cw.stored, 'session');
-      // A fresh page of the same tab reads it back.
+      assert.equal(cw.stored, 'memory');
       S.resetCustomWordlist();
+      assert.deepEqual(S.customWordlist().labels, ['api', 'billing', 'dev.api'], 'the workspace is the truth, not a module copy');
+      // Another customer has a list of its own.
+      other = (await singleton.createWorkspace('Wordlist test')).meta;
+      await singleton.switchWorkspace(other.id);
+      assert.deepEqual(S.customWordlist().labels, [], 'another workspace, another list');
+      S.saveCustomWordlist('portal');
+      assert.deepEqual(S.sharedVocabulary().custom, ['portal']);
+      await singleton.switchWorkspace('default');
       assert.deepEqual(S.customWordlist().labels, ['api', 'billing', 'dev.api']);
-      // Too long for session storage → kept in memory only (and the stale copy removed).
-      assert.equal(S.saveCustomWordlist('x'.repeat(S.CUSTOM_WORDLIST_MAX_CHARS + 1)), 'memory');
-      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
-      assert.equal(S.customWordlist().stored, 'memory');
-      // A throwing storage (private mode / quota) degrades to memory, never throws — and never
-      // leaves the older, replaced list behind for a reload of this tab to bring back.
-      assert.equal(S.saveCustomWordlist('old-label'), 'session');
-      store.failWrites = true;
-      assert.equal(S.saveCustomWordlist('vpn'), 'memory');
-      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null, 'the replaced list is removed from the tab storage');
-      assert.deepEqual(S.customWordlist().labels, ['vpn']);
-      S.resetCustomWordlist(); // a reload of this tab
-      assert.deepEqual(S.customWordlist().labels, [], 'the reload does not bring the older list back');
-      store.failWrites = false;
-      assert.equal(S.saveCustomWordlist(''), 'session', 'clearing removes the key');
-      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
     } finally {
-      S.resetCustomWordlist();
-      if (prev) Object.defineProperty(globalThis, 'sessionStorage', prev);
-      else delete globalThis.sessionStorage;
+      if (other) await singleton.deleteWorkspace(other.id);
+      S.saveCustomWordlist('');
     }
   });
 
@@ -1471,61 +1527,45 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.equal(S.wordlistScanConfig({ bruteforce: 'smart', locales: null, learned: true }, { learned: many }).learnedLabels.length, S.LEARNED_TRY_MAX);
   });
 
-  test('sharedVocabulary: SSL Targets reuses the Subdomains languages, custom list and learned names', async () => {
+  test('sharedVocabulary: SSL Targets reuses the Subdomains languages and the workspace\'s custom list and learned names', async () => {
     const { S } = await load();
+    const { state: singleton } = await import('../../assets/js/state.js');
+    await singleton.ready;
     const prevL = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    const prevS = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
-    const local = new MemoryStorage({
-      [S.OPTIONS_KEY]: JSON.stringify({ locales: ['de'], learned: true }),
-      'ssds.learned.labels': JSON.stringify({ v: 1, seq: 2, labels: { vpn: [3, 1], shop: [1, 2] } })
-    });
-    const session = new MemoryStorage({ [S.CUSTOM_WORDLIST_KEY]: 'kunden\nportal' });
+    const local = new MemoryStorage({ [S.OPTIONS_KEY]: JSON.stringify({ locales: ['de'], learned: true }) });
     Object.defineProperty(globalThis, 'localStorage', { value: local, configurable: true, writable: true });
-    Object.defineProperty(globalThis, 'sessionStorage', { value: session, configurable: true, writable: true });
     try {
-      S.resetCustomWordlist();
+      await singleton.setWorkspaceData('learned', { v: 1, seq: 2, labels: { vpn: [3, 1], shop: [1, 2] } });
+      S.saveCustomWordlist('kunden\nportal');
       assert.deepEqual(S.sharedVocabulary(), { locales: ['de'], learnedOn: true, custom: ['kunden', 'portal'], learned: ['vpn', 'shop'] });
+      // The learned store the scans record into is the workspace's too.
+      S.learnedStore().record(['intranet.example.com'], 'example.com');
+      assert.ok(singleton.workspaceData('learned').labels.intranet, 'recorded into the active workspace');
       local.setItem(S.OPTIONS_KEY, JSON.stringify({ learned: false }));
       const off = S.sharedVocabulary();
       assert.equal(off.locales, null, 'automatic languages');
       assert.deepEqual([off.learnedOn, off.learned], [false, []], 'learned names switched off in Subdomains');
     } finally {
-      S.resetCustomWordlist();
+      await singleton.setWorkspaceData('learned', null);
+      S.saveCustomWordlist('');
       if (prevL) Object.defineProperty(globalThis, 'localStorage', prevL);
       else delete globalThis.localStorage;
-      if (prevS) Object.defineProperty(globalThis, 'sessionStorage', prevS);
-      else delete globalThis.sessionStorage;
     }
   });
 
-  test('"Delete all local data" drops this tab\'s custom wordlist with no Subdomains view mounted', async () => {
+  test('"Delete all local data" drops the workspace\'s custom wordlist and learned names with no Subdomains view mounted', async () => {
     const { S } = await load();
     const { state: singleton } = await import('../../assets/js/state.js');
-    const prev = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
-    const store = new MemoryStorage();
-    Object.defineProperty(globalThis, 'sessionStorage', { value: store, configurable: true, writable: true });
-    try {
-      S.resetCustomWordlist();
-      assert.equal(S.saveCustomWordlist('billing\nintranet'), 'session');
-      assert.deepEqual(S.customWordlist().labels, ['billing', 'intranet']);
-      // About / Settings wipe the tab storage from any view: the module cache follows the storage.
-      createState({ storage: new MemoryStorage(), sessionStore: store, listenStorageEvents: false }).clearAll();
-      assert.equal(store.getItem(S.CUSTOM_WORDLIST_KEY), null);
-      assert.equal(S.loadCustomWordlist(), '', 'the textarea of a later mount starts empty');
-      assert.deepEqual(S.customWordlist().labels, [], 'the next scan probes nothing stale');
-      assert.deepEqual(S.sharedVocabulary().custom, [], 'SSL Targets sees it gone too');
-      // A memory-only copy (the tab storage refused it) is dropped by the app state's 'cleared' event.
-      store.failWrites = true;
-      assert.equal(S.saveCustomWordlist('vpn\nportal'), 'memory');
-      assert.deepEqual(S.customWordlist().labels, ['vpn', 'portal']);
-      store.failWrites = false;
-      singleton.clearAll();
-      assert.deepEqual(S.customWordlist().labels, [], 'memory copy forgotten');
-    } finally {
-      S.resetCustomWordlist();
-      if (prev) Object.defineProperty(globalThis, 'sessionStorage', prev);
-      else delete globalThis.sessionStorage;
-    }
+    await singleton.ready;
+    S.saveCustomWordlist('billing\nintranet');
+    await singleton.setWorkspaceData('learned', { v: 1, seq: 1, labels: { vpn: [1, 1] } });
+    assert.deepEqual(S.customWordlist().labels, ['billing', 'intranet']);
+    // About / Settings wipe it from any view.
+    await singleton.clearAll();
+    assert.equal(S.loadCustomWordlist(), '', 'the textarea of a later mount starts empty');
+    assert.deepEqual(S.customWordlist().labels, [], 'the next scan probes nothing stale');
+    assert.deepEqual(S.sharedVocabulary().custom, [], 'SSL Targets sees it gone too');
+    assert.equal(S.learnedStore().size(), 0);
   });
 
   test('learned names never reach another target when the wordlist level is Off (view config → real runScan)', async () => {

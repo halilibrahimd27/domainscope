@@ -1,6 +1,8 @@
 /**
  * views/inventory.js — "Servers": paste or import the server inventory, see it parsed live,
- * fix warnings, save it to this browser (localStorage via state.js).
+ * fix warnings, save it to the current workspace (state.js → lib/workspace.js, this browser's
+ * IndexedDB). Each workspace has its own inventory, so one customer's addresses never meet
+ * another's (no DUPLICATE_IP across customers); the editor card names the workspace.
  *
  * The inventory is what turns DNS answers into "these 10 of your 300 servers need the new
  * certificate": other views read it through `ctx.state.inventory` / `ctx.getInventoryIndex()`.
@@ -17,6 +19,7 @@ import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
 import { parseInventory, addressTargets, serverTargets } from '../lib/inventory.js';
 import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
+import { workspaceLabel } from '../ui/workspace-ui.js';
 
 /** Route id. */
 export const id = 'inventory';
@@ -64,7 +67,9 @@ const EXAMPLES = [
 
 registerStrings('en', {
   'inv.privacyTitle': 'Stays in your browser',
-  'inv.privacy': 'The inventory is parsed and stored only on this device (browser localStorage). It is never uploaded — the other tools use it locally to match DNS answers to your servers.',
+  'inv.privacy': 'The inventory is parsed and stored only on this device, with the current workspace (this browser’s IndexedDB). It is never uploaded — the other tools use it locally to match DNS answers to your servers. Each workspace has its own inventory.',
+  'inv.workspace': 'Workspace: {name}',
+  'inv.workspaceTitle': 'This inventory belongs to the workspace “{name}”. Switch workspaces in the header.',
   'inv.editorTitle': 'Inventory',
   'inv.editorSubtitle': 'Paste it or import a file — any common format works',
   'inv.textareaLabel': 'Server inventory',
@@ -73,7 +78,7 @@ registerStrings('en', {
   'inv.dropHint': 'drop it here, click to choose, or paste',
   'inv.save': 'Save inventory',
   'inv.clear': 'Clear',
-  'inv.clearConfirm': 'Remove the saved inventory from this browser?',
+  'inv.clearConfirm': 'Remove the saved inventory of this workspace from this browser?',
   'inv.cleared': 'Inventory cleared',
   'inv.saved': { zero: 'Inventory saved (empty)', one: 'Inventory saved: {count} server', other: 'Inventory saved: {count} servers' },
   'inv.notPersisted': 'Could not write to browser storage — the inventory is kept only until this tab is closed.',
@@ -129,7 +134,9 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'inv.privacyTitle': 'Tarayıcınızda kalır',
-  'inv.privacy': 'Envanter yalnızca bu cihazda ayrıştırılır ve saklanır (tarayıcı localStorage). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır.',
+  'inv.privacy': 'Envanter yalnızca bu cihazda, geçerli çalışma alanıyla birlikte ayrıştırılır ve saklanır (bu tarayıcının IndexedDB deposu). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır. Her çalışma alanının kendi envanteri vardır.',
+  'inv.workspace': 'Çalışma alanı: {name}',
+  'inv.workspaceTitle': 'Bu envanter “{name}” çalışma alanına ait. Çalışma alanını üst çubuktan değiştirin.',
   'inv.editorTitle': 'Envanter',
   'inv.editorSubtitle': 'Yapıştırın veya dosya içe aktarın — yaygın biçimlerin hepsi olur',
   'inv.textareaLabel': 'Sunucu envanteri',
@@ -138,7 +145,7 @@ registerStrings('tr', {
   'inv.dropHint': 'buraya bırakın, seçmek için tıklayın veya yapıştırın',
   'inv.save': 'Envanteri kaydet',
   'inv.clear': 'Temizle',
-  'inv.clearConfirm': 'Kayıtlı envanter bu tarayıcıdan kaldırılsın mı?',
+  'inv.clearConfirm': 'Bu çalışma alanının kayıtlı envanteri bu tarayıcıdan kaldırılsın mı?',
   'inv.cleared': 'Envanter temizlendi',
   'inv.saved': { zero: 'Envanter kaydedildi (boş)', other: 'Envanter kaydedildi: {count} sunucu' },
   'inv.notPersisted': 'Tarayıcı depolamasına yazılamadı — envanter yalnızca bu sekme kapanana kadar tutulacak.',
@@ -275,11 +282,15 @@ export function mount(container, ctx) {
         Button({ label: t('inv.useExample'), icon: 'arrow-down', size: 'sm', dataset: { example: ex.id }, onClick: () => useExample(ex) })))
   })), { label: t('inv.formatsTitle'), className: 'inv-examples' });
 
+  const wsName = workspaceLabel(state.workspace);
   const editorCard = Card({
     title: t('inv.editorTitle'),
     subtitle: t('inv.editorSubtitle'),
     icon: 'file-text',
     className: 'inv-editor',
+    actions: Badge(t('inv.workspace', { name: wsName }), {
+      icon: 'briefcase', variant: 'accent', className: 'inv-workspace', title: t('inv.workspaceTitle', { name: wsName })
+    }),
     children: h('div', { class: 'stack' },
       drop,
       editor.el,
@@ -456,12 +467,19 @@ export function mount(container, ctx) {
 
   function save() {
     reparseSoon.cancel();
-    const { persisted, inventory } = state.setInventory(editor.value);
+    const { persisted, inventory, done } = state.setInventory(editor.value);
     parsed = { servers: inventory.servers, warnings: inventory.warnings, stats: inventory.stats };
     renderResults();
     renderStatus();
-    if (!persisted && editor.value.trim()) toast(t('inv.notPersisted'), { type: 'warn', timeout: 8000 });
-    else toast(t('inv.saved', { count: inventory.servers.length }), { type: 'success' });
+    if (!persisted && editor.value.trim()) {
+      toast(t('inv.notPersisted'), { type: 'warn', timeout: 8000 });
+      return;
+    }
+    toast(t('inv.saved', { count: inventory.servers.length }), { type: 'success' });
+    // The write itself finishes a moment later; a full disk or a blocked database says so then.
+    done.then((ok) => {
+      if (!ok && inventory.text.trim()) toast(t('inv.notPersisted'), { type: 'warn', timeout: 8000 });
+    });
   }
 
   async function clearAll() {
@@ -522,12 +540,13 @@ export function mount(container, ctx) {
   // Another tab saved/cleared the inventory: follow it unless the user has unsaved edits.
   let lastSavedText = state.inventory.text;
   const unsubscribe = state.subscribe(({ key, origin }) => {
-    if (key === 'cleared') {
-      // "Delete all local data" (Settings, while this view is open): drop the editor copy too,
-      // unsaved edits included, so no session draft keeps it and Save cannot bring it back.
+    if (key === 'cleared' || key === 'workspace') {
+      // "Delete all local data" (Settings, while this view is open) or another workspace: the
+      // editor shows what is saved now, unsaved edits dropped, so no session draft keeps the
+      // other data and Save cannot write it into this workspace.
       reparseSoon.cancel();
-      editor.value = '';
-      lastSavedText = '';
+      editor.value = state.inventory.text;
+      lastSavedText = state.inventory.text;
       reparse();
       return;
     }

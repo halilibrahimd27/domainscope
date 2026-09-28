@@ -237,6 +237,14 @@ describe('the store', () => {
     assert.deepEqual(backend.entries(), [], 'nothing written');
     assert.equal(store.open(), store.open(), 'one open for all callers');
 
+    // Opening read nothing either: with IndexedDB a read would create the database.
+    const reads = createMemoryBackend([], { persistent: true, exists: false });
+    reads.fail.add('get');
+    reads.fail.add('list');
+    const quiet = makeStore({ backend: reads });
+    await quiet.open();
+    assert.equal(quiet.lastError, null, 'no read was tried');
+
     assert.equal(await store.save('notes', 'first note'), true);
     const keys = backend.entries().map(([k]) => k).sort();
     assert.deepEqual(keys, ['meta', 'wsdata/default/notes', 'wsmeta/default']);
@@ -355,6 +363,55 @@ describe('the store', () => {
     assert.ok(!backend.entries().some(([k]) => k === 'wsdata/default/wordlist'));
     await store.save('expectedCas', []);
     assert.equal(writes, 2, 'empty was empty already');
+  });
+
+  test('a burst of saves writes once, the latest value; idle() waits for every write', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const written = [];
+    const write = backend.write;
+    backend.write = async (puts, deletes) => {
+      written.push(puts.filter(([k]) => k.startsWith('wsdata/')).map(([, v]) => v));
+      return write(puts, deletes);
+    };
+    const store = makeStore({ backend });
+    await store.open();
+    const saves = ['a', 'ab', 'abc'].map((v) => store.save('wordlist', v));
+    assert.equal(store.data.wordlist, 'abc', 'memory follows every keystroke');
+    assert.deepEqual(await Promise.all(saves), [true, true, true]);
+    assert.deepEqual(written, [['abc']], 'one write, the newest text');
+    // A save while a write runs follows it, once, with the newest value.
+    written.length = 0;
+    store.save('notes', 'one');
+    await Promise.resolve();
+    store.save('notes', 'two');
+    store.save('notes', 'three');
+    await store.idle();
+    assert.deepEqual(written, [['one'], ['three']]);
+    assert.equal(new Map(backend.entries()).get('wsdata/default/notes'), 'three');
+  });
+
+  test('a save still waiting is dropped by "Delete all local data" and by deleting its workspace', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const store = makeStore({ backend });
+    await store.open();
+    store.save('notes', 'typed just before');
+    await store.destroy();
+    await store.idle();
+    assert.deepEqual(backend.entries(), [], 'the database does not come back');
+
+    const { meta } = await store.create('Acme');
+    await store.switchTo(meta.id);
+    store.save('notes', 'typed in Acme');
+    await store.remove(meta.id);
+    await store.idle();
+    assert.ok(!backend.entries().some(([k]) => k.includes(meta.id)), 'the workspace does not come back');
+
+    const { meta: other } = await store.create('Globex');
+    await store.switchTo(other.id);
+    store.save('notes', 'old text');
+    await store.replace(other.id, { notes: 'from the file' });
+    await store.idle();
+    assert.equal(new Map(backend.entries()).get(`wsdata/${other.id}/notes`), 'from the file', 'a waiting save writes the replacing value');
   });
 
   test('recordRecent keeps the domains worked on, newest first', async () => {

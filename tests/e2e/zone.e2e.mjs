@@ -186,7 +186,7 @@ async function main() {
     await run.step('boots on #/zone: nav entry, empty state, nothing sent', async () => {
       await page.goto(`${server.url}#/zone`);
       await waitReady(page);
-      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10'));
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10').done);
       await page.reload();
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
@@ -586,7 +586,7 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('.zone-summary'));
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.clearAll());
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'cleared' });
-      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10'));
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10').done);
       await page.click('[data-sample="bind"]');
       await page.waitFor(() => !!document.querySelector('.zone-summary'));
       await page.reload();

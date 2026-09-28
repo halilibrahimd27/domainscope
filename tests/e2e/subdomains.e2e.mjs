@@ -596,8 +596,8 @@ async function main() {
       await page.waitFor(() => /accepted/.test(document.querySelector('.sub-custom-status').textContent), { message: 'custom status' });
       const st = await status();
       assert(/3 names accepted/.test(st) && /1 rejected: -bad-/.test(st), `status: ${st}`);
-      assertEqual(await page.evaluate(() => sessionStorage.getItem('ssds.wordlist.custom')), 'api\nbilling, dev.api\n-bad-', 'kept in this tab (sessionStorage)');
-      assertEqual(await page.evaluate(() => localStorage.getItem('ssds.wordlist.custom')), null, 'never in localStorage');
+      assertEqual(await page.evaluate(async () => (await import('./assets/js/state.js')).state.workspaceData('wordlist')), 'api\nbilling, dev.api\n-bad-', 'kept in the workspace');
+      assertEqual(await page.evaluate(() => [localStorage.getItem('ssds.wordlist.custom'), sessionStorage.getItem('ssds.wordlist.custom')]), [null, null], 'never in localStorage or the tab storage');
       // A .txt file is read in the browser (FileReader-style, no network) and appended.
       const file = path.join(os.tmpdir(), `domainscope-e2e-wordlist-${process.pid}.txt`);
       await writeFile(file, 'vpn\nportal\n');
@@ -632,7 +632,8 @@ async function main() {
       await shotEl(page, opts, 'subdomains-advanced-desktop-light-en', '.sub-advanced');
       await page.click('[data-action="sub-custom-clear"]');
       await page.waitFor(() => document.querySelector('.sub-custom-status').textContent === 'No custom names.', { message: 'cleared' });
-      assertEqual(await page.evaluate(() => [document.querySelector('[data-role="sub-custom"]').value, sessionStorage.getItem('ssds.wordlist.custom')]), ['', null], 'clear empties the box and the tab storage');
+      assertEqual(await page.evaluate(async () => [document.querySelector('[data-role="sub-custom"]').value, (await import('./assets/js/state.js')).state.workspaceData('wordlist')]),
+        ['', ''], 'clear empties the box and the workspace\'s list');
       await page.type('[data-role="sub-domain"]', '');
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
     });
@@ -727,8 +728,9 @@ async function main() {
     });
 
     await liveStep('learned names: the finished scan saved bare labels only; the wordlist line says what was used', async () => {
-      const info = await page.waitFor(() => {
-        const raw = localStorage.getItem('ssds.learned.labels');
+      const info = await page.waitFor(async () => {
+        const learned = (await import('./assets/js/state.js')).state.workspaceData('learned');
+        const raw = learned ? JSON.stringify(learned) : null;
         const label = document.querySelector('.sub-learned .check-text')?.textContent || '';
         return raw && /\(\d[\d,]*\)$/.test(label) ? { raw, label, usage: document.querySelector('.sub-wl-usage')?.textContent || '' } : false;
       }, { message: 'learned labels recorded' });
@@ -1321,9 +1323,9 @@ async function main() {
         await waitReady(tab);
         await setLangUi(tab, 'en');
         // No passive source; small list; a custom list guarantees `ticket` is tried under both apexes.
-        await tab.evaluate(() => {
+        await tab.evaluate(async () => {
           localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
-          sessionStorage.setItem('ssds.wordlist.custom', 'ticket\napi\nwww');
+          (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', 'ticket\napi\nwww');
         });
         await tab.evaluate(() => { location.hash = '#/subdomains?domain=example.net,example.org&run=1'; });
         await tab.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
@@ -1351,6 +1353,8 @@ async function main() {
         await shotEl(tab, opts, 'subdomains-origin-siblings-desktop-light-en', '.sub-org');
         await assertClean(tab, 'sibling zone', origin);
       } finally {
+        // The seeded list is the (shared) Default workspace's now, not this tab's: take it away again.
+        await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', '')).catch(() => {});
         await tab.close();
       }
     });
@@ -1365,9 +1369,9 @@ async function main() {
         await tt.goto(`${server.url}#/about`);
         await waitReady(tt);
         await setLangUi(tt, 'en');
-        await tt.evaluate((words) => {
+        await tt.evaluate(async (words) => {
           localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
-          sessionStorage.setItem('ssds.wordlist.custom', words);
+          (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', words);
         }, TABS_WORDS);
         await tt.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, FAKE_APEX);
         await tt.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
@@ -1435,9 +1439,9 @@ async function main() {
           await tf.goto(`${server.url}#/about`);
           await waitReady(tf);
           await setLangUi(tf, 'en');
-          await tf.evaluate((words) => {
+          await tf.evaluate(async (words) => {
             localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: true }));
-            sessionStorage.setItem('ssds.wordlist.custom', words);
+            (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', words);
           }, TABS_WORDS);
           await tf.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, FAKE_APEX);
           await tf.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
@@ -1469,6 +1473,8 @@ async function main() {
           await tf.waitFor(() => new URLSearchParams(location.hash.split('?')[1] || '').get('tab') === 'hosts', { message: 'tab=hosts after the click' });
           await assertClean(tf, 'automatic tab and focus', origin);
         } finally {
+          // The seeded list is the (shared) Default workspace's now, not this tab's: take it away again.
+          await tf.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', '')).catch(() => {});
           await tf.close();
         }
       });
@@ -1612,6 +1618,8 @@ async function main() {
         await assertClean(tt, 'results tabs', origin);
       });
     } finally {
+      // The seeded list is the (shared) Default workspace's now, not this tab's: take it away again.
+      await tt.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', '')).catch(() => {});
       await tt.close();
     }
 

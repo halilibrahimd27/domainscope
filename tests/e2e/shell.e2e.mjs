@@ -197,6 +197,35 @@ async function setLangUi(page, lang) {
   await page.waitFor(() => document.querySelector('#page-body')?.childElementCount > 0);
 }
 
+/**
+ * In the page: the active workspace's saved inventory text (null without one), once every write
+ * to IndexedDB has settled — what a reload brings back.
+ */
+function savedInventoryText() {
+  return import('./assets/js/state.js').then(async ({ state }) => {
+    await state.whenSaved();
+    const inv = state.workspaceData('inventory');
+    return inv ? inv.text : null;
+  });
+}
+
+/** In the page: is `want` the saved inventory of the active workspace? */
+function savedInventoryIs(want) {
+  return import('./assets/js/state.js').then(async ({ state }) => {
+    await state.whenSaved();
+    const inv = state.workspaceData('inventory');
+    return !!inv && inv.text === want;
+  });
+}
+
+/** In the page: the Servers editor and the workspace's saved inventory are both empty. */
+function inventoryCleared() {
+  return import('./assets/js/state.js').then(async ({ state }) => {
+    await state.whenSaved();
+    return document.querySelector('[data-role="inventory-text"]').value === '' && !state.workspaceData('inventory');
+  });
+}
+
 async function dismissToasts(page) {
   await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
 }
@@ -996,7 +1025,7 @@ async function main() {
 
     await step('Servers: save persists across reload and updates the nav status', async () => {
       await page.click('[data-action="save"]');
-      await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
+      await page.waitFor(savedInventoryText, { message: 'saved in the workspace' });
       await page.waitFor((n) => document.querySelector('[data-status="inventory"]').textContent.includes(String(n)), { args: [expectedSample.servers.length] });
       await shot(page, 'desktop-light-en-inventory-filled');
       await page.reload();
@@ -1036,10 +1065,10 @@ async function main() {
       await page.click('[data-action="clear"]');
       await page.waitForSelector('dialog.modal[open]');
       await page.click('dialog.modal[open] .btn-danger');
-      await page.waitFor(() => document.querySelector('[data-role="inventory-text"]').value === '' && !localStorage.getItem('ssds.inventory'));
+      await page.waitFor(inventoryCleared, { message: 'editor and workspace emptied' });
       await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
       await page.click('[data-action="save"]');
-      await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
+      await page.waitFor(savedInventoryText, { message: 'saved in the workspace' });
     });
 
     await step('Servers: Settings › Delete all local data empties the open editor (no draft brings it back)', async () => {
@@ -1069,7 +1098,7 @@ async function main() {
       // Back to the saved sample for the steps below.
       await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
       await page.click('[data-action="save"]');
-      await page.waitFor(() => !!localStorage.getItem('ssds.inventory'));
+      await page.waitFor(savedInventoryText, { message: 'saved in the workspace' });
       await dismissToasts(page);
     });
 
@@ -1264,12 +1293,14 @@ async function main() {
       assertEqual(await page.evaluate(() => window.__tabs.getSelected()), 'servers', 'tabs.select');
     });
 
-    await step('Settings › Delete all local data also forgets the learned names and this tab\'s custom wordlist', async () => {
+    await step('Settings › Delete all local data also forgets the workspace\'s learned names and custom wordlist', async () => {
       await dismissToasts(page);
-      // Seed the per-browser vocabulary the way the Subdomains view keeps it.
-      await page.evaluate(() => {
-        localStorage.setItem('ssds.learned.labels', JSON.stringify({ v: 1, seq: 2, labels: { api: [2, 1], vpn: [1, 2] } }));
-        sessionStorage.setItem('ssds.wordlist.custom', 'portal\nbilling');
+      // Seed the workspace's vocabulary the way the Subdomains view keeps it (the reload proves it is stored).
+      await page.evaluate(async () => {
+        const { state } = await import('./assets/js/state.js');
+        state.setWorkspaceData('learned', { v: 1, seq: 2, labels: { api: [2, 1], vpn: [1, 2] } });
+        state.setWorkspaceData('wordlist', 'portal\nbilling');
+        await state.whenSaved();
         sessionStorage.setItem('other.key', 'keep');
       });
       await page.reload();
@@ -1285,7 +1316,7 @@ async function main() {
       try {
         await page.waitForSelector('dialog.modal[open] .settings-danger');
         const hint = await page.evaluate(() => document.querySelector('dialog.modal[open] .settings-danger .field-hint').textContent);
-        assert(/learned subdomain names and the custom wordlist/.test(hint), `the hint says what is deleted: ${hint}`);
+        assert(/every workspace/.test(hint) && /learned subdomain names, custom wordlists/.test(hint), `the hint says what is deleted: ${hint}`);
         await page.click('dialog.modal[open] .settings-danger .btn-danger');
         await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
         await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
@@ -1293,19 +1324,22 @@ async function main() {
       } finally {
         await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       }
-      const after = await page.waitFor(() => {
+      const after = await page.waitFor(async () => {
         const label = document.querySelector('.sub-learned .check-text').textContent;
-        return /none yet/.test(label) ? {
+        if (!/none yet/.test(label)) return false;
+        const { state } = await import('./assets/js/state.js');
+        return {
           label,
           custom: document.querySelector('[data-role="sub-custom"]').value,
           status: document.querySelector('.sub-custom-status').textContent,
-          learnedKey: localStorage.getItem('ssds.learned.labels'),
-          customKey: sessionStorage.getItem('ssds.wordlist.custom'),
+          learned: state.workspaceData('learned'),
+          wordlist: state.workspaceData('wordlist'),
+          db: (await indexedDB.databases()).some((d) => d.name === 'ssds.workspaces'),
           other: sessionStorage.getItem('other.key')
-        } : false;
+        };
       }, { message: 'view refreshed after the delete' });
-      assertEqual([after.custom, after.status, after.learnedKey, after.customKey, after.other], ['', 'No custom names.', null, null, 'keep'],
-        'learned names + custom wordlist gone; other session keys kept');
+      assertEqual([after.custom, after.status, after.learned, after.wordlist, after.db, after.other], ['', 'No custom names.', null, '', false, 'keep'],
+        'learned names + custom wordlist gone with the database; other session keys kept');
       await page.evaluate(() => sessionStorage.removeItem('other.key'));
       // Settings were reset too: back to English for the remaining steps.
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
@@ -1316,7 +1350,7 @@ async function main() {
       await gotoRoute(page, 'subdomains');
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = true; });
       await page.type('[data-role="sub-custom"]', 'portal, billing');
-      await page.waitFor(() => sessionStorage.getItem('ssds.wordlist.custom') === 'portal, billing', { message: 'custom list kept for this tab' });
+      await page.waitFor(async () => (await import('./assets/js/state.js')).state.workspaceData('wordlist') === 'portal, billing', { message: 'custom list kept in the workspace' });
       await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
       // Wipe from another view: the Subdomains view (and its 'cleared' listener) is unmounted now.
       await gotoRoute(page, 'about');
@@ -1329,12 +1363,12 @@ async function main() {
         await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       }
       await gotoRoute(page, 'subdomains');
-      const after = await page.evaluate(() => ({
+      const after = await page.evaluate(async () => ({
         custom: document.querySelector('[data-role="sub-custom"]').value,
         status: document.querySelector('.sub-custom-status').textContent,
-        key: sessionStorage.getItem('ssds.wordlist.custom')
+        wordlist: (await import('./assets/js/state.js')).state.workspaceData('wordlist')
       }));
-      assertEqual([after.custom, after.status, after.key], ['', 'No custom names.', null], 'the module keeps no stale copy after a delete from another view');
+      assertEqual([after.custom, after.status, after.wordlist], ['', 'No custom names.', ''], 'the module keeps no stale copy after a delete from another view');
       await dismissToasts(page);
     });
 
@@ -1563,7 +1597,9 @@ async function main() {
     const pause = (p, ms = 300) => p.evaluate((t) => new Promise((r) => setTimeout(r, t)), ms);
     /** A first-time visitor: nothing stored but the language. */
     const firstVisit = async (p, lang = 'en') => {
-      await p.evaluate((l) => {
+      await p.evaluate(async (l) => {
+        // A first visit has no workspace data either (IndexedDB): what an earlier step saved goes.
+        await (await import('./assets/js/state.js')).state.clearAll();
         localStorage.clear();
         localStorage.setItem('ssds.settings', JSON.stringify({ v: 2, lang: l }));
         window.location.hash = '#/subdomains';
@@ -1697,8 +1733,7 @@ async function main() {
       await gotoRoute(sm, 'inventory');
       await sm.type('[data-role="inventory-text"]', 'web01 192.0.2.10');
       await sm.press('Enter', { ctrl: true }); // the shared shortcut: Ctrl+Enter clicks Save
-      await sm.waitFor(() => (JSON.parse(localStorage.getItem('ssds.inventory') || 'null') || {}).text === 'web01 192.0.2.10',
-        { message: 'saved with Ctrl+Enter, no new line typed' });
+      await sm.waitFor(savedInventoryIs, { args: ['web01 192.0.2.10'], message: 'saved with Ctrl+Enter, no new line typed' });
       await gotoRoute(sm, 'subdomains');
       assert(!await pickerShown(sm), 'saved servers count as a run');
       // Remembered options alone (a switch flipped on the start page) are no run; learned names are.

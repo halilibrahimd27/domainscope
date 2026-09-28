@@ -190,6 +190,31 @@ export async function takeDownloads(page) {
   });
 }
 
+/**
+ * In the page: the stored SSL Targets options (localStorage) and the active workspace's inventory
+ * text (IndexedDB, through state.js), to be put back with {@link restoreSetup}.
+ */
+function storedSetup() {
+  return import('./assets/js/state.js').then(({ state }) => ({ options: localStorage.getItem('ssds.scan.options'), inventory: state.inventory.text }));
+}
+
+/** In the page: put back what {@link storedSetup} read (the inventory saved, or cleared when there was none). */
+function restoreSetup(s) {
+  return import('./assets/js/state.js').then(async ({ state }) => {
+    if (s.options === null) localStorage.removeItem('ssds.scan.options');
+    else localStorage.setItem('ssds.scan.options', s.options);
+    await state.setInventory(s.inventory || '').done;
+  });
+}
+
+/** In the page: save `text` as the active workspace's inventory ('' clears it), written before it resolves. */
+function saveInventoryIn(text) {
+  return import('./assets/js/state.js').then(async ({ state }) => {
+    await state.setInventory(text).done;
+    await state.whenSaved();
+  });
+}
+
 /** Wait until the shell has rendered its first route. */
 export async function waitReady(page) {
   await page.waitFor(() => document.documentElement.dataset.appReady === 'true', { timeout: 20000, message: 'app ready' });
@@ -596,10 +621,8 @@ async function main() {
     await run.step('boots on #/scan with the four setup steps and an empty run bar', async () => {
       await page.goto(`${server.url}#/scan`);
       await waitReady(page);
-      await page.evaluate(() => {
-        localStorage.removeItem('ssds.scan.options');
-        localStorage.removeItem('ssds.inventory');
-      });
+      await page.evaluate(() => localStorage.removeItem('ssds.scan.options'));
+      await page.evaluate(saveInventoryIn, '');
       await page.reload();
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
@@ -1088,7 +1111,7 @@ async function main() {
       // A new tab follows the host's colour scheme: pin light so the *-light-* screenshots are light.
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       // The live suite's stored options / inventory are restored afterwards.
-      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }));
+      const saved = await page.evaluate(storedSetup);
       try {
         await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS) });
         await tab.goto(`${server.url}#/about`);
@@ -1181,12 +1204,7 @@ async function main() {
         await assertClean(tab, 'zone hand-off (SSL Targets)', origin);
       } finally {
         await tab.close();
-        await page.evaluate((s) => {
-          for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
-            if (value === null) localStorage.removeItem(key);
-            else localStorage.setItem(key, value);
-          }
-        }, saved);
+        await page.evaluate(restoreSetup, saved);
       }
     });
 
@@ -1194,7 +1212,7 @@ async function main() {
     {
       const tab = await browser.newPage('about:blank', { width: 375, height: 667, mobile: true });
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
-      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }))
+      const saved = await page.evaluate(storedSetup)
         .catch(() => null);
       /** Where Start, the bar and a field sit on screen right now (no scrolling done here). */
       const layout = (field) => tab.evaluate((sel) => {
@@ -1226,8 +1244,8 @@ async function main() {
           const known = LIB_SOURCES.map((s) => s.id);
           await tab.evaluate((k) => {
             localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'small', permutations: false, originHints: true }));
-            localStorage.removeItem('ssds.inventory');
           }, known);
+          await tab.evaluate(saveInventoryIn, '');
           await tab.reload();
           await waitReady(tab);
           await gotoRoute(tab, 'scan');
@@ -1394,12 +1412,7 @@ async function main() {
       } finally {
         await tab.close();
         if (saved) {
-          await page.evaluate((s) => {
-            for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
-              if (value === null) localStorage.removeItem(key);
-              else localStorage.setItem(key, value);
-            }
-          }, saved);
+          await page.evaluate(restoreSetup, saved);
         }
       }
     }
@@ -1409,7 +1422,7 @@ async function main() {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       // The live suite's stored options / inventory are restored afterwards.
-      const saved = await page.evaluate(() => ({ options: localStorage.getItem('ssds.scan.options'), inventory: localStorage.getItem('ssds.inventory') }))
+      const saved = await page.evaluate(storedSetup)
         .catch(() => null);
       const pressed = (scope) => tab.evaluate((s) => document.querySelector(`${s} .seg-btn[aria-pressed="true"]`)?.dataset.value || null, scope);
       const code = (sel) => tab.evaluate((s) => document.querySelector(s)?.textContent || null, sel);
@@ -1441,10 +1454,10 @@ async function main() {
           await waitReady(tab);
           await setLangUi(tab, 'en');
           const known = LIB_SOURCES.map((s) => s.id);
-          await tab.evaluate((k, inv) => {
+          await tab.evaluate((k) => {
             localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'small', permutations: false, originHints: true }));
-            localStorage.setItem('ssds.inventory', JSON.stringify({ v: 1, text: inv, updatedAt: new Date().toISOString() }));
-          }, known, OFFLINE_INVENTORY);
+          }, known);
+          await tab.evaluate(saveInventoryIn, OFFLINE_INVENTORY);
           await tab.reload();
           await waitReady(tab);
           await gotoRoute(tab, 'scan');
@@ -1616,12 +1629,7 @@ async function main() {
       } finally {
         await tab.close();
         if (saved) {
-          await page.evaluate((s) => {
-            for (const [key, value] of [['ssds.scan.options', s.options], ['ssds.inventory', s.inventory]]) {
-              if (value === null) localStorage.removeItem(key);
-              else localStorage.setItem(key, value);
-            }
-          }, saved);
+          await page.evaluate(restoreSetup, saved);
         }
       }
     }

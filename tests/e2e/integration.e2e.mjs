@@ -12,7 +12,7 @@
  *   1b. Subdomains — the landing view: #/subdomains?domain=…&run=1 + one click on the link prompt
  *                  (Cloudflare rows, inventory match, the Hosts tab first; Overview, Origins and
  *                  Sources are checked in the four modes too); with learned names switched on
- *                  (opt-in), the scan's bare labels land in this browser's learned-names store,
+ *                  (opt-in), the scan's bare labels land in the workspace's learned-names store,
  *                  which SSL Targets then shows and uses too
  *   2. SSL Targets — the fixture certificate auto-fills its domain; then the domain's LIVE
  *                  certificate (fetched with node:tls) is loaded and the domain is scanned:
@@ -303,7 +303,8 @@ async function main() {
     await run.step('app boots with empty storage; English UI', async () => {
       await page.goto(`${server.url}#/about`);
       await waitReady(page);
-      await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('ssds.')).forEach((k) => localStorage.removeItem(k)));
+      // Empty storage: the workspaces (IndexedDB) and every 'ssds.*' key.
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.clearAll());
       await page.reload();
       await waitReady(page);
       await setLangUi(page, 'en');
@@ -327,7 +328,11 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-role="inventory-text"]').value.includes('dns-google'), { message: 'file imported' });
       await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr').length === n, { args: [direct.length + 4], message: 'parsed rows' });
       await page.click('[data-action="save"]');
-      await page.waitFor(() => !!localStorage.getItem('ssds.inventory'), { message: 'saved' });
+      await page.waitFor(async () => {
+        const { state } = await import('./assets/js/state.js');
+        await state.whenSaved();
+        return !!state.workspaceData('inventory');
+      }, { message: 'saved' });
       process.stdout.write(`        direct hosts: ${direct.map((d) => `${d.name}=${d.ip}`).join(', ') || 'none found'}\n`);
     });
     await run.step('Servers view in four modes', () => fourModes('inventory', "document.querySelectorAll('.inv-results .dt-table tbody tr').length > 0"));
@@ -360,7 +365,7 @@ async function main() {
       assert(info.tab === 'hosts' && info.shown, `hosts first: the Hosts tab shows the table (${info.tab})`);
       if (direct.length) assert(/web-origin/.test(info.text), 'inventory server shown for the direct host');
       // The scan taught this browser its naming vocabulary: bare labels only, never names or IPs.
-      learnedAfterSub = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('ssds.learned.labels') || '{}').labels || {}));
+      learnedAfterSub = await page.evaluate(async () => Object.keys(((await import('./assets/js/state.js')).state.workspaceData('learned') || {}).labels || {}));
       assert(learnedAfterSub.length > 0 && learnedAfterSub.every((l) => /^[a-z0-9-]+$/.test(l)), `learned labels: ${learnedAfterSub.slice(0, 12)}`);
       process.stdout.write(`        ${learnedAfterSub.length} labels learned in this browser\n`);
     });
@@ -448,7 +453,7 @@ async function main() {
       assert(targets && /web-origin|dns-google/.test(targets.text), `targets.txt holds inventory servers: ${targets && targets.text.slice(0, 200)}`);
       await page.click('.scan-tabs [data-tab="hosts"]');
       // SSL Targets learns like Subdomains does (the store only grows; still labels only).
-      const learned = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('ssds.learned.labels') || '{}').labels || {}));
+      const learned = await page.evaluate(async () => Object.keys(((await import('./assets/js/state.js')).state.workspaceData('learned') || {}).labels || {}));
       assert(learned.length >= learnedAfterSub.length && learned.every((l) => /^[a-z0-9-]+$/.test(l)), `learned after SSL Targets: ${learned.length}`);
       // ... and the mounted view refreshes its vocabulary line with the grown store right away
       // (active.refreshVocab), without an edit or a re-mount.

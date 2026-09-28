@@ -38,6 +38,13 @@
  * Installable app: once the first view is up the shell registers the service worker
  * (ui/pwa.js; Pages bundle only). Offline, a view that needs the network says so above its
  * body, and ctx.requireOnline() stops its network work with a message instead of failing requests.
+ *
+ * Workspaces (state.js, lib/workspace.js): the first view mounts once `state.ready` has opened the
+ * workspace store. The header's switcher (inside the Tools menu below 720 px) opens the
+ * Workspaces dialog (ui/workspace-panel.js, loaded on first use). A switch asks first when a long
+ * job runs (it stops), forgets the page session, makes the new workspace's most recent domain the
+ * current target and opens the tool on screen again with it filled in. Every target a tool runs on
+ * goes to the top of the active workspace's recent list.
  */
 
 import {
@@ -62,7 +69,8 @@ import { TargetChip, KeptNote } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summary.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
-import { setBaseTitle, refreshJobIndicators } from './ui/jobs.js';
+import { setBaseTitle, refreshJobIndicators, runningJobs } from './ui/jobs.js';
+import { WorkspaceSwitch, WorkspaceMenuEntry, workspaceLabel, deleteAllLocalData } from './ui/workspace-ui.js';
 
 /** Repository URL shown in the header/footer. */
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
@@ -70,6 +78,8 @@ export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
 export const APP_VERSION = '1.0.0';
 /** Default route. */
 export const DEFAULT_VIEW = 'subdomains';
+/** The first view waits this long at most for the workspace store (IndexedDB) to open. */
+const WORKSPACE_WAIT_MS = 8000;
 
 /**
  * Every per-view stylesheet (paths under assets/css/) in cascade order. index.html links only
@@ -419,28 +429,45 @@ state.subscribe(({ key }) => {
 export const pageSession = createSessionStore();
 
 state.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
-  pageSession.clear();
-  forgetShown();
+  if (key === 'cleared') {
+    pageSession.clear();
+    forgetShown();
+  } else if (key === 'workspace') {
+    // Another customer: the target, the kept results and what the tool on screen shows were the
+    // previous workspace's. Its most recent domain becomes the target, filled in everywhere.
+    pageSession.clear();
+    const recent = state.workspaceData('recent');
+    if (recent.length) pageSession.setTarget(recent[0].value);
+    forgetShown({ always: true, carry: true });
+  }
+});
+
+// Every domain or host name a tool runs on goes to the top of the workspace's recent list.
+pageSession.subscribe(({ type }) => {
+  const target = type === 'target' ? pageSession.target : null;
+  if (target && target.kind !== 'ip') state.recordRecent(target.value);
 });
 
 /**
  * "Delete all local data" ran: the tool on screen forgets what it shows too. Its note goes, its
  * result is not kept on the way out, and once every listener has dropped its own state (the
  * tools with module state listen too: Subdomains, SSL Targets, Bulk Resolve, the Certificate
- * view, Zone File), it opens again on its bare route, so nothing runs.
+ * view, Zone File), it opens again on its bare route, so nothing runs. After a switch to another
+ * workspace (`always`) every tool opens again, with the new current target filled in (`carry`).
+ * @param {{ always?: boolean, carry?: boolean }} [opts]
  */
-function forgetShown() {
+function forgetShown({ always = false, carry = false } = {}) {
   const cur = current;
   if (!cur) return;
   setKeptNote(null);
-  if (!cur.view || typeof cur.view.result !== 'function') return;
+  if (!always && (!cur.view || typeof cur.view.result !== 'function')) return;
   cur.forget = true;
   queueMicrotask(() => {
     if (current !== cur) return;
-    const hash = buildRoute(cur.id);
+    const params = carry ? carryRoute(cur.id, { target: pageSession.target }) : {};
+    const hash = buildRoute(cur.id, params);
     if (hash !== currentHash()) globalThis.history.replaceState(null, '', hash);
-    showRoute(cur.id, {}, { force: true });
+    showRoute(cur.id, params, { force: true });
   });
 }
 
@@ -1249,6 +1276,89 @@ function updateNavHrefs() {
   });
 }
 
+/** The header's workspace switcher (CSS hides it below 720 px, where the Tools menu has it). */
+function renderWorkspaceSwitch() {
+  if (!dom.workspaceHost) return;
+  const doc = globalThis.document;
+  const hadFocus = !!doc && dom.workspaceHost.contains(doc.activeElement);
+  clear(dom.workspaceHost);
+  const btn = WorkspaceSwitch({ workspace: state.workspace, onOpen: openWorkspaces });
+  dom.workspaceHost.append(btn);
+  if (hadFocus) btn.focus({ preventScroll: true });
+}
+
+/** The Workspaces dialog on screen (one at a time), or a pending first load of it. */
+let workspacePanel = null;
+
+/** An error in one line for a toast: what failed and why, else the kind of error. */
+function errorText(err) {
+  const { message, detail } = describeError(err);
+  return detail || message;
+}
+
+/**
+ * Open the Workspaces dialog: its module and stylesheet load on first use (a page left open
+ * across a deploy is offered a reload). The focus returns to the switcher, or on a phone to the
+ * Tools button.
+ */
+async function openWorkspaces() {
+  if (workspacePanel) return;
+  workspacePanel = 'loading';
+  let mod;
+  try {
+    [mod] = await Promise.all([import('./ui/workspace-panel.js'), loadStylesheet('workspace.css')]);
+  } catch (err) {
+    workspacePanel = null;
+    noticeIfOutdated(pageIsOutdated);
+    toast(t('ws.loadFailed', { message: errorText(err) }), { type: 'error' });
+    return;
+  }
+  workspacePanel = mod.openWorkspacePanel({
+    state,
+    appVersion: APP_VERSION,
+    switchTo: switchWorkspace,
+    setTarget: (value) => !!pageSession.setTarget(value),
+    onClose: () => {
+      workspacePanel = null;
+      const doc = globalThis.document;
+      if (doc.activeElement && doc.activeElement !== doc.body) return;
+      const back = [dom.workspaceHost && dom.workspaceHost.querySelector('[data-control="workspace"]'), dom.navMenuBtn, dom.pageTitle]
+        .find((el) => el && el.isConnected && el.getClientRects().length);
+      if (back) back.focus({ preventScroll: true });
+    }
+  });
+}
+
+/**
+ * Work in another workspace. A long job still running (Subdomains, SSL Targets, Bulk Resolve)
+ * belongs to this one and stops: the user confirms that first.
+ * @param {string} id
+ * @returns {Promise<boolean>} switched
+ */
+async function switchWorkspace(id) {
+  if (id === state.workspace.id) return true;
+  const next = state.workspaces.find((w) => w.id === id);
+  if (!next) return false;
+  const jobs = runningJobs();
+  if (jobs.length) {
+    const ok = await confirmDialog({
+      title: t('ws.switchTitle'),
+      message: t('ws.switchJobs', { jobs: jobs.map((v) => t(`nav.${v}`)).join(', '), name: workspaceLabel(next) }),
+      confirmLabel: t('ws.switchStop'),
+      danger: true
+    });
+    if (!ok) return false;
+  }
+  try {
+    await state.switchWorkspace(id);
+  } catch (err) {
+    toast(t('ws.switchFailed', { message: errorText(err) }), { type: 'error' });
+    return false;
+  }
+  toast(t('ws.switched', { name: workspaceLabel(state.workspace) }), { type: 'success' });
+  return true;
+}
+
 /** The header chip with the current target (hidden without one). */
 function renderTargetChip() {
   if (!dom.targetHost) return;
@@ -1349,16 +1459,24 @@ function renderFooter() {
 let navMenu = null;
 
 /**
- * The Tools menu of narrow screens: every view in its group (the sidebar's table), the current
- * one marked (with the busy dot while it works), in a Modal (focus trap, Esc closes). The focus
- * goes back to the Tools button, unless a link opened another tool: its page title takes the
- * focus then. A Ctrl/⌘/Shift/Alt click is the browser's (a new tab): the menu stays open.
+ * The Tools menu of narrow screens: the active workspace with a way to the Workspaces dialog (the
+ * header has no room for its switcher there), then every view in its group (the sidebar's table),
+ * the current one marked (with the busy dot while it works), in a Modal (focus trap, Esc closes).
+ * The focus goes back to the Tools button, unless a link opened another tool: its page title takes
+ * the focus then. A Ctrl/⌘/Shift/Alt click is the browser's (a new tab): the menu stays open.
  */
 function openNavMenu() {
   if (navMenu) return;
   const openedOn = current ? current.id : null;
   const busy = !!(current && current.busy);
-  const content = h('div', { class: 'navmenu' }, groupViews(VIEWS).map((g) => {
+  const workspaceEntry = WorkspaceMenuEntry({
+    workspace: state.workspace,
+    onOpen: () => {
+      menu.close({ workspace: true });
+      openWorkspaces();
+    }
+  });
+  const content = h('div', { class: 'navmenu' }, workspaceEntry, groupViews(VIEWS).map((g) => {
     const labelId = uid('navmenu-group');
     return h('div', { class: 'navmenu-group' },
       h('h3', { class: 'navmenu-label', id: labelId }, t(g.labelKey)),
@@ -1395,6 +1513,8 @@ function openNavMenu() {
         if (dom.pageTitle && dom.pageTitle.isConnected) dom.pageTitle.focus({ preventScroll: true });
         return;
       }
+      // The Workspaces dialog opens next and takes the focus (and gives it back to this button).
+      if (value && value.workspace) return;
       if (btn && btn.isConnected && (!value || value.view === openedOn)) btn.focus({ preventScroll: true });
     }
   });
@@ -1643,6 +1763,7 @@ function renderChrome() {
   dom.skip.textContent = t('shell.skip');
   renderHeaderActions();
   renderTargetChip();
+  renderWorkspaceSwitch();
   renderNav();
   renderFooter();
   renderOfflineNote();
@@ -1807,9 +1928,10 @@ function openSettings() {
         onClick: async () => {
           const ok = await confirmDialog({ message: t('settings.clearDataConfirm'), confirmLabel: t('common.delete'), danger: true });
           if (!ok) return;
-          state.clearAll();
+          // Memory is cleared at once; the toast waits for the database to be deleted.
+          const done = deleteAllLocalData(state);
           modal.close(null);
-          toast(t('settings.dataCleared'), { type: 'success' });
+          await done;
         }
       })));
 
@@ -1918,15 +2040,19 @@ function boot() {
   dom.skip = document.getElementById('skip-link');
   const brand = document.getElementById('brand');
   if (brand) brand.setAttribute('href', buildRoute(DEFAULT_VIEW));
-  // The current target sits between the brand and the header controls.
+  // The current target sits between the brand and the header controls, the workspace switcher
+  // right after it.
   dom.targetHost = h('div', { class: 'header-target', hidden: true });
   dom.header.insertBefore(dom.targetHost, dom.headerActions);
+  dom.workspaceHost = h('div', { class: 'header-workspace' });
+  dom.header.insertBefore(dom.workspaceHost, dom.headerActions);
   pageSession.subscribe(() => {
     renderTargetChip();
     updateNavHrefs();
   });
 
-  // A browser that used the app before the task picker existed is no first-time visitor.
+  // A browser that used the app before the task picker existed is no first-time visitor (read
+  // before the workspace store moves the old keys away; state.migrated says so afterwards too).
   if (state.settings.startTasks && hasUsedBefore(storedKeys())) noteRun();
   const settings = state.settings;
   applyTheme(settings.theme);
@@ -1959,6 +2085,7 @@ function boot() {
   });
   state.subscribe(({ key, value, origin }) => {
     if (key === 'inventory') updateNavStatus();
+    if (key === 'workspace' || key === 'workspaces' || key === 'cleared') renderWorkspaceSwitch();
     if (key === 'settings') {
       updateNavStatus();
       syncTheme(value.theme); // also covers "restore defaults" / "delete all local data" / other tabs
@@ -2003,9 +2130,19 @@ function boot() {
   globalThis.addEventListener('beforeprint', beforePrint);
   globalThis.addEventListener('afterprint', afterPrint);
 
-  if (!state.persistence) toast(t('shell.storageUnavailable'), { type: 'warn', timeout: 9000 });
-
-  handleRoute();
+  // The first view mounts once the workspace store is open (its inventory and learned names are
+  // read synchronously); a store that never answers holds it back WORKSPACE_WAIT_MS at most.
+  let routed = false;
+  const start = () => {
+    if (routed) return;
+    routed = true;
+    if (state.settings.startTasks && state.migrated.length) noteRun();
+    if (!state.persistence || !state.workspacePersistence) toast(t('shell.storageUnavailable'), { type: 'warn', timeout: 9000 });
+    renderWorkspaceSwitch();
+    handleRoute();
+  };
+  state.ready.then(start, start);
+  setTimeout(start, WORKSPACE_WAIT_MS);
 }
 
 if (typeof document !== 'undefined' && document.getElementById('app')) {

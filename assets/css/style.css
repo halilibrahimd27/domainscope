@@ -585,6 +585,110 @@ hr {
   color: var(--text);
 }
 
+/* Workspace switcher (app.js, ui/workspace-ui.js): after the target chip; in the Tools menu below 720 px */
+.header-workspace {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 6px;
+}
+
+.ws-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 8px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur), border-color var(--dur);
+}
+
+.ws-switch:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.ws-switch-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.ws-switch-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-switch.is-default .ws-switch-name {
+  color: var(--text-2);
+}
+
+.ws-switch-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* The Tools menu's workspace row (phones) */
+.navmenu-workspace {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.navmenu-workspace-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.navmenu-workspace-label {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+
+.navmenu-workspace-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.navmenu-workspace-name .icon {
+  color: var(--accent);
+}
+
+.navmenu-workspace .btn {
+  flex: none;
+}
+
+/* "Expected CA" / "Unexpected CA" after an issuer (ui/expected-ca.js) */
+.eca-badge {
+  margin-inline-start: 6px;
+  vertical-align: 1px;
+}
+
 /* Thin activity bar under the header while a view is busy */
 .busy-bar {
   position: absolute;
@@ -1671,6 +1775,11 @@ button.nav-status:hover {
   }
 
   .app-nav .nav-group {
+    display: none;
+  }
+
+  /* The Tools menu holds the workspace switcher here. */
+  .header-workspace {
     display: none;
   }
 

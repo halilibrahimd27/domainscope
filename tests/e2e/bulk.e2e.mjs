@@ -164,7 +164,7 @@ async function main() {
       await page.goto(`${server.url}#/bulk`);
       await waitReady(page);
       await page.evaluate(() => localStorage.removeItem('ssds.bulk.options'));
-      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('google-dns 8.8.8.8 8.8.4.4\nlab01 10.0.0.1\nweb09 203.0.113.9'));
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('google-dns 8.8.8.8 8.8.4.4\nlab01 10.0.0.1\nweb09 203.0.113.9').done);
       await page.reload();
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');

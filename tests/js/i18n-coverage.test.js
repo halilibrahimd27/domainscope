@@ -52,6 +52,8 @@ let views;
 before(async () => {
   i18n = await imp('assets/js/i18n.js');
   await imp('assets/js/app.js');
+  // The Workspaces dialog: the shell loads it on first use, not with a view.
+  await imp('assets/js/ui/workspace-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));

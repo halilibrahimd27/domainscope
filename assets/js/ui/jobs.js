@@ -112,6 +112,15 @@ export function startJob({ view }) {
 }
 
 /**
+ * The views whose long jobs are running now ('subdomains', 'scan', 'bulk'), each once: the shell
+ * names them before a switch to another workspace stops them.
+ * @returns {string[]}
+ */
+export function runningJobs() {
+  return [...new Set([...jobs.values()].map((job) => job.view))];
+}
+
+/**
  * The page's own title; while jobs run the progress prefix goes in front of it. The shell calls
  * this instead of setting document.title.
  * @param {string} text

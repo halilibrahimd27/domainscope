@@ -517,10 +517,11 @@ function backToJob() {
   return true;
 }
 
-// "Delete all local data" (About, or Settings on any view) forgets the pasted list and the last
-// job, stopping one that runs; the shell opens the view again when it is on screen.
+// "Delete all local data" (About, or Settings on any view) and a switch to another workspace
+// forget the pasted list and the last job (matched against the other workspace's servers),
+// stopping one that runs; the shell opens the view again when it is on screen.
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'cleared') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   const job = session.job;
   if (job && job.status === 'running') job.controller.abort();
   session.job = null;

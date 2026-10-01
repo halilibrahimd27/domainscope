@@ -271,6 +271,28 @@ class CompareUnitTests(unittest.TestCase):
         self.assertEqual(sos.compare_sides(side(self_signed), side(other_self, '192.0.2.2'), now)['verdict'], 'differs')
         self.assertEqual(sos.compare_sides(side(self_signed), side(self_signed, '192.0.2.2'), now)['shared'], ['cert-untrusted'])
 
+    def test_hsts_turned_off_or_weaker_on_the_new_server_is_a_warning(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        old = self.side(hsts='max-age=31536000; includeSubDomains; preload')
+
+        def hsts(new_value, old_side=old):
+            result = sos.compare_sides(old_side, self.side(ip='192.0.2.2', hsts=new_value), now)
+            item = next(f for f in result['fields'] if f['key'] == 'hsts')
+            return [result['verdict'], item['severity'], item['note']]
+        self.assertEqual(hsts('max-age=0'), ['differs', 'warn', 'hsts-off'], 'browsers forget the policy')
+        self.assertEqual(hsts('max-age=31536000'), ['differs', 'warn', 'hsts-weaker'], 'includeSubDomains dropped')
+        self.assertEqual(hsts('Max-Age="31536000"; includeSubDomains')[2], 'hsts-weaker', 'preload dropped')
+        self.assertEqual(hsts('max-age=63072000; includesubdomains; preload'), ['same', 'info', None])
+        self.assertEqual(hsts(None), ['differs', 'warn', 'hsts-lost'])
+        # An old max-age=0 is no policy to lose; a new header after it is one added.
+        self.assertEqual(hsts(None, self.side(hsts='max-age=0')), ['same', 'info', None])
+        self.assertEqual(hsts('max-age=600', self.side(hsts='max-age=0'))[2], 'hsts-new')
+        result = sos.compare_sides(old, self.side(ip='192.0.2.2', hsts='max-age=0'), now)
+        text = sos.render_compare(NAME, '/', old, self.side(ip='192.0.2.2', hsts='max-age=0'), result, width=160, now=now)
+        line = next(l for l in text.splitlines() if l.strip().startswith('HSTS'))
+        self.assertTrue(line.rstrip().endswith('DIFFERS'), line)
+        self.assertIn('max-age=0: browsers that kept the old header forget it', text)
+
     def test_certificate_names_side_by_side(self):
         now = datetime(2026, 9, 28, tzinfo=timezone.utc)
         wild, multi = fixture_cert('cli_private_wild.pem'), fixture_cert('rsa_multi_san.pem')

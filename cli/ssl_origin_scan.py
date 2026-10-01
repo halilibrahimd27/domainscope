@@ -6878,6 +6878,8 @@ COMPARE_NOTES = {
     'dynamic-body': 'a page with a token or a time in it differs on every request',
     'body-cut': 'only the first %d bytes are compared' % COMPARE_BODY_LIMIT,
     'hsts-lost': 'visitors that never saw the header lose HTTPS-only',
+    'hsts-off': 'max-age=0: browsers that kept the old header forget it and allow plain HTTP again',
+    'hsts-weaker': 'includeSubDomains or preload dropped: a weaker policy than the old one',
     'hsts-new': 'the new server adds HSTS',
     'cert-name': 'the certificate does not cover the name',
     'cert-untrusted': 'not trusted by this machine',
@@ -7065,6 +7067,21 @@ def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertI
         return None, _clean_ssl_message(exc)
 
 
+def hsts_policy(value: Optional[str]) -> Optional[Tuple[Optional[int], bool, bool]]:
+    """A Strict-Transport-Security header as ``(max-age or None, includeSubDomains, preload)``,
+    or None without one (the web app's parseHsts)."""
+    if not value or not value.strip():
+        return None
+    parts = [part.strip().lower() for part in value.split(';') if part.strip()]
+    age = None  # type: Optional[int]
+    for part in parts:
+        match = re.match(r'^max-age\s*=\s*"?(\d+)"?$', part)
+        if match:
+            age = int(match.group(1))
+            break
+    return age, 'includesubdomains' in parts, 'preload' in parts
+
+
 def _compare_field(key: str, old: Any, new: Any, severity: str, note: Optional[str] = None,
                    shared: Optional[bool] = None, same: Optional[bool] = None) -> Dict[str, Any]:
     """One compared field: 'ok' when both agree, unless its note is a certificate problem both
@@ -7088,8 +7105,9 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     """Field by field, with the web app's rules (lib/origincompare.js compareSides): the new
     server not answering, answering 4xx / 5xx where the old one did not, or a certificate
     that does not cover the name or is not trusted (while the old one was) is an error;
-    another status, redirect, content type or title, a lost HSTS header or a certificate
-    expiring within 14 days a warning; another body, Server header or certificate (its names,
+    another status, redirect, content type or title, a lost HSTS header (none, max-age=0, or
+    without the old one's includeSubDomains or preload) or a certificate expiring within 14
+    days a warning; another body, Server header or certificate (its names,
     issuer, expiry, fingerprint) is information. A certificate problem both servers share (an
     untrusted certificate, the same one or from the same issuer, neither covering the name, both
     expiring soon with the new one no sooner) is no difference: the field is ``shared``, its note
@@ -7127,9 +7145,17 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
         fields.append(_compare_field('body', a.body_sha256, b.body_sha256, 'info',
                                      ('body-cut' if cut else None) if same_body else 'dynamic-body'))
         hsts_note, hsts_sev = None, 'info'  # type: Optional[str], str
-        if a.hsts and not b.hsts:
+        old_hsts, new_hsts = hsts_policy(a.hsts), hsts_policy(b.hsts)
+        # max-age=0 tells a browser to forget the policy: no HSTS to keep, or to lose.
+        old_on = old_hsts is not None and old_hsts[0] != 0
+        new_on = new_hsts is not None and new_hsts[0] != 0
+        if old_on and new_hsts is None:
             hsts_note, hsts_sev = 'hsts-lost', warn
-        elif b.hsts and not a.hsts:
+        elif old_on and not new_on:
+            hsts_note, hsts_sev = 'hsts-off', warn
+        elif old_on and new_hsts is not None and ((old_hsts[1] and not new_hsts[1]) or (old_hsts[2] and not new_hsts[2])):
+            hsts_note, hsts_sev = 'hsts-weaker', warn
+        elif new_on and not old_on:
             hsts_note = 'hsts-new'
         fields.append(_compare_field('hsts', a.hsts, b.hsts, hsts_sev, hsts_note))
         fields.append(_compare_field('server', a.server, b.server, 'info'))
@@ -7510,15 +7536,16 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   covers the name, trusted, issuer, expiry, SHA-256 fingerprint - with ERROR (the new server
   does not answer, answers 4xx / 5xx where the old one did not, or its certificate does not
   cover the name or is not trusted while the old one was), DIFFERS (another status, redirect,
-  type or title, a lost HSTS header, a new certificate expiring within 14 days, an untrusted
-  certificate from another issuer than the old untrusted one) and differs (information:
-  another body, Server header or certificate; a page with a token or a time in it differs on
-  every request). A certificate problem both servers share - an untrusted certificate, the
-  same one or from the same issuer (an origin CA certificate behind a CDN; a self-signed
+  type or title, a lost HSTS header - none, max-age=0, or without the old includeSubDomains
+  or preload -, a new certificate expiring within 14 days, an untrusted certificate from
+  another issuer than the old untrusted one) and differs (information: another body,
+  Server header or certificate; a page with a token or a time in it differs on every
+  request). A certificate problem both servers share - an untrusted certificate, the same
+  one or from the same issuer (an origin CA certificate behind a CDN; a self-signed
   certificate is its own issuer), neither covering the name, both expiring within 14 days -
   is WARNING and no difference: two identical servers are SAME, with a WARNING line under
-  the verdict. When neither server answers, the verdict is UNREACHABLE: this
-  machine's network may be the cause as much as the servers. Private addresses are fine:
+  the verdict. When neither server answers, the verdict is UNREACHABLE: this machine's
+  network may be the cause as much as the servers. Private addresses are fine:
   this is the counterpart of the web app's check from the internet (Retire an IP > Compare
   the old and the new server). --json FILE writes both answers (schema
   domainscope.compare/1, the shared problems in "shared"); --fail-on-change exits with

@@ -154,6 +154,13 @@ describe('part values', () => {
     assert.deepEqual(sanitizePart('expectedCas', { a: 1 }), []);
   });
 
+  test('the portfolio policy: its JSON text as the editor holds it (a draft with a mistake too), capped; anything else empty', () => {
+    assert.equal(sanitizePart('policy', '{\r\n  "expiryDays": ">= 30"\u0000\r\n}'), '{\n  "expiryDays": ">= 30"\n}');
+    assert.equal(sanitizePart('policy', '{ "expiryDays": '), '{ "expiryDays": ', 'kept as typed');
+    assert.equal(sanitizePart('policy', 'p'.repeat(WORKSPACE_LIMITS.policy + 9)).length, WORKSPACE_LIMITS.policy);
+    assert.equal(sanitizePart('policy', { rules: {} }), '');
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

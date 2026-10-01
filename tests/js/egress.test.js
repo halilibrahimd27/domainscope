@@ -559,6 +559,8 @@ const CALL_SITES = {
   'assets/js/lib/rdap.js': ['rdap-bootstrap', 'rdap'],
   'assets/js/lib/globalping.js': ['globalping'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],
+  // the Domain portfolio: hands its fetch to lib/rdap.js (and its DNS client to lib/passport.js)
+  'assets/js/lib/portfolio.js': [],
   'assets/js/lib/keycontinuity.js': ['crtsh'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],

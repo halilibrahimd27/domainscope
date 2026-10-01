@@ -25,13 +25,15 @@ const DATA = {
   wordlist: 'billing\nintranet',
   expectedCas: ["Let's Encrypt", 'Example Internal CA'],
   notes: 'Renewal every March.\nCall the NOC first.',
-  recent: [{ value: 'example.com', at: '2026-09-28T09:00:00Z' }, { value: 'www.example.net', at: null }]
+  recent: [{ value: 'example.com', at: '2026-09-28T09:00:00Z' }, { value: 'www.example.net', at: null }],
+  // the portfolio audit's policy (lib/policy.js), as its editor holds it
+  policy: '{ "expiryDays": ">= 30", "transferLock": true }'
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
 describe('the plain file', () => {
   test('a readable, versioned JSON file; empty parts are left out', async () => {
-    const text = await exportWorkspaceFile({ ...WS, data: { ...DATA, notes: '', learned: null } });
+    const text = await exportWorkspaceFile({ ...WS, data: { ...DATA, notes: '', learned: null, policy: '' } });
     const file = JSON.parse(text);
     assert.equal(file.format, HANDOVER_FORMAT);
     assert.equal(file.v, HANDOVER_VERSION);

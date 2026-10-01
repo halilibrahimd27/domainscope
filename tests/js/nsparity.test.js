@@ -627,6 +627,11 @@ describe('summary and runbook', () => {
     assert.deepEqual([stopped.verdict, stopped.unchecked, stopped.stopped], ['partial', 26, true]);
     assert.equal(paritySummary({ ...clean, counts: { same: 2, extra: 1 }, notReached: 4 }).verdict, 'partial', 'record sets a stop left out');
     assert.equal(paritySummary({ ...clean, counts: { same: 2, missing: 1 }, stoppedBy: 'quota', notReached: 26 }).verdict, 'fix', 'a missing record still says fix');
+    // A record set without an answer could hold anything: 'partial' before 'check', as the CLI says.
+    const unanswered = paritySummary({ ...clean, counts: { same: 2, extra: 1, unproxied: 1, error: 1 }, rows: [{ status: 'error', reasons: ['servfail'] }] });
+    assert.deepEqual([unanswered.verdict, unanswered.unchecked], ['partial', 1]);
+    // A type only the CLI asks (CAA) is no unanswered question: extra rows still make it 'check'.
+    assert.equal(paritySummary({ ...clean, counts: { same: 2, extra: 1 }, rows: [{ status: 'skipped', reasons: ['not-queryable'] }] }).verdict, 'check');
   });
 
   test('the toast of a run that ends away from its tab: "nothing to fix" only for a finished clean run', async () => {

@@ -868,11 +868,12 @@ export function signedInFile(zone) {
 /**
  * The headline of a finished run: `verdict` 'ready' (every compared record set is the same, and
  * every server serves the zone), 'fix' (missing or different records, or a server that does not
- * serve it), 'partial' (nothing to fix so far, but the run stopped or a server was not asked:
- * what it left out could hold anything, so it is never judged 'check' or 'ready'), 'check' (a
+ * serve it), 'partial' (nothing to fix so far, but the run stopped, a server was not asked or
+ * a record set got no answer: what it left out could hold anything, so it is never judged
+ * 'check' or 'ready'; cli/dns_parity.py says the same), 'check' (a
  * finished run with only extra / unproxied records, TTL differences or serials out of step),
  * 'partial' again for a finished run that left record sets out (a type Globalping cannot ask,
- * past the probe cap, no answer), or 'blocked' (every server was asked, and none could be
+ * past the probe cap), or 'blocked' (every server was asked, and none could be
  * compared). `unchecked` counts the record sets left for the CLI, those without an answer, and
  * those a stop kept from being asked (`result.notReached`); `stopped` says the run did not finish.
  * @param {object} result {@link runParity}
@@ -890,12 +891,14 @@ export function paritySummary(result) {
   const compared = servers.filter((s) => s.role === 'full' && s.state === 'ok').length;
   const notRun = servers.some((s) => s.state === 'not-run');
   const stopped = !!(result && (result.stoppedBy || result.notReached > 0));
+  // Record sets a server gave no usable answer for: they could hold anything (the CLI's rule too).
+  const unanswered = rows.some((r) => r.status === 'error');
   let verdict;
   // Blocked only when every server was asked and none serves the zone; a stop before a server
   // was asked says nothing about it.
   if (!compared && !notRun) verdict = 'blocked';
   else if ((counts.missing || 0) + (counts.different || 0) > 0 || badServers) verdict = 'fix';
-  else if (stopped || notRun) verdict = 'partial';
+  else if (stopped || notRun || unanswered) verdict = 'partial';
   else if ((counts.extra || 0) + (counts.unproxied || 0) > 0 || ttl || result.serials === 'differ') verdict = 'check';
   else if (unchecked || result.capped) verdict = 'partial';
   else verdict = 'ready';

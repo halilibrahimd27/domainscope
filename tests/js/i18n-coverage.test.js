@@ -253,7 +253,7 @@ describe('i18n coverage', () => {
     for (const n of vf.NOT_RUN_REASONS) add(`vfy.notRun.${n}`);
     for (const x of vf.EXPOSURES) { add(`vfy.exp.${x}`); add(`vfy.exp.${x}.title`); }
     for (const hk of vf.HEADLINE_KEYS) add(`vfy.head.${hk}`);
-    for (const v of ['dns', 'hint', 'zone']) add(`vfy.via.${v}`);
+    for (const v of ['dns', 'hint', 'zone', 'known']) add(`vfy.via.${v}`);
     for (const k of ['datacenter', 'eyeball']) add(`vfy.det.kind.${k}`);
     for (const k of ['on', 'off']) add(`vfy.planOrigins.${k}`);
     for (const sh of views.subdomains.SHELLS) { add(`scan.cdn.shell.${sh}`); add(`scan.cdn.shellTitle.${sh}`); }
@@ -395,6 +395,13 @@ describe('i18n coverage', () => {
     for (const e of policy.POLICY_ERRORS) add(`pol.err.${e}`);
     for (const k of Object.keys(policy.POLICY_I18N.en)) add(k);
     for (const k of Object.keys(pfsum.PORTFOLIO_SUMMARY_I18N.en)) add(k);
+    // The origin map (ui/origin-map.js, ui/origin-map-panel.js over lib/originmap.js and lib/originfill.js):
+    // every source and stale reason, why the form refuses an entry, why a CLI report could not be read.
+    const [om, omp] = await Promise.all([imp('assets/js/ui/origin-map.js'), imp('assets/js/ui/origin-map-panel.js')]);
+    for (const k of om.generatedKeys()) add(k);
+    for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
+    for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
+    for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
     assert.deepEqual(missingIn(keys), []);
   });
 

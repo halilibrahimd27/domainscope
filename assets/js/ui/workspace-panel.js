@@ -45,7 +45,7 @@ const SAVE_DELAY_MS = 400;
 
 registerStrings('en', {
   'ws.title': 'Workspaces',
-  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains and domain policy, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
+  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy and origin map, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
   'ws.memoryOnly': 'Browser storage is unavailable: the workspaces last until you close this tab.',
   'ws.listTitle': 'Your workspaces',
   'ws.active': 'Active',
@@ -57,7 +57,7 @@ registerStrings('en', {
   'ws.save': 'Save',
   'ws.cancel': 'Cancel',
   'ws.delete': 'Delete “{name}”',
-  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains and domain policy? This cannot be undone. Export it first to keep a copy.',
+  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy and origin map? This cannot be undone. Export it first to keep a copy.',
   'ws.deleted': 'Workspace “{name}” deleted.',
   'ws.deleteNotSaved': '“{name}” is deleted here, but not in this browser’s storage: {reason}. It comes back when the page is loaded again.',
   'ws.gone': '“{name}” was deleted in another tab.',
@@ -113,6 +113,7 @@ registerStrings('en', {
   'ws.sum.learned': { zero: 'no learned names', one: '{count} learned name', other: '{count} learned names' },
   'ws.sum.expected': { zero: 'no expected CAs', one: '{count} expected CA', other: '{count} expected CAs' },
   'ws.sum.recent': { zero: 'no recent domains', one: '{count} recent domain', other: '{count} recent domains' },
+  'ws.sum.origins': { one: '{count} remembered origin', other: '{count} remembered origins' },
   'ws.sum.wordlist': 'a custom wordlist',
   'ws.sum.notes': 'notes',
   'ws.sum.policy': 'a domain policy',
@@ -135,7 +136,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'ws.title': 'Çalışma alanları',
-  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını ve alan adı politikasını tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
+  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını, alan adı politikasını ve origin haritasını tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
   'ws.memoryOnly': 'Tarayıcı depolaması kullanılamıyor: çalışma alanları bu sekmeyi kapatana kadar tutulur.',
   'ws.listTitle': 'Çalışma alanlarınız',
   'ws.active': 'Etkin',
@@ -147,7 +148,7 @@ registerStrings('tr', {
   'ws.save': 'Kaydet',
   'ws.cancel': 'Vazgeç',
   'ws.delete': '“{name}” alanını sil',
-  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları ve alan adı politikası? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
+  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası ve origin haritası? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
   'ws.deleted': '“{name}” çalışma alanı silindi.',
   'ws.deleteNotSaved': '“{name}” burada silindi ama bu tarayıcının depolamasından silinemedi: {reason}. Sayfa yeniden yüklendiğinde geri gelir.',
   'ws.gone': '“{name}” başka bir sekmede silindi.',
@@ -203,6 +204,7 @@ registerStrings('tr', {
   'ws.sum.learned': { zero: 'öğrenilen ad yok', other: '{count} öğrenilen ad' },
   'ws.sum.expected': { zero: 'beklenen CA yok', other: '{count} beklenen CA' },
   'ws.sum.recent': { zero: 'son alan adı yok', other: '{count} son alan adı' },
+  'ws.sum.origins': { other: '{count} hatırlanan origin' },
   'ws.sum.wordlist': 'bir özel kelime listesi',
   'ws.sum.notes': 'notlar',
   'ws.sum.policy': 'bir alan adı politikası',
@@ -287,6 +289,7 @@ export function importSummary(ws) {
     t('ws.sum.expected', { count: d.expectedCas.length }),
     t('ws.sum.recent', { count: d.recent.length })
   ];
+  if (d.origins && d.origins.entries.length) parts.push(t('ws.sum.origins', { count: d.origins.entries.length }));
   if (d.wordlist.trim()) parts.push(t('ws.sum.wordlist'));
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));

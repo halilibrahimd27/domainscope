@@ -15,6 +15,9 @@
  * - The form and the last comparison live in this module (the page session): leaving the view
  *   or switching the language keeps them (a run goes on, and ends on the card shown when it
  *   ends); "Delete all local data" and another workspace drop them.
+ * - A comparison whose new server answered with a certificate covering the name offers "Remember
+ *   <address> as the origin of <name>": one click puts it into the workspace's origin map
+ *   (ui/origin-map.js, source 'compare') while the workspace remembers origins.
  * - Every string is rendered through h() / text nodes: status lines, titles, header values and
  *   certificate names come from the servers.
  *
@@ -36,6 +39,9 @@ import {
 import { FAILURE_KINDS } from '../lib/verify.js';
 import { errorKind } from '../lib/util.js';
 import { state } from '../state.js';
+import { compareObservations } from '../lib/originfill.js';
+import { originTarget } from '../lib/originmap.js';
+import { OriginMapOffNote, recordOrigins, recordText, rememberOn } from './origin-map.js';
 
 /** Consent purpose of the gate (one per feature: each sends different data). */
 export const COMPARE_PURPOSE = 'origin-compare';
@@ -74,6 +80,8 @@ registerStrings('en', {
   'oc.cli.powershell': 'Windows PowerShell',
   'oc.cli.none': 'The path holds characters no command line should carry: use a plain path.',
   'oc.failed': 'The comparison failed',
+  'oc.remember': 'Remember {target} as the origin of {host}',
+  'oc.rememberHint': 'Puts the new server into this workspace’s origin map, so Subdomains and SSL Targets rank it first for this name.',
   'oc.quota': 'Not enough Globalping probes left this hour. More are available {when}; the CLI needs none.',
   'oc.quotaAfter': 'The hourly Globalping quota ran out after the old server was asked: the new one was not. What the old one answered is below; compare again {when}.',
   'oc.failedAfter': 'The old server was asked, the new one could not be: what the old one answered is below.',
@@ -175,6 +183,8 @@ registerStrings('tr', {
   'oc.cli.powershell': 'Windows PowerShell',
   'oc.cli.none': 'Yol, hiçbir komut satırının taşımaması gereken karakterler içeriyor: düz bir yol kullanın.',
   'oc.failed': 'Karşılaştırma başarısız oldu',
+  'oc.remember': '{target} adresini {host} adının origin’i olarak hatırla',
+  'oc.rememberHint': 'Yeni sunucuyu bu çalışma alanının origin haritasına ekler; Subdomain Tarama ve SSL Hedefleri bu ad için onu ilk sıraya koyar.',
   'oc.quota': 'Bu saat için yeterli Globalping ölçümü kalmadı. {when} yeniden kullanılabilir; CLI ölçüm harcamaz.',
   'oc.quotaAfter': 'Eski sunucu sorulduktan sonra saatlik Globalping kotası doldu: yenisi sorulmadı. Eskisinin yanıtı aşağıda; {when} yeniden karşılaştırın.',
   'oc.failedAfter': 'Eski sunucu soruldu, yenisi sorulamadı: eskisinin yanıtı aşağıda.',
@@ -556,6 +566,9 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
           h('td', { class: ['mono', { 'oc-new-differs': !f.same }], dataset: { label: t('oc.col.new', { ip: r.new.ip }) } }, newText));
       })));
     out.append(h('div', { class: 'oc-table-wrap' }, table));
+    // The new server serves the name: it can go into the workspace's origin map (one click).
+    const observed = compareObservations(r);
+    if (observed.length) out.append(rememberBlock(r, observed));
     out.append(h('div', { class: 'cluster' }, Button({
       label: t('oc.json'), icon: 'download', size: 'sm', variant: 'secondary', dataset: { action: 'oc-json' },
       onClick: () => downloadJson(timestampedName('compare', 'json', r.host), {
@@ -564,6 +577,27 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
       })
     })));
     return out;
+  }
+
+  /** "Remember <address> as the origin of <name>", or why nothing is written. */
+  function rememberBlock(r, observed) {
+    const box = h('div', { class: 'stack-sm oc-remember', dataset: { role: 'oc-remember' } });
+    if (!rememberOn()) {
+      box.append(OriginMapOffNote(ctx));
+      return box;
+    }
+    const target = originTarget({ ip: observed[0].ip, port: observed[0].port });
+    box.append(h('div', { class: 'cluster' }, Button({
+      label: t('oc.remember', { target, host: r.host }), icon: 'map-pin', size: 'sm', dataset: { action: 'oc-remember' },
+      onClick: () => {
+        const res = recordOrigins(observed, { source: 'compare', at: r.at || new Date() });
+        r.remembered = res.off ? null : recordText(res);
+        render();
+        if (r.remembered) announce(r.remembered);
+      }
+    })), h('p', { class: 'muted text-sm' }, t('oc.rememberHint')));
+    if (r.remembered) box.append(Alert({ variant: 'ok', compact: true, message: r.remembered }));
+    return box;
   }
 
   shown = { render, connected: () => el.isConnected };

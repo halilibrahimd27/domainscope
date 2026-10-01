@@ -6,7 +6,8 @@
  *
  * The inventory is what turns DNS answers into "these 10 of your 300 servers need the new
  * certificate": other views read it through `ctx.state.inventory` / `ctx.getInventoryIndex()`.
- * Nothing here ever leaves the browser.
+ * A second tab (`tab=origins`) holds the workspace's origin map (ui/origin-map-panel.js): which
+ * of these servers really serves a name behind a CDN. Nothing here ever leaves the browser.
  */
 
 import { h, clear, debounce } from '../ui/dom.js';
@@ -22,6 +23,7 @@ import { TopologyCard } from '../ui/topology.js';
 import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
 import { workspaceLabel } from '../ui/workspace-ui.js';
+import { OriginMapPanel } from '../ui/origin-map-panel.js';
 
 /** Route id. */
 export const id = 'inventory';
@@ -29,6 +31,9 @@ export const id = 'inventory';
 export const titleKey = 'nav.inventory';
 /** Nav/page icon. */
 export const icon = 'server';
+
+/** The view's tabs (the route carries `tab=origins` for the second). */
+export const INVENTORY_TABS = Object.freeze(['inventory', 'origins']);
 
 /** File types offered by the importer. */
 const ACCEPT = '.txt,.csv,.tsv,.ini,.cfg,.conf,.yml,.yaml,.json,.jsonl,.hosts,.list,.lst';
@@ -78,6 +83,9 @@ const EXAMPLES = [
 ];
 
 registerStrings('en', {
+  'inv.tabs': 'Servers',
+  'inv.tab.inventory': 'Inventory',
+  'inv.tab.origins': 'Origin map',
   'inv.privacyTitle': 'Stays in your browser',
   'inv.privacy': 'The inventory is parsed and stored only on this device, with the current workspace (this browser’s IndexedDB). It is never uploaded — the other tools use it locally to match DNS answers to your servers. Each workspace has its own inventory.',
   'inv.workspace': 'Workspace: {name}',
@@ -149,6 +157,9 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
+  'inv.tabs': 'Sunucular',
+  'inv.tab.inventory': 'Envanter',
+  'inv.tab.origins': 'Origin haritası',
   'inv.privacyTitle': 'Tarayıcınızda kalır',
   'inv.privacy': 'Envanter yalnızca bu cihazda, geçerli çalışma alanıyla birlikte ayrıştırılır ve saklanır (bu tarayıcının IndexedDB deposu). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır. Her çalışma alanının kendi envanteri vardır.',
   'inv.workspace': 'Çalışma alanı: {name}',
@@ -426,9 +437,33 @@ export function mount(container, ctx) {
     topologySlot,
     Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));
 
-  container.append(
-    Alert({ variant: 'ok', icon: 'lock', title: t('inv.privacyTitle'), message: t('inv.privacy'), compact: true }),
-    h('div', { class: 'inv-layout' }, editorCard, resultsCol));
+  // Two tabs: the inventory, and the workspace's origin map (built on its first show).
+  let originPanel = null;
+  const originCount = () => {
+    const map = state.workspaceData('origins');
+    return map && map.entries.length ? map.entries.length : null;
+  };
+  const tabs = Tabs([
+    {
+      id: 'inventory', label: t('inv.tab.inventory'), icon: 'server',
+      content: h('div', { class: 'stack' },
+        Alert({ variant: 'ok', icon: 'lock', title: t('inv.privacyTitle'), message: t('inv.privacy'), compact: true }),
+        h('div', { class: 'inv-layout' }, editorCard, resultsCol))
+    },
+    {
+      id: 'origins', label: t('inv.tab.origins'), icon: 'map-pin', badge: originCount(),
+      content: () => {
+        originPanel = OriginMapPanel({ ctx });
+        return originPanel.el;
+      }
+    }
+  ], {
+    selected: INVENTORY_TABS.includes(ctx.params.tab) ? ctx.params.tab : 'inventory',
+    label: t('inv.tabs'),
+    className: 'inv-tabs',
+    onChange: (tab) => ctx.setParams({ tab: tab === 'origins' ? 'origins' : null })
+  });
+  container.append(tabs.el);
 
   /* --- behaviour ------------------------------------------------------- */
   function isDirty() {
@@ -574,7 +609,10 @@ export function mount(container, ctx) {
 
   // Another tab saved/cleared the inventory: follow it unless the user has unsaved edits.
   let lastSavedText = state.inventory.text;
-  const unsubscribe = state.subscribe(({ key, origin }) => {
+  const unsubscribe = state.subscribe(({ key, origin, value }) => {
+    if (key === 'cleared' || key === 'workspace' || (key === 'workspaceData' && value && (value.parts || []).includes('origins'))) {
+      tabs.setBadge('origins', originCount());
+    }
     if (key === 'cleared' || key === 'workspace') {
       // "Delete all local data" (Settings, while this view is open) or another workspace: the
       // editor shows what is saved now, unsaved edits dropped, so no session draft keeps the
@@ -604,6 +642,7 @@ export function mount(container, ctx) {
 
   teardown = () => {
     unsubscribe();
+    if (originPanel) originPanel.destroy();
     clearInterval(timer);
     reparseSoon.cancel();
     // Keep an unsaved draft for this session so navigating away does not lose it.

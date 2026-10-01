@@ -209,3 +209,66 @@
 .inv-warning-more {
   padding: 8px 16px;
 }
+
+/* Servers › Origin map (ui/origin-map-panel.js, .om-*): the entries, then the form and the import side by side. */
+.inv-tabs .inv-layout {
+  margin-top: 0;
+}
+
+.om-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .om-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.om-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr) minmax(4.5rem, 0.6fr);
+  gap: 10px 12px;
+}
+
+.om-form .om-f-server {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 520px) {
+  .om-form {
+    grid-template-columns: minmax(0, 1fr) minmax(4.5rem, 0.45fr);
+  }
+
+  .om-form .om-f-name {
+    grid-column: 1 / -1;
+  }
+}
+
+.om-name {
+  overflow-wrap: anywhere;
+}
+
+.om-row-stale td {
+  color: var(--text-3);
+}
+
+.om-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 12rem;
+}
+
+.om-why {
+  color: var(--text-2);
+}
+
+.om-actions {
+  flex-wrap: nowrap;
+  gap: 2px;
+}

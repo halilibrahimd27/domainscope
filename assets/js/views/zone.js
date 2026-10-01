@@ -30,6 +30,10 @@
  *   mode: 'exact'|'discover', autostart: boolean, at: Date.now() }`; exact mode = only the zone
  *   names as seeds (no passive sources, no wordlist, no permutations: quota-free).
  *
+ * Origins & servers › "Remember these origins" (only on a click, and only while the workspace
+ * remembers origins: ui/origin-map.js) saves each proxied name's exact address in the workspace's
+ * origin map (lib/originmap.js, source 'zone'); that is the one thing of a zone that is stored.
+ *
  * "Copy summary" in the summary bar (ui/summary-button.js): counts and the worst problems for
  * Jira / Slack; its link is a bare #/zone. The Compare tab has its own (the counts and the first
  * differences by name and type, never a value).
@@ -64,6 +68,8 @@ import { SummaryButton } from '../ui/summary-button.js';
 import { onceAsync } from '../lib/util.js';
 import { ParityTab, freshParity, stopParity, generatedKeys as parityKeys, reasonKey as parityReasonKey } from '../ui/parity-panel.js';
 import { ZoneFetchPanel, stopZoneFetch, generatedKeys as fetchKeys } from '../ui/zone-fetch.js';
+import { zoneObservations } from '../lib/originfill.js';
+import { OriginMapOffNote, recordOrigins, recordText, rememberOn } from '../ui/origin-map.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -174,7 +180,7 @@ export const SAMPLES = Object.freeze([
 
 const EN = {
   'zone.privacyTitle': 'Stays in this tab',
-  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm. Fetch from deSEC or DigitalOcean sends only the zone name and your API token, to that provider.',
+  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved, except the exact origins you choose to remember in this workspace’s origin map. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm. Fetch from deSEC or DigitalOcean sends only the zone name and your API token, to that provider.',
   'zone.import.title': 'Import a zone file',
   'zone.import.subtitle': 'Drop it, choose it or paste it — the format is detected',
   'zone.drop.title': 'Drop a zone export here, choose a file or paste it',
@@ -319,6 +325,8 @@ const EN = {
   'zone.origins.addTitle': 'By address',
   'zone.origins.addSubtitle': 'Every address in the file and the names that use it',
   'zone.origins.addServers': 'Add your servers',
+  'zone.remember': { one: 'Remember this origin', other: 'Remember these {count} origins' },
+  'zone.rememberHint': 'Saves each proxied name’s exact address in this workspace’s origin map (Servers › Origin map), so Subdomains and SSL Targets rank it first next time. A remembered name at another address is marked stale.',
   'zone.kind.ip': 'Origin IP',
   'zone.kind.host': 'Origin host (resolved inside your network)',
   'zone.kind.tunnel': 'Cloudflare Tunnel — no inbound origin',
@@ -454,7 +462,7 @@ const EN = {
 
 const TR = {
   'zone.privacyTitle': 'Bu sekmede kalır',
-  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir. deSEC ya da DigitalOcean’dan getir ise yalnızca zone adını ve API anahtarınızı o sağlayıcıya gönderir.',
+  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — bu çalışma alanının origin haritasında hatırlamayı seçtiğiniz kesin origin’ler dışında hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir. deSEC ya da DigitalOcean’dan getir ise yalnızca zone adını ve API anahtarınızı o sağlayıcıya gönderir.',
   'zone.import.title': 'Zone dosyası içe aktar',
   'zone.import.subtitle': 'Bırakın, seçin ya da yapıştırın — biçim otomatik algılanır',
   'zone.drop.title': 'Zone dışa aktarımını buraya bırakın, dosya seçin ya da yapıştırın',
@@ -599,6 +607,8 @@ const TR = {
   'zone.origins.addTitle': 'Adrese göre',
   'zone.origins.addSubtitle': 'Dosyadaki her adres ve onu kullanan adlar',
   'zone.origins.addServers': 'Sunucularınızı ekleyin',
+  'zone.remember': { other: 'Bu {count} origin’i hatırla' },
+  'zone.rememberHint': 'Her proxy’li adın kesin adresini bu çalışma alanının origin haritasına (Sunucular › Origin haritası) kaydeder; Subdomain Tarama ve SSL Hedefleri bir dahaki sefere onu ilk sıraya koyar. Başka bir adreste hatırlanan bir ad eskimiş olarak işaretlenir.',
   'zone.kind.ip': 'Origin IP',
   'zone.kind.host': 'Origin host’u (ağınızın içinde çözümlenir)',
   'zone.kind.tunnel': 'Cloudflare Tunnel — dışarıdan erişilen origin yok',
@@ -1192,6 +1202,8 @@ function freshSession() {
     lint: null,
     origins: [],
     addresses: [],
+    // What "Remember these origins" did for this file (ui/origin-map.js recordText), or null.
+    remembered: null,
     invIndex: null,
     problems: [],
     counts: null,
@@ -1322,6 +1334,7 @@ export function mount(container, ctx) {
       return;
     }
     const inv = ctx.getInventoryIndex();
+    S.remembered = null;
     S.lint = lintZone(zone);
     ({ origins: S.origins, addresses: S.addresses } = serverColumns(zone, inv));
     S.invIndex = inv;
@@ -1944,13 +1957,37 @@ export function mount(container, ctx) {
       }
     });
     renderSweep();
+    // Remember the exact addresses in the workspace's origin map: only on this click, and only
+    // while the workspace remembers origins (else the note says why nothing is written).
+    const exactNames = S.origins.filter((r) => r.kind === 'ip' && r.ips.length).length;
+    const rememberBox = h('div', { class: 'stack-sm zone-remember', dataset: { role: 'zone-remember' } });
+    const renderRemember = () => {
+      clear(rememberBox);
+      if (!exactNames) return;
+      if (!rememberOn()) {
+        rememberBox.append(OriginMapOffNote(ctx));
+        return;
+      }
+      rememberBox.append(h('div', { class: 'cluster' }, Button({
+        label: t('zone.remember', { count: exactNames }), icon: 'map-pin', size: 'sm', dataset: { action: 'zone-remember' },
+        onClick: () => {
+          const res = recordOrigins(zoneObservations(S.origins), { source: 'zone', at: new Date() });
+          S.remembered = res.off ? null : recordText(res);
+          renderRemember();
+          if (S.remembered) announce(S.remembered);
+        }
+      })), h('p', { class: 'muted text-sm' }, t('zone.rememberHint')));
+      if (S.remembered) rememberBox.append(Alert({ variant: 'ok', compact: true, message: S.remembered }));
+    };
+    renderRemember();
     return h('div', { class: 'stack zone-origins' },
       Alert({ variant: 'warn', compact: true, message: t('zone.origins.privacy') }),
       Card({
         title: t('zone.origins.title'),
         subtitle: t('zone.origins.lead'),
         icon: 'cloud',
-        children: S.origins.length ? originTable.el : EmptyState({ icon: 'cloud', title: t('zone.origins.none'), compact: true })
+        children: S.origins.length ? h('div', { class: 'stack-sm' }, originTable.el, rememberBox)
+          : EmptyState({ icon: 'cloud', title: t('zone.origins.none'), compact: true })
       }),
       Card({
         title: t('zone.sweep.title'),

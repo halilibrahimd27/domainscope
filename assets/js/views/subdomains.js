@@ -77,6 +77,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
+import { knownForScan, originsFor, originTarget } from '../lib/originmap.js';
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
@@ -150,7 +151,7 @@ export const MAX_SWEEP_CONCURRENCY = 24;
 /** Stages shown as pills ("done" is the panel state). */
 export const SHOWN_STAGES = Object.freeze(SCAN_STAGES.filter((s) => s !== 'done'));
 /** Origin-hint kinds with a localized label (sub.hint.<kind>). */
-export const HINT_KINDS = Object.freeze(['resolver-leak', 'history', 'sibling-domain', 'direct-sibling', 'spf', 'mx', 'zone']);
+export const HINT_KINDS = Object.freeze(['known', 'resolver-leak', 'history', 'sibling-domain', 'direct-sibling', 'spf', 'mx', 'zone']);
 /** DNS record types lib/dnsmine can tag names with ('dns-mine:<record>'). */
 export const MINE_RECORDS = Object.freeze(['MX', 'NS', 'SOA', 'SPF', 'DMARC', 'SRV', 'CNAME', 'CAA', 'HTTPS', 'PTR']);
 const CHIP_ERRORS = ['abort', 'timeout', 'rate-limit', 'http', 'network', 'parse', 'unknown'];
@@ -581,6 +582,9 @@ registerStrings('en', {
   'sub.hint.zone': 'Zone file',
   'sub.hint.zone.title': 'Your zone file names this address as the real server behind the proxied name',
   'sub.reason.zone': '{host} · from your zone file',
+  'sub.hint.known': 'Remembered',
+  'sub.hint.known.title': 'This workspace’s origin map remembers this address as the real server behind the proxied name',
+  'sub.reason.known': '{host} · from the origin map',
   'sub.zone.chip': { one: 'Zone file loaded: {count} name, {origins} exact origins', other: 'Zone file loaded: {count} names, {origins} exact origins' },
   'sub.zone.mode': 'How this scan uses the zone file',
   'sub.zone.mode.exact': 'Scan exactly these names',
@@ -599,6 +603,10 @@ registerStrings('en', {
   'sub.zone.busy': 'A scan of {running} is still running. The scan of your zone file ({domain}) starts when it ends.',
   'sub.zone.busy.cancel': 'Cancel it and scan the zone',
   'sub.zone.busy.dismiss': 'Don’t start',
+  'sub.org.known': 'Remembered origins',
+  'sub.org.knownHint': 'This workspace’s origin map remembers the real server behind these proxied names. They rank first, and the command below probes them exactly.',
+  'sub.org.knownStale': 'stale since {date}, not used',
+  'sub.org.knownMap': 'Origin map',
   'sub.org.zone': 'Exact origins from your zone file',
   'sub.org.zoneHint': 'Your zone file names the real server behind these proxied names. The command below probes these exact addresses and never widens them to a /24.',
   'sub.org.ptr': 'Reverse DNS sweep',
@@ -1019,6 +1027,9 @@ registerStrings('tr', {
   'sub.hint.zone': 'Zone dosyası',
   'sub.hint.zone.title': 'Zone dosyanız bu adresi proxy’li adın arkasındaki gerçek sunucu olarak gösteriyor',
   'sub.reason.zone': '{host} · zone dosyanızdan',
+  'sub.hint.known': 'Hatırlanan',
+  'sub.hint.known.title': 'Bu çalışma alanının origin haritası bu adresi proxy’li adın arkasındaki gerçek sunucu olarak hatırlıyor',
+  'sub.reason.known': '{host} · origin haritasından',
   'sub.zone.chip': { one: 'Zone dosyası yüklü: {count} ad, {origins} kesin origin', other: 'Zone dosyası yüklü: {count} ad, {origins} kesin origin' },
   'sub.zone.mode': 'Bu tarama zone dosyasını nasıl kullansın',
   'sub.zone.mode.exact': 'Yalnızca bu adları tara',
@@ -1037,6 +1048,10 @@ registerStrings('tr', {
   'sub.zone.busy': '{running} taraması hâlâ sürüyor. Zone dosyanızın taraması ({domain}) o bitince başlar.',
   'sub.zone.busy.cancel': 'Onu iptal et, zone’u tara',
   'sub.zone.busy.dismiss': 'Vazgeç',
+  'sub.org.known': 'Hatırlanan origin’ler',
+  'sub.org.knownHint': 'Bu çalışma alanının origin haritası bu proxy’li adların arkasındaki gerçek sunucuyu hatırlıyor. İlk sırada yer alırlar ve aşağıdaki komut onları tam olarak yoklar.',
+  'sub.org.knownStale': '{date} tarihinden beri eskimiş, kullanılmıyor',
+  'sub.org.knownMap': 'Origin haritası',
   'sub.org.zone': 'Zone dosyanızdaki kesin originler',
   'sub.org.zoneHint': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
   'sub.org.ptr': 'Ters DNS taraması',
@@ -1488,6 +1503,7 @@ export function reasonText(reason) {
     return t(f.lastSeen ? 'sub.reason.historyDate' : 'sub.reason.history', { host: f.host, source, date: dayText(f.lastSeen) });
   }
   if (r.kind === 'zone' && f.host) return t('sub.reason.zone', { host: f.host });
+  if (r.kind === 'known' && f.host) return t('sub.reason.known', { host: f.host });
   return String(r.detail ?? '');
 }
 
@@ -1840,8 +1856,10 @@ export function originSweepTokens(result, { names = null, networks = [], dropped
   const zone = zoneOfResult(r);
   const zoneTargets = new Set(zone ? zone.cliTargets : []);
   const zoneNames = new Set(zone ? zone.cliNames : []);
+  // The origin map's remembered origins (`ip` or `ip:port`): exact as well, never dropped or widened.
+  const knownTargets = new Set(knownOfResult(r).targets);
   const expandTarget = (tok) => {
-    if (zoneTargets.has(tok)) return [tok];
+    if (zoneTargets.has(tok) || knownTargets.has(tok)) return [tok];
     const ip = normalizeIP(tok);
     if (dropped.has(tok) || (ip && dropped.has(ip))) return [];
     if (sweepableTarget(tok)) return [tok];
@@ -1905,6 +1923,8 @@ export function originSweep(result, { names = null, networks = [], dropped = new
   const opts = { targets, names: outNames, script: 'ssl_origin_scan.py', shell: sh };
   // A zone run keeps its host targets and `*.x` names (lib/cmdline opt-ins, off otherwise).
   if (zoneOfResult(result)) Object.assign(opts, { allowHostTargets: true, allowWildcardNames: true });
+  // A remembered origin on another port than 443 is an `ip:port` target (lib/cmdline allowPorts).
+  if (knownOfResult(result).ports) opts.allowPorts = true;
   if (withExclude) opts.exclude = exclude;
   const sweep = buildFittedSweepCommand(opts);
   // Report the exclusions' effect only when they were requested, so a call without `exclude` keeps
@@ -1959,6 +1979,7 @@ export function originOverview(result) {
   const { networks, dropped } = realOriginNetworks(r.originNetworks, hosts);
   const cidrs = new Set(networks.map((n) => n.cidr));
   const proxied = hosts.filter(isProxiedOriginHost).map((host) => {
+    const known = [];
     const zone = [];
     const leaks = [];
     const history = [];
@@ -1966,7 +1987,11 @@ export function originOverview(result) {
       for (const reason of hint.reasons || []) {
         const fields = reasonHost(reason);
         if (!fields.host || fields.host !== host.name) continue;
-        if (reason.kind === 'zone') {
+        if (reason.kind === 'known') {
+          // The workspace's origin map: a remembered exact origin, ranked above everything else.
+          const port = Number(reason.port) || 443;
+          if (!known.some((k) => k.ip === hint.ip && k.port === port)) known.push({ ip: hint.ip, port, target: originTarget({ ip: hint.ip, port }) });
+        } else if (reason.kind === 'zone') {
           // The imported zone file's exact origin of this host: shown first, before any candidate.
           if (!zone.some((z) => z.ip === hint.ip)) zone.push({ ip: hint.ip });
         } else if (reason.kind === 'resolver-leak') {
@@ -1990,7 +2015,7 @@ export function originOverview(result) {
         siblings.push({ ip: c.ip, sibling: (c.evidence && c.evidence.sibling) || '' });
       }
     }
-    return { name: host.name, host, zone, leaks, history, siblings, networks: candidates };
+    return { name: host.name, host, known, zone, leaks, history, siblings, networks: candidates };
   });
   const inNetworks = new Set(networks.flatMap((n) => (Array.isArray(n.ips) ? n.ips : [])));
   // General hints (SPF / MX / siblings). A sibling-only hint whose IP an origin network already
@@ -2011,11 +2036,12 @@ export function originOverview(result) {
   // Honest "left out because invalid" count: tokens the scanner proposed that are not a valid
   // IP / CIDR / hostname (a defence-in-depth signal — the scanner should never emit any).
   const raw = rawSweepTokens(r);
-  const droppedCount = validateTargets(raw.targets).dropped.length
+  const droppedCount = validateTargets(raw.targets, { allowPorts: knownOfResult(r).ports }).dropped.length
     + validateNames(raw.names, { allowWildcard: !!zoneOfResult(r) }).dropped.length;
   return {
     proxied,
     networks,
+    knownCount: proxied.filter((p) => p.known.length).length,
     zoneCount: proxied.filter((p) => p.zone.length).length,
     leakCount: proxied.filter((p) => p.leaks.length).length,
     historyCount: proxied.filter((p) => p.history.length).length,
@@ -2086,6 +2112,18 @@ export function zoneOfResult(result) {
     hostTargets: list(Array.isArray(result.cliHostTargets) ? result.cliHostTargets : z.cliHostTargets),
     exact: z.exact === true
   };
+}
+
+/**
+ * The origin-map part of a ScanResult (`result.known`, lib/scanner.js knownOrigins): the CLI
+ * targets of the remembered origins that went into the command, and whether one has a port.
+ * @param {object|null} result ScanResult
+ * @returns {{ targets: string[], ports: boolean }}
+ */
+export function knownOfResult(result) {
+  const k = result && result.known;
+  const targets = k && Array.isArray(k.cliTargets) ? k.cliTargets.map(String) : [];
+  return { targets, ports: targets.some((tok) => !normalizeIP(tok)) };
 }
 
 /** How a scan uses an imported zone file: its names only, added to discovery, or not at all. */
@@ -2953,6 +2991,8 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       // The names that really resolve (A/AAAA, no wildcard look-alike): the Zone File view's
       // "live, not in the file" comparison reads these.
       resolving: result.hosts.filter((x) => !x.wildcardSuspect && isResolving(x)).map((x) => x.name),
+      // The names behind a CDN: Servers › Origin map adds a CLI report's origins for these.
+      proxied: result.hosts.filter(isProxiedOriginHost).map((x) => x.name),
       finishedAt: run.finishedAt
     });
     // Learn the naming vocabulary of this scan (labels only, in the workspace it ran in) so the
@@ -3888,6 +3928,8 @@ export function mount(container, ctx) {
       inventory: state.inventory.servers,
       originHints: options.originHints,
       resolverLeak: options.originHints,
+      // The workspace's origin map: remembered, not stale origins rank first and join the command.
+      knownOrigins: knownForScan(state.workspaceData('origins')),
       // The Settings parallelism caps the scan: `concurrency` is the requested pool (the sweep
       // rotates over the balance pool), `maxConcurrency` the hard ceiling derived from the same
       // Settings value, so a lower setting genuinely means a gentler sweep (never above 24).
@@ -4671,13 +4713,32 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     if (!o.proxied.length) return;
     // Hosts with any host-specific candidate (resolver leak / history / sibling-domain) get the
     // "origin?" jump badge in the results table.
-    originCandidates = new Set(o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).map((p) => p.name));
+    originCandidates = new Set(o.proxied.filter((p) => p.known.length || p.zone.length || p.leaks.length || p.history.length || p.siblings.length).map((p) => p.name));
     const titleId = uid('sub-org');
     const ipLinkOrg = (ip) => h('a', { class: 'sub-ip mono', href: ctx.href('ip', { ip }), title: t('sub.ip.intel', { ip }) }, ip);
     const blocks = [];
     // A zone file's origin may be a private address: plain text, never an IP Intel link (that
     // view asks third-party services about the address as soon as it opens).
     const zoneIpEl = (ip) => h('span', { class: 'sub-ip mono' }, ip);
+
+    // 00. The workspace's origin map: remembered origins first; a stale entry of one of these
+    //     hosts is shown, not used (Servers › Origin map says why).
+    const knownRows = o.proxied.filter((p) => p.known.length);
+    const map = stateSingleton.workspaceData('origins');
+    const staleRows = o.proxied.flatMap((p) => originsFor(map, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, e })));
+    if (knownRows.length || staleRows.length) {
+      blocks.push(h('div', { class: 'sub-org-block', dataset: { block: 'known' } },
+        h('h4', { class: 'sub-org-sub' }, Icon('map-pin', { size: 14 }), t('sub.org.known')),
+        h('p', { class: 'sub-org-hint' }, t('sub.org.knownHint'), ' ',
+          h('a', { class: 'link', href: ctx.href('inventory', { tab: 'origins' }) }, t('sub.org.knownMap'))),
+        h('ul', { class: 'sub-org-list' },
+          knownRows.flatMap((p) => p.known.map((k) => h('li', { class: 'sub-org-leak', dataset: { host: p.name, ip: k.ip, kind: 'known' } },
+            h('span', { class: 'mono sub-org-name' }, hostNameNodes(p.name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+            zoneIpEl(k.target)))),
+          staleRows.map(({ name, e }) => h('li', { class: 'sub-org-leak muted', dataset: { host: name, ip: e.ip, kind: 'known-stale' } },
+            h('span', { class: 'mono sub-org-name' }, hostNameNodes(name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+            zoneIpEl(originTarget(e)), h('span', { class: 'sub-org-via' }, t('sub.org.knownStale', { date: formatDate(e.stale.at) })))))));
+    }
 
     // 0. Exact origins from the imported zone file (Zone File hand-off): authoritative, so first.
     const zoned = o.proxied.filter((p) => p.zone.length);
@@ -4869,10 +4930,12 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
         {
           key: 'candidates', label: t('sub.org.col.candidates'), wrap: true, sortable: true,
           // Rank: exact host-specific evidence (leak / sibling / history) above candidate networks.
-          sortValue: (p) => (p.zone.length ? -1 : p.leaks.length ? 0 : p.siblings.length ? 1 : p.history.length ? 2 : p.networks.length ? 3 : 4),
-          searchValue: (p) => [...p.zone.map((z) => z.ip), ...p.leaks.map((l) => l.ip), ...p.siblings.map((s) => `${s.ip} ${s.sibling}`), ...p.history.map((x) => x.ip), ...p.networks].join(' '),
+          sortValue: (p) => (p.known.length ? -2 : p.zone.length ? -1 : p.leaks.length ? 0 : p.siblings.length ? 1 : p.history.length ? 2 : p.networks.length ? 3 : 4),
+          searchValue: (p) => [...p.known.map((k) => k.target), ...p.zone.map((z) => z.ip), ...p.leaks.map((l) => l.ip), ...p.siblings.map((s) => `${s.ip} ${s.sibling}`), ...p.history.map((x) => x.ip), ...p.networks].join(' '),
           render: (p) => {
             const items = [
+              ...p.known.map((k) => h('span', { class: 'sub-org-cand', dataset: { kind: 'known' } },
+                Badge(t('sub.hint.known'), { variant: 'ok', title: t('sub.hint.known.title') }), zoneIpEl(k.target))),
               ...p.zone.map((z) => h('span', { class: 'sub-org-cand', dataset: { kind: 'zone' } },
                 Badge(t('sub.hint.zone'), { variant: 'ok', title: t('sub.hint.zone.title') }), zoneIpEl(z.ip))),
               ...p.leaks.map((l) => h('span', { class: 'sub-org-cand', dataset: { kind: 'resolver-leak' } },

@@ -68,6 +68,8 @@ import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
+import { knownForScan, originsFor, originTarget } from '../lib/originmap.js';
+import { StaleBadge, staleText } from '../ui/origin-map.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
@@ -130,7 +132,7 @@ const KIND_ORDER = ['dangling', 'cloudflare', 'cdn', 'platform', 'direct', 'priv
 export const KIND_FILTERS = Object.freeze(['all', 'hidden', 'cloudflare', 'cdn', 'platform', 'cdnplatform', 'direct', 'private', 'unresolved', 'dangling']);
 const SOURCE_NAMES = Object.fromEntries(SOURCES.map((s) => [s.id, s.name]));
 /** Origin-hint kinds with a localized label (scan.hint.<kind>). */
-export const HINT_KINDS = Object.freeze(['resolver-leak', 'spf', 'mx', 'direct-sibling', 'sibling-domain', 'history', 'zone']);
+export const HINT_KINDS = Object.freeze(['known', 'resolver-leak', 'spf', 'mx', 'direct-sibling', 'sibling-domain', 'history', 'zone']);
 const CHIP_ERRORS = ['abort', 'timeout', 'rate-limit', 'http', 'network', 'parse', 'unknown'];
 
 /* ------------------------------------------------------------------------ */
@@ -338,6 +340,14 @@ registerStrings('en', {
   'scan.hint.zone': 'Zone file',
   'scan.hint.zone.title': 'Your zone file names this address as the real server behind the proxied name',
   'scan.srv.via.zone': 'Zone file',
+  'scan.hint.known': 'Remembered',
+  'scan.hint.known.title': 'This workspace’s origin map remembers this address as the real server behind the proxied name',
+  'scan.srv.via.known': 'Origin map',
+  'scan.cdn.knownTitle': 'Remembered origins',
+  'scan.cdn.knownDesc': 'This workspace’s origin map remembers the real server behind these proxied names. They rank first, and the command below probes them exactly. A stale entry is shown but not used.',
+  'scan.cdn.knownMap': 'Open the origin map',
+  'scan.cdn.col.knownOrigin': 'Remembered origin',
+  'scan.cdn.col.knownState': 'Last confirmed',
   'scan.cdn.zoneTitle': 'Exact origins from your zone file',
   'scan.cdn.zoneDesc': 'Your zone file names the real server behind these proxied names. The command below probes these exact addresses and never widens them to a /24.',
   'scan.cdn.col.zoneOrigin': 'Origin from the zone file',
@@ -731,6 +741,14 @@ registerStrings('tr', {
   'scan.hint.zone': 'Zone dosyası',
   'scan.hint.zone.title': 'Zone dosyanız bu adresi proxy’li adın arkasındaki gerçek sunucu olarak gösteriyor',
   'scan.srv.via.zone': 'Zone dosyası',
+  'scan.hint.known': 'Hatırlanan',
+  'scan.hint.known.title': 'Bu çalışma alanının origin haritası bu adresi proxy’li adın arkasındaki gerçek sunucu olarak hatırlıyor',
+  'scan.srv.via.known': 'Origin haritası',
+  'scan.cdn.knownTitle': 'Hatırlanan origin’ler',
+  'scan.cdn.knownDesc': 'Bu çalışma alanının origin haritası bu proxy’li adların arkasındaki gerçek sunucuyu hatırlıyor. İlk sırada yer alırlar ve aşağıdaki komut onları tam olarak yoklar. Eskimiş bir kayıt gösterilir ama kullanılmaz.',
+  'scan.cdn.knownMap': 'Origin haritasını aç',
+  'scan.cdn.col.knownOrigin': 'Hatırlanan origin',
+  'scan.cdn.col.knownState': 'Son doğrulama',
   'scan.cdn.zoneTitle': 'Zone dosyanızdaki kesin originler',
   'scan.cdn.zoneDesc': 'Zone dosyanız bu proxy’li adların arkasındaki gerçek sunucuyu gösteriyor. Aşağıdaki komut bu kesin adresleri yoklar; onları asla bir /24’e genişletmez.',
   'scan.cdn.col.zoneOrigin': 'Zone dosyasındaki origin',
@@ -1427,6 +1445,8 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       domains: result.domains,
       names: result.hosts.filter((x) => !x.wildcardSuspect).map((x) => x.name),
       resolving: result.hosts.filter((x) => !x.wildcardSuspect && isResolving(x)).map((x) => x.name),
+      // The names behind a CDN: Servers › Origin map adds a CLI report's origins for these.
+      proxied: result.hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.hidesOrigin).map((x) => x.name),
       finishedAt: run.finishedAt
     });
     // Learn the naming vocabulary like Subdomains does (opt-in; bare labels of in-scope names only,
@@ -2504,6 +2524,8 @@ export function mount(container, ctx) {
       inventory: state.inventory.servers,
       originHints: options.originHints,
       resolverLeak: options.originHints,
+      // The workspace's origin map: remembered, not stale origins rank first and join the command.
+      knownOrigins: knownForScan(state.workspaceData('origins')),
       // The Settings parallelism caps the scan: `concurrency` is the requested pool, and
       // `maxConcurrency` the hard ceiling derived from the same Settings value (never above 24).
       concurrency: scanConcurrency(state.settings.concurrency),
@@ -3399,8 +3421,8 @@ function buildRunUI(run, ctx, { onFinish }) {
             exportValue: (g) => [...new Set(g.hosts.map((x) => x.name))].join(' '),
             render: (g) => TruncatedList(strongestPerName(g.hosts), {
               max: 3,
-              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' }] }, x.name,
-                x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null,
+              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' || x.via === 'known' }] }, x.name,
+                x.via === 'hint' || x.via === 'zone' || x.via === 'known' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null,
                 x.lbs ? h('span', { class: 'muted' }, ` · ${t('topo.via.lb', { lb: x.lbs.join(', ') })}`) : null)
             })
           },
@@ -3454,7 +3476,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         {
           key: 'via', label: t('scan.srv.col.via'),
           render: (x) => h('span', { class: 'cluster scan-srv-via' },
-            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }),
+            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' || x.via === 'known' ? 'ok' : 'info' }),
             x.lbs ? Badge(t('topo.via.lb', { lb: x.lbs.join(', ') }), { variant: 'neutral', icon: 'git-branch' }) : null,
             x.through ? Badge(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
         },
@@ -3545,6 +3567,41 @@ function buildRunUI(run, ctx, { onFinish }) {
       title: t('scan.cdn.whyTitle'),
       children: h('div', { class: 'stack-sm scan-why' }, h('p', null, t('scan.cdn.why1')), h('p', null, t('scan.cdn.why2')))
     }));
+
+    // The workspace's origin map: the remembered origins of these proxied names first (exact, and
+    // what the command probes), then a stale entry of one of them, shown but not used.
+    const originsMap = state.workspaceData('origins');
+    const knownRows = [
+      ...overview.proxied.flatMap((p) => p.known.map((k) => ({ name: p.name, target: k.target, entry: originsFor(originsMap, p.name).find((e) => e.ip === k.ip && e.port === k.port) || null, stale: false }))),
+      ...overview.proxied.flatMap((p) => originsFor(originsMap, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, target: originTarget(e), entry: e, stale: true })))
+    ];
+    if (knownRows.length) {
+      cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.knownTitle')),
+        h('p', { class: 'muted text-sm' }, t('scan.cdn.knownDesc'), ' ',
+          h('a', { class: 'link', href: ctx.href('inventory', { tab: 'origins' }) }, t('scan.cdn.knownMap'))),
+        DataTable({
+          caption: t('scan.cdn.knownTitle'),
+          rows: knownRows,
+          dense: true,
+          rowKey: (r) => `${r.name}|${r.target}`,
+          rowClass: (r) => (r.stale ? 'scan-known-stale' : null),
+          className: 'scan-known-origins',
+          columns: [
+            { key: 'name', label: t('scan.col.name'), mono: true, sortable: true, sortValue: (r) => hostSortKey(r.name), searchValue: (r) => r.name, render: (r) => r.name },
+            {
+              key: 'origin', label: t('scan.cdn.col.knownOrigin'), mono: true, searchValue: (r) => r.target, exportValue: (r) => r.target,
+              render: (r) => h('div', { class: 'cluster' },
+                r.stale ? StaleBadge(r.entry) : Badge(t('scan.hint.known'), { variant: 'ok', icon: 'map-pin', title: t('scan.hint.known.title') }),
+                h('span', null, r.target), r.entry && r.entry.server ? h('span', { class: 'muted' }, `(${r.entry.server})`) : null)
+            },
+            {
+              key: 'state', label: t('scan.cdn.col.knownState'), wrap: true,
+              exportValue: (r) => (r.stale ? `stale: ${r.entry.stale.reason}` : (r.entry ? r.entry.lastConfirmed : '')),
+              render: (r) => (r.stale ? h('span', { class: 'text-sm' }, staleText(r.entry)) : (r.entry ? formatDate(r.entry.lastConfirmed) : ''))
+            }
+          ]
+        }).el);
+    }
 
     // Exact origins from the imported zone file (Zone File hand-off): authoritative, so first. A
     // zone origin may be a private address: plain text, never an IP Intel link.

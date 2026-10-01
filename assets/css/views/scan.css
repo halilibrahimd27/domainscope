@@ -1610,3 +1610,8 @@
     white-space: nowrap;
   }
 }
+
+/* Behind CDN › Remembered origins: a stale entry of the origin map is shown, not used. */
+.scan-known-stale td {
+  color: var(--text-3);
+}

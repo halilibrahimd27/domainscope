@@ -13,6 +13,9 @@
  *   session shows the consent + cost dialog; consent is never stored and "Delete all local data"
  *   resets it (ui/globalping-gate.js keeps it, with the quota every view shares). Origin checks
  *   (a proxied name on an inventory origin IP, from an origin hint or the zone file) are opt-in.
+ * - A finished batch's origin checks go into the workspace's origin map (ui/origin-map.js, source
+ *   'verify') while it remembers origins: a confirmed name is remembered, one found elsewhere or
+ *   not served at a remembered address marks that entry stale; the tab says what changed.
  * - Private, reserved and CDN-edge addresses and names Globalping refuses are listed but never
  *   sent. Private and reserved addresses, refused names and every address the internet could not
  *   answer go into a ready-made CLI command; CDN edges do not (the CDN serves its own certificate).
@@ -50,6 +53,8 @@ import {
 } from '../lib/verify.js';
 import { setOfName, cliCertFiles } from '../lib/certsets.js';
 import { SetBadge, CertFileButtons } from './renewal-panel.js';
+import { verifyObservations } from '../lib/originfill.js';
+import { OriginMapOffNote, recordOrigins, recordText } from './origin-map.js';
 
 /* ------------------------------------------------------------------------ */
 /* Strings                                                                  */
@@ -252,6 +257,7 @@ registerStrings('en', {
   'vfy.via.dns': 'DNS',
   'vfy.via.hint': 'origin hint',
   'vfy.via.zone': 'zone file',
+  'vfy.via.known': 'origin map',
 
   'vfy.cli.title': 'Check the rest from inside your network',
   'vfy.cli.desc': 'Private, unaccepted and unanswered addresses: run this on a machine inside your network (a jump host). It gives the same verdicts and writes them to verify-cli.json.',
@@ -465,6 +471,7 @@ registerStrings('tr', {
   'vfy.via.dns': 'DNS',
   'vfy.via.hint': 'origin ipucu',
   'vfy.via.zone': 'bölge dosyası',
+  'vfy.via.known': 'origin haritası',
 
   'vfy.cli.title': 'Kalanları ağınızın içinden kontrol edin',
   'vfy.cli.desc': 'Özel, kabul edilmeyen ve yanıt vermeyen adresler: bunu ağınızın içindeki bir makinede (jump host) çalıştırın. Aynı sonuç türlerini verir ve verify-cli.json dosyasına yazar.',
@@ -487,7 +494,7 @@ registerStrings('tr', {
 
 /** Globalping's page about buying more measurements (verified 200 by the critic, 2026-09-24). */
 export const GP_CREDITS_URL = 'https://globalping.io/credits';
-const VIA_KINDS = ['dns', 'hint', 'zone'];
+const VIA_KINDS = ['dns', 'hint', 'zone', 'known'];
 const NOTICE_WARNINGS = ['chain-incomplete', 'http-421', 'mixed'];
 const DEFAULT_SHELLS = Object.freeze(['posix', 'powershell']);
 const DEFAULT_PYTHON = Object.freeze({ posix: 'python3', powershell: 'python' });
@@ -1165,7 +1172,9 @@ function ensureJob(run) {
     rows: [], pairs, stats: stats || {}, scope: 'all', origins: false,
     status: 'idle', stoppedBy: null, spent: 0, runs: 0, controller: null, listeners: new Set(),
     expect: null, expectValue: null, sets, setExpect: null, setExpectValue: null, startedAt: null, finishedAt: null,
-    batch: [], quotaOut: null, error: null, starting: false, launch: null, rememberTab: null
+    batch: [], quotaOut: null, error: null, starting: false, launch: null, rememberTab: null,
+    // The workspace the scan ran in (its origin map takes the batch's origin checks) and what that did.
+    workspace: run.config.workspace || null, originNote: null
   };
   job.expect = expectationFor(sets ? sets.flatMap((s) => s.certs) : run.config.cert).then((e) => {
     job.expectValue = e;
@@ -1296,9 +1305,23 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
     job.finishedAt = new Date();
     job.controller = null;
     liveJobs.delete(job);
+    recordVerifyOrigins(job);
     emitJob(job, 'end');
     if (!job.listeners.size && job.status !== 'cancelled') backgroundToast(job);
   });
+}
+
+/**
+ * The batch's origin checks with a verdict into the origin map of the workspace the scan ran in
+ * (never another one switched to meanwhile); `job.originNote` says what changed, or that
+ * remembering is off.
+ * @param {object} job
+ */
+function recordVerifyOrigins(job) {
+  const observations = verifyObservations(job.batch);
+  if (!observations.length || (job.workspace && job.workspace !== state.workspace.id)) return;
+  const res = recordOrigins(observations, { source: 'verify', at: job.finishedAt });
+  job.originNote = { off: res.off, text: res.off ? '' : recordText(res) };
 }
 
 /**
@@ -1798,6 +1821,17 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
                 head.append(a);
               }
               return head;
+            }
+          });
+        }
+        // What the batch's origin checks did to the workspace's origin map.
+        const note = job.status === 'running' ? null : job.originNote;
+        if (note) {
+          want.push({
+            id: 'origins', sig: note.off ? 'off' : note.text, build: () => {
+              const a = note.off ? OriginMapOffNote(ctx) : Alert({ variant: 'info', compact: true, icon: 'map-pin', message: note.text });
+              a.dataset.vfy = 'origin-map';
+              return a;
             }
           });
         }

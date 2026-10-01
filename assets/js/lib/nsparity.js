@@ -905,7 +905,8 @@ export function paritySummary(result) {
 /**
  * The move, step by step, with the facts of this zone and this run: lower the TTLs (the apex NS
  * TTL and the longest record TTL of the file), fix and compare again, DNSSEC before the switch
- * (the DS at the registrar decides the order), switch the NS at the registrar (blocked while
+ * (the DS at the registrar decides the order; the fix step's `stopped` says nothing is missing
+ * or different only so far), switch the NS at the registrar (blocked while
  * there is something to fix; 'warn' after a run that stopped or left record sets out: compare
  * again or run the CLI first), keep the old zone answering for {@link PARITY_KEEP_OLD_HOURS}
  * hours, then check from outside and restore the TTLs.
@@ -932,7 +933,10 @@ export function parityRunbook(zone, result, { nameservers = [] } = {}) {
   else if (sum.verdict === 'blocked') fix = { state: 'blocked', params: { servers: sum.badServers } };
   else {
     const c = sum.counts;
-    const params = { missing: c.missing || 0, different: c.different || 0, extra: c.extra || 0, unproxied: c.unproxied || 0, ttl: sum.ttl, unchecked: sum.unchecked, servers: sum.badServers };
+    const params = {
+      missing: c.missing || 0, different: c.different || 0, extra: c.extra || 0, unproxied: c.unproxied || 0, ttl: sum.ttl, unchecked: sum.unchecked,
+      servers: sum.badServers, stopped: sum.stopped
+    };
     let state = 'ok';
     if (params.missing + params.different + params.servers > 0) state = 'todo';
     else if (params.extra + params.unproxied + params.unchecked > 0 || result.stoppedBy || result.capped || result.serials === 'differ') state = 'warn';

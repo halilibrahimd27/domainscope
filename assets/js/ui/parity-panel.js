@@ -199,6 +199,7 @@ registerStrings('en', {
     other: '{count} proxied records are answered with their origins at the new provider: at the switch they stop being proxied, and their servers’ addresses become public. Protect the origins (a firewall that admits only the new proxy) or keep the proxy.'
   },
   'par.step.fix.warn': 'Nothing is missing or different. Check the rest: {extra} extra, {unproxied} not proxied, {unchecked} not compared here (the CLI compares every record, CAA included).',
+  'par.step.fix.warnStopped': 'Nothing is missing or different so far, but the comparison did not finish. Check the rest: {extra} extra, {unproxied} not proxied, {unchecked} not compared (compare again, or run the CLI, which compares every record).',
   'par.step.fix.ok': 'The new name servers serve every compared record set of this file.',
   'par.step.fix.blocked': 'No new name server serves this zone yet: create it at the new provider (import this file there) and compare again.',
   'par.step.dnssec.todo': 'The zone is signed (a DS record at the registrar, or DNSSEC records in this file). Before the switch, either remove the DS record at the registrar and wait until its TTL has passed (up to two days), or, only if both providers support multi-signer DNSSEC (RFC 8901), publish the new provider’s DNSKEY in the old zone and its DS at the registrar first. Switching with only the old DS in place makes validating resolvers answer SERVFAIL. Sign at the new provider and add its DS once the old delegation has run out.',
@@ -356,6 +357,7 @@ registerStrings('tr', {
   'par.step.fix.todoServers': 'Ad sunucularından {count} tanesi zone’u henüz sunmuyor: zone’u orada oluşturun ya da girdiğiniz adları kontrol edin.',
   'par.unproxied': '{count} proxy’li kayıt yeni sağlayıcıda origin’iyle yanıtlanıyor: geçişte proxy’den çıkar ve sunucu adresleri herkese açık olur. Origin’leri koruyun (yalnızca yeni proxy’ye izin veren bir güvenlik duvarı) ya da proxy’yi açık tutun.',
   'par.step.fix.warn': 'Eksik ya da farklı bir şey yok. Kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, burada karşılaştırılmayan {unchecked} (CLI her kaydı, CAA dahil, karşılaştırır).',
+  'par.step.fix.warnStopped': 'Şimdiye kadar eksik ya da farklı bir şey yok, ama karşılaştırma tamamlanmadı. Kalanlara bakın: {extra} fazladan, {unproxied} proxy’siz, karşılaştırılmayan {unchecked} (yeniden karşılaştırın ya da her kaydı karşılaştıran CLI’ı çalıştırın).',
   'par.step.fix.ok': 'Yeni ad sunucuları bu dosyanın karşılaştırılan her kayıt kümesini sunuyor.',
   'par.step.fix.blocked': 'Henüz hiçbir yeni ad sunucusu bu zone’u sunmuyor: zone’u yeni sağlayıcıda oluşturun (bu dosyayı oraya aktarın) ve yeniden karşılaştırın.',
   'par.step.dnssec.todo': 'Zone imzalı (kayıt kuruluşunda bir DS kaydı ya da bu dosyada DNSSEC kayıtları var). Geçişten önce ya kayıt kuruluşundaki DS kaydını silin ve TTL’i dolana kadar bekleyin (iki güne kadar), ya da yalnızca iki sağlayıcı da çok imzacılı DNSSEC’i (RFC 8901) destekliyorsa, önce yeni sağlayıcının DNSKEY’ini eski zone’a, DS’ini kayıt kuruluşuna ekleyin. Yalnızca eski DS yerindeyken geçiş yapmak, doğrulayan çözümleyicilerin SERVFAIL döndürmesine yol açar. Eski yetki devrinin süresi dolunca yeni sağlayıcıda imzalayıp DS’ini ekleyin.',
@@ -872,7 +874,8 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         h('span', { class: 'par-step-icon' }, SeverityIcon(STATE_ICON[s.state] || 'info')),
         h('span', { class: 'par-step-body' },
           h('span', { class: 'par-step-state text-xs' }, t(`par.state.${s.state}`)),
-          h('span', null, t(`par.step.${s.id}.${s.state}`, params)),
+          // After a stop, the fix step says "so far", as the headline does.
+          h('span', null, s.id === 'fix' && s.state === 'warn' && p.stopped ? t('par.step.fix.warnStopped', params) : t(`par.step.${s.id}.${s.state}`, params)),
           s.id === 'fix' && s.state === 'todo' && p.servers ? h('span', null, t('par.step.fix.todoServers', { count: p.servers })) : null));
     });
     return Card({

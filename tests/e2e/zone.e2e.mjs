@@ -767,6 +767,8 @@ async function main() {
       assert(/The hourly Globalping quota ran out/.test(await text(page, '.par-results')), 'the quota alert');
       assertEqual(await page.evaluate(() => document.querySelector('.par-step[data-step="switch"]').dataset.state), 'warn', 'the switch waits');
       assert(/Compare again, or run the CLI below, before you switch/.test(await text(page, '.par-step[data-step="switch"]')), 'the switch step says why');
+      const fixStep = await text(page, '.par-step[data-step="fix"]');
+      assert(/Nothing is missing or different so far, but the comparison did not finish/.test(fixStep), `the fix step says "so far": ${fixStep}`);
       await shot(page, opts, 'zone-parity-stopped-desktop-light-en');
       await page.evaluate(() => { window.__gp.quotaAfter = Infinity; });
       await page.waitFor(() => Date.now() > window.__gp.quotaResetAt + 250, { message: 'the quota window is over' });

@@ -501,10 +501,12 @@ describe('runParity', () => {
     const low = zone([SOA_ROW, ['@', 'NS', 'ns1.example.org.', { ttl: 3600 }], ['@', 'A', '192.0.2.10', { ttl: 300 }]]);
     const steps = Object.fromEntries(parityRunbook(low, result, { nameservers: [NS1] }).map((s) => [s.id, s]));
     assert.deepEqual([steps.fix.state, steps.switch.state, steps.switch.params.unchecked, steps.switch.params.stopped], ['warn', 'warn', sum.unchecked, true]);
+    assert.equal(steps.fix.params.stopped, true, 'the fix step says "so far" after a stop');
     // The same zone, finished: 'check' (CAA is left to the CLI, so the switch still says to run it).
     const finished = paritySummary(all.result);
     assert.deepEqual([finished.verdict, finished.stopped], ['check', false]);
-    assert.equal(parityRunbook(low, all.result).find((s) => s.id === 'switch').state, 'warn', 'CAA not compared here');
+    const done = Object.fromEntries(parityRunbook(low, all.result).map((s) => [s.id, s]));
+    assert.deepEqual([done.switch.state, done.fix.state, done.fix.params.stopped], ['warn', 'warn', false], 'CAA not compared here');
   });
 
   test('a stop counts the record sets it kept from being compared', async () => {

@@ -74,6 +74,11 @@ describe('ci.yml', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
     assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,domain,change,privacy,reports --offline --no-shots$/);
     for (const suite of ['shell', 'subdomains', 'zone', 'verify', 'renewal', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'ptr', 'retire', 'carry', 'ip', 'lookup', 'health', 'workspaces', 'domain', 'change', 'privacy', 'reports']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
+    // ci.yml's step names the same suites, in the same order.
+    const only = cmd.match(/--only (\S+)/)[1].split(',');
+    const named = ci.match(/- name: Offline E2E \(([^)]+)\)/);
+    assert.ok(named, 'the offline E2E step');
+    assert.deepEqual(named[1].split(', '), only);
     // global also has live resolver groups: --offline keeps it to its fake-DoH steps.
     assert.match(readFileSync(join(ROOT, 'tests', 'e2e', 'global.e2e.mjs'), 'utf8'), /if \(OFFLINE\)[^\n]*\n\s*else await liveChecks\(/);
     // subdomains too (live scans): --offline skips them, and only the local server resolves.

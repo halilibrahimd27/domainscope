@@ -83,7 +83,7 @@ class FakeAuthority:
     def __init__(self, origin: str, records: Dict[Tuple[str, str], List], serial: int = 7,
                  cuts: Optional[Dict[str, Tuple[List[str], Dict[str, str]]]] = None,
                  refuse: bool = False, authoritative: bool = True, silent: bool = False,
-                 truncate: Tuple[str, ...] = ()) -> None:
+                 truncate: Tuple[str, ...] = (), servfail: Tuple[str, ...] = ()) -> None:
         self.origin = origin
         self.records = dict(records)
         self.records.setdefault((origin, 'SOA'), [(3600, ('ns1.example.net', 'hostmaster.example.com', serial))])
@@ -92,6 +92,7 @@ class FakeAuthority:
         self.authoritative = authoritative
         self.silent = silent
         self.truncate = set(truncate)
+        self.servfail = set(servfail)  # record types answered with SERVFAIL
         self.asked = []  # type: List[Tuple[str, str, str]]
         # TCP first: its ephemeral port is never in a range Windows reserves for TCP (Hyper-V,
         # Docker), which a UDP ephemeral port can be in. Windows hands TCP ports out in sequence,
@@ -149,6 +150,8 @@ class FakeAuthority:
 
         if self.refuse:
             rcode, aa = 5, False
+        elif rtype in self.servfail:
+            rcode = 2
         else:
             cut = next((c for c in self.cuts if qname == c or qname.endswith('.' + c)), None)
             if cut and not (qname == cut and rtype == 'DS'):
@@ -608,6 +611,28 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual([rows['direct.example.com'].status, rows['direct.example.com'].notes], ['DIFFERENT', ['proxy-on']])
         self.assertEqual(rows['plain.example.com'].notes, ['values'], 'no proxy flag in the file: other values')
         self.assertIn('the proxy is on at the new provider', dp.render_summary(report))
+
+    def test_record_sets_without_an_answer_are_partial_and_fail_the_check(self):
+        # The server serves the zone (SOA, NS) but SERVFAILs every MX and TXT question: the
+        # comparison did not finish, as the web app's 'partial' says, never "nothing is missing".
+        records = dict(GOOD)
+        records[('old.example.com', 'A')] = [(3600, '198.51.100.30')]
+        records[('example.com', 'NS')] = [(86400, 'ns1.example.net')]
+        server = FakeAuthority('example.com', records, cuts=DEV_CUT, servfail=('MX', 'TXT'))
+        out_json = os.path.join(self.tmp.name, 'partial.json')
+        try:
+            code, out, _ = run_main(self.zone, '--ns', server.ns(), '--no-extras', '--json', out_json, '-q')
+            failed, _, _ = run_main(self.zone, '--ns', server.ns(), '--no-extras', '--fail-on-diff', '-q')
+        finally:
+            server.close()
+        doc = json.loads(Path(out_json).read_text(encoding='utf-8'))
+        self.assertEqual(sorted((r['name'], r['type']) for r in doc['rows'] if r['status'] == 'ERROR'),
+                         [('example.com', 'MX'), ('example.com', 'TXT'), ('long.example.com', 'TXT')])
+        self.assertFalse([r for r in doc['rows'] if r['status'] in ('MISSING', 'DIFFERENT', 'EXTRA', 'UNPROXIED')])
+        self.assertEqual([code, doc['summary']['verdict']], [0, 'partial'])
+        self.assertIn('3 record sets got no answer: run this again before you switch', out)
+        self.assertNotIn('Nothing is missing or different. Check the rest', out)
+        self.assertEqual(failed, dp.EXIT_DIFFERENCES, 'an unfinished comparison fails the check')
 
     def test_usage_errors(self):
         for args in ([self.zone], [self.zone, '--ns', 'bad..name'], [os.path.join(self.tmp.name, 'none.zone'), '--ns', '192.0.2.1'],

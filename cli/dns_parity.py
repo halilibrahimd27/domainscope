@@ -890,19 +890,25 @@ class ParityReport:
     def serials_differ(self) -> bool:
         return len({ns.serial for ns in self.nameservers if ns.state == NS_OK}) > 1
 
+    def unanswered(self) -> int:
+        """The record sets a server gave no usable answer for (ERROR rows), each counted once."""
+        return len({(row.name, row.rtype) for row in self.rows if row.status == ERROR})
+
     def verdict(self) -> str:
         """The web app's verdicts (lib/nsparity.js paritySummary): 'blocked' (no server could
         be compared), 'fix' (something missing or different, or a server that does not serve the
-        zone), 'check' (only unproxied or extra records, TTL differences, serials out of step or
-        questions without an answer) or 'ready'. The web app's 'partial' (a stop, the probe cap,
-        types a probe cannot ask) has no counterpart here: this script asks every record set,
-        so a question without an answer is 'check'."""
+        zone), 'partial' (nothing to fix so far, but record sets got no answer: what they hold is
+        not known, as the web app counts them not compared), 'check' (only unproxied or extra
+        records, TTL differences or serials out of step) or 'ready'. The web app's other
+        reasons for 'partial' (a stop, the probe cap, types a probe cannot ask) do not occur
+        here: this script asks every record set."""
         if not any(ns.state == NS_OK for ns in self.nameservers):
             return 'blocked'
         if any(row.status in TO_FIX for row in self.rows) or any(ns.state != NS_OK for ns in self.nameservers):
             return 'fix'
-        if (any(row.status in (UNPROXIED, EXTRA, ERROR) for row in self.rows) or self.ttl_rows()
-                or self.serials_differ()):
+        if self.unanswered():
+            return 'partial'
+        if any(row.status in (UNPROXIED, EXTRA) for row in self.rows) or self.ttl_rows() or self.serials_differ():
             return 'check'
         return 'ready'
 
@@ -1313,6 +1319,17 @@ def _row_line(row: Row, width: int, ttl_only: bool = False) -> str:
     return _plain(text)
 
 
+def _rest_text(report: ParityReport, always: bool = False) -> str:
+    """What the 'check' verdict asks to look at: '1 extra, 2 unproxied, 0 TTL differences'
+    ('' when there is nothing, unless ``always``)."""
+    extra = sum(1 for r in report.rows if r.status == EXTRA)
+    unproxied = sum(1 for r in report.rows if r.status == UNPROXIED)
+    ttl = len(report.ttl_rows())
+    if not (always or extra or unproxied or ttl):
+        return ''
+    return '%d extra, %d unproxied, %d TTL difference%s' % (extra, unproxied, ttl, '' if ttl == 1 else 's')
+
+
 def render_summary(report: ParityReport, show_all: bool = False) -> str:
     """The text report: the servers, then per server the problems, TTL differences and what
     was not compared, then the order of the move."""
@@ -1377,11 +1394,16 @@ def render_summary(report: ParityReport, show_all: bool = False) -> str:
     elif verdict == 'fix':
         lines.append('Fix the new provider\'s zone (what is missing or different above, and every server '
                      'that does not serve it), then run this again before you switch.')
+    elif verdict == 'partial':
+        count = report.unanswered()
+        rest = _rest_text(report)
+        lines.append('%d record set%s got no answer: run this again before you switch (a server that does '
+                     'not answer them now may not serve them). Nothing is missing or different among the '
+                     'others so far%s.' % (count, '' if count == 1 else 's',
+                                           '; check the rest too: ' + rest if rest else ''))
     elif verdict == 'check':
-        counts = {st: sum(1 for r in report.rows if r.status == st) for st in (EXTRA, UNPROXIED, ERROR)}
-        lines.append('Nothing is missing or different. Check the rest before you switch: %d extra, %d '
-                     'unproxied, %d TTL differences, %d not answered.' % (
-                         counts[EXTRA], counts[UNPROXIED], len(report.ttl_rows()), counts[ERROR]))
+        lines.append('Nothing is missing or different. Check the rest before you switch: %s.'
+                     % _rest_text(report, always=True))
     else:
         lines.append('The new name servers serve every compared record set of the file.')
     lines.append('The move: lower the TTLs at the current provider (the NS records at the apex too) '
@@ -1458,13 +1480,16 @@ statuses (per name server and record set):
   A TTL that differs from the file's is listed apart.
 
 verdict (the web app's): FIX while something is MISSING or DIFFERENT or a server does not
-  serve the zone; CHECK for UNPROXIED or EXTRA records, TTL differences, serials out of step
-  or questions without an answer; READY otherwise. The web app's PARTIAL (a stopped run, its
-  probe cap, types a probe cannot ask) does not occur: this script asks every record set.
+  serve the zone; PARTIAL while record sets got no answer (ERROR: run it again before you
+  switch, what they hold is not known); CHECK for UNPROXIED or EXTRA records, TTL
+  differences or serials out of step; READY otherwise. The web app's other reasons for
+  PARTIAL (a stopped run, its probe cap, types a probe cannot ask) do not occur here: this
+  script asks every record set.
 
-exit codes: 0 done, 1 something missing, different, extra or unproxied, or a server that
-  does not serve the zone (only with --fail-on-diff: stricter than the verdict, UNPROXIED and
-  EXTRA fail it too), 2 usage error, 3 a report file could not be written, 130 interrupted.
+exit codes: 0 done, 1 something missing, different, extra or unproxied, a record set without
+  an answer, or a server that does not serve the zone (only with --fail-on-diff: stricter
+  than the verdict, UNPROXIED and EXTRA fail it too), 2 usage error, 3 a report file could
+  not be written, 130 interrupted.
 
 Türkçe: DNS sağlayıcısını değiştirmeden önce yeni ad sunucularının zone dosyasındaki her
   kaydı sunup sunmadığını kontrol eder (eksik, farklı, fazladan kayıtlar, TTL farkları).
@@ -1496,7 +1521,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--csv', metavar='FILE', help='write a CSV report ("-" = stdout)')
     parser.add_argument('--show-all', action='store_true', help='also list what is the same and what was not compared')
     parser.add_argument('--fail-on-diff', action='store_true',
-                        help='exit with code 1 when anything is missing, different, extra or unproxied')
+                        help='exit with code 1 when anything is missing, different, extra or unproxied, '
+                             'or got no answer')
     parser.add_argument('-q', '--quiet', action='store_true', help='no progress and no warnings on stderr')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser
@@ -1596,7 +1622,7 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
     if failed:
         return EXIT_OUTPUT_ERROR
-    if args.fail_on_diff and (report.verdict() in ('fix', 'blocked') or report.problems()):
+    if args.fail_on_diff and (report.verdict() in ('fix', 'blocked', 'partial') or report.problems()):
         return EXIT_DIFFERENCES
     return EXIT_OK
 

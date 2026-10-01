@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets, inventoryFormat
+  parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets, inventoryFormat,
+  terminatesTls, topologyTokens, TOPOLOGY_KEYS, TOPOLOGY_REASONS
 } from '../../assets/js/lib/inventory.js';
+import { inventoryTopology } from '../../assets/js/lib/topology.js';
 
 /** Map server id -> sorted ips for order-independent comparison. */
 function ipsById(result) {
@@ -745,4 +747,169 @@ test('lookupServers matches IPv4-mapped IPv6 to the plain IPv4', () => {
 test('lookupServers is robust to bad input', () => {
   assert.deepEqual(lookupServers(['1.2.3.4'], null), []);
   assert.deepEqual(lookupServers('not-an-ip', new Map()), []);
+});
+
+/* -------------------------------------------------------------------- */
+/* Topology keys: where TLS really terminates (parity with the CLI)     */
+/* -------------------------------------------------------------------- */
+
+const TOPOLOGY_DIR = new URL('../fixtures/topology/', import.meta.url);
+const TOPOLOGY_EXPECTED = JSON.parse(readFileSync(new URL('expected.json', TOPOLOGY_DIR), 'utf8'));
+
+/** The model both parsers are compared on (tests/python/test_inventory_targets.py builds the same). */
+function topologyModel(result) {
+  return Object.fromEntries(result.servers.map((s) => [s.name, {
+    endpoints: serverTargets(s), tlsPorts: s.tlsPorts || [], terminatesTls: s.terminatesTls ?? null,
+    vips: s.vips || [], nats: s.nats || [], backends: s.backends || []
+  }]));
+}
+/** [line, code, reason] (line null when `lines` is false), sorted as expected.json lists them. */
+function topologyWarnings(result, lines) {
+  const key = (w) => [w[0] ?? -1, w[1], w[2] ?? ''];
+  return result.warnings.map((w) => [lines ? w.line : null, w.code, w.reason ?? null])
+    .sort((a, b) => {
+      const [x, y] = [key(a), key(b)];
+      return x[0] - y[0] || x[1].localeCompare(y[1]) || x[2].localeCompare(y[2]);
+    });
+}
+
+for (const [file, want] of Object.entries(TOPOLOGY_EXPECTED.files)) {
+  test(`tests/fixtures/topology/${file}: the same servers, endpoints, topology and warnings as the CLI`, () => {
+    // tests/python/test_inventory_targets.py reads the same file to the same expected.json.
+    const r = parseInventory(readFileSync(new URL(file, TOPOLOGY_DIR), 'utf8'));
+    assert.deepEqual(topologyModel(r), { ...TOPOLOGY_EXPECTED.servers, ...want.extra });
+    assert.deepEqual(topologyWarnings(r, want.lines), want.warnings);
+  });
+}
+
+test('topology keys: precedence of the ports — an address with its own port keeps it, ports= replaces -p, then -p', () => {
+  const r = parseInventory([
+    'web01 203.0.113.10 203.0.113.12:9443 ports=443,8443',
+    'web02 203.0.113.13 203.0.113.13:8443 ports=4443',
+    'web03 203.0.113.14',
+    'web04 203.0.113.15 ports=8443',
+    'web04 203.0.113.15 ports=443'
+  ].join('\n'));
+  assert.deepEqual(Object.fromEntries(r.servers.map((s) => [s.name, serverTargets(s)])), {
+    web01: ['203.0.113.10:443', '203.0.113.10:8443', '203.0.113.12:9443'],
+    web02: ['203.0.113.13:4443', '203.0.113.13:8443'],
+    web03: ['203.0.113.14'],
+    web04: ['203.0.113.15:8443', '203.0.113.15:443']
+  });
+  assert.equal(r.servers[2].tlsPorts, undefined, 'no key, no field: the shape of an old inventory');
+  assert.deepEqual(r.warnings, []);
+  // Two servers on one address but different ports= are different endpoints: no DUPLICATE_IP.
+  const nat = parseInventory('web01 203.0.113.10 ports=443\nweb02 203.0.113.10 ports=8443\nweb03 203.0.113.10 ports=8443');
+  assert.deepEqual(nat.warnings.map((w) => [w.line, w.code, w.detail]), [[3, 'DUPLICATE_IP', '203.0.113.10:8443 (web02, web03)']]);
+});
+
+test('topology keys: an inventory without them parses exactly as before', () => {
+  for (const text of ['web01 10.0.0.1\nweb02 10.0.0.2 2001:db8::2', 'hostname,ip\nweb01,10.0.0.1', '[{"name":"web01","ip":"10.0.0.1","natIP":"203.0.113.9"}]']) {
+    const r = parseInventory(text);
+    for (const s of r.servers) {
+      assert.deepEqual(Object.keys(s).sort(), ['aliases', 'groups', 'id', 'ips', 'line', 'name'], text);
+    }
+    assert.equal(inventoryTopology(r.servers).any, false);
+  }
+  // GCP's natIP stays one of the server's own addresses, as before (only the key `nat` is topology).
+  assert.deepEqual(parseInventory('[{"name":"web01","ip":"10.0.0.1","natIP":"203.0.113.9"}]').servers[0].ips, ['10.0.0.1', '203.0.113.9']);
+  // kubectl's container ports are no topology value: read as before (no warning, no server change).
+  const k8s = parseInventory(JSON.stringify([{ name: 'web01', ip: '10.0.0.1', ports: [{ containerPort: 80, protocol: 'TCP' }] }]));
+  assert.deepEqual([k8s.servers[0].tlsPorts, k8s.warnings], [undefined, []]);
+});
+
+test('topology keys: the shared and public addresses of vip= / nat= are no own address (no DUPLICATE_IP, not in stats.ips)', () => {
+  const r = parseInventory('lb01 203.0.113.2 vip=203.0.113.50,2001:db8::50\nlb02 203.0.113.3 vip=203.0.113.50\napp01 10.0.0.30 nat=203.0.113.10');
+  assert.deepEqual(r.servers.map((s) => [s.name, s.ips, s.vips ?? null, s.nats ?? null]), [
+    ['lb01', ['203.0.113.2'], ['203.0.113.50', '2001:db8::50'], null],
+    ['lb02', ['203.0.113.3'], ['203.0.113.50'], null],
+    ['app01', ['10.0.0.30'], null, ['203.0.113.10']]
+  ]);
+  assert.deepEqual(r.warnings, []);
+  assert.equal(r.stats.ips, 3);
+});
+
+test('topology keys: every malformed value is a TOPOLOGY warning naming the key', () => {
+  const r = parseInventory([
+    'web01 10.0.0.1 ports=443,70000',
+    'web02 10.0.0.2 ports=',
+    'web03 10.0.0.3 terminates_tls=yes,no',
+    'web04 10.0.0.4 vip=[2001:db8::1]:443',
+    'web05 10.0.0.5 nat=10.0.0.0/24',
+    'web06 10.0.0.6 backends=10.0.0.300',
+    'web07 10.0.0.7 backends=',
+    'nat=203.0.113.9 # a key without a server'
+  ].join('\n'));
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.reason, w.detail]), [
+    [1, 'TOPOLOGY', 'ports', 'ports=443,70000'],
+    [2, 'TOPOLOGY', 'ports', 'ports='],
+    [3, 'TOPOLOGY', 'terminatesTls', 'terminates_tls=yes,no'],
+    [4, 'TOPOLOGY', 'vip', 'vip=[2001:db8::1]:443'],
+    [5, 'TOPOLOGY', 'nat', 'nat=10.0.0.0/24'],
+    [6, 'TOPOLOGY', 'backends', 'backends=10.0.0.300'],
+    [7, 'TOPOLOGY', 'backends', 'backends='],
+    [8, 'TOPOLOGY', 'noServer', 'nat']
+  ]);
+  // The servers stay, without the bad value: never a silently dropped server.
+  assert.deepEqual(r.servers.map((s) => s.name), ['web01', 'web02', 'web03', 'web04', 'web05', 'web06', 'web07']);
+  assert.ok(r.servers.every((s) => !s.tlsPorts && s.terminatesTls === undefined && !s.vips && !s.nats && !s.backends));
+  for (const reason of new Set(r.warnings.map((w) => w.reason))) assert.ok(TOPOLOGY_REASONS.includes(reason), reason);
+});
+
+test('topology keys: names, booleans and spellings; backends by name, by address, across lines', () => {
+  const r = parseInventory([
+    'LB01 203.0.113.2 Backends=WEB01 terminatesTls=Yes',
+    'lb01 203.0.113.2 backends=10.0.0.22',
+    'web01 10.0.0.21 terminates-tls=off',
+    '10.0.0.22',
+    'web03 10.0.0.23 terminates_tls=0'
+  ].join('\n'));
+  // Named servers first, then the unnamed ones (named by their address), as always.
+  assert.deepEqual(r.servers.map((s) => [s.name, s.backends ?? null, s.terminatesTls ?? null]), [
+    ['LB01', ['web01', '10.0.0.22'], true],
+    ['web01', null, false],
+    ['web03', null, false],
+    ['10.0.0.22', null, null]
+  ]);
+  assert.deepEqual(TOPOLOGY_KEYS, ['ports', 'terminates_tls', 'vip', 'backends', 'nat']);
+  assert.equal(terminatesTls(r.servers[0]), true);
+  assert.equal(terminatesTls(r.servers[1]), false);
+  assert.equal(terminatesTls({}), true, 'not given: yes');
+});
+
+test('lookupServers: DNS answers match through nat= and vip= and say so', () => {
+  const { servers } = parseInventory('lb01 203.0.113.2 vip=203.0.113.50\nlb02 203.0.113.3 vip=203.0.113.50\napp01 10.0.0.30 nat=203.0.113.10\nweb01 203.0.113.12');
+  const index = buildIpIndex(servers);
+  assert.deepEqual(lookupServers(['203.0.113.50', '203.0.113.10', '203.0.113.2', '::ffff:203.0.113.10', '203.0.113.12'], index)
+    .map((m) => [m.server.name, m.ip, m.through ?? null]), [
+    ['lb01', '203.0.113.50', 'vip'],
+    ['lb02', '203.0.113.50', 'vip'],
+    ['app01', '203.0.113.10', 'nat'],
+    ['lb01', '203.0.113.2', null],
+    ['app01', '::ffff:203.0.113.10', 'nat'],
+    ['web01', '203.0.113.12', null]
+  ]);
+  // An own address answered directly has no `through`: the result shape of an old inventory.
+  assert.deepEqual(Object.keys(lookupServers(['203.0.113.12'], index)[0]).sort(), ['ip', 'server']);
+});
+
+test('inventoryTopology: load balancers with their backends, VIP holders, NAT pairs, plain servers', () => {
+  const { servers } = parseInventory(readFileSync(new URL('inventory.txt', TOPOLOGY_DIR), 'utf8'));
+  const topo = inventoryTopology(servers);
+  assert.equal(topo.any, true);
+  assert.deepEqual(topo.lbs.map((lb) => [lb.server.name, lb.backends.map((b) => b.name)]), [['lb01', ['web01', 'web02']], ['lb02', ['web01', 'web02']]]);
+  assert.deepEqual(topo.vips.map((v) => [v.ip, v.servers.map((s) => s.name)]), [['203.0.113.50', ['lb01', 'lb02']]]);
+  assert.deepEqual(topo.nats.map((n) => [n.ip, n.server.name]), [['203.0.113.10', 'app01']]);
+  assert.deepEqual(topo.plain.map((s) => s.name), ['web01', 'web03']);
+  assert.deepEqual([...topo.backendOf].map(([b, lbs]) => [b.name, lbs.map((s) => s.name)]), [['web01', ['lb01', 'lb02']], ['web02', ['lb01', 'lb02']]]);
+});
+
+test('topologyTokens: what targets.txt writes for the CLI', () => {
+  const { servers } = parseInventory('lb01 203.0.113.2 vip=203.0.113.50 backends=web01,10.0.0.22\nweb01 10.0.0.21 terminates_tls=no ports=8443\n10.0.0.22\napp01 10.0.0.30 nat=203.0.113.10');
+  assert.deepEqual(servers.map((s) => [s.name, topologyTokens(s, (n) => (n.includes('.') ? '' : n))]), [
+    ['lb01', ['backends=web01,10.0.0.22', 'vip=203.0.113.50']],
+    ['web01', ['terminates_tls=no']],
+    ['app01', ['nat=203.0.113.10']],
+    ['10.0.0.22', []]
+  ]);
 });

@@ -1,0 +1,37 @@
+all:
+  children:
+    lbs:
+      hosts:
+        lb01:
+          ansible_host: 203.0.113.2
+          ports: [443, 8443]
+          vip: 203.0.113.50
+          backends: [web01, web02]
+        lb02:
+          ansible_host: 203.0.113.3
+          vip: 203.0.113.50
+          backends:
+            - web01
+            - web02
+    web:
+      vars:
+        terminates_tls: no
+      hosts:
+        web01:
+          ansible_host: 10.0.0.21
+          terminates_tls: no
+        web02:
+          ansible_host: 10.0.0.22
+          ports: 8443
+          terminates_tls: yes
+    app:
+      hosts:
+        app01:
+          ansible_host: 10.0.0.30
+          nat: 203.0.113.10
+        db01:
+          ansible_host: 10.0.0.40:5432
+          ports: 443
+        bad01:
+          ansible_host: 10.0.0.50
+          ports: 0

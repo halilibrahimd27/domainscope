@@ -19,6 +19,12 @@
  * Ansible INI context (a line under a `[group]` header or with `ansible_*` variables) a port
  * on the host pattern, the first token (`203.0.113.10:2222`, `badwolf.example.com:5309`), is
  * Ansible's SSH port: the host stays on `-p` and a PARSE warning (reason 'sshPort') says so.
+ *
+ * Topology keys say where TLS terminates, in every format (`key=value` on a line, a CSV column,
+ * an Ansible host variable, a JSON / YAML key of a machine record), as the CLI reads them:
+ * `ports=443,8443`, `terminates_tls=yes|no`, `vip=`, `backends=web01,web02`, `nat=` (see
+ * Server). DNS answers match through `vip` and `nat` ({@link lookupServers}); lib/topology.js
+ * reads the rest. A malformed value is a TOPOLOGY warning; without the keys nothing changes.
  */
 
 import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
@@ -34,20 +40,33 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  * @property {Object<string, Array<number|null>>} [ports] Extension, present only when an address
  *   was written with a port: address → its ports, `null` standing for the CLI's `-p` ports (the
  *   address was also given without one). An address missing here is scanned on `-p` only.
+ * @property {number[]} [tlsPorts] Topology (`ports=`), present only when given: the TLS ports of
+ *   the server's addresses written without a port (the `null` / missing entries of `ports`), in
+ *   place of `-p`. An address written with its own port keeps exactly that port.
+ * @property {boolean} [terminatesTls] Topology (`terminates_tls=`), present only when given;
+ *   absent means true. false: the server never gets the certificate (a plain-HTTP backend).
+ * @property {string[]} [vips] Topology (`vip=`): shared addresses this server holds (an HA pair).
+ * @property {string[]} [nats] Topology (`nat=`): public addresses this server is reachable at.
+ * @property {string[]} [backends] Topology (`backends=`): the names of the inventory servers this
+ *   one (a load balancer) forwards to, as their `name`.
  */
 
 /**
  * @typedef {object} InventoryWarning
  * @property {number} line 1-based line (approximate for JSON/YAML; 0 = whole input).
- * @property {'NO_IP'|'INVALID_IP'|'DUPLICATE_IP'|'PARSE'} code
+ * @property {'NO_IP'|'INVALID_IP'|'DUPLICATE_IP'|'PARSE'|'TOPOLOGY'} code
  * @property {string} text  The offending line (trimmed, ≤ 200 chars).
  * @property {string} [detail] Extension: offending token / IP / server name.
- * @property {'port'|'zone'|'hostPort'|'sshPort'} [reason] Extension, a finer cause: 'port' — an
+ * @property {string} [reason] Extension, a finer cause: 'port' — an
  *   INVALID_IP whose address is fine but whose port is not 1–65535 (`203.0.113.10:99999`); 'zone'
  *   — an INVALID_IP for an IPv6 zone id with a port (`[fe80::1%eth0]:8443`); 'hostPort' — a PARSE
  *   for a host name with a port (`web01.example.net:8443`), which the CLI can resolve but a server
  *   here is only matched by address; 'sshPort' — a PARSE for the port on an Ansible host pattern
  *   (`203.0.113.10:2222` under `[web]`), Ansible's SSH port: the address is kept, on `-p`.
+ *   TOPOLOGY ({@link TOPOLOGY_REASONS}): a malformed value — 'ports', 'terminatesTls', 'vip',
+ *   'nat', 'backends' —, 'unknownBackend' (names no server here), 'selfBackend', 'conflict'
+ *   (terminates_tls given both ways; the first stays), 'noServer' (a line or record with
+ *   topology keys but no server) and 'groupVars' (Ansible group vars are not read: set it per host).
  */
 
 const MAX_INPUT = 10 * 1024 * 1024;
@@ -235,6 +254,120 @@ const FIELD_LABELS = new Set(['name', 'host', 'hostname', 'ip', 'ips', 'ipv4', '
   'addr', 'server', 'sunucu', 'adres', 'group', 'grup']);
 
 /* ------------------------------------------------------------------------ */
+/* Topology keys (cli/ssl_origin_scan.py reads them alike)                  */
+/* ------------------------------------------------------------------------ */
+
+/** The topology keys as {@link normalizeKey} writes them (`Terminates-TLS`, `terminatesTls` → terminates_tls). */
+export const TOPOLOGY_KEYS = Object.freeze(['ports', 'terminates_tls', 'vip', 'backends', 'nat']);
+const TOPOLOGY_KEY_SET = new Set(TOPOLOGY_KEYS);
+
+/** The `reason` of a TOPOLOGY warning: a malformed value of each key, then the other causes. */
+export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends',
+  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars']);
+const MALFORMED_REASON = { ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
+
+const TLS_YES = new Set(['yes', 'true', 'on', '1']);
+const TLS_NO = new Set(['no', 'false', 'off', '0']);
+
+/** The topology key `key` is (normalised), or null. */
+function topologyKey(key) {
+  const k = normalizeKey(key);
+  return TOPOLOGY_KEY_SET.has(k) ? k : null;
+}
+
+/** A value without the quotes around it (`"web01, web02"`). */
+const unquote = (s) => String(s).trim().replace(/^(["'])(.*)\1$/s, '$2').trim();
+
+/**
+ * The items of a topology value (a string split on commas, spaces and ';', a number, a boolean, a
+ * list of those); null for an object or a list holding one (`ports: [{ containerPort: 80 }]`), read as before.
+ */
+function topologyItems(value) {
+  if (value === null || value === undefined) return [];
+  if (typeof value === 'string') return unquote(value).split(/[\s,;]+/).map((v) => unquote(v)).filter(Boolean);
+  if (typeof value === 'number') return [String(value)];
+  if (typeof value === 'boolean') return [value ? 'yes' : 'no'];
+  if (!Array.isArray(value)) return null;
+  const out = [];
+  for (const v of value) {
+    if (v !== null && typeof v === 'object') return null;
+    out.push(...topologyItems(v));
+  }
+  return out;
+}
+
+/** An address of `vip=` / `nat=` / `backends=`: bare (a /32 or /128 is fine), never with a port. */
+function topologyAddress(item) {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:|\]:/.test(item)) return null;
+  const hit = parseIpToken(item);
+  return hit && hit.port === null ? hit.ip : null;
+}
+
+/**
+ * The value of `key` from its items; undefined when malformed: no item, a port not 1–65535, not
+ * one yes/no/true/false/on/off/1/0, a vip / nat that is no bare address, a backend address that is none.
+ */
+function topologyValue(key, items) {
+  if (!items.length) return undefined;
+  if (key === 'terminates_tls') {
+    const v = items.length === 1 ? items[0].toLowerCase() : '';
+    return TLS_YES.has(v) ? true : TLS_NO.has(v) ? false : undefined;
+  }
+  const out = [];
+  for (const item of items) {
+    let v;
+    if (key === 'ports') {
+      v = /^\d+$/.test(item) ? Number(item) : 0;
+      if (!(v >= 1 && v <= 65535)) return undefined;
+    } else if (key === 'vip' || key === 'nat') {
+      v = topologyAddress(item);
+      if (!v) return undefined;
+    } else {
+      v = topologyAddress(item);
+      if (!v && (looksLikeIp(item) || isBadPort(item))) return undefined;
+      v = v || item;
+    }
+    if (!out.some((x) => String(x).toLowerCase() === String(v).toLowerCase())) out.push(v);
+  }
+  return out;
+}
+
+/** One topology key read: `{ key, value, raw, line }`, or null after a TOPOLOGY warning (detail `key=raw`). */
+function readTopology(ctx, key, items, raw, line) {
+  const value = topologyValue(key, items);
+  if (value === undefined) {
+    ctx.warn(line, 'TOPOLOGY', undefined, `${key}=${raw}`, MALFORMED_REASON[key]);
+    return null;
+  }
+  return { key, value, raw, line };
+}
+
+/** `key=value` with a topology key on a line; the value runs to the next space, ';' or '|' (commas make a list). */
+const TOPOLOGY_TOKEN_RE = /(^|[\s,;|])([A-Za-z][A-Za-z0-9_-]*)=("[^"]*"|'[^']*'|[^\s;|"']*)/g;
+
+/** The topology `key=value` tokens taken out of a line before it is split on commas: `{ rest, found: [{ key, raw }] }`. */
+function splitTopology(line) {
+  const found = [];
+  const rest = line.replace(TOPOLOGY_TOKEN_RE, (all, sep, key, value) => {
+    const k = topologyKey(key);
+    if (!k) return all;
+    found.push({ key: k, raw: value });
+    return `${sep} `;
+  });
+  return { rest: found.length ? rest : line, found };
+}
+
+/** The topology of one line or CSV row: the values read, malformed ones warned about. */
+function lineTopology(ctx, found, line) {
+  const out = [];
+  for (const { key, raw } of found) {
+    const t = readTopology(ctx, key, topologyItems(raw), unquote(raw), line);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Collector: entries → merged servers                                     */
 /* ------------------------------------------------------------------------ */
 
@@ -280,8 +413,9 @@ function createCollector(text, lines) {
     },
     /**
      * @param {{ name: string|null, ips: string[], ports?: Object<string, Array<number|null>>,
-     *   groups?: string[], aliases?: string[], line: number, quiet?: boolean }} e
-     *   ports: {@link portsOf}; quiet: never emit NO_IP for this entry alone.
+     *   groups?: string[], aliases?: string[], line: number, quiet?: boolean,
+     *   topology?: Array<{ key: string, value: unknown, raw: string, line: number }> }} e
+     *   ports: {@link portsOf}; quiet: never emit NO_IP for this entry alone; topology: {@link readTopology}.
      */
     add(e) {
       const all = e.ips || [];
@@ -294,7 +428,8 @@ function createCollector(text, lines) {
         groups: (e.groups || []).filter(Boolean),
         aliases: (e.aliases || []).filter(Boolean),
         line: e.line || 1,
-        quiet: !!e.quiet
+        quiet: !!e.quiet,
+        topology: e.topology || []
       });
     },
     finalize(lineCount) {
@@ -374,6 +509,55 @@ function addAddress(d, ip, port) {
 /** The port list of `ip` in an entry: its own ports, or `[null]` (the `-p` ports). */
 const entryPorts = (e, ip) => (e.ports && e.ports[ip] ? e.ports[ip] : [null]);
 
+/** A server draft's topology so far (see {@link mergeTopology}). */
+const emptyTopology = () => ({ tlsPorts: [], terminatesTls: undefined, vips: [], nats: [], backendRefs: [] });
+
+/**
+ * Merge an entry's topology into a server draft, in line order: ports, VIPs, NAT addresses and
+ * backends add up; terminates_tls keeps the first value, a different later one is a 'conflict'.
+ */
+function mergeTopology(d, list, ctx) {
+  const push = (arr, values) => {
+    for (const v of values) if (!arr.includes(v)) arr.push(v);
+  };
+  for (const t of list || []) {
+    if (t.key === 'ports') push(d.topo.tlsPorts, t.value);
+    else if (t.key === 'vip') push(d.topo.vips, t.value);
+    else if (t.key === 'nat') push(d.topo.nats, t.value);
+    else if (t.key === 'backends') for (const ref of t.value) d.topo.backendRefs.push({ ref, line: t.line });
+    else if (t.key === 'terminates_tls') {
+      if (d.topo.terminatesTls === undefined) d.topo.terminatesTls = t.value;
+      else if (d.topo.terminatesTls !== t.value) ctx.warn(t.line, 'TOPOLOGY', undefined, `terminates_tls=${t.raw}`, 'conflict');
+    }
+  }
+}
+
+/**
+ * Each draft's `backends=` names resolved to inventory servers: by name (case-insensitive, a
+ * server without an address included), else an address one of them has. A name no server has is
+ * an 'unknownBackend', the server itself a 'selfBackend' warning.
+ */
+function linkBackends(drafts, ctx) {
+  const byName = new Map(drafts.map((d) => [d.name.toLowerCase(), d]));
+  for (const d of drafts) {
+    const out = [];
+    for (const { ref, line } of d.topo.backendRefs) {
+      const named = byName.get(String(ref).toLowerCase());
+      const ip = named ? null : normalizeIP(ref);
+      const targets = named ? [named] : ip ? drafts.filter((x) => x.ips.includes(ip)) : [];
+      if (!targets.length) {
+        ctx.warn(line, 'TOPOLOGY', undefined, ref, 'unknownBackend');
+        continue;
+      }
+      for (const target of targets) {
+        if (target === d) ctx.warn(line, 'TOPOLOGY', undefined, ref, 'selfBackend');
+        else if (!out.includes(target.name)) out.push(target.name);
+      }
+    }
+    d.topo.backends = out;
+  }
+}
+
 function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx) {
   const byName = new Map(); // lower name → server draft
   const drafts = [];
@@ -381,7 +565,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   const draftFor = (key, name, line) => {
     let d = byName.get(key);
     if (!d) {
-      d = { name, ips: [], ports: {}, groups: [], aliases: [], line, loud: false, named: true };
+      d = { name, ips: [], ports: {}, groups: [], aliases: [], line, loud: false, named: true, topo: emptyTopology() };
       byName.set(key, d);
       drafts.push(d);
     }
@@ -398,6 +582,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     for (const ip of e.ips) for (const port of entryPorts(e, ip)) addAddress(d, ip, port);
     push(d.groups, e.groups);
     push(d.aliases, e.aliases.filter((a) => a.toLowerCase() !== d.name.toLowerCase()));
+    mergeTopology(d, e.topology, ctx);
     if (!e.quiet) d.loud = true;
   }
 
@@ -409,11 +594,14 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   const byIp = new Map();
   for (const e of entries) {
     if (e.name) continue;
+    const owners = new Set();
     for (const ip of e.ips) {
       for (const owner of namedIps.get(ip) || []) {
         for (const port of entryPorts(e, ip)) addAddress(owner, ip, port);
+        owners.add(owner);
       }
     }
+    for (const owner of owners) mergeTopology(owner, e.topology, ctx);
     const ips = e.ips.filter((ip) => !namedIps.has(ip));
     if (ips.length === 0) {
       if (e.ips.length === 0 && !e.quiet) ctx.warn(e.line, 'NO_IP');
@@ -421,12 +609,13 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     }
     let d = byIp.get(ips[0]);
     if (!d) {
-      d = { name: ips[0], ips: [], ports: {}, groups: [], aliases: [], line: e.line, loud: true, named: false };
+      d = { name: ips[0], ips: [], ports: {}, groups: [], aliases: [], line: e.line, loud: true, named: false, topo: emptyTopology() };
       byIp.set(ips[0], d);
       drafts.push(d);
     }
     for (const ip of ips) for (const port of entryPorts(e, ip)) addAddress(d, ip, port);
     push(d.groups, e.groups);
+    mergeTopology(d, e.topology, ctx);
   }
 
   // 3) Ansible group definitions (names and IPs as hosts), incl. parent groups.
@@ -439,7 +628,9 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     d.groups = expand(own);
   }
 
-  // 4) Servers without IPs → NO_IP (unless only referenced quietly).
+  // 4) Servers without IPs → NO_IP (unless only referenced quietly). The topology keys appear
+  //    only when given, so an inventory without them parses to the same shape as before.
+  linkBackends(drafts, ctx);
   const servers = [];
   for (const d of drafts) {
     if (d.ips.length === 0) {
@@ -448,6 +639,11 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     }
     const server = { id: d.name, name: d.name, ips: d.ips, groups: d.groups, line: d.line, aliases: d.aliases };
     if (Object.keys(d.ports).length) server.ports = d.ports;
+    if (d.topo.tlsPorts.length) server.tlsPorts = d.topo.tlsPorts;
+    if (d.topo.terminatesTls !== undefined) server.terminatesTls = d.topo.terminatesTls;
+    if (d.topo.vips.length) server.vips = d.topo.vips;
+    if (d.topo.nats.length) server.nats = d.topo.nats;
+    if (d.topo.backends.length) server.backends = d.topo.backends;
     servers.push(server);
   }
 
@@ -615,10 +811,14 @@ function withoutHostPort(groups) {
  * (named, holding an address key, or an Ansible vars map) gateway / DNS / NTP /
  * iLO / version attributes are skipped.
  * Returns groups of { ip, raw } not claimed by any name.
+ * A topology key of a machine record (`nat`, `vip`, `ports`, `terminates_tls`, `backends` with a
+ * scalar or a list of scalars) is an item `{ topo, items, raw }` that travels with its record's
+ * addresses; in a group's `vars` it is a 'groupVars' warning; anywhere else it is read as before.
  * @param {Set<string>} [hosts] host names listed in Ansible groups or `_meta.hostvars`
  * @param {boolean} [isVars] `node` is a vars map: one of those hosts' (hostvars) or a group's `vars`
+ * @param {boolean} [groupVars] `node` is a group's `vars` map (not a host's)
  */
-function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
+function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false, groupVars = false) {
   if (depth > MAX_DEPTH || node === null || node === undefined) return [];
   if (typeof node === 'string') {
     const items = [];
@@ -651,20 +851,34 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false) {
   // Visit every value first (what it names goes to `sub`): whether this is a
   // machine record, and so which keys are attributes, depends on all of them.
   const entries = [];
-  for (const [key, value] of Object.entries(node)) {
-    if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
+  const visit = (key, value) => {
     // A listed host (a `hosts:` / hostvars map, a plain YAML host map), however
     // it is named; a machine's own variables are never hosts.
     const host = !name && !isVars && hosts.has(key) && isNameToken(String(key));
     const kind = host ? 'name' : keyKind(key, value);
     const sub = [];
-    const groups = visitStructured(value, depth + 1, sub, hosts, host || key === 'vars');
-    entries.push({ key, kind, host, groups, sub });
+    const inVars = host || key === 'vars';
+    const groups = visitStructured(value, depth + 1, sub, hosts, inVars, key === 'vars' && !host);
+    return { key, kind, host, groups, sub };
+  };
+  const topology = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
+    const tk = topologyKey(key);
+    const items = tk ? topologyItems(value) : null;
+    if (items) topology.push({ key, value, item: { topo: tk, items, raw: Array.isArray(value) ? value.join(',') : String(value ?? '') } });
+    else entries.push(visit(key, value));
   }
   const strong = !!name || isVars;
   const record = strong || entries.some((e) => e.kind === 'field' && e.groups.length && isAddressKey(e.key));
   const own = [];
   const pass = [];
+  // Topology keys belong to a machine record (named, holding an address, or a host's vars); a
+  // group's vars cannot set them (a warning), and anywhere else they are ordinary values.
+  for (const t of topology) {
+    if (!record) entries.push(visit(t.key, t.value));
+    else own.push(groupVars ? { bad: 'groupVars', raw: t.item.topo } : t.item);
+  }
   for (const { key, kind, host, groups: all, sub } of entries) {
     const groups = keepsHostPort(key, kind, record) ? all : withoutHostPort(all);
     // gateway, dns, ntp, iLO, version… A record known only by its address key
@@ -744,19 +958,28 @@ function extractStructured(root, ctx, fixedLine = null) {
   for (const items of leftovers) found.push({ name: null, items });
   for (const f of found) {
     // Values that cannot be used ({ bad, raw }): an INVALID_IP for a bad port or a zone id, a
-    // PARSE for a host name with a port, as on a line (the CLI warns about the first two too).
+    // PARSE for a host name with a port, as on a line (the CLI warns about the first two too);
+    // a TOPOLOGY warning for a topology key in a group's vars.
     const good = f.items.filter((i) => i.ip);
     const bad = f.items.filter((i) => i.bad);
     for (const b of bad) {
-      ctx.warn(fixedLine ?? ctx.lineOf(b.raw), b.bad === 'hostPort' ? 'PARSE' : 'INVALID_IP', undefined, b.raw, b.bad);
+      const code = b.bad === 'hostPort' ? 'PARSE' : b.bad === 'groupVars' ? 'TOPOLOGY' : 'INVALID_IP';
+      ctx.warn(fixedLine ?? ctx.lineOf(b.raw), code, undefined, b.raw, b.bad);
     }
     const line = fixedLine ?? ctx.lineOf((good[0] || f.items[0])?.raw);
+    const topology = [];
+    for (const i of f.items) {
+      if (!i.topo) continue;
+      const t = readTopology(ctx, i.topo, i.items, i.raw, line);
+      if (t) topology.push(t);
+    }
     if (!good.length) {
       // A named server keeps its groups; a mistyped address is not warned about twice (NO_IP).
-      if (f.name) ctx.add({ name: f.name, ips: [], line, quiet: bad.some((b) => b.bad !== 'hostPort') });
+      if (f.name) ctx.add({ name: f.name, ips: [], line, quiet: bad.some((b) => b.bad !== 'hostPort'), topology });
+      else if (f.items.some((i) => i.topo)) ctx.warn(line, 'TOPOLOGY', undefined, f.items.find((i) => i.topo).topo, 'noServer');
       continue;
     }
-    ctx.add({ name: f.name, ips: [...new Set(good.map((i) => i.ip))], ports: portsOf(good), line });
+    ctx.add({ name: f.name, ips: [...new Set(good.map((i) => i.ip))], ports: portsOf(good), line, topology });
   }
 }
 
@@ -969,6 +1192,7 @@ function splitCsvLine(line, delimiter) {
 function classifyHeader(cells) {
   const columns = cells.map((cell) => {
     const key = normalizeKey(cell);
+    if (TOPOLOGY_KEY_SET.has(key)) return { role: 'topology', key };
     if (isIpKey(key)) return { role: 'ip', key };
     if (NAME_HEADER_RANK.has(key)) return { role: 'name', key, rank: NAME_HEADER_RANK.get(key) };
     if (GROUP_HEADERS.has(key)) return { role: 'group', key };
@@ -1115,12 +1339,15 @@ function parseCsv(text, csv, ctx) {
         }
       }
     };
+    const topoFound = [];
     columns.forEach((col, i) => {
       const value = cells[i] || '';
       if (!value) return;
       if (col.role === 'ip') addIpValue(value, true);
       else if (col.role === 'group') groups.push(...value.split(/[,;|]+/).map((g) => g.trim()).filter(Boolean));
+      else if (col.role === 'topology') topoFound.push({ key: col.key, raw: value });
     });
+    const topology = lineTopology(ctx, topoFound, rec.line);
     for (const col of nameCols) {
       const value = cells[col.i] || '';
       if (!value) continue;
@@ -1139,7 +1366,7 @@ function parseCsv(text, csv, ctx) {
         if (col.role === 'other' && cells[i]) addIpValue(cells[i], false);
       });
     }
-    ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: rec.line, quiet: ips.length === 0 && invalid > 0 });
+    ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: rec.line, quiet: ips.length === 0 && invalid > 0, topology });
   }
 }
 
@@ -1183,7 +1410,11 @@ function parseLines(lines, ctx) {
         continue;
       }
     }
-    if (section === 'vars') continue;
+    if (section === 'vars') {
+      // Group variables are not read for the topology: say so rather than ignore it.
+      for (const t of splitTopology(stripInlineComment(line)).found) ctx.warn(lineNo, 'TOPOLOGY', undefined, t.key, 'groupVars');
+      continue;
+    }
     if (section === 'children') {
       const child = line.split(/\s+/)[0];
       if (group && child) {
@@ -1204,11 +1435,19 @@ function parseLines(lines, ctx) {
 
     line = stripInlineComment(line).replace(/^(?:[-*\u2022+]|\d{1,4}[.)])\s+/u, '');
     if (!line) continue;
-    parseHostLine(line, lineNo, group, ctx);
+    // Topology keys first: their values hold commas (`ports=443,8443`), which split a line.
+    const { rest, found } = splitTopology(line);
+    const topology = lineTopology(ctx, found, lineNo);
+    const added = rest.trim() ? parseHostLine(rest.trim(), lineNo, group, ctx, topology) : false;
+    if (!added && found.length) ctx.warn(lineNo, 'TOPOLOGY', undefined, found[0].key, 'noServer');
   }
 }
 
-function parseHostLine(line, lineNo, group, ctx) {
+/**
+ * One line of a plain list, a hosts file or an Ansible INI inventory. True when it added an
+ * entry (a server, or a name whose address was mistyped), which then carries `topology`.
+ */
+function parseHostLine(line, lineNo, group, ctx, topology = []) {
   const tokens = line.split(/[\s,;|]+/).filter(Boolean);
   const ips = [];
   const eps = [];
@@ -1296,21 +1535,22 @@ function parseHostLine(line, lineNo, group, ctx) {
 
   if (ips.length === 0) {
     if (invalid.length) {
-      // The IP was mistyped: keep group membership but do not double-warn.
-      if (names.length) ctx.add({ name: hostish[0] || names[0], ips: [], groups, line: lineNo, quiet: true });
-      return;
+      // The IP was mistyped: keep group membership but do not double-warn (the line's
+      // topology goes with that server: the INVALID_IP warning already names the line).
+      if (names.length) ctx.add({ name: hostish[0] || names[0], ips: [], groups, line: lineNo, quiet: true, topology });
+      return true;
     }
-    if (line.endsWith(':') || isHeaderLike(tokens.map(unwrap))) return; // heading / table header
+    if (line.endsWith(':') || isHeaderLike(tokens.map(unwrap))) return false; // heading / table header
     if (names.length === 0) {
       if (others.length) ctx.warn(lineNo, 'PARSE');
-      return; // only key=value vars
+      return false; // only key=value vars
     }
     if (others.length > 0 || plain.length >= 3 || names.length > 3) {
       ctx.warn(lineNo, 'PARSE');
-      return;
+      return false;
     }
-    ctx.add({ name: hostish[0] || names[0], ips: [], groups, line: lineNo });
-    return;
+    ctx.add({ name: hostish[0] || names[0], ips: [], groups, line: lineNo, topology });
+    return true;
   }
 
   let name = null;
@@ -1320,11 +1560,12 @@ function parseHostLine(line, lineNo, group, ctx) {
 
   if (!name) {
     // Prose around IPs ("please update 10.0.0.1 and 10.0.0.2"): each IP stands alone.
-    for (const ip of new Set(ips)) ctx.add({ name: null, ips: [ip], ports: portsOf(eps.filter((e) => e.ip === ip)), groups, line: lineNo });
-    return;
+    for (const ip of new Set(ips)) ctx.add({ name: null, ips: [ip], ports: portsOf(eps.filter((e) => e.ip === ip)), groups, line: lineNo, topology });
+    return true;
   }
   const aliases = ipFirst ? names.filter((n) => n !== name) : [];
-  ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: lineNo });
+  ctx.add({ name, ips: [...new Set(ips)], ports: portsOf(eps), groups, aliases, line: lineNo, topology });
+  return true;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1450,16 +1691,20 @@ export function formatEndpoint(ip, port = null) {
 /**
  * The `-t` tokens of address `ip` of `server`, as the CLI reads them back: the bare address, or
  * one `ip:port` per port it was written with (`Server.ports`; `null` there keeps the bare
- * address as well). [] when `ip` is not an IP address.
- * @param {{ ports?: Object<string, Array<number|null>> }|null} server
+ * address as well). [] when `ip` is not an IP address. Precedence of the ports: an address
+ * written with its own port keeps exactly that port; one written without (the `null` entries,
+ * or none) is scanned on the server's `ports=` (`Server.tlsPorts`, one token each) when it has
+ * them, else on the CLI's `-p` (the bare address).
+ * @param {{ ports?: Object<string, Array<number|null>>, tlsPorts?: number[] }|null} server
  * @param {string} ip canonical, as in `Server.ips`
  * @returns {string[]}
  */
 export function addressTargets(server, ip) {
   const ports = server && server.ports && typeof server.ports === 'object' ? server.ports : {};
   const spec = Array.isArray(ports[ip]) && ports[ip].length ? ports[ip] : [null];
+  const own = server && Array.isArray(server.tlsPorts) ? server.tlsPorts.filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535) : [];
   const out = [];
-  for (const port of spec) {
+  for (const port of spec.flatMap((p) => (p === null && own.length ? own : [p]))) {
     const token = formatEndpoint(ip, port);
     if (token && !out.includes(token)) out.push(token);
   }
@@ -1480,7 +1725,8 @@ export function serverTargets(server) {
 }
 
 /**
- * Index servers by canonical IP.
+ * Index servers by canonical IP: their own addresses, and the shared (`vip=`) and public
+ * (`nat=`) addresses they are reached at.
  * @param {Server[]} servers
  * @returns {Map<string, Server[]>}
  */
@@ -1488,7 +1734,9 @@ export function buildIpIndex(servers) {
   const index = new Map();
   for (const server of Array.isArray(servers) ? servers : []) {
     if (!server || !Array.isArray(server.ips)) continue;
-    for (const raw of server.ips) {
+    const vips = Array.isArray(server.vips) ? server.vips : [];
+    const nats = Array.isArray(server.nats) ? server.nats : [];
+    for (const raw of [...server.ips, ...vips, ...nats]) {
       const ip = normalizeIP(raw);
       if (!ip) continue;
       const list = index.get(ip);
@@ -1499,12 +1747,20 @@ export function buildIpIndex(servers) {
   return index;
 }
 
+/** How `server` answers at `key`: its own address (null), a shared one ('vip') or its public NAT address ('nat'). */
+function reachedThrough(server, key) {
+  if (server.ips.some((ip) => normalizeIP(ip) === key)) return null;
+  if ((server.vips || []).some((ip) => normalizeIP(ip) === key)) return 'vip';
+  return (server.nats || []).some((ip) => normalizeIP(ip) === key) ? 'nat' : null;
+}
+
 /**
- * Servers owning any of `ips`. IPv4-mapped IPv6 (`::ffff:1.2.3.4`) also
- * matches servers listed with the plain IPv4.
+ * Servers owning any of `ips`: their own address, or a shared (`vip=`) or public (`nat=`)
+ * address they are reached at — then the pair says so in `through`. IPv4-mapped IPv6
+ * (`::ffff:1.2.3.4`) also matches servers listed with the plain IPv4.
  * @param {string[]|string} ips
  * @param {Map<string, Server[]>} index From {@link buildIpIndex}.
- * @returns {Array<{ server: Server, ip: string }>} unique (server, ip) pairs, input order.
+ * @returns {Array<{ server: Server, ip: string, through?: 'vip'|'nat' }>} unique (server, ip) pairs, input order.
  */
 export function lookupServers(ips, index) {
   const out = [];
@@ -1522,9 +1778,45 @@ export function lookupServers(ips, index) {
         const k = `${server.id}\u0000${ip}`;
         if (seen.has(k)) continue;
         seen.add(k);
-        out.push({ server, ip });
+        const through = Array.isArray(server.ips) ? reachedThrough(server, key) : null;
+        out.push(through ? { server, ip, through } : { server, ip });
       }
     }
   }
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Topology: where TLS terminates                                           */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Does the server get the certificate? `terminates_tls` is yes unless the inventory says no.
+ * @param {{ terminatesTls?: boolean }|null} server
+ * @returns {boolean}
+ */
+export function terminatesTls(server) {
+  return !(server && server.terminatesTls === false);
+}
+
+/**
+ * The topology of `server` as `key=value` tokens of a targets.txt line, the way
+ * cli/ssl_origin_scan.py reads them: `terminates_tls=no`, `backends=…` (each backend as the CLI
+ * names it: `cliName(name)`, or the name itself when that is an address), `vip=…`, `nat=…`.
+ * The TLS ports are not written: {@link addressTargets} already writes each address on them.
+ * @param {Server} server
+ * @param {(name: string) => string} [cliName] lib/export cliServerName
+ * @returns {string[]}
+ */
+export function topologyTokens(server, cliName = (n) => n) {
+  if (!server) return [];
+  const out = [];
+  if (server.terminatesTls === false) out.push('terminates_tls=no');
+  if (Array.isArray(server.backends) && server.backends.length) {
+    const names = server.backends.map((n) => cliName(n) || (normalizeIP(n) ? n : '')).filter(Boolean);
+    if (names.length) out.push(`backends=${names.join(',')}`);
+  }
+  if (Array.isArray(server.vips) && server.vips.length) out.push(`vip=${server.vips.join(',')}`);
+  if (Array.isArray(server.nats) && server.nats.length) out.push(`nat=${server.nats.join(',')}`);
   return out;
 }

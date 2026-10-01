@@ -1350,11 +1350,34 @@ class Server:
     # stands for the -p ports (the target was also given without a port). A target that is
     # not a key here is scanned on the -p ports only.
     ports: Dict[str, List[Optional[int]]] = field(default_factory=dict)
+    # Topology (lib/inventory.js reads the same keys): ports=443,8443 - the TLS ports of the
+    # targets written without a port, in place of -p; terminates_tls=no - never gets the
+    # certificate, not scanned without --include-backends (None: not given, i.e. yes); vip= -
+    # shared addresses (an HA pair); nat= - public addresses it is reachable at; backends= -
+    # the servers this one (a load balancer) forwards to, by name.
+    tls_ports: List[int] = field(default_factory=list)
+    terminates_tls: Optional[bool] = None
+    vips: List[str] = field(default_factory=list)
+    nats: List[str] = field(default_factory=list)
+    backends: List[str] = field(default_factory=list)
+    # backends= as written, (name or address, line, source), until link_backends() resolves them
+    backend_refs: List[Tuple[str, int, str]] = field(default_factory=list, repr=False,
+                                                     compare=False)
 
     @property
     def id(self) -> str:
         """Stable identifier: the name, else the first IP."""
         return self.name or (self.ips[0] if self.ips else '')
+
+    @property
+    def gets_certificate(self) -> bool:
+        """False for ``terminates_tls=no``: a backend that never gets the certificate."""
+        return self.terminates_tls is not False
+
+    def has_topology(self) -> bool:
+        """Whether the inventory gave this server any topology key."""
+        return bool(self.tls_ports or self.terminates_tls is not None or self.vips or self.nats
+                    or self.backends or self.backend_refs)
 
     def add_ip(self, ip: str, port: Optional[int] = None) -> None:
         """Add address ``ip``: on ``port``, or on the -p ports when ``port`` is None."""
@@ -1381,8 +1404,21 @@ class Server:
         """The ports of address or host name ``key`` (None = the -p ports)."""
         return list(self.ports.get(key, [None]))
 
+    def endpoint_spec(self, key: str) -> List[Optional[int]]:
+        """:meth:`port_spec` with the server's own TLS ports (``ports=``) in place of None:
+        the ports lib/inventory.js addressTargets() writes ``key`` with (None = -p)."""
+        out = []  # type: List[Optional[int]]
+        for port in self.ports.get(key, [None]):
+            for value in (self.tls_ports if port is None and self.tls_ports else [port]):
+                if value not in out:
+                    out.append(value)
+        return out
+
     def ports_for(self, ip: str, default: Sequence[int]) -> List[int]:
-        """The ports address ``ip`` is scanned on, with ``default`` as the -p ports."""
+        """The ports address ``ip`` is scanned on: a port written with the address keeps
+        exactly that port; one written without is scanned on the server's ``ports=``, else on
+        ``default`` (the -p ports)."""
+        default = self.tls_ports or default
         out = []  # type: List[int]
         for port in self.ports.get(ip, [None]):
             for value in (default if port is None else [port]):
@@ -1396,9 +1432,13 @@ class InventoryWarning:
     """A skipped or suspicious inventory line (codes mirror lib/inventory.js, plus RESOLVE)."""
 
     line: int
-    code: str  # NO_IP | INVALID_IP | DUPLICATE_IP | PARSE | RESOLVE
+    code: str  # NO_IP | INVALID_IP | DUPLICATE_IP | PARSE | TOPOLOGY | RESOLVE
     text: str
     source: str = ''
+    # TOPOLOGY: the cause, as lib/inventory.js names it (TOPOLOGY_REASONS): ports,
+    # terminatesTls, vip, nat, backends (a malformed value), unknownBackend, selfBackend,
+    # conflict, noServer, groupVars
+    reason: str = ''
 
     def __str__(self) -> str:
         where = self.source or 'targets'
@@ -1502,6 +1542,128 @@ def _strip_comment(line: str) -> str:
     if _is_comment(line):
         return ''
     return re.split(r'\s(?:#|//)', line, maxsplit=1)[0].strip()
+
+
+# Topology keys (lib/inventory.js TOPOLOGY_KEYS), read in every inventory format: where TLS
+# really terminates. Keys are compared after _normalize_header (Terminates-TLS, terminatesTls).
+TOPOLOGY_KEYS = ('ports', 'terminates_tls', 'vip', 'backends', 'nat')
+_TOPOLOGY_MALFORMED = {'ports': 'ports', 'terminates_tls': 'terminatesTls', 'vip': 'vip',
+                       'nat': 'nat', 'backends': 'backends'}
+_TOPOLOGY_HELP = {
+    'ports': 'ports= takes TLS ports 1-65535, comma separated (ports=443,8443)',
+    'terminates_tls': 'terminates_tls= takes yes or no',
+    'vip': 'vip= takes IP addresses without a port',
+    'nat': 'nat= takes IP addresses without a port',
+    'backends': 'backends= takes server names (or their addresses), comma separated',
+}
+_TLS_YES = ('yes', 'true', 'on', '1')
+_TLS_NO = ('no', 'false', 'off', '0')
+# key=value on a line; the value runs to the next space, ';' or '|' (commas make a list)
+_TOPOLOGY_TOKEN_RE = re.compile(
+    r'(^|[\s,;|])([A-Za-z][A-Za-z0-9_-]*)=("[^"]*"|\'[^\']*\'|[^\s;|"\']*)')
+_QUOTED_RE = re.compile(r'^(["\'])(.*)\1$', re.S)
+
+TopologyValue = Tuple[str, Any, str, int]   # (key, value, raw, line)
+
+
+def _topology_key(key: Any) -> Optional[str]:
+    """The topology key ``key`` is (normalised), or None."""
+    normalized = _normalize_header(str(key))
+    return normalized if normalized in TOPOLOGY_KEYS else None
+
+
+def _unquote(text: Any) -> str:
+    text = str(text).strip()
+    match = _QUOTED_RE.match(text)
+    return (match.group(2) if match else text).strip()
+
+
+def _topology_items(value: Any) -> Optional[List[str]]:
+    """The items of a topology value: a string split on commas, whitespace and ';', a number,
+    a boolean (yes / no) or a list of those; None for anything else (an object, a list holding
+    one: ``ports: [{containerPort: 80}]``), which is then read as before."""
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return ['yes' if value else 'no']
+    if isinstance(value, int):
+        return [str(value)]
+    if isinstance(value, float):
+        return [str(int(value)) if value.is_integer() else str(value)]
+    if isinstance(value, str):
+        return [item for item in (_unquote(v) for v in re.split(r'[\s,;]+', _unquote(value)))
+                if item]
+    if isinstance(value, list):
+        out = []  # type: List[str]
+        for item in value:
+            if isinstance(item, (dict, list)):
+                return None
+            out.extend(_topology_items(item) or [])
+        return out
+    return None
+
+
+def _topology_address(item: str) -> Optional[str]:
+    """An address of vip= / nat= / backends=: bare (a /32 or /128 is fine), never with a port."""
+    if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}:', item) or ']:' in item:
+        return None
+    text = re.sub(r'["\'`)>},;]+$', '', re.sub(r'^["\'`(<{]+', '', item.strip()))
+    if not text or len(text) > 64:
+        return None
+    if text.endswith('.') and ':' not in text:
+        text = text[:-1]
+    match = re.match(r'^([^/]+)/(\d{1,3})$', text)
+    if match:
+        ip = normalize_ip(match.group(1))
+        return ip if ip and int(match.group(2)) == (128 if ':' in ip else 32) else None
+    return normalize_ip(text)
+
+
+def _topology_value(key: str, items: Sequence[str]) -> Any:
+    """The value of topology ``key`` from its items, or None when it is malformed (no item; a
+    port that is not 1-65535; terminates_tls other than one yes / no / true / false / on /
+    off / 1 / 0; a vip / nat that is not one address without a port; a backend meant as an
+    address that is none). Mirrors lib/inventory.js topologyValue()."""
+    if not items:
+        return None
+    if key == 'terminates_tls':
+        word = items[0].lower() if len(items) == 1 else ''
+        return True if word in _TLS_YES else False if word in _TLS_NO else None
+    out = []  # type: List[Any]
+    for item in items:
+        if key == 'ports':
+            if not (item.isascii() and item.isdigit() and 1 <= int(item) <= 65535):
+                return None
+            value = int(item)  # type: Any
+        elif key in ('vip', 'nat'):
+            value = _topology_address(item)
+            if value is None:
+                return None
+        else:
+            value = _topology_address(item)
+            if value is None and (_looks_like_ip(item) or _ENDPOINT_V4_RE.match(item)
+                                  or _BRACKETED_ADDRESS_RE.match(item)):
+                return None
+            value = value or item
+        if all(str(x).lower() != str(value).lower() for x in out):
+            out.append(value)
+    return out
+
+
+def _split_topology(line: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Take the topology ``key=value`` tokens out of a line before it is split on commas
+    (``ports=443,8443`` is one value): the rest of the line and each (key, raw value)."""
+    found = []  # type: List[Tuple[str, str]]
+
+    def take(match: Any) -> str:
+        key = _topology_key(match.group(2))
+        if key is None:
+            return match.group(0)
+        found.append((key, match.group(3)))
+        return match.group(1) + ' '
+
+    rest = _TOPOLOGY_TOKEN_RE.sub(take, line)
+    return (rest if found else line), found
 
 
 def is_ip_block(token: str) -> bool:
@@ -1715,15 +1877,57 @@ class _InventoryBuilder:
         self.servers = {}  # type: Dict[str, Server]
         self.warnings = []  # type: List[InventoryWarning]
 
-    def warn(self, line: int, code: str, text: str) -> None:
+    def warn(self, line: int, code: str, text: str, reason: str = '') -> None:
         """Record an :class:`InventoryWarning` for ``line``."""
-        self.warnings.append(InventoryWarning(line, code, text, self.source))
+        self.warnings.append(InventoryWarning(line, code, text, self.source, reason))
+
+    def read_topology(self, key: str, items: Optional[Sequence[str]], raw: str,
+                      line: int) -> Optional[TopologyValue]:
+        """One topology key read, or None after a TOPOLOGY warning for a malformed value."""
+        value = _topology_value(key, items or [])
+        if value is None:
+            self.warn(line, 'TOPOLOGY', '%s=%s: %s' % (key, raw, _TOPOLOGY_HELP[key]),
+                      _TOPOLOGY_MALFORMED[key])
+            return None
+        return key, value, raw, line
+
+    def line_topology(self, found: Sequence[Tuple[str, str]], line: int) -> List[TopologyValue]:
+        """The topology of one line or CSV row (malformed values warned about)."""
+        out = []  # type: List[TopologyValue]
+        for key, raw in found:
+            value = self.read_topology(key, _topology_items(raw), _unquote(raw), line)
+            if value is not None:
+                out.append(value)
+        return out
+
+    def apply_topology(self, server: Server, topology: Sequence[TopologyValue]) -> None:
+        """Merge a line's topology into ``server``: ports, VIPs, NAT addresses and backends add
+        up; terminates_tls keeps the first value, a different later one is a 'conflict'."""
+        for key, value, raw, line in topology:
+            if key == 'terminates_tls':
+                if server.terminates_tls is None:
+                    server.terminates_tls = value
+                elif server.terminates_tls != value:
+                    self.warn(line, 'TOPOLOGY', 'terminates_tls=%s for %s: it was already %s - '
+                              'the first value stays' % (raw, server.name,
+                                                         'yes' if server.terminates_tls else 'no'),
+                              'conflict')
+                continue
+            if key == 'backends':
+                server.backend_refs.extend((ref, line, self.source) for ref in value)
+                continue
+            target = {'ports': server.tls_ports, 'vip': server.vips, 'nat': server.nats}[key]
+            for item in value:
+                if item not in target:
+                    target.append(item)
 
     def add(self, name: Optional[str], ips: Sequence[TargetItem], line: int,
-            groups: Sequence[str] = (), hostnames: Sequence[TargetItem] = ()) -> None:
+            groups: Sequence[str] = (), hostnames: Sequence[TargetItem] = ()
+            ) -> Optional[Server]:
         """Add (or merge into) server ``name``; unscannable IPs become warnings.
 
         An address or host name may come with its own port as an ``(target, port)`` pair.
+        Returns the server (None when nothing was added).
         """
         usable = []  # type: List[Tuple[str, Optional[int]]]
         for item in ips:
@@ -1736,9 +1940,9 @@ class _InventoryBuilder:
         hosts = [_target_item(item) for item in hostnames]
         if not usable and not hosts:
             if ips:
-                return
+                return None
             self.warn(line, 'NO_IP', name or '')
-            return
+            return None
         name = (name or '').strip() or (usable[0][0] if usable else hosts[0][0])
         key = name.lower()
         server = self.servers.get(key)
@@ -1752,36 +1956,39 @@ class _InventoryBuilder:
                 server.groups.append(group)
         for host, port in hosts:
             server.add_hostname(host, port)
+        return server
 
     def add_hostname(self, name: str, line: int, groups: Sequence[str] = (),
-                     fallback: Optional[str] = None) -> None:
+                     fallback: Optional[str] = None) -> List[Server]:
         """Add a server known only by ``name`` (resolved later), or warn why it cannot be.
 
         A numeric name (``2026092401``, ``127.1``) is an INVALID_IP, never resolved;
         anything else that is not a hostname is NO_IP (text: ``fallback`` or the name).
-        ``web01.example.net:8443`` or ``203.0.113.10:8443`` keeps its port.
+        ``web01.example.net:8443`` or ``203.0.113.10:8443`` keeps its port. Returns the
+        servers added to.
         """
         try:
             endpoint = split_endpoint(name)
         except ValueError as exc:
             self.warn(line, 'INVALID_IP', '%s (%s)' % (name, exc))
-            return
+            return []
         if endpoint is not None:
-            self.add_token_values(None, [name], line, groups)
-            return
+            return self.add_token_values(None, [name], line, groups)
         if _malformed_ip_block(name):  # 10.0.0.5-300: a typo'd range, not a host to resolve
             self.warn(line, 'INVALID_IP', name)
-            return
+            return []
         host = normalize_hostname(name)
         if host:
-            self.add(name, [], line, groups, [host])
-        elif is_numeric_host(name):
+            server = self.add(name, [], line, groups, [host])
+            return [server] if server is not None else []
+        if is_numeric_host(name):
             self.warn(line, 'INVALID_IP', numeric_host_note(name))
         else:
             self.warn(line, 'NO_IP', name if fallback is None else fallback)
+        return []
 
     def add_token_values(self, name: Optional[str], values: Sequence[str], line: int,
-                         groups: Sequence[str] = ()) -> None:
+                         groups: Sequence[str] = ()) -> List[Server]:
         """Add ``name`` with IPs / hostnames / CIDRs taken from free-form ``values``.
 
         An address or host name written with a port (``203.0.113.10:8443``,
@@ -1790,9 +1997,11 @@ class _InventoryBuilder:
         are resolved only when the entry has no address; there, one without a port is a
         hosts-file alias, but one with a port (``web01 203.0.113.10 db.example.net:5432``)
         was meant as a target, so it is a PARSE warning, as lib/inventory.js has it.
+        Returns the servers added to (one per address of a CIDR / range).
         """
         ips, hosts = [], []  # type: List[TargetItem], List[TargetItem]
         ported = []  # type: List[str]
+        touched = []  # type: List[Server]
         for value in values:
             value = value.strip().strip('\'"')
             if not value:
@@ -1804,7 +2013,10 @@ class _InventoryBuilder:
             block = expand_ip_block(value, self.allow_large)
             if block is not None:
                 for block_ip in block:
-                    self.add(block_ip, [block_ip], line, list(groups) + ([name] if name else []))
+                    server = self.add(block_ip, [block_ip], line,
+                                      list(groups) + ([name] if name else []))
+                    if server is not None:
+                        touched.append(server)
                 continue
             try:
                 endpoint = split_endpoint(value)
@@ -1847,21 +2059,28 @@ class _InventoryBuilder:
                           'resolved - write the address with the port (ADDRESS:PORT); ignored'
                           % value)
         if ips or hosts:
-            self.add(name, ips, line, groups, [] if ips else hosts)
+            server = self.add(name, ips, line, groups, [] if ips else hosts)
+            if server is not None:
+                touched.append(server)
+        return touched
 
-    def result(self, line_count: int) -> Inventory:
-        """Finish: flag endpoints shared by several servers and compute stats.
+    def result(self, line_count: int, link: bool = True) -> Inventory:
+        """Finish: resolve ``backends=`` (unless ``link`` is False: :func:`load_targets` does
+        it over every source), flag endpoints shared by several servers and compute stats.
 
-        An endpoint is an address on its own port, or bare (the -p ports): one address on
-        different ports (``web01 203.0.113.10:8443``, ``web02 203.0.113.10:9443``, a NAT
-        forwarding each port to another machine) is no duplicate, as in lib/inventory.js.
+        An endpoint is an address on its own port (or on the server's ``ports=``), or bare
+        (the -p ports): one address on different ports (``web01 203.0.113.10:8443``,
+        ``web02 203.0.113.10:9443``, a NAT forwarding each port to another machine) is no
+        duplicate, as in lib/inventory.js. A shared address in ``vip=`` is none either.
         """
         servers = list(self.servers.values())
+        if link:
+            self.warnings.extend(link_backends(servers))
         seen = {}  # type: Dict[str, str]
         for server in servers:
             warned = set()  # type: Set[str]
             for ip in server.ips:
-                for port in server.port_spec(ip):
+                for port in server.endpoint_spec(ip):
                     endpoint = format_endpoint(ip, port)
                     owner = seen.setdefault(endpoint, server.name)
                     if owner != server.name and ip not in warned:
@@ -1873,7 +2092,41 @@ class _InventoryBuilder:
         return Inventory(servers, self.warnings, stats)
 
 
-def parse_inventory(text: str, source: str = '', allow_large: bool = False) -> Inventory:
+def link_backends(servers: Sequence[Server]) -> List[InventoryWarning]:
+    """Resolve each server's ``backends=`` (:attr:`Server.backend_refs`) to the names of other
+    servers, as lib/inventory.js does: by name (case-insensitive; a server known only by a host
+    name to resolve included), else an address one of them has. A name no server has is an
+    'unknownBackend', the server itself a 'selfBackend' TOPOLOGY warning."""
+    by_name = {server.name.lower(): server for server in servers}
+    warnings = []  # type: List[InventoryWarning]
+    for server in servers:
+        if not server.backend_refs:
+            continue
+        out = list(server.backends)
+        for ref, line, source in server.backend_refs:
+            named = by_name.get(str(ref).lower())
+            ip = None if named is not None else normalize_ip(str(ref))
+            targets = [named] if named is not None else (
+                [s for s in servers if ip in s.ips] if ip else [])
+            if not targets:
+                warnings.append(InventoryWarning(
+                    line, 'TOPOLOGY', 'backends=%s on %s: no server of that name or address in '
+                    'the inventory' % (ref, server.name), source, 'unknownBackend'))
+                continue
+            for target in targets:
+                if target is server:
+                    warnings.append(InventoryWarning(
+                        line, 'TOPOLOGY', 'backends=%s: %s cannot be its own backend'
+                        % (ref, server.name), source, 'selfBackend'))
+                elif target.name not in out:
+                    out.append(target.name)
+        server.backends = out
+        server.backend_refs = []
+    return warnings
+
+
+def parse_inventory(text: str, source: str = '', allow_large: bool = False,
+                    link: bool = True) -> Inventory:
     """Parse a server inventory in any of the formats the web app accepts.
 
     * ``name ip [ip...]``, ``ip name``, bare ``ip`` lines (separators: space, tab, ``,`` ``;``)
@@ -1888,6 +2141,11 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False) -> I
       objects, ``_meta.hostvars``, AWS-style ``Tags``)
     * CIDRs / ranges (expanded, one server per IP) and hostnames without an IP (kept in
       :attr:`Server.hostnames` for :func:`resolve_servers`)
+    * topology keys in every format (``key=value`` on a line, a CSV column, an Ansible host
+      variable, a JSON key): ``ports=443,8443``, ``terminates_tls=yes|no``, ``vip=``,
+      ``backends=web01,web02``, ``nat=`` (see :class:`Server`); a malformed value is a
+      TOPOLOGY warning. ``link=False`` leaves ``backends=`` unresolved for
+      :func:`link_backends` over several files.
     Comments: ``#``, ``;``, ``//``. The same name on several lines merges its IPs.
     """
     builder = _InventoryBuilder(source, allow_large)
@@ -1901,7 +2159,7 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False) -> I
             data = None
         if data is not None:
             _parse_json(data, builder)
-            return builder.result(len(lines))
+            return builder.result(len(lines), link)
     first = next((line for line in lines if line.strip() and not _is_comment(line)), '')
     delimiter = _detect_csv_delimiter(first)
     if delimiter:
@@ -1912,7 +2170,7 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False) -> I
         _parse_yaml(lines, builder)
     else:
         _parse_lines(lines, builder)
-    return builder.result(len(lines))
+    return builder.result(len(lines), link)
 
 
 def _detect_csv_delimiter(line: str) -> Optional[str]:
@@ -1922,6 +2180,8 @@ def _detect_csv_delimiter(line: str) -> Optional[str]:
         cells = [cell.strip().strip('"') for cell in line.split(delimiter)]
         if any(normalize_ip(cell) for cell in cells):
             return None  # a data line, not a header
+        if any('=' in cell for cell in cells):
+            return None  # key=value variables (backends=web01,web02): no header has them
         headers = [_normalize_header(cell) for cell in cells]
         if any(h in _NAME_RANK or _is_ip_header(h) for h in headers):
             return delimiter
@@ -1937,19 +2197,24 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
               next(csv.reader([content[0][1]], delimiter=delimiter))]
     name_idx = min((i for i, h in enumerate(header) if h in _NAME_RANK),
                    key=lambda i: _NAME_RANK[header[i]], default=None)
-    ip_idx = [i for i, h in enumerate(header) if _is_ip_header(h) and i != name_idx]
+    topology_idx = [i for i, h in enumerate(header) if h in TOPOLOGY_KEYS and i != name_idx]
+    ip_idx = [i for i, h in enumerate(header)
+              if _is_ip_header(h) and i != name_idx and i not in topology_idx]
     group_idx = [i for i, h in enumerate(header) if h in _GROUP_HEADERS]
     rows = csv.reader([line for _, line in content[1:]], delimiter=delimiter)
     for (number, _line), row in zip(content[1:], rows):
         cells = [cell.strip() for cell in row]
         name = cells[name_idx] if name_idx is not None and name_idx < len(cells) else ''
-        columns = ip_idx or [i for i in range(len(cells)) if i != name_idx]
+        columns = ip_idx or [i for i in range(len(cells))
+                             if i != name_idx and i not in topology_idx]
         values = []  # type: List[str]
         for i in columns:
             if i < len(cells) and cells[i]:
                 values.extend(v for v in re.split(r'[\s,;|]+', cells[i]) if v)
         values = [v for v in values if ip_idx or _address_token(v) or is_ip_block(v)]
         groups = [cells[i] for i in group_idx if i < len(cells) and cells[i]]
+        topology = builder.line_topology([(header[i], cells[i]) for i in topology_idx
+                                          if i < len(cells) and cells[i]], number)
         name_ip = _address_token(name) if name else None
         if name_ip:
             values.insert(0, name_ip)
@@ -1957,28 +2222,62 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
                 name = (split_endpoint(name) or (name_ip, None))[0]
         if not values:
             if name:
-                builder.add_hostname(name, number, groups, ','.join(cells))
+                touched = builder.add_hostname(name, number, groups, ','.join(cells))
             else:
+                touched = []
                 builder.warn(number, 'NO_IP', ','.join(cells))
-            continue
-        builder.add_token_values(name or None, values, number, groups)
+        else:
+            touched = builder.add_token_values(name or None, values, number, groups)
+        for server in touched:
+            builder.apply_topology(server, topology)
+
+
+def _yaml_value(text: str) -> Any:
+    """A YAML scalar or flow list as the web app's YAML reader gives it: ``[web01, web02]`` ->
+    a list, quotes removed, ``~`` / ``null`` / nothing -> None."""
+    text = text.strip()
+    if text in ('', '~', 'null', 'Null', 'NULL'):
+        return None
+    if text.startswith('[') and text.endswith(']'):
+        return [_unquote(item) for item in text[1:-1].split(',') if item.strip()]
+    return _unquote(text)
 
 
 def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
-    """Very small subset of YAML: nested ``key:`` mappings with ``ansible_host`` leaves."""
+    """Very small subset of YAML: nested ``key:`` mappings with ``ansible_host`` leaves, and the
+    topology keys of a host (a scalar, a flow list or a block list of ``- item`` lines); in a
+    group's ``vars:`` they are a 'groupVars' TOPOLOGY warning."""
     kv_re = re.compile(r'^(\s*)(?:-\s+)?([^\s:#][^:#]*?)\s*:(?:\s+(.*?))?\s*$')
+    item_re = re.compile(r'^(\s*)-\s+(.*?)\s*$')
     stack = []  # type: List[Tuple[int, str]]
     pending = {}  # type: Dict[str, Tuple[int, List[str]]]
+    topology = {}  # type: Dict[str, List[TopologyValue]]
+    open_list = None  # type: Optional[Tuple[int, str, str, int, List[str]]]
 
     def groups_of(path: List[Tuple[int, str]]) -> List[str]:
         keys = [key for _, key in path]
         return [keys[i - 1] for i, key in enumerate(keys)
                 if key == 'hosts' and i > 0 and keys[i - 1] not in ('all', 'children')]
 
+    def keep(host: str, key: str, value: Any, number: int) -> None:
+        items = _topology_items(value)
+        raw = ','.join(items or [])
+        read = builder.read_topology(key, items, raw, number)
+        if read is not None:
+            topology.setdefault(host, []).append(read)
+
     for number, raw in enumerate(lines, 1):
         if not raw.strip() or _is_comment(raw) or raw.strip() in ('---', '...'):
             continue
-        match = kv_re.match(raw.split(' #', 1)[0])
+        text = raw.split(' #', 1)[0]
+        if open_list is not None:  # backends:\n  - web01\n  - web02
+            item = item_re.match(text)
+            if item and len(item.group(1)) >= open_list[0]:
+                open_list[4].append(_unquote(item.group(2)))
+                continue
+            keep(open_list[2], open_list[1], open_list[4], open_list[3])
+            open_list = None
+        match = kv_re.match(text)
         if not match:
             continue
         indent = len(match.group(1))
@@ -1987,6 +2286,17 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
         while stack and stack[-1][0] >= indent:
             stack.pop()
         parent = stack[-1][1] if stack else None
+        topology_key = _topology_key(key)
+        if topology_key is not None and parent == 'vars':
+            builder.warn(number, 'TOPOLOGY', '%s in a group\'s vars: group variables are not read '
+                         'for the topology - set it on each host' % topology_key, 'groupVars')
+            continue
+        if topology_key is not None and parent and len(stack) > 1 and stack[-2][1] == 'hosts':
+            if value == '':
+                open_list = (indent, topology_key, parent, number, [])
+            else:
+                keep(parent, topology_key, _yaml_value(match.group(3) or ''), number)
+            continue
         if key in ('ansible_host', 'ansible_ssh_host'):
             if parent:
                 pending.pop(parent, None)
@@ -1998,8 +2308,14 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
             stack.append((indent, key))
             if parent == 'hosts':
                 pending[key] = (number, groups_of(stack[:-1]))
+    if open_list is not None:
+        keep(open_list[2], open_list[1], open_list[4], open_list[3])
     for key, (number, groups) in pending.items():
         builder.add_token_values(key, [key], number, groups)
+    for host, values in topology.items():
+        server = builder.servers.get(host.lower())
+        if server is not None:
+            builder.apply_topology(server, values)
 
 
 def _ssh_port(token: str) -> Optional[Tuple[str, int]]:
@@ -2019,6 +2335,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
     """Plain lists, /etc/hosts files and Ansible INI inventories."""
     group = None  # type: Optional[str]
     skip_section = False
+    vars_section = False
     for number, raw in enumerate(lines, 1):
         line = _strip_comment(raw)
         if not line:
@@ -2028,9 +2345,20 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
             name = section.group(1).strip()
             group, _, kind = name.partition(':')
             skip_section = kind in ('vars', 'children')
+            vars_section = kind == 'vars'
             continue
         if skip_section:
+            if vars_section:  # group variables are not read for the topology: say so
+                for key, _raw in _split_topology(line)[1]:
+                    builder.warn(number, 'TOPOLOGY', '%s in [%s:vars]: group variables are not '
+                                 'read for the topology - set it on each host' % (key, group),
+                                 'groupVars')
             continue
+        # Topology keys first: their values hold commas (ports=443,8443), which split a line.
+        line, found = _split_topology(line)
+        topology = builder.line_topology(found, number)
+        touched = []  # type: List[Server]
+        added = False
         groups = [group] if group else []
         name = None  # type: Optional[str]
         values = []  # type: List[str]
@@ -2100,14 +2428,20 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                 builder.warn(number, 'PARSE', '%s: a server name takes no port - write it after '
                              'the address (ADDRESS:PORT); ignored' % name)
                 name = named[0]
-            builder.add_token_values(name, values, number, groups)
+            touched, added = builder.add_token_values(name, values, number, groups), True
         elif had_invalid:
-            continue  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
+            added = True  # "web01 10.0.0.300": a typo, do not silently resolve "web01" instead
         elif _is_header_like(tokens):
-            continue  # "hostname   ip": a column heading, not a server called "hostname"
+            pass  # "hostname   ip": a column heading, not a server called "hostname"
         elif name is not None:
             # A zone file's "2026092401 ; serial" line must never be resolved (glibc -> IP).
-            builder.add_hostname(name, number, groups, line)
+            touched, added = builder.add_hostname(name, number, groups, line), True
+        for server in touched:
+            builder.apply_topology(server, topology)
+        if found and not added:
+            builder.warn(number, 'TOPOLOGY', '%s: no server on this line - write the keys after '
+                         'the server\'s name and address' % ', '.join(k for k, _ in found),
+                         'noServer')
 
 
 def _json_name(obj: Dict[str, Any]) -> Optional[str]:
@@ -2230,22 +2564,41 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
     if not isinstance(data, dict):
         return
     name = _json_name(data)
-    if name is not None or _json_has_ip_field(data) or _json_host_values(data):
+    # Topology keys of this record holding a scalar or a list of scalars (anything else, e.g.
+    # kubectl's "ports": [{"containerPort": 80}], is read as before).
+    topology_keys = {key: (topology_key, items) for key, topology_key, items in
+                     ((k, _topology_key(k), _topology_items(v)) for k, v in data.items())
+                     if topology_key is not None and items is not None}
+    record = {k: v for k, v in data.items() if k not in topology_keys}
+    if name is not None or _json_has_ip_field(record) or _json_host_values(record):
+        topology = [read for read in (builder.read_topology(key, items, ','.join(items), 0)
+                                      for key, items in topology_keys.values())
+                    if read is not None]
         ips, invalid = [], []  # type: List[str], List[str]
-        _json_ips(data, ips, invalid=invalid)
-        values = ips or _json_host_values(data)
+        _json_ips(record, ips, invalid=invalid)
+        values = ips or _json_host_values(record)
         for token in invalid:
             builder.warn(0, 'INVALID_IP', '%s (%s)' % (token, _bad_port(token)))
+        touched = []  # type: List[Server]
         if values:
-            builder.add_token_values(name or key_hint, values, 0)
+            touched = builder.add_token_values(name or key_hint, values, 0)
         elif name and not invalid:
             # "web01" with a mistyped port is a warning, never the name resolved instead
-            builder.add_hostname(name, 0)
+            touched = builder.add_hostname(name, 0)
+        for server in touched:
+            builder.apply_topology(server, topology)
         return
     for child_key, child in data.items():
         if child_key == '_meta' and isinstance(child, dict):
             _parse_json(child.get('hostvars', {}), builder)
             continue
+        if child_key == 'vars' and isinstance(child, dict):  # a group's vars
+            for key, value in child.items():
+                topology_key = _topology_key(key)
+                if topology_key is not None and _topology_items(value) is not None:
+                    builder.warn(0, 'TOPOLOGY', '%s in a group\'s vars: group variables are not '
+                                 'read for the topology - set it on each host' % topology_key,
+                                 'groupVars')
         _parse_json(child, builder, str(child_key))
 
 
@@ -2428,13 +2781,14 @@ def load_targets(values: Sequence[str], allow_large: bool = False,
     warnings = []  # type: List[InventoryWarning]
     for value in values:
         if value == '-':
-            inventory = parse_inventory((stdin or sys.stdin).read(), '<stdin>', allow_large)
+            inventory = parse_inventory((stdin or sys.stdin).read(), '<stdin>', allow_large,
+                                        link=False)
         elif os.path.isfile(value):
             try:
                 text = read_text_file(value)
             except OSError as exc:
                 raise UsageError('cannot read %s: %s' % (value, exc.strerror or exc))
-            inventory = parse_inventory(text, value, allow_large)
+            inventory = parse_inventory(text, value, allow_large, link=False)
         else:
             inventory = parse_target_tokens(value, allow_large)
         warnings.extend(inventory.warnings)
@@ -2452,8 +2806,32 @@ def load_targets(values: Sequence[str], allow_large: bool = False,
             for host in server.hostnames:
                 for port in server.port_spec(host):
                     existing.add_hostname(host, port)
+            warnings.extend(_merge_topology(existing, server))
+    # backends= may name a server of another file: resolved once every file is read
+    warnings.extend(link_backends(list(merged.values())))
     servers, resolve_warnings = resolve_servers(list(merged.values()), resolver, workers, cancel)
     return servers, warnings + resolve_warnings
+
+
+def _merge_topology(existing: Server, server: Server) -> List[InventoryWarning]:
+    """The topology of ``server`` (the same name in another -t source) merged into
+    ``existing``, as the same server on two lines of one file."""
+    for source, target in ((server.tls_ports, existing.tls_ports), (server.vips, existing.vips),
+                           (server.nats, existing.nats)):
+        for item in source:
+            if item not in target:
+                target.append(item)
+    existing.backend_refs.extend(server.backend_refs)
+    if server.terminates_tls is None or existing.terminates_tls == server.terminates_tls:
+        return []
+    if existing.terminates_tls is None:
+        existing.terminates_tls = server.terminates_tls
+        return []
+    return [InventoryWarning(server.line, 'TOPOLOGY', 'terminates_tls=%s for %s: it was already '
+                             '%s - the first value stays'
+                             % ('yes' if server.terminates_tls else 'no', server.name,
+                                'yes' if existing.terminates_tls else 'no'),
+                             server.source, 'conflict')]
 
 
 # =====================================================================================

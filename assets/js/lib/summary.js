@@ -186,6 +186,7 @@ export function scanSummary(facts, opts) {
  * @returns {SummaryDoc}
  */
 export function zoneSummary(facts, opts) {
+  if (facts.compare) return zoneCompareSummary(facts.compare, opts);
   const k = kit(opts);
   const { t } = k;
   const c = facts.counts || {};
@@ -197,6 +198,50 @@ export function zoneSummary(facts, opts) {
     ...problemLines(k, facts.problems, 3),
     [t('sum.zone.private')]
   ], { when: whenText(t, 'sum.at.asOf', null, opts.now || new Date()), url: opts.url });
+}
+
+/** The options a comparison names when they are on, in their order (`sum.zcmp.opt.<option>`). */
+export const ZONE_COMPARE_OPTIONS = Object.freeze(['ignoreTtl', 'joinTxt', 'ignoreSoa', 'ignoreApexNs']);
+/** The differences a comparison's summary words (`sum.zcmp.st.<status>`, `sum.zcmp.why.<reason>`). */
+export const ZONE_COMPARE_STATUSES = Object.freeze(['added', 'removed', 'changed']);
+export const ZONE_COMPARE_REASONS = Object.freeze(['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
+
+/**
+ * Zone File › Compare: both zones by name and format, the counts, the options that hid something,
+ * and the first differences by name and type with what changed — never a value of either file.
+ * @param {{ a: { origin: string|null, format?: string }, b: { origin: string|null, format?: string }, relative?: boolean,
+ *   counts: { added: number, removed: number, changed: number, same: number, ignored: number }, options?: string[],
+ *   differences?: Array<{ status: string, name: string, type: string, reasons?: string[] }>, more?: number }} cmp
+ *   lib/zonediff.js diffSummaryFacts (the format labels the view shows)
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function zoneCompareSummary(cmp, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const c = cmp.counts || {};
+  const diffs = (Number(c.added) || 0) + (Number(c.removed) || 0) + (Number(c.changed) || 0);
+  const name = (z) => (z && z.origin ? code(z.origin) : t('sum.zone.noOrigin'));
+  const lines = [];
+  if (cmp.a && cmp.b && (cmp.a.format || cmp.b.format)) {
+    lines.push([t('sum.zcmp.formats', { a: cleanText(cmp.a.format || '?'), b: cleanText(cmp.b.format || '?') })]);
+  }
+  if (cmp.relative) lines.push([t('sum.zcmp.relative')]);
+  if (!diffs) lines.push([t('sum.zcmp.none', { count: Number(c.same) || 0 })]);
+  else {
+    lines.push([k.counts([['sum.zcmp.added', c.added], ['sum.zcmp.removed', c.removed], ['sum.zcmp.changed', c.changed],
+      ['sum.zcmp.same', c.same], ['sum.zcmp.ignored', c.ignored]])]);
+  }
+  const on = (cmp.options || []).filter((o) => ZONE_COMPARE_OPTIONS.includes(o));
+  if (on.length) lines.push([t('sum.zcmp.options', { list: on.map((o) => t(`sum.zcmp.opt.${o}`)).join(', ') })]);
+  for (const d of (cmp.differences || []).filter((x) => ZONE_COMPARE_STATUSES.includes(x.status))) {
+    const why = (d.reasons || []).filter((r) => ZONE_COMPARE_REASONS.includes(r)).map((r) => t(`sum.zcmp.why.${r}`));
+    lines.push([strong(`${t(`sum.zcmp.st.${d.status}`)}:`), ' ', code(d.name), ` ${cleanText(d.type)}`, why.length ? ` (${why.join(', ')})` : '']);
+  }
+  if (cmp.more > 0) lines.push([t('sum.zcmp.more', { count: cmp.more })]);
+  lines.push([t('sum.zcmp.private')]);
+  return doc('zone', k.title('zone', [name(cmp.a), ' ↔ ', name(cmp.b)]), lines,
+    { when: whenText(t, 'sum.at.asOf', null, opts.now || new Date()), url: opts.url });
 }
 
 /**
@@ -859,6 +904,32 @@ const STRINGS = [
   ['sum.zone.problems', ['Problems: {list}', 'Sorunlar: {list}']],
   ['sum.zone.noProblems', ['No problems found in the zone', 'Zone’da sorun bulunmadı']],
   ['sum.zone.private', ['The zone file stays in this browser: the link opens Zone File without it', 'Zone dosyası bu tarayıcıda kalır: bağlantı Zone Dosyası aracını dosya olmadan açar']],
+  ['sum.zcmp.formats', ['This zone: {a} · the other: {b}', 'Bu zone: {a} · diğeri: {b}']],
+  ['sum.zcmp.relative', ['Different zone names: the names were compared relative to each zone', 'Farklı zone adları: adlar her zone’a göre göreli karşılaştırıldı']],
+  ['sum.zcmp.none', [{ one: 'No differences: the {count} record set is the same', other: 'No differences: all {count} record sets are the same' },
+    'Fark yok: {count} kayıt kümesinin hepsi aynı']],
+  ['sum.zcmp.added', ['{count} added', '{count} eklendi']],
+  ['sum.zcmp.removed', ['{count} removed', '{count} kaldırıldı']],
+  ['sum.zcmp.changed', ['{count} changed', '{count} değişti']],
+  ['sum.zcmp.same', [{ one: '{count} record set the same', other: '{count} record sets the same' }, '{count} kayıt kümesi aynı']],
+  ['sum.zcmp.ignored', ['{count} ignored', '{count} yok sayıldı']],
+  ['sum.zcmp.options', ['Ignored: {list}', 'Yok sayılanlar: {list}']],
+  ['sum.zcmp.opt.ignoreTtl', ['TTL differences', 'TTL farkları']],
+  ['sum.zcmp.opt.joinTxt', ['how TXT strings are split', 'TXT dizilerinin nasıl bölündüğü']],
+  ['sum.zcmp.opt.ignoreSoa', ['the SOA serial and timers', 'SOA seri numarası ve zamanlayıcıları']],
+  ['sum.zcmp.opt.ignoreApexNs', ['NS at the apex', 'zone kökündeki NS kayıtları']],
+  ['sum.zcmp.st.added', ['Added', 'Eklendi']],
+  ['sum.zcmp.st.removed', ['Removed', 'Kaldırıldı']],
+  ['sum.zcmp.st.changed', ['Changed', 'Değişti']],
+  ['sum.zcmp.why.values', ['values', 'değerler']],
+  ['sum.zcmp.why.ttl', ['TTL', 'TTL']],
+  ['sum.zcmp.why.proxied', ['Cloudflare proxy', 'Cloudflare proxy’si']],
+  ['sum.zcmp.why.routing', ['routing', 'yönlendirme']],
+  ['sum.zcmp.why.soa-names', ['SOA name server or mailbox', 'SOA ad sunucusu ya da e-posta adresi']],
+  ['sum.zcmp.why.soa-serial', ['SOA serial', 'SOA seri numarası']],
+  ['sum.zcmp.why.soa-timers', ['SOA timers', 'SOA zamanlayıcıları']],
+  ['sum.zcmp.more', [{ one: '+{count} more difference', other: '+{count} more differences' }, '+{count} fark daha']],
+  ['sum.zcmp.private', ['Both zone files stay in this browser: the link opens Zone File without them', 'İki zone dosyası da bu tarayıcıda kalır: bağlantı Zone Dosyası aracını onlar olmadan açar']],
 
   ['sum.cert.issuedBy', ['issued by {issuer}', 'veren: {issuer}']],
   ['sum.cert.names', [{ one: '{count} DNS name', other: '{count} DNS names' }, '{count} DNS adı']],

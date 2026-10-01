@@ -538,6 +538,55 @@ describe('zone', () => {
       assert.ok(tr.includes(s), `${s}\n${tr}`);
     }
   });
+
+  // Zone File › Compare: lib/zonediff.js diffSummaryFacts, as views/zone.js's Compare tab passes them.
+  const compare = {
+    a: { origin: 'example.com', format: 'BIND zone file' }, b: { origin: 'example.com', format: 'AWS Route 53 (JSON)' }, relative: false,
+    counts: { added: 1, removed: 1, changed: 2, same: 9, ignored: 1, total: 14 }, options: ['ignoreTtl', 'joinTxt', 'ignoreApexNs'],
+    differences: [
+      { status: 'changed', name: '@', type: 'SOA', reasons: ['soa-names'] },
+      { status: 'changed', name: 'api', type: 'A', reasons: ['values', 'ttl'] },
+      { status: 'added', name: 'new', type: 'A', reasons: [] },
+      { status: 'removed', name: 'old`<b>', type: 'A', reasons: [] }
+    ],
+    more: 0
+  };
+
+  test('a comparison: both zones, the counts, what the options hid, each difference by name and type, never a value', () => {
+    const url = `${URL_BASE}#/zone`;
+    const doc = S.zoneSummary({ origin: 'example.com', compare }, opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Zone File · `example.com` ↔ `example.com`**',
+      '- This zone: BIND zone file · the other: AWS Route 53 (JSON)',
+      '- 1 added · 1 removed · 2 changed · 9 record sets the same · 1 ignored',
+      '- Ignored: TTL differences, how TXT strings are split, NS at the apex',
+      '- **Changed:** `@` SOA (SOA name server or mailbox)',
+      '- **Changed:** `api` A (values, TTL)',
+      '- **Added:** `new` A',
+      "- **Removed:** `old'<b>` A",
+      '- Both zone files stay in this browser: the link opens Zone File without them',
+      '',
+      `DomainScope · as of 2026-09-27 14:03 UTC · ${url}`
+    ]);
+    assert.equal(doc.kind, 'zone');
+  });
+
+  test('a comparison without differences, of two zone names, and with more than it lists; Turkish', () => {
+    const none = S.zoneSummary({ compare: { ...compare, relative: true, counts: { added: 0, removed: 0, changed: 0, same: 12, ignored: 0, total: 12 }, options: [], differences: [] } }, opts());
+    assertShape(none, { min: 4 });
+    const out = md(none);
+    assert.ok(out.includes('- Different zone names: the names were compared relative to each zone') && out.includes('- No differences: all 12 record sets are the same'), out);
+    assert.ok(!out.includes('Ignored:'), 'no option line when none is on');
+    const more = md(S.zoneSummary({ compare: { ...compare, more: 7 } }, opts()));
+    assert.ok(more.includes('- +7 more differences'), more);
+    const tr = md(S.zoneSummary({ compare }, opts('tr')));
+    for (const s of ['**Zone Dosyası · `example.com` ↔ `example.com`**', '- Bu zone: BIND zone file · diğeri: AWS Route 53 (JSON)',
+      '- 1 eklendi · 1 kaldırıldı · 2 değişti · 9 kayıt kümesi aynı · 1 yok sayıldı', '- Yok sayılanlar: TTL farkları, TXT dizilerinin nasıl bölündüğü, zone kökündeki NS kayıtları',
+      '- **Değişti:** `api` A (değerler, TTL)', '- İki zone dosyası da bu tarayıcıda kalır: bağlantı Zone Dosyası aracını onlar olmadan açar']) {
+      assert.ok(tr.includes(s), `${s}\n${tr}`);
+    }
+  });
 });
 
 describe('cert', () => {
@@ -1451,6 +1500,10 @@ describe('i18n', () => {
     for (const w of S.CERT_SUMMARY_WARNINGS) used.add(`sum.cert.warn.${w}`);
     for (const r of S.RETIRE_BREAKING_SEVERITIES) used.add(`sum.retire.sev.${r}`);
     for (const s of S.CHANGE_SET_STATES) used.add(`sum.change.state.${s}`);
+    // Zone File › Compare: sum.zcmp.opt.<option>, sum.zcmp.st.<status>, sum.zcmp.why.<reason>.
+    for (const o of S.ZONE_COMPARE_OPTIONS) used.add(`sum.zcmp.opt.${o}`);
+    for (const st of S.ZONE_COMPARE_STATUSES) used.add(`sum.zcmp.st.${st}`);
+    for (const r of S.ZONE_COMPARE_REASONS) used.add(`sum.zcmp.why.${r}`);
     // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
     for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
     for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }

@@ -1,0 +1,300 @@
+/*
+ * views/zonetools.css — Zone File › Compare and Convert (ui/zone-tools.js: .zcmp-*, .zconv-*).
+ * Tokens only. The diff colours come from zone.css (.zone-diff-add / .zone-diff-del).
+ */
+
+/* Compare: the second zone's importer */
+.zcmp-loader p,
+.zconv-card p {
+  margin: 0;
+}
+
+.zcmp-loader-folded {
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.zcmp-loader-folded > .disclosure-body {
+  padding-bottom: 12px;
+}
+
+.zcmp-loader .filedrop-compact {
+  padding: 10px 14px;
+}
+
+.zcmp-samples {
+  align-items: center;
+  gap: 6px;
+}
+
+.zcmp-privacy,
+.zconv-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.zcmp-privacy .icon,
+.zconv-privacy .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.zcmp-origin-field {
+  max-width: 28rem;
+}
+
+/* Compare: the second zone, as the summary bar shows the first */
+.zcmp-other {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.zcmp-other-main {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.zcmp-other-title {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 6px;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.zcmp-other-title:focus {
+  outline: none;
+}
+
+.zcmp-other-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.zcmp-other-meta {
+  align-items: center;
+  gap: 6px 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Compare: the result */
+.zcmp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+}
+
+.zcmp-head > .alert {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.zcmp-options {
+  margin: 0;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.zcmp-options legend {
+  padding: 0 4px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.zcmp-options-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 6px 16px;
+}
+
+.zcmp-legend {
+  margin: 0;
+}
+
+.zcmp-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 641px) {
+  .zcmp-table .dt-table td.dt-wrap {
+    min-width: 9rem;
+  }
+
+  .zcmp-table .dt-table td.zcmp-note {
+    min-width: 12rem;
+  }
+}
+
+/* Convert */
+.zconv-counts {
+  font-weight: 600;
+}
+
+.zconv-pitfalls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zconv-pitfall {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.zconv-pitfall[data-severity="error"] {
+  border-color: var(--error-border);
+}
+
+.zconv-pitfall[data-severity="warn"] {
+  border-color: var(--warn-border);
+}
+
+.zconv-pitfall > .sev {
+  flex: none;
+  margin-top: 2px;
+}
+
+.zconv-pitfall-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.zconv-names {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+}
+
+.zconv-name {
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.zconv-count {
+  flex: none;
+}
+
+.zconv-clean {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.zconv-actions {
+  gap: 8px;
+}
+
+.zconv-code {
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .zcmp-other {
+    padding: 12px;
+  }
+
+  .zcmp-loader-folded {
+    padding: 4px 12px;
+  }
+
+  .zconv-targets {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  /* The comparison table: each record set a card of labelled lines (six columns never fit). */
+  .zcmp-table .dt-table,
+  .zcmp-table .dt-table tbody {
+    display: block;
+  }
+
+  .zcmp-table .dt-table thead {
+    display: none;
+  }
+
+  .zcmp-table .dt-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .zcmp-table .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .zcmp-table .dt-table td,
+  .zcmp-table .dt-table td:first-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .zcmp-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* a line with nothing to say (no value on one side, no note) is left out */
+  .zcmp-table .dt-table td:empty,
+  .zcmp-table .dt-table td:has(> span:only-child:empty) {
+    display: none;
+  }
+
+  .zcmp-table .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+}
+
+/* Print: the importer and the format picker are controls. */
+@media print {
+  .zcmp-loader,
+  .zconv-actions {
+    display: none;
+  }
+}

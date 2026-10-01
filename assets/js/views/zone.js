@@ -17,6 +17,9 @@
  *   as that check is replaced or dropped: a new check, a new import or analysis, Forget;
  * - `state.session.zone` (in memory; cleared by "Delete all local data") is the scan input the
  *   Subdomains / SSL Targets views read; it is published only for a confirmed origin.
+ * - Compare and Convert (ui/zone-tools.js, loaded on their first use) send nothing: the second
+ *   zone a comparison reads stays in this module's memory like the first (never in a URL, the
+ *   page session or storage), and Forget, another workspace or "Delete all local data" drop both.
  *
  * Hand-off contracts (read by views/subdomains.js and views/scan.js):
  * - `state.session.zone` = zoneorigins.zoneScanInput(zone, { skipPrivate }) plus
@@ -28,7 +31,8 @@
  *   names as seeds (no passive sources, no wordlist, no permutations: quota-free).
  *
  * "Copy summary" in the summary bar (ui/summary-button.js): counts and the worst problems for
- * Jira / Slack; its link is a bare #/zone.
+ * Jira / Slack; its link is a bare #/zone. The Compare tab has its own (the counts and the first
+ * differences by name and type, never a value).
  *
  * Pure helpers are exported for the unit tests (tests/js/zone-view.test.js); the module is
  * DOM-free at import time.
@@ -69,7 +73,10 @@ export const titleKey = 'nav.zone';
 export const icon = 'file-text';
 
 /** Tabs of a parsed zone (the route carries only `tab=`). */
-export const ZONE_TABS = Object.freeze(['overview', 'records', 'origins', 'problems', 'live', 'parity']);
+export const ZONE_TABS = Object.freeze(['overview', 'records', 'origins', 'problems', 'live', 'parity', 'compare', 'convert']);
+
+/** ui/zone-tools.js (Compare and Convert, with lib/zonediff.js and lib/zoneconvert.js), on the first of those tabs. */
+const loadZoneTools = onceAsync(() => import('../ui/zone-tools.js'));
 /**
  * Lint codes with a "Show the fix" (lib/fixes.js LINT_FIX_CODES; a unit test keeps the two equal):
  * the panel and lib/fixes.js load on the first click, so the list lives here.
@@ -257,6 +264,14 @@ const EN = {
   'zone.next.parity.body': 'Before you change the name servers at the registrar: check that the new provider’s servers serve this file, with the steps of the move.',
   'zone.next.parity.open': 'Compare with the new name servers',
   'zone.parity.needOrigin': 'Confirm the zone name first: the new name servers are asked for names under it.',
+  'zone.tab.compare': 'Compare',
+  'zone.tab.convert': 'Convert',
+  'zone.next.tools.title': 'Another copy, or another provider?',
+  'zone.next.tools.body': 'Compare this file with another export of the zone, or write it as BIND, a Route 53 change batch, octoDNS YAML or DNSControl.',
+  'zone.next.compare.open': 'Compare with another zone',
+  'zone.next.convert.open': 'Convert the zone',
+  'zone.convert.needOrigin': 'Confirm the zone name first: every format writes the names relative to it.',
+  'zone.tools.failed': 'This tab could not be loaded',
   'zone.top.title': 'Top problems',
   'zone.top.all': 'See all problems',
   'zone.records.filter': 'Record type',
@@ -529,6 +544,14 @@ const TR = {
   'zone.next.parity.body': 'Kayıt kuruluşunda ad sunucularını değiştirmeden önce: yeni sağlayıcının sunucularının bu dosyayı sunduğunu, taşımanın adımlarıyla birlikte kontrol edin.',
   'zone.next.parity.open': 'Yeni ad sunucularıyla karşılaştır',
   'zone.parity.needOrigin': 'Önce zone adını onaylayın: yeni ad sunucularına onun altındaki adlar sorulur.',
+  'zone.tab.compare': 'Karşılaştır',
+  'zone.tab.convert': 'Dönüştür',
+  'zone.next.tools.title': 'Başka bir kopya mı, başka bir sağlayıcı mı?',
+  'zone.next.tools.body': 'Bu dosyayı zone’un başka bir dışa aktarımıyla karşılaştırın ya da BIND, Route 53 değişiklik paketi, octoDNS YAML veya DNSControl olarak yazın.',
+  'zone.next.compare.open': 'Başka bir zone ile karşılaştır',
+  'zone.next.convert.open': 'Zone’u dönüştür',
+  'zone.convert.needOrigin': 'Önce zone adını onaylayın: her biçim adları ona göre yazar.',
+  'zone.tools.failed': 'Bu sekme yüklenemedi',
   'zone.top.title': 'Öne çıkan sorunlar',
   'zone.top.all': 'Tüm sorunları gör',
   'zone.records.filter': 'Kayıt türü',
@@ -755,7 +778,9 @@ const ISSUE_TEXT = {
   PROXY_FLAG_IGNORED: ['A proxy flag on a record type Cloudflare cannot proxy was ignored.', 'Cloudflare’in proxy’leyemediği bir kayıt türündeki proxy işareti yok sayıldı.'],
   WARNINGS_TRUNCATED: ['Too many issues; the rest are not listed.', 'Çok fazla sorun var; kalanlar listelenmedi.'],
   INCLUDE_MERGED: ['The $INCLUDE file was dropped too and merged.', '$INCLUDE dosyası da bırakıldı ve birleştirildi.'],
-  NO_PROXY_FLAGS: ['This export has no proxy flags: proxied and DNS-only records cannot be told apart.', 'Bu dışa aktarımda proxy işaretleri yok: proxy’li ve yalnızca DNS kayıtları ayırt edilemiyor.']
+  NO_PROXY_FLAGS: ['This export has no proxy flags: proxied and DNS-only records cannot be told apart.', 'Bu dışa aktarımda proxy işaretleri yok: proxy’li ve yalnızca DNS kayıtları ayırt edilemiyor.'],
+  CHANGE_BATCH: ['A Route 53 change batch: it holds only the record sets it changes. {upserts} created or updated sets were read; {deletes} deleted ones were left out.',
+    'Bir Route 53 değişiklik paketi: yalnızca değiştirdiği kayıt kümelerini içerir. Oluşturulan ya da güncellenen {upserts} küme okundu; silinen {deletes} küme dışarıda bırakıldı.']
 };
 
 
@@ -1186,7 +1211,12 @@ function freshSession() {
       filter: 'all', finishedAt: null
     },
     // The New name servers tab (ui/parity-panel.js): its job and options, dropped with the zone.
-    parity: freshParity()
+    parity: freshParity(),
+    // The Compare tab (ui/zone-tools.js): the second zone, in memory only like the first. A new
+    // import or analysis of the first keeps it (the comparison is made again); Forget drops both.
+    compare: { files: null, zone: null, originInput: '', options: null, filter: 'diff', includeOrigins: false, cache: null },
+    // The Convert tab: the chosen format and the files made for this zone.
+    convert: { target: 'bind', cache: null }
   };
 }
 
@@ -1279,6 +1309,9 @@ export function mount(container, ctx) {
     stopParity(S.parity);
     const { nsText, mode, extras, skipPrivate: parityPrivate, shell } = S.parity;
     S.parity = { ...freshParity(), nsText, mode, extras, skipPrivate: parityPrivate, shell };
+    // The second zone stays; its comparison and the converted files are made again for this one.
+    S.compare.cache = null;
+    S.convert.cache = null;
     if (zone.fatal) {
       S.lint = null;
       S.origins = [];
@@ -1370,7 +1403,9 @@ export function mount(container, ctx) {
       { id: 'origins', label: t('zone.tab.origins'), badge: S.origins.length || null, content: () => originsTab(z) },
       { id: 'problems', label: t('zone.tab.problems'), badge: S.counts.errors || null, content: () => problemsTab() },
       { id: 'live', label: t('zone.tab.live'), content: () => liveTab(z) },
-      { id: 'parity', label: t('zone.tab.parity'), content: () => parityTab(z) }
+      { id: 'parity', label: t('zone.tab.parity'), content: () => parityTab(z) },
+      { id: 'compare', label: t('zone.tab.compare'), content: () => compareTab(z) },
+      { id: 'convert', label: t('zone.tab.convert'), content: () => convertTab(z) }
     ], {
       selected: S.tab,
       label: t('nav.zone'),
@@ -1683,11 +1718,22 @@ export function mount(container, ctx) {
         h('div', { class: 'cluster' }, Button({ label: t('zone.next.parity.open'), size: 'sm', iconRight: 'arrow-right', dataset: { action: 'zone-open-parity' }, onClick: () => goTab('parity') })))
     });
 
+    const toolsCard = Card({
+      title: t('zone.next.tools.title'),
+      icon: 'swap',
+      className: 'zone-next-card',
+      children: h('div', { class: 'stack-sm' },
+        h('p', { class: 'text-sm' }, t('zone.next.tools.body')),
+        h('div', { class: 'cluster' },
+          Button({ label: t('zone.next.compare.open'), size: 'sm', iconRight: 'arrow-right', dataset: { action: 'zone-open-compare' }, onClick: () => goTab('compare') }),
+          Button({ label: t('zone.next.convert.open'), size: 'sm', variant: 'ghost', iconRight: 'arrow-right', dataset: { action: 'zone-open-convert' }, onClick: () => goTab('convert') })))
+    });
+
     const top = S.problems.filter((p) => p.severity !== 'info').slice(0, 3);
     return h('div', { class: 'stack zone-overview' },
       stats,
       h('h3', { class: 'zone-h3' }, t('zone.next.title')),
-      h('div', { class: 'zone-next' }, discoverCard, sweepCard, certCard, driftCard, parityCard),
+      h('div', { class: 'zone-next' }, discoverCard, sweepCard, certCard, driftCard, parityCard, toolsCard),
       top.length ? Card({
         title: t('zone.top.title'),
         icon: 'alert',
@@ -2163,6 +2209,41 @@ export function mount(container, ctx) {
 
   function valueLines(values) {
     return h('span', { class: 'zone-values' }, values.map((v) => h('span', null, v)));
+  }
+
+  /* --- compare and convert (ui/zone-tools.js, loaded on first use) -------- */
+  /** A tab whose body comes from ui/zone-tools.js: a spinner until the module is there. */
+  function toolsTab(className, build) {
+    const host = h('div', { class: `stack ${className}-host` }, h('div', { class: 'zone-busy' }, Spinner({ showLabel: true })));
+    loadZoneTools().then((mod) => {
+      clear(host);
+      host.append(build(mod));
+    }).catch((err) => {
+      clear(host);
+      host.append(ErrorBanner(err, { title: t('zone.tools.failed'), compact: true }));
+    });
+    return host;
+  }
+
+  /** The origin addresses of both zones' proxied records, hidden in the comparison's exports unless `include`. */
+  function redactCompare(values, include) {
+    const sec = secrets();
+    const other = S.compare.zone && !S.compare.zone.fatal ? originSecrets(proxiedOriginMap(S.compare.zone, {})) : new Set();
+    return redactValues(values, new Set([...sec, ...other]), include);
+  }
+
+  function compareTab(z) {
+    return toolsTab('zcmp', ({ CompareTab }) => CompareTab({
+      ctx, zone: z, C: S.compare, samples: SAMPLES, formatLabel: fmtLabel, redact: redactCompare,
+      parse: (files, { origin }) => parseFiles(files, { origin })
+    }));
+  }
+
+  function convertTab(z) {
+    if (!originConfirmed(z, S.confirmed)) {
+      return h('div', { class: 'stack zconv' }, Alert({ variant: 'info', message: t('zone.convert.needOrigin') }));
+    }
+    return toolsTab('zconv', ({ ConvertTab }) => ConvertTab({ ctx, zone: z, V: S.convert }));
   }
 
   /* --- new name servers (ui/parity-panel.js) ------------------------------ */

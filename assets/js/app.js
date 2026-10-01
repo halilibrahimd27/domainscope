@@ -95,7 +95,7 @@ const WORKSPACE_WAIT_MS = 8000;
  * order the views were opened in.
  */
 export const VIEW_CSS_ORDER = Object.freeze([
-  'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
+  'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
   'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
   'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/inventory.css', 'views/about.css'
 ]);
@@ -120,8 +120,12 @@ export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js',
 export const VIEWS = Object.freeze([
   { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: ENGINE_MODULES, load: () => import('./views/subdomains.js') },
   { id: 'domain', group: 'discover', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
-  // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css
-  { id: 'zone', group: 'discover', icon: 'file-text', css: ['views/fix.css', 'views/zone.css'], offline: true, load: () => import('./views/zone.js') },
+  // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css; Compare and Convert
+  // (ui/zone-tools.js, loaded on their first use, modulepreloaded when idle) by views/zonetools.css
+  {
+    id: 'zone', group: 'discover', icon: 'file-text', css: ['views/fix.css', 'views/zone.css', 'views/zonetools.css'], offline: true,
+    preload: ['ui/zone-tools.js', 'lib/zonediff.js', 'lib/zoneconvert.js'], load: () => import('./views/zone.js')
+  },
   {
     id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
     // the setup form reuses the Subdomains options and the Certificate loader; Verify and DANE are tabs

@@ -16,7 +16,11 @@
  * page session with "Live check from" and Run again; the note gone with the Live tab's own Run,
  * a new import and Forget), the exact-mode hand-off contract, Route 53 (incomplete export) and
  * cPanel imports ("Show the fix" of the cPanel localhost record: exact BIND and Route 53), a certificate
- * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Forget,
+ * pasted by mistake, two API pages, an $INCLUDE part dropped before its main file, Compare (the
+ * Cloudflare sample against the Route 53 sample: the rows lib/zonediff.js finds, the options from
+ * the keyboard, redacted CSV / JSON, Copy summary without values, "Forget the second zone", Forget
+ * clearing both) and Convert (every format as lib/zoneconvert.js writes it, its notes, each download
+ * read back, Copy all), at 320 / 375 px in TR / EN and light / dark, Forget,
  * "Delete all local data", nothing persisted, TR/EN, light/dark, 390 px, zero console errors /
  * CSP violations / missing i18n keys.
  *
@@ -1051,6 +1055,154 @@ async function main() {
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
     });
 
+    // Zone File › Compare and Convert: the Cloudflare sample against the Route 53 sample, then the
+    // sample written in every format. Computed again in Node from the same samples with the libraries.
+    const ZD = await import('../../assets/js/lib/zonediff.js');
+    const ZC = await import('../../assets/js/lib/zoneconvert.js');
+    const ZP = await import('../../assets/js/lib/zoneparse.js');
+    const ZV = await import('../../assets/js/views/zone.js');
+    const sampleZone = (id) => {
+      const s = ZV.SAMPLES.find((x) => x.id === id);
+      return ZV.parseFiles([{ name: s.file, text: s.text }]);
+    };
+    const cmpRows = () => page.evaluate(() => {
+      const keys = [...document.querySelectorAll('.zcmp-table thead th')].map((th) => th.dataset.key || '');
+      return [...document.querySelectorAll('.zcmp-table tbody tr.dt-row')].map((tr) => `${tr.querySelector('[data-status]')?.dataset.status} ${tr.cells[keys.indexOf('name')]?.textContent.trim()} ${tr.cells[keys.indexOf('type')]?.textContent.trim()}`);
+    });
+    const expectRows = (res, filter = 'diff') => res.rows.filter((r) => ZD.diffFilter(r, filter)).map((r) => `${r.status} ${r.rel} ${r.type}`);
+    const differences = () => page.evaluate(() => Number(document.querySelector('[data-role="zcmp-head"]')?.dataset.differences));
+
+    await run.step('Compare: the second zone from a sample; a semantic diff the libraries agree with; nothing sent or kept', async () => {
+      const sent = await page.evaluate(() => ({ dns: window.__fakeDnsLog.length, gp: window.__gp.calls.length }));
+      await page.click('[data-sample="cloudflare"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample' });
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('[data-compare-sample="route53"]'), { message: 'the second zone\'s importer', timeout: 10000 });
+      assert(/kept only in this tab’s memory/.test(await text(page, '.zcmp-privacy')), 'privacy line');
+      assertEqual(await count(page, '[data-sample]'), 0, 'the first importer\'s samples stay folded away');
+      await page.click('[data-compare-sample="route53"]');
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'compared' });
+      assert(/^Compared with example\.com$/.test(await text(page, '.zcmp-other-title')), await text(page, '.zcmp-other-title'));
+      assertEqual(await text(page, '.zcmp-format-badge'), 'AWS Route 53 (JSON)', 'the other zone\'s format');
+      const res = ZD.diffZones(sampleZone('cloudflare'), sampleZone('route53'));
+      assertEqual(await differences(), res.counts.added + res.counts.removed + res.counts.changed, 'differences');
+      assertEqual(await cmpRows(), expectRows(res), 'the differences, as lib/zonediff.js finds them');
+      assert((await cmpRows()).includes('changed @ A') && (await cmpRows()).includes('added app A') && (await cmpRows()).includes('removed app CNAME'), 'a changed, an added and a removed set');
+      await page.click('.zcmp-chips .zone-chip[data-filter="same"]');
+      await page.waitFor((n) => document.querySelectorAll('.zcmp-table tbody tr.dt-row').length === n, { args: [res.counts.same], message: 'same filter' });
+      assertEqual(await cmpRows(), expectRows(res, 'same'), 'the same sets');
+      await page.click('.zcmp-chips .zone-chip[data-filter="diff"]');
+      assertEqual(await page.evaluate(() => window.__fakeDnsLog.length), sent.dns, 'no DNS query');
+      assertEqual(await page.evaluate(() => window.__gp.calls.length), sent.gp, 'no Globalping call');
+      assertEqual(external, [], 'no external request');
+      assertEqual(await noZoneStorage(page), [], 'neither zone persisted');
+      assert(/^#\/zone\?tab=compare$/.test(await page.evaluate(() => location.hash)), 'only the tab in the URL');
+      await shot(page, opts, 'zone-compare-desktop-light-en');
+    });
+
+    await run.step('Compare options: TTLs, the SOA serial / timers and the apex NS left out from the keyboard; each row says what was hidden', async () => {
+      for (const [role, options] of [['zcmp-opt-ignoreTtl', { ignoreTtl: true }], ['zcmp-opt-ignoreSoa', { ignoreTtl: true, ignoreSoa: true }],
+        ['zcmp-opt-ignoreApexNs', { ignoreTtl: true, ignoreSoa: true, ignoreApexNs: true }]]) {
+        await page.evaluate((r) => document.querySelector(`[data-role="${r}"]`).focus(), role);
+        await page.press('Space');
+        const res = ZD.diffZones(sampleZone('cloudflare'), sampleZone('route53'), options);
+        await page.waitFor((n) => Number(document.querySelector('[data-role="zcmp-head"]')?.dataset.differences) === n,
+          { args: [res.counts.added + res.counts.removed + res.counts.changed], message: role });
+        assertEqual(await page.evaluate(() => document.activeElement?.dataset.role), role, `${role}: focus kept`);
+        assertEqual(await cmpRows(), expectRows(res), `${role}: rows`);
+      }
+      await page.click('.zcmp-chips .zone-chip[data-filter="ignored"]');
+      await page.waitFor(() => document.querySelectorAll('.zcmp-table tbody tr.dt-row').length === 1, { message: 'ignored filter' });
+      assert(/NS at the apex, ignored/.test(await text(page, '.zcmp-table tbody tr.dt-row')), 'the ignored row says why');
+      await page.click('.zcmp-chips .zone-chip[data-filter="diff"]');
+      for (const role of ['zcmp-opt-ignoreTtl', 'zcmp-opt-ignoreSoa', 'zcmp-opt-ignoreApexNs']) await jsClick(page, `[data-role="${role}"]`);
+      await page.waitFor((n) => Number(document.querySelector('[data-role="zcmp-head"]')?.dataset.differences) === n,
+        { args: [ZD.diffZones(sampleZone('cloudflare'), sampleZone('route53')).rows.filter((r) => ZD.diffFilter(r)).length], message: 'options off again' });
+    });
+
+    await run.step('Compare: CSV / JSON exports hide the proxied origins until opted in; Copy summary names sets, never values', async () => {
+      await takeDownloads(page);
+      await page.click('.zcmp-table .dt-export [data-export="csv"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'CSV' });
+      const [csv] = await takeDownloads(page);
+      assertEqual(csv.name, 'example.com-compare.csv', 'CSV name');
+      assert(csv.text.split('\n')[0].includes('status,name,type,ttl_a,ttl_b'), 'CSV header');
+      for (const ip of ['192.0.2.10', '192.0.2.14']) assert(!csv.text.includes(ip), `${ip} redacted`);
+      assert(csv.text.includes('[origin hidden]') && csv.text.includes('192.0.2.21'), 'origins hidden, other values kept');
+      await jsClick(page, '[data-role="zcmp-include-origins"]');
+      await page.click('.zcmp-table .dt-export [data-export="json"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
+      const [json] = await takeDownloads(page);
+      const doc = JSON.parse(json.text);
+      assertEqual(Object.keys(doc), ['a', 'b', 'relative', 'options', 'counts', 'rows'], 'JSON keys');
+      assert(json.text.includes('192.0.2.14'), 'origins included on opt-in');
+      await jsClick(page, '[data-role="zcmp-include-origins"]');
+      await stubClipboard(page);
+      await page.click('.zcmp-summary [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+      const [md] = await takeClipboard(page);
+      const ls = md.trim().split('\n');
+      assertEqual(ls.slice(0, 2), ['**Zone File · `example.com` ↔ `example.com`**', '- This zone: Cloudflare export (BIND) · the other: AWS Route 53 (JSON)'], 'title and formats');
+      assert(ls.some((l) => /^- \d+ added · \d+ removed · \d+ changed · \d+ record sets the same$/.test(l)), `counts: ${md}`);
+      assert(ls.includes('- **Changed:** `@` A (values)') || ls.some((l) => l.startsWith('- **Changed:** `@`')), `a difference by name: ${md}`);
+      assert(!/192\.0\.2\.|198\.51\.100\./.test(md), 'no value in the summary');
+      assert(new RegExp(`· ${origin}/domainscope/#/zone$`).test(ls[ls.length - 1]), `a bare #/zone link: ${ls[ls.length - 1]}`);
+    });
+
+    await run.step('Convert: BIND, Route 53, octoDNS and DNSControl as the library writes them, with their notes; each download reads back', async () => {
+      await clickTab(page, 'convert');
+      await page.waitFor(() => !!document.querySelector('[data-role="zconv"]'), { message: 'convert tab', timeout: 10000 });
+      const zone = sampleZone('cloudflare');
+      for (const target of ZC.CONVERT_TARGETS) {
+        await page.click(`.zconv-targets [data-value="${target}"]`);
+        await page.waitFor((t) => document.querySelector('[data-action="zconv-download"]')?.dataset.target === t, { args: [target], message: target });
+        const res = ZC.convertZone(zone, target);
+        const shown = await page.evaluate(() => [...document.querySelectorAll('.zconv-pitfall')].map((li) => `${li.dataset.severity}:${li.dataset.code}`));
+        assertEqual(shown, res.pitfalls.map((p) => `${p.severity}:${p.code}`), `${target}: notes`);
+        await takeDownloads(page);
+        await page.click('[data-action="zconv-download"]');
+        await page.waitFor(() => (window.__downloads || []).length === 1, { message: `${target} download` });
+        const [dl] = await takeDownloads(page);
+        assertEqual([dl.name, dl.text], [res.filename, res.text], `${target}: the file`);
+        if (target !== 'dnscontrol') {
+          const back = ZP.parseZone(dl.text, { origin: 'example.com', filename: dl.name });
+          assert(!back.fatal, `${target}: reads back`);
+          const gone = new Set([...res.omitted, ...res.changed].map((x) => x.id));
+          const d = ZD.diffZones({ ...zone, records: zone.records.filter((r) => !gone.has(r.id)) }, { ...back, records: back.records.filter((r) => r.type !== 'ALIAS') });
+          assertEqual(d.rows.filter((r) => r.status !== 'same').map((r) => r.key), [], `${target}: the same record sets`);
+        }
+      }
+      assert(await page.evaluate(() => [...document.querySelectorAll('.zconv-pitfall')].some((li) => li.dataset.code === 'proxied')), 'the proxy note');
+      await page.click('.zconv-targets [data-value="route53"]');
+      await page.waitFor(() => document.querySelector('[data-action="zconv-download"]')?.dataset.target === 'route53', { message: 'route53' });
+      assert(/Route 53 has none\. These names would point straight at their origin servers/.test(await text(page, '[data-role="zconv-pitfalls"]')), 'the Route 53 proxy warning');
+      await stubClipboard(page);
+      await page.click('.zconv-copy');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copy all' });
+      assertEqual((await takeClipboard(page))[0], ZC.convertZone(zone, 'route53').text, 'Copy all copies the whole file');
+      assertEqual(external, [], 'no external request');
+      await shot(page, opts, 'zone-convert-desktop-light-en');
+    });
+
+    await run.step('"Forget the second zone" keeps the first; Forget clears both', async () => {
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'the comparison kept over the tabs' });
+      await page.click('[data-action="zcmp-forget"]');
+      await page.waitFor(() => !document.querySelector('[data-role="zcmp-results"]') && !!document.querySelector('[data-compare-sample]'), { message: 'second zone forgotten' });
+      assert(await page.evaluate(() => !!document.querySelector('.zone-summary')), 'the first zone stays');
+      await page.click('[data-compare-sample="bind"]');
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'compared again' });
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
+      await page.click('[data-sample="cloudflare"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample again' });
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('[data-compare-sample]'), { message: 'importer', timeout: 10000 });
+      assert(!await page.evaluate(() => !!document.querySelector('[data-role="zcmp-results"]')), 'Forget dropped the second zone too');
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
+    });
+
     await run.step('"Delete all local data" drops a loaded zone; a reload forgets it', async () => {
       await page.click('[data-sample="cloudflare"]');
       await page.waitFor(() => !!document.querySelector('.zone-summary'));
@@ -1340,6 +1492,34 @@ async function main() {
       }
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+    });
+
+    await run.step('Compare and Convert at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('[data-compare-sample="route53"]') || !!document.querySelector('[data-role="zcmp-results"]'), { message: 'compare tab', timeout: 10000 });
+      if (!await page.evaluate(() => !!document.querySelector('[data-role="zcmp-results"]'))) {
+        await page.click('[data-compare-sample="route53"]');
+        await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'compared' });
+      }
+      for (const lang of ['en', 'tr']) {
+        await setLangUi(page, lang);
+        for (const tab of ['compare', 'convert']) {
+          await clickTab(page, tab);
+          await page.waitFor((t) => !!document.querySelector(t === 'compare' ? '[data-role="zcmp-results"]' : '[data-role="zconv"]'), { args: [tab], message: `${tab} after the language switch`, timeout: 10000 });
+          for (const scheme of ['light', 'dark']) {
+            await page.emulateMedia({ 'prefers-color-scheme': scheme });
+            for (const width of [320, 375]) {
+              await page.setViewport({ width, height: 800, mobile: true });
+              await page.evaluate(() => window.scrollTo(0, 0));
+              await assertNoHorizontalScroll(page, `${tab} ${width} ${scheme} ${lang}`);
+            }
+            await shot(page, opts, `zone-${tab}-mobile-${scheme}-${lang}`);
+            await page.setViewport({ width: 1440, height: 900 });
+          }
+        }
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
     });
 

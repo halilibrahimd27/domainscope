@@ -31,7 +31,7 @@ export const COMPARE_FIELDS = Object.freeze(['reach', 'status', 'location', 'con
 export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete', 'unreachable']);
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
-  'body-cut', 'hsts-lost', 'hsts-off', 'hsts-weaker', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);
+  'body-cut', 'hsts-lost', 'hsts-invalid', 'hsts-off', 'hsts-weaker', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);
 /** Certificate problems both servers can share (`oc.shared.<n>`): no difference, so said apart from the verdict. */
 export const COMPARE_SHARED = Object.freeze(['cert-untrusted', 'cert-name', 'cert-expiring']);
 /** Problems of the form (`oc.issue.<code>`). */
@@ -123,16 +123,52 @@ export function pageTitle(body) {
   return text ? text.slice(0, 200) : null;
 }
 
+const HSTS_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HSTS_VALUE = /^(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"[^"]*")$/;
+
 /**
- * A Strict-Transport-Security header as `{ raw, maxAge, includeSubDomains, preload }`, or null.
+ * A Strict-Transport-Security header as a browser reads it (RFC 6797 6.1, 8.1):
+ * `{ raw, maxAge, includeSubDomains, preload, valid }`, or null without one. Several header
+ * fields joined with ',' count as the first one alone. The header is `valid` only with exactly
+ * one max-age of digits (quoted or not), no directive twice, a valueless includeSubDomains and
+ * every directive a token (its value a token or a quoted string): a browser ignores any other
+ * header, so `maxAge` is then null. `preload` is the bare directive (the preload list's rule).
+ * The CLI's hsts_policy() reads it the same way.
  * @param {string|null} value
- * @returns {{ raw: string, maxAge: number|null, includeSubDomains: boolean, preload: boolean }|null}
+ * @returns {{ raw: string, maxAge: number|null, includeSubDomains: boolean, preload: boolean, valid: boolean }|null}
  */
 export function parseHsts(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
-  const parts = value.split(';').map((p) => p.trim().toLowerCase()).filter(Boolean);
-  const age = parts.map((p) => /^max-age\s*=\s*"?(\d+)"?$/.exec(p)).find(Boolean);
-  return { raw: value.trim(), maxAge: age ? Number(age[1]) : null, includeSubDomains: parts.includes('includesubdomains'), preload: parts.includes('preload') };
+  const raw = value.trim();
+  let valid = true;
+  let maxAge = null;
+  let includeSubDomains = false;
+  let preload = false;
+  const seen = new Set();
+  for (const part of raw.split(',')[0].split(';')) {
+    const directive = part.trim();
+    if (!directive) continue;
+    const m = /^([^=\s]+)\s*(?:=\s*(.*))?$/.exec(directive);
+    const name = m ? m[1].toLowerCase() : '';
+    const val = m && m[2] !== undefined ? m[2].trim() : null;
+    if (!m || !HSTS_TOKEN.test(name) || seen.has(name) || (val !== null && !HSTS_VALUE.test(val))) {
+      valid = false;
+      continue;
+    }
+    seen.add(name);
+    if (name === 'max-age') {
+      const age = val === null ? null : /^(?:(\d+)|"(\d+)")$/.exec(val);
+      if (age) maxAge = Number(age[1] ?? age[2]);
+      else valid = false;
+    } else if (name === 'includesubdomains') {
+      if (val === null) includeSubDomains = true;
+      else valid = false;
+    } else if (name === 'preload') {
+      preload = val === null;
+    }
+  }
+  if (maxAge === null) valid = false;
+  return { raw, maxAge: valid ? maxAge : null, includeSubDomains, preload, valid };
 }
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -173,7 +209,10 @@ export function certNames(cert, limit = COMPARE_CERT_NAMES) {
  * @property {object|null} hsts {@link parseHsts}
  * @property {{ sha256: string, length: number, truncated: boolean, title: string|null }|null} body
  * @property {{ sha256: string, subjectCN: string|null, hostnames: string[], covers: boolean, issuer: string|null,
- *   notAfter: Date|null, daysLeft: number|null, authorized: boolean, error: string|null }|null} cert
+ *   issuerCN: string|null, selfSigned: boolean, notBefore: Date|null, notAfter: Date|null, daysLeft: number|null,
+ *   authorized: boolean, error: string|null }|null} cert `issuer`: its CN and O, all Globalping reports;
+ *   `selfSigned`: the probe's self-signed error, or an issuer CN that is the subject CN (an expired
+ *   self-signed certificate reports CERT_HAS_EXPIRED instead)
  * @property {object|null} probe globalping.probeSummary
  * @property {string|null} measurementId
  */
@@ -194,13 +233,17 @@ export function readSide(measurement, { ip, host, now = Date.now() }) {
   if (!r) return { ...side, failure: { kind: 'unknown', text: 'no result' } };
   const served = servedCert(r.tls);
   if (served) {
-    const notAfter = served.notAfter instanceof Date && Number.isFinite(served.notAfter.getTime()) ? served.notAfter : null;
+    const date = (d) => (d instanceof Date && Number.isFinite(d.getTime()) ? d : null);
+    const notAfter = date(served.notAfter);
     side.cert = {
       sha256: served.sha256,
       subjectCN: served.subjectCN,
       hostnames: served.hostnames,
       covers: certCovers(served.hostnames, host).covered,
       issuer: [served.issuerCN, served.issuerO].filter(Boolean).join(' · ') || null,
+      issuerCN: served.issuerCN,
+      selfSigned: served.error === SELF_SIGNED_ERROR || (!!served.subjectCN && served.issuerCN === served.subjectCN),
+      notBefore: date(served.notBefore),
       notAfter,
       daysLeft: notAfter ? Math.floor((notAfter.getTime() - now) / DAY_MS) : null,
       authorized: served.authorized,
@@ -234,6 +277,7 @@ export function readSide(measurement, { ip, host, now = Date.now() }) {
 /* ------------------------------------------------------------------------ */
 
 const SEVERITY_RANK = { ok: 0, info: 1, warn: 2, error: 3 };
+const SELF_SIGNED_ERROR = 'DEPTH_ZERO_SELF_SIGNED_CERT';
 const SHARED_NOTES = new Set(COMPARE_SHARED);
 
 /**
@@ -247,13 +291,25 @@ function field(key, oldValue, newValue, same, severity, note = null, shared = sa
 }
 
 const dateKey = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : null);
-/** A self-signed certificate is its own issuer (Node's verify error for one). */
-const selfSigned = (c) => c.error === 'DEPTH_ZERO_SELF_SIGNED_CERT';
+/** A self-signed certificate is its own issuer: {@link readSide}'s flag, or for a side built by hand the error or an issuer named as the subject. */
+const selfSigned = (c) => (typeof c.selfSigned === 'boolean' ? c.selfSigned
+  : c.error === SELF_SIGNED_ERROR || (!!c.subjectCN && (c.issuerCN !== undefined ? c.issuerCN : c.issuer) === c.subjectCN));
+/** An issuer for comparison: case-folded, runs of whitespace collapsed (the CLI's _dn_key). */
+const issuerKey = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 /**
- * Two certificates that whatever trusts one also trusts: the same certificate, or the same issuer
- * (an origin CA or an internal CA renews its certificates); a self-signed one only itself.
+ * Whatever trusts one of two untrusted certificates also trusts the other: the same certificate;
+ * or, when the new one is valid by now, the same failure (the probe's error: a chain that lost
+ * its intermediate fails otherwise) from the same issuer (its CN and O, case aside; Cloudflare's
+ * RSA and ECC origin CAs have no CN and are both 'CloudFlare, Inc.') when neither is self-signed.
+ * The CLI's _shared_untrust applies the same rule.
  */
-const sameIssuer = (ca, cb) => ca.sha256 === cb.sha256 || (!!ca.issuer && ca.issuer === cb.issuer && !selfSigned(ca) && !selfSigned(cb));
+function sharedUntrust(ca, cb, now) {
+  if (ca.sha256 === cb.sha256) return true;
+  const early = (c) => c.notBefore instanceof Date && c.notBefore.getTime() > now;
+  if (early(cb) && !early(ca)) return false;
+  if (ca.error !== cb.error || selfSigned(ca) || selfSigned(cb)) return false;
+  return !!issuerKey(ca.issuer) && issuerKey(ca.issuer) === issuerKey(cb.issuer);
+}
 const hstsText = (h) => (h ? h.raw : null);
 
 /**
@@ -265,20 +321,22 @@ const hstsText = (h) => (h ? h.raw : null);
  *   certificate that does not cover the name or that the probe did not trust (while the old one
  *   was trusted) is an error; a new server that does not answer is compared no further, and
  *   the certificate fields come only with a certificate from the new server;
- * - another status, redirect, content type or title, a lost HSTS header (none, max-age=0, or
- *   without the old one's includeSubDomains or preload), or a certificate that expires within
+ * - another status, redirect, content type or title, a lost HSTS header (none, one a browser
+ *   ignores, max-age=0, or a shorter max-age or without the old one's includeSubDomains or
+ *   preload: {@link parseHsts}), or a certificate that expires within
  *   {@link COMPARE_EXPIRY_WARN_DAYS} days is a warning;
  * - another body, Server header, certificate names, issuer, expiry or certificate is
  *   information: a page with a token or a time in it differs on every request, and a new server
  *   usually has its own certificate.
  *
  * A certificate problem both servers share is no difference: an untrusted certificate, the same
- * one or from the same issuer (an origin CA certificate behind a CDN is one; a self-signed
- * certificate is its own issuer), a certificate that does not cover the name on both,
+ * one, or one failing alike from the same issuer (an origin CA certificate behind a CDN is one;
+ * a self-signed certificate is its own issuer), a certificate that does not cover the name on both,
  * or both expiring within {@link COMPARE_EXPIRY_WARN_DAYS} days with the new one no sooner. The
  * field is `shared` (severity 'warn'), its note is listed in `shared`, and the verdict leaves it
- * out: two identical servers are 'same'. An untrusted certificate from another issuer than the
- * old untrusted one is a warning (`cert-untrusted-other`): whatever trusts the old one may refuse it.
+ * out: two identical servers are 'same'. An untrusted certificate that fails otherwise (another
+ * error, not valid yet) or comes from another issuer than the old untrusted one is a warning
+ * (`cert-untrusted-other`): whatever trusts the old one may refuse it.
  *
  * `verdict`, from the fields that count: 'unreachable' (neither server answered: the probe's
  * network may be the cause as much as the servers, so nothing is judged), 'broken' (an error),
@@ -319,13 +377,18 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
     fields.push(field('body', ha, hb, ha === hb, 'info', ha === hb ? (cut ? 'body-cut' : null) : 'dynamic-body'));
     let hstsNote = null;
     let hstsSev = 'info';
-    // max-age=0 tells a browser to forget the policy: no HSTS to keep, or to lose.
-    const active = (x) => !!x && x.maxAge !== 0;
-    const dropped = (flag) => a.hsts[flag] && !b.hsts[flag];
-    if (active(a.hsts) && !b.hsts) [hstsNote, hstsSev] = ['hsts-lost', warn];
-    else if (active(a.hsts) && !active(b.hsts)) [hstsNote, hstsSev] = ['hsts-off', warn];
-    else if (active(a.hsts) && (dropped('includeSubDomains') || dropped('preload'))) [hstsNote, hstsSev] = ['hsts-weaker', warn];
-    else if (!active(a.hsts) && active(b.hsts)) hstsNote = 'hsts-new';
+    // A policy is on with one valid max-age above 0 (max-age=0 tells a browser to forget it; an
+    // invalid header is ignored): no HSTS to keep, or to lose, otherwise.
+    const on = (x) => !!x && x.valid && x.maxAge > 0;
+    if (on(a.hsts)) {
+      const dropped = (flag) => a.hsts[flag] && !b.hsts[flag];
+      if (!b.hsts) [hstsNote, hstsSev] = ['hsts-lost', warn];
+      else if (!b.hsts.valid) [hstsNote, hstsSev] = ['hsts-invalid', warn];
+      else if (b.hsts.maxAge === 0) [hstsNote, hstsSev] = ['hsts-off', warn];
+      else if (dropped('includeSubDomains') || dropped('preload') || b.hsts.maxAge < a.hsts.maxAge) [hstsNote, hstsSev] = ['hsts-weaker', warn];
+    } else if (on(b.hsts)) {
+      hstsNote = 'hsts-new';
+    }
     fields.push(field('hsts', hstsText(a.hsts), hstsText(b.hsts), hstsText(a.hsts) === hstsText(b.hsts), hstsSev, hstsNote));
     fields.push(field('server', a.server, b.server, a.server === b.server, 'info'));
   }
@@ -339,9 +402,9 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
     fields.push(field('certCovers', covers(ca), covers(cb), covers(ca) === covers(cb), cb && !cb.covers ? 'error' : 'info', cb && !cb.covers ? 'cert-name' : null));
     const trusted = (c) => (c ? c.authorized : null);
     const untrusted = cb && !cb.authorized;
-    if (untrusted && ca && !ca.authorized && !sameIssuer(ca, cb)) {
-      // Both untrusted, but from another issuer: whatever trusts the old one (a CDN that knows its
-      // origin CA, clients that know an internal CA) may refuse the new one.
+    if (untrusted && ca && !ca.authorized && !sharedUntrust(ca, cb, now)) {
+      // Both untrusted, but for another reason or from another issuer: whatever trusts the old one
+      // (a CDN that knows its origin CA, clients that know an internal CA) may refuse the new one.
       fields.push(field('certTrusted', false, false, false, 'warn', 'cert-untrusted-other'));
     } else {
       fields.push(field('certTrusted', trusted(ca), trusted(cb), trusted(ca) === trusted(cb), untrusted ? (ca && ca.authorized ? 'error' : 'warn') : 'info', untrusted ? 'cert-untrusted' : null));

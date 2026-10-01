@@ -80,7 +80,7 @@ describe('one side', () => {
   test('readSide on h01: status, headers, the body hash and title, the certificate', () => {
     const s = sideOf(H1.final.body, OLD);
     assert.deepEqual([s.ok, s.status, s.contentType, s.server, s.location], [true, 200, 'text/html; charset=utf-8', 'github.com', null]);
-    assert.deepEqual(s.hsts, { raw: 'max-age=31536000; includeSubdomains; preload', maxAge: 31536000, includeSubDomains: true, preload: true });
+    assert.deepEqual(s.hsts, { raw: 'max-age=31536000; includeSubdomains; preload', maxAge: 31536000, includeSubDomains: true, preload: true, valid: true });
     assert.match(s.body.sha256, /^[0-9a-f]{64}$/);
     assert.deepEqual([s.body.length, s.body.truncated], [1200, true]);
     assert.deepEqual([s.cert.subjectCN, s.cert.covers, s.cert.authorized, s.cert.daysLeft], ['github.com', true, true, 62]);
@@ -103,7 +103,18 @@ describe('one side', () => {
     assert.equal(pageTitle('no title'), null);
     assert.equal(pageTitle(null), null);
     assert.equal(pageTitle(`<title>${'x'.repeat(300)}</title>`).length, 200);
-    assert.deepEqual(parseHsts('max-age="600"'), { raw: 'max-age="600"', maxAge: 600, includeSubDomains: false, preload: false });
+    assert.deepEqual(parseHsts('max-age="600"'), { raw: 'max-age="600"', maxAge: 600, includeSubDomains: false, preload: false, valid: true });
+    assert.deepEqual(parseHsts('max-age=0, max-age=31536000; includeSubDomains'), {
+      raw: 'max-age=0, max-age=31536000; includeSubDomains', maxAge: 0, includeSubDomains: false, preload: false, valid: true
+    }, 'joined headers: only the first counts (RFC 6797 8.1)');
+    for (const bad of ['includeSubDomains', 'max-age=abc', 'max_age=600', 'max-age=600; max-age=0', 'max-age="600', 'max-age=600; includeSubDomains=1',
+      'max-age=600; includeSubDomains; includeSubDomains', 'max-age=600 600']) {
+      const h = parseHsts(bad);
+      assert.deepEqual([h.valid, h.maxAge], [false, null], bad);
+    }
+    assert.deepEqual(parseHsts('MAX-AGE = "31536000" ; INCLUDESUBDOMAINS;; preload'), {
+      raw: 'MAX-AGE = "31536000" ; INCLUDESUBDOMAINS;; preload', maxAge: 31536000, includeSubDomains: true, preload: true, valid: true
+    });
     assert.equal(parseHsts(''), null);
     assert.equal(parseHsts(null), null);
   });
@@ -252,6 +263,69 @@ describe('the comparison', () => {
     assert.equal(compare(oldSelf, newSelf).verdict, 'differs', 'two self-signed certificates with the same name');
     const twin = compare(oldSelf, sideOf(edited(selfSigned)));
     assert.deepEqual([twin.verdict, twin.shared], ['same', ['cert-untrusted']], 'the same self-signed certificate');
+  });
+
+  test('two untrusted certificates are a shared problem only when they fail alike, from the same issuer', () => {
+    const fp = (x) => Array.from({ length: 32 }, () => x).join(':');
+    const internal = (error, print) => (r) => {
+      r.tls.authorized = false;
+      r.tls.error = error;
+      r.tls.issuer = { O: 'Example Corp', CN: 'Example Internal CA' };
+      if (print) r.tls.fingerprint256 = fp(print);
+    };
+    // The old server sends its certificate with the intermediate; the new one sends the leaf
+    // alone: a client that trusts only the root now refuses it.
+    const oldChain = sideOf(edited(internal('UNABLE_TO_GET_ISSUER_CERT_LOCALLY'), H1), OLD);
+    const leafOnly = compare(oldChain, sideOf(edited(internal('UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'B1'))));
+    assert.deepEqual([leafOnly.verdict, leafOnly.shared, byKey(leafOnly).certTrusted.note], ['differs', [], 'cert-untrusted-other'], 'the chain lost its intermediate');
+    // A new certificate that is not valid yet, whatever error the probe reports first.
+    const early = compare(oldChain, sideOf(edited((r) => { internal('UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'B2')(r); r.tls.createdAt = '2027-01-01T00:00:00.000Z'; })));
+    assert.deepEqual([early.verdict, early.shared, byKey(early).certTrusted.note], ['differs', [], 'cert-untrusted-other'], 'not valid yet');
+    // The same failure from the same issuer, its name in another case and spacing (the CLI's DN key): shared.
+    const recased = compare(oldChain, sideOf(edited((r) => { internal('UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'B3')(r); r.tls.issuer = { O: 'example  corp', CN: 'EXAMPLE INTERNAL CA' }; })));
+    assert.deepEqual([recased.verdict, recased.shared], ['same', ['cert-untrusted']]);
+    // Two expired self-signed certificates for the same name: the probe reports CERT_HAS_EXPIRED,
+    // not the self-signed error; the issuer named as the subject still makes them self-signed.
+    const expiredSelf = (print) => (r) => {
+      r.tls.authorized = false;
+      r.tls.error = 'CERT_HAS_EXPIRED';
+      r.tls.issuer = { CN: 'github.com' };
+      r.tls.expiresAt = '2026-01-01T00:00:00.000Z';
+      if (print) r.tls.fingerprint256 = fp(print);
+    };
+    const oldSelf = sideOf(edited(expiredSelf(), H1), OLD);
+    assert.deepEqual([oldSelf.cert.selfSigned, oldSelf.cert.issuerCN], [true, 'github.com']);
+    const twoSelf = compare(oldSelf, sideOf(edited(expiredSelf('C1'))));
+    assert.deepEqual([twoSelf.verdict, byKey(twoSelf).certTrusted.note, twoSelf.shared], ['differs', 'cert-untrusted-other', ['cert-expiring']]);
+    // Cloudflare's RSA and ECC origin CAs have no CN: the probe names both 'CloudFlare, Inc.', and Cloudflare trusts both.
+    const origin = (print) => (r) => {
+      r.tls.authorized = false;
+      r.tls.error = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE';
+      r.tls.issuer = { C: 'US', O: 'CloudFlare, Inc.' };
+      if (print) r.tls.fingerprint256 = fp(print);
+    };
+    const rsaToEcc = compare(sideOf(edited(origin(), H1), OLD), sideOf(edited(origin('E1'))));
+    assert.deepEqual([rsaToEcc.verdict, rsaToEcc.shared], ['same', ['cert-untrusted']]);
+  });
+
+  test('HSTS as a browser reads it: the first header only, one valid max-age, no directive twice', () => {
+    const hsts = (value) => sideOf(edited((r) => { r.headers['strict-transport-security'] = value; }));
+    const note = (value, from = old) => {
+      const out = compare(from, hsts(value));
+      return [out.verdict, byKey(out).hsts.severity, byKey(out).hsts.note];
+    };
+    // h01's header: max-age=31536000; includeSubdomains; preload
+    for (const bad of ['includeSubDomains; preload', 'max-age=abc; includeSubDomains; preload', 'max_age=31536000; includeSubDomains; preload',
+      'max-age=31536000; max-age=0; includeSubDomains; preload', 'max-age=31536000; includeSubDomains; includesubdomains; preload']) {
+      assert.deepEqual(note(bad), ['differs', 'warn', 'hsts-invalid'], bad);
+    }
+    assert.deepEqual(note('max-age=0, max-age=31536000; includeSubDomains; preload'), ['differs', 'warn', 'hsts-off'], 'joined headers: the first one counts');
+    assert.deepEqual(note('max-age=31536000; includeSubDomains; preload, max-age=0'), ['same', 'info', null]);
+    assert.deepEqual(note('MAX-AGE="31536000"; INCLUDESUBDOMAINS; PRELOAD'), ['same', 'info', null]);
+    assert.deepEqual(note('max-age = 300; includeSubDomains; preload'), ['differs', 'warn', 'hsts-weaker'], 'a much shorter max-age');
+    // An old header no browser applies is no policy to lose.
+    const oldBad = sideOf(edited((r) => { r.headers['strict-transport-security'] = 'max-age=31536000; max-age=0'; }, H1), OLD);
+    assert.deepEqual(note('max-age=31536000', oldBad), ['same', 'info', 'hsts-new']);
   });
 
   test('the old server does not answer: incomplete; neither answers: unreachable, never "not ready"', () => {

@@ -110,11 +110,12 @@ registerStrings('en', {
   'oc.note.body-cut': 'The probe returns the first 10,000 characters of a page: only those are compared.',
   'oc.note.hsts-lost': 'The new server sends no HSTS header: visitors whose browsers never saw it lose HTTPS-only.',
   'oc.note.hsts-off': 'The new server sends max-age=0: browsers that kept the old header forget it and allow plain HTTP again.',
-  'oc.note.hsts-weaker': 'The new header drops includeSubDomains or preload: a weaker policy than the old one.',
+  'oc.note.hsts-invalid': 'The new server’s HSTS header is not valid (no single usable max-age, or a directive given twice): browsers ignore it, so visitors whose browsers never saw the old one lose HTTPS-only.',
+  'oc.note.hsts-weaker': 'The new header is weaker than the old one: a shorter max-age, or without includeSubDomains or preload.',
   'oc.note.hsts-new': 'The new server adds HSTS.',
   'oc.note.cert-name': 'The certificate does not cover the name: browsers refuse it.',
   'oc.note.cert-untrusted': 'The probe did not trust the certificate.',
-  'oc.note.cert-untrusted-other': 'Not trusted either, and from another issuer than the old one: a CDN or client that trusts the old certificate may refuse this one.',
+  'oc.note.cert-untrusted-other': 'Not trusted either, but for another reason or from another issuer than the old one: a CDN or client that trusts the old certificate may refuse this one.',
   'oc.note.cert-expiring': 'The certificate expires within 14 days.',
   'oc.note.new-cert': 'Another certificate: usual on a new server.',
   'oc.note.same-cert': 'The same certificate.',
@@ -209,11 +210,12 @@ registerStrings('tr', {
   'oc.note.body-cut': 'Ölçüm noktası bir sayfanın ilk 10.000 karakterini döndürür: yalnızca onlar karşılaştırılır.',
   'oc.note.hsts-lost': 'Yeni sunucu HSTS başlığı göndermiyor: tarayıcısı onu hiç görmemiş ziyaretçiler yalnızca-HTTPS korumasını kaybeder.',
   'oc.note.hsts-off': 'Yeni sunucu max-age=0 gönderiyor: eski başlığı saklayan tarayıcılar onu unutur ve yeniden düz HTTP’ye izin verir.',
-  'oc.note.hsts-weaker': 'Yeni başlıkta includeSubDomains ya da preload yok: eskisinden zayıf bir politika.',
+  'oc.note.hsts-invalid': 'Yeni sunucunun HSTS başlığı geçerli değil (tek ve kullanılabilir bir max-age yok ya da bir yönerge iki kez verilmiş): tarayıcılar onu yok sayar, bu yüzden eski başlığı hiç görmemiş ziyaretçiler yalnızca-HTTPS korumasını kaybeder.',
+  'oc.note.hsts-weaker': 'Yeni başlık eskisinden zayıf: daha kısa bir max-age ya da includeSubDomains veya preload eksik.',
   'oc.note.hsts-new': 'Yeni sunucu HSTS ekliyor.',
   'oc.note.cert-name': 'Sertifika adı kapsamıyor: tarayıcılar onu reddeder.',
   'oc.note.cert-untrusted': 'Ölçüm noktası sertifikaya güvenmedi.',
-  'oc.note.cert-untrusted-other': 'Buna da güvenilmiyor ve eskisinden farklı bir kuruluş vermiş: eski sertifikaya güvenen bir CDN ya da istemci bunu reddedebilir.',
+  'oc.note.cert-untrusted-other': 'Buna da güvenilmiyor, ama başka bir nedenle ya da sertifikayı eskisinden farklı bir kuruluş vermiş: eski sertifikaya güvenen bir CDN ya da istemci bunu reddedebilir.',
   'oc.note.cert-expiring': 'Sertifikanın süresi 14 gün içinde doluyor.',
   'oc.note.new-cert': 'Başka bir sertifika: yeni bir sunucuda olağan.',
   'oc.note.same-cert': 'Aynı sertifika.',
@@ -567,7 +569,9 @@ function sideJson(s) {
   return {
     ip: s.ip, ok: s.ok, failure: s.failure, status: s.status, location: s.location, contentType: s.contentType, server: s.server,
     hsts: s.hsts ? s.hsts.raw : null, title: s.body ? s.body.title : null, body: s.body ? { sha256: s.body.sha256, length: s.body.length, truncated: s.body.truncated } : null,
-    certificate: s.cert ? { ...s.cert, notAfter: s.cert.notAfter ? s.cert.notAfter.toISOString() : null } : null,
+    certificate: s.cert ? {
+      ...s.cert, notBefore: s.cert.notBefore ? s.cert.notBefore.toISOString() : null, notAfter: s.cert.notAfter ? s.cert.notAfter.toISOString() : null
+    } : null,
     probe: s.probe, measurementId: s.measurementId
   };
 }

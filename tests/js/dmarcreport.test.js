@@ -343,8 +343,17 @@ describe('readReportFiles — told apart by their content', () => {
     for (const p of r.problems) assert.ok(REPORT_PROBLEMS.includes(p.code), p.code);
   });
 
-  test('an abort rejects', async () => {
-    await assert.rejects(readReportFiles([{ name: 'a.xml', bytes: enc.encode('<a/>') }], { signal: AbortSignal.abort() }), (err) => err.name === 'AbortError');
+  test('a Stop resolves with what was read before it: the reports of the files done, stopped, the dropped files reached', async () => {
+    const files = ['a', 'b', 'c'].map((id) => ({ name: `${id}.xml`, bytes: enc.encode(smallReport([['192.0.2.1', 1]], { id })) }));
+    const before = await readReportFiles(files.slice(0, 1), { signal: AbortSignal.abort() });
+    assert.deepEqual([before.dmarc, before.problems, before.read, before.files, before.stopped], [[], [], 0, 0, true], 'stopped before the first file');
+    const ctl = new AbortController();
+    const r = await readReportFiles(files, { signal: ctl.signal, onProgress: (done) => { if (done === 1) ctl.abort(); } });
+    assert.equal(r.stopped, true);
+    assert.deepEqual(r.dmarc.map((x) => x.reportId), ['a'], 'the report read before the Stop is kept');
+    assert.deepEqual([r.read, r.files], [1, 1]);
+    const all = await readReportFiles(files);
+    assert.deepEqual([all.stopped, all.files, all.dmarc.length], [false, 3, 3], 'a read to the end');
   });
 
   test('a zipped mailbox folder counts its reports: the bar moves per file inside it, a damaged file counts one', async () => {
@@ -359,7 +368,7 @@ describe('readReportFiles — told apart by their content', () => {
     assert.deepEqual(seen, ['1/7', '2/7', '3/7', '4/7', '5/7', '6/7', '7/7'], 'three dropped files, the first of them five');
   });
 
-  test('a Stop in the middle of a zipped mailbox folder is heard between its reports; the event loop gets its turns', async () => {
+  test('a Stop in the middle of a zipped mailbox folder is heard between its reports and keeps those read; the event loop gets its turns', async () => {
     const n = 200;
     const zip = storedZip(Array.from({ length: n }, (_, i) => [`r${i}.xml`, smallReport([['192.0.2.1', 1], ['198.51.100.7', 2]], { id: `s${i}` })]));
     const ctl = new AbortController();
@@ -367,21 +376,25 @@ describe('readReportFiles — told apart by their content', () => {
     // A clock that moves READ_YIELD_MS per look: every report is a long one, so the reader yields before each.
     const realNow = Date.now;
     let clock = 0;
+    let r;
     Date.now = () => (clock += READ_YIELD_MS);
     try {
-      await assert.rejects(readReportFiles([{ name: 'mailbox.zip', bytes: zip }], {
+      r = await readReportFiles([{ name: 'mailbox.zip', bytes: zip }], {
         signal: ctl.signal,
         // The Stop is a task of its own (a click): it runs only when the reader gives the event loop a turn.
         onProgress: (done, total) => {
           seen.push(`${done}/${total}`);
           if (done === 3) setTimeout(() => ctl.abort(), 0);
         }
-      }), (err) => err.name === 'AbortError');
+      });
     } finally {
       Date.now = realNow;
     }
     assert.deepEqual(seen.slice(0, 3), [`1/${n}`, `2/${n}`, `3/${n}`], 'the total is the reports inside the archive');
     assert.ok(seen.length >= 3 && seen.length < 6, `stopped right after the click, not after ${n} reports: ${seen.length}`);
+    assert.equal(r.stopped, true);
+    assert.equal(r.dmarc.length, seen.length, 'every report read before the Stop is kept, from the archive it cut too');
+    assert.deepEqual([r.read, r.files], [seen.length, 1]);
   });
 
   test('a plain file past the entry bound is named too large, never parsed in one long task', async () => {

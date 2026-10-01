@@ -481,16 +481,20 @@ export function decodeReportText(bytes) {
  * `maxEntryBytes` is not parsed (`too-large`), whether it was dropped as it is or unpacked, so one
  * parse stays short. Before each file — a dropped one and every plain file an archive holds — the
  * event loop gets a turn once {@link READ_YIELD_MS} ms of work have passed and a Stop is heard, so
- * a page can draw the progress and stop in the middle of a zipped mailbox folder too.
+ * a page can draw the progress and stop in the middle of a zipped mailbox folder too. A Stop (the
+ * signal's abort) ends the read with what it read before: the reports of the files done, those of
+ * the archive it cut included, and `stopped`.
  * @param {Array<{ name: string, bytes: Uint8Array|ArrayBuffer }>} files
  * @param {{ signal?: AbortSignal, limits?: object, onProgress?: (done: number, total: number) => void }} [opts]
  *   `limits`: lib/zipread.js unpackFile bounds; `onProgress`: files read of the files known, a
  *   dropped file counting one until it is unpacked, then as the plain files inside it (at least one)
- * @returns {Promise<{ dmarc: AggregateReport[], tls: import('./tlsrpt.js').TlsReport[], problems: ReportProblem[], read: number }>}
- *   `read`: the plain files looked at. Rejects only with an AbortError.
+ * @returns {Promise<{ dmarc: AggregateReport[], tls: import('./tlsrpt.js').TlsReport[], problems: ReportProblem[], read: number,
+ *   files: number, stopped: boolean }>} `read`: the plain files looked at; `files`: the dropped files read, all of them
+ *   unless stopped (then those done and the one it cut once unpacked); `stopped`: a Stop ended the read, which then
+ *   resolves too.
  */
 export async function readReportFiles(files, { signal, limits = {}, onProgress = null } = {}) {
-  const out = { dmarc: [], tls: [], problems: [], read: 0 };
+  const out = { dmarc: [], tls: [], problems: [], read: 0, files: 0, stopped: false };
   const list = Array.isArray(files) ? files : [];
   const maxBytes = Number.isFinite(limits.maxEntryBytes) ? limits.maxEntryBytes : ZIP_LIMITS.maxEntryBytes;
   let done = 0;
@@ -508,24 +512,32 @@ export async function readReportFiles(files, { signal, limits = {}, onProgress =
     }
     throwIfAborted(signal);
   };
-  for (const file of list) {
-    await breathe();
-    if (out.read >= MAX_REPORT_FILES) {
-      // Full: the rest is named, not unpacked.
-      out.problems.push({ path: String(file && file.name ? file.name : 'file'), code: 'too-many', detail: `${MAX_REPORT_FILES}` });
-      step();
-      continue;
-    }
-    const unpacked = await unpackFile(file, { ...limits, signal });
-    out.problems.push(...unpacked.problems);
-    // From here the dropped file counts as the plain files inside it.
-    total += Math.max(unpacked.files.length, 1) - 1;
-    if (!unpacked.files.length) step();
-    for (const f of unpacked.files) {
+  try {
+    for (const file of list) {
       await breathe();
-      readOne(f, out, maxBytes);
-      step();
+      if (out.read >= MAX_REPORT_FILES) {
+        // Full: the rest is named, not unpacked.
+        out.problems.push({ path: String(file && file.name ? file.name : 'file'), code: 'too-many', detail: `${MAX_REPORT_FILES}` });
+        out.files += 1;
+        step();
+        continue;
+      }
+      const unpacked = await unpackFile(file, { ...limits, signal });
+      out.problems.push(...unpacked.problems);
+      out.files += 1;
+      // From here the dropped file counts as the plain files inside it.
+      total += Math.max(unpacked.files.length, 1) - 1;
+      if (!unpacked.files.length) step();
+      for (const f of unpacked.files) {
+        await breathe();
+        readOne(f, out, maxBytes);
+        step();
+      }
     }
+  } catch (err) {
+    // A Stop: what was read before it stays (unpackFile and the reader reject with nothing else).
+    if (!(err && (err.name === 'AbortError' || err.name === 'TimeoutError'))) throw err;
+    out.stopped = true;
   }
   return out;
 }

@@ -27,11 +27,14 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - appFiles: the app's own files from this site (scripts, styles, wordlists, the sample
  *   certificate) — nothing the user typed;
  * - nothing: a public list or a quota read (the IANA RDAP bootstrap, Globalping's free quota);
- * - dnsQuestions: DNS names and record types (a DoH question);
+ * - dnsQuestions: DNS names and record types (a DoH question, or one a probe asks: Globalping's
+ *   DNS check of Zone File › New name servers);
+ * - nameServers: the name servers such a probe asks, by host name or address;
  * - domains: domain and host names searched or looked up;
  * - hostnames: host names a check from the internet connects to (Globalping: Domain Health's
  *   MTA-STS policy, Renewal readiness's HTTP-01 test);
- * - ipNamePairs: public IP address, host name and port together (Globalping: SSL Targets › Verify);
+ * - ipNamePairs: public IP address, host name and port together (Globalping: SSL Targets › Verify,
+ *   Retire an IP › Compare the old and the new server, which also sends the path);
  * - ipAddresses: IP addresses and networks;
  * - asNumbers: AS numbers;
  * - certSerial: a certificate's serial number;
@@ -39,8 +42,8 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - measurementIds: ids the service gave out, sent back to read the results.
  */
 export const DATA_KINDS = Object.freeze([
-  'appFiles', 'nothing', 'dnsQuestions', 'domains', 'hostnames', 'ipNamePairs', 'ipAddresses', 'asNumbers', 'certSerial', 'keyHash',
-  'measurementIds'
+  'appFiles', 'nothing', 'dnsQuestions', 'nameServers', 'domains', 'hostnames', 'ipNamePairs', 'ipAddresses', 'asNumbers', 'certSerial',
+  'keyHash', 'measurementIds'
 ]);
 
 /** What a service is for (the ledger's second line). */
@@ -155,10 +158,13 @@ export const EGRESS_SERVICES = Object.freeze([
     id: 'globalping', name: 'Globalping', role: 'probes', hosts: ['api.globalping.io'],
     endpoints: [
       ep('limits', ['nothing'], { path: '/*/limits' }),
-      // One endpoint for every check: lib/globalping.js says whether the body sends an address (Verify)
-      // or a host name alone (MTA-STS, HTTP-01); a request without its note may have sent either.
-      ep('create', ['hostnames', 'ipNamePairs'], {
-        path: '/*/measurements', notes: { 'host-target': ['hostnames'], 'ip-target': ['ipNamePairs'] }
+      // One endpoint for every check: lib/globalping.js says whether the body sends an address
+      // (Verify, the old-versus-new server comparison), a host name alone (MTA-STS, HTTP-01) or a DNS
+      // question for a name server (Zone File › New name servers); a request without its note may
+      // have sent any of them.
+      ep('create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs'], {
+        path: '/*/measurements',
+        notes: { 'host-target': ['hostnames'], 'ip-target': ['ipNamePairs'], 'dns-query': ['dnsQuestions', 'nameServers'] }
       }),
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]

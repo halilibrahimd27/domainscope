@@ -31,7 +31,7 @@ import { certspotterIssuersUrl, crtshIssuersUrl } from '../../assets/js/lib/pass
 import { announcedPrefixesUrl } from '../../assets/js/lib/ptrsweep.js';
 import { RIPESTAT_BASE, RIPESTAT_SOURCEAPP, IPWHOIS_BASE, HACKERTARGET_REVERSE_IP, THC_REVERSE_IP } from '../../assets/js/lib/ipintel.js';
 import { IANA_BOOTSTRAP, RDAP_ORG, rdapDomain } from '../../assets/js/lib/rdap.js';
-import { GLOBALPING_API, createGlobalping, httpsGetRequest } from '../../assets/js/lib/globalping.js';
+import { GLOBALPING_API, createGlobalping, httpsGetRequest, dnsQueryRequest } from '../../assets/js/lib/globalping.js';
 import { crtshKeyUrl } from '../../assets/js/lib/keycontinuity.js';
 import { startEgressMeter, egressLog, egressMeterStatus } from '../../assets/js/ui/egress-meter.js';
 
@@ -290,9 +290,10 @@ describe('the registry', () => {
       [`${GLOBALPING_API}/limits`, 'globalping', 'limits', ['nothing']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['ipNamePairs'], ['ip-target']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames'], ['host-target']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['dnsQuestions', 'nameServers'], ['dns-query']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs'], ['host-target', 'ip-target']],
-      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs'], ['rdap']],
-      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs'], ['rdap']],
+      [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs']],
       [`${GLOBALPING_API}/measurements/AbCdEf123`, 'globalping', 'result', ['measurementIds']]
     ];
     for (const [url, service, endpoint, sends, notes = []] of cases) {
@@ -502,12 +503,19 @@ test('the senders note what the URL cannot say: a measurement\'s target kind, a 
     // Verify's origin check: an address with the host name and port (a body as httpsCheckRequest builds it).
     await gp.create({ type: 'http', target: '203.0.113.7', limit: 1, timeout: 10, measurementOptions: { protocol: 'HTTPS', port: 443, request: { method: 'HEAD', host: 'www.example.com', path: '/' } } });
     assert.deepEqual(gpRow().sends, ['hostnames', 'ipNamePairs']);
+    // Retire an IP's old-versus-new server comparison: an address with the host name, path and port
+    // (a body as httpsGetAtRequest builds it; it refuses documentation addresses).
+    await gp.create({ type: 'http', target: '203.0.113.8', limit: 1, timeout: 10, measurementOptions: { protocol: 'HTTPS', port: 443, request: { method: 'GET', host: 'www.example.com', path: '/health' } } });
+    assert.deepEqual(gpRow().sends, ['hostnames', 'ipNamePairs']);
+    // Zone File › New name servers: a DNS question asked at the name server named.
+    await gp.create(dnsQueryRequest({ name: 'www.example.com', type: 'A', resolver: 'ns1.example.net' }));
+    assert.deepEqual(gpRow().sends, ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs']);
     // RDAP: the server the bootstrap named is the registry's, by lib/rdap.js's note.
     const r = await rdapDomain('www.example.com', { fetchImpl, fallback: false });
     assert.equal(r.ok, true);
     const rdapRow = ledgerRows(log.snapshot()).find((row) => row.host === 'rdap.example.net');
     assert.deepEqual([rdapRow.kind, rdapRow.serviceId, rdapRow.sends], ['service', 'rdap', ['domains']]);
-    assert.deepEqual(log.snapshot().entries.flatMap((e) => e.notes).sort(), ['host-target', 'ip-target', 'rdap']);
+    assert.deepEqual(log.snapshot().entries.flatMap((e) => e.notes).sort(), ['dns-query', 'host-target', 'ip-target', 'rdap']);
   } finally {
     off();
   }
@@ -536,6 +544,8 @@ const CALL_SITES = {
   'assets/js/lib/globalping.js': ['globalping'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],
   'assets/js/lib/keycontinuity.js': ['crtsh'],
+  // the CCADB intermediate list, from this site (assets/data/intermediates/)
+  'assets/js/lib/chainfix.js': ['self'],
   'assets/js/lib/wordlist.js': ['self'],
   'assets/js/lib/scanner.js': [],
   'assets/js/lib/health.js': [],
@@ -570,6 +580,9 @@ const LINK_HOSTS = {
   // the SVG namespace, a name and never a request
   'assets/js/ui/dom.js': ['www.w3.org'],
   'assets/js/ui/verify-panel.js': ['globalping.io'],
+  'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
+  // an example CAA accounturi in the field's placeholder, never requested
+  'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
   'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };

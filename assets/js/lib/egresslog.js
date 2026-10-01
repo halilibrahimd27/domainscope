@@ -91,8 +91,8 @@ export function countRequests(entries, pageOrigin) {
 const noteListeners = new Set();
 
 /**
- * Say what a request is about to carry when its URL cannot (lib/globalping.js: 'ip-target' or
- * 'host-target'; lib/rdap.js: 'rdap', a registry's server), just before the fetch; the meter
+ * Say what a request is about to carry when its URL cannot (lib/globalping.js: 'ip-target',
+ * 'host-target' or 'dns-query'; lib/rdap.js: 'rdap', a registry's server), just before the fetch; the meter
  * attaches it to the signature. A fixed word, never a value: anything else is dropped.
  * @param {string|URL} url
  * @param {string} note

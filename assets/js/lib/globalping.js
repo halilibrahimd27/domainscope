@@ -725,9 +725,11 @@ export function createGlobalping({
     }
     throwIfAborted(signal);
     const payload = JSON.stringify(body);
-    // About › What this page sent: whether this body sends an address (with the host name and port,
-    // Verify) or a host name alone (MTA-STS, HTTP-01) — the kind, never the value.
-    const note = typeof body.target === 'string' && ipVersion(body.target) ? 'ip-target' : 'host-target';
+    // About › What this page sent: whether this body sends an address (with the host name and port:
+    // Verify, the old-versus-new server comparison), a host name alone (MTA-STS, HTTP-01) or a DNS
+    // question for a name server (Zone File › New name servers) — the kind, never the value.
+    const note = body.type === 'dns' ? 'dns-query'
+      : typeof body.target === 'string' && ipVersion(body.target) ? 'ip-target' : 'host-target';
     let anonRetried = false;
     let burstRetried = false;
     let gatewayRetried = false;

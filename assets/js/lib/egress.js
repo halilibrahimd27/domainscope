@@ -39,15 +39,17 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - asNumbers: AS numbers;
  * - certSerial: a certificate's serial number;
  * - keyHash: the SHA-256 of a certificate's public key;
- * - measurementIds: ids the service gave out, sent back to read the results.
+ * - measurementIds: ids the service gave out, sent back to read the results;
+ * - apiToken: the user's own API token for that service, in a request header (Zone File › Fetch
+ *   from deSEC / DigitalOcean: for one fetch, never stored).
  */
 export const DATA_KINDS = Object.freeze([
   'appFiles', 'nothing', 'dnsQuestions', 'nameServers', 'domains', 'hostnames', 'ipNamePairs', 'ipAddresses', 'asNumbers', 'certSerial',
-  'keyHash', 'measurementIds'
+  'keyHash', 'measurementIds', 'apiToken'
 ]);
 
-/** What a service is for (the ledger's second line). */
-export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes']);
+/** What a service is for (the ledger's second line). `dnsHosting`: the user's own DNS provider. */
+export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes', 'dnsHosting']);
 
 /**
  * What this page never sends anywhere, whatever the user does (About › What this page sent). The
@@ -168,6 +170,16 @@ export const EGRESS_SERVICES = Object.freeze([
       }),
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]
+  }),
+  // Zone File › Fetch from deSEC / DigitalOcean (lib/zonefetch.js): the zone name in the path, the
+  // user's token in the Authorization header, only after a click.
+  service({
+    id: 'desec', name: 'deSEC', role: 'dnsHosting', hosts: ['desec.io'],
+    endpoints: [ep('rrsets', ['domains', 'apiToken'], { path: '/api/*/domains/*/rrsets/' })]
+  }),
+  service({
+    id: 'digitalocean', name: 'DigitalOcean', role: 'dnsHosting', hosts: ['api.digitalocean.com'],
+    endpoints: [ep('records', ['domains', 'apiToken'], { path: '/*/domains/*/records' })]
   })
 ]);
 

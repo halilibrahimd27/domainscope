@@ -59,6 +59,7 @@ import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { onceAsync } from '../lib/util.js';
 import { ParityTab, freshParity, stopParity, generatedKeys as parityKeys, reasonKey as parityReasonKey } from '../ui/parity-panel.js';
+import { ZoneFetchPanel, stopZoneFetch, generatedKeys as fetchKeys } from '../ui/zone-fetch.js';
 
 /** Route id. */
 export const id = 'zone';
@@ -166,11 +167,11 @@ export const SAMPLES = Object.freeze([
 
 const EN = {
   'zone.privacyTitle': 'Stays in this tab',
-  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm.',
+  'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm. Fetch from deSEC or DigitalOcean sends only the zone name and your API token, to that provider.',
   'zone.import.title': 'Import a zone file',
   'zone.import.subtitle': 'Drop it, choose it or paste it — the format is detected',
   'zone.drop.title': 'Drop a zone export here, choose a file or paste it',
-  'zone.drop.hint': 'BIND / Cloudflare export, Cloudflare API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
+  'zone.drop.hint': 'BIND / Cloudflare export, Cloudflare, deSEC or DigitalOcean API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
   'zone.paste.summary': '…or paste the text',
   'zone.paste.label': 'Zone file text',
   'zone.import': 'Import',
@@ -214,6 +215,8 @@ const EN = {
   'zone.format.route53': 'AWS Route 53 (JSON)',
   'zone.format.octodns': 'octoDNS (YAML)',
   'zone.format.plesk-info': 'Plesk dns --info (unverified format)',
+  'zone.format.desec-api': 'deSEC API (JSON)',
+  'zone.format.digitalocean-api': 'DigitalOcean API (JSON)',
   'zone.dialect.cloudflare': 'Cloudflare export (BIND)',
   'zone.dialect.cpanel': 'cPanel',
   'zone.dialect.directadmin': 'DirectAdmin',
@@ -416,11 +419,13 @@ const EN = {
   'zone.fatal.NOT_TEXT': 'This is not a text file (or it is UTF-16 without a byte-order mark).',
   'zone.fatal.NOT_A_ZONE': 'This does not look like a DNS zone export.',
   'zone.fatal.INVALID_JSON': 'This looks like JSON but cannot be read.',
-  'zone.fatal.UNSUPPORTED_JSON': 'This JSON is neither a Route 53 nor a Cloudflare record listing.',
+  'zone.fatal.UNSUPPORTED_JSON': 'This JSON is not a record listing of Route 53, Cloudflare, deSEC or DigitalOcean.',
   'zone.fatal.YAML_UNSUPPORTED': 'This YAML uses a feature that is not supported. Use octodns-dump to get a flat file.',
   'zone.fatal.ORIGIN_REQUIRED': 'Enter the zone name: this file uses relative names.',
   'zone.fatal.ORIGIN_MISMATCH': 'These files belong to different zones ({origins}). Import one zone at a time.',
   'zone.fatal.API_ERROR': 'This is a Cloudflare API error, not a record listing. Check the API token and try again.',
+  'zone.fatal.API_ERROR.desec': 'This is a deSEC API error, not a record listing: “{message}”',
+  'zone.fatal.API_ERROR.digitalocean': 'This is a DigitalOcean API error, not a record listing: “{message}”',
   'zone.fatal.hint.pem': 'It is a certificate. Open it in Certificate.',
   'zone.fatal.hint.html': 'It is a web page. Save the export itself, not the page around it.',
   'zone.fatal.hint.gzip': 'It is compressed. Unzip it first.',
@@ -434,11 +439,11 @@ const EN = {
 
 const TR = {
   'zone.privacyTitle': 'Bu sekmede kalır',
-  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir.',
+  'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir. deSEC ya da DigitalOcean’dan getir ise yalnızca zone adını ve API anahtarınızı o sağlayıcıya gönderir.',
   'zone.import.title': 'Zone dosyası içe aktar',
   'zone.import.subtitle': 'Bırakın, seçin ya da yapıştırın — biçim otomatik algılanır',
   'zone.drop.title': 'Zone dışa aktarımını buraya bırakın, dosya seçin ya da yapıştırın',
-  'zone.drop.hint': 'BIND / Cloudflare dışa aktarımı, Cloudflare API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
+  'zone.drop.hint': 'BIND / Cloudflare dışa aktarımı, Cloudflare, deSEC ya da DigitalOcean API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
   'zone.paste.summary': '…ya da metni yapıştırın',
   'zone.paste.label': 'Zone dosyası metni',
   'zone.import': 'İçe aktar',
@@ -482,6 +487,8 @@ const TR = {
   'zone.format.route53': 'AWS Route 53 (JSON)',
   'zone.format.octodns': 'octoDNS (YAML)',
   'zone.format.plesk-info': 'Plesk dns --info (doğrulanmamış biçim)',
+  'zone.format.desec-api': 'deSEC API (JSON)',
+  'zone.format.digitalocean-api': 'DigitalOcean API (JSON)',
   'zone.dialect.cloudflare': 'Cloudflare dışa aktarımı (BIND)',
   'zone.dialect.cpanel': 'cPanel',
   'zone.dialect.directadmin': 'DirectAdmin',
@@ -684,11 +691,13 @@ const TR = {
   'zone.fatal.NOT_TEXT': 'Bu bir metin dosyası değil (ya da bayt sırası işareti olmayan UTF-16).',
   'zone.fatal.NOT_A_ZONE': 'Bu bir DNS zone dışa aktarımına benzemiyor.',
   'zone.fatal.INVALID_JSON': 'JSON’a benziyor ama okunamıyor.',
-  'zone.fatal.UNSUPPORTED_JSON': 'Bu JSON, Route 53 ya da Cloudflare kayıt listesi değil.',
+  'zone.fatal.UNSUPPORTED_JSON': 'Bu JSON; Route 53, Cloudflare, deSEC ya da DigitalOcean kayıt listesi değil.',
   'zone.fatal.YAML_UNSUPPORTED': 'Bu YAML desteklenmeyen bir özellik kullanıyor. Düz bir dosya için octodns-dump kullanın.',
   'zone.fatal.ORIGIN_REQUIRED': 'Zone adını girin: bu dosya göreli adlar kullanıyor.',
   'zone.fatal.ORIGIN_MISMATCH': 'Bu dosyalar farklı zone’lara ait ({origins}). Her seferinde tek zone içe aktarın.',
   'zone.fatal.API_ERROR': 'Bu bir kayıt listesi değil, Cloudflare API hatası. API anahtarını kontrol edip yeniden deneyin.',
+  'zone.fatal.API_ERROR.desec': 'Bu bir kayıt listesi değil, deSEC API hatası: “{message}”',
+  'zone.fatal.API_ERROR.digitalocean': 'Bu bir kayıt listesi değil, DigitalOcean API hatası: “{message}”',
   'zone.fatal.hint.pem': 'Bu bir sertifika. Sertifika aracında açın.',
   'zone.fatal.hint.html': 'Bu bir web sayfası. Sayfayı değil, dışa aktarımın kendisini kaydedin.',
   'zone.fatal.hint.gzip': 'Sıkıştırılmış. Önce açın.',
@@ -715,6 +724,8 @@ const ISSUE_TEXT = {
   UNPARSED_LINE: ['This line could not be understood: {snippet}', 'Bu satır anlaşılamadı: {snippet}'],
   PARTIAL_EXPORT: ['Only {have} records are in this export: it is incomplete. Cloudflare: add ?per_page=5000000 or drop every page together. Route 53: run the AWS CLI without --max-items.', 'Bu dışa aktarımda yalnızca {have} kayıt var: eksik. Cloudflare: ?per_page=5000000 ekleyin ya da tüm sayfaları birlikte bırakın. Route 53: AWS CLI’ı --max-items olmadan çalıştırın.'],
   OWNER_MISSING_TRAILING_DOT: ['“{intended}” has no trailing dot in the file, so DNS serves it as {name}, almost certainly not what was meant.', '“{intended}” dosyada sonda nokta olmadan yazılmış; DNS onu {name} olarak sunar, kastedilen büyük olasılıkla bu değil.'],
+  'PARTIAL_EXPORT.desec': ['Only {have} of the {total} record sets were read: deSEC lists 500 at a time and hides the link to its next page from browsers, so a record type with more than 500 sets stops at 500. Export the zone with curl (?cursor=) and drop every page here.', '{total} kayıt kümesinin yalnızca {have} tanesi okunabildi: deSEC kayıtları 500’erli listeler ve sonraki sayfanın bağlantısını tarayıcılardan gizler; bu yüzden 500’den fazla kümesi olan bir kayıt türü 500’de kalır. Zone’u curl ile (?cursor=) dışa aktarıp tüm sayfaları buraya bırakın.'],
+  'PARTIAL_EXPORT.digitalocean': ['Only {have} of the {total} records are in this listing: it is incomplete. Fetch the zone again, or drop every page of the listing together.', 'Bu listede {total} kaydın yalnızca {have} tanesi var: liste eksik. Zone’u yeniden getirin ya da listenin tüm sayfalarını birlikte bırakın.'],
   RECORDS_TRUNCATED: ['Only the first {max} records were read.', 'Yalnızca ilk {max} kayıt okundu.'],
   'RECORDS_TRUNCATED.entries': ['Only the first {max} entries were read.', 'Yalnızca ilk {max} girdi okundu.'],
   'RECORDS_TRUNCATED.documents': ['Only the first {max} pasted documents were read.', 'Yapıştırılan belgelerin yalnızca ilk {max} tanesi okundu.'],
@@ -785,6 +796,9 @@ export function generatedKeys() {
   for (const f of ZONE_FORMATS) keys.push(`zone.format.${f}`);
   for (const d of ZONE_DIALECTS) keys.push(`zone.dialect.${d}`);
   for (const hnt of NOT_A_ZONE_HINTS) keys.push(`zone.fatal.hint.${hnt}`);
+  for (const [code, providers] of Object.entries(FATAL_PROVIDERS)) for (const p of providers) keys.push(`zone.fatal.${code}.${p}`);
+  // Fetch from deSEC / DigitalOcean (ui/zone-fetch.js).
+  keys.push(...fetchKeys());
   for (const tab of ZONE_TABS) keys.push(`zone.tab.${tab}`);
   // The New name servers tab: its own codes, and every drift reason as the tab words it.
   keys.push(...parityKeys());
@@ -796,8 +810,24 @@ export function generatedKeys() {
 const ISSUE_VARIANTS = Object.freeze({
   UNBALANCED_PAREN: (p) => (p.kind === 'close' ? 'close' : null),
   BAD_TTL: (p) => (p.directive ? 'directive' : null),
-  RECORDS_TRUNCATED: (p) => (p.unit === 'entries' || p.unit === 'documents' ? p.unit : null)
+  RECORDS_TRUNCATED: (p) => (p.unit === 'entries' || p.unit === 'documents' ? p.unit : null),
+  PARTIAL_EXPORT: (p) => (p.provider === 'desec' || p.provider === 'digitalocean' ? p.provider : null)
 });
+
+/** Fatal codes whose text names the provider of an API error (`zone.fatal.<CODE>.<provider>`). */
+const FATAL_PROVIDERS = Object.freeze({ API_ERROR: Object.freeze(['desec', 'digitalocean']) });
+
+/**
+ * The i18n key of a fatal parse issue: `zone.fatal.<CODE>`, or the provider's variant of an API error
+ * (a Cloudflare error has none: its text is the code's own).
+ * @param {{ code: string, params?: object }} fatal
+ * @returns {string}
+ */
+export function fatalKey(fatal) {
+  const provider = fatal && fatal.params ? fatal.params.provider : null;
+  const list = fatal && Object.prototype.hasOwnProperty.call(FATAL_PROVIDERS, fatal.code) ? FATAL_PROVIDERS[fatal.code] : [];
+  return list.includes(provider) ? `zone.fatal.${fatal.code}.${provider}` : `zone.fatal.${fatal && fatal.code}`;
+}
 
 /**
  * The i18n key of a parse issue: `zone.issue.<CODE>`, or a variant where one sentence cannot fit
@@ -1177,6 +1207,7 @@ function abortDrift() {
 function resetSession() {
   abortDrift();
   stopParity(S.parity);
+  stopZoneFetch();
   S = freshSession();
 }
 
@@ -1284,13 +1315,17 @@ export function mount(container, ctx) {
     }, 0);
   }
 
-  function importFiles(files) {
+  /**
+   * Import dropped, pasted or fetched files. `origin`: the zone name given with them (a fetch from a
+   * DNS provider: the zone it asked for), taken as confirmed.
+   */
+  function importFiles(files, { origin = '' } = {}) {
     const list = (files || []).slice(0, MAX_FILES).map((f) => ({ name: String(f.name || ''), size: Number(f.size) || (f.text || '').length, text: String(f.text || '') }));
     if ((files || []).length > MAX_FILES) toast(t('zone.tooManyFiles', { max: MAX_FILES }), { type: 'warn' });
     if (!list.length) return;
     S.files = list;
-    S.originInput = '';
-    S.confirmed = false;
+    S.originInput = origin;
+    S.confirmed = !!origin;
     S.rec = { group: 'all', proxiedOnly: false, search: '', line: 0 };
     S.tab = 'overview';
     ctx.setParams({ tab: null });
@@ -1443,6 +1478,10 @@ export function mount(container, ctx) {
       drop.el || drop,
       h('div', { class: 'zone-import-fields' }, originField.el, formatSel.el),
       pasteBox,
+      ZoneFetchPanel({
+        domainHint: S.originInput || (S.zone && S.zone.origin) || '',
+        onZone: (z) => importFiles([{ name: z.name, size: z.text.length, text: z.text }], { origin: z.origin })
+      }),
       S.zone ? null : samples,
       S.zone ? null : howto);
     // With a zone loaded the importer folds away (open while the zone name still needs a look).
@@ -1468,7 +1507,7 @@ export function mount(container, ctx) {
     return h('div', { class: 'zone-fatal', dataset: { code: fatal.code } }, Alert({
       variant: 'error',
       title: t('zone.fatal.title'),
-      message: t(`zone.fatal.${fatal.code}`, params),
+      message: t(fatalKey(fatal), params),
       children: hint || links.length ? h('div', { class: 'stack-sm' }, hint ? h('p', null, hint) : null, links.length ? h('div', { class: 'cluster' }, links) : null) : null
     }));
   }
@@ -2225,6 +2264,8 @@ let teardown = null;
 export function unmount() {
   if (teardown) teardown();
   teardown = null;
+  // A fetch from a DNS provider is short and belongs to the importer on screen: leaving stops it.
+  stopZoneFetch();
 }
 
 /**

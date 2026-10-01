@@ -21,8 +21,8 @@ export const MAX_NOTES = 8;
 const WORD_RE = /^[a-z][a-z_-]{0,39}$/;
 const PARAM_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const NOTE_RE = /^[a-z][a-z0-9-]{0,31}$/;
-/** Path words an API puts a value after (domain/<name>, measurements/<id> …): the next segment is '*'. */
-const VALUE_AFTER = new Set(['domain', 'ip', 'autnum', 'entity', 'nameserver', 'measurements', 'subdomains']);
+/** Path words an API puts a value after (domain/<name>, domains/<zone>, measurements/<id> …): the next segment is '*'. */
+const VALUE_AFTER = new Set(['domain', 'domains', 'ip', 'autnum', 'entity', 'nameserver', 'measurements', 'subdomains']);
 
 /**
  * Where a request went and the shape of what it asked: the path's plain lower-case words (an

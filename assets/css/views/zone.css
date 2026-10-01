@@ -35,6 +35,31 @@
   gap: 6px;
 }
 
+/* Fetch from deSEC / DigitalOcean (ui/zone-fetch.js) */
+.zone-fetch-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.zone-fetch-links {
+  gap: 4px 16px;
+  font-size: 13px;
+}
+
+.zone-fetch-status[data-state="running"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.zone-fetch-status .alert-message,
+.zone-fetch-status p {
+  overflow-wrap: anywhere;
+}
+
 .zone-howto .code-block,
 .zone-command {
   font-size: 12px;
@@ -469,7 +494,8 @@
 }
 
 @media (max-width: 640px) {
-  .zone-import-fields {
+  .zone-import-fields,
+  .zone-fetch-fields {
     grid-template-columns: minmax(0, 1fr);
   }
 

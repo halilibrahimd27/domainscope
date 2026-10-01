@@ -1,0 +1,7 @@
+{
+  "pagination": { "status": 400, "headers": { "content-type": "application/json" }, "body": { "detail": "Pagination required. You can query up to 500 items at a time (612 total). Please use the `first` page link (see Link header)." } },
+  "invalid-token": { "status": 401, "headers": { "content-type": "application/json" }, "body": { "detail": "Invalid token." } },
+  "no-credentials": { "status": 401, "headers": { "content-type": "application/json" }, "body": { "detail": "Authentication credentials were not provided." } },
+  "not-found": { "status": 404, "headers": { "content-type": "application/json" }, "body": { "detail": "Not found." } },
+  "throttled": { "status": 429, "headers": { "content-type": "application/json" }, "body": { "detail": "Request was throttled. Expected available in 3 seconds." } }
+}

@@ -248,6 +248,83 @@ const fakeGlobalpingScript = (table, servers) => `(() => {
   };
 })();`;
 
+/** A made-up API token, built from pieces (no file holds anything token-shaped). */
+const FETCH_TOKEN = ['e2e', 'made', 'up', 'token', '42'].join('-');
+
+/**
+ * The two DNS provider APIs of Zone File › Fetch, answered inside the page (installed before the app,
+ * so the egress meter counts the requests as it would real ones): deSEC from the fixture listing
+ * (`paged`: over 500 RRsets, read by type; `throttle-once`: one 429), DigitalOcean from the two
+ * fixture pages (`forbidden`: a token without domain:read). Only the fixture token is accepted; every
+ * request is logged with what it carried — whether the token was in the header, never its value.
+ */
+const fakeProviderScript = (desec, doPages, token) => `(() => {
+  const DESEC = ${JSON.stringify(desec)};
+  const DO = ${JSON.stringify(doPages)};
+  const TOKEN = ${JSON.stringify(token)};
+  const P = window.__prov = { calls: [], mode: { desec: 'ok', digitalocean: 'ok' }, delayMs: 0, throttled: false };
+  const prevFetch = window.fetch;
+  const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const isDesec = url.startsWith('https://desec.io/');
+    if (!isDesec && !url.startsWith('https://api.digitalocean.com/')) return prevFetch(input, init);
+    const headers = init.headers || {};
+    const auth = String(headers.authorization || headers.Authorization || '');
+    P.calls.push({
+      url, scheme: auth.split(' ')[0], tokenOk: auth === (isDesec ? 'Token ' : 'Bearer ') + TOKEN, tokenInUrl: url.includes(TOKEN),
+      credentials: init.credentials, redirect: init.redirect, referrerPolicy: init.referrerPolicy
+    });
+    if (P.delayMs) await new Promise((r) => setTimeout(r, P.delayMs));
+    const u = new URL(url);
+    if (isDesec) {
+      if (auth !== 'Token ' + TOKEN) return json({ detail: 'Invalid token.' }, 401);
+      const m = /^\\/api\\/v1\\/domains\\/([^/]+)\\/rrsets\\/$/.exec(u.pathname);
+      if (!m || m[1] !== 'example.com') return json({ detail: 'Not found.' }, 404);
+      if (P.mode.desec === 'throttle-once' && !P.throttled) {
+        P.throttled = true;
+        return json({ detail: 'Request was throttled. Expected available in 1 second.' }, 429);
+      }
+      const type = u.searchParams.get('type');
+      if (type) return json(DESEC.filter((s) => s.type === type));
+      if (P.mode.desec === 'paged') {
+        return json({ detail: 'Pagination required. You can query up to 500 items at a time (' + DESEC.length + ' total). Please use the \`first\` page link (see Link header).' }, 400);
+      }
+      return json(DESEC);
+    }
+    if (auth !== 'Bearer ' + TOKEN) return json({ id: 'Unauthorized', message: 'Unable to authenticate you' }, 401);
+    if (P.mode.digitalocean === 'forbidden') return json({ id: 'forbidden', message: 'You do not have permission to perform this action.' }, 403);
+    if (u.pathname !== '/v2/domains/example.com/records') return json({ id: 'not_found', message: 'The resource you requested could not be found.' }, 404);
+    return json(DO[Number(u.searchParams.get('page') || 1) - 1] || { domain_records: [], links: {}, meta: { total: 0 } });
+  };
+})();`;
+
+/** Open the importer (folded under "Replace" while a zone is loaded) and its fetch panel. */
+const openFetch = (page) => page.evaluate(() => {
+  const folded = document.querySelector('.zone-import-folded');
+  if (folded) folded.open = true;
+  const panel = document.querySelector('.zone-fetch');
+  if (!panel) throw new Error('no fetch panel');
+  panel.open = true;
+});
+
+/** Everything this page keeps where the token must never be: storage, the DOM, every IndexedDB store. */
+const keptAnywhere = (page) => page.evaluate(async () => {
+  const parts = [document.documentElement.outerHTML, location.href];
+  for (const st of [localStorage, sessionStorage]) for (let i = 0; i < st.length; i += 1) parts.push(st.key(i), st.getItem(st.key(i)));
+  const state = (await import('./assets/js/state.js')).state;
+  parts.push(JSON.stringify(state.getSession('zone') ?? null));
+  for (const info of (indexedDB.databases ? await indexedDB.databases() : [])) {
+    const db = await new Promise((res, rej) => { const r = indexedDB.open(info.name); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    for (const name of db.objectStoreNames) {
+      const all = await new Promise((res) => { const r = db.transaction(name).objectStore(name).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => res([]); });
+      parts.push(JSON.stringify(all));
+    }
+    db.close();
+  }
+  return parts.join('\n');
+});
+
 async function nodeChecks(run) {
   const V = await import('../../assets/js/views/zone.js');
   const O = await import('../../assets/js/lib/zoneorigins.js');
@@ -294,6 +371,12 @@ async function main() {
     // ns1 / ns2 serve the new zone (the same serial), ns9 refuses it, any other name does not resolve.
     await page.send('Page.addScriptToEvaluateOnNewDocument', {
       source: fakeGlobalpingScript(await newProviderTable(), { [NEW_NS[0]]: 2026092801, [NEW_NS[1]]: 2026092801, 'ns9.example.org': null })
+    });
+    // deSEC and DigitalOcean for Fetch, from the fixture listings.
+    const doPages = [JSON.parse(await readFile(path.join(ZONES, 'digitalocean-api-page1.json'), 'utf8')),
+      JSON.parse(await readFile(path.join(ZONES, 'digitalocean-api-page2.json'), 'utf8'))];
+    await page.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: fakeProviderScript(JSON.parse(await readFile(path.join(ZONES, 'desec-api.json'), 'utf8')), doPages, FETCH_TOKEN)
     });
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
@@ -980,6 +1063,155 @@ async function main() {
       await waitReady(page);
       await gotoRoute(page, 'zone');
       assert(!await page.evaluate(() => !!document.querySelector('.zone-summary')), 'reload forgets');
+    });
+
+    run.group('Fetch from deSEC / DigitalOcean (the provider APIs answered in the page)');
+    const fetchState = () => page.evaluate(() => {
+      const st = document.querySelector('.zone-fetch-status');
+      const token = document.querySelector('[data-role="zone-fetch-token"]');
+      return { state: st?.dataset.state || null, code: st?.dataset.code || null, text: st?.textContent || '', token: token ? token.value : null };
+    });
+    const typeFetch = async (domain, token) => {
+      await page.type('[data-role="zone-fetch-domain"]', domain);
+      await page.type('[data-role="zone-fetch-token"]', token);
+    };
+
+    await run.step('the panel: a password field, where the token goes and how to make it read-only; nothing sent before Fetch', async () => {
+      await openFetch(page);
+      const ui = await page.evaluate(() => {
+        const tok = document.querySelector('[data-role="zone-fetch-token"]');
+        return {
+          type: tok.type, autocomplete: tok.getAttribute('autocomplete'), spellcheck: tok.getAttribute('spellcheck'),
+          providers: [...document.querySelectorAll('.zone-fetch .seg-btn')].map((b) => b.dataset.value),
+          privacy: document.querySelector('.zone-fetch-privacy')?.textContent || '',
+          links: [...document.querySelectorAll('.zone-fetch-links a')].map((a) => [a.getAttribute('href'), a.getAttribute('rel'), a.target])
+        };
+      });
+      assertEqual([ui.type, ui.autocomplete, ui.spellcheck], ['password', 'off', 'false'], 'token field');
+      assertEqual(ui.providers, ['desec', 'digitalocean'], 'providers');
+      assert(/only to desec\.io/.test(ui.privacy) && /never saved/.test(ui.privacy) && /never logged/.test(ui.privacy) && /emptied/.test(ui.privacy), `privacy: ${ui.privacy}`);
+      assertEqual(ui.links.map((l) => l[0]), ['https://desec.io/tokens', 'https://desec.readthedocs.io/en/latest/auth/tokens.html#token-scoping-policies'], 'deSEC links');
+      assert(ui.links.every((l) => /noopener/.test(l[1] || '') && l[2] === '_blank'), `links open apart: ${JSON.stringify(ui.links)}`);
+      assert(/read-only/.test(await text(page, '.zone-fetch-how')), 'read-only advice');
+      assertEqual(await page.evaluate(() => window.__prov.calls.length), 0, 'nothing sent');
+      await shot(page, opts, 'zone-fetch-desktop-light-en');
+    });
+
+    await run.step('deSEC refuses a wrong token: 401 with deSEC\'s words, the field emptied, one request with the token in its header only', async () => {
+      await typeFetch('example.com', `wrong-${FETCH_TOKEN}`);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => document.querySelector('.zone-fetch-status')?.dataset.state === 'error', { message: 'error' });
+      const st = await fetchState();
+      assertEqual([st.code, st.token], ['auth', ''], 'code and empty field');
+      assert(/did not accept the token \(HTTP 401\)/.test(st.text) && /deSEC said: “Invalid token\.”/.test(st.text) && /paste the token again/.test(st.text), st.text);
+      const calls = await page.evaluate(() => window.__prov.calls);
+      assertEqual(calls.map((c) => [c.url, c.scheme, c.tokenInUrl, c.credentials, c.redirect, c.referrerPolicy]),
+        [['https://desec.io/api/v1/domains/example.com/rrsets/', 'Token', false, 'omit', 'error', 'no-referrer']], 'the request');
+      assert(!(await keptAnywhere(page)).includes('wrong-'), 'the wrong token is nowhere');
+      await shot(page, opts, 'zone-fetch-error-desktop-light-en');
+    });
+
+    await run.step('deSEC over 500 record sets: read type by type from the keyboard (Enter), imported as deSEC API with the zone name confirmed', async () => {
+      await page.evaluate(() => { window.__prov.mode.desec = 'paged'; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.press('Enter');
+      await page.waitFor(() => /deSEC API/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { timeout: 20000, message: 'imported' });
+      assertEqual(await text(page, '.zone-summary-title'), 'Zone example.com', 'zone');
+      assert(/deSEC API · example\.com/.test(await text(page, '.zone-files')), await text(page, '.zone-files'));
+      assert(!await page.evaluate(() => !!document.querySelector('[data-action="zone-confirm"]')), 'the zone name asked for is taken as confirmed');
+      const calls = await page.evaluate(() => window.__prov.calls);
+      assertEqual(calls.map((c) => c.url.replace('https://desec.io/api/v1/domains/example.com/rrsets/', '')),
+        ['', ...['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'NS', 'CAA', 'SRV', 'HTTPS', 'SVCB', 'TLSA', 'DS'].map((t) => `?type=${t}`)], 'base, then types until all 21 are in');
+      assert(calls.every((c) => c.tokenOk && !c.tokenInUrl), 'the token in every header, in no URL');
+      assertEqual(await count(page, '.zone-partial'), 0, 'complete');
+      const kept = await keptAnywhere(page);
+      assert(!kept.includes(FETCH_TOKEN), 'the token is in no storage, IndexedDB store, session value, URL or the DOM');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="zone-fetch-token"]')?.value ?? ''), '', 'field empty');
+      // The ledger names deSEC with what it got.
+      const row = await page.evaluate(async () => {
+        const { egressLog } = await import('./assets/js/ui/egress-meter.js');
+        const { ledgerRows } = await import('./assets/js/lib/egress.js');
+        const r = ledgerRows(egressLog.snapshot(), { origin: location.origin }).find((x) => x.serviceId === 'desec');
+        return r ? { name: r.name, role: r.role, requests: r.requests, sends: r.sends } : null;
+      });
+      assertEqual(row, { name: 'deSEC', role: 'dnsHosting', requests: 14, sends: ['domains', 'apiToken'] }, 'ledger row (the refused request and the 13 of this fetch)');
+    });
+
+    await run.step('the fetched zone is analysed like a dropped one: records, problems and the live check', async () => {
+      await clickTab(page, 'records');
+      assert(/27/.test(await text(page, '[data-role="zone-counts"]')), await text(page, '[data-role="zone-counts"]'));
+      await clickTab(page, 'problems');
+      assert(await count(page, '.zone-problems-all > li') > 0, 'problems listed');
+      await clickTab(page, 'live');
+      await page.click('[data-action="zone-live-run"]');
+      await page.waitFor(() => document.querySelector('.zone-drift')?.dataset.status === 'done', { timeout: 30000, message: 'live check done' });
+    });
+
+    await run.step('DigitalOcean: a token without domain:read says which scope is missing; then both pages, merged', async () => {
+      await openFetch(page);
+      await page.click('.zone-fetch .seg-btn[data-value="digitalocean"]');
+      assert(/only to api\.digitalocean\.com/.test(await text(page, '.zone-fetch-privacy')), 'privacy names DigitalOcean');
+      assert(/domain: read/.test(await text(page, '.zone-fetch-how')), 'scope advice');
+      await page.evaluate(() => { window.__prov.mode.digitalocean = 'forbidden'; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => document.querySelector('.zone-fetch-status')?.dataset.state === 'error', { message: 'error' });
+      const st = await fetchState();
+      assertEqual([st.code, st.token], ['forbidden', ''], 'forbidden');
+      assert(/domain: read scope/.test(st.text), st.text);
+      await page.evaluate(() => { window.__prov.mode.digitalocean = 'ok'; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => /DigitalOcean API/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { timeout: 20000, message: 'imported' });
+      const calls = await page.evaluate(() => window.__prov.calls);
+      assertEqual(calls.map((c) => [new URL(c.url).searchParams.get('page'), c.scheme, c.tokenOk]), [['1', 'Bearer', true], ['2', 'Bearer', true]], 'two pages');
+      assert(/16/.test(await text(page, '[data-role="zone-counts"]')), await text(page, '[data-role="zone-counts"]'));
+      assert(!(await keptAnywhere(page)).includes(FETCH_TOKEN), 'the token is nowhere');
+    });
+
+    await run.step('deSEC asks to slow down once: the wait is shown and the fetch goes on; Stop ends a slow one and imports nothing', async () => {
+      await openFetch(page);
+      await page.click('.zone-fetch .seg-btn[data-value="desec"]');
+      await page.evaluate(() => { window.__prov.mode.desec = 'throttle-once'; window.__prov.throttled = false; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => /waiting 1 s/.test(document.querySelector('.zone-fetch-status')?.textContent || ''), { message: 'the wait is shown' });
+      await page.waitFor(() => /deSEC API/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { timeout: 20000, message: 'imported after the wait' });
+      assertEqual(await page.evaluate(() => window.__prov.calls.length), 2, 'asked again once');
+      const files = await text(page, '.zone-files');
+      await openFetch(page);
+      await page.evaluate(() => { window.__prov.delayMs = 5000; window.__prov.mode.desec = 'ok'; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="zone-fetch-stop"]'), { message: 'running' });
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="zone-fetch-token"]').value), '', 'emptied while it runs');
+      await page.click('[data-action="zone-fetch-stop"]');
+      await page.waitFor(() => /Stopped\. Nothing was imported\./.test(document.querySelector('.zone-fetch-status')?.textContent || ''), { message: 'stopped' });
+      await sleep(5500);
+      assertEqual(await text(page, '.zone-files'), files, 'the loaded zone is unchanged');
+      await page.evaluate(() => { window.__prov.delayMs = 0; });
+    });
+
+    await run.step('the fetch panel at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty' });
+      for (const lang of ['tr', 'en']) {
+        await setLangUi(page, lang);
+        await openFetch(page);
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          for (const width of [320, 375]) {
+            await page.setViewport({ width, height: 800, mobile: true });
+            await openFetch(page);
+            await page.evaluate(() => document.querySelector('.zone-fetch').scrollIntoView());
+            await assertNoHorizontalScroll(page, `fetch ${width} ${scheme} ${lang}`);
+          }
+          await shot(page, opts, `zone-fetch-mobile-${scheme}-${lang}`);
+        }
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
     });
 
     run.group('Phone 390×844 and Turkish / dark');

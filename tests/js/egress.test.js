@@ -33,6 +33,7 @@ import { RIPESTAT_BASE, RIPESTAT_SOURCEAPP, IPWHOIS_BASE, HACKERTARGET_REVERSE_I
 import { IANA_BOOTSTRAP, RDAP_ORG, rdapDomain } from '../../assets/js/lib/rdap.js';
 import { GLOBALPING_API, createGlobalping, httpsGetRequest, dnsQueryRequest } from '../../assets/js/lib/globalping.js';
 import { crtshKeyUrl } from '../../assets/js/lib/keycontinuity.js';
+import { ZONE_PROVIDERS, getZoneProvider } from '../../assets/js/lib/zonefetch.js';
 import { startEgressMeter, egressLog, egressMeterStatus } from '../../assets/js/ui/egress-meter.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -73,6 +74,9 @@ describe('requestSignature', () => {
     assert.equal(requestSignature('https://otx.alienvault.com/api/v1/indicators/domain/intranet/passive_dns').path,
       '/api/*/indicators/domain/*/passive_dns', 'the fixed words after the value stay');
     assert.equal(requestSignature('https://ip.thc.org/api/v1/lookup/subdomains').path, '/api/*/lookup/subdomains');
+    // a zone name at a DNS provider's API, even one without a dot
+    assert.equal(requestSignature('https://desec.io/api/v1/domains/intranet/rrsets/?type=A').key, 'https://desec.io/api/*/domains/*/rrsets/?type');
+    assert.equal(requestSignature('https://api.digitalocean.com/v2/domains/example.com/records?per_page=200&page=1').path, '/*/domains/*/records');
   });
 
   test('relative URLs resolve against the page; anything but http(s) is not a request of the page', () => {
@@ -294,7 +298,14 @@ describe('the registry', () => {
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['hostnames', 'ipNamePairs'], ['host-target', 'ip-target']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs'], ['rdap']],
       [`${GLOBALPING_API}/measurements`, 'globalping', 'create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs']],
-      [`${GLOBALPING_API}/measurements/AbCdEf123`, 'globalping', 'result', ['measurementIds']]
+      [`${GLOBALPING_API}/measurements/AbCdEf123`, 'globalping', 'result', ['measurementIds']],
+      // Zone File › Fetch: the zone name and the user's token, to the provider's API only
+      ...ZONE_PROVIDERS.map((p) => [`${p.api}/domains/example.com/${p.id === 'desec' ? 'rrsets/' : 'records'}`, p.id,
+        p.id === 'desec' ? 'rrsets' : 'records', ['domains', 'apiToken']]),
+      ['https://desec.io/api/v1/domains/example.com/rrsets/?type=A&cursor=', 'desec', 'rrsets', ['domains', 'apiToken']],
+      ['https://api.digitalocean.com/v2/domains/example.com/records?per_page=200&page=2', 'digitalocean', 'records', ['domains', 'apiToken']],
+      // the token page, a link on the API host: no endpoint
+      [getZoneProvider('desec').tokenUrl, 'desec', null, ['domains', 'apiToken']]
     ];
     for (const [url, service, endpoint, sends, notes = []] of cases) {
       const c = classifyUrl(url, { notes });
@@ -544,6 +555,8 @@ const CALL_SITES = {
   'assets/js/lib/globalping.js': ['globalping'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],
   'assets/js/lib/keycontinuity.js': ['crtsh'],
+  // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
+  'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
   'assets/js/lib/chainfix.js': ['self'],
   'assets/js/lib/wordlist.js': ['self'],
@@ -577,6 +590,9 @@ const LINK_HOSTS = {
     'tiarap.org'
   ],
   'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
+  // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
+  // desec.io/tokens: a desec URL the registry gives no endpoint)
+  'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],
   // the SVG namespace, a name and never a request
   'assets/js/ui/dom.js': ['www.w3.org'],
   'assets/js/ui/verify-panel.js': ['globalping.io'],

@@ -1,0 +1,6 @@
+{
+  "unauthorized": { "status": 401, "headers": { "content-type": "application/json" }, "body": { "id": "Unauthorized", "message": "Unable to authenticate you" } },
+  "forbidden": { "status": 403, "headers": { "content-type": "application/json" }, "body": { "id": "forbidden", "message": "You do not have permission to perform this action." } },
+  "not-found": { "status": 404, "headers": { "content-type": "application/json" }, "body": { "id": "not_found", "message": "The resource you requested could not be found." } },
+  "too-many-requests": { "status": 429, "headers": { "content-type": "application/json" }, "body": { "id": "too_many_requests", "message": "API rate limit exceeded." } }
+}

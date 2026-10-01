@@ -241,7 +241,7 @@ registerStrings('tr', {
   'par.ns.hint': 'Yeni sağlayıcının verdiği host adları (adresleri de olur), her satıra bir tane ya da boşlukla ayrılmış. En fazla {max}.',
   'par.nsIssue.invalid': 'Bir ad sunucusu değil: {value}',
   'par.nsIssue.private': '{value} özel ya da dokümantasyon adresi: ölçüm noktası ona ulaşamaz. Aşağıdaki CLI komutu onu sizin ağınızdan sorar.',
-  'par.nsIssue.ipv6': '{value} bir IPv6 adresi: ölçüm noktası ad sunucularına IPv4 üzerinden sorar, bu yüzden bunu aşağıdaki CLI komutu sorar.',
+  'par.nsIssue.ipv6': '{value} bir IPv6 adresi: ölçüm noktaları ad sunucularına IPv4 üzerinden sorar; bu sunucuyu aşağıdaki CLI komutu sorgular.',
   'par.nsIssue.too-many': 'Yalnızca {max} ad sunucusu karşılaştırılır; {value} dışarıda kaldı.',
   'par.nsIssue.in-file': '{value} bu dosyanın kendi ad sunucularından biri: bu, mevcut sağlayıcı; onun yanıtlarını Canlı kontrol karşılaştırır.',
   'par.nsNeeded': 'Önce yeni sağlayıcının ad sunucularını girin.',
@@ -272,13 +272,13 @@ registerStrings('tr', {
   'par.finished.fix': 'Yeni ad sunucuları: düzeltilecek {count} sorun',
   'par.finished.check': 'Yeni ad sunucuları: eksik ya da farklı bir şey yok, ama bakılması gereken kayıtlar var',
   'par.finished.partial': {
-    zero: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı',
-    other: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, {count} kayıt kümesi karşılaştırılmadı'
+    zero: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, ama karşılaştırma tamamlanmadı',
+    other: 'Yeni ad sunucuları: şimdiye kadar eksik ya da farklı bir şey yok, ama {count} kayıt kümesi karşılaştırılmadı'
   },
   'par.finished.blocked': 'Yeni ad sunucuları: henüz hiçbiri zone’u sunmuyor',
   'par.finished.stopped': {
     zero: 'Yeni ad sunucuları: karşılaştırma tamamlanmadan durdu',
-    other: 'Yeni ad sunucuları: durdu, {count} kayıt kümesi karşılaştırılmadı'
+    other: 'Yeni ad sunucuları: karşılaştırma durdu, {count} kayıt kümesi karşılaştırılmadı'
   },
   'par.checkedAt': '{time} karşılaştırıldı · {count} ölçüm',
 
@@ -289,7 +289,7 @@ registerStrings('tr', {
   'par.head.uncompared': '{count} kayıt kümesi burada karşılaştırılmadı (CLI her kaydı karşılaştırır).',
   'par.head.partial': {
     zero: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama karşılaştırma tamamlanmadı (CLI her kaydı karşılaştırır).',
-    other: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama her şey karşılaştırılmadı: {count} kayıt kümesi karşılaştırılmadı (CLI her kaydı karşılaştırır).'
+    other: 'Şimdiye kadar eksik ya da farklı bir şey yok, ama {count} kayıt kümesi karşılaştırılmadı (CLI her kaydı karşılaştırır).'
   },
   'par.head.blocked': 'Henüz hiçbir yeni ad sunucusu {origin} zone’unu sunmuyor: zone’u yeni sağlayıcıda oluşturun (bu dosyayı oraya aktarın), sonra yeniden karşılaştırın.',
   'par.serials.differ': 'Ad sunucuları farklı SOA seri numaraları sunuyor: henüz eşitlenmemişler.',
@@ -365,7 +365,7 @@ registerStrings('tr', {
   'par.step.switch.blocked': 'Henüz geçiş yapmayın: önce yukarıdaki farkları düzeltin.',
   'par.step.switch.warn': {
     zero: 'Karşılaştırma tamamlanmadı. Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirmeden önce yeniden karşılaştırın ya da aşağıdaki CLI’ı çalıştırın.',
-    other: 'Her şey karşılaştırılmadı: {count} kayıt kümesi karşılaştırılmadı. Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirmeden önce yeniden karşılaştırın ya da aşağıdaki CLI’ı çalıştırın.'
+    other: '{count} kayıt kümesi karşılaştırılmadı. Kayıt kuruluşundaki NS kayıtlarını {nameservers} olarak değiştirmeden önce yeniden karşılaştırın ya da aşağıdaki CLI’ı çalıştırın.'
   },
   'par.step.wait.todo': 'Eski sağlayıcıdaki zone’u en az {hours} saat değiştirmeden yanıt verir durumda tutun: eski yetki devrini önbelleğe alan çözümleyiciler, süresi dolana kadar eski sunuculara sormaya devam eder. Bu sürede değiştirdiğiniz bir kaydı iki sağlayıcıda da değiştirin.',
   'par.step.after.todo': 'Sonra dışarıdan kontrol edin: bu sayfanın Canlı kontrolü ve Global DNS her yerde yeni sunucuların yanıtlarını göstermeli. Düşürdüğünüz TTL’leri geri yükseltin.',

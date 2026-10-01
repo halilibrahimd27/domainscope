@@ -25,7 +25,8 @@ import {
   classifyResolution, matchProviderByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP,
   isSharedProvider
 } from './netinfo.js';
-import { buildIpIndex, lookupServers } from './inventory.js';
+import { buildIpIndex, lookupServers, terminatesTls } from './inventory.js';
+import { applyTopology, orderByLoadBalancer } from './topology.js';
 import {
   getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES
 } from './wordlist.js';
@@ -1626,7 +1627,9 @@ export async function runScan(config = {}, hooks = {}) {
       resolution,
       classification,
       cert: hasCert ? certCovers(certHostnames, name) : null,
-      servers: matches.map(({ server, ip }) => ({ serverId: server.id, name: server.name, ip })),
+      // `through`: the answer is the server's shared (vip=) or public NAT (nat=) address
+      servers: matches.map(({ server, ip, through }) => (through
+        ? { serverId: server.id, name: server.name, ip, through } : { serverId: server.id, name: server.name, ip })),
       wildcardSuspect,
       ipHints: hintsByName.get(name) || [],
       candidateNetworks: [],
@@ -1997,8 +2000,10 @@ export async function runScan(config = {}, hooks = {}) {
   };
   const coveredOf = (host) => (host.cert ? host.cert.covered : null);
   for (const host of hosts) {
-    for (const { server, ip } of matchesByName.get(host.name) || []) {
-      groupOf(server).hosts.push({ name: host.name, ip, covered: coveredOf(host), via: 'dns' });
+    for (const { server, ip, through } of matchesByName.get(host.name) || []) {
+      const entry = { name: host.name, ip, covered: coveredOf(host), via: 'dns' };
+      if (through) entry.through = through;
+      groupOf(server).hosts.push(entry);
     }
   }
   for (const hint of originHintList) {
@@ -2012,27 +2017,34 @@ export async function runScan(config = {}, hooks = {}) {
     const zoneHosts = new Set(hint.reasons.filter((r) => r.kind === 'zone').map((r) => r.host));
     const targets = hosts.filter((x) => hint.historyHosts.has(x.name) || (general && x.classification.hidesOrigin));
     if (!targets.length) continue;
-    for (const { server } of lookupServers([hint.ip], ipIndex)) {
+    for (const { server, through } of lookupServers([hint.ip], ipIndex)) {
       const g = groupOf(server);
       for (const host of targets) {
         if (g.hosts.some((e) => e.name === host.name && e.ip === hint.ip)) continue;
-        g.hosts.push({ name: host.name, ip: hint.ip, covered: coveredOf(host), via: zoneHosts.has(host.name) ? 'zone' : 'hint' });
+        const entry = { name: host.name, ip: hint.ip, covered: coveredOf(host), via: zoneHosts.has(host.name) ? 'zone' : 'hint' };
+        if (through) entry.through = through;
+        g.hosts.push(entry);
       }
     }
   }
   for (const hint of originHintList) delete hint.historyHosts; // internal only
-  const serverGroups = [...groups.values()];
+  // The inventory topology (lib/topology.js): a load balancer's names reach its backends
+  // (entries with `lb`), and a server with terminates_tls=no needs no certificate. Without a
+  // topology key in the inventory the groups are exactly as before.
+  let serverGroups = applyTopology([...groups.values()], servers);
   for (const g of serverGroups) {
     const order = new Map(sortHostnames([...new Set(g.hosts.map((e) => e.name))]).map((n, i) => [n, i]));
     g.hosts.sort((a, b) => (VIA_RANK[a.via] ?? 9) - (VIA_RANK[b.via] ?? 9)
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
-    g.needsCert = g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false);
-    g.maybeNeedsCert = !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
+    const tls = terminatesTls(g.server);
+    g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false);
+    g.maybeNeedsCert = tls && !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
   }
   serverGroups.sort((a, b) => Number(b.needsCert) - Number(a.needsCert)
     || Number(b.maybeNeedsCert) - Number(a.maybeNeedsCert)
     || String(a.server.name ?? '').localeCompare(String(b.server.name ?? ''), undefined, { numeric: true, sensitivity: 'base' })
     || String(a.server.id ?? '').localeCompare(String(b.server.id ?? '')));
+  serverGroups = orderByLoadBalancer(serverGroups);
 
   /* ---- unmatched direct IPs --------------------------------------------- */
   const unmatched = new Map();
@@ -2073,7 +2085,7 @@ export async function runScan(config = {}, hooks = {}) {
     nxdomain: kindCount('nxdomain'),
     dangling: count((x) => x.classification.dangling),
     covered: count((x) => !!(x.cert && x.cert.covered)),
-    matchedServers: serverGroups.filter((g) => g.hosts.some((e) => e.via === 'dns')).length,
+    matchedServers: serverGroups.filter((g) => terminatesTls(g.server) && g.hosts.some((e) => e.via === 'dns' && !e.lb)).length,
     wildcardSuspects: count((x) => x.wildcardSuspect),
     // extensions
     unresolved: kindCount('unresolved'),

@@ -5,7 +5,7 @@
  */
 
 import { sortHostnames } from './domain.js';
-import { addressTargets } from './inventory.js';
+import { addressTargets, topologyTokens } from './inventory.js';
 import { normalizeIP } from './netinfo.js';
 
 /* ------------------------------------------------------------------------ */
@@ -257,6 +257,7 @@ export function scanServerRows(scan) {
       maybeNeedsCert: !!g.maybeNeedsCert,
       matched: true
     };
+    if (g.topology) base.topology = g.topology; // lib/topology.js TOPOLOGY_CSV_COLUMN reads it
     const hosts = Array.isArray(g.hosts) && g.hosts.length ? g.hosts : [null];
     for (const h of hosts) {
       rows.push({
@@ -351,7 +352,9 @@ function isIpRangeToken(token) {
  * name wins), so another server on the same address with a port of its own
  * still gets its line ("web02 203.0.113.10" after "web01 203.0.113.10:8443",
  * as the CLI scans both reading the inventory); a hint or an unmatched IP is
- * left out when any line has its address.
+ * left out when any line has its address. A server's topology keys follow its
+ * addresses (inventory.topologyTokens: `terminates_tls=no`, `backends=`, `vip=`,
+ * `nat=`), so the CLI skips a plain-HTTP backend and groups by load balancer.
  * @param {Array<object|string>} servers
  * @returns {string}
  */
@@ -359,7 +362,7 @@ export function targetsForCli(servers) {
   const seenIps = new Set();
   const seenTargets = new Set();
   const lines = [];
-  const add = (name, rawIp, server = null) => {
+  const add = (name, rawIp, server = null, keys = []) => {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip) return;
     const targets = server
@@ -368,7 +371,7 @@ export function targetsForCli(servers) {
     if (!targets.length) return;
     seenIps.add(ip);
     for (const target of targets) seenTargets.add(target);
-    lines.push([cliServerName(name), ...targets].filter(Boolean).join(' '));
+    lines.push([cliServerName(name), ...targets, ...keys].filter(Boolean).join(' '));
   };
   for (const item of Array.isArray(servers) ? servers : []) {
     if (!item) continue;
@@ -378,7 +381,8 @@ export function targetsForCli(servers) {
     }
     const server = item.server && typeof item.server === 'object' ? item.server : item;
     if (Array.isArray(server.ips) && server.ips.length) {
-      for (const ip of server.ips) add(server.name ?? server.id, ip, server);
+      const keys = topologyTokens(server, cliServerName);
+      for (const ip of server.ips) add(server.name ?? server.id, ip, server, keys);
       continue;
     }
     if (item.ip) {

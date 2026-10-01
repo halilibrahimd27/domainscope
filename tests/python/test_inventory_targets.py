@@ -324,22 +324,21 @@ class InventoryTopologyParity(unittest.TestCase):
             ('web03', [], False)])
         self.assertEqual(sos.TOPOLOGY_KEYS, ('ports', 'terminates_tls', 'vip', 'backends', 'nat'))
 
-    def test_targets_txt_with_topology_reads_back(self):
-        # What the web app's targets.txt writes for the fixture (views/inventory.js targetsText):
-        # the ports as ip:port tokens, the other keys as they are.
-        text = ('lb01 203.0.113.2:443 203.0.113.2:8443 backends=web01 vip=203.0.113.50\n'
-                'web01 10.0.0.21 terminates_tls=no\n'
-                'app01 10.0.0.30 nat=203.0.113.10\n')
-        inventory = sos.parse_inventory(text, 'targets.txt')
+    def test_the_web_apps_targets_txt_reads_back_to_the_same_topology(self):
+        # tests/fixtures/topology/targets.txt is what the web app writes for inventory.txt
+        # (views/inventory.js targetsText, tests/js/topology.test.js): the ports= as ip:port
+        # tokens, the other keys as they are. The CLI scans the same endpoints and skips and
+        # groups the same servers.
+        inventory = sos.parse_inventory((TOPOLOGY / 'targets.txt').read_text(encoding='utf-8'),
+                                        'targets.txt')
         self.assertEqual(inventory.warnings, [])
-        self.assertEqual(topology_model(inventory), {
-            'lb01': {'endpoints': ['203.0.113.2:443', '203.0.113.2:8443'], 'tlsPorts': [],
-                     'terminatesTls': None, 'vips': ['203.0.113.50'], 'nats': [],
-                     'backends': ['web01']},
-            'web01': {'endpoints': ['10.0.0.21'], 'tlsPorts': [], 'terminatesTls': False, 'vips': [],
-                      'nats': [], 'backends': []},
-            'app01': {'endpoints': ['10.0.0.30'], 'tlsPorts': [], 'terminatesTls': None, 'vips': [],
-                      'nats': ['203.0.113.10'], 'backends': []}})
+        source = sos.parse_inventory((TOPOLOGY / 'inventory.txt').read_text(encoding='utf-8'),
+                                     'inventory.txt')
+
+        def scanned(inv):
+            return {s.name: (topology_endpoints(s), s.gets_certificate, s.vips, s.nats, s.backends)
+                    for s in inv.servers}
+        self.assertEqual(scanned(inventory), scanned(source))
 
 
 if __name__ == '__main__':

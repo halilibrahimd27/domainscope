@@ -103,6 +103,17 @@
   overflow-wrap: anywhere;
 }
 
+/* A load balancer / a server that never gets the certificate (topology keys). */
+.inv-topo {
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.inv-topo .badge {
+  height: 18px;
+  font-size: 10.5px;
+}
+
 .inv-ip {
   display: inline-flex;
   flex-wrap: nowrap;

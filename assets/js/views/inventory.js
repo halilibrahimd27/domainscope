@@ -16,7 +16,8 @@ import {
 } from '../ui/components.js';
 import { downloadText } from '../ui/download.js';
 import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
-import { parseInventory, addressTargets, serverTargets } from '../lib/inventory.js';
+import { parseInventory, addressTargets, serverTargets, topologyTokens, terminatesTls } from '../lib/inventory.js';
+import { TopologyCard } from '../ui/topology.js';
 import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
 import { workspaceLabel } from '../ui/workspace-ui.js';
@@ -62,6 +63,16 @@ const EXAMPLES = [
     id: 'json',
     labelKey: 'inv.ex.json',
     text: '[\n  { "name": "web01", "ip": "10.0.1.11" },\n  { "name": "web02", "ips": ["10.0.1.12", "2001:db8::12"] }\n]\n'
+  },
+  {
+    id: 'topology',
+    labelKey: 'inv.ex.topology',
+    text: '# where TLS terminates: lb01 and lb02 share 203.0.113.50 and forward to web01 and web02\n'
+      + 'lb01   203.0.113.2  vip=203.0.113.50 backends=web01,web02\n'
+      + 'lb02   203.0.113.3  vip=203.0.113.50 backends=web01,web02\n'
+      + 'web01  10.0.1.11    terminates_tls=no\n'
+      + 'web02  10.0.1.12    ports=8443\n'
+      + 'app01  10.0.2.20    nat=203.0.113.10\n'
   }
 ];
 
@@ -118,6 +129,19 @@ registerStrings('en', {
   'inv.warn.PARSE.hostPort': 'Host name with a port — servers are matched by address here, so write the address with the port',
   'inv.warn.INVALID_IP.zone': 'IPv6 zone id — an address written with a zone (%eth0) cannot be a target with a port',
   'inv.warn.PARSE.sshPort': 'Ansible SSH port — a port on an Ansible host is its SSH port (ansible_port), not a TLS port: the CLI scans this server on its -p ports',
+  'inv.warn.TOPOLOGY': 'Topology key that could not be used',
+  'inv.warn.TOPOLOGY.ports': 'Invalid ports= — TLS ports are numbers from 1 to 65535, comma separated (ports=443,8443)',
+  'inv.warn.TOPOLOGY.terminatesTls': 'Invalid terminates_tls= — write yes or no',
+  'inv.warn.TOPOLOGY.vip': 'Invalid vip= — a shared address is an IP address without a port',
+  'inv.warn.TOPOLOGY.nat': 'Invalid nat= — a public address is an IP address without a port',
+  'inv.warn.TOPOLOGY.backends': 'Invalid backends= — list server names (or their addresses), comma separated',
+  'inv.warn.TOPOLOGY.unknownBackend': 'Unknown backend — no server of that name or address in the inventory',
+  'inv.warn.TOPOLOGY.selfBackend': 'A server cannot be its own backend',
+  'inv.warn.TOPOLOGY.conflict': 'terminates_tls given twice with different values — the first one stays',
+  'inv.warn.TOPOLOGY.noServer': 'Topology key without a server — write it after the server’s name and address',
+  'inv.warn.TOPOLOGY.groupVars': 'Group variables are not read for the topology — set it on each host',
+  'inv.badge.lb': 'load balancer',
+  'inv.badge.plain': 'no certificate',
   'inv.lineN': 'line {n}',
   'inv.wholeInput': 'input',
   'inv.formatsTitle': 'Supported formats & examples',
@@ -129,6 +153,8 @@ registerStrings('en', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
+  'inv.ex.topology': 'Topology',
+  'inv.topologyNote': 'Topology keys on a server’s line (or as CSV columns, Ansible host variables, JSON keys) say where TLS terminates: ports=443,8443 (its TLS ports, for addresses written without a port), terminates_tls=no (a plain-HTTP backend that never gets the certificate), vip= (an address an HA pair shares), backends=web01,web02 (a load balancer and the servers behind it) and nat= (the public address DNS answers with). SSL Targets and the CLI follow them.',
   'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too. An address written with a port (203.0.113.10:8443, [2001:db8::1]:8443) keeps it: the CLI scans it on that port instead of -p. In an Ansible INI inventory (a [group] section, or a line with ansible_* variables) the port of the host at the start of a line (203.0.113.10:2222) is Ansible’s SSH port, so that host is scanned on -p.'
 });
 
@@ -185,6 +211,19 @@ registerStrings('tr', {
   'inv.warn.PARSE.hostPort': 'Portlu host adı — burada sunucular adresle eşleştirilir; adresi portuyla yazın',
   'inv.warn.INVALID_IP.zone': 'IPv6 bölge kimliği (zone id) — bölgesiyle (%eth0) yazılan bir adres portlu bir hedef olamaz',
   'inv.warn.PARSE.sshPort': 'Ansible SSH portu — bir Ansible host adının ya da adresinin portu SSH portudur (ansible_port), TLS portu değil: CLI bu sunucuyu -p portlarından tarar',
+  'inv.warn.TOPOLOGY': 'Kullanılamayan topoloji anahtarı',
+  'inv.warn.TOPOLOGY.ports': 'Geçersiz ports= — TLS portları 1 ile 65535 arasında, virgülle ayrılmış sayılardır (ports=443,8443)',
+  'inv.warn.TOPOLOGY.terminatesTls': 'Geçersiz terminates_tls= — yes ya da no yazın',
+  'inv.warn.TOPOLOGY.vip': 'Geçersiz vip= — paylaşılan adres portsuz bir IP adresidir',
+  'inv.warn.TOPOLOGY.nat': 'Geçersiz nat= — genel adres portsuz bir IP adresidir',
+  'inv.warn.TOPOLOGY.backends': 'Geçersiz backends= — sunucu adlarını (ya da adreslerini) virgülle ayırarak yazın',
+  'inv.warn.TOPOLOGY.unknownBackend': 'Bilinmeyen arka uç sunucusu — envanterde bu ad ya da adreste bir sunucu yok',
+  'inv.warn.TOPOLOGY.selfBackend': 'Bir sunucu kendi arka ucu olamaz',
+  'inv.warn.TOPOLOGY.conflict': 'terminates_tls iki kez farklı değerle yazılmış — ilk değer geçerli',
+  'inv.warn.TOPOLOGY.noServer': 'Sunucusu olmayan topoloji anahtarı — sunucunun adından ve adresinden sonra yazın',
+  'inv.warn.TOPOLOGY.groupVars': 'Grup değişkenleri topoloji için okunmaz — her host için ayrı yazın',
+  'inv.badge.lb': 'yük dengeleyici',
+  'inv.badge.plain': 'sertifika gerekmez',
   'inv.lineN': '{n}. satır',
   'inv.wholeInput': 'girdi',
   'inv.formatsTitle': 'Desteklenen biçimler ve örnekler',
@@ -196,6 +235,8 @@ registerStrings('tr', {
   'inv.ex.ini': 'Ansible INI',
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
+  'inv.ex.topology': 'Topoloji',
+  'inv.topologyNote': 'Bir sunucunun satırındaki (ya da CSV sütunu, Ansible host değişkeni, JSON anahtarı olarak yazılan) topoloji anahtarları TLS’in nerede sonlandığını söyler: ports=443,8443 (portsuz yazılan adreslerinin TLS portları), terminates_tls=no (sertifikayı hiç almayan düz HTTP arka uç sunucusu), vip= (bir HA çiftinin paylaştığı adres), backends=web01,web02 (yük dengeleyici ve arkasındaki sunucular) ve nat= (DNS’in döndürdüğü genel adres). SSL Hedefleri ve CLI bunlara uyar.',
   'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır. Portuyla yazılan bir adres (203.0.113.10:8443, [2001:db8::1]:8443) portunu korur: CLI onu -p yerine o porttan tarar. Ansible INI envanterinde ([grup] bölümü ya da ansible_* değişkenli bir satır) satır başındaki host adının ya da adresin portu (203.0.113.10:2222) Ansible’ın SSH portudur; o sunucu -p portlarından taranır.'
 });
 
@@ -207,12 +248,15 @@ let teardown = null;
  * "name ip ip…" lines for the CLI's -t option, one per server. The name is made one CLI token
  * (lib/export.cliServerName), so "Web Server 1" or "#bastion" is neither split, merged with
  * another server nor read as a comment. An address written with a port keeps it
- * (lib/inventory.serverTargets: "web01 203.0.113.10:8443"), so the CLI scans the same ip:port.
+ * (lib/inventory.serverTargets: "web01 203.0.113.10:8443"), so the CLI scans the same ip:port;
+ * so does a server's `ports=`. Its other topology keys follow (lib/inventory.topologyTokens:
+ * "web01 10.0.0.21 terminates_tls=no", "lb01 203.0.113.2 backends=web01,web02 vip=203.0.113.50").
  * @param {Array<{ name: string, ips: string[], ports?: object }>} servers
  * @returns {string}
  */
 export function targetsText(servers) {
-  const lines = servers.filter((s) => s.ips.length).map((s) => [cliServerName(s.name), ...serverTargets(s)].filter(Boolean).join(' '));
+  const lines = servers.filter((s) => s.ips.length)
+    .map((s) => [cliServerName(s.name), ...serverTargets(s), ...topologyTokens(s, cliServerName)].filter(Boolean).join(' '));
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
@@ -298,7 +342,8 @@ export function mount(container, ctx) {
       Disclosure({
         summary: t('inv.formatsTitle'),
         className: 'inv-formats',
-        children: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-sm' }, t('inv.formatsNote')), examplesTabs)
+        children: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-sm' }, t('inv.formatsNote')),
+          h('p', { class: 'muted text-sm', dataset: { role: 'topology-note' } }, t('inv.topologyNote')), examplesTabs)
       }))
   });
 
@@ -338,7 +383,10 @@ export function mount(container, ctx) {
         exportValue: (s) => s.name,
         render: (s) => h('div', { class: 'inv-name' },
           h('span', { class: 'inv-name-main' }, s.name),
-          s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null)
+          s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null,
+          s.backends || !terminatesTls(s) ? h('span', { class: 'cluster inv-topo' },
+            s.backends ? Badge(t('inv.badge.lb'), { variant: 'accent', icon: 'git-branch' }) : null,
+            terminatesTls(s) ? null : Badge(t('inv.badge.plain'), { variant: 'ok', icon: 'unlock' })) : null)
       },
       {
         key: 'ips',
@@ -389,10 +437,14 @@ export function mount(container, ctx) {
     children: warningsList
   });
 
+  // Where TLS terminates (load balancers, VIPs, NAT): only for an inventory with topology keys.
+  const topologySlot = h('div', { class: 'inv-topology', dataset: { role: 'topology-slot' } });
+
   // No part of the editor's form: Ctrl/Cmd+Enter in the table's filter saves nothing.
   const resultsCol = h('div', { class: 'stack inv-results', dataset: { shortcutScope: 'results' } },
     h('div', { class: 'stat-grid inv-stats' }, stats.servers, stats.ips, stats.groups, stats.warnings),
     warningsCard,
+    topologySlot,
     Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));
 
   container.append(
@@ -434,6 +486,10 @@ export function mount(container, ctx) {
     stats.warnings.set({ value: warnings.length, variant: warnings.length ? 'warn' : 'default' });
     table.setRows(servers);
     targetsBtn.disabled = !servers.some((s) => s.ips.length);
+    clear(topologySlot);
+    const topology = TopologyCard(servers);
+    topologySlot.hidden = !topology;
+    if (topology) topologySlot.append(topology);
 
     clear(warningsList);
     warningsCard.hidden = warnings.length === 0;

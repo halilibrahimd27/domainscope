@@ -136,6 +136,30 @@ export function applyTopology(groups, servers) {
 }
 
 /**
+ * What a group's topology says, in English, for the CSV exports (the Servers CSV, the renewal
+ * work list): `load balancer for web01, web02`, `behind lb01 (plain HTTP, no certificate)`,
+ * `VIP 203.0.113.50 (lb01, lb02)`, `NAT 203.0.113.10 -> 10.0.0.30`, `TLS ports 443,8443`.
+ * @param {GroupTopology|null|undefined} t
+ * @returns {string[]}
+ */
+export function topologyNotes(t) {
+  if (!t) return [];
+  const out = [];
+  if (t.backends && t.backends.length) {
+    out.push(`load balancer for ${t.backends.map((b) => b.name).join(', ')}${t.terminatesTls ? '' : ' (passes TLS through)'}`);
+  }
+  if (t.behind && t.behind.length) out.push(`behind ${t.behind.join(', ')} (${t.terminatesTls ? 're-encrypts' : 'plain HTTP, no certificate'})`);
+  else if (!t.terminatesTls && !(t.backends && t.backends.length)) out.push('terminates_tls=no (no certificate)');
+  for (const v of t.vips || []) out.push(`VIP ${v.ip} (${v.servers.join(', ')})`);
+  for (const n of t.nats || []) out.push(`NAT ${n.ip} -> ${n.addresses.join(', ')}`);
+  if (t.tlsPorts && t.tlsPorts.length) out.push(`TLS ports ${t.tlsPorts.join(',')}`);
+  return out;
+}
+
+/** A `Topology` CSV column (lib/export toCsv) over rows carrying a {@link GroupTopology} as `topology`. */
+export const TOPOLOGY_CSV_COLUMN = Object.freeze({ key: 'topology', header: 'Topology', get: (row) => topologyNotes(row && row.topology).join('; ') });
+
+/**
  * Put each load balancer's backend groups right after it (keeping the order otherwise), so a
  * list of server groups reads as "lb01, then what is behind lb01". Groups no load balancer of
  * the list reached stay where they are.

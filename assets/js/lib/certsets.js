@@ -25,6 +25,7 @@
 
 import { certCovers, sortHostnames } from './domain.js';
 import { leafCertificates } from './x509.js';
+import { TOPOLOGY_CSV_COLUMN } from './topology.js';
 
 /** Why a loaded file adds no certificate to the renewal. */
 export const SKIP_ISSUES = Object.freeze(['no-certificate', 'ca-only', 'no-names']);
@@ -443,6 +444,8 @@ const resolves = (host) => !!host && !!host.resolution
  * @property {Record<string, PlanEntry[]>} cells set id → the names it needs from that set
  * @property {boolean} needsCert a DNS or zone-file name needs a certificate here
  * @property {boolean} maybe only origin hints point here
+ * @property {object} [topology] the server group's lib/topology.js GroupTopology (behind a load
+ *   balancer, a shared VIP, a NAT address), only when the inventory has topology keys
  */
 
 /**
@@ -456,6 +459,9 @@ const resolves = (host) => !!host && !!host.resolution
  * @property {Record<string, { names: number, rows: number, servers: number, addresses: number }>} perSet per set:
  *   the names assigned to it and the matrix rows needing it — `servers` of your inventory, `addresses`
  *   outside it (`rows` = both)
+ * @property {Array<{ server: { id: string, name: string, ips: string[] }, behind: string[], passthrough: boolean,
+ *   backends: string[] }>} plain servers the scan reached that never get a certificate (terminates_tls=no): a
+ *   plain-HTTP backend `behind` its load balancers, or a load balancer passing TLS through to its `backends`
  */
 
 /**
@@ -509,14 +515,25 @@ export function planRenewal(result, sets) {
   };
 
   const rows = [];
+  const plain = [];
   for (const g of Array.isArray(r.servers) ? r.servers : []) {
     if (!g || !g.server) continue;
+    if (g.topology && g.topology.terminatesTls === false) {
+      // terminates_tls=no: no set is installed here, whatever names reach it (lib/topology.js).
+      const s = g.server;
+      plain.push({
+        server: { id: String(s.id ?? s.name ?? ''), name: String(s.name ?? s.id ?? ''), ips: [...(s.ips || [])] },
+        behind: [...g.topology.behind], passthrough: g.topology.backends.length > 0,
+        backends: g.topology.backends.map((x) => x.name)
+      });
+      continue;
+    }
     const cells = {};
     for (const e of Array.isArray(g.hosts) ? g.hosts : []) if (e && e.covered !== false) addEntry(cells, e.name, e.ip, e.via);
     if (!Object.keys(cells).length) continue;
     const all = Object.values(cells).flat();
     const s = g.server;
-    rows.push({
+    const row = {
       key: `s:${s.id ?? s.name}`,
       server: { id: String(s.id ?? s.name ?? ''), name: String(s.name ?? s.id ?? ''), ips: [...(s.ips || [])], groups: [...(s.groups || [])] },
       ip: null,
@@ -524,7 +541,9 @@ export function planRenewal(result, sets) {
       cells: sortCells(cells),
       needsCert: all.some((x) => x.via !== 'hint'),
       maybe: all.every((x) => x.via === 'hint')
-    });
+    };
+    if (g.topology) row.topology = g.topology;
+    rows.push(row);
   }
   for (const u of Array.isArray(r.unmatchedIps) ? r.unmatchedIps : []) {
     if (!u || !u.ip) continue;
@@ -542,7 +561,7 @@ export function planRenewal(result, sets) {
     const servers = needing.filter((row) => row.server).length;
     perSet[s.id] = { names, rows: needing.length, servers, addresses: needing.length - servers };
   }
-  return { sets: list, assigned, uncovered, rows, perSet };
+  return { sets: list, assigned, uncovered, rows, perSet, plain };
 }
 
 /** A list joined with `sep` for a CSV cell (not an array: toCsv would join it with spaces). */
@@ -565,6 +584,17 @@ export const WORKLIST_COLUMNS = Object.freeze([
   { key: 'expires', header: 'Expires' },
   { key: 'files', header: 'Files', get: joined('files', '; ') }
 ].map((c) => Object.freeze(c)));
+
+/**
+ * The work list's columns for `plan`: {@link WORKLIST_COLUMNS}, plus a last `Topology` column
+ * (behind which load balancer, a shared VIP, a NAT address) when a row has a topology.
+ * @param {RenewalPlan|{ rows: PlanRow[] }} plan
+ * @returns {ReadonlyArray<{ key: string, header: string, get?: (row: object) => string }>}
+ */
+export function workListColumns(plan) {
+  const rows = plan && Array.isArray(plan.rows) ? plan.rows : [];
+  return rows.some((row) => row && row.topology) ? [...WORKLIST_COLUMNS, TOPOLOGY_CSV_COLUMN] : WORKLIST_COLUMNS;
+}
 
 /**
  * The per-server work list: one row per server (or address) and set it needs, in matrix order.
@@ -592,7 +622,8 @@ export function workListRows(plan) {
         setNames: set.names.slice(),
         keyTypes: set.keyTypes.slice(),
         expires: set.expires,
-        files: set.files.slice()
+        files: set.files.slice(),
+        ...(row.topology ? { topology: row.topology } : {})
       });
     }
   }

@@ -913,6 +913,16 @@
   color: var(--text-2);
 }
 
+/* A backend right under its load balancer (lib/topology.js orderByLoadBalancer): indented. */
+.scan-row-behind .scan-srv {
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+}
+
+.scan-srv-via {
+  gap: 4px;
+}
+
 .scan-row-needs td:first-child,
 .scan-row-needs td.dt-expander + td {
   box-shadow: inset 3px 0 0 var(--warn-solid);

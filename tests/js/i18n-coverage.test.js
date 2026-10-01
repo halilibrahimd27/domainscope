@@ -224,7 +224,11 @@ describe('i18n coverage', () => {
     for (const d of views.cert.PKCS12_WORDED) add(`cert.warn.PKCS12_UNSUPPORTED.${d}`);
     for (const l of ['EV', 'OV', 'IV', 'DV']) add(`cert.level.${l}`);
     for (const r of ['leaf', 'intermediate', 'root', 'unrelated']) add(`cert.role.${r}`);
-    for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);
+    for (const c of ['NO_IP', 'INVALID_IP', 'DUPLICATE_IP', 'PARSE', 'TOPOLOGY', 'INVALID_IP.port', 'INVALID_IP.zone', 'PARSE.hostPort', 'PARSE.sshPort']) add(`inv.warn.${c}`);
+    // The topology keys (lib/inventory.js TOPOLOGY_REASONS): every cause the Servers view words.
+    const inventory = await imp('assets/js/lib/inventory.js');
+    for (const r of inventory.TOPOLOGY_REASONS) add(`inv.warn.TOPOLOGY.${r}`);
+    for (const s of ['plain', 'passthrough']) add(`topo.status.${s}`);
     for (const k of [...views.bulk.BULK_FILTERS, ...views.bulk.IP_FILTERS]) add(`bulk.filter.${k}`);
     for (const k of Object.keys(views.lookup.TYPE_PRESETS)) add(`lkp.preset.${k}`);
     // Global DNS: every verdict finding the summary renders as glb.find.<code>.

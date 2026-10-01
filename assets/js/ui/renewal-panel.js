@@ -26,7 +26,8 @@ import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { toCsv } from '../lib/export.js';
 import { pemEncode } from '../lib/x509.js';
-import { WORKLIST_COLUMNS, cliCertFiles, workListRows } from '../lib/certsets.js';
+import { cliCertFiles, workListColumns, workListRows } from '../lib/certsets.js';
+import { TopologyNotes } from './topology.js';
 
 /* ------------------------------------------------------------------------ */
 /* Strings                                                                  */
@@ -413,7 +414,23 @@ function serverCell(row) {
   return h('div', { class: 'rw-srv' },
     h('span', { class: 'rw-srv-name' }, row.server.name),
     row.server.ips.length ? h('span', { class: 'rw-srv-ips mono text-xs muted' }, row.server.ips.join(', ')) : null,
-    row.maybe ? h('span', { class: 'cluster rw-srv-badges' }, Badge(t('rw.maybe'), { variant: 'info', icon: 'help', title: t('rw.maybeTitle') })) : null);
+    row.maybe ? h('span', { class: 'cluster rw-srv-badges' }, Badge(t('rw.maybe'), { variant: 'info', icon: 'help', title: t('rw.maybeTitle') })) : null,
+    TopologyNotes(row.topology));
+}
+
+/**
+ * The servers the names reach that never get a certificate (terminates_tls=no: plain HTTP behind
+ * a load balancer, or a load balancer passing TLS through), under the matrix; null without any.
+ * @param {Array<{ server: { name: string }, behind: string[], backends?: string[] }>|undefined} plain
+ * @returns {HTMLElement|null}
+ */
+function plainList(plain) {
+  if (!plain || !plain.length) return null;
+  return h('div', { class: 'stack-sm', dataset: { role: 'renewal-plain', count: String(plain.length) } },
+    h('h3', { class: 'scan-subtitle' }, t('topo.planPlain', { count: plain.length })),
+    h('ul', { class: 'topo-list' }, plain.map((p) => h('li', { class: 'topo-item', dataset: { server: p.server.name } },
+      h('span', { class: 'topo-name' }, p.server.name),
+      TopologyNotes({ terminatesTls: false, behind: p.behind, backends: (p.backends || []).map((name) => ({ name })), vips: [], nats: [], tlsPorts: [] })))));
 }
 
 /**
@@ -428,7 +445,7 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
     const file = downloadText(timestampedName(base, ext, subject), text, mime);
     toast(t('rw.exported', { file }), { type: 'success', timeout: 2500 });
   };
-  const workCsv = (rows) => toCsv(workListRows({ sets, rows }), WORKLIST_COLUMNS);
+  const workCsv = (rows) => toCsv(workListRows({ sets, rows }), workListColumns({ rows }));
 
   const setCards = h('div', { class: 'rw-plan-sets', attrs: { role: 'list', 'aria-label': t('rw.plan.setsTitle') } },
     sets.map((set) => {
@@ -521,6 +538,7 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
         disabled: !plan.rows.length, onClick: () => save('renewal-worklist', 'csv', workCsv(plan.rows), 'text/csv;charset=utf-8')
       })),
     matrix.el,
+    plainList(plan.plain),
     uncoveredTable ? h('h3', { class: 'scan-subtitle', dataset: { role: 'renewal-uncovered-title' } }, t('rw.uncovered', { count: plan.uncovered.length })) : null,
     uncoveredTable ? h('p', { class: 'muted text-sm' }, t('rw.uncovered.desc')) : null,
     uncoveredTable ? uncoveredTable.el : EmptyState({ compact: true, icon: 'check-circle', message: t('rw.uncovered', { count: 0 }) }));

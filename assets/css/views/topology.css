@@ -1,0 +1,143 @@
+/*
+ * views/topology.css — where TLS terminates (.topo-*): the notes of a server in SSL Targets ›
+ * Servers and the Renewal plan, and the Servers view's load balancer → backends card
+ * (ui/topology.js). Injected with the SSL Targets and Servers views.
+ */
+
+.topo-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.topo-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.topo-note .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+/* The notes that ask for work: install here too, install on every holder of the VIP. */
+.topo-note[data-topo="behind-tls"],
+.topo-note[data-topo="vip"] {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.topo-note[data-topo="behind-tls"] .icon,
+.topo-note[data-topo="vip"] .icon {
+  color: var(--warn-solid);
+}
+
+/* No certificate here: plain HTTP, TLS passed through. */
+.topo-note[data-topo="behind-plain"],
+.topo-note[data-topo="plain"],
+.topo-note[data-topo="passthrough"] {
+  color: var(--ok);
+}
+
+.topo-note[data-topo="behind-plain"] .icon,
+.topo-note[data-topo="plain"] .icon,
+.topo-note[data-topo="passthrough"] .icon {
+  color: var(--ok-solid);
+}
+
+/* ---- the Servers view's card -------------------------------------------- */
+
+.topo-section + .topo-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.topo-heading {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.topo-tree,
+.topo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.topo-node,
+.topo-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.topo-item > .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.topo-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.topo-ips {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* Backends hang off their load balancer: a rail and one elbow per backend. */
+.topo-backends {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0 7px;
+  padding: 0 0 0 14px;
+  list-style: none;
+  border-left: 2px solid var(--border-strong);
+}
+
+.topo-backend {
+  position: relative;
+}
+
+.topo-backend::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: -14px;
+  width: 10px;
+  border-top: 2px solid var(--border-strong);
+}
+
+.topo-empty {
+  margin: 4px 0 0 23px;
+}
+
+.topo-howto {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

@@ -93,6 +93,18 @@ import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
+// Where TLS terminates (the inventory's topology keys): the notes of a server, the CSV column.
+import { TopologyNotes, noCertStatus } from '../ui/topology.js';
+import { TOPOLOGY_CSV_COLUMN } from '../lib/topology.js';
+
+/**
+ * The Servers CSV columns for these server groups: lib/export SERVER_COLUMNS, and the inventory
+ * topology's notes (behind which load balancer, a shared VIP, a NAT address) when any has one.
+ * @param {Array<{ topology?: object }>} groups
+ */
+function serverCsvColumns(groups) {
+  return (groups || []).some((g) => g && g.topology) ? [...SERVER_COLUMNS, TOPOLOGY_CSV_COLUMN] : SERVER_COLUMNS;
+}
 
 /** Route id. */
 export const id = 'scan';
@@ -3159,7 +3171,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     hosts: Button({ label: t('scan.export.hosts'), icon: 'download', size: 'sm', dataset: { export: 'hosts-csv' }, onClick: () => exportHosts('csv') }),
     servers: Button({
       label: t('scan.export.servers'), icon: 'download', size: 'sm', dataset: { export: 'servers-csv' },
-      onClick: () => saveFile('servers', 'csv', toCsv(scanServerRows(run.result), SERVER_COLUMNS), 'text/csv;charset=utf-8')
+      onClick: () => saveFile('servers', 'csv', toCsv(scanServerRows(run.result), serverCsvColumns(run.result.servers)), 'text/csv;charset=utf-8')
     }),
     json: Button({
       label: t('scan.export.json'), icon: 'download', size: 'sm', dataset: { export: 'json' },
@@ -3298,6 +3310,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
     const inv = run.config.inventoryServers > 0;
     serversPanel.append(h('p', { class: 'muted text-sm' }, t('scan.srv.intro')));
+    if (r.servers.some((g) => g.topology)) serversPanel.append(h('p', { class: 'muted text-sm', dataset: { role: 'scan-topology-intro' } }, t('topo.introScan')));
     if (cert && (r.servers.length || r.unmatchedIps.length)) {
       serversPanel.append(h('div', { class: 'cluster vfy-hint' },
         h('span', { class: 'muted text-sm' }, t('scan.srv.verifyHint')),
@@ -3309,18 +3322,22 @@ function buildRunUI(run, ctx, { onFinish }) {
         actions: [h('a', { class: 'btn btn-secondary btn-sm', href: ctx.href('inventory') }, Icon('plus', { size: 14 }), h('span', { class: 'btn-label' }, t('scan.inv.add')))]
       }));
     } else {
+      // terminates_tls=no (lib/topology.js): plain HTTP or TLS passed through, no certificate here.
       const statusOf = (g) => {
+        const noCert = noCertStatus(g);
+        if (noCert) return noCert;
         if (g.needsCert) return cert ? 'needs' : 'serves';
         if (g.maybeNeedsCert) return 'maybe';
         return 'none';
       };
+      const statusLabel = (s) => (s === 'plain' || s === 'passthrough' ? t(`topo.status.${s}`) : t(`scan.srv.${s}`));
       serversPanel.append(DataTable({
         caption: t('scan.tab.servers'),
         rows: r.servers,
         search: r.servers.length > 8,
         empty: t('scan.srv.empty'),
         rowKey: (g) => String(g.server.id),
-        rowClass: (g) => ({ 'scan-row-needs': g.needsCert }),
+        rowClass: (g) => ({ 'scan-row-needs': g.needsCert, 'scan-row-behind': !!(g.topology && g.topology.behind.length) }),
         className: 'scan-servers-table',
         details: (g) => serverDetails(g),
         export: {
@@ -3329,28 +3346,29 @@ function buildRunUI(run, ctx, { onFinish }) {
           onExport: (format, rows) => {
             const scanLike = { servers: rows, unmatchedIps: [], hosts: r.hosts };
             if (format === 'json') saveFile('servers', 'json', `${toJson(rows)}\n`, 'application/json;charset=utf-8');
-            else saveFile('servers', 'csv', toCsv(scanServerRows(scanLike), SERVER_COLUMNS), 'text/csv;charset=utf-8');
+            else saveFile('servers', 'csv', toCsv(scanServerRows(scanLike), serverCsvColumns(rows)), 'text/csv;charset=utf-8');
           }
         },
         columns: [
           {
             key: 'server', label: t('scan.srv.col.server'), sortable: true,
             sortValue: (g) => g.server.name,
-            searchValue: (g) => [g.server.name, ...(g.server.groups || [])].join(' '),
-            render: (g) => h('div', { class: 'scan-srv' },
+            searchValue: (g) => [g.server.name, ...(g.server.groups || []), ...(g.topology ? g.topology.behind : [])].join(' '),
+            render: (g) => h('div', { class: 'scan-srv', dataset: { server: g.server.name } },
               h('span', { class: 'scan-srv-name' }, g.server.name),
-              g.server.groups && g.server.groups.length ? h('span', { class: 'cluster scan-srv-groups' }, g.server.groups.map((x) => Badge(x))) : null)
+              g.server.groups && g.server.groups.length ? h('span', { class: 'cluster scan-srv-groups' }, g.server.groups.map((x) => Badge(x))) : null,
+              TopologyNotes(g.topology))
           },
           {
             key: 'status', label: t('scan.srv.col.status'), sortable: true,
-            sortValue: (g) => ({ needs: 0, serves: 0, maybe: 1, none: 2 })[statusOf(g)],
-            searchValue: (g) => t(`scan.srv.${statusOf(g)}`),
+            sortValue: (g) => ({ needs: 0, serves: 0, maybe: 1, none: 2, plain: 3, passthrough: 3 })[statusOf(g)],
+            searchValue: (g) => statusLabel(statusOf(g)),
             exportValue: (g) => statusOf(g),
             render: (g) => {
               const s = statusOf(g);
-              const variant = { needs: 'warn', serves: 'info', maybe: 'info', none: 'neutral' }[s];
-              const ic = { needs: 'alert', serves: 'server', maybe: 'help', none: 'minus-circle' }[s];
-              const b = Badge(t(`scan.srv.${s}`), { variant, icon: ic });
+              const variant = { needs: 'warn', serves: 'info', maybe: 'info', none: 'neutral', plain: 'ok', passthrough: 'ok' }[s];
+              const ic = { needs: 'alert', serves: 'server', maybe: 'help', none: 'minus-circle', plain: 'unlock', passthrough: 'arrow-right' }[s];
+              const b = Badge(statusLabel(s), { variant, icon: ic });
               b.dataset.status = s;
               return b;
             }
@@ -3368,7 +3386,8 @@ function buildRunUI(run, ctx, { onFinish }) {
             render: (g) => TruncatedList(strongestPerName(g.hosts), {
               max: 3,
               render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' }] }, x.name,
-                x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null)
+                x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null,
+                x.lb ? h('span', { class: 'muted' }, ` · ${t('topo.via.lb', { lb: x.lb })}`) : null)
             })
           },
           {
@@ -3414,11 +3433,17 @@ function buildRunUI(run, ctx, { onFinish }) {
       rows: g.hosts,
       dense: true,
       maxHeight: null,
-      rowKey: (x) => `${x.name}|${x.ip}|${x.via}`,
+      rowKey: (x) => `${x.name}|${x.ip}|${x.via}|${x.lb || ''}`,
       columns: [
         { key: 'name', label: t('scan.srv.col.host'), mono: true },
         { key: 'ip', label: t('scan.srv.col.ip'), mono: true, className: 'scan-col-ips' },
-        { key: 'via', label: t('scan.srv.col.via'), render: (x) => Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }) },
+        {
+          key: 'via', label: t('scan.srv.col.via'),
+          render: (x) => h('span', { class: 'cluster scan-srv-via' },
+            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }),
+            x.lb ? Badge(t('topo.via.lb', { lb: x.lb }), { variant: 'neutral', icon: 'git-branch' }) : null,
+            x.through ? Badge(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
+        },
         cert ? {
           key: 'covered', label: t('scan.srv.col.covered'),
           render: (x) => (x.covered ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))

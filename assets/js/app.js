@@ -97,7 +97,7 @@ const WORKSPACE_WAIT_MS = 8000;
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
   'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
-  'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/inventory.css', 'views/about.css'
+  'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/inventory.css', 'views/topology.css', 'views/about.css'
 ]);
 
 /**
@@ -106,7 +106,7 @@ export const VIEW_CSS_ORDER = Object.freeze([
  * waits for them. A unit test keeps the list equal to what lib/scanner.js adds to the
  * Subdomains view's own imports.
  */
-export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/permute.js']);
+export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/permute.js', 'lib/topology.js']);
 
 /**
  * Navigation table in spec §6 order. `group` is one of lib/shellnav.js NAV_GROUPS (the sidebar
@@ -129,7 +129,7 @@ export const VIEWS = Object.freeze([
   {
     id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
     // the setup form reuses the Subdomains options and the Certificate loader; Verify and DANE are tabs
-    css: ['views/subdomains.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css']
+    css: ['views/subdomains.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/topology.css']
   },
   { id: 'cert', group: 'ssl', icon: 'shield', css: ['views/dane.css', 'views/cert.css'], offline: true, load: () => import('./views/cert.js') },
   // the certificate block reuses the Certificate view's loader (its module graph brings the DANE panel's classes)
@@ -148,7 +148,7 @@ export const VIEWS = Object.freeze([
   { id: 'reports', group: 'mail', icon: 'inbox', css: ['views/reports.css'], offline: true, load: () => import('./views/reports.js') },
   // many domains, one row each, and the workspace's policy audit (RDAP and DoH: needs the network)
   { id: 'portfolio', group: 'mail', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },
-  { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css'], offline: true, load: () => import('./views/inventory.js') },
+  { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css', 'views/topology.css'], offline: true, load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
 ].map((v) => Object.freeze({
   offline: false, ...v, css: Object.freeze([...(v.css || [])]), preload: Object.freeze([...(v.preload || [])])

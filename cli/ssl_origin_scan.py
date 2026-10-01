@@ -6881,15 +6881,18 @@ COMPARE_NOTES = {
     'hsts-new': 'the new server adds HSTS',
     'cert-name': 'the certificate does not cover the name',
     'cert-untrusted': 'not trusted by this machine',
+    'cert-untrusted-other': 'not trusted either, and from another issuer than the old one: a CDN or client that '
+                            'trusts the old certificate may refuse this one',
     'cert-expiring': 'expires within %d days' % COMPARE_EXPIRY_WARN_DAYS,
     'new-cert': 'another certificate (usual on a new server)',
     'same-cert': 'the same certificate',
 }
 # Certificate problems both servers can share: no difference, so said apart from the verdict.
 COMPARE_SHARED = {
-    'cert-untrusted': 'Both servers serve a certificate this machine does not trust: no difference between '
-                      'them (an origin CA certificate behind a CDN is trusted by the CDN only; --private-ca '
-                      'names your own CA), but a client that reaches either server directly refuses it.',
+    'cert-untrusted': 'Both servers serve a certificate this machine does not trust (the same one, or one from '
+                      'the same issuer): no difference between them (an origin CA certificate behind a CDN is '
+                      'trusted by the CDN only; --private-ca names your own CA), but a client that reaches '
+                      'either server directly refuses it.',
     'cert-name': 'Neither server\'s certificate covers the name: no difference between them (a CDN that '
                  'does not check the name hides it), but a client that reaches either server directly '
                  'refuses it.',
@@ -7063,14 +7066,22 @@ def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertI
 
 
 def _compare_field(key: str, old: Any, new: Any, severity: str, note: Optional[str] = None,
-                   shared: Optional[bool] = None) -> Dict[str, Any]:
+                   shared: Optional[bool] = None, same: Optional[bool] = None) -> Dict[str, Any]:
     """One compared field: 'ok' when both agree, unless its note is a certificate problem both
-    servers share (``shared``: a 'warn' the verdict leaves out; the caller can say it itself)."""
-    same = old == new
+    servers share (``shared``: a 'warn' the verdict leaves out; the caller can say it itself, and
+    ``same``: two untrusted certificates from different issuers do not agree)."""
+    if same is None:
+        same = old == new
     if shared is None:
         shared = same and note in COMPARE_SHARED
     return {'key': key, 'old': old, 'new': new, 'same': same,
             'severity': 'warn' if shared else 'ok' if same else severity, 'note': note, 'shared': shared}
+
+
+def _same_issuer(ca: CertInfo, cb: CertInfo) -> bool:
+    """Two certificates that whatever trusts one also trusts: the same certificate, or the same
+    issuer (an origin CA or an internal CA renews its certificates); a self-signed one only itself."""
+    return ca.sha256 == cb.sha256 or (ca.issuer_dn == cb.issuer_dn and not ca.self_signed and not cb.self_signed)
 
 
 def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -7079,10 +7090,11 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
     that does not cover the name or is not trusted (while the old one was) is an error;
     another status, redirect, content type or title, a lost HSTS header or a certificate
     expiring within 14 days a warning; another body, Server header or certificate (its names,
-    issuer, expiry, fingerprint) is information. A certificate problem both servers share (the
-    same untrusted certificate, neither covering the name, both expiring soon with the new one
-    no sooner) is no difference: the field is ``shared``, its note is listed in ``shared`` and
-    the verdict leaves it out. Verdict: unreachable (neither server answered: this machine's
+    issuer, expiry, fingerprint) is information. A certificate problem both servers share (an
+    untrusted certificate, the same one or from the same issuer, neither covering the name, both
+    expiring soon with the new one no sooner) is no difference: the field is ``shared``, its note
+    is listed in ``shared`` and the verdict leaves it out; an untrusted certificate from another
+    issuer than the old untrusted one is a warning (``cert-untrusted-other``). Verdict: unreachable (neither server answered: this machine's
     network may be the cause as much as the servers), broken, incomplete (the old server did
     not answer), differs, same."""
     now = now or _utcnow()
@@ -7128,9 +7140,15 @@ def compare_sides(a: CompareSide, b: CompareSide, now: Optional[datetime] = None
         fields.append(_compare_field('cert_covers', a.covers, b.covers, 'error' if wrong_name else 'info',
                                      'cert-name' if wrong_name else None))
         untrusted = b.trusted is False
-        fields.append(_compare_field('cert_trusted', a.trusted, b.trusted,
-                                     ('error' if a.trusted else 'warn') if untrusted else 'info',
-                                     'cert-untrusted' if untrusted else None))
+        if untrusted and ca is not None and a.trusted is False and not _same_issuer(ca, cb):
+            # Both untrusted, but from another issuer: whatever trusts the old one (a CDN that
+            # knows its origin CA, clients that know an internal CA) may refuse the new one.
+            fields.append(_compare_field('cert_trusted', a.trusted, b.trusted, 'warn', 'cert-untrusted-other',
+                                         same=False))
+        else:
+            fields.append(_compare_field('cert_trusted', a.trusted, b.trusted,
+                                         ('error' if a.trusted else 'warn') if untrusted else 'info',
+                                         'cert-untrusted' if untrusted else None))
         fields.append(_compare_field('cert_issuer', ca.issuer_label() if ca else None,
                                      cb.issuer_label() if cb else None, 'info'))
         soon = cb.days_left(now) < COMPARE_EXPIRY_WARN_DAYS
@@ -7491,13 +7509,15 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   <title>, body SHA-256, HSTS, Server, and the certificate: its names (subject CN and SANs),
   covers the name, trusted, issuer, expiry, SHA-256 fingerprint - with ERROR (the new server
   does not answer, answers 4xx / 5xx where the old one did not, or its certificate does not
-  cover the name or is not trusted), DIFFERS (another status, redirect, type or title, a lost
-  HSTS header, a new certificate expiring within 14 days) and differs (information:
+  cover the name or is not trusted while the old one was), DIFFERS (another status, redirect,
+  type or title, a lost HSTS header, a new certificate expiring within 14 days, an untrusted
+  certificate from another issuer than the old untrusted one) and differs (information:
   another body, Server header or certificate; a page with a token or a time in it differs on
-  every request). A certificate problem both servers share - the same untrusted certificate
-  (an origin CA certificate behind a CDN), neither covering the name, both expiring within
-  14 days - is WARNING and no difference: two identical servers are SAME, with a WARNING
-  line under the verdict. When neither server answers, the verdict is UNREACHABLE: this
+  every request). A certificate problem both servers share - an untrusted certificate, the
+  same one or from the same issuer (an origin CA certificate behind a CDN; a self-signed
+  certificate is its own issuer), neither covering the name, both expiring within 14 days -
+  is WARNING and no difference: two identical servers are SAME, with a WARNING line under
+  the verdict. When neither server answers, the verdict is UNREACHABLE: this
   machine's network may be the cause as much as the servers. Private addresses are fine:
   this is the counterpart of the web app's check from the internet (Retire an IP > Compare
   the old and the new server). --json FILE writes both answers (schema

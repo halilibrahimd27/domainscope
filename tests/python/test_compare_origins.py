@@ -11,6 +11,7 @@ Run from the repository root:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import socket
@@ -130,6 +131,17 @@ class CompareIntegrationTests(unittest.TestCase):
         trusted = next(f for f in doc['fields'] if f['key'] == 'cert_trusted')
         self.assertEqual([trusted['same'], trusted['shared'], trusted['severity']], [True, True, 'warn'])
 
+    def test_an_internal_ca_certificate_then_a_self_signed_one_fails_the_check(self):
+        # Without --private-ca this machine trusts neither, but the new certificate is not from
+        # the old one's CA: what trusts the internal CA refuses it.
+        old, _new = self.pair(new_fixture='ec_wildcard')
+        code, out, err = self.compare(old.port, '--fail-on-change', private_ca=False)
+        self.assertEqual(code, sos.EXIT_CHANGED, out + err)
+        self.assertIn('DIFFERS: The new server answers differently', out)
+        self.assertNotIn('WARNING: Both servers', out)
+        line = next(l for l in out.splitlines() if l.strip().startswith('cert trusted'))
+        self.assertTrue(line.rstrip().endswith('DIFFERS'), line)
+
     def test_a_new_server_that_answers_differently(self):
         old, _new = self.pair(new_kwargs={'status': 301, 'headers': {'Location': 'https://www.example.net/', 'Server': 'caddy'},
                                           'body': b'moved'})
@@ -226,6 +238,38 @@ class CompareUnitTests(unittest.TestCase):
         # Next to a real difference, the verdict follows the difference.
         moved = sos.compare_sides(self.side(**untrusted), self.side(ip='192.0.2.2', status=301, location='https://www.example.net/', **untrusted), now)
         self.assertEqual([moved['verdict'], moved['shared']], ['differs', ['cert-untrusted']])
+
+    def test_an_untrusted_certificate_from_another_issuer_is_a_difference(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        origin, internal = fixture_cert('cli_origin_wild.pem'), fixture_cert('cli_private_wild.pem')
+        self_signed, other_self = fixture_cert('ec_wildcard.pem'), fixture_cert('cli_renewed_wild.pem')
+        self.assertTrue(self_signed.self_signed and not origin.self_signed and not internal.self_signed)
+
+        def side(cert, ip='192.0.2.1'):
+            return self.side(ip=ip, cert=cert, covers=True, trusted=False)
+
+        # An origin CA certificate (a CDN trusts it) on the old server, a self-signed one on the new.
+        for old in (origin, internal):
+            result = sos.compare_sides(side(old), side(self_signed, '192.0.2.2'), now)
+            self.assertEqual([result['verdict'], result['shared']], ['differs', []], old.issuer_label())
+            field = next(f for f in result['fields'] if f['key'] == 'cert_trusted')
+            self.assertEqual([field['same'], field['shared'], field['severity'], field['note']],
+                             [False, False, 'warn', 'cert-untrusted-other'])
+            text = sos.render_compare(NAME, '/', side(old), side(self_signed, '192.0.2.2'), result, width=160, now=now)
+            self.assertIn('DIFFERS: ', text)
+            self.assertNotIn('WARNING: Both servers', text)
+            line = next(l for l in text.splitlines() if l.strip().startswith('cert trusted'))
+            self.assertTrue(line.rstrip().endswith('DIFFERS'), line)
+            self.assertIn('from another issuer', text)
+        # A renewed certificate from the same CA: no difference.
+        renewed = dataclasses.replace(internal, sha256='ee' * 32)
+        same_ca = sos.compare_sides(side(internal), side(renewed, '192.0.2.2'), now)
+        self.assertEqual([same_ca['verdict'], same_ca['shared']], ['same', ['cert-untrusted']])
+        # A self-signed certificate is its own issuer: only the same one is shared.
+        regenerated = dataclasses.replace(self_signed, sha256='ff' * 32)
+        self.assertEqual(sos.compare_sides(side(self_signed), side(regenerated, '192.0.2.2'), now)['verdict'], 'differs')
+        self.assertEqual(sos.compare_sides(side(self_signed), side(other_self, '192.0.2.2'), now)['verdict'], 'differs')
+        self.assertEqual(sos.compare_sides(side(self_signed), side(self_signed, '192.0.2.2'), now)['shared'], ['cert-untrusted'])
 
     def test_certificate_names_side_by_side(self):
         now = datetime(2026, 9, 28, tzinfo=timezone.utc)

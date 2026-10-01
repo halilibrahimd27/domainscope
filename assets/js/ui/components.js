@@ -1852,7 +1852,8 @@ export function rowsToCsv(rows, columns, { bom = true } = {}) {
  * - `addRows()` batches appends per animation frame (throttled for big tables), so views can
  *   stream thousands of results without jank.
  * - Only the first `pageSize` rows (after filter + sort) are rendered; "Show N more" adds more.
- * - Rendered <tr>s are cached per row object; call `updateRow(row)` after mutating a row.
+ * - Rendered <tr>s are cached per row object; call `updateRow(row)` after mutating a row, or
+ *   `updateRows(rows)` for many (one index of the table, one render).
  * - Rows are sorted with empty values last; string sorting is natural ('web2' < 'web10').
  * - Export buttons (CSV/JSON) export all rows that pass the current filter/search, in the
  *   current sort order. Provide `export.onExport(format, rows)` to take over (e.g. lib/export.js).
@@ -2314,6 +2315,51 @@ export function DataTable(opts) {
       view = null;
       schedule();
       return true;
+    },
+    /**
+     * updateRow for many rows at once: the table is indexed once (by identity, then by `rowKey`)
+     * and drawn once, where a loop of updateRow searches it per row (seconds for 20,000 fresh
+     * objects). A row the table does not hold is skipped.
+     * @param {any[]} rows
+     * @returns {number} how many rows were found
+     */
+    updateRows(rows) {
+      flushPending();
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) return 0;
+      const byRow = new Map();
+      allRows.forEach((r, i) => byRow.set(r, i));
+      let byKey = null;
+      let found = 0;
+      for (const row of list) {
+        let idx = byRow.get(row);
+        if (idx === undefined && rowKey) {
+          if (!byKey) {
+            // The first row of a key, as updateRow finds it.
+            byKey = new Map();
+            allRows.forEach((r, i) => {
+              const k = rowKey(r);
+              if (!byKey.has(k)) byKey.set(k, i);
+            });
+          }
+          idx = byKey.get(rowKey(row));
+        }
+        if (idx === undefined) continue;
+        const old = allRows[idx];
+        invalidate(old);
+        if (old !== row) {
+          if (expanded.has(old)) expanded.add(row);
+          byRow.delete(old);
+          byRow.set(row, idx);
+          allRows[idx] = row;
+        }
+        found += 1;
+      }
+      if (found) {
+        view = null;
+        schedule();
+      }
+      return found;
     },
     /** updateRow, or addRows when the row (by identity or rowKey) is not present. */
     upsertRow(row) {

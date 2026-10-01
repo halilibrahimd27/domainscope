@@ -1,0 +1,17 @@
+{
+  "ResourceRecordSets": [
+    { "Name": "example.com.", "Type": "SOA", "TTL": 900, "ResourceRecords": [{ "Value": "ns-1.awsdns-01.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400" }] },
+    { "Name": "example.com.", "Type": "NS", "TTL": 172800, "ResourceRecords": [{ "Value": "ns-1.awsdns-01.org." }, { "Value": "ns-2.awsdns-02.co.uk." }] },
+    { "Name": "example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.10" }] },
+    { "Name": "www.example.com.", "Type": "CNAME", "TTL": 3600, "ResourceRecords": [{ "Value": "example.com" }] },
+    { "Name": "ipv6.example.com.", "Type": "AAAA", "TTL": 3600, "ResourceRecords": [{ "Value": "2001:db8::1" }] },
+    { "Name": "example.com.", "Type": "MX", "TTL": 3600, "ResourceRecords": [{ "Value": "10 mail.example.com." }] },
+    { "Name": "mail.example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.25" }] },
+    { "Name": "example.com.", "Type": "CAA", "TTL": 3600, "ResourceRecords": [{ "Value": "0 issue \"letsencrypt.org\"" }] },
+    { "Name": "example.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{ "Value": "\"v=spf1 mx -all\"" }] },
+    { "Name": "\\052.wild.example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.99" }] },
+    { "Name": "api.example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.14" }, { "Value": "192.0.2.16" }] },
+    { "Name": "new.example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.70" }] },
+    { "Name": "ttl.example.com.", "Type": "A", "TTL": 3600, "ResourceRecords": [{ "Value": "192.0.2.60" }] }
+  ]
+}

@@ -1,0 +1,18 @@
+; lib/zonediff.js fixture: example.com at its old provider (BIND), written the way people write zone files.
+$ORIGIN example.com.
+$TTL 3600
+@        IN SOA  ns1.example.com. hostmaster.example.com. ( 2026100101 7200 3600 1209600 300 )
+@        IN NS   ns1.example.com.
+@        IN NS   ns2.example.com.
+@        IN A    192.0.2.10
+WWW      IN CNAME @
+ipv6     IN AAAA 2001:DB8:0:0:0:0:0:1
+@        IN MX   10    mail
+mail     IN A    192.0.2.25
+@        IN CAA  0 ISSUE "LetsEncrypt.org"
+@        IN TXT  "v=spf1 mx " "-all"
+\042.wild IN A   192.0.2.99
+old      IN A    192.0.2.50
+api      IN A    192.0.2.14
+api      IN A    192.0.2.15
+ttl  300 IN A    192.0.2.60

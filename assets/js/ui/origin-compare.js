@@ -327,7 +327,9 @@ export function displayValue(key, value, side) {
  * @returns {{ el: HTMLElement, render(): void }}
  */
 export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
-  const el = h('div', { class: 'oc-card-host' });
+  // A form of its own for the shell's shortcuts: Ctrl/Cmd+Enter in its fields compares, never
+  // Retire an IP's own check (lib/shellnav.js pickShortcutTarget).
+  const el = h('div', { class: 'oc-card-host', dataset: { shortcutScope: 'origin-compare' } });
 
   function fillDefaults() {
     if (S.touched) return;
@@ -414,7 +416,7 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
           icon: 'swap',
           variant: 'primary',
           disabled: running || !check.ok,
-          dataset: { action: 'oc-run' },
+          dataset: { action: 'oc-run', shortcut: 'submit' },
           onClick: () => start()
         }),
         running ? Button({ label: t('oc.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'oc-stop', shortcut: 'cancel' }, onClick: () => S.controller && S.controller.abort() }) : null,

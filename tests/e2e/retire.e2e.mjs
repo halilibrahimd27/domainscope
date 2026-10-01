@@ -752,6 +752,18 @@ async function main() {
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs' && !document.querySelector('.oc-partial'), { timeout: 20000, message: 'compared again' });
     });
 
+    await run.step('Ctrl+Enter in a field of the card compares, and Retire an IP\'s own check does not start', async () => {
+      const base = await page.evaluate(() => window.__gp.n);
+      const status = () => page.evaluate(() => document.querySelector('.retire-job')?.dataset.status || null);
+      const before = await status();
+      await page.evaluate(() => document.querySelector('[data-role="oc-path"]').focus());
+      await page.press('Enter', { ctrl: true });
+      await page.waitFor((b) => window.__gp.n >= b + 2 && !document.querySelector('[data-action="oc-stop"]') && !!document.querySelector('.oc-results'),
+        { args: [base], timeout: 20000, message: 'compared from the keyboard' });
+      assertEqual(await status(), before, 'the view\'s own check did not run');
+      assert(!await page.evaluate(() => !!document.querySelector('[data-action="retire-stop"]:not([hidden])')), 'no check of the view in progress');
+    });
+
     await run.step('leaving Retire an IP during a run and coming back: the card on screen gets the result and its Compare button back', async () => {
       // The old address answers; the new one is held while the view is left and opened again.
       const base = await page.evaluate(() => { window.__compareScenario = 'broken'; window.__gp.allowUpTo = window.__gp.n + 1; return window.__gp.n; });

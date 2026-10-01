@@ -937,29 +937,32 @@ button.nav-status:hover {
   color: var(--ok);
 }
 
-/* Short desktop screens (a 1366 × 768 laptop leaves ~650 px): every tool link of the six groups stays in view,
-   with room for one more */
-@media (min-width: 900.02px) and (max-height: 860px) {
+/* Desktop screens up to 1000 px high (a 1366 × 768 laptop leaves ~650 px, a 1440 × 900 one ~840): every tool
+   link of the six groups stays in view, with room for one more */
+@media (min-width: 900.02px) and (max-height: 1000px) {
   .app-nav {
     padding-top: 8px;
   }
 
   .nav-group + .nav-group {
-    margin-top: 6px;
+    margin-top: 4px;
   }
 
+  /* line heights in pixels: the same fit with any platform's fonts */
   .nav-group-label {
-    padding-bottom: 2px;
+    padding-bottom: 1px;
+    line-height: 14px;
   }
 
   .nav-list {
     gap: 1px;
   }
 
-  /* 18 links and room for one more; a link stays taller than a 24 px target. */
+  /* 18 links and room for one more; a link stays a 24 px target (20 + 2 × 2). */
   .nav-link {
     padding-top: 2px;
     padding-bottom: 2px;
+    line-height: 20px;
   }
 
   .nav-foot {

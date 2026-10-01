@@ -53,7 +53,7 @@ const JS = join(ASSETS, 'js');
  * The builders and texts of every view but the start view then moved to lib/summary.js, which
  * loads with the first view that has a Copy summary (ui/view-summaries.js); lib/summarycore.js
  * keeps the rendering, the registry and the Subdomains builder on the start route:
- * ≈ 364 KB (373,095 bytes), under the 370 KB budget it had before wave 4.
+ * ≈ 365 KB (373,256 bytes), under the 370 KB budget it had before wave 4.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

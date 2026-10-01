@@ -133,7 +133,7 @@ const DAY_MS = 86400000;
  *   certificate is served (null when none is)
  * @typedef {ProbeVerdict & { agreement: 'all'|'mixed', probes: ProbeVerdict[] }} Verdict
  * @typedef {{ key: string, ip: string, port: number, name: string, server: { id: string, name: string }|null,
- *   alsoServers: Array<{ id: string, name: string }>, via: 'dns'|'zone'|'hint', proxied: boolean,
+ *   alsoServers: Array<{ id: string, name: string }>, via: 'dns'|'known'|'zone'|'hint', proxied: boolean,
  *   provider: string|null, needsCert: boolean, newCertCovers: boolean|null, skip: string|null,
  *   cliTargets: string[]|null, setId?: string|null }} VerifyPair `cliTargets`: the CLI `-t` tokens of the
  *   address when an inventory server wrote it with its own port (`['10.0.0.13:8443']`), else null; see
@@ -773,16 +773,21 @@ export function requeueRows(rows) {
   return list;
 }
 
+/** The `via` values of origin pairs ({@link isOriginPair}). */
+const ORIGIN_VIAS = new Set(['hint', 'zone', 'known']);
+
 /**
  * An origin pair: an inventory origin IP with a proxied name it serves behind
- * the CDN, from an origin hint (`via: 'hint'`, a candidate) or the zone file
- * (`via: 'zone'`, that name's exact origin, which public DNS does not show).
+ * the CDN, from an origin hint (`via: 'hint'`, a candidate), the zone file
+ * (`via: 'zone'`, that name's exact origin, which public DNS does not show) or
+ * the workspace's origin map (`via: 'known'`, a remembered exact origin).
  * Globalping keeps the result public by measurement id, so these pairs wait
- * for the origin opt-in. Verdict rules still treat a zone pair like a DNS one.
+ * for the origin opt-in. Verdict rules still treat a zone or known pair like a
+ * DNS one.
  * @param {VerifyPair|VerifyRow|null|undefined} p
  * @returns {boolean}
  */
-export const isOriginPair = (p) => !!p && (p.via === 'hint' || p.via === 'zone');
+export const isOriginPair = (p) => !!p && ORIGIN_VIAS.has(p.via);
 
 /**
  * The origin opt-in: origin pairs ({@link isOriginPair}) run only when the
@@ -930,7 +935,7 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
     entries.sort((a, b) => Number(!isDnsLike(a.via)) - Number(!isDnsLike(b.via))
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
     for (const e of entries) {
-      add(pairFor({ ip: e.ip, name: e.name, server, via: e.via === 'hint' || e.via === 'zone' ? e.via : 'dns',
+      add(pairFor({ ip: e.ip, name: e.name, server, via: ORIGIN_VIAS.has(e.via) ? e.via : 'dns',
         needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name), inventoryServer: g.server, through: e.through ?? null }));
     }
   }
@@ -1016,7 +1021,7 @@ function pairsOverCap(pairs, maxRows) {
     const k = `${hint ? 'hint' : 'dns'}|${p.server ? `s:${p.server.id}` : ''}|${p.ip}|${p.port}|${p.setId ?? ''}`;
     const first = !seen.has(k);
     seen.add(k);
-    const tier = hint ? (first ? 3 : 4) : first ? 0 : p.via === 'zone' ? 2 : 1;
+    const tier = hint ? (first ? 3 : 4) : first ? 0 : p.via === 'zone' || p.via === 'known' ? 2 : 1;
     return { p, i, tier };
   });
   ranked.sort((a, b) => a.tier - b.tier || a.i - b.i);

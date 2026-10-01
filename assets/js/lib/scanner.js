@@ -66,7 +66,7 @@ export { SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS, estimateQueries, learnedLabelsFr
  *   sweeping for THIS proxied host's real origin, ranked (host-related networks, then the main
  *   cluster, then other multi-IP clusters; a lone 1-IP network unrelated to the host is left out).
  *   Empty unless the host hides its origin. The CIDRs of the `originCandidates` network entries.
- * @property {Array<{ ip?: string, cidr?: string, kind: 'zone'|'resolver-leak'|'history'|'sibling-domain'|'network',
+ * @property {Array<{ ip?: string, cidr?: string, kind: 'known'|'zone'|'resolver-leak'|'history'|'sibling-domain'|'network',
  *   score: number, evidence: object }>} originCandidates extension (v3): the ordered origin
  *   candidates for THIS proxied host, strongest first — host-specific exact IPs (zone file,
  *   resolver-leak, history, sibling-domain) above candidate networks. Empty unless the host hides its origin.
@@ -106,8 +106,9 @@ export { SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS, estimateQueries, learnedLabelsFr
 /**
  * @typedef {object} ServerGroup
  * @property {object} server inventory Server
- * @property {Array<{ name: string, ip: string, covered: boolean|null, via: 'dns'|'zone'|'hint' }>} hosts
- *   sorted dns, then zone (the zone file's exact origin of a proxied name), then hint
+ * @property {Array<{ name: string, ip: string, covered: boolean|null, via: 'dns'|'known'|'zone'|'hint' }>} hosts
+ *   sorted dns, then known (the workspace's origin map), then zone (the zone file's exact origin
+ *   of a proxied name), then hint
  * @property {boolean} needsCert a DNS- or zone-matched host is covered by the certificate (without a
  *   certificate: any DNS- or zone-matched host)
  * @property {boolean} maybeNeedsCert extension: only origin hints point here
@@ -121,7 +122,7 @@ export { SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS, estimateQueries, learnedLabelsFr
 // rank above candidate networks; a network's relatedness to the host sets which
 // band it lands in.
 const CANDIDATE_SCORE = Object.freeze({
-  zone: 110, 'resolver-leak': 100, 'sibling-domain': 95, history: 90,
+  known: 120, zone: 110, 'resolver-leak': 100, 'sibling-domain': 95, history: 90,
   'net-sibling': 70, 'net-related': 65, 'net-main': 60, 'net-cluster': 50
 });
 // Per-host cap on the weakest candidate band: other multi-IP clusters unrelated
@@ -184,8 +185,10 @@ const PROBE_BACKOFF_MAX = 1000;
 // Zone import: the Cloudflare placeholder origins ("no server behind this proxied
 // record") are never a hint or a CLI target, even if a caller passes them.
 const ZONE_PLACEHOLDER_IPS = new Set(['192.0.2.0', '100::']);
-// Server-group host order: DNS matches, then zone-file origins, then hints.
-const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
+// Server-group host order: DNS matches, then remembered origins, then zone-file origins, then hints.
+const VIA_RANK = { dns: 0, known: 1, zone: 2, hint: 3 };
+// At most this many remembered origins (lib/originmap.js ORIGIN_MAP_LIMITS.entries) are read.
+const MAX_KNOWN_ORIGINS = 2000;
 
 /** Rank of an origin tag for stable display order. */
 function rankOrigin(o) {
@@ -428,6 +431,36 @@ function normalizeZoneInput(zone) {
   return { origin, names, wildcardBases, proxied };
 }
 
+/**
+ * Validate `config.knownOrigins` (lib/originmap.js knownForScan: the workspace's remembered,
+ * not stale origins) defensively, as plain data: a name (`*.x` allowed), an address that is no
+ * CDN / WAF edge and no Cloudflare placeholder, a port 1-65535 (443 when absent). One entry per
+ * name, address and port; at most MAX_KNOWN_ORIGINS.
+ * @param {unknown} list
+ * @returns {Array<{ name: string, ip: string, port: number, source: string|null, lastConfirmed: string|null, server: string|null }>}
+ */
+function normalizeKnownOrigins(list) {
+  const out = [];
+  const seen = new Set();
+  const text = (v, max) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+  for (const k of Array.isArray(list) ? list.slice(0, MAX_KNOWN_ORIGINS) : []) {
+    if (!k || typeof k !== 'object') continue;
+    const name = typeof k.name === 'string' ? normalizeHostname(k.name, { allowWildcard: true }) : null;
+    const ip = normalizeIP(String(k.ip ?? ''));
+    const port = k.port === undefined || k.port === null ? 443 : Number(k.port);
+    if (!name || !ip || !Number.isInteger(port) || port < 1 || port > 65535) continue;
+    if (ZONE_PLACEHOLDER_IPS.has(ip) || (matchProviderByIP(ip) || {}).hidesOrigin) continue;
+    const key = `${name}|${ip}|${port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, ip, port, source: text(k.source, 20), lastConfirmed: text(k.lastConfirmed, 40), server: text(k.server, 80) });
+  }
+  return out;
+}
+
+/** The CLI target of a remembered origin: the address on 443, `ip:port` / `[v6]:port` on another port. */
+const knownTarget = (k) => (k.port === 443 ? k.ip : k.ip.includes(':') ? `[${k.ip}]:${k.port}` : `${k.ip}:${k.port}`);
+
 /* ------------------------------------------------------------------------ */
 /* Wordlist selection                                                        */
 /* ------------------------------------------------------------------------ */
@@ -605,7 +638,8 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
       const evidence = reason.kind === 'resolver-leak' ? { resolver: reason.resolver || null }
         : reason.kind === 'history' ? { source: reason.source || null, lastSeen: reason.lastSeen || null }
           : reason.kind === 'zone' ? { source: 'zone' }
-            : { sibling: reason.sibling || null };
+            : reason.kind === 'known' ? { port: reason.port, source: reason.source || null, lastConfirmed: reason.lastConfirmed || null }
+              : { sibling: reason.sibling || null };
       let list = exactByHost.get(reason.host);
       if (!list) exactByHost.set(reason.host, (list = []));
       // One candidate per IP: an address named by two kinds (zone file + sibling
@@ -726,6 +760,15 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  *   inventory server as `via: 'zone'` (counts toward needsCert) and goes into the CLI command as
  *   exact addresses (private ones kept, never widened to a /24) plus host targets
  *   (`cliHostTargets`) and the proxied names (`*.x` kept). A run without it is unchanged.
+ * @param {object[]|null} [config.knownOrigins=null] extension (origin map): the workspace's
+ *   remembered, not stale origins `[{ name, ip, port, source?, lastConfirmed?, server? }]`
+ *   (lib/originmap.js knownForScan), validated here. A proxied host with one (its own name, or a
+ *   `*.parent` entry) gets a host-specific hint `{ kind: 'known', host, port, source,
+ *   lastConfirmed }` that ranks above every other candidate (even with `originHints` off: it costs
+ *   no query), skips the resolver-leak pass, matches its inventory server as `via: 'known'`
+ *   (counts toward needsCert) and goes into the CLI command exactly (`ip`, or `ip:port` on
+ *   another port; never widened to a /24). `result.known` says what was used; a run without the
+ *   option has no `known` key.
  * @param {boolean} [config.exact=false] extension (zone import): resolve the given names only —
  *   no passive sources, no DNS mining, no wordlist, no permutations, no recursive round and no
  *   wildcard detection (the zone names are authoritative, so never wildcard suspects). Quota-free.
@@ -747,7 +790,7 @@ export async function runScan(config = {}, hooks = {}) {
     balance = true, recursiveParents = DEFAULT_RECURSIVE_PARENTS,
     resolverLeak = true, maxHosts = 20000, concurrency = 32, maxConcurrency,
     sourceGraceMs = DEFAULT_SOURCE_GRACE_MS, wordlistPreferFetch = false,
-    zone = null, exact = false
+    zone = null, exact = false, knownOrigins = null
   } = config || {};
   if (!dns || typeof dns.query !== 'function' || typeof dns.resolveHost !== 'function' || typeof dns.detectWildcard !== 'function') {
     throw new TypeError('runScan: config.dns must be a DohClient');
@@ -769,6 +812,8 @@ export async function runScan(config = {}, hooks = {}) {
   // passive sources, no mining (quota-free; the names are the user's own zone).
   const exactMode = exact === true;
   const zoneIn = normalizeZoneInput(zone);
+  // The workspace's origin map: null when the option was not given at all, so such a run is unchanged.
+  const knownIn = knownOrigins === null || knownOrigins === undefined ? null : normalizeKnownOrigins(knownOrigins);
   const bfMode = exactMode ? 'off' : bruteforce === undefined || bruteforce === null ? 'smart' : String(bruteforce);
   const permBudget = !exactMode && Number.isFinite(permutationBudget) && permutationBudget > 0
     ? Math.min(Math.floor(permutationBudget), MAX_PERMUTATIONS) : 0;
@@ -1676,7 +1721,23 @@ export async function runScan(config = {}, hooks = {}) {
   // the zone already maps skips the resolver-leak pass (its origin is exact).
   const zoneProxied = zoneIn ? zoneIn.proxied.filter((p) => inScope(stripWildcard(p.name).base)) : [];
   const zoneKnown = new Set(zoneProxied.map((p) => p.name));
-  const leakHosts = zoneKnown.size ? proxiedHosts.filter((x) => !zoneKnown.has(x.name)) : proxiedHosts;
+  // The origin map: each proxied host's remembered origins (its own name first, then a `*.parent`
+  // entry covering it). Such a host skips the resolver-leak pass too (its origin is exact).
+  const knownByHost = new Map();
+  if (knownIn && knownIn.length) {
+    const byName = new Map();
+    for (const k of knownIn) {
+      if (!byName.has(k.name)) byName.set(k.name, []);
+      byName.get(k.name).push(k);
+    }
+    for (const host of proxiedHosts) {
+      const dot = host.name.indexOf('.');
+      const list = [...(byName.get(host.name) || []), ...(dot > 0 ? byName.get(`*.${host.name.slice(dot + 1)}`) || [] : [])];
+      if (list.length) knownByHost.set(host.name, list);
+    }
+  }
+  const leakHosts = zoneKnown.size || knownByHost.size
+    ? proxiedHosts.filter((x) => !zoneKnown.has(x.name) && !knownByHost.has(x.name)) : proxiedHosts;
   // A 'direct' host is origin evidence only if its answer is its own: no CNAME,
   // or a CNAME chain that stays inside the scanned zones, OR one of its IPs
   // matches an inventory server. An in-zone name that CNAMEs out to third-party
@@ -1719,6 +1780,16 @@ export async function runScan(config = {}, hooks = {}) {
   stage('hints', { skipped: !hintsEnabled, total: hintsTotal, leakQueries: plannedLeak, zones: hintZones.length });
   const hintErrors = [];
   let resolverLeakQueries = 0;
+  // 0a. Origin map: each proxied host's remembered origins, host-specific and ranked first. It costs
+  //     no query, so it runs even with originHints off; addHint drops a CDN / WAF address.
+  for (const [hostName, list] of knownByHost) {
+    for (const k of list) {
+      addHint(k.ip, {
+        kind: 'known', host: hostName, port: k.port, source: k.source, lastConfirmed: k.lastConfirmed,
+        detail: `origin map: ${hostName} -> ${knownTarget(k)}`
+      }, { own: true, hostNames: [hostName] });
+    }
+  }
   // 0. Zone file: each proxied zone name's exact origin, host-specific. It costs
   //    no query, so it runs even with originHints off. A `*.x` name names no
   //    single host (its addresses still go to the CLI targets below); addHint
@@ -1975,16 +2046,22 @@ export async function runScan(config = {}, hooks = {}) {
   // builds exactly the command it always did.
   const zoneIps = [...new Set(zoneProxied.flatMap((p) => p.ips))].sort(compareIp);
   const zoneHosts = sortHostnames([...new Set(zoneProxied.map((p) => p.host).filter(Boolean))]);
+  // Origin map: the remembered origins of this scan's proxied hosts join exactly, the address on
+  // 443 and `ip:port` on another port (cmdline's allowPorts opt-in, on only when one needs it).
+  const knownTokens = [...new Set([...knownByHost.values()].flat()
+    .sort((a, b) => compareIp(a.ip, b.ip) || a.port - b.port).map(knownTarget))];
+  const portOptIn = knownTokens.some((tok) => !normalizeIP(tok)) ? { allowPorts: true } : {};
   const sweep = zoneIn
     ? buildFittedSweepCommand({
-      targets: [...cliTargets, ...zoneIps, ...zoneHosts],
+      targets: [...cliTargets, ...knownTokens, ...zoneIps, ...zoneHosts],
       names: sortHostnames([...new Set([...proxiedNames, ...zoneProxied.map((p) => p.name)])]),
-      script: 'cli/ssl_origin_scan.py', shell: 'posix', allowHostTargets: true, allowWildcardNames: true
+      script: 'cli/ssl_origin_scan.py', shell: 'posix', allowHostTargets: true, allowWildcardNames: true, ...portOptIn
     })
-    : buildFittedSweepCommand({ targets: cliTargets, names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix' });
+    : buildFittedSweepCommand({ targets: [...cliTargets, ...knownTokens], names: proxiedNames, script: 'cli/ssl_origin_scan.py', shell: 'posix', ...portOptIn });
   const cliSuggestion = sweep.command ? `python3 ${sweep.command}` : null;
   const cliNames = sweep.names;
-  const isAddressToken = (tok) => !!(normalizeIP(tok) || parseCidr(tok));
+  const knownTokenSet = new Set(knownTokens);
+  const isAddressToken = (tok) => !!(normalizeIP(tok) || parseCidr(tok)) || knownTokenSet.has(tok);
   const cliValidTargets = zoneIn ? sweep.targets.filter(isAddressToken) : sweep.targets;
   const cliHostTargets = zoneIn ? sweep.targets.filter((tok) => !isAddressToken(tok)) : [];
 
@@ -2015,13 +2092,18 @@ export async function runScan(config = {}, hooks = {}) {
     // The zone file's exact origin of a proxied name matches that host as 'zone'
     // (authoritative: it counts toward needsCert); everything else stays a 'hint'.
     const zoneHosts = new Set(hint.reasons.filter((r) => r.kind === 'zone').map((r) => r.host));
+    // A remembered origin (the workspace's origin map) matches as 'known', ahead of the zone.
+    const knownHosts = new Set(hint.reasons.filter((r) => r.kind === 'known').map((r) => r.host));
     const targets = hosts.filter((x) => hint.historyHosts.has(x.name) || (general && x.classification.hidesOrigin));
     if (!targets.length) continue;
     for (const { server, through } of lookupServers([hint.ip], ipIndex)) {
       const g = groupOf(server);
       for (const host of targets) {
         if (g.hosts.some((e) => e.name === host.name && e.ip === hint.ip)) continue;
-        const entry = { name: host.name, ip: hint.ip, covered: coveredOf(host), via: zoneHosts.has(host.name) ? 'zone' : 'hint' };
+        const entry = {
+          name: host.name, ip: hint.ip, covered: coveredOf(host),
+          via: knownHosts.has(host.name) ? 'known' : zoneHosts.has(host.name) ? 'zone' : 'hint'
+        };
         if (through) entry.through = through;
         g.hosts.push(entry);
       }
@@ -2038,7 +2120,7 @@ export async function runScan(config = {}, hooks = {}) {
     g.hosts.sort((a, b) => (VIA_RANK[a.via] ?? 9) - (VIA_RANK[b.via] ?? 9)
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
     const tls = terminatesTls(g.server) || !!(g.topology && g.topology.suspect);
-    g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false);
+    g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone' || e.via === 'known') && e.covered !== false);
     g.maybeNeedsCert = tls && !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
   }
   serverGroups.sort((a, b) => Number(b.needsCert) - Number(a.needsCert)
@@ -2250,7 +2332,16 @@ export async function runScan(config = {}, hooks = {}) {
     },
     // zone import summary (null without a zone): counts, plus exactly which zone
     // names / addresses / hosts went into the CLI command
-    zone: zoneSummary
+    zone: zoneSummary,
+    // origin map (only when knownOrigins was given): how many remembered origins it held, the
+    // proxied names one matched, and exactly which of their targets went into the CLI command
+    ...(knownIn ? {
+      known: {
+        entries: knownIn.length,
+        names: sortHostnames([...knownByHost.keys()]),
+        cliTargets: sweep.targets.filter((tok) => knownTokenSet.has(tok))
+      }
+    } : {})
   };
   stage('done', { stats });
   return result;

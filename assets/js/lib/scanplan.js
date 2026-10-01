@@ -31,9 +31,10 @@ export const PROBE_ORIGINS = new Set(['wordlist', 'permutation', 'recursive']);
 // origin), as opposed to a general candidate (spf / mx / direct-sibling) that
 // applies to every proxied host. Used for the per-host candidate list and the
 // server-group attribution.
-// 'zone' is the imported zone file's exact origin of one proxied name (exported
-// so the views split host-specific from general hints the same way).
-export const HOST_SPECIFIC_HINT_KINDS = new Set(['history', 'resolver-leak', 'sibling-domain', 'zone']);
+// 'zone' is the imported zone file's exact origin of one proxied name, 'known' the
+// workspace's origin map's (exported so the views split host-specific from general
+// hints the same way).
+export const HOST_SPECIFIC_HINT_KINDS = new Set(['history', 'resolver-leak', 'sibling-domain', 'zone', 'known']);
 
 /* ------------------------------------------------------------------------ */
 /* Caps and defaults shared by the scan and its estimate                    */

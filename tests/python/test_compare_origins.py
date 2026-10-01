@@ -130,6 +130,9 @@ class CompareIntegrationTests(unittest.TestCase):
         self.assertEqual([doc['verdict'], doc['shared']], ['same', ['cert-untrusted']])
         trusted = next(f for f in doc['fields'] if f['key'] == 'cert_trusted')
         self.assertEqual([trusted['same'], trusted['shared'], trusted['severity']], [True, True, 'warn'])
+        # The certificates each server sent (Python 3.13+ tells): the leaf alone here.
+        sent = 1 if hasattr(ssl.SSLSocket, 'get_unverified_chain') else None
+        self.assertEqual([doc['old']['chainLength'], doc['new']['chainLength']], [sent, sent])
 
     def test_an_internal_ca_certificate_then_a_self_signed_one_fails_the_check(self):
         # Without --private-ca this machine trusts neither, but the new certificate is not from
@@ -308,6 +311,16 @@ class CompareUnitTests(unittest.TestCase):
         self.assertEqual(compare(internal, renewed), shared, 'renewed by the same CA')
         # The new server sends the leaf without its intermediate: a client that trusts only the root refuses it.
         self.assertEqual(compare(internal, renewed, new_detail='unable to verify the first certificate'), other)
+        # Python stops at the first error, so both say "unable to get local issuer certificate":
+        # the chain each server sent (Python 3.13+) tells them apart.
+        def chained(old_length, new_length):
+            result = sos.compare_sides(
+                self.side(cert=internal, covers=True, trusted=False, trust_detail=local, chain_length=old_length),
+                self.side(ip='192.0.2.2', cert=renewed, covers=True, trusted=False, trust_detail=local, chain_length=new_length), now)
+            return [result['verdict'], result['shared']]
+        self.assertEqual(chained(2, 1), ['differs', []], 'the intermediate lost')
+        self.assertEqual(chained(3, 2), ['same', ['cert-untrusted']], 'only the root dropped: clients have it')
+        self.assertEqual(chained(None, 1), ['same', ['cert-untrusted']], 'not known before Python 3.13')
         # A new certificate that is not valid yet, whatever this machine reports first.
         self.assertEqual(compare(internal, dataclasses.replace(renewed, not_before=now + timedelta(days=30))), other)
         # The issuer DN as issued_by compares it; an empty one says nothing; another CA key is another CA.

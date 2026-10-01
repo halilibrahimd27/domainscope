@@ -623,6 +623,88 @@ export function domainSummary(facts, opts) {
   return doc('domain', k.title('domain', [code(f.domain)]), lines, { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
 }
 
+/** Certificates an estate summary names as expiring first (the rest as "+N more"). */
+const ESTATE_MAX_FIRST = 3;
+/** Names an estate summary lists as served with different certificates. */
+const ESTATE_MAX_CONFLICTS = 3;
+
+/**
+ * Certificate estate: how many certificates the reports hold and on how many endpoints, when they
+ * expire (the buckets up to 90 days that hold one), the ones that expire first and the names served
+ * with different certificates — by name only: a summary never lists an address or a server of the
+ * reports — and what needs a look (keys shared by many hosts or several certificates, weak keys or
+ * signatures, certificates covering none of the names asked; unknown when no name was asked). The
+ * reports never go into its link.
+ * @param {{ reports: number, certificates: number, endpoints: number, expiry: Record<string, number>,
+ *   first?: Array<{ name: string, daysLeft: number }>, conflicts?: string[], stale?: number, sharedKeys?: number,
+ *   weak?: number, coversNone?: number|null, at?: Date|null }} facts views/estate.js estateSummaryFacts
+ *   (lib/estate.js estateOf of the reports on screen); `first`: expired or expiring within 30 days, soonest first
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function estateSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const ex = facts.expiry || {};
+  const lines = [[t('sum.estate.certs', { count: Number(facts.certificates) || 0 }), ' · ', t('sum.estate.endpoints', { count: Number(facts.endpoints) || 0 })]];
+  const soon = k.counts([['sum.estate.expired', ex.expired], ['sum.estate.week', ex['7d']], ['sum.estate.month', ex['30d']], ['sum.estate.quarter', ex['90d']]]);
+  lines.push(soon ? k.cap([soon]) : [t('sum.estate.noneSoon')]);
+  const first = (facts.first || []).filter((c) => c && Number.isFinite(c.daysLeft));
+  if (first.length) {
+    const parts = [strong(`${t('sum.estate.first')}:`), ' '];
+    first.slice(0, ESTATE_MAX_FIRST).forEach((c, i) => {
+      const left = c.daysLeft < 0 ? t('sum.estate.expiredAgo', { count: -c.daysLeft })
+        : c.daysLeft === 0 ? t('sum.estate.today') : t('sum.estate.daysLeft', { count: c.daysLeft });
+      parts.push(i ? ', ' : '', code(c.name), ` (${left})`);
+    });
+    if (first.length > ESTATE_MAX_FIRST) parts.push(` ${t('common.moreCount', { count: first.length - ESTATE_MAX_FIRST })}`);
+    lines.push(parts);
+  }
+  const conflicts = facts.conflicts || [];
+  if (conflicts.length) lines.push([strong(`${t('sum.estate.conflicts', { count: conflicts.length })}:`), ' ', ...k.values(conflicts, ESTATE_MAX_CONFLICTS)]);
+  if (Number(facts.stale) > 0) lines.push(k.cap([t('sum.estate.stale', { count: Number(facts.stale) })]));
+  const look = k.counts([['sum.estate.shared', facts.sharedKeys], ['sum.estate.weak', facts.weak], ['sum.estate.coversNone', facts.coversNone]]);
+  if (look) lines.push(k.cap([look]));
+  else if (!conflicts.length) lines.push([t('sum.estate.clean')]);
+  if (facts.coversNone === null || facts.coversNone === undefined) lines.push([t('sum.estate.noNames')]);
+  lines.push([t('sum.estate.filesStay')]);
+  return doc('estate', k.title('estate', t('sum.estate.reports', { count: Number(facts.reports) || 0 })), lines,
+    { when: whenText(t, 'sum.at.scanned', facts.at, opts.now || new Date()), url: opts.url });
+}
+
+/** Record sets a DNS change check summary lists one by one (the rest as "+N more"). */
+const CHANGE_MAX_SETS = 5;
+/** The states of a record set on the check page (lib/changecheck.js checkState). */
+export const CHANGE_SET_STATES = Object.freeze(['done', 'pending', 'wrong', 'unknown']);
+
+/**
+ * DNS change request › the check page ("is it live?"): the headline the page shows (its own key),
+ * each record set by name and type with what the resolvers answered (live, not yet, another
+ * value, no answer yet; seen on n of m), and why the check stopped where it stopped. Names and
+ * types only: the values are in the link, which is the check page itself.
+ * @param {{ zone: string, headline: { key: string, params?: object }, sets: Array<{ name: string, type: string,
+ *   state: string, done: number, resolvers: number }>, stop?: { key: string, params?: object }|null, at?: Date|number|null }} facts
+ *   views/change.js checkSummaryFacts (lib/changecheck.js checkState of the check on screen)
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function changeSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const head = facts.headline || { key: 'sum.change.state.unknown' };
+  const lines = [[t(head.key, head.params || {})]];
+  const sets = facts.sets || [];
+  for (const s of sets.slice(0, CHANGE_MAX_SETS)) {
+    const state = CHANGE_SET_STATES.includes(s.state) ? s.state : 'unknown';
+    lines.push([code(s.name), ` ${cleanText(s.type)}: `, t(`sum.change.state.${state}`), ' · ',
+      t('sum.change.resolvers', { count: Number(s.resolvers) || 0, done: Number(s.done) || 0 })]);
+  }
+  if (sets.length > CHANGE_MAX_SETS) lines.push([t('sum.change.more', { count: sets.length - CHANGE_MAX_SETS })]);
+  if (facts.stop && facts.stop.key) lines.push([t(facts.stop.key, facts.stop.params || {})]);
+  return doc('change', k.title('change', [code(facts.zone)]), lines,
+    { when: whenText(t, 'sum.at.checked', facts.at, opts.now || new Date()), url: opts.url });
+}
+
 const BUILDERS = {
   domain: domainSummary,
   zone: zoneSummary,
@@ -633,7 +715,9 @@ const BUILDERS = {
   lookup: lookupSummary,
   ip: ipSummary,
   retire: retireSummary,
-  health: healthSummary
+  health: healthSummary,
+  estate: estateSummary,
+  change: changeSummary
 };
 for (const [kind, build] of Object.entries(BUILDERS)) registerSummaryBuilder(kind, build);
 
@@ -841,7 +925,43 @@ const STRINGS = [
   ['sum.retire.failed', [{ one: '{count} failed lookup (the list may be incomplete)', other: '{count} failed lookups (the list may be incomplete)' },
     '{count} başarısız sorgu (liste eksik olabilir)']],
   ['sum.retire.missing', [{ one: '{count} domain that does not exist (a typo?)', other: '{count} domains that do not exist (a typo?)' },
-    'mevcut olmayan {count} alan adı (yazım hatası mı?)']]
+    'mevcut olmayan {count} alan adı (yazım hatası mı?)']],
+
+  ['sum.estate.reports', [{ one: '{count} report', other: '{count} reports' }, '{count} rapor']],
+  ['sum.estate.certs', [{ one: '{count} certificate', other: '{count} certificates' }, '{count} sertifika']],
+  ['sum.estate.endpoints', [{ one: 'served on {count} endpoint', other: 'served on {count} endpoints' }, '{count} uç noktada sunuluyor']],
+  ['sum.estate.expired', [{ one: '{count} expired', other: '{count} expired' }, 'süresi dolmuş: {count}']],
+  ['sum.estate.week', [{ one: '{count} within 7 days', other: '{count} within 7 days' }, '7 gün içinde: {count}']],
+  ['sum.estate.month', [{ one: '{count} within 30 days', other: '{count} within 30 days' }, '30 gün içinde: {count}']],
+  ['sum.estate.quarter', [{ one: '{count} within 90 days', other: '{count} within 90 days' }, '90 gün içinde: {count}']],
+  ['sum.estate.noneSoon', ['None expires within 90 days', '90 gün içinde süresi dolan yok']],
+  ['sum.estate.first', ['Expiring first', 'İlk dolacaklar']],
+  ['sum.estate.daysLeft', [{ one: '{count} day left', other: '{count} days left' }, '{count} gün kaldı']],
+  ['sum.estate.today', ['less than a day left', '1 günden az kaldı']],
+  ['sum.estate.expiredAgo', [{ one: 'expired {count} day ago', other: 'expired {count} days ago' }, '{count} gün önce doldu']],
+  ['sum.estate.conflicts', [{ one: '{count} name served with different certificates', other: '{count} names served with different certificates' },
+    'Farklı sertifikalarla sunulan {count} ad']],
+  ['sum.estate.stale', [{ one: '{count} older certificate left behind on its servers', other: '{count} older certificates left behind on their servers' },
+    'Sunucularında geride kalmış {count} eski sertifika']],
+  ['sum.estate.shared', [{ one: '{count} key on many hosts or in several certificates', other: '{count} keys on many hosts or in several certificates' },
+    'birçok sunucuda ya da birden çok sertifikada {count} anahtar']],
+  ['sum.estate.weak', [{ one: '{count} certificate with a weak key or signature', other: '{count} certificates with a weak key or signature' },
+    'zayıf anahtarlı ya da imzalı {count} sertifika']],
+  ['sum.estate.coversNone', [{ one: '{count} certificate covering none of the names asked', other: '{count} certificates covering none of the names asked' },
+    'sorulan adların hiçbirini kapsamayan {count} sertifika']],
+  ['sum.estate.clean', ['No name served with different certificates, no shared or weak key', 'Farklı sertifikalarla sunulan ad, ortak ya da zayıf anahtar yok']],
+  ['sum.estate.noNames', ['The reports asked for no name: which certificates cover none cannot be told',
+    'Raporlar hiçbir ad sormadı: hiçbir adı kapsamayan sertifikalar söylenemez']],
+  ['sum.estate.filesStay', ['The reports stay in this browser: the link opens the Certificate estate without them',
+    'Raporlar bu tarayıcıda kalır: bağlantı Sertifika envanterini onlar olmadan açar']],
+
+  ['sum.change.state.done', ['live', 'yayında']],
+  ['sum.change.state.pending', ['not live yet', 'henüz yayında değil']],
+  ['sum.change.state.wrong', ['another value', 'başka bir değer']],
+  ['sum.change.state.unknown', ['no answer yet', 'henüz yanıt yok']],
+  ['sum.change.resolvers', [{ one: 'seen on {done} of {count} resolver', other: 'seen on {done} of {count} resolvers' },
+    '{count} çözümleyiciden {done} tanesinde görülüyor']],
+  ['sum.change.more', [{ one: '+{count} more record set', other: '+{count} more record sets' }, '+{count} kayıt kümesi daha']]
 ];
 
 function buildStrings(lang) {

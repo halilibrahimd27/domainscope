@@ -31,6 +31,8 @@ before(async () => {
   const { HEALTH_I18N } = await imp('assets/js/lib/health.js');
   // The Verify headline keys a scan summary quotes (registered by the panel, as in the app).
   await imp('assets/js/ui/verify-panel.js');
+  // The check page's headline and stop keys a DNS change summary quotes (registered by its view).
+  await imp('assets/js/views/change.js');
   for (const lang of ['en', 'tr']) {
     i18n.registerStrings(lang, S.SUMMARY_I18N[lang]);
     i18n.registerStrings(lang, R.REPORTS_SUMMARY_I18N[lang]);
@@ -1136,6 +1138,102 @@ describe('domain (overview)', () => {
   });
 });
 
+describe('estate (Certificate estate)', () => {
+  const facts = (extra = {}) => ({
+    reports: 2,
+    certificates: 7,
+    endpoints: 12,
+    expiry: { expired: 1, '7d': 0, '30d': 2, '90d': 1, later: 3 },
+    first: [{ name: 'www.example.com', daysLeft: -3 }, { name: 'api.example.com', daysLeft: 0 }, { name: 'mail.example.com', daysLeft: 12 },
+      { name: 'shop.example.com', daysLeft: 20 }],
+    conflicts: ['www.example.com'],
+    stale: 1,
+    sharedKeys: 1,
+    weak: 0,
+    coversNone: 2,
+    at: new Date('2026-09-20T08:30:00Z'),
+    ...extra
+  });
+
+  test('counts, the buckets up to 90 days, what expires first by name, the conflicts and what needs a look; a bare link', () => {
+    const doc = S.estateSummary(facts(), opts('en', `${URL_BASE}#/estate`));
+    assertShape(doc);
+    const out = lines(md(doc));
+    assert.equal(out[0], '**Certificate estate · 2 reports**');
+    assert.equal(out[1], '- 7 certificates · served on 12 endpoints');
+    assert.equal(out[2], '- 1 expired · 2 within 30 days · 1 within 90 days');
+    assert.equal(out[3], '- **Expiring first:** `www.example.com` (expired 3 days ago), `api.example.com` (less than a day left), `mail.example.com` (12 days left) +1 more');
+    assert.equal(out[4], '- **1 name served with different certificates:** `www.example.com`');
+    assert.equal(out[5], '- 1 older certificate left behind on its servers');
+    assert.equal(out[6], '- 1 key on many hosts or in several certificates · 2 certificates covering none of the names asked');
+    assert.equal(out[7], '- The reports stay in this browser: the link opens the Certificate estate without them');
+    assert.equal(out[out.length - 1], `DomainScope · scanned 2026-09-20 08:30 UTC · ${URL_BASE}#/estate`);
+    assert.deepEqual(S.permalinkParams('estate', { domain: 'example.com' }), {}, 'the reports never go into a URL');
+  });
+
+  test('nothing soon, nothing to look at; no name asked: covering none cannot be told; a hostile name stays one code span', () => {
+    const quiet = S.estateSummary(facts({ expiry: { expired: 0, '7d': 0, '30d': 0, '90d': 0, later: 7 }, first: [], conflicts: [], stale: 0, sharedKeys: 0, coversNone: 0 }), opts());
+    assertShape(quiet);
+    const out = md(quiet);
+    assert.match(out, /- None expires within 90 days\n/);
+    assert.match(out, /- No name served with different certificates, no shared or weak key\n/);
+    const noNames = md(S.estateSummary(facts({ coversNone: null, first: [{ name: `evil${RLO}\n<@here>`, daysLeft: 5 }] }), opts()));
+    assert.match(noNames, /- The reports asked for no name: which certificates cover none cannot be told\n/);
+    assert.match(noNames, /\*\*Expiring first:\*\* `evil <@here>` \(5 days left\)/);
+  });
+
+  test('Turkish: every line begins with a capital, the buckets read "label: count"', () => {
+    const doc = S.estateSummary(facts(), opts('tr'));
+    assertShape(doc);
+    const out = lines(md(doc));
+    assert.equal(out[0], '**Sertifika envanteri · 2 rapor**');
+    assert.equal(out[2], '- Süresi dolmuş: 1 · 30 gün içinde: 2 · 90 gün içinde: 1');
+    assert.equal(out[4], '- **Farklı sertifikalarla sunulan 1 ad:** `www.example.com`');
+    assert.equal(out[6], '- Birçok sunucuda ya da birden çok sertifikada 1 anahtar · sorulan adların hiçbirini kapsamayan 2 sertifika');
+  });
+});
+
+describe('change (DNS change request › is it live?)', () => {
+  const facts = (extra = {}) => ({
+    zone: 'example.com',
+    headline: { key: 'chg.check.head.pending', params: { count: 3, done: 1 } },
+    sets: [
+      { name: '_acme-challenge.example.com', type: 'TXT', state: 'done', done: 4, resolvers: 4 },
+      { name: 'example.com', type: 'TXT · SPF', state: 'pending', done: 2, resolvers: 4 },
+      { name: 'www.example.com', type: 'A', state: 'wrong', done: 0, resolvers: 4 }
+    ],
+    stop: null,
+    at: new Date('2026-09-28T12:00:00Z'),
+    ...extra
+  });
+
+  test('the page\'s headline, each set by name and type with what the resolvers answered, the check link', () => {
+    const url = `${URL_BASE}#/change/check?z=example.com&r=has%20_acme-challenge%20TXT%20x`;
+    const doc = S.changeSummary(facts(), opts('en', url));
+    assertShape(doc, { min: 5 });
+    const out = lines(md(doc));
+    assert.equal(out[0], '**DNS change request · `example.com`**');
+    assert.equal(out[1], '- Not live everywhere yet: 1 of 3 record sets done.');
+    assert.equal(out[2], '- `_acme-challenge.example.com` TXT: live · seen on 4 of 4 resolvers');
+    assert.equal(out[3], '- `example.com` TXT · SPF: not live yet · seen on 2 of 4 resolvers');
+    assert.equal(out[4], '- `www.example.com` A: another value · seen on 0 of 4 resolvers');
+    assert.equal(out[out.length - 1], `DomainScope · checked 2026-09-28 12:00 UTC · ${url}`);
+  });
+
+  test('more than five sets, a stop, a state it does not know; Turkish', () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({ name: `h${i}.example.com`, type: 'A', state: i ? 'done' : 'bogus', done: 4, resolvers: 4 }));
+    const doc = S.changeSummary(facts({ sets: many, stop: { key: 'chg.check.stop.timeout' } }), opts());
+    assertShape(doc);
+    const out = md(doc);
+    assert.match(out, /- `h0\.example\.com` A: no answer yet · seen on 4 of 4 resolvers\n/);
+    assert.match(out, /- \+2 more record sets\n/);
+    assert.match(out, /- Stopped after two hours\. Check again when the change has been made\.\n/);
+    const tr = lines(md(S.changeSummary(facts(), opts('tr'))));
+    assert.equal(tr[0], '**DNS değişiklik talebi · `example.com`**');
+    assert.equal(tr[2], '- `_acme-challenge.example.com` TXT: yayında · 4 çözümleyiciden 4 tanesinde görülüyor');
+  });
+});
+
 describe('rendering and dispatch', () => {
   test('buildSummary dispatches by view id and refuses unknown views', () => {
     const doc = S.buildSummary('zone', { origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts());
@@ -1223,6 +1321,7 @@ describe('i18n', () => {
     for (const f of ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']) used.add(`sum.global.find.${f}`);
     for (const w of S.CERT_SUMMARY_WARNINGS) used.add(`sum.cert.warn.${w}`);
     for (const r of S.RETIRE_BREAKING_SEVERITIES) used.add(`sum.retire.sev.${r}`);
+    for (const s of S.CHANGE_SET_STATES) used.add(`sum.change.state.${s}`);
     // Domain overview: sum.domain.dnssec.<state>, sum.domain.spf.<state>, sum.domain.dmarc.<state>.
     for (const d of ['validated', 'signed', 'unsigned', 'failing']) used.add(`sum.domain.dnssec.${d}`);
     for (const st of ['none', 'many', 'invalid']) { used.add(`sum.domain.spf.${st}`); used.add(`sum.domain.dmarc.${st}`); }

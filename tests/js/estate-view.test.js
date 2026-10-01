@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { listKeys } from '../../assets/js/i18n.js';
 import {
-  ESTATE_TABS, CLI_EXAMPLE, bucketVariant, endpointLabel, estateOfReports, importReports
+  ESTATE_TABS, CLI_EXAMPLE, bucketVariant, endpointLabel, estateOfReports, estateSummaryFacts, importReports
 } from '../../assets/js/views/estate.js';
 import {
   ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_REPORTS, ESTATE_WEAK_REASONS, REPORT_ERRORS
@@ -52,6 +52,27 @@ describe('estateOfReports', () => {
     assert.deepEqual(view.merged.overlaps, ['192.0.2.11|443']);
     assert.equal(view.estate.counts.endpoints, 8);
     assert.equal(view.estate.counts.expiry.expired, 2, 'the weak certificate has expired by then');
+  });
+});
+
+describe('estateSummaryFacts', () => {
+  test('the Copy summary\'s facts: the estate\'s counts, names only (never an address or a server), the newest scan', () => {
+    const { reports } = importReports([], [file('report-a.json'), file('report-b.json')]);
+    const { estate } = estateOfReports(reports, Date.parse('2026-10-05T12:00:00Z'));
+    const f = estateSummaryFacts(estate, reports);
+    assert.equal(f.reports, 2);
+    assert.equal(f.certificates, estate.counts.certificates);
+    assert.equal(f.endpoints, estate.counts.endpointsWithCertificate);
+    assert.deepEqual(f.expiry, estate.counts.expiry);
+    assert.deepEqual(f.conflicts, estate.nameConflicts.map((c) => c.name));
+    assert.ok(f.first.length >= 2 && f.first.every((c) => typeof c.name === 'string' && Number.isFinite(c.daysLeft)), 'expired or expiring, by name');
+    assert.ok(f.first.every((c, i) => i === 0 || f.first[i - 1].daysLeft <= c.daysLeft), 'soonest first');
+    assert.equal(f.at.getTime(), Math.max(...reports.map((r) => r.finishedAt.getTime())), 'the newest report dates it');
+    const text = JSON.stringify(f);
+    assert.doesNotMatch(text, /192\.0\.2\.|198\.51\.100\.|203\.0\.113\./, 'no address');
+    for (const c of estate.certificates) for (const e of c.endpoints) for (const s of e.servers) assert.ok(!text.includes(JSON.stringify(s)), `no server name: ${s}`);
+    const noNames = estateSummaryFacts({ ...estate, namesAsked: [] }, reports);
+    assert.equal(noNames.coversNone, null, 'no name asked: covering none cannot be told');
   });
 });
 

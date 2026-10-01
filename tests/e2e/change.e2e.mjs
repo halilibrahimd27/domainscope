@@ -39,7 +39,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner, gotoRoute,
-  installDownloadCapture, setLangUi, shot, takeDownloads, waitReady
+  installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const TOKEN_A = 'gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk';
@@ -314,6 +314,20 @@ async function main() {
       assertEqual((await dnsLog(page)).map((q) => `${q.name} ${q.type} ${q.resolver}`).sort(), ['_acme-challenge.example.com TXT cloudflare', '_acme-challenge.example.com TXT cznic',
         '_acme-challenge.example.com TXT dnssb', '_acme-challenge.example.com TXT google'], '4 resolvers × 1 record set');
       assertEqual(await resolverRows(page), [['cloudflare:done', 'google:done', 'dnssb:done', 'cznic:done']], 'verdicts');
+    });
+
+    await run.step('Copy summary of the check: the headline, each set with what the resolvers saw, this check\'s link', async () => {
+      await stubClipboard(page);
+      await page.click('[data-summary="change"] [data-action="copy-summary"]');
+      await page.click('[data-summary="change"] [data-action="copy-summary-text"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+      const [md, plain] = await takeClipboard(page);
+      const lines = md.trim().split('\n');
+      assertEqual(lines.slice(0, 4), ['**DNS change request · `example.com`**', '- Done: every resolver sees the change.',
+        '- `_acme-challenge.example.com` TXT: live · seen on 4 of 4 resolvers', ''], 'title, headline, the set');
+      const foot = lines[lines.length - 1];
+      assert(foot.startsWith('DomainScope · checked ') && foot.includes(` UTC · ${origin}${BASE}#/change/check?z=example.com&r=`), `footer: ${foot}`);
+      assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the same lines in plain text');
     });
 
     const wrongQuery = 'z=example.com&r=is+www+A+192.0.2.10^198.51.100.5';

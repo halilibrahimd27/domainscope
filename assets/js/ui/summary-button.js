@@ -9,7 +9,8 @@
  * summary takes from the server list where it takes something: SSL Targets names the servers
  * that need the certificate, IP Intel says how many of the addresses are in the list. The
  * permalink in it never carries inventory data or a file's contents (lib/summary.permalinkParams);
- * the tooltip of Zone File, Certificate and DMARC & TLS reports, whose result is a file, says that too.
+ * the tooltip of Zone File, Certificate, Certificate estate and DMARC & TLS reports, whose result is
+ * a file, says that too.
  * {@link resultPermalink} gives the print header (app.js) the same link: the result's, not the
  * route's, which a new run changes before its result replaces the one on screen.
  *
@@ -70,7 +71,7 @@ const permalinks = new WeakMap();
 /** Tooltip key per `inventory` option of {@link SummaryButton}. */
 const TIPS = { names: 'sum.btn.tipInventory', count: 'sum.btn.tipCount' };
 /** Views whose result comes from files the user loaded: their tooltip says the link leaves them out. */
-const FILE_KINDS = new Set(['zone', 'cert', 'reports']);
+const FILE_KINDS = new Set(['zone', 'cert', 'estate', 'reports']);
 
 /**
  * The permalink of the result shown under `root`: the link the first shown SummaryButton (not

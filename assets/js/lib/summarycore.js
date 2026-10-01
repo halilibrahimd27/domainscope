@@ -22,7 +22,8 @@
 import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'global', 'lookup', 'ip', 'retire', 'health', 'reports']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'retire',
+  'health', 'reports']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -33,8 +34,9 @@ export const SUMMARY_MAX_PROBLEMS = 5;
 export const SUMMARY_MAX_VALUE = 96;
 
 /**
- * Route params a view's permalink may carry (app.js buildRoute keys). Zone File, Certificate and
- * DMARC & TLS reports carry none: the file never goes into a URL.
+ * Route params a view's permalink may carry (app.js buildRoute keys). Zone File, Certificate,
+ * Certificate estate and DMARC & TLS reports carry none: the file never goes into a URL. The DNS
+ * change request's summary links its check page (the check link itself), never its form.
  */
 export const PERMALINK_PARAMS = Object.freeze({
   subdomains: Object.freeze(['domain', 'run']),
@@ -43,8 +45,10 @@ export const PERMALINK_PARAMS = Object.freeze({
   scan: Object.freeze(['domain', 'run']),
   cert: Object.freeze([]),
   renew: Object.freeze(['names', 'ca', 'challenge']),
+  estate: Object.freeze([]),
   global: Object.freeze(['name', 'type', 'geo']),
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
+  change: Object.freeze([]),
   ip: Object.freeze(['ips']),
   retire: Object.freeze(['ips', 'domains']),
   health: Object.freeze(['domain', 'selectors']),

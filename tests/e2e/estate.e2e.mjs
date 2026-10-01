@@ -42,7 +42,7 @@ import { launchBrowser } from './cdp.mjs';
 import { orderSuites } from './run-all.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady
+  csvHeader, gotoRoute, installDownloadCapture, setLangUi, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 import { ESTATE_CSV_COLUMNS } from '../../assets/js/lib/estate.js';
 
@@ -322,6 +322,24 @@ async function main() {
       const [file] = await takeDownloads(page);
       assertEqual(csvHeader(file.text), [...ESTATE_CSV_COLUMNS.map((c) => c.key), 'report'], 'report column');
       assert(/,report-b\.json\r?\n/.test(file.text) && /,report-a\.json\r?\n/.test(file.text), 'rows name their report');
+      await removeToasts(page);
+    });
+
+    await run.step('Copy summary: the counts, what expires first and the conflicts by name, never an address; a bare #/estate link', async () => {
+      await stubClipboard(page);
+      const tip = await page.evaluate(() => document.querySelector('[data-summary="estate"] [data-action="copy-summary"]').title);
+      assert(/nothing from your server list/.test(tip) && /without any file contents/.test(tip), `tooltip: ${tip}`);
+      await page.click('[data-summary="estate"] [data-action="copy-summary"]');
+      await page.click('[data-summary="estate"] [data-action="copy-summary-text"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'two copies' });
+      const [md, plain] = await takeClipboard(page);
+      const lines = md.trim().split('\n');
+      assertEqual(lines[0], '**Certificate estate · 2 reports**', 'title');
+      assert(/^- 9 certificates · served on \d+ endpoints$/.test(lines[1]), `counts: ${lines[1]}`);
+      assert(lines.some((l) => /^- \*\*\d+ names? served with different certificates:\*\* `/.test(l)), `the conflicts by name:\n${md}`);
+      assert(!/192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|2001:db8:/.test(md), `no address:\n${md}`);
+      assert(new RegExp(`^DomainScope · scanned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · ${origin}${BASE}#/estate$`).test(lines[lines.length - 1]), `footer: ${lines[lines.length - 1]}`);
+      assertEqual(plain, md.replace(/\*\*|`/g, '').replace('\n\nDomainScope · ', '\nDomainScope · '), 'the same lines in plain text');
       await removeToasts(page);
     });
 

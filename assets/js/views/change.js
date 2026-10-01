@@ -44,6 +44,8 @@ import { normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { getResolver } from '../lib/resolvers.js';
 import { isFillOnly } from '../lib/session.js';
 import { ChangeOutputs, ProblemList, builderParams, checkUrl } from '../ui/fix-panel.js';
+import { SummaryButton } from '../ui/summary-button.js';
+import '../ui/view-summaries.js'; // the check page's Copy summary: lib/summary.js changeSummary and its texts
 
 /** Route id (`#/change`). */
 export const id = 'change';
@@ -535,6 +537,47 @@ function mountBuilder(container, ctx) {
 const VERDICT_BADGE = Object.freeze({ done: ['ok', 'check-circle'], pending: ['warn', 'clock'], wrong: ['error', 'x-circle'], error: ['neutral', 'help'], waiting: ['neutral', 'clock'] });
 const HEAD_VARIANT = Object.freeze({ done: 'ok', 'done-partial': 'ok', wrong: 'error', pending: 'warn', 'no-answer': 'warn', unknown: 'info' });
 
+/**
+ * The check page's headline: its i18n key and params (the sets done of all; done-partial: the
+ * resolvers that failed for at least one set; no-answer: the sets no resolver answered for).
+ * @param {{ sets: object[] }} check
+ * @param {Map<string, object>} latest
+ * @param {ReturnType<typeof checkState>} st
+ * @returns {{ key: string, params: { count: number, done: number } }}
+ */
+export function checkHeadline(check, latest, st) {
+  const params = { count: check.sets.length, done: st.sets.filter((s) => s.state === 'done').length };
+  if (st.headline === 'done-partial') params.count = CHECK_RESOLVERS.filter((rid) => check.sets.some((_, i) => (latest.get(pairKey(i, rid)) || {}).verdict === 'error')).length;
+  if (st.headline === 'no-answer') params.count = st.sets.filter((s) => !s.counts.done).length;
+  return { key: `chg.check.head.${st.headline}`, params };
+}
+
+/**
+ * The Copy summary's facts of the check page (lib/summary.js changeSummary): the headline, each set
+ * by name and type (with its TXT family) and what the resolvers answered, why the check stopped and
+ * when it last asked. Never a value: those are in the check link the summary carries.
+ * @param {{ zone: string, sets: object[] }} check
+ * @param {{ latest: Map<string, object>, stop: string|null, cachedUntil: number|null, lastAt: number|null }} memo
+ * @param {{ timeText?: (ms: number) => string }} [opts] the stop's time, as the page says it
+ * @returns {object}
+ */
+export function checkSummaryFacts(check, memo, { timeText = (ms) => new Date(ms).toISOString() } = {}) {
+  const st = checkState(check, memo.latest);
+  return {
+    zone: check.zone,
+    headline: checkHeadline(check, memo.latest, st),
+    sets: check.sets.map((exp, i) => ({
+      name: exp.name,
+      type: exp.family ? `${exp.type} · ${TXT_FAMILIES[exp.family]}` : exp.type,
+      state: st.sets[i].state,
+      done: st.sets[i].counts.done,
+      resolvers: CHECK_RESOLVERS.length
+    })),
+    stop: memo.stop && memo.stop !== 'done' ? { key: `chg.check.stop.${memo.stop}`, params: { time: memo.cachedUntil ? timeText(memo.cachedUntil) : '' } } : null,
+    at: memo.lastAt || null
+  };
+}
+
 function mountCheck(container, ctx) {
   const { t } = ctx;
   // The link as it was opened (its readable form): what its length limit counts, Copy link, and
@@ -568,6 +611,12 @@ function mountCheck(container, ctx) {
   const stopBtn = Button({ label: t('chg.check.stop'), icon: 'stop', size: 'sm', dataset: { action: 'check-stop', shortcut: 'cancel' }, onClick: () => stop() });
   const againBtn = Button({ label: t('chg.check.again'), icon: 'refresh', size: 'sm', variant: 'primary', dataset: { action: 'check-again' }, onClick: () => again() });
   const copyBtn = CopyButton(() => checkUrl(query), { label: t('chg.check.copy'), size: 'sm', variant: 'ghost', toastOnCopy: true });
+  // Copy summary for the ticket: the headline and each set's answers, with this check's link.
+  const summary = SummaryButton({
+    kind: 'change',
+    facts: () => checkSummaryFacts(check, memo, { timeText: (ms) => formatDateTime(ms) }),
+    url: () => checkUrl(query)
+  });
   const actionBtns = [nowBtn, stopBtn, againBtn];
   const setsEl = h('div', { class: 'stack chg-sets' });
   const hero = h('section', { class: 'card chg-hero' },
@@ -575,7 +624,7 @@ function mountCheck(container, ctx) {
       h('h2', { class: 'chg-hero-title' }, t('chg.check.title')),
       Badge(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' })),
     headEl, metaEl,
-    h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn, copyBtn));
+    h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn, copyBtn, summary.el));
   view.append(hero, setsEl,
     h('p', { class: 'muted text-sm chg-check-privacy' }, Icon('lock', { size: 14 }), ' ', t('chg.check.privacy')),
     h('p', { class: 'text-sm' }, h('a', { href: ctx.href('change') }, Icon('edit', { size: 14 }), ' ', t('chg.check.own'))));
@@ -639,12 +688,8 @@ function mountCheck(container, ctx) {
     view.dataset.nextAt = memo.nextAt && !memo.stop ? String(memo.nextAt) : '';
     view.dataset.nextPairs = memo.nextAt && !memo.stop ? (memo.pairs || []).join(' ') : '';
     clear(headEl);
-    const doneSets = st.sets.filter((s) => s.state === 'done').length;
-    const params = { count: check.sets.length, done: doneSets };
-    // done-partial: the resolvers that failed for at least one set; no-answer: the sets no resolver answered for.
-    if (st.headline === 'done-partial') params.count = CHECK_RESOLVERS.filter((rid) => check.sets.some((_, i) => (memo.latest.get(pairKey(i, rid)) || {}).verdict === 'error')).length;
-    if (st.headline === 'no-answer') params.count = st.sets.filter((s) => !s.counts.done).length;
-    const headline = Alert({ variant: HEAD_VARIANT[st.headline], compact: true, message: t(`chg.check.head.${st.headline}`, params) });
+    const head = checkHeadline(check, memo.latest, st);
+    const headline = Alert({ variant: HEAD_VARIANT[st.headline], compact: true, message: t(head.key, head.params) });
     headline.dataset.headline = st.headline;
     headEl.append(headline);
     if (memo.stop && memo.stop !== 'done') {

@@ -16,7 +16,9 @@
  *   its hint the names or keys behind them), the kinds, and three tabs:
  *   Certificates (filter, search, a row's details: fingerprints and where it is served; CSV of
  *   what the filter shows, the CLI's --estate --csv columns), Same name, different certificates,
- *   and Shared keys.
+ *   and Shared keys. "Copy summary" (lib/summary.js estateSummary) above the numbers: the counts,
+ *   what expires first and what needs a look, by certificate name only — never an address or a
+ *   server of the reports — and a link to the view without them.
  *
  * Pure helpers are exported for the unit tests (tests/js/estate-view.test.js); the module is
  * DOM-free at import time.
@@ -28,6 +30,8 @@ import {
   TruncatedList, announce, select, textarea, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
+import { SummaryButton } from '../ui/summary-button.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
 import {
   ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, SHARED_KEY_WIDE_HOSTS, estateCsv,
@@ -397,6 +401,33 @@ export function estateOfReports(reports, now = Date.now()) {
 }
 
 /**
+ * The Copy summary's facts (lib/summary.js estateSummary): the counts, the certificates that expire
+ * first (expired or within 30 days, soonest first, by name), the names served with different
+ * certificates and what needs a look; never an address or a server name of the reports.
+ * @param {object} estate lib/estate.js estateOf
+ * @param {Array<{ finishedAt?: Date|null }>} reports the reports read (the newest scan dates the summary)
+ * @returns {object}
+ */
+export function estateSummaryFacts(estate, reports) {
+  const counts = estateFilterCounts(estate);
+  const name = (c) => c.subjectCN || (c.hostnames && c.hostnames[0]) || c.sha256.slice(0, 16);
+  const times = (reports || []).map((r) => r && r.finishedAt).filter((d) => d instanceof Date && !Number.isNaN(d.getTime()));
+  return {
+    reports: (reports || []).length,
+    certificates: estate.counts.certificates,
+    endpoints: estate.counts.endpointsWithCertificate,
+    expiry: { ...estate.counts.expiry },
+    first: estate.certificates.filter((c) => estateMatches(c, 'expiring')).map((c) => ({ name: name(c), daysLeft: c.daysLeft })),
+    conflicts: estate.nameConflicts.map((c) => c.name),
+    stale: estate.certificates.filter((c) => c.flags.includes('stale')).length,
+    sharedKeys: estate.sharedKeys.filter((g) => sharedKeyNeedsLook(g)).length,
+    weak: counts.weak,
+    coversNone: estate.namesAsked.length ? counts['covers-none'] : null,
+    at: times.length ? new Date(Math.max(...times.map((d) => d.getTime()))) : null
+  };
+}
+
+/**
  * Badge variant of an expiry bucket.
  * @param {string} bucket
  * @returns {'error'|'warn'|'info'|'ok'}
@@ -528,8 +559,15 @@ export function mount(container, ctx) {
     const { estate, merged } = S.view;
     const notes = notesOf(estate, merged);
     // A scope without a submit: Ctrl/Cmd+Enter in the table's filter never re-reads a report.
+    const summary = SummaryButton({
+      kind: 'estate',
+      facts: () => (S.view ? estateSummaryFacts(S.view.estate, S.reports) : null),
+      // the view's bare link: the reports never go into a URL
+      url: () => ctx.shareUrl(permalinkParams('estate', {}))
+    });
     root.append(h('div', { class: 'stack estate-results', dataset: { shortcutScope: 'results' } },
       notes.length ? h('div', { class: 'stack-sm estate-notes' }, notes) : null,
+      h('div', { class: 'cluster estate-summary' }, summary.el),
       statTiles(estate), overviewLine(estate), resultTabs(estate)));
   }
 

@@ -6927,7 +6927,7 @@ class CompareSide:
     body_bytes: int = 0
     body_truncated: bool = False
     title: Optional[str] = None
-    chain_length: Optional[int] = None  # the certificates the server sent (Python 3.13+), else None
+    chain_length: Optional[int] = None  # the certificates the server sent (Python 3.10+), else None
 
     @property
     def ok(self) -> bool:
@@ -7014,11 +7014,14 @@ def fetch_side(ip: str, port: int, name: str, path: str, timeout: float,
         tls.do_handshake()
         der = tls.getpeercert(binary_form=True)
         side.tls_version = tls.version()
-        unverified = getattr(tls, 'get_unverified_chain', None)  # Python 3.13+
+        # The certificates the server sent: public on Python 3.13+, on the private _sslobj since 3.10.
+        unverified = (getattr(tls, 'get_unverified_chain', None)
+                      or getattr(getattr(tls, '_sslobj', None), 'get_unverified_chain', None))
         if unverified is not None:
             try:
-                side.chain_length = len(unverified() or [])
-            except (ssl.SSLError, ValueError):
+                sent = unverified()
+                side.chain_length = len(sent) if sent else None
+            except (ssl.SSLError, ValueError, TypeError):
                 side.chain_length = None
         if der:
             try:
@@ -7139,7 +7142,7 @@ def _shared_untrust(a: CompareSide, b: CompareSide, now: datetime) -> bool:
     """Whatever trusts one of two untrusted certificates also trusts the other (the web app's
     sharedUntrust): the same certificate; or, when the new one is valid by now, the same failure
     (this machine's verify message; a new leaf sent alone where the old server sent its chain,
-    which Python 3.13+ reports, fails otherwise) from the same issuer when neither is self-signed - both Cloudflare Origin CA certificates (Cloudflare
+    which Python 3.10+ reports, fails otherwise) from the same issuer when neither is self-signed - both Cloudflare Origin CA certificates (Cloudflare
     trusts its RSA and ECC origin CAs alike), else the same issuer DN as issued_by compares it
     and, when both carry one, the same authority key id (a re-created CA of the same name is
     another CA)."""
@@ -7153,7 +7156,7 @@ def _shared_untrust(a: CompareSide, b: CompareSide, now: datetime) -> bool:
     if a.trust_detail != b.trust_detail or ca.self_signed or cb.self_signed:
         return False
     # Python stops at the first verify error, so a leaf sent without its intermediate reads like
-    # the old chain; the certificates each server sent (Python 3.13+) tell them apart.
+    # the old chain; the certificates each server sent (Python 3.10+) tell them apart.
     if b.chain_length == 1 and (a.chain_length or 0) > 1:
         return False
     if is_origin_ca_certificate(ca) and is_origin_ca_certificate(cb):
@@ -7611,7 +7614,7 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   without the old includeSubDomains or preload -, a new certificate expiring within 14
   days, an untrusted certificate that fails otherwise than the old untrusted one (another
   verify error, not valid yet, its leaf sent alone where the old server sent its chain:
-  Python 3.13+ tells) or comes from another issuer) and differs (information:
+  Python 3.10+ tells) or comes from another issuer) and differs (information:
   another body, Server header or certificate; a page with a token or a time in it differs
   on every request). A certificate problem both servers share - an untrusted certificate,
   the same one or failing alike from the same issuer (the issuer DN and authority key id;

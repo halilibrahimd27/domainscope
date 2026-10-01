@@ -33,7 +33,7 @@ import { normalizeHostname, registrableDomain } from './domain.js';
 import { normalizeIP, ipVersion, isPrivateIP } from './netinfo.js';
 import { spfLookupCount, spfEvaluate, spfMxHosts } from './health.js';
 import { lookupServers } from './inventory.js';
-import { unpackFile, ZIP_ERRORS, ZIP_LIMITS } from './zipread.js';
+import { unpackFile, containerOf, toBytes, ZIP_ERRORS, ZIP_LIMITS } from './zipread.js';
 import { parseTlsReport } from './tlsrpt.js';
 
 /* ------------------------------------------------------------------------ */
@@ -101,6 +101,11 @@ export const SPF_MAX_MX_HOSTS = 10;
 export const MAX_REPORT_FILES = 2000;
 /** Work between two turns of the event loop while {@link readReportFiles} reads (ms). */
 export const READ_YIELD_MS = 50;
+/**
+ * Most bytes one {@link readReportFiles} call (a drop) inflates, every dropped file together: each
+ * has its own lib/zipread.js `maxTotalBytes` too, so 200 small gzip bombs cost 1 GiB, not 200 × that.
+ */
+export const MAX_DROP_BYTES = 1024 * 1024 * 1024;
 
 /* ------------------------------------------------------------------------ */
 /* A minimal XML reader                                                     */
@@ -479,24 +484,30 @@ export function decodeReportText(bytes) {
  * {@link ReportProblem}; nothing is dropped silently. At most {@link MAX_REPORT_FILES} plain files
  * are read; the files after that are named, not unpacked. A plain file larger than lib/zipread.js
  * `maxEntryBytes` is not parsed (`too-large`), whether it was dropped as it is or unpacked, so one
- * parse stays short. Before each file — a dropped one and every plain file an archive holds — the
+ * parse stays short. Archives share one budget across the drop ({@link MAX_DROP_BYTES} inflated, every
+ * byte charged as lib/zipread.js charges it): past it a container is `too-large`, not opened, while a
+ * plain report is still read. Before each file — a dropped one and every plain file an archive holds — the
  * event loop gets a turn once {@link READ_YIELD_MS} ms of work have passed and a Stop is heard, so
  * a page can draw the progress and stop in the middle of a zipped mailbox folder too. A Stop (the
  * signal's abort) ends the read with what it read before: the reports of the files done, those of
  * the archive it cut included, and `stopped`.
  * @param {Array<{ name: string, bytes: Uint8Array|ArrayBuffer }>} files
  * @param {{ signal?: AbortSignal, limits?: object, onProgress?: (done: number, total: number) => void }} [opts]
- *   `limits`: lib/zipread.js unpackFile bounds; `onProgress`: files read of the files known, a
- *   dropped file counting one until it is unpacked, then as the plain files inside it (at least one)
+ *   `limits`: lib/zipread.js unpackFile bounds and `maxDropBytes` (default {@link MAX_DROP_BYTES}); `onProgress`:
+ *   files read of the files known, a dropped file counting one until it is unpacked, then as the plain files inside
+ *   it (at least one)
  * @returns {Promise<{ dmarc: AggregateReport[], tls: import('./tlsrpt.js').TlsReport[], problems: ReportProblem[], read: number,
- *   files: number, stopped: boolean }>} `read`: the plain files looked at; `files`: the dropped files read, all of them
- *   unless stopped (then those done and the one it cut once unpacked); `stopped`: a Stop ended the read, which then
- *   resolves too.
+ *   files: number, inflated: number, stopped: boolean }>} `read`: the plain files looked at; `files`: the dropped files
+ *   read, all of them unless stopped (then those done and the one it cut once unpacked); `inflated`: the bytes the drop's
+ *   archives cost; `stopped`: a Stop ended the read, which then resolves too.
  */
 export async function readReportFiles(files, { signal, limits = {}, onProgress = null } = {}) {
-  const out = { dmarc: [], tls: [], problems: [], read: 0, files: 0, stopped: false };
+  const out = { dmarc: [], tls: [], problems: [], read: 0, files: 0, inflated: 0, stopped: false };
   const list = Array.isArray(files) ? files : [];
   const maxBytes = Number.isFinite(limits.maxEntryBytes) ? limits.maxEntryBytes : ZIP_LIMITS.maxEntryBytes;
+  const perFile = Number.isFinite(limits.maxTotalBytes) ? limits.maxTotalBytes : ZIP_LIMITS.maxTotalBytes;
+  // What the drop's archives may still inflate, every dropped file together.
+  let dropLeft = Number.isFinite(limits.maxDropBytes) ? Math.max(0, limits.maxDropBytes) : MAX_DROP_BYTES;
   let done = 0;
   let total = list.length;
   const step = () => {
@@ -522,7 +533,17 @@ export async function readReportFiles(files, { signal, limits = {}, onProgress =
         step();
         continue;
       }
-      const unpacked = await unpackFile(file, { ...limits, signal });
+      const name = String(file && file.name ? file.name : 'file');
+      if (!dropLeft && file && containerOf(toBytes(file.bytes))) {
+        // The drop's budget is spent: an archive past it is named, not opened.
+        out.problems.push({ path: name, code: 'too-large', detail: 'the drop as a whole' });
+        out.files += 1;
+        step();
+        continue;
+      }
+      const unpacked = await unpackFile(file, { ...limits, maxTotalBytes: Math.min(perFile, dropLeft), signal });
+      dropLeft -= Math.min(dropLeft, unpacked.inflated);
+      out.inflated += unpacked.inflated;
       out.problems.push(...unpacked.problems);
       out.files += 1;
       // From here the dropped file counts as the plain files inside it.

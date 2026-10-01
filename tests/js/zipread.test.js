@@ -242,12 +242,14 @@ describe('unpackFile — a dropped file into its plain files', () => {
     assert.deepEqual(r.problems, []);
     assert.equal(r.files.length, 1);
     assert.deepEqual([r.files[0].name, r.files[0].path, r.files[0].via], [BIS_XML, BIS_XML, []]);
+    assert.equal(r.inflated, 0, 'nothing unpacked, nothing charged');
   });
 
   test('a .json.gz loses its .gz, keeps its path', async () => {
     const r = await unpackFile({ name: `${MICROSOFT_TLS}.gz`, bytes: fixture(`${MICROSOFT_TLS}.gz`).buffer });
     assert.deepEqual(r.files.map((f) => [f.name, f.path, f.via]), [[MICROSOFT_TLS, `${MICROSOFT_TLS}.gz`, ['gzip']]]);
     assert.equal(text(r.files[0].bytes), src(MICROSOFT_TLS));
+    assert.equal(r.inflated, r.files[0].bytes.length, 'what it cost: the bytes inflated');
   });
 
   test('a mailbox export: a zip of zips and gzip files, stored; junk skipped, every report out', async () => {
@@ -291,6 +293,7 @@ describe('unpackFile — a dropped file into its plain files', () => {
     const perFile = await unpackFile({ name: 'x.zip', bytes: zip }, { maxTotalBytes: 4000 });
     assert.deepEqual(perFile.files.map((f) => f.name), ['a.xml', 'c.xml']);
     assert.deepEqual(perFile.problems.map((p) => [p.path, p.code]), [['x.zip › b.xml', 'too-large']]);
+    assert.equal(perFile.inflated, 3001, 'a stored entry costs its size; one refused before it is read costs nothing');
     const many = await unpackFile({ name: 'x.zip', bytes: zip }, { maxEntries: 2 });
     assert.deepEqual(many.files.map((f) => f.name), ['a.xml', 'b.xml']);
     assert.deepEqual(many.problems.map((p) => [p.code, p.detail]), [['too-many', '3 > 2']]);
@@ -341,6 +344,7 @@ describe('unpackFile — a dropped file into its plain files', () => {
     const entries = Array.from({ length: 6 }, (_, i) => ({ name: `r${i}.xml`, data: big, crc: 1 }));
     const r = await unpackFile({ name: 'x.zip', bytes: buildZip(entries) }, { maxTotalBytes: 20 * 1024 * 1024 });
     assert.deepEqual(r.problems.map((p) => p.code), ['crc', 'crc', 'too-large', 'too-large', 'too-large', 'too-large'], 'two paid 16 MB of 20');
+    assert.equal(r.inflated, 16 * 1024 * 1024, 'the failed parts are in what it cost');
     const inflated = await extractZipEntry(buildZip([{ name: 'a.xml', data: 'x'.repeat(50), crc: 5 }]),
       readZipDirectory(buildZip([{ name: 'a.xml', data: 'x'.repeat(50), crc: 5 }])).entries[0]).catch((err) => err);
     assert.deepEqual([inflated.code, inflated.inflated], ['crc', 50]);
@@ -352,6 +356,7 @@ describe('unpackFile — a dropped file into its plain files', () => {
     // The first paid its 8 MB of 10, the second stopped at the 2 MB left, and nothing is left for c.xml.
     assert.deepEqual(g.problems.map((p) => p.code), ['corrupt', 'too-large', 'too-large']);
     assert.deepEqual(g.files, []);
+    assert.equal(g.inflated, 10 * 1024 * 1024, 'never more than its budget');
   });
 
   test('maxEntries holds for the dropped file, the archives inside it included', async () => {

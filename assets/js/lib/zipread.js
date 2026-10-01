@@ -438,12 +438,14 @@ function overlapping(bytes, entries) {
  * (a CRC or a size that lies), and every entry counts, the nested archives' included.
  * @param {{ name: string, bytes: Uint8Array|ArrayBuffer }} file
  * @param {{ maxEntryBytes?: number, maxTotalBytes?: number, maxEntries?: number, maxDepth?: number, signal?: AbortSignal }} [opts]
- * @returns {Promise<{ files: UnpackedFile[], problems: UnpackProblem[] }>} rejects only with an AbortError
+ * @returns {Promise<{ files: UnpackedFile[], problems: UnpackProblem[], inflated: number }>} `inflated`: what it cost, the
+ *   bytes charged to `maxTotalBytes` (inflated, failed parts included, or a stored entry's size; 0 for a plain file), so a
+ *   caller can share one budget across several files. Rejects only with an AbortError.
  */
 export async function unpackFile(file, opts = {}) {
   const limits = { ...ZIP_LIMITS, ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => Object.hasOwn(ZIP_LIMITS, k) && Number.isFinite(v))) };
   const { signal } = opts;
-  const out = { files: [], problems: [] };
+  const out = { files: [], problems: [], inflated: 0 };
   let budget = limits.maxTotalBytes;
   let entriesLeft = limits.maxEntries;
   const spend = (n) => {
@@ -509,5 +511,6 @@ export async function unpackFile(file, opts = {}) {
   }
 
   await visit(String(file && file.name ? file.name : 'file'), String(file && file.name ? file.name : 'file'), toBytes(file.bytes), []);
+  out.inflated = limits.maxTotalBytes - budget;
   return out;
 }

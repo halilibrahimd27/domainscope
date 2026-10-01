@@ -18,9 +18,10 @@ import { gzipSync } from 'node:zlib';
 import {
   SOURCE_CLASSES, CLASS_REASONS, FIX_CODES, DMARC_VERDICTS, DMARC_NOTES, REPORT_PROBLEMS, DMARC_CSV_COLUMNS, XML_LIMITS, DISPOSITIONS,
   XmlError, parseXml, xmlChild, xmlChildren, xmlText, looksLikeAggregate, parseAggregateReport, decodeReportText, readReportFiles,
-  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS, MAX_REPORT_FILES, READ_YIELD_MS
+  aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, SPF_MAX_DOMAINS, MAX_REPORT_FILES, READ_YIELD_MS,
+  MAX_DROP_BYTES
 } from '../../assets/js/lib/dmarcreport.js';
-import { crc32 } from '../../assets/js/lib/zipread.js';
+import { crc32, ZIP_LIMITS } from '../../assets/js/lib/zipread.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { hostResolutionFrom } from '../../assets/js/lib/doh.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
@@ -407,6 +408,29 @@ describe('readReportFiles — told apart by their content', () => {
     assert.ok(xml.length > 1000);
     assert.deepEqual(r.problems.map((p) => [p.path, p.code]), [['big.xml', 'too-large'], ['big.zip › inner.xml', 'too-large']]);
     assert.equal(r.dmarc.length, 1);
+  });
+
+  test('one inflation budget for the whole drop: past it every archive is too large, unopened; a plain report is still read', async () => {
+    // 4 KB of gzip that inflates to 4 MB: each one alone stays under a dropped file's own budget.
+    const bomb = new Uint8Array(gzipSync(Buffer.alloc(4 * 1024 * 1024, 0x20), { level: 9 }));
+    const report = (id) => smallReport([['192.0.2.1', 1]], { id });
+    const files = [
+      ...Array.from({ length: 10 }, (_, i) => ({ name: `bomb${i}.xml.gz`, bytes: bomb })),
+      { name: 'late.xml.gz', bytes: new Uint8Array(gzipSync(enc.encode(report('late')))) },
+      { name: 'late.zip', bytes: storedZip([['late.xml', report('zip')]]) },
+      { name: 'plain.xml', bytes: enc.encode(report('plain')) }
+    ];
+    const limits = { maxEntryBytes: 1024 * 1024, maxDropBytes: 3 * 1024 * 1024 };
+    const r = await readReportFiles(files, { limits });
+    assert.ok(r.inflated <= limits.maxDropBytes, `${r.inflated} bytes inflated for the drop`);
+    assert.ok(r.inflated >= 2 * 1024 * 1024, 'the first bombs were paid for');
+    assert.deepEqual(r.problems.map((p) => p.code), Array(12).fill('too-large'), 'every bomb, and the archives past the budget');
+    assert.deepEqual(r.problems.slice(-2).map((p) => [p.path, p.detail]), [['late.xml.gz', 'the drop as a whole'], ['late.zip', 'the drop as a whole']]);
+    assert.deepEqual(r.dmarc.map((x) => x.reportId), ['plain'], 'nothing to inflate, still read');
+    assert.equal(r.files, files.length);
+    // The default: 1 GiB a drop, where 200 dropped bombs of a file's own 128 MiB budget each would inflate 25 GiB.
+    assert.equal(MAX_DROP_BYTES, 1024 * 1024 * 1024);
+    assert.ok(MAX_DROP_BYTES < 200 * ZIP_LIMITS.maxTotalBytes && MAX_DROP_BYTES >= 4 * ZIP_LIMITS.maxTotalBytes);
   });
 
   test('a report that starts with a DOCTYPE line is read', async () => {

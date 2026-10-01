@@ -127,7 +127,7 @@ const WARN_CODES = ['GENERATE_UNSUPPORTED', 'BAD_TTL', 'TARGET_MISSING_TRAILING_
 const INFO_CODES = ['ORIGIN_INFERRED', 'ORIGIN_CORRECTED', 'CF_SOA_OWNER_UNDOTTED', 'NON_IN_CLASS',
   'GENERATE_EXPANDED', 'UNKNOWN_DIRECTIVE', 'FORMAT_UNVERIFIED', 'OCTODNS_IGNORED', 'RDATA_UNPARSED',
   'TTL_DEFAULTED', 'NON_ASCII_LABEL', 'ENCODING_REPLACED', 'JSON_PAGES_MERGED', 'PROXY_FLAG_IGNORED',
-  'WARNINGS_TRUNCATED', 'INCLUDE_MERGED', 'NO_PROXY_FLAGS'];
+  'WARNINGS_TRUNCATED', 'INCLUDE_MERGED', 'NO_PROXY_FLAGS', 'CHANGE_BATCH'];
 
 /**
  * The closed set of issue codes: `CODE → { severity: 'error'|'warn'|'info', fatal: boolean }`.
@@ -885,6 +885,20 @@ const isDoRecord = (o) => isPlainMap(o) && typeof own(o, 'id') === 'number' && t
 const DESEC_PAGINATION_RE = /^Pagination required\b/;
 
 /**
+ * The changes of a Route 53 change batch (`{ Changes: [...] }`, the `--change-batch` file, or the
+ * `{ ChangeBatch: { Changes } }` of a whole request), or null: at least one change with an
+ * `Action` and a `ResourceRecordSet`.
+ */
+function changeList(v) {
+  if (!isPlainMap(v)) return null;
+  const batch = isPlainMap(own(v, 'ChangeBatch')) ? own(v, 'ChangeBatch') : v;
+  const list = own(batch, 'Changes');
+  if (!Array.isArray(list) || !list.length) return null;
+  const f = list[0];
+  return isPlainMap(f) && typeof own(f, 'Action') === 'string' && isPlainMap(own(f, 'ResourceRecordSet')) ? list : null;
+}
+
+/**
  * Kind of one parsed JSON document: 'route53' | 'cloudflare-api' | 'cf-error' | 'desec-api' |
  * 'desec-pagination' | 'desec-error' | 'digitalocean-api' | 'do-error' | 'empty' | null.
  */
@@ -901,6 +915,7 @@ function jsonKind(v) {
   }
   if (!isPlainMap(v)) return null;
   if (Array.isArray(own(v, 'ResourceRecordSets'))) return 'route53';
+  if (changeList(v)) return 'route53';
   if (Array.isArray(own(v, 'result'))) return 'cloudflare-api';
   if (own(v, 'success') === false && Array.isArray(own(v, 'errors'))) return 'cf-error';
   if (Array.isArray(own(v, 'domain_records')) || isDoRecord(own(v, 'domain_record'))) return 'digitalocean-api';
@@ -1008,7 +1023,7 @@ function detectInternal(text, filename, maxJsonDocs = ZONE_LIMITS.maxJsonDocs) {
     }
     res.format = [...kinds][0];
     res.confidence = 'high';
-    res.markers.push(JSON_MARKER[res.format]);
+    res.markers.push(res.format === 'route53' && split.docs.some((d) => changeList(d.value)) ? 'Changes' : JSON_MARKER[res.format]);
     if (split.docs.length > 1) res.markers.push('json-pages');
     return res;
   }
@@ -2810,12 +2825,31 @@ function parseRoute53(docs, zone, b, opts) {
   const { issues } = b;
   const sets = [];
   let lastDoc = null;
+  let upserts = 0;
+  let deletes = 0;
+  let batches = 0;
   for (const d of docs) {
     const v = d.value;
+    const changes = changeList(v);
+    if (changes) {
+      // A change batch: what the zone holds after it — CREATE / UPSERT sets; a DELETE goes.
+      batches += 1;
+      for (const c of changes) {
+        const action = String(own(c, 'Action') ?? '').toUpperCase();
+        const set = own(c, 'ResourceRecordSet');
+        if (action === 'DELETE') deletes += 1;
+        else {
+          upserts += 1;
+          sets.push(set);
+        }
+      }
+      continue;
+    }
     const list = Array.isArray(v) ? v : own(v, 'ResourceRecordSets');
     if (Array.isArray(list)) for (const s of list) sets.push(s);
     lastDoc = v;
   }
+  if (batches) issues.add('CHANGE_BATCH', 0, { upserts, deletes }, `a change batch: ${upserts} set(s) read, ${deletes} DELETE(s) left out`);
   if (!sets.length) return { fatal: fatalIssue('EMPTY', {}, 'no record sets') };
   const trunc = own(lastDoc, 'IsTruncated');
   if (trunc === true || trunc === 'true' || typeof own(lastDoc, 'NextToken') === 'string') {
@@ -3652,7 +3686,8 @@ function parseOctodns(text, zone, b, opts) {
         if (type === 'TXT' || type === 'SPF') {
           const s = typeof v === 'string' || typeof v === 'number' ? String(v) : '';
           if (/(^|[^\\]);/.test(s)) issues.add('OCTODNS_UNESCAPED_SEMICOLON', line, { name: nr.name }, 'bare ";" in an octoDNS TXT value (write \\;)', { name: nr.name, type });
-          b.fillTxt(rec, split255(utf8Encoder.encode(s.replace(/\\;/g, ';'))));
+          // octoDNS keeps a TXT value escaped as a zone file would: `\;` and `\\` (lib/zoneconvert.js octodnsTxt).
+          b.fillTxt(rec, split255(utf8Encoder.encode(s.replace(/\\([\\;])/g, '$1'))));
         } else {
           let toks;
           try {
@@ -4098,6 +4133,17 @@ function bindSafe(text) {
 
 function tagValueOut(v) {
   return /["=,\\\s;]/.test(v) ? JSON.stringify(v) : v;
+}
+
+/**
+ * The comment a BIND line carries for a record (' ; …', or ''): Route 53 routing in cli53 syntax,
+ * else the Cloudflare tags and flags as `cf_tags=` after the free comment — what this parser reads
+ * back from any BIND file. Shared by {@link toBindText} and lib/zoneconvert.js.
+ * @param {object} r ZoneRecord
+ * @returns {string}
+ */
+export function bindComment(r) {
+  return recordComment(r);
 }
 
 function recordComment(r) {

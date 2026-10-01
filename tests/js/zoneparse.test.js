@@ -67,7 +67,8 @@ describe('API surface and closed code sets', () => {
         'OCTODNS_UNESCAPED_SEMICOLON', 'OUT_OF_ZONE', 'ORIGIN_OVERRIDDEN'],
       info: ['ORIGIN_INFERRED', 'ORIGIN_CORRECTED', 'CF_SOA_OWNER_UNDOTTED', 'NON_IN_CLASS', 'GENERATE_EXPANDED',
         'UNKNOWN_DIRECTIVE', 'FORMAT_UNVERIFIED', 'OCTODNS_IGNORED', 'RDATA_UNPARSED', 'TTL_DEFAULTED', 'NON_ASCII_LABEL',
-        'ENCODING_REPLACED', 'JSON_PAGES_MERGED', 'PROXY_FLAG_IGNORED', 'WARNINGS_TRUNCATED', 'INCLUDE_MERGED', 'NO_PROXY_FLAGS']
+        'ENCODING_REPLACED', 'JSON_PAGES_MERGED', 'PROXY_FLAG_IGNORED', 'WARNINGS_TRUNCATED', 'INCLUDE_MERGED', 'NO_PROXY_FLAGS',
+        'CHANGE_BATCH']
     };
     const fatal = ['EMPTY', 'TOO_LARGE', 'NOT_TEXT', 'NOT_A_ZONE', 'INVALID_JSON', 'UNSUPPORTED_JSON', 'YAML_UNSUPPORTED',
       'ORIGIN_REQUIRED', 'ORIGIN_MISMATCH', 'API_ERROR'];
@@ -906,6 +907,23 @@ describe('Route 53 JSON and cli53', () => {
     assert.equal(bare.records[0].data, '2001:db8::1');
   });
 
+  test('a change batch: CREATE / UPSERT sets are the zone after it, a DELETE is left out (CHANGE_BATCH says how many)', () => {
+    const changes = [
+      { Action: 'UPSERT', ResourceRecordSet: { Name: 'example.com.', Type: 'MX', TTL: 300, ResourceRecords: [{ Value: '10 mail.example.com.' }] } },
+      { Action: 'CREATE', ResourceRecordSet: { Name: 'www.example.com.', Type: 'A', AliasTarget: { HostedZoneId: 'Z2FDTNDATAQYW2', DNSName: 'd111.cloudfront.net.', EvaluateTargetHealth: false } } },
+      { Action: 'DELETE', ResourceRecordSet: { Name: 'old.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.50' }] } }
+    ];
+    for (const doc of [{ Comment: 'x', Changes: changes }, { HostedZoneId: 'Z0EXAMPLE', ChangeBatch: { Changes: changes } }]) {
+      const z = P(JSON.stringify(doc), { origin: 'example.com' });
+      assert.deepEqual([z.format, z.fatal, z.markers], ['route53', null, ['Changes']]);
+      assert.deepEqual(z.records.map((r) => `${r.name} ${r.type} ${r.alias ? r.alias.provider : r.text}`), ['example.com MX 10 mail.example.com.', 'www.example.com A cloudfront']);
+      assert.deepEqual(z.warnings.find((w) => w.code === 'CHANGE_BATCH'), { code: 'CHANGE_BATCH', severity: 'info', line: 0, source: 0, params: { upserts: 2, deletes: 1 },
+        detail: 'a change batch: 2 set(s) read, 1 DELETE(s) left out' });
+    }
+    assert.equal(P(JSON.stringify({ Changes: [changes[2]] })).fatal.code, 'EMPTY', 'only DELETEs: nothing in the zone');
+    assert.equal(P(JSON.stringify({ Changes: [{ Foo: 1 }] })).fatal.code, 'UNSUPPORTED_JSON', 'a list of something else');
+  });
+
   test('cli53: AWS ALIAS pseudo-records and routing comments', () => {
     const z = parseFixture(fx('cli53'));
     const self = find(z, 'www.example.com');
@@ -1094,6 +1112,12 @@ describe('octoDNS YAML', () => {
     assert.equal(r.value.__proto__.polluted, true);
     assert.equal({}.polluted, undefined);
     assert.deepEqual(parseYamlSubset('').value, null);
+  });
+
+  test('a TXT value escaped as a zone file escapes it: \\; and \\\\ (what lib/zoneconvert.js writes)', () => {
+    const z = P("txt:\n  type: TXT\n  value: 'a\\\\b\\; c'\n", { filename: 'example.com.yaml' });
+    assert.deepEqual(find(z, 'txt.example.com').data, ['a\\b; c']);
+    assert.deepEqual(z.warnings.filter((w) => w.severity !== 'info'), []);
   });
 
   test('without a zone name from the file name → ORIGIN_REQUIRED; not a mapping → NOT_A_ZONE', () => {

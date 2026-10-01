@@ -1,0 +1,479 @@
+# route53: 27 records, origin example.com
+## bind (example.com.zone, text/plain;charset=utf-8, 22 written)
+; example.com as an RFC 1035 zone file (BIND), written by DomainScope from route53.
+; Records that cannot be served as they are stay here as comments, with the reason.
+$ORIGIN example.com.
+$TTL 300
+@                        900 IN SOA   ns-111.awsdns-13.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400
+; Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53:
+; @ A ALIAS d111111abcdef8.cloudfront.net.
+@                        300 IN MX    10 mail.example.com.
+@                        300 IN MX    20 mx2.example.net.
+@                     172800 IN NS    ns-111.awsdns-13.com.
+@                     172800 IN NS    ns-1222.awsdns-24.org.
+@                     172800 IN NS    ns-555.awsdns-05.net.
+@                     172800 IN NS    ns-1888.awsdns-44.co.uk.
+@                        300 IN TXT   "v=spf1 ip4:198.51.100.25 include:amazonses.com ~all"
+@                        300 IN TXT   "part-one-of-a-long-value-" "part-two"
+@                        300 IN CAA   0 issue "amazon.com"
+*                        300 IN CNAME example.com.
+; Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53:
+; api A ALIAS dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com.
+; Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53:
+; static A ALIAS s3-website-us-east-1.amazonaws.com.
+; Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53:
+; gw A ALIAS d-abcdef1234.execute-api.us-east-1.amazonaws.com.
+; Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53:
+; www A ALIAS example.com.
+app                       60 IN A     192.0.2.21 ; AWS routing="WEIGHTED" weight=90 identifier="blue"
+app                       60 IN A     192.0.2.22 ; AWS routing="WEIGHTED" weight=10 identifier="green"
+geo                       60 IN A     198.51.100.30 ; AWS routing="GEOLOCATION" countryCode="*" identifier="default"
+geo                       60 IN A     198.51.100.31 ; AWS routing="GEOLOCATION" countryCode="TR" identifier="turkey"
+lat                       60 IN A     203.0.113.40 ; AWS routing="LATENCY" region="eu-central-1" identifier="eu-central-1"
+ha                        60 IN A     203.0.113.50 ; AWS routing="FAILOVER" failover="PRIMARY" healthCheckId="11111111-2222-3333-4444-555555555555" identifier="primary"
+ha                        60 IN A     203.0.113.51 ; AWS routing="FAILOVER" failover="SECONDARY" identifier="secondary"
+multi                     60 IN A     192.0.2.61 ; AWS routing="MULTIVALUE" identifier="one"
+db.internal              300 IN A     10.0.12.34
+_sip._tcp                300 IN SRV   10 5 5060 sip.example.com.
+name\032with\032space    300 IN TXT   "octal — escapes in TXT"
+## bind pitfalls
+warn r53-alias ×5: @ api static gw www
+warn routing ×8: app geo lat ha multi
+info wildcard ×1: *
+## bind left out
+1 example.com A r53-alias
+8 api.example.com A r53-alias
+9 static.example.com A r53-alias
+10 gw.example.com A r53-alias
+11 www.example.com A r53-alias
+## route53 (example.com.route53.json, application/json;charset=utf-8, 22 written)
+{
+  "Comment": "example.com, written by DomainScope from route53",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z2FDTNDATAQYW2",
+          "DNSName": "d111111abcdef8.cloudfront.net.",
+          "EvaluateTargetHealth": false
+        }
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "10 mail.example.com."
+          },
+          {
+            "Value": "20 mx2.example.net."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "TXT",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=spf1 ip4:198.51.100.25 include:amazonses.com ~all\""
+          },
+          {
+            "Value": "\"part-one-of-a-long-value-\" \"part-two\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "CAA",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "0 issue \"amazon.com\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "*.example.com.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "api.example.com.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z35SXDOTRQ7X7K",
+          "DNSName": "dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com.",
+          "EvaluateTargetHealth": true
+        }
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "static.example.com.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z3AQBSTGFYJSTF",
+          "DNSName": "s3-website-us-east-1.amazonaws.com.",
+          "EvaluateTargetHealth": false
+        }
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "gw.example.com.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z1UJRXOUMOOFQ8",
+          "DNSName": "d-abcdef1234.execute-api.us-east-1.amazonaws.com.",
+          "EvaluateTargetHealth": false
+        }
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z0EXAMPLEZONEID",
+          "DNSName": "example.com.",
+          "EvaluateTargetHealth": false
+        }
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "app.example.com.",
+        "Type": "A",
+        "SetIdentifier": "blue",
+        "Weight": 90,
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.21"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "app.example.com.",
+        "Type": "A",
+        "SetIdentifier": "green",
+        "Weight": 10,
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.22"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "geo.example.com.",
+        "Type": "A",
+        "SetIdentifier": "default",
+        "GeoLocation": {
+          "CountryCode": "*"
+        },
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.30"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "geo.example.com.",
+        "Type": "A",
+        "SetIdentifier": "turkey",
+        "GeoLocation": {
+          "CountryCode": "TR"
+        },
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.31"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "lat.example.com.",
+        "Type": "A",
+        "SetIdentifier": "eu-central-1",
+        "Region": "eu-central-1",
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "203.0.113.40"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "ha.example.com.",
+        "Type": "A",
+        "SetIdentifier": "primary",
+        "Failover": "PRIMARY",
+        "HealthCheckId": "11111111-2222-3333-4444-555555555555",
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "203.0.113.50"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "ha.example.com.",
+        "Type": "A",
+        "SetIdentifier": "secondary",
+        "Failover": "SECONDARY",
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "203.0.113.51"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "multi.example.com.",
+        "Type": "A",
+        "SetIdentifier": "one",
+        "MultiValueAnswer": true,
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.61"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "db.internal.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "10.0.12.34"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_sip._tcp.example.com.",
+        "Type": "SRV",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "10 5 5060 sip.example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "name\\040with\\040space.example.com.",
+        "Type": "TXT",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "\"octal \\342\\200\\224 escapes in TXT\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 pitfalls
+warn escaped-name ×1: name\032with\032space
+info soa ×1: @
+info apex-ns ×4: @
+info wildcard ×1: *
+## route53 left out
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+4 example.com SOA soa
+## octodns (example.com.yaml, application/yaml;charset=utf-8, 17 written)
+# example.com as an octoDNS zone (example.com.yaml), written by DomainScope from route53.
+# Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+---
+'':
+  - ttl: 300
+    type: CAA
+    value:
+      flags: 0
+      tag: issue
+      value: amazon.com
+  - ttl: 300
+    type: MX
+    values:
+      - exchange: mail.example.com.
+        preference: 10
+      - exchange: mx2.example.net.
+        preference: 20
+  - ttl: 300
+    type: TXT
+    values:
+      - 'v=spf1 ip4:198.51.100.25 include:amazonses.com ~all'
+      - part-one-of-a-long-value-part-two
+'*':
+  ttl: 300
+  type: CNAME
+  value: example.com.
+_sip._tcp:
+  ttl: 300
+  type: SRV
+  value:
+    port: 5060
+    priority: 10
+    target: sip.example.com.
+    weight: 5
+app:
+  ttl: 60
+  type: A
+  values:
+    - '192.0.2.21'
+    - '192.0.2.22'
+db.internal:
+  ttl: 300
+  type: A
+  value: '10.0.12.34'
+geo:
+  ttl: 60
+  type: A
+  values:
+    - '198.51.100.30'
+    - '198.51.100.31'
+ha:
+  ttl: 60
+  type: A
+  values:
+    - '203.0.113.50'
+    - '203.0.113.51'
+lat:
+  ttl: 60
+  type: A
+  value: '203.0.113.40'
+multi:
+  ttl: 60
+  type: A
+  value: '192.0.2.61'
+'name\032with\032space':
+  ttl: 300
+  type: TXT
+  value: 'octal — escapes in TXT'
+## octodns pitfalls
+warn r53-alias ×5: @ api static gw www
+warn routing ×8: app geo lat ha multi
+warn escaped-name ×1: name\032with\032space
+info txt-split ×1: @
+info soa ×1: @
+info apex-ns ×4: @
+info wildcard ×1: *
+## octodns left out
+1 example.com A r53-alias
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+4 example.com SOA soa
+8 api.example.com A r53-alias
+9 static.example.com A r53-alias
+10 gw.example.com A r53-alias
+11 www.example.com A r53-alias
+## dnscontrol (dnsconfig.js, text/javascript;charset=utf-8, 22 written)
+// example.com as DNSControl's dnsconfig.js, written by DomainScope from route53.
+// Read the notes DomainScope listed, then run `dnscontrol preview` before `dnscontrol push`.
+var REG_NONE = NewRegistrar("none");
+var DSP_MAIN = NewDnsProvider("main"); // the name of your provider's entry in creds.json
+
+D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
+    DefaultTTL(300),
+    R53_ALIAS("@", "A", "d111111abcdef8.cloudfront.net.", R53_ZONE("Z2FDTNDATAQYW2")),
+    MX("@", 10, "mail.example.com."),
+    MX("@", 20, "mx2.example.net."),
+    TXT("@", "v=spf1 ip4:198.51.100.25 include:amazonses.com ~all"),
+    TXT("@", ["part-one-of-a-long-value-", "part-two"]),
+    CAA("@", "issue", "amazon.com"),
+    CNAME("*", "example.com."),
+    R53_ALIAS("api", "A", "dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com.", R53_ZONE("Z35SXDOTRQ7X7K"), R53_EVALUATE_TARGET_HEALTH(true)),
+    R53_ALIAS("static", "A", "s3-website-us-east-1.amazonaws.com.", R53_ZONE("Z3AQBSTGFYJSTF")),
+    R53_ALIAS("gw", "A", "d-abcdef1234.execute-api.us-east-1.amazonaws.com.", R53_ZONE("Z1UJRXOUMOOFQ8")),
+    R53_ALIAS("www", "A", "example.com.", R53_ZONE("Z0EXAMPLEZONEID")),
+    A("app", "192.0.2.21", TTL(60)),
+    A("app", "192.0.2.22", TTL(60)),
+    A("geo", "198.51.100.30", TTL(60)),
+    A("geo", "198.51.100.31", TTL(60)),
+    A("lat", "203.0.113.40", TTL(60)),
+    A("ha", "203.0.113.50", TTL(60)),
+    A("ha", "203.0.113.51", TTL(60)),
+    A("multi", "192.0.2.61", TTL(60)),
+    A("db.internal", "10.0.12.34"),
+    SRV("_sip._tcp", 10, 5, 5060, "sip.example.com."),
+    TXT("name\\032with\\032space", "octal — escapes in TXT"),
+END);
+## dnscontrol pitfalls
+warn routing ×8: app geo lat ha multi
+warn escaped-name ×1: name\032with\032space
+info r53-alias ×5: @ api static gw www
+info soa ×1: @
+info apex-ns ×4: @
+info wildcard ×1: *
+## dnscontrol left out
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+3 example.com NS apex-ns
+4 example.com SOA soa

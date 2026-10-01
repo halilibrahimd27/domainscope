@@ -1,0 +1,698 @@
+# pitfalls: 41 records, origin example.com
+## bind (example.com.zone, text/plain;charset=utf-8, 38 written)
+; example.com as an RFC 1035 zone file (BIND), written by DomainScope from bind.
+; Records that cannot be served as they are stay here as comments, with the reason.
+$ORIGIN example.com.
+$TTL 3600
+@                    3600 IN SOA   ns1.example.com. hostmaster.example.com. 2026100201 7200 3600 1209600 300
+@                    3600 IN NS    ns1.example.com.
+@                    3600 IN NS    ns2.example.net.
+; CNAME at the apex: it cannot sit next to the SOA and NS records. Use A / AAAA records of the target (or ALIAS / ANAME where the server has it):
+; @                     300 IN CNAME apex-target.example.net.
+@                    3600 IN DNSKEY 257 3 13 AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QA==
+@                    3600 IN CAA   0 issue "letsencrypt.org"
+@                    3600 IN CAA   128 issuewild ";"
+@                    3600 IN CAA   1 iodef "mailto:security@example.com"
+@                    3600 IN CAA   0 policy "strict"
+@                    3600 IN NAPTR 100 10 "S" "SIP+D2U" "" _sip._udp.example.com.
+www                   300 IN A     192.0.2.10 ; cf_tags=cf-proxied:true
+mixed                 300 IN A     192.0.2.30 ; cf_tags=cf-proxied:true
+mixed                 300 IN A     192.0.2.31 ; cf_tags=cf-proxied:false
+status                300 IN CNAME status.example.org. ; cf_tags=cf-flatten-cname,cf-proxied:false
+ns1                  3600 IN A     192.0.2.53
+mail                 3600 IN A     192.0.2.25
+mail                 3600 IN AAAA  2001:db8::25
+null                 3600 IN MX    0 .
+ttls                  300 IN A     198.51.100.1
+ttls                  600 IN A     198.51.100.2
+dup                  3600 IN A     198.51.100.9
+*.apps               3600 IN A     203.0.113.20
+a.*.inner            3600 IN A     203.0.113.21
+a\032b               3600 IN TXT   "a name with a space"
+google._domainkey    3600 IN TXT   "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat" "erialx0example0key0materialx0example0key0mate"
+split                3600 IN TXT   "v=spf1 " "include:_spf.example.net " "-all"
+quoted               3600 IN TXT   "say \"hi\"; a back\\slash"
+_sip._tcp            3600 IN SRV   10 60 5060 sip.example.com.
+_443._tcp.www        3600 IN TLSA  3 1 1 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+svc                  3600 IN HTTPS 1 . alpn="h2,h3" ipv4hint=192.0.2.10
+_svc                 3600 IN SVCB  1 svc.example.net. port=8443
+host                 3600 IN SSHFP 4 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+sub                  3600 IN NS    ns1.example.net.
+sub                  3600 IN DS    12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+old                  3600 IN DNAME new.example.net.
+spf                  3600 IN SPF   "v=spf1 -all"
+uri                  3600 IN URI   10 1 "https://www.example.com/"
+geo                  3600 IN LOC   52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
+; not a record type this format holds:
+; alias                3600 IN ALIAS target.example.net.
+other.example.net.   3600 IN A     198.51.100.80
+## bind pitfalls
+warn cname-apex ×1: @
+warn unsupported-type ×1: alias [types=ALIAS]
+warn dnssec ×1: @
+warn out-of-zone ×1: other.example.net.
+warn wildcard-inner ×1: a.*.inner
+info proxied ×2: www mixed
+info cname-flatten ×1: status
+info txt-long ×1: google._domainkey
+info wildcard ×1: *.apps
+info duplicate ×1: dup
+## bind left out
+7 example.com CNAME cname-apex
+25 dup.example.com A duplicate
+43 alias.example.com ALIAS unsupported-type
+## route53 (example.com.route53.json, application/json;charset=utf-8, 30 written)
+{
+  "Comment": "example.com, written by DomainScope from bind",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "CAA",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "0 issue \"letsencrypt.org\""
+          },
+          {
+            "Value": "128 issuewild \";\""
+          },
+          {
+            "Value": "1 iodef \"mailto:security@example.com\""
+          },
+          {
+            "Value": "0 policy \"strict\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "NAPTR",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "100 10 \"S\" \"SIP+D2U\" \"\" _sip._udp.example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.10"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "mixed.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.30"
+          },
+          {
+            "Value": "192.0.2.31"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "status.example.com.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "status.example.org."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "ns1.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.53"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "mail.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.25"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "mail.example.com.",
+        "Type": "AAAA",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "2001:db8::25"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "null.example.com.",
+        "Type": "MX",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "0 ."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "ttls.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.1"
+          },
+          {
+            "Value": "198.51.100.2"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "dup.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.9"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "*.apps.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "203.0.113.20"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "a.\\052.inner.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "203.0.113.21"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "a\\040b.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"a name with a space\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "google._domainkey.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat\" \"erialx0example0key0materialx0example0key0mate\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "split.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=spf1 \" \"include:_spf.example.net \" \"-all\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "quoted.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"say \\\"hi\\\"; a back\\\\slash\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_sip._tcp.example.com.",
+        "Type": "SRV",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "10 60 5060 sip.example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_443._tcp.www.example.com.",
+        "Type": "TLSA",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "3 1 1 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "svc.example.com.",
+        "Type": "HTTPS",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "1 . alpn=\"h2,h3\" ipv4hint=192.0.2.10"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_svc.example.com.",
+        "Type": "SVCB",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "1 svc.example.net. port=8443"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "host.example.com.",
+        "Type": "SSHFP",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "4 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "sub.example.com.",
+        "Type": "NS",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "ns1.example.net."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "sub.example.com.",
+        "Type": "DS",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "spf.example.com.",
+        "Type": "SPF",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=spf1 -all\""
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 pitfalls
+error cname-apex ×1: @
+warn proxied ×2: www mixed
+warn caa-flags ×1: @ [flags=1]
+warn unsupported-type ×4: old uri geo alias [types=DNAME,URI,LOC,ALIAS]
+warn dnssec ×1: @
+warn out-of-zone ×1: other.example.net.
+warn wildcard-inner ×1: a.*.inner
+warn escaped-name ×1: a\032b
+info cname-flatten ×1: status
+info txt-long ×1: google._domainkey
+info caa-tag ×1: @ [tags=policy]
+info soa ×1: @
+info apex-ns ×2: @
+info wildcard ×1: *.apps
+info duplicate ×1: dup
+info ttl-mixed ×1: ttls
+## route53 left out
+4 example.com SOA soa
+5 example.com NS apex-ns
+6 example.com NS apex-ns
+7 example.com CNAME cname-apex
+8 example.com DNSKEY dnssec
+25 dup.example.com A duplicate
+39 old.example.com DNAME unsupported-type
+41 uri.example.com URI unsupported-type
+42 geo.example.com LOC unsupported-type
+43 alias.example.com ALIAS unsupported-type
+44 other.example.net A out-of-zone
+## octodns (example.com.yaml, application/yaml;charset=utf-8, 30 written)
+# example.com as an octoDNS zone (example.com.yaml), written by DomainScope from bind.
+# Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+---
+'':
+  - octodns:
+      cloudflare:
+        proxied: true
+    ttl: 300
+    type: ALIAS
+    value: apex-target.example.net.
+  - ttl: 3600
+    type: CAA
+    values:
+      - flags: 0
+        tag: issue
+        value: letsencrypt.org
+      - flags: 128
+        tag: issuewild
+        value: ';'
+      - flags: 1
+        tag: iodef
+        value: 'mailto:security@example.com'
+      - flags: 0
+        tag: policy
+        value: strict
+  - ttl: 3600
+    type: NAPTR
+    value:
+      flags: S
+      order: 100
+      preference: 10
+      regexp: ''
+      replacement: _sip._udp.example.com.
+      service: 'SIP+D2U'
+'*.apps':
+  ttl: 3600
+  type: A
+  value: '203.0.113.20'
+_443._tcp.www:
+  ttl: 3600
+  type: TLSA
+  value:
+    certificate_association_data: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    certificate_usage: 3
+    matching_type: 1
+    selector: 1
+_sip._tcp:
+  ttl: 3600
+  type: SRV
+  value:
+    port: 5060
+    priority: 10
+    target: sip.example.com.
+    weight: 60
+'a.*.inner':
+  ttl: 3600
+  type: A
+  value: '203.0.113.21'
+'a\032b':
+  ttl: 3600
+  type: TXT
+  value: 'a name with a space'
+dup:
+  ttl: 3600
+  type: A
+  value: '198.51.100.9'
+google._domainkey:
+  ttl: 3600
+  type: TXT
+  value: 'v=DKIM1\; k=rsa\; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mate'
+host:
+  ttl: 3600
+  type: SSHFP
+  value:
+    algorithm: 4
+    fingerprint: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    fingerprint_type: 2
+mail:
+  - ttl: 3600
+    type: A
+    value: '192.0.2.25'
+  - ttl: 3600
+    type: AAAA
+    value: '2001:db8::25'
+mixed:
+  octodns:
+    cloudflare:
+      proxied: true
+  ttl: 300
+  type: A
+  values:
+    - '192.0.2.30'
+    - '192.0.2.31'
+ns1:
+  ttl: 3600
+  type: A
+  value: '192.0.2.53'
+'null':
+  ttl: 3600
+  type: MX
+  value:
+    exchange: '.'
+    preference: 0
+old:
+  ttl: 3600
+  type: DNAME
+  value: new.example.net.
+quoted:
+  ttl: 3600
+  type: TXT
+  value: 'say "hi"\; a back\\slash'
+spf:
+  ttl: 3600
+  type: SPF
+  value: 'v=spf1 -all'
+split:
+  ttl: 3600
+  type: TXT
+  value: 'v=spf1 include:_spf.example.net -all'
+status:
+  octodns:
+    cloudflare:
+      proxied: false
+  ttl: 300
+  type: CNAME
+  value: status.example.org.
+sub:
+  - ttl: 3600
+    type: DS
+    value:
+      algorithm: 13
+      digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      digest_type: 2
+      key_tag: 12345
+  - ttl: 3600
+    type: NS
+    value: ns1.example.net.
+ttls:
+  ttl: 300
+  type: A
+  values:
+    - '198.51.100.1'
+    - '198.51.100.2'
+www:
+  octodns:
+    cloudflare:
+      proxied: true
+  ttl: 300
+  type: A
+  value: '192.0.2.10'
+## octodns pitfalls
+warn proxied-mixed ×1: mixed
+warn caa-flags ×1: @ [flags=1]
+warn unsupported-type ×5: svc _svc uri geo alias [types=HTTPS,SVCB,URI,LOC,ALIAS]
+warn dnssec ×1: @
+warn out-of-zone ×1: other.example.net.
+warn wildcard-inner ×1: a.*.inner
+warn escaped-name ×1: a\032b
+info cname-apex ×1: @
+info proxied ×3: @ www mixed
+info cname-flatten ×1: status
+info txt-long ×1: google._domainkey
+info txt-split ×1: split
+info caa-tag ×1: @ [tags=policy]
+info soa ×1: @
+info apex-ns ×2: @
+info wildcard ×1: *.apps
+info duplicate ×1: dup
+info ttl-mixed ×1: ttls
+## octodns left out
+4 example.com SOA soa
+5 example.com NS apex-ns
+6 example.com NS apex-ns
+8 example.com DNSKEY dnssec
+25 dup.example.com A duplicate
+34 svc.example.com HTTPS unsupported-type
+35 _svc.example.com SVCB unsupported-type
+41 uri.example.com URI unsupported-type
+42 geo.example.com LOC unsupported-type
+43 alias.example.com ALIAS unsupported-type
+44 other.example.net A out-of-zone
+## octodns changed
+7 example.com CNAME cname-apex
+16 mixed.example.com A proxied-mixed
+## dnscontrol (dnsconfig.js, text/javascript;charset=utf-8, 30 written)
+// example.com as DNSControl's dnsconfig.js, written by DomainScope from bind.
+// Read the notes DomainScope listed, then run `dnscontrol preview` before `dnscontrol push`.
+var REG_NONE = NewRegistrar("none");
+var DSP_MAIN = NewDnsProvider("main"); // the name of your provider's entry in creds.json
+
+D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
+    DefaultTTL(3600),
+    ALIAS("@", "apex-target.example.net.", TTL(300), CF_PROXY_ON),
+    CAA("@", "issue", "letsencrypt.org"),
+    CAA("@", "issuewild", ";", CAA_CRITICAL),
+    CAA("@", "iodef", "mailto:security@example.com"),
+    CAA("@", "policy", "strict"),
+    NAPTR("@", 100, 10, "S", "SIP+D2U", "", "_sip._udp.example.com."),
+    A("www", "192.0.2.10", TTL(300), CF_PROXY_ON),
+    A("mixed", "192.0.2.30", TTL(300), CF_PROXY_ON),
+    A("mixed", "192.0.2.31", TTL(300)),
+    CNAME("status", "status.example.org.", TTL(300)),
+    A("ns1", "192.0.2.53"),
+    A("mail", "192.0.2.25"),
+    AAAA("mail", "2001:db8::25"),
+    MX("null", 0, "."),
+    A("ttls", "198.51.100.1", TTL(300)),
+    A("ttls", "198.51.100.2", TTL(300)),
+    A("dup", "198.51.100.9"),
+    A("*.apps", "203.0.113.20"),
+    A("a.*.inner", "203.0.113.21"),
+    TXT("a\\032b", "a name with a space"),
+    TXT("google._domainkey", ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat", "erialx0example0key0materialx0example0key0mate"]),
+    TXT("split", ["v=spf1 ", "include:_spf.example.net ", "-all"]),
+    TXT("quoted", "say \"hi\"; a back\\slash"),
+    SRV("_sip._tcp", 10, 60, 5060, "sip.example.com."),
+    TLSA("_443._tcp.www", 3, 1, 1, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    HTTPS("svc", 1, ".", "alpn=\"h2,h3\" ipv4hint=192.0.2.10"),
+    SVCB("_svc", 1, "svc.example.net.", "port=8443"),
+    SSHFP("host", 4, 2, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    NS("sub", "ns1.example.net."),
+    DS("sub", 12345, 13, 2, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    // not written (not a record type this format holds): old DNAME new.example.net.
+    // not written (not a record type this format holds): spf SPF "v=spf1 -all"
+    // not written (not a record type this format holds): uri URI 10 1 "https://www.example.com/"
+    // not written (not a record type this format holds): geo LOC 52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
+    // not written (not a record type this format holds): alias ALIAS target.example.net.
+END);
+## dnscontrol pitfalls
+warn caa-flags ×1: @ [flags=1]
+warn unsupported-type ×5: old spf uri geo alias [types=DNAME,SPF,URI,LOC,ALIAS]
+warn dnssec ×1: @
+warn out-of-zone ×1: other.example.net.
+warn wildcard-inner ×1: a.*.inner
+warn escaped-name ×1: a\032b
+info cname-apex ×1: @
+info proxied ×3: @ www mixed
+info cname-flatten ×1: status
+info txt-long ×1: google._domainkey
+info caa-tag ×1: @ [tags=policy]
+info soa ×1: @
+info apex-ns ×2: @
+info wildcard ×1: *.apps
+info duplicate ×1: dup
+info ttl-mixed ×1: ttls
+## dnscontrol left out
+4 example.com SOA soa
+5 example.com NS apex-ns
+6 example.com NS apex-ns
+8 example.com DNSKEY dnssec
+25 dup.example.com A duplicate
+39 old.example.com DNAME unsupported-type
+40 spf.example.com SPF unsupported-type
+41 uri.example.com URI unsupported-type
+42 geo.example.com LOC unsupported-type
+43 alias.example.com ALIAS unsupported-type
+44 other.example.net A out-of-zone
+## dnscontrol changed
+7 example.com CNAME cname-apex

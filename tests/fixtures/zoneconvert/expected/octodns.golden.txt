@@ -1,0 +1,415 @@
+# octodns: 23 records, origin example.com
+## bind (example.com.zone, text/plain;charset=utf-8, 23 written)
+; example.com as an RFC 1035 zone file (BIND), written by DomainScope from octodns.
+; Records that cannot be served as they are stay here as comments, with the reason.
+$ORIGIN example.com.
+$TTL 3600
+; No SOA record in the source: add one before a name server loads this file.
+@                    300 IN A     192.0.2.10 ; cf_tags=cf-proxied:true
+@                   3600 IN CAA   0 issue "letsencrypt.org"
+@                   3600 IN MX    10 mail.example.com.
+@                   3600 IN MX    20 mx2.example.net.
+@                   3600 IN NS    ns1.example-dns.net.
+@                   3600 IN NS    ns2.example-dns.net.
+@                   3600 IN TXT   "google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+@                   3600 IN TXT   "v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all"
+*                   3600 IN CNAME www.example.com.
+_dmarc              3600 IN TXT   "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com"
+_sip._tcp            600 IN SRV   10 5 5060 sip.example.com.
+admin               3600 IN A     192.0.2.12
+api                  300 IN A     192.0.2.14 ; cf_tags=cf-proxied:true
+app                 3600 IN CNAME origin-lb.example.net. ; cf_tags=cf-proxied:true
+geo                 3600 IN A     198.51.100.30
+geo                 3600 IN A     198.51.100.31
+geo                 3600 IN A     198.51.100.32
+geo                 3600 IN A     198.51.100.33
+google._domainkey   3600 IN TXT   "v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample"
+intranet            3600 IN A     10.20.30.40
+mail                3600 IN A     198.51.100.25
+www                 3600 IN A     192.0.2.10 ; cf_tags=cf-proxied:true
+www                 3600 IN AAAA  2001:db8::10 ; cf_tags=cf-proxied:true
+## bind pitfalls
+warn routing ×4: geo
+warn no-soa ×1: 
+info proxied ×5: @ api app www
+info wildcard ×1: *
+## route53 (example.com.route53.json, application/json;charset=utf-8, 21 written)
+{
+  "Comment": "example.com, written by DomainScope from octodns",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.10"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "CAA",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "0 issue \"letsencrypt.org\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "10 mail.example.com."
+          },
+          {
+            "Value": "20 mx2.example.net."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\""
+          },
+          {
+            "Value": "\"v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "*.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "www.example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_dmarc.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_sip._tcp.example.com.",
+        "Type": "SRV",
+        "TTL": 600,
+        "ResourceRecords": [
+          {
+            "Value": "10 5 5060 sip.example.com."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "admin.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.12"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "api.example.com.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.14"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "app.example.com.",
+        "Type": "CNAME",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "origin-lb.example.net."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "geo.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.30"
+          },
+          {
+            "Value": "198.51.100.31"
+          },
+          {
+            "Value": "198.51.100.32"
+          },
+          {
+            "Value": "198.51.100.33"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "google._domainkey.example.com.",
+        "Type": "TXT",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "\"v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "intranet.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "10.20.30.40"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "mail.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "198.51.100.25"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "A",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "192.0.2.10"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "www.example.com.",
+        "Type": "AAAA",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "2001:db8::10"
+          }
+        ]
+      }
+    }
+  ]
+}
+## route53 pitfalls
+warn proxied ×5: @ api app www
+warn routing ×4: geo
+info apex-ns ×2: @
+info wildcard ×1: *
+## route53 left out
+7 example.com NS apex-ns
+7 example.com NS apex-ns
+## octodns (example.com.yaml, application/yaml;charset=utf-8, 21 written)
+# example.com as an octoDNS zone (example.com.yaml), written by DomainScope from octodns.
+# Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+---
+'':
+  - octodns:
+      cloudflare:
+        proxied: true
+    ttl: 300
+    type: A
+    value: '192.0.2.10'
+  - ttl: 3600
+    type: CAA
+    value:
+      flags: 0
+      tag: issue
+      value: letsencrypt.org
+  - ttl: 3600
+    type: MX
+    values:
+      - exchange: mail.example.com.
+        preference: 10
+      - exchange: mx2.example.net.
+        preference: 20
+  - ttl: 3600
+    type: TXT
+    values:
+      - 'google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+      - 'v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all'
+'*':
+  ttl: 3600
+  type: CNAME
+  value: www.example.com.
+_dmarc:
+  ttl: 3600
+  type: TXT
+  value: 'v=DMARC1\; p=quarantine\; rua=mailto:dmarc@example.com'
+_sip._tcp:
+  ttl: 600
+  type: SRV
+  value:
+    port: 5060
+    priority: 10
+    target: sip.example.com.
+    weight: 5
+admin:
+  ttl: 3600
+  type: A
+  value: '192.0.2.12'
+api:
+  octodns:
+    cloudflare:
+      auto-ttl: true
+      proxied: true
+  ttl: 300
+  type: A
+  value: '192.0.2.14'
+app:
+  octodns:
+    cloudflare:
+      proxied: true
+  ttl: 3600
+  type: CNAME
+  value: origin-lb.example.net.
+geo:
+  ttl: 3600
+  type: A
+  values:
+    - '198.51.100.30'
+    - '198.51.100.31'
+    - '198.51.100.32'
+    - '198.51.100.33'
+google._domainkey:
+  ttl: 3600
+  type: TXT
+  value: 'v=DKIM1\;k=rsa\;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample'
+intranet:
+  ttl: 3600
+  type: A
+  value: '10.20.30.40'
+mail:
+  ttl: 3600
+  type: A
+  value: '198.51.100.25'
+www:
+  - octodns:
+      cloudflare:
+        proxied: true
+    ttl: 3600
+    type: A
+    value: '192.0.2.10'
+  - octodns:
+      cloudflare:
+        proxied: true
+    ttl: 3600
+    type: AAAA
+    value: '2001:db8::10'
+## octodns pitfalls
+warn routing ×4: geo
+info proxied ×5: @ api app www
+info apex-ns ×2: @
+info wildcard ×1: *
+## octodns left out
+7 example.com NS apex-ns
+7 example.com NS apex-ns
+## dnscontrol (dnsconfig.js, text/javascript;charset=utf-8, 21 written)
+// example.com as DNSControl's dnsconfig.js, written by DomainScope from octodns.
+// Read the notes DomainScope listed, then run `dnscontrol preview` before `dnscontrol push`.
+var REG_NONE = NewRegistrar("none");
+var DSP_MAIN = NewDnsProvider("main"); // the name of your provider's entry in creds.json
+
+D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
+    DefaultTTL(3600),
+    A("@", "192.0.2.10", TTL(300), CF_PROXY_ON),
+    CAA("@", "issue", "letsencrypt.org"),
+    MX("@", 10, "mail.example.com."),
+    MX("@", 20, "mx2.example.net."),
+    TXT("@", "google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"),
+    TXT("@", "v=spf1 ip4:198.51.100.25 include:_spf.example.net ~all"),
+    CNAME("*", "www.example.com."),
+    TXT("_dmarc", "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com"),
+    SRV("_sip._tcp", 10, 5, 5060, "sip.example.com.", TTL(600)),
+    A("admin", "192.0.2.12"),
+    A("api", "192.0.2.14", TTL(300), CF_PROXY_ON),
+    CNAME("app", "origin-lb.example.net.", CF_PROXY_ON),
+    A("geo", "198.51.100.30"),
+    A("geo", "198.51.100.31"),
+    A("geo", "198.51.100.32"),
+    A("geo", "198.51.100.33"),
+    TXT("google._domainkey", "v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample"),
+    A("intranet", "10.20.30.40"),
+    A("mail", "198.51.100.25"),
+    A("www", "192.0.2.10", CF_PROXY_ON),
+    AAAA("www", "2001:db8::10", CF_PROXY_ON),
+END);
+## dnscontrol pitfalls
+warn routing ×4: geo
+info proxied ×5: @ api app www
+info apex-ns ×2: @
+info wildcard ×1: *
+## dnscontrol left out
+7 example.com NS apex-ns
+7 example.com NS apex-ns

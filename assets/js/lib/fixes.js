@@ -39,6 +39,8 @@ import { parseSpf, parseDmarc, parseCaaIssueValue, spfLookupCount, CAA_ISSUERS, 
 import { quoteArg } from './cmdline.js';
 import { parseZone, rdataKey, txtJoinedKey, presentCharString } from './zoneparse.js';
 import { lintZone } from './zonelint.js';
+// The Route 53 string escapes, the YAML quoting and the octoDNS TXT escapes, shared with the zone converter.
+import { route53String, yamlString as yamlStr, octodnsTxt } from './zoneconvert.js';
 
 /* ------------------------------------------------------------------------ */
 /* Vocabulary                                                               */
@@ -735,20 +737,6 @@ function bindText(req) {
   return `${out.join('\n')}\n`;
 }
 
-/**
- * A character-string as Route 53 reads it: quoted, `"` and `\` escaped, every byte outside
- * printable ASCII as a three-digit octal escape (Route 53's own escape form, never \DDD decimal).
- */
-function route53String(s) {
-  let out = '"';
-  for (const b of utf8.encode(String(s ?? ''))) {
-    if (b === 0x22 || b === 0x5c) out += `\\${String.fromCharCode(b)}`;
-    else if (b >= 0x20 && b <= 0x7e) out += String.fromCharCode(b);
-    else out += `\\${b.toString(8).padStart(3, '0')}`;
-  }
-  return `${out}"`;
-}
-
 /** A Route 53 value: the presentation text, names without the root dot, TXT and CAA strings in its escape form. */
 function route53Value(type, v) {
   if (type === 'CNAME') return canon(v) || '.';
@@ -866,14 +854,8 @@ function cloudflareText(req) {
   return `${out.join('\n')}\n`;
 }
 
-/** A YAML scalar: single-quoted unless it is a plain name or number. */
-function yamlStr(s) {
-  const v = String(s ?? '');
-  return /^[a-z0-9_][a-z0-9._-]*$/i.test(v) && !/^(?:true|false|yes|no|on|off|null|~|\d[\d.e+-]*)$/i.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
-}
-
-/** octoDNS: a TXT value with `;` escaped (octoDNS refuses a bare one). */
-const octoTxt = (v) => txtText(v).replace(/\\/g, '\\\\').replace(/;/g, '\\;');
+/** octoDNS: a TXT value with `;` escaped (octoDNS refuses a bare one); lib/zoneconvert.js writes whole zones the same way. */
+const octoTxt = (v) => octodnsTxt(txtText(v));
 
 function octoValue(type, v, indent) {
   const pad = ' '.repeat(indent);

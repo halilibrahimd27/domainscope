@@ -21,8 +21,9 @@
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
  * back (no new query); Forget; 150 daily reports in one drop (past the 100 other drop zones take) with
  * a zip whose entries share one stream, refused at once; files dropped while reading wait their turn,
- * the bar counts them, and Stop (Esc) ends the read with nothing half-read kept; a zipped mailbox
- * folder of 300 reports counted report by report and stopped in its middle; an SPF record with a
+ * the bar counts them, and Stop (Esc) before a report was read keeps nothing; a zipped mailbox
+ * folder of 300 reports counted report by report and stopped in its middle, the reports read before
+ * the Stop kept and counted in its toast; an SPF record with a
  * syntax error: the SPF line, the note and the verdict say receivers get a permanent error, the
  * server it lists stays yours and its mail that passed through SPF alone is to fix, refused now once
  * p=reject is in force; offline, a dropped
@@ -458,7 +459,7 @@ async function main() {
       }
     });
 
-    await run.step('files dropped while reading wait their turn and the bar counts them; Stop (Esc) ends the read, nothing half-read kept', async () => {
+    await run.step('files dropped while reading wait their turn and the bar counts them; Stop (Esc) before a report was read keeps nothing', async () => {
       // Every DecompressionStream holds its output until the gate opens: the read stays busy for as long as the test needs.
       await page.evaluate(() => {
         const Real = window.DecompressionStream;
@@ -482,8 +483,8 @@ async function main() {
         await page.press('Escape');
         await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
         const toastText = await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent, { message: 'toast' });
-        assertEqual(toastText, 'Reading stopped. What was read before it stays.', 'the toast');
-        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing half-read kept');
+        assertEqual(toastText, 'Reading stopped. No report had been read yet.', 'the toast');
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing read, nothing kept');
         assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus back on the drop zone');
         assertEqual(await counts(page), before, 'nothing sent');
       } finally {
@@ -500,7 +501,7 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
     });
 
-    await run.step('a zipped mailbox folder: the bar counts the reports inside it, and Stop (Esc) acts between them', async () => {
+    await run.step('a zipped mailbox folder: the bar counts the reports inside it, Stop (Esc) acts between them and keeps the reports read before it', async () => {
       const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-zip-'));
       const n = 300;
       const before = await counts(page);
@@ -534,10 +535,18 @@ async function main() {
           await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
           const decoded = await page.evaluate(() => window.__decodes);
           assert(decoded < n, `stopped in the middle of the archive, not after it: ${decoded} of ${n} reports read`);
-          await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent === 'Reading stopped. What was read before it stays.', { message: 'the toast' });
-          assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing half-read kept');
+          const toastText = await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent, { message: 'the toast' });
+          const said = /^Reading stopped\. The ([\d,]+) reports read before it are kept\.$/.exec(toastText);
+          assert(said, `the toast says how many reports were kept: ${toastText}`);
+          const kept = Number(said[1].replace(/,/g, ''));
+          assert(kept >= 5 && kept <= decoded, `kept ${kept}, read ${decoded}`);
+          assertEqual(await text(page, '[data-role="rpt-files"]'), `1 file · ${kept} DMARC reports · 0 TLS reports`, 'the reports read before the Stop are kept');
+          assertEqual(await text(page, '.rpt-results-title'), 'Reports for example.com', 'and shown');
           assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus back on the drop zone');
-          assertEqual(await counts(page), before, 'nothing sent');
+          assertEqual((await counts(page)).ip, before.ip, 'no IP data asked');
+          await waitDmarc(page, 'the kept reports classified');
+          await page.click('[data-action="rpt-forget"]');
+          await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
         } finally {
           await page.evaluate(() => { TextDecoder.prototype.decode = window.__realDecode; });
         }

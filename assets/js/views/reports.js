@@ -96,7 +96,9 @@ registerStrings('en', {
   'rpt.reading': { one: 'Reading {count} file…', other: 'Reading {count} files…' },
   'rpt.queued': { one: '{count} more file will be read next.', other: '{count} more files will be read next.' },
   'rpt.stop': 'Stop reading',
-  'rpt.stopped': 'Reading stopped. What was read before it stays.',
+  'rpt.stopped': 'Reading stopped.',
+  'rpt.stoppedKept': { one: 'Reading stopped. The report read before it is kept.', other: 'Reading stopped. The {count} reports read before it are kept.' },
+  'rpt.stoppedNone': 'Reading stopped. No report had been read yet.',
   'rpt.loaded': 'Read: {dmarc} DMARC and {tls} TLS reports',
   'rpt.noneRead': 'No DMARC or TLS report in these files.',
   'rpt.kept': 'Reports read at {time}',
@@ -351,7 +353,9 @@ registerStrings('tr', {
   'rpt.reading': '{count} dosya okunuyor…',
   'rpt.queued': 'Sırada {count} dosya daha var; ardından okunacak.',
   'rpt.stop': 'Okumayı durdur',
-  'rpt.stopped': 'Okuma durduruldu. Ondan önce okunanlar duruyor.',
+  'rpt.stopped': 'Okuma durduruldu.',
+  'rpt.stoppedKept': 'Okuma durduruldu. O ana kadar okunan {count} rapor korundu.',
+  'rpt.stoppedNone': 'Okuma durduruldu. Henüz hiçbir rapor okunmamıştı.',
   'rpt.loaded': 'Okundu: {dmarc} DMARC ve {tls} TLS raporu',
   'rpt.noneRead': 'Bu dosyalarda DMARC ya da TLS raporu yok.',
   'rpt.kept': 'Raporlar {time} okundu',
@@ -807,7 +811,8 @@ export function mount(container, ctx) {
     const mine = S;
     const got = { files: 0, dmarc: [], tls: [], problems: [] };
     try {
-      while (queue.length && mine === S) {
+      let cut = false;
+      while (queue.length && mine === S && !cut) {
         const batch = queue;
         queue = [];
         const before = readDone;
@@ -822,14 +827,15 @@ export function mount(container, ctx) {
           }
         });
         readDone = before + batchTotal;
-        got.files += batch.length;
+        // A Stop ends the read with what it read before, the reports of an archive it cut included.
+        got.files += r.files;
         got.dmarc.push(...r.dmarc);
         got.tls.push(...r.tls);
         got.problems.push(...r.problems);
+        cut = r.stopped;
       }
     } catch (err) {
-      // Stop: what the batches before it read stays; the batch it cut is dropped whole.
-      if (!(err && err.name === 'AbortError') && !ctx.signal.aborted) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      if (!ctx.signal.aborted) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
     }
     const stopped = reading.signal.aborted && !ctx.signal.aborted;
     busy = false;
@@ -839,8 +845,9 @@ export function mount(container, ctx) {
     readTotal = 0;
     if (ctx.signal.aborted) return;
     ctx.setBusy(false);
-    if (stopped) toast(t('rpt.stopped'), { type: 'info' });
     // Another workspace (or "Delete all local data") came while the files were read: they belonged to the one left.
+    const kept = mine === S ? got.dmarc.length + got.tls.length : 0;
+    if (stopped) toast(mine !== S ? t('rpt.stopped') : kept ? t('rpt.stoppedKept', { count: kept }) : t('rpt.stoppedNone'), { type: 'info' });
     if (mine !== S || !got.files) {
       renderAll();
       if (stopped) focusDrop();
@@ -851,25 +858,27 @@ export function mount(container, ctx) {
     S.tlsReports.push(...got.tls);
     S.problems.push(...got.problems);
     analyse();
-    if (got.dmarc.length || got.tls.length) {
+    if (kept) {
       S.loadedAt = new Date();
       ctx.resultChanged();
       const target = S.domain || S.tlsDomain;
       if (target) ctx.runStarted(target);
       if (!got.dmarc.length && got.tls.length) S.tab = 'tls';
       else if (got.dmarc.length) S.tab = 'dmarc';
-      announce(t('rpt.loaded', { dmarc: num(got.dmarc.length), tls: num(got.tls.length) }));
-    } else {
+      // After a Stop its toast says what was kept.
+      if (!stopped) announce(t('rpt.loaded', { dmarc: num(got.dmarc.length), tls: num(got.tls.length) }));
+    } else if (!stopped) {
       toast(t('rpt.noneRead'), { type: 'warn' });
     }
     renderAll();
     const head = root.querySelector('.rpt-results-title');
-    if (head && (got.dmarc.length || got.tls.length)) head.focus({ preventScroll: true });
-    else if (stopped) focusDrop();
+    // A Stop gives the focus back to the drop zone, as its button is gone; a read to the end, to the results.
+    if (stopped) focusDrop();
+    else if (head && kept) head.focus({ preventScroll: true });
     checkSpf();
   }
 
-  /** Stop reading (the Stop button, Esc): the queue is dropped, the file being read too. */
+  /** Stop reading (the Stop button, Esc): the queue is dropped; the reports read before stay, those of an archive it cut too. */
   function stopReading() {
     queue = [];
     if (reading) reading.abort();

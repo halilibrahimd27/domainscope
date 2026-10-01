@@ -203,6 +203,40 @@ describe('the comparison', () => {
     assert.deepEqual([moved.verdict, moved.shared], ['differs', ['cert-untrusted']]);
   });
 
+  test('an untrusted certificate from another issuer is a difference, never a problem both share', () => {
+    const selfSigned = (r) => { r.tls.authorized = false; r.tls.error = 'DEPTH_ZERO_SELF_SIGNED_CERT'; r.tls.issuer = { CN: 'github.com' }; };
+    const fresh = (r) => { selfSigned(r); r.tls.fingerprint256 = 'DD:'.repeat(31) + 'DD'; };
+    // The old server: an origin CA certificate (a CDN in strict mode trusts it, the probe does not);
+    // the new one: a self-signed certificate (the same CDN refuses it).
+    const originCa = (r) => {
+      r.tls.authorized = false;
+      r.tls.error = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE';
+      r.tls.issuer = { O: 'Example Origin CA, Inc.', CN: 'Example Origin SSL Certificate Authority' };
+    };
+    const oldCa = sideOf(edited(originCa, H1), OLD);
+    const newSelf = sideOf(edited(fresh));
+    const out = compare(oldCa, newSelf);
+    const f = byKey(out).certTrusted;
+    assert.deepEqual([out.verdict, out.shared], ['differs', []], 'origin CA → self-signed');
+    assert.deepEqual([f.same, f.shared, f.severity, f.note], [false, false, 'warn', 'cert-untrusted-other']);
+    // An internal CA's certificate on the old server, a self-signed one on the new.
+    const internal = sideOf(edited((r) => {
+      r.tls.authorized = false;
+      r.tls.error = 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY';
+      r.tls.issuer = { O: 'Example Corp', CN: 'Example Internal CA' };
+    }, H1), OLD);
+    const inside = compare(internal, newSelf);
+    assert.deepEqual([inside.verdict, inside.shared, byKey(inside).certTrusted.note], ['differs', [], 'cert-untrusted-other'], 'internal CA → self-signed');
+    // A renewed certificate from the same origin CA: no difference.
+    const renewed = compare(oldCa, sideOf(edited((r) => { originCa(r); r.tls.fingerprint256 = 'EE:'.repeat(31) + 'EE'; })));
+    assert.deepEqual([renewed.verdict, renewed.shared, byKey(renewed).certTrusted.shared], ['same', ['cert-untrusted'], true]);
+    // A self-signed certificate is its own issuer: only the same one is shared.
+    const oldSelf = sideOf(edited(selfSigned, H1), OLD);
+    assert.equal(compare(oldSelf, newSelf).verdict, 'differs', 'two self-signed certificates with the same name');
+    const twin = compare(oldSelf, sideOf(edited(selfSigned)));
+    assert.deepEqual([twin.verdict, twin.shared], ['same', ['cert-untrusted']], 'the same self-signed certificate');
+  });
+
   test('the old server does not answer: incomplete; neither answers: unreachable, never "not ready"', () => {
     const gone = sideOf(edited((r) => Object.assign(r, { status: 'failed', statusCode: null, tls: null, rawOutput: 'connect ECONNREFUSED' }), H1), OLD);
     const out = compare(gone, sideOf(H2.final.body));

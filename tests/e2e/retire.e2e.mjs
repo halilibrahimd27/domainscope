@@ -157,7 +157,8 @@ const NEW_IP = '93.184.216.34';
  * like a web server of www.example.com. `window.__compareScenario`: 'differs' (the new server has
  * its own certificate, no HSTS header and another Server header), 'broken' (its certificate names
  * another host), 'down' (neither address answers), 'origin-ca' (both serve the same answer and the
- * same certificate, which the probe does not trust: an origin CA behind a CDN).
+ * same certificate, which the probe does not trust: an origin CA behind a CDN), 'origin-ca-self'
+ * (the same answer, but the new server's certificate is self-signed).
  * `window.__gp.allowUpTo`: measurements numbered above it stay in progress. Every call is logged
  * in window.__gp.
  */
@@ -175,13 +176,16 @@ const fakeCompareScript = () => `(() => {
   });
   function result(ip, host, path) {
     if (window.__compareScenario === 'down') return { status: 'failed', rawOutput: 'connect ECONNREFUSED ' + ip + ':443', timings: {} };
-    const twin = window.__compareScenario === 'origin-ca';
+    const twin = window.__compareScenario === 'origin-ca' || window.__compareScenario === 'origin-ca-self';
     const old = ip === '${OLD_IP}' || twin;
     const broken = !old && window.__compareScenario === 'broken';
     const headers = { 'content-type': 'text/html; charset=utf-8', server: old ? 'nginx' : 'caddy' };
     if (old) headers['strict-transport-security'] = 'max-age=31536000; includeSubDomains';
     const tls = cert(old ? 'AA' : 'BB', broken ? ['www.example.net'] : [host, 'example.com']);
     if (twin) Object.assign(tls, { authorized: false, error: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', issuer: { C: 'US', O: 'Example Origin CA', CN: 'Example Origin CA' } });
+    if (window.__compareScenario === 'origin-ca-self' && ip !== '${OLD_IP}') {
+      Object.assign(tls, { error: 'DEPTH_ZERO_SELF_SIGNED_CERT', issuer: { CN: host }, fingerprint256: Array.from({ length: 32 }, () => 'CC').join(':') });
+    }
     return {
       status: 'finished', resolvedAddress: ip, statusCode: 200, statusCodeName: 'OK', headers, rawBody: body, truncated: false,
       tls, timings: { total: 120 }
@@ -703,6 +707,21 @@ async function main() {
       await shot(page, opts, 'retire-compare-shared-desktop-light-en');
       await setLangUi(page, 'tr');
       await page.waitFor(() => /İki sunucu da ölçüm noktasının güvenmediği/.test(document.querySelector('.oc-results')?.textContent || ''), { message: 'TR shared warning' });
+      await setLangUi(page, 'en');
+      await page.evaluate(() => { window.__compareScenario = 'differs'; });
+    });
+
+    await run.step('an origin CA certificate on the old server, a self-signed one on the new: a difference, never a shared warning', async () => {
+      await page.evaluate(() => { window.__compareScenario = 'origin-ca-self'; });
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs', { timeout: 20000, message: 'differs' });
+      const rows = await ocRows();
+      assertEqual(rows.certTrusted, 'warn differs', 'another untrusted certificate, from another issuer');
+      assert(/from another issuer than the old one/.test(await text(page, '.oc-row[data-field="certTrusted"]')), 'the note says why');
+      const results = await text(page, '.oc-results');
+      assert(/answers differently/.test(results) && !/Both servers serve a certificate/.test(results), 'the verdict, no shared warning');
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => /eskisinden farklı bir kuruluş vermiş/.test(document.querySelector('.oc-row[data-field="certTrusted"]')?.textContent || ''), { message: 'TR note' });
       await setLangUi(page, 'en');
       await page.evaluate(() => { window.__compareScenario = 'differs'; });
     });

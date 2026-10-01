@@ -31,7 +31,7 @@ export const COMPARE_FIELDS = Object.freeze(['reach', 'status', 'location', 'con
 export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete', 'unreachable']);
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
-  'body-cut', 'hsts-lost', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-expiring', 'new-cert', 'same-cert']);
+  'body-cut', 'hsts-lost', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);
 /** Certificate problems both servers can share (`oc.shared.<n>`): no difference, so said apart from the verdict. */
 export const COMPARE_SHARED = Object.freeze(['cert-untrusted', 'cert-name', 'cert-expiring']);
 /** Problems of the form (`oc.issue.<code>`). */
@@ -239,13 +239,21 @@ const SHARED_NOTES = new Set(COMPARE_SHARED);
 /**
  * One compared field. A field both servers agree on is 'ok', unless its note is a problem of the
  * certificate both serve: then it is `shared`, a 'warn' that says nothing about the move. The
- * caller can say `shared` itself (two certificates that both expire soon, the new one no sooner).
+ * caller can say `shared` itself (two certificates that both expire soon, the new one no sooner),
+ * and `same` (two untrusted certificates from different issuers do not agree).
  */
 function field(key, oldValue, newValue, same, severity, note = null, shared = same && SHARED_NOTES.has(note)) {
   return { key, old: oldValue, new: newValue, same, severity: shared ? 'warn' : same ? 'ok' : severity, note, shared };
 }
 
 const dateKey = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : null);
+/** A self-signed certificate is its own issuer (Node's verify error for one). */
+const selfSigned = (c) => c.error === 'DEPTH_ZERO_SELF_SIGNED_CERT';
+/**
+ * Two certificates that whatever trusts one also trusts: the same certificate, or the same issuer
+ * (an origin CA or an internal CA renews its certificates); a self-signed one only itself.
+ */
+const sameIssuer = (ca, cb) => ca.sha256 === cb.sha256 || (!!ca.issuer && ca.issuer === cb.issuer && !selfSigned(ca) && !selfSigned(cb));
 const hstsText = (h) => (h ? h.raw : null);
 
 /**
@@ -263,11 +271,13 @@ const hstsText = (h) => (h ? h.raw : null);
  *   information: a page with a token or a time in it differs on every request, and a new server
  *   usually has its own certificate.
  *
- * A certificate problem both servers share is no difference: the same untrusted certificate (an
- * origin CA certificate behind a CDN is one), a certificate that does not cover the name on both,
+ * A certificate problem both servers share is no difference: an untrusted certificate, the same
+ * one or from the same issuer (an origin CA certificate behind a CDN is one; a self-signed
+ * certificate is its own issuer), a certificate that does not cover the name on both,
  * or both expiring within {@link COMPARE_EXPIRY_WARN_DAYS} days with the new one no sooner. The
  * field is `shared` (severity 'warn'), its note is listed in `shared`, and the verdict leaves it
- * out: two identical servers are 'same'.
+ * out: two identical servers are 'same'. An untrusted certificate from another issuer than the
+ * old untrusted one is a warning (`cert-untrusted-other`): whatever trusts the old one may refuse it.
  *
  * `verdict`, from the fields that count: 'unreachable' (neither server answered: the probe's
  * network may be the cause as much as the servers, so nothing is judged), 'broken' (an error),
@@ -323,7 +333,13 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
     fields.push(field('certCovers', covers(ca), covers(cb), covers(ca) === covers(cb), cb && !cb.covers ? 'error' : 'info', cb && !cb.covers ? 'cert-name' : null));
     const trusted = (c) => (c ? c.authorized : null);
     const untrusted = cb && !cb.authorized;
-    fields.push(field('certTrusted', trusted(ca), trusted(cb), trusted(ca) === trusted(cb), untrusted ? (ca && ca.authorized ? 'error' : 'warn') : 'info', untrusted ? 'cert-untrusted' : null));
+    if (untrusted && ca && !ca.authorized && !sameIssuer(ca, cb)) {
+      // Both untrusted, but from another issuer: whatever trusts the old one (a CDN that knows its
+      // origin CA, clients that know an internal CA) may refuse the new one.
+      fields.push(field('certTrusted', false, false, false, 'warn', 'cert-untrusted-other'));
+    } else {
+      fields.push(field('certTrusted', trusted(ca), trusted(cb), trusted(ca) === trusted(cb), untrusted ? (ca && ca.authorized ? 'error' : 'warn') : 'info', untrusted ? 'cert-untrusted' : null));
+    }
     fields.push(field('certIssuer', ca ? ca.issuer : null, cb ? cb.issuer : null, (ca && ca.issuer) === (cb && cb.issuer), 'info'));
     const soon = (c) => !!(c && c.notAfter && c.notAfter.getTime() - now < COMPARE_EXPIRY_WARN_DAYS * DAY_MS);
     const sameDay = (ca && dateKey(ca.notAfter)) === (cb && dateKey(cb.notAfter));

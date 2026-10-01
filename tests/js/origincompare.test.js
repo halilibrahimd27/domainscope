@@ -272,6 +272,14 @@ describe('the comparison', () => {
   });
 });
 
+test('the card says why a certificate is not trusted, as the CLI does ("no: <reason>")', async () => {
+  const { displayValue } = await import('../../assets/js/ui/origin-compare.js');
+  assert.equal(displayValue('certTrusted', false, { cert: { error: 'DEPTH_ZERO_SELF_SIGNED_CERT' } }), 'no: DEPTH_ZERO_SELF_SIGNED_CERT');
+  assert.equal(displayValue('certTrusted', false, { cert: { error: null } }), 'no');
+  assert.equal(displayValue('certTrusted', true, { cert: { error: null } }), 'yes');
+  assert.equal(displayValue('certCovers', false, null), 'no');
+});
+
 describe('runCompare', () => {
   function fakeClient({ failSecond = null } = {}) {
     const calls = [];

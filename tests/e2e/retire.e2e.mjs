@@ -717,6 +717,8 @@ async function main() {
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs', { timeout: 20000, message: 'differs' });
       const rows = await ocRows();
       assertEqual(rows.certTrusted, 'warn differs', 'another untrusted certificate, from another issuer');
+      const trust = await page.evaluate(() => [...document.querySelectorAll('.oc-row[data-field="certTrusted"] td')].map((td) => td.textContent));
+      assertEqual(trust, ['no: UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'no: DEPTH_ZERO_SELF_SIGNED_CERT'], 'why each one is not trusted');
       assert(/from another issuer than the old one/.test(await text(page, '.oc-row[data-field="certTrusted"]')), 'the note says why');
       const results = await text(page, '.oc-results');
       assert(/answers differently/.test(results) && !/Both servers serve a certificate/.test(results), 'the verdict, no shared warning');

@@ -290,6 +290,8 @@ export function displayValue(key, value, side) {
     const label = FAILURE_KINDS.includes(value) ? t(`oc.fail.${value}`) : String(value);
     return side && side.failure && side.failure.text ? `${label} — ${side.failure.text}` : label;
   }
+  // Why the probe did not trust the certificate (the CLI's "no: <reason>"), before the plain yes / no.
+  if (key === 'certTrusted' && value === false && side && side.cert && side.cert.error) return `${t('oc.no')}: ${side.cert.error}`;
   if (typeof value === 'boolean') return t(value ? 'oc.yes' : 'oc.no');
   if (key === 'body') {
     const b = side && side.body;
@@ -299,7 +301,6 @@ export function displayValue(key, value, side) {
   if (key === 'certExpires' && side && side.cert && Number.isFinite(side.cert.daysLeft)) {
     return t('oc.days', { date: String(value), count: side.cert.daysLeft });
   }
-  if (key === 'certTrusted' && value === false && side && side.cert && side.cert.error) return `${t('oc.no')}: ${side.cert.error}`;
   return String(value);
 }
 

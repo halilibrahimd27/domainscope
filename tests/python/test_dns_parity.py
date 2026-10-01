@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import os
+import random
 import socket
 import struct
 import sys
@@ -93,18 +94,21 @@ class FakeAuthority:
         self.truncate = set(truncate)
         self.asked = []  # type: List[Tuple[str, str, str]]
         # TCP first: its ephemeral port is never in a range Windows reserves for TCP (Hyper-V,
-        # Docker), which a UDP ephemeral port can be in.
-        for _ in range(50):
-            self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.tcp.bind(('127.0.0.1', 0))
-            self.port = self.tcp.getsockname()[1]
-            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Docker), which a UDP ephemeral port can be in. Windows hands TCP ports out in sequence,
+        # so a run of them can sit inside one 100-port block reserved for UDP: after a few tries,
+        # ports below every system's ephemeral range are tried instead.
+        for want in [0] * 8 + random.sample(range(20000, 32000), 200):
+            tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                self.udp.bind(('127.0.0.1', self.port))
-                break
+                tcp.bind(('127.0.0.1', want))
+                udp.bind(('127.0.0.1', tcp.getsockname()[1]))
             except OSError:
-                self.udp.close()
-                self.tcp.close()
+                tcp.close()
+                udp.close()
+                continue
+            self.tcp, self.udp, self.port = tcp, udp, tcp.getsockname()[1]
+            break
         else:
             raise OSError('no local port free for both UDP and TCP')
         self.tcp.listen(16)

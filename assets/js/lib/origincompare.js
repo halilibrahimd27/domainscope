@@ -31,7 +31,7 @@ export const COMPARE_FIELDS = Object.freeze(['reach', 'status', 'location', 'con
 export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete', 'unreachable']);
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
-  'body-cut', 'hsts-lost', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);
+  'body-cut', 'hsts-lost', 'hsts-off', 'hsts-weaker', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);
 /** Certificate problems both servers can share (`oc.shared.<n>`): no difference, so said apart from the verdict. */
 export const COMPARE_SHARED = Object.freeze(['cert-untrusted', 'cert-name', 'cert-expiring']);
 /** Problems of the form (`oc.issue.<code>`). */
@@ -265,8 +265,9 @@ const hstsText = (h) => (h ? h.raw : null);
  *   certificate that does not cover the name or that the probe did not trust (while the old one
  *   was trusted) is an error; a new server that does not answer is compared no further, and
  *   the certificate fields come only with a certificate from the new server;
- * - another status, redirect, content type or title, a lost HSTS header, or a certificate that
- *   expires within {@link COMPARE_EXPIRY_WARN_DAYS} days is a warning;
+ * - another status, redirect, content type or title, a lost HSTS header (none, max-age=0, or
+ *   without the old one's includeSubDomains or preload), or a certificate that expires within
+ *   {@link COMPARE_EXPIRY_WARN_DAYS} days is a warning;
  * - another body, Server header, certificate names, issuer, expiry or certificate is
  *   information: a page with a token or a time in it differs on every request, and a new server
  *   usually has its own certificate.
@@ -318,8 +319,13 @@ export function compareSides(a, b, { now = Date.now() } = {}) {
     fields.push(field('body', ha, hb, ha === hb, 'info', ha === hb ? (cut ? 'body-cut' : null) : 'dynamic-body'));
     let hstsNote = null;
     let hstsSev = 'info';
-    if (a.hsts && !b.hsts) [hstsNote, hstsSev] = ['hsts-lost', warn];
-    else if (!a.hsts && b.hsts) hstsNote = 'hsts-new';
+    // max-age=0 tells a browser to forget the policy: no HSTS to keep, or to lose.
+    const active = (x) => !!x && x.maxAge !== 0;
+    const dropped = (flag) => a.hsts[flag] && !b.hsts[flag];
+    if (active(a.hsts) && !b.hsts) [hstsNote, hstsSev] = ['hsts-lost', warn];
+    else if (active(a.hsts) && !active(b.hsts)) [hstsNote, hstsSev] = ['hsts-off', warn];
+    else if (active(a.hsts) && (dropped('includeSubDomains') || dropped('preload'))) [hstsNote, hstsSev] = ['hsts-weaker', warn];
+    else if (!active(a.hsts) && active(b.hsts)) hstsNote = 'hsts-new';
     fields.push(field('hsts', hstsText(a.hsts), hstsText(b.hsts), hstsText(a.hsts) === hstsText(b.hsts), hstsSev, hstsNote));
     fields.push(field('server', a.server, b.server, a.server === b.server, 'info'));
   }

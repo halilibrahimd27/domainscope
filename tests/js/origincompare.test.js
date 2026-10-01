@@ -155,6 +155,23 @@ describe('the comparison', () => {
     assert.equal(compare(sideOf(edited((r) => { delete r.headers['strict-transport-security']; }), OLD), sideOf(H2.final.body)).fields.find((x) => x.key === 'hsts').note, 'hsts-new');
   });
 
+  test('HSTS turned off (max-age=0) or made weaker on the new server: a warning', () => {
+    // h01's header: max-age=31536000; includeSubdomains; preload
+    const hsts = (value) => sideOf(edited((r) => { r.headers['strict-transport-security'] = value; }));
+    const off = compare(old, hsts('max-age=0'));
+    assert.deepEqual([off.verdict, byKey(off).hsts.severity, byKey(off).hsts.note], ['differs', 'warn', 'hsts-off'], 'browsers forget the policy');
+    const weaker = compare(old, hsts('max-age=31536000'));
+    assert.deepEqual([weaker.verdict, byKey(weaker).hsts.severity, byKey(weaker).hsts.note], ['differs', 'warn', 'hsts-weaker'], 'includeSubDomains dropped');
+    assert.equal(byKey(compare(old, hsts('max-age=31536000; includeSubDomains'))).hsts.note, 'hsts-weaker', 'preload dropped');
+    const longer = compare(old, hsts('max-age=63072000; includeSubDomains; preload'));
+    assert.deepEqual([longer.verdict, byKey(longer).hsts.severity, byKey(longer).hsts.note], ['same', 'info', null]);
+    // An old max-age=0 is no policy to lose; a new header after it is one added.
+    const oldOff = sideOf(edited((r) => { r.headers['strict-transport-security'] = 'max-age=0'; }, H1), OLD);
+    const none = compare(oldOff, sideOf(edited((r) => { delete r.headers['strict-transport-security']; })));
+    assert.deepEqual([none.verdict, byKey(none).hsts.severity, byKey(none).hsts.note], ['same', 'info', null]);
+    assert.equal(byKey(compare(oldOff, sideOf(H2.final.body))).hsts.note, 'hsts-new');
+  });
+
   test('broken: an error status, a certificate for another name, an untrusted or soon-expiring one, no answer', () => {
     assert.equal(byKey(compare(old, sideOf(edited((r) => { r.statusCode = 502; })))).status.note, 'new-error-status');
     assert.equal(compare(old, sideOf(edited((r) => { r.statusCode = 404; }))).verdict, 'broken');

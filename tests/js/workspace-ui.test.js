@@ -17,6 +17,8 @@ import { registerRunning, runningWork } from '../../assets/js/ui/jobs.js';
 import { WorkspaceError } from '../../assets/js/lib/workspace.js';
 import '../../assets/js/views/ptr.js';
 import '../../assets/js/ui/verify-panel.js';
+import '../../assets/js/ui/parity-panel.js';
+import '../../assets/js/ui/origin-compare.js';
 
 after(() => setLang('en'));
 
@@ -125,7 +127,7 @@ describe('the shell', () => {
   });
 
   test('a switch names what it would stop: the long jobs and the registered work, each once', () => {
-    assert.deepEqual(runningWork(), [], 'nothing runs (a Reverse DNS sweep and a Verify batch are registered, idle)');
+    assert.deepEqual(runningWork(), [], 'nothing runs (a Reverse DNS sweep, a Verify batch and the two Globalping comparisons are registered, idle)');
     let busy = true;
     registerRunning('nav.ptr.test', () => busy);
     registerRunning('nav.broken.test', () => {
@@ -139,6 +141,8 @@ describe('the shell', () => {
       registerRunning('nav.ptr.test', () => false);
       registerRunning('nav.broken.test', () => false);
     }
-    for (const lang of LANGS) assert.ok(hasString('vfy.switchRunning', lang) && hasString('nav.ptr', lang), lang);
+    for (const lang of LANGS) {
+      for (const key of ['vfy.switchRunning', 'nav.ptr', 'par.switchRunning', 'oc.switchRunning']) assert.ok(hasString(key, lang), `${key} ${lang}`);
+    }
   });
 });

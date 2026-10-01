@@ -26,6 +26,7 @@ import {
   announce, checkbox, radioGroup, textarea, toast
 } from './components.js';
 import { downloadText } from './download.js';
+import { registerRunning } from './jobs.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from './globalping-gate.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
@@ -87,6 +88,7 @@ registerStrings('en', {
   'par.run': { one: 'Compare {count} record set', other: 'Compare {count} record sets' },
   'par.rerun': 'Compare again',
   'par.stop': 'Stop',
+  'par.switchRunning': 'New name servers on Globalping (the probes it has used stay used)',
   'par.privacy': 'Sends to Globalping only the names and record types asked ({probes} DNS queries) and the name servers’ host names; one DS query of {origin} goes to your DNS-over-HTTPS resolvers. The values of the file, the origin addresses and the names that look internal stay here. Anyone with a measurement ID can read its result for about six months: the answers of your new name servers, which anyone can already ask them for.',
   'par.privacyInternal': 'Sends to Globalping only the names and record types asked ({probes} DNS queries) and the name servers’ host names; one DS query of {origin} goes to your DNS-over-HTTPS resolvers. The values of the file and the origin addresses stay here. The names that look internal are included, because you turned their skip off: they become public with the measurements. Anyone with a measurement ID can read its result for about six months.',
   'par.running': 'Asking the new name servers…',
@@ -260,6 +262,7 @@ registerStrings('tr', {
   'par.run': '{count} kayıt kümesini karşılaştır',
   'par.rerun': 'Yeniden karşılaştır',
   'par.stop': 'Durdur',
+  'par.switchRunning': 'Globalping’de yeni ad sunucuları (kullandığı ölçümler geri gelmez)',
   'par.privacy': 'Globalping’e yalnızca sorulan adlar ve kayıt türleri ({probes} DNS sorgusu) ile ad sunucularının host adları gider; {origin} için bir DS sorgusu DNS-over-HTTPS çözümleyicilerinize gider. Dosyadaki değerler, origin adresleri ve iç ağa ait görünen adlar burada kalır. Ölçüm kimliğini bilen herkes sonucu yaklaşık altı ay okuyabilir: yeni ad sunucularınızın yanıtları, ki bunları herkes zaten onlara sorabilir.',
   'par.privacyInternal': 'Globalping’e yalnızca sorulan adlar ve kayıt türleri ({probes} DNS sorgusu) ile ad sunucularının host adları gider; {origin} için bir DS sorgusu DNS-over-HTTPS çözümleyicilerinize gider. Dosyadaki değerler ve origin adresleri burada kalır. İç ağa ait görünen adlar da gönderilir, çünkü onları atlamayı kapattınız: ölçümlerle birlikte herkese açık olurlar. Ölçüm kimliğini bilen herkes sonucu yaklaşık altı ay okuyabilir.',
   'par.running': 'Yeni ad sunucularına soruluyor…',
@@ -468,6 +471,10 @@ export function stopParity(P) {
   if (P.controller) P.controller.abort();
 }
 
+/** Holders whose comparison runs now: a switch to another workspace names it before it stops it (ui/jobs.js). */
+const runningHolders = new Set();
+registerRunning('par.switchRunning', () => [...runningHolders].some((P) => !!P.controller && !P.dropped));
+
 const ttlText = (v) => (Number.isFinite(v) ? `${formatNumber(v)} s` : t('par.ttlUnknown'));
 const relName = (name, origin) => (name === origin ? '@' : origin && name.endsWith(`.${origin}`) ? name.slice(0, -origin.length - 1) : name);
 
@@ -655,6 +662,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     // Started from this tab's controls (a click or a key): Compare hands focus to Stop and back.
     pendingFocus = box.contains(document.activeElement) ? 'par-run' : null;
     Object.assign(P, { controller: ac, status: 'gate', error: null, done: 0, total: plan.probes });
+    runningHolders.add(P);
     ctx.setBusy(true);
     shown().render();
     try {
@@ -716,6 +724,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
       else Object.assign(P, { status: 'failed', error: err });
     } finally {
       if (P.controller === ac) P.controller = null;
+      if (!P.controller) runningHolders.delete(P);
       ctx.setBusy(false);
       if (!P.dropped) shown().render();
       pendingFocus = null;

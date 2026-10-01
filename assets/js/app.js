@@ -1366,8 +1366,9 @@ async function openWorkspaces() {
 
 /**
  * Work in another workspace. What belongs to this one and would be lost — a long job still
- * running (Subdomains, SSL Targets, Bulk Resolve, a Reverse DNS sweep, a Verify check on
- * Globalping: ui/jobs.js runningWork), which stops, or Servers edits not saved yet (the view's
+ * running (Subdomains, SSL Targets, Bulk Resolve, a Reverse DNS sweep, a Verify check, a
+ * comparison with new name servers or of an old and a new server on Globalping: ui/jobs.js
+ * runningWork), which stops, or Servers edits not saved yet (the view's
  * `unsaved()`, or its draft kept in the session) — the user confirms first.
  * @param {string} id
  * @returns {Promise<boolean>} switched

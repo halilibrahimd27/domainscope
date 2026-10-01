@@ -27,6 +27,7 @@ import {
 } from './components.js';
 import { downloadJson, timestampedName } from './download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from './globalping-gate.js';
+import { registerRunning } from './jobs.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
   checkCompare, runCompare, buildCompareCommand, sideFields, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_SHARED, COMPARE_ISSUES,
@@ -60,6 +61,7 @@ registerStrings('en', {
   'oc.issue.port': 'Not a port: {value}',
   'oc.run': 'Compare ({probes} probes)',
   'oc.stop': 'Stop',
+  'oc.switchRunning': 'Old and new server on Globalping (the probes it has used stay used)',
   'oc.running': 'Asking both servers…',
   'oc.privacy': 'Sends the two addresses, {host} and the path {path} to Globalping: one probe sends one HTTPS GET to each address (User-Agent “globalping probe”), so compare only servers you operate. Anyone with a measurement ID can read the results for about six months: the status, the response headers and the first 10,000 characters of each page.',
   'oc.private': {
@@ -160,6 +162,7 @@ registerStrings('tr', {
   'oc.issue.port': 'Port değil: {value}',
   'oc.run': 'Karşılaştır ({probes} ölçüm)',
   'oc.stop': 'Durdur',
+  'oc.switchRunning': 'Globalping’de eski ve yeni sunucu (kullandığı ölçümler geri gelmez)',
   'oc.running': 'İki sunucuya da soruluyor…',
   'oc.privacy': 'İki adresi, {host} adını ve {path} yolunu Globalping’e gönderir: bir ölçüm noktası her adrese bir HTTPS GET isteği gönderir (User-Agent “globalping probe”); yalnızca yönettiğiniz sunucuları karşılaştırın. Ölçüm kimliğini bilen herkes sonuçları yaklaşık altı ay okuyabilir: durum kodu, yanıt başlıkları ve her sayfanın ilk 10.000 karakteri.',
   'oc.private': {
@@ -276,6 +279,8 @@ state.subscribe(({ key }) => {
   if (S.controller) S.controller.abort();
   S = fresh();
 });
+// A switch to another workspace names a comparison still running before it stops it (ui/jobs.js).
+registerRunning('oc.switchRunning', () => !!S.controller);
 
 /* ------------------------------------------------------------------------ */
 /* Display values                                                           */

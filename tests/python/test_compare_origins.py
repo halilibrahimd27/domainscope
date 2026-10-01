@@ -425,6 +425,7 @@ class CompareUsageTests(unittest.TestCase):
             (['--compare', '192.0.2.1', '192.0.2.2', '-n', NAME, '-p', '443,8443'], 'one port'),
             (['--compare', '192.0.2.1', '192.0.2.2', '-n', NAME, '--path', 'nope'], '--path'),
             (['--compare', '192.0.2.1', '192.0.2.2', '-n', NAME, '--cert', 'x.pem'], '--cert'),
+            (['--compare', '192.0.2.1', '192.0.2.2', '-n', NAME, '--estate'], '--compare does not take --estate'),
         ]
         for args, message in cases:
             code, _, err = run_main(*args)

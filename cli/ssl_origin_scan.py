@@ -7362,7 +7362,8 @@ def _run_compare(args: argparse.Namespace) -> int:
     unsupported = [flag for flag, used in (
         ('-t/--targets', args.targets), ('--exclude', args.exclude), ('--cert', args.cert), ('--csv', args.csv),
         ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
-        ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update)) if used]
+        ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update),
+        ('--estate', args.estate)) if used]
     if unsupported:
         raise UsageError('--compare does not take %s' % ', '.join(unsupported))
     ips = []

@@ -464,8 +464,9 @@ class BundleCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn('Bundle check: 3 files', out)
         self.assertEqual(out.count('private key: RSA 2048'), 1, out)
-        self.assertEqual(out.count('belongs to the certificate'), 1, out)
+        # The checks wrap at the terminal width: a long checkout path (Windows) splits a sentence.
         text = ' '.join(out.split())
+        self.assertEqual(text.count('belongs to the certificate'), 1, out)
         self.assertEqual(text.count('was given twice: read once.'), 2, out)
         self.assertIn('bundle_leaf.key was given twice: read once.', text)
 

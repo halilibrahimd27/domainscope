@@ -15,7 +15,8 @@
  * Workspace:
  *   { "name": "Acme", "default": false, "exportedAt": "2026-09-28T09:30:00.000Z", "app": "DomainScope 1.0.0",
  *     "parts": { "inventory": { "text", "updatedAt" }, "learned": { "v": 1, "seq", "labels" }, "wordlist": "…",
- *                "expectedCas": ["…"], "notes": "…", "recent": [{ "value", "at" }] } }
+ *                "expectedCas": ["…"], "notes": "…", "recent": [{ "value", "at" }],
+ *                "origins": { "v": 1, "remember", "entries": [{ "name", "ip", "port", "source", "firstSeen", "lastConfirmed", "server", "stale" }] } } }
  *   An empty part is left out. `default`: exported from the Default workspace.
  *
  * DOM-free; the password is never stored or kept (lib/cryptobox.js).

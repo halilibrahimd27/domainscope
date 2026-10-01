@@ -1,9 +1,9 @@
 /**
  * lib/workspace.js — customer workspaces: named, separate sets of what belongs to one customer
  * (the server inventory, the learned names, the custom wordlist, the expected CAs, free-text
- * notes, the domains worked on and the domain policy of the portfolio audit, lib/policy.js), so a
- * DUPLICATE_IP never mixes two customers' servers and a label learned from one customer's scans is
- * never tried under another customer's domains.
+ * notes, the domains worked on, the domain policy of the portfolio audit (lib/policy.js) and the
+ * origin map of its proxied names), so a DUPLICATE_IP never mixes two customers' servers and a label
+ * learned from one customer's scans is never tried under another customer's domains.
  * Settings about the tool itself (theme, language, resolvers, parallelism) stay global (state.js).
  *
  * DOM-free and storage-injected. The persistence is a small async key-value backend
@@ -38,6 +38,7 @@
  */
 
 import { isStorableLabel } from './learned.js';
+import { sanitizeOriginMap } from './originmap.js';
 import { parseTarget } from './session.js';
 import { randomLabel } from './util.js';
 
@@ -45,7 +46,7 @@ import { randomLabel } from './util.js';
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -268,13 +269,14 @@ export function sanitizePart(part, value) {
     // The portfolio's policy as the editor holds it: JSON text, read (and checked) by lib/policy.js
     // where it is used, so a draft with a mistake is kept as typed.
     case 'policy': return typeof value === 'string' ? cut(value.replace(/\r\n?/g, '\n').replace(TEXT_JUNK_RE, ''), WORKSPACE_LIMITS.policy) : '';
+    case 'origins': return sanitizeOriginMap(value);
     default: throw new WorkspaceError('part', `unknown workspace part: ${part}`);
   }
 }
 
 /** Every part of a workspace, empty. */
 export function emptyWorkspaceData() {
-  return { inventory: null, learned: null, wordlist: '', expectedCas: [], notes: '', recent: [], policy: '' };
+  return { inventory: null, learned: null, wordlist: '', expectedCas: [], notes: '', recent: [], policy: '', origins: null };
 }
 
 /**

@@ -27,7 +27,17 @@ const DATA = {
   notes: 'Renewal every March.\nCall the NOC first.',
   recent: [{ value: 'example.com', at: '2026-09-28T09:00:00Z' }, { value: 'www.example.net', at: null }],
   // the portfolio audit's policy (lib/policy.js), as its editor holds it
-  policy: '{ "expiryDays": ">= 30", "transferLock": true }'
+  policy: '{ "expiryDays": ">= 30", "transferLock": true }',
+  // The origin map (lib/originmap.js): remembering on, one active and one stale entry.
+  origins: {
+    v: 1,
+    remember: true,
+    entries: [
+      { name: 'shop.example.com', ip: '203.0.113.10', port: 443, source: 'cli-json', firstSeen: '2026-09-20T08:00:00.000Z', lastConfirmed: '2026-09-27T08:00:00.000Z', server: 'web03', stale: null },
+      { name: 'shop.example.com', ip: '192.0.2.40', port: 8443, source: 'zone', firstSeen: '2026-09-01T08:00:00.000Z', lastConfirmed: '2026-09-01T08:00:00.000Z', server: null,
+        stale: { reason: 'cli-elsewhere', at: '2026-09-27T08:00:00.000Z', ip: '203.0.113.10', port: 443 } }
+    ]
+  }
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -42,7 +52,8 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins']);
+    assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');
     assert.ok(text.endsWith('\n') && text.includes('\n  "format"'), 'indented');
   });
 

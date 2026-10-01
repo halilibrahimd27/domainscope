@@ -722,6 +722,11 @@ async function main() {
       assert(/from another issuer than the old one/.test(await text(page, '.oc-row[data-field="certTrusted"]')), 'the note says why');
       const results = await text(page, '.oc-results');
       assert(/answers differently/.test(results) && !/Both servers serve a certificate/.test(results), 'the verdict, no shared warning');
+      await page.setViewport({ width: 320, height: 700, mobile: true });
+      await assertNoHorizontalScroll(page, 'the reasons at 320 px');
+      assert(await page.evaluate(() => [...document.querySelectorAll('.oc-table-wrap')].every((w) => w.scrollWidth <= w.clientWidth + 1)),
+        'the reasons wrap inside the table at 320 px');
+      await page.setViewport({ width: 1440, height: 900 });
       await setLangUi(page, 'tr');
       await page.waitFor(() => /eskisinden farklı bir kuruluş vermiş/.test(document.querySelector('.oc-row[data-field="certTrusted"]')?.textContent || ''), { message: 'TR note' });
       await setLangUi(page, 'en');

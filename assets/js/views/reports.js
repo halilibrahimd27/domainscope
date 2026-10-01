@@ -1054,7 +1054,8 @@ export function mount(container, ctx) {
       dataset: { action: 'rpt-choose', shortcut: 'submit' }, onClick: () => drop.open()
     })];
     if (drop.openFolder) actions.push(Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', onClick: () => drop.openFolder() }));
-    if (hasReports()) {
+    // Files that were no report are listed too: Forget drops that list as well.
+    if (hasReports() || S.problems.length) {
       actions.push(Button({ label: t('rpt.forget'), icon: 'trash', size: 'sm', variant: 'ghost', disabled: busy, dataset: { action: 'rpt-forget' }, onClick: forget }));
     }
     const body = h('div', { class: 'stack-sm' }, drop.el);

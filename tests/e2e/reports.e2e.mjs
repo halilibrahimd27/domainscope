@@ -20,7 +20,8 @@
  * policies, failure types with advice and links to Domain Health, DNS Lookup and the Certificate
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
  * back (no new query); Forget; 150 daily reports in one drop (past the 100 other drop zones take) with
- * a zip whose entries share one stream, refused at once; files dropped while reading wait their turn,
+ * a zip whose entries share one stream, refused at once; a zip of 205 files that are no report: the
+ * first 200 listed, "+5 more", and Forget offered for them alone; files dropped while reading wait their turn,
  * the bar counts them, and Stop (Esc) before a report was read keeps nothing; a zipped mailbox
  * folder of 300 reports counted report by report and stopped in its middle, the reports read before
  * the Stop kept and counted in its toast; an SPF record with a
@@ -454,6 +455,31 @@ async function main() {
         assert(/Reports for example\.com/.test(await text(page, '.rpt-results-title')), 'results title');
         await page.click('[data-action="rpt-forget"]');
         await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    await run.step('only files that are no report: the first 200 listed, the rest counted, and Forget drops them', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-junk-'));
+      const before = await counts(page);
+      try {
+        const zip = path.join(dir, 'notes.zip');
+        await writeFile(zip, storedZip(Array.from({ length: 205 }, (_, i) => [`notes/n${i}.txt`, `note ${i}`])));
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+        await page.setFileInput('.rpt-load .filedrop-input', [zip]);
+        await page.waitFor(() => /could not be used/.test(document.querySelector('[data-role="rpt-files"]')?.textContent || ''), { message: 'read' });
+        assertEqual(await text(page, '[data-role="rpt-files"]'), '1 file · 0 DMARC reports · 0 TLS reports · 205 could not be used', 'files line');
+        assertEqual(await text(page, '.rpt-problems summary'), 'What could not be used (205)', 'the list counts them all');
+        assertEqual(await page.evaluate(() => document.querySelectorAll('.rpt-problem-list li').length), 200, 'the first 200 listed');
+        assertEqual(await text(page, '.rpt-problem-list li:last-child .rpt-problem-path'), 'notes.zip › notes/n199.txt', 'in their order');
+        assertEqual(await text(page, '.rpt-problem-more'), '+5 more', 'the rest counted');
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty')), 'no results to show');
+        await page.click('[data-action="rpt-forget"]');
+        await page.waitFor(() => !document.querySelector('[data-role="rpt-files"]'), { message: 'forgotten' });
+        assertEqual(await page.evaluate(() => document.querySelectorAll('.rpt-problem-list li, [data-action="rpt-forget"]').length), 0, 'the list and Forget gone');
+        assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus on the drop zone');
+        assertEqual(await counts(page), before, 'nothing sent');
       } finally {
         await rm(dir, { recursive: true, force: true }).catch(() => {});
       }

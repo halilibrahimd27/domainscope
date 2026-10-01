@@ -51,7 +51,7 @@ describe('API surface and closed code sets', () => {
       'maxRecords', 'maxTokensPerEntry', 'maxYamlDepth']);
     assert.equal(ZONE_LIMITS.maxRecords, 20000);
     assert.equal(ZONE_LIMITS.maxChars, 5000000);
-    assert.deepEqual(ZONE_FORMATS, ['bind', 'cloudflare-api', 'route53', 'octodns', 'plesk-info']);
+    assert.deepEqual(ZONE_FORMATS, ['bind', 'cloudflare-api', 'route53', 'octodns', 'plesk-info', 'desec-api', 'digitalocean-api']);
     assert.deepEqual(ZONE_DIALECTS, ['generic', 'cloudflare', 'cli53', 'godaddy', 'cpanel', 'directadmin']);
     assert.deepEqual(ORIGIN_SOURCES, ['user', '$ORIGIN', 'header', 'soa', 'filename', 'records']);
     assert.ok(NOT_A_ZONE_HINTS.includes('pem') && NOT_A_ZONE_HINTS.includes('dns-csv'));
@@ -926,6 +926,110 @@ describe('Route 53 JSON and cli53', () => {
     ];
     for (const [t, p] of cases) assert.equal(awsAliasProvider(t, { origin: 'example.com' }), p, t);
     assert.equal(awsAliasProvider('x.example.net', { self: true }), 'same-zone');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+describe('deSEC API JSON', () => {
+  test('fixture: the zone name from `domain`, presentation records, multi-string TXT, wildcard, delegation', () => {
+    const z = parseFixture(fx('desec-api'));
+    assert.deepEqual([z.format, z.origin, z.originSource, z.originConfidence, z.partial], ['desec-api', 'example.com', 'header', 'high', false]);
+    assert.deepEqual(find(z, 'example.com', 'MX').data, { preference: 10, exchange: 'mx1.example.com' });
+    assert.deepEqual(find(z, '_sip._tcp.example.com').data, { priority: 10, weight: 60, port: 5060, target: 'sip.example.com' });
+    assert.deepEqual(find(z, 'sel1._domainkey.example.com').data.map((s) => s.length), [250, 146]);
+    assert.equal(find(z, '*.example.com').ttl, 300);
+    assert.deepEqual(findAll(z, 'dev.example.com', 'NS').map((r) => r.data), ['ns1.example.net', 'ns2.example.net']);
+    assert.deepEqual(z.warnings.map((w) => w.code), ['ORIGIN_INFERRED']);
+  });
+
+  test('the same zone as BIND text gives the same records', () => {
+    const z = parseFixture(fx('desec-api'));
+    const again = P(toBindText(z));
+    assert.deepEqual(again.records.map((r) => `${r.name} ${r.type} ${r.text}`), z.records.map((r) => `${r.name} ${r.type} ${r.text}`));
+  });
+
+  test('read type by type: deSEC\'s "Pagination required … (N total)" answer makes a shorter listing partial', () => {
+    const z = parseFixture(fx('desec-api-bytype'));
+    assert.equal(z.partial, true);
+    assert.deepEqual(z.warnings.find((w) => w.code === 'PARTIAL_EXPORT').params, { have: 6, total: 8, provider: 'desec' });
+    // All of them read: complete, and the pagination answer is no page of its own.
+    const sets = JSON.parse(fixtureText(fx('desec-api-bytype')).split('\n')[0]);
+    const extra = [{ domain: 'example.com', subname: 'www', name: 'www.example.com.', type: 'CNAME', ttl: 3600, records: ['example.com.'] },
+      { domain: 'example.com', subname: '', name: 'example.com.', type: 'AAAA', ttl: 3600, records: ['2001:db8::10'] }];
+    const full = P(`${JSON.stringify(sets)}\n${JSON.stringify(extra)}\n{"detail":"Pagination required. You can query up to 500 items at a time (8 total)."}`);
+    assert.equal(full.partial, false);
+    assert.deepEqual(full.warnings.find((w) => w.code === 'JSON_PAGES_MERGED').params, { pages: 2, duplicates: 0 });
+    assert.ok(!full.warnings.some((w) => w.code === 'PARTIAL_EXPORT'));
+  });
+
+  test('an RRset read twice counts once; deSEC errors are API_ERROR with the provider; one RRset object', () => {
+    const set = { domain: 'example.com', subname: 'a', name: 'a.example.com.', type: 'A', ttl: 60, records: ['192.0.2.1'] };
+    const twice = P(`${JSON.stringify([set])}\n${JSON.stringify([set])}`);
+    assert.equal(twice.records.length, 1);
+    assert.deepEqual(twice.warnings.find((w) => w.code === 'JSON_PAGES_MERGED').params, { pages: 2, duplicates: 1 });
+    const err = P('{"detail":"Invalid token."}');
+    assert.deepEqual([err.format, err.fatal.code, err.fatal.params], ['desec-api', 'API_ERROR', { message: 'Invalid token.', code: null, provider: 'desec' }]);
+    const one = P(JSON.stringify(set));
+    assert.deepEqual([one.format, one.records[0].name, one.records[0].data], ['desec-api', 'a.example.com', '192.0.2.1']);
+    assert.equal(P('[]', { format: 'desec-api' }).fatal.code, 'EMPTY');
+  });
+
+  test('broken RRsets are skipped with BAD_RECORD / BAD_RDATA, never thrown', () => {
+    const z = P(JSON.stringify([
+      { domain: 'example.com', subname: '', name: 'example.com.', type: 'A', ttl: 60, records: ['192.0.2.1'] },
+      { domain: 'example.com', subname: 'x', name: 'x.example.com.', type: 'A', ttl: 60, records: [] },
+      { domain: 'example.com', subname: 'y', name: 'y.example.com.', type: 'TXT', ttl: 60, records: ['"open'] },
+      { domain: 'example.com', subname: 'z', name: 'z.example.com.', type: 'MX', ttl: 60, records: [42] }
+    ]));
+    assert.deepEqual(z.records.map((r) => r.name), ['example.com', 'y.example.com']);
+    assert.deepEqual(codes(z).filter((c) => c !== 'ORIGIN_INFERRED').sort(), ['BAD_RDATA', 'BAD_RECORD', 'BAD_RECORD']);
+  });
+});
+
+describe('DigitalOcean API JSON', () => {
+  test('pages merged by id: @ is the apex, host names are absolute without their dot, MX / SRV / CAA fields, SOA skipped', () => {
+    const z = parseFixture(fx('digitalocean-api-pages'));
+    assert.deepEqual([z.format, z.origin, z.originSource, z.partial, z.stats.skipped], ['digitalocean-api', 'example.com', 'user', false, 1]);
+    assert.equal(find(z, 'www.example.com').data, 'example.com');
+    assert.equal(find(z, 'blog.example.com').data, 'blog.example.net');
+    assert.deepEqual(findAll(z, 'example.com', 'MX').map((r) => r.data), [{ preference: 10, exchange: 'mx1.example.com' }, { preference: 20, exchange: 'example.com' }]);
+    assert.deepEqual(find(z, '_sip._tcp.example.com').data, { priority: 10, weight: 60, port: 5060, target: 'sip.example.com' });
+    assert.deepEqual(findAll(z, 'example.com', 'CAA').map((r) => r.text), ['0 issue "letsencrypt.org"', '0 iodef "mailto:hostmaster@example.com"']);
+    assert.deepEqual(find(z, 'example.com', 'TXT').data, ['v=spf1 mx include:_spf.example.net ~all']);
+    assert.deepEqual(findAll(z, 'example.com', 'NS').map((r) => r.data), ['ns1.digitalocean.com', 'ns2.digitalocean.com', 'ns3.digitalocean.com']);
+    assert.ok(!z.records.some((r) => r.type === 'SOA'));
+  });
+
+  test('one page of two: partial against meta.total; the zone name comes from the user or the file name', () => {
+    const page1 = parseFixture(fx('digitalocean-api-page1'));
+    assert.deepEqual(page1.warnings.find((w) => w.code === 'PARTIAL_EXPORT').params, { have: 10, total: 17, provider: 'digitalocean' });
+    const none = parseFixture(fx('digitalocean-api-no-origin'));
+    assert.deepEqual([none.format, none.fatal.code], ['digitalocean-api', 'ORIGIN_REQUIRED']);
+    const named = P(fixtureText(fx('digitalocean-api-no-origin')), { filename: 'example.com.json' });
+    assert.deepEqual([named.origin, named.originSource, named.originConfidence], ['example.com', 'filename', 'low']);
+  });
+
+  test('a long TXT is split at 255 bytes; errors are API_ERROR with the provider and its id', () => {
+    const rec = (id, type, name, data, extra = {}) => ({ id, type, name, data, priority: null, port: null, ttl: 300, weight: null, flags: null, tag: null, ...extra });
+    const z = P(JSON.stringify({ domain_records: [rec(1, 'TXT', 'k', 'p'.repeat(300))], meta: { total: 1 } }), { origin: 'example.com' });
+    assert.deepEqual(z.records[0].data.map((s) => s.length), [255, 45]);
+    const err = P('{"id":"Unauthorized","message":"Unable to authenticate you"}');
+    assert.deepEqual([err.format, err.fatal.code, err.fatal.params], ['digitalocean-api', 'API_ERROR', { message: 'Unable to authenticate you', code: 'Unauthorized', provider: 'digitalocean' }]);
+    const single = P(JSON.stringify({ domain_record: rec(7, 'A', 'www', '192.0.2.7') }), { origin: 'example.com' });
+    assert.deepEqual([single.format, single.records[0].name], ['digitalocean-api', 'www.example.com']);
+  });
+
+  test('detection keeps Cloudflare, Route 53, deSEC and DigitalOcean apart', () => {
+    const cf = [{ id: 'a', name: 'example.com', type: 'A', content: '192.0.2.1', ttl: 1 }];
+    const desec = [{ domain: 'example.com', subname: '', name: 'example.com.', type: 'A', ttl: 60, records: ['192.0.2.1'] }];
+    const doList = [{ id: 1, type: 'A', name: '@', data: '192.0.2.1', priority: null, port: null, ttl: 60, weight: null, flags: null, tag: null }];
+    assert.equal(detectZoneFormat(JSON.stringify(cf)).format, 'cloudflare-api');
+    assert.equal(detectZoneFormat(JSON.stringify(desec)).format, 'desec-api');
+    assert.equal(detectZoneFormat(JSON.stringify(doList)).format, 'digitalocean-api');
+    assert.equal(detectZoneFormat(JSON.stringify({ domain_records: doList, meta: { total: 1 } })).format, 'digitalocean-api');
+    assert.equal(detectZoneFormat(`${JSON.stringify(desec)}\n${JSON.stringify(doList)}`).fatal.code, 'UNSUPPORTED_JSON');
+    assert.equal(detectZoneFormat('{"detail":"Not found.","extra":1}').fatal.code, 'UNSUPPORTED_JSON');
   });
 });
 

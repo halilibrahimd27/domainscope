@@ -100,8 +100,13 @@ export const ZONE_LIMITS = Object.freeze({
   maxCommentChars: 500
 });
 
-/** Input formats. */
-export const ZONE_FORMATS = Object.freeze(['bind', 'cloudflare-api', 'route53', 'octodns', 'plesk-info']);
+/**
+ * Input formats. `desec-api` / `digitalocean-api`: the record listings of those providers' APIs, as
+ * lib/zonefetch.js reads them with the user's token (or as `curl` saved them).
+ */
+export const ZONE_FORMATS = Object.freeze(['bind', 'cloudflare-api', 'route53', 'octodns', 'plesk-info', 'desec-api', 'digitalocean-api']);
+/** The JSON formats (parsed as JSON documents, one or several pages). */
+const JSON_FORMATS = new Set(['cloudflare-api', 'route53', 'desec-api', 'digitalocean-api']);
 
 /** BIND dialects. */
 export const ZONE_DIALECTS = Object.freeze(['generic', 'cloudflare', 'cli53', 'godaddy', 'cpanel', 'directadmin']);
@@ -870,7 +875,19 @@ function firstItem(v) {
   return Array.isArray(v) && v.length && isPlainMap(v[0]) ? v[0] : null;
 }
 
-/** Kind of one parsed JSON document: 'route53' | 'cloudflare-api' | 'cf-error' | 'empty' | null. */
+/** A deSEC RRset (desec.io API v1 `rrsets/`): `{ domain, subname, name, type, ttl, records[] }`. */
+const isDesecRrset = (o) => isPlainMap(o) && Array.isArray(own(o, 'records')) && typeof own(o, 'type') === 'string'
+  && typeof own(o, 'subname') === 'string';
+/** A DigitalOcean domain record (api.digitalocean.com v2): `{ id, type, name, data, priority, port, ttl, weight, flags, tag }`. */
+const isDoRecord = (o) => isPlainMap(o) && typeof own(o, 'id') === 'number' && typeof own(o, 'type') === 'string'
+  && typeof own(o, 'name') === 'string' && typeof own(o, 'data') === 'string' && own(o, 'content') === undefined;
+/** deSEC's answer to a listing of more than 500 RRsets without a cursor; the total is in its text. */
+const DESEC_PAGINATION_RE = /^Pagination required\b/;
+
+/**
+ * Kind of one parsed JSON document: 'route53' | 'cloudflare-api' | 'cf-error' | 'desec-api' |
+ * 'desec-pagination' | 'desec-error' | 'digitalocean-api' | 'do-error' | 'empty' | null.
+ */
 function jsonKind(v) {
   if (Array.isArray(v)) {
     if (!v.length) return 'empty';
@@ -878,15 +895,32 @@ function jsonKind(v) {
     if (!f) return null;
     if (own(f, 'ResourceRecords') !== undefined || own(f, 'AliasTarget') !== undefined) return 'route53';
     if (typeof own(f, 'type') === 'string' && own(f, 'content') !== undefined) return 'cloudflare-api';
+    if (isDesecRrset(f)) return 'desec-api';
+    if (isDoRecord(f)) return 'digitalocean-api';
     return null;
   }
   if (!isPlainMap(v)) return null;
   if (Array.isArray(own(v, 'ResourceRecordSets'))) return 'route53';
   if (Array.isArray(own(v, 'result'))) return 'cloudflare-api';
   if (own(v, 'success') === false && Array.isArray(own(v, 'errors'))) return 'cf-error';
+  if (Array.isArray(own(v, 'domain_records')) || isDoRecord(own(v, 'domain_record'))) return 'digitalocean-api';
   if (typeof own(v, 'type') === 'string' && typeof own(v, 'name') === 'string' && own(v, 'content') !== undefined) return 'cloudflare-api';
+  if (isDesecRrset(v)) return 'desec-api';
+  const keys = Object.keys(v);
+  const detail = own(v, 'detail');
+  if (typeof detail === 'string' && keys.length === 1) return DESEC_PAGINATION_RE.test(detail) ? 'desec-pagination' : 'desec-error';
+  if (typeof own(v, 'id') === 'string' && typeof own(v, 'message') === 'string' && keys.length <= 3) return 'do-error';
   return null;
 }
+
+/** Error and pagination documents count as the format of the listing they answer. */
+const KIND_FORMAT = Object.freeze({
+  'cf-error': 'cloudflare-api', 'desec-pagination': 'desec-api', 'desec-error': 'desec-api', 'do-error': 'digitalocean-api'
+});
+/** The marker a JSON format shows (Zone.markers). */
+const JSON_MARKER = Object.freeze({
+  route53: 'ResourceRecordSets', 'cloudflare-api': 'result[]', 'desec-api': 'rrsets[]', 'digitalocean-api': 'domain_records[]'
+});
 
 const TYPE_TOKEN_RE = /^(?:A|AAAA|CNAME|MX|NS|TXT|SOA|SRV|CAA|PTR)$/;
 
@@ -959,23 +993,22 @@ function detectInternal(text, filename, maxJsonDocs = ZONE_LIMITS.maxJsonDocs) {
     }
     res.docs = split.docs;
     res.docsTruncated = split.truncated;
-    const kinds = new Set(split.docs.map((d) => jsonKind(d.value)));
+    const kinds = new Set(split.docs.map((d) => {
+      const k = jsonKind(d.value);
+      return k !== null && Object.hasOwn(KIND_FORMAT, k) ? KIND_FORMAT[k] : k;
+    }));
     kinds.delete('empty');
-    if (kinds.has('cf-error')) {
-      kinds.delete('cf-error');
-      kinds.add('cloudflare-api');
-    }
     if (kinds.size === 0 && split.docs.length) {
       res.fatal = fatalIssue('EMPTY', {}, 'JSON without records');
       return res;
     }
     if (kinds.size !== 1 || kinds.has(null)) {
-      res.fatal = fatalIssue('UNSUPPORTED_JSON', {}, 'JSON is neither a Cloudflare API nor a Route 53 export');
+      res.fatal = fatalIssue('UNSUPPORTED_JSON', {}, 'JSON is not a Cloudflare, Route 53, deSEC or DigitalOcean record listing');
       return res;
     }
     res.format = [...kinds][0];
     res.confidence = 'high';
-    res.markers.push(res.format === 'route53' ? 'ResourceRecordSets' : 'result[]');
+    res.markers.push(JSON_MARKER[res.format]);
     if (split.docs.length > 1) res.markers.push('json-pages');
     return res;
   }
@@ -2881,6 +2914,251 @@ function parseRoute53(docs, zone, b, opts) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* deSEC API JSON (desec.io API v1: GET /api/v1/domains/<zone>/rrsets/)     */
+/* ------------------------------------------------------------------------ */
+
+/** The fatal API_ERROR of a provider's error document (its text made safe to show). */
+function apiErrorFatal(provider, message, code = null) {
+  return { fatal: fatalIssue('API_ERROR', { message: safeText(message, 200), code, provider }, `the ${provider} API answered with an error`) };
+}
+
+/**
+ * deSEC RRsets: one or several arrays (a listing, or the pages of a listing read type by type),
+ * single RRset objects, and deSEC's "Pagination required … (N total)" answer, which says how many
+ * RRsets the zone has: fewer read → PARTIAL_EXPORT. Every record is RFC 1035 presentation text with
+ * absolute names (deSEC requires the trailing dot); the zone name is the RRsets' `domain`.
+ */
+function parseDesecApi(docs, zone, b, opts) {
+  const { issues } = b;
+  const sets = [];
+  const seen = new Set();
+  let total = null;
+  let lists = 0;
+  let duplicates = 0;
+  let zoneName = null;
+  for (const d of docs) {
+    const v = d.value;
+    const kind = jsonKind(v);
+    if (kind === 'desec-error') return apiErrorFatal('desec', own(v, 'detail'));
+    if (kind === 'desec-pagination') {
+      const m = /\((\d+) total\)/.exec(own(v, 'detail'));
+      if (m) total = Math.max(total ?? 0, Number(m[1]));
+      continue;
+    }
+    const list = Array.isArray(v) ? v : [v];
+    lists++;
+    for (const set of list) {
+      if (isDesecRrset(set)) {
+        const key = `${own(set, 'subname')}|${own(set, 'type')}`;
+        if (seen.has(key)) {
+          duplicates++;
+          continue;
+        }
+        seen.add(key);
+        if (zoneName === null && typeof own(set, 'domain') === 'string') zoneName = own(set, 'domain');
+      }
+      sets.push(set);
+    }
+  }
+  if (lists > 1 || duplicates) issues.add('JSON_PAGES_MERGED', 0, { pages: lists, duplicates }, `${lists} pasted page(s) merged`);
+  if (!sets.length) return { fatal: fatalIssue('EMPTY', {}, 'no RRsets in the listing') };
+  if (total !== null && total > sets.length) {
+    zone.partial = true;
+    issues.add('PARTIAL_EXPORT', 0, { have: sets.length, total, provider: 'desec' }, `only ${sets.length} of ${total} RRsets were read`);
+  }
+  const owners = [];
+  const ns = [];
+  for (const set of sets) {
+    const r = typeof own(set, 'name') === 'string' ? parseName(own(set, 'name'), { absolute: true }) : null;
+    if (!r || !r.ok) continue;
+    owners.push(r.name);
+    if (own(set, 'type') === 'NS') ns.push(r.name);
+  }
+  setJsonOrigin(zone, issues, opts, { explicit: zoneName, explicitSource: 'header', soa: null, ns, owners });
+  b.entries = sets.length;
+  const ctx = { origin: null, base: 10, absolute: true };
+  for (let idx = 0; idx < sets.length; idx++) {
+    const set = sets[idx];
+    const line = idx + 1;
+    if (b.full(line)) break;
+    if (!isPlainMap(set)) {
+      badRecord(b, line, 'not-an-object');
+      continue;
+    }
+    const nameRaw = own(set, 'name');
+    const typeRaw = own(set, 'type');
+    if (typeof nameRaw !== 'string' || typeof typeRaw !== 'string') {
+      badRecord(b, line, 'name-or-type');
+      continue;
+    }
+    const type = typeOf(typeRaw);
+    if (!type) {
+      badRecord(b, line, 'type');
+      continue;
+    }
+    const nr = parseName(nameRaw, { absolute: true });
+    if (!nr.ok) {
+      issues.add('BAD_NAME', line, { name: safeText(nameRaw, 80), reason: nr.reason }, `invalid name (${nr.reason})`, { type });
+      b.skipped++;
+      continue;
+    }
+    const values = own(set, 'records');
+    if (!Array.isArray(values) || !values.length) {
+      badRecord(b, line, 'no-values');
+      continue;
+    }
+    for (const value of values) {
+      if (b.full(line)) break;
+      if (typeof value !== 'string') {
+        badRecord(b, line, 'value');
+        continue;
+      }
+      const rec = b.make(nr.name, type, line);
+      jsonTtl(rec, own(set, 'ttl'), b, line);
+      const toks = splitValueTokens(value);
+      if (toks === null) {
+        rec.invalid = true;
+        rec.text = safeText(value, 2000);
+        issues.add('BAD_RDATA', line, { type, reason: 'unterminated-quote' }, 'unterminated quote', { name: rec.name, type });
+      } else {
+        b.fillRdata(rec, toks, ctx, line);
+      }
+      b.push(rec);
+    }
+  }
+  return { fatal: null };
+}
+
+/* ------------------------------------------------------------------------ */
+/* DigitalOcean API JSON (api.digitalocean.com: GET /v2/domains/<zone>/records) */
+/* ------------------------------------------------------------------------ */
+
+/** Record types whose `data` is a host name: '@' for the apex, else the name without its trailing dot. */
+const DO_NAME_DATA = new Set(['CNAME', 'NS', 'MX', 'SRV', 'PTR']);
+
+/**
+ * DigitalOcean domain records: `{ domain_records: [...], meta: { total } }` pages (or a bare array,
+ * or one `{ domain_record }`), merged by id; fewer records than `meta.total` → PARTIAL_EXPORT.
+ * Names are relative to the zone ('@' = the apex) and the listing never names the zone, so the
+ * origin comes from the user, else the file name (ORIGIN_REQUIRED otherwise). Host-name data is
+ * absolute without its trailing dot ('@' = the apex); MX / SRV / CAA keep their numbers and tag in
+ * fields of their own; TXT data is the raw text. DigitalOcean lists the zone's SOA as a record whose
+ * data is only a TTL: it is skipped.
+ */
+function parseDigitalOceanApi(docs, zone, b, opts) {
+  const { issues } = b;
+  const items = [];
+  const seen = new Set();
+  let total = null;
+  let pages = 0;
+  let duplicates = 0;
+  for (const d of docs) {
+    const v = d.value;
+    const kind = jsonKind(v);
+    if (kind === 'do-error') return apiErrorFatal('digitalocean', own(v, 'message'), safeText(own(v, 'id'), 60));
+    pages++;
+    let list;
+    if (Array.isArray(v)) list = v;
+    else if (Array.isArray(own(v, 'domain_records'))) list = own(v, 'domain_records');
+    else list = [own(v, 'domain_record')];
+    const tc = own(own(v, 'meta'), 'total');
+    if (Number.isInteger(tc) && tc >= 0) total = Math.max(total ?? 0, tc);
+    for (const item of list) {
+      const id = own(item, 'id');
+      if (typeof id === 'number') {
+        if (seen.has(id)) {
+          duplicates++;
+          continue;
+        }
+        seen.add(id);
+      }
+      items.push(item);
+    }
+  }
+  if (pages > 1 || duplicates) issues.add('JSON_PAGES_MERGED', 0, { pages, duplicates }, `${pages} pasted page(s) merged`);
+  if (!items.length) return { fatal: fatalIssue('EMPTY', {}, 'no DNS records in the response') };
+  if (total !== null && total > items.length) {
+    zone.partial = true;
+    issues.add('PARTIAL_EXPORT', 0, { have: items.length, total, provider: 'digitalocean' }, `only ${items.length} of ${total} records were read`);
+  }
+  const fromFile = inferOriginFromFilename(opts.filename);
+  if (opts.userOrigin) {
+    zone.origin = opts.userOrigin;
+    zone.originSource = 'user';
+    zone.originConfidence = 'high';
+  } else if (fromFile) {
+    zone.origin = fromFile;
+    zone.originSource = 'filename';
+    zone.originConfidence = 'low';
+    issues.add('ORIGIN_INFERRED', 0, { origin: fromFile, source: 'filename' }, `origin ${fromFile} from the file name`);
+  } else {
+    return { fatal: fatalIssue('ORIGIN_REQUIRED', { relative: items.length }, 'DigitalOcean names are relative to a zone the listing does not name') };
+  }
+  b.entries = items.length;
+  const origin = zone.origin;
+  /** A host-name field: '@' (or nothing) = the apex; a name without a trailing dot is absolute. */
+  const host = (s) => ({ t: s === '@' || s === '' ? fqdn(origin) : s.endsWith('.') ? s : `${s}.`, q: false });
+  const num = (v) => ({ t: String(v ?? ''), q: false });
+  const ctx = { origin, base: 10, absolute: false };
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx];
+    const line = idx + 1;
+    if (b.full(line)) break;
+    if (!isPlainMap(item)) {
+      badRecord(b, line, 'not-an-object');
+      continue;
+    }
+    const nameRaw = own(item, 'name');
+    const typeRaw = own(item, 'type');
+    const data = own(item, 'data');
+    if (typeof nameRaw !== 'string' || typeof typeRaw !== 'string') {
+      badRecord(b, line, 'name-or-type');
+      continue;
+    }
+    const type = typeOf(typeRaw);
+    if (!type) {
+      badRecord(b, line, 'type');
+      continue;
+    }
+    if (type === 'SOA') {
+      b.skipped++;
+      continue;
+    }
+    const nr = parseName(nameRaw === '' ? '@' : nameRaw, { origin });
+    if (!nr.ok) {
+      issues.add('BAD_NAME', line, { name: safeText(nameRaw, 80), reason: nr.reason }, `invalid name (${nr.reason})`, { type });
+      b.skipped++;
+      continue;
+    }
+    if (typeof data !== 'string') {
+      badRecord(b, line, 'value');
+      continue;
+    }
+    const rec = b.make(nr.name, type, line);
+    jsonTtl(rec, own(item, 'ttl'), b, line);
+    if (type === 'TXT' || type === 'SPF') {
+      b.fillTxt(rec, split255(utf8Encoder.encode(data)));
+    } else {
+      let toks;
+      if (type === 'MX') toks = [num(own(item, 'priority')), host(data)];
+      else if (type === 'SRV') toks = [num(own(item, 'priority')), num(own(item, 'weight')), num(own(item, 'port')), host(data)];
+      else if (type === 'CAA') toks = [num(own(item, 'flags') ?? 0), { t: String(own(item, 'tag') ?? ''), q: false }, rawToken(data)];
+      else if (DO_NAME_DATA.has(type)) toks = [host(data)];
+      else toks = splitValueTokens(data);
+      if (toks === null) {
+        rec.invalid = true;
+        rec.text = safeText(data, 2000);
+        issues.add('BAD_RDATA', line, { type, reason: 'unterminated-quote' }, 'unterminated quote', { name: rec.name, type });
+      } else {
+        b.fillRdata(rec, toks, ctx, line);
+      }
+    }
+    b.push(rec);
+  }
+  return { fatal: null };
+}
+
+/* ------------------------------------------------------------------------ */
 /* YAML subset (octoDNS)                                                    */
 /* ------------------------------------------------------------------------ */
 
@@ -3515,7 +3793,7 @@ function parseZoneInner(input, opts) {
   if (opts.format !== 'auto' && ZONE_FORMATS.includes(opts.format)) {
     det = detectInternal(text, filename, L.maxJsonDocs);
     if (det.fatal && det.fatal.code === 'EMPTY') return failZone(zone, det.fatal);
-    if (opts.format === 'cloudflare-api' || opts.format === 'route53') {
+    if (JSON_FORMATS.has(opts.format)) {
       if (!det.docs) {
         const split = splitJsonDocuments(text, L.maxJsonDocs);
         if (split.error) return failZone(zone, fatalIssue('INVALID_JSON', { position: split.error.position, reason: split.error.reason }, 'invalid JSON'));
@@ -3550,6 +3828,9 @@ function parseZoneInner(input, opts) {
   } else if (zone.format === 'route53') {
     if (det.docsTruncated) issues.add('RECORDS_TRUNCATED', 0, { max: L.maxJsonDocs, unit: 'documents' }, 'too many pasted pages');
     res = parseRoute53(det.docs, zone, b, opts);
+  } else if (zone.format === 'desec-api' || zone.format === 'digitalocean-api') {
+    if (det.docsTruncated) issues.add('RECORDS_TRUNCATED', 0, { max: L.maxJsonDocs, unit: 'documents' }, 'too many pasted pages');
+    res = zone.format === 'desec-api' ? parseDesecApi(det.docs, zone, b, opts) : parseDigitalOceanApi(det.docs, zone, b, opts);
   } else if (zone.format === 'octodns') res = parseOctodns(text, zone, b, opts);
   else res = parsePlesk(text, lines, zone, b, opts);
   if (res.fatal) {

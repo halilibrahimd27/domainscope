@@ -1,0 +1,16 @@
+format desec-api dialect - origin example.com (header, high)
+markers rrsets[] | json-pages
+stats records=8 proxied=0 dns-only=0 entries=6 skipped=0 generated=0 lines=2
+types A=4 MX=1 NS=2 TXT=1
+owners 3
+partial true
+rr example.com. 3600 A 192.0.2.10 ; @1
+rr api.example.com. 300 A 192.0.2.20 ; @2
+rr api.example.com. 300 A 192.0.2.21 ; @2
+rr mx1.example.com. 3600 A 192.0.2.25 ; @3
+rr example.com. 3600 TXT "v=spf1 mx -all" ; @4
+rr example.com. 3600 MX 10 mx1.example.com. ; @5
+rr example.com. 3600 NS ns1.desec.io. ; @6
+rr example.com. 3600 NS ns2.desec.org. ; @6
+issue error PARTIAL_EXPORT @0 have=6 total=8 provider=desec
+issue info ORIGIN_INFERRED @0 origin=example.com source=header

@@ -1,0 +1,23 @@
+format digitalocean-api dialect - origin example.com (user, high)
+markers domain_records[] | json-pages
+stats records=16 proxied=0 dns-only=0 entries=17 skipped=1 generated=0 lines=3
+types A=3 AAAA=1 CAA=2 CNAME=2 MX=2 NS=3 SRV=1 TXT=2
+owners 7
+partial false
+rr example.com. 1800 NS ns1.digitalocean.com. ; @2
+rr example.com. 1800 NS ns2.digitalocean.com. ; @3
+rr example.com. 1800 NS ns3.digitalocean.com. ; @4
+rr example.com. 3600 A 192.0.2.10 ; @5
+rr example.com. 3600 AAAA 2001:db8::10 ; @6
+rr www.example.com. 3600 CNAME example.com. ; @7
+rr blog.example.com. 3600 CNAME blog.example.net. ; @8
+rr example.com. 3600 MX 10 mx1.example.com. ; @9
+rr example.com. 3600 MX 20 example.com. ; @10
+rr mx1.example.com. 3600 A 192.0.2.25 ; @11
+rr example.com. 3600 TXT "v=spf1 mx include:_spf.example.net ~all" ; @12
+rr _dmarc.example.com. 3600 TXT "v=DMARC1; p=none; rua=mailto:dmarc@example.com" ; @13
+rr example.com. 3600 CAA 0 issue "letsencrypt.org" ; @14
+rr example.com. 3600 CAA 0 iodef "mailto:hostmaster@example.com" ; @15
+rr _sip._tcp.example.com. 3600 SRV 10 60 5060 sip.example.com. ; @16
+rr sip.example.com. 30 A 198.51.100.5 ; @17
+issue info JSON_PAGES_MERGED @0 pages=2 duplicates=0

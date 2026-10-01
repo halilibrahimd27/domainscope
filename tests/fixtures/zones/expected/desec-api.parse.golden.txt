@@ -1,0 +1,34 @@
+format desec-api dialect - origin example.com (header, high)
+markers rrsets[]
+stats records=27 proxied=0 dns-only=0 entries=21 skipped=0 generated=0 lines=23
+types A=7 AAAA=2 CAA=2 CNAME=2 DS=1 HTTPS=1 MX=2 NS=4 SRV=1 TLSA=1 TXT=4
+owners 13
+partial false
+rr example.com. 3600 A 192.0.2.10 ; @1
+rr example.com. 3600 AAAA 2001:db8::10 ; @2
+rr example.com. 3600 CAA 0 iodef "mailto:hostmaster@example.com" ; @3
+rr example.com. 3600 CAA 0 issue "letsencrypt.org" ; @3
+rr example.com. 3600 HTTPS 1 . alpn="h3,h2" ipv4hint=192.0.2.10 ; @4
+rr example.com. 3600 MX 10 mx1.example.com. ; @5
+rr example.com. 3600 MX 20 mx2.example.net. ; @5
+rr example.com. 3600 NS ns1.desec.io. ; @6
+rr example.com. 3600 NS ns2.desec.org. ; @6
+rr example.com. 3600 TXT "example-site-verification=AbCdEf0123456789" ; @7
+rr example.com. 3600 TXT "v=spf1 mx include:_spf.example.net -all" ; @7
+rr *.example.com. 300 A 192.0.2.10 ; @8
+rr _443._tcp.www.example.com. 3600 TLSA 3 1 1 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF ; @9
+rr _dmarc.example.com. 3600 TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com" ; @10
+rr _sip._tcp.example.com. 3600 SRV 10 60 5060 sip.example.com. ; @11
+rr api.example.com. 300 A 192.0.2.20 ; @12
+rr api.example.com. 300 A 192.0.2.21 ; @12
+rr api.example.com. 300 AAAA 2001:db8::20 ; @13
+rr dev.example.com. 3600 DS 12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF ; @14
+rr dev.example.com. 3600 NS ns1.example.net. ; @15
+rr dev.example.com. 3600 NS ns2.example.net. ; @15
+rr intranet.example.com. 3600 A 10.0.0.5 ; @16
+rr mx1.example.com. 3600 A 192.0.2.25 ; @17
+rr sel1._domainkey.example.com. 3600 TXT "v=DKIM1; k=rsa; p=MIIBIjEXAMPLEKEYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAB" ; @18
+rr shop.example.com. 3600 CNAME shops.example.net. ; @19
+rr sip.example.com. 3600 A 198.51.100.5 ; @20
+rr www.example.com. 3600 CNAME example.com. ; @21
+issue info ORIGIN_INFERRED @0 origin=example.com source=header

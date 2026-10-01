@@ -37,7 +37,7 @@ import {
 import { GP_LIMITS } from '../lib/globalping.js';
 import { getResolver } from '../lib/resolvers.js';
 import { toCsv, toJson } from '../lib/export.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly, commonTarget } from '../lib/session.js';
 import { downloadText, timestampedName } from '../ui/download.js';

@@ -38,7 +38,7 @@ import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/global`). */

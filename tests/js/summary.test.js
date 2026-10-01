@@ -1207,9 +1207,16 @@ describe('i18n', () => {
   });
 
   test('every sum.* key the builders use exists, and every defined key is used', async () => {
-    const src = readFileSync(join(ROOT, 'assets', 'js', 'lib', 'summary.js'), 'utf8');
-    const code = src.slice(0, src.indexOf('const STRINGS = ['));
-    const used = new Set([...code.matchAll(/'(sum\.[A-Za-z.]+)'/g)].map((m) => m[1]));
+    // lib/summarycore.js (the start route: rendering, the registry, the Subdomains builder) and lib/summary.js (the rest).
+    const keysOf = (file) => {
+      const src = readFileSync(join(ROOT, 'assets', 'js', 'lib', file), 'utf8');
+      const code = src.slice(0, src.indexOf('const STRINGS = ['));
+      return new Set([...code.matchAll(/'(sum\.[A-Za-z.]+)'/g)].map((m) => m[1]));
+    };
+    const usedByCore = keysOf('summarycore.js');
+    const core = await imp('assets/js/lib/summarycore.js');
+    assert.deepEqual([...usedByCore].filter((k) => !(k in core.SUMMARY_CORE_I18N.en)), [], 'the start route has the texts of its own code');
+    const used = new Set([...usedByCore, ...keysOf('summary.js')]);
     // Keys built from a code: sum.health.light.<light>, sum.global.<state>, sum.global.find.<code>, sum.cert.warn.<code>.
     for (const l of ['ok', 'warn', 'error']) used.add(`sum.health.light.${l}`);
     for (const s of ['agree', 'geo', 'unresolved', 'differ']) used.add(`sum.global.${s}`);

@@ -38,7 +38,7 @@ import { lookupServers } from '../lib/inventory.js';
 import { CAA_ISSUERS } from '../lib/health.js';
 import { mergeSignals } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { lookupLayout, LOOKUP_FLAGS } from '../lib/density.js';
 import { dohStatus } from '../lib/sourcestatus.js';

@@ -42,7 +42,7 @@ import { ipFieldStatus } from '../lib/sourcestatus.js';
 import { registrableDomain } from '../lib/domain.js';
 import { toCsv } from '../lib/export.js';
 import { mergeSignals, sharePercent } from '../lib/util.js';
-import { registerSummaryBuilder } from '../lib/summary.js';
+import { registerSummaryBuilder } from '../lib/summarycore.js';
 import { reportsSummary, REPORTS_SUMMARY_I18N } from '../lib/reportsummary.js';
 import { NaMark } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';

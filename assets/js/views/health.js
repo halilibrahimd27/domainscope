@@ -57,7 +57,7 @@ import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
-import { healthScore, trafficLight, permalinkParams } from '../lib/summary.js';
+import { healthScore, trafficLight, permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 

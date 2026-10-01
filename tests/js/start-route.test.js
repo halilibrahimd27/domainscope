@@ -46,20 +46,21 @@ const JS = join(ASSETS, 'js');
  * few shared components: ≈ 368 KB (377,294 bytes). Wave 4's "What this page sent" ledger counts every
  * request from the first one, so its meter (the fetch wrapper and the Resource Timing observer,
  * ui/egress-meter.js) and its log (lib/egresslog.js) load with the shell, and the footer links to
- * it; the deploy's version file joined lib/pwa.js, and the senders' notes (what a measurement body
- * carried, a registry's RDAP server) the log: ≈ 376 KB (384,678 bytes). Wave 4's DMARC & TLS
- * reports put its Copy summary builder with its strings in lib/summary.js and an entry in the
- * navigation (the report readers load with the view): ≈ 3.5 KB more; its summary's lines for an
- * SPF record that gives a permerror and a policy in test mode, one-decimal shares (lib/util.js)
- * and FileDrop's `maxFiles` / `text: false`: ≈ 1.1 KB more. The reports summary's builder and
- * texts then moved to lib/reportsummary.js, which loads with its view: ≈ 2.5 KB less.
+ * it; the deploy's version file joined lib/pwa.js and the senders' notes (what a measurement body
+ * carried, a registry's RDAP server) the log. With wave 4's other tools — their navigation
+ * entries, FileDrop's `maxFiles`, one-decimal shares, a view's sub-pages (#/change/check) — and
+ * every view's Copy summary builder still on it, the start route reached ≈ 379 KB (388,003 bytes).
+ * The builders and texts of every view but the start view then moved to lib/summary.js, which
+ * loads with the first view that has a Copy summary (ui/view-summaries.js); lib/summarycore.js
+ * keeps the rendering, the registry and the Subdomains builder on the start route:
+ * ≈ 364 KB (373,095 bytes), under the 370 KB budget it had before wave 4.
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 380 * 1024;
+const START_ROUTE_BUDGET = 370 * 1024;
 
-/** Modules that must never be part of the start route. */
+/** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's). */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
-  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js'];
+  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
 const code = (file) => readFileSync(file, 'utf8')

@@ -71,7 +71,7 @@ import {
   createSessionStore, carryRoute, restorePlan, normalizeResult, keptNote, FILL_PARAM, FILL_VALUE
 } from './lib/session.js';
 import { TargetChip, KeptNote } from './ui/session-ui.js';
-import { permalinkParams, utcStamp } from './lib/summary.js';
+import { permalinkParams, utcStamp } from './lib/summarycore.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
 import { setBaseTitle, refreshJobIndicators, runningWork } from './ui/jobs.js';

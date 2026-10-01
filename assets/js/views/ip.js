@@ -40,7 +40,7 @@ import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
 import { mergeSignals, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/ip`). */

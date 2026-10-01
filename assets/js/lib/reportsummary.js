@@ -1,12 +1,12 @@
 /**
  * reportsummary.js — "Copy summary" of DMARC & TLS reports (views/reports.js): the builder and its
- * texts, in lib/summary.js's model (its {@link BUILDER_KIT}: the same parts, escaping, footer and
- * rendering). They live here, not in lib/summary.js, so they load with the view, not on the start
- * route: views/reports.js registers {@link reportsSummary} (summary.registerSummaryBuilder) and
+ * texts, in lib/summarycore.js's model (its {@link BUILDER_KIT}: the same parts, escaping, footer and
+ * rendering). They live here, not in lib/summary.js (every other view's), so they load with this
+ * view alone: views/reports.js registers {@link reportsSummary} (summary.registerSummaryBuilder) and
  * {@link REPORTS_SUMMARY_I18N}. DOM-free; runs in browsers and Node 22.
  */
 
-import { BUILDER_KIT } from './summary.js';
+import { BUILDER_KIT } from './summarycore.js';
 import { sharePercent } from './util.js';
 
 const { kit, doc, code, strong, isoDay, whenText } = BUILDER_KIT;
@@ -32,7 +32,7 @@ const REPORTS_MAX_TLS_TYPES = 3;
  *   byType: Array<{ type: string, sessions: number }> }|null, problems?: number, at?: Date }} facts lib/dmarcreport.js
  *   dmarcOverview and lib/tlsrpt.js summarizeTls of the domain on screen; `problems`: files or entries that were no report
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
- * @returns {import('./summary.js').SummaryDoc}
+ * @returns {import('./summarycore.js').SummaryDoc}
  */
 export function reportsSummary(facts, opts) {
   const k = kit(opts);
@@ -84,7 +84,7 @@ export function reportsSummary(facts, opts) {
   return doc('reports', k.title('reports', [code(facts.domain || '')]), lines, { when: whenText(t, 'sum.at.asOf', null, opts.now || new Date()), url: opts.url });
 }
 
-/** English and Turkish texts of the `sum.rpt.*` keys: [key, [en, tr]] (lib/summary.js's shape). */
+/** English and Turkish texts of the `sum.rpt.*` keys: [key, [en, tr]] (lib/summarycore.js's shape). */
 const STRINGS = [
   ['sum.rpt.compliance', [{ one: '{pct}% of {count} message passes', other: '{pct}% of {count} messages pass' }, '{count} e-postanın %{pct} kadarı geçiyor']],
   ['sum.rpt.noMail', ['no message in the reports', 'raporlarda e-posta yok']],

@@ -71,7 +71,7 @@ import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullc
 import { KeyContinuityCard, cancelKeyLookups } from '../ui/key-continuity.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { ExpectedCaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 

@@ -38,7 +38,7 @@ import {
 import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { mergeSignals } from '../lib/util.js';
 

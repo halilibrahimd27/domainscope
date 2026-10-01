@@ -84,7 +84,7 @@ import { toCsv, toJson, scanHostRows } from '../lib/export.js';
 import { SUB_TABS, parseSubTab, initialSubTab, nextAutoTab, subTabParams, summaryAlerts, subTabBadges, hostSegments } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList, onceAsync } from '../lib/util.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../lib/summarycore.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';

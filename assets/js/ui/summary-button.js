@@ -1,6 +1,7 @@
 /**
  * summary-button.js — "Copy summary" in a view's result header: the finished result as a few
- * lines of Markdown for a Jira ticket or a Slack thread (lib/summary.js), in the UI language,
+ * lines of Markdown for a Jira ticket or a Slack thread (lib/summarycore.js renders it; the builders
+ * are lib/summary.js's, loaded with ui/view-summaries.js), in the UI language,
  * with a small "Plain text" button next to it for tools that do not render Markdown. A browser
  * that blocks the clipboard gets the text in a dialog to copy by hand.
  *
@@ -25,10 +26,11 @@
 import { h } from './dom.js';
 import { CopyButton, Modal } from './components.js';
 import { t, getLang, registerStrings } from '../i18n.js';
-import { SUMMARY_I18N, buildSummary, renderSummary } from '../lib/summary.js';
+import { SUMMARY_CORE_I18N, buildSummary, renderSummary } from '../lib/summarycore.js';
 
-registerStrings('en', SUMMARY_I18N.en);
-registerStrings('tr', SUMMARY_I18N.tr);
+// The start route's texts; every other view's come with ui/view-summaries.js (DMARC & TLS reports: its view).
+registerStrings('en', SUMMARY_CORE_I18N.en);
+registerStrings('tr', SUMMARY_CORE_I18N.tr);
 
 registerStrings('en', {
   'sum.btn.label': 'Summary',

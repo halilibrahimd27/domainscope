@@ -55,7 +55,7 @@ import { planDrift, driftZone, DRIFT_STATUSES, DRIFT_REASONS, DRIFT_SEVERITY } f
 import { buildSweepCommand, quoteArg } from '../lib/cmdline.js';
 import { getResolver } from '../lib/resolvers.js';
 import { normalizeIP } from '../lib/netinfo.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { onceAsync } from '../lib/util.js';
 import { ParityTab, freshParity, stopParity, generatedKeys as parityKeys, reasonKey as parityReasonKey } from '../ui/parity-panel.js';

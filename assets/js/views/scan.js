@@ -89,7 +89,7 @@ import {
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 import { summarizeVerify, verifyHeadline } from '../lib/verify.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';

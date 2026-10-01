@@ -46,7 +46,7 @@ import { isSubdomainOf, registrableDomain } from '../lib/domain.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { errorKind } from '../lib/util.js';
 import { toCsv, toJson } from '../lib/export.js';
-import { permalinkParams } from '../lib/summary.js';
+import { permalinkParams } from '../ui/view-summaries.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerRunning } from '../ui/jobs.js';

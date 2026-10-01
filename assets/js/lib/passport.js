@@ -46,7 +46,7 @@ import {
 } from './health.js';
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS, CRTSH_TIMEOUT_MS, ctCooldown, noteCertspotterLimit } from './ctcert.js';
 import { sourceStatus, dohStatus, rdapStatus } from './sourcestatus.js';
-import { healthScore, trafficLight } from './summary.js';
+import { healthScore, trafficLight } from './summarycore.js';
 
 /** The cards of a passport, in display order. */
 export const PASSPORT_CARDS = Object.freeze(['registration', 'dns', 'mail', 'web', 'certs', 'saas', 'health']);

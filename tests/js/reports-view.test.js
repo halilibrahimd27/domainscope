@@ -2,16 +2,17 @@
  * views/reports.js — the pure parts of the DMARC & TLS reports view: how much of a source's mail
  * passed aligned, the parameters of a fix text, the facts Copy summary gets (the domain on screen,
  * the TLS summary of the same domain, whether the classes rest on the current SPF), and that
- * every source class, SPF line state and advice link has its look. The module is DOM-free at
- * import. Pure Node, no network; documentation data only.
+ * every source class, SPF line state and advice link has its look, and which rows of the sources
+ * table a new classification redraws. The module is DOM-free at import. Pure Node, no network; documentation data only.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
-  INTEL_MAX, FIX_FIRST_MAX, result
+  INTEL_MAX, FIX_FIRST_MAX, result, sourceRowChanged
 } from '../../assets/js/views/reports.js';
-import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS } from '../../assets/js/lib/dmarcreport.js';
+import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS, aggregateDmarc, parseAggregateReport, classifySources } from '../../assets/js/lib/dmarcreport.js';
+import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
 import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
 
@@ -98,4 +99,35 @@ test('every source class has a badge and a tile look; every advice link is drawn
   const tools = new Set(TLS_RESULT_TYPES.flatMap((ty) => tlsAdvice(ty).tools));
   assert.deepEqual([...tools].sort(), [...TLS_TOOLS].sort());
   assert.ok(SPF_LINE_STATES.includes('offline') && SPF_LINE_STATES.includes('failed'));
+});
+
+test('sourceRowChanged: a row is drawn again only when its class, why, servers, current SPF or fixes changed', () => {
+  const base = { ip: '192.0.2.1', messages: 3, cls: 'unknown', reason: 'none', detail: null, servers: [], spfDomain: null, spfNow: null, spfListed: null, atRisk: 0, fixes: [] };
+  const verdict = { result: 'pass', term: 'ip4:192.0.2.0/24', holder: 'example.com', path: ['example.com'], via: null, reason: null };
+  assert.equal(sourceRowChanged(base, { ...base, servers: [], fixes: [] }), false, 'equal lists, other arrays');
+  for (const change of [{ cls: 'yours' }, { reason: 'spf' }, { detail: 'ip4:192.0.2.0/24' }, { servers: ['mail01'] }, { spfDomain: 'example.com' },
+    { atRisk: 2 }, { fixes: ['dkim-sign'] }, { spfNow: verdict }, { spfListed: verdict }]) {
+    assert.equal(sourceRowChanged(base, { ...base, ...change }), true, JSON.stringify(change));
+  }
+  const withVerdict = { ...base, spfNow: verdict };
+  assert.equal(sourceRowChanged(withVerdict, { ...base, spfNow: { ...verdict, path: [...verdict.path] } }), false, 'the same verdict in another object');
+  for (const change of [{ result: 'fail' }, { term: '~all' }, { holder: '_spf.example.com' }, { reason: 'lookup-limit' }, { path: ['example.com', '_spf.example.com'] },
+    { via: { host: 'mx1.example.com', address: '192.0.2.1' } }]) {
+    assert.equal(sourceRowChanged(withVerdict, { ...base, spfNow: { ...verdict, ...change } }), true, JSON.stringify(change));
+  }
+});
+
+test('sourceRowChanged over classifySources: the same evidence redraws nothing, a server added redraws its row only', () => {
+  const rec = (ip) => `<record><row><source_ip>${ip}</source_ip><count>2</count><policy_evaluated><disposition>none</disposition><dkim>fail</dkim><spf>fail</spf></policy_evaluated></row>
+    <identifiers><header_from>example.com</header_from></identifiers><auth_results><spf><domain>example.com</domain><result>fail</result></spf></auth_results></record>`;
+  const xml = `<?xml version="1.0"?><feedback><report_metadata><org_name>google.com</org_name><report_id>1</report_id>
+    <date_range><begin>1790294400</begin><end>1790899200</end></date_range></report_metadata>
+    <policy_published><domain>example.com</domain><p>none</p></policy_published>${['192.0.2.1', '192.0.2.2', '198.51.100.7'].map(rec).join('')}</feedback>`;
+  const agg = aggregateDmarc([parseAggregateReport(xml).report]).domains[0];
+  const changed = (a, b) => b.filter((r, i) => sourceRowChanged(a[i], r)).map((r) => r.ip);
+  const before = classifySources(agg, {});
+  assert.deepEqual(changed(before, classifySources(agg, {})), [], 'classified again on the same evidence (the SPF lookup starting)');
+  const index = buildIpIndex(parseInventory('mail01 192.0.2.2').servers);
+  assert.deepEqual(changed(before, classifySources(agg, { index })), ['192.0.2.2']);
+  assert.deepEqual(changed(before, classifySources(agg, { spf: new Map([['example.com', { status: 'none' }]]) })).length, 3, 'the SPF landed: every row');
 });

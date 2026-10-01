@@ -653,6 +653,24 @@ export function headlineShare(ratio) {
   return { value: v / 100, digits: Number.isInteger(v) ? 0 : 1 };
 }
 
+const sameList = (a, b) => a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]));
+const sameVerdict = (a, b) => a === b || (!!a && !!b && a.result === b.result && a.term === b.term && a.holder === b.holder
+  && a.reason === b.reason && sameList(a.path, b.path) && (a.via === b.via || (!!a.via && !!b.via && a.via.host === b.via.host && a.via.address === b.via.address)));
+
+/**
+ * Whether a source's row, classified again (the SPF landed, the server list changed), draws
+ * differently: its class, why, servers, the current SPF's verdicts or the fixes. The rest of a
+ * row comes from the reports, which did not change; an unchanged row keeps its drawn <tr>, its
+ * search text and its open details, so a table of 60,000 addresses redraws only what moved.
+ * @param {object} a the row drawn (lib/dmarcreport.js classifySources)
+ * @param {object} b the same address classified again
+ * @returns {boolean}
+ */
+export function sourceRowChanged(a, b) {
+  return a.cls !== b.cls || a.reason !== b.reason || a.detail !== b.detail || a.spfDomain !== b.spfDomain || a.atRisk !== b.atRisk
+    || !sameList(a.servers, b.servers) || !sameList(a.fixes, b.fixes) || !sameVerdict(a.spfNow, b.spfNow) || !sameVerdict(a.spfListed, b.spfListed);
+}
+
 /**
  * The facts of Copy summary (lib/reportsummary.js reportsSummary) for the DMARC domain on screen and the
  * TLS summary of the same domain (or the TLS domain on screen when there is no DMARC report).
@@ -698,6 +716,8 @@ const fresh = () => ({
   tab: 'dmarc',
   cls: null,
   spf: new Map(),
+  // Bumped with every SPF answer stored: the classes rest on them.
+  spfVersion: 0,
   spfState: new Map(),
   intel: new Map()
 });
@@ -913,7 +933,10 @@ export function mount(container, ctx) {
       const dns = await ctx.getDns();
       const sig = signal();
       // "Check again" asks past the resolver's cache: a record fixed a minute ago shows at once.
-      for (const d of wanted) mine.spf.set(d, await loadSpfContext(d, { dns, signal: sig, noCache: force }));
+      for (const d of wanted) {
+        mine.spf.set(d, await loadSpfContext(d, { dns, signal: sig, noCache: force }));
+        mine.spfVersion += 1;
+      }
       mine.spfState.set(domain, 'done');
     } catch (err) {
       mine.spfState.delete(domain);
@@ -923,11 +946,19 @@ export function mount(container, ctx) {
     if (!ctx.signal.aborted && mine === S) refreshDmarc();
   }
 
+  // The last classification: the same reports, server list and SPF answers give the same rows (the
+  // SPF line going to "looking up…" right after a drop redraws the head, never classifies again).
+  let classified = null;
+
   /** Rows, overview and SPF line state of the DMARC domain on screen. */
   function dmarcModel() {
     const agg = aggOf(S.domain);
     if (!agg) return null;
-    const rows = classifySources(agg, { spf: S.spf, index: ctx.getInventoryIndex() });
+    const index = ctx.getInventoryIndex();
+    if (!classified || classified.agg !== agg || classified.index !== index || classified.spf !== S.spf || classified.spfVersion !== S.spfVersion) {
+      classified = { agg, index, spf: S.spf, spfVersion: S.spfVersion, rows: classifySources(agg, { spf: S.spf, index }) };
+    }
+    const { rows } = classified;
     const line = spfStateOf(agg.domain);
     const spfChecked = line === 'loading' || line === 'ok' || line === 'none' || line === 'multiple';
     return { agg, rows, overview: dmarcOverview(agg, rows, { spfChecked }), line };
@@ -958,7 +989,7 @@ export function mount(container, ctx) {
 
   function refreshRows(ips) {
     if (!sourcesTable) return;
-    for (const row of sourcesTable.getRows()) if (ips.includes(row.ip)) sourcesTable.updateRow(row);
+    sourcesTable.updateRows(sourcesTable.getRows().filter((row) => ips.includes(row.ip)));
     updateBulk();
   }
 
@@ -1139,22 +1170,27 @@ export function mount(container, ctx) {
   let dmarcParts = null;
 
   /**
-   * The DMARC panel of the domain on screen. `keepTable`: the same domain with new classes (the SPF
-   * landed, the server list changed): the head and the tiles are drawn again, the table's rows
-   * replaced in place, so its search, sort, open details and the keyboard focus stay.
+   * The DMARC panel of the domain on screen. `keepTable`: the same reports with new classes (the
+   * SPF landed, the server list changed): the head and the tiles are drawn again, and the table's
+   * rows that changed ({@link sourceRowChanged}) are replaced in place in one batch, so its search,
+   * sort, open details and the keyboard focus stay, and a big table is not searched per row.
    */
   function fillDmarc({ keepTable = false } = {}) {
     const m = dmarcModel();
     if (!m) return;
     const { agg, rows, overview } = m;
-    if (keepTable && sourcesTable && dmarcParts && dmarcParts.domain === agg.domain) {
+    if (keepTable && sourcesTable && dmarcParts && dmarcParts.agg === agg) {
       keepFocus(dmarcPanel, () => {
         const head = dmarcHead(m);
         const tiles = classTiles(overview);
         dmarcParts.head.replaceWith(head);
         dmarcParts.tiles.replaceWith(tiles);
-        dmarcParts = { domain: agg.domain, head, tiles };
-        for (const r of rows) sourcesTable.updateRow(r);
+        dmarcParts = { agg, head, tiles };
+        const drawn = new Map(sourcesTable.getRows().map((r) => [r.ip, r]));
+        sourcesTable.updateRows(rows.filter((r) => {
+          const old = drawn.get(r.ip);
+          return !old || sourceRowChanged(old, r);
+        }));
       });
       return;
     }
@@ -1168,7 +1204,7 @@ export function mount(container, ctx) {
     if (picker) dmarcPanel.append(picker);
     const head = dmarcHead(m);
     const tiles = classTiles(overview);
-    dmarcParts = { domain: agg.domain, head, tiles };
+    dmarcParts = { agg, head, tiles };
     dmarcPanel.append(head, tiles, sourcesSection(agg, rows), reportersSection(agg));
   }
 

@@ -149,7 +149,9 @@ export const EGRESS_SERVICES = Object.freeze([
   service({ id: 'ipwhois', name: 'ipwho.is', role: 'ip', hosts: ['ipwho.is'], endpoints: [ep('address', ['ipAddresses'], { path: '/*' })] }),
   service({ id: 'rdap-bootstrap', name: 'IANA', role: 'registration', hosts: ['data.iana.org'], endpoints: [ep('bootstrap', ['nothing'], { path: '/rdap/*' })] }),
   service({
-    id: 'rdap', name: 'RDAP', role: 'registration', hosts: ['rdap.org'], noteHost: 'rdap',
+    // rdap.org (the paced fallback) and the registry server lib/rdap.js RDAP_OVERRIDES names for the
+    // TLDs the IANA bootstrap does not list yet (.io, .sh, .ac, .me: the Domain portfolio, any lookup)
+    id: 'rdap', name: 'RDAP', role: 'registration', hosts: ['rdap.org', 'rdap.identitydigital.services'], noteHost: 'rdap',
     // RFC 9082 lookup paths under a server's base URL: domain/<name>, ip/<address> or ip/<address>/<length>.
     endpoints: [
       ep('domain', ['domains'], { path: '/**/domain/*' }),

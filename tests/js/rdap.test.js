@@ -2,7 +2,8 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   rdapDomain, rdapIp, registryDomain, parseBootstrap, findDomainService, findIpService,
-  parseRdapDomain, parseRdapIp, rangeToCidrs, clearRdapCache, IANA_BOOTSTRAP, RDAP_ORG
+  parseRdapDomain, parseRdapIp, rangeToCidrs, clearRdapCache, IANA_BOOTSTRAP, RDAP_ORG, RDAP_OVERRIDES, RDAP_ORG_INTERVAL_MS,
+  RDAP_ORG_COOLDOWN_MS
 } from '../../assets/js/lib/rdap.js';
 
 /* -------------------------------------------------------------------- */
@@ -529,4 +530,74 @@ test('rdapIp: all servers failing yields an error; abort rejects', async () => {
   assert.equal(r.ok, false);
   assert.equal(r.errorKind, 'network');
   await assert.rejects(rdapIp('140.82.121.4', { fetchImpl: f, signal: AbortSignal.abort() }), { name: 'AbortError' });
+});
+
+/* -------------------------------------------------------------------- */
+/* TLDs missing from the bootstrap; rdap.org paced and paused           */
+/* -------------------------------------------------------------------- */
+
+test('rdapDomain: a TLD the bootstrap does not list but RDAP_OVERRIDES does goes to that registry server', async () => {
+  assert.deepEqual(Object.keys(RDAP_OVERRIDES), ['io', 'sh', 'ac', 'me']);
+  const io = { ...GITHUB_COM, ldhName: 'EXAMPLE.IO', links: [] };
+  const f = mockFetch({ ...BOOT, 'https://rdap.identitydigital.services/rdap/domain/example.io': io, [RDAP_ORG]: () => { throw new Error('not the fallback'); } });
+  const r = await rdapDomain('www.example.io', { fetchImpl: f });
+  assert.equal(r.ok, true);
+  assert.equal(r.rdapServer, 'https://rdap.identitydigital.services/rdap/');
+  assert.equal(r.unsupportedTld, false);
+  // a TLD without RDAP and without an override: no request at all
+  const de = await rdapDomain('example.de', { fetchImpl: f });
+  assert.equal(de.unsupportedTld, true);
+  assert.deepEqual(f.calls.map((c) => c.url), [IANA_BOOTSTRAP.dns, 'https://rdap.identitydigital.services/rdap/domain/example.io']);
+  // the bootstrap out of reach: the override still answers
+  clearRdapCache();
+  const g = mockFetch({ [IANA_BOOTSTRAP.dns]: () => new TypeError('offline'), 'https://rdap.identitydigital.services/rdap/': io });
+  assert.equal((await rdapDomain('example.io', { fetchImpl: g, fallback: false })).ok, true);
+});
+
+test('rdap.org: one request a second at most, every lookup of the page together, in call order', async () => {
+  assert.equal(RDAP_ORG_INTERVAL_MS, 1000);
+  const at = [];
+  const f = mockFetch({
+    ...BOOT,
+    'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'),
+    [RDAP_ORG]: (u) => { at.push([u.split('/').pop(), Date.now()]); return GITHUB_COM; }
+  });
+  const rs = await Promise.all(['a.com', 'b.com', 'c.com'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 80 })));
+  assert.ok(rs.every((r) => r.ok));
+  assert.deepEqual(at.map((x) => x[0]), ['a.com', 'b.com', 'c.com']);
+  for (let i = 1; i < at.length; i += 1) assert.ok(at[i][1] - at[i - 1][1] >= 75, `spaced: ${at[i][1] - at[i - 1][1]} ms`);
+});
+
+test('rdap.org: an unreadable answer (a browser\'s view of its 429) pauses it; the registry\'s own error stands meanwhile', async () => {
+  assert.equal(RDAP_ORG_COOLDOWN_MS, 60000);
+  let orgCalls = 0;
+  const f = mockFetch({
+    ...BOOT,
+    'https://rdap.verisign.com/': () => jsonResponse('busy', 503),
+    [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('Failed to fetch'); }
+  });
+  const first = await rdapDomain('a.com', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  assert.equal(first.ok, false);
+  assert.equal(first.errorKind, 'network');
+  assert.match(first.error, /rdap\.org gave no readable answer/);
+  assert.equal(orgCalls, 1, 'a TypeError is never retried');
+  const second = await rdapDomain('b.com', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  assert.equal(orgCalls, 1, 'paused: not asked again');
+  assert.equal(second.rdapOrgPaused, true);
+  assert.equal(second.httpStatus, 503, 'the registry\'s answer is the one reported');
+  // a readable 429 pauses it too, and is not retried
+  clearRdapCache();
+  let n = 0;
+  const g = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => new TypeError('x'), [RDAP_ORG]: () => { n += 1; return jsonResponse('slow down', 429); } });
+  await rdapDomain('a.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  await rdapDomain('b.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  assert.equal(n, 1);
+  // after the pause it is asked again
+  clearRdapCache();
+  let m = 0;
+  const h = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => new TypeError('x'), [RDAP_ORG]: () => { m += 1; return new TypeError('y'); } });
+  await rdapDomain('a.com', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  await new Promise((r) => setTimeout(r, 40));
+  await rdapDomain('b.com', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  assert.equal(m, 2);
 });

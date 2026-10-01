@@ -180,13 +180,16 @@ export function OriginMapPanel({ ctx }) {
 
   const map = () => originMap() || { v: 1, remember: false, entries: [] };
   const save = (next) => state.setWorkspaceData('origins', sanitizeOriginMap(next));
-  const outcomeEl = h('div', { class: 'om-outcome', dataset: { role: 'om-outcome' }, attrs: { 'aria-live': 'polite' } });
+  const outcomeEl = h('div', { class: 'om-outcome', dataset: { role: 'om-outcome' }, attrs: { 'aria-live': 'polite', tabindex: -1 } });
 
+  /** Say what a click did; when that click's control went away (a deleted row), the keyboard focus goes to the message. */
   function say(message, variant = 'ok') {
     S.outcome = { message, variant };
     clear(outcomeEl);
     outcomeEl.append(Alert({ variant, compact: true, message, dismissible: true, onDismiss: () => { S.outcome = null; } }));
     announce(message);
+    const doc = globalThis.document;
+    if (doc && (!doc.activeElement || doc.activeElement === doc.body || !doc.activeElement.isConnected)) outcomeEl.focus({ preventScroll: true });
   }
 
   async function toggle(on) {
@@ -312,7 +315,7 @@ export function OriginMapPanel({ ctx }) {
         {
           key: 'actions', label: t('omp.col.actions'), export: false,
           render: (e) => h('div', { class: 'cluster om-actions' },
-            IconButton({ icon: 'edit', size: 'sm', label: t('omp.edit', { name: e.name, target: originTarget(e) }), onClick: () => edit(e) }),
+            m.remember ? IconButton({ icon: 'edit', size: 'sm', label: t('omp.edit', { name: e.name, target: originTarget(e) }), onClick: () => edit(e) }) : null,
             IconButton({ icon: 'trash', size: 'sm', label: t('omp.delete', { name: e.name, target: originTarget(e) }), onClick: () => remove(e) }))
         }
       ]

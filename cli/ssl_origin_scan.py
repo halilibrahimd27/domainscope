@@ -3464,6 +3464,15 @@ class ScanReport:
     private_cas: List[CertInfo] = field(default_factory=list)      # --private-ca certificates
     strict_public: bool = False                                    # --strict-public
     new_cert_files: Dict[str, str] = field(default_factory=dict)   # sha256 -> its --cert FILE
+    # terminates_tls=no servers set aside (never connected to) without --include-backends
+    skipped_backends: List[Server] = field(default_factory=list)
+    include_backends: bool = False                                 # --include-backends
+
+    @property
+    def has_topology(self) -> bool:
+        """Whether the inventory gave any topology key (ports=, terminates_tls=, vip=,
+        backends=, nat=): the reports then say where TLS terminates."""
+        return any(server.has_topology() for server in self.servers + self.skipped_backends)
 
     @property
     def several_new_certs(self) -> bool:
@@ -3750,14 +3759,19 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
              default_probe: bool = True, warnings: Optional[List[str]] = None,
              exclude: Iterable[Union[str, ExcludeRule]] = (),
              private_cas: Sequence[CertInfo] = (), strict_public: bool = False,
-             new_cert_files: Optional[Dict[str, str]] = None) -> ScanReport:
+             new_cert_files: Optional[Dict[str, str]] = None,
+             include_backends: bool = False) -> ScanReport:
     """Probe every ``server IP x port`` for every name and classify the results.
 
     A served certificate that is any of ``new_certs`` is UPDATED; ``new_cert_files``
     (sha256 -> the --cert FILE) lets the reports name which one when there are several.
 
     ``ports`` apply to every address except those with ports of their own
-    (:attr:`Server.ports`). A certificate that covers a name but is not the new one is
+    (:attr:`Server.ports`), and to no address of a server with TLS ports of its own
+    (``ports=``, :attr:`Server.tls_ports`): each server is scanned only on its own ports. A
+    server with ``terminates_tls=no`` (a plain-HTTP backend, never given the certificate) is
+    set aside, never connected to, and listed in :attr:`ScanReport.skipped_backends` unless
+    ``include_backends``. A certificate that covers a name but is not the new one is
     NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT (:class:`HostedClassifier` with
     ``private_cas`` and ``strict_public``).
     Addresses matching ``exclude`` (:class:`ExcludeRule` objects or IP / CIDR / range
@@ -3777,6 +3791,10 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     ports = list(ports)
     exclude_rules = _as_rules(exclude)
     servers, excluded = apply_excludes(servers, exclude_rules)
+    skipped = [] if include_backends else [s for s in servers if not s.gets_certificate]
+    if skipped:
+        set_aside = {id(server) for server in skipped}
+        servers = [server for server in servers if id(server) not in set_aside]
 
     endpoints = {}  # type: Dict[Tuple[str, int], Endpoint]
     for server in servers:
@@ -3947,7 +3965,8 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                       warnings=list(warnings or []),
                       exclude=[rule.label for rule in exclude_rules], excluded=excluded,
                       private_cas=list(private_cas), strict_public=strict_public,
-                      new_cert_files=dict(new_cert_files or {}))
+                      new_cert_files=dict(new_cert_files or {}), skipped_backends=skipped,
+                      include_backends=include_backends)
 
 
 def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional[str],
@@ -4061,6 +4080,10 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
     now = report.finished_at
     new_fps = {cert.sha256 for cert in report.new_certs}
     summaries = report.server_summaries()
+    behind = {}  # type: Dict[str, List[str]]
+    for server in list(report.servers) + list(report.skipped_backends):
+        for name in server.backends:
+            behind.setdefault(name.lower(), []).append(server.name)
     servers = []
     for summary in summaries:
         by_status = {}  # type: Dict[str, List[str]]
@@ -4090,6 +4113,8 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
             'hostedNotInNewCert': by_status.get('OTHER', []),
             'defaultCertNeedsUpdate': any(r.status == NEEDS_UPDATE for r in default_rows),
         })
+        if summary.server.has_topology():  # only then: an old inventory's report is unchanged
+            servers[-1]['topology'] = _topology_dict(summary.server, behind)
     certificates = {}
     for sha, cert in report.certificates.items():
         entry = cert.to_dict(now)
@@ -4141,10 +4166,24 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
             doc['changes'] = monitor.changes
         if monitor.expiring is not None:
             doc['expiring'] = monitor.expiring
+    if report.has_topology:
+        # where TLS terminates: the servers with terminates_tls=no left out of the scan
+        doc['options']['includeBackends'] = report.include_backends
+        doc['skippedBackends'] = [{'name': server.name, 'ips': list(server.ips),
+                                   'topology': _topology_dict(server, behind)}
+                                  for server in report.skipped_backends]
     if estate:
         doc['options']['estate'] = True
         doc['estate'] = estate_from_report(doc, report.finished_at)
     return doc
+
+
+def _topology_dict(server: Server, behind: Dict[str, List[str]]) -> Dict[str, Any]:
+    """A server's topology in the JSON report: does it get the certificate, its own TLS ports,
+    the shared and public addresses it is reached at, its backends and its load balancers."""
+    return {'terminatesTls': server.gets_certificate, 'tlsPorts': list(server.tls_ports),
+            'vips': list(server.vips), 'nats': list(server.nats),
+            'backends': list(server.backends), 'behind': list(behind.get(server.name.lower(), []))}
 
 
 def render_json(report: ScanReport, ensure_ascii: bool = False,
@@ -4375,10 +4414,12 @@ _NOT_COUNTED_NOTE = ('Not counted as needing the new certificate (--fail-on-need
 
 def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: int,
                    now: datetime, has_new_cert: bool,
-                   note: Optional[Callable[[str, CertInfo], str]] = None) -> List[str]:
+                   note: Optional[Callable[[str, CertInfo], str]] = None,
+                   tag: Optional[Callable[[Server], str]] = None) -> List[str]:
     """Lines for one server: per endpoint, names grouped by (status, served certificate).
 
-    ``note(status, cert)`` may add why a group has its status (``self-signed``).
+    ``note(status, cert)`` may add why a group has its status (``self-signed``); ``tag(server)``
+    where TLS terminates (:func:`topology_tag`).
     """
     server = summary.server
     head = '  ' + style.paint(display_text(server.name), 'bold')
@@ -4387,6 +4428,9 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
         head += '  ' + style.paint(', '.join(extra_ips), 'dim')
     if server.groups:
         head += '  ' + style.paint(display_text('[%s]' % ', '.join(server.groups)), 'dim')
+    label = tag(server) if tag is not None else ''
+    if label:
+        head += '  ' + style.paint(display_text('[%s]' % label), 'dim')
     out = [head]
     by_endpoint = {}  # type: Dict[Tuple[str, int], List[ProbeResult]]
     for row in summary.rows:
@@ -4453,13 +4497,121 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
 def _section(lines: List[str], title: str, summaries: Sequence[ServerSummary], style: Style,
              colors: Sequence[str], show_all: bool, width: int, now: datetime,
              has_new: bool, note: Optional[Callable[[str, CertInfo], str]] = None,
-             explain: Sequence[str] = ()) -> None:
+             explain: Sequence[str] = (), tag: Optional[Callable[[Server], str]] = None) -> None:
     lines.append(style.paint('%s: %d' % (title, len(summaries)), *colors))
     for text in explain:
         lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, text, width))
     for summary in summaries:
-        lines.extend(_render_server(summary, style, show_all, width, now, has_new, note))
+        lines.extend(_render_server(summary, style, show_all, width, now, has_new, note, tag))
     lines.append('')
+
+
+def topology_tag(servers: Sequence[Server]) -> Callable[[Server], str]:
+    """``tag(server)``: where TLS terminates for ``server``, from the topology of ``servers``
+    (``LB: web01, web02``, ``behind lb01``, ``VIP 203.0.113.50 with lb02``, ``NAT
+    203.0.113.10``, ``TLS ports 443,8443``); '' for a server the inventory says nothing about."""
+    behind = {}  # type: Dict[str, List[str]]
+    holders = {}  # type: Dict[str, List[str]]
+    for server in servers:
+        for name in server.backends:
+            behind.setdefault(name.lower(), []).append(server.name)
+        for vip in server.vips:
+            holders.setdefault(vip, []).append(server.name)
+
+    def tag(server: Server) -> str:
+        parts = []  # type: List[str]
+        if server.backends:
+            parts.append('LB: %s%s' % (', '.join(server.backends),
+                                       '' if server.gets_certificate else ', TLS passed through'))
+        lbs = behind.get(server.name.lower(), [])
+        if lbs:
+            parts.append('behind %s%s' % (', '.join(lbs), ', re-encrypts' if server.gets_certificate
+                                          else ', plain HTTP'))
+        elif not server.gets_certificate and not server.backends:
+            parts.append('terminates_tls=no')
+        for vip in server.vips:
+            others = [name for name in holders.get(vip, []) if name != server.name]
+            parts.append('VIP %s%s' % (vip, ' with %s' % ', '.join(others) if others else ''))
+        parts.extend('NAT %s' % nat for nat in server.nats)
+        if server.tls_ports:
+            parts.append('TLS ports %s' % ','.join(str(port) for port in server.tls_ports))
+        return '; '.join(parts)
+    return tag
+
+
+def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], style: Style,
+                    width: int = 100) -> List[str]:
+    """The summary's topology lines, grouped by load balancer: each load balancer with its
+    status and the servers behind it (plain HTTP - no certificate, or re-encrypting - needs it
+    too), every VIP and the servers to install on, the NAT pairs, and the servers with
+    terminates_tls=no that were not scanned. [] without a topology key in the targets."""
+    servers = list(report.servers) + list(report.skipped_backends)
+    if not any(server.has_topology() for server in servers):
+        return []
+    by_name = {server.name.lower(): server for server in servers}
+    status = {summary.server.name: summary.status for summary in summaries}
+    skipped = {server.name for server in report.skipped_backends}
+
+    def state(server: Server) -> str:
+        if server.name in skipped:
+            return style.paint('not scanned', 'dim')
+        return style.status(status[server.name]) if server.name in status else \
+            style.paint('excluded', 'dim')
+
+    lines = []  # type: List[str]
+    lbs = [server for server in servers if server.backends]
+    if lbs:
+        lines.append(style.paint('By load balancer: %d' % len(lbs), 'bold'))
+        for lb in lbs:
+            role = ('terminates TLS: install the certificate here' if lb.gets_certificate
+                    else 'passes TLS through (terminates_tls=no): no certificate here')
+            vips = ['VIP %s' % vip for vip in lb.vips]
+            plain = '  %s  %s  ' % (display_text(lb.name), _plain_state(lb, skipped, status))
+            lines.extend(_wrap('  %s  %s  ' % (style.paint(display_text(lb.name), 'bold'), state(lb)),
+                               len(plain), display_text('; '.join([role] + vips)), width))
+            for name in lb.backends:
+                backend = by_name.get(name.lower())
+                if backend is None:
+                    lines.append('    -> %s  %s' % (display_text(name), style.paint('not in the targets', 'dim')))
+                    continue
+                what = ('re-encrypts: needs the certificate too' if backend.gets_certificate
+                        else 'plain HTTP, no certificate needed')
+                if backend.name in skipped:
+                    what += ' (--include-backends scans it)'
+                prefix = '    -> %s  %s  ' % (display_text(backend.name), state(backend))
+                plain = '    -> %s  %s  ' % (display_text(backend.name),
+                                             _plain_state(backend, skipped, status))
+                lines.extend(_wrap(prefix, len(plain), what, width))
+        lines.append('')
+    holders = {}  # type: Dict[str, List[str]]
+    for server in servers:
+        for vip in server.vips:
+            holders.setdefault(vip, []).append(server.name)
+    for vip, names in holders.items():
+        action = ('install the certificate on both' if len(names) == 2 else
+                  'install the certificate on all %d' % len(names) if len(names) > 2 else
+                  'held by %s only' % names[0])
+        lines.extend(_wrap('Shared address (VIP) %s: ' % vip, 2, display_text(
+            '%s - %s' % (', '.join(names), action)), width))
+    for server in servers:
+        for nat in server.nats:
+            lines.append(display_text('NAT %s -> %s (%s)' % (nat, server.name, ', '.join(server.ips))))
+    behind = {name.lower() for server in servers for name in server.backends}
+    loose = [server.name for server in report.skipped_backends
+             if server.name.lower() not in behind and not server.backends]
+    if loose:
+        lines.extend(_wrap('Not scanned (terminates_tls=no): ', 2, display_text(
+            '%s - --include-backends scans them' % ', '.join(loose)), width))
+    if lines and lines[-1] != '':
+        lines.append('')
+    return lines
+
+
+def _plain_state(server: Server, skipped: Set[str], status: Dict[str, str]) -> str:
+    """The state :func:`render_topology` prints for ``server``, without colours (its width)."""
+    if server.name in skipped:
+        return 'not scanned'
+    return status.get(server.name, 'excluded')
 
 
 def _excluded_line(report: ScanReport, style: Style, limit: int = 10) -> str:
@@ -4487,7 +4639,9 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     serving a self-signed or private-CA one (each explained, not counted as needing the
     new certificate), handshake errors, servers that host only names the new certificate
     does not cover, and - only with ``show_all`` - servers not hosting any name and
-    unreachable ones (otherwise counted).
+    unreachable ones (otherwise counted). With topology keys in the targets (ports=,
+    terminates_tls=, vip=, backends=, nat=) the servers are first grouped by load balancer
+    (:func:`render_topology`) and each server line says where TLS terminates for it.
     """
     style = Style(color)
     now = report.finished_at
@@ -4523,6 +4677,10 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     lines.append('')
     if monitor is not None:
         lines.extend(render_monitor(report, monitor, style, show_all, width))
+    # Where TLS terminates (the inventory's topology keys): grouped by load balancer first.
+    lines.extend(render_topology(report, summaries, style, width))
+    tag = topology_tag(list(report.servers) + list(report.skipped_backends)) \
+        if report.has_topology else None
 
     def note(status: str, cert: CertInfo) -> str:
         # Why a group is ORIGIN_CERT / PRIVATE_CERT, or why --strict-public made it NEEDS_UPDATE;
@@ -4540,24 +4698,24 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     _section(lines, 'Servers that need the new certificate' if has_new
              else 'Servers hosting the names', needs, style,
              ('red', 'bold') if needs else ('green', 'bold'), show_all, width, now, has_new,
-             note)
+             note, tag=tag)
     if has_new:
         _section(lines, 'Already serving the new certificate', buckets.get(UPDATED, []), style,
-                 ('green', 'bold'), show_all, width, now, has_new, note)
+                 ('green', 'bold'), show_all, width, now, has_new, note, tag=tag)
     if buckets.get(ORIGIN_CERT):
         _section(lines, 'Serving a Cloudflare Origin CA certificate', buckets[ORIGIN_CERT],
                  style, ('cyan', 'bold'), show_all, width, now, has_new, note,
-                 (_ORIGIN_NOTE, _NOT_COUNTED_NOTE) if has_new else (_ORIGIN_NOTE,))
+                 (_ORIGIN_NOTE, _NOT_COUNTED_NOTE) if has_new else (_ORIGIN_NOTE,), tag=tag)
     if buckets.get(PRIVATE_CERT):
         _section(lines, 'Serving a self-signed or private-CA certificate', buckets[PRIVATE_CERT],
                  style, ('blue', 'bold'), show_all, width, now, has_new, note,
-                 (_PRIVATE_NOTE, _NOT_COUNTED_NOTE) if has_new else (_PRIVATE_NOTE,))
+                 (_PRIVATE_NOTE, _NOT_COUNTED_NOTE) if has_new else (_PRIVATE_NOTE,), tag=tag)
 
     errors = [s for s in buckets.get(TLS_ERROR, []) + buckets.get(TIMEOUT, [])
               if any(r.probe != PROBE_CONNECT for r in s.rows)]
     if errors:
         _section(lines, 'Handshake errors', errors, style, ('magenta', 'bold'), show_all, width,
-                 now, has_new)
+                 now, has_new, tag=tag)
 
     not_hosted = buckets.get(NOT_HOSTED, [])
     other_cert = [s for s in not_hosted if any(r.status in HOSTED_STATUSES and not is_relevant(r)
@@ -4565,16 +4723,16 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
     not_hosted = [s for s in not_hosted if s not in other_cert]
     if other_cert:
         _section(lines, 'Hosting only names the new certificate does not cover', other_cert,
-                 style, ('bold',), show_all, width, now, has_new, note)
+                 style, ('bold',), show_all, width, now, has_new, note, tag=tag)
     unreachable = [s for s in summaries if s.status in (CLOSED, TIMEOUT)
                    and all(r.probe == PROBE_CONNECT for r in s.rows)]
     if show_all:
         if not_hosted:
             _section(lines, 'Not hosting any of the names', not_hosted, style, ('bold',), True,
-                     width, now, has_new)
+                     width, now, has_new, tag=tag)
         if unreachable:
             _section(lines, 'Unreachable (no open port)', unreachable, style, ('bold',), True,
-                     width, now, has_new)
+                     width, now, has_new, tag=tag)
     else:
         hidden = []
         if not_hosted:
@@ -7741,7 +7899,7 @@ def _run_compare(args: argparse.Namespace) -> int:
         ('-t/--targets', args.targets), ('--exclude', args.exclude), ('--cert', args.cert), ('--csv', args.csv),
         ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
         ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update),
-        ('--estate', args.estate)) if used]
+        ('--estate', args.estate), ('--include-backends', args.include_backends)) if used]
     if unsupported:
         raise UsageError('--compare does not take %s' % ', '.join(unsupported))
     ips = []
@@ -7873,6 +8031,23 @@ targets (-t, repeatable):
   on the command line, skipped in files): the system resolver would read them as an
   IPv4 address. IPv4 parts with a leading zero (010.0.0.1, octal) are refused too.
   0.0.0.0/8, multicast and broadcast addresses are never scanned.
+
+topology (keys on a server's line in an inventory file, or CSV columns, Ansible host
+  variables, JSON keys; the web app's Servers view reads the same): where TLS terminates.
+    ports=443,8443         the server's TLS ports, in place of -p for its addresses written
+                           without a port (an address written with its own port keeps it)
+    terminates_tls=yes|no  no: a backend that never gets the certificate (plain HTTP behind
+                           a load balancer) - not scanned unless --include-backends
+    vip=203.0.113.50       an address several servers share (an HA pair): the certificate
+                           goes on every one of them
+    backends=web01,web02   this server is a load balancer forwarding to those servers
+    nat=203.0.113.10       the public address this server is reachable at
+  e.g. "lb01 203.0.113.2 vip=203.0.113.50 backends=web01,web02" and "web01 10.0.0.21
+  terminates_tls=no". The summary then groups the servers by load balancer, and the JSON
+  gets servers[].topology and skippedBackends. A VIP or NAT address is not scanned itself:
+  each server is scanned on its own addresses (add the VIP with -t to see what the active
+  node serves). A malformed value is a TOPOLOGY warning; Ansible group variables
+  ([web:vars]) are not read for the topology - set the keys on each host.
 
 exclude (--exclude, repeatable): addresses that must never be probed, e.g. a mail
   server or a host you may not test inside a swept range. IPs, CIDRs (IPv4/IPv6) or
@@ -8034,7 +8209,14 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   2026092401 ya da 0x7f.0x1 gibi sayısal "alan adları" reddedilir: sistem çözümleyicisi
   bunları IPv4 adresi olarak okur.
   Portu yazılmış bir hedef (10.0.0.5:8443, [2001:db8::5]:8443) yalnızca o porttan
-  taranır; -p portu olmayan hedefler içindir. Ansible INI envanterinde satırın başındaki
+  taranır; -p portu olmayan hedefler içindir.
+  Topoloji anahtarları TLS'in nerede sonlandığını söyler (envanter satırında, CSV sütunu,
+  Ansible host değişkeni ya da JSON anahtarı olarak): ports=443,8443 sunucunun TLS
+  portlarıdır (-p yerine); terminates_tls=no sertifikayı hiç almayan düz HTTP arka uç
+  sunucusudur ve --include-backends verilmedikçe taranmaz; vip= bir HA çiftinin paylaştığı
+  adrestir (sertifika ikisine de kurulur); backends=web01,web02 yük dengeleyicinin
+  arkasındaki sunuculardır; nat= sunucunun genel adresidir. Özet sunucuları yük
+  dengeleyiciye göre gruplar. Ansible INI envanterinde satırın başındaki
   adresin ya da host adının portu (10.0.0.5:2222) Ansible'ın SSH portudur: o sunucu -p
   portlarından taranır.
   Cloudflare Origin CA sertifikası sunan sunucular ORIGIN_CERT, kendinden imzalı ya da
@@ -8113,6 +8295,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help='allow CIDRs/ranges larger than a /16 (up to a /12)')
     scan.add_argument('--no-wildcard-probe', action='store_true',
                       help='for *.domain names only probe the base domain')
+    scan.add_argument('--include-backends', action='store_true',
+                      help='also scan servers the inventory marks terminates_tls=no (plain-HTTP '
+                           'backends that never get the certificate; left out by default)')
     out = parser.add_argument_group('output')
     out.add_argument('--json', metavar='FILE', help='write a JSON report ("-" = stdout)')
     out.add_argument('--csv', metavar='FILE', help='write a CSV report ("-" = stdout)')
@@ -8593,6 +8778,14 @@ def _run(args: argparse.Namespace) -> int:
     if not kept:
         raise UsageError('no scannable targets: all %d target address(es) are excluded by '
                          '--exclude' % excluded_address_count(excluded))
+    # terminates_tls=no (a plain-HTTP backend): never given the certificate, not scanned unless
+    # --include-backends (run_scan sets them aside itself; this is for the messages)
+    backends = [] if args.include_backends else [s for s in kept if not s.gets_certificate]
+    kept = [s for s in kept if s.gets_certificate] if backends else kept
+    if not kept:
+        raise UsageError('no scannable targets: every server left has terminates_tls=no (a '
+                         'plain-HTTP backend that never gets the certificate); '
+                         '--include-backends scans them')
     if args.estate:  # every server is asked for the host names among the targets too
         probes = build_probe_names(names + cert_names + inventory_names(kept),
                                    wildcard_probe=not args.no_wildcard_probe)
@@ -8601,7 +8794,10 @@ def _run(args: argparse.Namespace) -> int:
     if not quiet:
         skipped = (' (%d excluded address(es) left out)' % excluded_address_count(excluded)
                    if excluded else '')
-        if any(server.ports for server in kept):  # 203.0.113.10:8443 in the targets
+        if backends:
+            skipped += (' (%d server(s) with terminates_tls=no left out; --include-backends '
+                        'scans them)' % len(backends))
+        if any(server.ports or server.tls_ports for server in kept):  # 203.0.113.10:8443, ports=
             endpoint_count = len({(ip, port) for server in kept for ip in server.ips
                                   for port in server.ports_for(ip, ports)})
             where = '%d IP(s), %d ip:port endpoint(s)' % (ip_count, endpoint_count)
@@ -8616,7 +8812,7 @@ def _run(args: argparse.Namespace) -> int:
                           workers=args.workers, progress=progress.update,
                           warnings=all_warnings, exclude=exclude_rules,
                           private_cas=private_cas, strict_public=args.strict_public,
-                          new_cert_files=new_cert_files)
+                          new_cert_files=new_cert_files, include_backends=args.include_backends)
     finally:
         progress.finish()
     monitor = None  # type: Optional[MonitorResult]

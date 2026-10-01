@@ -7,13 +7,14 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 1 — shipped 2026-09-27** ([what shipped and where](#wave-1--shipped-2026-09-27)): CLI certificate kinds and per-target ports, CLI monitoring (`--baseline`, `--warn-days`, `--notify`), CAA RFC 8657 restrictions and the MTA-STS policy check, the DANE / TLSA renewal guard, the Global DNS verdict, a certificate from CT or a sample, and the SSL Targets setup form.
 - **Wave 2 — shipped 2026-09-28** ([what shipped and where](#wave-2--shipped-2026-09-28)): the Reverse DNS sweep and FCrDNS of the MX addresses, a phone Tools menu with a first-visit task picker and keyboard shortcuts, the current target carried across the tools with each tool's kept result, Subdomains results in tabs, Copy summary and printing, the installable offline app with a lighter start route, and failed sources said as "n/a" with a retry of only that source, a denser DNS Lookup and IP Intel, and long-job progress outside the view.
 - **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
+- **Wave 4 — shipped 2026-10-01** ([what shipped and where](#wave-4--shipped-2026-10-01)): the headless runner with a nightly GitHub Actions template, the CLI's certificate estate and `bundle-check` with a Certificate estate view and a CSR check, the missing intermediate from a bundled CCADB list with root-store warnings, DNS change requests with an "is it live?" link and fix-as-code, DNS provider moves (new name servers, `dns_parity.py`, the old and the new server side by side), a ledger of what the page sent with related domains and key continuity, and DMARC & TLS reports.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
   - [P0.3 Rollout Board: per-server certificate rollout checklist](#p03-rollout-board-per-server-certificate-rollout-checklist)
   - [P0.4 Per-server deploy snippet + verify-command generator](#p04-per-server-deploy-snippet--verify-command-generator)
-  - [P0.5 Old-vs-new certificate diff and pre-install lint](#p05-old-vs-new-certificate-diff-and-pre-install-lint)
-  - [P0.6 Cutover assistant: expected value, watch mode, cache countdown, TTL planner](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner)
+  - [P0.5 Old-vs-new certificate diff and pre-install lint](#p05-old-vs-new-certificate-diff-and-pre-install-lint) — **pre-install lint shipped (`bundle-check`)**
+  - [P0.6 Cutover assistant: expected value, watch mode, cache countdown, TTL planner](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner) — **expected-value check shipped (DNS change request)**
   - [P0.7 CT watchlist: expiry radar and new-issuance alerts](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts)
   - [P0.8 IP Intel enrichment: open ports, RPKI, routing, abuse, exposure matrix](#p08-ip-intel-enrichment-open-ports-rpki-routing-abuse-exposure-matrix)
   - [P0.9 Zonemaster deep delegation test in Domain Health](#p09-zonemaster-deep-delegation-test-in-domain-health)
@@ -34,22 +35,22 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)](#p18-blacklist--filtering-resolver-reputation-over-doh-honest-about-spamhaus)
   - [P1.9 Permutation discovery from found names, multi-level wildcard filtering](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering)
   - [P1.10 CLI: TLS on mail, database and other non-HTTPS ports](#p110-cli-tls-on-mail-database-and-other-non-https-ports)
-  - [P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency)
+  - [P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency) — **fleet inventory shipped (`--estate`)**
   - [P1.12 CLI local-certs finder + generated fleet one-liners](#p112-cli-local-certs-finder--generated-fleet-one-liners)
   - [P1.13 Renewal planning: ARI window, CA/B lifetime schedule, coverage/CSR planner](#p113-renewal-planning-ari-window-cab-lifetime-schedule-coveragecsr-planner) — **renewal readiness shipped next to it**
   - [P1.14 In-browser DNSSEC chain-of-trust validator and graph](#p114-in-browser-dnssec-chain-of-trust-validator-and-graph)
 - **P2** — later
   - [P2.1 'Copy as command' + provenance on every row](#p21-copy-as-command--provenance-on-every-row)
   - [P2.2 Run history and diff between scans](#p22-run-history-and-diff-between-scans)
-  - [P2.3 Monitoring/automation exports (web + CLI)](#p23-monitoringautomation-exports-web--cli)
-  - [P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns)
+  - [P2.3 Monitoring/automation exports (web + CLI)](#p23-monitoringautomation-exports-web--cli) — **headless runner and nightly template shipped**
+  - [P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns) — **change requests as code shipped**
   - [P2.5 Reverse-DNS sweep of a prefix or ASN](#p25-reverse-dns-sweep-of-a-prefix-or-asn) — **shipped**
   - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each) — **one domain per page shipped (Domain overview)**
   - [P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl)
   - [P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)](#p28-lookalike--typosquat-watch-locale-aware-dnstwist-lite)
   - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view)
   - [P2.10 Self-refreshing provider ranges + two-tier Cloudflare classification](#p210-self-refreshing-provider-ranges--two-tier-cloudflare-classification)
-  - [P2.11 CLI DNS mode: split-horizon diff, per-NS consistency, AXFR check](#p211-cli-dns-mode-split-horizon-diff-per-ns-consistency-axfr-check)
+  - [P2.11 CLI DNS mode: split-horizon diff, per-NS consistency, AXFR check](#p211-cli-dns-mode-split-horizon-diff-per-ns-consistency-axfr-check) — **per-NS parity shipped (`dns_parity.py`)**
   - [P2.12 CLI mail checks: MTA-STS, MX STARTTLS certs, DNSBL incl. Spamhaus, FCrDNS](#p212-cli-mail-checks-mta-sts-mx-starttls-certs-dnsbl-incl-spamhaus-fcrdns)
 - [Rejected (with reasons)](#rejected)
 - [UI upgrade spec](#ui-upgrade-spec)
@@ -89,6 +90,19 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | Retire an IP: every A / AAAA record, CNAME chain, SPF mechanism (term order weighed), MX / NS host, HTTPS hint and imported zone record that still reaches an address or /24, checked live, as a change list worst first; passive reverse IP on a click | Retire an IP (new view, IP addresses) | new; uses the SPF include tree of [P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) |
 | Domain overview: registration, DNS hosting, mail platform, web front, certificates (CAA read as RFC 8659, CT issuers on a click), SaaS verifications (service names, never the tokens) and health on one page, each card linking to its tool | Domain overview (new view, Discover) | one domain of [P2.6](#p26-domain-portfolio-view-many-domains-one-row-each); the TXT vendor names of [P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) |
 | PFX / PKCS#12 import: a password dialog, the bundle's certificates in the chain view, fullchain.pem, an opt-in check that the key matches the certificate (the key never shown), legacy 3DES / RC2 bundles through pure-JS ciphers | Certificate, SSL Targets | new |
+
+## Wave 4 — shipped 2026-10-01
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| Headless runner `tools/ds.mjs` (Node 22+, no dependency): health, subdomains, drift, ct, renew and dane over the app's own libraries, a summary, JSON and Markdown reports, "Changes since the baseline" with what a run could not read carried from the last run that did; a nightly GitHub Actions template that commits the reports and keeps one issue open while something changed | `tools/`, `docs/examples/` | the automation part of [P2.3](#p23-monitoringautomation-exports-web--cli) and [P2.2](#p22-run-history-and-diff-between-scans) |
+| Certificate estate: the CLI's `--estate` inventory of every certificate served (expiry buckets, kinds, a name served with different certificates, keys on several hosts or certificates, weak keys, certificates covering none of the names) read in a new view with filters, a CSV and Copy summary; `bundle-check` (key, CSR, chain order, missing intermediate, extra root, fullchain.pem / chain.pem / haproxy.pem); "Does this CSR match?" in the Certificate view | CLI, Certificate estate (new view, Certificates), Certificate | the fleet part of [P1.11](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency); the pre-install lint of [P0.5](#p05-old-vs-new-certificate-diff-and-pre-install-lint) |
+| Missing intermediate found in a bundled CCADB list (rebuilt weekly by a pull request), fullchain.pem with it, the trusted path chosen over cross-signs; root-store warnings for distrusted, removed or expiring roots with the announcements | Certificate, SSL Targets step 1 | new; replaces the rejected AIA fetch |
+| DNS change request: templates (ACME, CAA, SPF, DMARC, Microsoft 365, Google Workspace, TTLs, a parked domain …) checked with the Zone File linter, instructions in English and Turkish, BIND / Route 53 / Cloudflare API / octoDNS / Terraform, an "is it live?" link checked on four resolvers with a cache-aware schedule and Copy summary; Show the fix in Domain Health and Zone File | DNS change request (new view, DNS tools), Domain Health, Zone File | [P2.4](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns); the expected-value part of [P0.6](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner) |
+| DNS provider moves: the zone compared with the new name servers through Globalping with the move step by step, `cli/dns_parity.py` for any zone over UDP / TCP 53, and the old and the new server of a name compared side by side (web, and the CLI's `--compare` for private addresses) | Zone File › New name servers, Retire an IP, CLI | the per-NS part of [P2.11](#p211-cli-dns-mode-split-horizon-diff-per-ns-consistency-axfr-check); new |
+| What this page sent: every request counted per host with what it carried, named by an endpoint registry a test keeps in step with the code, and the deploy's commit; related domains from the scan's CT certificates; key continuity, the public key looked up in CT | About, Subdomains › Sources, Certificate › CT logs | new |
+| DMARC aggregate and TLS-RPT reports read in the browser (zip, gzip, a mailbox folder), sources classified against the current SPF and the server list, whether `p=reject` can come and what to fix first, TLS failures by type and MX host | DMARC & TLS reports (new view, Mail & domain) | new, next to [P1.6](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf) |
+| Integration: every new view in the navigation, the Tools menu and the shortcuts, the sidebar fitting 18 tools, the workspace switch naming a running Globalping comparison, Copy summary for the estate and the change check page, the ledger naming every new endpoint, the start route back under 370 KB (every view's Copy summary but the start view's loads with its view) | Shell, About | — |
 
 ## P0 — next iteration
 
@@ -571,7 +585,7 @@ Ideas that were checked and dropped, so nobody has to re-investigate them.
 | Idea | Why it was rejected |
 | --- | --- |
 | Verify mail/DB TLS certs (SMTP/IMAP/POP3/465/993) from the browser via Globalping | Globalping HTTPS probes return NO tls object on non-HTTP ports (imap.gmail.com:993 → 'Response does not match HTTP/1.1', :465 timed out). Non-HTTP TLS verification is CLI-only (cli-starttls / cli-mail). |
-| Fetch AIA caIssuers to auto-build the full chain in the browser | AIA caIssuers URLs are http:// (lencr.org, sectigo, pki.goog) → blocked as mixed content from an https page; https variants restrict ACAO or don't respond; crt.sh ?d= and the CCADB CSV have no ACAO. Show the openssl fullchain command instead of fetching. |
+| Fetch AIA caIssuers to auto-build the full chain in the browser | AIA caIssuers URLs are http:// (lencr.org, sectigo, pki.goog) → blocked as mixed content from an https page; https variants restrict ACAO or don't respond; crt.sh ?d= and the CCADB CSV have no ACAO. Show the openssl fullchain command instead of fetching. The Certificate view completes the chain from a bundled CCADB list instead (wave 4). |
 | Check Spamhaus zen/dbl/sbl through public DoH resolvers | Cloudflare returns 127.255.255.254 (open-resolver refused) and Google returns NXDOMAIN — a FALSE 'clean'. Only a user DQS key (&lt;key&gt;.zen.dq.spamhaus.net, experimental) or the CLI querying Spamhaus's authoritative NS works. |
 | ARI renewal window in the browser for GTS / Sectigo / ZeroSSL / SSL.com | Their directories/renewalInfo hosts send no ACAO (dv.acme-v02.api.pki.goog, ari.sectigo.com, ari.trust-provider.com all 'Failed to fetch' from a browser). Only Let's Encrypt (prod+staging) is browser-usable; other CAs → CLI. |
 | Inventory-wide InternetDB open-port exposure matrix from the browser | A short burst (~37 requests) locks the source IP out for ~1h (429, Retry-After not JS-exposed) and it returns fabricated ports for RFC1918. Keep InternetDB per-IP on demand; route fleet-wide port sweeps to the CLI --ports. |

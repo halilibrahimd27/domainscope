@@ -18,7 +18,7 @@ import socket
 import ssl
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from test_ssl_origin_scan import FIXTURES, _Listener, fixture_cert, read_json, run_main, sos
@@ -292,6 +292,67 @@ class CompareUnitTests(unittest.TestCase):
         line = next(l for l in text.splitlines() if l.strip().startswith('HSTS'))
         self.assertTrue(line.rstrip().endswith('DIFFERS'), line)
         self.assertIn('max-age=0: browsers that kept the old header forget it', text)
+
+    def test_two_untrusted_certificates_are_shared_only_when_they_fail_alike(self):
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        internal, origin = fixture_cert('cli_private_wild.pem'), fixture_cert('cli_origin_wild.pem')
+        local = 'unable to get local issuer certificate'
+
+        def compare(ca, cb, old_detail=local, new_detail=local):
+            result = sos.compare_sides(self.side(cert=ca, covers=True, trusted=False, trust_detail=old_detail),
+                                       self.side(ip='192.0.2.2', cert=cb, covers=True, trusted=False, trust_detail=new_detail), now)
+            item = next(f for f in result['fields'] if f['key'] == 'cert_trusted')
+            return [result['verdict'], item['note'], result['shared']]
+        shared, other = ['same', 'cert-untrusted', ['cert-untrusted']], ['differs', 'cert-untrusted-other', []]
+        renewed = dataclasses.replace(internal, sha256='b2' * 32)
+        self.assertEqual(compare(internal, renewed), shared, 'renewed by the same CA')
+        # The new server sends the leaf without its intermediate: a client that trusts only the root refuses it.
+        self.assertEqual(compare(internal, renewed, new_detail='unable to verify the first certificate'), other)
+        # A new certificate that is not valid yet, whatever this machine reports first.
+        self.assertEqual(compare(internal, dataclasses.replace(renewed, not_before=now + timedelta(days=30))), other)
+        # The issuer DN as issued_by compares it; an empty one says nothing; another CA key is another CA.
+        self.assertEqual(compare(internal, dataclasses.replace(renewed, issuer_dn=internal.issuer_dn.upper())), shared)
+        self.assertEqual(compare(dataclasses.replace(internal, issuer_dn=''), dataclasses.replace(renewed, issuer_dn=' ')), other)
+        self.assertEqual(compare(internal, dataclasses.replace(renewed, authority_key_id='00' * 20)), other, 'a re-created CA of the same name')
+        # Cloudflare's RSA and ECC origin CAs: Cloudflare trusts both (the web app sees 'CloudFlare, Inc.' on both).
+        ecc_name = 'CloudFlare Origin SSL ECC Certificate Authority'
+        ecc = dataclasses.replace(origin, sha256='e1' * 32, issuer=dict(origin.issuer, OU=ecc_name),
+                                  issuer_dn=origin.issuer_dn.replace('CloudFlare Origin SSL Certificate Authority', ecc_name),
+                                  authority_key_id='11' * 20)
+        self.assertTrue(sos.is_origin_ca_certificate(ecc))
+        first = 'unable to verify the first certificate'
+        self.assertEqual(compare(origin, ecc, first, first), shared, 'RSA -> ECC origin CA')
+
+    def test_hsts_as_a_browser_reads_it(self):
+        self.assertEqual(sos.hsts_policy('max-age="600"'), (600, False, False, True))
+        self.assertEqual(sos.hsts_policy('max-age=0, max-age=31536000; includeSubDomains'), (0, False, False, True),
+                         'joined headers: only the first counts (RFC 6797 8.1)')
+        for bad in ('includeSubDomains', 'max-age=abc', 'max_age=600', 'max-age=600; max-age=0', 'max-age="600',
+                    'max-age=600; includeSubDomains=1', 'max-age=600; includeSubDomains; includeSubDomains', 'max-age=600 600'):
+            policy = sos.hsts_policy(bad)
+            self.assertEqual([policy[0], policy[3]], [None, False], bad)
+        self.assertEqual(sos.hsts_policy('MAX-AGE = "31536000" ; INCLUDESUBDOMAINS;; preload'), (31536000, True, True, True))
+        self.assertIsNone(sos.hsts_policy('  '))
+        now = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        old = self.side(hsts='max-age=31536000; includeSubDomains; preload')
+
+        def hsts(new_value, old_side=old):
+            result = sos.compare_sides(old_side, self.side(ip='192.0.2.2', hsts=new_value), now)
+            item = next(f for f in result['fields'] if f['key'] == 'hsts')
+            return [result['verdict'], item['severity'], item['note']]
+        for bad in ('includeSubDomains; preload', 'max-age=abc; includeSubDomains; preload', 'max_age=31536000; includeSubDomains; preload',
+                    'max-age=31536000; max-age=0; includeSubDomains; preload',
+                    'max-age=31536000; includeSubDomains; includesubdomains; preload'):
+            self.assertEqual(hsts(bad), ['differs', 'warn', 'hsts-invalid'], bad)
+        self.assertEqual(hsts('max-age=0, max-age=31536000; includeSubDomains; preload'), ['differs', 'warn', 'hsts-off'])
+        self.assertEqual(hsts('max-age=31536000; includeSubDomains; preload, max-age=0'), ['same', 'info', None])
+        self.assertEqual(hsts('MAX-AGE="31536000"; INCLUDESUBDOMAINS; PRELOAD'), ['same', 'info', None])
+        self.assertEqual(hsts('max-age = 300; includeSubDomains; preload'), ['differs', 'warn', 'hsts-weaker'], 'a much shorter max-age')
+        # An old header no browser applies is no policy to lose.
+        self.assertEqual(hsts('max-age=31536000', self.side(hsts='max-age=31536000; max-age=0')), ['same', 'info', 'hsts-new'])
+        result = sos.compare_sides(old, self.side(ip='192.0.2.2', hsts='includeSubDomains'), now)
+        text = sos.render_compare(NAME, '/', old, self.side(ip='192.0.2.2', hsts='includeSubDomains'), result, width=160, now=now)
+        self.assertIn('not a valid header', text)
 
     def test_certificate_names_side_by_side(self):
         now = datetime(2026, 9, 28, tzinfo=timezone.utc)

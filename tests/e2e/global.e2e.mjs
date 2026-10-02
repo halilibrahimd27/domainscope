@@ -584,10 +584,12 @@ async function offlineVerdicts(browser, server) {
           text: tr.textContent
         })),
         mainCn: [...document.querySelectorAll('.glb-geo tbody tr.dt-row')].filter((tr) => !tr.closest('.glb-geo-group') && /China/.test(tr.textContent)).length,
+        desc: group ? group.querySelector('.section-desc')?.textContent || '' : '',
         queries: window.__jsonQueries
       };
     });
     assertEqual([cn.title, cn.flagHidden], ['Mainland China', 'true'], 'group title, its flag decorative');
+    assert(/For A and AAAA it is also asked once on behalf of a US subnet, to tell a China line from an older answer./.test(cn.desc), `the note names the control question: ${cn.desc}`);
     assertEqual(cn.rows.length, 3, 'three China rows');
     assertEqual(cn.mainCn, 0, 'no China row in the main location table');
     assert(cn.rows.every((r) => r.via === 'AliDNS (ECS)' && r.scope === 'Not reported' && r.ops.some((o) => /Alibaba Cloud CDN/.test(o))), `AliDNS, no ECS scope, Alibaba Cloud CDN on each row: ${JSON.stringify(cn.rows.map(({ text, ...r }) => r))}`);
@@ -602,9 +604,11 @@ async function offlineVerdicts(browser, server) {
     await page.waitFor(() => /^Tasarım gereği farklı/.test(document.querySelector('.glb-summary .alert-title')?.textContent || ''), { message: 'TR verdict' });
     const tr = await page.evaluate(() => ({
       title: document.querySelector('.glb-geo-group[data-group="cn"] .glb-geo-group-title > span:not(.flag)')?.textContent.trim(),
+      desc: document.querySelector('.glb-geo-group[data-group="cn"] .section-desc')?.textContent || '',
       message: document.querySelector('.glb-summary .alert-message')?.textContent || ''
     }));
     assertEqual(tr.title, 'Anakara Çin', 'TR group title');
+    assert(/A ve AAAA için ayrıca bir kez ABD’deki bir alt ağ adına sorulur/.test(tr.desc), `TR note names the control question: ${tr.desc}`);
     assert(/Pekin, Çin; Şanghay, Çin; Guangzhou, Çin konumlarını diğer tüm kaynaklardan farklı bir yere \(CNAME china\.example\.com\.w\.kunluncan\.com\) gönderiyor/.test(tr.message), `TR body: ${tr.message}`);
     await setLangUi(page, 'en');
   });

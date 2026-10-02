@@ -85,9 +85,10 @@
   color: var(--text-3);
 }
 
-/* The inventory key of a section, as it is written (ports=, terminates_tls=no). */
+/* The inventory key of a section, as it is written (ports=, terminates_tls=no): one token, never broken. */
 .topo-key {
   margin-left: 6px;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: 500;

@@ -2688,3 +2688,21 @@ test('folderOrder: a folder reads in path order whatever order the file system l
   assert.equal(files[0].name, 'b.pem', 'the input is not reordered');
   assert.deepEqual(folderOrder([{ name: 'y' }, { name: 'x' }]).map((f) => f.name), ['x', 'y'], 'no relative path: by name');
 });
+
+describe('topology notes and card (ui/topology.js)', () => {
+  test('Turkish: one backend reads singular, a VIP one server holds and the intro read naturally', async () => {
+    const { TopologyNotes } = await import('../../assets/js/ui/topology.js');
+    const lb = (names) => ({ terminatesTls: false, backends: names.map((name) => ({ name })), behind: [], vips: [], nats: [], tlsPorts: [] });
+    i18n.setLang('tr');
+    try {
+      const text = (topology) => withFakeDocument(() => TopologyNotes(topology).textContent);
+      assert.equal(text(lb(['web01'])), 'TLS’i web01 sunucusuna olduğu gibi iletiyor: burada sertifika gerekmez');
+      assert.equal(text(lb(['web01', 'web02'])), 'TLS’i web01, web02 sunucularına olduğu gibi iletiyor: burada sertifika gerekmez');
+      assert.equal(i18n.t('topo.vipHolder1', { name: 'db01' }), 'yalnızca db01 sunucusunda');
+      assert.match(i18n.t('topo.introScan'), /arkasındaki sunucular hemen altında listelenir;/);
+    } finally {
+      i18n.setLang('en');
+    }
+    assert.equal(withFakeDocument(() => TopologyNotes(lb(['web01'])).textContent), 'Passes TLS through to web01: no certificate here');
+  });
+});

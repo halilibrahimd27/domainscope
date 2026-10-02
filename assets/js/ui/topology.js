@@ -39,7 +39,7 @@ registerStrings('en', {
   'topo.noTermination': 'TLS terminates nowhere behind it: every backend says terminates_tls=no too — check the inventory',
   'topo.introScan': 'Your inventory says where TLS terminates: the servers behind a load balancer (or a VIP pair) come right after it, and a server with terminates_tls=no needs no certificate.',
   'topo.note.lb': 'Load balancer → {names}',
-  'topo.note.passthrough': 'Passes TLS through to {names}: no certificate here',
+  'topo.note.passthrough': { one: 'Passes TLS through to {names}: no certificate here', other: 'Passes TLS through to {names}: no certificate here' },
   'topo.note.behindPlain': 'Behind {lb} — plain HTTP, no certificate needed',
   'topo.note.behindTls': 'Behind {lb} — re-encrypts: install here too',
   'topo.note.behind': 'Behind {lb}',
@@ -80,14 +80,17 @@ registerStrings('tr', {
   'topo.reencrypts': 'yeniden şifreliyor — sertifika gerekir',
   'topo.vipHolders2': 'ikisine de kurun: {a} ve {b}',
   'topo.vipHoldersN': '{count} sunucunun hepsine kurun: {names}',
-  'topo.vipHolder1': 'yalnızca {name} tutuyor',
+  'topo.vipHolder1': 'yalnızca {name} sunucusunda',
   'topo.vipMixed': 'kurulacak: {tls}; {plain} için terminates_tls=no yazılmış — envanteri kontrol edin',
   'topo.vipPlainAll': '{names} üzerinde düz HTTP (terminates_tls=no) — sertifika gerekmez',
   'topo.noBackends': 'arkasındaki sunucuların hiçbiri envanterde yok',
   'topo.noTermination': 'Arkasında TLS hiçbir yerde sonlanmıyor: her arka uç da terminates_tls=no diyor — envanteri kontrol edin',
-  'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında gelir; terminates_tls=no olan bir sunucuya sertifika gerekmez.',
+  'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında listelenir; terminates_tls=no olan bir sunucuya sertifika gerekmez.',
   'topo.note.lb': 'Yük dengeleyici → {names}',
-  'topo.note.passthrough': 'TLS’i {names} sunucularına olduğu gibi iletiyor: burada sertifika gerekmez',
+  'topo.note.passthrough': {
+    one: 'TLS’i {names} sunucusuna olduğu gibi iletiyor: burada sertifika gerekmez',
+    other: 'TLS’i {names} sunucularına olduğu gibi iletiyor: burada sertifika gerekmez'
+  },
   'topo.note.behindPlain': '{lb} arkasında — düz HTTP, sertifika gerekmez',
   'topo.note.behindTls': '{lb} arkasında — trafiği yeniden şifreliyor: buraya da kurun',
   'topo.note.behind': '{lb} arkasında',
@@ -143,6 +146,7 @@ export function TopologyNotes(topology) {
   if (!topology) return null;
   const notes = [];
   const note = (kind, icon, text) => notes.push(h('li', { class: 'topo-note', dataset: { topo: kind } }, Icon(icon, { size: 12 }), h('span', null, text)));
+  const backendCount = (topology.backends || []).length;
   const backends = (topology.backends || []).map((b) => b.name).join(', ');
   const behind = (topology.behind || []).join(', ');
   // The inventory says terminates_tls=no, DNS disagrees: the certificate goes here, and no note may say otherwise.
@@ -155,7 +159,7 @@ export function TopologyNotes(topology) {
   }
   if (backends) {
     if (topology.terminatesTls || suspect) note('lb', 'git-branch', t('topo.note.lb', { names: backends }));
-    else note('passthrough', 'git-branch', t('topo.note.passthrough', { names: backends }));
+    else note('passthrough', 'git-branch', t('topo.note.passthrough', { count: backendCount, names: backends }));
   } else if (!topology.terminatesTls && !behind && !suspect) {
     note('plain', 'unlock', t('topo.note.plain'));
   }

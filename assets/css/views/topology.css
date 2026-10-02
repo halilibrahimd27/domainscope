@@ -4,13 +4,17 @@
  * (ui/topology.js). Injected with the SSL Targets and Servers views.
  */
 
+/* Prose in a table cell, which keeps tokens whole (.dt-table td): a note wraps between words, and
+   the column never gets narrower than a readable line (like .dt-table td.dt-wrap). */
 .topo-notes {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 12rem;
   margin: 2px 0 0;
   padding: 0;
   list-style: none;
+  white-space: normal;
 }
 
 .topo-note {
@@ -22,13 +26,20 @@
   font-weight: 400;
   line-height: 1.4;
   color: var(--text-2);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .topo-note .icon {
   flex: none;
   margin-top: 2px;
   color: var(--text-3);
+}
+
+/* On a phone the tables scroll sideways: a note wraps inside the first screenful instead. */
+@media (max-width: 640px) {
+  .topo-notes {
+    max-width: 15rem;
+  }
 }
 
 /* The notes that ask for work: install here too, install on every holder of the VIP. */
@@ -70,6 +81,16 @@
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+
+/* The inventory key of a section, as it is written (ports=, terminates_tls=no). */
+.topo-key {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .topo-tree,

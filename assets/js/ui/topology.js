@@ -25,8 +25,8 @@ registerStrings('en', {
   'topo.lbs': 'Load balancers',
   'topo.vips': 'Shared addresses (VIP)',
   'topo.nats': 'NAT: public address → server',
-  'topo.plainTitle': 'No TLS here (terminates_tls=no)',
-  'topo.portsTitle': 'Own TLS ports (ports=)',
+  'topo.plainTitle': 'No TLS here',
+  'topo.portsTitle': 'Own TLS ports',
   'topo.terminates': 'terminates TLS',
   'topo.passthrough': 'passes TLS through',
   'topo.plain': 'plain HTTP — no certificate',
@@ -59,8 +59,8 @@ registerStrings('tr', {
   'topo.lbs': 'Yük dengeleyiciler',
   'topo.vips': 'Paylaşılan adresler (VIP)',
   'topo.nats': 'NAT: genel adres → sunucu',
-  'topo.plainTitle': 'TLS sonlandırmayanlar (terminates_tls=no)',
-  'topo.portsTitle': 'Kendi TLS portları (ports=)',
+  'topo.plainTitle': 'TLS sonlandırmayanlar',
+  'topo.portsTitle': 'Kendi TLS portları',
   'topo.terminates': 'TLS’i sonlandırıyor',
   'topo.passthrough': 'TLS’i olduğu gibi iletiyor',
   'topo.plain': 'düz HTTP — sertifika gerekmez',
@@ -153,8 +153,9 @@ export function TopologyCard(servers) {
   const topo = inventoryTopology(servers);
   if (!topo.any) return null;
   const sections = [];
-  const section = (role, title, list) => sections.push(h('section', { class: 'topo-section', dataset: { role } },
-    h('h3', { class: 'topo-heading' }, title), list));
+  // `key`: the inventory key the section is about, as written (never upper-cased with the title)
+  const section = (role, title, list, key = null) => sections.push(h('section', { class: 'topo-section', dataset: { role } },
+    h('h3', { class: 'topo-heading' }, title, key ? h('code', { class: 'topo-key' }, key) : null), list));
 
   if (topo.lbs.length) {
     section('lbs', t('topo.lbs'), h('ul', { class: 'topo-tree' }, topo.lbs.map(({ server, backends }) => {
@@ -185,11 +186,11 @@ export function TopologyCard(servers) {
   const behindLb = new Set(topo.backendOf.keys());
   const loose = topo.plain.filter((s) => !behindLb.has(s) && !topo.lbs.some((lb) => lb.server === s));
   if (loose.length) {
-    section('plain', t('topo.plainTitle'), h('ul', { class: 'topo-list' }, loose.map((s) => h('li', { class: 'topo-item' }, serverLine(s)))));
+    section('plain', t('topo.plainTitle'), h('ul', { class: 'topo-list' }, loose.map((s) => h('li', { class: 'topo-item' }, serverLine(s)))), 'terminates_tls=no');
   }
   if (topo.ported.length) {
     section('ports', t('topo.portsTitle'), h('ul', { class: 'topo-list' }, topo.ported.map((s) => h('li', { class: 'topo-item' },
-      h('span', { class: 'topo-name' }, s.name), h('span', { class: 'topo-ips' }, s.tlsPorts.join(', '))))));
+      h('span', { class: 'topo-name' }, s.name), h('span', { class: 'topo-ips' }, s.tlsPorts.join(', '))))), 'ports=');
   }
   return Card({
     title: t('topo.title'),

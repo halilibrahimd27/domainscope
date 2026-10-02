@@ -19,7 +19,7 @@
  * DOM-free, no I/O.
  */
 
-import { RESOLVERS } from './resolvers.js';
+import { RESOLVERS, ECS_RESOLVERS } from './resolvers.js';
 import { requestSignature, requestCount } from './egresslog.js';
 
 /**
@@ -96,13 +96,14 @@ function hostOf(url) {
 
 /**
  * Every third-party service, in the order the ledger lists them. DNS-over-HTTPS takes its hosts
- * from lib/resolvers.js, so a resolver added there is covered here at once.
+ * from lib/resolvers.js (the general resolvers and the ones asked only for a location, AliDNS's JSON
+ * form included), so a resolver added there is covered here at once.
  * @type {ReadonlyArray<EgressService>}
  */
 export const EGRESS_SERVICES = Object.freeze([
   service({
     id: 'doh', name: 'DNS-over-HTTPS', role: 'dns',
-    hosts: [...new Set(RESOLVERS.map((r) => hostOf(r.url)).filter(Boolean))],
+    hosts: [...new Set([...RESOLVERS, ...ECS_RESOLVERS].map((r) => hostOf(r.url)).filter(Boolean))],
     endpoints: [ep('query', ['dnsQuestions'])]
   }),
   service({
@@ -191,7 +192,7 @@ export const SELF_SERVICE = Object.freeze({
 const SERVICE_BY_HOST = new Map();
 for (const s of EGRESS_SERVICES) for (const host of s.hosts) SERVICE_BY_HOST.set(host, s);
 const SERVICE_BY_ID = new Map(EGRESS_SERVICES.map((s) => [s.id, s]));
-const RESOLVER_BY_HOST = new Map(RESOLVERS.map((r) => [hostOf(r.url), r]));
+const RESOLVER_BY_HOST = new Map([...RESOLVERS, ...ECS_RESOLVERS].map((r) => [hostOf(r.url), r]));
 
 /**
  * A registry service by id.

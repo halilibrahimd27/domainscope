@@ -4,22 +4,37 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { checkPropagation, answerValues, answerAddresses, isFilteredResponse } from '../../assets/js/lib/propagation.js';
 import { DohClient } from '../../assets/js/lib/doh.js';
-import { RESOLVERS, GEO_VANTAGES, getResolver } from '../../assets/js/lib/resolvers.js';
-import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
+import { RESOLVERS, ECS_RESOLVERS, GEO_VANTAGES, getResolver } from '../../assets/js/lib/resolvers.js';
+import { decodeMessage, encodeMessage, base64UrlDecode, typeToNumber, typeToName } from '../../assets/js/lib/dnswire.js';
 import { AbortError } from '../../assets/js/lib/util.js';
 
 const FIX_DIR = new URL('../fixtures/dns/', import.meta.url);
 const fixture = (id) => decodeMessage(new Uint8Array(readFileSync(new URL(`${id}.bin`, FIX_DIR))));
 
 function resolverIdOf(url) {
-  const r = RESOLVERS.find((x) => url.startsWith(`${x.url}?`));
+  const r = [...RESOLVERS, ...ECS_RESOLVERS].find((x) => url.startsWith(`${x.url}?`));
   return r ? r.id : new URL(url).host;
 }
 
-/** Mock DoH fetch; handler gets { resolver, name, type, ecs } and returns a message spec or throws. */
+/**
+ * Mock DoH fetch; handler gets { resolver, name, type, ecs, json } and returns a message spec or throws.
+ * A JSON-form question (AliDNS: ?name=&type=&edns_client_subnet=) gets the same spec as a JSON answer.
+ */
 function mockFetch(handler) {
   const calls = [];
   const fetchImpl = async (url) => {
+    const params = new URL(url).searchParams;
+    if (params.has('name')) {
+      const call = { resolver: resolverIdOf(url), name: params.get('name'), type: typeToName(Number(params.get('type'))), ecs: params.get('edns_client_subnet'), json: true };
+      calls.push(call);
+      const out = await handler(call);
+      const rr = (a) => ({ name: `${a.name}.`, type: typeToNumber(a.type), TTL: a.ttl, data: String(a.data) });
+      return new Response(JSON.stringify({
+        Status: { NOERROR: 0, SERVFAIL: 2, NXDOMAIN: 3 }[out.rcode || 'NOERROR'], TC: false, RD: true, RA: true, AD: false, CD: false,
+        Question: { name: `${call.name}.`, type: typeToNumber(call.type) }, Answer: (out.answers || []).map(rr),
+        ...(call.ecs ? { edns_client_subnet: call.ecs } : {})
+      }), { headers: { 'content-type': 'application/json' } });
+    }
     const query = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns')));
     const q = query.questions[0];
     const call = { resolver: resolverIdOf(url), name: q.name, type: q.type, ecs: query.edns && query.edns.ecs ? query.edns.ecs.subnet : null };
@@ -153,6 +168,12 @@ describe('checkPropagation', () => {
     assert.deepEqual(r.resolverResults.map((x) => x.resolver.id), RESOLVERS.map((x) => x.id));
     assert.deepEqual(r.geoResults.map((x) => x.vantage.id), GEO_VANTAGES.map((x) => x.id));
     assert.equal(r.geoResults[0].resolver.id, 'google');
+    // Mainland China: AliDNS in its JSON form, with the subnet; it reports no ECS scope.
+    const china = r.geoResults.filter((x) => x.vantage.group === 'cn');
+    assert.deepEqual(china.map((x) => [x.vantage.id, x.resolver.id, x.resolver.name]), [
+      ['cn-bjs-cu', 'alidns', 'AliDNS (ECS)'], ['cn-sha-ct', 'alidns', 'AliDNS (ECS)'], ['cn-can-cm', 'alidns', 'AliDNS (ECS)']]);
+    assert.deepEqual(calls.filter((c) => c.json).map((c) => [c.resolver, c.ecs]), china.map((x) => ['alidns', x.vantage.subnet]));
+    assert.ok(china.every((x) => x.response.ok && x.scopePrefix === null && x.values.join() === '192.0.2.49'));
     const ist = r.geoResults.find((x) => x.vantage.id === 'tr-ist-tt');
     assert.deepEqual(ist.values, ['192.0.2.34']);
     assert.equal(ist.scopePrefix, 24);

@@ -133,7 +133,7 @@ registerStrings('en', {
   'about.res.location': 'Location',
   'about.res.features': 'Features',
   'about.rangesNote': 'CDN IP ranges from official sources, updated {date} ({count} providers recognised by IP range or CNAME).',
-  'about.vantagesNote': 'Global DNS compares {count} vantage points in {countries} countries via EDNS Client Subnet.',
+  'about.vantagesNote': 'Global DNS compares {count} vantage points in {countries} countries via EDNS Client Subnet: Google Public DNS for most of them, AliDNS’s JSON API for the mainland China ones (its standard DoH endpoint cannot be read from a page).',
 
   'about.privacyTitle': 'Privacy',
   'about.privacyDesc': 'Designed so sensitive data never leaves your machine, except what you choose to check from the internet: the public IP / host name pairs in Verify, a domain’s MTA-STS policy host in Domain Health, a zone’s record names asked at its new name servers and the old and new address of a server you move.',
@@ -268,7 +268,7 @@ registerStrings('tr', {
   'about.res.location': 'Konum',
   'about.res.features': 'Özellikler',
   'about.rangesNote': 'CDN IP aralıkları resmî kaynaklardan, {date} tarihinde güncellendi (IP aralığı veya CNAME ile tanınan {count} sağlayıcı).',
-  'about.vantagesNote': 'Global DNS, EDNS Client Subnet ile {countries} ülkedeki {count} gözlem noktasını karşılaştırır.',
+  'about.vantagesNote': 'Global DNS, EDNS Client Subnet ile {countries} ülkedeki {count} gözlem noktasını karşılaştırır: çoğu için Google Public DNS’e, anakara Çin’dekiler için AliDNS’in JSON API’sine sorar (standart DoH uç noktası bir sayfadan okunamıyor).',
 
   'about.privacyTitle': 'Gizlilik',
   'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı; istisna, internetten kontrol etmeyi seçtiklerinizdir: Doğrula’daki genel IP / host adı çiftleri, Alan Adı Sağlığı’nda bir alan adının MTA-STS politika sunucusu, yeni ad sunucularına sorulan zone kayıt adları ve taşıdığınız bir sunucunun eski ve yeni adresi.',

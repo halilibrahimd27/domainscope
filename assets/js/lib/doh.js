@@ -1,5 +1,6 @@
 /**
- * doh.js — DNS-over-HTTPS client (RFC 8484 wire format, GET `?dns=`).
+ * doh.js — DNS-over-HTTPS client (RFC 8484 wire format, GET `?dns=`; the JSON form `?name=&type=`
+ * for a resolver a page can read only that way, lib/dohjson.js, loaded with its first question).
  *
  * Features:
  *  - failover over a resolver chain (transport error / timeout / HTTP error /
@@ -24,10 +25,10 @@
 import {
   encodeQuery, decodeMessage, base64UrlEncode, typeToNumber, typeToName, DnsWireError
 } from './dnswire.js';
-import { RESOLVERS, DEFAULT_CHAIN } from './resolvers.js';
+import { RESOLVERS, ECS_RESOLVERS, DEFAULT_CHAIN } from './resolvers.js';
 import {
   AbortError, TimeoutError, HttpError, fetchWithTimeout, createLimiter, createCache, errorKind,
-  randomLabel, mergeSignals, abortReasonToError, parseRetryAfter, sleep, defaultShouldRetry
+  randomLabel, mergeSignals, abortReasonToError, parseRetryAfter, sleep, defaultShouldRetry, onceAsync
 } from './util.js';
 import { normalizeIP, reversePtrName } from './netinfo.js';
 import { normalizeHostname } from './domain.js';
@@ -86,6 +87,10 @@ const DNS_MESSAGE = 'application/dns-message';
 const FAILOVER_RCODES = new Set(['SERVFAIL', 'REFUSED', 'NOTIMP']);
 const HOST_STATUSES = new Set(['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']);
 const MAX_MESSAGE = 65535;
+// A JSON answer (lib/dohjson.js) is text: a full 64 KB message takes a few times its size.
+const MAX_JSON = 1024 * 1024;
+// The JSON form is loaded with its first question: only Global DNS's mainland China rows use it.
+const loadJson = onceAsync(() => import('./dohjson.js'));
 const MAX_CHAIN = 16;
 // Circuit breaker: after this many consecutive transport failures a resolver
 // is moved to the end of the failover order for BREAKER_COOLDOWN_MS. When the
@@ -201,6 +206,15 @@ function isRetryable(err) {
   if (err instanceof HttpError) return err.status === 408 || err.status === 429 || err.status >= 500;
   if (err instanceof DnsWireError) return false;
   return defaultShouldRetry(err);
+}
+
+/** The JSON body of a JSON DoH answer; text that is not JSON is a DnsWireError (never retried). */
+function parseJsonBody(bytes) {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new DnsWireError('DoH response is not JSON');
+  }
 }
 
 function minTtl(rrs) {
@@ -537,7 +551,8 @@ function messageResponse(name, type, resolverId, msg, elapsedMs) {
  * scan so that its limiter, cache and statistics are shared too.
  *
  * Extensions beyond the contract (all optional constructor options):
- *  - `resolvers` (default RESOLVERS): resolver definitions ids are looked up in;
+ *  - `resolvers` (default RESOLVERS and ECS_RESOLVERS): resolver definitions ids are looked up in; a
+ *    definition with `format: 'json'` is asked in the JSON form (lib/dohjson.js), the others in RFC 8484;
  *    `chain` / `query({ resolver })` may also pass `{ id, url }` objects;
  *  - `baseDelayMs` (250) / `maxDelayMs` (4000): backoff between retry passes;
  *  - `cache`: true | false | a cache object with get/set (e.g. shared);
@@ -582,7 +597,7 @@ export class DohClient {
     retries = 1,
     fetchImpl = globalThis.fetch,
     cache = true,
-    resolvers = RESOLVERS,
+    resolvers = [...RESOLVERS, ...ECS_RESOLVERS],
     baseDelayMs = 250,
     maxDelayMs = 4000,
     cacheSize = 5000,
@@ -788,7 +803,7 @@ export class DohClient {
     // Rotate the balance pool only on a real (cache-miss) request.
     const chainList = balanced ? this.#balancedChain() : null;
     const ctx = {
-      qname, typeNum, typeName, wire: base64UrlEncode(wire), targets, chainList, key, noCache,
+      qname, typeNum, typeName, wire: base64UrlEncode(wire), ecs: ecs || null, targets, chainList, key, noCache,
       timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : this.#timeoutMs,
       retries: Number.isFinite(retries) && retries >= 0 ? Math.floor(retries) : this.#retries
     };
@@ -1176,6 +1191,8 @@ export class DohClient {
 
   /** One HTTP request; resolves with the decoded message or throws. */
   async #request(r, ctx, signal) {
+    const json = r.format === 'json';
+    const J = json ? await loadJson() : null;
     this.#counters.requests += 1;
     const t0 = clock();
     const timeoutMs = ctx.timeoutMs;
@@ -1184,14 +1201,16 @@ export class DohClient {
       timeoutCtl.abort(new TimeoutError(`${r.id}: no answer within ${timeoutMs} ms`, { timeoutMs }));
     }, timeoutMs);
     const linked = signal ? mergeSignals(signal, timeoutCtl.signal) : timeoutCtl.signal;
-    const url = `${r.url}${r.url.includes('?') ? '&' : '?'}dns=${ctx.wire}`;
+    const url = json
+      ? J.dnsJsonUrl(r.url, { name: ctx.qname, type: ctx.typeNum, ecs: ctx.ecs })
+      : `${r.url}${r.url.includes('?') ? '&' : '?'}dns=${ctx.wire}`;
     try {
       const res = await fetchWithTimeout(url, {
         fetchImpl: this.#fetchImpl,
         signal: linked,
         timeoutMs: 0, // our own timer covers headers and body
         method: 'GET',
-        headers: { accept: DNS_MESSAGE },
+        headers: { accept: json ? J.DNS_JSON : DNS_MESSAGE },
         credentials: 'omit',
         referrerPolicy: 'no-referrer',
         cache: ctx.noCache ? 'no-store' : 'default'
@@ -1204,8 +1223,8 @@ export class DohClient {
         throw new HttpError(res.status, url, body, { statusText: res.statusText || '', retryAfterMs });
       }
       const bytes = new Uint8Array(await raceSignal(res.arrayBuffer(), linked));
-      if (bytes.length > MAX_MESSAGE) throw new DnsWireError(`DoH response larger than ${MAX_MESSAGE} bytes`);
-      const msg = decodeMessage(bytes);
+      if (bytes.length > (json ? MAX_JSON : MAX_MESSAGE)) throw new DnsWireError(`DoH response larger than ${json ? MAX_JSON : MAX_MESSAGE} bytes`);
+      const msg = json ? J.decodeDnsJson(parseJsonBody(bytes)) : decodeMessage(bytes);
       if (!msg.flags.qr) throw new DnsWireError('DoH response is not a DNS response (QR=0)');
       const q = msg.questions[0];
       if (q && (canonicalName(q.name) !== ctx.qname || q.typeNum !== ctx.typeNum)) {

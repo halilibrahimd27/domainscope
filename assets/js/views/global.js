@@ -30,7 +30,7 @@ import {
   Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion } from '../i18n.js';
-import { RESOLVERS, GEO_VANTAGES } from '../lib/resolvers.js';
+import { RESOLVERS, GEO_VANTAGES, getAnyResolver } from '../lib/resolvers.js';
 import { Flag } from '../ui/flag.js';
 import { checkPropagation, propagationVerdict, splitChain } from '../lib/propagation.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
@@ -79,7 +79,7 @@ registerStrings('en', {
   'glb.progressDone': 'All answers received',
   'glb.cancelled': 'Stopped — showing the answers received so far.',
   'glb.how.title': 'Why can answers differ?',
-  'glb.how.ecs': 'Locations use EDNS Client Subnet (ECS): Google Public DNS is asked on behalf of a typical home-internet subnet in each place, so the authoritative server answers as if a user there had asked.',
+  'glb.how.ecs': 'Locations use EDNS Client Subnet (ECS): Google Public DNS — AliDNS for the mainland China ones — is asked on behalf of a typical home-internet subnet in each place, so the authoritative server answers as if a user there had asked.',
   'glb.how.geo': 'CDNs and GeoDNS services (Cloudflare, Akamai, CloudFront …) deliberately hand out different, nearby servers per region — different IPs per location are normal for them.',
   'glb.how.anycast': 'Public resolvers are anycast: you reach the nearest point of presence (PoP, shown when the resolver reports its NSID). Each PoP has its own cache and its own view of GeoDNS.',
   'glb.how.ttl': 'Right after a DNS change, resolvers keep the old answer until its TTL expires — that is what “DNS propagation” means.',
@@ -97,6 +97,7 @@ registerStrings('en', {
   'glb.sum.designTitle': 'Differs by design: CDN / GeoDNS edges ({operators})',
   'glb.sum.designBody': 'Every answer is an edge of a known CDN, platform or DNS steering service, and the CNAME chains agree up to it. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.designSteered': 'Every answer is an edge of a known CDN, platform or DNS steering service. On the way, {owner} sends sources to different names ({targets}), but they lead to the same CDN names: weighted or load-balanced records in the name’s own DNS, not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.designGeo': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source: the name’s own DNS answers the resolvers there from a line of its own (typically for a CDN inside mainland China), not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.nodataTitle': 'No {type} records anywhere — the CNAME chains differ by design ({operators})',
   'glb.sum.nodataBody': 'No source returns {type} records for this name. The CNAME chains differ only by steering (CDN / GeoDNS, weighted or load-balanced records) and all lead to {operators} — this is not propagation.',
   'glb.sum.designMulti': 'More than one operator answers (multi-CDN steering). If you are moving from one to the other, answers that point to the old one stay cached until their TTL expires.',
@@ -123,6 +124,7 @@ registerStrings('en', {
   },
   'glb.find.cname': 'The record at {owner} differs between sources: {targets}. Either it changed recently and the old answer stays cached until its TTL expires, or its DNS sends sources to different names on purpose (GeoDNS, weighted or load-balanced records), or its name servers disagree.',
   'glb.find.cnameMove': 'The record at {owner} points to different providers depending on the source ({operators}): {targets}. A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
+  'glb.find.cnameGeo': '{owner} sends {sources} to {targets}, unlike every other source: the name’s own DNS answers the resolvers there from a line of its own (typically for a CDN inside mainland China) — by design, not a change.',
   'glb.find.operators': 'The {type} records of {name} point to different providers depending on the source ({operators}). A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
   'glb.find.addressRecords': '{type} records',
   'glb.find.noRecords': 'no CNAME and no {type} records',
@@ -165,6 +167,8 @@ registerStrings('en', {
   'glb.res.desc': '{count} DNS-over-HTTPS resolvers, each asked directly (no failover). Anycast resolvers answer from the PoP nearest to you.',
   'glb.geo.title': 'Locations — GeoDNS via EDNS Client Subnet',
   'glb.geo.desc': 'Google Public DNS asked on behalf of a home-internet subnet in {count} locations: roughly what users there get.',
+  'glb.cn.title': 'Mainland China',
+  'glb.cn.desc': 'AliDNS (Alibaba Cloud) asked on behalf of a home-internet subnet of {count} mainland ISPs, in Beijing, Shanghai and Guangzhou: roughly what users there get, also for names whose GeoDNS ignores Google’s subnet. AliDNS reports no ECS scope and does not validate DNSSEC.',
   'glb.col.resolver': 'Resolver',
   'glb.col.location': 'Location',
   'glb.col.filtering': 'Filtering',
@@ -215,7 +219,7 @@ registerStrings('tr', {
   'glb.progressDone': 'Tüm yanıtlar alındı',
   'glb.cancelled': 'Durduruldu — o ana kadar gelen yanıtlar gösteriliyor.',
   'glb.how.title': 'Yanıtlar neden farklı olabilir?',
-  'glb.how.ecs': 'Konumlar EDNS Client Subnet (ECS) kullanır: Google Public DNS’e her yerdeki tipik bir ev interneti alt ağı adına sorulur; yetkili sunucu, oradaki bir kullanıcı sormuş gibi yanıt verir.',
+  'glb.how.ecs': 'Konumlar EDNS Client Subnet (ECS) kullanır: Google Public DNS’e — anakara Çin’dekiler için AliDNS’e — her yerdeki tipik bir ev interneti alt ağı adına sorulur; yetkili sunucu, oradaki bir kullanıcı sormuş gibi yanıt verir.',
   'glb.how.geo': 'CDN’ler ve GeoDNS hizmetleri (Cloudflare, Akamai, CloudFront …) her bölgeye bilerek farklı ve yakın sunucular verir — konuma göre farklı IP’ler onlar için normaldir.',
   'glb.how.anycast': 'Genel çözümleyiciler anycast’tir: size en yakın erişim noktasına (PoP; çözümleyici NSID bildiriyorsa gösterilir) bağlanırsınız. Her PoP’un kendi önbelleği ve kendi GeoDNS görünümü vardır.',
   'glb.how.ttl': 'Bir DNS değişikliğinden hemen sonra çözümleyiciler eski yanıtı TTL süresi dolana kadar tutar — “DNS yayılması” (propagation) budur.',
@@ -233,6 +237,7 @@ registerStrings('tr', {
   'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
   'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designSteered': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. Yol üzerinde {owner} kaynakları farklı adlara gönderiyor ({targets}), ama bunlar aynı CDN adlarına çıkıyor: adın kendi DNS’indeki ağırlıklı ya da yük dengeleyen kayıtlar, bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designGeo': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: adın kendi DNS’i oradaki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle anakara Çin içindeki bir CDN için), bu bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.nodataTitle': 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri tasarım gereği farklı ({operators})',
   'glb.sum.nodataBody': 'Hiçbir kaynak bu ad için {type} kaydı döndürmüyor. CNAME zincirleri yalnızca yönlendirme (CDN / GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar) yüzünden farklı ve hepsi {operators} adlarına çıkıyor — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designMulti': 'Birden fazla sağlayıcı yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
@@ -259,6 +264,7 @@ registerStrings('tr', {
   },
   'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Ya kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor, ya adın DNS’i kaynakları bilerek farklı adlara gönderiyor (GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar), ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.cnameMove': '{owner} kaydı kaynağa göre farklı sağlayıcıları gösteriyor ({operators}): {targets}. Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
+  'glb.find.cnameGeo': '{owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: adın kendi DNS’i oradaki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle anakara Çin içindeki bir CDN için) — tasarım gereği, bir değişiklik değil.',
   'glb.find.operators': '{name} adının {type} kayıtları kaynağa göre farklı sağlayıcıları gösteriyor ({operators}). Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
   'glb.find.addressRecords': '{type} kayıtları',
   'glb.find.noRecords': 'CNAME ve {type} kaydı yok',
@@ -301,6 +307,8 @@ registerStrings('tr', {
   'glb.res.desc': '{count} DNS-over-HTTPS çözümleyicisi; her birine doğrudan (yedeğe geçmeden) soruldu. Anycast çözümleyiciler size en yakın PoP’tan yanıt verir.',
   'glb.geo.title': 'Konumlar — EDNS Client Subnet ile GeoDNS',
   'glb.geo.desc': 'Google Public DNS’e {count} konumdaki bir ev interneti alt ağı adına soruldu: oradaki kullanıcıların aldığı yanıta yakındır.',
+  'glb.cn.title': 'Çin (anakara)',
+  'glb.cn.desc': 'AliDNS’e (Alibaba Cloud) Pekin, Şanghay ve Guangzhou’daki {count} anakara Çin internet sağlayıcısının ev interneti alt ağı adına soruldu: oradaki kullanıcıların aldığı yanıta yakındır; GeoDNS’i Google’ın gönderdiği alt ağı dikkate almayan adlar için de. AliDNS ECS kapsamı bildirmez ve DNSSEC doğrulamaz.',
   'glb.col.resolver': 'Çözümleyici',
   'glb.col.location': 'Konum',
   'glb.col.filtering': 'Filtreleme',
@@ -700,6 +708,7 @@ export function mount(container, ctx) {
   const exportOpts = {
     resolvers: { filename: 'global-dns-resolvers', subject: '' },
     geo: { filename: 'global-dns-locations', subject: '' },
+    cn: { filename: 'global-dns-china', subject: '' },
     ips: { filename: 'global-dns-ips', subject: '' }
   };
   const latencyValue = (row) => (row.pending || !row.response ? null : (row.response.ok ? row.response.elapsedMs : row.response.totalMs));
@@ -754,7 +763,50 @@ export function mount(container, ctx) {
     ]
   });
 
-  /* --- geo table --------------------------------------------------------------- */
+  /* --- geo tables: the locations Google is asked for, and mainland China (AliDNS) ---------- */
+  /** The resolver a location is asked through (its own, else Google). */
+  const resolverOf = (row) => getAnyResolver(row.vantage.resolver || 'google') || { name: row.vantage.resolver || '' };
+  const geoColumns = ({ withResolver = false } = {}) => [
+    {
+      key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
+      render: (r) => groupMark(rowGroup(r)), exportValue: (r) => rowGroup(r)?.letter || ''
+    },
+    {
+      key: 'location', label: t('glb.col.location'), sortable: true,
+      sortValue: (r) => `${r.vantage.countryCode} ${r.vantage.city || ''}`,
+      exportValue: (r) => vantageName(r.vantage),
+      render: (r) => h('span', { class: 'glb-loc-geo' }, flag(r.vantage.countryCode, formatRegion(r.vantage.countryCode)), ' ', vantageName(r.vantage))
+    },
+    {
+      key: 'isp', label: t('glb.col.isp'), sortable: true, sortValue: (r) => r.vantage.isp,
+      exportValue: (r) => `${r.vantage.isp} AS${r.vantage.asn}`,
+      render: (r) => h('div', { class: 'glb-isp' }, h('span', null, r.vantage.isp), h('span', { class: 'muted text-xs mono' }, `AS${r.vantage.asn}`))
+    },
+    ...(withResolver ? [{
+      key: 'via', label: t('glb.col.resolver'), sortable: true, sortValue: (r) => resolverOf(r).name, exportValue: (r) => resolverOf(r).name,
+      render: (r) => h('span', { class: 'glb-via' }, resolverOf(r).name)
+    }] : []),
+    { key: 'subnet', label: t('glb.col.subnet'), mono: true, sortable: true, sortValue: (r) => ipSortValue(r.vantage.subnet.split('/')[0]), render: (r) => r.vantage.subnet, exportValue: (r) => r.vantage.subnet },
+    {
+      key: 'scope', label: t('glb.col.scope'), sortable: true, align: 'end',
+      title: t('glb.scopeTitle'),
+      sortValue: (r) => (r.pending ? null : r.scopePrefix),
+      exportValue: (r) => (Number.isFinite(r.scopePrefix) ? `/${r.scopePrefix}` : ''),
+      render: (r) => (r.pending ? null : Number.isFinite(r.scopePrefix)
+        ? h('span', { class: ['mono', { muted: r.scopePrefix === 0 }], title: t('glb.scopeTitle') }, `/${r.scopePrefix}`)
+        : h('span', { class: 'dt-null', title: t('glb.scopeNone') }, '—'))
+    },
+    { key: 'latency', label: t('glb.col.latency'), sortable: true, align: 'end', sortValue: latencyValue, render: renderLatency, exportValue: latencyValue },
+    {
+      key: 'operator', label: t('glb.col.operator'),
+      exportValue: (r) => operatorsOf(r).map((c) => c.provider?.name || c.kind).join(' '),
+      render: (r) => {
+        const kinds = operatorsOf(r);
+        return kinds.length ? h('div', { class: 'cluster glb-ops' }, kinds.map((c) => KindBadge(c))) : null;
+      }
+    },
+    { key: 'answer', label: t('glb.col.answer'), render: renderAnswer, searchValue: answerText, exportValue: answerText }
+  ];
   const geoTable = DataTable({
     caption: t('glb.geo.title'),
     rowKey: (r) => r.key,
@@ -762,44 +814,25 @@ export function mount(container, ctx) {
     dense: true,
     maxHeight: null,
     export: exportOpts.geo,
-    columns: [
-      {
-        key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
-        render: (r) => groupMark(rowGroup(r)), exportValue: (r) => rowGroup(r)?.letter || ''
-      },
-      {
-        key: 'location', label: t('glb.col.location'), sortable: true,
-        sortValue: (r) => `${r.vantage.countryCode} ${r.vantage.city || ''}`,
-        exportValue: (r) => vantageName(r.vantage),
-        render: (r) => h('span', { class: 'glb-loc-geo' }, flag(r.vantage.countryCode, formatRegion(r.vantage.countryCode)), ' ', vantageName(r.vantage))
-      },
-      {
-        key: 'isp', label: t('glb.col.isp'), sortable: true, sortValue: (r) => r.vantage.isp,
-        exportValue: (r) => `${r.vantage.isp} AS${r.vantage.asn}`,
-        render: (r) => h('div', { class: 'glb-isp' }, h('span', null, r.vantage.isp), h('span', { class: 'muted text-xs mono' }, `AS${r.vantage.asn}`))
-      },
-      { key: 'subnet', label: t('glb.col.subnet'), mono: true, sortable: true, sortValue: (r) => ipSortValue(r.vantage.subnet.split('/')[0]), render: (r) => r.vantage.subnet, exportValue: (r) => r.vantage.subnet },
-      {
-        key: 'scope', label: t('glb.col.scope'), sortable: true, align: 'end',
-        title: t('glb.scopeTitle'),
-        sortValue: (r) => (r.pending ? null : r.scopePrefix),
-        exportValue: (r) => (Number.isFinite(r.scopePrefix) ? `/${r.scopePrefix}` : ''),
-        render: (r) => (r.pending ? null : Number.isFinite(r.scopePrefix)
-          ? h('span', { class: ['mono', { muted: r.scopePrefix === 0 }], title: t('glb.scopeTitle') }, `/${r.scopePrefix}`)
-          : h('span', { class: 'dt-null', title: t('glb.scopeNone') }, '—'))
-      },
-      { key: 'latency', label: t('glb.col.latency'), sortable: true, align: 'end', sortValue: latencyValue, render: renderLatency, exportValue: latencyValue },
-      {
-        key: 'operator', label: t('glb.col.operator'),
-        exportValue: (r) => operatorsOf(r).map((c) => c.provider?.name || c.kind).join(' '),
-        render: (r) => {
-          const kinds = operatorsOf(r);
-          return kinds.length ? h('div', { class: 'cluster glb-ops' }, kinds.map((c) => KindBadge(c))) : null;
-        }
-      },
-      { key: 'answer', label: t('glb.col.answer'), render: renderAnswer, searchValue: answerText, exportValue: answerText }
-    ]
+    columns: geoColumns()
   });
+  // A row group of its own: the locations asked through another resolver (mainland China, AliDNS).
+  const chinaTable = DataTable({
+    caption: t('glb.cn.title'),
+    rowKey: (r) => r.key,
+    rowClass,
+    dense: true,
+    maxHeight: null,
+    export: exportOpts.cn,
+    columns: geoColumns({ withResolver: true })
+  });
+  const CHINA = GEO_VANTAGES.filter((v) => v.group === 'cn');
+  const isChinaRow = (r) => r.kind === 'geo' && r.vantage.group === 'cn';
+  const chinaGroup = h('div', { class: 'glb-geo-group stack-sm', dataset: { group: 'cn' } },
+    // The heading names the region: its flag is decorative.
+    h('h3', { class: 'glb-geo-group-title' }, flag('CN'), h('span', null, t('glb.cn.title'))),
+    h('p', { class: 'section-desc' }, t('glb.cn.desc', { count: formatNumber(CHINA.length) })),
+    chinaTable.el || chinaTable);
 
   /** Operators of a row's answer IPs (Cloudflare, CDN · X, Direct …): those of its verdict group. */
   function operatorsOf(row) {
@@ -905,9 +938,9 @@ export function mount(container, ctx) {
   });
   const geoSection = Section({
     title: t('glb.geo.title'),
-    description: t('glb.geo.desc', { count: formatNumber(GEO_VANTAGES.length) }),
+    description: t('glb.geo.desc', { count: formatNumber(GEO_VANTAGES.length - CHINA.length) }),
     className: 'glb-geo',
-    children: geoTable
+    children: [geoTable.el || geoTable, CHINA.length ? chinaGroup : null]
   });
   const emptyEl = EmptyState({
     icon: 'globe',
@@ -1018,6 +1051,7 @@ export function mount(container, ctx) {
     if (filterKey && !groupByKey.has(filterKey)) setFilter(null);
     resolverTable.refresh();
     geoTable.refresh();
+    chinaTable.refresh();
     ipTable.refresh();
     renderLegend();
     renderStats();
@@ -1058,6 +1092,7 @@ export function mount(container, ctx) {
     const fn = g ? (row) => !row.pending && !isBrowserBlocked(row) && row.values.join('\n') === key : null;
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
+    chinaTable.setFilter(fn);
     ipTable.setFilter(g ? (ipRow) => [...ipRow.members].some((k) => g.members.includes(k)) : null);
     clear(filterNote);
     filterNote.hidden = !g;
@@ -1156,14 +1191,20 @@ export function mount(container, ctx) {
       // No records of the type anywhere (AAAA of an IPv4-only CDN name): only the chains differ.
       const type = current.type;
       const steered = verdict.steering[0];
+      // Only the locations asked through a resolver of their own (mainland China) take another branch.
+      const split = verdict.geoSplits[0];
       const body = verdict.noRecords ? t('glb.sum.nodataBody', { type, operators })
-        : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
-          : t('glb.sum.designBody');
+        : split ? t('glb.sum.designGeo', { owner: split.owner || current.name, sources: sourceNames(split.members), targets: splitTargets(split) })
+          : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
+            : t('glb.sum.designBody');
+      // An operator only those locations get is explained above: "multi-CDN" only for the others.
+      const away = new Set(verdict.geoSplits.flatMap((s) => s.members));
+      const multi = verdict.operators.filter((op) => !op.members.every((m) => away.has(m))).length > 1;
       alert = Alert({
         variant: 'info',
         icon: 'globe',
         title: verdict.noRecords ? t('glb.sum.nodataTitle', { type, operators }) : t('glb.sum.designTitle', { operators }),
-        message: [body, verdict.multiOperator ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
+        message: [body, multi ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
       });
     } else if (state === 'geo') {
       const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
@@ -1192,12 +1233,20 @@ export function mount(container, ctx) {
     return list.length > max ? `${list.slice(0, max).join(separator)} ${t('glb.find.more', { count: list.length - max })}` : list.join(separator);
   }
 
+  /** Where a location split sends its locations: "CNAME x", or the address records (null). */
+  const splitTargets = (split) => shortList(split.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)), 3, ' · ');
+
   /**
    * Display names of answer sources (resolver names, location names), de-duplicated. Joined
    * with "; ": a location name has a comma of its own ("Istanbul, Türkiye").
    */
   function sourceNames(keys) {
-    const names = keys.map((key) => {
+    // In table order (resolvers, then locations as listed), not in the order answers arrived.
+    const order = (key) => {
+      const i = current.rows.findIndex((r) => r.key === key);
+      return i === -1 ? Infinity : i;
+    };
+    const names = [...keys].sort((a, b) => order(a) - order(b)).map((key) => {
       const row = current.rowByKey.get(key);
       if (!row) return key;
       return row.kind === 'geo' ? vantageName(row.vantage) : row.resolver.name;
@@ -1223,6 +1272,11 @@ export function mount(container, ctx) {
         break;
       case 'cname': {
         const owner = f.owner || current.name;
+        if (f.byLocation) {
+          // Only the locations asked through a resolver of their own take this branch: by design.
+          text = t('glb.find.cnameGeo', { owner, sources: sourceNames(f.byLocation.members), targets: splitTargets(f.byLocation) });
+          break;
+        }
         // null: the chain ends there — in address records, or with no records at all.
         const end = verdict.noRecords ? t('glb.find.noRecords', { type: current.type }) : t('glb.find.addressRecords', { type: current.type });
         const targets = f.targets.map((x) => (x === null ? end : `CNAME ${x}`)).join(' · ');
@@ -1363,10 +1417,12 @@ export function mount(container, ctx) {
     groupByKey = new Map();
     resolverTable.setFilter(null);
     geoTable.setFilter(null);
+    chinaTable.setFilter(null);
     ipTable.setFilter(null);
     ipTable.setSearch('');
     resolverTable.setRows(rows.filter((r) => r.kind === 'resolver'));
-    geoTable.setRows(rows.filter((r) => r.kind === 'geo'));
+    geoTable.setRows(rows.filter((r) => r.kind === 'geo' && !isChinaRow(r)));
+    chinaTable.setRows(rows.filter(isChinaRow));
     ipTable.setRows([]);
     geoSection.hidden = !geo;
     for (const o of Object.values(exportOpts)) o.subject = name;

@@ -11,10 +11,12 @@
  * keeping results without re-querying, desktop + phone in light/dark, no horizontal page
  * scroll, no console errors / exceptions / CSP violations and no missing i18n keys.
  *
- * OFFLINE (always; alone with --offline): a fake DoH inside the page answers every query, so
- * the verdict (why answers differ: CDN / GeoDNS edges by design, or which part looks like
- * propagation or a misconfiguration) and the operator on every answer group are checked with
- * fixed answers, in EN / TR, light / dark, at 1440 px and 375 px, with nothing leaving the page.
+ * OFFLINE (always; alone with --offline): a fake DoH inside the page answers every query — the
+ * mainland China locations' AliDNS questions in its JSON form (?name=&type=&edns_client_subnet=)
+ * too — so the verdict (why answers differ: CDN / GeoDNS edges by design, or which part looks
+ * like propagation or a misconfiguration), the operator on every answer group and the China row
+ * group are checked with fixed answers, in EN / TR, light / dark, at 1440 px and 375 px, with
+ * nothing leaving the page.
  *
  * Quad9 / Quad9 ECS (resolvers.js browserReliable:false): browsers use HTTP/3 for them and
  * Quad9's HTTP/3 answers carry no CORS header (tests/live/browser-doh-matrix.mjs), so their rows
@@ -31,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { groupAnswers, groupLetter, median, minAnswerTtl, splitChain, isBrowserBlocked, terminalCommand, GLOBAL_TYPES } from '../../assets/js/views/global.js';
-import { RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
+import { RESOLVERS, ECS_RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
@@ -47,7 +49,7 @@ const SHOTS_ON = !argv.includes('--no-shots');
 const OFFLINE = argv.includes('--offline');
 /** Third-party hosts whose request failures the view reports in its UI: every public DoH
  *  resolver can time out or, like Quad9 over HTTP/3, omit CORS headers. */
-const FLAKY_HOSTS = [...RESOLVERS.map((r) => new URL(r.url).hostname)];
+const FLAKY_HOSTS = [...RESOLVERS, ...ECS_RESOLVERS].map((r) => new URL(r.url).hostname);
 const DONE = "document.querySelector('.glb-summary .alert') && document.querySelector('.glb-summary .alert').dataset.state !== 'running'";
 
 /* ------------------------------------------------------------------------ */
@@ -185,8 +187,11 @@ function tableInfo() {
 /* Offline: the verdict over a fake DoH (no request leaves the page)        */
 /* ------------------------------------------------------------------------ */
 
-/** Resolver DoH URL → id, so the fake can answer per resolver. */
+/** Resolver DoH URL → id, so the fake can answer per resolver (AliDNS: the JSON form). */
 const RESOLVER_URLS = RESOLVERS.map((r) => [r.url, r.id]);
+const JSON_URLS = ECS_RESOLVERS.map((r) => [r.url, r.id]);
+/** The mainland China locations (asked through AliDNS) and what the China group shows for them. */
+const CHINA = GEO_VANTAGES.filter((v) => v.group === 'cn');
 /** Locations whose ECS queries get a SERVFAIL for mixed.example.com (Istanbul, Ankara). */
 const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
 
@@ -211,12 +216,18 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  *   the same Fastly name — steering in the name's own DNS, by design;
  * - nov6.example.com: a shared name steers to Fastly or Cloudflare; for AAAA every answer is
  *   empty (A records only), so only the CNAME chains are judged — by design;
- * - broken.example.com: SERVFAIL everywhere — nobody resolves it, never "agree".
+ * - broken.example.com: SERVFAIL everywhere — nobody resolves it, never "agree";
+ * - china.example.com: its DNS answers mainland China's resolver (AliDNS, the China rows) from a
+ *   line of its own — a CNAME to Alibaba Cloud CDN — and everyone else with one CloudFront
+ *   distribution: by design, the China rows' operator named.
+ * The China rows' questions reach AliDNS in its JSON form and are answered in it (recorded in
+ * window.__jsonQueries); every other name answers them like the other locations.
  * An AAAA query gets the same answers without their A records.
  * Any other request to another origin gets a 503 and is recorded in window.__externalFetches.
  */
 const fakeGlobalDnsScript = () => `(() => {
   const RESOLVER_URLS = ${JSON.stringify(RESOLVER_URLS)};
+  const JSON_URLS = ${JSON.stringify(JSON_URLS)};
   const SERVFAIL_SUBNETS = ${JSON.stringify(SERVFAIL_SUBNETS)};
   const OLD = '192.0.2.10';
   const NEW = '198.51.100.20';
@@ -271,13 +282,42 @@ const fakeGlobalDnsScript = () => `(() => {
       return { answers: [cn(qname, glb), cn(glb, target), a(target, ip)] };
     }
     if (qname === 'broken.example.com') return { rcode: 'SERVFAIL', answers: [] };
+    if (qname === 'china.example.com') {
+      if (resolver === 'alidns') {
+        const edge = 'china.example.com.w.kunluncan.com';
+        return { answers: [cn(qname, edge), a(edge, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
+      }
+      return { answers: [cn(qname, 'd333333abcdef8.cloudfront.net'), a('d333333abcdef8.cloudfront.net', CLOUDFRONT[h % 4])] };
+    }
     return { rcode: 'NXDOMAIN', answers: [] };
+  };
+  // The JSON form (AliDNS /resolve): the same answers, as AliDNS writes them.
+  const JSON_TYPES = { A: 1, CNAME: 5, AAAA: 28 };
+  const RCODES = { NOERROR: 0, SERVFAIL: 2, NXDOMAIN: 3, REFUSED: 5 };
+  window.__jsonQueries = [];
+  const jsonAnswer = (url, resolver, init) => {
+    const u = new URL(url);
+    const qname = String(u.searchParams.get('name')).toLowerCase().replace(/[.]$/, '');
+    const type = Number(u.searchParams.get('type'));
+    const ecs = u.searchParams.get('edns_client_subnet');
+    const headers = (init && init.headers) || {};
+    window.__jsonQueries.push({ resolver, name: qname, type, ecs, accept: typeof headers.get === 'function' ? headers.get('accept') : headers.accept });
+    const out = answer(qname, resolver, ecs);
+    if (type === 28) out.answers = out.answers.filter((rr) => rr.type !== 'A');
+    const rr = (x) => ({ name: x.name + '.', TTL: x.ttl, type: JSON_TYPES[x.type], data: x.type === 'CNAME' ? x.data + '.' : x.data });
+    return new Response(JSON.stringify({
+      Status: RCODES[out.rcode || 'NOERROR'], TC: false, RD: true, RA: true, AD: false, CD: false,
+      Question: { name: qname + '.', type }, ...(out.answers.length ? { Answer: out.answers.map(rr) } : {}),
+      ...(ecs ? { edns_client_subnet: ecs } : {})
+    }), { headers: { 'content-type': 'application/json' } });
   };
   const realFetch = window.fetch.bind(window);
   let wire = null;
   window.__externalFetches = [];
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const viaJson = JSON_URLS.find(([u]) => url.startsWith(u + '?'));
+    if (viaJson) return jsonAnswer(url, viaJson[1], init);
     const m = /[?&]dns=([^&]+)/.exec(url);
     if (!m) {
       if (new URL(url, location.href).origin === location.origin) return realFetch(input, init);
@@ -469,6 +509,60 @@ async function offlineVerdicts(browser, server) {
     await shot(page, 'global-offline-desktop-light-en-nov6');
   });
 
+  await step('mainland China: AliDNS rows in a group of their own; a CDN only there is by design, its operator named (EN / TR)', async () => {
+    await page.evaluate(() => { window.__jsonQueries.length = 0; });
+    await gotoHash(page, '#/global?name=china.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'by-design', `state (${info.title}: ${info.message})`);
+    assertEqual(info.title, 'Differs by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN)', 'title');
+    assert(/^Every answer is an edge .* china\.example\.com sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china\.example\.com\.w\.kunluncan\.com, unlike every other source: .*mainland China/.test(info.message),
+      `body: ${info.message}`);
+    assert(!/multi-CDN/.test(info.message), `a CDN only mainland China gets is not called multi-CDN steering: ${info.message}`);
+    assertEqual(info.findings, [], 'no findings');
+    assert(info.chips.some((c) => c.ops.join() === 'Alibaba Cloud CDN') && info.chips.some((c) => c.ops.join() === 'Amazon CloudFront'),
+      `the chips name both operators: ${JSON.stringify(info.chips)}`);
+    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    assertEqual(info.external, [], 'nothing left the page');
+    const cn = await page.evaluate(() => {
+      const group = document.querySelector('.glb-geo .glb-geo-group[data-group="cn"]');
+      const rows = [...(group ? group.querySelectorAll('tbody tr.dt-row') : [])];
+      return {
+        title: group ? group.querySelector('.glb-geo-group-title > span:not(.flag)').textContent.trim() : null,
+        flagHidden: group ? group.querySelector('.glb-geo-group-title .flag').getAttribute('aria-hidden') : null,
+        caption: group ? group.querySelector('caption')?.textContent.trim() : null,
+        rows: rows.map((tr) => ({
+          via: tr.querySelector('.glb-via')?.textContent,
+          scope: tr.querySelector('.dt-null')?.getAttribute('title') || null,
+          ops: [...tr.querySelectorAll('.glb-ops .badge-text')].map((b) => b.textContent),
+          text: tr.textContent
+        })),
+        mainCn: [...document.querySelectorAll('.glb-geo tbody tr.dt-row')].filter((tr) => !tr.closest('.glb-geo-group') && /China/.test(tr.textContent)).length,
+        queries: window.__jsonQueries
+      };
+    });
+    assertEqual([cn.title, cn.flagHidden], ['Mainland China', 'true'], 'group title, its flag decorative');
+    assertEqual(cn.rows.length, 3, 'three China rows');
+    assertEqual(cn.mainCn, 0, 'no China row in the main location table');
+    assert(cn.rows.every((r) => r.via === 'AliDNS (ECS)' && r.ops.some((o) => /Alibaba Cloud CDN/.test(o))), `AliDNS, Alibaba Cloud CDN on each row: ${JSON.stringify(cn.rows.map(({ text, ...r }) => r))}`);
+    assert(['Beijing', 'Shanghai', 'Guangzhou'].every((c, i) => cn.rows.some((r) => r.text.includes(c))), 'the three cities');
+    const bySubnet = (a, b) => (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0);
+    assertEqual(cn.queries.map((q) => [q.resolver, q.name, q.type, q.ecs, q.accept]).sort(bySubnet),
+      CHINA.map((v) => ['alidns', 'china.example.com', 1, v.subnet, 'application/dns-json']).sort(bySubnet),
+      'one JSON question to AliDNS per China row, with its subnet');
+    await assertNoHorizontalScroll(page, 'china');
+    await shot(page, 'global-offline-desktop-light-en-china');
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => /^Tasarım gereği farklı/.test(document.querySelector('.glb-summary .alert-title')?.textContent || ''), { message: 'TR verdict' });
+    const tr = await page.evaluate(() => ({
+      title: document.querySelector('.glb-geo-group[data-group="cn"] .glb-geo-group-title > span:not(.flag)')?.textContent.trim(),
+      message: document.querySelector('.glb-summary .alert-message')?.textContent || ''
+    }));
+    assertEqual(tr.title, 'Çin (anakara)', 'TR group title');
+    assert(/Pekin, Çin; Şanghay, Çin; Guangzhou, Çin konumlarını diğer tüm kaynaklardan farklı bir yere \(CNAME china\.example\.com\.w\.kunluncan\.com\) gönderiyor/.test(tr.message), `TR body: ${tr.message}`);
+    await setLangUi(page, 'en');
+  });
+
   await step('SERVFAIL everywhere: an error, never "All answers agree" (EN / TR)', async () => {
     await gotoHash(page, '#/global?name=broken.example.com&type=A', 'global');
     await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
@@ -489,10 +583,20 @@ async function offlineVerdicts(browser, server) {
     await page.setViewport({ width: 375, height: 812, mobile: true });
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ 'prefers-color-scheme': scheme });
-      for (const name of ['www.example.com', 'example.org', 'mixed.example.com']) {
+      for (const name of ['www.example.com', 'example.org', 'china.example.com', 'mixed.example.com']) {
         await gotoHash(page, `#/global?name=${name}&type=A`, 'global');
         await page.waitFor(DONE, { timeout: 20000 });
         await assertNoHorizontalScroll(page, `375 px ${scheme} ${name}`);
+        if (name === 'china.example.com') {
+          // The China group: its heading, description and table stay inside the page width.
+          const fit = await page.evaluate(() => {
+            const g = document.querySelector('.glb-geo-group[data-group="cn"]');
+            const r = g.getBoundingClientRect();
+            return { left: r.left, right: r.right, width: document.documentElement.clientWidth, rows: g.querySelectorAll('tbody tr.dt-row').length };
+          });
+          assert(fit.left >= 0 && fit.right <= fit.width + 1 && fit.rows === 3, `375 px ${scheme}: the China group fits: ${JSON.stringify(fit)}`);
+          await shot(page, `global-offline-mobile-${scheme}-en-china`);
+        }
       }
       await shot(page, `global-offline-mobile-${scheme}-en-mixed`);
     }
@@ -537,7 +641,7 @@ async function liveChecks(browser, server) {
     assertEqual(info, { requests: [], hash: '#/global', name: 'example.org', resultsHidden: true }, 'draft kept, nothing sent');
   });
 
-  await step('shared link #/global?name=www.amazon.com&type=A runs, streams and groups 12 + 31 sources', async () => {
+  await step(`shared link #/global?name=www.amazon.com&type=A runs, streams and groups ${RESOLVERS.length} + ${GEO_VANTAGES.length} sources`, async () => {
     await gotoHash(page, '#/about', 'about');
     await gotoHash(page, '#/global?name=www.amazon.com&type=A', 'global');
     // Rows exist (pre-filled) before the answers arrive.

@@ -521,6 +521,63 @@ describe('propagationVerdict', () => {
     assert.deepEqual([resolvers.state, codes(resolvers)], ['differ', ['cname']]);
   });
 
+  test('mainland China: a branch only the locations asked through AliDNS take is by design, not a move', () => {
+    // The China rows: ECS locations whose vantage names its own resolver (resolvers.js `resolver`).
+    const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
+    const D = 'd333333abcdef8.cloudfront.net';
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const world = [
+      item('resolver:cloudflare', CF_A[0], ...cname(D)),
+      item('resolver:google', CF_A[1], ...cname(D)),
+      item('geo:de-ham', CF_A[2], ...cname(D)),
+      item('geo:jp-tyo', CF_A[3], ...cname(D))
+    ];
+    const cn = [
+      china('cn-bjs-cu', '198.51.100.17', ...cname(ALI)),
+      china('cn-sha-ct', '198.51.100.18', ...cname(ALI)),
+      china('cn-can-cm', '198.51.100.17', ...cname(ALI))
+    ];
+    const v = propagationVerdict([...world, ...cn]);
+    assert.equal(v.state, 'by-design', 'CloudFront for the world, Alibaba Cloud CDN for mainland China');
+    assert.deepEqual(ids(v.operators), ['cloudfront', 'alibaba-cdn']);
+    assert.equal(v.resolversAgree, false);
+    assert.deepEqual(v.findings, []);
+    assert.deepEqual(v.geoSplits.map((s) => [s.owner, s.targets, [...s.members].sort()]), [[null, [ALI], ['geo:cn-bjs-cu', 'geo:cn-can-cm', 'geo:cn-sha-ct']]]);
+    assert.ok(v.groups.every((g) => !('regional' in g) && !('geo' in g)), 'no working fields in the groups');
+
+    // Next to a real problem the split stays a finding, marked as the location's.
+    const servfail = propagationVerdict([...world, ...cn, item('resolver:dnssb', 'SERVFAIL')]);
+    assert.deepEqual([servfail.state, codes(servfail)], ['differ', ['rcode', 'cname']]);
+    const f = servfail.findings[1];
+    assert.deepEqual([f.owner, f.targets.includes(ALI), [...f.byLocation.members].sort(), ids(f.operators)],
+      [null, true, ['geo:cn-bjs-cu', 'geo:cn-can-cm', 'geo:cn-sha-ct'], ['cloudfront', 'alibaba-cdn']]);
+    assert.equal(servfail.designPart, false);
+
+    // The resolvers agree: the classic GeoDNS case, as before.
+    const agree = propagationVerdict([item('resolver:cloudflare', CF_A[0], ...cname(D)), item('resolver:google', CF_A[0], ...cname(D)), ...cn]);
+    assert.deepEqual([agree.state, agree.findings], ['geo', []]);
+
+    // A resolver on the China branch too, or a Google ECS location on it alone: not a split.
+    const resolver = propagationVerdict([...world, ...cn, item('resolver:iij', '198.51.100.17', ...cname(ALI))]);
+    assert.deepEqual([resolver.state, codes(resolver), resolver.findings[0].byLocation, resolver.geoSplits], ['differ', ['cname'], null, []]);
+    const google = propagationVerdict([...world, item('geo:hk-hkg', '198.51.100.17', ...cname(ALI))]);
+    assert.deepEqual([google.state, codes(google), google.geoSplits], ['differ', ['cname'], []]);
+
+    // An operator this page does not know in mainland China: its addresses look direct.
+    const unknown = propagationVerdict([...world, china('cn-bjs-cu', '198.51.100.30', ...cname('www.example.com.cdn.example.net'))]);
+    assert.deepEqual([unknown.state, codes(unknown)], ['differ', ['mixed']]);
+
+    // A CDN only in mainland China in front of the origin everyone else reaches directly.
+    const origin = [item('resolver:cloudflare', '192.0.2.10'), item('resolver:google', '192.0.2.10'), item('geo:de-ham', '192.0.2.10')];
+    const front = propagationVerdict([...origin, ...cn]);
+    assert.deepEqual([front.state, front.findings, ids(front.operators)], ['geo', [], ['alibaba-cdn']], 'resolvers agree: GeoDNS');
+    const roundRobin = propagationVerdict([...origin, item('resolver:dnssb', '192.0.2.11'), ...cn]);
+    assert.deepEqual([roundRobin.state, codes(roundRobin)], ['differ', ['mixed']], 'resolvers disagree: still named');
+    // The same answers from Google ECS locations (no resolver of their own) stay a mixed finding.
+    const viaGoogle = propagationVerdict([...origin, item('geo:hk-hkg', '198.51.100.17', ...cname(ALI))]);
+    assert.deepEqual([viaGoogle.state, codes(viaGoogle)], ['differ', ['mixed']]);
+  });
+
   test('entry names: a dualstack variant is the same service, a Traffic Manager profile is not regional', () => {
     const reddit = propagationVerdict([
       item('resolver:cloudflare', '151.101.1.140', ...cname('example.map.fastly.net')),

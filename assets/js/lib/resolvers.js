@@ -18,6 +18,8 @@
  *  - vantages: each /24's country (and city) with RIPEstat maxmind-geo-lite, its
  *    origin ASN with RIPEstat prefix-overview, and Google DoH returning an ECS
  *    scope / geo-specific answers for it.
+ * The mainland China vantages and AliDNS, which they are asked through (ECS_RESOLVERS), were
+ * added and verified the same way on 2026-10-02 (AliDNS: its own answers per subnet, no scope).
  */
 
 /** Date the lists below were last verified live. */
@@ -265,6 +267,42 @@ export const RESOLVERS = Object.freeze([
 ].map((r) => Object.freeze(r)));
 
 /**
+ * Resolvers asked only on behalf of a location (Global DNS ECS vantages whose `resolver` names
+ * them), never in a failover chain, the bulk pool, a picker or the settings: they are not general
+ * resolvers for this page.
+ *
+ * AliDNS (Alibaba Cloud), verified live on 2026-10-02 (docs/RESEARCH.md › Mainland China vantage):
+ * its RFC 8484 endpoint (/dns-query) sends no Access-Control-Allow-Origin, so it is asked in the JSON
+ * form, `/resolve?name=&type=&edns_client_subnet=` (`format: 'json'`, lib/dohjson.js), which sends `*`
+ * — on 400 and 401 answers too (real Chrome: 16/16 reads from two fresh profiles over HTTP/2; an
+ * earlier run read it over HTTP/3 after Alt-Svc as well). It applies the subnet it is given: the
+ * three mainland ISP /24s below get edges inside their own ISP, and for names whose GeoDNS ignores
+ * Google's ECS it answers what mainland users get (a mainland CDN where Google's ECS answer is an
+ * overseas edge). It echoes the subnet without a scope prefix (`ecsEcho: false`), does not validate
+ * DNSSEC (a broken signature still resolves), and ignores `do` / `cd`.
+ * @type {ReadonlyArray<Resolver & { format: 'json' }>}
+ */
+export const ECS_RESOLVERS = Object.freeze([
+  {
+    id: 'alidns',
+    name: 'AliDNS (ECS)',
+    operator: 'Alibaba Cloud',
+    url: 'https://dns.alidns.com/resolve',
+    format: 'json',
+    location: 'Anycast',
+    countryCode: null,
+    ecs: true,
+    dnssecValidating: false,
+    filtering: null,
+    homepage: 'https://www.alidns.com/',
+    ecsEcho: false,
+    nsid: false,
+    browserReliable: true,
+    issue: null
+  }
+].map((r) => Object.freeze(r)));
+
+/**
  * Failover order for general lookups (resolver ids): unfiltered, DNSSEC-validating
  * resolvers that real browsers read reliably (18/18 GETs in Chrome + Edge). Quad9 is not
  * here — browsers cannot read it (h3-no-cors) and, as a malware-filtering resolver, it
@@ -289,14 +327,24 @@ export const DEFAULT_GEO_RESOLVER = 'google';
  * @property {string} isp
  * @property {number} asn origin AS of the /24 (RIPEstat prefix-overview)
  * @property {string} verifiedCountry country reported by RIPEstat maxmind-geo-lite
- * @property {string|null} verifiedCity extension: city reported by maxmind-geo-lite
+ * @property {string|null} verifiedCity extension: city reported by maxmind-geo-lite (null: it reports none)
  * @property {'EU'|'AS'|'NA'|'SA'|'AF'|'OC'} continent extension, for grouping
+ * @property {string} [resolver] extension: the resolver asked for this location (an {@link ECS_RESOLVERS} id);
+ *   without one, {@link DEFAULT_GEO_RESOLVER}
+ * @property {string} [group] extension: the row group the Global DNS view shows it in ('cn': mainland China)
  */
 
 // Compact constructor; `verifiedCity` is MaxMind's city when it differs from the display city
 // (e.g. a borough or suburb of the metro area named in `city`).
 const v = (id, countryCode, continent, city, nameTr, nameEn, subnet, isp, asn, verifiedCity = city) => Object.freeze({
   id, countryCode, city, nameTr, nameEn, subnet, isp, asn, verifiedCountry: countryCode, verifiedCity, continent
+});
+// Mainland China, asked through AliDNS: MaxMind places these /24s in CN without a city, so the city
+// is the one the ISP publishes for the DNS servers of that network (Beijing Unicom 202.106.0.20,
+// Shanghai Telecom 202.96.209.133, Guangdong Mobile 211.136.192.6) and the origin AS names the
+// province (AS4808 China Unicom Beijing, AS4812 China Telecom Shanghai, AS56040 China Mobile Guangdong).
+const cn = (id, city, nameTr, nameEn, subnet, isp, asn) => Object.freeze({
+  ...v(id, 'CN', 'AS', city, nameTr, nameEn, subnet, isp, asn, null), resolver: 'alidns', group: 'cn'
 });
 
 /**
@@ -343,7 +391,12 @@ export const GEO_VANTAGES = Object.freeze([
   // Oceania / Africa
   v('au-mel', 'AU', 'OC', 'Melbourne', 'Melbourne, Avustralya', 'Melbourne, Australia', '1.136.0.0/24', 'Telstra', 1221),
   v('za-cpt', 'ZA', 'AF', 'Cape Town', 'Cape Town, Güney Afrika', 'Cape Town, South Africa', '197.229.0.0/24', 'Telkom SA', 37457),
-  v('eg-cai', 'EG', 'AF', 'Cairo', 'Kahire, Mısır', 'Cairo, Egypt', '41.41.232.0/24', 'Telecom Egypt (WE)', 8452)
+  v('eg-cai', 'EG', 'AF', 'Cairo', 'Kahire, Mısır', 'Cairo, Egypt', '41.41.232.0/24', 'Telecom Egypt (WE)', 8452),
+  // Mainland China — three ISPs in three cities, asked through AliDNS (Google's ECS answers miss
+  // what mainland users get for names whose GeoDNS decides by resolver)
+  cn('cn-bjs-cu', 'Beijing', 'Pekin, Çin', 'Beijing, China', '202.106.0.0/24', 'China Unicom', 4808),
+  cn('cn-sha-ct', 'Shanghai', 'Şanghay, Çin', 'Shanghai, China', '202.96.209.0/24', 'China Telecom', 4812),
+  cn('cn-can-cm', 'Guangzhou', 'Guangzhou, Çin', 'Guangzhou, China', '211.136.192.0/24', 'China Mobile', 56040)
 ]);
 
 /**
@@ -353,6 +406,16 @@ export const GEO_VANTAGES = Object.freeze([
  */
 export function getResolver(id) {
   return RESOLVERS.find((r) => r.id === id);
+}
+
+/**
+ * Look up any resolver by id: a general one ({@link RESOLVERS}) or one asked only for a location
+ * ({@link ECS_RESOLVERS}).
+ * @param {string} id
+ * @returns {Resolver|undefined}
+ */
+export function getAnyResolver(id) {
+  return getResolver(id) || ECS_RESOLVERS.find((r) => r.id === id);
 }
 
 /**

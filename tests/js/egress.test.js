@@ -25,7 +25,7 @@ import {
   DATA_KINDS, EGRESS_ROLES, EGRESS_SERVICES, NEVER_SENT, SELF_SERVICE, classifySignature, classifyUrl, getEgressService,
   ledgerRows, ledgerTotals, serviceSends
 } from '../../assets/js/lib/egress.js';
-import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
+import { RESOLVERS, ECS_RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { certspotterUrl, crtshSearchUrls, CRTSH_BASE, CERTSPOTTER_ISSUANCES } from '../../assets/js/lib/ctcert.js';
 import { certspotterIssuersUrl, crtshIssuersUrl } from '../../assets/js/lib/passport.js';
 import { announcedPrefixesUrl } from '../../assets/js/lib/ptrsweep.js';
@@ -251,6 +251,11 @@ describe('the registry', () => {
       assert.equal(c.service.id, 'doh', r.id);
       assert.equal(c.label, r.name, r.id);
       assert.deepEqual(c.sends, ['dnsQuestions'], r.id);
+    }
+    // Resolvers asked only for a location, in the JSON form (AliDNS): DNS questions too.
+    for (const r of ECS_RESOLVERS) {
+      const c = classifyUrl(`${r.url}?name=www.example.com&type=1&edns_client_subnet=192.0.2.0/24`);
+      assert.deepEqual([c.service.id, c.label, c.sends], ['doh', r.name, ['dnsQuestions']], r.id);
     }
   });
 
@@ -587,7 +592,7 @@ const LINK_HOSTS = {
   // the resolvers' home pages (their DoH endpoints are the registry's)
   'assets/js/lib/resolvers.js': [
     'one.one.one.one', 'developers.google.com', 'quad9.net', 'www.nic.cz', 'dns.sb', 'controld.com', 'cleanbrowsing.org', 'dns.seby.io',
-    'tiarap.org'
+    'tiarap.org', 'www.alidns.com'
   ],
   'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,

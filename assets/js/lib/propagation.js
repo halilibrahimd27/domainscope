@@ -6,7 +6,7 @@
  * DOM-free; all I/O goes through the injected DohClient (`dns`).
  */
 
-import { RESOLVERS, GEO_VANTAGES, DEFAULT_GEO_RESOLVER, getResolver, getVantage } from './resolvers.js';
+import { RESOLVERS, GEO_VANTAGES, DEFAULT_GEO_RESOLVER, getAnyResolver, getVantage } from './resolvers.js';
 import { typeToNumber, typeToName } from './dnswire.js';
 import { followCnames } from './doh.js';
 import {
@@ -89,7 +89,7 @@ export function isFilteredResponse(response, resolver = null) {
 
 function resolverInfo(id) {
   if (id && typeof id === 'object' && typeof id.id === 'string') return id;
-  return getResolver(id) || { id: String(id), name: String(id), url: null, location: null, countryCode: null, filtering: null };
+  return getAnyResolver(id) || { id: String(id), name: String(id), url: null, location: null, countryCode: null, filtering: null };
 }
 
 function vantageInfo(v) {
@@ -476,7 +476,12 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   vs new-site.netlify.app two sites; only regional load balancers may differ there) — and
  *   different operators diverge only behind a name every answer shares (e.g. tp.example.com →
  *   a CloudFront edge in one region, and tp.example.com → *.edgekey.net → *.akamaiedge.net in
- *   another), never at the queried name itself; no NXDOMAIN / NODATA / rcode / private address
+ *   another), never at the queried name itself — except where only locations asked through a
+ *   resolver of their own (a vantage with `resolver`: mainland China through AliDNS) take another
+ *   branch while every other answer takes the same one (www.example.com → a CloudFront
+ *   distribution for the world, → *.w.kunluncan.com, Alibaba Cloud CDN, for mainland China: the
+ *   name's DNS answers China's resolvers from a line of its own; listed in `geoSplits`) and the
+ *   resolvers do not all agree anyway; no NXDOMAIN / NODATA / rcode / private address
  *   anywhere, except empty answers whose chain enters the provider through the entry name the
  *   addresses come through while the resolvers agree (only some locations get its dual-stack
  *   variant with AAAA records: www.reddit.com AAAA). A name before the entry may differ when both names lead to the same entry names
@@ -486,7 +491,9 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * - 'geo': the resolvers agree and only the ECS locations differ, without anything above
  *   that looks wrong, and not every answer is a known edge (the classic GeoDNS case). A CNAME
  *   that differs only between locations (GeoDNS by CNAME, e.g. geolocation records) is GeoDNS
- *   too, and so are empty answers through another entry name than the addresses';
+ *   too, and so are empty answers through another entry name than the addresses', and edges
+ *   only locations asked through a resolver of their own get next to the direct addresses
+ *   everyone else gets (a CDN in mainland China in front of an origin the world reaches directly);
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
@@ -503,12 +510,16 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * 'nodata'), `ips` ('private', 'mixed': the offending addresses), `owner` (null = the queried
  * name) / `targets` (string, or null = address records — with `noRecords`, no records and no
  * CNAME) ('cname') and `operators` ('cname', 'operators': the managed operators of the answers
- * involved when they enter different ones — a move between providers — else []). NXDOMAIN and
- * NODATA are findings only next to another kind of answer, not next to failures alone.
+ * involved when they enter different ones — a move between providers — else []), `byLocation`
+ * ('cname': its `geoSplits` entry when only locations asked through a resolver of their own take
+ * another branch, else null). NXDOMAIN and NODATA are findings only next to another kind of
+ * answer, not next to failures alone. `geoSplits` (any state): `{ owner, targets, members }` per
+ * such CNAME — the names those locations get instead (null: address records) and their sources.
  *
  * @param {Array<{ key?: string, kind?: 'resolver'|'geo', values?: string[], filtered?: boolean,
- *   pending?: boolean, resolver?: { filtering?: string|null }|null }>} items resolver / geo results
- *   (checkPropagation items or streamed rows; 'geo:' keys or kind 'geo' mark locations)
+ *   pending?: boolean, resolver?: { filtering?: string|null }|null, vantage?: { resolver?: string }|null }>} items
+ *   resolver / geo results (checkPropagation items or streamed rows; 'geo:' keys or kind 'geo' mark
+ *   locations, a `vantage` with its own `resolver` one asked through a resolver of its own)
  * @param {{ type?: string|number, ipInfo?: Map<string, object>|Record<string, object>|null }} [opts]
  *   `ipInfo`: already fetched ipintel IpInfo (or `{ ptr, asn, asns }`) per canonical address
  * @returns {{ state: 'none'|'unresolved'|'agree'|'by-design'|'geo'|'differ', type: string,
@@ -516,6 +527,7 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *     chain: string[], addresses: string[], operators: object[], managed: boolean, rewritten: boolean }>,
  *   operators: object[], findings: object[], resolversAgree: boolean, designPart: boolean, multiOperator: boolean,
  *   noRecords: boolean, steering: Array<{ owner: string|null, targets: string[] }>,
+ *   geoSplits: Array<{ owner: string|null, targets: Array<string|null>, members: string[] }>,
  *   rewritten: string[], rewriteTargets: string[] }}
  *   Operators: `{ id, name, kind (netinfo kind), provider, via: 'ip'|'cname'|'ptr'|'asn'|null, reasonKey,
  *   managed, steering }` — of a group's addresses, or for a NODATA group of the provider its CNAME
@@ -533,6 +545,8 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
   const usable = (Array.isArray(items) ? items : []).filter((it) => it && !it.pending && !it.filtered
     && Array.isArray(it.values) && it.values.length && !isErrorValues(it.values));
   const isGeo = (it) => it.kind === 'geo' || String(it.key ?? '').startsWith('geo:');
+  // A location asked through a resolver of its own (mainland China: AliDNS), not Google's ECS.
+  const isRegional = (it) => isGeo(it) && !!(it.vantage && it.vantage.resolver);
   const isFiltering = (it) => !isGeo(it) && !!(it.resolver && it.resolver.filtering);
   const baseline = usable.some((it) => !isFiltering(it));
 
@@ -541,11 +555,12 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
     const key = it.values.join('\n');
     let g = byKey.get(key);
     if (!g) {
-      g = { key, values: [...it.values], members: [], order, geo: true, filteringOnly: baseline };
+      g = { key, values: [...it.values], members: [], order, geo: true, regional: true, filteringOnly: baseline };
       byKey.set(key, g);
     }
     g.members.push(String(it.key ?? `#${order}`));
     if (!isGeo(it)) g.geo = false;
+    if (!isRegional(it)) g.regional = false;
     if (!isFiltering(it)) g.filteringOnly = false;
   });
   const groups = [...byKey.values()]
@@ -564,11 +579,11 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
 
   // A SafeSearch rewrite only filtering resolvers give is their policy: judged without it.
   const policy = groups.filter((g) => g.rewrite);
-  const { state, operators, findings, resolversAgree, managed, noRecords, steering } = judgeGroups(groups.filter((g) => !g.rewrite), address);
+  const { state, operators, findings, resolversAgree, managed, noRecords, steering, geoSplits } = judgeGroups(groups.filter((g) => !g.rewrite), address);
   return {
     state: usable.length ? state : 'none',
     type: qtype,
-    groups: groups.map(({ perIp, geo, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
+    groups: groups.map(({ perIp, geo, regional, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
     operators,
     findings: state === 'differ' || state === 'unresolved' ? findings : [],
     resolversAgree,
@@ -576,6 +591,7 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
     multiOperator: operators.length > 1,
     noRecords,
     steering,
+    geoSplits,
     rewritten: membersOf(policy),
     rewriteTargets: uniqueList(policy.map((g) => g.rewrite))
   };
@@ -583,8 +599,8 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
 
 /**
  * The judgement of propagationVerdict over prepared answer groups (with `perIp` operators,
- * `geo`: only ECS locations gave it, and `filteringOnly`): managed operators, findings and
- * the state.
+ * `geo`: only ECS locations gave it, `regional`: only locations asked through a resolver of
+ * their own, and `filteringOnly`): managed operators, findings and the state.
  */
 function judgeGroups(groups, address) {
   const answers = groups.filter((g) => g.status === 'answer');
@@ -620,6 +636,7 @@ function judgeGroups(groups, address) {
     }
   }
   let steering = [];
+  const geoSplits = [];
   if (groups.length > 1) {
     const ipsOf = (g, pred) => g.perIp.filter(({ op }) => pred(op)).map(({ ip }) => ip);
     const privateGroups = answers.filter((g) => ipsOf(g, (op) => op.kind === 'private').length);
@@ -635,7 +652,9 @@ function judgeGroups(groups, address) {
       for (const code of ['cname', 'operators']) {
         for (const c of conflicts.filter((x) => x.code === code)) {
           const extra = { operators: c.move ? operatorsOf(c.groups) : [] };
-          add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra } : extra);
+          const split = code === 'cname' ? locationSplit(c) : null;
+          if (split) geoSplits.push(split);
+          add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra, byLocation: split } : extra);
         }
       }
     }
@@ -658,16 +677,47 @@ function judgeGroups(groups, address) {
   // A chain that differs only between locations while the resolvers agree is GeoDNS by CNAME,
   // as different addresses there are ('direct'): not serious, and "by design" only when the empty
   // answers enter the provider through the entry name the addresses come through (its
-  // `dualstack.` variant included).
-  const locationOnly = (f) => resolversAgree && (chainFinding(f) || edgeNodata(f));
+  // `dualstack.` variant included). So is, whatever the resolvers do, a branch only the locations
+  // asked through a resolver of their own take (`byLocation`: the name's own DNS answers mainland
+  // China's resolvers with a CDN there, a line of its own, and the rest of the world with another
+  // one), and — while the resolvers agree — direct addresses next to edges only those locations
+  // get (a CDN in mainland China in front of an origin the rest of the world reaches directly).
+  const edgesOnlyRegional = answers.filter((g) => g.operators.some((op) => op.managed)).every((g) => g.regional);
+  const locationOnly = (f) => !!f.byLocation
+    || (resolversAgree && (chainFinding(f) || edgeNodata(f) || (f.code === 'mixed' && edgesOnlyRegional)));
   const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !locationOnly(f));
   const edges = address && judged.length > 0 && (noRecords ? judged.every((g) => entryOf(g)) : judged.every((g) => g.managed));
+  // Edges everywhere with such a branch on the way are by design too — unless the resolvers
+  // agree, which stays the classic GeoDNS case ('geo').
+  const blocksDesign = (f) => (chainFinding(f) && (resolversAgree || !f.byLocation)) || (edgeNodata(f) && !sameEdges(f));
   let state = 'differ';
   if (!resolved.length) state = 'unresolved';
   else if (groups.length <= 1) state = 'agree';
-  else if (!serious.length && edges && !findings.some((f) => chainFinding(f) || (edgeNodata(f) && !sameEdges(f)))) state = 'by-design';
+  else if (!serious.length && edges && !findings.some(blocksDesign)) state = 'by-design';
   else if (!serious.length && resolversAgree) state = 'geo';
-  return { state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length, noRecords, steering };
+  return {
+    state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length, noRecords, steering, geoSplits
+  };
+}
+
+/**
+ * A CNAME conflict only the locations asked through a resolver of their own show (mainland China
+ * through AliDNS): every other answer involved — the resolvers' and the Google ECS locations' —
+ * takes one branch there (or none is involved) and some of those locations take another, as a
+ * name's DNS does that answers mainland China's resolvers from a line of its own. `{ owner,
+ * targets, members }`: the names those locations get instead (null: address records) and their
+ * sources; null when the other answers take different branches too.
+ */
+function locationSplit(c) {
+  const sideOf = (g) => [...g.chain, null][c.depth];
+  const home = [];
+  for (const g of c.groups) {
+    if (!g.regional && !home.some((x) => sameName(x, sideOf(g)))) home.push(sideOf(g));
+  }
+  if (home.length > 1) return null;
+  const away = c.groups.filter((g) => g.regional && !home.some((x) => sameName(x, sideOf(g))));
+  if (!away.length) return null;
+  return { owner: c.owner, targets: uniqueList(away.map(sideOf).filter((x) => x !== undefined)), members: membersOf(away) };
 }
 
 /**
@@ -699,7 +749,7 @@ function judgeGroups(groups, address) {
  * @param {object} opts.dns DohClient
  * @param {Array<string|object>} [opts.resolvers] resolver ids (default: all RESOLVERS)
  * @param {Array<string|object>} [opts.vantages] vantages or ids (default: GEO_VANTAGES; [] = no geo)
- * @param {string} [opts.geoResolver='google'] resolver used for ECS queries
+ * @param {string} [opts.geoResolver='google'] resolver used for ECS queries (a vantage with its own `resolver` uses that)
  * @param {AbortSignal} [opts.signal]
  * @param {(item: object) => void} [opts.onResult]
  * @param {boolean} [opts.noCache=true] extension: always ask the network
@@ -741,16 +791,18 @@ export async function checkPropagation(name, type = 'A', {
   });
 
   const geoTasks = vantageList.map(async (vantage, i) => {
+    // A vantage may name its own resolver (mainland China: AliDNS); the others use `geoResolver`.
+    const via = vantage.resolver ? resolverInfo(vantage.resolver) : geo;
     const response = await dns.query(name, qtype, {
-      resolver: geo.id, ecs: vantage.subnet, signal, noCache, dnssec
+      resolver: via.id, ecs: vantage.subnet, signal, noCache, dnssec
     });
     const values = answerValues(response, qtype);
     const scopePrefix = response && response.ecs && Number.isFinite(response.ecs.scopePrefix)
       ? response.ecs.scopePrefix
       : null;
     const item = {
-      vantage, resolver: geo, response, values, scopePrefix, key: `geo:${vantage.id}`,
-      filtered: isFilteredResponse(response, geo), addresses: answerAddresses(response)
+      vantage, resolver: via, response, values, scopePrefix, key: `geo:${vantage.id}`,
+      filtered: isFilteredResponse(response, via), addresses: answerAddresses(response)
     };
     geoResults[i] = item;
     safeCall(onResult, { kind: 'geo', ...item });

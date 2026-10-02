@@ -395,6 +395,24 @@
   font-weight: 550;
 }
 
+/* A row group of the locations (mainland China, asked through AliDNS) under the main table. */
+.glb-geo-group {
+  margin-top: 20px;
+}
+
+.glb-geo-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.glb-via {
+  white-space: nowrap;
+}
+
 .glb-ms-fast {
   color: var(--ok);
 }

@@ -64,8 +64,8 @@ fix.fn.cloudflare-ids {}
 ---
 '':
   # keep the other TXT values this name has; replace its SPF value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=spf1 include:mailgun.org ~all'
 ## octodns notes

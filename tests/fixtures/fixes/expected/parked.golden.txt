@@ -164,34 +164,34 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.org.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: MX
-    ttl: 3600
+  - ttl: 3600
+    type: MX
     values:
       - exchange: '.'
         preference: 0
   # keep the other TXT values this name has; replace its SPF value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=spf1 -all'
-  - type: CAA
-    ttl: 3600
+  - ttl: 3600
+    type: CAA
     values:
       - flags: 0
         tag: issue
         value: ';'
-_dmarc:
-  # keep the other TXT values this name has; replace its DMARC value with the one below
-  - type: TXT
-    ttl: 3600
-    values:
-      - 'v=DMARC1\; p=reject'
 '*._domainkey':
   # keep the other TXT values this name has; replace its DKIM value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DKIM1\; p='
+_dmarc:
+  # keep the other TXT values this name has; replace its DMARC value with the one below
+  - ttl: 3600
+    type: TXT
+    values:
+      - 'v=DMARC1\; p=reject'
 ## octodns notes
 fix.fn.incomplete {"name":"example.org","type":"TXT"}
 fix.fn.incomplete {"name":"_dmarc.example.org","type":"TXT"}

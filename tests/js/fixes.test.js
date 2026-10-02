@@ -334,6 +334,15 @@ describe('formats', () => {
     assert.match(y, /- 'v=DMARC1\\; p=none\\; it''s'$/m);
   });
 
+  test('octoDNS: keys in its natural order (ttl, type, values; the names too), TXT as raw text, lenient where its own check refuses the text', () => {
+    const y = renderFix(buildChange('record', { name: 'www.example.com', type: 'TXT', values: 'café a\\b' }), 'octodns');
+    assert.match(y, /^www:\n {2}# octoDNS's check refuses this text [^\n]+\n {2}- octodns:\n {6}lenient: true\n {4}ttl: 3600\n {4}type: TXT\n {4}values:\n {6}- 'café a\\b'$/m);
+    const plain = renderFix(buildChange('record', { name: 'www.example.com', type: 'A', values: '192.0.2.10' }), 'octodns');
+    assert.match(plain, /^www:\n {2}- ttl: 3600\n {4}type: A\n {4}values:\n {6}- '192\.0\.2\.10'$/m);
+    const names = renderFix(buildChange('m365', { domain: 'example.com', tenant: 'example' }), 'octodns').split('\n').filter((l) => /^\S.*:$/.test(l));
+    assert.deepEqual(names, ["'':", '_dmarc:', 'autodiscover:'], '_ sorts before letters');
+  });
+
   test('formatNotes: a whole-set format says what was not read; a Route 53 DELETE must match exactly', () => {
     const unread = buildChange('acme-txt', { name: 'example.com', tokens: TOKEN });
     assert.deepEqual(formatNotes(unread, 'route53').map((n) => n.key), ['fix.fn.incomplete']);

@@ -66,8 +66,8 @@ fix.fn.cloudflare-ids {}
 ---
 _dmarc:
   # keep the other TXT values this name has; replace its DMARC value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DMARC1\; p=reject'
 ## octodns notes

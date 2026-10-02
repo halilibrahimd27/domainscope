@@ -108,20 +108,20 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: MX
-    ttl: 3600
+  - ttl: 3600
+    type: MX
     values:
       - exchange: smtp.google.com.
         preference: 1
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'google-site-verification=abc123'
       - 'v=spf1 include:spf.protection.outlook.com include:_spf.google.com ~all'
 google._domainkey:
   # keep the other TXT values this name has; replace its DKIM value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DKIM1\; k=rsa\; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexampleexampleexample'
 ## octodns notes

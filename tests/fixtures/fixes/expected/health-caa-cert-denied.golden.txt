@@ -56,8 +56,8 @@ curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Con
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: CAA
-    ttl: 3600
+  - ttl: 3600
+    type: CAA
     values:
       - flags: 0
         tag: issue

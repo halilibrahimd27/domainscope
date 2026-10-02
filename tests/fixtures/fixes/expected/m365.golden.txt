@@ -200,34 +200,34 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: MX
-    ttl: 3600
+  - ttl: 3600
+    type: MX
     values:
       - exchange: example-com.mail.protection.outlook.com.
         preference: 0
   # keep the other TXT values this name has; replace its SPF value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=spf1 include:spf.protection.outlook.com -all'
-autodiscover:
-  - type: CNAME
-    ttl: 3600
-    value: autodiscover.outlook.com.
-selector1._domainkey:
-  - type: CNAME
-    ttl: 3600
-    value: selector1-example-com._domainkey.example.onmicrosoft.com.
-selector2._domainkey:
-  - type: CNAME
-    ttl: 3600
-    value: selector2-example-com._domainkey.example.onmicrosoft.com.
 _dmarc:
   # keep the other TXT values this name has; replace its DMARC value with the one below
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DMARC1\; p=none\; rua=mailto:dmarc@example.com'
+autodiscover:
+  - ttl: 3600
+    type: CNAME
+    value: autodiscover.outlook.com.
+selector1._domainkey:
+  - ttl: 3600
+    type: CNAME
+    value: selector1-example-com._domainkey.example.onmicrosoft.com.
+selector2._domainkey:
+  - ttl: 3600
+    type: CNAME
+    value: selector2-example-com._domainkey.example.onmicrosoft.com.
 ## octodns notes
 fix.fn.unread-edit {"name":"example.com","family":"SPF"}
 fix.fn.unread-edit {"name":"_dmarc.example.com","family":"DMARC"}

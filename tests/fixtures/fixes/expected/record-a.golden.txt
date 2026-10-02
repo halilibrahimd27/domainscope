@@ -63,8 +63,8 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 www:
-  - type: A
-    ttl: 600
+  - ttl: 600
+    type: A
     values:
       - '192.0.2.10'
       - '192.0.2.11'

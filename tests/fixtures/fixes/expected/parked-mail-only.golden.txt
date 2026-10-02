@@ -104,19 +104,19 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: MX
-    ttl: 3600
+  - ttl: 3600
+    type: MX
     values:
       - exchange: '.'
         preference: 0
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'google-site-verification=abc123'
       - 'v=spf1 -all'
 _dmarc:
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DMARC1\; p=reject\; rua=mailto:dmarc@example.com'
 ## terraform-cloudflare

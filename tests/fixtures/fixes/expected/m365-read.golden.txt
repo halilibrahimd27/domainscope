@@ -128,27 +128,27 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: MX
-    ttl: 3600
+  - ttl: 3600
+    type: MX
     values:
       - exchange: example-com.mail.protection.outlook.com.
         preference: 0
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'google-site-verification=abc123'
       - 'v=spf1 include:spf.protection.outlook.com ~all'
 autodiscover:
-  - type: CNAME
-    ttl: 3600
+  - ttl: 3600
+    type: CNAME
     value: autodiscover.outlook.com.
 selector1._domainkey:
-  - type: CNAME
-    ttl: 3600
+  - ttl: 3600
+    type: CNAME
     value: selector1-example-com._domainkey.example.onmicrosoft.com.
 selector2._domainkey:
-  - type: CNAME
-    ttl: 3600
+  - ttl: 3600
+    type: CNAME
     value: selector2-example-com._domainkey.example.onmicrosoft.com.
 ## terraform-cloudflare
 # DNS change request for example.com (DomainScope)

@@ -39,8 +39,8 @@ import { parseSpf, parseDmarc, parseCaaIssueValue, spfLookupCount, CAA_ISSUERS, 
 import { quoteArg } from './cmdline.js';
 import { parseZone, rdataKey, txtJoinedKey, presentCharString } from './zoneparse.js';
 import { lintZone } from './zonelint.js';
-// The Route 53 string escapes, the YAML quoting and the octoDNS TXT escapes, shared with the zone converter.
-import { route53String, yamlString as yamlStr, octodnsTxt } from './zoneconvert.js';
+// The Route 53 string escapes, the YAML quoting, the octoDNS TXT escapes and key order, shared with the zone converter.
+import { route53String, yamlString as yamlStr, octodnsTxt, octodnsTxtRefused, naturalCompare } from './zoneconvert.js';
 
 /* ------------------------------------------------------------------------ */
 /* Vocabulary                                                               */
@@ -854,7 +854,7 @@ function cloudflareText(req) {
   return `${out.join('\n')}\n`;
 }
 
-/** octoDNS: a TXT value with `;` escaped (octoDNS refuses a bare one); lib/zoneconvert.js writes whole zones the same way. */
+/** octoDNS: a TXT value's raw text with `;` escaped (octoDNS refuses a bare one); lib/zoneconvert.js writes whole zones the same way. */
 const octoTxt = (v) => octodnsTxt(txtText(v));
 
 function octoValue(type, v, indent) {
@@ -875,9 +875,10 @@ function octodnsText(req) {
     if (!byName.has(key)) byName.set(key, []);
     byName.get(key).push(r);
   }
-  for (const [key, sets] of byName) {
+  // The names in octoDNS's natural key order, so the entries go into a sorted file as they are.
+  for (const key of [...byName.keys()].sort(naturalCompare)) {
     out.push(`${key === '' ? "''" : yamlStr(key)}:`);
-    for (const r of sets) {
+    for (const r of byName.get(key)) {
       const plan = rrsetPlan(r);
       if (r.mode === 'none') {
         out.push(r.family ? `  # delete: remove the ${TXT_FAMILIES[r.family]} value from this name's TXT values; the other values stay`
@@ -889,7 +890,15 @@ function octodnsText(req) {
         out.push(r.family ? `  # keep the other TXT values this name has; replace its ${TXT_FAMILIES[r.family]} value with the one below`
           : `  # keep the ${r.type} values this name already has, and add the ones below`);
       }
-      out.push(`  - type: ${r.type}`, `    ttl: ${r.ttl}`);
+      // In octoDNS's key order (YamlProvider enforce_order): octodns, ttl, type, value(s). A TXT value
+      // octoDNS's own check refuses (outside ASCII, a \ before a ;) loads only as lenient.
+      if (r.type === 'TXT' && values.some((v) => octodnsTxtRefused(octoTxt(v)))) {
+        out.push("  # octoDNS's check refuses this text (characters outside ASCII, or a \\ before a ;): lenient loads it with a warning",
+          '  - octodns:', '      lenient: true', `    ttl: ${r.ttl}`);
+      } else {
+        out.push(`  - ttl: ${r.ttl}`);
+      }
+      out.push(`    type: ${r.type}`);
       if (r.type === 'CNAME') out.push(`    value: ${yamlStr(fqdn(values[0]))}`);
       else out.push('    values:', ...values.flatMap((v) => octoValue(r.type, v, 6)));
     }

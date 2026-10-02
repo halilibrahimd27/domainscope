@@ -61,8 +61,8 @@ curl -sS -X POST "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Con
 ---
 _acme-challenge:
   # keep the TXT values this name already has, and add the ones below
-  - type: TXT
-    ttl: 300
+  - ttl: 300
+    type: TXT
     values:
       - gfj9Xq3Wr1Bm5zQXxZrW1zFeI6nY6cRgO0sIkWQfVbk
       - LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0

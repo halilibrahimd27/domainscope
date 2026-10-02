@@ -80,8 +80,8 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: CAA
-    ttl: 3600
+  - ttl: 3600
+    type: CAA
     values:
       - flags: 0
         tag: issue

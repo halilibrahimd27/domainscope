@@ -53,8 +53,8 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 _dmarc:
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'v=DMARC1\; p=quarantine\; rua=mailto:dmarc@example.com\; pct=25'
 ## terraform-cloudflare

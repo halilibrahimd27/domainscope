@@ -55,8 +55,11 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 quote:
-  - type: TXT
+  # octoDNS's check refuses this text (characters outside ASCII, or a \ before a ;): lenient loads it with a warning
+  - octodns:
+      lenient: true
     ttl: 3600
+    type: TXT
     values:
       - 'a "quoted" \ back|slash ^ caret\; semi ''single'' café'
 ## terraform-cloudflare

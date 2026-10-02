@@ -55,8 +55,8 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 '':
-  - type: TXT
-    ttl: 3600
+  - ttl: 3600
+    type: TXT
     values:
       - 'google-site-verification=abc123'
       - 'v=spf1 include:spf.protection.outlook.com include:_spf.google.com -all'

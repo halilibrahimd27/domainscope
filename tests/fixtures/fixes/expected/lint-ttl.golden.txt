@@ -52,8 +52,8 @@ fix.fn.cloudflare-ids {}
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
 ---
 api:
-  - type: A
-    ttl: 300
+  - ttl: 300
+    type: A
     values:
       - '192.0.2.20'
 ## terraform-cloudflare

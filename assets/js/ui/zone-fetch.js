@@ -150,11 +150,13 @@ export function zoneFetchRunning() {
 
 /**
  * The fetch panel of the Zone File importer.
- * @param {{ domainHint?: string, open?: boolean, onZone: (z: { name: string, text: string, origin: string, provider: string }) => void }} opts
- *   onZone: called with the provider's listing when a fetch succeeds
+ * @param {{ domainHint?: string, open?: boolean, onZone: (z: { name: string, text: string, origin: string, provider: string }) => void,
+ *   requireOnline?: () => boolean }} opts
+ *   onZone: called with the provider's listing when a fetch succeeds; requireOnline: the shell's
+ *   ctx.requireOnline — offline (Zone File works offline) Fetch says so and leaves the fields as they are
  * @returns {HTMLElement}
  */
-export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
+export function ZoneFetchPanel({ domainHint = '', open = false, onZone, requireOnline = () => true }) {
   if (!memo.domain && domainHint) memo.domain = domainHint;
   const body = h('div', { class: 'stack-sm zone-fetch-body', dataset: { shortcutScope: 'zone-fetch' } });
   const panel = Disclosure({
@@ -242,6 +244,8 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
     /** Read the fields, empty the token field at once, and run one fetch. */
     function start() {
       if (memo.job) return;
+      // Offline nothing is read or sent: the token stays in its field for when the connection is back.
+      if (!requireOnline()) return;
       const raw = tokenField.value;
       tokenField.value = '';
       // `cleared`: a token had been pasted, and is gone now: the error says to paste it again.

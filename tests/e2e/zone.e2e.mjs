@@ -1192,6 +1192,29 @@ async function main() {
       await page.evaluate(() => { window.__prov.delayMs = 0; });
     });
 
+    await run.step('offline: Fetch zone says it needs the network, sends nothing and leaves the token in its field', async () => {
+      const setOnline = async (on) => {
+        await page.send('Network.emulateNetworkConditions', { offline: !on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        await page.waitFor((o) => navigator.onLine === o, { args: [on], message: `navigator.onLine ${on}` });
+      };
+      await openFetch(page);
+      await page.evaluate(() => { window.__prov.calls = []; });
+      await typeFetch('example.com', FETCH_TOKEN);
+      await setOnline(false);
+      try {
+        await page.click('[data-action="zone-fetch"]');
+        await page.waitFor(() => [...document.querySelectorAll('.toast')].some((x) => /this needs the network/.test(x.textContent)), { message: 'the offline toast' });
+        const st = await fetchState();
+        assert(!['running', 'error'].includes(st.state), `no fetch, no error: ${st.state}`);
+        assertEqual(st.token, FETCH_TOKEN, 'the token kept for when the connection is back');
+        assert(!await page.evaluate(() => !!document.querySelector('[data-action="zone-fetch-stop"]')), 'nothing running');
+        assertEqual(await page.evaluate(() => window.__prov.calls.length), 0, 'nothing sent');
+      } finally {
+        await setOnline(true);
+      }
+      await page.evaluate(() => { document.querySelector('[data-role="zone-fetch-token"]').value = ''; });
+    });
+
     await run.step('keyboard: the focus survives every repaint — the provider, the token field after an error, Stop through progress, Fetch after Stop', async () => {
       const active = () => page.evaluate(() => {
         const el = document.activeElement;

@@ -1480,7 +1480,8 @@ export function mount(container, ctx) {
       pasteBox,
       ZoneFetchPanel({
         domainHint: S.originInput || (S.zone && S.zone.origin) || '',
-        onZone: (z) => importFiles([{ name: z.name, size: z.text.length, text: z.text }], { origin: z.origin })
+        onZone: (z) => importFiles([{ name: z.name, size: z.text.length, text: z.text }], { origin: z.origin }),
+        requireOnline: ctx.requireOnline
       }),
       S.zone ? null : samples,
       S.zone ? null : howto);

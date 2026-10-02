@@ -77,7 +77,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
-import { knownForScan, originIndex, originsFor, originTarget } from '../lib/originmap.js';
+import { knownForScan, originIndex, originTarget, rememberedRows } from '../lib/originmap.js';
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
@@ -1846,7 +1846,7 @@ export function rawSweepTokens(result) {
  * @param {{ names?: Iterable<string>|null, networks?: object[], dropped?: Set<string> }} [opts]
  * @returns {{ targets: string[], names: string[] }}
  */
-export function originSweepTokens(result, { names = null, networks = [], dropped = new Set() } = {}) {
+export function originSweepTokens(result, { names = null, networks = [], dropped = new Set(), origins = null } = {}) {
   const r = result || {};
   const allowed = names ? new Set(names) : null;
   const byCidr = new Map((networks || []).map((n) => [n.cidr, n]));
@@ -1856,9 +1856,11 @@ export function originSweepTokens(result, { names = null, networks = [], dropped
   const zone = zoneOfResult(r);
   const zoneTargets = new Set(zone ? zone.cliTargets : []);
   const zoneNames = new Set(zone ? zone.cliNames : []);
-  // The origin map's remembered origins (`ip` or `ip:port`): exact as well, never dropped or widened.
+  // Remembered origins (`ip`, `ip:port`): exact too; out once the map now marks them stale.
   const knownTargets = new Set(knownOfResult(r).targets);
+  const staleKnown = origins ? staleKnownTargets(r, origins) : new Set();
   const expandTarget = (tok) => {
+    if (staleKnown.has(tok)) return [];
     if (zoneTargets.has(tok) || knownTargets.has(tok)) return [tok];
     const ip = normalizeIP(tok);
     if (dropped.has(tok) || (ip && dropped.has(ip))) return [];
@@ -1900,6 +1902,35 @@ export function originCliCommand(result, { names = null, networks = [], dropped 
 }
 
 /**
+ * The CLI targets of the remembered origins a scan used that the map (read now) marks stale for
+ * every name, when only the map put them in the command (`result.known.exclusive`).
+ * @param {object|null} result ScanResult
+ * @param {object} origins the map, or its originIndex
+ * @returns {Set<string>}
+ */
+export function staleKnownTargets(result, origins) {
+  const r = result || {};
+  const exclusive = new Set(r.known && Array.isArray(r.known.exclusive) ? r.known.exclusive : []);
+  const stale = new Set();
+  const active = new Set();
+  for (const p of knownUses(r)) {
+    const [row] = rememberedRows(origins, p.name, [p]);
+    (row.stale ? stale : active).add(row.target);
+  }
+  return new Set([...stale].filter((tok) => !active.has(tok) && exclusive.has(tok)));
+}
+
+function knownUses(result) {
+  const out = [];
+  for (const hint of Array.isArray(result.originHints) ? result.originHints : []) {
+    for (const reason of hint.reasons || []) {
+      if (reason.kind === 'known' && reason.host) out.push({ name: reason.host, ip: hint.ip, port: Number(reason.port) || 443 });
+    }
+  }
+  return out;
+}
+
+/**
  * {@link originCliCommand} plus the files it may need. Above 200 names (or an 8,000-character
  * command) lib/cmdline puts `-n proxied-names.txt` in the command instead of the names; `namesFile`
  * is then that file's name and `namesText` its content (the validated proxied names, one per line)
@@ -1913,9 +1944,9 @@ export function originCliCommand(result, { names = null, networks = [], dropped 
  * @returns {{ command: string|null, namesFile: string|null, namesText: string, count: number,
  *   targetsFile?: string, targetsText?: string, targetCount?: number, overLength?: true }}
  */
-export function originSweep(result, { names = null, networks = [], dropped = new Set(), shell = 'posix', exclude = null } = {}) {
+export function originSweep(result, { names = null, networks = [], dropped = new Set(), shell = 'posix', exclude = null, origins = null } = {}) {
   const sh = SHELLS.includes(shell) ? shell : 'posix';
-  const { targets, names: outNames } = originSweepTokens(result, { names, networks, dropped });
+  const { targets, names: outNames } = originSweepTokens(result, { names, networks, dropped, origins });
   // `exclude` (IPs / CIDRs the user pasted) is handed to lib/cmdline verbatim: it validates and
   // shell-quotes every token, emits `--exclude …`, drops a fully-covered target and reports an
   // exclusion that touches nothing. When null (the default) the command is byte-identical to before.
@@ -1964,7 +1995,10 @@ const isProxiedOriginHost = (x) => !!(x && !x.wildcardSuspect && x.classificatio
  * resolver-leak and history candidates (from the structured reason fields, never parsed text)
  * and the origin networks, the origin networks themselves (without wildcard suspects), the other
  * (general) origin hints and the ready-to-run CLI sweep command in both shells.
+ * With `origins` (the map read now: originIndex), `remembered` is lib/originmap.js rememberedRows,
+ * `known` its active rows, and the command leaves a now-stale one out ({@link staleKnownTargets}).
  * @param {object|null} result ScanResult
+ * @param {{ origins?: object|null }} [opts]
  * @returns {{ proxied: Array<{ name: string, host: object, leaks: Array<{ ip: string, resolver: string }>,
  *   history: Array<{ ip: string, source: string, lastSeen: string }>, networks: string[] }>, networks: object[],
  *   leakCount: number, historyCount: number, general: object[], command: string|null,
@@ -1972,8 +2006,9 @@ const isProxiedOriginHost = (x) => !!(x && !x.wildcardSuspect && x.classificatio
  *   namesFiles: { posix: { file: string, text: string, count: number }|null, powershell: object|null },
  *   droppedCount: number }}
  */
-export function originOverview(result) {
+export function originOverview(result, { origins = null } = {}) {
   const r = result || {};
+  const index = origins ? originIndex(origins) : null;
   const hosts = Array.isArray(r.hosts) ? r.hosts : [];
   const hints = Array.isArray(r.originHints) ? r.originHints : [];
   const { networks, dropped } = realOriginNetworks(r.originNetworks, hosts);
@@ -1988,7 +2023,6 @@ export function originOverview(result) {
         const fields = reasonHost(reason);
         if (!fields.host || fields.host !== host.name) continue;
         if (reason.kind === 'known') {
-          // The workspace's origin map: a remembered exact origin, ranked above everything else.
           const port = Number(reason.port) || 443;
           if (!known.some((k) => k.ip === hint.ip && k.port === port)) known.push({ ip: hint.ip, port, target: originTarget({ ip: hint.ip, port }) });
         } else if (reason.kind === 'zone') {
@@ -2015,7 +2049,10 @@ export function originOverview(result) {
         siblings.push({ ip: c.ip, sibling: (c.evidence && c.evidence.sibling) || '' });
       }
     }
-    return { name: host.name, host, known, zone, leaks, history, siblings, networks: candidates };
+    const remembered = index ? rememberedRows(index, host.name, known)
+      : known.map((k) => ({ ...k, entry: null, stale: false, used: true }));
+    const active = remembered.filter((x) => x.used && !x.stale).map(({ ip, port, target }) => ({ ip, port, target }));
+    return { name: host.name, host, known: active, remembered, zone, leaks, history, siblings, networks: candidates };
   });
   const inNetworks = new Set(networks.flatMap((n) => (Array.isArray(n.ips) ? n.ips : [])));
   // General hints (SPF / MX / siblings). A sibling-only hint whose IP an origin network already
@@ -2028,7 +2065,7 @@ export function originOverview(result) {
     return !(kinds.every((k) => k === 'direct-sibling') && inNetworks.has(hint.ip));
   });
   const proxiedNames = proxied.map((p) => p.name);
-  const sweeps = Object.fromEntries(SHELLS.map((sh) => [sh, originSweep(r, { names: proxiedNames, networks, dropped, shell: sh })]));
+  const sweeps = Object.fromEntries(SHELLS.map((sh) => [sh, originSweep(r, { names: proxiedNames, networks, dropped, shell: sh, origins: index })]));
   const commands = Object.fromEntries(SHELLS.map((sh) => [sh, sweeps[sh].command]));
   // The names file a long command reads its `-n` names from (null when they are inline).
   const namesFiles = Object.fromEntries(SHELLS.map((sh) => [sh, sweeps[sh].namesFile
@@ -2065,11 +2102,11 @@ export function originOverview(result) {
  * @param {{ shell?: 'posix'|'powershell', exclude?: string[]|null }} [opts]
  * @returns {ReturnType<typeof originSweep>}
  */
-export function originSweepFor(result, { shell = 'posix', exclude = null } = {}) {
+export function originSweepFor(result, { shell = 'posix', exclude = null, origins = null } = {}) {
   const r = result || {};
   const hosts = Array.isArray(r.hosts) ? r.hosts : [];
   const { networks, dropped } = realOriginNetworks(r.originNetworks, hosts);
-  return originSweep(r, { names: hosts.filter(isProxiedOriginHost).map((x) => x.name), networks, dropped, shell, exclude });
+  return originSweep(r, { names: hosts.filter(isProxiedOriginHost).map((x) => x.name), networks, dropped, shell, exclude, origins });
 }
 
 /**
@@ -2078,13 +2115,14 @@ export function originSweepFor(result, { shell = 'posix', exclude = null } = {})
  * exported command never probes an address the user excluded — and what they did (`exclude`).
  * @param {object|null} result ScanResult
  * @param {string[]} [exclude] the tokens typed into the panel's Exclude box
+ * @param {object|null} [origins] the origin map read now
  * @returns {{ networks: object[], hints: object[], cliSuggestion: string|null,
  *   exclude: { requested: string[], emitted: string[], excluded: string[], unused: string[], invalid: string[] }|null }}
  */
-export function originExport(result, exclude = []) {
+export function originExport(result, exclude = [], origins = null) {
   const r = result || {};
   const tokens = Array.isArray(exclude) && exclude.length ? exclude.map(String) : null;
-  const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens });
+  const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens, origins });
   return {
     networks: realOriginNetworks(r.originNetworks, r.hosts).networks,
     hints: r.originHints || [],
@@ -2115,8 +2153,7 @@ export function zoneOfResult(result) {
 }
 
 /**
- * The origin-map part of a ScanResult (`result.known`, lib/scanner.js knownOrigins): the CLI
- * targets of the remembered origins that went into the command, and whether one has a port.
+ * `result.known`'s CLI targets (the remembered origins in the command), and whether one has a port.
  * @param {object|null} result ScanResult
  * @returns {{ targets: string[], ports: boolean }}
  */
@@ -2991,7 +3028,6 @@ function startRun(run, scanConfig, appState, onDataMissing) {
       // The names that really resolve (A/AAAA, no wildcard look-alike): the Zone File view's
       // "live, not in the file" comparison reads these.
       resolving: result.hosts.filter((x) => !x.wildcardSuspect && isResolving(x)).map((x) => x.name),
-      // The names behind a CDN: Servers › Origin map adds a CLI report's origins for these.
       proxied: result.hosts.filter(isProxiedOriginHost).map((x) => x.name),
       finishedAt: run.finishedAt
     });
@@ -3928,7 +3964,6 @@ export function mount(container, ctx) {
       inventory: state.inventory.servers,
       originHints: options.originHints,
       resolverLeak: options.originHints,
-      // The workspace's origin map: remembered, not stale origins rank first and join the command.
       knownOrigins: knownForScan(state.workspaceData('origins')),
       // The Settings parallelism caps the scan: `concurrency` is the requested pool (the sweep
       // rotates over the balance pool), `maxConcurrency` the hard ceiling derived from the same
@@ -4600,7 +4635,7 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
       discovery: run.result ? techniqueCounts(run.result.hosts) : null,
       sourceHealth: sourceHealthSummary(run.sourceResults).map(({ domains: _d, ...x }) => x),
       // The networks and the POSIX command the ORIGIN panel shows, with its exclusions applied.
-      origin: run.result ? originExport(run.result, originExclude.tokens) : null,
+      origin: run.result ? originExport(run.result, originExclude.tokens, originIndex(stateSingleton.workspaceData('origins'))) : null,
       subdomains: exportRows()
     })}\n`, 'application/json;charset=utf-8'))
   });
@@ -4709,7 +4744,9 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     const r = run.result;
     originCandidates = new Set();
     if (!r) return;
-    const o = originOverview(r);
+    // The origin map, read once per render (2,000 entries at most).
+    const origins = originIndex(stateSingleton.workspaceData('origins'));
+    const o = originOverview(r, { origins });
     if (!o.proxied.length) return;
     // Hosts with any host-specific candidate (resolver leak / history / sibling-domain) get the
     // "origin?" jump badge in the results table.
@@ -4721,24 +4758,17 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     // view asks third-party services about the address as soon as it opens).
     const zoneIpEl = (ip) => h('span', { class: 'sub-ip mono' }, ip);
 
-    // 00. The workspace's origin map: remembered origins first; a stale entry of one of these
-    //     hosts is shown, not used (Servers › Origin map says why).
-    const knownRows = o.proxied.filter((p) => p.known.length);
-    // Read once for this render (a full map holds 2,000 entries), then looked up per proxied host.
-    const map = originIndex(stateSingleton.workspaceData('origins'));
-    const staleRows = o.proxied.flatMap((p) => originsFor(map, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, e })));
-    if (knownRows.length || staleRows.length) {
+    // 00. Remembered origins (one row each, a stale one in place, not used).
+    const remembered = o.proxied.flatMap((p) => p.remembered.map((x) => ({ name: p.name, x })));
+    if (remembered.length) {
       blocks.push(h('div', { class: 'sub-org-block', dataset: { block: 'known' } },
         h('h4', { class: 'sub-org-sub' }, Icon('map-pin', { size: 14 }), t('sub.org.known')),
         h('p', { class: 'sub-org-hint' }, t('sub.org.knownHint'), ' ',
           h('a', { class: 'link', href: ctx.href('inventory', { tab: 'origins' }) }, t('sub.org.knownMap'))),
-        h('ul', { class: 'sub-org-list' },
-          knownRows.flatMap((p) => p.known.map((k) => h('li', { class: 'sub-org-leak', dataset: { host: p.name, ip: k.ip, kind: 'known' } },
-            h('span', { class: 'mono sub-org-name' }, hostNameNodes(p.name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
-            zoneIpEl(k.target)))),
-          staleRows.map(({ name, e }) => h('li', { class: 'sub-org-leak muted', dataset: { host: name, ip: e.ip, kind: 'known-stale' } },
-            h('span', { class: 'mono sub-org-name' }, hostNameNodes(name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
-            zoneIpEl(originTarget(e)), h('span', { class: 'sub-org-via' }, t('sub.org.knownStale', { date: formatDate(e.stale.at) })))))));
+        h('ul', { class: 'sub-org-list' }, remembered.map(({ name, x }) => h('li', {
+          class: ['sub-org-leak', { muted: x.stale }], dataset: { host: name, ip: x.ip, kind: x.stale ? 'known-stale' : 'known' }
+        }, h('span', { class: 'mono sub-org-name' }, hostNameNodes(name)), h('span', { class: 'sub-arrow', attrs: { 'aria-hidden': 'true' } }, '→'),
+        zoneIpEl(x.target), x.stale ? h('span', { class: 'sub-org-via' }, t('sub.org.knownStale', { date: formatDate(x.entry.stale.at) })) : null)))));
     }
 
     // 0. Exact origins from the imported zone file (Zone File hand-off): authoritative, so first.
@@ -4753,7 +4783,7 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     }
 
     /** The sweep for a shell with the current exclusions applied (the JSON export reads the same). */
-    const currentSweep = (shell) => originSweepFor(r, { shell, exclude: originExclude.tokens.length ? originExclude.tokens : null });
+    const currentSweep = (shell) => originSweepFor(r, { shell, exclude: originExclude.tokens.length ? originExclude.tokens : null, origins });
 
     // 1. Origin networks (/24 · /48 clusters of the DNS-only records). Each card says whether the
     //    command sweeps the whole /24 or only its known addresses (and why), flags shared cloud /

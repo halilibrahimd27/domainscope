@@ -29,7 +29,7 @@
 import { readEstateReport, ESTATE_MAX_REPORTS } from './estate.js';
 import { normalizeIP } from './netinfo.js';
 import {
-  sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTimeAt, originWildcard,
+  sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTime, originWildcard,
   ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT
 } from './originmap.js';
 
@@ -108,7 +108,7 @@ export function applyObservations(map, observations, { source, at, now, proxied 
   const nowMs = originNow(now);
   const m = working(map, nowMs);
   const out = { map: sanitizeOriginMap(map, { now: nowMs }), off: !m.remember, added: [], confirmed: [], staled: [], skipped: [] };
-  const when = originTimeAt(at, nowMs);
+  const when = originTime(at, nowMs);
   if (out.off || !when || !ORIGIN_SOURCES.includes(source)) return out;
   const t = ms(when);
   // The entries by name, kept up to date as the run adds some (a report can hold 200,000 rows).
@@ -268,7 +268,7 @@ export function addManualOrigin(map, input, { at, now, replace = null, serverOf 
   if (!ip) return fail('ip');
   const port = originPort(typeof src.port === 'string' ? src.port.trim() : src.port);
   if (!port) return fail('port');
-  const when = originTimeAt(at, nowMs) || new Date(nowMs).toISOString();
+  const when = originTime(at, nowMs) || new Date(nowMs).toISOString();
   const entry = { name, ip, port };
   const key = originKey(entry);
   const entries = m.entries.filter((e) => originKey(e) !== replace || replace === key);

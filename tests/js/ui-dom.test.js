@@ -1542,7 +1542,8 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // Wiring: the panel and the export read the same helper and the run's exclusions, which are kept
     // per run at module level (a re-mount — another view and back, a language switch — keeps them).
     const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
-    assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens\) : null/, 'the export reads the panel exclusions');
+    assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens, originIndex\(stateSingleton\.workspaceData\('origins'\)\)\) : null/,
+      'the export reads the panel exclusions and the origin map as the panel does');
     assert.match(src, /const currentSweep = \(shell\) => originSweepFor\(r, \{/, 'the panel reads the same helper');
     assert.match(src, /let originExclude = originExcludes\.get\(run\);/, 'the exclusions outlive the mounted panel');
     assert.doesNotMatch(src, /const originExclude = \{ tokens: \[\] \};/);

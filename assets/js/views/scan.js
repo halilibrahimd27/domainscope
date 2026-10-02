@@ -68,7 +68,7 @@ import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
-import { knownForScan, originIndex, originsFor, originTarget } from '../lib/originmap.js';
+import { knownForScan, originIndex, originTarget } from '../lib/originmap.js';
 import { StaleBadge, staleText } from '../ui/origin-map.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
@@ -3513,8 +3513,10 @@ function buildRunUI(run, ctx, { onFinish }) {
       return;
     }
     const hidden = r.hosts.filter((x) => x.classification.hidesOrigin);
-    // Origin networks without wildcard suspects (and a CLI command the CLI accepts), shared with Subdomains.
-    const overview = originOverview(r);
+    // Origin networks without wildcard suspects (and a CLI command the CLI accepts), shared with
+    // Subdomains; the remembered origins as the workspace's origin map has them now (read once).
+    const origins = originIndex(state.workspaceData('origins'));
+    const overview = originOverview(r, { origins });
     const { networks: cdnNetworks, dropped: cdnDropped } = realOriginNetworks(r.originNetworks, r.hosts);
     const cdnProxiedNames = overview.proxied.map((p) => p.name);
     const netCidrs = new Set(overview.networks.map((n) => n.cidr));
@@ -3572,14 +3574,9 @@ function buildRunUI(run, ctx, { onFinish }) {
       children: h('div', { class: 'stack-sm scan-why' }, h('p', null, t('scan.cdn.why1')), h('p', null, t('scan.cdn.why2')))
     }));
 
-    // The workspace's origin map: the remembered origins of these proxied names first (exact, and
-    // what the command probes), then a stale entry of one of them, shown but not used.
-    // Read once for this render (a full map holds 2,000 entries), then looked up per proxied host.
-    const originsMap = originIndex(state.workspaceData('origins'));
-    const knownRows = [
-      ...overview.proxied.flatMap((p) => p.known.map((k) => ({ name: p.name, target: k.target, entry: originsFor(originsMap, p.name).find((e) => e.ip === k.ip && e.port === k.port) || null, stale: false }))),
-      ...overview.proxied.flatMap((p) => originsFor(originsMap, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, target: originTarget(e), entry: e, stale: true })))
-    ];
+    // The workspace's origin map: the remembered origins this scan used, as the map has them now
+    // (one row each: a stale one in place, shown but not used), then a host's other stale entries.
+    const knownRows = overview.proxied.flatMap((p) => p.remembered.map((x) => ({ name: p.name, target: x.target, entry: x.entry, stale: x.stale })));
     if (knownRows.length) {
       cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.knownTitle')),
         h('p', { class: 'muted text-sm' }, t('scan.cdn.knownDesc'), ' ',
@@ -3728,7 +3725,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           const shell = cdnShell();
           const sweep = originSweep(r, {
             names: cdnProxiedNames, networks: cdnNetworks, dropped: cdnDropped, shell,
-            exclude: cdnExclude.tokens.length ? cdnExclude.tokens : null
+            exclude: cdnExclude.tokens.length ? cdnExclude.tokens : null, origins
           });
           if (sweep.command) quickHost.append(CodeBlock(sweep.command, { label: t('scan.cli.command'), wrap: true }));
           const nf = sweep.command && sweep.namesFile ? { file: sweep.namesFile, text: sweep.namesText, count: sweep.count } : null;

@@ -302,6 +302,25 @@ async function main() {
       await shotPage(page, opts, 'origins-map-stale-desktop-light-en');
     });
 
+    await run.step('the results already on screen follow the map: the stale origin once, in place, and out of the command', async () => {
+      await gotoRoute(page, 'subdomains');
+      await page.click('.sub-tabs .tab[data-tab="origins"]');
+      await page.waitFor(() => document.querySelector('.sub-org [data-block]'), { message: 'origin panel' });
+      const panel = await originPanel(page);
+      assertEqual(panel.known, [`known shop.${APEX} 192.0.2.20`, `known-stale www.${APEX} 192.0.2.10`], 'one row each, www stale in place');
+      assertEqual(panel.first[`www.${APEX}`] === 'known', false, 'no longer ranked first for www');
+      assertEqual(panel.command, `python3 ssl_origin_scan.py -t 203.0.113.0/24 192.0.2.20 -n shop.${APEX} www.${APEX}`, 'command');
+      await gotoRoute(page, 'scan');
+      await page.click('.scan-tabs [data-tab="cdn"]');
+      const rows = await page.waitFor(() => {
+        const trs = [...document.querySelectorAll('.scan-known-origins tbody tr.dt-row')];
+        return trs.length ? trs.map((tr) => [...tr.querySelectorAll('td')].slice(0, 2).map((td) => td.textContent.trim()).join(' | ')) : false;
+      }, { message: 'remembered origins table' });
+      assertEqual(rows, [`shop.${APEX} | Remembered192.0.2.20`, `www.${APEX} | Stale192.0.2.10`], 'rows');
+      const cmd = await page.evaluate(() => document.querySelector('.scan-cli-quick code')?.textContent || '');
+      assert(!cmd.includes('192.0.2.10') && cmd.includes('192.0.2.20'), `Behind CDN command: ${cmd}`);
+    });
+
     await run.step('the next scan shows the stale entry but leaves it out of the ranking and the command', async () => {
       await subdomainsScan(page);
       const panel = await originPanel(page);

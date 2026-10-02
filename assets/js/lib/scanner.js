@@ -2069,6 +2069,7 @@ export async function runScan(config = {}, hooks = {}) {
   const cliSuggestion = sweep.command ? `python3 ${sweep.command}` : null;
   const cliNames = sweep.names;
   const knownTokenSet = new Set(knownTokens);
+  const otherTokens = new Set([...cliTargets, ...zoneIps, ...zoneHosts]);
   const isAddressToken = (tok) => !!(normalizeIP(tok) || parseCidr(tok)) || knownTokenSet.has(tok);
   const cliValidTargets = zoneIn ? sweep.targets.filter(isAddressToken) : sweep.targets;
   const cliHostTargets = zoneIn ? sweep.targets.filter((tok) => !isAddressToken(tok)) : [];
@@ -2351,12 +2352,14 @@ export async function runScan(config = {}, hooks = {}) {
     // names / addresses / hosts went into the CLI command
     zone: zoneSummary,
     // origin map (only when knownOrigins was given): how many remembered origins it held, the
-    // proxied names one matched, and exactly which of their targets went into the CLI command
+    // proxied names one matched, exactly which of their targets went into the CLI command, and
+    // which of those only the origin map put there (a view leaves one out once the map marks it stale)
     ...(knownIn ? {
       known: {
         entries: knownIn.length,
         names: sortHostnames([...knownByHost.keys()]),
-        cliTargets: sweep.targets.filter((tok) => knownTokenSet.has(tok))
+        cliTargets: sweep.targets.filter((tok) => knownTokenSet.has(tok)),
+        exclusive: sweep.targets.filter((tok) => knownTokenSet.has(tok) && !otherTokens.has(tok))
       }
     } : {})
   };

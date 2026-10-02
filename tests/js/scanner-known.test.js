@@ -18,7 +18,7 @@ import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/l
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { buildVerifyPairs, isOriginPair, cliPlan } from '../../assets/js/lib/verify.js';
 import { targetsForCli } from '../../assets/js/lib/export.js';
-import { knownForScan } from '../../assets/js/lib/originmap.js';
+import { knownForScan, originIndex } from '../../assets/js/lib/originmap.js';
 import { applyObservations, setRemember, verifyObservations } from '../../assets/js/lib/originfill.js';
 import { originOverview, originSweep, originSweepTokens, knownOfResult } from '../../assets/js/views/subdomains.js';
 
@@ -141,7 +141,9 @@ describe('config.knownOrigins: the remembered origins rank first', () => {
     assert.ok(result.cliTargets.includes('192.0.2.40'));
     assert.ok(result.cliTargets.includes('198.51.100.30:8443'));
     assert.ok(!result.cliTargets.some((tok) => tok.startsWith('192.0.2.0/') || tok.startsWith('198.51.100.0/')), 'never widened');
-    assert.deepEqual(result.known, { entries: 3, names: ['shop.example.com', 'www.example.com'], cliTargets: ['192.0.2.40', '198.51.100.30:8443'] });
+    assert.deepEqual(result.known, {
+      entries: 3, names: ['shop.example.com', 'www.example.com'], cliTargets: ['192.0.2.40', '198.51.100.30:8443'], exclusive: ['192.0.2.40', '198.51.100.30:8443']
+    }, 'exclusive: only the origin map put them in the command');
     assert.match(result.cliSuggestion, /-t .*192\.0\.2\.40 198\.51\.100\.30:8443 .*-n blog\.example\.com shop\.example\.com www\.example\.com$/);
   });
 
@@ -157,7 +159,7 @@ describe('config.knownOrigins: the remembered origins rank first', () => {
     const plain = (await scan()).result;
     assert.ok(!('known' in plain));
     const empty = (await scan({ knownOrigins: [] })).result;
-    assert.deepEqual(empty.known, { entries: 0, names: [], cliTargets: [] });
+    assert.deepEqual(empty.known, { entries: 0, names: [], cliTargets: [], exclusive: [] });
     assert.deepEqual(empty.cliTargets, plain.cliTargets);
     assert.equal(empty.cliSuggestion, plain.cliSuggestion);
     assert.deepEqual(byName(empty).get('www.example.com').originCandidates, byName(plain).get('www.example.com').originCandidates);
@@ -229,6 +231,33 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
     const res = applyObservations(map, verifyObservations(rows), { source: 'verify', at: '2026-10-01T12:00:00.000Z' });
     assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
     assert.deepEqual(knownForScan(res.map).map((k) => `${k.name} ${k.ip}`), ['shop.example.com 198.51.100.31', 'www.example.com 198.51.100.30']);
+  });
+
+  test('the same results read after the map marked a used origin stale: one row, stale in place, out of the ranking and the command', async () => {
+    let map = setRemember(null, true);
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'hosted' },
+      { name: 'shop.example.com', ip: '198.51.100.30', port: 8443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: LAST }));
+    const { result } = await scan({ knownOrigins: knownForScan(map) });
+    const fresh = originOverview(result, { origins: originIndex(map) });
+    assert.deepEqual(fresh.proxied.find((p) => p.name === 'www.example.com').remembered.map((x) => `${x.target} ${x.stale} ${x.used}`), ['192.0.2.40 false true']);
+    // A later CLI report: www answered without the name at 192.0.2.40, and was found elsewhere.
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'not-hosted' },
+      { name: 'www.example.com', ip: '198.51.100.40', port: 443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: '2026-10-01T00:00:00.000Z' }));
+    const o = originOverview(result, { origins: originIndex(map) });
+    const www = o.proxied.find((p) => p.name === 'www.example.com');
+    assert.deepEqual(www.remembered.map((x) => `${x.target} ${x.stale} ${x.used}`), ['192.0.2.40 true true'], 'once, stale in place');
+    assert.deepEqual(www.known, [], 'no longer a remembered origin of the ranking');
+    assert.equal(o.knownCount, 1);
+    for (const shell of ['posix', 'powershell']) {
+      assert.ok(!/192\.0\.2\.40/.test(o.commands[shell]), `${shell}: ${o.commands[shell]}`);
+      assert.match(o.commands[shell], /198\.51\.100\.30:8443/);
+    }
+    assert.match(originOverview(result).commands.posix, /192\.0\.2\.40/, 'without the map: the command as the scan built it');
+    assert.ok(!/192\.0\.2\.40/.test(originSweep(result, { names: o.proxied.map((p) => p.name), origins: originIndex(map) }).command));
   });
 
   test('a remembered origin on another port keeps it: its server entry, its Verify pair, the CLI fallback and targets.txt', async () => {

@@ -1,33 +1,30 @@
 /**
- * lib/originmap.js — a workspace's origin map (the part 'origins': `{ v: 1, remember, entries }`):
- * which server and port really serves a proxied name. `remember` is the opt-in (off by default).
- * An entry: `{ name, ip, port, source, firstSeen, lastConfirmed, server, stale }`; `stale` is null
- * or the newest contradiction `{ reason, at, ip?, port? }` (always newer than lastConfirmed; ip /
- * port: where the name was found instead). Stale entries are shown, never a known origin.
- * The model and its readers (on the start route with the workspace store); the merge rules are
- * lib/originfill.js. DOM-free and pure. Spec: docs/SPEC.md §5.61.
+ * lib/originmap.js — the workspace part 'origins' `{ v: 1, remember, entries }`: which server and
+ * port really serves a proxied name. Entry: `{ name, ip, port, source, firstSeen, lastConfirmed,
+ * server, stale }`, `stale` null or the newest contradiction `{ reason, at, ip?, port? }`. The
+ * model and readers (start route); merge rules: lib/originfill.js. Pure. Spec §5.61.
  */
 
 import { normalizeHostname } from './domain.js';
 import { normalizeIP } from './netinfo.js';
 
-/** Where an entry was found / last confirmed. */
+/** Where an entry was last confirmed. */
 export const ORIGIN_SOURCES = Object.freeze(['cli-json', 'zone', 'verify', 'compare', 'manual']);
-/** Why an entry is stale: the source that contradicted it, and how. */
+/** Why an entry is stale. */
 export const STALE_REASONS = Object.freeze(['cli-elsewhere', 'cli-not-hosted', 'verify-elsewhere', 'verify-not-hosted', 'zone-other']);
-/** Caps: entries in all, entries of one name (a pool), the server name's length. */
+/** Caps: entries, entries per name, server name length. */
 export const ORIGIN_MAP_LIMITS = Object.freeze({ entries: 2000, perName: 16, server: 80 });
-/** The port an entry gets when its source names none (a zone file). */
+/** The port when a source names none (a zone file). */
 export const ORIGIN_DEFAULT_PORT = 443;
 
 // eslint-disable-next-line no-control-regex
 const JUNK_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g;
 
-/** An ISO time of a date or a parseable value, else null. */
-export const originTime = (v) => {
+/** An ISO time of a date or a parseable value, at most `nowMs`; else null. */
+export const originTime = (v, nowMs = Infinity) => {
   if (v === null || v === undefined || v === '') return null;
   const d = v instanceof Date ? v : new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  return Number.isNaN(d.getTime()) ? null : new Date(Math.min(d.getTime(), nowMs)).toISOString();
 };
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 
@@ -35,12 +32,6 @@ const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 export function originNow(now) {
   const n = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : typeof now === 'string' ? Date.parse(now) : NaN;
   return Number.isFinite(n) ? n : Date.now();
-}
-
-/** {@link originTime} of `v`, at most `nowMs`. */
-export function originTimeAt(v, nowMs) {
-  const t = originTime(v);
-  return t && Date.parse(t) > nowMs ? new Date(nowMs).toISOString() : t;
 }
 
 /** A server name as an entry keeps it (controls removed, at most 80 characters), or null. */
@@ -81,12 +72,12 @@ function sanitizeEntry(raw, nowMs) {
   const name = originName(raw.name);
   const ip = normalizeIP(String(raw.ip ?? ''));
   const port = originPort(raw.port);
-  const last = originTimeAt(raw.lastConfirmed, nowMs) || originTimeAt(raw.firstSeen, nowMs);
+  const last = originTime(raw.lastConfirmed, nowMs) || originTime(raw.firstSeen, nowMs);
   if (!name || !ip || !port || !last) return null;
-  const first = originTimeAt(raw.firstSeen, nowMs);
+  const first = originTime(raw.firstSeen, nowMs);
   let stale = null;
   const s = raw.stale;
-  const markedAt = s && typeof s === 'object' ? originTimeAt(s.at, nowMs) : null;
+  const markedAt = s && typeof s === 'object' ? originTime(s.at, nowMs) : null;
   // A mark stands only while newer than the last confirmation.
   if (markedAt && STALE_REASONS.includes(s.reason) && ms(markedAt) > ms(last)) {
     stale = { reason: s.reason, at: markedAt };
@@ -168,6 +159,26 @@ export function originsFor(map, name) {
   const wild = originWildcard(n);
   const covering = ((wild && byName.get(wild)) || []).filter((w) => !mine.some((e) => e.ip === w.ip && e.port === w.port));
   return [...mine, ...covering].sort(rank);
+}
+
+/**
+ * A host's remembered origins as a result shows them now: the ones it used (stale in place), then
+ * its other stale entries; one row per address and port.
+ * @param {object|null} map the map, or its {@link originIndex}
+ * @param {string} name
+ * @param {Array<{ ip: string, port: number }>} used
+ * @returns {Array<{ ip: string, port: number, target: string, entry: object|null, stale: boolean, used: boolean }>}
+ */
+export function rememberedRows(map, name, used) {
+  const entries = originsFor(map, name);
+  const rows = [];
+  const add = (ip, port, entry, isUsed) => {
+    if (rows.some((r) => r.ip === ip && r.port === port)) return;
+    rows.push({ ip, port, target: originTarget({ ip, port }), entry, stale: !!(entry && entry.stale), used: isUsed });
+  };
+  for (const u of used || []) add(u.ip, u.port, entries.find((e) => e.ip === u.ip && e.port === u.port) || null, true);
+  for (const e of entries) if (e.stale) add(e.ip, e.port, e, false);
+  return rows;
 }
 
 /**

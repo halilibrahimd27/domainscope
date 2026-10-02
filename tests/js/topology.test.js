@@ -70,6 +70,18 @@ const groupsByName = (scan) => Object.fromEntries(scan.servers.map((g) => [g.ser
 /* ---- lib/topology.js on server groups ------------------------------------------------------ */
 
 describe('applyTopology / orderByLoadBalancer', () => {
+  test('a VIP pair with 40 backends and 5000 names stays fast: no name-by-name search per entry', () => {
+    const names = Array.from({ length: 40 }, (_, i) => `web${i}`);
+    const { servers } = parseInventory([`lb01 203.0.113.2 vip=203.0.113.50 backends=${names}`, `lb02 203.0.113.3 vip=203.0.113.50 backends=${names}`,
+      ...names.map((n, i) => `${n} 10.0.0.${i + 1}`)].join('\n'));
+    const hosts = () => Array.from({ length: 5000 }, (_, i) => ({ name: `h${i}.${D}`, ip: '203.0.113.50', covered: true, via: 'dns', through: 'vip' }));
+    const started = performance.now();
+    const out = applyTopology([{ server: servers[0], hosts: hosts() }, { server: servers[1], hosts: hosts() }], servers);
+    const ms = performance.now() - started;
+    assert.deepEqual([out.length, out[2].hosts.length, out[2].hosts[4999].lbs], [42, 5000, ['lb01', 'lb02']]);
+    assert.ok(ms < 1000, `applyTopology took ${Math.round(ms)} ms`);
+  });
+
   const [lb01, lb02, web01, web02, app01] = ['lb01', 'lb02', 'web01', 'web02', 'app01'].map((n) => CORE.find((s) => s.name === n));
   const entry = (name, ip, extra = {}) => ({ name, ip, covered: true, via: 'dns', ...extra });
 

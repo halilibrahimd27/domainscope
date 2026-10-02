@@ -153,6 +153,17 @@ export function applyTopology(groups, servers) {
     }
     return g;
   };
+  // each group's entries by name and address (the first one of each), built once: a VIP pair's
+  // thousands of names reach every backend, and a search of the list per entry would not end
+  const entries = new Map();
+  const entriesOf = (g) => {
+    let m = entries.get(g);
+    if (!m) {
+      entries.set(g, (m = new Map()));
+      for (const x of g.hosts) if (!m.has(`${x.name}\u0000${x.ip}`)) m.set(`${x.name}\u0000${x.ip}`, x);
+    }
+    return m;
+  };
   // Breadth first from every load balancer the scan reached: a backend that is itself a load
   // balancer passes the names on.
   const queue = out.filter((g) => lbsOf.has(g.server) && g.hosts.length);
@@ -160,23 +171,26 @@ export function applyTopology(groups, servers) {
     const lb = queue[i];
     for (const backend of lbsOf.get(lb.server) || []) {
       const g = groupOf(backend);
+      const known = entriesOf(g);
       if (!behind.has(g)) behind.set(g, []);
       if (!behind.get(g).includes(lb.server.name)) behind.get(g).push(lb.server.name);
       let added = false;
       for (const e of lb.hosts) {
         const rank = VIA_RANK[e.via] ?? 9;
         for (const ip of backend.ips) {
-          const known = g.hosts.find((x) => x.name === e.name && x.ip === ip);
-          if (!known) {
-            g.hosts.push({ name: e.name, ip, covered: e.covered ?? null, via: e.via, lbs: [lb.server.name] });
+          const x = known.get(`${e.name}\u0000${ip}`);
+          if (!x) {
+            const entry = { name: e.name, ip, covered: e.covered ?? null, via: e.via, lbs: [lb.server.name] };
+            g.hosts.push(entry);
+            known.set(`${e.name}\u0000${ip}`, entry);
             added = true;
-          } else if (rank < (VIA_RANK[known.via] ?? 9)) {
+          } else if (rank < (VIA_RANK[x.via] ?? 9)) {
             // a stronger tie than the one known (DNS over an origin hint, also over a direct one) replaces it
-            known.via = e.via;
-            known.lbs = [lb.server.name];
+            x.via = e.via;
+            x.lbs = [lb.server.name];
             added = true;
-          } else if (known.lbs && rank === (VIA_RANK[known.via] ?? 9) && !known.lbs.includes(lb.server.name)) {
-            known.lbs.push(lb.server.name); // the same name through the other one of a VIP pair
+          } else if (x.lbs && rank === (VIA_RANK[x.via] ?? 9) && !x.lbs.includes(lb.server.name)) {
+            x.lbs.push(lb.server.name); // the same name through the other one of a VIP pair
           }
         }
       }
@@ -206,7 +220,8 @@ export function applyTopology(groups, servers) {
     if (r.tls) continue;
     for (const g of r.direct) {
       suspect.add(g);
-      nowhere.set(g, [...(nowhere.get(g) || []), name]);
+      if (!nowhere.has(g)) nowhere.set(g, []);
+      nowhere.get(g).push(name);
     }
   }
   const vipHolders = new Map(topo.vips.map((v) => [v.ip, v]));
@@ -297,13 +312,15 @@ export function orderByLoadBalancer(groups) {
   const list = Array.isArray(groups) ? groups : [];
   if (!list.some((g) => g && g.topology)) return [...list];
   const byName = new Map(list.map((g) => [g.server.name, g]));
+  const position = new Map(list.map((g, i) => [g, i]));
   const out = [];
   const placed = new Set();
   const reachedByListed = (g) => !!g.topology && g.topology.behind.some((n) => n !== g.server.name && byName.has(n));
   /** The other holders of the VIPs `g` was reached at, in list order (none behind a listed load balancer). */
   const partners = (g) => {
     const names = new Set((g.topology ? g.topology.vips : []).flatMap((v) => v.servers));
-    return list.filter((x) => x !== g && names.has(x.server.name) && !reachedByListed(x));
+    return [...names].map((n) => byName.get(n)).filter((x) => x && x !== g && !reachedByListed(x))
+      .sort((a, b) => position.get(a) - position.get(b));
   };
   const place = (g) => {
     if (placed.has(g)) return;

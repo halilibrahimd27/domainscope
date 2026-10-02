@@ -225,6 +225,59 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.deepEqual(entry(map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'verify-elsewhere', at: DAY2, ip: '203.0.113.10', port: 443 });
   });
 
+  test('the newest contradiction is kept, and only a newer confirmation clears it: an older report imported late changes nothing', () => {
+    const N = 'shop.example.com';
+    const [A, B, C] = ['203.0.113.10', '198.51.100.20', '198.51.100.21'];
+    let { map } = applyObservations(ON, [{ name: N, ip: A, port: null, outcome: 'hosted' }], { source: 'zone', at: '2026-09-01T00:00:00Z' });
+    ({ map } = applyObservations(map, [hosted(N, B), unknown(N, A)], { source: 'verify', at: '2026-09-10T00:00:00Z' }));
+    assert.deepEqual(entry(map, `${N}|${A}|443`).stale, { reason: 'verify-elsewhere', at: '2026-09-10T00:00:00.000Z', ip: B, port: 443 });
+    // Later the CLI found the name on C, and A answered without it: the newer mark replaces the first.
+    let res = applyObservations(map, [hosted(N, C), notHosted(N, A)], { source: 'cli-json', at: '2026-09-30T00:00:00Z' });
+    ({ map } = res);
+    assert.deepEqual(entry(map, `${N}|${A}|443`).stale, { reason: 'cli-elsewhere', at: '2026-09-30T00:00:00.000Z', ip: C, port: 443 });
+    // A report from before that (A served the name on 09-20), imported last: A stays stale.
+    res = applyObservations(map, [hosted(N, A)], { source: 'cli-json', at: '2026-09-20T00:00:00Z' });
+    ({ map } = res);
+    assert.deepEqual(res.confirmed, [`${N}|${A}|443`]);
+    assert.equal(entry(map, `${N}|${A}|443`).lastConfirmed, '2026-09-20T00:00:00.000Z');
+    assert.equal(entry(map, `${N}|${A}|443`).stale.at, '2026-09-30T00:00:00.000Z', 'the NOT_HOSTED of 09-30 is not undone');
+    assert.deepEqual(knownForScan(map).map((k) => k.ip).sort(), [B, C]);
+  });
+
+  test('the order reports are imported in does not matter: an entry added from an older run is stale when a newer one found the name elsewhere', () => {
+    const N = 'shop.example.com';
+    const [A, B] = ['203.0.113.10', '198.51.100.20'];
+    const newer = (map) => applyObservations(map, [hosted(N, B), notHosted(N, A)], { source: 'cli-json', at: '2026-10-02T00:00:00Z' }).map;
+    const older = (map) => applyObservations(map, [hosted(N, A)], { source: 'cli-json', at: '2026-09-01T00:00:00Z' }).map;
+    const newThenOld = older(newer(ON));
+    const oldThenNew = newer(older(ON));
+    assert.deepEqual(newThenOld, oldThenNew);
+    assert.deepEqual(entry(newThenOld, `${N}|${A}|443`).stale, { reason: 'cli-elsewhere', at: '2026-10-02T00:00:00.000Z', ip: B, port: 443 });
+    assert.deepEqual(knownForScan(newThenOld).map((k) => k.ip), [B]);
+    // A confirmation and a contradiction of the same moment: active, whichever came first.
+    const base = applyObservations(ON, [hosted(N, A)], { source: 'cli-json', at: DAY1 }).map;
+    const confirm = (map) => applyObservations(map, [hosted(N, A)], { source: 'verify', at: DAY2 }).map;
+    const contradict = (map) => applyObservations(map, [hosted(N, B), notHosted(N, A)], { source: 'cli-json', at: DAY2 }).map;
+    const one = confirm(contradict(base));
+    const two = contradict(confirm(base));
+    assert.equal(entry(one, `${N}|${A}|443`).stale, null);
+    assert.equal(entry(two, `${N}|${A}|443`).stale, null);
+  });
+
+  test('a stored mark not newer than the last confirmation is dropped', () => {
+    const map = sanitizeOriginMap({
+      remember: true,
+      entries: [
+        { name: 'shop.example.com', ip: '203.0.113.10', lastConfirmed: DAY2, stale: { reason: 'cli-not-hosted', at: DAY1 } },
+        { name: 'shop.example.com', ip: '203.0.113.11', lastConfirmed: DAY2, stale: { reason: 'cli-not-hosted', at: DAY2 } },
+        { name: 'shop.example.com', ip: '203.0.113.12', lastConfirmed: DAY1, stale: { reason: 'cli-not-hosted', at: DAY2 } }
+      ]
+    });
+    assert.deepEqual(map.entries.map((e) => `${e.ip} ${e.stale ? e.stale.reason : '-'}`).sort(), [
+      '203.0.113.10 -', '203.0.113.11 -', '203.0.113.12 cli-not-hosted'
+    ]);
+  });
+
   test('a comparison or a manual entry never marks another entry stale', () => {
     const { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10')], { source: 'zone', at: DAY1 });
     for (const source of ['compare', 'manual']) {

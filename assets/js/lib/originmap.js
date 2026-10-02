@@ -7,7 +7,8 @@
  * lib/originfill.js writes nothing). An entry: `{ name, ip, port, source, firstSeen,
  * lastConfirmed, server, stale }` — `source` where it was last confirmed ({@link ORIGIN_SOURCES}),
  * `server` an inventory name or null, `stale` null or `{ reason, at, ip?, port? }` once a later
- * run contradicted it ({@link STALE_REASONS}; ip / port: where the name was found instead).
+ * run contradicted it ({@link STALE_REASONS}; ip / port: where the name was found instead; the
+ * newest contradiction, always newer than `lastConfirmed`).
  * Stale entries are kept and shown, never a scan's known origin ({@link knownForScan}).
  *
  * This module is the model and how it is read (it loads with the workspace store); the merge
@@ -73,7 +74,9 @@ function sanitizeEntry(raw) {
   const first = originTime(raw.firstSeen);
   let stale = null;
   const s = raw.stale;
-  if (s && typeof s === 'object' && STALE_REASONS.includes(s.reason) && originTime(s.at)) {
+  // A mark stands only while it is newer than the last confirmation (a confirmation as new as the
+  // mark, or newer, cleared it: lib/originfill.js).
+  if (s && typeof s === 'object' && STALE_REASONS.includes(s.reason) && originTime(s.at) && ms(originTime(s.at)) > ms(last)) {
     stale = { reason: s.reason, at: originTime(s.at) };
     const byIp = normalizeIP(String(s.ip ?? ''));
     const byPort = originPort(s.port);

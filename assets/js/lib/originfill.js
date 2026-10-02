@@ -42,6 +42,8 @@ const OUTCOMES = Object.freeze(['hosted', 'not-hosted', 'unknown']);
 const CONTRADICTS = Object.freeze({
   'cli-json': ['cli-elsewhere', 'cli-not-hosted'], verify: ['verify-elsewhere', 'verify-not-hosted'], zone: ['zone-other', null]
 });
+/** The mark an entry added from an older run gets when a newer run of this source found the name elsewhere. */
+const FOUND_ELSEWHERE = Object.freeze({ 'cli-json': 'cli-elsewhere', verify: 'verify-elsewhere', zone: 'zone-other' });
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 /** A copy of the map to change (remembering off and no entry when there is none). */
 const working = (map) => {
@@ -68,9 +70,12 @@ export function setRemember(map, on) {
  * (no answer, an error: it was asked, and said nothing). `port` null matches any port of the
  * address (a zone file names no port) and adds {@link ORIGIN_DEFAULT_PORT}.
  *
- * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark older than
- *   the run goes) or adds one — only for a proxied name: one the map has, or `proxied(name)`
- *   (absent: every name); the others are listed in `skipped`.
+ * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark not newer than
+ *   the run goes, a newer one stays) or adds one — only for a proxied name: one the map has, or
+ *   `proxied(name)` (absent: every name); the others are listed in `skipped`. An entry added from
+ *   a run older than another entry of the name at another address, which the CLI JSON, Verify or
+ *   a zone file confirmed, starts stale (that newer run found the name elsewhere), so the order
+ *   reports are imported in does not matter.
  * - Contradictions (the CLI JSON, Verify, a zone file; a comparison or a manual entry never
  *   contradicts): a run marks an entry `<src>-elsewhere` only when it asked that entry's address
  *   and port and got no answer or an answer without the name while it found the name on another
@@ -78,7 +83,7 @@ export function setRemember(map, on) {
  *   did not ask is left alone (a name may have several origins). 'not-hosted' at an entry's
  *   address and port, with the name found nowhere else, marks it `<src>-not-hosted`. A zone file
  *   names a proxied name's origins: its other entries are `zone-other`. An entry confirmed by the
- *   same run, or after it, is never marked.
+ *   same run, or at or after its time, is never marked; a stale entry takes the newer of two marks.
  * - With remembering off nothing changes (`off: true`).
  * @param {object|null} map
  * @param {Array<{ name: string, ip: string, port?: number|null, outcome: 'hosted'|'not-hosted'|'unknown', server?: string|null }>} observations
@@ -139,13 +144,23 @@ export function applyObservations(map, observations, { source, at, proxied = nul
       continue;
     }
     const e = { name: o.name, ip: o.ip, port: o.port ?? ORIGIN_DEFAULT_PORT, source, firstSeen: when, lastConfirmed: when, server: o.server || lookup(o.ip), stale: null };
+    // An older run than one that found the name on another address: its finding is already superseded.
+    const newer = m.entries
+      .filter((x) => x.name === e.name && x.ip !== e.ip && !x.stale && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t)
+      .sort((a, b) => ms(b.lastConfirmed) - ms(a.lastConfirmed))[0];
+    if (newer) {
+      e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
+      out.staled.push(originKey(e));
+    }
     m.entries.push(e);
     confirmed.add(originKey(e));
     out.added.push(originKey(e));
   }
   const [elsewhere, notHosted] = CONTRADICTS[source] || [null, null];
   const mark = (e, reason, by = null) => {
-    if (!reason || e.stale || confirmed.has(originKey(e)) || t <= ms(e.lastConfirmed)) return;
+    if (!reason || confirmed.has(originKey(e)) || t <= ms(e.lastConfirmed)) return;
+    // The newest contradiction is kept: an older run's mark never replaces a newer one.
+    if (e.stale && ms(e.stale.at) >= t) return;
     e.stale = { reason, at: when, ...(by ? { ip: by.ip, port: by.port ?? ORIGIN_DEFAULT_PORT } : {}) };
     out.staled.push(originKey(e));
   };

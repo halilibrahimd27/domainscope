@@ -1,8 +1,7 @@
 /**
- * lib/originmap.js — the workspace part 'origins' `{ v: 1, remember, entries }`: which server and
- * port really serves a proxied name. Entry: `{ name, ip, port, source, firstSeen, lastConfirmed,
- * server, stale }`, `stale` null or the newest contradiction `{ reason, at, ip?, port? }`. The
- * model and readers (start route); merge rules: lib/originfill.js. Pure. Spec §5.61.
+ * lib/originmap.js — the workspace part 'origins' `{ v: 1, remember, entries, refuted? }`: which
+ * server and port really serves a proxied name. The model and readers (start route); merge rules
+ * and `refuted`: lib/originfill.js. Pure. Spec §5.61.
  */
 
 import { normalizeHostname } from './domain.js';
@@ -99,7 +98,7 @@ const rank = (a, b) => Number(!!a.stale) - Number(!!b.stale) || ms(b.lastConfirm
  * capped (active and recent kept first), by name, no date after `now`; null when off and empty.
  * @param {unknown} value
  * @param {{ now?: Date|number|string }} [opts]
- * @returns {{ v: 1, remember: boolean, entries: object[] }|null}
+ * @returns {object|null}
  */
 export function sanitizeOriginMap(value, { now } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -168,7 +167,7 @@ export function originsFor(map, name) {
  * @param {object|null} map the map, or its {@link originIndex}
  * @param {string} name
  * @param {Array<{ ip: string, port: number }>} used
- * @returns {Array<{ ip: string, port: number, target: string, entry: object|null, stale: boolean, used: boolean }>}
+ * @returns {object[]} `{ ip, port, target, entry, stale, used }`
  */
 export function rememberedRows(map, name, used) {
   const entries = originsFor(map, name);
@@ -186,7 +185,7 @@ export function rememberedRows(map, name, used) {
  * The active entries as a scan's `knownOrigins` (lib/scanner.js); a wildcard's `except` lists the
  * names with their own entry at its address and port.
  * @param {object|null} map the map, or its {@link originIndex}
- * @returns {Array<{ name: string, ip: string, port: number, server: string|null, source: string, lastConfirmed: string, except?: string[] }>}
+ * @returns {object[]} `{ name, ip, port, server, source, lastConfirmed, except? }`
  */
 export function knownForScan(map) {
   const { map: m } = originIndex(map);

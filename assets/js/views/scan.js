@@ -4271,9 +4271,16 @@ function buildRunUI(run, ctx, { onFinish }) {
     finish();
   }
 
+  // The origin map changed (a Verify batch here, another tab, "Delete all local data"): Behind CDN
+  // follows at once.
+  const offOrigins = state.subscribe(({ key, value }) => {
+    if (run.result && key === 'workspaceData' && value && (value.parts || []).includes('origins')) renderCdnTab();
+  });
+
   return {
     el,
     dispose() {
+      offOrigins();
       run.listeners.delete(listener);
       stopTicker();
       try {

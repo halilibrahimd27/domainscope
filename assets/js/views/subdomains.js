@@ -5413,11 +5413,20 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     finish();
   }
 
+  // The origin map changed (Verify, another tab): the Origins block follows.
+  const offOrigins = stateSingleton.subscribe(({ key, value }) => {
+    if (run.result && key === 'workspaceData' && (value.parts || []).includes('origins')) {
+      renderOrigin();
+      table.refresh();
+    }
+  });
+
   return {
     el: root,
     /** Open a results tab (the route's `tab=` changed). */
     showTab,
     dispose() {
+      offOrigins();
       run.listeners.delete(listener);
       stopTicker();
       // Abandon any in-flight network-owner lookups when the panel is torn down.

@@ -40,7 +40,7 @@ export const FORM_ERRORS = Object.freeze(['off', 'name', 'ip', 'port', 'limit'])
 registerStrings('en', {
   'omp.privacy': 'The origin map stays in this browser, in the current workspace (IndexedDB). It leaves the browser only inside a workspace hand-over file you export yourself.',
   'omp.privacyMemory': 'Browser storage is unavailable, so the origin map is kept in this tab only and is gone when you close it. It is sent nowhere.',
-  'omp.lead': 'Which server and port really serves a name behind a CDN, remembered once a CLI sweep, a zone file or a server comparison found it. Verify checks the remembered origins (and a zone file’s) again, never a mere candidate. Subdomains and SSL Targets rank these origins first and put them in the CLI command.',
+  'omp.lead': 'Which server and port really serves a name behind a CDN, remembered once a CLI sweep, a zone file or a server comparison found it. Verify checks the remembered origins (and a zone file’s) again; a mere candidate is never remembered. Subdomains and SSL Targets rank these origins first and put them in the CLI command.',
   'omp.remember': 'Remember origins in this workspace',
   'omp.rememberHint': 'Off by default. While it is off nothing is written to this map.',
   'omp.offHere': 'Remembering is off: Zone File, Verify, Retire an IP, CLI reports and the form below write nothing here.',

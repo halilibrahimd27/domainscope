@@ -238,6 +238,8 @@ async function main() {
       await toggleRemember(page);
       await page.waitFor(() => document.querySelector('[data-role="om-remember"]')?.checked && !document.querySelector('[data-role="om-off"]'), { message: 'on' });
       assertEqual(await mapOf(page), { v: 1, remember: true, entries: [] }, 'the setting is stored');
+      const lead = await page.evaluate(() => document.querySelector('[data-role="origin-map"]')?.textContent || '');
+      assert(lead.includes('Verify checks the remembered origins (and a zone file’s) again; a mere candidate is never remembered.'), 'the lead says a candidate is never remembered');
       await zoneOrigins(page);
       const label = await page.evaluate(() => document.querySelector('[data-action="zone-remember"]')?.textContent);
       assertEqual(label, 'Remember these 2 origins', 'button');
@@ -319,6 +321,31 @@ async function main() {
       assertEqual(rows, [`shop.${APEX} | Remembered192.0.2.20`, `www.${APEX} | Stale192.0.2.10`], 'rows');
       const cmd = await page.evaluate(() => document.querySelector('.scan-cli-quick code')?.textContent || '');
       assert(!cmd.includes('192.0.2.10') && cmd.includes('192.0.2.20'), `Behind CDN command: ${cmd}`);
+    });
+
+    await run.step('a map change while results are open (a Verify batch, another tab): Behind CDN and the Subdomains block follow at once', async () => {
+      // SSL Targets › Behind CDN is open: shop's origin goes stale as a Verify batch would mark it.
+      const before = await mapOf(page);
+      const setMap = (map) => page.evaluate(async (m) => { await (await import('./assets/js/state.js')).state.setWorkspaceData('origins', m); }, map);
+      const at = new Date().toISOString();
+      await setMap({ ...before, entries: before.entries.map((e) => (e.ip === '192.0.2.20' ? { ...e, stale: { reason: 'verify-not-hosted', at } } : e)) });
+      const rows = await page.waitFor(() => {
+        const trs = [...document.querySelectorAll('.scan-known-origins tbody tr.dt-row')];
+        const text = trs.map((tr) => [...tr.querySelectorAll('td')].slice(0, 2).map((td) => td.textContent.trim()).join(' | '));
+        return text.some((x) => x.includes('Stale192.0.2.20')) ? text : false;
+      }, { message: 'Behind CDN follows the map' });
+      assertEqual(rows, [`shop.${APEX} | Stale192.0.2.20`, `www.${APEX} | Stale192.0.2.10`], 'rows');
+      const cmd = await page.evaluate(() => document.querySelector('.scan-cli-quick code')?.textContent || '');
+      assert(!cmd.includes('192.0.2.20') && !cmd.includes('192.0.2.10'), `Behind CDN command: ${cmd}`);
+      // Subdomains › Origins is open: the map comes back (another tab, say).
+      await gotoRoute(page, 'subdomains');
+      await page.click('.sub-tabs .tab[data-tab="origins"]');
+      await page.waitFor(() => document.querySelector('.sub-org [data-kind="known-stale"][data-ip="192.0.2.20"]'), { message: 'shop stale in the block' });
+      await setMap(before);
+      await page.waitFor(() => document.querySelector('.sub-org [data-kind="known"][data-ip="192.0.2.20"]'), { message: 'the block follows the map' });
+      const panel = await originPanel(page);
+      assertEqual(panel.known, [`known shop.${APEX} 192.0.2.20`, `known-stale www.${APEX} 192.0.2.10`], 'block');
+      assertEqual(panel.command, `python3 ssl_origin_scan.py -t 203.0.113.0/24 192.0.2.20 -n shop.${APEX} www.${APEX}`, 'command');
     });
 
     await run.step('the next scan shows the stale entry but leaves it out of the ranking and the command', async () => {

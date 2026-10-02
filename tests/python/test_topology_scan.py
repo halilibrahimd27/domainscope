@@ -176,8 +176,19 @@ class TopologySweep(unittest.TestCase):
         network = Network()
         report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
                               workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        # TLS can end nowhere else: the load balancer is scanned all the same, its backend is not
+        self.assertEqual([s.name for s in report.skipped_backends], ['pool01'])
+        self.assertIn(('203.0.113.60', 443), network.calls)
         text = sos.render_summary(report, color=False, width=200)
-        self.assertIn('  edge01  not scanned  passes TLS through (terminates_tls=no), but no backend '
+        self.assertIn('  edge01  NEEDS_UPDATE  says terminates_tls=no, yet answers TLS for the names and no '
+                      'backend terminates TLS: the inventory is wrong - check it', text)
+        # nothing answers: it still says TLS terminates nowhere
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn,
+                              tls_fn=lambda ip, port, sni, timeout: sos.TlsResult(status=sos.TLS_ERROR, error='handshake failed'))
+        text = sos.render_summary(report, color=False, width=200)
+        self.assertIn('  edge01  TLS_ERROR  passes TLS through (terminates_tls=no), but no backend '
                       'behind it terminates TLS: TLS terminates nowhere - check the inventory', text)
 
     def test_backends_that_loop_are_warned_and_the_summary_ends(self):
@@ -274,6 +285,17 @@ class TopologyCommandLine(unittest.TestCase):
         self.assertEqual(code, sos.EXIT_USAGE)
         self.assertIn('terminates_tls=no', err)
         self.assertIn('--include-backends', err)
+
+    def test_a_passthrough_load_balancer_with_tls_terminating_nowhere_is_scanned_not_refused(self):
+        path = self.write('nowhere.txt', 'edge01 203.0.113.60 terminates_tls=no backends=pool01\n'
+                                         'pool01 10.0.0.61 terminates_tls=no\n')
+        network = Network()
+        with mock.patch.object(sos, 'tcp_connect', network.connect_fn), \
+                mock.patch.object(sos, 'TlsProber', lambda: network.tls_fn):
+            code, out, err = run_main('-t', path, '-n', NAME, '--no-color')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(set(network.calls)), [('203.0.113.60', 443)])
+        self.assertIn('the inventory is wrong - check it', out)
 
     def test_backends_may_name_a_server_of_another_file(self):
         lbs = self.write('lbs.txt', 'lb01 203.0.113.2 backends=web01\n')

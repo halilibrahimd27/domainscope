@@ -2215,6 +2215,16 @@ def _terminates_behind(server: Server, by_name: Dict[str, Server]) -> bool:
     return False
 
 
+def servers_set_aside(servers: Sequence[Server]) -> List[Server]:
+    """The servers a scan leaves out without --include-backends: those with terminates_tls=no
+    (a plain-HTTP backend, a load balancer passing TLS through), except a load balancer with no
+    server behind it terminating TLS: TLS would terminate nowhere, so the inventory is wrong
+    somewhere and the scan shows what answers there (erring toward the certificate)."""
+    by_name = {server.name.lower(): server for server in servers}
+    return [server for server in servers if not server.gets_certificate
+            and not (server.backends and not _terminates_behind(server, by_name))]
+
+
 def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
     """Checks over the linked inventory (lib/inventory.js topologyChecks alike): a load balancer
     that passes TLS through (terminates_tls=no) with no backend terminating it is a
@@ -3934,7 +3944,8 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     (``ports=``, :attr:`Server.tls_ports`): each server is scanned only on its own ports. A
     server with ``terminates_tls=no`` (a plain-HTTP backend, never given the certificate) is
     set aside, never connected to, and listed in :attr:`ScanReport.skipped_backends` unless
-    ``include_backends``. A certificate that covers a name but is not the new one is
+    ``include_backends`` - but a load balancer with TLS terminating nowhere behind it is
+    scanned (:func:`servers_set_aside`). A certificate that covers a name but is not the new one is
     NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT (:class:`HostedClassifier` with
     ``private_cas`` and ``strict_public``).
     Addresses matching ``exclude`` (:class:`ExcludeRule` objects or IP / CIDR / range
@@ -3954,7 +3965,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     ports = list(ports)
     exclude_rules = _as_rules(exclude)
     servers, excluded = apply_excludes(servers, exclude_rules)
-    skipped = [] if include_backends else [s for s in servers if not s.gets_certificate]
+    skipped = [] if include_backends else servers_set_aside(servers)
     if skipped:
         set_aside = {id(server) for server in skipped}
         servers = [server for server in servers if id(server) not in set_aside]
@@ -8259,7 +8270,9 @@ topology (keys on a server's line in an inventory file, or CSV columns, Ansible 
                            lists every open port, so it is not read); a port that usually
                            carries no TLS (22, 80 ...) is a warning
     terminates_tls=yes|no  no: a backend that never gets the certificate (plain HTTP behind
-                           a load balancer) - not scanned unless --include-backends
+                           a load balancer) - not scanned unless --include-backends; a load
+                           balancer passing TLS through to such backends only is scanned all
+                           the same (TLS would end nowhere: the inventory is wrong somewhere)
     vip=203.0.113.50       an address several servers share (an HA pair): the certificate
                            goes on every one of them
     backends=web01,web02   this server is a load balancer forwarding to those servers
@@ -8435,7 +8448,9 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   Topoloji anahtarları TLS'in nerede sonlandığını söyler (envanter satırında, CSV sütunu,
   Ansible host değişkeni ya da JSON anahtarı olarak): ports=443,8443 sunucunun TLS
   portlarıdır (-p yerine); terminates_tls=no sertifikayı hiç almayan düz HTTP arka uç
-  sunucusudur ve --include-backends verilmedikçe taranmaz; vip= bir HA çiftinin paylaştığı
+  sunucusudur ve --include-backends verilmedikçe taranmaz (TLS'i yalnızca böyle sunuculara
+  ileten bir yük dengeleyici yine taranır: TLS hiçbir yerde sonlanmaz, envanter bir yerde
+  yanlıştır); vip= bir HA çiftinin paylaştığı
   adrestir (sertifika ikisine de kurulur); backends=web01,web02 yük dengeleyicinin
   arkasındaki sunuculardır; nat= sunucunun genel adresidir. Özet sunucuları yük
   dengeleyiciye göre gruplar. Ansible INI envanterinde satırın başındaki
@@ -9002,8 +9017,9 @@ def _run(args: argparse.Namespace) -> int:
                          '--exclude' % excluded_address_count(excluded))
     # terminates_tls=no (a plain-HTTP backend): never given the certificate, not scanned unless
     # --include-backends (run_scan sets them aside itself; this is for the messages)
-    backends = [] if args.include_backends else [s for s in kept if not s.gets_certificate]
-    kept = [s for s in kept if s.gets_certificate] if backends else kept
+    backends = [] if args.include_backends else servers_set_aside(kept)
+    aside = {id(server) for server in backends}
+    kept = [s for s in kept if id(s) not in aside]
     if not kept:
         raise UsageError('no scannable targets: every server left has terminates_tls=no (a '
                          'plain-HTTP backend that never gets the certificate); '

@@ -53,11 +53,13 @@ export const COMMAND_SPECS = Object.freeze({
 
 /**
  * An `audit` target that names a file of domains rather than a domain: a path (a separator in
- * it) or a list's extension (`domains.txt`, `.csv`, `.list`, `.lst` — none is a TLD).
+ * it) or a list's extension (`domains.txt`, `.csv`, `.list`, `.lst` — none is a TLD). A URL (a
+ * scheme before `//`) is a target whatever its path: its registrable domain is audited.
  * @param {string} token
  * @returns {boolean}
  */
 export function isListArgument(token) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false;
   return /[\\/]/.test(token) || /\.(?:txt|csv|list|lst)$/i.test(token);
 }
 

@@ -197,6 +197,9 @@ describe('command line', () => {
     assert.deepEqual(file.targets, ['example.net']);
     assert.deepEqual([file.options.policy, file.options.preset, file.options.dkim], ['policy.json', null, false]);
     assert.deepEqual(parseCommandLine(['audit', '--preset', 'parked', '--list', 'd.lst']).options.lists, ['d.lst']);
+    // a URL is a target (its registrable domain), never a file, whatever its path
+    const url = parseCommandLine(['audit', '--preset', 'baseline', 'https://www.example.com/', 'http://example.org/domains.txt']);
+    assert.deepEqual([url.targets, url.options.lists], [['example.com', 'example.org'], []]);
     assert.throws(() => parseCommandLine(['audit', 'example.com']), /audit needs the rules: --policy FILE or --preset NAME \(one of them\)/);
     assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', 'p.json', '--preset', 'baseline']), /one of them/);
     assert.throws(() => parseCommandLine(['audit', 'example.com', '--preset', 'strict']), /--preset takes baseline, strict-mail, parked, not "strict"/);

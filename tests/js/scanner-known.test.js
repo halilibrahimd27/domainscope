@@ -16,7 +16,8 @@ import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
-import { buildVerifyPairs, isOriginPair } from '../../assets/js/lib/verify.js';
+import { buildVerifyPairs, isOriginPair, cliPlan } from '../../assets/js/lib/verify.js';
+import { targetsForCli } from '../../assets/js/lib/export.js';
 import { knownForScan } from '../../assets/js/lib/originmap.js';
 import { applyObservations, setRemember, verifyObservations } from '../../assets/js/lib/originfill.js';
 import { originOverview, originSweep, originSweepTokens, knownOfResult } from '../../assets/js/views/subdomains.js';
@@ -228,6 +229,25 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
     const res = applyObservations(map, verifyObservations(rows), { source: 'verify', at: '2026-10-01T12:00:00.000Z' });
     assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
     assert.deepEqual(knownForScan(res.map).map((k) => `${k.name} ${k.ip}`), ['shop.example.com 198.51.100.31', 'www.example.com 198.51.100.30']);
+  });
+
+  test('a remembered origin on another port keeps it: its server entry, its Verify pair, the CLI fallback and targets.txt', async () => {
+    const LIST = [{ name: 'shop.example.com', ip: '198.51.100.30', port: 8443, source: 'cli-json', lastConfirmed: LAST }];
+    let { result } = await scan({ knownOrigins: LIST }, { inventory: 'web01 203.0.113.10\nweb04 198.51.100.30' });
+    const web04 = result.servers.find((g) => g.server.name === 'web04');
+    assert.deepEqual(web04.hosts.map((x) => [x.name, x.ip, x.port, x.via]), [['shop.example.com', '198.51.100.30', 8443, 'known']]);
+    const { pairs } = buildVerifyPairs(result);
+    const pair = pairs.find((p) => p.name === 'shop.example.com' && p.via === 'known');
+    assert.deepEqual([pair.ip, pair.port, pair.key], ['198.51.100.30', 8443, '198.51.100.30|8443|shop.example.com'], 'checked where it is served');
+    // A documentation address is never sent: the CLI card scans it on that port.
+    assert.equal(pair.skip, 'reserved');
+    assert.deepEqual(cliPlan([{ ...pair, state: 'skipped' }]).targets, ['198.51.100.30:8443']);
+    const lines = (text) => text.split('\n').filter(Boolean);
+    assert.ok(lines(targetsForCli([...parseInventory('web01 203.0.113.10\nweb04 198.51.100.30').servers, ...result.originHints, ...result.unmatchedIps]))
+      .includes('web04 198.51.100.30:8443'), 'targets.txt: the inventory line and the remembered port');
+    ({ result } = await scan({ knownOrigins: LIST }, { inventory: 'web01 203.0.113.10' }));
+    const text = lines(targetsForCli([...parseInventory('web01 203.0.113.10').servers, ...result.originHints, ...result.unmatchedIps]));
+    assert.ok(text.includes('198.51.100.30:8443') && !text.includes('198.51.100.30'), `only on its port: ${text.join(' / ')}`);
   });
 
   test('a remembered origin on an inventory server is an origin pair (opt-in), checked like the zone\'s', async () => {

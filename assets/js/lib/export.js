@@ -5,7 +5,7 @@
  */
 
 import { sortHostnames } from './domain.js';
-import { addressTargets } from './inventory.js';
+import { addressTargets, formatEndpoint } from './inventory.js';
 import { normalizeIP } from './ip.js';
 
 /* ------------------------------------------------------------------------ */
@@ -355,7 +355,10 @@ function isIpRangeToken(token) {
  * left out when any line has its address. `keys(server)` gives the `key=value` tokens
  * written after a server's addresses (lib/topology.topologyTokens, which stays off the start
  * route: `terminates_tls=no`, `backends=`, `vip=`, `nat=`), so the CLI skips a plain-HTTP
- * backend and groups by load balancer; none without it.
+ * backend and groups by load balancer; none without it. A hint of the workspace's origin
+ * map (`kind` known) remembered on another port is written on that port
+ * ("web04 198.51.100.30:8443"), and only there when nothing else points at
+ * the address.
  * @param {Array<object|string>} servers
  * @param {{ keys?: ((server: object) => string[])|null }} [opts]
  * @returns {string}
@@ -364,12 +367,16 @@ export function targetsForCli(servers, { keys = null } = {}) {
   const seenIps = new Set();
   const seenTargets = new Set();
   const lines = [];
-  const add = (name, rawIp, server = null, keys = []) => {
+  const add = (name, rawIp, server = null, keys = [], { bare = true, ports = [] } = {}) => {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip) return;
     const targets = server
       ? addressTargets(server, ip).filter((target) => !seenTargets.has(target))
-      : seenIps.has(ip) ? [] : [ip];
+      : seenIps.has(ip) || !bare ? [] : [ip];
+    for (const port of ports) {
+      const target = formatEndpoint(ip, port);
+      if (target && !seenTargets.has(target) && !targets.includes(target)) targets.push(target);
+    }
     if (!targets.length) return;
     seenIps.add(ip);
     for (const target of targets) seenTargets.add(target);
@@ -389,7 +396,12 @@ export function targetsForCli(servers, { keys = null } = {}) {
     }
     if (item.ip) {
       const named = Array.isArray(item.servers) && item.servers.length ? item.servers[0].name : '';
-      add(named, item.ip);
+      // An origin-map hint names its port: the address on 443 is written bare, another port as ip:port.
+      const reasons = Array.isArray(item.reasons) ? item.reasons : [];
+      const portOf = (r) => Number(r.port) || 443;
+      const ports = [...new Set(reasons.filter((r) => r && r.kind === 'known' && portOf(r) !== 443).map(portOf))].sort((a, b) => a - b);
+      const bare = !reasons.length || reasons.some((r) => !r || r.kind !== 'known' || portOf(r) === 443);
+      add(named, item.ip, null, [], { bare, ports });
     }
   }
   return lines.length ? `${lines.join('\n')}\n` : '';

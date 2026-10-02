@@ -51,8 +51,9 @@ import {
   VERIFY_SOFT_CONFIRM_PROBES, VERIFY_MAX_RETRIES, VERIFY_TIMEOUT_S, VERIFY_CSV_COLUMNS, VERIFY_REUSE_WINDOW_MS,
   buildVerifyPairs, scopePairs, createVerifyRows, checkCount, expectationFor, runVerify, recheckRows, requeueRows,
   applyOriginOptIn, isOriginPair, verifyCost, summarizeVerify, notHereParts, verifyHeadline, verifyExportRows, verifyExportJson, cliPlan,
-  setExpectations, VERIFY_SET_COLUMNS
+  setExpectations, VERIFY_SET_COLUMNS, VERIFY_PORT
 } from '../lib/verify.js';
+import { formatEndpoint } from '../lib/inventory.js';
 import { setOfName, cliCertFiles } from '../lib/certsets.js';
 import { SetBadge, CertFileButtons } from './renewal-panel.js';
 import { verifyObservations } from '../lib/originfill.js';
@@ -1043,8 +1044,10 @@ function resultSearchText(row) {
 
 function ipCell(row) {
   const sub = [serverLabel(row), isOriginPair(row) ? t(`vfy.via.${row.via}`) : null].filter(Boolean).join(' · ');
+  // A check on another port (a remembered origin's) shows it: 198.51.100.30:8443.
+  const where = Number.isInteger(row.port) && row.port !== VERIFY_PORT ? formatEndpoint(row.ip, row.port) ?? row.ip : row.ip;
   return h('div', { class: 'vfy-cell-2' },
-    h('span', { class: 'mono vfy-ip' }, row.ip),
+    h('span', { class: 'mono vfy-ip' }, where),
     sub ? h('span', { class: 'vfy-sub' }, sub) : null);
 }
 

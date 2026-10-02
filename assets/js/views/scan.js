@@ -3469,10 +3469,14 @@ function buildRunUI(run, ctx, { onFinish }) {
       rows: g.hosts,
       dense: true,
       maxHeight: null,
-      rowKey: (x) => `${x.name}|${x.ip}|${x.via}|${(x.lbs || []).join(',')}`,
+      rowKey: (x) => `${x.name}|${x.ip}|${x.port ?? ''}|${x.via}|${(x.lbs || []).join(',')}`,
       columns: [
         { key: 'name', label: t('scan.srv.col.host'), mono: true },
-        { key: 'ip', label: t('scan.srv.col.ip'), mono: true, className: 'scan-col-ips' },
+        {
+          key: 'ip', label: t('scan.srv.col.ip'), mono: true, className: 'scan-col-ips',
+          // A remembered origin on another port shows it: 198.51.100.30:8443.
+          render: (x) => (Number.isInteger(x.port) && x.port !== 443 ? originTarget({ ip: x.ip, port: x.port }) : x.ip)
+        },
         {
           key: 'via', label: t('scan.srv.col.via'),
           render: (x) => h('span', { class: 'cluster scan-srv-via' },

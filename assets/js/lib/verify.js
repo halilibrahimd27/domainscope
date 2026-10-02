@@ -882,7 +882,8 @@ function skipReason(ip, name, port) {
  * reached a server through its public NAT address (`nat=`) carries the server's
  * own addresses, which the CLI scans from inside. A server that never gets the
  * certificate (`terminates_tls=no`, lib/topology.js) gives no pair, unless the scan found DNS
- * pointing at it directly (`topology.suspect`).
+ * pointing at it directly (`topology.suspect`). A remembered
+ * origin (`via` known) on another port is a pair on that port.
  * @param {object} result ScanResult
  * @param {{ port?: number, setOf?: ((name: string) => string|null)|null }} [opts] `setOf` (several
  *   certificate sets, lib/certsets.js setOfName): every pair gets the `setId` planned for its name
@@ -908,15 +909,18 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
     byKey.set(pair.key, pair);
     all.push(pair);
   };
-  const pairFor = ({ ip: rawIp, name, server, via, needsCert, covered, host, inventoryServer = null, through = null }) => {
+  const pairFor = ({ ip: rawIp, name, server, via, needsCert, covered, host, inventoryServer = null, through = null, ownPort = null }) => {
     const ip = normalizeIP(rawIp) ?? String(rawIp);
     const cls = host?.classification ?? {};
-    const targets = !inventoryServer ? [] : through === 'nat' ? serverTargets(inventoryServer) : addressTargets(inventoryServer, ip);
+    // A remembered origin is checked on the port it was remembered on (the CLI card scans it there
+    // too: cliPlan writes ip:port); every other pair on the check's port.
+    const at = ownPort ?? port;
+    const targets = !inventoryServer || ownPort ? [] : through === 'nat' ? serverTargets(inventoryServer) : addressTargets(inventoryServer, ip);
     const pair = {
-      key: `${ip}|${port}|${name}`, ip, port, name, server, alsoServers: [], via,
+      key: `${ip}|${at}|${name}`, ip, port: at, name, server, alsoServers: [], via,
       proxied: !!cls.hidesOrigin, provider: cls.provider?.name ?? null,
       needsCert: !!needsCert, newCertCovers: covered === true ? true : covered === false ? false : null,
-      skip: skipReason(ip, name, port),
+      skip: skipReason(ip, name, at),
       cliTargets: targets.length && (targets.length > 1 || targets[0] !== ip) ? targets : null
     };
     if (typeof setOf === 'function') pair.setId = setOf(name) ?? null;
@@ -936,7 +940,8 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
     for (const e of entries) {
       add(pairFor({ ip: e.ip, name: e.name, server, via: ORIGIN_VIAS.has(e.via) ? e.via : 'dns',
-        needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name), inventoryServer: g.server, through: e.through ?? null }));
+        needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name), inventoryServer: g.server, through: e.through ?? null,
+        ownPort: e.via === 'known' && Number.isInteger(e.port) && e.port !== port ? e.port : null }));
     }
   }
   const unmatched = (Array.isArray(r.unmatchedIps) ? r.unmatchedIps : []).slice().sort((a, b) => compareIp(a.ip, b.ip));

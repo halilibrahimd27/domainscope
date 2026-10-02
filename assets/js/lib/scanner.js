@@ -106,9 +106,9 @@ export { SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS, estimateQueries, learnedLabelsFr
 /**
  * @typedef {object} ServerGroup
  * @property {object} server inventory Server
- * @property {Array<{ name: string, ip: string, covered: boolean|null, via: 'dns'|'known'|'zone'|'hint' }>} hosts
- *   sorted dns, then known (the workspace's origin map), then zone (the zone file's exact origin
- *   of a proxied name), then hint
+ * @property {Array<{ name: string, ip: string, port?: number, covered: boolean|null, via: 'dns'|'known'|'zone'|'hint' }>} hosts
+ *   sorted dns, then known (the workspace's origin map; `port`: the port it was remembered on, one
+ *   entry per port), then zone (the zone file's exact origin of a proxied name), then hint
  * @property {boolean} needsCert a DNS- or zone-matched host is covered by the certificate (without a
  *   certificate: any DNS- or zone-matched host)
  * @property {boolean} maybeNeedsCert extension: only origin hints point here
@@ -2107,11 +2107,20 @@ export async function runScan(config = {}, hooks = {}) {
     for (const { server, through } of lookupServers([hint.ip], ipIndex)) {
       const g = groupOf(server);
       for (const host of targets) {
+        if (knownHosts.has(host.name)) {
+          // A remembered origin is served on its own port: one entry per port it was remembered on.
+          const ports = [...new Set(hint.reasons.filter((r) => r.kind === 'known' && r.host === host.name).map((r) => Number(r.port) || 443))]
+            .sort((a, b) => a - b);
+          for (const port of ports) {
+            if (g.hosts.some((e) => e.name === host.name && e.ip === hint.ip && (e.port ?? 443) === port)) continue;
+            const entry = { name: host.name, ip: hint.ip, port, covered: coveredOf(host), via: 'known' };
+            if (through) entry.through = through;
+            g.hosts.push(entry);
+          }
+          continue;
+        }
         if (g.hosts.some((e) => e.name === host.name && e.ip === hint.ip)) continue;
-        const entry = {
-          name: host.name, ip: hint.ip, covered: coveredOf(host),
-          via: knownHosts.has(host.name) ? 'known' : zoneHosts.has(host.name) ? 'zone' : 'hint'
-        };
+        const entry = { name: host.name, ip: hint.ip, covered: coveredOf(host), via: zoneHosts.has(host.name) ? 'zone' : 'hint' };
         if (through) entry.through = through;
         g.hosts.push(entry);
       }
@@ -2126,7 +2135,7 @@ export async function runScan(config = {}, hooks = {}) {
   for (const g of serverGroups) {
     const order = new Map(sortHostnames([...new Set(g.hosts.map((e) => e.name))]).map((n, i) => [n, i]));
     g.hosts.sort((a, b) => (VIA_RANK[a.via] ?? 9) - (VIA_RANK[b.via] ?? 9)
-      || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
+      || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip) || (a.port ?? 443) - (b.port ?? 443));
     const tls = terminatesTls(g.server) || !!(g.topology && g.topology.suspect);
     g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone' || e.via === 'known') && e.covered !== false);
     g.maybeNeedsCert = tls && !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);

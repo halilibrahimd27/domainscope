@@ -1121,6 +1121,46 @@ async function main() {
       assertEqual(info, { tabs: ['hosts', 'servers', 'cdn', 'sources', 'ct'], hint: false, summary: false }, 'no Verify');
     });
 
+    run.group('The origin map: a remembered origin, checked on its own port');
+    await run.step('shop remembered on web01:8443: its row is on that port, the check goes there and confirms the entry', async () => {
+      // The inventory again ("Delete all local data" took it), remembering on, and shop found on
+      // web01, port 8443, by a CLI report three days ago.
+      await page.evaluate(async ([name, inventory]) => {
+        const { state } = await import('./assets/js/state.js');
+        await state.setInventory(inventory).done;
+        await state.setWorkspaceData('origins', { v: 1, remember: true, entries: [{
+          name, ip: '1.2.3.4', port: 8443, source: 'cli-json', firstSeen: '2026-09-29T08:00:00.000Z', lastConfirmed: '2026-09-29T08:00:00.000Z', server: 'web01', stale: null
+        }] });
+      }, [N('shop'), INVENTORY]);
+      await page.evaluate(() => window.__gpNewWindow({ limits: 250, post: 250 }));
+      await page.setFileInput('.scan-step-cert .filedrop-input', [CERT_FILE]);
+      await page.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
+      await runScan(page);
+      await openTab(page, 'verify');
+      await page.waitFor(() => document.querySelector('.scan-tab-verify [data-action="vfy-start"]'), { message: 'Verify tab' });
+      const rowsNow = byKey(await readRows(page));
+      const shop = rowsNow[`${N('shop')}|1.2.3.4:8443`];
+      assert(shop, `the remembered origin's row, on its port (rows: ${Object.keys(rowsNow).join(', ')})`);
+      assertEqual([shop.state, shop.notRun], ['not-run', 'optional'], 'an origin check waits for the opt-in');
+      assert(/web01 · origin map/.test(shop.sub), `labelled: ${shop.sub}`);
+      await page.click('.scan-tab-verify [data-vfy="origins"] input');
+      const mark = await panelState(page);
+      const c0 = await gpCount(page);
+      await page.click('.scan-tab-verify [data-action="vfy-start"]');
+      await page.waitFor((d) => document.querySelector(d), { args: [DIALOG], message: 'consent dialog' });
+      await page.click(`${DIALOG} .modal-foot .btn-primary`);
+      await waitLaunch(page, mark);
+      await waitBatch(page, mark);
+      const sent = posts(await gpCalls(page, c0)).filter((c) => c.body.measurementOptions.request.host === N('shop'));
+      assertEqual(sent.map((c) => `${c.body.target}:${c.body.measurementOptions.port}`), ['1.2.3.4:8443'], 'checked on 8443');
+      assertEqual(byKey(await readRows(page))[`${N('shop')}|1.2.3.4:8443`].status, 'UPDATED', 'served there');
+      const map = await originMapOf(page);
+      assertEqual(map.entries.map((e) => `${e.name} ${e.ip}:${e.port} ${e.source} ${e.stale}`), [`${N('shop')} 1.2.3.4:8443 verify null`], 'confirmed by Verify');
+      const note = await page.evaluate(() => document.querySelector('.scan-tab-verify [data-vfy="origin-map"]')?.textContent || '');
+      assert(/Origin map: 0 added, 1 confirmed, 0 marked stale\./.test(note), `origin map note: ${note}`);
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('origins', null));
+    });
+
     run.group('Quality');
     await run.step('nothing left the page: no real Globalping request, no external fetch; totals', async () => {
       const calls = await gpCalls(page);

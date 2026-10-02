@@ -607,7 +607,7 @@ const TR = {
   'zone.origins.addTitle': 'Adrese göre',
   'zone.origins.addSubtitle': 'Dosyadaki her adres ve onu kullanan adlar',
   'zone.origins.addServers': 'Sunucularınızı ekleyin',
-  'zone.remember': { other: 'Bu {count} origin’i hatırla' },
+  'zone.remember': { one: 'Bu origin’i hatırla', other: 'Bu {count} origin’i hatırla' },
   'zone.rememberHint': 'Her proxy’li adın kesin adresini bu çalışma alanının origin haritasına (Sunucular › Origin haritası) kaydeder; Subdomain Tarama ve SSL Hedefleri bir dahaki sefere onu ilk sıraya koyar. Başka bir adreste hatırlanan bir ad eskimiş olarak işaretlenir.',
   'zone.kind.ip': 'Origin IP',
   'zone.kind.host': 'Origin host’u (ağınızın içinde çözümlenir)',

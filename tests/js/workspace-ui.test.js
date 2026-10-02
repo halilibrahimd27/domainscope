@@ -12,9 +12,10 @@ import { t, setLang, hasString, LANGS } from '../../assets/js/i18n.js';
 import {
   workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageReason, storageErrorText, STORAGE_REASONS
 } from '../../assets/js/ui/workspace-ui.js';
-import { exportFileName, passwordProblem, PASSWORD_PROBLEMS } from '../../assets/js/ui/workspace-panel.js';
+import { exportFileName, passwordProblem, importSummary, PASSWORD_PROBLEMS } from '../../assets/js/ui/workspace-panel.js';
 import { registerRunning, runningWork } from '../../assets/js/ui/jobs.js';
-import { WorkspaceError } from '../../assets/js/lib/workspace.js';
+import { WorkspaceError, emptyWorkspaceData } from '../../assets/js/lib/workspace.js';
+import '../../assets/js/views/zone.js';
 import '../../assets/js/views/ptr.js';
 import '../../assets/js/ui/verify-panel.js';
 import '../../assets/js/ui/parity-panel.js';
@@ -113,6 +114,30 @@ describe('storage errors in words', () => {
     } finally {
       setLang('en');
     }
+  });
+});
+
+describe('the origin map in words', () => {
+  test('an imported hand-over file says when it switches remembering origins on', () => {
+    const ws = (origins) => ({ encrypted: false, data: { ...emptyWorkspaceData(), origins } });
+    setLang('en');
+    assert.match(importSummary(ws({ v: 1, remember: true, entries: [] })), /remembering origins is on$/);
+    assert.doesNotMatch(importSummary(ws({ v: 1, remember: false, entries: [{ name: 'www.example.com', ip: '192.0.2.10', port: 443 }] })), /remembering/);
+    assert.match(importSummary(ws({ v: 1, remember: false, entries: [{ name: 'www.example.com', ip: '192.0.2.10', port: 443 }] })), /1 remembered origin$/);
+    setLang('tr');
+    assert.match(importSummary(ws({ v: 1, remember: true, entries: [] })), /origin’leri hatırlama açık$/);
+    setLang('en');
+  });
+
+  test('Turkish: a server that no longer serves the name, and one origin to remember', () => {
+    setLang('tr');
+    for (const key of ['om.stale.cli-not-hosted', 'om.stale.verify-not-hosted']) {
+      assert.match(t(key, { date: '1 Eki 2026' }), /bu adın artık bu sunucuda sunulmadığını gördü$/, key);
+    }
+    assert.equal(t('zone.remember', { count: 1 }), 'Bu origin’i hatırla');
+    assert.equal(t('zone.remember', { count: 2 }), 'Bu 2 origin’i hatırla');
+    setLang('en');
+    assert.equal(t('zone.remember', { count: 1 }), 'Remember this origin');
   });
 });
 

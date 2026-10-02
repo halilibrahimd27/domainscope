@@ -114,6 +114,7 @@ registerStrings('en', {
   'ws.sum.expected': { zero: 'no expected CAs', one: '{count} expected CA', other: '{count} expected CAs' },
   'ws.sum.recent': { zero: 'no recent domains', one: '{count} recent domain', other: '{count} recent domains' },
   'ws.sum.origins': { one: '{count} remembered origin', other: '{count} remembered origins' },
+  'ws.sum.originsOn': 'remembering origins is on',
   'ws.sum.wordlist': 'a custom wordlist',
   'ws.sum.notes': 'notes',
   'ws.sum.policy': 'a domain policy',
@@ -205,6 +206,7 @@ registerStrings('tr', {
   'ws.sum.expected': { zero: 'beklenen CA yok', other: '{count} beklenen CA' },
   'ws.sum.recent': { zero: 'son alan adı yok', other: '{count} son alan adı' },
   'ws.sum.origins': { other: '{count} hatırlanan origin' },
+  'ws.sum.originsOn': 'origin’leri hatırlama açık',
   'ws.sum.wordlist': 'bir özel kelime listesi',
   'ws.sum.notes': 'notlar',
   'ws.sum.policy': 'bir alan adı politikası',
@@ -290,6 +292,8 @@ export function importSummary(ws) {
     t('ws.sum.recent', { count: d.recent.length })
   ];
   if (d.origins && d.origins.entries.length) parts.push(t('ws.sum.origins', { count: d.origins.entries.length }));
+  // The file switches remembering origins on in the workspace it opens as: say so before the import.
+  if (d.origins && d.origins.remember) parts.push(t('ws.sum.originsOn'));
   if (d.wordlist.trim()) parts.push(t('ws.sum.wordlist'));
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));

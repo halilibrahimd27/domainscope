@@ -112,6 +112,7 @@ const STRINGS = [
   ['zcmp.note.ttl-ignored', ['The TTL differs ({a} → {b}), ignored.', 'TTL farklı ({a} → {b}), yok sayıldı.']],
   ['zcmp.note.txt-split', ['The same text, split into strings differently.', 'Aynı metin, dizilere farklı bölünmüş.']],
   ['zcmp.note.soa-ignored', ['The serial, the timers or the TTL differ, ignored.', 'Seri numarası, zamanlayıcılar ya da TTL farklı, yok sayıldı.']],
+  ['zcmp.note.soa-one-side', ['Only one file has an SOA record (a provider’s export leaves it out), ignored.', 'SOA kaydı yalnızca bir dosyada var (sağlayıcı dışa aktarımları onu içermez), yok sayıldı.']],
   ['zcmp.note.apex-ns', ['NS at the apex, ignored.', 'Zone kökündeki (apex) NS, yok sayıldı.']],
   ['zcmp.proxy.true', ['proxied', 'proxy’li']],
   ['zcmp.proxy.false', ['DNS only', 'yalnızca DNS']],

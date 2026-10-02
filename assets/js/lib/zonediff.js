@@ -36,7 +36,7 @@ export const DIFF_STATUSES = Object.freeze(['added', 'removed', 'changed', 'same
 export const DIFF_REASONS = Object.freeze(['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
 
 /** What an option kept from counting (the row says so) — or why a set was left out. */
-export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'apex-ns']);
+export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns']);
 
 /** Comparison options and their defaults. */
 export const DIFF_DEFAULTS = Object.freeze({ ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
@@ -349,6 +349,10 @@ export function diffZones(a, b, options = {}) {
     if (opts.ignoreApexNs && any.type === 'NS' && any.rel === '@') {
       row.status = 'ignored';
       row.notes.push('apex-ns');
+    } else if (opts.ignoreSoa && any.type === 'SOA' && (!sa || !sb)) {
+      // A provider's export (Cloudflare, Route 53 lists, octoDNS) has no SOA: nothing to compare.
+      row.status = 'ignored';
+      row.notes.push('soa-one-side');
     } else if (!sa) {
       row.status = 'added';
       row.added = [...sb.values.values()].map((v) => v.text);

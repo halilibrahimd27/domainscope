@@ -25,7 +25,7 @@ describe('vocabulary', () => {
   test('statuses, reasons, notes, options and filters', () => {
     assert.deepEqual(DIFF_STATUSES, ['added', 'removed', 'changed', 'same', 'ignored']);
     assert.deepEqual(DIFF_REASONS, ['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
-    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'apex-ns']);
+    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns']);
     assert.deepEqual(DIFF_DEFAULTS, { ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
     assert.deepEqual(DIFF_OPTIONS, ['ignoreTtl', 'joinTxt', 'ignoreSoa', 'ignoreApexNs']);
     assert.deepEqual(DIFF_FILTERS, ['diff', 'added', 'removed', 'changed', 'same', 'ignored', 'all']);
@@ -222,6 +222,15 @@ describe('more cases', () => {
       assert.deepEqual(lines(diffZones(before, pair(name, a, b, ['192.0.2.1', '192.0.2.3']))), [`changed ${name} A values|`], `${name}: one value changed`);
       assert.equal(hasDifferences(diffZones(before, pair(name, a, b, ['192.0.2.1', '192.0.2.2']))), false, `${name}: the same`);
     }
+  });
+
+  test('ignoreSoa: an SOA only one side has (a provider export leaves it out) is ignored too, and says why', () => {
+    const withSoa = bind('@ SOA ns1 host 1 2 3 4 5\nwww A 192.0.2.1');
+    const without = bind('www A 192.0.2.1');
+    assert.deepEqual(lines(diffZones(withSoa, without)), ['removed @ SOA |', 'same www A |']);
+    assert.deepEqual(lines(diffZones(withSoa, without, { ignoreSoa: true })), ['ignored @ SOA |soa-one-side', 'same www A |']);
+    assert.deepEqual(lines(diffZones(without, withSoa, { ignoreSoa: true })), ['ignored @ SOA |soa-one-side', 'same www A |']);
+    assert.ok(DIFF_NOTES.includes('soa-one-side'));
   });
 
   test('a fatal zone is refused', () => {

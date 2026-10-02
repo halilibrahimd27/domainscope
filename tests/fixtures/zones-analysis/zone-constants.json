@@ -63,7 +63,8 @@
   "cnameSuffixes": {
     "cloudflare": [
       "cdn.cloudflare.net",
-      "cloudflare.net"
+      "cloudflare.net",
+      "cloudflarecn.net"
     ],
     "fastly": [
       "fastly.net",
@@ -126,6 +127,123 @@
     ],
     "cachefly": [
       "cachefly.net"
+    ],
+    "alibaba-cdn": [
+      "kunlunsl.com",
+      "kunluncan.com",
+      "kunlunar.com",
+      "kunlunno.com",
+      "kunlunaq.com",
+      "kunlunca.com",
+      "kunlunea.com",
+      "kunlunpi.com",
+      "kunlungr.com",
+      "alikunlun.com",
+      "alikunlun.net",
+      "cdngslb.com",
+      "queniubl.com",
+      "queniukw.com",
+      "queniumf.com",
+      "queniuqy.com",
+      "queniusa.com",
+      "queniusy.com",
+      "tbcache.com",
+      "alicdn.com"
+    ],
+    "alibaba-waf": [
+      "yundunwaf1.com",
+      "yundunwaf2.com",
+      "yundunwaf3.com",
+      "yundunwaf4.com",
+      "yundunwaf5.com",
+      "alicloudwaf.com"
+    ],
+    "tencent-cdn": [
+      "dnsv1.com",
+      "dnsv1.com.cn",
+      "cdntip.com",
+      "spcdntip.com",
+      "tdnsv5.com",
+      "tdnsv6.com",
+      "tdnsstic1.cn",
+      "tdnsdp1.cn"
+    ],
+    "tencent-edgeone": [
+      "dnse0.com",
+      "dnse1.com",
+      "dnse2.com",
+      "dnse3.com",
+      "dnse4.com",
+      "dnse5.com",
+      "dnse0.cn"
+    ],
+    "tencent-waf": [
+      "qcloudwaf.com",
+      "qcloudwzgj.com",
+      "qcloudzygj.com",
+      "qcloudcjgj.com"
+    ],
+    "huawei-cdn": [
+      "cdnhwc1.com",
+      "cdnhwc2.com",
+      "cdnhwc3.com",
+      "cdnhwc4.com",
+      "cdnhwc5.com",
+      "cdnhwc6.com",
+      "cdnhwc7.com",
+      "cdnhwc8.com"
+    ],
+    "baidu-cdn": [
+      "bdydns.com",
+      "jomodns.com"
+    ],
+    "wangsu": [
+      "wscdns.com",
+      "wscloudcdn.com",
+      "wswebcdn.com",
+      "wswebpic.com",
+      "wsglb0.com",
+      "wsdvs.com",
+      "wsssec.com",
+      "lxdns.com",
+      "cdn20.com",
+      "cdn30.com",
+      "wtxcdn.com",
+      "mwcloudcdn.com",
+      "mwcname.com",
+      "speedcdns.com",
+      "51cdn.com",
+      "ourplat.net",
+      "chinanetcenter.com"
+    ],
+    "baishan": [
+      "bsgslb.cn",
+      "qingcdn.com",
+      "trpcdn.net",
+      "bsclink.cn"
+    ],
+    "volcengine": [
+      "vedcdnlb.com",
+      "cdnbuild.net"
+    ],
+    "kingsoft-cdn": [
+      "ks-cdn.com",
+      "ksyuncdn.com"
+    ],
+    "jdcloud-cdn": [
+      "jcloud-cdn.com",
+      "jcloudimg.com",
+      "jdcdn.com"
+    ],
+    "ctyun-cdn": [
+      "ctdns.cn",
+      "ctadns.cn"
+    ],
+    "qiniu": [
+      "qiniudns.com"
+    ],
+    "upyun": [
+      "aicdn.com"
     ],
     "aws-elb": [
       "elb.amazonaws.com",
@@ -203,6 +321,9 @@
     ]
   },
   "cnamePatterns": {
+    "alibaba-waf": [
+      "(?:^|\\.)aliyunddos\\d{4}\\.com$"
+    ],
     "aws-s3": [
       "(?:^|\\.)s3(?:[.-][a-z0-9-]+)*\\.amazonaws\\.com(?:\\.cn)?$"
     ],

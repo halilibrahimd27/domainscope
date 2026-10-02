@@ -199,6 +199,70 @@ test('matchProviderByCname: label-boundary suffix match', () => {
   assert.equal(matchProviderByCname('foo.trafficmanager.net').id, 'azure-trafficmanager');
 });
 
+test('mainland China: CDNs and WAFs recognised by CNAME only (Global DNS’s China rows)', () => {
+  // The shapes AliDNS answered the mainland China vantages with (2026-10-02), owners scrubbed.
+  const seen = {
+    'www.example.com.w.kunluncan.com': 'alibaba-cdn',
+    'www.example.com.w.cdngslb.com': 'alibaba-cdn',
+    'www.example.com.w.alikunlun.com': 'alibaba-cdn',
+    'www.example.com.queniusa.com': 'alibaba-cdn',
+    'www.example.com.danuoyi.tbcache.com': 'alibaba-cdn',
+    'img.example.com.danuoyi.alicdn.com': 'alibaba-cdn',
+    'www.example.com.0abcdefg.c.yundunwaf1.com': 'alibaba-waf',
+    'x0abcdefg.yundunwaf4.com': 'alibaba-waf',
+    'x0abcdefg.aliyunddos1002.com': 'alibaba-waf',
+    'www.example.com.cdn.dnsv1.com': 'tencent-cdn',
+    'www.example.com.dsa.dnsv1.com.cn': 'tencent-cdn',
+    'best.sched.sma-dk.tdnsstic1.cn': 'tencent-cdn',
+    'res.example.com.sched.legopic1-dk.tdnsv6.com': 'tencent-cdn',
+    'www.example.com.eo.dnse2.com': 'tencent-edgeone',
+    'eo.0abcdefg.share.dnse1.com': 'tencent-edgeone',
+    'www.example.com.eo.dnse0.cn': 'tencent-edgeone',
+    '0abcdef-cl2.qcloudwzgj.com': 'tencent-waf',
+    'www.example.com.c.cdnhwc1.com': 'huawei-cdn',
+    'hcdnw.example.gslb.c.cdnhwc2.com': 'huawei-cdn',
+    'www.example.com.a.bdydns.com': 'baidu-cdn',
+    'opencdn.jomodns.com': 'baidu-cdn',
+    'www.example.com.wscdns.com': 'wangsu',
+    'www.example.com.lxdns.com': 'wangsu',
+    'www.example.com.cdn20.com': 'wangsu',
+    'www.example.com.bsgslb.cn': 'baishan',
+    'www.example.com.c.vedcdnlb.com': 'volcengine',
+    'example.s.dsa.cdnbuild.net': 'volcengine',
+    'www.example.com.download.ks-cdn.com': 'kingsoft-cdn',
+    'q2.gslb.ksyuncdn.com': 'kingsoft-cdn',
+    'www.example.com.s.galileo.jcloud-cdn.com': 'jdcloud-cdn',
+    'www.example.com.ctdns.cn': 'ctyun-cdn',
+    'cdn-example.qiniudns.com': 'qiniu',
+    'cdn-example.b0.aicdn.com': 'upyun',
+    // Cloudflare's China Network: edges of a partner there, outside Cloudflare's ranges
+    'www.example.com.cdn.cloudflarecn.net': 'cloudflare'
+  };
+  for (const [name, id] of Object.entries(seen)) assert.equal(matchProviderByCname(name)?.id, id, name);
+  for (const id of new Set(Object.values(seen))) {
+    const p = getProvider(id);
+    assert.ok(['cdn', 'waf'].includes(p.category) && p.hidesOrigin && p.certManagedByProvider && !p.dnsOnly, id);
+    if (id !== 'cloudflare') assert.deepEqual(p.cidrs, [], `${id}: by CNAME only`);
+  }
+  // Steering names that hand out an operator's own servers, rejected suffixes and look-alikes.
+  for (const name of [
+    'www.example.com.gds.alibabadns.com', 'www.example.com.gslb.qianxun.com', 'www.example.com.akadns.net',
+    'x.huaweicloudwaf.com', 'www.example.com.ctlcdn.cn', 'notkunluncan.com', 'kunluncan.com.example.net',
+    'x.aliyunddos12.com', 'x.aliyunddos1002.com.example.net', 'x.notaliyunddos1002.com', 'notcloudflarecn.net'
+  ]) assert.equal(matchProviderByCname(name), null, name);
+  // No suffix is listed twice or under another operator's suffix (the first one would win).
+  const all = PROVIDERS.flatMap((p) => p.cnameSuffixes.map((s) => [s, p.id]));
+  assert.equal(new Set(all.map(([s]) => s)).size, all.length, 'every suffix once');
+  assert.deepEqual(all.filter(([s, id]) => all.some(([t, other]) => other !== id && t.endsWith(`.${s}`))), [], 'no suffix under another operator’s');
+  // An address behind such a name is that CDN's (or WAF's) edge, not a direct server.
+  const cdn = classifyResolution({ status: 'NOERROR', ipv4: ['198.51.100.17'], cnames: ['www.example.com.w.kunluncan.com'] });
+  assert.deepEqual([cdn.kind, cdn.provider.name, cdn.reasonKey, cdn.hidesOrigin, cdn.via], ['cdn', 'Alibaba Cloud CDN', 'class.cdn.cname', true, 'cname']);
+  const waf = classifyResolution({ status: 'NOERROR', ipv4: ['198.51.100.18'], cnames: ['x0abcdefg.yundunwaf4.com'] });
+  assert.deepEqual([waf.kind, waf.provider.id, waf.reasonKey], ['cdn', 'alibaba-waf', 'class.waf.cname']);
+  const china = classifyResolution({ status: 'NOERROR', ipv4: ['198.51.100.19'], cnames: ['www.example.com.cdn.cloudflarecn.net'] });
+  assert.deepEqual([china.kind, china.reasonKey], ['cloudflare', 'class.cloudflare.cname']);
+});
+
 test('matchProviderByCname: regex patterns (S3, Vercel)', () => {
   assert.equal(matchProviderByCname('bucket.s3.eu-west-1.amazonaws.com').id, 'aws-s3');
   assert.equal(matchProviderByCname('bucket.s3-website-us-east-1.amazonaws.com').id, 'aws-s3');

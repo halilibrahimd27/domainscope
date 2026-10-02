@@ -91,8 +91,10 @@ const REGRESSION_WORLD = {
   'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
 };
 // Re-pinned since: the wildcard results gained `targets` / `variable`, then `conclusive`,
-// and the stats `*Vanished` (each time the only difference in the normalised output).
-const PRE_ZONE_DIGEST = 'c284192be594db1a0039da94201034abd94fd9f45ec3cce5a8d7896560600034';
+// and the stats `*Vanished`, then Cloudflare's provider record (serialised with the
+// proxy.cdn.cloudflare.net host) its China Network suffix, cloudflarecn.net (each time the only
+// difference in the normalised output).
+const PRE_ZONE_DIGEST = '535076ee547837e401f212ff0d6ff08a3186d5ced97ea91d9a57806d67f6a36a';
 
 async function regressionScan(extra = {}) {
   const { fetchImpl, dns } = mkWorld({

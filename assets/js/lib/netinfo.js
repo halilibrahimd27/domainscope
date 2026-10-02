@@ -446,6 +446,11 @@ function defineProvider(def) {
   return Object.freeze(p);
 }
 
+/** A CDN or WAF recognised by CNAME only: visitors reach its edges, which hold the certificate. */
+const edgeByName = (id, name, cnameSuffixes, category = 'cdn', cnamePatterns = []) => defineProvider({
+  id, name, category, hidesOrigin: true, certManagedByProvider: true, cnameSuffixes, cnamePatterns
+});
+
 /**
  * Known CDNs, WAFs, load balancers and hosting platforms.
  *
@@ -462,7 +467,8 @@ function defineProvider(def) {
 export const PROVIDERS = Object.freeze([
   defineProvider({
     id: 'cloudflare', name: 'Cloudflare', category: 'cdn', hidesOrigin: true, certManagedByProvider: true,
-    cidrs: CLOUDFLARE_CIDRS, cnameSuffixes: ['cdn.cloudflare.net', 'cloudflare.net'],
+    // cloudflarecn.net: the China Network (its edges there are a partner's, not in the ranges)
+    cidrs: CLOUDFLARE_CIDRS, cnameSuffixes: ['cdn.cloudflare.net', 'cloudflare.net', 'cloudflarecn.net'],
     homepage: 'https://www.cloudflare.com/', rangesSource: 'https://www.cloudflare.com/ips/'
   }),
   defineProvider({
@@ -530,6 +536,35 @@ export const PROVIDERS = Object.freeze([
     id: 'cachefly', name: 'CacheFly', category: 'cdn', hidesOrigin: true, certManagedByProvider: true,
     cnameSuffixes: ['cachefly.net'], homepage: 'https://www.cachefly.com/'
   }),
+  // Mainland China (Global DNS's China rows): by CNAME only — none publishes its edge ranges. Each
+  // suffix was in AliDNS's answers for a mainland vantage on 2026-10-02 or is on ProjectDiscovery
+  // cdncheck's list (or the operator's docs) for the same operator, and its zone is delegated to that
+  // operator's name servers or names it in its SOA (docs/RESEARCH.md). A steering name that hands out
+  // the operator's own servers (Alibaba's *.gds.alibabadns.com, JD's *.gslb.qianxun.com) is not one.
+  edgeByName('alibaba-cdn', 'Alibaba Cloud CDN', ['kunlunsl.com', 'kunluncan.com', 'kunlunar.com', 'kunlunno.com',
+    'kunlunaq.com', 'kunlunca.com', 'kunlunea.com', 'kunlunpi.com', 'kunlungr.com', 'alikunlun.com', 'alikunlun.net',
+    'cdngslb.com', 'queniubl.com', 'queniukw.com', 'queniumf.com', 'queniuqy.com', 'queniusa.com', 'queniusy.com',
+    'tbcache.com', 'alicdn.com']),
+  edgeByName('alibaba-waf', 'Alibaba Cloud WAF / Anti-DDoS', ['yundunwaf1.com', 'yundunwaf2.com', 'yundunwaf3.com',
+    'yundunwaf4.com', 'yundunwaf5.com', 'alicloudwaf.com'], 'waf', [/(?:^|\.)aliyunddos\d{4}\.com$/]),
+  edgeByName('tencent-cdn', 'Tencent Cloud CDN', ['dnsv1.com', 'dnsv1.com.cn', 'cdntip.com', 'spcdntip.com', 'tdnsv5.com',
+    'tdnsv6.com', 'tdnsstic1.cn', 'tdnsdp1.cn']),
+  edgeByName('tencent-edgeone', 'Tencent EdgeOne', ['dnse0.com', 'dnse1.com', 'dnse2.com', 'dnse3.com', 'dnse4.com',
+    'dnse5.com', 'dnse0.cn']),
+  edgeByName('tencent-waf', 'Tencent Cloud WAF', ['qcloudwaf.com', 'qcloudwzgj.com', 'qcloudzygj.com', 'qcloudcjgj.com'], 'waf'),
+  edgeByName('huawei-cdn', 'Huawei Cloud CDN', ['cdnhwc1.com', 'cdnhwc2.com', 'cdnhwc3.com', 'cdnhwc4.com', 'cdnhwc5.com',
+    'cdnhwc6.com', 'cdnhwc7.com', 'cdnhwc8.com']),
+  edgeByName('baidu-cdn', 'Baidu AI Cloud CDN', ['bdydns.com', 'jomodns.com']),
+  edgeByName('wangsu', 'Wangsu (ChinaNetCenter)', ['wscdns.com', 'wscloudcdn.com', 'wswebcdn.com', 'wswebpic.com',
+    'wsglb0.com', 'wsdvs.com', 'wsssec.com', 'lxdns.com', 'cdn20.com', 'cdn30.com', 'wtxcdn.com', 'mwcloudcdn.com',
+    'mwcname.com', 'speedcdns.com', '51cdn.com', 'ourplat.net', 'chinanetcenter.com']),
+  edgeByName('baishan', 'Baishan Cloud', ['bsgslb.cn', 'qingcdn.com', 'trpcdn.net', 'bsclink.cn']),
+  edgeByName('volcengine', 'Volcano Engine CDN', ['vedcdnlb.com', 'cdnbuild.net']),
+  edgeByName('kingsoft-cdn', 'Kingsoft Cloud CDN', ['ks-cdn.com', 'ksyuncdn.com']),
+  edgeByName('jdcloud-cdn', 'JD Cloud CDN', ['jcloud-cdn.com', 'jcloudimg.com', 'jdcdn.com']),
+  edgeByName('ctyun-cdn', 'CTYun CDN (China Telecom)', ['ctdns.cn', 'ctadns.cn']),
+  edgeByName('qiniu', 'Qiniu Cloud CDN', ['qiniudns.com']),
+  edgeByName('upyun', 'Upyun CDN', ['aicdn.com']),
   defineProvider({
     id: 'aws-elb', name: 'AWS Elastic Load Balancing', category: 'loadbalancer', hidesOrigin: true,
     certManagedByProvider: true, cnameSuffixes: ['elb.amazonaws.com', 'elb.amazonaws.com.cn'],

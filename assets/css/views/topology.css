@@ -120,6 +120,30 @@
   color: var(--text-3);
 }
 
+/* A badge of the card wraps rather than cut its words (a long translation at 320 px). */
+.topo-node .badge {
+  height: auto;
+  min-height: 21px;
+  padding-block: 3px;
+  white-space: normal;
+}
+
+.topo-node .badge-text {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* What a backend's badge means: the certificate or none. */
+.topo-badge-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.topo-backend[data-tls="true"] .topo-badge-note {
+  color: var(--warn);
+}
+
 .topo-name {
   font-weight: 650;
   overflow-wrap: anywhere;
@@ -183,6 +207,36 @@
   flex: none;
   margin-top: 2px;
   color: var(--warn-solid);
+}
+
+/* SSL Targets: the inventory's topology warnings, each with its line, what it means and its token. */
+.topo-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.topo-warnings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.topo-warnings-line {
+  flex: none;
+  font-weight: 650;
+}
+
+.topo-warnings-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .topo-howto {

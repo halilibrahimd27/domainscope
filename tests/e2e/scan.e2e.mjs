@@ -626,6 +626,21 @@ const TOPOLOGY_DNS = {
   'mail.wild.example.net': { A: ['203.0.113.12'] }
 };
 /**
+ * The inventory and DNS disagree: web01 says terminates_tls=no, yet direct.wild.example.net
+ * answers with its own (public) address; edge01 passes TLS through to pool01, which says
+ * terminates_tls=no too (TLS terminates nowhere), and web09's backend= is a letter off.
+ */
+const TOPOLOGY_DISAGREE_INVENTORY = [
+  'lb01  203.0.113.2  ports=443,8443 vip=203.0.113.50 backends=web01,web02',
+  'lb02  203.0.113.3  vip=203.0.113.50 backends=web01,web02',
+  'web01 203.0.113.21 terminates_tls=no',
+  'web02 10.0.0.22    ports=8443',
+  'edge01 203.0.113.60 terminates_tls=no backends=pool01',
+  'pool01 10.0.0.61   terminates_tls=no',
+  'web09 10.0.0.90    backend=web01'
+].join('\n');
+const TOPOLOGY_DISAGREE_DNS = { ...TOPOLOGY_DNS, 'direct.wild.example.net': { A: ['203.0.113.21'] } };
+/**
  * The same topology under example.com for the Renewal plan of an RSA + ECDSA pair
  * (tests/fixtures/renew_a_*.pem: example.com, *.example.com): the apex answers with lb01's own
  * address, www with the VIP, api with the NAT address; mail is outside the inventory.
@@ -705,8 +720,25 @@ async function topologySteps(run, { browser, server, page, origin, opts }) {
         const ta = document.querySelector('[data-role="inventory-text"]');
         ta.value = text;
         ta.dispatchEvent(new Event('input', { bubbles: true }));
-      }, `${TOPOLOGY_INVENTORY}\nweb09 10.0.0.90 ports=99999`);
+      }, `${TOPOLOGY_INVENTORY}\nweb08 10.0.0.92 terminates_tls=no\nweb09 10.0.0.90 ports=99999`);
       await tab.waitFor(() => document.querySelector('.inv-warning[data-code="TOPOLOGY"]'), { message: 'TOPOLOGY warning' });
+      // Every badge of the card keeps its words whole, and the section keys (terminates_tls=no) stay one token.
+      const cut = () => tab.evaluate(() => ({
+        badges: [...document.querySelectorAll('.topo-card .badge')].filter((b) => {
+          const text = b.querySelector('.badge-text');
+          const card = b.closest('.topo-card').getBoundingClientRect();
+          return (text && text.scrollWidth > text.clientWidth + 1) || b.getBoundingClientRect().right > card.right + 0.5;
+        }).map((b) => b.textContent),
+        keys: [...document.querySelectorAll('.topo-card .topo-key')].filter((k) => k.getClientRects().length > 1).map((k) => k.textContent),
+        plainKey: !!document.querySelector('.topo-section[data-role="plain"] .topo-key')
+      }));
+      for (const lang of ['tr', 'en']) {
+        await setLangUi(tab, lang);
+        await tab.waitFor(() => document.querySelector('.topo-section[data-role="plain"]'), { message: `the plain section (${lang})` });
+        assertEqual(await cut(), { badges: [], keys: [], plainKey: true }, `card badges cut or keys broken at 320 px (${lang})`);
+      }
+      await setLangUi(tab, 'tr');
+      await tab.waitFor(() => document.querySelector('.inv-warning[data-code="TOPOLOGY"]'), { message: 'TOPOLOGY warning (TR)' });
       const warning = await tab.evaluate(() => {
         const w = document.querySelector('.inv-warning[data-code="TOPOLOGY"]');
         return { reason: w.dataset.reason, text: w.querySelector('.inv-warning-code').textContent };
@@ -892,6 +924,68 @@ async function topologySteps(run, { browser, server, page, origin, opts }) {
         await assertClean(pair, 'topology renewal plan', origin);
       } finally {
         await pair.close();
+      }
+    });
+
+    await run.step('SSL Targets, when the inventory and DNS disagree: web01 (terminates_tls=no) that a name reaches directly needs the certificate and says to check the inventory; the inventory\'s topology warnings show in step 3 and on the Servers tab (EN, TR at 320 px)', async () => {
+      const dis = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      const web01 = () => dis.evaluate(() => {
+        const tr = [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].find((x) => x.querySelector('.scan-srv')?.dataset.server === 'web01');
+        return tr ? { status: tr.querySelector('[data-status]')?.dataset.status, notes: [...tr.querySelectorAll('.topo-note')].map((n) => n.textContent) } : null;
+      });
+      const listed = (sel) => dis.evaluate((s) => {
+        const el = document.querySelector(s);
+        return el ? { title: el.querySelector('.alert-title').textContent, reasons: [...el.querySelectorAll('li')].map((li) => li.dataset.reason) } : null;
+      }, sel);
+      try {
+        await dis.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await dis.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(OFFLINE_APEX, TOPOLOGY_DISAGREE_DNS) });
+        await dis.goto(`${server.url}#/about`);
+        await waitReady(dis);
+        await setLangUi(dis, 'en');
+        await dis.evaluate(saveInventoryIn, TOPOLOGY_DISAGREE_INVENTORY);
+        await gotoRoute(dis, 'scan');
+        await dis.waitFor(() => document.querySelector('.scan-step-inventory [data-role="topology-warnings"]'), { message: 'the topology warnings in step 3' });
+        assertEqual(await listed('.scan-step-inventory [data-role="topology-warnings"]'), {
+          title: 'Your inventory has 2 topology warnings — they affect which servers get the certificate', reasons: ['noTermination', 'nearMiss']
+        }, 'step 3 lists the inventory\'s topology warnings');
+        await dis.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'ec_wildcard.pem')]);
+        await dis.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
+        await dis.evaluate(() => {
+          const ta = document.querySelector('[data-role="scan-extra"]');
+          ta.value = 'direct.wild.example.net';
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const before = await runStatus(dis);
+        await dis.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+        await dis.waitFor((prev) => {
+          const ui = document.querySelector('.scan-run-ui');
+          return ui && ui.dataset.run !== (prev && prev.id) && ui.querySelector('.scan-run').dataset.status === 'done';
+        }, { args: [before], timeout: 90000, message: 'the disagreeing scan done' });
+        assert(await dis.evaluate(() => !!document.querySelector('[data-summary="topology-suspect"]')), 'the summary says the inventory and DNS disagree');
+        await dis.evaluate(() => document.querySelector('.scan-tabs [data-tab="servers"]').click());
+        await dis.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row'), { message: 'servers rows' });
+        const got = await web01();
+        assertEqual(got.status, 'needs', 'web01 needs the certificate, never "No certificate needed"');
+        assert(got.notes.includes('DNS points here directly but the inventory says terminates_tls=no — check the inventory'), `web01: ${got.notes}`);
+        assertEqual((await listed('.scan-tab-servers [data-role="topology-warnings"]')).reasons, ['noTermination', 'nearMiss'], 'the Servers tab lists them too');
+        await assertNoHorizontalScroll(dis, 'scan servers disagree desktop');
+        await shot(dis, opts, 'topology-scan-disagree-desktop-light-en');
+        await dis.setViewport({ width: 320, height: 640, mobile: true });
+        await setLangUi(dis, 'tr');
+        await dis.waitFor(() => document.querySelector('.scan-tab-servers [data-role="topology-warnings"]'), { message: 'the warnings after the re-mount' });
+        assert(/^Envanterinizde 2 topoloji uyarısı var/.test((await listed('.scan-tab-servers [data-role="topology-warnings"]')).title), 'the warnings in Turkish');
+        assert((await web01()).notes.includes('DNS doğrudan buraya işaret ediyor ama envanter terminates_tls=no diyor — envanteri kontrol edin'), 'web01 in Turkish');
+        for (const scheme of ['light', 'dark']) {
+          await dis.emulateMedia({ 'prefers-color-scheme': scheme });
+          await dis.evaluate(() => document.querySelector('.scan-tab-servers [data-role="topology-warnings"]').scrollIntoView({ block: 'start' }));
+          await assertNoHorizontalScroll(dis, `scan servers disagree 320 ${scheme}`);
+          await shot(dis, opts, `topology-scan-disagree-320-${scheme}-tr`);
+        }
+        assertEqual(await dis.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS for the zone left the page');
+        await assertClean(dis, 'topology disagree', origin);
+      } finally {
+        await dis.close();
       }
     });
   } finally {

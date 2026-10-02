@@ -94,7 +94,7 @@ import { SummaryButton } from '../ui/summary-button.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 // Where TLS terminates (the inventory's topology keys): the notes of a server, the CSV column.
-import { TopologyNotes, noCertStatus } from '../ui/topology.js';
+import { TopologyNotes, TopologyWarnings, noCertStatus } from '../ui/topology.js';
 import { TOPOLOGY_CSV_COLUMN, topologyTokens, scanTargetsKeys } from '../lib/topology.js';
 
 /**
@@ -1950,6 +1950,8 @@ export function mount(container, ctx) {
         h('div', { class: 'muted text-sm' }, t('scan.inv.ips', { count: ips }),
           inv.updatedAt ? ` · ${t('scan.inv.updated', { when: formatRelative(inv.updatedAt) })}` : '')),
       h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('inventory') }, Icon('sliders', { size: 14 }), h('span', { class: 'btn-label' }, t('scan.inv.edit')))),
+    // what the topology warnings change shows here, before the run (Edit servers is right above)
+    ...[TopologyWarnings(inv.warnings)].filter(Boolean),
     h('p', { class: 'muted text-sm scan-privacy' }, Icon('lock', { size: 13 }), ' ', t('scan.inv.privacy')));
   }
 
@@ -2469,7 +2471,9 @@ export function mount(container, ctx) {
       // records are compared with them (DANE tab).
       certChain: rw ? rw.chain.slice() : certLoad && v.cert ? certLoad.result.certificates.filter((c) => c !== v.cert) : [],
       certName: rw ? (primaryFile(session.certLoads) || { name: '' }).name : certLoad ? certLoad.name : '',
-      inventoryServers: state.inventory.servers.length
+      inventoryServers: state.inventory.servers.length,
+      // the inventory's TOPOLOGY warnings as the run read it: they change the Servers tab's grouping
+      topologyWarnings: (state.inventory.warnings || []).filter((w) => w.code === 'TOPOLOGY')
     });
     // The DohClient counts queries for its whole life; remember where this run started.
     run.queriesAtStart = typeof dns.stats === 'function' ? dns.stats().queries : null;
@@ -3319,6 +3323,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     const inv = run.config.inventoryServers > 0;
     serversPanel.append(h('p', { class: 'muted text-sm' }, t('scan.srv.intro')));
     if (r.servers.some((g) => g.topology)) serversPanel.append(h('p', { class: 'muted text-sm', dataset: { role: 'scan-topology-intro' } }, t('topo.introScan')));
+    const topologyWarnings = TopologyWarnings(run.config.topologyWarnings, { href: ctx.href('inventory') });
+    if (topologyWarnings) serversPanel.append(topologyWarnings);
     if (cert && (r.servers.length || r.unmatchedIps.length)) {
       serversPanel.append(h('div', { class: 'cluster vfy-hint' },
         h('span', { class: 'muted text-sm' }, t('scan.srv.verifyHint')),

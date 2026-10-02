@@ -7,13 +7,15 @@
  *     install on every holder, the public NAT address, its own TLS ports;
  *   - {@link noCertStatus}: a server group that gets no certificate ('plain' / 'passthrough');
  *   - {@link TopologyCard}: the Servers view's compact load balancer → backends tree, the VIPs
- *     and the NAT pairs.
+ *     and the NAT pairs;
+ *   - {@link TopologyWarnings}: the inventory's TOPOLOGY warnings in SSL Targets, where they
+ *     change which servers get the certificate (the words of each are registered here).
  *
  * Builds DOM with h() only (no innerHTML); styles in assets/css/views/topology.css.
  */
 
 import { h } from './dom.js';
-import { Badge, Card, Icon } from './components.js';
+import { Alert, Badge, Card, Icon } from './components.js';
 import { t, registerStrings } from '../i18n.js';
 import { inventoryTopology, terminatesTls } from '../lib/topology.js';
 
@@ -28,8 +30,10 @@ registerStrings('en', {
   'topo.portsTitle': 'Own TLS ports',
   'topo.terminates': 'terminates TLS',
   'topo.passthrough': 'passes TLS through',
-  'topo.plain': 'plain HTTP — no certificate',
-  'topo.reencrypts': 're-encrypts — needs the certificate',
+  'topo.plain': 'plain HTTP',
+  'topo.plainNote': 'no certificate',
+  'topo.reencrypts': 're-encrypts',
+  'topo.reencryptsNote': 'needs the certificate',
   'topo.vipHolders2': 'install on both: {a} and {b}',
   'topo.vipHoldersN': 'install on all {count}: {names}',
   'topo.vipHolder1': 'only {name} holds it',
@@ -54,6 +58,31 @@ registerStrings('en', {
   'topo.status.plain': 'No certificate needed',
   'topo.status.passthrough': 'TLS passthrough',
   'topo.via.lb': 'Through {lb}',
+  'topo.warnings': {
+    one: 'Your inventory has {count} topology warning — it affects which servers get the certificate',
+    other: 'Your inventory has {count} topology warnings — they affect which servers get the certificate'
+  },
+  'topo.warnings.line': 'Line {n}',
+  'topo.warnings.more': '…and {count} more on the Servers page',
+  'topo.warnings.fix': 'Fix on the Servers page',
+  // The inventory's TOPOLOGY warnings (lib/inventory.js TOPOLOGY_REASONS): the Servers view and SSL Targets
+  'inv.warn.TOPOLOGY': 'Topology key that could not be used',
+  'inv.warn.TOPOLOGY.ports': 'Invalid ports= — TLS ports are numbers from 1 to 65535, comma separated (ports=443,8443)',
+  'inv.warn.TOPOLOGY.plainPorts': 'ports= lists a port that usually carries no TLS (22, 80 …) — the server is scanned on these ports instead of -p: list its TLS ports',
+  'inv.warn.TOPOLOGY.terminatesTls': 'Invalid terminates_tls= — write yes or no',
+  'inv.warn.TOPOLOGY.vip': 'Invalid vip= — a shared address is an IP address without a port',
+  'inv.warn.TOPOLOGY.nat': 'Invalid nat= — a public address is an IP address without a port',
+  'inv.warn.TOPOLOGY.backends': 'Invalid backends= — list server names (or their addresses), comma separated',
+  'inv.warn.TOPOLOGY.unknownBackend': 'Unknown backend — no server of that name or address in the inventory',
+  'inv.warn.TOPOLOGY.selfBackend': 'A server cannot be its own backend',
+  'inv.warn.TOPOLOGY.conflict': 'terminates_tls given both ways — yes is kept, the safe value',
+  'inv.warn.TOPOLOGY.noServer': 'Topology key without a server — write it after the server’s name and address',
+  'inv.warn.TOPOLOGY.groupVars': 'Group variables are not read for the topology — set it on each host',
+  'inv.warn.TOPOLOGY.noTermination': 'TLS terminates nowhere behind this load balancer — it passes TLS through (terminates_tls=no) and every backend says terminates_tls=no too',
+  'inv.warn.TOPOLOGY.vipMixed': 'The holders of this VIP disagree — some say terminates_tls=no, some do not: whichever holds the VIP serves its names',
+  'inv.warn.TOPOLOGY.cycle': 'Backends that lead back to this load balancer (the loop is shown) — it cannot sit behind itself: check the inventory',
+  'inv.warn.TOPOLOGY.ownedAddress': 'This vip= / nat= address is also a server’s own address (in brackets) — which server answers there is unclear: check the inventory',
+  'inv.warn.TOPOLOGY.nearMiss': 'Not a topology key — did you mean the one in brackets? It is not read',
   'topo.planPlain': { one: '{count} server the names reach needs no certificate', other: '{count} servers the names reach need no certificate' },
   'topo.sum.suspect': {
     one: '{count} server of your list says terminates_tls=no, but DNS points at it directly: it is counted as needing the certificate — check the inventory.',
@@ -76,8 +105,10 @@ registerStrings('tr', {
   'topo.portsTitle': 'Kendi TLS portları',
   'topo.terminates': 'TLS’i sonlandırıyor',
   'topo.passthrough': 'TLS’i olduğu gibi iletiyor',
-  'topo.plain': 'düz HTTP — sertifika gerekmez',
-  'topo.reencrypts': 'yeniden şifreliyor — sertifika gerekir',
+  'topo.plain': 'düz HTTP',
+  'topo.plainNote': 'sertifika gerekmez',
+  'topo.reencrypts': 'yeniden şifreliyor',
+  'topo.reencryptsNote': 'sertifika gerekir',
   'topo.vipHolders2': 'ikisine de kurun: {a} ve {b}',
   'topo.vipHoldersN': '{count} sunucunun hepsine kurun: {names}',
   'topo.vipHolder1': 'yalnızca {name} sunucusunda',
@@ -105,6 +136,30 @@ registerStrings('tr', {
   'topo.status.plain': 'Sertifika gerekmiyor',
   'topo.status.passthrough': 'TLS geçişi (passthrough)',
   'topo.via.lb': '{lb} üzerinden',
+  'topo.warnings': {
+    one: 'Envanterinizde {count} topoloji uyarısı var — sertifikanın hangi sunuculara kurulacağını etkiliyor',
+    other: 'Envanterinizde {count} topoloji uyarısı var — sertifikanın hangi sunuculara kurulacağını etkiliyor'
+  },
+  'topo.warnings.line': 'Satır {n}',
+  'topo.warnings.more': '…ve Sunucular sayfasında {count} uyarı daha',
+  'topo.warnings.fix': 'Sunucular sayfasında düzeltin',
+  'inv.warn.TOPOLOGY': 'Kullanılamayan topoloji anahtarı',
+  'inv.warn.TOPOLOGY.ports': 'Geçersiz ports= — TLS portları 1 ile 65535 arasında, virgülle ayrılmış sayılardır (ports=443,8443)',
+  'inv.warn.TOPOLOGY.plainPorts': 'ports= genelde TLS taşımayan bir port içeriyor (22, 80 …) — sunucu -p yerine bu portlardan taranır: TLS portlarını yazın',
+  'inv.warn.TOPOLOGY.terminatesTls': 'Geçersiz terminates_tls= — yes ya da no yazın',
+  'inv.warn.TOPOLOGY.vip': 'Geçersiz vip= — paylaşılan adres portsuz bir IP adresidir',
+  'inv.warn.TOPOLOGY.nat': 'Geçersiz nat= — genel adres portsuz bir IP adresidir',
+  'inv.warn.TOPOLOGY.backends': 'Geçersiz backends= — sunucu adlarını (ya da adreslerini) virgülle ayırarak yazın',
+  'inv.warn.TOPOLOGY.unknownBackend': 'Bilinmeyen arka uç sunucusu — envanterde bu ad ya da adreste bir sunucu yok',
+  'inv.warn.TOPOLOGY.selfBackend': 'Bir sunucu kendi arka ucu olamaz',
+  'inv.warn.TOPOLOGY.conflict': 'terminates_tls iki farklı değerle yazılmış — güvenli olan yes geçerli',
+  'inv.warn.TOPOLOGY.noServer': 'Sunucusu olmayan topoloji anahtarı — sunucunun adından ve adresinden sonra yazın',
+  'inv.warn.TOPOLOGY.groupVars': 'Grup değişkenleri topoloji için okunmaz — her host için ayrı yazın',
+  'inv.warn.TOPOLOGY.noTermination': 'Bu yük dengeleyicinin arkasında TLS hiçbir yerde sonlanmıyor — TLS’i olduğu gibi iletiyor (terminates_tls=no) ve her arka uç da terminates_tls=no diyor',
+  'inv.warn.TOPOLOGY.vipMixed': 'Bu VIP’i tutan sunucular çelişiyor — bazıları terminates_tls=no diyor, bazıları demiyor: VIP hangisindeyse adları o sunar',
+  'inv.warn.TOPOLOGY.cycle': 'Arka uçları bu yük dengeleyiciye geri dönüyor (döngü gösteriliyor) — kendi arkasında duramaz: envanteri kontrol edin',
+  'inv.warn.TOPOLOGY.ownedAddress': 'Bu vip= / nat= adresi aynı zamanda bir sunucunun kendi adresi (parantez içinde) — orada hangi sunucunun yanıt verdiği belli değil: envanteri kontrol edin',
+  'inv.warn.TOPOLOGY.nearMiss': 'Bu bir topoloji anahtarı değil — parantez içindekini mi demek istediniz? Bu anahtar okunmuyor',
   'topo.planPlain': { one: 'Adların ulaştığı {count} sunucuya sertifika gerekmiyor', other: 'Adların ulaştığı {count} sunucuya sertifika gerekmiyor' },
   'topo.sum.suspect': {
     one: 'Listenizdeki {count} sunucu için envanter terminates_tls=no diyor, ama DNS doğrudan ona işaret ediyor: sertifika gerekiyor sayıldı — envanteri kontrol edin.',
@@ -173,6 +228,34 @@ export function TopologyNotes(topology) {
   return notes.length ? h('ul', { class: 'topo-notes' }, notes) : null;
 }
 
+/**
+ * The inventory's TOPOLOGY warnings for SSL Targets, where they change which servers get the
+ * certificate: the first `limit` with their line, what each means and its token, and a link to
+ * the Servers view to fix them (`href`). null without one.
+ * @param {Array<{ line: number, code: string, reason?: string, detail?: string }>} warnings
+ * @param {{ href?: string|null, limit?: number }} [opts]
+ * @returns {HTMLElement|null}
+ */
+export function TopologyWarnings(warnings, { href = null, limit = 5 } = {}) {
+  const list = (Array.isArray(warnings) ? warnings : []).filter((w) => w && w.code === 'TOPOLOGY');
+  if (!list.length) return null;
+  const el = Alert({
+    variant: 'warn',
+    compact: true,
+    title: t('topo.warnings', { count: list.length }),
+    children: [
+      h('ul', { class: 'topo-warnings' }, list.slice(0, limit).map((w) => h('li', { dataset: { reason: w.reason || '' } },
+        w.line ? h('span', { class: 'topo-warnings-line num' }, t('topo.warnings.line', { n: w.line })) : null,
+        h('span', null, t(w.reason ? `inv.warn.TOPOLOGY.${w.reason}` : 'inv.warn.TOPOLOGY')),
+        w.detail ? h('code', { class: 'topo-warnings-detail' }, w.detail) : null))),
+      list.length > limit ? h('p', { class: 'muted text-xs' }, t('topo.warnings.more', { count: list.length - limit })) : null
+    ],
+    actions: href ? [h('a', { class: 'btn btn-secondary btn-sm', href }, Icon('sliders', { size: 14 }), h('span', { class: 'btn-label' }, t('topo.warnings.fix')))] : null
+  });
+  el.dataset.role = 'topology-warnings';
+  return el;
+}
+
 /** A server's name and its own addresses, for the card. */
 function serverLine(server, ...extra) {
   return h('div', { class: 'topo-node' },
@@ -206,7 +289,9 @@ export function TopologyCard(servers) {
           ? h('ul', { class: 'topo-backends' }, backends.map((b) => {
             const own = terminatesTls(b);
             return h('li', { class: 'topo-backend', dataset: { server: b.name, tls: String(own) } },
-              serverLine(b, Badge(t(own ? 'topo.reencrypts' : 'topo.plain'), { variant: own ? 'warn' : 'ok', icon: own ? 'lock' : 'unlock' })));
+              // a short badge says what the backend does, the text after it what that means (it wraps on a phone)
+              serverLine(b, Badge(t(own ? 'topo.reencrypts' : 'topo.plain'), { variant: own ? 'warn' : 'ok', icon: own ? 'lock' : 'unlock' }),
+                h('span', { class: 'topo-badge-note' }, t(own ? 'topo.reencryptsNote' : 'topo.plainNote'))));
           }))
           : h('p', { class: 'muted text-xs topo-empty' }, t('topo.noBackends')),
         topo.nowhere.has(server) ? h('p', { class: 'topo-warn', dataset: { topo: 'nowhere' } }, Icon('alert', { size: 12 }), h('span', null, t('topo.noTermination'))) : null);

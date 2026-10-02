@@ -2705,4 +2705,33 @@ describe('topology notes and card (ui/topology.js)', () => {
     }
     assert.equal(withFakeDocument(() => TopologyNotes(lb(['web01'])).textContent), 'Passes TLS through to web01: no certificate here');
   });
+
+  test('TopologyWarnings: SSL Targets lists the inventory topology warnings in words, with their line and token', async () => {
+    const { TopologyWarnings } = await import('../../assets/js/ui/topology.js');
+    const warnings = [
+      { line: 3, code: 'TOPOLOGY', reason: 'noTermination', detail: 'edge01' },
+      { line: 5, code: 'NO_IP', detail: 'web09' },
+      { line: 7, code: 'TOPOLOGY', reason: 'nearMiss', detail: 'backend=pool01 (backends=?)' }
+    ];
+    withFakeDocument(() => {
+      assert.equal(TopologyWarnings([{ line: 5, code: 'NO_IP' }]), null, 'none without a TOPOLOGY warning');
+      const el = TopologyWarnings(warnings, { href: '#/inventory' });
+      assert.equal(el.dataset.role, 'topology-warnings');
+      const text = el.textContent;
+      assert.match(text, /Your inventory has 2 topology warnings — they affect which servers get the certificate/);
+      assert.match(text, /Line 3TLS terminates nowhere behind this load balancer.*edge01/);
+      assert.match(text, /Line 7Not a topology key.*backend=pool01 \(backends=\?\)/);
+      assert.match(text, /Fix on the Servers page/);
+      assert.doesNotMatch(text, /web09/);
+      const many = TopologyWarnings(Array.from({ length: 7 }, (_, i) => ({ line: i + 1, code: 'TOPOLOGY', reason: 'vip', detail: `vip=x${i}` })));
+      assert.match(many.textContent, /…and 2 more on the Servers page/);
+      assert.doesNotMatch(many.textContent, /Fix on the Servers page/, 'no link without href');
+    });
+    i18n.setLang('tr');
+    try {
+      assert.match(withFakeDocument(() => TopologyWarnings(warnings).textContent), /Envanterinizde 2 topoloji uyarısı var.*Satır 3/);
+    } finally {
+      i18n.setLang('en');
+    }
+  });
 });

@@ -722,14 +722,15 @@ async function topologySteps(run, { browser, server, page, origin, opts }) {
         ta.dispatchEvent(new Event('input', { bubbles: true }));
       }, `${TOPOLOGY_INVENTORY}\nweb08 10.0.0.92 terminates_tls=no\nweb09 10.0.0.90 ports=99999`);
       await tab.waitFor(() => document.querySelector('.inv-warning[data-code="TOPOLOGY"]'), { message: 'TOPOLOGY warning' });
-      // Every badge of the card keeps its words whole, and the section keys (terminates_tls=no) stay one token.
+      // Every badge of the card keeps its words whole, and the section keys (terminates_tls=no) stay one token inside the card.
       const cut = () => tab.evaluate(() => ({
         badges: [...document.querySelectorAll('.topo-card .badge')].filter((b) => {
           const text = b.querySelector('.badge-text');
           const card = b.closest('.topo-card').getBoundingClientRect();
           return (text && text.scrollWidth > text.clientWidth + 1) || b.getBoundingClientRect().right > card.right + 0.5;
         }).map((b) => b.textContent),
-        keys: [...document.querySelectorAll('.topo-card .topo-key')].filter((k) => k.getClientRects().length > 1).map((k) => k.textContent),
+        keys: [...document.querySelectorAll('.topo-card .topo-key')].filter((k) => k.getClientRects().length > 1
+          || k.getBoundingClientRect().right > k.closest('.topo-card').getBoundingClientRect().right + 0.5).map((k) => k.textContent),
         plainKey: !!document.querySelector('.topo-section[data-role="plain"] .topo-key')
       }));
       for (const lang of ['tr', 'en']) {
